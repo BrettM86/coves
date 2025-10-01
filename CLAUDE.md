@@ -13,77 +13,20 @@ Project: Coves Builder You are a distinguished developer actively building Coves
 #### Human & LLM Readability Guidelines:
 - Descriptive Naming: Use full words over abbreviations (e.g., CommunityGovernance not CommGov)
 
-## Build Process
+## atProto Essentials for Coves
 
-### Phase 1: Planning (Before Writing Code)
+### Architecture
+- **PDS is Self-Contained**: Uses internal SQLite + CAR files (in Docker volume)
+- **PostgreSQL for AppView Only**: One database for Coves AppView indexing
+- **Don't Touch PDS Internals**: PDS manages its own storage, we just read from firehose
+- **Data Flow**: Client → PDS → Firehose → AppView → PostgreSQL
 
-**ALWAYS START WITH:**
-
-- [ ] Identify which atProto patterns apply (check ATPROTO_GUIDE.md or context7 https://context7.com/bluesky-social/atproto)
-- [ ] Check if Indigo (also in context7) packages already solve this: https://context7.com/bluesky-social/indigo
-- [ ] Define the XRPC interface first
-- [ ] Write the Lexicon schema
-- [ ] Plan the data flow: CAR store → AppView
-    - [ ] - Follow the two-database pattern: Repository (CAR files)(PostgreSQL for metadata) and AppView (PostgreSQL)
-- [ ] **Identify auth requirements and data sensitivity**
-
-### Phase 2: Test-First Implementation
-
-**BUILD ORDER:**
-
-1. **Domain Model** (`core/[domain]/[domain].go`)
-
-    - Start with the simplest struct
-    - Add validation methods
-    - Define error types
-    - **Add input validation from the start**
-2. **Repository Interfaces** (`core/[domain]/repository.go`)
-
-    ```go
-    type CommunityWriteRepository interface {
-        Create(ctx context.Context, community *Community) error
-        Update(ctx context.Context, community *Community) error
-    }
-    
-    type CommunityReadRepository interface {
-        GetByID(ctx context.Context, id string) (*Community, error)
-        List(ctx context.Context, limit, offset int) ([]*Community, error)
-    }
-    ```
-
-3. **Service Tests** (`core/[domain]/service_test.go`)
-
-    - Write failing tests for happy path
-    - **Add tests for invalid inputs**
-    - **Add tests for unauthorized access**
-    - Mock repositories
-4. **Service Implementation** (`core/[domain]/service.go`)
-
-    - Implement to pass tests
-    - **Validate all inputs before processing**
-    - **Check permissions before operations**
-    - Handle transactions
-5. **Repository Implementations**
-
-    - **Always use parameterized queries**
-    - **Never concatenate user input into queries**
-    - Write repo: `internal/atproto/carstore/[domain]_write_repo.go`
-    - Read repo: `db/appview/[domain]_read_repo.go`
-6. **XRPC Handler** (`xrpc/handlers/[domain]_handler.go`)
-
-    - **Verify auth tokens/DIDs**
-    - Parse XRPC request
-    - Call service
-    - **Sanitize errors before responding**
-
-### Phase 3: Integration
-
-**WIRE IT UP:**
-
-- [ ] Add to dependency injection in main.go
-- [ ] Register XRPC routes with proper auth middleware
-- [ ] Create migration if needed
-- [ ] Write integration test including auth flows
+### Always Consider:
+- [ ] **Identity**: Every action needs DID verification
+- [ ] **Record Types**: Define custom lexicons (e.g., `social.coves.post`, `social.coves.community`)
+- [ ] **Is it federated-friendly?** (Can other PDSs interact with it?)
+- [ ] **Does the Lexicon make sense?** (Would it work for other forums?)
+- [ ] **AppView only indexes**: We don't write to CAR files, only read from firehose
 
 ## Security-First Building
 
@@ -103,14 +46,6 @@ Project: Coves Builder You are a distinguished developer actively building Coves
 - No input validation → Add it immediately
 - Error messages with internal details → Wrap errors properly
 - Unbounded queries → Add limits/pagination
-
-## Quick Decision Guide
-
-### "Should I use X?"
-
-1. Does Indigo have it? → Use it
-2. Can PostgreSQL + Go do it securely? → Build it simple
-3. Requires external dependency? → Check Context7 first
 
 ### "How should I structure this?"
 
@@ -134,14 +69,13 @@ Your code is ready when:
 
 - [ ] Tests pass (including security tests)
 - [ ] Follows atProto patterns
-- [ ] No security checklist items missed
 - [ ] Handles errors gracefully
 - [ ] Works end-to-end with auth
 
 ## Quick Checks Before Committing
 
 1. **Will it work?** (Integration test proves it)
-2. 1. **Is it secure?** (Auth, validation, parameterized queries)
+2. **Is it secure?** (Auth, validation, parameterized queries)
 3. **Is it simple?** (Could you explain to a junior?)
 4. **Is it complete?** (Test, implementation, documentation)
 

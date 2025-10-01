@@ -3,7 +3,6 @@
 This document provides an overview of the Coves project directory structure, following atProto architecture patterns.
 
 **Legend:**
-- † = Planned but not yet implemented
 - 🔒 = Security-sensitive files
 
 ```
@@ -43,27 +42,6 @@ Coves/
 └── build/ †                    # Build artifacts
 ```
 
-## Implementation Status
-
-### Completed ✓
-- Basic repository structure
-- User domain models
-- CAR store foundation
-- Lexicon schemas
-- Database migrations
-
-### In Progress 🚧
-- Repository service implementation
-- User service
-- Basic authentication
-
-### Planned 📋
-- XRPC handlers
-- AppView indexer
-- Firehose implementation
-- Community features
-- Moderation system
-- Feed algorithms
 
 ## Development Guidelines
 
@@ -72,5 +50,4 @@ For detailed implementation guidelines, see [CLAUDE.md](./CLAUDE.md) and [ATPROT
 1. **Start with Lexicons**: Define data schemas first
 2. **Implement Core Domain**: Create models and interfaces
 3. **Build Services**: Implement business logic
-4. **Add Repositories**: Create data access layers
 5. **Wire XRPC**: Connect handlers last

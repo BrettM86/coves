@@ -24,49 +24,66 @@ AT Protocol is a federated social networking protocol that enables:
 ### Key Components
 1. **DIDs (Decentralized Identifiers)** - Persistent user identifiers (e.g., `did:plc:xyz123`)
 2. **Handles** - Human-readable names that resolve to DIDs (e.g., `alice.bsky.social`)
-3. **Repositories** - User data stored as signed Merkle trees in CAR files
+3. **Repositories** - User data stored in PDS'
 4. **Lexicons** - Schema definitions for data types and API methods
 5. **XRPC** - The RPC protocol for client-server communication
 6. **Firehose** - Real-time event stream of repository changes
 
 ## Architecture Overview
 
-### Two-Database Pattern
-AT Protocol requires two distinct data stores:
+### Coves Architecture Pattern
+Coves uses a simplified, single-database architecture that leverages existing atProto infrastructure:
 
-#### 1. Repository Database (Source of Truth)
-- **Purpose**: Stores user-generated content as immutable, signed records
-- **Storage**: CAR files containing Merkle trees + PostgreSQL metadata
-- **Access**: Through XRPC procedures that modify repositories
-- **Properties**:
-  - Append-only (soft deletes via tombstones)
-  - Cryptographically verifiable
-  - User-controlled and portable
+#### Components
 
-#### 2. AppView Database (Query Layer)
-- **Purpose**: Denormalized, indexed data optimized for queries
-- **Storage**: PostgreSQL with application-specific schema
-- **Access**: Through XRPC queries (read-only)
-- **Properties**:
-  - Eventually consistent with repositories
-  - Can be rebuilt from repository data
-  - Application-specific aggregations
+1. **PDS (Personal Data Server)**
+   - Managed by Bluesky's official PDS implementation
+   - Handles user repositories, DIDs, and CAR file storage
+   - Users can use our PDS or any external PDS (federated)
+   - Emits events to the Relay/firehose
+
+2. **Relay (BigSky)**
+   - Aggregates firehose events from multiple PDSs
+   - For development: subscribes only to local dev PDS
+   - For production: can subscribe to multiple PDSs or public relay
+
+3. **AppView Database (Single PostgreSQL)**
+   - **Purpose**: Denormalized, indexed data optimized for Coves queries
+   - **Storage**: PostgreSQL with Coves-specific schema
+   - **Contains**:
+     - Indexed posts, communities, feeds
+     - User read states and preferences
+     - PDS metadata and record references
+   - **Properties**:
+     - Eventually consistent with PDS repositories
+     - Can be rebuilt from firehose replay
+     - Application-specific aggregations
+
+4. **Coves AppView (Go Application)**
+   - Subscribes to Relay firehose
+   - Indexes relevant records into PostgreSQL
+   - Serves XRPC queries for Coves features
+   - Implements custom feed algorithms
 
 ### Data Flow
 
 ```
 Write Path:
-Client → XRPC Procedure → Service → Write Repo → CAR Store
-                                           ↓
-                                    Firehose Event
-                                           ↓
-                                    AppView Indexer
-                                           ↓
-                                    AppView Database
+Client → PDS (via XRPC) → Repository Record Created
+                                    ↓
+                             Firehose Event
+                                    ↓
+                          Relay aggregates events
+                                    ↓
+                       Coves AppView subscribes
+                                    ↓
+                          Index in PostgreSQL
 
 Read Path:
-Client → XRPC Query → Service → Read Repo → AppView Database
+Client → Coves AppView (via XRPC) → PostgreSQL Query → Response
 ```
+
+**Key Point**: Coves AppView only reads from the firehose and indexes data. It does NOT write to CAR files or manage repositories directly - the PDS handles that.
 
 ## Lexicons
 
@@ -138,57 +155,6 @@ Define operations that modify repositories:
 - Procedures often start with `create`, `update`, or `delete`
 - Keep names descriptive but concise
 
-## XRPC
-
-### What is XRPC?
-XRPC (Cross-Protocol RPC) is AT Protocol's HTTP-based RPC system:
-- All methods live under `/xrpc/` path
-- Method names map directly to Lexicon IDs
-- Supports both JSON and binary data
-
-### Request Format
-```
-# Query (GET)
-GET /xrpc/social.coves.community.getCommunity?id=123
-
-# Procedure (POST)
-POST /xrpc/social.coves.community.createPost
-Content-Type: application/json
-Authorization: Bearer <token>
-
-{"text": "Hello, Coves!"}
-```
-
-### Authentication
-- Uses Bearer tokens in Authorization header
-- Tokens are JWTs signed by the user's signing key
-- Service auth for server-to-server calls
-
-## Data Storage
-
-### CAR Files
-Content Addressable archive files store repository data:
-- Contains IPLD blocks forming a Merkle tree
-- Each block identified by CID (Content IDentifier)
-- Enables cryptographic verification and efficient sync
-
-### Record Keys (rkeys)
-- Unique identifiers for records within a collection
-- Can be TIDs (timestamp-based) or custom strings
-- Must match pattern: `[a-zA-Z0-9._~-]{1,512}`
-
-### Repository Structure
-```
-Repository (did:plc:user123)
-├── social.coves.post
-│   ├── 3kkreaz3amd27 (TID)
-│   └── 3kkreaz3amd28 (TID)
-├── social.coves.community.member
-│   ├── community123
-│   └── community456
-└── app.bsky.actor.profile
-    └── self
-```
 
 ## Identity & Authentication
 
@@ -204,10 +170,7 @@ Handles resolve to DIDs via:
 2. HTTPS well-known: `https://alice.com/.well-known/atproto-did`
 
 ### Authentication Flow
-1. Client creates session with identifier/password
-2. Server returns access/refresh tokens
-3. Client uses access token for API requests
-4. Refresh when access token expires
+1. Client creates session with OAuth
 
 ## Firehose & Sync
 
@@ -233,7 +196,6 @@ wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos
 ### Using Indigo Library
 Bluesky's official Go implementation provides:
 - Lexicon code generation
-- CAR file handling
 - XRPC client/server
 - Firehose subscription
 

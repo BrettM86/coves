@@ -32,7 +32,7 @@
     },
     "postView": {
       "type": "object",
-      "required": ["uri", "cid", "author", "record", "community", "postType", "createdAt"],
+      "required": ["uri", "cid", "author", "record", "community", "postType", "createdAt", "indexedAt"],
       "properties": {
         "uri": {
           "type": "string",
@@ -97,6 +97,11 @@
         "editedAt": {
           "type": "string",
           "format": "datetime"
+        },
+        "indexedAt": {
+          "type": "string",
+          "format": "datetime",
+          "description": "When this post was indexed by the AppView"
         },
         "stats": {
           "type": "ref",

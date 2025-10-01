@@ -1,6 +1,8 @@
 package tests
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -17,33 +19,31 @@ func TestLexiconSchemaValidation(t *testing.T) {
 		t.Fatalf("Failed to load lexicon schemas: %v", err)
 	}
 
-	// Test that we can resolve our key schemas
-	expectedSchemas := []string{
-		"social.coves.actor.profile",
-		"social.coves.actor.subscription",
-		"social.coves.actor.membership",
-		"social.coves.community.profile",
-		"social.coves.community.rules",
-		"social.coves.community.wiki",
-		"social.coves.post.text",
-		"social.coves.post.image",
-		"social.coves.post.video",
-		"social.coves.post.article",
-		"social.coves.richtext.facet",
-		"social.coves.embed.image",
-		"social.coves.embed.video",
-		"social.coves.embed.external",
-		"social.coves.embed.post",
-		"social.coves.interaction.vote",
-		"social.coves.interaction.tag",
-		"social.coves.interaction.comment",
-		"social.coves.interaction.share",
-		"social.coves.moderation.vote",
-		"social.coves.moderation.tribunalVote",
-		"social.coves.moderation.ruleProposal",
+	// Walk through the directory and find all lexicon files
+	var lexiconFiles []string
+	err := filepath.Walk(schemaPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if strings.HasSuffix(path, ".json") && !info.IsDir() {
+			lexiconFiles = append(lexiconFiles, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Failed to walk directory: %v", err)
 	}
 
-	for _, schemaID := range expectedSchemas {
+	t.Logf("Found %d lexicon files to validate", len(lexiconFiles))
+
+	// Extract schema IDs from file paths and test resolution
+	for _, filePath := range lexiconFiles {
+		// Convert file path to schema ID
+		// e.g., ../internal/atproto/lexicon/social/coves/actor/profile.json -> social.coves.actor.profile
+		relPath, _ := filepath.Rel(schemaPath, filePath)
+		relPath = strings.TrimSuffix(relPath, ".json")
+		schemaID := strings.ReplaceAll(relPath, string(filepath.Separator), ".")
+
 		t.Run(schemaID, func(t *testing.T) {
 			if _, err := catalog.Resolve(schemaID); err != nil {
 				t.Errorf("Failed to resolve schema %s: %v", schemaID, err)
@@ -137,10 +137,7 @@ func TestValidateRecord(t *testing.T) {
 				"community":       "did:plc:programming123",
 				"postType":        "text",
 				"title":           "Test Post",
-				"text":            "This is a test post",
-				"tags":            []string{"test", "golang"},
-				"language":        "en",
-				"contentWarnings": []string{},
+				"content":         "This is a test post",
 				"createdAt":       "2025-01-09T14:30:00Z",
 			},
 			shouldFail: false,
@@ -153,10 +150,7 @@ func TestValidateRecord(t *testing.T) {
 				"community":       "did:plc:programming123",
 				"postType":        "invalid-type",
 				"title":           "Test Post",
-				"text":            "This is a test post",
-				"tags":            []string{"test"},
-				"language":        "en",
-				"contentWarnings": []string{},
+				"content":         "This is a test post",
 				"createdAt":       "2025-01-09T14:30:00Z",
 			},
 			shouldFail:    true,

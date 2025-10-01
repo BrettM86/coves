@@ -8,8 +8,13 @@
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["community", "postType", "createdAt"],
+        "required": ["$type", "community", "postType", "createdAt"],
         "properties": {
+          "$type": {
+            "type": "string",
+            "const": "social.coves.post.record",
+            "description": "The record type identifier"
+          },
           "community": {
             "type": "string",
             "format": "at-identifier",

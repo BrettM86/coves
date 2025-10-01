@@ -1,0 +1,144 @@
+version: '3.8'
+
+# Coves Local Development Stack
+# Simple setup: PDS + AppView (no relay needed for local dev)
+# AppView subscribes directly to PDS firehose at ws://localhost:3001/xrpc/com.atproto.sync.subscribeRepos
+# Ports configured to avoid conflicts with production PDS on :3000
+
+services:
+  # Bluesky Personal Data Server (PDS)
+  # Handles user repositories, DIDs, and CAR files
+  pds:
+    image: ghcr.io/bluesky-social/pds:latest
+    container_name: coves-dev-pds
+    ports:
+      - "3001:3000"  # PDS XRPC API (avoiding production PDS on :3000)
+    environment:
+      # PDS Configuration
+      PDS_HOSTNAME: ${PDS_HOSTNAME:-localhost}
+      PDS_PORT: 3000
+      PDS_DATA_DIRECTORY: /pds
+      PDS_BLOBSTORE_DISK_LOCATION: /pds/blocks
+      PDS_DID_PLC_URL: ${PDS_DID_PLC_URL:-https://plc.directory}
+      # PDS_CRAWLERS not needed - we're not using a relay for local dev
+
+      # Note: PDS uses its own internal SQLite database and CAR file storage
+      # Our PostgreSQL database is only for the Coves AppView
+
+      # JWT secrets (for local dev only)
+      PDS_JWT_SECRET: ${PDS_JWT_SECRET:-local-dev-jwt-secret-change-in-production}
+      PDS_ADMIN_PASSWORD: ${PDS_ADMIN_PASSWORD:-admin}
+      PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX: ${PDS_PLC_ROTATION_KEY:-af514fb84c4356241deed29feb392d1ee359f99c05a7b8f7bff2e5f2614f64b2}
+
+      # Service endpoints
+      PDS_SERVICE_HANDLE_DOMAINS: ${PDS_SERVICE_HANDLE_DOMAINS:-.local.coves.dev}
+
+      # Dev mode settings (allows HTTP instead of HTTPS)
+      PDS_DEV_MODE: "true"
+
+      # Development settings
+      NODE_ENV: development
+      LOG_ENABLED: "true"
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+    volumes:
+      - pds-data:/pds
+    networks:
+      - coves-dev
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/xrpc/_health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Indigo Relay (BigSky) - OPTIONAL for local dev
+  # WARNING: BigSky is designed to crawl the entire atProto network!
+  # For local dev, consider using direct PDS firehose instead (see AppView config below)
+  #
+  # To use relay: docker-compose -f docker-compose.dev.yml up pds relay
+  # To skip relay: docker-compose -f docker-compose.dev.yml up pds
+  #
+  # If using relay, you MUST manually configure it to only watch local PDS:
+  # 1. Start relay
+  # 2. Use admin API to block all domains except localhost
+  #    curl -X POST http://localhost:2471/admin/pds/requestCrawl \
+  #      -H "Authorization: Bearer dev-admin-key" \
+  #      -d '{"hostname": "localhost:3001"}'
+  relay:
+    image: ghcr.io/bluesky-social/indigo:bigsky-0a2d4173e6e89e49b448f6bb0a6e1ab58d12b385
+    container_name: coves-dev-relay
+    ports:
+      - "2471:2470"  # Relay firehose WebSocket (avoiding conflicts)
+    environment:
+      # Relay Configuration
+      BGS_ADMIN_KEY: ${BGS_ADMIN_KEY:-dev-admin-key}
+      BGS_PORT: 2470
+
+      # IMPORTANT: Allow insecure WebSocket for local PDS (ws:// instead of wss://)
+      BGS_CRAWL_INSECURE_WS: "true"
+
+      # Database connection (uses shared PostgreSQL for relay state)
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@host.docker.internal:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable
+
+      # Relay will discover PDSs automatically - use admin API to restrict!
+      # See comments above for how to configure allowlist
+
+      # Development settings
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+    networks:
+      - coves-dev
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      pds:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:2470/xrpc/_health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Mark as optional - start with: docker-compose up pds relay
+    profiles:
+      - relay
+
+  # Coves AppView (Your Go Application)
+  # Subscribes to PDS firehose and indexes Coves-specific data
+  # Note: Uncomment when you have a Dockerfile for the AppView
+  # appview:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: coves-dev-appview
+  #   ports:
+  #     - "8081:8080"  # AppView API (avoiding conflicts)
+  #   environment:
+  #     # Database connection
+  #     DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@host.docker.internal:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable
+  #
+  #     # PDS Firehose subscription (direct, no relay)
+  #     FIREHOSE_URL: ws://pds:3000/xrpc/com.atproto.sync.subscribeRepos
+  #
+  #     # PDS connection (for XRPC calls)
+  #     PDS_URL: http://pds:3000
+  #
+  #     # Application settings
+  #     PORT: 8080
+  #     ENV: development
+  #     LOG_LEVEL: ${LOG_LEVEL:-debug}
+  #   networks:
+  #     - coves-dev
+  #   extra_hosts:
+  #     - "host.docker.internal:host-gateway"
+  #   depends_on:
+  #     - pds
+
+# Note: PostgreSQL runs separately via internal/db/local_dev_db_compose/
+# This stack connects to it via host.docker.internal:5433
+
+networks:
+  coves-dev:
+    driver: bridge
+    name: coves-dev-network
+
+volumes:
+  pds-data:
+    name: coves-dev-pds-data
