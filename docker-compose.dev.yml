@@ -41,17 +41,17 @@ services:
     image: postgres:15
     container_name: coves-test-postgres
     ports:
-      - "5434:5432"
+      - "${POSTGRES_TEST_PORT:-5434}:5432"
     environment:
-      POSTGRES_DB: coves_test
-      POSTGRES_USER: test_user
-      POSTGRES_PASSWORD: test_password
+      POSTGRES_DB: ${POSTGRES_TEST_DB:-coves_test}
+      POSTGRES_USER: ${POSTGRES_TEST_USER:-test_user}
+      POSTGRES_PASSWORD: ${POSTGRES_TEST_PASSWORD:-test_password}
     volumes:
       - postgres-test-data:/var/lib/postgresql/data
     networks:
       - coves-dev
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U test_user -d coves_test"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_TEST_USER:-test_user} -d ${POSTGRES_TEST_DB:-coves_test}"]
       interval: 5s
       timeout: 5s
       retries: 5

@@ -92,9 +92,9 @@ test: ## Run all tests with test database
 	@echo "Waiting for test database to be ready..."
 	@sleep 3
 	@echo "$(GREEN)Running migrations on test database...$(RESET)"
-	@goose -dir internal/db/migrations postgres "postgresql://test_user:test_password@localhost:5434/coves_test?sslmode=disable" up || true
+	@. .env.dev && goose -dir internal/db/migrations postgres "postgresql://$$POSTGRES_TEST_USER:$$POSTGRES_TEST_PASSWORD@localhost:$$POSTGRES_TEST_PORT/$$POSTGRES_TEST_DB?sslmode=disable" up || true
 	@echo "$(GREEN)Running tests...$(RESET)"
-	@TEST_DATABASE_URL="postgresql://test_user:test_password@localhost:5434/coves_test?sslmode=disable" go test ./... -v
+	@. .env.dev && TEST_DATABASE_URL="postgresql://$$POSTGRES_TEST_USER:$$POSTGRES_TEST_PASSWORD@localhost:$$POSTGRES_TEST_PORT/$$POSTGRES_TEST_DB?sslmode=disable" go test ./... -v
 	@echo "$(GREEN)✓ Tests complete$(RESET)"
 
 test-db-reset: ## Reset test database
@@ -104,7 +104,7 @@ test-db-reset: ## Reset test database
 	@docker-compose -f docker-compose.dev.yml --env-file .env.dev --profile test up -d postgres-test
 	@echo "Waiting for PostgreSQL to be ready..."
 	@sleep 3
-	@goose -dir internal/db/migrations postgres "postgresql://test_user:test_password@localhost:5434/coves_test?sslmode=disable" up || true
+	@. .env.dev && goose -dir internal/db/migrations postgres "postgresql://$$POSTGRES_TEST_USER:$$POSTGRES_TEST_PASSWORD@localhost:$$POSTGRES_TEST_PORT/$$POSTGRES_TEST_DB?sslmode=disable" up || true
 	@echo "$(GREEN)✓ Test database reset$(RESET)"
 
 test-db-stop: ## Stop test database
