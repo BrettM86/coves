@@ -1,11 +1,63 @@
 version: '3.8'
 
 # Coves Local Development Stack
-# Simple setup: PDS + AppView (no relay needed for local dev)
-# AppView subscribes directly to PDS firehose at ws://localhost:3001/xrpc/com.atproto.sync.subscribeRepos
-# Ports configured to avoid conflicts with production PDS on :3000
+# All-in-one setup: PDS + PostgreSQL + optional Relay
+#
+# Usage:
+#   make dev-up              # Start PDS + PostgreSQL
+#   make dev-down            # Stop everything
+#   docker-compose up relay  # Optional: start with relay
+#
+# Profiles:
+#   - default: PDS + PostgreSQL (dev database on port 5433)
+#   - test: PostgreSQL test database (port 5434)
+#   - relay: BigSky relay (optional, will crawl entire network!)
 
 services:
+  # PostgreSQL Database (Port 5433)
+  # Used by Coves AppView for indexing data from firehose
+  postgres:
+    image: postgres:15
+    container_name: coves-dev-postgres
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-coves_dev}
+      POSTGRES_USER: ${POSTGRES_USER:-dev_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dev_password}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - coves-dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dev_user} -d ${POSTGRES_DB:-coves_dev}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL Test Database (Port 5434) - Optional
+  # Use with: docker-compose --profile test up postgres-test
+  postgres-test:
+    image: postgres:15
+    container_name: coves-test-postgres
+    ports:
+      - "5434:5432"
+    environment:
+      POSTGRES_DB: coves_test
+      POSTGRES_USER: test_user
+      POSTGRES_PASSWORD: test_password
+    volumes:
+      - postgres-test-data:/var/lib/postgresql/data
+    networks:
+      - coves-dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test_user -d coves_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - test
+
   # Bluesky Personal Data Server (PDS)
   # Handles user repositories, DIDs, and CAR files
   pds:
@@ -76,8 +128,8 @@ services:
       # IMPORTANT: Allow insecure WebSocket for local PDS (ws:// instead of wss://)
       BGS_CRAWL_INSECURE_WS: "true"
 
-      # Database connection (uses shared PostgreSQL for relay state)
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@host.docker.internal:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable
+      # Database connection (uses PostgreSQL for relay state)
+      DATABASE_URL: postgresql://${POSTGRES_USER:-dev_user}:${POSTGRES_PASSWORD:-dev_password}@postgres:5432/${POSTGRES_DB:-coves_dev}?sslmode=disable
 
       # Relay will discover PDSs automatically - use admin API to restrict!
       # See comments above for how to configure allowlist
@@ -86,9 +138,9 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-debug}
     networks:
       - coves-dev
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     depends_on:
+      postgres:
+        condition: service_healthy
       pds:
         condition: service_healthy
     healthcheck:
@@ -112,7 +164,7 @@ services:
   #     - "8081:8080"  # AppView API (avoiding conflicts)
   #   environment:
   #     # Database connection
-  #     DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@host.docker.internal:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable
+  #     DATABASE_URL: postgresql://${POSTGRES_USER:-dev_user}:${POSTGRES_PASSWORD:-dev_password}@postgres:5432/${POSTGRES_DB:-coves_dev}?sslmode=disable
   #
   #     # PDS Firehose subscription (direct, no relay)
   #     FIREHOSE_URL: ws://pds:3000/xrpc/com.atproto.sync.subscribeRepos
@@ -126,13 +178,11 @@ services:
   #     LOG_LEVEL: ${LOG_LEVEL:-debug}
   #   networks:
   #     - coves-dev
-  #   extra_hosts:
-  #     - "host.docker.internal:host-gateway"
   #   depends_on:
-  #     - pds
-
-# Note: PostgreSQL runs separately via internal/db/local_dev_db_compose/
-# This stack connects to it via host.docker.internal:5433
+  #     postgres:
+  #       condition: service_healthy
+  #     pds:
+  #       condition: service_healthy
 
 networks:
   coves-dev:
@@ -140,5 +190,9 @@ networks:
     name: coves-dev-network
 
 volumes:
+  postgres-data:
+    name: coves-dev-postgres-data
+  postgres-test-data:
+    name: coves-test-postgres-data
   pds-data:
     name: coves-dev-pds-data

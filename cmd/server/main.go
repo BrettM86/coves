@@ -11,12 +11,8 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	_ "github.com/lib/pq"
 	"github.com/pressly/goose/v3"
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
 
 	"Coves/internal/api/routes"
-	"Coves/internal/atproto/carstore"
-	"Coves/internal/core/repository"
 	"Coves/internal/core/users"
 	postgresRepo "Coves/internal/db/postgres"
 )
@@ -51,35 +47,12 @@ func main() {
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
 
-	// Initialize GORM
-	gormDB, err := gorm.Open(postgres.New(postgres.Config{
-		Conn: db,
-	}), &gorm.Config{
-		DisableForeignKeyConstraintWhenMigrating: true,
-		PrepareStmt:                              true, // Enable prepared statements for better performance
-	})
-	if err != nil {
-		log.Fatal("Failed to initialize GORM:", err)
-	}
-
 	// Initialize repositories
 	userRepo := postgresRepo.NewUserRepository(db)
-	_ = users.NewUserService(userRepo) // TODO: Use when UserRoutes is fixed
-
-	// Initialize carstore for ATProto repository storage
-	carDirs := []string{"./data/carstore"}
-	repoStore, err := carstore.NewRepoStore(gormDB, carDirs)
-	if err != nil {
-		log.Fatal("Failed to initialize repo store:", err)
-	}
-
-	repositoryRepo := postgresRepo.NewRepositoryRepo(db)
-	repositoryService := repository.NewService(repositoryRepo, repoStore)
+	userService := users.NewUserService(userRepo)
 
 	// Mount routes
-	// TODO: Fix UserRoutes to accept *UserService
-	// r.Mount("/api/users", routes.UserRoutes(userService))
-	r.Mount("/", routes.RepositoryRoutes(repositoryService))
+	r.Mount("/api/users", routes.UserRoutes(userService))
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
