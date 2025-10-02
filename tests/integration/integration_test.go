@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,10 +20,29 @@ import (
 )
 
 func setupTestDB(t *testing.T) *sql.DB {
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
+	// Build connection string from environment variables (set by .env.dev)
+	// These are loaded by the Makefile when running tests
+	testUser := os.Getenv("POSTGRES_TEST_USER")
+	testPassword := os.Getenv("POSTGRES_TEST_PASSWORD")
+	testPort := os.Getenv("POSTGRES_TEST_PORT")
+	testDB := os.Getenv("POSTGRES_TEST_DB")
+
+	// Fallback to defaults if not set
+	if testUser == "" {
+		testUser = "test_user"
 	}
+	if testPassword == "" {
+		testPassword = "test_password"
+	}
+	if testPort == "" {
+		testPort = "5434"
+	}
+	if testDB == "" {
+		testDB = "coves_test"
+	}
+
+	dbURL := fmt.Sprintf("postgres://%s:%s@localhost:%s/%s?sslmode=disable",
+		testUser, testPassword, testPort, testDB)
 
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {

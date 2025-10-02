@@ -9,6 +9,10 @@ RESET := \033[0m
 GREEN := \033[32m
 YELLOW := \033[33m
 
+# Load test database configuration from .env.dev
+include .env.dev
+export
+
 ##@ General
 
 help: ## Show this help message
@@ -92,9 +96,9 @@ test: ## Run all tests with test database
 	@echo "Waiting for test database to be ready..."
 	@sleep 3
 	@echo "$(GREEN)Running migrations on test database...$(RESET)"
-	@. .env.dev && goose -dir internal/db/migrations postgres "postgresql://$$POSTGRES_TEST_USER:$$POSTGRES_TEST_PASSWORD@localhost:$$POSTGRES_TEST_PORT/$$POSTGRES_TEST_DB?sslmode=disable" up || true
+	@goose -dir internal/db/migrations postgres "postgresql://$(POSTGRES_TEST_USER):$(POSTGRES_TEST_PASSWORD)@localhost:$(POSTGRES_TEST_PORT)/$(POSTGRES_TEST_DB)?sslmode=disable" up || true
 	@echo "$(GREEN)Running tests...$(RESET)"
-	@. .env.dev && TEST_DATABASE_URL="postgresql://$$POSTGRES_TEST_USER:$$POSTGRES_TEST_PASSWORD@localhost:$$POSTGRES_TEST_PORT/$$POSTGRES_TEST_DB?sslmode=disable" go test ./... -v
+	@go test ./... -v
 	@echo "$(GREEN)✓ Tests complete$(RESET)"
 
 test-db-reset: ## Reset test database
@@ -104,7 +108,7 @@ test-db-reset: ## Reset test database
 	@docker-compose -f docker-compose.dev.yml --env-file .env.dev --profile test up -d postgres-test
 	@echo "Waiting for PostgreSQL to be ready..."
 	@sleep 3
-	@. .env.dev && goose -dir internal/db/migrations postgres "postgresql://$$POSTGRES_TEST_USER:$$POSTGRES_TEST_PASSWORD@localhost:$$POSTGRES_TEST_PORT/$$POSTGRES_TEST_DB?sslmode=disable" up || true
+	@goose -dir internal/db/migrations postgres "postgresql://$(POSTGRES_TEST_USER):$(POSTGRES_TEST_PASSWORD)@localhost:$(POSTGRES_TEST_PORT)/$(POSTGRES_TEST_DB)?sslmode=disable" up || true
 	@echo "$(GREEN)✓ Test database reset$(RESET)"
 
 test-db-stop: ## Stop test database

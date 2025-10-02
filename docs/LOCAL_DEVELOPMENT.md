@@ -190,9 +190,12 @@ make db-shell          # Open psql shell to the database
 ### Testing Commands
 
 ```bash
-make test              # Run all tests with test database
-make test-db-reset     # Reset test database
+make test              # Run all tests (starts test DB, runs migrations, executes tests)
+make test-db-reset     # Reset test database (clean slate)
+make test-db-stop      # Stop test database
 ```
+
+**See [TESTING_SUMMARY.md](../TESTING_SUMMARY.md) for complete testing documentation.**
 
 ### Workflow Commands
 
@@ -385,15 +388,23 @@ curl http://localhost:3001/xrpc/_health
 
 ## Environment Variables
 
-All configuration is in `.env.dev`:
+All configuration is in [.env.dev](../.env.dev) - a single file for both development and testing:
 
-### Database Configuration
+### Development Database (Port 5433)
 ```bash
 POSTGRES_HOST=localhost
 POSTGRES_PORT=5433
 POSTGRES_DB=coves_dev
 POSTGRES_USER=dev_user
 POSTGRES_PASSWORD=dev_password
+```
+
+### Test Database (Port 5434)
+```bash
+POSTGRES_TEST_DB=coves_test
+POSTGRES_TEST_USER=test_user
+POSTGRES_TEST_PASSWORD=test_password
+POSTGRES_TEST_PORT=5434
 ```
 
 ### PDS Configuration
@@ -403,12 +414,6 @@ PDS_PORT=3001
 PDS_JWT_SECRET=local-dev-jwt-secret-change-in-production
 PDS_ADMIN_PASSWORD=admin
 PDS_SERVICE_HANDLE_DOMAINS=.local.coves.dev
-```
-
-### Relay Configuration
-```bash
-BGS_PORT=2471
-BGS_ADMIN_KEY=dev-admin-key
 ```
 
 ### AppView Configuration
@@ -423,6 +428,8 @@ PDS_URL=http://localhost:3001
 ENV=development
 LOG_LEVEL=debug
 ```
+
+**No separate `.env.test` file needed!** All configuration (dev + test) is in `.env.dev`.
 
 ## Next Steps
 
