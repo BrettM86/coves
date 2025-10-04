@@ -81,10 +81,10 @@ docker-compose -f docker-compose.dev.yml --env-file .env.dev --profile test stop
 
 Test individual components in isolation.
 
-**Example**: [internal/core/users/service_test.go](internal/core/users/service_test.go)
+**Note**: Unit tests will be added as needed. Currently focusing on integration tests.
 
 ```bash
-# Run unit tests for a specific package
+# Run unit tests for a specific package (when available)
 go test -v ./internal/core/users/...
 ```
 
@@ -346,7 +346,7 @@ cat tests/lexicon-test-data/your-test.json | jq .
 - ✅ One test file per feature/endpoint
 
 ### Test Data
-- ✅ Use `@example.com` emails for test users (auto-cleaned by setupTestDB)
+- ✅ Use `.test` handles for test users (e.g., `alice.test`) (auto-cleaned by setupTestDB)
 - ✅ Clean up data in tests (or rely on setupTestDB cleanup)
 - ✅ Don't rely on specific test execution order
 - ✅ Each test should be independent

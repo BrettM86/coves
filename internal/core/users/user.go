@@ -4,15 +4,18 @@ import (
 	"time"
 )
 
+// User represents an atProto user tracked in the Coves AppView
+// This is NOT the user's repository - that lives in the PDS
+// This table only tracks metadata for efficient AppView queries
 type User struct {
-	ID        int       `json:"id" db:"id"`
-	Email     string    `json:"email" db:"email"`
-	Username  string    `json:"username" db:"username"`
-	CreatedAt time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt time.Time `json:"updated_at" db:"updated_at"`
+	DID       string    `json:"did" db:"did"`           // atProto DID (e.g., did:plc:xyz123)
+	Handle    string    `json:"handle" db:"handle"`     // Human-readable handle (e.g., alice.coves.dev)
+	CreatedAt time.Time `json:"createdAt" db:"created_at"`
+	UpdatedAt time.Time `json:"updatedAt" db:"updated_at"`
 }
 
+// CreateUserRequest represents the input for creating a new user
 type CreateUserRequest struct {
-	Email    string `json:"email"`
-	Username string `json:"username"`
+	DID    string `json:"did"`
+	Handle string `json:"handle"`
 }

@@ -1,10 +1,18 @@
 package users
 
-type UserServiceInterface interface {
-	CreateUser(req CreateUserRequest) (*User, error)
-	GetUserByID(id int) (*User, error)
-	GetUserByEmail(email string) (*User, error)
-	GetUserByUsername(username string) (*User, error)
-	UpdateUser(id int, req UpdateUserRequest) (*User, error)
-	DeleteUser(id int) error
+import "context"
+
+// UserRepository defines the interface for user data persistence
+type UserRepository interface {
+	Create(ctx context.Context, user *User) (*User, error)
+	GetByDID(ctx context.Context, did string) (*User, error)
+	GetByHandle(ctx context.Context, handle string) (*User, error)
+}
+
+// UserService defines the interface for user business logic
+type UserService interface {
+	CreateUser(ctx context.Context, req CreateUserRequest) (*User, error)
+	GetUserByDID(ctx context.Context, did string) (*User, error)
+	GetUserByHandle(ctx context.Context, handle string) (*User, error)
+	ResolveHandleToDID(ctx context.Context, handle string) (string, error)
 }

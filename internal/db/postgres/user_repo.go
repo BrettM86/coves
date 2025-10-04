@@ -1,123 +1,81 @@
 package postgres
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"Coves/internal/core/users"
 )
 
-type PostgresUserRepo struct {
+type postgresUserRepo struct {
 	db *sql.DB
 }
 
+// NewUserRepository creates a new PostgreSQL user repository
 func NewUserRepository(db *sql.DB) users.UserRepository {
-	return &PostgresUserRepo{db: db}
+	return &postgresUserRepo{db: db}
 }
 
-func (r *PostgresUserRepo) Create(user *users.User) (*users.User, error) {
+// Create inserts a new user into the users table
+func (r *postgresUserRepo) Create(ctx context.Context, user *users.User) (*users.User, error) {
 	query := `
-		INSERT INTO users (email, username) 
-		VALUES ($1, $2) 
-		RETURNING id, email, username, created_at, updated_at`
+		INSERT INTO users (did, handle)
+		VALUES ($1, $2)
+		RETURNING did, handle, created_at, updated_at`
 
-	err := r.db.QueryRow(query, user.Email, user.Username).
-		Scan(&user.ID, &user.Email, &user.Username, &user.CreatedAt, &user.UpdatedAt)
+	err := r.db.QueryRowContext(ctx, query, user.DID, user.Handle).
+		Scan(&user.DID, &user.Handle, &user.CreatedAt, &user.UpdatedAt)
 
 	if err != nil {
-		return nil, fmt.Errorf("repository: failed to create user: %w", err)
+		// Check for unique constraint violations
+		if strings.Contains(err.Error(), "duplicate key") {
+			if strings.Contains(err.Error(), "users_pkey") {
+				return nil, fmt.Errorf("user with DID already exists")
+			}
+			if strings.Contains(err.Error(), "users_handle_key") {
+				return nil, fmt.Errorf("handle already taken")
+			}
+		}
+		return nil, fmt.Errorf("failed to create user: %w", err)
 	}
 
 	return user, nil
 }
 
-func (r *PostgresUserRepo) GetByID(id int) (*users.User, error) {
+// GetByDID retrieves a user by their DID
+func (r *postgresUserRepo) GetByDID(ctx context.Context, did string) (*users.User, error) {
 	user := &users.User{}
-	query := `SELECT id, email, username, created_at, updated_at FROM users WHERE id = $1`
+	query := `SELECT did, handle, created_at, updated_at FROM users WHERE did = $1`
 
-	err := r.db.QueryRow(query, id).
-		Scan(&user.ID, &user.Email, &user.Username, &user.CreatedAt, &user.UpdatedAt)
+	err := r.db.QueryRowContext(ctx, query, did).
+		Scan(&user.DID, &user.Handle, &user.CreatedAt, &user.UpdatedAt)
 
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("repository: user not found")
+		return nil, fmt.Errorf("user not found")
 	}
 	if err != nil {
-		return nil, fmt.Errorf("repository: failed to get user: %w", err)
+		return nil, fmt.Errorf("failed to get user by DID: %w", err)
 	}
 
 	return user, nil
 }
 
-func (r *PostgresUserRepo) GetByEmail(email string) (*users.User, error) {
+// GetByHandle retrieves a user by their handle
+func (r *postgresUserRepo) GetByHandle(ctx context.Context, handle string) (*users.User, error) {
 	user := &users.User{}
-	query := `SELECT id, email, username, created_at, updated_at FROM users WHERE email = $1`
+	query := `SELECT did, handle, created_at, updated_at FROM users WHERE handle = $1`
 
-	err := r.db.QueryRow(query, email).
-		Scan(&user.ID, &user.Email, &user.Username, &user.CreatedAt, &user.UpdatedAt)
+	err := r.db.QueryRowContext(ctx, query, handle).
+		Scan(&user.DID, &user.Handle, &user.CreatedAt, &user.UpdatedAt)
 
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("repository: user not found")
+		return nil, fmt.Errorf("user not found")
 	}
 	if err != nil {
-		return nil, fmt.Errorf("repository: failed to get user by email: %w", err)
+		return nil, fmt.Errorf("failed to get user by handle: %w", err)
 	}
 
 	return user, nil
-}
-
-func (r *PostgresUserRepo) GetByUsername(username string) (*users.User, error) {
-	user := &users.User{}
-	query := `SELECT id, email, username, created_at, updated_at FROM users WHERE username = $1`
-
-	err := r.db.QueryRow(query, username).
-		Scan(&user.ID, &user.Email, &user.Username, &user.CreatedAt, &user.UpdatedAt)
-
-	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("repository: user not found")
-	}
-	if err != nil {
-		return nil, fmt.Errorf("repository: failed to get user by username: %w", err)
-	}
-
-	return user, nil
-}
-
-func (r *PostgresUserRepo) Update(user *users.User) (*users.User, error) {
-	query := `
-		UPDATE users 
-		SET email = $2, username = $3, updated_at = CURRENT_TIMESTAMP
-		WHERE id = $1
-		RETURNING id, email, username, created_at, updated_at`
-
-	err := r.db.QueryRow(query, user.ID, user.Email, user.Username).
-		Scan(&user.ID, &user.Email, &user.Username, &user.CreatedAt, &user.UpdatedAt)
-
-	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("repository: user not found")
-	}
-	if err != nil {
-		return nil, fmt.Errorf("repository: failed to update user: %w", err)
-	}
-
-	return user, nil
-}
-
-func (r *PostgresUserRepo) Delete(id int) error {
-	query := `DELETE FROM users WHERE id = $1`
-
-	result, err := r.db.Exec(query, id)
-	if err != nil {
-		return fmt.Errorf("repository: failed to delete user: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("repository: failed to get rows affected: %w", err)
-	}
-
-	if rowsAffected == 0 {
-		return fmt.Errorf("repository: user not found")
-	}
-
-	return nil
 }
