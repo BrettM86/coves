@@ -16,9 +16,9 @@ import (
 
 	"Coves/internal/api/middleware"
 	"Coves/internal/api/routes"
+	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/users"
 	postgresRepo "Coves/internal/db/postgres"
-	"Coves/internal/jetstream"
 )
 
 func main() {

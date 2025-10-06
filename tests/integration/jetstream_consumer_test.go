@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
-	"Coves/internal/jetstream"
 )
 
 func TestUserIndexingFromJetstream(t *testing.T) {

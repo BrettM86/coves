@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
-	"Coves/internal/jetstream"
 	_ "github.com/lib/pq"
 	"github.com/pressly/goose/v3"
 )
