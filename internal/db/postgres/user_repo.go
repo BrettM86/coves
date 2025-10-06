@@ -21,12 +21,12 @@ func NewUserRepository(db *sql.DB) users.UserRepository {
 // Create inserts a new user into the users table
 func (r *postgresUserRepo) Create(ctx context.Context, user *users.User) (*users.User, error) {
 	query := `
-		INSERT INTO users (did, handle)
-		VALUES ($1, $2)
-		RETURNING did, handle, created_at, updated_at`
+		INSERT INTO users (did, handle, pds_url)
+		VALUES ($1, $2, $3)
+		RETURNING did, handle, pds_url, created_at, updated_at`
 
-	err := r.db.QueryRowContext(ctx, query, user.DID, user.Handle).
-		Scan(&user.DID, &user.Handle, &user.CreatedAt, &user.UpdatedAt)
+	err := r.db.QueryRowContext(ctx, query, user.DID, user.Handle, user.PDSURL).
+		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt)
 
 	if err != nil {
 		// Check for unique constraint violations
@@ -47,10 +47,10 @@ func (r *postgresUserRepo) Create(ctx context.Context, user *users.User) (*users
 // GetByDID retrieves a user by their DID
 func (r *postgresUserRepo) GetByDID(ctx context.Context, did string) (*users.User, error) {
 	user := &users.User{}
-	query := `SELECT did, handle, created_at, updated_at FROM users WHERE did = $1`
+	query := `SELECT did, handle, pds_url, created_at, updated_at FROM users WHERE did = $1`
 
 	err := r.db.QueryRowContext(ctx, query, did).
-		Scan(&user.DID, &user.Handle, &user.CreatedAt, &user.UpdatedAt)
+		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("user not found")
@@ -65,10 +65,10 @@ func (r *postgresUserRepo) GetByDID(ctx context.Context, did string) (*users.Use
 // GetByHandle retrieves a user by their handle
 func (r *postgresUserRepo) GetByHandle(ctx context.Context, handle string) (*users.User, error) {
 	user := &users.User{}
-	query := `SELECT did, handle, created_at, updated_at FROM users WHERE handle = $1`
+	query := `SELECT did, handle, pds_url, created_at, updated_at FROM users WHERE handle = $1`
 
 	err := r.db.QueryRowContext(ctx, query, handle).
-		Scan(&user.DID, &user.Handle, &user.CreatedAt, &user.UpdatedAt)
+		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt)
 
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("user not found")

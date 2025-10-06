@@ -1,4 +1,4 @@
-.PHONY: help dev-up dev-down dev-logs dev-status dev-reset dev-db-up dev-db-down dev-db-reset test clean
+.PHONY: help dev-up dev-down dev-logs dev-status dev-reset test e2e-test clean
 
 # Default target - show help
 .DEFAULT_GOAL := help
@@ -26,17 +26,22 @@ help: ## Show this help message
 
 ##@ Local Development (All-in-One)
 
-dev-up: ## Start PDS + PostgreSQL for local development
+dev-up: ## Start PDS + PostgreSQL + Jetstream for local development
 	@echo "$(GREEN)Starting Coves development stack...$(RESET)"
-	@docker-compose -f docker-compose.dev.yml --env-file .env.dev up -d postgres pds
+	@docker-compose -f docker-compose.dev.yml --env-file .env.dev --profile jetstream up -d postgres pds jetstream
 	@echo ""
 	@echo "$(GREEN)✓ Development stack started!$(RESET)"
 	@echo ""
 	@echo "Services available at:"
 	@echo "  - PostgreSQL:        localhost:5433"
 	@echo "  - PDS (XRPC):        http://localhost:3001"
-	@echo "  - PDS Firehose (WS): ws://localhost:3001/xrpc/com.atproto.sync.subscribeRepos"
-	@echo "  - AppView (API):     http://localhost:8081 (when uncommented)"
+	@echo "  - PDS Firehose:      ws://localhost:3001/xrpc/com.atproto.sync.subscribeRepos"
+	@echo "  - Jetstream:         ws://localhost:6008/subscribe  $(CYAN)(Read-Forward)$(RESET)"
+	@echo "  - Jetstream Metrics: http://localhost:6009/metrics"
+	@echo ""
+	@echo "$(CYAN)Next steps:$(RESET)"
+	@echo "  1. Run: make run  (starts AppView)"
+	@echo "  2. AppView will auto-index users from Jetstream"
 	@echo ""
 	@echo "Run 'make dev-logs' to view logs"
 
@@ -90,16 +95,30 @@ db-reset: ## Reset database (delete all data and re-run migrations)
 
 ##@ Testing
 
-test: ## Run all tests with test database
+test: ## Run fast unit/integration tests (skips slow E2E tests)
 	@echo "$(GREEN)Starting test database...$(RESET)"
 	@docker-compose -f docker-compose.dev.yml --env-file .env.dev --profile test up -d postgres-test
 	@echo "Waiting for test database to be ready..."
 	@sleep 3
 	@echo "$(GREEN)Running migrations on test database...$(RESET)"
 	@goose -dir internal/db/migrations postgres "postgresql://$(POSTGRES_TEST_USER):$(POSTGRES_TEST_PASSWORD)@localhost:$(POSTGRES_TEST_PORT)/$(POSTGRES_TEST_DB)?sslmode=disable" up || true
-	@echo "$(GREEN)Running tests...$(RESET)"
-	@go test ./... -v
+	@echo "$(GREEN)Running fast tests (use 'make e2e-test' for E2E tests)...$(RESET)"
+	@go test ./... -short -v
 	@echo "$(GREEN)✓ Tests complete$(RESET)"
+
+e2e-test: ## Run automated E2E tests (requires: make dev-up + make run in another terminal)
+	@echo "$(CYAN)========================================$(RESET)"
+	@echo "$(CYAN)  E2E Test: Full User Signup Flow      $(RESET)"
+	@echo "$(CYAN)========================================$(RESET)"
+	@echo ""
+	@echo "$(CYAN)Prerequisites:$(RESET)"
+	@echo "  1. Run 'make dev-up' (if not already running)"
+	@echo "  2. Run 'make run' in another terminal (AppView must be running)"
+	@echo ""
+	@echo "$(GREEN)Running E2E tests...$(RESET)"
+	@go test ./tests/e2e -run TestE2E_UserSignup -v
+	@echo ""
+	@echo "$(GREEN)✓ E2E tests complete!$(RESET)"
 
 test-db-reset: ## Reset test database
 	@echo "$(GREEN)Resetting test database...$(RESET)"

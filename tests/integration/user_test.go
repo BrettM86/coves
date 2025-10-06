@@ -85,6 +85,7 @@ func TestUserCreationAndRetrieval(t *testing.T) {
 		req := users.CreateUserRequest{
 			DID:    "did:plc:test123456",
 			Handle: "alice.test",
+			PDSURL: "http://localhost:3001",
 		}
 
 		user, err := userService.CreateUser(ctx, req)
@@ -155,6 +156,7 @@ func TestGetProfileEndpoint(t *testing.T) {
 	_, err := userService.CreateUser(ctx, users.CreateUserRequest{
 		DID:    "did:plc:endpoint123",
 		Handle: "bob.test",
+		PDSURL: "http://localhost:3001",
 	})
 	if err != nil {
 		t.Fatalf("Failed to create test user: %v", err)
@@ -162,11 +164,11 @@ func TestGetProfileEndpoint(t *testing.T) {
 
 	// Set up HTTP router
 	r := chi.NewRouter()
-	r.Mount("/xrpc/social.coves.actor", routes.UserRoutes(userService))
+	routes.RegisterUserRoutes(r, userService)
 
 	// Test 1: Get profile by DID
 	t.Run("Get Profile By DID", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor/profile?actor=did:plc:endpoint123", nil)
+		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getProfile?actor=did:plc:endpoint123", nil)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 
@@ -187,7 +189,7 @@ func TestGetProfileEndpoint(t *testing.T) {
 
 	// Test 2: Get profile by handle
 	t.Run("Get Profile By Handle", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor/profile?actor=bob.test", nil)
+		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getProfile?actor=bob.test", nil)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 
@@ -209,7 +211,7 @@ func TestGetProfileEndpoint(t *testing.T) {
 
 	// Test 3: Missing actor parameter
 	t.Run("Missing Actor Parameter", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor/profile", nil)
+		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getProfile", nil)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 
@@ -220,7 +222,7 @@ func TestGetProfileEndpoint(t *testing.T) {
 
 	// Test 4: User not found
 	t.Run("User Not Found", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor/profile?actor=nonexistent.test", nil)
+		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getProfile?actor=nonexistent.test", nil)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 
@@ -243,24 +245,28 @@ func TestDuplicateCreation(t *testing.T) {
 	_, err := userService.CreateUser(ctx, users.CreateUserRequest{
 		DID:    "did:plc:duplicate123",
 		Handle: "duplicate.test",
+		PDSURL: "http://localhost:3001",
 	})
 	if err != nil {
 		t.Fatalf("Failed to create first user: %v", err)
 	}
 
-	// Test duplicate DID
-	t.Run("Duplicate DID", func(t *testing.T) {
-		_, err := userService.CreateUser(ctx, users.CreateUserRequest{
+	// Test duplicate DID - now idempotent, returns existing user
+	t.Run("Duplicate DID - Idempotent", func(t *testing.T) {
+		user, err := userService.CreateUser(ctx, users.CreateUserRequest{
 			DID:    "did:plc:duplicate123",
-			Handle: "different.test",
+			Handle: "different.test", // Different handle, same DID
+			PDSURL: "http://localhost:3001",
 		})
 
-		if err == nil {
-			t.Error("Expected error for duplicate DID, got nil")
+		// Should return existing user, not error
+		if err != nil {
+			t.Fatalf("Expected idempotent behavior, got error: %v", err)
 		}
 
-		if !strings.Contains(err.Error(), "DID already exists") {
-			t.Errorf("Expected 'DID already exists' error, got: %v", err)
+		// Should return the original user (with original handle)
+		if user.Handle != "duplicate.test" {
+			t.Errorf("Expected original handle 'duplicate.test', got: %s", user.Handle)
 		}
 	})
 
@@ -269,6 +275,7 @@ func TestDuplicateCreation(t *testing.T) {
 		_, err := userService.CreateUser(ctx, users.CreateUserRequest{
 			DID:    "did:plc:different456",
 			Handle: "duplicate.test",
+			PDSURL: "http://localhost:3001",
 		})
 
 		if err == nil {
@@ -294,6 +301,7 @@ func TestHandleValidation(t *testing.T) {
 		name        string
 		did         string
 		handle      string
+		pdsURL      string
 		shouldError bool
 		errorMsg    string
 	}{
@@ -301,60 +309,76 @@ func TestHandleValidation(t *testing.T) {
 			name:        "Valid handle with hyphen",
 			did:         "did:plc:valid1",
 			handle:      "alice-bob.test",
+			pdsURL:      "http://localhost:3001",
 			shouldError: false,
 		},
 		{
 			name:        "Valid handle with dots",
 			did:         "did:plc:valid2",
 			handle:      "alice.bob.test",
+			pdsURL:      "http://localhost:3001",
 			shouldError: false,
 		},
 		{
-			name:        "Invalid: consecutive hyphens",
-			did:         "did:plc:invalid1",
-			handle:      "alice--bob.test",
+			name:        "Invalid: no dot (not domain-like)",
+			did:         "did:plc:invalid8",
+			handle:      "alice",
+			pdsURL:      "http://localhost:3001",
 			shouldError: true,
-			errorMsg:    "consecutive hyphens",
+			errorMsg:    "invalid handle",
+		},
+		{
+			name:        "Valid: consecutive hyphens (allowed per atProto spec)",
+			did:         "did:plc:valid3",
+			handle:      "alice--bob.test",
+			pdsURL:      "http://localhost:3001",
+			shouldError: false,
 		},
 		{
 			name:        "Invalid: starts with hyphen",
 			did:         "did:plc:invalid2",
 			handle:      "-alice.test",
+			pdsURL:      "http://localhost:3001",
 			shouldError: true,
-			errorMsg:    "invalid handle format",
+			errorMsg:    "invalid handle",
 		},
 		{
 			name:        "Invalid: ends with hyphen",
 			did:         "did:plc:invalid3",
 			handle:      "alice-.test",
+			pdsURL:      "http://localhost:3001",
 			shouldError: true,
-			errorMsg:    "invalid handle format",
+			errorMsg:    "invalid handle",
 		},
 		{
 			name:        "Invalid: special characters",
 			did:         "did:plc:invalid4",
 			handle:      "alice!bob.test",
+			pdsURL:      "http://localhost:3001",
 			shouldError: true,
-			errorMsg:    "invalid handle format",
+			errorMsg:    "invalid handle",
 		},
 		{
 			name:        "Invalid: spaces",
 			did:         "did:plc:invalid5",
 			handle:      "alice bob.test",
+			pdsURL:      "http://localhost:3001",
 			shouldError: true,
-			errorMsg:    "invalid handle format",
+			errorMsg:    "invalid handle",
 		},
 		{
 			name:        "Invalid: too long",
 			did:         "did:plc:invalid6",
 			handle:      strings.Repeat("a", 254) + ".test",
+			pdsURL:      "http://localhost:3001",
 			shouldError: true,
-			errorMsg:    "must be between 1 and 253 characters",
+			errorMsg:    "invalid handle",
 		},
 		{
 			name:        "Invalid: missing DID prefix",
 			did:         "plc:invalid7",
 			handle:      "valid.test",
+			pdsURL:      "http://localhost:3001",
 			shouldError: true,
 			errorMsg:    "must start with 'did:'",
 		},
@@ -365,6 +389,7 @@ func TestHandleValidation(t *testing.T) {
 			_, err := userService.CreateUser(ctx, users.CreateUserRequest{
 				DID:    tc.did,
 				Handle: tc.handle,
+				PDSURL: tc.pdsURL,
 			})
 
 			if tc.shouldError {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -17,6 +18,7 @@ import (
 	"Coves/internal/api/routes"
 	"Coves/internal/core/users"
 	postgresRepo "Coves/internal/db/postgres"
+	"Coves/internal/jetstream"
 )
 
 func main() {
@@ -27,10 +29,10 @@ func main() {
 		dbURL = "postgres://dev_user:dev_password@localhost:5433/coves_dev?sslmode=disable"
 	}
 
-	// PDS URL configuration
-	pdsURL := os.Getenv("PDS_URL")
-	if pdsURL == "" {
-		pdsURL = "http://localhost:3001" // Local dev PDS
+	// Default PDS URL for this Coves instance (supports self-hosting)
+	defaultPDS := os.Getenv("PDS_URL")
+	if defaultPDS == "" {
+		defaultPDS = "http://localhost:3001" // Local dev PDS
 	}
 
 	db, err := sql.Open("postgres", dbURL)
@@ -68,10 +70,28 @@ func main() {
 
 	// Initialize repositories and services
 	userRepo := postgresRepo.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, pdsURL)
+	userService := users.NewUserService(userRepo, defaultPDS)
 
-	// Mount XRPC routes
-	r.Mount("/xrpc/social.coves.actor", routes.UserRoutes(userService))
+	// Start Jetstream consumer for read-forward user indexing
+	jetstreamURL := os.Getenv("JETSTREAM_URL")
+	if jetstreamURL == "" {
+		jetstreamURL = "wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=app.bsky.actor.profile"
+	}
+
+	pdsFilter := os.Getenv("JETSTREAM_PDS_FILTER") // Optional: filter to specific PDS
+
+	userConsumer := jetstream.NewUserEventConsumer(userService, jetstreamURL, pdsFilter)
+	ctx := context.Background()
+	go func() {
+		if err := userConsumer.Start(ctx); err != nil {
+			log.Printf("Jetstream consumer stopped: %v", err)
+		}
+	}()
+
+	log.Printf("Started Jetstream consumer: %s", jetstreamURL)
+
+	// Register XRPC routes
+	routes.RegisterUserRoutes(r, userService)
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -84,6 +104,6 @@ func main() {
 	}
 
 	fmt.Printf("Coves AppView starting on port %s\n", port)
-	fmt.Printf("PDS URL: %s\n", pdsURL)
+	fmt.Printf("Default PDS: %s\n", defaultPDS)
 	log.Fatal(http.ListenAndServe(":"+port, r))
 }

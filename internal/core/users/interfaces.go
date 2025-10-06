@@ -15,4 +15,5 @@ type UserService interface {
 	GetUserByDID(ctx context.Context, did string) (*User, error)
 	GetUserByHandle(ctx context.Context, handle string) (*User, error)
 	ResolveHandleToDID(ctx context.Context, handle string) (string, error)
+	RegisterAccount(ctx context.Context, req RegisterAccountRequest) (*RegisterAccountResponse, error)
 }

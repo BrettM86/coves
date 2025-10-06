@@ -2,6 +2,7 @@ package routes
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -21,16 +22,16 @@ func NewUserHandler(userService users.UserService) *UserHandler {
 	}
 }
 
-// UserRoutes returns user-related XRPC routes
+// RegisterUserRoutes registers user-related XRPC endpoints on the router
 // Implements social.coves.actor.* lexicon endpoints
-func UserRoutes(service users.UserService) chi.Router {
+func RegisterUserRoutes(r chi.Router, service users.UserService) {
 	h := NewUserHandler(service)
-	r := chi.NewRouter()
 
 	// social.coves.actor.getProfile - query endpoint
-	r.Get("/profile", h.GetProfile)
+	r.Get("/xrpc/social.coves.actor.getProfile", h.GetProfile)
 
-	return r
+	// social.coves.actor.signup - procedure endpoint
+	r.Post("/xrpc/social.coves.actor.signup", h.Signup)
 }
 
 // GetProfile handles social.coves.actor.getProfile
@@ -73,4 +74,102 @@ func (h *UserHandler) GetProfile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(response)
+}
+
+// Signup handles social.coves.actor.signup
+// Procedure endpoint that registers a new account on the Coves instance
+func (h *UserHandler) Signup(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Parse request body
+	var req users.RegisterAccountRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Call service to register account
+	resp, err := h.userService.RegisterAccount(ctx, req)
+	if err != nil {
+		// Map service errors to lexicon error types with proper HTTP status codes
+		respondWithLexiconError(w, err)
+		return
+	}
+
+	// Return response matching lexicon output schema
+	response := map[string]interface{}{
+		"did":        resp.DID,
+		"handle":     resp.Handle,
+		"accessJwt":  resp.AccessJwt,
+		"refreshJwt": resp.RefreshJwt,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+
+// respondWithLexiconError maps domain errors to lexicon error types and HTTP status codes
+// Error names match the lexicon definition in social.coves.actor.signup
+func respondWithLexiconError(w http.ResponseWriter, err error) {
+	var (
+		statusCode int
+		errorName  string
+		message    string
+	)
+
+	// Map domain errors to lexicon error types
+	var invalidHandleErr *users.InvalidHandleError
+	var handleNotAvailableErr *users.HandleNotAvailableError
+	var invalidInviteCodeErr *users.InvalidInviteCodeError
+	var invalidEmailErr *users.InvalidEmailError
+	var weakPasswordErr *users.WeakPasswordError
+	var pdsErr *users.PDSError
+
+	switch {
+	case errors.As(err, &invalidHandleErr):
+		statusCode = http.StatusBadRequest
+		errorName = "InvalidHandle"
+		message = invalidHandleErr.Error()
+
+	case errors.As(err, &handleNotAvailableErr):
+		statusCode = http.StatusBadRequest
+		errorName = "HandleNotAvailable"
+		message = handleNotAvailableErr.Error()
+
+	case errors.As(err, &invalidInviteCodeErr):
+		statusCode = http.StatusBadRequest
+		errorName = "InvalidInviteCode"
+		message = invalidInviteCodeErr.Error()
+
+	case errors.As(err, &invalidEmailErr):
+		statusCode = http.StatusBadRequest
+		errorName = "InvalidEmail"
+		message = invalidEmailErr.Error()
+
+	case errors.As(err, &weakPasswordErr):
+		statusCode = http.StatusBadRequest
+		errorName = "WeakPassword"
+		message = weakPasswordErr.Error()
+
+	case errors.As(err, &pdsErr):
+		// PDS errors get mapped based on status code
+		statusCode = pdsErr.StatusCode
+		errorName = "PDSError"
+		message = pdsErr.Message
+
+	default:
+		// Generic error handling (avoid leaking internal details)
+		statusCode = http.StatusInternalServerError
+		errorName = "InternalServerError"
+		message = "An error occurred while processing your request"
+	}
+
+	// XRPC error response format
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"error":   errorName,
+		"message": message,
+	})
 }

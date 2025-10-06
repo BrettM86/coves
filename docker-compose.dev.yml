@@ -102,6 +102,62 @@ services:
       timeout: 5s
       retries: 5
 
+  # Jetstream - Consumes PDS firehose and serves JSON WebSocket
+  # This is the RECOMMENDED approach for local E2E testing
+  # Jetstream converts raw atProto CBOR firehose to clean JSON events
+  #
+  # Flow: PDS firehose → Jetstream (CBOR→JSON) → Your AppView (JSON)
+  #
+  # Usage:
+  #   docker-compose --profile jetstream up pds jetstream
+  #   Your AppView connects to: ws://localhost:6008/subscribe
+  #
+  # Why use Jetstream instead of direct PDS firehose?
+  #   - PDS emits raw CBOR (binary) - hard to parse
+  #   - Jetstream converts to clean JSON - easy to consume
+  #   - Same format as production Bluesky Jetstream
+  jetstream:
+    image: ghcr.io/bluesky-social/jetstream:sha-306e463693365e21a5ffd3ec051a5a7920000214
+    container_name: coves-dev-jetstream
+    ports:
+      - "6008:6008"  # Jetstream WebSocket endpoint
+      - "6009:6009"  # Metrics endpoint
+    environment:
+      # Point Jetstream at local PDS firehose
+      JETSTREAM_WS_URL: ws://pds:3000/xrpc/com.atproto.sync.subscribeRepos
+
+      # Server configuration
+      JETSTREAM_LISTEN_ADDR: ":6008"
+      JETSTREAM_METRICS_LISTEN_ADDR: ":6009"
+
+      # Data storage
+      JETSTREAM_DATA_DIR: /data
+      JETSTREAM_EVENT_TTL: 24h
+
+      # Set long liveness TTL for local dev (PDS may be quiet for long periods)
+      JETSTREAM_LIVENESS_TTL: 24h
+
+      # Performance tuning
+      JETSTREAM_WORKER_COUNT: 10
+      JETSTREAM_MAX_QUEUE_SIZE: 1000
+
+      # Development settings
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+    volumes:
+      - jetstream-data:/data
+    networks:
+      - coves-dev
+    depends_on:
+      pds:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6009/metrics"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - jetstream
+
   # Indigo Relay (BigSky) - OPTIONAL for local dev
   # WARNING: BigSky is designed to crawl the entire atProto network!
   # For local dev, consider using direct PDS firehose instead (see AppView config below)
@@ -196,3 +252,5 @@ volumes:
     name: coves-test-postgres-data
   pds-data:
     name: coves-dev-pds-data
+  jetstream-data:
+    name: coves-dev-jetstream-data
