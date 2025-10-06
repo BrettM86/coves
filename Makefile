@@ -103,7 +103,7 @@ test: ## Run fast unit/integration tests (skips slow E2E tests)
 	@echo "$(GREEN)Running migrations on test database...$(RESET)"
 	@goose -dir internal/db/migrations postgres "postgresql://$(POSTGRES_TEST_USER):$(POSTGRES_TEST_PASSWORD)@localhost:$(POSTGRES_TEST_PORT)/$(POSTGRES_TEST_DB)?sslmode=disable" up || true
 	@echo "$(GREEN)Running fast tests (use 'make e2e-test' for E2E tests)...$(RESET)"
-	@go test ./... -short -v
+	@go test ./cmd/... ./internal/... ./tests/... -short -v
 	@echo "$(GREEN)✓ Tests complete$(RESET)"
 
 e2e-test: ## Run automated E2E tests (requires: make dev-up + make run in another terminal)
@@ -133,6 +133,18 @@ test-db-reset: ## Reset test database
 test-db-stop: ## Stop test database
 	@docker-compose -f docker-compose.dev.yml --env-file .env.dev --profile test stop postgres-test
 	@echo "$(GREEN)✓ Test database stopped$(RESET)"
+
+##@ Code Quality
+
+lint: ## Run golangci-lint on the codebase
+	@echo "$(GREEN)Running linter...$(RESET)"
+	@golangci-lint run
+	@echo "$(GREEN)✓ Linting complete$(RESET)"
+
+lint-fix: ## Run golangci-lint and auto-fix issues
+	@echo "$(GREEN)Running linter with auto-fix...$(RESET)"
+	@golangci-lint run --fix
+	@echo "$(GREEN)✓ Linting complete$(RESET)"
 
 ##@ Build & Run
 

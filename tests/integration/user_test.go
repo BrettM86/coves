@@ -16,6 +16,7 @@ import (
 	"github.com/pressly/goose/v3"
 
 	"Coves/internal/api/routes"
+	"Coves/internal/atproto/identity"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
 )
@@ -76,7 +77,8 @@ func TestUserCreationAndRetrieval(t *testing.T) {
 
 	// Wire up dependencies
 	userRepo := postgres.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, "http://localhost:3001")
+	resolver := identity.NewResolver(db, identity.DefaultConfig())
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
 
 	ctx := context.Background()
 
@@ -130,16 +132,19 @@ func TestUserCreationAndRetrieval(t *testing.T) {
 		}
 	})
 
-	// Test 4: Resolve handle to DID
+	// Test 4: Resolve handle to DID (using real handle)
 	t.Run("Resolve Handle to DID", func(t *testing.T) {
-		did, err := userService.ResolveHandleToDID(ctx, "alice.test")
+		// Test with a real atProto handle
+		did, err := userService.ResolveHandleToDID(ctx, "bretton.dev")
 		if err != nil {
-			t.Fatalf("Failed to resolve handle: %v", err)
+			t.Fatalf("Failed to resolve handle bretton.dev: %v", err)
 		}
 
-		if did != "did:plc:test123456" {
-			t.Errorf("Expected DID did:plc:test123456, got %s", did)
+		if did == "" {
+			t.Error("Expected non-empty DID")
 		}
+
+		t.Logf("✅ Resolved bretton.dev → %s", did)
 	})
 }
 
@@ -149,7 +154,8 @@ func TestGetProfileEndpoint(t *testing.T) {
 
 	// Wire up dependencies
 	userRepo := postgres.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, "http://localhost:3001")
+	resolver := identity.NewResolver(db, identity.DefaultConfig())
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
 
 	// Create test user directly in service
 	ctx := context.Background()
@@ -238,7 +244,8 @@ func TestDuplicateCreation(t *testing.T) {
 	defer db.Close()
 
 	userRepo := postgres.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, "http://localhost:3001")
+	resolver := identity.NewResolver(db, identity.DefaultConfig())
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
 	ctx := context.Background()
 
 	// Create first user
@@ -294,7 +301,8 @@ func TestHandleValidation(t *testing.T) {
 	defer db.Close()
 
 	userRepo := postgres.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, "http://localhost:3001")
+	resolver := identity.NewResolver(db, identity.DefaultConfig())
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
 	ctx := context.Background()
 
 	testCases := []struct {

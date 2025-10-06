@@ -79,3 +79,29 @@ func (r *postgresUserRepo) GetByHandle(ctx context.Context, handle string) (*use
 
 	return user, nil
 }
+
+// UpdateHandle updates the handle for a user with the given DID
+func (r *postgresUserRepo) UpdateHandle(ctx context.Context, did, newHandle string) (*users.User, error) {
+	user := &users.User{}
+	query := `
+		UPDATE users
+		SET handle = $2, updated_at = NOW()
+		WHERE did = $1
+		RETURNING did, handle, pds_url, created_at, updated_at`
+
+	err := r.db.QueryRowContext(ctx, query, did, newHandle).
+		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt)
+
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("user not found")
+	}
+	if err != nil {
+		// Check for unique constraint violation on handle
+		if strings.Contains(err.Error(), "duplicate key") && strings.Contains(err.Error(), "users_handle_key") {
+			return nil, fmt.Errorf("handle already taken")
+		}
+		return nil, fmt.Errorf("failed to update handle: %w", err)
+	}
+
+	return user, nil
+}

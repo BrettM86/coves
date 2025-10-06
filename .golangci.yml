@@ -1,0 +1,29 @@
+linters:
+  enable:
+    - gofmt          # Enforce standard Go formatting
+    - govet          # Examine Go source code and report suspicious constructs
+    - errcheck       # Check for unchecked errors
+    - staticcheck    # Advanced static analysis
+    - unused         # Check for unused code
+    - gosimple       # Suggest code simplifications
+    - ineffassign    # Detect ineffectual assignments
+    - typecheck      # Standard Go type checker
+
+linters-settings:
+  errcheck:
+    check-blank: true  # Check for blank error assignments (x, _ = f())
+
+  govet:
+    enable-all: true
+
+  staticcheck:
+    checks: ["all"]
+
+run:
+  timeout: 5m
+  tests: true
+
+issues:
+  exclude-use-default: false
+  max-issues-per-linter: 0
+  max-same-issues: 0

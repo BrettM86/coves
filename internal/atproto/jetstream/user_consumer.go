@@ -7,6 +7,7 @@ import (
 	"log"
 	"time"
 
+	"Coves/internal/atproto/identity"
 	"Coves/internal/core/users"
 	"github.com/gorilla/websocket"
 )
@@ -37,17 +38,19 @@ type IdentityEvent struct {
 
 // UserEventConsumer consumes user-related events from Jetstream
 type UserEventConsumer struct {
-	userService users.UserService
-	wsURL       string
-	pdsFilter   string // Optional: only index users from specific PDS
+	userService      users.UserService
+	identityResolver identity.Resolver
+	wsURL            string
+	pdsFilter        string // Optional: only index users from specific PDS
 }
 
 // NewUserEventConsumer creates a new Jetstream consumer for user events
-func NewUserEventConsumer(userService users.UserService, wsURL string, pdsFilter string) *UserEventConsumer {
+func NewUserEventConsumer(userService users.UserService, identityResolver identity.Resolver, wsURL string, pdsFilter string) *UserEventConsumer {
 	return &UserEventConsumer{
-		userService: userService,
-		wsURL:       wsURL,
-		pdsFilter:   pdsFilter,
+		userService:      userService,
+		identityResolver: identityResolver,
+		wsURL:            wsURL,
+		pdsFilter:        pdsFilter,
 	}
 }
 
@@ -181,36 +184,54 @@ func (c *UserEventConsumer) handleIdentityEvent(ctx context.Context, event *Jets
 
 	log.Printf("Identity event: %s → %s", did, handle)
 
-	// For now, we'll create/update user on identity events
-	// In a full implementation, you'd want to:
-	// 1. Check if user exists
-	// 2. Update handle if changed
-	// 3. Resolve PDS URL from DID document
-
-	// Simplified: just try to create user (will be idempotent)
-	// We need PDS URL - for now use a placeholder
-	// TODO: Implement DID→PDS resolution via PLC directory (https://plc.directory/{did})
-	// For production federation support, resolve PDS endpoint from DID document
-	// For local dev, this works fine since we filter to our own PDS
-	// See PR review issue #2
-	pdsURL := "https://bsky.social" // Default Bluesky PDS
-
-	_, err := c.userService.CreateUser(ctx, users.CreateUserRequest{
-		DID:    did,
-		Handle: handle,
-		PDSURL: pdsURL,
-	})
-
+	// Get existing user to check if handle changed
+	existingUser, err := c.userService.GetUserByDID(ctx, did)
 	if err != nil {
-		// Check if it's a duplicate error (expected for idempotency)
-		if isDuplicateError(err) {
-			log.Printf("User already indexed: %s (%s)", handle, did)
-			return nil
+		// User doesn't exist - create new user
+		pdsURL := "https://bsky.social" // Default Bluesky PDS
+		// TODO: Resolve PDS URL from DID document via PLC directory
+
+		_, createErr := c.userService.CreateUser(ctx, users.CreateUserRequest{
+			DID:    did,
+			Handle: handle,
+			PDSURL: pdsURL,
+		})
+
+		if createErr != nil && !isDuplicateError(createErr) {
+			return fmt.Errorf("failed to create user: %w", createErr)
 		}
-		return fmt.Errorf("failed to create user: %w", err)
+
+		log.Printf("Indexed new user: %s (%s)", handle, did)
+		return nil
 	}
 
-	log.Printf("Indexed new user: %s (%s)", handle, did)
+	// User exists - check if handle changed
+	if existingUser.Handle != handle {
+		log.Printf("Handle changed: %s → %s (DID: %s)", existingUser.Handle, handle, did)
+
+		// CRITICAL: Update database FIRST, then purge cache
+		// This prevents race condition where cache gets refilled with stale data
+		_, updateErr := c.userService.UpdateHandle(ctx, did, handle)
+		if updateErr != nil {
+			return fmt.Errorf("failed to update handle: %w", updateErr)
+		}
+
+		// CRITICAL: Purge BOTH old handle and DID from cache
+		// Old handle: alice.bsky.social → did:plc:abc123 (must be removed)
+		if purgeErr := c.identityResolver.Purge(ctx, existingUser.Handle); purgeErr != nil {
+			log.Printf("Warning: failed to purge old handle cache for %s: %v", existingUser.Handle, purgeErr)
+		}
+
+		// DID: did:plc:abc123 → alice.bsky.social (must be removed)
+		if purgeErr := c.identityResolver.Purge(ctx, did); purgeErr != nil {
+			log.Printf("Warning: failed to purge DID cache for %s: %v", did, purgeErr)
+		}
+
+		log.Printf("Updated handle and purged cache: %s → %s", existingUser.Handle, handle)
+	} else {
+		log.Printf("Handle unchanged for %s (%s)", handle, did)
+	}
+
 	return nil
 }
 

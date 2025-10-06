@@ -16,6 +16,7 @@ import (
 
 	"Coves/internal/api/middleware"
 	"Coves/internal/api/routes"
+	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/users"
 	postgresRepo "Coves/internal/db/postgres"
@@ -68,9 +69,24 @@ func main() {
 	rateLimiter := middleware.NewRateLimiter(100, 1*time.Minute)
 	r.Use(rateLimiter.Middleware)
 
+	// Initialize identity resolver
+	identityConfig := identity.DefaultConfig()
+	// Override from environment if set
+	if plcURL := os.Getenv("IDENTITY_PLC_URL"); plcURL != "" {
+		identityConfig.PLCURL = plcURL
+	}
+	if cacheTTL := os.Getenv("IDENTITY_CACHE_TTL"); cacheTTL != "" {
+		if duration, err := time.ParseDuration(cacheTTL); err == nil {
+			identityConfig.CacheTTL = duration
+		}
+	}
+
+	identityResolver := identity.NewResolver(db, identityConfig)
+	log.Println("Identity resolver initialized with PLC:", identityConfig.PLCURL)
+
 	// Initialize repositories and services
 	userRepo := postgresRepo.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, defaultPDS)
+	userService := users.NewUserService(userRepo, identityResolver, defaultPDS)
 
 	// Start Jetstream consumer for read-forward user indexing
 	jetstreamURL := os.Getenv("JETSTREAM_URL")
@@ -80,7 +96,7 @@ func main() {
 
 	pdsFilter := os.Getenv("JETSTREAM_PDS_FILTER") // Optional: filter to specific PDS
 
-	userConsumer := jetstream.NewUserEventConsumer(userService, jetstreamURL, pdsFilter)
+	userConsumer := jetstream.NewUserEventConsumer(userService, identityResolver, jetstreamURL, pdsFilter)
 	ctx := context.Background()
 	go func() {
 		if err := userConsumer.Start(ctx); err != nil {

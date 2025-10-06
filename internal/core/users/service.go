@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"Coves/internal/atproto/identity"
 )
 
 // atProto handle validation regex (per official atProto spec: https://atproto.com/specs/handle)
@@ -39,15 +41,17 @@ const (
 )
 
 type userService struct {
-	userRepo   UserRepository
-	defaultPDS string // Default PDS URL for this Coves instance (used when creating new local users via registration API)
+	userRepo         UserRepository
+	identityResolver identity.Resolver
+	defaultPDS       string // Default PDS URL for this Coves instance (used when creating new local users via registration API)
 }
 
 // NewUserService creates a new user service
-func NewUserService(userRepo UserRepository, defaultPDS string) UserService {
+func NewUserService(userRepo UserRepository, identityResolver identity.Resolver, defaultPDS string) UserService {
 	return &userService{
-		userRepo:   userRepo,
-		defaultPDS: defaultPDS,
+		userRepo:         userRepo,
+		identityResolver: identityResolver,
+		defaultPDS:       defaultPDS,
 	}
 }
 
@@ -106,23 +110,42 @@ func (s *userService) GetUserByHandle(ctx context.Context, handle string) (*User
 	return s.userRepo.GetByHandle(ctx, handle)
 }
 
+// UpdateHandle updates the handle for a user with the given DID
+func (s *userService) UpdateHandle(ctx context.Context, did, newHandle string) (*User, error) {
+	did = strings.TrimSpace(did)
+	newHandle = strings.TrimSpace(strings.ToLower(newHandle))
+
+	if did == "" {
+		return nil, fmt.Errorf("DID is required")
+	}
+	if newHandle == "" {
+		return nil, fmt.Errorf("handle is required")
+	}
+
+	// Validate new handle format
+	if err := validateHandle(newHandle); err != nil {
+		return nil, err
+	}
+
+	return s.userRepo.UpdateHandle(ctx, did, newHandle)
+}
+
 // ResolveHandleToDID resolves a handle to a DID
 // This is critical for login: users enter their handle, we resolve to DID
-// TODO: Implement actual DNS/HTTPS resolution via atProto
+// Uses DNS TXT record lookup and HTTPS .well-known/atproto-did resolution
 func (s *userService) ResolveHandleToDID(ctx context.Context, handle string) (string, error) {
 	handle = strings.TrimSpace(strings.ToLower(handle))
 	if handle == "" {
 		return "", fmt.Errorf("handle is required")
 	}
 
-	// For now, check if user exists in our AppView database
-	// Later: implement DNS TXT record lookup or HTTPS .well-known/atproto-did
-	user, err := s.userRepo.GetByHandle(ctx, handle)
+	// Use identity resolver to resolve handle to DID
+	did, _, err := s.identityResolver.ResolveHandle(ctx, handle)
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve handle %s: %w", handle, err)
 	}
 
-	return user.DID, nil
+	return did, nil
 }
 
 // RegisterAccount creates a new account on the PDS via XRPC

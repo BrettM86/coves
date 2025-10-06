@@ -57,7 +57,7 @@ func (rl *RateLimiter) allow(clientID string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	now := time.Now()
+	now := time.Now().UTC()
 
 	// Get or create client limit
 	client, exists := rl.clients[clientID]
@@ -93,7 +93,7 @@ func (rl *RateLimiter) cleanup() {
 
 	for range ticker.C {
 		rl.mu.Lock()
-		now := time.Now()
+		now := time.Now().UTC()
 		for clientID, client := range rl.clients {
 			if now.After(client.resetTime) {
 				delete(rl.clients, clientID)

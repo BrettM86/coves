@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
@@ -58,11 +59,13 @@ func TestE2E_UserSignup(t *testing.T) {
 
 	// Set up services
 	userRepo := postgres.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, "http://localhost:3001")
+	resolver := identity.NewResolver(db, identity.DefaultConfig())
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
 
 	// Start Jetstream consumer
 	consumer := jetstream.NewUserEventConsumer(
 		userService,
+		resolver,
 		"ws://localhost:6008/subscribe",
 		"", // No PDS filter
 	)

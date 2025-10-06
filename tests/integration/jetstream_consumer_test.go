@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
@@ -16,7 +17,8 @@ func TestUserIndexingFromJetstream(t *testing.T) {
 
 	// Wire up dependencies
 	userRepo := postgres.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, "http://localhost:3001")
+	resolver := identity.NewResolver(db, identity.DefaultConfig())
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
 
 	ctx := context.Background()
 
@@ -33,7 +35,7 @@ func TestUserIndexingFromJetstream(t *testing.T) {
 			},
 		}
 
-		consumer := jetstream.NewUserEventConsumer(userService, "", "")
+		consumer := jetstream.NewUserEventConsumer(userService, resolver, "", "")
 
 		// Handle the event
 		err := consumer.HandleIdentityEventPublic(ctx, &event)
@@ -79,7 +81,7 @@ func TestUserIndexingFromJetstream(t *testing.T) {
 			},
 		}
 
-		consumer := jetstream.NewUserEventConsumer(userService, "", "")
+		consumer := jetstream.NewUserEventConsumer(userService, resolver, "", "")
 
 		// Handle duplicate event - should not error
 		err = consumer.HandleIdentityEventPublic(ctx, &event)
@@ -99,7 +101,7 @@ func TestUserIndexingFromJetstream(t *testing.T) {
 	})
 
 	t.Run("Index multiple users", func(t *testing.T) {
-		consumer := jetstream.NewUserEventConsumer(userService, "", "")
+		consumer := jetstream.NewUserEventConsumer(userService, resolver, "", "")
 
 		users := []struct {
 			did    string
@@ -142,7 +144,7 @@ func TestUserIndexingFromJetstream(t *testing.T) {
 	})
 
 	t.Run("Skip invalid events", func(t *testing.T) {
-		consumer := jetstream.NewUserEventConsumer(userService, "", "")
+		consumer := jetstream.NewUserEventConsumer(userService, resolver, "", "")
 
 		// Missing DID
 		invalidEvent1 := jetstream.JetstreamEvent{
@@ -190,6 +192,107 @@ func TestUserIndexingFromJetstream(t *testing.T) {
 			t.Error("expected error for nil identity data, got nil")
 		}
 	})
+
+	t.Run("Handle change updates database and purges cache", func(t *testing.T) {
+		testID := "handlechange"
+		oldHandle := "old." + testID + ".test"
+		newHandle := "new." + testID + ".test"
+		did := "did:plc:" + testID
+
+		// 1. Create user with old handle
+		_, err := userService.CreateUser(ctx, users.CreateUserRequest{
+			DID:    did,
+			Handle: oldHandle,
+			PDSURL: "https://bsky.social",
+		})
+		if err != nil {
+			t.Fatalf("failed to create initial user: %v", err)
+		}
+
+		// 2. Manually cache the identity (simulate a previous resolution)
+		cache := identity.NewPostgresCache(db, 24*time.Hour)
+		err = cache.Set(ctx, &identity.Identity{
+			DID:        did,
+			Handle:     oldHandle,
+			PDSURL:     "https://bsky.social",
+			Method:     identity.MethodDNS,
+			ResolvedAt: time.Now().UTC(),
+		})
+		if err != nil {
+			t.Fatalf("failed to cache identity: %v", err)
+		}
+
+		// 3. Verify cached (both handle and DID should be cached)
+		cachedByHandle, err := cache.Get(ctx, oldHandle)
+		if err != nil {
+			t.Fatalf("expected old handle to be cached, got error: %v", err)
+		}
+		if cachedByHandle.DID != did {
+			t.Errorf("expected cached DID %s, got %s", did, cachedByHandle.DID)
+		}
+
+		cachedByDID, err := cache.Get(ctx, did)
+		if err != nil {
+			t.Fatalf("expected DID to be cached, got error: %v", err)
+		}
+		if cachedByDID.Handle != oldHandle {
+			t.Errorf("expected cached handle %s, got %s", oldHandle, cachedByDID.Handle)
+		}
+
+		// 4. Send identity event with NEW handle
+		event := jetstream.JetstreamEvent{
+			Did:  did,
+			Kind: "identity",
+			Identity: &jetstream.IdentityEvent{
+				Did:    did,
+				Handle: newHandle,
+				Seq:    99999,
+				Time:   time.Now().Format(time.RFC3339),
+			},
+		}
+
+		consumer := jetstream.NewUserEventConsumer(userService, resolver, "", "")
+		err = consumer.HandleIdentityEventPublic(ctx, &event)
+		if err != nil {
+			t.Fatalf("failed to handle handle change event: %v", err)
+		}
+
+		// 5. Verify database updated
+		user, err := userService.GetUserByDID(ctx, did)
+		if err != nil {
+			t.Fatalf("failed to get user by DID: %v", err)
+		}
+		if user.Handle != newHandle {
+			t.Errorf("expected database to have new handle %s, got %s", newHandle, user.Handle)
+		}
+
+		// 6. Verify old handle purged from cache
+		_, err = cache.Get(ctx, oldHandle)
+		if err == nil {
+			t.Error("expected old handle to be purged from cache, but it's still cached")
+		}
+		if _, isCacheMiss := err.(*identity.ErrCacheMiss); !isCacheMiss {
+			t.Errorf("expected ErrCacheMiss for old handle, got: %v", err)
+		}
+
+		// 7. Verify DID cache purged
+		_, err = cache.Get(ctx, did)
+		if err == nil {
+			t.Error("expected DID to be purged from cache, but it's still cached")
+		}
+		if _, isCacheMiss := err.(*identity.ErrCacheMiss); !isCacheMiss {
+			t.Errorf("expected ErrCacheMiss for DID, got: %v", err)
+		}
+
+		// 8. Verify user can be found by new handle
+		userByHandle, err := userService.GetUserByHandle(ctx, newHandle)
+		if err != nil {
+			t.Fatalf("failed to get user by new handle: %v", err)
+		}
+		if userByHandle.DID != did {
+			t.Errorf("expected DID %s when looking up by new handle, got %s", did, userByHandle.DID)
+		}
+	})
 }
 
 func TestUserServiceIdempotency(t *testing.T) {
@@ -197,7 +300,8 @@ func TestUserServiceIdempotency(t *testing.T) {
 	defer db.Close()
 
 	userRepo := postgres.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, "http://localhost:3001")
+	resolver := identity.NewResolver(db, identity.DefaultConfig())
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
 	ctx := context.Background()
 
 	t.Run("CreateUser is idempotent for duplicate DID", func(t *testing.T) {
