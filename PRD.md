@@ -19,7 +19,7 @@
 ### Phase 1: Core Forum Platform (Web)
 
 #### Must Have:
-- **Indigo PDS Integration** - Use existing atProto infrastructure (no CAR file reimplementation!)
+- **Indigo PDS Integration**1 - Use existing atProto infrastructure (no CAR file reimplementation!)
 - User registration with phone verification (verified badge)
 - Community creation, subscription, and discovery
 - Post creation (text initially, then image/video/article)

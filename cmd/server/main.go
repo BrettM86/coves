@@ -14,10 +14,12 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/pressly/goose/v3"
 
+	"Coves/internal/api/handlers/oauth"
 	"Coves/internal/api/middleware"
 	"Coves/internal/api/routes"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
+	oauthCore "Coves/internal/core/oauth"
 	"Coves/internal/core/users"
 	postgresRepo "Coves/internal/db/postgres"
 )
@@ -84,6 +86,10 @@ func main() {
 	identityResolver := identity.NewResolver(db, identityConfig)
 	log.Println("Identity resolver initialized with PLC:", identityConfig.PLCURL)
 
+	// Initialize OAuth session store
+	sessionStore := oauthCore.NewPostgresSessionStore(db)
+	log.Println("OAuth session store initialized")
+
 	// Initialize repositories and services
 	userRepo := postgresRepo.NewUserRepository(db)
 	userService := users.NewUserService(userRepo, identityResolver, defaultPDS)
@@ -105,6 +111,48 @@ func main() {
 	}()
 
 	log.Printf("Started Jetstream consumer: %s", jetstreamURL)
+
+	// Start OAuth cleanup background job
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			if pgStore, ok := sessionStore.(*oauthCore.PostgresSessionStore); ok {
+				_ = pgStore.CleanupExpiredRequests(ctx)
+				_ = pgStore.CleanupExpiredSessions(ctx)
+				log.Println("OAuth cleanup completed")
+			}
+		}
+	}()
+
+	log.Println("Started OAuth cleanup background job (runs hourly)")
+
+	// Initialize OAuth cookie store (singleton)
+	cookieSecret, err := oauth.GetEnvBase64OrPlain("OAUTH_COOKIE_SECRET")
+	if err != nil {
+		log.Fatalf("Failed to load OAUTH_COOKIE_SECRET: %v", err)
+	}
+	if cookieSecret == "" {
+		log.Fatal("OAUTH_COOKIE_SECRET not configured")
+	}
+
+	if err := oauth.InitCookieStore(cookieSecret); err != nil {
+		log.Fatalf("Failed to initialize cookie store: %v", err)
+	}
+
+	// Initialize OAuth handlers
+	loginHandler := oauth.NewLoginHandler(identityResolver, sessionStore)
+	callbackHandler := oauth.NewCallbackHandler(sessionStore)
+	logoutHandler := oauth.NewLogoutHandler(sessionStore)
+
+	// OAuth routes (public endpoints)
+	r.Post("/oauth/login", loginHandler.HandleLogin)
+	r.Get("/oauth/callback", callbackHandler.HandleCallback)
+	r.Post("/oauth/logout", logoutHandler.HandleLogout)
+	r.Get("/oauth/client-metadata.json", oauth.HandleClientMetadata)
+	r.Get("/oauth/jwks.json", oauth.HandleJWKS)
+
+	log.Println("OAuth endpoints registered")
 
 	// Register XRPC routes
 	routes.RegisterUserRoutes(r, userService)
