@@ -275,7 +275,6 @@ func TestOAuthCallbackHandler(t *testing.T) {
 	sessionStore := oauthCore.NewPostgresSessionStore(db)
 
 	testJWK := `{"alg":"ES256","crv":"P-256","d":"9tCMceYSgyZfO5KYOCm3rWEhXLqq2l4LjP7-PJtJKyk","kid":"oauth-client-key","kty":"EC","use":"sig","x":"EOYWEgZ2d-smTO6jh0f-9B7YSFYdlrvlryjuXTCrOjE","y":"_FR2jBcWNxoJl5cd1eq9sYtAs33No9AVtd42UyyWYi4"}`
-	cookieSecret := "f1132c01b1a625a865c6c455a75ee793572cedb059cebe0c4c1ae4c446598f7d"
 
 	tests := []struct {
 		name           string
@@ -323,7 +322,7 @@ func TestOAuthCallbackHandler(t *testing.T) {
 			defer os.Unsetenv("OAUTH_PRIVATE_JWK")
 
 			// Create handler
-			handler := oauth.NewCallbackHandler(sessionStore, cookieSecret)
+			handler := oauth.NewCallbackHandler(sessionStore)
 
 			// Build query string
 			req := httptest.NewRequest("GET", "/oauth/callback", nil)
