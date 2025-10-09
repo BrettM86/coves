@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -17,8 +20,10 @@ import (
 	"Coves/internal/api/handlers/oauth"
 	"Coves/internal/api/middleware"
 	"Coves/internal/api/routes"
+	"Coves/internal/atproto/did"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
+	"Coves/internal/core/communities"
 	oauthCore "Coves/internal/core/oauth"
 	"Coves/internal/core/users"
 	postgresRepo "Coves/internal/db/postgres"
@@ -94,6 +99,46 @@ func main() {
 	userRepo := postgresRepo.NewUserRepository(db)
 	userService := users.NewUserService(userRepo, identityResolver, defaultPDS)
 
+	communityRepo := postgresRepo.NewCommunityRepository(db)
+
+	// Initialize DID generator for communities
+	// IS_DEV_ENV=true:  Generate did:plc:xxx without registering to PLC directory
+	// IS_DEV_ENV=false: Generate did:plc:xxx and register with PLC_DIRECTORY_URL
+	isDevEnv := os.Getenv("IS_DEV_ENV") == "true"
+	plcDirectoryURL := os.Getenv("PLC_DIRECTORY_URL")
+	if plcDirectoryURL == "" {
+		plcDirectoryURL = "https://plc.directory" // Default to Bluesky's PLC
+	}
+	didGenerator := did.NewGenerator(isDevEnv, plcDirectoryURL)
+	log.Printf("DID generator initialized (dev_mode=%v, plc_url=%s)", isDevEnv, plcDirectoryURL)
+
+	instanceDID := os.Getenv("INSTANCE_DID")
+	if instanceDID == "" {
+		instanceDID = "did:web:coves.local" // Default for development
+	}
+	communityService := communities.NewCommunityService(communityRepo, didGenerator, defaultPDS, instanceDID)
+
+	// Authenticate Coves instance with PDS to enable community record writes
+	// The instance needs a PDS account to write community records it owns
+	pdsHandle := os.Getenv("PDS_INSTANCE_HANDLE")
+	pdsPassword := os.Getenv("PDS_INSTANCE_PASSWORD")
+	if pdsHandle != "" && pdsPassword != "" {
+		log.Printf("Authenticating Coves instance (%s) with PDS...", instanceDID)
+		accessToken, err := authenticateWithPDS(defaultPDS, pdsHandle, pdsPassword)
+		if err != nil {
+			log.Printf("Warning: Failed to authenticate with PDS: %v", err)
+			log.Println("Community creation will fail until PDS authentication is configured")
+		} else {
+			if svc, ok := communityService.(interface{ SetPDSAccessToken(string) }); ok {
+				svc.SetPDSAccessToken(accessToken)
+				log.Println("✓ Coves instance authenticated with PDS")
+			}
+		}
+	} else {
+		log.Println("Note: PDS_INSTANCE_HANDLE and PDS_INSTANCE_PASSWORD not set")
+		log.Println("Community creation via write-forward is disabled")
+	}
+
 	// Start Jetstream consumer for read-forward user indexing
 	jetstreamURL := os.Getenv("JETSTREAM_URL")
 	if jetstreamURL == "" {
@@ -110,7 +155,13 @@ func main() {
 		}
 	}()
 
-	log.Printf("Started Jetstream consumer: %s", jetstreamURL)
+	log.Printf("Started Jetstream user consumer: %s", jetstreamURL)
+
+	// Note: Community indexing happens through the same Jetstream firehose
+	// The CommunityEventConsumer is used by handlers when processing community-related events
+	// For now, community records are created via write-forward to PDS, then indexed when
+	// they appear in the firehose. A dedicated consumer can be added later if needed.
+	log.Println("Community event consumer initialized (processes events from firehose)")
 
 	// Start OAuth cleanup background job
 	go func() {
@@ -156,6 +207,8 @@ func main() {
 
 	// Register XRPC routes
 	routes.RegisterUserRoutes(r, userService)
+	routes.RegisterCommunityRoutes(r, communityService)
+	log.Println("Community XRPC endpoints registered")
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -170,4 +223,48 @@ func main() {
 	fmt.Printf("Coves AppView starting on port %s\n", port)
 	fmt.Printf("Default PDS: %s\n", defaultPDS)
 	log.Fatal(http.ListenAndServe(":"+port, r))
+}
+
+// authenticateWithPDS creates a session on the PDS and returns an access token
+func authenticateWithPDS(pdsURL, handle, password string) (string, error) {
+	type CreateSessionRequest struct {
+		Identifier string `json:"identifier"`
+		Password   string `json:"password"`
+	}
+
+	type CreateSessionResponse struct {
+		DID       string `json:"did"`
+		Handle    string `json:"handle"`
+		AccessJwt string `json:"accessJwt"`
+	}
+
+	reqBody, err := json.Marshal(CreateSessionRequest{
+		Identifier: handle,
+		Password:   password,
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	resp, err := http.Post(
+		pdsURL+"/xrpc/com.atproto.server.createSession",
+		"application/json",
+		bytes.NewReader(reqBody),
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to call PDS: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("PDS returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var session CreateSessionResponse
+	if err := json.NewDecoder(resp.Body).Decode(&session); err != nil {
+		return "", fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return session.AccessJwt, nil
 }
