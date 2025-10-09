@@ -67,6 +67,15 @@
               "minimum": 0,
               "maximum": 10000,
               "description": "Reputation threshold required for membership"
+            },
+            "visibility": {
+              "type": "string",
+              "enum": ["public", "unlisted", "private"],
+              "description": "Community visibility level"
+            },
+            "allowExternalDiscovery": {
+              "type": "boolean",
+              "description": "Whether other Coves instances can index and discover this community"
             }
           }
         }

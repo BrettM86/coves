@@ -1,10 +1,20 @@
 {
   "$type": "social.coves.community.profile",
+  "did": "did:plc:community123456789abc",
+  "handle": "!programming@coves.social",
   "name": "programming",
   "displayName": "Programming Community",
   "description": "A community for programmers",
-  "creator": "did:plc:creator123456",
+  "owner": "did:plc:instance123456",
+  "createdBy": "did:plc:creator123456",
+  "hostedBy": "did:plc:instance123456",
+  "visibility": "public",
+  "federation": {
+    "allowExternalDiscovery": true
+  },
   "moderationType": "moderator",
+  "memberCount": 0,
+  "subscriberCount": 0,
   "federatedFrom": "coves",
   "createdAt": "2023-12-01T08:00:00Z"
 }

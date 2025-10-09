@@ -63,6 +63,17 @@
               "maximum": 10000,
               "default": 100,
               "description": "Reputation threshold required for membership"
+            },
+            "visibility": {
+              "type": "string",
+              "enum": ["public", "unlisted", "private"],
+              "default": "public",
+              "description": "Community visibility level"
+            },
+            "allowExternalDiscovery": {
+              "type": "boolean",
+              "default": true,
+              "description": "Whether other Coves instances can index and discover this community"
             }
           }
         }
@@ -71,7 +82,7 @@
         "encoding": "application/json",
         "schema": {
           "type": "object",
-          "required": ["uri", "cid", "did"],
+          "required": ["uri", "cid", "did", "handle"],
           "properties": {
             "uri": {
               "type": "string",
@@ -87,6 +98,10 @@
               "type": "string",
               "format": "did",
               "description": "DID of the created community"
+            },
+            "handle": {
+              "type": "string",
+              "description": "Scoped handle of the created community (~name@instance)"
             }
           }
         }

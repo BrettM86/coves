@@ -8,12 +8,22 @@
       "key": "literal:self",
       "record": {
         "type": "object",
-        "required": ["name", "createdAt", "creator", "moderationType", "federatedFrom"],
+        "required": ["did", "handle", "name", "createdAt", "owner", "createdBy", "hostedBy", "visibility"],
         "properties": {
+          "did": {
+            "type": "string",
+            "format": "did",
+            "description": "The community's unique DID identifier (portable across instances)"
+          },
+          "handle": {
+            "type": "string",
+            "maxLength": 253,
+            "description": "Scoped handle (~name@instance.com)"
+          },
           "name": {
             "type": "string",
             "maxLength": 64,
-            "description": "Unique community name"
+            "description": "Short community name (local part of handle)"
           },
           "displayName": {
             "type": "string",
@@ -45,10 +55,31 @@
             "accept": ["image/png", "image/jpeg", "image/webp"],
             "maxSize": 2000000
           },
-          "creator": {
+          "owner": {
             "type": "string",
             "format": "did",
-            "description": "DID of the community creator"
+            "description": "DID of the community owner (instance DID in V1, community DID in V3)"
+          },
+          "createdBy": {
+            "type": "string",
+            "format": "did",
+            "description": "DID of the user who created this community"
+          },
+          "hostedBy": {
+            "type": "string",
+            "format": "did",
+            "description": "DID of the instance hosting this community"
+          },
+          "visibility": {
+            "type": "string",
+            "enum": ["public", "unlisted", "private"],
+            "default": "public",
+            "description": "Community visibility level"
+          },
+          "federation": {
+            "type": "ref",
+            "ref": "#federationConfig",
+            "description": "Federation and discovery configuration"
           },
           "moderationType": {
             "type": "string",
@@ -87,6 +118,17 @@
             "type": "string",
             "format": "datetime"
           }
+        }
+      }
+    },
+    "federationConfig": {
+      "type": "object",
+      "description": "Federation and discovery configuration for this community",
+      "properties": {
+        "allowExternalDiscovery": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether other Coves instances can index and discover this community"
         }
       }
     }
