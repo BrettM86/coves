@@ -15,11 +15,12 @@ import (
 // JetstreamEvent represents an event from the Jetstream firehose
 // Jetstream documentation: https://docs.bsky.app/docs/advanced-guides/jetstream
 type JetstreamEvent struct {
-	Did    string          `json:"did"`
-	TimeUS int64           `json:"time_us"`
-	Kind   string          `json:"kind"` // "account", "commit", "identity"
-	Account *AccountEvent  `json:"account,omitempty"`
+	Did      string         `json:"did"`
+	TimeUS   int64          `json:"time_us"`
+	Kind     string         `json:"kind"` // "account", "commit", "identity"
+	Account  *AccountEvent  `json:"account,omitempty"`
 	Identity *IdentityEvent `json:"identity,omitempty"`
+	Commit   *CommitEvent   `json:"commit,omitempty"`
 }
 
 type AccountEvent struct {
@@ -34,6 +35,16 @@ type IdentityEvent struct {
 	Handle string `json:"handle"`
 	Seq    int64  `json:"seq"`
 	Time   string `json:"time"`
+}
+
+// CommitEvent represents a record commit from Jetstream
+type CommitEvent struct {
+	Rev        string                 `json:"rev"`
+	Operation  string                 `json:"operation"` // "create", "update", "delete"
+	Collection string                 `json:"collection"`
+	RKey       string                 `json:"rkey"`
+	Record     map[string]interface{} `json:"record,omitempty"`
+	CID        string                 `json:"cid,omitempty"`
 }
 
 // UserEventConsumer consumes user-related events from Jetstream
