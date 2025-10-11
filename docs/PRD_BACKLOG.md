@@ -35,6 +35,19 @@ Miscellaneous platform improvements, bug fixes, and technical debt that don't fi
 
 **Solution:** Auto-refresh tokens before PDS operations. Parse JWT exp claim, use refresh token when expired, update DB.
 
+**Code:** TODO in [communities/service.go:123](../internal/core/communities/service.go#L123)
+
+---
+
+### OAuth Authentication for Community Actions
+**Added:** 2025-10-11 | **Effort:** 2-3 days
+
+**Problem:** Subscribe/unsubscribe and community creation need authenticated user DID. Currently using placeholder.
+
+**Solution:** Extract authenticated DID from OAuth session context. Requires OAuth middleware integration.
+
+**Code:** Multiple TODOs in [community/subscribe.go](../internal/api/handlers/community/subscribe.go#L46), [community/create.go](../internal/api/handlers/community/create.go#L38)
+
 ---
 
 ## 🟢 P2: Nice-to-Have
@@ -64,6 +77,17 @@ Miscellaneous platform improvements, bug fixes, and technical debt that don't fi
 
 ---
 
+### Jetstream Consumer Race Condition
+**Added:** 2025-10-11 | **Effort:** 1 hour
+
+**Problem:** Multiple goroutines can call `close(done)` concurrently in consumer shutdown.
+
+**Solution:** Use `sync.Once` for channel close or atomic flag for shutdown state.
+
+**Code:** TODO in [jetstream/user_consumer.go:114](../internal/atproto/jetstream/user_consumer.go#L114)
+
+---
+
 ## 🔵 P3: Technical Debt
 
 ### Consolidate Environment Variable Validation
@@ -84,6 +108,39 @@ Create shared `http.Client` with connection pooling instead of new client per re
 **Added:** 2025-10-11 | **Effort:** Ongoing
 
 Document: did:plc choice, pgcrypto encryption, Jetstream vs firehose, write-forward pattern, single handle field.
+
+---
+
+### Replace log Package with Structured Logger
+**Added:** 2025-10-11 | **Effort:** 1 day
+
+**Problem:** Using standard `log` package. Need structured logging (JSON) with levels.
+
+**Solution:** Switch to `slog`, `zap`, or `zerolog`. Add request IDs, context fields.
+
+**Code:** TODO in [community/errors.go:46](../internal/api/handlers/community/errors.go#L46)
+
+---
+
+### PDS URL Resolution from DID
+**Added:** 2025-10-11 | **Effort:** 2-3 hours
+
+**Problem:** User consumer doesn't resolve PDS URL from DID document when missing.
+
+**Solution:** Query PLC directory for DID document, extract `serviceEndpoint`.
+
+**Code:** TODO in [jetstream/user_consumer.go:203](../internal/atproto/jetstream/user_consumer.go#L203)
+
+---
+
+### PLC Directory Registration (Production)
+**Added:** 2025-10-11 | **Effort:** 1 day
+
+**Problem:** DID generator creates did:plc but doesn't register in prod mode.
+
+**Solution:** Implement PLC registration API call when `isDevEnv=false`.
+
+**Code:** TODO in [did/generator.go:46](../internal/atproto/did/generator.go#L46)
 
 ---
 
