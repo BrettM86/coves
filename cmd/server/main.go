@@ -115,13 +115,20 @@ func main() {
 
 	instanceDID := os.Getenv("INSTANCE_DID")
 	if instanceDID == "" {
-		instanceDID = "did:web:coves.local" // Default for development
+		instanceDID = "did:web:coves.social" // Default for development
 	}
 
 	// V2: Extract instance domain for community handles
 	// IMPORTANT: This MUST match the domain in INSTANCE_DID for security
 	// We cannot allow arbitrary domains to prevent impersonation attacks
 	// Example attack: !leagueoflegends@riotgames.com on a non-Riot instance
+	//
+	// TODO (Security - V2.1): Implement did:web domain verification
+	// Currently, any self-hoster can set INSTANCE_DID=did:web:nintendo.com without
+	// actually owning nintendo.com. This allows domain impersonation attacks.
+	// Solution: Verify domain ownership by fetching https://domain/.well-known/did.json
+	// and ensuring it matches the claimed DID. See: https://atproto.com/specs/did-web
+	// Alternatively, switch to did:plc for instance DIDs (cryptographically unique).
 	var instanceDomain string
 	if strings.HasPrefix(instanceDID, "did:web:") {
 		// Extract domain from did:web (this is the authoritative source)
