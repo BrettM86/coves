@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -116,7 +117,29 @@ func main() {
 	if instanceDID == "" {
 		instanceDID = "did:web:coves.local" // Default for development
 	}
-	communityService := communities.NewCommunityService(communityRepo, didGenerator, defaultPDS, instanceDID)
+
+	// V2: Extract instance domain for community handles
+	// IMPORTANT: This MUST match the domain in INSTANCE_DID for security
+	// We cannot allow arbitrary domains to prevent impersonation attacks
+	// Example attack: !leagueoflegends@riotgames.com on a non-Riot instance
+	var instanceDomain string
+	if strings.HasPrefix(instanceDID, "did:web:") {
+		// Extract domain from did:web (this is the authoritative source)
+		instanceDomain = strings.TrimPrefix(instanceDID, "did:web:")
+	} else {
+		// For non-web DIDs (e.g., did:plc), require explicit INSTANCE_DOMAIN
+		instanceDomain = os.Getenv("INSTANCE_DOMAIN")
+		if instanceDomain == "" {
+			log.Fatal("INSTANCE_DOMAIN must be set for non-web DIDs")
+		}
+	}
+
+	log.Printf("Instance domain: %s (extracted from DID: %s)", instanceDomain, instanceDID)
+
+	// V2: Initialize PDS account provisioner for communities
+	provisioner := communities.NewPDSAccountProvisioner(userService, instanceDomain, defaultPDS)
+
+	communityService := communities.NewCommunityService(communityRepo, didGenerator, defaultPDS, instanceDID, instanceDomain, provisioner)
 
 	// Authenticate Coves instance with PDS to enable community record writes
 	// The instance needs a PDS account to write community records it owns
