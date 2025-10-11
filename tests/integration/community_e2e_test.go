@@ -229,10 +229,16 @@ func TestCommunity_E2E(t *testing.T) {
 		t.Logf("   URI: %s", pdsRecord.URI)
 		t.Logf("   CID: %s", pdsRecord.CID)
 
-		// Verify record has correct DIDs
-		if pdsRecord.Value["did"] != community.DID {
-			t.Errorf("Community DID mismatch in PDS record: expected %s, got %v",
-				community.DID, pdsRecord.Value["did"])
+		// Print full record for inspection
+		recordJSON, _ := json.MarshalIndent(pdsRecord.Value, "   ", "  ")
+		t.Logf("   Record value:\n   %s", string(recordJSON))
+
+		// V2: DID is NOT in the record - it's in the repository URI
+		// The record should have handle, name, etc. but no 'did' field
+		// This matches Bluesky's app.bsky.actor.profile pattern
+		if pdsRecord.Value["handle"] != community.Handle {
+			t.Errorf("Community handle mismatch in PDS record: expected %s, got %v",
+				community.Handle, pdsRecord.Value["handle"])
 		}
 
 		// ====================================================================================
@@ -326,8 +332,9 @@ func TestCommunity_E2E(t *testing.T) {
 	t.Run("3. XRPC HTTP Endpoints", func(t *testing.T) {
 
 		t.Run("Create via XRPC endpoint", func(t *testing.T) {
+			// Use Unix timestamp (seconds) instead of UnixNano to keep handle short
 			createReq := map[string]interface{}{
-				"name":                   fmt.Sprintf("xrpc-%d", time.Now().UnixNano()),
+				"name":                   fmt.Sprintf("xrpc-%d", time.Now().Unix()),
 				"displayName":            "XRPC E2E Test",
 				"description":            "Testing true end-to-end flow",
 				"visibility":             "public",
@@ -340,6 +347,7 @@ func TestCommunity_E2E(t *testing.T) {
 
 			// Step 1: Client POSTs to XRPC endpoint
 			t.Logf("📡 Client → POST /xrpc/social.coves.community.create")
+			t.Logf("   Request: %s", string(reqBody))
 			resp, err := http.Post(
 				httpServer.URL+"/xrpc/social.coves.community.create",
 				"application/json",
@@ -352,6 +360,9 @@ func TestCommunity_E2E(t *testing.T) {
 
 			if resp.StatusCode != http.StatusOK {
 				body, _ := io.ReadAll(resp.Body)
+				t.Logf("❌ XRPC Create Failed")
+				t.Logf("   Status: %d", resp.StatusCode)
+				t.Logf("   Response: %s", string(body))
 				t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, string(body))
 			}
 
@@ -513,8 +524,11 @@ func TestCommunity_E2E(t *testing.T) {
 
 // Helper: create and index a community (simulates full flow)
 func createAndIndexCommunity(t *testing.T, service communities.Service, consumer *jetstream.CommunityEventConsumer, instanceDID string) *communities.Community {
+	// Use nanoseconds % 1 billion to get unique but short names
+	// This avoids handle collisions when creating multiple communities quickly
+	uniqueID := time.Now().UnixNano() % 1000000000
 	req := communities.CreateCommunityRequest{
-		Name:                   fmt.Sprintf("test-%d", time.Now().Unix()),
+		Name:                   fmt.Sprintf("test-%d", uniqueID),
 		DisplayName:            "Test Community",
 		Description:            "Test",
 		Visibility:             "public",
@@ -709,6 +723,7 @@ func subscribeToJetstream(
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 					continue // Timeout is expected, keep listening
 				}
+				// For other errors, don't retry reading from a broken connection
 				return fmt.Errorf("failed to read Jetstream message: %w", err)
 			}
 
@@ -720,8 +735,12 @@ func subscribeToJetstream(
 				}
 
 				// Send to channel so test can verify
-				eventChan <- &event
-				return nil
+				select {
+				case eventChan <- &event:
+					return nil
+				case <-time.After(1 * time.Second):
+					return fmt.Errorf("timeout sending event to channel")
+				}
 			}
 		}
 	}

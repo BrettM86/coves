@@ -25,13 +25,13 @@ func TestCommunityRepository_CredentialPersistence(t *testing.T) {
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 
 		community := &communities.Community{
-			DID:             communityDID,
-			Handle:          fmt.Sprintf("!cred-test-%s@coves.local", uniqueSuffix),
-			Name:            "cred-test",
-			OwnerDID:        communityDID, // V2: self-owned
-			CreatedByDID:    "did:plc:user123",
-			HostedByDID:     "did:web:coves.local",
-			Visibility:      "public",
+			DID:          communityDID,
+			Handle:       fmt.Sprintf("!cred-test-%s@coves.local", uniqueSuffix),
+			Name:         "cred-test",
+			OwnerDID:     communityDID, // V2: self-owned
+			CreatedByDID: "did:plc:user123",
+			HostedByDID:  "did:web:coves.local",
+			Visibility:   "public",
 			// V2: PDS credentials
 			PDSEmail:        "community-test@communities.coves.local",
 			PDSPasswordHash: "$2a$10$abcdefghijklmnopqrstuv", // Mock bcrypt hash
@@ -88,8 +88,8 @@ func TestCommunityRepository_CredentialPersistence(t *testing.T) {
 			HostedByDID:  "did:web:coves.local",
 			Visibility:   "public",
 			// No PDS credentials
-			CreatedAt:    time.Now(),
-			UpdatedAt:    time.Now(),
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
 		}
 
 		created, err := repo.Create(ctx, community)

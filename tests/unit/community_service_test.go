@@ -161,8 +161,8 @@ func TestCommunityService_PDSTimeouts(t *testing.T) {
 		}))
 		defer slowPDS.Close()
 
-		repo := newMockCommunityRepo()
-		didGen := did.NewGenerator(true, "https://plc.directory")
+		_ = newMockCommunityRepo()
+		_ = did.NewGenerator(true, "https://plc.directory")
 
 		// Note: We can't easily test the actual service without mocking more dependencies
 		// This test verifies the concept - in practice, a 15s operation should NOT timeout
@@ -188,9 +188,15 @@ func TestCommunityService_UpdateWithCredentials(t *testing.T) {
 		mockPDS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Capture the authorization header
 			usedToken = r.Header.Get("Authorization")
+			// Mark as used to avoid compiler error
+			_ = usedToken
 
 			// Capture the repo DID from request body
 			var payload map[string]interface{}
+			// Mark as used to avoid compiler error
+			_ = payload
+			_ = usedRepoDID
+
 			// We'd need to parse the body here, but for this unit test
 			// we're just verifying the concept
 
@@ -249,7 +255,7 @@ func TestCommunityService_CredentialPersistence(t *testing.T) {
 			UpdatedAt:       time.Now(),
 		}
 
-		created, err := repo.Create(context.Background(), community)
+		_, err := repo.Create(context.Background(), community)
 		if err != nil {
 			t.Fatalf("Failed to persist community: %v", err)
 		}
