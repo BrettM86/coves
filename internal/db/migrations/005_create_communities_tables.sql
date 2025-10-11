@@ -14,10 +14,17 @@ CREATE TABLE communities (
     avatar_cid TEXT,                                                -- CID of avatar image blob
     banner_cid TEXT,                                                -- CID of banner image blob
 
-    -- Ownership & hosting
-    owner_did TEXT NOT NULL,                                        -- DID of community owner (instance in V1)
+    -- Ownership & hosting (V2: community owns its own repo)
+    owner_did TEXT NOT NULL,                                        -- V1: instance DID, V2: same as did (self-owned)
     created_by_did TEXT NOT NULL,                                   -- DID of user who created community
     hosted_by_did TEXT NOT NULL,                                    -- DID of hosting instance
+
+    -- V2: PDS Account Credentials (community has its own PDS account)
+    pds_email TEXT,                                                 -- System email for community PDS account
+    pds_password_hash TEXT,                                         -- bcrypt hash for re-authentication
+    pds_access_token TEXT,                                          -- JWT for API calls (expires)
+    pds_refresh_token TEXT,                                         -- For refreshing sessions
+    pds_url TEXT DEFAULT 'http://localhost:2583',                   -- PDS hosting this community's repo
 
     -- Visibility & federation
     visibility TEXT NOT NULL DEFAULT 'public' CHECK (visibility IN ('public', 'unlisted', 'private')),
@@ -53,6 +60,12 @@ CREATE INDEX idx_communities_created_by ON communities(created_by_did);
 CREATE INDEX idx_communities_created_at ON communities(created_at);
 CREATE INDEX idx_communities_name_trgm ON communities USING gin(name gin_trgm_ops);  -- For fuzzy search
 CREATE INDEX idx_communities_description_trgm ON communities USING gin(description gin_trgm_ops);
+CREATE INDEX idx_communities_pds_email ON communities(pds_email);  -- V2: For credential lookups
+
+-- Security comments for V2 credentials
+COMMENT ON COLUMN communities.pds_password_hash IS 'V2: bcrypt hash - NEVER return in API responses';
+COMMENT ON COLUMN communities.pds_access_token IS 'V2: JWT - rotate frequently, NEVER log';
+COMMENT ON COLUMN communities.pds_refresh_token IS 'V2: Refresh token - NEVER log or expose in APIs';
 
 -- Subscriptions table: lightweight feed following
 CREATE TABLE community_subscriptions (
@@ -120,6 +133,12 @@ CREATE INDEX idx_moderation_action ON community_moderation(action);
 CREATE INDEX idx_moderation_created_at ON community_moderation(created_at);
 
 -- +goose Down
+-- Drop security comments
+COMMENT ON COLUMN communities.pds_refresh_token IS NULL;
+COMMENT ON COLUMN communities.pds_access_token IS NULL;
+COMMENT ON COLUMN communities.pds_password_hash IS NULL;
+
+DROP INDEX IF EXISTS idx_communities_pds_email;
 DROP INDEX IF EXISTS idx_moderation_created_at;
 DROP INDEX IF EXISTS idx_moderation_action;
 DROP INDEX IF EXISTS idx_moderation_instance;
