@@ -92,12 +92,12 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 
 	// Create community entity
 	community := &communities.Community{
-		DID:                    did,         // V2: Repository DID IS the community DID
+		DID:                    did, // V2: Repository DID IS the community DID
 		Handle:                 profile.Handle,
 		Name:                   profile.Name,
 		DisplayName:            profile.DisplayName,
 		Description:            profile.Description,
-		OwnerDID:               ownerDID,    // V2: same as DID (self-owned)
+		OwnerDID:               ownerDID, // V2: same as DID (self-owned)
 		CreatedByDID:           profile.CreatedBy,
 		HostedByDID:            profile.HostedBy,
 		Visibility:             profile.Visibility,
@@ -297,26 +297,26 @@ func (c *CommunityEventConsumer) handleUnsubscribe(ctx context.Context, userDID 
 
 type CommunityProfile struct {
 	// V2 ONLY: No DID field (repo DID is authoritative)
-	Handle              string                   `json:"handle"`            // Scoped handle (!gaming@coves.social)
-	AtprotoHandle       string                   `json:"atprotoHandle"`     // Real atProto handle (gaming.communities.coves.social)
-	Name                string                   `json:"name"`
-	DisplayName         string                   `json:"displayName"`
-	Description         string                   `json:"description"`
-	DescriptionFacets   []interface{}            `json:"descriptionFacets"`
-	Avatar              map[string]interface{}   `json:"avatar"`
-	Banner              map[string]interface{}   `json:"banner"`
+	Handle            string                 `json:"handle"`        // Scoped handle (!gaming@coves.social)
+	AtprotoHandle     string                 `json:"atprotoHandle"` // Real atProto handle (gaming.communities.coves.social)
+	Name              string                 `json:"name"`
+	DisplayName       string                 `json:"displayName"`
+	Description       string                 `json:"description"`
+	DescriptionFacets []interface{}          `json:"descriptionFacets"`
+	Avatar            map[string]interface{} `json:"avatar"`
+	Banner            map[string]interface{} `json:"banner"`
 	// Owner field removed - V2 communities ALWAYS self-own (owner == repo DID)
-	CreatedBy           string                   `json:"createdBy"`
-	HostedBy            string                   `json:"hostedBy"`
-	Visibility          string                   `json:"visibility"`
-	Federation          FederationConfig         `json:"federation"`
-	ModerationType      string                   `json:"moderationType"`
-	ContentWarnings     []string                 `json:"contentWarnings"`
-	MemberCount         int                      `json:"memberCount"`
-	SubscriberCount     int                      `json:"subscriberCount"`
-	FederatedFrom       string                   `json:"federatedFrom"`
-	FederatedID         string                   `json:"federatedId"`
-	CreatedAt           time.Time                `json:"createdAt"`
+	CreatedBy       string           `json:"createdBy"`
+	HostedBy        string           `json:"hostedBy"`
+	Visibility      string           `json:"visibility"`
+	Federation      FederationConfig `json:"federation"`
+	ModerationType  string           `json:"moderationType"`
+	ContentWarnings []string         `json:"contentWarnings"`
+	MemberCount     int              `json:"memberCount"`
+	SubscriberCount int              `json:"subscriberCount"`
+	FederatedFrom   string           `json:"federatedFrom"`
+	FederatedID     string           `json:"federatedId"`
+	CreatedAt       time.Time        `json:"createdAt"`
 }
 
 type FederationConfig struct {

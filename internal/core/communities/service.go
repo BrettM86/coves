@@ -14,17 +14,18 @@ import (
 	"Coves/internal/atproto/did"
 )
 
-// Community handle validation regex (!name@instance)
-var communityHandleRegex = regexp.MustCompile(`^![a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?@([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
+// Community handle validation regex (DNS-valid handle: name.communities.instance.com)
+// Matches standard DNS hostname format (RFC 1035)
+var communityHandleRegex = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
 
 type communityService struct {
-	repo            Repository
-	didGen          *did.Generator
-	pdsURL          string // PDS URL for write-forward operations
-	instanceDID     string // DID of this Coves instance
-	instanceDomain  string // Domain of this instance (for handles)
-	pdsAccessToken  string // Access token for authenticating to PDS as the instance
-	provisioner     *PDSAccountProvisioner // V2: Creates PDS accounts for communities
+	repo           Repository
+	didGen         *did.Generator
+	pdsURL         string                 // PDS URL for write-forward operations
+	instanceDID    string                 // DID of this Coves instance
+	instanceDomain string                 // Domain of this instance (for handles)
+	pdsAccessToken string                 // Access token for authenticating to PDS as the instance
+	provisioner    *PDSAccountProvisioner // V2: Creates PDS accounts for communities
 }
 
 // NewCommunityService creates a new community service
@@ -79,24 +80,18 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 		return nil, fmt.Errorf("failed to provision PDS account for community: %w", err)
 	}
 
-	// Build scoped handle for display: !{name}@{instance}
-	// Note: The community's atProto handle is pdsAccount.Handle (e.g., gaming.communities.coves.social)
-	// The scoped handle (!gaming@coves.social) is for UI/UX - cleaner than the full atProto handle
-	scopedHandle := fmt.Sprintf("!%s@%s", req.Name, s.instanceDomain)
-
-	// Validate the scoped handle
-	if err := s.ValidateHandle(scopedHandle); err != nil {
-		return nil, fmt.Errorf("generated scoped handle is invalid: %w", err)
+	// Validate the atProto handle
+	if err := s.ValidateHandle(pdsAccount.Handle); err != nil {
+		return nil, fmt.Errorf("generated atProto handle is invalid: %w", err)
 	}
 
 	// Build community profile record
 	profile := map[string]interface{}{
 		"$type":      "social.coves.community.profile",
-		"handle":     scopedHandle,        // Display handle (!gaming@coves.social)
-		"atprotoHandle": pdsAccount.Handle, // Real atProto handle (gaming.communities.coves.social)
-		"name":       req.Name,
+		"handle":     pdsAccount.Handle, // atProto handle (e.g., gaming.communities.coves.social)
+		"name":       req.Name,          // Short name for !mentions (e.g., "gaming")
 		"visibility": req.Visibility,
-		"hostedBy":   s.instanceDID,       // V2: Instance hosts, community owns
+		"hostedBy":   s.instanceDID, // V2: Instance hosts, community owns
 		"createdBy":  req.CreatedByDID,
 		"createdAt":  time.Now().Format(time.RFC3339),
 		"federation": map[string]interface{}{
@@ -136,11 +131,11 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 	// Authenticate using community's access token
 	recordURI, recordCID, err := s.createRecordOnPDSAs(
 		ctx,
-		pdsAccount.DID,                    // repo = community's DID (community owns its repo!)
+		pdsAccount.DID, // repo = community's DID (community owns its repo!)
 		"social.coves.community.profile",
-		"self",                            // canonical rkey for profile
+		"self", // canonical rkey for profile
 		profile,
-		pdsAccount.AccessToken,            // authenticate as the community
+		pdsAccount.AccessToken, // authenticate as the community
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create community profile record: %w", err)
@@ -148,12 +143,12 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 
 	// Build Community object with PDS credentials
 	community := &Community{
-		DID:                    pdsAccount.DID,         // Community's DID (owns the repo!)
-		Handle:                 scopedHandle,           // !gaming@coves.social
+		DID:                    pdsAccount.DID,    // Community's DID (owns the repo!)
+		Handle:                 pdsAccount.Handle, // atProto handle (e.g., gaming.communities.coves.social)
 		Name:                   req.Name,
 		DisplayName:            req.DisplayName,
 		Description:            req.Description,
-		OwnerDID:               pdsAccount.DID,         // V2: Community owns itself
+		OwnerDID:               pdsAccount.DID, // V2: Community owns itself
 		CreatedByDID:           req.CreatedByDID,
 		HostedByDID:            req.HostedByDID,
 		PDSEmail:               pdsAccount.Email,
@@ -289,11 +284,11 @@ func (s *communityService) UpdateCommunity(ctx context.Context, req UpdateCommun
 
 	recordURI, recordCID, err := s.putRecordOnPDSAs(
 		ctx,
-		existing.DID,                      // repo = community's own DID (V2!)
+		existing.DID, // repo = community's own DID (V2!)
 		"social.coves.community.profile",
-		"self",                            // V2: always "self"
+		"self", // V2: always "self"
 		profile,
-		existing.PDSAccessToken,           // authenticate as the community
+		existing.PDSAccessToken, // authenticate as the community
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update community on PDS: %w", err)
