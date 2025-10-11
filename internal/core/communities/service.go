@@ -22,16 +22,20 @@ type communityService struct {
 	didGen          *did.Generator
 	pdsURL          string // PDS URL for write-forward operations
 	instanceDID     string // DID of this Coves instance
+	instanceDomain  string // Domain of this instance (for handles)
 	pdsAccessToken  string // Access token for authenticating to PDS as the instance
+	provisioner     *PDSAccountProvisioner // V2: Creates PDS accounts for communities
 }
 
 // NewCommunityService creates a new community service
-func NewCommunityService(repo Repository, didGen *did.Generator, pdsURL string, instanceDID string) Service {
+func NewCommunityService(repo Repository, didGen *did.Generator, pdsURL string, instanceDID string, instanceDomain string, provisioner *PDSAccountProvisioner) Service {
 	return &communityService{
-		repo:        repo,
-		didGen:      didGen,
-		pdsURL:      pdsURL,
-		instanceDID: instanceDID,
+		repo:           repo,
+		didGen:         didGen,
+		pdsURL:         pdsURL,
+		instanceDID:    instanceDID,
+		instanceDomain: instanceDomain,
+		provisioner:    provisioner,
 	}
 }
 
@@ -42,7 +46,17 @@ func (s *communityService) SetPDSAccessToken(token string) {
 }
 
 // CreateCommunity creates a new community via write-forward to PDS
-// Flow: Service -> PDS (creates record) -> Firehose -> Consumer -> AppView DB
+// V2 Flow:
+// 1. Service creates PDS account for community (PDS generates signing keypair)
+// 2. Service writes community profile to COMMUNITY's own repository
+// 3. Firehose emits event
+// 4. Consumer indexes to AppView DB
+//
+// V2 Architecture:
+// - Community owns its own repository (at://community_did/social.coves.community.profile/self)
+// - PDS manages the signing keypair (we never see it)
+// - We store PDS credentials to act on behalf of the community
+// - Community can migrate to other instances (future V2.1 with rotation keys)
 func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommunityRequest) (*Community, error) {
 	// Apply defaults before validation
 	if req.Visibility == "" {
@@ -54,34 +68,36 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 		return nil, err
 	}
 
-	// Generate a unique DID for the community
-	communityDID, err := s.didGen.GenerateCommunityDID()
+	// V2: Provision a real PDS account for this community
+	// This calls com.atproto.server.createAccount internally
+	// The PDS will:
+	//   1. Generate a signing keypair (stored in PDS, we never see it)
+	//   2. Create a DID (did:plc:xxx)
+	//   3. Return credentials (DID, tokens)
+	pdsAccount, err := s.provisioner.ProvisionCommunityAccount(ctx, req.Name)
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate community DID: %w", err)
+		return nil, fmt.Errorf("failed to provision PDS account for community: %w", err)
 	}
 
-	// Build scoped handle: !{name}@{instance}
-	instanceDomain := extractDomain(s.instanceDID)
-	if instanceDomain == "" {
-		instanceDomain = "coves.local" // Fallback for testing
-	}
-	handle := fmt.Sprintf("!%s@%s", req.Name, instanceDomain)
+	// Build scoped handle for display: !{name}@{instance}
+	// Note: The community's atProto handle is pdsAccount.Handle (e.g., gaming.communities.coves.social)
+	// The scoped handle (!gaming@coves.social) is for UI/UX - cleaner than the full atProto handle
+	scopedHandle := fmt.Sprintf("!%s@%s", req.Name, s.instanceDomain)
 
-	// Validate the generated handle
-	if err := s.ValidateHandle(handle); err != nil {
-		return nil, fmt.Errorf("generated handle is invalid: %w", err)
+	// Validate the scoped handle
+	if err := s.ValidateHandle(scopedHandle); err != nil {
+		return nil, fmt.Errorf("generated scoped handle is invalid: %w", err)
 	}
 
 	// Build community profile record
 	profile := map[string]interface{}{
 		"$type":      "social.coves.community.profile",
-		"did":        communityDID, // Unique identifier for this community
-		"handle":     handle,
+		"handle":     scopedHandle,        // Display handle (!gaming@coves.social)
+		"atprotoHandle": pdsAccount.Handle, // Real atProto handle (gaming.communities.coves.social)
 		"name":       req.Name,
 		"visibility": req.Visibility,
-		"owner":      s.instanceDID, // V1: instance owns the community
+		"hostedBy":   s.instanceDID,       // V2: Instance hosts, community owns
 		"createdBy":  req.CreatedByDID,
-		"hostedBy":   req.HostedByDID,
 		"createdAt":  time.Now().Format(time.RFC3339),
 		"federation": map[string]interface{}{
 			"allowExternalDiscovery": req.AllowExternalDiscovery,
@@ -115,25 +131,36 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 	// 2. Get blob ref (CID)
 	// 3. Add to profile record
 
-	// Write-forward to PDS: create the community profile record in the INSTANCE's repository
-	// The instance owns all community records, community DID is just metadata in the record
-	// Record will be at: at://INSTANCE_DID/social.coves.community.profile/COMMUNITY_RKEY
-	recordURI, recordCID, err := s.createRecordOnPDS(ctx, s.instanceDID, "social.coves.community.profile", "", profile)
+	// V2: Write to COMMUNITY's own repository (not instance repo!)
+	// Repository: at://COMMUNITY_DID/social.coves.community.profile/self
+	// Authenticate using community's access token
+	recordURI, recordCID, err := s.createRecordOnPDSAs(
+		ctx,
+		pdsAccount.DID,                    // repo = community's DID (community owns its repo!)
+		"social.coves.community.profile",
+		"self",                            // canonical rkey for profile
+		profile,
+		pdsAccount.AccessToken,            // authenticate as the community
+	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create community on PDS: %w", err)
+		return nil, fmt.Errorf("failed to create community profile record: %w", err)
 	}
 
-	// Return a Community object representing what was created
-	// Note: This won't be in AppView DB until the Jetstream consumer processes it
+	// Build Community object with PDS credentials
 	community := &Community{
-		DID:                    communityDID,
-		Handle:                 handle,
+		DID:                    pdsAccount.DID,         // Community's DID (owns the repo!)
+		Handle:                 scopedHandle,           // !gaming@coves.social
 		Name:                   req.Name,
 		DisplayName:            req.DisplayName,
 		Description:            req.Description,
-		OwnerDID:               s.instanceDID,
+		OwnerDID:               pdsAccount.DID,         // V2: Community owns itself
 		CreatedByDID:           req.CreatedByDID,
 		HostedByDID:            req.HostedByDID,
+		PDSEmail:               pdsAccount.Email,
+		PDSPasswordHash:        pdsAccount.PasswordHash,
+		PDSAccessToken:         pdsAccount.AccessToken,
+		PDSRefreshToken:        pdsAccount.RefreshToken,
+		PDSURL:                 pdsAccount.PDSURL,
 		Visibility:             req.Visibility,
 		AllowExternalDiscovery: req.AllowExternalDiscovery,
 		MemberCount:            0,
@@ -142,6 +169,16 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 		UpdatedAt:              time.Now(),
 		RecordURI:              recordURI,
 		RecordCID:              recordCID,
+	}
+
+	// CRITICAL: Persist PDS credentials immediately to database
+	// The Jetstream consumer will eventually index the community profile from the firehose,
+	// but it won't have the PDS credentials. We must store them now so we can:
+	// 1. Update the community profile later (using its own credentials)
+	// 2. Re-authenticate if access tokens expire
+	_, err = s.repo.Create(ctx, community)
+	if err != nil {
+		return nil, fmt.Errorf("failed to persist community with credentials: %w", err)
 	}
 
 	return community, nil
@@ -240,14 +277,24 @@ func (s *communityService) UpdateCommunity(ctx context.Context, req UpdateCommun
 	profile["memberCount"] = existing.MemberCount
 	profile["subscriberCount"] = existing.SubscriberCount
 
-	// Extract rkey from existing record URI (communities live in instance's repo)
-	rkey := extractRKeyFromURI(existing.RecordURI)
-	if rkey == "" {
-		return nil, fmt.Errorf("invalid community record URI: %s", existing.RecordURI)
+	// V2: Community profiles always use "self" as rkey
+	// (No need to extract from URI - it's always "self" for V2 communities)
+
+	// V2 CRITICAL FIX: Write-forward using COMMUNITY's own DID and credentials
+	// Repository: at://COMMUNITY_DID/social.coves.community.profile/self
+	// Authenticate as the community (not as instance!)
+	if existing.PDSAccessToken == "" {
+		return nil, fmt.Errorf("community %s missing PDS credentials - cannot update", existing.DID)
 	}
 
-	// Write-forward: update record on PDS using INSTANCE DID (communities are stored in instance repo)
-	recordURI, recordCID, err := s.putRecordOnPDS(ctx, s.instanceDID, "social.coves.community.profile", rkey, profile)
+	recordURI, recordCID, err := s.putRecordOnPDSAs(
+		ctx,
+		existing.DID,                      // repo = community's own DID (V2!)
+		"social.coves.community.profile",
+		"self",                            // V2: always "self"
+		profile,
+		existing.PDSAccessToken,           // authenticate as the community
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update community on PDS: %w", err)
 	}
@@ -521,6 +568,23 @@ func (s *communityService) createRecordOnPDS(ctx context.Context, repoDID, colle
 	return s.callPDS(ctx, "POST", endpoint, payload)
 }
 
+// createRecordOnPDSAs creates a record with a specific access token (for V2 community auth)
+func (s *communityService) createRecordOnPDSAs(ctx context.Context, repoDID, collection, rkey string, record map[string]interface{}, accessToken string) (string, string, error) {
+	endpoint := fmt.Sprintf("%s/xrpc/com.atproto.repo.createRecord", strings.TrimSuffix(s.pdsURL, "/"))
+
+	payload := map[string]interface{}{
+		"repo":       repoDID,
+		"collection": collection,
+		"record":     record,
+	}
+
+	if rkey != "" {
+		payload["rkey"] = rkey
+	}
+
+	return s.callPDSWithAuth(ctx, "POST", endpoint, payload, accessToken)
+}
+
 func (s *communityService) putRecordOnPDS(ctx context.Context, repoDID, collection, rkey string, record map[string]interface{}) (string, string, error) {
 	endpoint := fmt.Sprintf("%s/xrpc/com.atproto.repo.putRecord", strings.TrimSuffix(s.pdsURL, "/"))
 
@@ -532,6 +596,20 @@ func (s *communityService) putRecordOnPDS(ctx context.Context, repoDID, collecti
 	}
 
 	return s.callPDS(ctx, "POST", endpoint, payload)
+}
+
+// putRecordOnPDSAs updates a record with a specific access token (for V2 community auth)
+func (s *communityService) putRecordOnPDSAs(ctx context.Context, repoDID, collection, rkey string, record map[string]interface{}, accessToken string) (string, string, error) {
+	endpoint := fmt.Sprintf("%s/xrpc/com.atproto.repo.putRecord", strings.TrimSuffix(s.pdsURL, "/"))
+
+	payload := map[string]interface{}{
+		"repo":       repoDID,
+		"collection": collection,
+		"rkey":       rkey,
+		"record":     record,
+	}
+
+	return s.callPDSWithAuth(ctx, "POST", endpoint, payload, accessToken)
 }
 
 func (s *communityService) deleteRecordOnPDS(ctx context.Context, repoDID, collection, rkey string) error {
@@ -548,6 +626,12 @@ func (s *communityService) deleteRecordOnPDS(ctx context.Context, repoDID, colle
 }
 
 func (s *communityService) callPDS(ctx context.Context, method, endpoint string, payload map[string]interface{}) (string, string, error) {
+	// Use instance's access token
+	return s.callPDSWithAuth(ctx, method, endpoint, payload, s.pdsAccessToken)
+}
+
+// callPDSWithAuth makes a PDS call with a specific access token (V2: for community authentication)
+func (s *communityService) callPDSWithAuth(ctx context.Context, method, endpoint string, payload map[string]interface{}, accessToken string) (string, string, error) {
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to marshal payload: %w", err)
@@ -559,12 +643,24 @@ func (s *communityService) callPDS(ctx context.Context, method, endpoint string,
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	// Add authentication if we have an access token
-	if s.pdsAccessToken != "" {
-		req.Header.Set("Authorization", "Bearer "+s.pdsAccessToken)
+	// Add authentication with provided access token
+	if accessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+accessToken)
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	// Dynamic timeout based on operation type
+	// Write operations (createAccount, createRecord, putRecord) are slower due to:
+	// - Keypair generation
+	// - DID PLC registration
+	// - Database writes on PDS
+	timeout := 10 * time.Second // Default for read operations
+	if strings.Contains(endpoint, "createAccount") ||
+		strings.Contains(endpoint, "createRecord") ||
+		strings.Contains(endpoint, "putRecord") {
+		timeout = 30 * time.Second // Extended timeout for write operations
+	}
+
+	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to call PDS: %w", err)
