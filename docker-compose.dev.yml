@@ -101,7 +101,7 @@ services:
     networks:
       - coves-dev
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/xrpc/_health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/xrpc/_health"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -155,7 +155,7 @@ services:
       pds:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6009/metrics"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:6009/metrics"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -204,7 +204,7 @@ services:
       pds:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:2470/xrpc/_health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:2470/xrpc/_health"]
       interval: 10s
       timeout: 5s
       retries: 5

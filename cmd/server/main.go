@@ -35,7 +35,7 @@ func main() {
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		// Use dev database from .env.dev
-		dbURL = "postgres://dev_user:dev_password@localhost:5433/coves_dev?sslmode=disable"
+		dbURL = "postgres://dev_user:dev_password@localhost:5435/coves_dev?sslmode=disable"
 	}
 
 	// Default PDS URL for this Coves instance (supports self-hosting)
