@@ -388,6 +388,37 @@ Communities can be co-owned by multiple entities (users, instances, DAOs) with d
 
 ## Technical Decisions Log
 
+### 2025-10-11: Moderator Records Storage Location
+**Decision:** Store moderator records in community's repository (`at://community_did/social.coves.community.moderator/{tid}`), not user's repository
+
+**Rationale:**
+1. **Federation security**: Community's PDS can write/delete records in its own repo without cross-PDS coordination
+2. **Attack resistance**: Malicious self-hosted instances cannot forge or retain moderator status after revocation
+3. **Single source of truth**: Community's repo is authoritative; no need to check multiple repos + revocation lists
+4. **Instant revocation**: Deleting the record immediately removes moderator status across all instances
+5. **Simpler implementation**: No invitation flow, no multi-step acceptance, no revocation reconciliation
+
+**Security Analysis:**
+- **Option B (user's repo) vulnerability**: Attacker could self-host malicious AppView that ignores revocation signals stored in community's AppView database, presenting their moderator record as "proof" of authority
+- **Option A (community's repo) security**: Even malicious instances must query community's PDS for authoritative moderator list; attacker cannot forge records in community's repository
+
+**Alternatives Considered:**
+- **User's repo**: Follows atProto pattern for relationships (like `app.bsky.graph.follow`), provides user consent model, but introduces cross-instance write complexity and security vulnerabilities
+- **Hybrid (both repos)**: Assignment in community's repo + acceptance in user's repo provides consent without compromising security, but significantly increases complexity
+
+**Trade-offs Accepted:**
+- No explicit user consent (moderators are appointed, not invited)
+- Users cannot easily query "what do I moderate?" without AppView index
+- Doesn't follow standard atProto relationship pattern (but matches service account pattern like feed generators)
+
+**Implementation Notes:**
+- Moderator records are source of truth for permissions
+- AppView indexes these records from firehose for efficient querying
+- User consent can be added later via optional acceptance records without changing security model
+- Matches Bluesky's pattern: relationships in user's repo, service configuration in service's repo
+
+---
+
 ### 2025-10-10: V1 Role-Based Model Selected
 **Decision:** Start with simple creator/moderator two-tier system
 

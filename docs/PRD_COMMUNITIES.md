@@ -171,6 +171,10 @@ Hosted By:   did:web:coves.social (instance manages credentials)
 - [ ] **Monitoring Guide:** Metrics and alerting setup
 - [ ] **Security Checklist:** Pre-launch security audit
 
+### Infrastructure & DNS
+- [ ] **DNS Wildcard Setup:** Configure `*.communities.coves.social` for community handle resolution
+- [ ] **Well-Known Endpoint:** Implement `.well-known/atproto-did` handler for `*.communities.coves.social` subdomains
+
 ---
 
 ## Out of Scope (Future Versions)
@@ -221,13 +225,14 @@ Hosted By:   did:web:coves.social (instance manages credentials)
 **Status:** ✅ Implemented and tested
 
 **Required Fields:**
-- `handle` - Scoped handle (`!gaming@coves.social`)
-- `atprotoHandle` - Real atProto handle (`gaming.communities.coves.social`)
-- `name` - Community name
+- `handle` - atProto handle (DNS-resolvable, e.g., `gaming.communities.coves.social`)
+- `name` - Short community name for !mentions (e.g., `gaming`)
 - `createdBy` - DID of user who created community
 - `hostedBy` - DID of hosting instance
 - `visibility` - `"public"`, `"unlisted"`, or `"private"`
 - `federation.allowExternalDiscovery` - Boolean
+
+**Note:** The `!gaming@coves.social` format is derived client-side from `name` + instance for UI display. The `handle` field contains only the DNS-resolvable atProto handle.
 
 **Optional Fields:**
 - `displayName` - Display name for UI
@@ -276,6 +281,27 @@ Hosted By:   did:web:coves.social (instance manages credentials)
 ---
 
 ## Technical Decisions Log
+
+### 2025-10-11: Single Handle Field (atProto-Compliant)
+**Decision:** Use single `handle` field containing DNS-resolvable atProto handle; remove `atprotoHandle` field
+
+**Rationale:**
+- Matches Bluesky pattern: `app.bsky.actor.profile` has one `handle` field
+- Reduces confusion about which handle is "real"
+- Simplifies lexicon (one field vs two)
+- `!gaming@coves.social` display format is client-side UX concern, not protocol concern
+- Follows separation of concerns: protocol layer uses DNS handles, UI layer formats for display
+
+**Implementation:**
+- Lexicon: `handle` = `gaming.communities.coves.social` (DNS-resolvable)
+- Client derives display: `!${name}@${instance}` from `name` + parsed instance
+- Rich text facets can encode community mentions with `!` prefix for UX
+
+**Trade-offs Accepted:**
+- Clients must parse/format for display (but already do this for `@user` mentions)
+- No explicit "display handle" in record (but `displayName` serves this purpose)
+
+---
 
 ### 2025-10-10: V2 Architecture Completed
 - Migrated from instance-owned to community-owned repositories
