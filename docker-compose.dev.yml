@@ -14,13 +14,13 @@ version: '3.8'
 #   - relay: BigSky relay (optional, will crawl entire network!)
 
 services:
-  # PostgreSQL Database (Port 5433)
+  # PostgreSQL Database (Port 5435)
   # Used by Coves AppView for indexing data from firehose
   postgres:
     image: postgres:15
     container_name: coves-dev-postgres
     ports:
-      - "5433:5432"
+      - "5435:5432"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-coves_dev}
       POSTGRES_USER: ${POSTGRES_USER:-dev_user}
@@ -83,10 +83,14 @@ services:
       PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX: ${PDS_PLC_ROTATION_KEY:-af514fb84c4356241deed29feb392d1ee359f99c05a7b8f7bff2e5f2614f64b2}
 
       # Service endpoints
-      PDS_SERVICE_HANDLE_DOMAINS: ${PDS_SERVICE_HANDLE_DOMAINS:-.local.coves.dev}
+      # Allow both user handles (.local.coves.dev) and community handles (.communities.coves.social)
+      PDS_SERVICE_HANDLE_DOMAINS: ${PDS_SERVICE_HANDLE_DOMAINS:-.local.coves.dev,.communities.coves.social}
 
       # Dev mode settings (allows HTTP instead of HTTPS)
       PDS_DEV_MODE: "true"
+
+      # Disable invite codes for testing
+      PDS_INVITE_REQUIRED: "false"
 
       # Development settings
       NODE_ENV: development
@@ -97,7 +101,7 @@ services:
     networks:
       - coves-dev
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/xrpc/_health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/xrpc/_health"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -151,7 +155,7 @@ services:
       pds:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6009/metrics"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:6009/metrics"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -200,7 +204,7 @@ services:
       pds:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:2470/xrpc/_health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:2470/xrpc/_health"]
       interval: 10s
       timeout: 5s
       retries: 5

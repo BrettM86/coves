@@ -1,11 +1,9 @@
 {
   "$type": "social.coves.community.profile",
-  "did": "did:plc:community123456789abc",
-  "handle": "!programming@coves.social",
+  "handle": "programming.communities.coves.social",
   "name": "programming",
   "displayName": "Programming Community",
   "description": "A community for programmers",
-  "owner": "did:plc:instance123456",
   "createdBy": "did:plc:creator123456",
   "hostedBy": "did:plc:instance123456",
   "visibility": "public",

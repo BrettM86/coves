@@ -2,6 +2,7 @@ package community
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 
 	"Coves/internal/core/communities"
@@ -41,7 +42,9 @@ func handleServiceError(w http.ResponseWriter, err error) {
 	case err == communities.ErrMemberBanned:
 		writeError(w, http.StatusForbidden, "Blocked", "You are blocked from this community")
 	default:
-		// Internal server error
+		// Internal server error - log the actual error for debugging
+		// TODO: Use proper logger instead of log package
+		log.Printf("XRPC handler error: %v", err)
 		writeError(w, http.StatusInternalServerError, "InternalServerError", "An internal error occurred")
 	}
 }

@@ -25,13 +25,20 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 		INSERT INTO communities (
 			did, handle, name, display_name, description, description_facets,
 			avatar_cid, banner_cid, owner_did, created_by_did, hosted_by_did,
+			pds_email, pds_password_hash,
+			pds_access_token_encrypted, pds_refresh_token_encrypted, pds_url,
 			visibility, allow_external_discovery, moderation_type, content_warnings,
 			member_count, subscriber_count, post_count,
 			federated_from, federated_id, created_at, updated_at,
 			record_uri, record_cid
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-			$16, $17, $18, $19, $20, $21, $22, $23, $24
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+			$12, $13,
+			CASE WHEN $14 != '' THEN pgp_sym_encrypt($14, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1)) ELSE NULL END,
+			CASE WHEN $15 != '' THEN pgp_sym_encrypt($15, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1)) ELSE NULL END,
+			$16,
+			$17, $18, $19, $20,
+			$21, $22, $23, $24, $25, $26, $27, $28, $29
 		)
 		RETURNING id, created_at, updated_at`
 
@@ -55,6 +62,12 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 		community.OwnerDID,
 		community.CreatedByDID,
 		community.HostedByDID,
+		// V2: PDS credentials for community account
+		nullString(community.PDSEmail),
+		nullString(community.PDSPasswordHash),
+		nullString(community.PDSAccessToken),
+		nullString(community.PDSRefreshToken),
+		nullString(community.PDSURL),
 		community.Visibility,
 		community.AllowExternalDiscovery,
 		nullString(community.ModerationType),
@@ -87,11 +100,17 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 }
 
 // GetByDID retrieves a community by its DID
+// Note: PDS credentials are included (for internal service use only)
+// Handlers MUST use json:"-" tags to prevent credential exposure in APIs
 func (r *postgresCommunityRepo) GetByDID(ctx context.Context, did string) (*communities.Community, error) {
 	community := &communities.Community{}
 	query := `
 		SELECT id, did, handle, name, display_name, description, description_facets,
 			avatar_cid, banner_cid, owner_did, created_by_did, hosted_by_did,
+			pds_email, pds_password_hash,
+			COALESCE(pgp_sym_decrypt(pds_access_token_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1)), '') as pds_access_token,
+			COALESCE(pgp_sym_decrypt(pds_refresh_token_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1)), '') as pds_refresh_token,
+			pds_url,
 			visibility, allow_external_discovery, moderation_type, content_warnings,
 			member_count, subscriber_count, post_count,
 			federated_from, federated_id, created_at, updated_at,
@@ -101,6 +120,7 @@ func (r *postgresCommunityRepo) GetByDID(ctx context.Context, did string) (*comm
 
 	var displayName, description, avatarCID, bannerCID, moderationType sql.NullString
 	var federatedFrom, federatedID, recordURI, recordCID sql.NullString
+	var pdsEmail, pdsPasswordHash, pdsAccessToken, pdsRefreshToken, pdsURL sql.NullString
 	var descFacets []byte
 	var contentWarnings []string
 
@@ -109,6 +129,8 @@ func (r *postgresCommunityRepo) GetByDID(ctx context.Context, did string) (*comm
 		&displayName, &description, &descFacets,
 		&avatarCID, &bannerCID,
 		&community.OwnerDID, &community.CreatedByDID, &community.HostedByDID,
+		// V2: PDS credentials
+		&pdsEmail, &pdsPasswordHash, &pdsAccessToken, &pdsRefreshToken, &pdsURL,
 		&community.Visibility, &community.AllowExternalDiscovery,
 		&moderationType, pq.Array(&contentWarnings),
 		&community.MemberCount, &community.SubscriberCount, &community.PostCount,
@@ -129,6 +151,11 @@ func (r *postgresCommunityRepo) GetByDID(ctx context.Context, did string) (*comm
 	community.Description = description.String
 	community.AvatarCID = avatarCID.String
 	community.BannerCID = bannerCID.String
+	community.PDSEmail = pdsEmail.String
+	community.PDSPasswordHash = pdsPasswordHash.String
+	community.PDSAccessToken = pdsAccessToken.String
+	community.PDSRefreshToken = pdsRefreshToken.String
+	community.PDSURL = pdsURL.String
 	community.ModerationType = moderationType.String
 	community.ContentWarnings = contentWarnings
 	community.FederatedFrom = federatedFrom.String
