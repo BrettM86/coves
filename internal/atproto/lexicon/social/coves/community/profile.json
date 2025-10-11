@@ -4,21 +4,21 @@
   "defs": {
     "main": {
       "type": "record",
-      "description": "A community's profile information",
+      "description": "A community's profile information (V2: stored in community's own repository)",
       "key": "literal:self",
       "record": {
         "type": "object",
-        "required": ["did", "handle", "name", "createdAt", "owner", "createdBy", "hostedBy", "visibility"],
+        "required": ["handle", "name", "createdAt", "createdBy", "hostedBy", "visibility"],
         "properties": {
-          "did": {
-            "type": "string",
-            "format": "did",
-            "description": "The community's unique DID identifier (portable across instances)"
-          },
           "handle": {
             "type": "string",
             "maxLength": 253,
-            "description": "Scoped handle (~name@instance.com)"
+            "description": "Scoped handle (!name@instance.com) for UI display"
+          },
+          "atprotoHandle": {
+            "type": "string",
+            "maxLength": 253,
+            "description": "V2: Real atProto handle (e.g., gaming.coves.social) matching the community's DID"
           },
           "name": {
             "type": "string",
@@ -54,11 +54,6 @@
             "type": "blob",
             "accept": ["image/png", "image/jpeg", "image/webp"],
             "maxSize": 2000000
-          },
-          "owner": {
-            "type": "string",
-            "format": "did",
-            "description": "DID of the community owner (instance DID in V1, community DID in V3)"
           },
           "createdBy": {
             "type": "string",

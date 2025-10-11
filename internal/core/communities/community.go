@@ -20,9 +20,16 @@ type Community struct {
 	BannerCID string `json:"bannerCid,omitempty" db:"banner_cid"` // CID of banner image
 
 	// Ownership
-	OwnerDID     string `json:"ownerDid" db:"owner_did"`           // Instance DID in V1, community DID in V3
+	OwnerDID     string `json:"ownerDid" db:"owner_did"`           // V2: same as DID (community owns itself)
 	CreatedByDID string `json:"createdByDid" db:"created_by_did"`  // User who created the community
 	HostedByDID  string `json:"hostedByDid" db:"hosted_by_did"`    // Instance hosting this community
+
+	// V2: PDS Account Credentials (NEVER expose in public API responses!)
+	PDSEmail        string `json:"-" db:"pds_email"`          // System email for PDS account
+	PDSPasswordHash string `json:"-" db:"pds_password_hash"`  // bcrypt hash for re-authentication
+	PDSAccessToken  string `json:"-" db:"pds_access_token"`   // JWT for API calls (expires)
+	PDSRefreshToken string `json:"-" db:"pds_refresh_token"`  // For refreshing sessions
+	PDSURL          string `json:"-" db:"pds_url"`            // PDS hosting this community's repo
 
 	// Visibility & Federation
 	Visibility              string `json:"visibility" db:"visibility"`                               // public, unlisted, private

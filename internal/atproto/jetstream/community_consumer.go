@@ -75,18 +75,29 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 	}
 
 	// Build AT-URI for this record
-	// IMPORTANT: 'did' parameter is the repository owner (instance DID)
-	// The community's DID comes from profile.Did field in the record
-	uri := fmt.Sprintf("at://%s/social.coves.community.profile/%s", did, commit.RKey)
+	// V2 Architecture (ONLY):
+	//   - 'did' parameter IS the community DID (community owns its own repo)
+	//   - rkey MUST be "self" for community profiles
+	//   - URI: at://community_did/social.coves.community.profile/self
+
+	// REJECT non-V2 communities (pre-production: no V1 compatibility)
+	if commit.RKey != "self" {
+		return fmt.Errorf("invalid community profile rkey: expected 'self', got '%s' (V1 communities not supported)", commit.RKey)
+	}
+
+	uri := fmt.Sprintf("at://%s/social.coves.community.profile/self", did)
+
+	// V2: Community ALWAYS owns itself
+	ownerDID := did
 
 	// Create community entity
 	community := &communities.Community{
-		DID:                    profile.Did, // Community's unique DID from record, not repo owner!
+		DID:                    did,         // V2: Repository DID IS the community DID
 		Handle:                 profile.Handle,
 		Name:                   profile.Name,
 		DisplayName:            profile.DisplayName,
 		Description:            profile.Description,
-		OwnerDID:               profile.Owner,
+		OwnerDID:               ownerDID,    // V2: same as DID (self-owned)
 		CreatedByDID:           profile.CreatedBy,
 		HostedByDID:            profile.HostedBy,
 		Visibility:             profile.Visibility,
@@ -140,18 +151,24 @@ func (c *CommunityEventConsumer) updateCommunity(ctx context.Context, did string
 		return fmt.Errorf("community profile update event missing record data")
 	}
 
-	// Parse profile to get the community DID
+	// REJECT non-V2 communities (pre-production: no V1 compatibility)
+	if commit.RKey != "self" {
+		return fmt.Errorf("invalid community profile rkey: expected 'self', got '%s' (V1 communities not supported)", commit.RKey)
+	}
+
+	// Parse profile
 	profile, err := parseCommunityProfile(commit.Record)
 	if err != nil {
 		return fmt.Errorf("failed to parse community profile: %w", err)
 	}
 
-	// Get existing community using the community DID from the record, not repo owner
-	existing, err := c.repo.GetByDID(ctx, profile.Did)
+	// V2: Repository DID IS the community DID
+	// Get existing community using the repo DID
+	existing, err := c.repo.GetByDID(ctx, did)
 	if err != nil {
 		if communities.IsNotFound(err) {
 			// Community doesn't exist yet - treat as create
-			log.Printf("Community not found for update, creating: %s", profile.Did)
+			log.Printf("Community not found for update, creating: %s", did)
 			return c.createCommunity(ctx, did, commit)
 		}
 		return fmt.Errorf("failed to get existing community: %w", err)
@@ -279,15 +296,16 @@ func (c *CommunityEventConsumer) handleUnsubscribe(ctx context.Context, userDID 
 // Helper types and functions
 
 type CommunityProfile struct {
-	Did                 string                   `json:"did"`         // Community's unique DID
-	Handle              string                   `json:"handle"`
+	// V2 ONLY: No DID field (repo DID is authoritative)
+	Handle              string                   `json:"handle"`            // Scoped handle (!gaming@coves.social)
+	AtprotoHandle       string                   `json:"atprotoHandle"`     // Real atProto handle (gaming.communities.coves.social)
 	Name                string                   `json:"name"`
 	DisplayName         string                   `json:"displayName"`
 	Description         string                   `json:"description"`
 	DescriptionFacets   []interface{}            `json:"descriptionFacets"`
 	Avatar              map[string]interface{}   `json:"avatar"`
 	Banner              map[string]interface{}   `json:"banner"`
-	Owner               string                   `json:"owner"`
+	// Owner field removed - V2 communities ALWAYS self-own (owner == repo DID)
 	CreatedBy           string                   `json:"createdBy"`
 	HostedBy            string                   `json:"hostedBy"`
 	Visibility          string                   `json:"visibility"`
