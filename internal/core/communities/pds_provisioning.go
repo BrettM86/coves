@@ -1,13 +1,13 @@
 package communities
 
 import (
+	"Coves/internal/core/users"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"strings"
 
-	"Coves/internal/core/users"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -30,7 +30,7 @@ type PDSAccountProvisioner struct {
 }
 
 // NewPDSAccountProvisioner creates a new provisioner
-func NewPDSAccountProvisioner(userService users.UserService, instanceDomain string, pdsURL string) *PDSAccountProvisioner {
+func NewPDSAccountProvisioner(userService users.UserService, instanceDomain, pdsURL string) *PDSAccountProvisioner {
 	return &PDSAccountProvisioner{
 		userService:    userService,
 		instanceDomain: instanceDomain,
@@ -107,13 +107,13 @@ func (p *PDSAccountProvisioner) ProvisionCommunityAccount(
 
 	// 6. Return account credentials
 	return &CommunityPDSAccount{
-		DID:          resp.DID,           // The community's DID - it owns its own repository!
-		Handle:       resp.Handle,        // e.g., gaming.coves.social
-		Email:        email,              // community-gaming@system.coves.social
+		DID:          resp.DID,             // The community's DID - it owns its own repository!
+		Handle:       resp.Handle,          // e.g., gaming.coves.social
+		Email:        email,                // community-gaming@system.coves.social
 		PasswordHash: string(passwordHash), // bcrypt hash for re-authentication
-		AccessToken:  resp.AccessJwt,     // JWT for making API calls as the community
-		RefreshToken: resp.RefreshJwt,    // For refreshing sessions when access token expires
-		PDSURL:       resp.PDSURL,        // PDS hosting this community's repository
+		AccessToken:  resp.AccessJwt,       // JWT for making API calls as the community
+		RefreshToken: resp.RefreshJwt,      // For refreshing sessions when access token expires
+		PDSURL:       resp.PDSURL,          // PDS hosting this community's repository
 	}, nil
 }
 

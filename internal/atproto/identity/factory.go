@@ -8,14 +8,9 @@ import (
 
 // Config holds configuration for the identity resolver
 type Config struct {
-	// PLCURL is the URL of the PLC directory (default: https://plc.directory)
-	PLCURL string
-
-	// CacheTTL is how long to cache resolved identities
-	CacheTTL time.Duration
-
-	// HTTPClient for making HTTP requests (optional, will use default if nil)
 	HTTPClient *http.Client
+	PLCURL     string
+	CacheTTL   time.Duration
 }
 
 // DefaultConfig returns a configuration with sensible defaults

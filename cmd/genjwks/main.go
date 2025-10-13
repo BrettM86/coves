@@ -16,7 +16,8 @@ import (
 // The private key is stored in the config/env, public key is served at /oauth/jwks.json
 //
 // Usage:
-//   go run cmd/genjwks/main.go
+//
+//	go run cmd/genjwks/main.go
 //
 // This will output a JSON private key that should be stored in OAUTH_PRIVATE_JWK
 func main() {
@@ -35,13 +36,13 @@ func main() {
 	}
 
 	// Set key parameters
-	if err := jwkKey.Set(jwk.KeyIDKey, "oauth-client-key"); err != nil {
+	if err = jwkKey.Set(jwk.KeyIDKey, "oauth-client-key"); err != nil {
 		log.Fatalf("Failed to set kid: %v", err)
 	}
-	if err := jwkKey.Set(jwk.AlgorithmKey, "ES256"); err != nil {
+	if err = jwkKey.Set(jwk.AlgorithmKey, "ES256"); err != nil {
 		log.Fatalf("Failed to set alg: %v", err)
 	}
-	if err := jwkKey.Set(jwk.KeyUsageKey, "sig"); err != nil {
+	if err = jwkKey.Set(jwk.KeyUsageKey, "sig"); err != nil {
 		log.Fatalf("Failed to set use: %v", err)
 	}
 
@@ -64,7 +65,7 @@ func main() {
 	// Optionally write to a file (not committed)
 	if len(os.Args) > 1 && os.Args[1] == "--save" {
 		filename := "oauth-private-key.json"
-		if err := os.WriteFile(filename, jsonData, 0600); err != nil {
+		if err := os.WriteFile(filename, jsonData, 0o600); err != nil {
 			log.Fatalf("Failed to write key file: %v", err)
 		}
 		fmt.Printf("\n💾 Private key saved to %s (remember to add to .gitignore!)\n", filename)

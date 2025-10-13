@@ -80,7 +80,7 @@ func TestFacetStructure(t *testing.T) {
 				}
 				return
 			}
-			
+
 			// Basic validation
 			if _, hasIndex := facet["index"]; !hasIndex && !tt.wantErr {
 				t.Error("facet missing required 'index' field")
@@ -148,11 +148,11 @@ func TestUTF8ByteCounting(t *testing.T) {
 					break
 				}
 			}
-			
+
 			if idx == -1 {
 				t.Fatalf("substring %q not found in text %q", tt.substring, tt.text)
 			}
-			
+
 			// Calculate byte positions
 			startByte := len([]byte(tt.text[:idx]))
 			endByte := startByte + len([]byte(tt.substring))
@@ -170,10 +170,10 @@ func TestUTF8ByteCounting(t *testing.T) {
 // TestOverlappingFacets tests validation of overlapping facet ranges
 func TestOverlappingFacets(t *testing.T) {
 	tests := []struct {
-		name         string
-		facets       []map[string]interface{}
-		expectError  bool
-		description  string
+		name        string
+		description string
+		facets      []map[string]interface{}
+		expectError bool
 	}{
 		{
 			name: "non-overlapping facets",
@@ -191,8 +191,8 @@ func TestOverlappingFacets(t *testing.T) {
 					},
 				},
 			},
-			expectError:  false,
-			description:  "Facets with non-overlapping ranges should be valid",
+			expectError: false,
+			description: "Facets with non-overlapping ranges should be valid",
 		},
 		{
 			name: "exact same range",
@@ -210,8 +210,8 @@ func TestOverlappingFacets(t *testing.T) {
 					},
 				},
 			},
-			expectError:  false,
-			description:  "Multiple facets on the same range are allowed (e.g., bold + italic)",
+			expectError: false,
+			description: "Multiple facets on the same range are allowed (e.g., bold + italic)",
 		},
 		{
 			name: "nested ranges",
@@ -229,8 +229,8 @@ func TestOverlappingFacets(t *testing.T) {
 					},
 				},
 			},
-			expectError:  false,
-			description:  "Nested facet ranges are allowed",
+			expectError: false,
+			description: "Nested facet ranges are allowed",
 		},
 		{
 			name: "partial overlap",
@@ -248,8 +248,8 @@ func TestOverlappingFacets(t *testing.T) {
 					},
 				},
 			},
-			expectError:  false,
-			description:  "Partially overlapping facets are allowed",
+			expectError: false,
+			description: "Partially overlapping facets are allowed",
 		},
 	}
 
@@ -268,9 +268,9 @@ func TestOverlappingFacets(t *testing.T) {
 // TestFacetFeatureTypes tests all supported facet feature types
 func TestFacetFeatureTypes(t *testing.T) {
 	featureTypes := []struct {
+		feature  map[string]interface{}
 		name     string
 		typeName string
-		feature  map[string]interface{}
 	}{
 		{
 			name:     "mention",

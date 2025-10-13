@@ -48,8 +48,8 @@ func (e *WeakPasswordError) Error() string {
 
 // PDSError wraps errors from the PDS that we couldn't map to domain errors
 type PDSError struct {
-	StatusCode int
 	Message    string
+	StatusCode int
 }
 
 func (e *PDSError) Error() string {

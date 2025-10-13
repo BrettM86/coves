@@ -8,11 +8,11 @@ import (
 // This is NOT the user's repository - that lives in the PDS
 // This table only tracks metadata for efficient AppView queries
 type User struct {
-	DID       string    `json:"did" db:"did"`           // atProto DID (e.g., did:plc:xyz123)
-	Handle    string    `json:"handle" db:"handle"`     // Human-readable handle (e.g., alice.coves.dev)
-	PDSURL    string    `json:"pdsUrl" db:"pds_url"`    // User's PDS host URL (supports federation)
 	CreatedAt time.Time `json:"createdAt" db:"created_at"`
 	UpdatedAt time.Time `json:"updatedAt" db:"updated_at"`
+	DID       string    `json:"did" db:"did"`
+	Handle    string    `json:"handle" db:"handle"`
+	PDSURL    string    `json:"pdsUrl" db:"pds_url"`
 }
 
 // CreateUserRequest represents the input for creating a new user
@@ -32,9 +32,9 @@ type RegisterAccountRequest struct {
 
 // RegisterAccountResponse represents the response from PDS account creation
 type RegisterAccountResponse struct {
-	DID         string `json:"did"`
-	Handle      string `json:"handle"`
-	AccessJwt   string `json:"accessJwt"`
-	RefreshJwt  string `json:"refreshJwt"`
-	PDSURL      string `json:"pdsUrl"`
+	DID        string `json:"did"`
+	Handle     string `json:"handle"`
+	AccessJwt  string `json:"accessJwt"`
+	RefreshJwt string `json:"refreshJwt"`
+	PDSURL     string `json:"pdsUrl"`
 }

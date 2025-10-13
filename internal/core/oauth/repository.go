@@ -38,7 +38,6 @@ func (s *PostgresSessionStore) SaveRequest(req *OAuthRequest) error {
 		req.AuthServerIss,
 		req.ReturnURL,
 	)
-
 	if err != nil {
 		return fmt.Errorf("failed to save OAuth request: %w", err)
 	}
@@ -163,7 +162,6 @@ func (s *PostgresSessionStore) SaveSession(session *OAuthSession) error {
 		session.AuthServerIss,
 		session.ExpiresAt,
 	)
-
 	if err != nil {
 		return fmt.Errorf("failed to save OAuth session: %w", err)
 	}
@@ -240,7 +238,6 @@ func (s *PostgresSessionStore) UpdateSession(session *OAuthSession) error {
 		session.AuthServerIss,
 		session.ExpiresAt,
 	)
-
 	if err != nil {
 		return fmt.Errorf("failed to update OAuth session: %w", err)
 	}

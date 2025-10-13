@@ -9,15 +9,15 @@ import (
 // RateLimiter implements a simple in-memory rate limiter
 // For production, consider using Redis or a distributed rate limiter
 type RateLimiter struct {
-	mu       sync.Mutex
 	clients  map[string]*clientLimit
-	requests int           // Max requests per window
-	window   time.Duration // Time window
+	requests int
+	window   time.Duration
+	mu       sync.Mutex
 }
 
 type clientLimit struct {
-	count     int
 	resetTime time.Time
+	count     int
 }
 
 // NewRateLimiter creates a new rate limiter

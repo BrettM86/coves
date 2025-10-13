@@ -1,12 +1,11 @@
 package postgres
 
 import (
+	"Coves/internal/core/users"
 	"context"
 	"database/sql"
 	"fmt"
 	"strings"
-
-	"Coves/internal/core/users"
 )
 
 type postgresUserRepo struct {
@@ -27,7 +26,6 @@ func (r *postgresUserRepo) Create(ctx context.Context, user *users.User) (*users
 
 	err := r.db.QueryRowContext(ctx, query, user.DID, user.Handle, user.PDSURL).
 		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt)
-
 	if err != nil {
 		// Check for unique constraint violations
 		if strings.Contains(err.Error(), "duplicate key") {

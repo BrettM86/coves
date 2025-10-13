@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"Coves/internal/api/handlers/oauth"
 	"context"
 	"fmt"
 	"log"
@@ -8,7 +9,6 @@ import (
 	"os"
 	"strings"
 
-	"Coves/internal/api/handlers/oauth"
 	atprotoOAuth "Coves/internal/atproto/oauth"
 	oauthCore "Coves/internal/core/oauth"
 )

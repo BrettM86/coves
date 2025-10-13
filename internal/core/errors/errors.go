@@ -36,8 +36,8 @@ func (e ConflictError) Error() string {
 }
 
 type NotFoundError struct {
-	Resource string
 	ID       interface{}
+	Resource string
 }
 
 func (e NotFoundError) Error() string {

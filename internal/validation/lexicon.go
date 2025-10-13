@@ -16,7 +16,7 @@ type LexiconValidator struct {
 // NewLexiconValidator creates a new validator with the specified schema directory
 func NewLexiconValidator(schemaPath string, strict bool) (*LexiconValidator, error) {
 	catalog := lexicon.NewBaseCatalog()
-	
+
 	if err := catalog.LoadDirectory(schemaPath); err != nil {
 		return nil, fmt.Errorf("failed to load lexicon schemas: %w", err)
 	}
@@ -38,7 +38,7 @@ func NewLexiconValidator(schemaPath string, strict bool) (*LexiconValidator, err
 func (v *LexiconValidator) ValidateRecord(recordData interface{}, recordType string) error {
 	// Convert to map if needed
 	var data map[string]interface{}
-	
+
 	switch rd := recordData.(type) {
 	case map[string]interface{}:
 		data = rd

@@ -8,9 +8,9 @@ import (
 func TestGenerateCommunityDID(t *testing.T) {
 	tests := []struct {
 		name            string
-		isDevEnv        bool
 		plcDirectoryURL string
-		want            string // prefix we expect
+		want            string
+		isDevEnv        bool
 	}{
 		{
 			name:            "generates did:plc in dev mode",
@@ -30,7 +30,6 @@ func TestGenerateCommunityDID(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			g := NewGenerator(tt.isDevEnv, tt.plcDirectoryURL)
 			did, err := g.GenerateCommunityDID()
-
 			if err != nil {
 				t.Fatalf("GenerateCommunityDID() error = %v", err)
 			}

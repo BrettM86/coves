@@ -1,10 +1,10 @@
 package routes
 
 import (
-	"github.com/go-chi/chi/v5"
-
 	"Coves/internal/api/handlers/community"
 	"Coves/internal/core/communities"
+
+	"github.com/go-chi/chi/v5"
 )
 
 // RegisterCommunityRoutes registers community-related XRPC endpoints on the router
