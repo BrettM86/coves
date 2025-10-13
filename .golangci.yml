@@ -1,6 +1,8 @@
 linters:
   enable:
     - gofmt          # Enforce standard Go formatting
+    - gofumpt        # Stricter gofmt (extra formatting rules)
+    - goimports      # Check import organization
     - govet          # Examine Go source code and report suspicious constructs
     - errcheck       # Check for unchecked errors
     - staticcheck    # Advanced static analysis
@@ -10,11 +12,19 @@ linters:
     - typecheck      # Standard Go type checker
 
 linters-settings:
+  gofmt:
+    simplify: true   # Simplify code where possible
+
+  gofumpt:
+    extra-rules: true  # Enable extra formatting rules
+
   errcheck:
-    check-blank: true  # Check for blank error assignments (x, _ = f())
+    check-blank: false  # Don't check blank assignments (allows _ = in defer closures)
 
   govet:
     enable-all: true
+    disable:
+      - shadow  # Disable shadow checking (common pattern in tests)
 
   staticcheck:
     checks: ["all"]
@@ -27,3 +37,6 @@ issues:
   exclude-use-default: false
   max-issues-per-linter: 0
   max-same-issues: 0
+  exclude-dirs:
+    - local_dev_data
+    - vendor

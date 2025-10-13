@@ -136,14 +136,31 @@ test-db-stop: ## Stop test database
 
 ##@ Code Quality
 
-lint: ## Run golangci-lint on the codebase
+fmt: ## Format all Go code with gofmt
+	@echo "$(GREEN)Formatting Go code...$(RESET)"
+	@gofmt -w ./cmd ./internal ./tests
+	@echo "$(GREEN)✓ Formatting complete$(RESET)"
+
+fmt-check: ## Check if Go code is properly formatted
+	@echo "$(GREEN)Checking code formatting...$(RESET)"
+	@unformatted=$$(gofmt -l ./cmd ./internal ./tests); \
+	if [ -n "$$unformatted" ]; then \
+		echo "$(RED)✗ The following files are not formatted:$(RESET)"; \
+		echo "$$unformatted"; \
+		echo "$(YELLOW)Run 'make fmt' to fix$(RESET)"; \
+		exit 1; \
+	fi
+	@echo "$(GREEN)✓ All files are properly formatted$(RESET)"
+
+lint: fmt-check ## Run golangci-lint on the codebase (includes format check)
 	@echo "$(GREEN)Running linter...$(RESET)"
-	@golangci-lint run
+	@golangci-lint run ./cmd/... ./internal/... ./tests/...
 	@echo "$(GREEN)✓ Linting complete$(RESET)"
 
 lint-fix: ## Run golangci-lint and auto-fix issues
 	@echo "$(GREEN)Running linter with auto-fix...$(RESET)"
-	@golangci-lint run --fix
+	@golangci-lint run --fix ./cmd/... ./internal/... ./tests/...
+	@gofmt -w ./cmd ./internal ./tests
 	@echo "$(GREEN)✓ Linting complete$(RESET)"
 
 ##@ Build & Run
