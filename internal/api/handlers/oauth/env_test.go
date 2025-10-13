@@ -62,8 +62,14 @@ func TestGetEnvBase64OrPlain(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Set environment variable
 			if tt.envValue != "" {
-				os.Setenv(tt.envKey, tt.envValue)
-				defer os.Unsetenv(tt.envKey)
+				if err := os.Setenv(tt.envKey, tt.envValue); err != nil {
+					t.Fatalf("Failed to set env var: %v", err)
+				}
+				defer func() {
+					if err := os.Unsetenv(tt.envKey); err != nil {
+						t.Errorf("Failed to unset env var: %v", err)
+					}
+				}()
 			}
 
 			got, err := GetEnvBase64OrPlain(tt.envKey)
@@ -103,8 +109,14 @@ func TestGetEnvBase64OrPlain_RealWorldJWK(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			os.Setenv("TEST_REAL_JWK", tt.envValue)
-			defer os.Unsetenv("TEST_REAL_JWK")
+			if err := os.Setenv("TEST_REAL_JWK", tt.envValue); err != nil {
+				t.Fatalf("Failed to set env var: %v", err)
+			}
+			defer func() {
+				if err := os.Unsetenv("TEST_REAL_JWK"); err != nil {
+					t.Errorf("Failed to unset env var: %v", err)
+				}
+			}()
 
 			got, err := GetEnvBase64OrPlain("TEST_REAL_JWK")
 			if err != nil {

@@ -1,40 +1,40 @@
 package jetstream
 
 import (
+	"Coves/internal/atproto/identity"
+	"Coves/internal/core/users"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"time"
 
-	"Coves/internal/atproto/identity"
-	"Coves/internal/core/users"
 	"github.com/gorilla/websocket"
 )
 
 // JetstreamEvent represents an event from the Jetstream firehose
 // Jetstream documentation: https://docs.bsky.app/docs/advanced-guides/jetstream
 type JetstreamEvent struct {
-	Did      string         `json:"did"`
-	TimeUS   int64          `json:"time_us"`
-	Kind     string         `json:"kind"` // "account", "commit", "identity"
 	Account  *AccountEvent  `json:"account,omitempty"`
 	Identity *IdentityEvent `json:"identity,omitempty"`
 	Commit   *CommitEvent   `json:"commit,omitempty"`
+	Did      string         `json:"did"`
+	Kind     string         `json:"kind"`
+	TimeUS   int64          `json:"time_us"`
 }
 
 type AccountEvent struct {
-	Active bool   `json:"active"`
 	Did    string `json:"did"`
-	Seq    int64  `json:"seq"`
 	Time   string `json:"time"`
+	Seq    int64  `json:"seq"`
+	Active bool   `json:"active"`
 }
 
 type IdentityEvent struct {
 	Did    string `json:"did"`
 	Handle string `json:"handle"`
-	Seq    int64  `json:"seq"`
 	Time   string `json:"time"`
+	Seq    int64  `json:"seq"`
 }
 
 // CommitEvent represents a record commit from Jetstream
@@ -56,7 +56,7 @@ type UserEventConsumer struct {
 }
 
 // NewUserEventConsumer creates a new Jetstream consumer for user events
-func NewUserEventConsumer(userService users.UserService, identityResolver identity.Resolver, wsURL string, pdsFilter string) *UserEventConsumer {
+func NewUserEventConsumer(userService users.UserService, identityResolver identity.Resolver, wsURL, pdsFilter string) *UserEventConsumer {
 	return &UserEventConsumer{
 		userService:      userService,
 		identityResolver: identityResolver,
@@ -91,16 +91,24 @@ func (c *UserEventConsumer) connect(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to Jetstream: %w", err)
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			log.Printf("Failed to close WebSocket connection: %v", err)
+		}
+	}()
 
 	log.Println("Connected to Jetstream")
 
 	// Set read deadline to detect connection issues
-	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	if err := conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
+		log.Printf("Failed to set read deadline: %v", err)
+	}
 
 	// Set pong handler to keep connection alive
 	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		if err := conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
+			log.Printf("Failed to set read deadline in pong handler: %v", err)
+		}
 		return nil
 	})
 
@@ -146,7 +154,9 @@ func (c *UserEventConsumer) connect(ctx context.Context) error {
 			}
 
 			// Reset read deadline on successful read
-			conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+			if err := conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
+				log.Printf("Failed to set read deadline: %v", err)
+			}
 
 			if err := c.handleEvent(ctx, message); err != nil {
 				log.Printf("Error handling event: %v", err)

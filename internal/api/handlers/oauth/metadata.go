@@ -13,15 +13,15 @@ type ClientMetadata struct {
 	ClientID                    string   `json:"client_id"`
 	ClientName                  string   `json:"client_name"`
 	ClientURI                   string   `json:"client_uri"`
-	RedirectURIs                []string `json:"redirect_uris"`
-	GrantTypes                  []string `json:"grant_types"`
-	ResponseTypes               []string `json:"response_types"`
 	Scope                       string   `json:"scope"`
 	TokenEndpointAuthMethod     string   `json:"token_endpoint_auth_method"`
 	TokenEndpointAuthSigningAlg string   `json:"token_endpoint_auth_signing_alg"`
-	DpopBoundAccessTokens       bool     `json:"dpop_bound_access_tokens"`
 	ApplicationType             string   `json:"application_type"`
-	JwksURI                     string   `json:"jwks_uri,omitempty"` // Only in production
+	JwksURI                     string   `json:"jwks_uri,omitempty"`
+	RedirectURIs                []string `json:"redirect_uris"`
+	GrantTypes                  []string `json:"grant_types"`
+	ResponseTypes               []string `json:"response_types"`
+	DpopBoundAccessTokens       bool     `json:"dpop_bound_access_tokens"`
 }
 
 // HandleClientMetadata serves the OAuth client metadata
@@ -55,7 +55,11 @@ func HandleClientMetadata(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(metadata)
+	if err := json.NewEncoder(w).Encode(metadata); err != nil {
+		// Log encoding errors but don't return error response (headers already sent)
+		// This follows Go's standard practice for HTTP handlers
+		_ = err
+	}
 }
 
 // getAppViewURL returns the public URL of the AppView

@@ -143,8 +143,8 @@ func (r *postgresCache) Purge(ctx context.Context, identifier string) error {
 		return fmt.Errorf("failed to purge identity cache: %w", err)
 	}
 
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected > 0 {
+	rowsAffected, err := result.RowsAffected()
+	if err == nil && rowsAffected > 0 {
 		log.Printf("[identity-cache] Purged %d entries for: %s", rowsAffected, identifier)
 	}
 

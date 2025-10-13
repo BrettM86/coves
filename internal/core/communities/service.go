@@ -1,17 +1,17 @@
 package communities
 
 import (
+	"Coves/internal/atproto/did"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
 	"time"
-
-	"Coves/internal/atproto/did"
 )
 
 // Community handle validation regex (DNS-valid handle: name.communities.instance.com)
@@ -21,15 +21,15 @@ var communityHandleRegex = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[
 type communityService struct {
 	repo           Repository
 	didGen         *did.Generator
-	pdsURL         string                 // PDS URL for write-forward operations
-	instanceDID    string                 // DID of this Coves instance
-	instanceDomain string                 // Domain of this instance (for handles)
-	pdsAccessToken string                 // Access token for authenticating to PDS as the instance
-	provisioner    *PDSAccountProvisioner // V2: Creates PDS accounts for communities
+	provisioner    *PDSAccountProvisioner
+	pdsURL         string
+	instanceDID    string
+	instanceDomain string
+	pdsAccessToken string
 }
 
 // NewCommunityService creates a new community service
-func NewCommunityService(repo Repository, didGen *did.Generator, pdsURL string, instanceDID string, instanceDomain string, provisioner *PDSAccountProvisioner) Service {
+func NewCommunityService(repo Repository, didGen *did.Generator, pdsURL, instanceDID, instanceDomain string, provisioner *PDSAccountProvisioner) Service {
 	return &communityService{
 		repo:           repo,
 		didGen:         didGen,
@@ -81,8 +81,8 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 	}
 
 	// Validate the atProto handle
-	if err := s.ValidateHandle(pdsAccount.Handle); err != nil {
-		return nil, fmt.Errorf("generated atProto handle is invalid: %w", err)
+	if validateErr := s.ValidateHandle(pdsAccount.Handle); validateErr != nil {
+		return nil, fmt.Errorf("generated atProto handle is invalid: %w", validateErr)
 	}
 
 	// Build community profile record
@@ -580,19 +580,6 @@ func (s *communityService) createRecordOnPDSAs(ctx context.Context, repoDID, col
 	return s.callPDSWithAuth(ctx, "POST", endpoint, payload, accessToken)
 }
 
-func (s *communityService) putRecordOnPDS(ctx context.Context, repoDID, collection, rkey string, record map[string]interface{}) (string, string, error) {
-	endpoint := fmt.Sprintf("%s/xrpc/com.atproto.repo.putRecord", strings.TrimSuffix(s.pdsURL, "/"))
-
-	payload := map[string]interface{}{
-		"repo":       repoDID,
-		"collection": collection,
-		"rkey":       rkey,
-		"record":     record,
-	}
-
-	return s.callPDS(ctx, "POST", endpoint, payload)
-}
-
 // putRecordOnPDSAs updates a record with a specific access token (for V2 community auth)
 func (s *communityService) putRecordOnPDSAs(ctx context.Context, repoDID, collection, rkey string, record map[string]interface{}, accessToken string) (string, string, error) {
 	endpoint := fmt.Sprintf("%s/xrpc/com.atproto.repo.putRecord", strings.TrimSuffix(s.pdsURL, "/"))
@@ -660,7 +647,11 @@ func (s *communityService) callPDSWithAuth(ctx context.Context, method, endpoint
 	if err != nil {
 		return "", "", fmt.Errorf("failed to call PDS: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			log.Printf("Failed to close response body: %v", closeErr)
+		}
+	}()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -688,28 +679,6 @@ func (s *communityService) callPDSWithAuth(ctx context.Context, method, endpoint
 }
 
 // Helper functions
-
-func extractDomain(didOrURL string) string {
-	// For did:web:example.com -> example.com
-	if strings.HasPrefix(didOrURL, "did:web:") {
-		parts := strings.Split(didOrURL, ":")
-		if len(parts) >= 3 {
-			return parts[2]
-		}
-	}
-
-	// For URLs, extract domain
-	if strings.Contains(didOrURL, "://") {
-		parts := strings.Split(didOrURL, "://")
-		if len(parts) >= 2 {
-			domain := strings.Split(parts[1], "/")[0]
-			domain = strings.Split(domain, ":")[0] // Remove port
-			return domain
-		}
-	}
-
-	return ""
-}
 
 func extractRKeyFromURI(uri string) string {
 	// at://did/collection/rkey -> rkey

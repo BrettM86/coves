@@ -1,17 +1,17 @@
 package users
 
 import (
+	"Coves/internal/atproto/identity"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
 	"time"
-
-	"Coves/internal/atproto/identity"
 )
 
 // atProto handle validation regex (per official atProto spec: https://atproto.com/specs/handle)
@@ -187,7 +187,11 @@ func (s *userService) RegisterAccount(ctx context.Context, req RegisterAccountRe
 	if err != nil {
 		return nil, fmt.Errorf("failed to call PDS: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			log.Printf("Failed to close response body: %v", closeErr)
+		}
+	}()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

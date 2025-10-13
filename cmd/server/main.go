@@ -1,6 +1,14 @@
 package main
 
 import (
+	"Coves/internal/api/handlers/oauth"
+	"Coves/internal/api/middleware"
+	"Coves/internal/api/routes"
+	"Coves/internal/atproto/did"
+	"Coves/internal/atproto/identity"
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/core/communities"
+	"Coves/internal/core/users"
 	"bytes"
 	"context"
 	"database/sql"
@@ -18,15 +26,8 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/pressly/goose/v3"
 
-	"Coves/internal/api/handlers/oauth"
-	"Coves/internal/api/middleware"
-	"Coves/internal/api/routes"
-	"Coves/internal/atproto/did"
-	"Coves/internal/atproto/identity"
-	"Coves/internal/atproto/jetstream"
-	"Coves/internal/core/communities"
 	oauthCore "Coves/internal/core/oauth"
-	"Coves/internal/core/users"
+
 	postgresRepo "Coves/internal/db/postgres"
 )
 
@@ -48,20 +49,24 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
 	}
-	defer db.Close()
+	defer func() {
+		if closeErr := db.Close(); closeErr != nil {
+			log.Printf("Failed to close database connection: %v", closeErr)
+		}
+	}()
 
-	if err := db.Ping(); err != nil {
+	if err = db.Ping(); err != nil {
 		log.Fatal("Failed to ping database:", err)
 	}
 
 	log.Println("Connected to AppView database")
 
 	// Run migrations
-	if err := goose.SetDialect("postgres"); err != nil {
+	if err = goose.SetDialect("postgres"); err != nil {
 		log.Fatal("Failed to set goose dialect:", err)
 	}
 
-	if err := goose.Up(db, "internal/db/migrations"); err != nil {
+	if err = goose.Up(db, "internal/db/migrations"); err != nil {
 		log.Fatal("Failed to run migrations:", err)
 	}
 
@@ -84,7 +89,7 @@ func main() {
 		identityConfig.PLCURL = plcURL
 	}
 	if cacheTTL := os.Getenv("IDENTITY_CACHE_TTL"); cacheTTL != "" {
-		if duration, err := time.ParseDuration(cacheTTL); err == nil {
+		if duration, parseErr := time.ParseDuration(cacheTTL); parseErr == nil {
 			identityConfig.CacheTTL = duration
 		}
 	}
@@ -154,9 +159,9 @@ func main() {
 	pdsPassword := os.Getenv("PDS_INSTANCE_PASSWORD")
 	if pdsHandle != "" && pdsPassword != "" {
 		log.Printf("Authenticating Coves instance (%s) with PDS...", instanceDID)
-		accessToken, err := authenticateWithPDS(defaultPDS, pdsHandle, pdsPassword)
-		if err != nil {
-			log.Printf("Warning: Failed to authenticate with PDS: %v", err)
+		accessToken, authErr := authenticateWithPDS(defaultPDS, pdsHandle, pdsPassword)
+		if authErr != nil {
+			log.Printf("Warning: Failed to authenticate with PDS: %v", authErr)
 			log.Println("Community creation will fail until PDS authentication is configured")
 		} else {
 			if svc, ok := communityService.(interface{ SetPDSAccessToken(string) }); ok {
@@ -180,8 +185,8 @@ func main() {
 	userConsumer := jetstream.NewUserEventConsumer(userService, identityResolver, jetstreamURL, pdsFilter)
 	ctx := context.Background()
 	go func() {
-		if err := userConsumer.Start(ctx); err != nil {
-			log.Printf("Jetstream consumer stopped: %v", err)
+		if startErr := userConsumer.Start(ctx); startErr != nil {
+			log.Printf("Jetstream consumer stopped: %v", startErr)
 		}
 	}()
 
@@ -199,8 +204,12 @@ func main() {
 		defer ticker.Stop()
 		for range ticker.C {
 			if pgStore, ok := sessionStore.(*oauthCore.PostgresSessionStore); ok {
-				_ = pgStore.CleanupExpiredRequests(ctx)
-				_ = pgStore.CleanupExpiredSessions(ctx)
+				if cleanupErr := pgStore.CleanupExpiredRequests(ctx); cleanupErr != nil {
+					log.Printf("Failed to cleanup expired OAuth requests: %v", cleanupErr)
+				}
+				if cleanupErr := pgStore.CleanupExpiredSessions(ctx); cleanupErr != nil {
+					log.Printf("Failed to cleanup expired OAuth sessions: %v", cleanupErr)
+				}
 				log.Println("OAuth cleanup completed")
 			}
 		}
@@ -242,7 +251,9 @@ func main() {
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		if _, err := w.Write([]byte("OK")); err != nil {
+			log.Printf("Failed to write health check response: %v", err)
+		}
 	})
 
 	port := os.Getenv("APPVIEW_PORT")
@@ -284,10 +295,17 @@ func authenticateWithPDS(pdsURL, handle, password string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to call PDS: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			log.Printf("Failed to close response body: %v", closeErr)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return "", fmt.Errorf("PDS returned status %d and failed to read body: %w", resp.StatusCode, readErr)
+		}
 		return "", fmt.Errorf("PDS returned status %d: %s", resp.StatusCode, string(body))
 	}
 

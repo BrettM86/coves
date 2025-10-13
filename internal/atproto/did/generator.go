@@ -9,8 +9,8 @@ import (
 
 // Generator creates DIDs for Coves entities
 type Generator struct {
-	isDevEnv        bool   // true = generate without registering, false = register with PLC
-	plcDirectoryURL string // PLC directory URL (only used when isDevEnv=false)
+	plcDirectoryURL string
+	isDevEnv        bool
 }
 
 // NewGenerator creates a new DID generator
@@ -51,10 +51,11 @@ func (g *Generator) GenerateCommunityDID() (string, error) {
 	// 4. Store keypair securely for future DID updates
 	//
 	// For now, we just generate the identifier (works fine for local dev)
-	if !g.isDevEnv {
-		// Future: implement PLC registration here
-		// return "", fmt.Errorf("PLC registration not yet implemented")
-	}
+	// Production PLC registration is not yet implemented - DIDs are generated
+	// locally but not registered with the PLC directory. This is acceptable
+	// for development and private instances, but production deployments should
+	// implement full PLC registration to ensure DIDs are globally resolvable.
+	_ = g.isDevEnv // Acknowledge that isDevEnv will be used when PLC registration is implemented
 
 	return did, nil
 }

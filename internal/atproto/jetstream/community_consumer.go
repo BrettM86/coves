@@ -1,14 +1,12 @@
 package jetstream
 
 import (
+	"Coves/internal/core/communities"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
 	"time"
-
-	"Coves/internal/core/communities"
 )
 
 // CommunityEventConsumer consumes community-related events from Jetstream
@@ -124,8 +122,8 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 
 	// Handle description facets (rich text)
 	if profile.DescriptionFacets != nil {
-		facetsJSON, err := json.Marshal(profile.DescriptionFacets)
-		if err == nil {
+		facetsJSON, marshalErr := json.Marshal(profile.DescriptionFacets)
+		if marshalErr == nil {
 			community.DescriptionFacets = facetsJSON
 		}
 	}
@@ -195,8 +193,8 @@ func (c *CommunityEventConsumer) updateCommunity(ctx context.Context, did string
 
 	// Update description facets
 	if profile.DescriptionFacets != nil {
-		facetsJSON, err := json.Marshal(profile.DescriptionFacets)
-		if err == nil {
+		facetsJSON, marshalErr := json.Marshal(profile.DescriptionFacets)
+		if marshalErr == nil {
 			existing.DescriptionFacets = facetsJSON
 		}
 	}
@@ -296,27 +294,25 @@ func (c *CommunityEventConsumer) handleUnsubscribe(ctx context.Context, userDID 
 // Helper types and functions
 
 type CommunityProfile struct {
-	// V2 ONLY: No DID field (repo DID is authoritative)
-	Handle            string                 `json:"handle"`        // Scoped handle (!gaming@coves.social)
-	AtprotoHandle     string                 `json:"atprotoHandle"` // Real atProto handle (gaming.communities.coves.social)
-	Name              string                 `json:"name"`
-	DisplayName       string                 `json:"displayName"`
-	Description       string                 `json:"description"`
-	DescriptionFacets []interface{}          `json:"descriptionFacets"`
+	CreatedAt         time.Time              `json:"createdAt"`
 	Avatar            map[string]interface{} `json:"avatar"`
 	Banner            map[string]interface{} `json:"banner"`
-	// Owner field removed - V2 communities ALWAYS self-own (owner == repo DID)
-	CreatedBy       string           `json:"createdBy"`
-	HostedBy        string           `json:"hostedBy"`
-	Visibility      string           `json:"visibility"`
-	Federation      FederationConfig `json:"federation"`
-	ModerationType  string           `json:"moderationType"`
-	ContentWarnings []string         `json:"contentWarnings"`
-	MemberCount     int              `json:"memberCount"`
-	SubscriberCount int              `json:"subscriberCount"`
-	FederatedFrom   string           `json:"federatedFrom"`
-	FederatedID     string           `json:"federatedId"`
-	CreatedAt       time.Time        `json:"createdAt"`
+	CreatedBy         string                 `json:"createdBy"`
+	Visibility        string                 `json:"visibility"`
+	AtprotoHandle     string                 `json:"atprotoHandle"`
+	DisplayName       string                 `json:"displayName"`
+	Name              string                 `json:"name"`
+	Handle            string                 `json:"handle"`
+	HostedBy          string                 `json:"hostedBy"`
+	Description       string                 `json:"description"`
+	FederatedID       string                 `json:"federatedId"`
+	ModerationType    string                 `json:"moderationType"`
+	FederatedFrom     string                 `json:"federatedFrom"`
+	ContentWarnings   []string               `json:"contentWarnings"`
+	DescriptionFacets []interface{}          `json:"descriptionFacets"`
+	MemberCount       int                    `json:"memberCount"`
+	SubscriberCount   int                    `json:"subscriberCount"`
+	Federation        FederationConfig       `json:"federation"`
 }
 
 type FederationConfig struct {
@@ -364,18 +360,4 @@ func extractBlobCID(blob map[string]interface{}) (string, bool) {
 	}
 
 	return link, true
-}
-
-// validateHandle checks if a handle matches expected format (!name@instance)
-func validateHandle(handle string) bool {
-	if !strings.HasPrefix(handle, "!") {
-		return false
-	}
-
-	parts := strings.Split(handle, "@")
-	if len(parts) != 2 {
-		return false
-	}
-
-	return true
 }

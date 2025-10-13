@@ -1,11 +1,10 @@
 package community
 
 import (
+	"Coves/internal/core/communities"
 	"encoding/json"
 	"log"
 	"net/http"
-
-	"Coves/internal/core/communities"
 )
 
 // XRPCError represents an XRPC error response
@@ -18,10 +17,12 @@ type XRPCError struct {
 func writeError(w http.ResponseWriter, status int, error, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(XRPCError{
+	if err := json.NewEncoder(w).Encode(XRPCError{
 		Error:   error,
 		Message: message,
-	})
+	}); err != nil {
+		log.Printf("Failed to encode error response: %v", err)
+	}
 }
 
 // handleServiceError converts service errors to appropriate HTTP responses

@@ -1,10 +1,10 @@
 package community
 
 import (
-	"encoding/json"
-	"net/http"
-
 	"Coves/internal/core/communities"
+	"encoding/json"
+	"log"
+	"net/http"
 )
 
 // SubscribeHandler handles community subscriptions
@@ -70,7 +70,9 @@ func (h *SubscribeHandler) HandleSubscribe(w http.ResponseWriter, r *http.Reques
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("Failed to encode response: %v", err)
+	}
 }
 
 // HandleUnsubscribe unsubscribes a user from a community
@@ -118,7 +120,9 @@ func (h *SubscribeHandler) HandleUnsubscribe(w http.ResponseWriter, r *http.Requ
 	// Return success response
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
-	})
+	}); err != nil {
+		log.Printf("Failed to encode response: %v", err)
+	}
 }

@@ -92,15 +92,15 @@ func CreateDPoPProof(privateKey jwk.Key, method, uri, nonce, accessToken string)
 	// Create headers with DPoP-specific fields
 	// RFC 9449 requires the "jwk" header to contain the public key as a JSON object
 	headers := jws.NewHeaders()
-	if err := headers.Set(jws.AlgorithmKey, jwa.ES256); err != nil {
-		return "", fmt.Errorf("failed to set algorithm: %w", err)
+	if setErr := headers.Set(jws.AlgorithmKey, jwa.ES256); setErr != nil {
+		return "", fmt.Errorf("failed to set algorithm: %w", setErr)
 	}
-	if err := headers.Set(jws.TypeKey, "dpop+jwt"); err != nil {
-		return "", fmt.Errorf("failed to set type: %w", err)
+	if setErr := headers.Set(jws.TypeKey, "dpop+jwt"); setErr != nil {
+		return "", fmt.Errorf("failed to set type: %w", setErr)
 	}
 	// Set the public JWK directly - jwx library will handle serialization
-	if err := headers.Set(jws.JWKKey, pubKey); err != nil {
-		return "", fmt.Errorf("failed to set JWK: %w", err)
+	if setErr := headers.Set(jws.JWKKey, pubKey); setErr != nil {
+		return "", fmt.Errorf("failed to set JWK: %w", setErr)
 	}
 
 	// Sign using jws.Sign to preserve custom headers

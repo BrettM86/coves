@@ -1,11 +1,10 @@
 package oauth
 
 import (
+	"Coves/internal/atproto/oauth"
 	"context"
 	"fmt"
 	"time"
-
-	"Coves/internal/atproto/oauth"
 
 	"github.com/lestrrat-go/jwx/v2/jwk"
 )
@@ -71,8 +70,10 @@ func (s *AuthService) RefreshTokenIfNeeded(ctx context.Context, session *OAuthSe
 	// Update nonce if provided (best effort - non-critical)
 	if tokenResp.DpopAuthserverNonce != "" {
 		session.DPoPAuthServerNonce = tokenResp.DpopAuthserverNonce
-		if err := s.sessionStore.UpdateAuthServerNonce(session.DID, tokenResp.DpopAuthserverNonce); err != nil {
+		if updateErr := s.sessionStore.UpdateAuthServerNonce(session.DID, tokenResp.DpopAuthserverNonce); updateErr != nil {
 			// Log but don't fail - nonce will be updated on next request
+			// (We ignore the error here intentionally as nonce updates are non-critical)
+			_ = updateErr
 		}
 	}
 

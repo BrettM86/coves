@@ -1,13 +1,13 @@
 package oauth
 
 import (
+	"Coves/internal/atproto/oauth"
 	"log"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
-	"Coves/internal/atproto/oauth"
 	oauthCore "Coves/internal/core/oauth"
 )
 
@@ -154,8 +154,8 @@ func (h *CallbackHandler) HandleCallback(w http.ResponseWriter, r *http.Request)
 		ExpiresAt:           expiresAt,
 	}
 
-	if err := h.sessionStore.SaveSession(session); err != nil {
-		log.Printf("Failed to save OAuth session: %v", err)
+	if saveErr := h.sessionStore.SaveSession(session); saveErr != nil {
+		log.Printf("Failed to save OAuth session: %v", saveErr)
 		http.Error(w, "Failed to save session", http.StatusInternalServerError)
 		return
 	}
@@ -168,7 +168,12 @@ func (h *CallbackHandler) HandleCallback(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		log.Printf("Failed to get cookie session: %v", err)
 		// Try to create a new session anyway
-		httpSession, _ = cookieStore.New(r, sessionName)
+		httpSession, err = cookieStore.New(r, sessionName)
+		if err != nil {
+			log.Printf("Failed to create new session: %v", err)
+			http.Error(w, "Failed to create session", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	httpSession.Values[sessionDID] = oauthReq.DID

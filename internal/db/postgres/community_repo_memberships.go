@@ -1,12 +1,12 @@
 package postgres
 
 import (
+	"Coves/internal/core/communities"
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"strings"
-
-	"Coves/internal/core/communities"
 )
 
 // CreateMembership creates a new membership record
@@ -29,7 +29,6 @@ func (r *postgresCommunityRepo) CreateMembership(ctx context.Context, membership
 		membership.IsBanned,
 		membership.IsModerator,
 	).Scan(&membership.ID, &membership.JoinedAt, &membership.LastActiveAt)
-
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
 			return nil, fmt.Errorf("membership already exists")
@@ -120,13 +119,17 @@ func (r *postgresCommunityRepo) ListMembers(ctx context.Context, communityDID st
 	if err != nil {
 		return nil, fmt.Errorf("failed to list members: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			log.Printf("Failed to close rows: %v", closeErr)
+		}
+	}()
 
 	result := []*communities.Membership{}
 	for rows.Next() {
 		membership := &communities.Membership{}
 
-		err := rows.Scan(
+		scanErr := rows.Scan(
 			&membership.ID,
 			&membership.UserDID,
 			&membership.CommunityDID,
@@ -137,8 +140,8 @@ func (r *postgresCommunityRepo) ListMembers(ctx context.Context, communityDID st
 			&membership.IsBanned,
 			&membership.IsModerator,
 		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan member: %w", err)
+		if scanErr != nil {
+			return nil, fmt.Errorf("failed to scan member: %w", scanErr)
 		}
 
 		result = append(result, membership)
@@ -169,7 +172,6 @@ func (r *postgresCommunityRepo) CreateModerationAction(ctx context.Context, acti
 		action.CreatedAt,
 		action.ExpiresAt,
 	).Scan(&action.ID, &action.CreatedAt)
-
 	if err != nil {
 		if strings.Contains(err.Error(), "foreign key") {
 			return nil, communities.ErrCommunityNotFound
@@ -193,14 +195,18 @@ func (r *postgresCommunityRepo) ListModerationActions(ctx context.Context, commu
 	if err != nil {
 		return nil, fmt.Errorf("failed to list moderation actions: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			log.Printf("Failed to close rows: %v", closeErr)
+		}
+	}()
 
 	result := []*communities.ModerationAction{}
 	for rows.Next() {
 		action := &communities.ModerationAction{}
 		var reason sql.NullString
 
-		err := rows.Scan(
+		scanErr := rows.Scan(
 			&action.ID,
 			&action.CommunityDID,
 			&action.Action,
@@ -210,8 +216,8 @@ func (r *postgresCommunityRepo) ListModerationActions(ctx context.Context, commu
 			&action.CreatedAt,
 			&action.ExpiresAt,
 		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan moderation action: %w", err)
+		if scanErr != nil {
+			return nil, fmt.Errorf("failed to scan moderation action: %w", scanErr)
 		}
 
 		action.Reason = reason.String

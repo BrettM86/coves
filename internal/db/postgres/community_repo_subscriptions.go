@@ -1,12 +1,12 @@
 package postgres
 
 import (
+	"Coves/internal/core/communities"
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"strings"
-
-	"Coves/internal/core/communities"
 )
 
 // Subscribe creates a new subscription record
@@ -23,7 +23,6 @@ func (r *postgresCommunityRepo) Subscribe(ctx context.Context, subscription *com
 		nullString(subscription.RecordURI),
 		nullString(subscription.RecordCID),
 	).Scan(&subscription.ID, &subscription.SubscribedAt)
-
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
 			return nil, communities.ErrSubscriptionAlreadyExists
@@ -44,7 +43,11 @@ func (r *postgresCommunityRepo) SubscribeWithCount(ctx context.Context, subscrip
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && rollbackErr != sql.ErrTxDone {
+			log.Printf("Failed to rollback transaction: %v", rollbackErr)
+		}
+	}()
 
 	// Insert subscription with ON CONFLICT DO NOTHING for idempotency
 	query := `
@@ -70,8 +73,8 @@ func (r *postgresCommunityRepo) SubscribeWithCount(ctx context.Context, subscrip
 			return nil, fmt.Errorf("failed to get existing subscription: %w", err)
 		}
 		// Don't increment count - subscription already existed
-		if err := tx.Commit(); err != nil {
-			return nil, fmt.Errorf("failed to commit transaction: %w", err)
+		if commitErr := tx.Commit(); commitErr != nil {
+			return nil, fmt.Errorf("failed to commit transaction: %w", commitErr)
 		}
 		return subscription, nil
 	}
@@ -129,7 +132,11 @@ func (r *postgresCommunityRepo) UnsubscribeWithCount(ctx context.Context, userDI
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && rollbackErr != sql.ErrTxDone {
+			log.Printf("Failed to rollback transaction: %v", rollbackErr)
+		}
+	}()
 
 	// Delete subscription
 	deleteQuery := `DELETE FROM community_subscriptions WHERE user_did = $1 AND community_did = $2`
@@ -145,8 +152,8 @@ func (r *postgresCommunityRepo) UnsubscribeWithCount(ctx context.Context, userDI
 
 	// If no rows deleted, subscription didn't exist (idempotent - not an error)
 	if rowsAffected == 0 {
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("failed to commit transaction: %w", err)
+		if commitErr := tx.Commit(); commitErr != nil {
+			return fmt.Errorf("failed to commit transaction: %w", commitErr)
 		}
 		return nil
 	}
@@ -214,14 +221,18 @@ func (r *postgresCommunityRepo) ListSubscriptions(ctx context.Context, userDID s
 	if err != nil {
 		return nil, fmt.Errorf("failed to list subscriptions: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			log.Printf("Failed to close rows: %v", closeErr)
+		}
+	}()
 
 	result := []*communities.Subscription{}
 	for rows.Next() {
 		subscription := &communities.Subscription{}
 		var recordURI, recordCID sql.NullString
 
-		err := rows.Scan(
+		scanErr := rows.Scan(
 			&subscription.ID,
 			&subscription.UserDID,
 			&subscription.CommunityDID,
@@ -229,8 +240,8 @@ func (r *postgresCommunityRepo) ListSubscriptions(ctx context.Context, userDID s
 			&recordURI,
 			&recordCID,
 		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan subscription: %w", err)
+		if scanErr != nil {
+			return nil, fmt.Errorf("failed to scan subscription: %w", scanErr)
 		}
 
 		subscription.RecordURI = recordURI.String
@@ -259,14 +270,18 @@ func (r *postgresCommunityRepo) ListSubscribers(ctx context.Context, communityDI
 	if err != nil {
 		return nil, fmt.Errorf("failed to list subscribers: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			log.Printf("Failed to close rows: %v", closeErr)
+		}
+	}()
 
 	result := []*communities.Subscription{}
 	for rows.Next() {
 		subscription := &communities.Subscription{}
 		var recordURI, recordCID sql.NullString
 
-		err := rows.Scan(
+		scanErr := rows.Scan(
 			&subscription.ID,
 			&subscription.UserDID,
 			&subscription.CommunityDID,
@@ -274,8 +289,8 @@ func (r *postgresCommunityRepo) ListSubscribers(ctx context.Context, communityDI
 			&recordURI,
 			&recordCID,
 		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan subscriber: %w", err)
+		if scanErr != nil {
+			return nil, fmt.Errorf("failed to scan subscriber: %w", scanErr)
 		}
 
 		subscription.RecordURI = recordURI.String

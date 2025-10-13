@@ -88,10 +88,13 @@ func validateSchemaStructure(catalog *lexicon.BaseCatalog, schemaPath string, ve
 		// Only process .json files
 		if !info.IsDir() && filepath.Ext(path) == ".json" {
 			schemaFiles = append(schemaFiles, path)
-			
+
 			// Convert file path to schema ID
 			// e.g., internal/atproto/lexicon/social/coves/actor/profile.json -> social.coves.actor.profile
-			relPath, _ := filepath.Rel(schemaPath, path)
+			relPath, err := filepath.Rel(schemaPath, path)
+			if err != nil {
+				return fmt.Errorf("failed to compute relative path: %w", err)
+			}
 			schemaID := filepath.ToSlash(relPath)
 			schemaID = schemaID[:len(schemaID)-5] // Remove .json extension
 			schemaID = strings.ReplaceAll(schemaID, "/", ".")
@@ -99,7 +102,6 @@ func validateSchemaStructure(catalog *lexicon.BaseCatalog, schemaPath string, ve
 		}
 		return nil
 	})
-
 	if err != nil {
 		return fmt.Errorf("error walking schema directory: %w", err)
 	}
@@ -157,7 +159,6 @@ func loadSchemasWithDebug(catalog *lexicon.BaseCatalog, schemaPath string, verbo
 		}
 		return nil
 	})
-
 	if err != nil {
 		return fmt.Errorf("error walking schema directory: %w", err)
 	}
@@ -182,50 +183,55 @@ func loadSchemasWithDebug(catalog *lexicon.BaseCatalog, schemaPath string, verbo
 // extractAllSchemaIDs walks the schema directory and returns all schema IDs
 func extractAllSchemaIDs(schemaPath string) []string {
 	var schemaIDs []string
-	
-	filepath.Walk(schemaPath, func(path string, info os.FileInfo, err error) error {
+
+	if err := filepath.Walk(schemaPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		
+
 		// Skip test-data directory
 		if info.IsDir() && info.Name() == "test-data" {
 			return filepath.SkipDir
 		}
-		
+
 		// Only process .json files
 		if !info.IsDir() && filepath.Ext(path) == ".json" {
 			// Convert file path to schema ID
-			relPath, _ := filepath.Rel(schemaPath, path)
+			relPath, err := filepath.Rel(schemaPath, path)
+			if err != nil {
+				return err
+			}
 			schemaID := filepath.ToSlash(relPath)
 			schemaID = schemaID[:len(schemaID)-5] // Remove .json extension
 			schemaID = strings.ReplaceAll(schemaID, "/", ".")
-			
+
 			// Only include record schemas (not procedures)
-			if strings.Contains(schemaID, ".record") || 
-			   strings.Contains(schemaID, ".profile") || 
-			   strings.Contains(schemaID, ".rules") || 
-			   strings.Contains(schemaID, ".wiki") || 
-			   strings.Contains(schemaID, ".subscription") || 
-			   strings.Contains(schemaID, ".membership") ||
-			   strings.Contains(schemaID, ".vote") ||
-			   strings.Contains(schemaID, ".tag") ||
-			   strings.Contains(schemaID, ".comment") ||
-			   strings.Contains(schemaID, ".share") ||
-			   strings.Contains(schemaID, ".tribunalVote") ||
-			   strings.Contains(schemaID, ".ruleProposal") ||
-			   strings.Contains(schemaID, ".ban") {
+			if strings.Contains(schemaID, ".record") ||
+				strings.Contains(schemaID, ".profile") ||
+				strings.Contains(schemaID, ".rules") ||
+				strings.Contains(schemaID, ".wiki") ||
+				strings.Contains(schemaID, ".subscription") ||
+				strings.Contains(schemaID, ".membership") ||
+				strings.Contains(schemaID, ".vote") ||
+				strings.Contains(schemaID, ".tag") ||
+				strings.Contains(schemaID, ".comment") ||
+				strings.Contains(schemaID, ".share") ||
+				strings.Contains(schemaID, ".tribunalVote") ||
+				strings.Contains(schemaID, ".ruleProposal") ||
+				strings.Contains(schemaID, ".ban") {
 				schemaIDs = append(schemaIDs, schemaID)
 			}
 		}
 		return nil
-	})
-	
+	}); err != nil {
+		log.Printf("Warning: failed to walk schema directory: %v", err)
+	}
+
 	return schemaIDs
 }
 
 // validateTestData validates test JSON data files against their corresponding schemas
-func validateTestData(catalog *lexicon.BaseCatalog, testDataPath string, verbose bool, strict bool, allSchemas []string) error {
+func validateTestData(catalog *lexicon.BaseCatalog, testDataPath string, verbose, strict bool, allSchemas []string) error {
 	// Check if test data directory exists
 	if _, err := os.Stat(testDataPath); os.IsNotExist(err) {
 		return fmt.Errorf("test data path does not exist: %s", testDataPath)
@@ -248,7 +254,7 @@ func validateTestData(catalog *lexicon.BaseCatalog, testDataPath string, verbose
 		if !info.IsDir() && filepath.Ext(path) == ".json" {
 			filename := filepath.Base(path)
 			isInvalidTest := strings.Contains(filename, "-invalid-")
-			
+
 			if verbose {
 				if isInvalidTest {
 					fmt.Printf("\n  Testing (expect failure): %s\n", filename)
@@ -263,11 +269,15 @@ func validateTestData(catalog *lexicon.BaseCatalog, testDataPath string, verbose
 				validationErrors = append(validationErrors, fmt.Sprintf("Failed to open %s: %v", path, err))
 				return nil
 			}
-			defer file.Close()
+			defer func() {
+				if closeErr := file.Close(); closeErr != nil {
+					validationErrors = append(validationErrors, fmt.Sprintf("Failed to close %s: %v", path, closeErr))
+				}
+			}()
 
-			data, err := io.ReadAll(file)
-			if err != nil {
-				validationErrors = append(validationErrors, fmt.Sprintf("Failed to read %s: %v", path, err))
+			data, readErr := io.ReadAll(file)
+			if readErr != nil {
+				validationErrors = append(validationErrors, fmt.Sprintf("Failed to read %s: %v", path, readErr))
 				return nil
 			}
 
@@ -275,11 +285,11 @@ func validateTestData(catalog *lexicon.BaseCatalog, testDataPath string, verbose
 			var recordData map[string]interface{}
 			decoder := json.NewDecoder(bytes.NewReader(data))
 			decoder.UseNumber() // This preserves numbers as json.Number instead of float64
-			if err := decoder.Decode(&recordData); err != nil {
-				validationErrors = append(validationErrors, fmt.Sprintf("Failed to parse JSON in %s: %v", path, err))
+			if decodeErr := decoder.Decode(&recordData); decodeErr != nil {
+				validationErrors = append(validationErrors, fmt.Sprintf("Failed to parse JSON in %s: %v", path, decodeErr))
 				return nil
 			}
-			
+
 			// Convert json.Number values to appropriate types
 			recordData = convertNumbers(recordData).(map[string]interface{})
 
@@ -299,15 +309,15 @@ func validateTestData(catalog *lexicon.BaseCatalog, testDataPath string, verbose
 			}
 
 			// Validate the record
-			err = lexicon.ValidateRecord(catalog, recordData, recordType, flags)
-			
+			validateErr := lexicon.ValidateRecord(catalog, recordData, recordType, flags)
+
 			if isInvalidTest {
 				// This file should fail validation
 				invalidFiles++
-				if err != nil {
+				if validateErr != nil {
 					invalidFailCount++
 					if verbose {
-						fmt.Printf("    ✅ Correctly rejected invalid %s record: %v\n", recordType, err)
+						fmt.Printf("    ✅ Correctly rejected invalid %s record: %v\n", recordType, validateErr)
 					}
 				} else {
 					validationErrors = append(validationErrors, fmt.Sprintf("Invalid test file %s passed validation when it should have failed", path))
@@ -318,10 +328,10 @@ func validateTestData(catalog *lexicon.BaseCatalog, testDataPath string, verbose
 			} else {
 				// This file should pass validation
 				validFiles++
-				if err != nil {
-					validationErrors = append(validationErrors, fmt.Sprintf("Validation failed for %s (type: %s): %v", path, recordType, err))
+				if validateErr != nil {
+					validationErrors = append(validationErrors, fmt.Sprintf("Validation failed for %s (type: %s): %v", path, recordType, validateErr))
 					if verbose {
-						fmt.Printf("    ❌ Failed: %v\n", err)
+						fmt.Printf("    ❌ Failed: %v\n", validateErr)
 					}
 				} else {
 					validSuccessCount++
@@ -334,7 +344,6 @@ func validateTestData(catalog *lexicon.BaseCatalog, testDataPath string, verbose
 		}
 		return nil
 	})
-
 	if err != nil {
 		return fmt.Errorf("error walking test data directory: %w", err)
 	}
@@ -355,22 +364,22 @@ func validateTestData(catalog *lexicon.BaseCatalog, testDataPath string, verbose
 		fmt.Printf("\n📋 Validation Summary:\n")
 		fmt.Printf("  Valid test files:   %d/%d passed\n", validSuccessCount, validFiles)
 		fmt.Printf("  Invalid test files: %d/%d correctly rejected\n", invalidFailCount, invalidFiles)
-		
+
 		if validSuccessCount == validFiles && invalidFailCount == invalidFiles {
 			fmt.Printf("\n  ✅ All test files behaved as expected!\n")
 		}
-		
+
 		// Show test coverage summary (only for valid files)
 		fmt.Printf("\n📊 Test Data Coverage Summary:\n")
 		fmt.Printf("  - Records with test data: %d types\n", len(testedTypes))
 		fmt.Printf("  - Valid test files: %d\n", validFiles)
 		fmt.Printf("  - Invalid test files: %d (for error validation)\n", invalidFiles)
-		
+
 		fmt.Printf("\n  Tested record types:\n")
 		for recordType := range testedTypes {
 			fmt.Printf("    ✓ %s\n", recordType)
 		}
-		
+
 		// Show untested schemas
 		untestedCount := 0
 		fmt.Printf("\n  ⚠️  Record types without test data:\n")
@@ -380,12 +389,12 @@ func validateTestData(catalog *lexicon.BaseCatalog, testDataPath string, verbose
 				untestedCount++
 			}
 		}
-		
+
 		if untestedCount == 0 {
 			fmt.Println("    (None - full test coverage!)")
 		} else {
-			fmt.Printf("\n  Coverage: %d/%d record types have test data (%.1f%%)\n", 
-				len(testedTypes), len(allSchemas), 
+			fmt.Printf("\n  Coverage: %d/%d record types have test data (%.1f%%)\n",
+				len(testedTypes), len(allSchemas),
 				float64(len(testedTypes))/float64(len(allSchemas))*100)
 		}
 	}
@@ -404,7 +413,7 @@ func validateCrossReferences(catalog *lexicon.BaseCatalog, verbose bool) error {
 		"social.coves.richtext.facet#italic",
 		"social.coves.richtext.facet#strikethrough",
 		"social.coves.richtext.facet#spoiler",
-		
+
 		// Post types and views
 		"social.coves.post.get#postView",
 		"social.coves.post.get#authorView",
@@ -414,13 +423,13 @@ func validateCrossReferences(catalog *lexicon.BaseCatalog, verbose bool) error {
 		"social.coves.post.get#externalView",
 		"social.coves.post.get#postStats",
 		"social.coves.post.get#viewerState",
-		
+
 		// Post record types
 		"social.coves.post.record#originalAuthor",
-		
+
 		// Actor definitions
 		"social.coves.actor.profile#geoLocation",
-		
+
 		// Community definitions
 		"social.coves.community.rules#rule",
 	}

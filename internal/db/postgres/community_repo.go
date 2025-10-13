@@ -1,12 +1,13 @@
 package postgres
 
 import (
+	"Coves/internal/core/communities"
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"strings"
 
-	"Coves/internal/core/communities"
 	"github.com/lib/pq"
 )
 
@@ -44,7 +45,7 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 
 	// Handle JSONB field - use sql.NullString with valid JSON or NULL
 	var descFacets interface{}
-	if community.DescriptionFacets != nil && len(community.DescriptionFacets) > 0 {
+	if len(community.DescriptionFacets) > 0 {
 		descFacets = community.DescriptionFacets
 	} else {
 		descFacets = nil
@@ -82,7 +83,6 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 		nullString(community.RecordURI),
 		nullString(community.RecordCID),
 	).Scan(&community.ID, &community.CreatedAt, &community.UpdatedAt)
-
 	if err != nil {
 		// Check for unique constraint violations
 		if strings.Contains(err.Error(), "duplicate key") {
@@ -240,7 +240,7 @@ func (r *postgresCommunityRepo) Update(ctx context.Context, community *communiti
 
 	// Handle JSONB field - use sql.NullString with valid JSON or NULL
 	var descFacets interface{}
-	if community.DescriptionFacets != nil && len(community.DescriptionFacets) > 0 {
+	if len(community.DescriptionFacets) > 0 {
 		descFacets = community.DescriptionFacets
 	} else {
 		descFacets = nil
@@ -358,7 +358,11 @@ func (r *postgresCommunityRepo) List(ctx context.Context, req communities.ListCo
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to list communities: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			log.Printf("Failed to close rows: %v", closeErr)
+		}
+	}()
 
 	result := []*communities.Community{}
 	for rows.Next() {
@@ -368,7 +372,7 @@ func (r *postgresCommunityRepo) List(ctx context.Context, req communities.ListCo
 		var descFacets []byte
 		var contentWarnings []string
 
-		err := rows.Scan(
+		scanErr := rows.Scan(
 			&community.ID, &community.DID, &community.Handle, &community.Name,
 			&displayName, &description, &descFacets,
 			&avatarCID, &bannerCID,
@@ -380,8 +384,8 @@ func (r *postgresCommunityRepo) List(ctx context.Context, req communities.ListCo
 			&community.CreatedAt, &community.UpdatedAt,
 			&recordURI, &recordCID,
 		)
-		if err != nil {
-			return nil, 0, fmt.Errorf("failed to scan community: %w", err)
+		if scanErr != nil {
+			return nil, 0, fmt.Errorf("failed to scan community: %w", scanErr)
 		}
 
 		// Map nullable fields
@@ -456,7 +460,11 @@ func (r *postgresCommunityRepo) Search(ctx context.Context, req communities.Sear
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to search communities: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			log.Printf("Failed to close rows: %v", closeErr)
+		}
+	}()
 
 	result := []*communities.Community{}
 	for rows.Next() {
@@ -467,7 +475,7 @@ func (r *postgresCommunityRepo) Search(ctx context.Context, req communities.Sear
 		var contentWarnings []string
 		var relevance float64
 
-		err := rows.Scan(
+		scanErr := rows.Scan(
 			&community.ID, &community.DID, &community.Handle, &community.Name,
 			&displayName, &description, &descFacets,
 			&avatarCID, &bannerCID,
@@ -480,8 +488,8 @@ func (r *postgresCommunityRepo) Search(ctx context.Context, req communities.Sear
 			&recordURI, &recordCID,
 			&relevance,
 		)
-		if err != nil {
-			return nil, 0, fmt.Errorf("failed to scan community: %w", err)
+		if scanErr != nil {
+			return nil, 0, fmt.Errorf("failed to scan community: %w", scanErr)
 		}
 
 		// Map nullable fields
@@ -512,11 +520,4 @@ func (r *postgresCommunityRepo) Search(ctx context.Context, req communities.Sear
 // Helper functions
 func nullString(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: s != ""}
-}
-
-func nullBytes(b []byte) []byte {
-	if b == nil || len(b) == 0 {
-		return nil
-	}
-	return b
 }

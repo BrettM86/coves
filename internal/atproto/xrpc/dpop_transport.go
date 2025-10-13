@@ -1,11 +1,12 @@
 package xrpc
 
 import (
+	"Coves/internal/atproto/oauth"
 	"fmt"
+	"log"
 	"net/http"
 	"sync"
 
-	"Coves/internal/atproto/oauth"
 	oauthCore "Coves/internal/core/oauth"
 
 	"github.com/lestrrat-go/jwx/v2/jwk"
@@ -18,11 +19,11 @@ import (
 // 3. Handles nonce rotation (retries on 401 with new nonce)
 // 4. Updates nonces in session store
 type DPoPTransport struct {
-	base            http.RoundTripper      // Underlying transport (usually http.DefaultTransport)
-	session         *oauthCore.OAuthSession // User's OAuth session
-	sessionStore    oauthCore.SessionStore  // For updating nonces
-	dpopKey         jwk.Key                 // Parsed DPoP private key
-	mu              sync.Mutex              // Protects nonce updates
+	base         http.RoundTripper       // Underlying transport (usually http.DefaultTransport)
+	session      *oauthCore.OAuthSession // User's OAuth session
+	sessionStore oauthCore.SessionStore  // For updating nonces
+	dpopKey      jwk.Key                 // Parsed DPoP private key
+	mu           sync.Mutex              // Protects nonce updates
 }
 
 // NewDPoPTransport creates a new DPoP-enabled HTTP transport
@@ -87,7 +88,9 @@ func (t *DPoPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			t.updateDPoPNonce(req.URL.String(), newNonce)
 
 			// Close the 401 response body
-			_ = resp.Body.Close()
+			if err := resp.Body.Close(); err != nil {
+				log.Printf("Failed to close response body: %v", err)
+			}
 
 			// Retry with new nonce
 			return t.retryWithNewNonce(req, newNonce)
@@ -134,7 +137,9 @@ func (t *DPoPTransport) updateDPoPNonce(url, newNonce string) {
 		t.mu.Unlock()
 		// Persist to database (async, best-effort)
 		go func() {
-			_ = t.sessionStore.UpdatePDSNonce(did, newNonce)
+			if err := t.sessionStore.UpdatePDSNonce(did, newNonce); err != nil {
+				log.Printf("Failed to update PDS nonce: %v", err)
+			}
 		}()
 		return
 	}
@@ -145,7 +150,9 @@ func (t *DPoPTransport) updateDPoPNonce(url, newNonce string) {
 		t.mu.Unlock()
 		// Persist to database (async, best-effort)
 		go func() {
-			_ = t.sessionStore.UpdateAuthServerNonce(did, newNonce)
+			if err := t.sessionStore.UpdateAuthServerNonce(did, newNonce); err != nil {
+				log.Printf("Failed to update auth server nonce: %v", err)
+			}
 		}()
 		return
 	}

@@ -1,14 +1,14 @@
 package oauth
 
 import (
+	"Coves/internal/atproto/identity"
+	"Coves/internal/atproto/oauth"
 	"encoding/json"
 	"log"
 	"net/http"
 	"net/url"
 	"strings"
 
-	"Coves/internal/atproto/identity"
-	"Coves/internal/atproto/oauth"
 	oauthCore "Coves/internal/core/oauth"
 )
 
@@ -144,8 +144,8 @@ func (h *LoginHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		ReturnURL:           req.ReturnURL,
 	}
 
-	if err := h.sessionStore.SaveRequest(oauthReq); err != nil {
-		log.Printf("Failed to save OAuth request: %v", err)
+	if saveErr := h.sessionStore.SaveRequest(oauthReq); saveErr != nil {
+		log.Printf("Failed to save OAuth request: %v", saveErr)
 		http.Error(w, "Failed to save authorization state", http.StatusInternalServerError)
 		return
 	}
@@ -171,5 +171,7 @@ func (h *LoginHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		log.Printf("Failed to encode response: %v", err)
+	}
 }

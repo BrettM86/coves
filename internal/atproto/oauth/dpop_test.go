@@ -28,14 +28,14 @@ func TestCreateDPoPProof(t *testing.T) {
 	}
 
 	// Decode and inspect the header
-	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
-	if err != nil {
-		t.Fatalf("Failed to decode header: %v", err)
+	headerJSON, decodeErr := base64.RawURLEncoding.DecodeString(parts[0])
+	if decodeErr != nil {
+		t.Fatalf("Failed to decode header: %v", decodeErr)
 	}
 
 	var header map[string]interface{}
-	if err := json.Unmarshal(headerJSON, &header); err != nil {
-		t.Fatalf("Failed to unmarshal header: %v", err)
+	if unmarshalErr := json.Unmarshal(headerJSON, &header); unmarshalErr != nil {
+		t.Fatalf("Failed to unmarshal header: %v", unmarshalErr)
 	}
 
 	t.Logf("DPoP Header: %s", string(headerJSON))
@@ -122,9 +122,14 @@ func TestDPoPProofWithNonce(t *testing.T) {
 
 	// Decode payload
 	parts := strings.Split(proof, ".")
-	payloadJSON, _ := base64.RawURLEncoding.DecodeString(parts[1])
+	payloadJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("Failed to decode payload: %v", err)
+	}
 	var payload map[string]interface{}
-	json.Unmarshal(payloadJSON, &payload)
+	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
+		t.Fatalf("Failed to unmarshal payload: %v", err)
+	}
 
 	if payload["nonce"] != testNonce {
 		t.Errorf("Expected nonce=%s, got %v", testNonce, payload["nonce"])
@@ -146,9 +151,14 @@ func TestDPoPProofWithAccessToken(t *testing.T) {
 
 	// Decode payload
 	parts := strings.Split(proof, ".")
-	payloadJSON, _ := base64.RawURLEncoding.DecodeString(parts[1])
+	payloadJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("Failed to decode payload: %v", err)
+	}
 	var payload map[string]interface{}
-	json.Unmarshal(payloadJSON, &payload)
+	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
+		t.Fatalf("Failed to unmarshal payload: %v", err)
+	}
 
 	ath, hasATH := payload["ath"]
 	if !hasATH {

@@ -1,12 +1,13 @@
 package routes
 
 import (
+	"Coves/internal/core/users"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"time"
 
-	"Coves/internal/core/users"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -73,7 +74,9 @@ func (h *UserHandler) GetProfile(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("Failed to encode response: %v", err)
+	}
 }
 
 // Signup handles social.coves.actor.signup
@@ -106,7 +109,9 @@ func (h *UserHandler) Signup(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("Failed to encode response: %v", err)
+	}
 }
 
 // respondWithLexiconError maps domain errors to lexicon error types and HTTP status codes
@@ -168,8 +173,10 @@ func respondWithLexiconError(w http.ResponseWriter, err error) {
 	// XRPC error response format
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
 		"error":   errorName,
 		"message": message,
-	})
+	}); err != nil {
+		log.Printf("Failed to encode error response: %v", err)
+	}
 }

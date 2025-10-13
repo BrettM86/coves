@@ -1,10 +1,10 @@
 package oauth
 
 import (
-	"encoding/json"
-	"net/http"
-
 	"Coves/internal/atproto/oauth"
+	"encoding/json"
+	"log"
+	"net/http"
 
 	"github.com/lestrrat-go/jwx/v2/jwk"
 )
@@ -47,5 +47,7 @@ func HandleJWKS(w http.ResponseWriter, r *http.Request) {
 	// Serve JWKS
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(jwks)
+	if err := json.NewEncoder(w).Encode(jwks); err != nil {
+		log.Printf("Failed to encode JWKS response: %v", err)
+	}
 }
