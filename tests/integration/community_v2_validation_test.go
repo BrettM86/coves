@@ -1,19 +1,22 @@
 package integration
 
 import (
-	"context"
-	"testing"
-	"time"
-
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/communities"
 	"Coves/internal/db/postgres"
+	"context"
+	"testing"
+	"time"
 )
 
 // TestCommunityConsumer_V2RKeyValidation tests that only V2 communities (rkey="self") are accepted
 func TestCommunityConsumer_V2RKeyValidation(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
 
 	repo := postgres.NewCommunityRepository(db)
 	consumer := jetstream.NewCommunityEventConsumer(repo)
@@ -231,7 +234,11 @@ func TestCommunityConsumer_V2RKeyValidation(t *testing.T) {
 // TestCommunityConsumer_HandleField tests the V2 handle field
 func TestCommunityConsumer_HandleField(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
 
 	repo := postgres.NewCommunityRepository(db)
 	consumer := jetstream.NewCommunityEventConsumer(repo)

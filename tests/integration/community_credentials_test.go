@@ -1,27 +1,33 @@
 package integration
 
 import (
+	"Coves/internal/atproto/did"
+	"Coves/internal/core/communities"
+	"Coves/internal/db/postgres"
 	"context"
 	"fmt"
 	"testing"
 	"time"
-
-	"Coves/internal/atproto/did"
-	"Coves/internal/core/communities"
-	"Coves/internal/db/postgres"
 )
 
 // TestCommunityRepository_CredentialPersistence tests that PDS credentials are properly persisted
 func TestCommunityRepository_CredentialPersistence(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
 
 	repo := postgres.NewCommunityRepository(db)
 	didGen := did.NewGenerator(true, "https://plc.directory")
 	ctx := context.Background()
 
 	t.Run("persists PDS credentials on create", func(t *testing.T) {
-		communityDID, _ := didGen.GenerateCommunityDID()
+		communityDID, err := didGen.GenerateCommunityDID()
+		if err != nil {
+			t.Fatalf("Failed to generate community DID: %v", err)
+		}
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 
 		community := &communities.Community{
@@ -75,7 +81,10 @@ func TestCommunityRepository_CredentialPersistence(t *testing.T) {
 	})
 
 	t.Run("handles empty credentials gracefully", func(t *testing.T) {
-		communityDID, _ := didGen.GenerateCommunityDID()
+		communityDID, err := didGen.GenerateCommunityDID()
+		if err != nil {
+			t.Fatalf("Failed to generate community DID: %v", err)
+		}
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 
 		// Community without PDS credentials (e.g., from Jetstream consumer)
@@ -122,14 +131,21 @@ func TestCommunityRepository_CredentialPersistence(t *testing.T) {
 // TestCommunityRepository_EncryptedCredentials tests encryption at rest
 func TestCommunityRepository_EncryptedCredentials(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
 
 	repo := postgres.NewCommunityRepository(db)
 	didGen := did.NewGenerator(true, "https://plc.directory")
 	ctx := context.Background()
 
 	t.Run("credentials are encrypted in database", func(t *testing.T) {
-		communityDID, _ := didGen.GenerateCommunityDID()
+		communityDID, err := didGen.GenerateCommunityDID()
+		if err != nil {
+			t.Fatalf("Failed to generate community DID: %v", err)
+		}
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 
 		accessToken := "sensitive_access_token_xyz123"
@@ -152,8 +168,7 @@ func TestCommunityRepository_EncryptedCredentials(t *testing.T) {
 			UpdatedAt:       time.Now(),
 		}
 
-		_, err := repo.Create(ctx, community)
-		if err != nil {
+		if _, err := repo.Create(ctx, community); err != nil {
 			t.Fatalf("Failed to create community: %v", err)
 		}
 
@@ -164,8 +179,7 @@ func TestCommunityRepository_EncryptedCredentials(t *testing.T) {
 			FROM communities
 			WHERE did = $1
 		`
-		err = db.QueryRowContext(ctx, query, communityDID).Scan(&encryptedAccess, &encryptedRefresh)
-		if err != nil {
+		if err := db.QueryRowContext(ctx, query, communityDID).Scan(&encryptedAccess, &encryptedRefresh); err != nil {
 			t.Fatalf("Failed to query encrypted data: %v", err)
 		}
 
@@ -200,7 +214,10 @@ func TestCommunityRepository_EncryptedCredentials(t *testing.T) {
 	})
 
 	t.Run("encryption handles special characters", func(t *testing.T) {
-		communityDID, _ := didGen.GenerateCommunityDID()
+		communityDID, err := didGen.GenerateCommunityDID()
+		if err != nil {
+			t.Fatalf("Failed to generate community DID: %v", err)
+		}
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 
 		// Token with special characters
@@ -220,8 +237,7 @@ func TestCommunityRepository_EncryptedCredentials(t *testing.T) {
 			UpdatedAt:       time.Now(),
 		}
 
-		_, err := repo.Create(ctx, community)
-		if err != nil {
+		if _, err := repo.Create(ctx, community); err != nil {
 			t.Fatalf("Failed to create community with special chars: %v", err)
 		}
 
@@ -239,14 +255,21 @@ func TestCommunityRepository_EncryptedCredentials(t *testing.T) {
 // TestCommunityRepository_V2OwnershipModel tests that communities are self-owned
 func TestCommunityRepository_V2OwnershipModel(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
 
 	repo := postgres.NewCommunityRepository(db)
 	didGen := did.NewGenerator(true, "https://plc.directory")
 	ctx := context.Background()
 
 	t.Run("V2 communities are self-owned", func(t *testing.T) {
-		communityDID, _ := didGen.GenerateCommunityDID()
+		communityDID, err := didGen.GenerateCommunityDID()
+		if err != nil {
+			t.Fatalf("Failed to generate community DID: %v", err)
+		}
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 
 		community := &communities.Community{

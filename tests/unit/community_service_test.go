@@ -1,6 +1,8 @@
 package unit
 
 import (
+	"Coves/internal/atproto/did"
+	"Coves/internal/core/communities"
 	"context"
 	"fmt"
 	"net/http"
@@ -9,9 +11,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"Coves/internal/atproto/did"
-	"Coves/internal/core/communities"
 )
 
 // mockCommunityRepo is a minimal mock for testing service layer
@@ -157,7 +156,9 @@ func TestCommunityService_PDSTimeouts(t *testing.T) {
 			time.Sleep(15 * time.Second)
 
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"uri":"at://did:plc:test/collection/self","cid":"bafyrei123"}`))
+			if _, err := w.Write([]byte(`{"uri":"at://did:plc:test/collection/self","cid":"bafyrei123"}`)); err != nil {
+				t.Errorf("Failed to write response: %v", err)
+			}
 		}))
 		defer slowPDS.Close()
 
@@ -205,7 +206,9 @@ func TestCommunityService_UpdateWithCredentials(t *testing.T) {
 			}
 
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"uri":"at://did:plc:community/social.coves.community.profile/self","cid":"bafyrei456"}`))
+			if _, err := w.Write([]byte(`{"uri":"at://did:plc:community/social.coves.community.profile/self","cid":"bafyrei456"}`)); err != nil {
+				t.Errorf("Failed to write response: %v", err)
+			}
 		}))
 		defer mockPDS.Close()
 

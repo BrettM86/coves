@@ -1,6 +1,10 @@
 package e2e
 
 import (
+	"Coves/internal/atproto/identity"
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/core/users"
+	"Coves/internal/db/postgres"
 	"bytes"
 	"context"
 	"database/sql"
@@ -11,10 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"Coves/internal/atproto/identity"
-	"Coves/internal/atproto/jetstream"
-	"Coves/internal/core/users"
-	"Coves/internal/db/postgres"
 	_ "github.com/lib/pq"
 	"github.com/pressly/goose/v3"
 )
@@ -31,9 +31,10 @@ import (
 //   - Test database on localhost:5434
 //
 // Run with:
-//   make e2e-up  # Start infrastructure
-//   go run ./cmd/server &  # Start AppView
-//   go test ./tests/integration -run TestE2E_UserSignup -v
+//
+//	make e2e-up  # Start infrastructure
+//	go run ./cmd/server &  # Start AppView
+//	go test ./tests/integration -run TestE2E_UserSignup -v
 func TestE2E_UserSignup(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping E2E test in short mode")
@@ -55,7 +56,11 @@ func TestE2E_UserSignup(t *testing.T) {
 	}
 
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
 
 	// Set up services
 	userRepo := postgres.NewUserRepository(db)
@@ -253,11 +258,13 @@ func generateInviteCode(t *testing.T) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to create invite code: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		var errorResp map[string]interface{}
-		json.NewDecoder(resp.Body).Decode(&errorResp)
+		if err := json.NewDecoder(resp.Body).Decode(&errorResp); err != nil {
+			return "", fmt.Errorf("PDS admin API returned status %d (failed to decode error: %w)", resp.StatusCode, err)
+		}
 		return "", fmt.Errorf("PDS admin API returned status %d: %v", resp.StatusCode, errorResp)
 	}
 
@@ -303,19 +310,21 @@ func createPDSAccount(t *testing.T, userService users.UserService, handle, email
 	if err != nil {
 		return "", fmt.Errorf("failed to call signup endpoint: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		var errorResp map[string]interface{}
-		json.NewDecoder(resp.Body).Decode(&errorResp)
+		if err := json.NewDecoder(resp.Body).Decode(&errorResp); err != nil {
+			return "", fmt.Errorf("signup endpoint returned status %d (failed to decode error: %w)", resp.StatusCode, err)
+		}
 		return "", fmt.Errorf("signup endpoint returned status %d: %v", resp.StatusCode, errorResp)
 	}
 
 	var result struct {
-		DID         string `json:"did"`
-		Handle      string `json:"handle"`
-		AccessJwt   string `json:"accessJwt"`
-		RefreshJwt  string `json:"refreshJwt"`
+		DID        string `json:"did"`
+		Handle     string `json:"handle"`
+		AccessJwt  string `json:"accessJwt"`
+		RefreshJwt string `json:"refreshJwt"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -334,7 +343,7 @@ func isPDSAvailable(t *testing.T) bool {
 		t.Logf("PDS not available: %v", err)
 		return false
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return resp.StatusCode == http.StatusOK
 }
 
@@ -346,7 +355,7 @@ func isJetstreamAvailable(t *testing.T) bool {
 		t.Logf("Jetstream not available: %v", err)
 		return false
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return resp.StatusCode == http.StatusOK
 }
 
@@ -357,7 +366,7 @@ func isAppViewAvailable(t *testing.T) bool {
 		t.Logf("AppView not available: %v", err)
 		return false
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return resp.StatusCode == http.StatusOK
 }
 
@@ -391,16 +400,16 @@ func setupTestDB(t *testing.T) *sql.DB {
 		t.Fatalf("Failed to connect to test database: %v", err)
 	}
 
-	if err := db.Ping(); err != nil {
-		t.Fatalf("Failed to ping test database: %v", err)
+	if pingErr := db.Ping(); pingErr != nil {
+		t.Fatalf("Failed to ping test database: %v", pingErr)
 	}
 
-	if err := goose.SetDialect("postgres"); err != nil {
-		t.Fatalf("Failed to set goose dialect: %v", err)
+	if dialectErr := goose.SetDialect("postgres"); dialectErr != nil {
+		t.Fatalf("Failed to set goose dialect: %v", dialectErr)
 	}
 
-	if err := goose.Up(db, "../../internal/db/migrations"); err != nil {
-		t.Fatalf("Failed to run migrations: %v", err)
+	if migrateErr := goose.Up(db, "../../internal/db/migrations"); migrateErr != nil {
+		t.Fatalf("Failed to run migrations: %v", migrateErr)
 	}
 
 	// Clean up any existing test data

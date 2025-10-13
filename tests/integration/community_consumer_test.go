@@ -1,20 +1,23 @@
 package integration
 
 import (
-	"context"
-	"fmt"
-	"testing"
-	"time"
-
 	"Coves/internal/atproto/did"
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/communities"
 	"Coves/internal/db/postgres"
+	"context"
+	"fmt"
+	"testing"
+	"time"
 )
 
 func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
 
 	repo := postgres.NewCommunityRepository(db)
 	consumer := jetstream.NewCommunityEventConsumer(repo)
@@ -22,7 +25,10 @@ func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("creates community from firehose event", func(t *testing.T) {
-		communityDID, _ := didGen.GenerateCommunityDID()
+		communityDID, err := didGen.GenerateCommunityDID()
+		if err != nil {
+			t.Fatalf("Failed to generate community DID: %v", err)
+		}
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 
 		// Simulate a Jetstream commit event
@@ -57,8 +63,7 @@ func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
 		}
 
 		// Handle the event
-		err := consumer.HandleEvent(ctx, event)
-		if err != nil {
+		if err := consumer.HandleEvent(ctx, event); err != nil {
 			t.Fatalf("Failed to handle event: %v", err)
 		}
 
@@ -80,7 +85,10 @@ func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
 	})
 
 	t.Run("updates existing community", func(t *testing.T) {
-		communityDID, _ := didGen.GenerateCommunityDID()
+		communityDID, err := didGen.GenerateCommunityDID()
+		if err != nil {
+			t.Fatalf("Failed to generate community DID: %v", err)
+		}
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		handle := fmt.Sprintf("!update-test-%s@coves.local", uniqueSuffix)
 
@@ -100,8 +108,7 @@ func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
 			UpdatedAt:              time.Now(),
 		}
 
-		_, err := repo.Create(ctx, initialCommunity)
-		if err != nil {
+		if _, err := repo.Create(ctx, initialCommunity); err != nil {
 			t.Fatalf("Failed to create initial community: %v", err)
 		}
 
@@ -137,8 +144,7 @@ func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
 		}
 
 		// Handle the update
-		err = consumer.HandleEvent(ctx, updateEvent)
-		if err != nil {
+		if err := consumer.HandleEvent(ctx, updateEvent); err != nil {
 			t.Fatalf("Failed to handle update event: %v", err)
 		}
 
@@ -163,7 +169,10 @@ func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
 	})
 
 	t.Run("deletes community", func(t *testing.T) {
-		communityDID, _ := didGen.GenerateCommunityDID()
+		communityDID, err := didGen.GenerateCommunityDID()
+		if err != nil {
+			t.Fatalf("Failed to generate community DID: %v", err)
+		}
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 
 		// Create community to delete
@@ -179,8 +188,7 @@ func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
 			UpdatedAt:    time.Now(),
 		}
 
-		_, err := repo.Create(ctx, community)
-		if err != nil {
+		if _, err := repo.Create(ctx, community); err != nil {
 			t.Fatalf("Failed to create community: %v", err)
 		}
 
@@ -198,14 +206,12 @@ func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
 		}
 
 		// Handle the delete
-		err = consumer.HandleEvent(ctx, deleteEvent)
-		if err != nil {
+		if err := consumer.HandleEvent(ctx, deleteEvent); err != nil {
 			t.Fatalf("Failed to handle delete event: %v", err)
 		}
 
 		// Verify community was deleted
-		_, err = repo.GetByDID(ctx, communityDID)
-		if err != communities.ErrCommunityNotFound {
+		if _, err := repo.GetByDID(ctx, communityDID); err != communities.ErrCommunityNotFound {
 			t.Errorf("Expected ErrCommunityNotFound, got: %v", err)
 		}
 	})
@@ -213,7 +219,11 @@ func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
 
 func TestCommunityConsumer_HandleSubscription(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
 
 	repo := postgres.NewCommunityRepository(db)
 	consumer := jetstream.NewCommunityEventConsumer(repo)
@@ -222,7 +232,10 @@ func TestCommunityConsumer_HandleSubscription(t *testing.T) {
 
 	t.Run("creates subscription from event", func(t *testing.T) {
 		// Create a community first
-		communityDID, _ := didGen.GenerateCommunityDID()
+		communityDID, err := didGen.GenerateCommunityDID()
+		if err != nil {
+			t.Fatalf("Failed to generate community DID: %v", err)
+		}
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 
 		community := &communities.Community{
@@ -237,8 +250,7 @@ func TestCommunityConsumer_HandleSubscription(t *testing.T) {
 			UpdatedAt:    time.Now(),
 		}
 
-		_, err := repo.Create(ctx, community)
-		if err != nil {
+		if _, err := repo.Create(ctx, community); err != nil {
 			t.Fatalf("Failed to create community: %v", err)
 		}
 
@@ -261,8 +273,7 @@ func TestCommunityConsumer_HandleSubscription(t *testing.T) {
 		}
 
 		// Handle the subscription
-		err = consumer.HandleEvent(ctx, subEvent)
-		if err != nil {
+		if err := consumer.HandleEvent(ctx, subEvent); err != nil {
 			t.Fatalf("Failed to handle subscription event: %v", err)
 		}
 
@@ -293,7 +304,11 @@ func TestCommunityConsumer_HandleSubscription(t *testing.T) {
 
 func TestCommunityConsumer_IgnoresNonCommunityEvents(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
 
 	repo := postgres.NewCommunityRepository(db)
 	consumer := jetstream.NewCommunityEventConsumer(repo)

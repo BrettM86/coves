@@ -1,26 +1,32 @@
 package integration
 
 import (
+	"Coves/internal/atproto/did"
+	"Coves/internal/core/communities"
+	"Coves/internal/db/postgres"
 	"context"
 	"fmt"
 	"testing"
 	"time"
-
-	"Coves/internal/atproto/did"
-	"Coves/internal/core/communities"
-	"Coves/internal/db/postgres"
 )
 
 func TestCommunityRepository_Create(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
 
 	repo := postgres.NewCommunityRepository(db)
 	didGen := did.NewGenerator(true, "https://plc.directory")
 	ctx := context.Background()
 
 	t.Run("creates community successfully", func(t *testing.T) {
-		communityDID, _ := didGen.GenerateCommunityDID()
+		communityDID, err := didGen.GenerateCommunityDID()
+		if err != nil {
+			t.Fatalf("Failed to generate community DID: %v", err)
+		}
 		// Generate unique handle using timestamp to avoid collisions
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		community := &communities.Community{
@@ -52,7 +58,10 @@ func TestCommunityRepository_Create(t *testing.T) {
 	})
 
 	t.Run("returns error for duplicate DID", func(t *testing.T) {
-		communityDID, _ := didGen.GenerateCommunityDID()
+		communityDID, err := didGen.GenerateCommunityDID()
+		if err != nil {
+			t.Fatalf("Failed to generate community DID: %v", err)
+		}
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		community := &communities.Community{
 			DID:          communityDID,
@@ -67,14 +76,12 @@ func TestCommunityRepository_Create(t *testing.T) {
 		}
 
 		// Create first time
-		_, err := repo.Create(ctx, community)
-		if err != nil {
+		if _, err := repo.Create(ctx, community); err != nil {
 			t.Fatalf("First create failed: %v", err)
 		}
 
 		// Try to create again with same DID
-		_, err = repo.Create(ctx, community)
-		if err != communities.ErrCommunityAlreadyExists {
+		if _, err = repo.Create(ctx, community); err != communities.ErrCommunityAlreadyExists {
 			t.Errorf("Expected ErrCommunityAlreadyExists, got: %v", err)
 		}
 	})
@@ -84,7 +91,10 @@ func TestCommunityRepository_Create(t *testing.T) {
 		handle := fmt.Sprintf("!unique-handle-%s@coves.local", uniqueSuffix)
 
 		// First community
-		did1, _ := didGen.GenerateCommunityDID()
+		did1, err := didGen.GenerateCommunityDID()
+		if err != nil {
+			t.Fatalf("Failed to generate first community DID: %v", err)
+		}
 		community1 := &communities.Community{
 			DID:          did1,
 			Handle:       handle,
@@ -97,13 +107,15 @@ func TestCommunityRepository_Create(t *testing.T) {
 			UpdatedAt:    time.Now(),
 		}
 
-		_, err := repo.Create(ctx, community1)
-		if err != nil {
+		if _, err := repo.Create(ctx, community1); err != nil {
 			t.Fatalf("First create failed: %v", err)
 		}
 
 		// Second community with different DID but same handle
-		did2, _ := didGen.GenerateCommunityDID()
+		did2, err := didGen.GenerateCommunityDID()
+		if err != nil {
+			t.Fatalf("Failed to generate second community DID: %v", err)
+		}
 		community2 := &communities.Community{
 			DID:          did2,
 			Handle:       handle, // Same handle!
@@ -116,8 +128,7 @@ func TestCommunityRepository_Create(t *testing.T) {
 			UpdatedAt:    time.Now(),
 		}
 
-		_, err = repo.Create(ctx, community2)
-		if err != communities.ErrHandleTaken {
+		if _, err = repo.Create(ctx, community2); err != communities.ErrHandleTaken {
 			t.Errorf("Expected ErrHandleTaken, got: %v", err)
 		}
 	})
@@ -125,14 +136,21 @@ func TestCommunityRepository_Create(t *testing.T) {
 
 func TestCommunityRepository_GetByDID(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
 
 	repo := postgres.NewCommunityRepository(db)
 	didGen := did.NewGenerator(true, "https://plc.directory")
 	ctx := context.Background()
 
 	t.Run("retrieves existing community", func(t *testing.T) {
-		communityDID, _ := didGen.GenerateCommunityDID()
+		communityDID, err := didGen.GenerateCommunityDID()
+		if err != nil {
+			t.Fatalf("Failed to generate community DID: %v", err)
+		}
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		community := &communities.Community{
 			DID:          communityDID,
@@ -170,9 +188,11 @@ func TestCommunityRepository_GetByDID(t *testing.T) {
 	})
 
 	t.Run("returns error for non-existent community", func(t *testing.T) {
-		fakeDID, _ := didGen.GenerateCommunityDID()
-		_, err := repo.GetByDID(ctx, fakeDID)
-		if err != communities.ErrCommunityNotFound {
+		fakeDID, err := didGen.GenerateCommunityDID()
+		if err != nil {
+			t.Fatalf("Failed to generate fake DID: %v", err)
+		}
+		if _, err := repo.GetByDID(ctx, fakeDID); err != communities.ErrCommunityNotFound {
 			t.Errorf("Expected ErrCommunityNotFound, got: %v", err)
 		}
 	})
@@ -180,14 +200,21 @@ func TestCommunityRepository_GetByDID(t *testing.T) {
 
 func TestCommunityRepository_GetByHandle(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
 
 	repo := postgres.NewCommunityRepository(db)
 	didGen := did.NewGenerator(true, "https://plc.directory")
 	ctx := context.Background()
 
 	t.Run("retrieves community by handle", func(t *testing.T) {
-		communityDID, _ := didGen.GenerateCommunityDID()
+		communityDID, err := didGen.GenerateCommunityDID()
+		if err != nil {
+			t.Fatalf("Failed to generate community DID: %v", err)
+		}
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		handle := fmt.Sprintf("!handle-lookup-%s@coves.local", uniqueSuffix)
 
@@ -203,8 +230,7 @@ func TestCommunityRepository_GetByHandle(t *testing.T) {
 			UpdatedAt:    time.Now(),
 		}
 
-		_, err := repo.Create(ctx, community)
-		if err != nil {
+		if _, err := repo.Create(ctx, community); err != nil {
 			t.Fatalf("Failed to create community: %v", err)
 		}
 
@@ -224,14 +250,21 @@ func TestCommunityRepository_GetByHandle(t *testing.T) {
 
 func TestCommunityRepository_Subscriptions(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
 
 	repo := postgres.NewCommunityRepository(db)
 	didGen := did.NewGenerator(true, "https://plc.directory")
 	ctx := context.Background()
 
 	// Create a community for subscription tests
-	communityDID, _ := didGen.GenerateCommunityDID()
+	communityDID, err := didGen.GenerateCommunityDID()
+	if err != nil {
+		t.Fatalf("Failed to generate community DID: %v", err)
+	}
 	uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 	community := &communities.Community{
 		DID:          communityDID,
@@ -245,8 +278,7 @@ func TestCommunityRepository_Subscriptions(t *testing.T) {
 		UpdatedAt:    time.Now(),
 	}
 
-	_, err := repo.Create(ctx, community)
-	if err != nil {
+	if _, err := repo.Create(ctx, community); err != nil {
 		t.Fatalf("Failed to create community: %v", err)
 	}
 
@@ -274,8 +306,7 @@ func TestCommunityRepository_Subscriptions(t *testing.T) {
 			SubscribedAt: time.Now(),
 		}
 
-		_, err := repo.Subscribe(ctx, sub)
-		if err != nil {
+		if _, err := repo.Subscribe(ctx, sub); err != nil {
 			t.Fatalf("First subscription failed: %v", err)
 		}
 
@@ -314,7 +345,11 @@ func TestCommunityRepository_Subscriptions(t *testing.T) {
 
 func TestCommunityRepository_List(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
 
 	repo := postgres.NewCommunityRepository(db)
 	didGen := did.NewGenerator(true, "https://plc.directory")
@@ -324,7 +359,10 @@ func TestCommunityRepository_List(t *testing.T) {
 		// Create multiple communities
 		baseSuffix := time.Now().UnixNano()
 		for i := 0; i < 5; i++ {
-			communityDID, _ := didGen.GenerateCommunityDID()
+			communityDID, err := didGen.GenerateCommunityDID()
+			if err != nil {
+				t.Fatalf("Failed to generate community DID: %v", err)
+			}
 			community := &communities.Community{
 				DID:          communityDID,
 				Handle:       fmt.Sprintf("!list-test-%d-%d@coves.local", baseSuffix, i),
@@ -336,8 +374,7 @@ func TestCommunityRepository_List(t *testing.T) {
 				CreatedAt:    time.Now(),
 				UpdatedAt:    time.Now(),
 			}
-			_, err := repo.Create(ctx, community)
-			if err != nil {
+			if _, err := repo.Create(ctx, community); err != nil {
 				t.Fatalf("Failed to create community %d: %v", i, err)
 			}
 			time.Sleep(10 * time.Millisecond) // Ensure different timestamps
@@ -365,7 +402,10 @@ func TestCommunityRepository_List(t *testing.T) {
 
 	t.Run("filters by visibility", func(t *testing.T) {
 		// Create an unlisted community
-		communityDID, _ := didGen.GenerateCommunityDID()
+		communityDID, err := didGen.GenerateCommunityDID()
+		if err != nil {
+			t.Fatalf("Failed to generate community DID: %v", err)
+		}
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		community := &communities.Community{
 			DID:          communityDID,
@@ -379,8 +419,7 @@ func TestCommunityRepository_List(t *testing.T) {
 			UpdatedAt:    time.Now(),
 		}
 
-		_, err := repo.Create(ctx, community)
-		if err != nil {
+		if _, err := repo.Create(ctx, community); err != nil {
 			t.Fatalf("Failed to create unlisted community: %v", err)
 		}
 
@@ -407,7 +446,11 @@ func TestCommunityRepository_List(t *testing.T) {
 
 func TestCommunityRepository_Search(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
 
 	repo := postgres.NewCommunityRepository(db)
 	didGen := did.NewGenerator(true, "https://plc.directory")
@@ -415,7 +458,10 @@ func TestCommunityRepository_Search(t *testing.T) {
 
 	t.Run("searches communities by name", func(t *testing.T) {
 		// Create a community with searchable name
-		communityDID, _ := didGen.GenerateCommunityDID()
+		communityDID, err := didGen.GenerateCommunityDID()
+		if err != nil {
+			t.Fatalf("Failed to generate community DID: %v", err)
+		}
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		community := &communities.Community{
 			DID:          communityDID,
@@ -431,8 +477,7 @@ func TestCommunityRepository_Search(t *testing.T) {
 			UpdatedAt:    time.Now(),
 		}
 
-		_, err := repo.Create(ctx, community)
-		if err != nil {
+		if _, err := repo.Create(ctx, community); err != nil {
 			t.Fatalf("Failed to create community: %v", err)
 		}
 

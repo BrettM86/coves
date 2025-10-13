@@ -40,13 +40,16 @@ func TestLexiconSchemaValidation(t *testing.T) {
 	for _, filePath := range lexiconFiles {
 		// Convert file path to schema ID
 		// e.g., ../internal/atproto/lexicon/social/coves/actor/profile.json -> social.coves.actor.profile
-		relPath, _ := filepath.Rel(schemaPath, filePath)
+		relPath, err := filepath.Rel(schemaPath, filePath)
+		if err != nil {
+			t.Fatalf("Failed to get relative path for %s: %v", filePath, err)
+		}
 		relPath = strings.TrimSuffix(relPath, ".json")
 		schemaID := strings.ReplaceAll(relPath, string(filepath.Separator), ".")
 
 		t.Run(schemaID, func(t *testing.T) {
-			if _, err := catalog.Resolve(schemaID); err != nil {
-				t.Errorf("Failed to resolve schema %s: %v", schemaID, err)
+			if _, resolveErr := catalog.Resolve(schemaID); resolveErr != nil {
+				t.Errorf("Failed to resolve schema %s: %v", schemaID, resolveErr)
 			}
 		})
 	}
@@ -63,7 +66,7 @@ func TestLexiconCrossReferences(t *testing.T) {
 
 	// Test specific cross-references that should work
 	crossRefs := map[string]string{
-		"social.coves.richtext.facet#byteSlice": "byteSlice definition in facet schema",
+		"social.coves.richtext.facet#byteSlice":  "byteSlice definition in facet schema",
 		"social.coves.actor.profile#geoLocation": "geoLocation definition in actor profile",
 		"social.coves.community.rules#rule":      "rule definition in community rules",
 	}
@@ -88,11 +91,11 @@ func TestValidateRecord(t *testing.T) {
 
 	// Test cases for ValidateRecord
 	tests := []struct {
-		name        string
-		recordType  string
-		recordData  map[string]interface{}
-		shouldFail  bool
+		recordData    map[string]interface{}
+		name          string
+		recordType    string
 		errorContains string
+		shouldFail    bool
 	}{
 		{
 			name:       "Valid actor profile",
@@ -120,9 +123,12 @@ func TestValidateRecord(t *testing.T) {
 			recordType: "social.coves.community.profile",
 			recordData: map[string]interface{}{
 				"$type":          "social.coves.community.profile",
+				"handle":         "programming.communities.coves.social",
 				"name":           "programming",
 				"displayName":    "Programming Community",
-				"creator":        "did:plc:creator123",
+				"createdBy":      "did:plc:creator123",
+				"hostedBy":       "did:plc:coves123",
+				"visibility":     "public",
 				"moderationType": "moderator",
 				"federatedFrom":  "coves",
 				"createdAt":      "2023-12-01T08:00:00Z",
@@ -133,12 +139,12 @@ func TestValidateRecord(t *testing.T) {
 			name:       "Valid post record",
 			recordType: "social.coves.post.record",
 			recordData: map[string]interface{}{
-				"$type":           "social.coves.post.record",
-				"community":       "did:plc:programming123",
-				"postType":        "text",
-				"title":           "Test Post",
-				"content":         "This is a test post",
-				"createdAt":       "2025-01-09T14:30:00Z",
+				"$type":     "social.coves.post.record",
+				"community": "did:plc:programming123",
+				"postType":  "text",
+				"title":     "Test Post",
+				"content":   "This is a test post",
+				"createdAt": "2025-01-09T14:30:00Z",
 			},
 			shouldFail: false,
 		},
@@ -146,12 +152,12 @@ func TestValidateRecord(t *testing.T) {
 			name:       "Invalid post record - invalid enum value",
 			recordType: "social.coves.post.record",
 			recordData: map[string]interface{}{
-				"$type":           "social.coves.post.record",
-				"community":       "did:plc:programming123",
-				"postType":        "invalid-type",
-				"title":           "Test Post",
-				"content":         "This is a test post",
-				"createdAt":       "2025-01-09T14:30:00Z",
+				"$type":     "social.coves.post.record",
+				"community": "did:plc:programming123",
+				"postType":  "invalid-type",
+				"title":     "Test Post",
+				"content":   "This is a test post",
+				"createdAt": "2025-01-09T14:30:00Z",
 			},
 			shouldFail:    true,
 			errorContains: "string val not in required enum",
@@ -161,7 +167,7 @@ func TestValidateRecord(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := lexicon.ValidateRecord(&catalog, tt.recordData, tt.recordType, lexicon.AllowLenientDatetime)
-			
+
 			if tt.shouldFail {
 				if err == nil {
 					t.Errorf("Expected validation to fail but it passed")

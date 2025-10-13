@@ -1,6 +1,13 @@
 package integration
 
 import (
+	"Coves/internal/api/routes"
+	"Coves/internal/atproto/did"
+	"Coves/internal/atproto/identity"
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/core/communities"
+	"Coves/internal/core/users"
+	"Coves/internal/db/postgres"
 	"bytes"
 	"context"
 	"database/sql"
@@ -19,14 +26,6 @@ import (
 	"github.com/gorilla/websocket"
 	_ "github.com/lib/pq"
 	"github.com/pressly/goose/v3"
-
-	"Coves/internal/api/routes"
-	"Coves/internal/atproto/did"
-	"Coves/internal/atproto/identity"
-	"Coves/internal/atproto/jetstream"
-	"Coves/internal/core/communities"
-	"Coves/internal/core/users"
-	"Coves/internal/db/postgres"
 )
 
 // TestCommunity_E2E is a TRUE end-to-end test covering the complete flow:
@@ -55,14 +54,18 @@ func TestCommunity_E2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to connect to test database: %v", err)
 	}
-	defer db.Close()
+	defer func() {
+		if closeErr := db.Close(); closeErr != nil {
+			t.Logf("Failed to close database: %v", closeErr)
+		}
+	}()
 
 	// Run migrations
-	if err := goose.SetDialect("postgres"); err != nil {
-		t.Fatalf("Failed to set goose dialect: %v", err)
+	if dialectErr := goose.SetDialect("postgres"); dialectErr != nil {
+		t.Fatalf("Failed to set goose dialect: %v", dialectErr)
 	}
-	if err := goose.Up(db, "../../internal/db/migrations"); err != nil {
-		t.Fatalf("Failed to run migrations: %v", err)
+	if migrateErr := goose.Up(db, "../../internal/db/migrations"); migrateErr != nil {
+		t.Fatalf("Failed to run migrations: %v", migrateErr)
 	}
 
 	// Check if PDS is running
@@ -75,7 +78,11 @@ func TestCommunity_E2E(t *testing.T) {
 	if err != nil {
 		t.Skipf("PDS not running at %s: %v", pdsURL, err)
 	}
-	healthResp.Body.Close()
+	func() {
+		if closeErr := healthResp.Body.Close(); closeErr != nil {
+			t.Logf("Failed to close health response: %v", closeErr)
+		}
+	}()
 
 	// Setup dependencies
 	communityRepo := postgres.NewCommunityRepository(db)
@@ -208,17 +215,20 @@ func TestCommunity_E2E(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to query PDS: %v", err)
 		}
-		defer pdsResp.Body.Close()
+		defer func() { _ = pdsResp.Body.Close() }()
 
 		if pdsResp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(pdsResp.Body)
+			body, readErr := io.ReadAll(pdsResp.Body)
+			if readErr != nil {
+				t.Fatalf("PDS returned status %d (failed to read body: %v)", pdsResp.StatusCode, readErr)
+			}
 			t.Fatalf("PDS returned status %d: %s", pdsResp.StatusCode, string(body))
 		}
 
 		var pdsRecord struct {
+			Value map[string]interface{} `json:"value"`
 			URI   string                 `json:"uri"`
 			CID   string                 `json:"cid"`
-			Value map[string]interface{} `json:"value"`
 		}
 
 		if err := json.NewDecoder(pdsResp.Body).Decode(&pdsRecord); err != nil {
@@ -230,8 +240,12 @@ func TestCommunity_E2E(t *testing.T) {
 		t.Logf("   CID: %s", pdsRecord.CID)
 
 		// Print full record for inspection
-		recordJSON, _ := json.MarshalIndent(pdsRecord.Value, "   ", "  ")
-		t.Logf("   Record value:\n   %s", string(recordJSON))
+		recordJSON, marshalErr := json.MarshalIndent(pdsRecord.Value, "   ", "  ")
+		if marshalErr != nil {
+			t.Logf("   Failed to marshal record: %v", marshalErr)
+		} else {
+			t.Logf("   Record value:\n   %s", string(recordJSON))
+		}
 
 		// V2: DID is NOT in the record - it's in the repository URI
 		// The record should have handle, name, etc. but no 'did' field
@@ -330,7 +344,6 @@ func TestCommunity_E2E(t *testing.T) {
 	// Part 3: XRPC HTTP Endpoints
 	// ====================================================================================
 	t.Run("3. XRPC HTTP Endpoints", func(t *testing.T) {
-
 		t.Run("Create via XRPC endpoint", func(t *testing.T) {
 			// Use Unix timestamp (seconds) instead of UnixNano to keep handle short
 			createReq := map[string]interface{}{
@@ -343,7 +356,10 @@ func TestCommunity_E2E(t *testing.T) {
 				"allowExternalDiscovery": true,
 			}
 
-			reqBody, _ := json.Marshal(createReq)
+			reqBody, marshalErr := json.Marshal(createReq)
+			if marshalErr != nil {
+				t.Fatalf("Failed to marshal request: %v", marshalErr)
+			}
 
 			// Step 1: Client POSTs to XRPC endpoint
 			t.Logf("📡 Client → POST /xrpc/social.coves.community.create")
@@ -356,10 +372,13 @@ func TestCommunity_E2E(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to POST: %v", err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			if resp.StatusCode != http.StatusOK {
-				body, _ := io.ReadAll(resp.Body)
+				body, readErr := io.ReadAll(resp.Body)
+				if readErr != nil {
+					t.Fatalf("Expected 200, got %d (failed to read body: %v)", resp.StatusCode, readErr)
+				}
 				t.Logf("❌ XRPC Create Failed")
 				t.Logf("   Status: %d", resp.StatusCode)
 				t.Logf("   Response: %s", string(body))
@@ -373,7 +392,9 @@ func TestCommunity_E2E(t *testing.T) {
 				Handle string `json:"handle"`
 			}
 
-			json.NewDecoder(resp.Body).Decode(&createResp)
+			if err := json.NewDecoder(resp.Body).Decode(&createResp); err != nil {
+				t.Fatalf("Failed to decode create response: %v", err)
+			}
 
 			t.Logf("✅ XRPC response received:")
 			t.Logf("   DID:    %s", createResp.DID)
@@ -409,7 +430,9 @@ func TestCommunity_E2E(t *testing.T) {
 					CID: createResp.CID,
 				},
 			}
-			consumer.HandleEvent(context.Background(), &event)
+			if handleErr := consumer.HandleEvent(context.Background(), &event); handleErr != nil {
+				t.Logf("Warning: failed to handle event: %v", handleErr)
+			}
 
 			// Step 3: Verify it's indexed in AppView
 			t.Logf("🔍 Querying AppView to verify indexing...")
@@ -443,17 +466,22 @@ func TestCommunity_E2E(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to GET: %v", err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			if resp.StatusCode != http.StatusOK {
-				body, _ := io.ReadAll(resp.Body)
+				body, readErr := io.ReadAll(resp.Body)
+				if readErr != nil {
+					t.Fatalf("Expected 200, got %d (failed to read body: %v)", resp.StatusCode, readErr)
+				}
 				t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, string(body))
 			}
 
 			var getCommunity communities.Community
-			json.NewDecoder(resp.Body).Decode(&getCommunity)
+			if err := json.NewDecoder(resp.Body).Decode(&getCommunity); err != nil {
+				t.Fatalf("Failed to decode get response: %v", err)
+			}
 
-			t.Logf("✅ Retrieved via XRPC HTTP endpoint:")
+			t.Logf("Retrieved via XRPC HTTP endpoint:")
 			t.Logf("   DID:         %s", getCommunity.DID)
 			t.Logf("   DisplayName: %s", getCommunity.DisplayName)
 
@@ -473,10 +501,13 @@ func TestCommunity_E2E(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to GET list: %v", err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			if resp.StatusCode != http.StatusOK {
-				body, _ := io.ReadAll(resp.Body)
+				body, readErr := io.ReadAll(resp.Body)
+				if readErr != nil {
+					t.Fatalf("Expected 200, got %d (failed to read body: %v)", resp.StatusCode, readErr)
+				}
 				t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, string(body))
 			}
 
@@ -485,7 +516,9 @@ func TestCommunity_E2E(t *testing.T) {
 				Total       int                     `json:"total"`
 			}
 
-			json.NewDecoder(resp.Body).Decode(&listResp)
+			if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
+				t.Fatalf("Failed to decode list response: %v", err)
+			}
 
 			t.Logf("✅ Listed %d communities via XRPC", len(listResp.Communities))
 
@@ -547,15 +580,24 @@ func createAndIndexCommunity(t *testing.T, service communities.Service, consumer
 	collection := "social.coves.community.profile"
 	rkey := extractRKeyFromURI(community.RecordURI)
 
-	pdsResp, _ := http.Get(fmt.Sprintf("%s/xrpc/com.atproto.repo.getRecord?repo=%s&collection=%s&rkey=%s",
+	pdsResp, pdsErr := http.Get(fmt.Sprintf("%s/xrpc/com.atproto.repo.getRecord?repo=%s&collection=%s&rkey=%s",
 		pdsURL, instanceDID, collection, rkey))
-	defer pdsResp.Body.Close()
+	if pdsErr != nil {
+		t.Fatalf("Failed to fetch PDS record: %v", pdsErr)
+	}
+	defer func() {
+		if closeErr := pdsResp.Body.Close(); closeErr != nil {
+			t.Logf("Failed to close PDS response: %v", closeErr)
+		}
+	}()
 
 	var pdsRecord struct {
-		CID   string                 `json:"cid"`
 		Value map[string]interface{} `json:"value"`
+		CID   string                 `json:"cid"`
 	}
-	json.NewDecoder(pdsResp.Body).Decode(&pdsRecord)
+	if decodeErr := json.NewDecoder(pdsResp.Body).Decode(&pdsRecord); decodeErr != nil {
+		t.Fatalf("Failed to decode PDS record: %v", decodeErr)
+	}
 
 	// Simulate firehose event
 	event := jetstream.JetstreamEvent{
@@ -572,7 +614,9 @@ func createAndIndexCommunity(t *testing.T, service communities.Service, consumer
 		},
 	}
 
-	consumer.HandleEvent(context.Background(), &event)
+	if handleErr := consumer.HandleEvent(context.Background(), &event); handleErr != nil {
+		t.Logf("Warning: failed to handle event: %v", handleErr)
+	}
 
 	return community
 }
@@ -594,7 +638,10 @@ func authenticateWithPDS(pdsURL, handle, password string) (string, string, error
 		"password":   password,
 	}
 
-	reqBody, _ := json.Marshal(sessionReq)
+	reqBody, marshalErr := json.Marshal(sessionReq)
+	if marshalErr != nil {
+		return "", "", fmt.Errorf("failed to marshal session request: %w", marshalErr)
+	}
 	resp, err := http.Post(
 		pdsURL+"/xrpc/com.atproto.server.createSession",
 		"application/json",
@@ -603,10 +650,13 @@ func authenticateWithPDS(pdsURL, handle, password string) (string, string, error
 	if err != nil {
 		return "", "", fmt.Errorf("failed to create session: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return "", "", fmt.Errorf("PDS auth failed (status %d, failed to read body: %w)", resp.StatusCode, readErr)
+		}
 		return "", "", fmt.Errorf("PDS auth failed (status %d): %s", resp.StatusCode, string(body))
 	}
 
@@ -665,10 +715,13 @@ func queryPDSAccount(pdsURL, handle string) (string, string, error) {
 	if err != nil {
 		return "", "", fmt.Errorf("failed to query PDS: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return "", "", fmt.Errorf("account not found (status %d, failed to read body: %w)", resp.StatusCode, readErr)
+		}
 		return "", "", fmt.Errorf("account not found (status %d): %s", resp.StatusCode, string(body))
 	}
 
@@ -700,7 +753,7 @@ func subscribeToJetstream(
 	if err != nil {
 		return fmt.Errorf("failed to connect to Jetstream: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Read messages until we find our event or receive done signal
 	for {
@@ -711,7 +764,9 @@ func subscribeToJetstream(
 			return ctx.Err()
 		default:
 			// Set read deadline to avoid blocking forever
-			conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+				return fmt.Errorf("failed to set read deadline: %w", err)
+			}
 
 			var event jetstream.JetstreamEvent
 			err := conn.ReadJSON(&event)

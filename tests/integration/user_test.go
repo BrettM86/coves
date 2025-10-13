@@ -1,6 +1,10 @@
 package integration
 
 import (
+	"Coves/internal/api/routes"
+	"Coves/internal/atproto/identity"
+	"Coves/internal/core/users"
+	"Coves/internal/db/postgres"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -14,11 +18,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	_ "github.com/lib/pq"
 	"github.com/pressly/goose/v3"
-
-	"Coves/internal/api/routes"
-	"Coves/internal/atproto/identity"
-	"Coves/internal/core/users"
-	"Coves/internal/db/postgres"
 )
 
 func setupTestDB(t *testing.T) *sql.DB {
@@ -50,16 +49,16 @@ func setupTestDB(t *testing.T) *sql.DB {
 		t.Fatalf("Failed to connect to test database: %v", err)
 	}
 
-	if err := db.Ping(); err != nil {
-		t.Fatalf("Failed to ping test database: %v", err)
+	if pingErr := db.Ping(); pingErr != nil {
+		t.Fatalf("Failed to ping test database: %v", pingErr)
 	}
 
-	if err := goose.SetDialect("postgres"); err != nil {
-		t.Fatalf("Failed to set goose dialect: %v", err)
+	if dialectErr := goose.SetDialect("postgres"); dialectErr != nil {
+		t.Fatalf("Failed to set goose dialect: %v", dialectErr)
 	}
 
-	if err := goose.Up(db, "../../internal/db/migrations"); err != nil {
-		t.Fatalf("Failed to run migrations: %v", err)
+	if migrateErr := goose.Up(db, "../../internal/db/migrations"); migrateErr != nil {
+		t.Fatalf("Failed to run migrations: %v", migrateErr)
 	}
 
 	// Clean up any existing test data
@@ -73,7 +72,11 @@ func setupTestDB(t *testing.T) *sql.DB {
 
 func TestUserCreationAndRetrieval(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
 
 	// Wire up dependencies
 	userRepo := postgres.NewUserRepository(db)
@@ -150,7 +153,11 @@ func TestUserCreationAndRetrieval(t *testing.T) {
 
 func TestGetProfileEndpoint(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
 
 	// Wire up dependencies
 	userRepo := postgres.NewUserRepository(db)
@@ -241,7 +248,11 @@ func TestGetProfileEndpoint(t *testing.T) {
 // TestDuplicateCreation tests that duplicate DID/handle creation fails properly
 func TestDuplicateCreation(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
 
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
@@ -265,7 +276,6 @@ func TestDuplicateCreation(t *testing.T) {
 			Handle: "different.test", // Different handle, same DID
 			PDSURL: "http://localhost:3001",
 		})
-
 		// Should return existing user, not error
 		if err != nil {
 			t.Fatalf("Expected idempotent behavior, got error: %v", err)
@@ -298,7 +308,11 @@ func TestDuplicateCreation(t *testing.T) {
 // TestHandleValidation tests atProto handle validation rules
 func TestHandleValidation(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
 
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
@@ -310,8 +324,8 @@ func TestHandleValidation(t *testing.T) {
 		did         string
 		handle      string
 		pdsURL      string
-		shouldError bool
 		errorMsg    string
+		shouldError bool
 	}{
 		{
 			name:        "Valid handle with hyphen",

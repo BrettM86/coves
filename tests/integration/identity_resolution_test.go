@@ -1,13 +1,12 @@
 package integration
 
 import (
+	"Coves/internal/atproto/identity"
 	"context"
 	"fmt"
 	"os"
 	"testing"
 	"time"
-
-	"Coves/internal/atproto/identity"
 )
 
 // uniqueID generates a unique identifier for test isolation
@@ -18,7 +17,11 @@ func uniqueID() string {
 // TestIdentityCache tests the PostgreSQL identity cache operations
 func TestIdentityCache(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
 
 	cache := identity.NewPostgresCache(db, 5*time.Minute)
 	ctx := context.Background()
@@ -174,7 +177,9 @@ func TestIdentityCache(t *testing.T) {
 		}
 
 		// Cleanup
-		cache.Delete(ctx, "alice.test")
+		if delErr := cache.Delete(ctx, "alice.test"); delErr != nil {
+			t.Logf("Failed to delete cache entry: %v", delErr)
+		}
 	})
 
 	t.Run("DID is Case Sensitive", func(t *testing.T) {
@@ -201,14 +206,20 @@ func TestIdentityCache(t *testing.T) {
 		}
 
 		// Cleanup
-		cache.Delete(ctx, "did:plc:CaseSensitive")
+		if delErr := cache.Delete(ctx, "did:plc:CaseSensitive"); delErr != nil {
+			t.Logf("Failed to delete cache entry: %v", delErr)
+		}
 	})
 }
 
 // TestIdentityCacheTTL tests that expired cache entries are not returned
 func TestIdentityCacheTTL(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
 
 	// Create cache with very short TTL (reduced from 1s to 100ms for faster, less flaky tests)
 	ttl := 100 * time.Millisecond
@@ -250,12 +261,18 @@ func TestIdentityCacheTTL(t *testing.T) {
 // TestIdentityResolverWithCache tests the caching resolver behavior
 func TestIdentityResolverWithCache(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
 
 	cache := identity.NewPostgresCache(db, 5*time.Minute)
 
 	// Clean slate
-	_, _ = db.Exec("TRUNCATE identity_cache")
+	if _, err := db.Exec("TRUNCATE identity_cache"); err != nil {
+		t.Logf("Warning: failed to truncate identity_cache: %v", err)
+	}
 
 	// Create resolver with caching
 	resolver := identity.NewResolver(db, identity.Config{
@@ -348,7 +365,11 @@ func TestIdentityResolverRealHandles(t *testing.T) {
 	}
 
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
 
 	resolver := identity.NewResolver(db, identity.Config{
 		PLCURL:   "https://plc.directory",
@@ -360,8 +381,8 @@ func TestIdentityResolverRealHandles(t *testing.T) {
 	testCases := []struct {
 		name           string
 		handle         string
-		expectError    bool
 		expectedMethod identity.ResolutionMethod
+		expectError    bool
 	}{
 		{
 			name:           "Resolve bsky.app (well-known handle)",
@@ -432,7 +453,11 @@ func TestResolveDID(t *testing.T) {
 	}
 
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
 
 	resolver := identity.NewResolver(db, identity.Config{
 		PLCURL:   "https://plc.directory",

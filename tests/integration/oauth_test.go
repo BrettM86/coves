@@ -1,6 +1,8 @@
 package integration
 
 import (
+	"Coves/internal/api/handlers/oauth"
+	"Coves/internal/atproto/identity"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,8 +11,6 @@ import (
 	"os"
 	"testing"
 
-	"Coves/internal/api/handlers/oauth"
-	"Coves/internal/atproto/identity"
 	oauthCore "Coves/internal/core/oauth"
 
 	"github.com/lestrrat-go/jwx/v2/jwk"
@@ -19,33 +19,39 @@ import (
 // TestOAuthClientMetadata tests the /oauth/client-metadata.json endpoint
 func TestOAuthClientMetadata(t *testing.T) {
 	tests := []struct {
-		name              string
-		appviewURL        string
-		expectedClientID  string
-		expectedJWKSURI   string
-		expectedRedirect  string
+		name             string
+		appviewURL       string
+		expectedClientID string
+		expectedJWKSURI  string
+		expectedRedirect string
 	}{
 		{
-			name:              "localhost development",
-			appviewURL:        "http://localhost:8081",
-			expectedClientID:  "http://localhost?redirect_uri=http://localhost:8081/oauth/callback&scope=atproto%20transition:generic",
-			expectedJWKSURI:   "", // No JWKS URI for localhost
-			expectedRedirect:  "http://localhost:8081/oauth/callback",
+			name:             "localhost development",
+			appviewURL:       "http://localhost:8081",
+			expectedClientID: "http://localhost?redirect_uri=http://localhost:8081/oauth/callback&scope=atproto%20transition:generic",
+			expectedJWKSURI:  "", // No JWKS URI for localhost
+			expectedRedirect: "http://localhost:8081/oauth/callback",
 		},
 		{
-			name:              "production HTTPS",
-			appviewURL:        "https://coves.social",
-			expectedClientID:  "https://coves.social/oauth/client-metadata.json",
-			expectedJWKSURI:   "https://coves.social/oauth/jwks.json",
-			expectedRedirect:  "https://coves.social/oauth/callback",
+			name:             "production HTTPS",
+			appviewURL:       "https://coves.social",
+			expectedClientID: "https://coves.social/oauth/client-metadata.json",
+			expectedJWKSURI:  "https://coves.social/oauth/jwks.json",
+			expectedRedirect: "https://coves.social/oauth/callback",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Set environment
-			os.Setenv("APPVIEW_PUBLIC_URL", tt.appviewURL)
-			defer os.Unsetenv("APPVIEW_PUBLIC_URL")
+			if err := os.Setenv("APPVIEW_PUBLIC_URL", tt.appviewURL); err != nil {
+				t.Fatalf("Failed to set APPVIEW_PUBLIC_URL: %v", err)
+			}
+			defer func() {
+				if err := os.Unsetenv("APPVIEW_PUBLIC_URL"); err != nil {
+					t.Logf("Failed to unset APPVIEW_PUBLIC_URL: %v", err)
+				}
+			}()
 
 			// Create request
 			req := httptest.NewRequest("GET", "/oauth/client-metadata.json", nil)
@@ -123,8 +129,14 @@ func TestOAuthJWKS(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Set environment
 			if tt.envValue != "" {
-				os.Setenv("OAUTH_PRIVATE_JWK", tt.envValue)
-				defer os.Unsetenv("OAUTH_PRIVATE_JWK")
+				if err := os.Setenv("OAUTH_PRIVATE_JWK", tt.envValue); err != nil {
+					t.Fatalf("Failed to set OAUTH_PRIVATE_JWK: %v", err)
+				}
+				defer func() {
+					if err := os.Unsetenv("OAUTH_PRIVATE_JWK"); err != nil {
+						t.Logf("Failed to unset OAUTH_PRIVATE_JWK: %v", err)
+					}
+				}()
 			}
 
 			// Create request
@@ -187,7 +199,11 @@ func TestOAuthLoginHandler(t *testing.T) {
 
 	// Setup test database
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
 
 	// Create session store
 	sessionStore := oauthCore.NewPostgresSessionStore(db)
@@ -231,10 +247,18 @@ func TestOAuthLoginHandler(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Set environment
 			if tt.envJWK != "" {
-				os.Setenv("OAUTH_PRIVATE_JWK", tt.envJWK)
-				defer os.Unsetenv("OAUTH_PRIVATE_JWK")
+				if err := os.Setenv("OAUTH_PRIVATE_JWK", tt.envJWK); err != nil {
+					t.Fatalf("Failed to set OAUTH_PRIVATE_JWK: %v", err)
+				}
+				defer func() {
+					if err := os.Unsetenv("OAUTH_PRIVATE_JWK"); err != nil {
+						t.Logf("Failed to unset OAUTH_PRIVATE_JWK: %v", err)
+					}
+				}()
 			} else {
-				os.Unsetenv("OAUTH_PRIVATE_JWK")
+				if err := os.Unsetenv("OAUTH_PRIVATE_JWK"); err != nil {
+					t.Logf("Failed to unset OAUTH_PRIVATE_JWK: %v", err)
+				}
 			}
 
 			// Create mock identity resolver for validation tests
@@ -244,7 +268,10 @@ func TestOAuthLoginHandler(t *testing.T) {
 			handler := oauth.NewLoginHandler(mockResolver, sessionStore)
 
 			// Create request
-			bodyBytes, _ := json.Marshal(tt.requestBody)
+			bodyBytes, marshalErr := json.Marshal(tt.requestBody)
+			if marshalErr != nil {
+				t.Fatalf("Failed to marshal request body: %v", marshalErr)
+			}
 			req := httptest.NewRequest("POST", "/oauth/login", bytes.NewReader(bodyBytes))
 			req.Header.Set("Content-Type", "application/json")
 			w := httptest.NewRecorder()
@@ -269,7 +296,11 @@ func TestOAuthCallbackHandler(t *testing.T) {
 
 	// Setup test database
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
 
 	// Create session store
 	sessionStore := oauthCore.NewPostgresSessionStore(db)
@@ -277,8 +308,8 @@ func TestOAuthCallbackHandler(t *testing.T) {
 	testJWK := `{"alg":"ES256","crv":"P-256","d":"9tCMceYSgyZfO5KYOCm3rWEhXLqq2l4LjP7-PJtJKyk","kid":"oauth-client-key","kty":"EC","use":"sig","x":"EOYWEgZ2d-smTO6jh0f-9B7YSFYdlrvlryjuXTCrOjE","y":"_FR2jBcWNxoJl5cd1eq9sYtAs33No9AVtd42UyyWYi4"}`
 
 	tests := []struct {
-		name           string
 		queryParams    map[string]string
+		name           string
 		expectedStatus int
 	}{
 		{
@@ -318,8 +349,14 @@ func TestOAuthCallbackHandler(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Set environment
-			os.Setenv("OAUTH_PRIVATE_JWK", testJWK)
-			defer os.Unsetenv("OAUTH_PRIVATE_JWK")
+			if err := os.Setenv("OAUTH_PRIVATE_JWK", testJWK); err != nil {
+				t.Fatalf("Failed to set OAUTH_PRIVATE_JWK: %v", err)
+			}
+			defer func() {
+				if err := os.Unsetenv("OAUTH_PRIVATE_JWK"); err != nil {
+					t.Logf("Failed to unset OAUTH_PRIVATE_JWK: %v", err)
+				}
+			}()
 
 			// Create handler
 			handler := oauth.NewCallbackHandler(sessionStore)
@@ -400,9 +437,14 @@ func TestJWKParsing(t *testing.T) {
 	}
 
 	// Verify public key doesn't have private component
-	pubKeyJSON, _ := json.Marshal(pubKey)
+	pubKeyJSON, marshalErr := json.Marshal(pubKey)
+	if marshalErr != nil {
+		t.Fatalf("failed to marshal public key: %v", marshalErr)
+	}
 	var pubKeyMap map[string]interface{}
-	json.Unmarshal(pubKeyJSON, &pubKeyMap)
+	if unmarshalErr := json.Unmarshal(pubKeyJSON, &pubKeyMap); unmarshalErr != nil {
+		t.Fatalf("failed to unmarshal public key: %v", unmarshalErr)
+	}
 
 	if _, hasPrivate := pubKeyMap["d"]; hasPrivate {
 		t.Error("SECURITY: public key should not contain private 'd' component!")
