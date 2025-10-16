@@ -54,8 +54,8 @@ type Service interface {
 	SearchCommunities(ctx context.Context, req SearchCommunitiesRequest) ([]*Community, int, error)
 
 	// Subscription operations (write-forward: creates record in user's PDS)
-	SubscribeToCommunity(ctx context.Context, userDID, communityIdentifier string) (*Subscription, error)
-	UnsubscribeFromCommunity(ctx context.Context, userDID, communityIdentifier string) error
+	SubscribeToCommunity(ctx context.Context, userDID, userAccessToken, communityIdentifier string) (*Subscription, error)
+	UnsubscribeFromCommunity(ctx context.Context, userDID, userAccessToken, communityIdentifier string) error
 	GetUserSubscriptions(ctx context.Context, userDID string, limit, offset int) ([]*Subscription, error)
 	GetCommunitySubscribers(ctx context.Context, communityIdentifier string, limit, offset int) ([]*Subscription, error)
 

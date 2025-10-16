@@ -28,6 +28,20 @@ type communityService struct {
 
 // NewCommunityService creates a new community service
 func NewCommunityService(repo Repository, pdsURL, instanceDID, instanceDomain string, provisioner *PDSAccountProvisioner) Service {
+	// SECURITY: Basic validation that did:web domain matches configured instanceDomain
+	// This catches honest configuration mistakes but NOT malicious code modifications
+	// Full verification (Phase 2) requires fetching DID document from domain
+	// See: docs/PRD_BACKLOG.md - "did:web Domain Verification"
+	if strings.HasPrefix(instanceDID, "did:web:") {
+		didDomain := strings.TrimPrefix(instanceDID, "did:web:")
+		if didDomain != instanceDomain {
+			log.Printf("⚠️  SECURITY WARNING: Instance DID domain (%s) doesn't match configured domain (%s)",
+				didDomain, instanceDomain)
+			log.Printf("    This could indicate a configuration error or potential domain spoofing attempt")
+			log.Printf("    Communities will be hosted by: %s", instanceDID)
+		}
+	}
+
 	return &communityService{
 		repo:           repo,
 		pdsURL:         pdsURL,
@@ -60,6 +74,11 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 	if req.Visibility == "" {
 		req.Visibility = "public"
 	}
+
+	// SECURITY: Auto-populate hostedByDID from instance configuration
+	// Clients MUST NOT provide this field - it's derived from the instance receiving the request
+	// This prevents malicious instances from claiming to host communities for domains they don't own
+	req.HostedByDID = s.instanceDID
 
 	// Validate request
 	if err := s.validateCreateRequest(req); err != nil {
@@ -353,9 +372,12 @@ func (s *communityService) SearchCommunities(ctx context.Context, req SearchComm
 }
 
 // SubscribeToCommunity creates a subscription via write-forward to PDS
-func (s *communityService) SubscribeToCommunity(ctx context.Context, userDID, communityIdentifier string) (*Subscription, error) {
+func (s *communityService) SubscribeToCommunity(ctx context.Context, userDID, userAccessToken, communityIdentifier string) (*Subscription, error) {
 	if userDID == "" {
 		return nil, NewValidationError("userDid", "required")
+	}
+	if userAccessToken == "" {
+		return nil, NewValidationError("userAccessToken", "required")
 	}
 
 	// Resolve community identifier to DID
@@ -381,8 +403,8 @@ func (s *communityService) SubscribeToCommunity(ctx context.Context, userDID, co
 		"community": communityDID,
 	}
 
-	// Write-forward: create subscription record in user's repo
-	recordURI, recordCID, err := s.createRecordOnPDS(ctx, userDID, "social.coves.community.subscribe", "", subRecord)
+	// Write-forward: create subscription record in user's repo using their access token
+	recordURI, recordCID, err := s.createRecordOnPDSAs(ctx, userDID, "social.coves.community.subscribe", "", subRecord, userAccessToken)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create subscription on PDS: %w", err)
 	}
@@ -400,9 +422,12 @@ func (s *communityService) SubscribeToCommunity(ctx context.Context, userDID, co
 }
 
 // UnsubscribeFromCommunity removes a subscription via PDS delete
-func (s *communityService) UnsubscribeFromCommunity(ctx context.Context, userDID, communityIdentifier string) error {
+func (s *communityService) UnsubscribeFromCommunity(ctx context.Context, userDID, userAccessToken, communityIdentifier string) error {
 	if userDID == "" {
 		return NewValidationError("userDid", "required")
+	}
+	if userAccessToken == "" {
+		return NewValidationError("userAccessToken", "required")
 	}
 
 	// Resolve community identifier
@@ -423,8 +448,8 @@ func (s *communityService) UnsubscribeFromCommunity(ctx context.Context, userDID
 		return fmt.Errorf("invalid subscription record URI")
 	}
 
-	// Write-forward: delete record from PDS
-	if err := s.deleteRecordOnPDS(ctx, userDID, "social.coves.community.subscribe", rkey); err != nil {
+	// Write-forward: delete record from PDS using user's access token
+	if err := s.deleteRecordOnPDSAs(ctx, userDID, "social.coves.community.subscribe", rkey, userAccessToken); err != nil {
 		return fmt.Errorf("failed to delete subscription on PDS: %w", err)
 	}
 
@@ -548,9 +573,8 @@ func (s *communityService) validateCreateRequest(req CreateCommunityRequest) err
 		return NewValidationError("createdByDid", "required")
 	}
 
-	if req.HostedByDID == "" {
-		return NewValidationError("hostedByDid", "required")
-	}
+	// hostedByDID is auto-populated by the service layer, no validation needed
+	// The handler ensures clients cannot provide this field
 
 	return nil
 }
@@ -614,6 +638,20 @@ func (s *communityService) deleteRecordOnPDS(ctx context.Context, repoDID, colle
 	}
 
 	_, _, err := s.callPDS(ctx, "POST", endpoint, payload)
+	return err
+}
+
+// deleteRecordOnPDSAs deletes a record with a specific access token (for user-scoped deletions)
+func (s *communityService) deleteRecordOnPDSAs(ctx context.Context, repoDID, collection, rkey string, accessToken string) error {
+	endpoint := fmt.Sprintf("%s/xrpc/com.atproto.repo.deleteRecord", strings.TrimSuffix(s.pdsURL, "/"))
+
+	payload := map[string]interface{}{
+		"repo":       repoDID,
+		"collection": collection,
+		"rkey":       rkey,
+	}
+
+	_, _, err := s.callPDSWithAuth(ctx, "POST", endpoint, payload, accessToken)
 	return err
 }
 
