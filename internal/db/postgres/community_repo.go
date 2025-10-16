@@ -66,9 +66,9 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 		community.HostedByDID,
 		// V2.0: PDS credentials for community account (encrypted at rest)
 		nullString(community.PDSEmail),
-		nullString(community.PDSPassword),      // Encrypted by pgp_sym_encrypt
-		nullString(community.PDSAccessToken),   // Encrypted by pgp_sym_encrypt
-		nullString(community.PDSRefreshToken),  // Encrypted by pgp_sym_encrypt
+		nullString(community.PDSPassword),     // Encrypted by pgp_sym_encrypt
+		nullString(community.PDSAccessToken),  // Encrypted by pgp_sym_encrypt
+		nullString(community.PDSRefreshToken), // Encrypted by pgp_sym_encrypt
 		nullString(community.PDSURL),
 		// V2.0: No key columns - PDS manages all keys
 		community.Visibility,

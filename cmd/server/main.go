@@ -1,9 +1,9 @@
 package main
 
 import (
-	"Coves/internal/api/handlers/oauth"
 	"Coves/internal/api/middleware"
 	"Coves/internal/api/routes"
+	"Coves/internal/atproto/auth"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/communities"
@@ -24,8 +24,6 @@ import (
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
 	_ "github.com/lib/pq"
 	"github.com/pressly/goose/v3"
-
-	oauthCore "Coves/internal/core/oauth"
 
 	postgresRepo "Coves/internal/db/postgres"
 )
@@ -116,9 +114,19 @@ func main() {
 
 	identityResolver := identity.NewResolver(db, identityConfig)
 
-	// Initialize OAuth session store
-	sessionStore := oauthCore.NewPostgresSessionStore(db)
-	log.Println("OAuth session store initialized")
+	// Initialize atProto auth middleware for JWT validation
+	// Phase 1: Set skipVerify=true to test JWT parsing only
+	// Phase 2: Set skipVerify=false to enable full signature verification
+	skipVerify := os.Getenv("AUTH_SKIP_VERIFY") == "true"
+	if skipVerify {
+		log.Println("⚠️  WARNING: JWT signature verification is DISABLED (Phase 1 testing)")
+		log.Println("   Set AUTH_SKIP_VERIFY=false for production")
+	}
+
+	jwksCacheTTL := 1 * time.Hour // Cache public keys for 1 hour
+	jwksFetcher := auth.NewCachedJWKSFetcher(jwksCacheTTL)
+	authMiddleware := middleware.NewAtProtoAuthMiddleware(jwksFetcher, skipVerify)
+	log.Println("✅ atProto auth middleware initialized")
 
 	// Initialize repositories and services
 	userRepo := postgresRepo.NewUserRepository(db)
@@ -215,56 +223,22 @@ func main() {
 	// they appear in the firehose. A dedicated consumer can be added later if needed.
 	log.Println("Community event consumer initialized (processes events from firehose)")
 
-	// Start OAuth cleanup background job
+	// Start JWKS cache cleanup background job
 	go func() {
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
-			if pgStore, ok := sessionStore.(*oauthCore.PostgresSessionStore); ok {
-				if cleanupErr := pgStore.CleanupExpiredRequests(ctx); cleanupErr != nil {
-					log.Printf("Failed to cleanup expired OAuth requests: %v", cleanupErr)
-				}
-				if cleanupErr := pgStore.CleanupExpiredSessions(ctx); cleanupErr != nil {
-					log.Printf("Failed to cleanup expired OAuth sessions: %v", cleanupErr)
-				}
-				log.Println("OAuth cleanup completed")
-			}
+			jwksFetcher.CleanupExpiredCache()
+			log.Println("JWKS cache cleanup completed")
 		}
 	}()
 
-	log.Println("Started OAuth cleanup background job (runs hourly)")
-
-	// Initialize OAuth cookie store (singleton)
-	cookieSecret, err := oauth.GetEnvBase64OrPlain("OAUTH_COOKIE_SECRET")
-	if err != nil {
-		log.Fatalf("Failed to load OAUTH_COOKIE_SECRET: %v", err)
-	}
-	if cookieSecret == "" {
-		log.Fatal("OAUTH_COOKIE_SECRET not configured")
-	}
-
-	if err := oauth.InitCookieStore(cookieSecret); err != nil {
-		log.Fatalf("Failed to initialize cookie store: %v", err)
-	}
-
-	// Initialize OAuth handlers
-	loginHandler := oauth.NewLoginHandler(identityResolver, sessionStore)
-	callbackHandler := oauth.NewCallbackHandler(sessionStore)
-	logoutHandler := oauth.NewLogoutHandler(sessionStore)
-
-	// OAuth routes (public endpoints)
-	r.Post("/oauth/login", loginHandler.HandleLogin)
-	r.Get("/oauth/callback", callbackHandler.HandleCallback)
-	r.Post("/oauth/logout", logoutHandler.HandleLogout)
-	r.Get("/oauth/client-metadata.json", oauth.HandleClientMetadata)
-	r.Get("/oauth/jwks.json", oauth.HandleJWKS)
-
-	log.Println("OAuth endpoints registered")
+	log.Println("Started JWKS cache cleanup background job (runs hourly)")
 
 	// Register XRPC routes
 	routes.RegisterUserRoutes(r, userService)
-	routes.RegisterCommunityRoutes(r, communityService)
-	log.Println("Community XRPC endpoints registered")
+	routes.RegisterCommunityRoutes(r, communityService, authMiddleware)
+	log.Println("Community XRPC endpoints registered with OAuth authentication")
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
