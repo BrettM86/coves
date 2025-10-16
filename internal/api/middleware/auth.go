@@ -1,16 +1,11 @@
 package middleware
 
 import (
-	"Coves/internal/api/handlers/oauth"
+	"Coves/internal/atproto/auth"
 	"context"
-	"fmt"
 	"log"
 	"net/http"
-	"os"
 	"strings"
-
-	atprotoOAuth "Coves/internal/atproto/oauth"
-	oauthCore "Coves/internal/core/oauth"
 )
 
 // Context keys for storing user information
@@ -18,95 +13,88 @@ type contextKey string
 
 const (
 	UserDIDKey      contextKey = "user_did"
-	OAuthSessionKey contextKey = "oauth_session"
+	JWTClaimsKey    contextKey = "jwt_claims"
+	UserAccessToken contextKey = "user_access_token"
 )
 
-const (
-	sessionName = "coves_session"
-	sessionDID  = "did"
-)
-
-// AuthMiddleware enforces OAuth authentication for protected routes
-type AuthMiddleware struct {
-	authService *oauthCore.AuthService
+// AtProtoAuthMiddleware enforces atProto OAuth authentication for protected routes
+// Validates JWT Bearer tokens from the Authorization header
+type AtProtoAuthMiddleware struct {
+	jwksFetcher auth.JWKSFetcher
+	skipVerify  bool // For Phase 1 testing only
 }
 
-// NewAuthMiddleware creates a new auth middleware
-func NewAuthMiddleware(sessionStore oauthCore.SessionStore) (*AuthMiddleware, error) {
-	privateJWK := os.Getenv("OAUTH_PRIVATE_JWK")
-	if privateJWK == "" {
-		return nil, fmt.Errorf("OAUTH_PRIVATE_JWK not configured")
+// NewAtProtoAuthMiddleware creates a new atProto auth middleware
+// skipVerify: if true, only parses JWT without signature verification (Phase 1)
+//
+//	if false, performs full signature verification (Phase 2)
+func NewAtProtoAuthMiddleware(jwksFetcher auth.JWKSFetcher, skipVerify bool) *AtProtoAuthMiddleware {
+	return &AtProtoAuthMiddleware{
+		jwksFetcher: jwksFetcher,
+		skipVerify:  skipVerify,
 	}
-
-	// Parse OAuth client key
-	privateKey, err := atprotoOAuth.ParseJWKFromJSON([]byte(privateJWK))
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse OAuth private key: %w", err)
-	}
-
-	// Get AppView URL
-	appviewURL := os.Getenv("APPVIEW_PUBLIC_URL")
-	if appviewURL == "" {
-		appviewURL = "http://localhost:8081"
-	}
-
-	// Determine client ID
-	var clientID string
-	if strings.HasPrefix(appviewURL, "http://localhost") || strings.HasPrefix(appviewURL, "http://127.0.0.1") {
-		clientID = "http://localhost?redirect_uri=" + appviewURL + "/oauth/callback&scope=atproto%20transition:generic"
-	} else {
-		clientID = appviewURL + "/oauth/client-metadata.json"
-	}
-
-	redirectURI := appviewURL + "/oauth/callback"
-
-	oauthClient := atprotoOAuth.NewClient(clientID, privateKey, redirectURI)
-	authService := oauthCore.NewAuthService(sessionStore, oauthClient)
-
-	return &AuthMiddleware{
-		authService: authService,
-	}, nil
 }
 
-// RequireAuth middleware ensures the user is authenticated
+// RequireAuth middleware ensures the user is authenticated with a valid JWT
 // If not authenticated, returns 401
-// If authenticated, injects user DID and OAuth session into context
-func (m *AuthMiddleware) RequireAuth(next http.Handler) http.Handler {
+// If authenticated, injects user DID and JWT claims into context
+func (m *AtProtoAuthMiddleware) RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Get HTTP session
-		cookieStore := oauth.GetCookieStore()
-		httpSession, err := cookieStore.Get(r, sessionName)
-		if err != nil || httpSession.IsNew {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		// Extract Authorization header
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			writeAuthError(w, "Missing Authorization header")
 			return
 		}
 
-		// Get DID from session
-		did, ok := httpSession.Values[sessionDID].(string)
-		if !ok || did == "" {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		// Must be Bearer token
+		if !strings.HasPrefix(authHeader, "Bearer ") {
+			writeAuthError(w, "Invalid Authorization header format. Expected: Bearer <token>")
 			return
 		}
 
-		// Load OAuth session from database
-		session, err := m.authService.ValidateSession(r.Context(), did)
-		if err != nil {
-			log.Printf("Failed to load OAuth session for DID %s: %v", did, err)
-			http.Error(w, "Session expired", http.StatusUnauthorized)
+		token := strings.TrimPrefix(authHeader, "Bearer ")
+		token = strings.TrimSpace(token)
+
+		var claims *auth.Claims
+		var err error
+
+		if m.skipVerify {
+			// Phase 1: Parse only (no signature verification)
+			claims, err = auth.ParseJWT(token)
+			if err != nil {
+				log.Printf("[AUTH_FAILURE] type=parse_error ip=%s method=%s path=%s error=%v",
+					r.RemoteAddr, r.Method, r.URL.Path, err)
+				writeAuthError(w, "Invalid token")
+				return
+			}
+		} else {
+			// Phase 2: Full verification with signature check
+			claims, err = auth.VerifyJWT(r.Context(), token, m.jwksFetcher)
+			if err != nil {
+				// Try to extract issuer for better logging
+				issuer := "unknown"
+				if parsedClaims, parseErr := auth.ParseJWT(token); parseErr == nil {
+					issuer = parsedClaims.Issuer
+				}
+				log.Printf("[AUTH_FAILURE] type=verification_failed ip=%s method=%s path=%s issuer=%s error=%v",
+					r.RemoteAddr, r.Method, r.URL.Path, issuer, err)
+				writeAuthError(w, "Invalid or expired token")
+				return
+			}
+		}
+
+		// Extract user DID from 'sub' claim
+		userDID := claims.Subject
+		if userDID == "" {
+			writeAuthError(w, "Missing user DID in token")
 			return
 		}
 
-		// Check if token needs refresh and refresh if necessary
-		session, err = m.authService.RefreshTokenIfNeeded(r.Context(), session, oauth.TokenRefreshThreshold)
-		if err != nil {
-			log.Printf("Failed to refresh token for DID %s: %v", did, err)
-			http.Error(w, "Session expired", http.StatusUnauthorized)
-			return
-		}
-
-		// Inject user info into context
-		ctx := context.WithValue(r.Context(), UserDIDKey, did)
-		ctx = context.WithValue(ctx, OAuthSessionKey, session)
+		// Inject user info and access token into context
+		ctx := context.WithValue(r.Context(), UserDIDKey, userDID)
+		ctx = context.WithValue(ctx, JWTClaimsKey, claims)
+		ctx = context.WithValue(ctx, UserAccessToken, token)
 
 		// Call next handler
 		next.ServeHTTP(w, r.WithContext(ctx))
@@ -115,45 +103,41 @@ func (m *AuthMiddleware) RequireAuth(next http.Handler) http.Handler {
 
 // OptionalAuth middleware loads user info if authenticated, but doesn't require it
 // Useful for endpoints that work for both authenticated and anonymous users
-func (m *AuthMiddleware) OptionalAuth(next http.Handler) http.Handler {
+func (m *AtProtoAuthMiddleware) OptionalAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Get HTTP session
-		cookieStore := oauth.GetCookieStore()
-		httpSession, err := cookieStore.Get(r, sessionName)
-		if err != nil || httpSession.IsNew {
+		// Extract Authorization header
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
 			// Not authenticated - continue without user context
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// Get DID from session
-		did, ok := httpSession.Values[sessionDID].(string)
-		if !ok || did == "" {
-			// No DID - continue without user context
-			next.ServeHTTP(w, r)
-			return
-		}
+		token := strings.TrimPrefix(authHeader, "Bearer ")
+		token = strings.TrimSpace(token)
 
-		// Load OAuth session from database
-		session, err := m.authService.ValidateSession(r.Context(), did)
-		if err != nil {
-			// Session expired - continue without user context
-			next.ServeHTTP(w, r)
-			return
-		}
+		var claims *auth.Claims
+		var err error
 
-		// Try to refresh token if needed (best effort)
-		refreshedSession, err := m.authService.RefreshTokenIfNeeded(r.Context(), session, oauth.TokenRefreshThreshold)
-		if err != nil {
-			// If refresh fails, continue with old session (best effort)
-			// Session will still be valid for a few more minutes
+		if m.skipVerify {
+			// Phase 1: Parse only
+			claims, err = auth.ParseJWT(token)
 		} else {
-			session = refreshedSession
+			// Phase 2: Full verification
+			claims, err = auth.VerifyJWT(r.Context(), token, m.jwksFetcher)
 		}
 
-		// Inject user info into context
-		ctx := context.WithValue(r.Context(), UserDIDKey, did)
-		ctx = context.WithValue(ctx, OAuthSessionKey, session)
+		if err != nil {
+			// Invalid token - continue without user context
+			log.Printf("Optional auth failed: %v", err)
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Inject user info and access token into context
+		ctx := context.WithValue(r.Context(), UserDIDKey, claims.Subject)
+		ctx = context.WithValue(ctx, JWTClaimsKey, claims)
+		ctx = context.WithValue(ctx, UserAccessToken, token)
 
 		// Call next handler
 		next.ServeHTTP(w, r.WithContext(ctx))
@@ -167,9 +151,27 @@ func GetUserDID(r *http.Request) string {
 	return did
 }
 
-// GetOAuthSession extracts the OAuth session from the request context
+// GetJWTClaims extracts the JWT claims from the request context
 // Returns nil if not authenticated
-func GetOAuthSession(r *http.Request) *oauthCore.OAuthSession {
-	session, _ := r.Context().Value(OAuthSessionKey).(*oauthCore.OAuthSession)
-	return session
+func GetJWTClaims(r *http.Request) *auth.Claims {
+	claims, _ := r.Context().Value(JWTClaimsKey).(*auth.Claims)
+	return claims
+}
+
+// GetUserAccessToken extracts the user's access token from the request context
+// Returns empty string if not authenticated
+func GetUserAccessToken(r *http.Request) string {
+	token, _ := r.Context().Value(UserAccessToken).(string)
+	return token
+}
+
+// writeAuthError writes a JSON error response for authentication failures
+func writeAuthError(w http.ResponseWriter, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnauthorized)
+	// Simple error response matching XRPC error format
+	response := `{"error":"AuthenticationRequired","message":"` + message + `"}`
+	if _, err := w.Write([]byte(response)); err != nil {
+		log.Printf("Failed to write auth error response: %v", err)
+	}
 }
