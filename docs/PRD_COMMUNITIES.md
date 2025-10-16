@@ -102,8 +102,10 @@ Hosted By:   did:web:coves.social (instance manages credentials)
 **📍 Post-Alpha:**
 - [ ] `social.coves.community.search` - Handler exists, defer E2E testing to post-alpha
 
-**⚠️ Remaining Alpha Blocker:**
-- Replace placeholder auth (X-User-DID header) with OAuth context extraction across all endpoints
+**✅ OAuth Authentication Complete (2025-10-16):**
+- User access tokens now flow through middleware → handlers → service
+- Subscribe/unsubscribe operations use correct user-scoped credentials
+- All E2E tests validate real PDS authentication with user tokens
 
 ---
 
@@ -123,10 +125,32 @@ Hosted By:   did:web:coves.social (instance manages credentials)
   - Repository: ❌ No methods
   - **Impact:** Users have no way to hide unwanted communities
 
+### Critical Infrastructure (BLOCKING)
+- [ ] **⚠️ Subscription Indexing - NO PRODUCTION CONSUMER**
+  - **Status:** Subscriptions write to PDS but are NEVER indexed in AppView
+  - **Root Cause:** `CommunityEventConsumer` only runs in tests, not in production
+  - **Impact:**
+    - ❌ Users CAN subscribe/unsubscribe (writes to their PDS repo) ✅
+    - ❌ AppView has NO KNOWLEDGE of subscriptions (not consuming from Jetstream)
+    - ❌ Cannot query user's subscriptions (data doesn't exist in AppView)
+    - ❌ Feed generation impossible (don't know who's subscribed to what)
+  - **Required Fixes:**
+    1. Start `CommunityEventConsumer` in production ([cmd/server/main.go](cmd/server/main.go))
+    2. Subscribe to local Jetstream: `ws://localhost:6008/subscribe?wantedCollections=social.coves.community.subscribe`
+    3. Fix unsubscribe handler - should handle `delete` operation on `social.coves.community.subscribe`, NOT a separate collection
+    4. Remove incorrect `social.coves.community.unsubscribe` case ([community_consumer.go:40](internal/atproto/jetstream/community_consumer.go#L40))
+  - **Files:**
+    - Consumer: [internal/atproto/jetstream/community_consumer.go](internal/atproto/jetstream/community_consumer.go) (exists, needs fixes)
+    - Server: [cmd/server/main.go](cmd/server/main.go) (needs to instantiate consumer)
+  - **See:** Issue discovered 2025-10-16 during OAuth user token implementation
+
 ### Critical Security (High Priority)
-- [ ] **OAuth Authentication:** Replace placeholder `X-User-DID` header with OAuth context
-  - **Currently affected endpoints:** create, update, subscribe, unsubscribe
-  - **See:** [PRD_BACKLOG.md P1 Priority](docs/PRD_BACKLOG.md#L42-L50)
+- [x] **OAuth Authentication:** ✅ COMPLETE - User access tokens flow end-to-end
+  - ✅ Middleware stores user access token in context
+  - ✅ Handlers extract and pass token to service
+  - ✅ Service uses user token for user repo operations (subscribe/unsubscribe)
+  - ✅ All E2E tests pass with real PDS authentication
+  - **Completed:** 2025-10-16
 
 - [ ] **Token Refresh Logic:** Auto-refresh expired PDS access tokens
   - **Impact:** Communities break after ~2 hours when tokens expire
