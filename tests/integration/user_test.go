@@ -70,6 +70,14 @@ func setupTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
+// generateTestDID generates a unique test DID for integration tests
+// V2.0: No longer uses DID generator - just creates valid did:plc strings
+func generateTestDID(suffix string) string {
+	// Use a deterministic base + suffix for reproducible test DIDs
+	// Format matches did:plc but doesn't need PLC registration for unit/repo tests
+	return fmt.Sprintf("did:plc:test%s", suffix)
+}
+
 func TestUserCreationAndRetrieval(t *testing.T) {
 	db := setupTestDB(t)
 	defer func() {

@@ -1,7 +1,6 @@
 package unit
 
 import (
-	"Coves/internal/atproto/did"
 	"Coves/internal/core/communities"
 	"context"
 	"fmt"
@@ -163,7 +162,7 @@ func TestCommunityService_PDSTimeouts(t *testing.T) {
 		defer slowPDS.Close()
 
 		_ = newMockCommunityRepo()
-		_ = did.NewGenerator(true, "https://plc.directory")
+		// V2.0: DID generator no longer needed - PDS generates DIDs
 
 		// Note: We can't easily test the actual service without mocking more dependencies
 		// This test verifies the concept - in practice, a 15s operation should NOT timeout
@@ -249,7 +248,7 @@ func TestCommunityService_CredentialPersistence(t *testing.T) {
 			CreatedByDID:    "did:plc:creator",
 			HostedByDID:     "did:web:coves.social",
 			PDSEmail:        "community-test@communities.coves.social",
-			PDSPasswordHash: "$2a$10$hash",
+			PDSPassword:     "cleartext-password-will-be-encrypted", // V2: Cleartext (encrypted by repository)
 			PDSAccessToken:  "test_access_token",
 			PDSRefreshToken: "test_refresh_token",
 			PDSURL:          "http://localhost:2583",

@@ -2,7 +2,6 @@ package integration
 
 import (
 	"Coves/internal/api/routes"
-	"Coves/internal/atproto/did"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/communities"
@@ -86,7 +85,6 @@ func TestCommunity_E2E(t *testing.T) {
 
 	// Setup dependencies
 	communityRepo := postgres.NewCommunityRepository(db)
-	didGen := did.NewGenerator(true, "https://plc.directory")
 
 	// Get instance credentials
 	instanceHandle := os.Getenv("PDS_INSTANCE_HANDLE")
@@ -108,7 +106,7 @@ func TestCommunity_E2E(t *testing.T) {
 
 	t.Logf("✅ Authenticated - Instance DID: %s", instanceDID)
 
-	// V2: Extract instance domain for community provisioning
+	// V2.0: Extract instance domain for community provisioning
 	var instanceDomain string
 	if strings.HasPrefix(instanceDID, "did:web:") {
 		instanceDomain = strings.TrimPrefix(instanceDID, "did:web:")
@@ -117,16 +115,24 @@ func TestCommunity_E2E(t *testing.T) {
 		instanceDomain = "coves.social"
 	}
 
-	// V2: Create user service for PDS account provisioning
+	// V2.0: Create user service with REAL identity resolution using local PLC
+	plcURL := os.Getenv("PLC_DIRECTORY_URL")
+	if plcURL == "" {
+		plcURL = "http://localhost:3002" // Local PLC directory
+	}
 	userRepo := postgres.NewUserRepository(db)
-	identityResolver := &communityTestIdentityResolver{} // Simple mock for test
-	userService := users.NewUserService(userRepo, identityResolver, pdsURL)
+	identityConfig := identity.DefaultConfig()
+	identityConfig.PLCURL = plcURL // Use local PLC for identity resolution
+	identityResolver := identity.NewResolver(db, identityConfig)
+	_ = users.NewUserService(userRepo, identityResolver, pdsURL) // Keep for potential future use
+	t.Logf("✅ Identity resolver configured with local PLC: %s", plcURL)
 
-	// V2: Initialize PDS account provisioner
-	provisioner := communities.NewPDSAccountProvisioner(userService, instanceDomain, pdsURL)
+	// V2.0: Initialize PDS account provisioner (simplified - no DID generator needed!)
+	// PDS handles all DID generation and registration automatically
+	provisioner := communities.NewPDSAccountProvisioner(instanceDomain, pdsURL)
 
-	// Create service and consumer
-	communityService := communities.NewCommunityService(communityRepo, didGen, pdsURL, instanceDID, instanceDomain, provisioner)
+	// Create service (no longer needs didGen directly - provisioner owns it)
+	communityService := communities.NewCommunityService(communityRepo, pdsURL, instanceDID, instanceDomain, provisioner)
 	if svc, ok := communityService.(interface{ SetPDSAccessToken(string) }); ok {
 		svc.SetPDSAccessToken(accessToken)
 	}

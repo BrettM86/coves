@@ -1,7 +1,6 @@
 package integration
 
 import (
-	"Coves/internal/atproto/did"
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/communities"
 	"Coves/internal/db/postgres"
@@ -21,15 +20,11 @@ func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
 
 	repo := postgres.NewCommunityRepository(db)
 	consumer := jetstream.NewCommunityEventConsumer(repo)
-	didGen := did.NewGenerator(true, "https://plc.directory")
 	ctx := context.Background()
 
 	t.Run("creates community from firehose event", func(t *testing.T) {
-		communityDID, err := didGen.GenerateCommunityDID()
-		if err != nil {
-			t.Fatalf("Failed to generate community DID: %v", err)
-		}
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
+		communityDID := generateTestDID(uniqueSuffix)
 
 		// Simulate a Jetstream commit event
 		event := &jetstream.JetstreamEvent{
@@ -85,11 +80,8 @@ func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
 	})
 
 	t.Run("updates existing community", func(t *testing.T) {
-		communityDID, err := didGen.GenerateCommunityDID()
-		if err != nil {
-			t.Fatalf("Failed to generate community DID: %v", err)
-		}
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
+		communityDID := generateTestDID(uniqueSuffix)
 		handle := fmt.Sprintf("!update-test-%s@coves.local", uniqueSuffix)
 
 		// Create initial community
@@ -169,11 +161,8 @@ func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
 	})
 
 	t.Run("deletes community", func(t *testing.T) {
-		communityDID, err := didGen.GenerateCommunityDID()
-		if err != nil {
-			t.Fatalf("Failed to generate community DID: %v", err)
-		}
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
+		communityDID := generateTestDID(uniqueSuffix)
 
 		// Create community to delete
 		community := &communities.Community{
@@ -227,16 +216,12 @@ func TestCommunityConsumer_HandleSubscription(t *testing.T) {
 
 	repo := postgres.NewCommunityRepository(db)
 	consumer := jetstream.NewCommunityEventConsumer(repo)
-	didGen := did.NewGenerator(true, "https://plc.directory")
 	ctx := context.Background()
 
 	t.Run("creates subscription from event", func(t *testing.T) {
 		// Create a community first
-		communityDID, err := didGen.GenerateCommunityDID()
-		if err != nil {
-			t.Fatalf("Failed to generate community DID: %v", err)
-		}
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
+		communityDID := generateTestDID(uniqueSuffix)
 
 		community := &communities.Community{
 			DID:          communityDID,
