@@ -1,6 +1,7 @@
 package community
 
 import (
+	"Coves/internal/api/middleware"
 	"Coves/internal/core/communities"
 	"encoding/json"
 	"log"
@@ -43,19 +44,21 @@ func (h *SubscribeHandler) HandleSubscribe(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// TODO(Communities-OAuth): Extract authenticated user DID from request context
-	// This MUST be replaced with OAuth middleware before production deployment
-	// Expected implementation:
-	//   userDID := r.Context().Value("authenticated_user_did").(string)
-	// For now, we read from header (INSECURE - allows impersonation)
-	userDID := r.Header.Get("X-User-DID")
+	// Extract authenticated user DID and access token from request context (injected by auth middleware)
+	userDID := middleware.GetUserDID(r)
 	if userDID == "" {
 		writeError(w, http.StatusUnauthorized, "AuthRequired", "Authentication required")
 		return
 	}
 
+	userAccessToken := middleware.GetUserAccessToken(r)
+	if userAccessToken == "" {
+		writeError(w, http.StatusUnauthorized, "AuthRequired", "Missing access token")
+		return
+	}
+
 	// Subscribe via service (write-forward to PDS)
-	subscription, err := h.service.SubscribeToCommunity(r.Context(), userDID, req.Community)
+	subscription, err := h.service.SubscribeToCommunity(r.Context(), userDID, userAccessToken, req.Community)
 	if err != nil {
 		handleServiceError(w, err)
 		return
@@ -99,19 +102,21 @@ func (h *SubscribeHandler) HandleUnsubscribe(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// TODO(Communities-OAuth): Extract authenticated user DID from request context
-	// This MUST be replaced with OAuth middleware before production deployment
-	// Expected implementation:
-	//   userDID := r.Context().Value("authenticated_user_did").(string)
-	// For now, we read from header (INSECURE - allows impersonation)
-	userDID := r.Header.Get("X-User-DID")
+	// Extract authenticated user DID and access token from request context (injected by auth middleware)
+	userDID := middleware.GetUserDID(r)
 	if userDID == "" {
 		writeError(w, http.StatusUnauthorized, "AuthRequired", "Authentication required")
 		return
 	}
 
+	userAccessToken := middleware.GetUserAccessToken(r)
+	if userAccessToken == "" {
+		writeError(w, http.StatusUnauthorized, "AuthRequired", "Missing access token")
+		return
+	}
+
 	// Unsubscribe via service (delete record on PDS)
-	err := h.service.UnsubscribeFromCommunity(r.Context(), userDID, req.Community)
+	err := h.service.UnsubscribeFromCommunity(r.Context(), userDID, userAccessToken, req.Community)
 	if err != nil {
 		handleServiceError(w, err)
 		return
