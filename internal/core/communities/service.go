@@ -260,12 +260,18 @@ func (s *communityService) UpdateCommunity(ctx context.Context, req UpdateCommun
 		}
 	}
 
+	// Preserve moderation settings (even if empty)
+	// These fields are optional but should not be erased on update
 	if req.ModerationType != nil {
 		profile["moderationType"] = *req.ModerationType
+	} else if existing.ModerationType != "" {
+		profile["moderationType"] = existing.ModerationType
 	}
 
 	if len(req.ContentWarnings) > 0 {
 		profile["contentWarnings"] = req.ContentWarnings
+	} else if len(existing.ContentWarnings) > 0 {
+		profile["contentWarnings"] = existing.ContentWarnings
 	}
 
 	// Preserve counts
