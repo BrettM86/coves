@@ -26,10 +26,10 @@ Miscellaneous platform improvements, bug fixes, and technical debt that don't fi
 
 ---
 
-## 🟡 P1: Important
+## 🟡 P1: Important (Alpha Blockers)
 
 ### Token Refresh Logic for Community Credentials
-**Added:** 2025-10-11 | **Effort:** 1-2 days
+**Added:** 2025-10-11 | **Effort:** 1-2 days | **Priority:** ALPHA BLOCKER
 
 **Problem:** Community PDS access tokens expire (~2hrs). Updates fail until manual intervention.
 
@@ -40,17 +40,72 @@ Miscellaneous platform improvements, bug fixes, and technical debt that don't fi
 ---
 
 ### OAuth Authentication for Community Actions
-**Added:** 2025-10-11 | **Effort:** 2-3 days
+**Added:** 2025-10-11 | **Effort:** 2-3 days | **Priority:** ALPHA BLOCKER
 
 **Problem:** Subscribe/unsubscribe and community creation need authenticated user DID. Currently using placeholder.
 
 **Solution:** Extract authenticated DID from OAuth session context. Requires OAuth middleware integration.
 
-**Code:** Multiple TODOs in [community/subscribe.go](../internal/api/handlers/community/subscribe.go#L46), [community/create.go](../internal/api/handlers/community/create.go#L38)
+**Code:** Multiple TODOs in [community/subscribe.go](../internal/api/handlers/community/subscribe.go#L46), [community/create.go](../internal/api/handlers/community/create.go#L38), [community/update.go](../internal/api/handlers/community/update.go#L47)
+
+---
+
+### Subscription Visibility Level (Feed Slider 1-5 Scale)
+**Added:** 2025-10-15 | **Effort:** 4-6 hours | **Priority:** ALPHA BLOCKER
+
+**Problem:** Users can't control how much content they see from each community. Lexicon has `contentVisibility` (1-5 scale) but code doesn't use it.
+
+**Solution:**
+- Update subscribe handler to accept `contentVisibility` parameter (1-5, default 3)
+- Store in subscription record on PDS
+- Update feed generation to respect visibility level (beta work, but data structure needed now)
+
+**Code:**
+- Lexicon: [subscription.json:28-34](../internal/atproto/lexicon/social/coves/actor/subscription.json#L28-L34) ✅ Ready
+- Handler: [community/subscribe.go](../internal/api/handlers/community/subscribe.go) - Add parameter
+- Service: [communities/service.go:373-376](../internal/core/communities/service.go#L373-L376) - Add to record
+
+**Impact:** Without this, users have no way to adjust feed volume per community (key feature from DOMAIN_KNOWLEDGE.md)
+
+---
+
+### Community Blocking
+**Added:** 2025-10-15 | **Effort:** 1 day | **Priority:** ALPHA BLOCKER
+
+**Problem:** Users have no way to block unwanted communities from their feeds.
+
+**Solution:**
+1. **Lexicon:** Extend `social.coves.actor.block` to support community DIDs (currently user-only)
+2. **Service:** Implement `BlockCommunity(userDID, communityDID)` and `UnblockCommunity()`
+3. **Handlers:** Add XRPC endpoints `social.coves.community.block` and `unblock`
+4. **Repository:** Add methods to track blocked communities
+5. **Feed:** Filter blocked communities from feed queries (beta work)
+
+**Code:**
+- Lexicon: [actor/block.json](../internal/atproto/lexicon/social/coves/actor/block.json) - Currently only supports user DIDs
+- Service: New methods needed
+- Handlers: New files needed
+
+**Impact:** Users can't avoid unwanted content without blocking
 
 ---
 
 ## 🟢 P2: Nice-to-Have
+
+### Remove Categories from Community Lexicon
+**Added:** 2025-10-15 | **Effort:** 30 minutes | **Priority:** Cleanup
+
+**Problem:** Categories field exists in create/update lexicon but not in profile record. Adds complexity without clear value.
+
+**Solution:**
+- Remove `categories` from [create.json](../internal/atproto/lexicon/social/coves/community/create.json#L46-L54)
+- Remove `categories` from [update.json](../internal/atproto/lexicon/social/coves/community/update.json#L51-L59)
+- Remove from [community.go:91](../internal/core/communities/community.go#L91)
+- Remove from service layer ([service.go:109-110](../internal/core/communities/service.go#L109-L110))
+
+**Impact:** Simplifies lexicon, removes unused feature
+
+---
 
 ### Improve .local TLD Error Messages
 **Added:** 2025-10-11 | **Effort:** 1 hour

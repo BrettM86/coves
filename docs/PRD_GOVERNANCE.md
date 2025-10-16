@@ -15,11 +15,13 @@ The governance system must balance three competing needs:
 
 ## Problem Statement
 
-**Current State (2025-10-10):**
+**Current State (2025-10-15):**
 - Communities own their own atProto repositories (V2 architecture)
 - Instance holds PDS credentials for infrastructure management
-- No authorization model exists for who can update/manage communities
-- Only implicit "owner" is the instance itself
+- Basic authorization exists: only `createdBy` user can update communities
+- No moderator management system exists yet
+
+**Note:** Moderator management and advanced governance are **post-alpha** (Beta Phase 1) work. Alpha focuses on basic community CRUD operations.
 
 **Key Issues:**
 1. **Self-hosted instances:** Instance operator can't delegate community management to trusted users

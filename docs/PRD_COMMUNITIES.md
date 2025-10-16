@@ -89,70 +89,111 @@ Hosted By:   did:web:coves.social (instance manages credentials)
 ## 🚧 In Progress / Needs Testing
 
 ### XRPC API Endpoints
-**Status:** Handlers exist, need comprehensive E2E testing
+**Status:** All core endpoints E2E tested! ✅
 
-- [ ] `social.coves.community.create` - **Handler exists**, needs E2E test with real PDS
-- [ ] `social.coves.community.get` - **Handler exists**, needs E2E test
-- [ ] `social.coves.community.update` - **Handler exists**, needs E2E test with community credentials
-- [ ] `social.coves.community.list` - **Handler exists**, needs E2E test with pagination
-- [ ] `social.coves.community.search` - **Handler exists**, needs E2E test with queries
-- [ ] `social.coves.community.subscribe` - **Handler exists**, needs E2E test
-- [ ] `social.coves.community.unsubscribe` - **Handler exists**, needs E2E test
+**✅ E2E Tested (via community_e2e_test.go):**
+- [x] `social.coves.community.create` - Full E2E test with real PDS
+- [x] `social.coves.community.get` - E2E test validates HTTP endpoint
+- [x] `social.coves.community.list` - E2E test with pagination/filtering
+- [x] `social.coves.community.update` - E2E test verifies write-forward + PDS update
+- [x] `social.coves.community.subscribe` - E2E test verifies subscription in user's repo
+- [x] `social.coves.community.unsubscribe` - E2E test verifies PDS deletion
 
-**What's needed:**
-- E2E tests that verify complete flow: HTTP → Service → PDS → Firehose → Consumer → DB → HTTP response
-- Test with real PDS instance (not mocked)
-- Verify Jetstream consumer picks up events in real-time
+**📍 Post-Alpha:**
+- [ ] `social.coves.community.search` - Handler exists, defer E2E testing to post-alpha
+
+**⚠️ Remaining Alpha Blocker:**
+- Replace placeholder auth (X-User-DID header) with OAuth context extraction across all endpoints
+
+---
+
+## ⚠️ Alpha Blockers (Must Complete Before Alpha Launch)
+
+### Critical Missing Features
+- [ ] **Subscription Visibility Level (1-5 Scale):** Implement feed slider from DOMAIN_KNOWLEDGE.md
+  - Lexicon: ✅ Ready ([subscription.json:28-34](internal/atproto/lexicon/social/coves/actor/subscription.json))
+  - Service: ❌ Not using `contentVisibility` field
+  - Handler: ❌ Subscribe endpoint doesn't accept/store visibility level
+  - **Impact:** Users can't control how much content they see from each community
+
+- [ ] **Community Blocking:** Users can block communities from their feeds
+  - Lexicon: ❌ Need new record type (extend `social.coves.actor.block` or create new)
+  - Service: ❌ No implementation (`BlockCommunity()` / `UnblockCommunity()`)
+  - Handler: ❌ No endpoints
+  - Repository: ❌ No methods
+  - **Impact:** Users have no way to hide unwanted communities
+
+### Critical Security (High Priority)
+- [ ] **OAuth Authentication:** Replace placeholder `X-User-DID` header with OAuth context
+  - **Currently affected endpoints:** create, update, subscribe, unsubscribe
+  - **See:** [PRD_BACKLOG.md P1 Priority](docs/PRD_BACKLOG.md#L42-L50)
+
+- [ ] **Token Refresh Logic:** Auto-refresh expired PDS access tokens
+  - **Impact:** Communities break after ~2 hours when tokens expire
+  - **See:** [PRD_BACKLOG.md P1 Priority](docs/PRD_BACKLOG.md#L31-L38)
+
+---
+
+## 📍 Beta Features (High Priority - Post Alpha)
 
 ### Posts in Communities
 **Status:** Lexicon designed, implementation TODO
+**Priority:** HIGHEST for Beta 1
 
-- [ ] Extend `social.coves.post` lexicon with `community` field
-- [ ] Create post endpoint (with community membership validation?)
+- [ ] `social.coves.post` already has `community` field ✅
+- [ ] Create post endpoint (decide: membership validation?)
 - [ ] Feed generation for community posts
 - [ ] Post consumer (index community posts from firehose)
 - [ ] Community post count tracking
+- [ ] Decide membership requirements for posting
 
-**What's needed:**
-- Decide membership requirements for posting
-- Design feed generation algorithm
-- Implement post indexing in consumer
-- Add tests for post creation/listing
+**Without posts, communities exist but can't be used!**
+
+---
+
+## 📍 Beta Features (Lower Priority)
+
+### Membership System
+**Status:** Lexicon exists, design decisions needed
+**Deferred:** Answer design questions before implementing
+
+- [ ] Decide: Auto-join on first post vs explicit join?
+- [ ] Decide: Reputation tracking in lexicon vs AppView only?
+- [ ] Implement membership record creation (if explicit join)
+- [ ] Member lists endpoint
+- [ ] Reputation tracking (if in lexicon)
+
+### Community Management
+- [ ] **Community Deletion:** Soft delete / permanent delete
+- [ ] **Wiki System:** Lexicon exists, no implementation
+- [ ] **Advanced Rules:** Separate rules records, moderation config
+- [ ] **Moderator Management:** Assign/remove moderators (governance work)
+- [ ] **Categories:** REMOVE from lexicon and code (not needed)
+
+### User Features
+- [ ] **Saved Items:** Save posts/comments for later
+- [ ] **User Flairs:** Per-community user flair (design TBD)
+
+### Instance Moderation
+- [ ] **Delist Community:** Remove from search/directory
+- [ ] **Quarantine Community:** Show warning label
+- [ ] **Remove Community:** Hide from instance AppView
+- [ ] **Moderation Audit Log:** Track all moderation actions
 
 ---
 
 ## ⏳ TODO Before V1 Production Launch
-
-### Critical Security & Authorization
-- [ ] **OAuth Middleware:** Protect create/update/delete endpoints
-- [ ] **Authorization Checks:** Verify user is community creator/moderator
-- [ ] **Rate Limiting:** Prevent community creation spam (e.g., 5 per user per hour)
-- [ ] **Handle Collision Detection:** Prevent duplicate community handles
-- [ ] **DID Validation:** Verify DIDs before accepting create requests
-- [ ] **Token Refresh Logic:** Handle expired PDS access tokens
 
 ### Community Discovery & Visibility
 - [ ] **Visibility Enforcement:** Respect public/unlisted/private settings in listings
 - [ ] **Federation Config:** Honor `allowExternalDiscovery` flag
 - [ ] **Search Relevance:** Implement ranking algorithm (members, activity, etc.)
 - [ ] **Directory Endpoint:** Public community directory with filters
-
-### Membership & Participation
-- [ ] **Membership Tracking:** Auto-create membership on first post
-- [ ] **Reputation System:** Track user participation per community
-- [ ] **Subscription → Membership Flow:** Define conversion logic
-- [ ] **Member Lists:** Endpoint to list community members
-- [ ] **Moderator Assignment:** Allow creators to add moderators
-
-### Moderation (Basic)
-- [ ] **Delist Community:** Remove from search/directory
-- [ ] **Quarantine Community:** Show warning label
-- [ ] **Remove Community:** Hide from instance AppView
-- [ ] **Moderation Audit Log:** Track all moderation actions
-- [ ] **Admin Endpoints:** Instance operator tools
+- [ ] **Rate Limiting:** Prevent community creation spam (e.g., 5 per user per hour)
+- [ ] **Handle Collision Detection:** Prevent duplicate community handles
+- [ ] **DID Validation:** Verify DIDs before accepting create requests
 
 ### Token Refresh & Resilience
-- [ ] **Refresh Token Logic:** Auto-refresh expired PDS access tokens
 - [ ] **Retry Mechanism:** Retry failed PDS calls with backoff
 - [ ] **Credential Rotation:** Periodic password rotation for security
 - [ ] **Error Recovery:** Graceful degradation if PDS is unavailable
