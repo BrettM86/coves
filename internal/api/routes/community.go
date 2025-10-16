@@ -13,6 +13,7 @@ func RegisterCommunityRoutes(r chi.Router, service communities.Service) {
 	// Initialize handlers
 	createHandler := community.NewCreateHandler(service)
 	getHandler := community.NewGetHandler(service)
+	updateHandler := community.NewUpdateHandler(service)
 	listHandler := community.NewListHandler(service)
 	searchHandler := community.NewSearchHandler(service)
 	subscribeHandler := community.NewSubscribeHandler(service)
@@ -31,13 +32,15 @@ func RegisterCommunityRoutes(r chi.Router, service communities.Service) {
 	// social.coves.community.create - create a new community
 	r.Post("/xrpc/social.coves.community.create", createHandler.HandleCreate)
 
+	// social.coves.community.update - update an existing community
+	r.Post("/xrpc/social.coves.community.update", updateHandler.HandleUpdate)
+
 	// social.coves.community.subscribe - subscribe to a community
 	r.Post("/xrpc/social.coves.community.subscribe", subscribeHandler.HandleSubscribe)
 
 	// social.coves.community.unsubscribe - unsubscribe from a community
 	r.Post("/xrpc/social.coves.community.unsubscribe", subscribeHandler.HandleUnsubscribe)
 
-	// TODO: Add update and delete handlers when implemented
-	// r.Post("/xrpc/social.coves.community.update", updateHandler.HandleUpdate)
+	// TODO: Add delete handler when implemented
 	// r.Post("/xrpc/social.coves.community.delete", deleteHandler.HandleDelete)
 }
