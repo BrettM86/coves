@@ -26,23 +26,25 @@ help: ## Show this help message
 
 ##@ Local Development (All-in-One)
 
-dev-up: ## Start PDS + PostgreSQL + Jetstream for local development
+dev-up: ## Start PDS + PostgreSQL + Jetstream + PLC Directory for local development
 	@echo "$(GREEN)Starting Coves development stack...$(RESET)"
-	@docker-compose -f docker-compose.dev.yml --env-file .env.dev --profile jetstream up -d postgres pds jetstream
+	@docker-compose -f docker-compose.dev.yml --env-file .env.dev --profile jetstream --profile plc up -d postgres postgres-plc plc-directory pds jetstream
 	@echo ""
 	@echo "$(GREEN)✓ Development stack started!$(RESET)"
 	@echo ""
 	@echo "Services available at:"
-	@echo "  - PostgreSQL:        localhost:5433"
+	@echo "  - PostgreSQL:        localhost:5435"
 	@echo "  - PDS (XRPC):        http://localhost:3001"
 	@echo "  - PDS Firehose:      ws://localhost:3001/xrpc/com.atproto.sync.subscribeRepos"
 	@echo "  - Jetstream:         ws://localhost:6008/subscribe  $(CYAN)(Read-Forward)$(RESET)"
 	@echo "  - Jetstream Metrics: http://localhost:6009/metrics"
+	@echo "  - PLC Directory:     http://localhost:3002  $(CYAN)(Local DID registry)$(RESET)"
 	@echo ""
 	@echo "$(CYAN)Next steps:$(RESET)"
 	@echo "  1. Run: make run  (starts AppView)"
 	@echo "  2. AppView will auto-index users from Jetstream"
 	@echo ""
+	@echo "$(CYAN)Note:$(RESET) Using local PLC directory - DIDs registered locally (won't pollute plc.directory)"
 	@echo "Run 'make dev-logs' to view logs"
 
 dev-down: ## Stop all development services
@@ -112,7 +114,7 @@ e2e-test: ## Run automated E2E tests (requires: make dev-up + make run in anothe
 	@echo "$(CYAN)========================================$(RESET)"
 	@echo ""
 	@echo "$(CYAN)Prerequisites:$(RESET)"
-	@echo "  1. Run 'make dev-up' (if not already running)"
+	@echo "  1. Run 'make dev-up' (starts PDS + Jetstream)"
 	@echo "  2. Run 'make run' in another terminal (AppView must be running)"
 	@echo ""
 	@echo "$(GREEN)Running E2E tests...$(RESET)"
