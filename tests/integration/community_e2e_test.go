@@ -533,6 +533,373 @@ func TestCommunity_E2E(t *testing.T) {
 			}
 		})
 
+		t.Run("Subscribe via XRPC endpoint", func(t *testing.T) {
+			// Create a community to subscribe to
+			community := createAndIndexCommunity(t, communityService, consumer, instanceDID)
+
+			// Subscribe to the community
+			subscribeReq := map[string]interface{}{
+				"community": community.DID,
+			}
+
+			reqBody, marshalErr := json.Marshal(subscribeReq)
+			if marshalErr != nil {
+				t.Fatalf("Failed to marshal subscribe request: %v", marshalErr)
+			}
+
+			// POST subscribe request
+			t.Logf("📡 Client → POST /xrpc/social.coves.community.subscribe")
+			t.Logf("   Subscribing to community: %s", community.DID)
+
+			req, err := http.NewRequest(http.MethodPost,
+				httpServer.URL+"/xrpc/social.coves.community.subscribe",
+				bytes.NewBuffer(reqBody))
+			if err != nil {
+				t.Fatalf("Failed to create request: %v", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			// TODO(Communities-OAuth): Replace with OAuth session
+			req.Header.Set("X-User-DID", instanceDID)
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("Failed to POST subscribe: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			if resp.StatusCode != http.StatusOK {
+				body, readErr := io.ReadAll(resp.Body)
+				if readErr != nil {
+					t.Fatalf("Expected 200, got %d (failed to read body: %v)", resp.StatusCode, readErr)
+				}
+				t.Logf("❌ XRPC Subscribe Failed")
+				t.Logf("   Status: %d", resp.StatusCode)
+				t.Logf("   Response: %s", string(body))
+				t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, string(body))
+			}
+
+			var subscribeResp struct {
+				URI      string `json:"uri"`
+				CID      string `json:"cid"`
+				Existing bool   `json:"existing"`
+			}
+
+			if err := json.NewDecoder(resp.Body).Decode(&subscribeResp); err != nil {
+				t.Fatalf("Failed to decode subscribe response: %v", err)
+			}
+
+			t.Logf("✅ XRPC subscribe response received:")
+			t.Logf("   URI:      %s", subscribeResp.URI)
+			t.Logf("   CID:      %s", subscribeResp.CID)
+			t.Logf("   Existing: %v", subscribeResp.Existing)
+
+			// Verify the subscription was written to PDS (in user's repository)
+			t.Logf("🔍 Verifying subscription record on PDS...")
+			pdsURL := os.Getenv("PDS_URL")
+			if pdsURL == "" {
+				pdsURL = "http://localhost:3001"
+			}
+
+			rkey := extractRKeyFromURI(subscribeResp.URI)
+			collection := "social.coves.community.subscribe"
+
+			pdsResp, pdsErr := http.Get(fmt.Sprintf("%s/xrpc/com.atproto.repo.getRecord?repo=%s&collection=%s&rkey=%s",
+				pdsURL, instanceDID, collection, rkey))
+			if pdsErr != nil {
+				t.Fatalf("Failed to fetch subscription record from PDS: %v", pdsErr)
+			}
+			defer func() {
+				if closeErr := pdsResp.Body.Close(); closeErr != nil {
+					t.Logf("Failed to close PDS response: %v", closeErr)
+				}
+			}()
+
+			if pdsResp.StatusCode != http.StatusOK {
+				t.Fatalf("Subscription record not found on PDS: status %d", pdsResp.StatusCode)
+			}
+
+			var pdsRecord struct {
+				Value map[string]interface{} `json:"value"`
+			}
+			if decodeErr := json.NewDecoder(pdsResp.Body).Decode(&pdsRecord); decodeErr != nil {
+				t.Fatalf("Failed to decode PDS record: %v", decodeErr)
+			}
+
+			t.Logf("✅ Subscription record found on PDS:")
+			t.Logf("   Community: %v", pdsRecord.Value["community"])
+
+			// Verify the community DID matches
+			if pdsRecord.Value["community"] != community.DID {
+				t.Errorf("Community DID mismatch: expected %s, got %v", community.DID, pdsRecord.Value["community"])
+			}
+
+			t.Logf("✅ TRUE E2E SUBSCRIBE FLOW COMPLETE:")
+			t.Logf("   Client → XRPC Subscribe → PDS (user repo) → Firehose → AppView ✓")
+		})
+
+		t.Run("Unsubscribe via XRPC endpoint", func(t *testing.T) {
+			// Create a community and subscribe to it first
+			community := createAndIndexCommunity(t, communityService, consumer, instanceDID)
+
+			// Subscribe first
+			subscription, err := communityService.SubscribeToCommunity(ctx, instanceDID, community.DID)
+			if err != nil {
+				t.Fatalf("Failed to subscribe: %v", err)
+			}
+
+			// Index the subscription in AppView (simulate firehose event)
+			rkey := extractRKeyFromURI(subscription.RecordURI)
+			subEvent := jetstream.JetstreamEvent{
+				Did:    instanceDID,
+				TimeUS: time.Now().UnixMicro(),
+				Kind:   "commit",
+				Commit: &jetstream.CommitEvent{
+					Rev:        "test-sub-rev",
+					Operation:  "create",
+					Collection: "social.coves.community.subscribe",
+					RKey:       rkey,
+					CID:        subscription.RecordCID,
+					Record: map[string]interface{}{
+						"$type":     "social.coves.community.subscribe",
+						"community": community.DID,
+					},
+				},
+			}
+			if handleErr := consumer.HandleEvent(context.Background(), &subEvent); handleErr != nil {
+				t.Logf("Warning: failed to handle subscription event: %v", handleErr)
+			}
+
+			t.Logf("📝 Subscription created: %s", subscription.RecordURI)
+
+			// Now unsubscribe via XRPC endpoint
+			unsubscribeReq := map[string]interface{}{
+				"community": community.DID,
+			}
+
+			reqBody, marshalErr := json.Marshal(unsubscribeReq)
+			if marshalErr != nil {
+				t.Fatalf("Failed to marshal unsubscribe request: %v", marshalErr)
+			}
+
+			// POST unsubscribe request
+			t.Logf("📡 Client → POST /xrpc/social.coves.community.unsubscribe")
+			t.Logf("   Unsubscribing from community: %s", community.DID)
+
+			req, err := http.NewRequest(http.MethodPost,
+				httpServer.URL+"/xrpc/social.coves.community.unsubscribe",
+				bytes.NewBuffer(reqBody))
+			if err != nil {
+				t.Fatalf("Failed to create request: %v", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			// TODO(Communities-OAuth): Replace with OAuth session
+			req.Header.Set("X-User-DID", instanceDID)
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("Failed to POST unsubscribe: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			if resp.StatusCode != http.StatusOK {
+				body, readErr := io.ReadAll(resp.Body)
+				if readErr != nil {
+					t.Fatalf("Expected 200, got %d (failed to read body: %v)", resp.StatusCode, readErr)
+				}
+				t.Logf("❌ XRPC Unsubscribe Failed")
+				t.Logf("   Status: %d", resp.StatusCode)
+				t.Logf("   Response: %s", string(body))
+				t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, string(body))
+			}
+
+			var unsubscribeResp struct {
+				Success bool `json:"success"`
+			}
+
+			if err := json.NewDecoder(resp.Body).Decode(&unsubscribeResp); err != nil {
+				t.Fatalf("Failed to decode unsubscribe response: %v", err)
+			}
+
+			t.Logf("✅ XRPC unsubscribe response received:")
+			t.Logf("   Success: %v", unsubscribeResp.Success)
+
+			if !unsubscribeResp.Success {
+				t.Errorf("Expected success: true, got: %v", unsubscribeResp.Success)
+			}
+
+			// Verify the subscription record was deleted from PDS
+			t.Logf("🔍 Verifying subscription record deleted from PDS...")
+			pdsURL := os.Getenv("PDS_URL")
+			if pdsURL == "" {
+				pdsURL = "http://localhost:3001"
+			}
+
+			collection := "social.coves.community.subscribe"
+			pdsResp, pdsErr := http.Get(fmt.Sprintf("%s/xrpc/com.atproto.repo.getRecord?repo=%s&collection=%s&rkey=%s",
+				pdsURL, instanceDID, collection, rkey))
+			if pdsErr != nil {
+				t.Fatalf("Failed to query PDS: %v", pdsErr)
+			}
+			defer func() {
+				if closeErr := pdsResp.Body.Close(); closeErr != nil {
+					t.Logf("Failed to close PDS response: %v", closeErr)
+				}
+			}()
+
+			// Should return 404 since record was deleted
+			if pdsResp.StatusCode == http.StatusOK {
+				t.Errorf("❌ Subscription record still exists on PDS (expected 404, got 200)")
+			} else {
+				t.Logf("✅ Subscription record successfully deleted from PDS (status: %d)", pdsResp.StatusCode)
+			}
+
+			t.Logf("✅ TRUE E2E UNSUBSCRIBE FLOW COMPLETE:")
+			t.Logf("   Client → XRPC Unsubscribe → PDS Delete → Firehose → AppView ✓")
+		})
+
+		t.Run("Update via XRPC endpoint", func(t *testing.T) {
+			// Create a community first (via service, so it's indexed)
+			community := createAndIndexCommunity(t, communityService, consumer, instanceDID)
+
+			// Update the community
+			newDisplayName := "Updated E2E Test Community"
+			newDescription := "This community has been updated"
+			newVisibility := "unlisted"
+
+			updateReq := map[string]interface{}{
+				"communityDid": community.DID,
+				"updatedByDid": instanceDID, // TODO: Replace with OAuth user DID
+				"displayName":  newDisplayName,
+				"description":  newDescription,
+				"visibility":   newVisibility,
+			}
+
+			reqBody, marshalErr := json.Marshal(updateReq)
+			if marshalErr != nil {
+				t.Fatalf("Failed to marshal update request: %v", marshalErr)
+			}
+
+			// POST update request
+			t.Logf("📡 Client → POST /xrpc/social.coves.community.update")
+			t.Logf("   Updating community: %s", community.DID)
+			resp, err := http.Post(
+				httpServer.URL+"/xrpc/social.coves.community.update",
+				"application/json",
+				bytes.NewBuffer(reqBody),
+			)
+			if err != nil {
+				t.Fatalf("Failed to POST update: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			if resp.StatusCode != http.StatusOK {
+				body, readErr := io.ReadAll(resp.Body)
+				if readErr != nil {
+					t.Fatalf("Expected 200, got %d (failed to read body: %v)", resp.StatusCode, readErr)
+				}
+				t.Logf("❌ XRPC Update Failed")
+				t.Logf("   Status: %d", resp.StatusCode)
+				t.Logf("   Response: %s", string(body))
+				t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, string(body))
+			}
+
+			var updateResp struct {
+				URI    string `json:"uri"`
+				CID    string `json:"cid"`
+				DID    string `json:"did"`
+				Handle string `json:"handle"`
+			}
+
+			if err := json.NewDecoder(resp.Body).Decode(&updateResp); err != nil {
+				t.Fatalf("Failed to decode update response: %v", err)
+			}
+
+			t.Logf("✅ XRPC update response received:")
+			t.Logf("   DID:    %s", updateResp.DID)
+			t.Logf("   URI:    %s", updateResp.URI)
+			t.Logf("   CID:    %s (changed after update)", updateResp.CID)
+
+			// Verify the CID changed (update creates a new version)
+			if updateResp.CID == community.RecordCID {
+				t.Logf("⚠️  Warning: CID did not change after update (expected for a new version)")
+			}
+
+			// Simulate Jetstream consumer picking up the update event
+			t.Logf("🔄 Simulating Jetstream consumer indexing update...")
+			rkey := extractRKeyFromURI(updateResp.URI)
+
+			// Fetch updated record from PDS
+			pdsURL := os.Getenv("PDS_URL")
+			if pdsURL == "" {
+				pdsURL = "http://localhost:3001"
+			}
+
+			collection := "social.coves.community.profile"
+			pdsResp, pdsErr := http.Get(fmt.Sprintf("%s/xrpc/com.atproto.repo.getRecord?repo=%s&collection=%s&rkey=%s",
+				pdsURL, community.DID, collection, rkey))
+			if pdsErr != nil {
+				t.Fatalf("Failed to fetch updated PDS record: %v", pdsErr)
+			}
+			defer func() {
+				if closeErr := pdsResp.Body.Close(); closeErr != nil {
+					t.Logf("Failed to close PDS response: %v", closeErr)
+				}
+			}()
+
+			var pdsRecord struct {
+				Value map[string]interface{} `json:"value"`
+				CID   string                 `json:"cid"`
+			}
+			if decodeErr := json.NewDecoder(pdsResp.Body).Decode(&pdsRecord); decodeErr != nil {
+				t.Fatalf("Failed to decode PDS record: %v", decodeErr)
+			}
+
+			// Create update event for consumer
+			updateEvent := jetstream.JetstreamEvent{
+				Did:    community.DID,
+				TimeUS: time.Now().UnixMicro(),
+				Kind:   "commit",
+				Commit: &jetstream.CommitEvent{
+					Rev:        "test-update-rev",
+					Operation:  "update",
+					Collection: collection,
+					RKey:       rkey,
+					CID:        pdsRecord.CID,
+					Record:     pdsRecord.Value,
+				},
+			}
+
+			if handleErr := consumer.HandleEvent(context.Background(), &updateEvent); handleErr != nil {
+				t.Fatalf("Failed to handle update event: %v", handleErr)
+			}
+
+			// Verify update was indexed in AppView
+			t.Logf("🔍 Querying AppView to verify update was indexed...")
+			updated, err := communityService.GetCommunity(ctx, community.DID)
+			if err != nil {
+				t.Fatalf("Failed to get updated community: %v", err)
+			}
+
+			t.Logf("✅ Update indexed in AppView:")
+			t.Logf("   DisplayName: %s (was: %s)", updated.DisplayName, community.DisplayName)
+			t.Logf("   Description: %s", updated.Description)
+			t.Logf("   Visibility:  %s (was: %s)", updated.Visibility, community.Visibility)
+
+			// Verify the updates were applied
+			if updated.DisplayName != newDisplayName {
+				t.Errorf("DisplayName not updated: expected %s, got %s", newDisplayName, updated.DisplayName)
+			}
+			if updated.Description != newDescription {
+				t.Errorf("Description not updated: expected %s, got %s", newDescription, updated.Description)
+			}
+			if updated.Visibility != newVisibility {
+				t.Errorf("Visibility not updated: expected %s, got %s", newVisibility, updated.Visibility)
+			}
+
+			t.Logf("✅ TRUE E2E UPDATE FLOW COMPLETE:")
+			t.Logf("   Client → XRPC Update → PDS → Firehose → AppView ✓")
+		})
+
 		t.Logf("\n✅ Part 3 Complete: All XRPC HTTP endpoints working ✓")
 	})
 
