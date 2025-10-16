@@ -14,15 +14,15 @@ import (
 
 // CommunityPDSAccount represents PDS account credentials for a community
 type CommunityPDSAccount struct {
-	DID              string // Community's DID (owns the repository)
-	Handle           string // Community's handle (e.g., gaming.communities.coves.social)
-	Email            string // System email for PDS account
-	Password         string // Cleartext password (MUST be encrypted before database storage)
-	AccessToken      string // JWT for making API calls as the community
-	RefreshToken     string // For refreshing sessions
-	PDSURL           string // PDS hosting this community
-	RotationKeyPEM   string // PEM-encoded rotation key (for portability)
-	SigningKeyPEM    string // PEM-encoded signing key (for atproto operations)
+	DID            string // Community's DID (owns the repository)
+	Handle         string // Community's handle (e.g., gaming.communities.coves.social)
+	Email          string // System email for PDS account
+	Password       string // Cleartext password (MUST be encrypted before database storage)
+	AccessToken    string // JWT for making API calls as the community
+	RefreshToken   string // For refreshing sessions
+	PDSURL         string // PDS hosting this community
+	RotationKeyPEM string // PEM-encoded rotation key (for portability)
+	SigningKeyPEM  string // PEM-encoded signing key (for atproto operations)
 }
 
 // PDSAccountProvisioner creates PDS accounts for communities with PDS-managed DIDs
@@ -151,7 +151,6 @@ func generateSecurePassword(length int) (string, error) {
 	return password, nil
 }
 
-
 // FetchPDSDID queries the PDS to get its DID via com.atproto.server.describeServer
 // This is the proper way to get the PDS DID rather than hardcoding it
 // Works in both development (did:web:localhost) and production (did:web:pds.example.com)
@@ -171,4 +170,3 @@ func FetchPDSDID(ctx context.Context, pdsURL string) (string, error) {
 
 	return resp.Did, nil
 }
-

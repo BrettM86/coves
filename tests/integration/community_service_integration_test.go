@@ -80,7 +80,6 @@ func TestCommunityService_CreateWithRealPDS(t *testing.T) {
 			HostedByDID:            "did:web:coves.social",
 			AllowExternalDiscovery: true,
 		})
-
 		if err != nil {
 			t.Fatalf("Failed to create community: %v", err)
 		}
@@ -325,7 +324,6 @@ func TestCommunityService_UpdateWithRealPDS(t *testing.T) {
 			HostedByDID:            "did:web:coves.social",
 			AllowExternalDiscovery: true,
 		})
-
 		if err != nil {
 			t.Fatalf("Failed to create community: %v", err)
 		}
@@ -339,14 +337,13 @@ func TestCommunityService_UpdateWithRealPDS(t *testing.T) {
 
 		t.Logf("Updating community via service.UpdateCommunity()...")
 		updated, err := service.UpdateCommunity(ctx, communities.UpdateCommunityRequest{
-			CommunityDID:      community.DID,
-			UpdatedByDID:      creatorDID, // Same as creator - should be authorized
-			DisplayName:       &newDisplayName,
-			Description:       &newDescription,
-			Visibility:        &newVisibility,
+			CommunityDID:           community.DID,
+			UpdatedByDID:           creatorDID, // Same as creator - should be authorized
+			DisplayName:            &newDisplayName,
+			Description:            &newDescription,
+			Visibility:             &newVisibility,
 			AllowExternalDiscovery: nil, // Don't change
 		})
-
 		if err != nil {
 			t.Fatalf("Failed to update community: %v", err)
 		}
@@ -395,7 +392,6 @@ func TestCommunityService_UpdateWithRealPDS(t *testing.T) {
 			HostedByDID:            "did:web:coves.social",
 			AllowExternalDiscovery: true,
 		})
-
 		if err != nil {
 			t.Fatalf("Failed to create community: %v", err)
 		}
@@ -517,7 +513,6 @@ func TestPasswordAuthentication(t *testing.T) {
 			HostedByDID:            "did:web:coves.social",
 			AllowExternalDiscovery: true,
 		})
-
 		if err != nil {
 			t.Fatalf("Failed to create community: %v", err)
 		}

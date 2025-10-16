@@ -1,6 +1,7 @@
 package community
 
 import (
+	"Coves/internal/api/middleware"
 	"Coves/internal/core/communities"
 	"encoding/json"
 	"net/http"
@@ -40,16 +41,15 @@ func (h *UpdateHandler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO(Communities-OAuth): Extract authenticated user DID from request context
-	// This MUST be replaced with OAuth middleware before production deployment
-	// Expected implementation:
-	//   userDID := r.Context().Value("authenticated_user_did").(string)
-	//   req.UpdatedByDID = userDID
-	// For now, we require client to send it (INSECURE - allows impersonation)
-	if req.UpdatedByDID == "" {
+	// Extract authenticated user DID from request context (injected by auth middleware)
+	userDID := middleware.GetUserDID(r)
+	if userDID == "" {
 		writeError(w, http.StatusUnauthorized, "AuthRequired", "Authentication required")
 		return
 	}
+
+	// Set the authenticated user as the updater
+	req.UpdatedByDID = userDID
 
 	// Update community via service (write-forward to PDS)
 	community, err := h.service.UpdateCommunity(r.Context(), req)

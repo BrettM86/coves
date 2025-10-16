@@ -2,7 +2,7 @@
 
 **Status:** Ongoing
 **Owner:** Platform Team
-**Last Updated:** 2025-10-11
+**Last Updated:** 2025-10-16
 
 ## Overview
 
@@ -10,23 +10,44 @@ Miscellaneous platform improvements, bug fixes, and technical debt that don't fi
 
 ---
 
-## 🔴 P0: Critical Security
+## 🟡 P1: Important (Alpha Blockers)
 
-### did:web Domain Verification
-**Added:** 2025-10-11 | **Effort:** 2-3 days | **Severity:** Medium
+### did:web Domain Verification & hostedByDID Auto-Population
+**Added:** 2025-10-11 | **Updated:** 2025-10-16 | **Effort:** 2-3 days | **Priority:** ALPHA BLOCKER
 
-**Problem:** Self-hosters can set `INSTANCE_DID=did:web:nintendo.com` without owning the domain, enabling domain impersonation attacks (e.g., `mario.communities.nintendo.com` on malicious instance).
+**Problem:**
+1. **Domain Impersonation**: Self-hosters can set `INSTANCE_DID=did:web:nintendo.com` without owning the domain, enabling attacks where communities appear hosted by trusted domains
+2. **hostedByDID Spoofing**: Malicious instance operators can modify source code to claim communities are hosted by domains they don't own, enabling reputation hijacking and phishing
 
-**Solution:** Implement did:web verification per [atProto spec](https://atproto.com/specs/did-web) - fetch `https://domain/.well-known/did.json` on startup and verify it matches claimed DID. Add `SKIP_DID_WEB_VERIFICATION=true` for dev mode.
+**Attack Scenarios:**
+- Malicious instance sets `instanceDID="did:web:coves.social"` → communities show as hosted by official Coves
+- Federation partners can't verify instance authenticity
+- AppView pollution with fake hosting claims
+
+**Solution:**
+1. **Basic Validation (Phase 1)**: Verify `did:web:` domain matches configured `instanceDomain`
+2. **Cryptographic Verification (Phase 2)**: Fetch `https://domain/.well-known/did.json` and verify:
+   - DID document exists and is valid
+   - Domain ownership proven via HTTPS hosting
+   - DID document matches claimed `instanceDID`
+3. **Auto-populate hostedByDID**: Remove from client API, derive from instance configuration in service layer
 
 **Current Status:**
 - ✅ Default changed from `coves.local` → `coves.social` (fixes `.local` TLD bug)
 - ✅ TODO comment in [cmd/server/main.go:126-131](../cmd/server/main.go#L126-L131)
-- ⚠️ Verification not implemented
+- ✅ hostedByDID removed from client requests (2025-10-16)
+- ✅ Service layer auto-populates `hostedByDID` from `instanceDID` (2025-10-16)
+- ✅ Handler rejects client-provided `hostedByDID` (2025-10-16)
+- ✅ Basic validation: Logs warning if `did:web:` domain ≠ `instanceDomain` (2025-10-16)
+- ⚠️ **REMAINING**: Full DID document verification (cryptographic proof of ownership)
+
+**Implementation Notes:**
+- Phase 1 complete: Basic validation catches config errors, logs warnings
+- Phase 2 needed: Fetch `https://domain/.well-known/did.json` and verify ownership
+- Add `SKIP_DID_WEB_VERIFICATION=true` for dev mode
+- Full verification blocks startup if domain ownership cannot be proven
 
 ---
-
-## 🟡 P1: Important (Alpha Blockers)
 
 ### Token Refresh Logic for Community Credentials
 **Added:** 2025-10-11 | **Effort:** 1-2 days | **Priority:** ALPHA BLOCKER
@@ -36,17 +57,6 @@ Miscellaneous platform improvements, bug fixes, and technical debt that don't fi
 **Solution:** Auto-refresh tokens before PDS operations. Parse JWT exp claim, use refresh token when expired, update DB.
 
 **Code:** TODO in [communities/service.go:123](../internal/core/communities/service.go#L123)
-
----
-
-### OAuth Authentication for Community Actions
-**Added:** 2025-10-11 | **Effort:** 2-3 days | **Priority:** ALPHA BLOCKER
-
-**Problem:** Subscribe/unsubscribe and community creation need authenticated user DID. Currently using placeholder.
-
-**Solution:** Extract authenticated DID from OAuth session context. Requires OAuth middleware integration.
-
-**Code:** Multiple TODOs in [community/subscribe.go](../internal/api/handlers/community/subscribe.go#L46), [community/create.go](../internal/api/handlers/community/create.go#L38), [community/update.go](../internal/api/handlers/community/update.go#L47)
 
 ---
 
@@ -200,6 +210,27 @@ Document: did:plc choice, pgcrypto encryption, Jetstream vs firehose, write-forw
 ---
 
 ## Recent Completions
+
+### ✅ OAuth Authentication for Community Actions (2025-10-16)
+**Completed:** Full OAuth JWT authentication flow for protected endpoints
+
+**Implementation:**
+- ✅ JWT parser compatible with atProto PDS tokens (aud/iss handling)
+- ✅ Auth middleware protecting create/update/subscribe/unsubscribe endpoints
+- ✅ Handler-level DID extraction from JWT tokens via `middleware.GetUserDID(r)`
+- ✅ Removed all X-User-DID header placeholders
+- ✅ E2E tests validate complete OAuth flow with real PDS tokens
+- ✅ Security: Issuer validation supports both HTTPS URLs and DIDs
+
+**Files Modified:**
+- [internal/atproto/auth/jwt.go](../internal/atproto/auth/jwt.go) - JWT parsing with atProto compatibility
+- [internal/api/middleware/auth.go](../internal/api/middleware/auth.go) - Auth middleware
+- [internal/api/handlers/community/](../internal/api/handlers/community/) - All handlers updated
+- [tests/integration/community_e2e_test.go](../tests/integration/community_e2e_test.go) - OAuth E2E tests
+
+**Related:** Also implemented `hostedByDID` auto-population for security (see P1 item above)
+
+---
 
 ### ✅ Fix .local TLD Bug (2025-10-11)
 Changed default `INSTANCE_DID` from `did:web:coves.local` → `did:web:coves.social`. Fixed community creation failure due to disallowed `.local` TLD.

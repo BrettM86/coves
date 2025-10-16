@@ -1,6 +1,7 @@
 package community
 
 import (
+	"Coves/internal/api/middleware"
 	"Coves/internal/core/communities"
 	"encoding/json"
 	"net/http"
@@ -34,21 +35,30 @@ func (h *CreateHandler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO(Communities-OAuth): Extract authenticated user DID from request context
-	// This MUST be replaced with OAuth middleware before production deployment
-	// Expected implementation:
-	//   userDID := r.Context().Value("authenticated_user_did").(string)
-	//   req.CreatedByDID = userDID
-	// For now, we require client to send it (INSECURE - allows impersonation)
-	if req.CreatedByDID == "" {
+	// Extract authenticated user DID from request context (injected by auth middleware)
+	userDID := middleware.GetUserDID(r)
+	if userDID == "" {
 		writeError(w, http.StatusUnauthorized, "AuthRequired", "Authentication required")
 		return
 	}
 
-	if req.HostedByDID == "" {
-		writeError(w, http.StatusBadRequest, "InvalidRequest", "hostedByDid is required")
+	// Client should not send createdByDid - we derive it from authenticated user
+	if req.CreatedByDID != "" {
+		writeError(w, http.StatusBadRequest, "InvalidRequest",
+			"createdByDid must not be provided - derived from authenticated user")
 		return
 	}
+
+	// Client should not send hostedByDid - we derive it from the instance
+	if req.HostedByDID != "" {
+		writeError(w, http.StatusBadRequest, "InvalidRequest",
+			"hostedByDid must not be provided - derived from instance")
+		return
+	}
+
+	// Set the authenticated user as the creator
+	req.CreatedByDID = userDID
+	// Note: hostedByDID will be set by the service layer based on instance configuration
 
 	// Create community via service (write-forward to PDS)
 	community, err := h.service.CreateCommunity(r.Context(), req)
