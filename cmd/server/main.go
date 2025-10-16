@@ -4,7 +4,6 @@ import (
 	"Coves/internal/api/handlers/oauth"
 	"Coves/internal/api/middleware"
 	"Coves/internal/api/routes"
-	"Coves/internal/atproto/did"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/communities"
@@ -83,11 +82,32 @@ func main() {
 	r.Use(rateLimiter.Middleware)
 
 	// Initialize identity resolver
+	// IMPORTANT: In dev mode, identity resolution MUST use the same local PLC
+	// directory as DID registration to ensure E2E tests work without hitting
+	// the production plc.directory
 	identityConfig := identity.DefaultConfig()
-	// Override from environment if set
-	if plcURL := os.Getenv("IDENTITY_PLC_URL"); plcURL != "" {
-		identityConfig.PLCURL = plcURL
+
+	isDevEnv := os.Getenv("IS_DEV_ENV") == "true"
+	plcDirectoryURL := os.Getenv("PLC_DIRECTORY_URL")
+	if plcDirectoryURL == "" {
+		plcDirectoryURL = "https://plc.directory" // Default to production PLC
 	}
+
+	// In dev mode, use PLC_DIRECTORY_URL for identity resolution
+	// In prod mode, use IDENTITY_PLC_URL if set, otherwise PLC_DIRECTORY_URL
+	if isDevEnv {
+		identityConfig.PLCURL = plcDirectoryURL
+		log.Printf("🧪 DEV MODE: Identity resolver will use local PLC: %s", plcDirectoryURL)
+	} else {
+		// Production: Allow separate IDENTITY_PLC_URL for read operations
+		if identityPLCURL := os.Getenv("IDENTITY_PLC_URL"); identityPLCURL != "" {
+			identityConfig.PLCURL = identityPLCURL
+		} else {
+			identityConfig.PLCURL = plcDirectoryURL
+		}
+		log.Printf("✅ PRODUCTION MODE: Identity resolver using PLC: %s", identityConfig.PLCURL)
+	}
+
 	if cacheTTL := os.Getenv("IDENTITY_CACHE_TTL"); cacheTTL != "" {
 		if duration, parseErr := time.ParseDuration(cacheTTL); parseErr == nil {
 			identityConfig.CacheTTL = duration
@@ -95,7 +115,6 @@ func main() {
 	}
 
 	identityResolver := identity.NewResolver(db, identityConfig)
-	log.Println("Identity resolver initialized with PLC:", identityConfig.PLCURL)
 
 	// Initialize OAuth session store
 	sessionStore := oauthCore.NewPostgresSessionStore(db)
@@ -107,16 +126,9 @@ func main() {
 
 	communityRepo := postgresRepo.NewCommunityRepository(db)
 
-	// Initialize DID generator for communities
-	// IS_DEV_ENV=true:  Generate did:plc:xxx without registering to PLC directory
-	// IS_DEV_ENV=false: Generate did:plc:xxx and register with PLC_DIRECTORY_URL
-	isDevEnv := os.Getenv("IS_DEV_ENV") == "true"
-	plcDirectoryURL := os.Getenv("PLC_DIRECTORY_URL")
-	if plcDirectoryURL == "" {
-		plcDirectoryURL = "https://plc.directory" // Default to Bluesky's PLC
-	}
-	didGenerator := did.NewGenerator(isDevEnv, plcDirectoryURL)
-	log.Printf("DID generator initialized (dev_mode=%v, plc_url=%s)", isDevEnv, plcDirectoryURL)
+	// V2.0: PDS-managed DID generation
+	// Community DIDs and keys are generated entirely by the PDS
+	// No Coves-side DID generator needed (reserved for future V2.1 hybrid approach)
 
 	instanceDID := os.Getenv("INSTANCE_DID")
 	if instanceDID == "" {
@@ -148,10 +160,15 @@ func main() {
 
 	log.Printf("Instance domain: %s (extracted from DID: %s)", instanceDomain, instanceDID)
 
-	// V2: Initialize PDS account provisioner for communities
-	provisioner := communities.NewPDSAccountProvisioner(userService, instanceDomain, defaultPDS)
+	// V2.0: Initialize PDS account provisioner for communities (simplified)
+	// PDS handles all DID and key generation - no Coves-side cryptography needed
+	provisioner := communities.NewPDSAccountProvisioner(instanceDomain, defaultPDS)
+	log.Printf("✅ Community provisioner initialized (PDS-managed keys)")
+	log.Printf("   - Communities will be created at: %s", defaultPDS)
+	log.Printf("   - PDS will generate and manage all DIDs and keys")
 
-	communityService := communities.NewCommunityService(communityRepo, didGenerator, defaultPDS, instanceDID, instanceDomain, provisioner)
+	// Initialize community service (no longer needs didGenerator directly)
+	communityService := communities.NewCommunityService(communityRepo, defaultPDS, instanceDID, instanceDomain, provisioner)
 
 	// Authenticate Coves instance with PDS to enable community record writes
 	// The instance needs a PDS account to write community records it owns

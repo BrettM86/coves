@@ -26,7 +26,7 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 		INSERT INTO communities (
 			did, handle, name, display_name, description, description_facets,
 			avatar_cid, banner_cid, owner_did, created_by_did, hosted_by_did,
-			pds_email, pds_password_hash,
+			pds_email, pds_password_encrypted,
 			pds_access_token_encrypted, pds_refresh_token_encrypted, pds_url,
 			visibility, allow_external_discovery, moderation_type, content_warnings,
 			member_count, subscriber_count, post_count,
@@ -34,7 +34,8 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 			record_uri, record_cid
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-			$12, $13,
+			$12,
+			CASE WHEN $13 != '' THEN pgp_sym_encrypt($13, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1)) ELSE NULL END,
 			CASE WHEN $14 != '' THEN pgp_sym_encrypt($14, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1)) ELSE NULL END,
 			CASE WHEN $15 != '' THEN pgp_sym_encrypt($15, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1)) ELSE NULL END,
 			$16,
@@ -63,12 +64,13 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 		community.OwnerDID,
 		community.CreatedByDID,
 		community.HostedByDID,
-		// V2: PDS credentials for community account
+		// V2.0: PDS credentials for community account (encrypted at rest)
 		nullString(community.PDSEmail),
-		nullString(community.PDSPasswordHash),
-		nullString(community.PDSAccessToken),
-		nullString(community.PDSRefreshToken),
+		nullString(community.PDSPassword),      // Encrypted by pgp_sym_encrypt
+		nullString(community.PDSAccessToken),   // Encrypted by pgp_sym_encrypt
+		nullString(community.PDSRefreshToken),  // Encrypted by pgp_sym_encrypt
 		nullString(community.PDSURL),
+		// V2.0: No key columns - PDS manages all keys
 		community.Visibility,
 		community.AllowExternalDiscovery,
 		nullString(community.ModerationType),
@@ -102,14 +104,29 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 // GetByDID retrieves a community by its DID
 // Note: PDS credentials are included (for internal service use only)
 // Handlers MUST use json:"-" tags to prevent credential exposure in APIs
+//
+// V2.0: Key columns not included - PDS manages all keys
 func (r *postgresCommunityRepo) GetByDID(ctx context.Context, did string) (*communities.Community, error) {
 	community := &communities.Community{}
 	query := `
 		SELECT id, did, handle, name, display_name, description, description_facets,
 			avatar_cid, banner_cid, owner_did, created_by_did, hosted_by_did,
-			pds_email, pds_password_hash,
-			COALESCE(pgp_sym_decrypt(pds_access_token_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1)), '') as pds_access_token,
-			COALESCE(pgp_sym_decrypt(pds_refresh_token_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1)), '') as pds_refresh_token,
+			pds_email,
+			CASE
+				WHEN pds_password_encrypted IS NOT NULL
+				THEN pgp_sym_decrypt(pds_password_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
+				ELSE NULL
+			END as pds_password,
+			CASE
+				WHEN pds_access_token_encrypted IS NOT NULL
+				THEN pgp_sym_decrypt(pds_access_token_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
+				ELSE NULL
+			END as pds_access_token,
+			CASE
+				WHEN pds_refresh_token_encrypted IS NOT NULL
+				THEN pgp_sym_decrypt(pds_refresh_token_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
+				ELSE NULL
+			END as pds_refresh_token,
 			pds_url,
 			visibility, allow_external_discovery, moderation_type, content_warnings,
 			member_count, subscriber_count, post_count,
@@ -120,7 +137,7 @@ func (r *postgresCommunityRepo) GetByDID(ctx context.Context, did string) (*comm
 
 	var displayName, description, avatarCID, bannerCID, moderationType sql.NullString
 	var federatedFrom, federatedID, recordURI, recordCID sql.NullString
-	var pdsEmail, pdsPasswordHash, pdsAccessToken, pdsRefreshToken, pdsURL sql.NullString
+	var pdsEmail, pdsPassword, pdsAccessToken, pdsRefreshToken, pdsURL sql.NullString
 	var descFacets []byte
 	var contentWarnings []string
 
@@ -129,8 +146,8 @@ func (r *postgresCommunityRepo) GetByDID(ctx context.Context, did string) (*comm
 		&displayName, &description, &descFacets,
 		&avatarCID, &bannerCID,
 		&community.OwnerDID, &community.CreatedByDID, &community.HostedByDID,
-		// V2: PDS credentials
-		&pdsEmail, &pdsPasswordHash, &pdsAccessToken, &pdsRefreshToken, &pdsURL,
+		// V2.0: PDS credentials (decrypted from pgp_sym_encrypt)
+		&pdsEmail, &pdsPassword, &pdsAccessToken, &pdsRefreshToken, &pdsURL,
 		&community.Visibility, &community.AllowExternalDiscovery,
 		&moderationType, pq.Array(&contentWarnings),
 		&community.MemberCount, &community.SubscriberCount, &community.PostCount,
@@ -152,10 +169,13 @@ func (r *postgresCommunityRepo) GetByDID(ctx context.Context, did string) (*comm
 	community.AvatarCID = avatarCID.String
 	community.BannerCID = bannerCID.String
 	community.PDSEmail = pdsEmail.String
-	community.PDSPasswordHash = pdsPasswordHash.String
+	community.PDSPassword = pdsPassword.String
 	community.PDSAccessToken = pdsAccessToken.String
 	community.PDSRefreshToken = pdsRefreshToken.String
 	community.PDSURL = pdsURL.String
+	// V2.0: No key fields - PDS manages all keys
+	community.RotationKeyPEM = "" // Empty - PDS-managed
+	community.SigningKeyPEM = ""  // Empty - PDS-managed
 	community.ModerationType = moderationType.String
 	community.ContentWarnings = contentWarnings
 	community.FederatedFrom = federatedFrom.String

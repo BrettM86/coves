@@ -1,7 +1,6 @@
 package integration
 
 import (
-	"Coves/internal/atproto/did"
 	"Coves/internal/core/communities"
 	"Coves/internal/db/postgres"
 	"context"
@@ -20,15 +19,11 @@ func TestCommunityRepository_CredentialPersistence(t *testing.T) {
 	}()
 
 	repo := postgres.NewCommunityRepository(db)
-	didGen := did.NewGenerator(true, "https://plc.directory")
 	ctx := context.Background()
 
 	t.Run("persists PDS credentials on create", func(t *testing.T) {
-		communityDID, err := didGen.GenerateCommunityDID()
-		if err != nil {
-			t.Fatalf("Failed to generate community DID: %v", err)
-		}
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
+		communityDID := generateTestDID(uniqueSuffix)
 
 		community := &communities.Community{
 			DID:          communityDID,
@@ -40,7 +35,7 @@ func TestCommunityRepository_CredentialPersistence(t *testing.T) {
 			Visibility:   "public",
 			// V2: PDS credentials
 			PDSEmail:        "community-test@communities.coves.local",
-			PDSPasswordHash: "$2a$10$abcdefghijklmnopqrstuv", // Mock bcrypt hash
+			PDSPassword:     "cleartext-password-encrypted-by-repo", // V2: Cleartext (encrypted by repository)
 			PDSAccessToken:  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.test.token",
 			PDSRefreshToken: "refresh_token_xyz123",
 			PDSURL:          "http://localhost:2583",
@@ -66,8 +61,8 @@ func TestCommunityRepository_CredentialPersistence(t *testing.T) {
 		if retrieved.PDSEmail != community.PDSEmail {
 			t.Errorf("Expected PDSEmail %s, got %s", community.PDSEmail, retrieved.PDSEmail)
 		}
-		if retrieved.PDSPasswordHash != community.PDSPasswordHash {
-			t.Errorf("Expected PDSPasswordHash to be persisted")
+		if retrieved.PDSPassword != community.PDSPassword {
+			t.Errorf("Expected PDSPassword to be persisted and encrypted/decrypted")
 		}
 		if retrieved.PDSAccessToken != community.PDSAccessToken {
 			t.Errorf("Expected PDSAccessToken to be persisted and decrypted correctly")
@@ -81,11 +76,8 @@ func TestCommunityRepository_CredentialPersistence(t *testing.T) {
 	})
 
 	t.Run("handles empty credentials gracefully", func(t *testing.T) {
-		communityDID, err := didGen.GenerateCommunityDID()
-		if err != nil {
-			t.Fatalf("Failed to generate community DID: %v", err)
-		}
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
+		communityDID := generateTestDID(uniqueSuffix)
 
 		// Community without PDS credentials (e.g., from Jetstream consumer)
 		community := &communities.Community{
@@ -138,15 +130,11 @@ func TestCommunityRepository_EncryptedCredentials(t *testing.T) {
 	}()
 
 	repo := postgres.NewCommunityRepository(db)
-	didGen := did.NewGenerator(true, "https://plc.directory")
 	ctx := context.Background()
 
 	t.Run("credentials are encrypted in database", func(t *testing.T) {
-		communityDID, err := didGen.GenerateCommunityDID()
-		if err != nil {
-			t.Fatalf("Failed to generate community DID: %v", err)
-		}
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
+		communityDID := generateTestDID(uniqueSuffix)
 
 		accessToken := "sensitive_access_token_xyz123"
 		refreshToken := "sensitive_refresh_token_abc456"
@@ -160,7 +148,7 @@ func TestCommunityRepository_EncryptedCredentials(t *testing.T) {
 			HostedByDID:     "did:web:coves.local",
 			Visibility:      "public",
 			PDSEmail:        "encrypted@communities.coves.local",
-			PDSPasswordHash: "$2a$10$encrypted",
+			PDSPassword:     "cleartext-password-for-encryption", // V2: Cleartext (encrypted by repository)
 			PDSAccessToken:  accessToken,
 			PDSRefreshToken: refreshToken,
 			PDSURL:          "http://localhost:2583",
@@ -214,11 +202,8 @@ func TestCommunityRepository_EncryptedCredentials(t *testing.T) {
 	})
 
 	t.Run("encryption handles special characters", func(t *testing.T) {
-		communityDID, err := didGen.GenerateCommunityDID()
-		if err != nil {
-			t.Fatalf("Failed to generate community DID: %v", err)
-		}
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
+		communityDID := generateTestDID(uniqueSuffix)
 
 		// Token with special characters
 		specialToken := "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJodHRwczovL2NvdmVzLnNvY2lhbCIsInN1YiI6ImRpZDpwbGM6YWJjMTIzIiwiaWF0IjoxNzA5MjQwMDAwfQ.special/chars+here=="
@@ -262,15 +247,11 @@ func TestCommunityRepository_V2OwnershipModel(t *testing.T) {
 	}()
 
 	repo := postgres.NewCommunityRepository(db)
-	didGen := did.NewGenerator(true, "https://plc.directory")
 	ctx := context.Background()
 
 	t.Run("V2 communities are self-owned", func(t *testing.T) {
-		communityDID, err := didGen.GenerateCommunityDID()
-		if err != nil {
-			t.Fatalf("Failed to generate community DID: %v", err)
-		}
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
+		communityDID := generateTestDID(uniqueSuffix)
 
 		community := &communities.Community{
 			DID:          communityDID,

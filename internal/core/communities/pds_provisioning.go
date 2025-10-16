@@ -1,58 +1,63 @@
 package communities
 
 import (
-	"Coves/internal/core/users"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"strings"
 
-	"golang.org/x/crypto/bcrypt"
+	"github.com/bluesky-social/indigo/api/atproto"
+	comatproto "github.com/bluesky-social/indigo/api/atproto"
+	"github.com/bluesky-social/indigo/xrpc"
 )
 
 // CommunityPDSAccount represents PDS account credentials for a community
 type CommunityPDSAccount struct {
-	DID          string // Community's DID (owns the repository)
-	Handle       string // Community's handle (e.g., gaming.coves.social)
-	Email        string // System email for PDS account
-	PasswordHash string // bcrypt hash of generated password
-	AccessToken  string // JWT for making API calls as the community
-	RefreshToken string // For refreshing sessions
-	PDSURL       string // PDS hosting this community
+	DID              string // Community's DID (owns the repository)
+	Handle           string // Community's handle (e.g., gaming.communities.coves.social)
+	Email            string // System email for PDS account
+	Password         string // Cleartext password (MUST be encrypted before database storage)
+	AccessToken      string // JWT for making API calls as the community
+	RefreshToken     string // For refreshing sessions
+	PDSURL           string // PDS hosting this community
+	RotationKeyPEM   string // PEM-encoded rotation key (for portability)
+	SigningKeyPEM    string // PEM-encoded signing key (for atproto operations)
 }
 
-// PDSAccountProvisioner creates PDS accounts for communities
+// PDSAccountProvisioner creates PDS accounts for communities with PDS-managed DIDs
 type PDSAccountProvisioner struct {
-	userService    users.UserService
 	instanceDomain string
-	pdsURL         string
+	pdsURL         string // URL to call PDS (e.g., http://localhost:3001)
 }
 
-// NewPDSAccountProvisioner creates a new provisioner
-func NewPDSAccountProvisioner(userService users.UserService, instanceDomain, pdsURL string) *PDSAccountProvisioner {
+// NewPDSAccountProvisioner creates a new provisioner for V2.0 (PDS-managed keys)
+func NewPDSAccountProvisioner(instanceDomain, pdsURL string) *PDSAccountProvisioner {
 	return &PDSAccountProvisioner{
-		userService:    userService,
 		instanceDomain: instanceDomain,
 		pdsURL:         pdsURL,
 	}
 }
 
-// ProvisionCommunityAccount creates a real PDS account for a community
+// ProvisionCommunityAccount creates a real PDS account for a community with PDS-managed keys
 //
-// This function:
-// 1. Generates a unique handle (e.g., gaming.coves.social)
-// 2. Generates a system email (e.g., community-gaming@system.coves.social)
-// 3. Generates a secure random password
-// 4. Calls com.atproto.server.createAccount via the PDS
-// 5. The PDS automatically generates and stores the signing keypair
-// 6. Returns credentials for Coves to act on behalf of the community
+// V2.0 Architecture (PDS-Managed Keys):
+// 1. Generates community handle and credentials
+// 2. Calls com.atproto.server.createAccount (PDS generates DID and keys)
+// 3. Returns credentials for storage
 //
-// V2 Architecture:
-// - Community DID owns its own repository (at://community_did/...)
-// - PDS manages signing keys (we never see them)
-// - We store credentials to authenticate as the community
-// - Future: Add rotation key management for true portability (V2.1)
+// V2.0 Design Philosophy:
+// - PDS manages ALL cryptographic keys (signing + rotation)
+// - Communities can migrate between Coves-controlled PDSs using standard atProto migration
+// - Simpler, faster, ships immediately
+// - Migration uses com.atproto.server.getServiceAuth + standard migration endpoints
+//
+// Future V2.1 (Optional Portability Enhancement):
+// - Add Coves-controlled rotation key alongside PDS rotation key
+// - Enables migration to non-Coves PDSs
+// - Implement when actual external migration is needed
+//
+// SECURITY: The returned credentials MUST be encrypted before database storage
 func (p *PDSAccountProvisioner) ProvisionCommunityAccount(
 	ctx context.Context,
 	communityName string,
@@ -61,16 +66,14 @@ func (p *PDSAccountProvisioner) ProvisionCommunityAccount(
 		return nil, fmt.Errorf("community name is required")
 	}
 
-	// 1. Generate unique handle for the community using subdomain
-	// This makes it immediately clear these are communities, not user accounts
+	// 1. Generate unique handle for the community
 	// Format: {name}.communities.{instance-domain}
+	// Example: "gaming.communities.coves.social"
 	handle := fmt.Sprintf("%s.communities.%s", strings.ToLower(communityName), p.instanceDomain)
-	// Example: "gaming.communities.coves.social" (much cleaner!)
 
 	// 2. Generate system email for PDS account management
 	// This email is used for account operations, not for user communication
 	email := fmt.Sprintf("community-%s@communities.%s", strings.ToLower(communityName), p.instanceDomain)
-	// Example: "community-gaming@communities.coves.social"
 
 	// 3. Generate secure random password (32 characters)
 	// This password is never shown to users - it's for Coves to authenticate as the community
@@ -79,41 +82,48 @@ func (p *PDSAccountProvisioner) ProvisionCommunityAccount(
 		return nil, fmt.Errorf("failed to generate password: %w", err)
 	}
 
-	// 4. Call PDS com.atproto.server.createAccount
+	// 4. Create PDS account - let PDS generate DID and all keys
 	// The PDS will:
-	//   - Generate a signing keypair (we never see the private key)
-	//   - Create a DID (did:plc:xxx)
-	//   - Store the private signing key securely
-	//   - Return DID, handle, and authentication tokens
-	//
-	// Note: No inviteCode needed for our local PDS (configure PDS with invites disabled)
-	resp, err := p.userService.RegisterAccount(ctx, users.RegisterAccountRequest{
+	//   1. Generate a signing keypair (stored in PDS, never exported)
+	//   2. Generate rotation keys (stored in PDS)
+	//   3. Create a DID (did:plc:xxx)
+	//   4. Register DID with PLC directory
+	//   5. Return credentials (DID, handle, tokens)
+	client := &xrpc.Client{
+		Host: p.pdsURL,
+	}
+
+	emailStr := email
+	passwordStr := password
+
+	input := &atproto.ServerCreateAccount_Input{
 		Handle:   handle,
-		Email:    email,
-		Password: password,
-		// InviteCode: "", // Not needed if PDS has open registration or we're admin
-	})
+		Email:    &emailStr,
+		Password: &passwordStr,
+		// No Did parameter - let PDS generate it
+		// No RecoveryKey - PDS manages rotation keys
+	}
+
+	output, err := atproto.ServerCreateAccount(ctx, client, input)
 	if err != nil {
 		return nil, fmt.Errorf("PDS account creation failed for community %s: %w", communityName, err)
 	}
 
-	// 5. Hash the password for storage
-	// We need to store the password hash so we can re-authenticate if tokens expire
-	// This is secure - bcrypt is industry standard
-	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return nil, fmt.Errorf("failed to hash password: %w", err)
-	}
-
-	// 6. Return account credentials
+	// 5. Return account credentials with cleartext password
+	// CRITICAL: The password MUST be encrypted (not hashed) before database storage
+	// We need to recover the plaintext password to call com.atproto.server.createSession
+	// when access/refresh tokens expire (90-day window on refresh tokens)
+	// The repository layer handles encryption using pgp_sym_encrypt()
 	return &CommunityPDSAccount{
-		DID:          resp.DID,             // The community's DID - it owns its own repository!
-		Handle:       resp.Handle,          // e.g., gaming.coves.social
-		Email:        email,                // community-gaming@system.coves.social
-		PasswordHash: string(passwordHash), // bcrypt hash for re-authentication
-		AccessToken:  resp.AccessJwt,       // JWT for making API calls as the community
-		RefreshToken: resp.RefreshJwt,      // For refreshing sessions when access token expires
-		PDSURL:       resp.PDSURL,          // PDS hosting this community's repository
+		DID:            output.Did,        // The community's DID (PDS-generated)
+		Handle:         output.Handle,     // e.g., gaming.communities.coves.social
+		Email:          email,             // community-gaming@communities.coves.social
+		Password:       password,          // Cleartext - will be encrypted by repository
+		AccessToken:    output.AccessJwt,  // JWT for making API calls
+		RefreshToken:   output.RefreshJwt, // For refreshing sessions
+		PDSURL:         p.pdsURL,          // PDS hosting this community
+		RotationKeyPEM: "",                // Empty - PDS manages keys (V2.1: add Coves rotation key)
+		SigningKeyPEM:  "",                // Empty - PDS manages keys
 	}, nil
 }
 
@@ -140,3 +150,25 @@ func generateSecurePassword(length int) (string, error) {
 
 	return password, nil
 }
+
+
+// FetchPDSDID queries the PDS to get its DID via com.atproto.server.describeServer
+// This is the proper way to get the PDS DID rather than hardcoding it
+// Works in both development (did:web:localhost) and production (did:web:pds.example.com)
+func FetchPDSDID(ctx context.Context, pdsURL string) (string, error) {
+	client := &xrpc.Client{
+		Host: pdsURL,
+	}
+
+	resp, err := comatproto.ServerDescribeServer(ctx, client)
+	if err != nil {
+		return "", fmt.Errorf("failed to describe server at %s: %w", pdsURL, err)
+	}
+
+	if resp.Did == "" {
+		return "", fmt.Errorf("PDS at %s did not return a DID", pdsURL)
+	}
+
+	return resp.Did, nil
+}
+

@@ -1,7 +1,6 @@
 package communities
 
 import (
-	"Coves/internal/atproto/did"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -20,7 +19,6 @@ var communityHandleRegex = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[
 
 type communityService struct {
 	repo           Repository
-	didGen         *did.Generator
 	provisioner    *PDSAccountProvisioner
 	pdsURL         string
 	instanceDID    string
@@ -29,10 +27,9 @@ type communityService struct {
 }
 
 // NewCommunityService creates a new community service
-func NewCommunityService(repo Repository, didGen *did.Generator, pdsURL, instanceDID, instanceDomain string, provisioner *PDSAccountProvisioner) Service {
+func NewCommunityService(repo Repository, pdsURL, instanceDID, instanceDomain string, provisioner *PDSAccountProvisioner) Service {
 	return &communityService{
 		repo:           repo,
-		didGen:         didGen,
 		pdsURL:         pdsURL,
 		instanceDID:    instanceDID,
 		instanceDomain: instanceDomain,
@@ -141,7 +138,7 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 		return nil, fmt.Errorf("failed to create community profile record: %w", err)
 	}
 
-	// Build Community object with PDS credentials
+	// Build Community object with PDS credentials AND cryptographic keys
 	community := &Community{
 		DID:                    pdsAccount.DID,    // Community's DID (owns the repo!)
 		Handle:                 pdsAccount.Handle, // atProto handle (e.g., gaming.communities.coves.social)
@@ -152,7 +149,7 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 		CreatedByDID:           req.CreatedByDID,
 		HostedByDID:            req.HostedByDID,
 		PDSEmail:               pdsAccount.Email,
-		PDSPasswordHash:        pdsAccount.PasswordHash,
+		PDSPassword:            pdsAccount.Password,
 		PDSAccessToken:         pdsAccount.AccessToken,
 		PDSRefreshToken:        pdsAccount.RefreshToken,
 		PDSURL:                 pdsAccount.PDSURL,
@@ -164,6 +161,9 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 		UpdatedAt:              time.Now(),
 		RecordURI:              recordURI,
 		RecordCID:              recordCID,
+		// V2: Cryptographic keys for portability (will be encrypted by repository)
+		RotationKeyPEM: pdsAccount.RotationKeyPEM, // CRITICAL: Enables DID migration
+		SigningKeyPEM:  pdsAccount.SigningKeyPEM,  // For atproto operations
 	}
 
 	// CRITICAL: Persist PDS credentials immediately to database
@@ -515,12 +515,16 @@ func (s *communityService) validateCreateRequest(req CreateCommunityRequest) err
 		return NewValidationError("name", "required")
 	}
 
-	if len(req.Name) > 64 {
-		return NewValidationError("name", "must be 64 characters or less")
+	// DNS label limit: 63 characters per label
+	// Community handle format: {name}.communities.{instanceDomain}
+	// The first label is just req.Name, so it must be <= 63 chars
+	if len(req.Name) > 63 {
+		return NewValidationError("name", "must be 63 characters or less (DNS label limit)")
 	}
 
 	// Name can only contain alphanumeric and hyphens
-	nameRegex := regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,62}[a-zA-Z0-9])?$`)
+	// Must start and end with alphanumeric (not hyphen)
+	nameRegex := regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
 	if !nameRegex.MatchString(req.Name) {
 		return NewValidationError("name", "must contain only alphanumeric characters and hyphens")
 	}

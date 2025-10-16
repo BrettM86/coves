@@ -9,8 +9,8 @@ import (
 type Community struct {
 	CreatedAt              time.Time `json:"createdAt" db:"created_at"`
 	UpdatedAt              time.Time `json:"updatedAt" db:"updated_at"`
-	PDSAccessToken         string    `json:"-" db:"pds_access_token"`
-	FederatedID            string    `json:"federatedId,omitempty" db:"federated_id"`
+	RecordURI              string    `json:"recordUri,omitempty" db:"record_uri"`
+	FederatedFrom          string    `json:"federatedFrom,omitempty" db:"federated_from"`
 	DisplayName            string    `json:"displayName" db:"display_name"`
 	Description            string    `json:"description" db:"description"`
 	PDSURL                 string    `json:"-" db:"pds_url"`
@@ -20,16 +20,18 @@ type Community struct {
 	CreatedByDID           string    `json:"createdByDid" db:"created_by_did"`
 	HostedByDID            string    `json:"hostedByDid" db:"hosted_by_did"`
 	PDSEmail               string    `json:"-" db:"pds_email"`
-	PDSPasswordHash        string    `json:"-" db:"pds_password_hash"`
+	PDSPassword            string    `json:"-" db:"pds_password_encrypted"`
 	Name                   string    `json:"name" db:"name"`
 	RecordCID              string    `json:"recordCid,omitempty" db:"record_cid"`
-	RecordURI              string    `json:"recordUri,omitempty" db:"record_uri"`
-	Visibility             string    `json:"visibility" db:"visibility"`
-	DID                    string    `json:"did" db:"did"`
+	FederatedID            string    `json:"federatedId,omitempty" db:"federated_id"`
+	PDSAccessToken         string    `json:"-" db:"pds_access_token"`
+	SigningKeyPEM          string    `json:"-" db:"signing_key_encrypted"`
 	ModerationType         string    `json:"moderationType,omitempty" db:"moderation_type"`
 	Handle                 string    `json:"handle" db:"handle"`
 	PDSRefreshToken        string    `json:"-" db:"pds_refresh_token"`
-	FederatedFrom          string    `json:"federatedFrom,omitempty" db:"federated_from"`
+	Visibility             string    `json:"visibility" db:"visibility"`
+	RotationKeyPEM         string    `json:"-" db:"rotation_key_encrypted"`
+	DID                    string    `json:"did" db:"did"`
 	ContentWarnings        []string  `json:"contentWarnings,omitempty" db:"content_warnings"`
 	DescriptionFacets      []byte    `json:"descriptionFacets,omitempty" db:"description_facets"`
 	PostCount              int       `json:"postCount" db:"post_count"`
