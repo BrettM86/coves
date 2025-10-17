@@ -1,0 +1,6 @@
+{
+  "$type": "social.coves.community.subscription",
+  "subject": "did:plc:test123",
+  "createdAt": "2025-01-15T12:00:00Z",
+  "contentVisibility": 3
+}

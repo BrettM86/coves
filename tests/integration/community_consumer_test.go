@@ -240,6 +240,7 @@ func TestCommunityConsumer_HandleSubscription(t *testing.T) {
 		}
 
 		// Simulate subscription event
+		// IMPORTANT: Use correct collection name (record type, not XRPC procedure)
 		userDID := "did:plc:subscriber123"
 		subEvent := &jetstream.JetstreamEvent{
 			Did:    userDID,
@@ -248,11 +249,13 @@ func TestCommunityConsumer_HandleSubscription(t *testing.T) {
 			Commit: &jetstream.CommitEvent{
 				Rev:        "rev200",
 				Operation:  "create",
-				Collection: "social.coves.community.subscribe",
+				Collection: "social.coves.community.subscription", // Updated to communities namespace
 				RKey:       "sub123",
 				CID:        "bafy789ghi",
 				Record: map[string]interface{}{
-					"community": communityDID,
+					"subject":           communityDID, // Using 'subject' per atProto conventions
+					"contentVisibility": 3,
+					"createdAt":         time.Now().Format(time.RFC3339),
 				},
 			},
 		}

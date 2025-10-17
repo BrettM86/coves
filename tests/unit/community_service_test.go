@@ -90,6 +90,10 @@ func (m *mockCommunityRepo) GetSubscription(ctx context.Context, userDID, commun
 	return nil, communities.ErrSubscriptionNotFound
 }
 
+func (m *mockCommunityRepo) GetSubscriptionByURI(ctx context.Context, recordURI string) (*communities.Subscription, error) {
+	return nil, communities.ErrSubscriptionNotFound
+}
+
 func (m *mockCommunityRepo) ListSubscriptions(ctx context.Context, userDID string, limit, offset int) ([]*communities.Subscription, error) {
 	return nil, nil
 }

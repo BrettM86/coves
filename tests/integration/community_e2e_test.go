@@ -553,9 +553,19 @@ func TestCommunity_E2E(t *testing.T) {
 			// Create a community to subscribe to
 			community := createAndIndexCommunity(t, communityService, consumer, instanceDID, pdsURL)
 
-			// Subscribe to the community
+			// Get initial subscriber count
+			initialCommunity, err := communityRepo.GetByDID(ctx, community.DID)
+			if err != nil {
+				t.Fatalf("Failed to get initial community state: %v", err)
+			}
+			initialSubscriberCount := initialCommunity.SubscriberCount
+			t.Logf("Initial subscriber count: %d", initialSubscriberCount)
+
+			// Subscribe to the community with contentVisibility=5 (test max visibility)
+			// NOTE: HTTP API uses "community" field, but atProto record uses "subject" internally
 			subscribeReq := map[string]interface{}{
-				"community": community.DID,
+				"community":         community.DID,
+				"contentVisibility": 5, // Test with max visibility
 			}
 
 			reqBody, marshalErr := json.Marshal(subscribeReq)
@@ -617,7 +627,8 @@ func TestCommunity_E2E(t *testing.T) {
 			}
 
 			rkey := extractRKeyFromURI(subscribeResp.URI)
-			collection := "social.coves.community.subscribe"
+			// CRITICAL: Use correct collection name (record type, not XRPC endpoint)
+			collection := "social.coves.community.subscription"
 
 			pdsResp, pdsErr := http.Get(fmt.Sprintf("%s/xrpc/com.atproto.repo.getRecord?repo=%s&collection=%s&rkey=%s",
 				pdsURL, instanceDID, collection, rkey))
@@ -631,7 +642,8 @@ func TestCommunity_E2E(t *testing.T) {
 			}()
 
 			if pdsResp.StatusCode != http.StatusOK {
-				t.Fatalf("Subscription record not found on PDS: status %d", pdsResp.StatusCode)
+				body, _ := io.ReadAll(pdsResp.Body)
+				t.Fatalf("Subscription record not found on PDS: status %d, body: %s", pdsResp.StatusCode, string(body))
 			}
 
 			var pdsRecord struct {
@@ -642,23 +654,104 @@ func TestCommunity_E2E(t *testing.T) {
 			}
 
 			t.Logf("✅ Subscription record found on PDS:")
-			t.Logf("   Community: %v", pdsRecord.Value["community"])
+			t.Logf("   Subject (community): %v", pdsRecord.Value["subject"])
+			t.Logf("   ContentVisibility:   %v", pdsRecord.Value["contentVisibility"])
 
-			// Verify the community DID matches
-			if pdsRecord.Value["community"] != community.DID {
-				t.Errorf("Community DID mismatch: expected %s, got %v", community.DID, pdsRecord.Value["community"])
+			// Verify the subject (community) DID matches
+			if pdsRecord.Value["subject"] != community.DID {
+				t.Errorf("Community DID mismatch: expected %s, got %v", community.DID, pdsRecord.Value["subject"])
+			}
+
+			// Verify contentVisibility was stored correctly
+			if cv, ok := pdsRecord.Value["contentVisibility"].(float64); ok {
+				if int(cv) != 5 {
+					t.Errorf("ContentVisibility mismatch: expected 5, got %v", cv)
+				}
+			} else {
+				t.Errorf("ContentVisibility not found or wrong type in PDS record")
+			}
+
+			// CRITICAL: Simulate Jetstream consumer indexing the subscription
+			// This is the MISSING PIECE - we need to verify the firehose event gets indexed
+			t.Logf("🔄 Simulating Jetstream consumer indexing subscription...")
+			subEvent := jetstream.JetstreamEvent{
+				Did:    instanceDID,
+				TimeUS: time.Now().UnixMicro(),
+				Kind:   "commit",
+				Commit: &jetstream.CommitEvent{
+					Rev:        "test-sub-rev",
+					Operation:  "create",
+					Collection: "social.coves.community.subscription", // CORRECT collection
+					RKey:       rkey,
+					CID:        subscribeResp.CID,
+					Record: map[string]interface{}{
+						"$type":             "social.coves.community.subscription",
+						"subject":         community.DID,
+						"contentVisibility": float64(5), // JSON numbers are float64
+						"createdAt":         time.Now().Format(time.RFC3339),
+					},
+				},
+			}
+			if handleErr := consumer.HandleEvent(context.Background(), &subEvent); handleErr != nil {
+				t.Fatalf("Failed to handle subscription event: %v", handleErr)
+			}
+
+			// Verify subscription was indexed in AppView
+			t.Logf("🔍 Verifying subscription indexed in AppView...")
+			indexedSub, err := communityRepo.GetSubscription(ctx, instanceDID, community.DID)
+			if err != nil {
+				t.Fatalf("Subscription not indexed in AppView: %v", err)
+			}
+
+			t.Logf("✅ Subscription indexed in AppView:")
+			t.Logf("   User:              %s", indexedSub.UserDID)
+			t.Logf("   Community:         %s", indexedSub.CommunityDID)
+			t.Logf("   ContentVisibility: %d", indexedSub.ContentVisibility)
+			t.Logf("   RecordURI:         %s", indexedSub.RecordURI)
+
+			// Verify contentVisibility was indexed correctly
+			if indexedSub.ContentVisibility != 5 {
+				t.Errorf("ContentVisibility not indexed correctly: expected 5, got %d", indexedSub.ContentVisibility)
+			}
+
+			// Verify subscriber count was incremented
+			t.Logf("🔍 Verifying subscriber count incremented...")
+			updatedCommunity, err := communityRepo.GetByDID(ctx, community.DID)
+			if err != nil {
+				t.Fatalf("Failed to get updated community: %v", err)
+			}
+
+			expectedCount := initialSubscriberCount + 1
+			if updatedCommunity.SubscriberCount != expectedCount {
+				t.Errorf("Subscriber count not incremented: expected %d, got %d",
+					expectedCount, updatedCommunity.SubscriberCount)
+			} else {
+				t.Logf("✅ Subscriber count incremented: %d → %d",
+					initialSubscriberCount, updatedCommunity.SubscriberCount)
 			}
 
 			t.Logf("✅ TRUE E2E SUBSCRIBE FLOW COMPLETE:")
-			t.Logf("   Client → XRPC Subscribe → PDS (user repo) → Firehose → AppView ✓")
+			t.Logf("   Client → XRPC Subscribe → PDS (user repo) → Firehose → Consumer → AppView ✓")
+			t.Logf("   ✓ Subscription written to PDS")
+			t.Logf("   ✓ Subscription indexed in AppView")
+			t.Logf("   ✓ ContentVisibility stored and indexed correctly (5)")
+			t.Logf("   ✓ Subscriber count incremented")
 		})
 
 		t.Run("Unsubscribe via XRPC endpoint", func(t *testing.T) {
 			// Create a community and subscribe to it first
 			community := createAndIndexCommunity(t, communityService, consumer, instanceDID, pdsURL)
 
-			// Subscribe first (using instance access token for instance user)
-			subscription, err := communityService.SubscribeToCommunity(ctx, instanceDID, accessToken, community.DID)
+			// Get initial subscriber count
+			initialCommunity, err := communityRepo.GetByDID(ctx, community.DID)
+			if err != nil {
+				t.Fatalf("Failed to get initial community state: %v", err)
+			}
+			initialSubscriberCount := initialCommunity.SubscriberCount
+			t.Logf("Initial subscriber count: %d", initialSubscriberCount)
+
+			// Subscribe first (using instance access token for instance user, with contentVisibility=3)
+			subscription, err := communityService.SubscribeToCommunity(ctx, instanceDID, accessToken, community.DID, 3)
 			if err != nil {
 				t.Fatalf("Failed to subscribe: %v", err)
 			}
@@ -672,20 +765,38 @@ func TestCommunity_E2E(t *testing.T) {
 				Commit: &jetstream.CommitEvent{
 					Rev:        "test-sub-rev",
 					Operation:  "create",
-					Collection: "social.coves.community.subscribe",
+					Collection: "social.coves.community.subscription", // CORRECT collection
 					RKey:       rkey,
 					CID:        subscription.RecordCID,
 					Record: map[string]interface{}{
-						"$type":     "social.coves.community.subscribe",
-						"community": community.DID,
+						"$type":             "social.coves.community.subscription",
+						"subject":         community.DID,
+						"contentVisibility": float64(3),
+						"createdAt":         time.Now().Format(time.RFC3339),
 					},
 				},
 			}
 			if handleErr := consumer.HandleEvent(context.Background(), &subEvent); handleErr != nil {
-				t.Logf("Warning: failed to handle subscription event: %v", handleErr)
+				t.Fatalf("Failed to handle subscription event: %v", handleErr)
 			}
 
-			t.Logf("📝 Subscription created: %s", subscription.RecordURI)
+			// Verify subscription was indexed
+			_, err = communityRepo.GetSubscription(ctx, instanceDID, community.DID)
+			if err != nil {
+				t.Fatalf("Subscription not indexed: %v", err)
+			}
+
+			// Verify subscriber count incremented
+			midCommunity, err := communityRepo.GetByDID(ctx, community.DID)
+			if err != nil {
+				t.Fatalf("Failed to get community after subscribe: %v", err)
+			}
+			if midCommunity.SubscriberCount != initialSubscriberCount+1 {
+				t.Errorf("Subscriber count not incremented after subscribe: expected %d, got %d",
+					initialSubscriberCount+1, midCommunity.SubscriberCount)
+			}
+
+			t.Logf("📝 Subscription created and indexed: %s", subscription.RecordURI)
 
 			// Now unsubscribe via XRPC endpoint
 			unsubscribeReq := map[string]interface{}{
@@ -750,7 +861,8 @@ func TestCommunity_E2E(t *testing.T) {
 				pdsURL = "http://localhost:3001"
 			}
 
-			collection := "social.coves.community.subscribe"
+			// CRITICAL: Use correct collection name (record type, not XRPC endpoint)
+			collection := "social.coves.community.subscription"
 			pdsResp, pdsErr := http.Get(fmt.Sprintf("%s/xrpc/com.atproto.repo.getRecord?repo=%s&collection=%s&rkey=%s",
 				pdsURL, instanceDID, collection, rkey))
 			if pdsErr != nil {
@@ -769,8 +881,56 @@ func TestCommunity_E2E(t *testing.T) {
 				t.Logf("✅ Subscription record successfully deleted from PDS (status: %d)", pdsResp.StatusCode)
 			}
 
+			// CRITICAL: Simulate Jetstream consumer indexing the DELETE event
+			t.Logf("🔄 Simulating Jetstream consumer indexing DELETE event...")
+			deleteEvent := jetstream.JetstreamEvent{
+				Did:    instanceDID,
+				TimeUS: time.Now().UnixMicro(),
+				Kind:   "commit",
+				Commit: &jetstream.CommitEvent{
+					Rev:        "test-unsub-rev",
+					Operation:  "delete",
+					Collection: "social.coves.community.subscription",
+					RKey:       rkey,
+					CID:        "",     // No CID on deletes
+					Record:     nil,    // No record data on deletes
+				},
+			}
+			if handleErr := consumer.HandleEvent(context.Background(), &deleteEvent); handleErr != nil {
+				t.Fatalf("Failed to handle delete event: %v", handleErr)
+			}
+
+			// Verify subscription was removed from AppView
+			t.Logf("🔍 Verifying subscription removed from AppView...")
+			_, err = communityRepo.GetSubscription(ctx, instanceDID, community.DID)
+			if err == nil {
+				t.Errorf("❌ Subscription still exists in AppView (should be deleted)")
+			} else if !communities.IsNotFound(err) {
+				t.Fatalf("Unexpected error querying subscription: %v", err)
+			} else {
+				t.Logf("✅ Subscription removed from AppView")
+			}
+
+			// Verify subscriber count was decremented
+			t.Logf("🔍 Verifying subscriber count decremented...")
+			finalCommunity, err := communityRepo.GetByDID(ctx, community.DID)
+			if err != nil {
+				t.Fatalf("Failed to get final community state: %v", err)
+			}
+
+			if finalCommunity.SubscriberCount != initialSubscriberCount {
+				t.Errorf("Subscriber count not decremented: expected %d, got %d",
+					initialSubscriberCount, finalCommunity.SubscriberCount)
+			} else {
+				t.Logf("✅ Subscriber count decremented: %d → %d",
+					initialSubscriberCount+1, finalCommunity.SubscriberCount)
+			}
+
 			t.Logf("✅ TRUE E2E UNSUBSCRIBE FLOW COMPLETE:")
-			t.Logf("   Client → XRPC Unsubscribe → PDS Delete → Firehose → AppView ✓")
+			t.Logf("   Client → XRPC Unsubscribe → PDS Delete → Firehose → Consumer → AppView ✓")
+			t.Logf("   ✓ Subscription deleted from PDS")
+			t.Logf("   ✓ Subscription removed from AppView")
+			t.Logf("   ✓ Subscriber count decremented")
 		})
 
 		t.Run("Update via XRPC endpoint", func(t *testing.T) {
