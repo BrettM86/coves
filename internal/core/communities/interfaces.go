@@ -22,6 +22,7 @@ type Repository interface {
 	Unsubscribe(ctx context.Context, userDID, communityDID string) error
 	UnsubscribeWithCount(ctx context.Context, userDID, communityDID string) error // Atomic: unsubscribe + decrement count
 	GetSubscription(ctx context.Context, userDID, communityDID string) (*Subscription, error)
+	GetSubscriptionByURI(ctx context.Context, recordURI string) (*Subscription, error) // For Jetstream delete operations
 	ListSubscriptions(ctx context.Context, userDID string, limit, offset int) ([]*Subscription, error)
 	ListSubscribers(ctx context.Context, communityDID string, limit, offset int) ([]*Subscription, error)
 
@@ -54,7 +55,7 @@ type Service interface {
 	SearchCommunities(ctx context.Context, req SearchCommunitiesRequest) ([]*Community, int, error)
 
 	// Subscription operations (write-forward: creates record in user's PDS)
-	SubscribeToCommunity(ctx context.Context, userDID, userAccessToken, communityIdentifier string) (*Subscription, error)
+	SubscribeToCommunity(ctx context.Context, userDID, userAccessToken, communityIdentifier string, contentVisibility int) (*Subscription, error)
 	UnsubscribeFromCommunity(ctx context.Context, userDID, userAccessToken, communityIdentifier string) error
 	GetUserSubscriptions(ctx context.Context, userDID string, limit, offset int) ([]*Subscription, error)
 	GetCommunitySubscribers(ctx context.Context, communityIdentifier string, limit, offset int) ([]*Subscription, error)

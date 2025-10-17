@@ -31,7 +31,8 @@ func (h *SubscribeHandler) HandleSubscribe(w http.ResponseWriter, r *http.Reques
 
 	// Parse request body
 	var req struct {
-		Community string `json:"community"`
+		Community         string `json:"community"`
+		ContentVisibility int    `json:"contentVisibility"` // Optional: 1-5 scale, defaults to 3
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -45,6 +46,7 @@ func (h *SubscribeHandler) HandleSubscribe(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Extract authenticated user DID and access token from request context (injected by auth middleware)
+	// Note: contentVisibility defaults and clamping handled by service layer
 	userDID := middleware.GetUserDID(r)
 	if userDID == "" {
 		writeError(w, http.StatusUnauthorized, "AuthRequired", "Authentication required")
@@ -58,7 +60,7 @@ func (h *SubscribeHandler) HandleSubscribe(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Subscribe via service (write-forward to PDS)
-	subscription, err := h.service.SubscribeToCommunity(r.Context(), userDID, userAccessToken, req.Community)
+	subscription, err := h.service.SubscribeToCommunity(r.Context(), userDID, userAccessToken, req.Community, req.ContentVisibility)
 	if err != nil {
 		handleServiceError(w, err)
 		return

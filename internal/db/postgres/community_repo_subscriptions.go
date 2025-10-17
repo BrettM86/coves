@@ -12,8 +12,8 @@ import (
 // Subscribe creates a new subscription record
 func (r *postgresCommunityRepo) Subscribe(ctx context.Context, subscription *communities.Subscription) (*communities.Subscription, error) {
 	query := `
-		INSERT INTO community_subscriptions (user_did, community_did, subscribed_at, record_uri, record_cid)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO community_subscriptions (user_did, community_did, subscribed_at, record_uri, record_cid, content_visibility)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id, subscribed_at`
 
 	err := r.db.QueryRowContext(ctx, query,
@@ -22,6 +22,7 @@ func (r *postgresCommunityRepo) Subscribe(ctx context.Context, subscription *com
 		subscription.SubscribedAt,
 		nullString(subscription.RecordURI),
 		nullString(subscription.RecordCID),
+		subscription.ContentVisibility,
 	).Scan(&subscription.ID, &subscription.SubscribedAt)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
@@ -51,10 +52,10 @@ func (r *postgresCommunityRepo) SubscribeWithCount(ctx context.Context, subscrip
 
 	// Insert subscription with ON CONFLICT DO NOTHING for idempotency
 	query := `
-		INSERT INTO community_subscriptions (user_did, community_did, subscribed_at, record_uri, record_cid)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO community_subscriptions (user_did, community_did, subscribed_at, record_uri, record_cid, content_visibility)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (user_did, community_did) DO NOTHING
-		RETURNING id, subscribed_at`
+		RETURNING id, subscribed_at, content_visibility`
 
 	err = tx.QueryRowContext(ctx, query,
 		subscription.UserDID,
@@ -62,13 +63,14 @@ func (r *postgresCommunityRepo) SubscribeWithCount(ctx context.Context, subscrip
 		subscription.SubscribedAt,
 		nullString(subscription.RecordURI),
 		nullString(subscription.RecordCID),
-	).Scan(&subscription.ID, &subscription.SubscribedAt)
+		subscription.ContentVisibility,
+	).Scan(&subscription.ID, &subscription.SubscribedAt, &subscription.ContentVisibility)
 
 	// If no rows returned, subscription already existed (idempotent behavior)
 	if err == sql.ErrNoRows {
 		// Get existing subscription
-		query = `SELECT id, subscribed_at FROM community_subscriptions WHERE user_did = $1 AND community_did = $2`
-		err = tx.QueryRowContext(ctx, query, subscription.UserDID, subscription.CommunityDID).Scan(&subscription.ID, &subscription.SubscribedAt)
+		query = `SELECT id, subscribed_at, content_visibility FROM community_subscriptions WHERE user_did = $1 AND community_did = $2`
+		err = tx.QueryRowContext(ctx, query, subscription.UserDID, subscription.CommunityDID).Scan(&subscription.ID, &subscription.SubscribedAt, &subscription.ContentVisibility)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get existing subscription: %w", err)
 		}
@@ -180,7 +182,7 @@ func (r *postgresCommunityRepo) UnsubscribeWithCount(ctx context.Context, userDI
 func (r *postgresCommunityRepo) GetSubscription(ctx context.Context, userDID, communityDID string) (*communities.Subscription, error) {
 	subscription := &communities.Subscription{}
 	query := `
-		SELECT id, user_did, community_did, subscribed_at, record_uri, record_cid
+		SELECT id, user_did, community_did, subscribed_at, record_uri, record_cid, content_visibility
 		FROM community_subscriptions
 		WHERE user_did = $1 AND community_did = $2`
 
@@ -193,6 +195,7 @@ func (r *postgresCommunityRepo) GetSubscription(ctx context.Context, userDID, co
 		&subscription.SubscribedAt,
 		&recordURI,
 		&recordCID,
+		&subscription.ContentVisibility,
 	)
 
 	if err == sql.ErrNoRows {
@@ -208,10 +211,44 @@ func (r *postgresCommunityRepo) GetSubscription(ctx context.Context, userDID, co
 	return subscription, nil
 }
 
+// GetSubscriptionByURI retrieves a subscription by its AT-URI
+// This is used by Jetstream consumer for DELETE operations (which don't include record data)
+func (r *postgresCommunityRepo) GetSubscriptionByURI(ctx context.Context, recordURI string) (*communities.Subscription, error) {
+	subscription := &communities.Subscription{}
+	query := `
+		SELECT id, user_did, community_did, subscribed_at, record_uri, record_cid, content_visibility
+		FROM community_subscriptions
+		WHERE record_uri = $1`
+
+	var uri, cid sql.NullString
+
+	err := r.db.QueryRowContext(ctx, query, recordURI).Scan(
+		&subscription.ID,
+		&subscription.UserDID,
+		&subscription.CommunityDID,
+		&subscription.SubscribedAt,
+		&uri,
+		&cid,
+		&subscription.ContentVisibility,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, communities.ErrSubscriptionNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get subscription by URI: %w", err)
+	}
+
+	subscription.RecordURI = uri.String
+	subscription.RecordCID = cid.String
+
+	return subscription, nil
+}
+
 // ListSubscriptions retrieves all subscriptions for a user
 func (r *postgresCommunityRepo) ListSubscriptions(ctx context.Context, userDID string, limit, offset int) ([]*communities.Subscription, error) {
 	query := `
-		SELECT id, user_did, community_did, subscribed_at, record_uri, record_cid
+		SELECT id, user_did, community_did, subscribed_at, record_uri, record_cid, content_visibility
 		FROM community_subscriptions
 		WHERE user_did = $1
 		ORDER BY subscribed_at DESC
@@ -239,6 +276,7 @@ func (r *postgresCommunityRepo) ListSubscriptions(ctx context.Context, userDID s
 			&subscription.SubscribedAt,
 			&recordURI,
 			&recordCID,
+			&subscription.ContentVisibility,
 		)
 		if scanErr != nil {
 			return nil, fmt.Errorf("failed to scan subscription: %w", scanErr)
@@ -260,7 +298,7 @@ func (r *postgresCommunityRepo) ListSubscriptions(ctx context.Context, userDID s
 // ListSubscribers retrieves all subscribers for a community
 func (r *postgresCommunityRepo) ListSubscribers(ctx context.Context, communityDID string, limit, offset int) ([]*communities.Subscription, error) {
 	query := `
-		SELECT id, user_did, community_did, subscribed_at, record_uri, record_cid
+		SELECT id, user_did, community_did, subscribed_at, record_uri, record_cid, content_visibility
 		FROM community_subscriptions
 		WHERE community_did = $1
 		ORDER BY subscribed_at DESC
@@ -288,6 +326,7 @@ func (r *postgresCommunityRepo) ListSubscribers(ctx context.Context, communityDI
 			&subscription.SubscribedAt,
 			&recordURI,
 			&recordCID,
+			&subscription.ContentVisibility,
 		)
 		if scanErr != nil {
 			return nil, fmt.Errorf("failed to scan subscriber: %w", scanErr)

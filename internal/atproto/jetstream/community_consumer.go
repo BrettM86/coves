@@ -32,13 +32,18 @@ func (c *CommunityEventConsumer) HandleEvent(ctx context.Context, event *Jetstre
 	commit := event.Commit
 
 	// Route to appropriate handler based on collection
+	// IMPORTANT: Collection names refer to RECORD TYPES in repositories, not XRPC procedures
+	// - social.coves.community.profile: Community profile records (in community's own repo)
+	// - social.coves.community.subscription: Subscription records (in user's repo)
+	//
+	// XRPC procedures (social.coves.community.subscribe/unsubscribe) are just HTTP endpoints
+	// that CREATE or DELETE records in these collections
 	switch commit.Collection {
 	case "social.coves.community.profile":
 		return c.handleCommunityProfile(ctx, event.Did, commit)
-	case "social.coves.community.subscribe":
+	case "social.coves.community.subscription":
+		// Handle both create (subscribe) and delete (unsubscribe) operations
 		return c.handleSubscription(ctx, event.Did, commit)
-	case "social.coves.community.unsubscribe":
-		return c.handleUnsubscribe(ctx, event.Did, commit)
 	default:
 		// Not a community-related collection
 		return nil
@@ -224,70 +229,102 @@ func (c *CommunityEventConsumer) deleteCommunity(ctx context.Context, did string
 	return nil
 }
 
-// handleSubscription indexes a subscription event
+// handleSubscription processes subscription create/delete events
+// CREATE operation = user subscribed to community
+// DELETE operation = user unsubscribed from community
 func (c *CommunityEventConsumer) handleSubscription(ctx context.Context, userDID string, commit *CommitEvent) error {
-	if commit.Operation != "create" {
-		return nil // Subscriptions are only created, not updated
+	switch commit.Operation {
+	case "create":
+		return c.createSubscription(ctx, userDID, commit)
+	case "delete":
+		return c.deleteSubscription(ctx, userDID, commit)
+	default:
+		// Update operations shouldn't happen on subscriptions, but ignore gracefully
+		log.Printf("Ignoring unexpected operation on subscription: %s (userDID=%s, rkey=%s)",
+			commit.Operation, userDID, commit.RKey)
+		return nil
 	}
+}
 
+// createSubscription indexes a new subscription with retry logic
+func (c *CommunityEventConsumer) createSubscription(ctx context.Context, userDID string, commit *CommitEvent) error {
 	if commit.Record == nil {
-		return fmt.Errorf("subscription event missing record data")
+		return fmt.Errorf("subscription create event missing record data")
 	}
 
-	// Extract community DID from record
-	communityDID, ok := commit.Record["community"].(string)
+	// Extract community DID from record's subject field (following atProto conventions)
+	communityDID, ok := commit.Record["subject"].(string)
 	if !ok {
-		return fmt.Errorf("subscription record missing community field")
+		return fmt.Errorf("subscription record missing subject field")
 	}
+
+	// Extract contentVisibility with clamping and default value
+	contentVisibility := extractContentVisibility(commit.Record)
 
 	// Build AT-URI for subscription record
-	uri := fmt.Sprintf("at://%s/social.coves.community.subscribe/%s", userDID, commit.RKey)
+	// IMPORTANT: Collection is social.coves.community.subscription (record type), not the XRPC endpoint
+	// The record lives in the USER's repository, but uses the communities namespace
+	uri := fmt.Sprintf("at://%s/social.coves.community.subscription/%s", userDID, commit.RKey)
 
-	// Create subscription
+	// Create subscription entity
 	subscription := &communities.Subscription{
-		UserDID:      userDID,
-		CommunityDID: communityDID,
-		SubscribedAt: time.Now(),
-		RecordURI:    uri,
-		RecordCID:    commit.CID,
+		UserDID:           userDID,
+		CommunityDID:      communityDID,
+		ContentVisibility: contentVisibility,
+		SubscribedAt:      time.Now(),
+		RecordURI:         uri,
+		RecordCID:         commit.CID,
 	}
 
 	// Use transactional method to ensure subscription and count are atomically updated
 	// This is idempotent - safe for Jetstream replays
 	_, err := c.repo.SubscribeWithCount(ctx, subscription)
 	if err != nil {
+		// If already exists, that's fine (idempotency)
+		if communities.IsConflict(err) {
+			log.Printf("Subscription already indexed: %s -> %s (visibility: %d)",
+				userDID, communityDID, contentVisibility)
+			return nil
+		}
 		return fmt.Errorf("failed to index subscription: %w", err)
 	}
 
-	log.Printf("Indexed subscription: %s -> %s", userDID, communityDID)
+	log.Printf("✓ Indexed subscription: %s -> %s (visibility: %d)",
+		userDID, communityDID, contentVisibility)
 	return nil
 }
 
-// handleUnsubscribe removes a subscription
-func (c *CommunityEventConsumer) handleUnsubscribe(ctx context.Context, userDID string, commit *CommitEvent) error {
-	if commit.Operation != "delete" {
-		return nil
-	}
+// deleteSubscription removes a subscription from the index
+// DELETE operations don't include record data, so we need to look up the subscription
+// by its URI to find which community the user unsubscribed from
+func (c *CommunityEventConsumer) deleteSubscription(ctx context.Context, userDID string, commit *CommitEvent) error {
+	// Build AT-URI from the rkey
+	uri := fmt.Sprintf("at://%s/social.coves.community.subscription/%s", userDID, commit.RKey)
 
-	// For unsubscribe, we need to extract the community DID from the record key or metadata
-	// This might need adjustment based on actual Jetstream structure
-	if commit.Record == nil {
-		return fmt.Errorf("unsubscribe event missing record data")
-	}
-
-	communityDID, ok := commit.Record["community"].(string)
-	if !ok {
-		return fmt.Errorf("unsubscribe record missing community field")
+	// Look up the subscription to get the community DID
+	// (DELETE operations don't include record data in Jetstream)
+	subscription, err := c.repo.GetSubscriptionByURI(ctx, uri)
+	if err != nil {
+		if communities.IsNotFound(err) {
+			// Already deleted - this is fine (idempotency)
+			log.Printf("Subscription already deleted: %s", uri)
+			return nil
+		}
+		return fmt.Errorf("failed to find subscription for deletion: %w", err)
 	}
 
 	// Use transactional method to ensure unsubscribe and count are atomically updated
 	// This is idempotent - safe for Jetstream replays
-	err := c.repo.UnsubscribeWithCount(ctx, userDID, communityDID)
+	err = c.repo.UnsubscribeWithCount(ctx, userDID, subscription.CommunityDID)
 	if err != nil {
+		if communities.IsNotFound(err) {
+			log.Printf("Subscription already removed: %s -> %s", userDID, subscription.CommunityDID)
+			return nil
+		}
 		return fmt.Errorf("failed to remove subscription: %w", err)
 	}
 
-	log.Printf("Removed subscription: %s -> %s", userDID, communityDID)
+	log.Printf("✓ Removed subscription: %s -> %s", userDID, subscription.CommunityDID)
 	return nil
 }
 
@@ -332,6 +369,47 @@ func parseCommunityProfile(record map[string]interface{}) (*CommunityProfile, er
 	}
 
 	return &profile, nil
+}
+
+// extractContentVisibility extracts contentVisibility from subscription record with clamping
+// Returns default value of 3 if missing or invalid
+func extractContentVisibility(record map[string]interface{}) int {
+	const defaultVisibility = 3
+
+	cv, ok := record["contentVisibility"]
+	if !ok {
+		// Field missing - use default
+		return defaultVisibility
+	}
+
+	// JSON numbers decode as float64
+	cvFloat, ok := cv.(float64)
+	if !ok {
+		// Try int (shouldn't happen but handle gracefully)
+		if cvInt, isInt := cv.(int); isInt {
+			return clampContentVisibility(cvInt)
+		}
+		log.Printf("WARNING: contentVisibility has unexpected type %T, using default", cv)
+		return defaultVisibility
+	}
+
+	// Convert and clamp
+	clamped := clampContentVisibility(int(cvFloat))
+	if clamped != int(cvFloat) {
+		log.Printf("WARNING: Clamped contentVisibility from %d to %d", int(cvFloat), clamped)
+	}
+	return clamped
+}
+
+// clampContentVisibility ensures value is within valid range (1-5)
+func clampContentVisibility(value int) int {
+	if value < 1 {
+		return 1
+	}
+	if value > 5 {
+		return 5
+	}
+	return value
 }
 
 // extractBlobCID extracts the CID from a blob reference
