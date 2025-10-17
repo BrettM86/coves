@@ -372,12 +372,17 @@ func (s *communityService) SearchCommunities(ctx context.Context, req SearchComm
 }
 
 // SubscribeToCommunity creates a subscription via write-forward to PDS
-func (s *communityService) SubscribeToCommunity(ctx context.Context, userDID, userAccessToken, communityIdentifier string) (*Subscription, error) {
+func (s *communityService) SubscribeToCommunity(ctx context.Context, userDID, userAccessToken, communityIdentifier string, contentVisibility int) (*Subscription, error) {
 	if userDID == "" {
 		return nil, NewValidationError("userDid", "required")
 	}
 	if userAccessToken == "" {
 		return nil, NewValidationError("userAccessToken", "required")
+	}
+
+	// Clamp contentVisibility to valid range (1-5), default to 3 if 0 or invalid
+	if contentVisibility <= 0 || contentVisibility > 5 {
+		contentVisibility = 3
 	}
 
 	// Resolve community identifier to DID
@@ -398,24 +403,31 @@ func (s *communityService) SubscribeToCommunity(ctx context.Context, userDID, us
 	}
 
 	// Build subscription record
+	// CRITICAL: Collection is social.coves.community.subscription (RECORD TYPE), not social.coves.community.subscribe (XRPC procedure)
+	// This record will be created in the USER's repository: at://user_did/social.coves.community.subscription/{tid}
+	// Following atProto conventions, we use "subject" field to reference the community
 	subRecord := map[string]interface{}{
-		"$type":     "social.coves.community.subscribe",
-		"community": communityDID,
+		"$type":             "social.coves.community.subscription",
+		"subject":           communityDID, // atProto convention: "subject" for entity references
+		"createdAt":         time.Now().Format(time.RFC3339),
+		"contentVisibility": contentVisibility,
 	}
 
 	// Write-forward: create subscription record in user's repo using their access token
-	recordURI, recordCID, err := s.createRecordOnPDSAs(ctx, userDID, "social.coves.community.subscribe", "", subRecord, userAccessToken)
+	// The collection parameter refers to the record type in the repository
+	recordURI, recordCID, err := s.createRecordOnPDSAs(ctx, userDID, "social.coves.community.subscription", "", subRecord, userAccessToken)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create subscription on PDS: %w", err)
 	}
 
 	// Return subscription representation
 	subscription := &Subscription{
-		UserDID:      userDID,
-		CommunityDID: communityDID,
-		SubscribedAt: time.Now(),
-		RecordURI:    recordURI,
-		RecordCID:    recordCID,
+		UserDID:           userDID,
+		CommunityDID:      communityDID,
+		ContentVisibility: contentVisibility,
+		SubscribedAt:      time.Now(),
+		RecordURI:         recordURI,
+		RecordCID:         recordCID,
 	}
 
 	return subscription, nil
@@ -449,7 +461,8 @@ func (s *communityService) UnsubscribeFromCommunity(ctx context.Context, userDID
 	}
 
 	// Write-forward: delete record from PDS using user's access token
-	if err := s.deleteRecordOnPDSAs(ctx, userDID, "social.coves.community.subscribe", rkey, userAccessToken); err != nil {
+	// CRITICAL: Delete from social.coves.community.subscription (RECORD TYPE), not social.coves.community.unsubscribe
+	if err := s.deleteRecordOnPDSAs(ctx, userDID, "social.coves.community.subscription", rkey, userAccessToken); err != nil {
 		return fmt.Errorf("failed to delete subscription on PDS: %w", err)
 	}
 

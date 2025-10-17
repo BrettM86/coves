@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -117,18 +118,16 @@ func (c *UserEventConsumer) connect(ctx context.Context) error {
 	defer ticker.Stop()
 
 	done := make(chan struct{})
+	var closeOnce sync.Once // Ensure done channel is only closed once
 
 	// Goroutine to send pings
-	// TODO: Fix race condition - multiple goroutines can call close(done) concurrently
-	// Use sync.Once to ensure close(done) is called exactly once
-	// See PR review issue #4
 	go func() {
 		for {
 			select {
 			case <-ticker.C:
 				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 					log.Printf("Ping error: %v", err)
-					close(done)
+					closeOnce.Do(func() { close(done) })
 					return
 				}
 			case <-done:
@@ -149,7 +148,7 @@ func (c *UserEventConsumer) connect(ctx context.Context) error {
 		default:
 			_, message, err := conn.ReadMessage()
 			if err != nil {
-				close(done)
+				closeOnce.Do(func() { close(done) })
 				return fmt.Errorf("read error: %w", err)
 			}
 

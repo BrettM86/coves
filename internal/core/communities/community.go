@@ -43,12 +43,13 @@ type Community struct {
 
 // Subscription represents a lightweight feed follow (user subscribes to see posts)
 type Subscription struct {
-	SubscribedAt time.Time `json:"subscribedAt" db:"subscribed_at"`
-	UserDID      string    `json:"userDid" db:"user_did"`
-	CommunityDID string    `json:"communityDid" db:"community_did"`
-	RecordURI    string    `json:"recordUri,omitempty" db:"record_uri"`
-	RecordCID    string    `json:"recordCid,omitempty" db:"record_cid"`
-	ID           int       `json:"id" db:"id"`
+	SubscribedAt      time.Time `json:"subscribedAt" db:"subscribed_at"`
+	UserDID           string    `json:"userDid" db:"user_did"`
+	CommunityDID      string    `json:"communityDid" db:"community_did"`
+	RecordURI         string    `json:"recordUri,omitempty" db:"record_uri"`
+	RecordCID         string    `json:"recordCid,omitempty" db:"record_cid"`
+	ContentVisibility int       `json:"contentVisibility" db:"content_visibility"` // Feed slider: 1-5 (1=best content only, 5=all content)
+	ID                int       `json:"id" db:"id"`
 }
 
 // Membership represents active participation with reputation tracking

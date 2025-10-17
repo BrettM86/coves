@@ -217,11 +217,30 @@ func main() {
 
 	log.Printf("Started Jetstream user consumer: %s", jetstreamURL)
 
-	// Note: Community indexing happens through the same Jetstream firehose
-	// The CommunityEventConsumer is used by handlers when processing community-related events
-	// For now, community records are created via write-forward to PDS, then indexed when
-	// they appear in the firehose. A dedicated consumer can be added later if needed.
-	log.Println("Community event consumer initialized (processes events from firehose)")
+	// Start Jetstream consumer for community events (profiles and subscriptions)
+	// This consumer indexes:
+	// 1. Community profiles (social.coves.community.profile) - in community's own repo
+	// 2. User subscriptions (social.coves.community.subscription) - in user's repo
+	communityJetstreamURL := os.Getenv("COMMUNITY_JETSTREAM_URL")
+	if communityJetstreamURL == "" {
+		// Local Jetstream for communities - filter to our instance's collections
+		// IMPORTANT: We listen to social.coves.community.subscription (not social.coves.community.subscribe)
+		// because subscriptions are RECORD TYPES in the communities namespace, not XRPC procedures
+		communityJetstreamURL = "ws://localhost:6008/subscribe?wantedCollections=social.coves.community.profile&wantedCollections=social.coves.community.subscription"
+	}
+
+	communityEventConsumer := jetstream.NewCommunityEventConsumer(communityRepo)
+	communityJetstreamConnector := jetstream.NewCommunityJetstreamConnector(communityEventConsumer, communityJetstreamURL)
+
+	go func() {
+		if startErr := communityJetstreamConnector.Start(ctx); startErr != nil {
+			log.Printf("Community Jetstream consumer stopped: %v", startErr)
+		}
+	}()
+
+	log.Printf("Started Jetstream community consumer: %s", communityJetstreamURL)
+	log.Println("  - Indexing: social.coves.community.profile (community profiles)")
+	log.Println("  - Indexing: social.coves.community.subscription (user subscriptions)")
 
 	// Start JWKS cache cleanup background job
 	go func() {
