@@ -2,7 +2,7 @@
 
 **Status:** In Development
 **Owner:** Platform Team
-**Last Updated:** 2025-10-10
+**Last Updated:** 2025-10-16
 
 ## Overview
 
@@ -112,12 +112,6 @@ Hosted By:   did:web:coves.social (instance manages credentials)
 ## ⚠️ Alpha Blockers (Must Complete Before Alpha Launch)
 
 ### Critical Missing Features
-- [ ] **Subscription Visibility Level (1-5 Scale):** Implement feed slider from DOMAIN_KNOWLEDGE.md
-  - Lexicon: ✅ Ready ([subscription.json:28-34](internal/atproto/lexicon/social/coves/actor/subscription.json))
-  - Service: ❌ Not using `contentVisibility` field
-  - Handler: ❌ Subscribe endpoint doesn't accept/store visibility level
-  - **Impact:** Users can't control how much content they see from each community
-
 - [ ] **Community Blocking:** Users can block communities from their feeds
   - Lexicon: ❌ Need new record type (extend `social.coves.actor.block` or create new)
   - Service: ❌ No implementation (`BlockCommunity()` / `UnblockCommunity()`)
@@ -125,24 +119,37 @@ Hosted By:   did:web:coves.social (instance manages credentials)
   - Repository: ❌ No methods
   - **Impact:** Users have no way to hide unwanted communities
 
-### Critical Infrastructure (BLOCKING)
-- [ ] **⚠️ Subscription Indexing - NO PRODUCTION CONSUMER**
-  - **Status:** Subscriptions write to PDS but are NEVER indexed in AppView
-  - **Root Cause:** `CommunityEventConsumer` only runs in tests, not in production
+### ✅ Critical Infrastructure - RESOLVED (2025-10-16)
+- [x] **✅ Subscription Indexing & ContentVisibility - COMPLETE**
+  - **Status:** Subscriptions now fully indexed in AppView with feed slider support
+  - **Completed:** 2025-10-16
+  - **What Was Fixed:**
+    1. ✅ Fixed critical collection name bug (`social.coves.actor.subscription` → `social.coves.community.subscription`)
+    2. ✅ Implemented ContentVisibility (1-5 slider) across all layers (handler, service, consumer, repository)
+    3. ✅ Production Jetstream consumer now running ([cmd/server/main.go:220-243](cmd/server/main.go#L220-L243))
+    4. ✅ Migration 008 adds `content_visibility` column with defaults and constraints
+    5. ✅ Atomic subscriber count updates (SubscribeWithCount/UnsubscribeWithCount)
+    6. ✅ DELETE operations properly handled (unsubscribe indexing)
+    7. ✅ Idempotent operations (safe for Jetstream event replays)
+    8. ✅ atProto naming compliance: singular namespace + `subject` field
   - **Impact:**
-    - ❌ Users CAN subscribe/unsubscribe (writes to their PDS repo) ✅
-    - ❌ AppView has NO KNOWLEDGE of subscriptions (not consuming from Jetstream)
-    - ❌ Cannot query user's subscriptions (data doesn't exist in AppView)
-    - ❌ Feed generation impossible (don't know who's subscribed to what)
-  - **Required Fixes:**
-    1. Start `CommunityEventConsumer` in production ([cmd/server/main.go](cmd/server/main.go))
-    2. Subscribe to local Jetstream: `ws://localhost:6008/subscribe?wantedCollections=social.coves.community.subscribe`
-    3. Fix unsubscribe handler - should handle `delete` operation on `social.coves.community.subscribe`, NOT a separate collection
-    4. Remove incorrect `social.coves.community.unsubscribe` case ([community_consumer.go:40](internal/atproto/jetstream/community_consumer.go#L40))
+    - ✅ Users CAN subscribe/unsubscribe (writes to their PDS repo)
+    - ✅ AppView INDEXES subscriptions from Jetstream in real-time
+    - ✅ Can query user's subscriptions (data persisted with contentVisibility)
+    - ✅ Feed generation ENABLED (know who's subscribed with visibility preferences)
+    - ✅ Subscriber counts accurate (atomic updates)
+  - **Testing:**
+    - ✅ 13 comprehensive integration tests (subscription_indexing_test.go) - ALL PASSING
+    - ✅ Enhanced E2E tests verify complete flow (HTTP → PDS → Jetstream → AppView)
+    - ✅ ContentVisibility clamping tested (0→1, 10→5, defaults to 3)
+    - ✅ Idempotency verified (duplicate events handled gracefully)
   - **Files:**
-    - Consumer: [internal/atproto/jetstream/community_consumer.go](internal/atproto/jetstream/community_consumer.go) (exists, needs fixes)
-    - Server: [cmd/server/main.go](cmd/server/main.go) (needs to instantiate consumer)
-  - **See:** Issue discovered 2025-10-16 during OAuth user token implementation
+    - Implementation Doc: [docs/IMPLEMENTATION_SUBSCRIPTION_INDEXING.md](docs/IMPLEMENTATION_SUBSCRIPTION_INDEXING.md)
+    - Lexicon: [internal/atproto/lexicon/social/coves/community/subscription.json](internal/atproto/lexicon/social/coves/community/subscription.json)
+    - Consumer: [internal/atproto/jetstream/community_consumer.go](internal/atproto/jetstream/community_consumer.go)
+    - Connector: [internal/atproto/jetstream/community_jetstream_connector.go](internal/atproto/jetstream/community_jetstream_connector.go)
+    - Migration: [internal/db/migrations/008_add_content_visibility_to_subscriptions.sql](internal/db/migrations/008_add_content_visibility_to_subscriptions.sql)
+    - Tests: [tests/integration/subscription_indexing_test.go](tests/integration/subscription_indexing_test.go)
 
 ### Critical Security (High Priority)
 - [x] **OAuth Authentication:** ✅ COMPLETE - User access tokens flow end-to-end

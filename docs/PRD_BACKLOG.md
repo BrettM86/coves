@@ -60,22 +60,34 @@ Miscellaneous platform improvements, bug fixes, and technical debt that don't fi
 
 ---
 
-### Subscription Visibility Level (Feed Slider 1-5 Scale)
-**Added:** 2025-10-15 | **Effort:** 4-6 hours | **Priority:** ALPHA BLOCKER
+### ✅ Subscription Visibility Level (Feed Slider 1-5 Scale) - COMPLETE
+**Added:** 2025-10-15 | **Completed:** 2025-10-16 | **Effort:** 1 day | **Status:** ✅ DONE
 
-**Problem:** Users can't control how much content they see from each community. Lexicon has `contentVisibility` (1-5 scale) but code doesn't use it.
+**Problem:** Users couldn't control how much content they see from each community. Lexicon had `contentVisibility` (1-5 scale) but code didn't use it.
 
-**Solution:**
-- Update subscribe handler to accept `contentVisibility` parameter (1-5, default 3)
-- Store in subscription record on PDS
-- Update feed generation to respect visibility level (beta work, but data structure needed now)
+**Solution Implemented:**
+- ✅ Updated subscribe handler to accept `contentVisibility` parameter (1-5, default 3)
+- ✅ Store in subscription record on PDS (`social.coves.community.subscription`)
+- ✅ Migration 008 adds `content_visibility` column to database with CHECK constraint
+- ✅ Clamping at all layers (handler, service, consumer) for defense in depth
+- ✅ Atomic subscriber count updates (SubscribeWithCount/UnsubscribeWithCount)
+- ✅ Idempotent operations (safe for Jetstream event replays)
+- ✅ Fixed critical collection name bug (was using wrong namespace)
+- ✅ Production Jetstream consumer now running
+- ✅ 13 comprehensive integration tests - all passing
 
-**Code:**
-- Lexicon: [subscription.json:28-34](../internal/atproto/lexicon/social/coves/actor/subscription.json#L28-L34) ✅ Ready
-- Handler: [community/subscribe.go](../internal/api/handlers/community/subscribe.go) - Add parameter
-- Service: [communities/service.go:373-376](../internal/core/communities/service.go#L373-L376) - Add to record
+**Files Modified:**
+- Lexicon: [subscription.json](../internal/atproto/lexicon/social/coves/community/subscription.json) ✅ Updated to atProto conventions
+- Handler: [community/subscribe.go](../internal/api/handlers/community/subscribe.go) ✅ Accepts contentVisibility
+- Service: [communities/service.go](../internal/core/communities/service.go) ✅ Clamps and passes to PDS
+- Consumer: [community_consumer.go](../internal/atproto/jetstream/community_consumer.go) ✅ Extracts and indexes
+- Repository: [community_repo_subscriptions.go](../internal/db/postgres/community_repo_subscriptions.go) ✅ All queries updated
+- Migration: [008_add_content_visibility_to_subscriptions.sql](../internal/db/migrations/008_add_content_visibility_to_subscriptions.sql) ✅ Schema changes
+- Tests: [subscription_indexing_test.go](../tests/integration/subscription_indexing_test.go) ✅ Comprehensive coverage
 
-**Impact:** Without this, users have no way to adjust feed volume per community (key feature from DOMAIN_KNOWLEDGE.md)
+**Documentation:** See [IMPLEMENTATION_SUBSCRIPTION_INDEXING.md](../docs/IMPLEMENTATION_SUBSCRIPTION_INDEXING.md) for full details
+
+**Impact:** ✅ Users can now adjust feed volume per community (key feature from DOMAIN_KNOWLEDGE.md enabled)
 
 ---
 
