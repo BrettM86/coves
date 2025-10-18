@@ -687,7 +687,7 @@ func TestCommunity_E2E(t *testing.T) {
 					CID:        subscribeResp.CID,
 					Record: map[string]interface{}{
 						"$type":             "social.coves.community.subscription",
-						"subject":         community.DID,
+						"subject":           community.DID,
 						"contentVisibility": float64(5), // JSON numbers are float64
 						"createdAt":         time.Now().Format(time.RFC3339),
 					},
@@ -771,7 +771,7 @@ func TestCommunity_E2E(t *testing.T) {
 					CID:        subscription.RecordCID,
 					Record: map[string]interface{}{
 						"$type":             "social.coves.community.subscription",
-						"subject":         community.DID,
+						"subject":           community.DID,
 						"contentVisibility": float64(3),
 						"createdAt":         time.Now().Format(time.RFC3339),
 					},
@@ -893,8 +893,8 @@ func TestCommunity_E2E(t *testing.T) {
 					Operation:  "delete",
 					Collection: "social.coves.community.subscription",
 					RKey:       rkey,
-					CID:        "",     // No CID on deletes
-					Record:     nil,    // No record data on deletes
+					CID:        "",  // No CID on deletes
+					Record:     nil, // No record data on deletes
 				},
 			}
 			if handleErr := consumer.HandleEvent(context.Background(), &deleteEvent); handleErr != nil {
@@ -1504,7 +1504,6 @@ func createAndIndexCommunity(t *testing.T, service communities.Service, consumer
 
 	return community
 }
-
 
 // authenticateWithPDS authenticates with the PDS and returns access token and DID
 func authenticateWithPDS(pdsURL, handle, password string) (string, string, error) {

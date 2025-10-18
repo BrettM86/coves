@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -565,10 +566,16 @@ func (s *communityService) BlockCommunity(ctx context.Context, userDID, userAcce
 				// Block exists in our index - return it
 				return existingBlock, nil
 			}
-			// Race condition: PDS has the block but Jetstream hasn't indexed it yet
-			// Return typed conflict error so handler can return 409 instead of 500
-			// This is normal in eventually-consistent systems
-			return nil, ErrBlockAlreadyExists
+			// Only treat as "already exists" if the error is ErrBlockNotFound (race condition)
+			// Any other error (DB outage, connection failure, etc.) should bubble up
+			if errors.Is(getErr, ErrBlockNotFound) {
+				// Race condition: PDS has the block but Jetstream hasn't indexed it yet
+				// Return typed conflict error so handler can return 409 instead of 500
+				// This is normal in eventually-consistent systems
+				return nil, ErrBlockAlreadyExists
+			}
+			// Real datastore error - bubble it up so operators see the failure
+			return nil, fmt.Errorf("PDS reported duplicate block but failed to fetch from index: %w", getErr)
 		}
 		return nil, fmt.Errorf("failed to create block on PDS: %w", err)
 	}
@@ -724,22 +731,6 @@ func (s *communityService) validateCreateRequest(req CreateCommunityRequest) err
 
 // PDS write-forward helpers
 
-func (s *communityService) createRecordOnPDS(ctx context.Context, repoDID, collection, rkey string, record map[string]interface{}) (string, string, error) {
-	endpoint := fmt.Sprintf("%s/xrpc/com.atproto.repo.createRecord", strings.TrimSuffix(s.pdsURL, "/"))
-
-	payload := map[string]interface{}{
-		"repo":       repoDID,
-		"collection": collection,
-		"record":     record,
-	}
-
-	if rkey != "" {
-		payload["rkey"] = rkey
-	}
-
-	return s.callPDS(ctx, "POST", endpoint, payload)
-}
-
 // createRecordOnPDSAs creates a record with a specific access token (for V2 community auth)
 func (s *communityService) createRecordOnPDSAs(ctx context.Context, repoDID, collection, rkey string, record map[string]interface{}, accessToken string) (string, string, error) {
 	endpoint := fmt.Sprintf("%s/xrpc/com.atproto.repo.createRecord", strings.TrimSuffix(s.pdsURL, "/"))
@@ -771,21 +762,8 @@ func (s *communityService) putRecordOnPDSAs(ctx context.Context, repoDID, collec
 	return s.callPDSWithAuth(ctx, "POST", endpoint, payload, accessToken)
 }
 
-func (s *communityService) deleteRecordOnPDS(ctx context.Context, repoDID, collection, rkey string) error {
-	endpoint := fmt.Sprintf("%s/xrpc/com.atproto.repo.deleteRecord", strings.TrimSuffix(s.pdsURL, "/"))
-
-	payload := map[string]interface{}{
-		"repo":       repoDID,
-		"collection": collection,
-		"rkey":       rkey,
-	}
-
-	_, _, err := s.callPDS(ctx, "POST", endpoint, payload)
-	return err
-}
-
 // deleteRecordOnPDSAs deletes a record with a specific access token (for user-scoped deletions)
-func (s *communityService) deleteRecordOnPDSAs(ctx context.Context, repoDID, collection, rkey string, accessToken string) error {
+func (s *communityService) deleteRecordOnPDSAs(ctx context.Context, repoDID, collection, rkey, accessToken string) error {
 	endpoint := fmt.Sprintf("%s/xrpc/com.atproto.repo.deleteRecord", strings.TrimSuffix(s.pdsURL, "/"))
 
 	payload := map[string]interface{}{
@@ -796,11 +774,6 @@ func (s *communityService) deleteRecordOnPDSAs(ctx context.Context, repoDID, col
 
 	_, _, err := s.callPDSWithAuth(ctx, "POST", endpoint, payload, accessToken)
 	return err
-}
-
-func (s *communityService) callPDS(ctx context.Context, method, endpoint string, payload map[string]interface{}) (string, string, error) {
-	// Use instance's access token
-	return s.callPDSWithAuth(ctx, method, endpoint, payload, s.pdsAccessToken)
 }
 
 // callPDSWithAuth makes a PDS call with a specific access token (V2: for community authentication)
@@ -870,4 +843,3 @@ func (s *communityService) callPDSWithAuth(ctx context.Context, method, endpoint
 }
 
 // Helper functions
-

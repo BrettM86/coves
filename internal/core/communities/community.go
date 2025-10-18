@@ -55,12 +55,12 @@ type Subscription struct {
 // CommunityBlock represents a user blocking a community
 // Block records live in the user's repository (at://user_did/social.coves.community.block/{rkey})
 type CommunityBlock struct {
-	ID           int       `json:"id" db:"id"`
+	BlockedAt    time.Time `json:"blockedAt" db:"blocked_at"`
 	UserDID      string    `json:"userDid" db:"user_did"`
 	CommunityDID string    `json:"communityDid" db:"community_did"`
-	BlockedAt    time.Time `json:"blockedAt" db:"blocked_at"`
 	RecordURI    string    `json:"recordUri,omitempty" db:"record_uri"`
 	RecordCID    string    `json:"recordCid,omitempty" db:"record_cid"`
+	ID           int       `json:"id" db:"id"`
 }
 
 // Membership represents active participation with reputation tracking

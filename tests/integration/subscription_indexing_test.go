@@ -46,8 +46,8 @@ func TestSubscriptionIndexing_ContentVisibility(t *testing.T) {
 				RKey:       rkey,
 				CID:        "bafytest123",
 				Record: map[string]interface{}{
-					"$type":   "social.coves.community.subscription",
-					"subject": community.DID,
+					"$type":             "social.coves.community.subscription",
+					"subject":           community.DID,
 					"createdAt":         time.Now().Format(time.RFC3339),
 					"contentVisibility": float64(5), // JSON numbers decode as float64
 				},
@@ -101,8 +101,8 @@ func TestSubscriptionIndexing_ContentVisibility(t *testing.T) {
 				RKey:       rkey,
 				CID:        "bafydefault",
 				Record: map[string]interface{}{
-					"$type":   "social.coves.community.subscription",
-					"subject": community.DID,
+					"$type":     "social.coves.community.subscription",
+					"subject":   community.DID,
 					"createdAt": time.Now().Format(time.RFC3339),
 					// contentVisibility NOT provided
 				},
@@ -130,9 +130,9 @@ func TestSubscriptionIndexing_ContentVisibility(t *testing.T) {
 
 	t.Run("clamps contentVisibility to valid range (1-5)", func(t *testing.T) {
 		testCases := []struct {
+			name     string
 			input    float64
 			expected int
-			name     string
 		}{
 			{input: 0, expected: 1, name: "zero clamped to 1"},
 			{input: -5, expected: 1, name: "negative clamped to 1"},
@@ -201,8 +201,8 @@ func TestSubscriptionIndexing_ContentVisibility(t *testing.T) {
 				RKey:       rkey,
 				CID:        "bafyidempotent",
 				Record: map[string]interface{}{
-					"$type":   "social.coves.community.subscription",
-					"subject": community.DID,
+					"$type":             "social.coves.community.subscription",
+					"subject":           community.DID,
 					"createdAt":         time.Now().Format(time.RFC3339),
 					"contentVisibility": float64(4),
 				},
@@ -268,8 +268,8 @@ func TestSubscriptionIndexing_DeleteOperations(t *testing.T) {
 				RKey:       rkey,
 				CID:        "bafycreate",
 				Record: map[string]interface{}{
-					"$type":   "social.coves.community.subscription",
-					"subject": community.DID,
+					"$type":             "social.coves.community.subscription",
+					"subject":           community.DID,
 					"createdAt":         time.Now().Format(time.RFC3339),
 					"contentVisibility": float64(3),
 				},
@@ -298,7 +298,7 @@ func TestSubscriptionIndexing_DeleteOperations(t *testing.T) {
 				Operation:  "delete",
 				Collection: "social.coves.community.subscription",
 				RKey:       rkey,
-				CID:        "", // No CID on deletes
+				CID:        "",  // No CID on deletes
 				Record:     nil, // No record data on deletes
 			},
 		}
@@ -390,8 +390,8 @@ func TestSubscriptionIndexing_SubscriberCount(t *testing.T) {
 				RKey:       rkey,
 				CID:        "bafycount",
 				Record: map[string]interface{}{
-					"$type":   "social.coves.community.subscription",
-					"subject": community.DID,
+					"$type":             "social.coves.community.subscription",
+					"subject":           community.DID,
 					"createdAt":         time.Now().Format(time.RFC3339),
 					"contentVisibility": float64(3),
 				},

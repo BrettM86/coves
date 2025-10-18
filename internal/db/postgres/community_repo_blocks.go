@@ -171,4 +171,3 @@ func (r *postgresCommunityRepo) IsBlocked(ctx context.Context, userDID, communit
 
 	return exists, nil
 }
-

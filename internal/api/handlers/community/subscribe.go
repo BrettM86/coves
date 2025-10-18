@@ -34,7 +34,7 @@ func (h *SubscribeHandler) HandleSubscribe(w http.ResponseWriter, r *http.Reques
 
 	// Parse request body
 	var req struct {
-		Community         string `json:"community"` // DID only (per lexicon)
+		Community         string `json:"community"`         // DID only (per lexicon)
 		ContentVisibility int    `json:"contentVisibility"` // Optional: 1-5 scale, defaults to 3
 	}
 

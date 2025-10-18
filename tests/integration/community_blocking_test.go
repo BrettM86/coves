@@ -431,12 +431,12 @@ func createBlockingTestCommunityRepo(t *testing.T, db *sql.DB) communities.Repos
 
 func createBlockingTestCommunity(t *testing.T, repo communities.Repository, name, did string) *communities.Community {
 	community := &communities.Community{
-		DID:         did,
-		Handle:      fmt.Sprintf("!%s@coves.test", name),
-		Name:        name,
-		DisplayName: fmt.Sprintf("Test Community %s", name),
-		Description: "Test community for blocking tests",
-		OwnerDID:    did,
+		DID:          did,
+		Handle:       fmt.Sprintf("!%s@coves.test", name),
+		Name:         name,
+		DisplayName:  fmt.Sprintf("Test Community %s", name),
+		Description:  "Test community for blocking tests",
+		OwnerDID:     did,
 		CreatedByDID: "did:plc:test-creator",
 		HostedByDID:  "did:plc:test-instance",
 		Visibility:   "public",
