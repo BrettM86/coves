@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -20,13 +21,30 @@ import (
 var communityHandleRegex = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
 
 type communityService struct {
-	repo           Repository
-	provisioner    *PDSAccountProvisioner
+	// Interfaces and pointers first (better alignment)
+	repo        Repository
+	provisioner *PDSAccountProvisioner
+
+	// Token refresh concurrency control
+	// Each community gets its own mutex to prevent concurrent refresh attempts
+	refreshMutexes map[string]*sync.Mutex
+
+	// Strings
 	pdsURL         string
 	instanceDID    string
 	instanceDomain string
 	pdsAccessToken string
+
+	// Sync primitives last
+	mapMutex sync.RWMutex // Protects refreshMutexes map itself
 }
+
+const (
+	// Maximum recommended size for mutex cache (warning threshold, not hard limit)
+	// At 10,000 entries × 16 bytes = ~160KB memory (negligible overhead)
+	// Map can grow larger in production - even 100,000 entries = 1.6MB is acceptable
+	maxMutexCacheSize = 10000
+)
 
 // NewCommunityService creates a new community service
 func NewCommunityService(repo Repository, pdsURL, instanceDID, instanceDomain string, provisioner *PDSAccountProvisioner) Service {
@@ -50,6 +68,7 @@ func NewCommunityService(repo Repository, pdsURL, instanceDID, instanceDomain st
 		instanceDID:    instanceDID,
 		instanceDomain: instanceDomain,
 		provisioner:    provisioner,
+		refreshMutexes: make(map[string]*sync.Mutex),
 	}
 }
 
@@ -235,6 +254,13 @@ func (s *communityService) UpdateCommunity(ctx context.Context, req UpdateCommun
 		return nil, err
 	}
 
+	// CRITICAL: Ensure fresh PDS access token before write operation
+	// Community PDS tokens expire every ~2 hours and must be refreshed
+	existing, err = s.ensureFreshToken(ctx, existing)
+	if err != nil {
+		return nil, fmt.Errorf("failed to ensure fresh credentials: %w", err)
+	}
+
 	// Authorization: verify user is the creator
 	// TODO(Communities-Auth): Add moderator check when moderation system is implemented
 	if existing.CreatedByDID != req.UpdatedByDID {
@@ -347,6 +373,145 @@ func (s *communityService) UpdateCommunity(ctx context.Context, req UpdateCommun
 	updated.UpdatedAt = time.Now()
 
 	return &updated, nil
+}
+
+// getOrCreateRefreshMutex returns a mutex for the given community DID
+// Thread-safe with read-lock fast path for existing entries
+// SAFETY: Does NOT evict entries to avoid race condition where:
+//  1. Thread A holds mutex for community-123
+//  2. Thread B evicts community-123 from map
+//  3. Thread C creates NEW mutex for community-123
+//  4. Now two threads can refresh community-123 concurrently (mutex defeated!)
+func (s *communityService) getOrCreateRefreshMutex(did string) *sync.Mutex {
+	// Fast path: check if mutex already exists (read lock)
+	s.mapMutex.RLock()
+	mutex, exists := s.refreshMutexes[did]
+	s.mapMutex.RUnlock()
+
+	if exists {
+		return mutex
+	}
+
+	// Slow path: create new mutex (write lock)
+	s.mapMutex.Lock()
+	defer s.mapMutex.Unlock()
+
+	// Double-check after acquiring write lock (another goroutine might have created it)
+	mutex, exists = s.refreshMutexes[did]
+	if exists {
+		return mutex
+	}
+
+	// Create new mutex
+	mutex = &sync.Mutex{}
+	s.refreshMutexes[did] = mutex
+
+	// SAFETY: No eviction to prevent race condition
+	// Map will grow beyond maxMutexCacheSize but this is safer than evicting in-use mutexes
+	if len(s.refreshMutexes) > maxMutexCacheSize {
+		memoryKB := len(s.refreshMutexes) * 16 / 1024
+		log.Printf("[TOKEN-REFRESH] WARN: Mutex cache size (%d) exceeds recommended limit (%d) - this is safe but may indicate high community churn. Memory usage: ~%d KB",
+			len(s.refreshMutexes), maxMutexCacheSize, memoryKB)
+	}
+
+	return mutex
+}
+
+// ensureFreshToken checks if a community's access token needs refresh and updates if needed
+// Returns updated community with fresh credentials (or original if no refresh needed)
+// Thread-safe: Uses per-community mutex to prevent concurrent refresh attempts
+func (s *communityService) ensureFreshToken(ctx context.Context, community *Community) (*Community, error) {
+	// Get or create mutex for this specific community DID
+	mutex := s.getOrCreateRefreshMutex(community.DID)
+
+	// Lock for this specific community (allows other communities to refresh concurrently)
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	// Re-fetch community from DB (another goroutine might have already refreshed it)
+	fresh, err := s.repo.GetByDID(ctx, community.DID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to re-fetch community: %w", err)
+	}
+
+	// Check if token needs refresh (5-minute buffer before expiration)
+	needsRefresh, err := NeedsRefresh(fresh.PDSAccessToken)
+	if err != nil {
+		log.Printf("[TOKEN-REFRESH] Community: %s, Event: token_parse_failed, Error: %v", fresh.DID, err)
+		return nil, fmt.Errorf("failed to check token expiration: %w", err)
+	}
+
+	if !needsRefresh {
+		// Token still valid, no refresh needed
+		return fresh, nil
+	}
+
+	log.Printf("[TOKEN-REFRESH] Community: %s, Event: token_refresh_started, Message: Access token expiring soon", fresh.DID)
+
+	// Attempt token refresh using refresh token
+	newAccessToken, newRefreshToken, err := refreshPDSToken(ctx, fresh.PDSURL, fresh.PDSAccessToken, fresh.PDSRefreshToken)
+	if err != nil {
+		// Check if refresh token expired (need password fallback)
+		if strings.Contains(err.Error(), "expired or invalid") {
+			log.Printf("[TOKEN-REFRESH] Community: %s, Event: refresh_token_expired, Message: Re-authenticating with password", fresh.DID)
+
+			// Fallback: Re-authenticate with stored password
+			newAccessToken, newRefreshToken, err = reauthenticateWithPassword(
+				ctx,
+				fresh.PDSURL,
+				fresh.PDSEmail,
+				fresh.PDSPassword, // Retrieved decrypted from DB
+			)
+			if err != nil {
+				log.Printf("[TOKEN-REFRESH] Community: %s, Event: password_auth_failed, Error: %v", fresh.DID, err)
+				return nil, fmt.Errorf("failed to re-authenticate community: %w", err)
+			}
+
+			log.Printf("[TOKEN-REFRESH] Community: %s, Event: password_fallback_success, Message: Re-authenticated after refresh token expiry", fresh.DID)
+		} else {
+			log.Printf("[TOKEN-REFRESH] Community: %s, Event: refresh_failed, Error: %v", fresh.DID, err)
+			return nil, fmt.Errorf("failed to refresh token: %w", err)
+		}
+	}
+
+	// CRITICAL: Update database with new tokens immediately
+	// Refresh tokens are SINGLE-USE - old one is now invalid
+	// Use retry logic to handle transient DB failures
+	const maxRetries = 3
+	var updateErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		updateErr = s.repo.UpdateCredentials(ctx, fresh.DID, newAccessToken, newRefreshToken)
+		if updateErr == nil {
+			break // Success
+		}
+
+		log.Printf("[TOKEN-REFRESH] Community: %s, Event: db_update_retry, Attempt: %d/%d, Error: %v",
+			fresh.DID, attempt+1, maxRetries, updateErr)
+
+		if attempt < maxRetries-1 {
+			// Exponential backoff: 100ms, 200ms, 400ms
+			backoff := time.Duration(1<<attempt) * 100 * time.Millisecond
+			time.Sleep(backoff)
+		}
+	}
+
+	if updateErr != nil {
+		// CRITICAL: Community is now locked out - old refresh token invalid, new one not saved
+		log.Printf("[TOKEN-REFRESH] CRITICAL: Community %s LOCKED OUT - failed to persist credentials after %d retries: %v",
+			fresh.DID, maxRetries, updateErr)
+		// TODO: Send alert to monitoring system (add in Beta)
+		return nil, fmt.Errorf("failed to persist refreshed credentials after %d retries (COMMUNITY LOCKED OUT): %w",
+			maxRetries, updateErr)
+	}
+
+	// Return updated community object with fresh tokens
+	updatedCommunity := *fresh
+	updatedCommunity.PDSAccessToken = newAccessToken
+	updatedCommunity.PDSRefreshToken = newRefreshToken
+
+	log.Printf("[TOKEN-REFRESH] Community: %s, Event: token_refreshed, Message: Access token refreshed successfully", fresh.DID)
+
+	return &updatedCommunity, nil
 }
 
 // ListCommunities queries AppView DB for communities with filters

@@ -12,6 +12,9 @@ type Repository interface {
 	Update(ctx context.Context, community *Community) (*Community, error)
 	Delete(ctx context.Context, did string) error
 
+	// Credential Management (for token refresh)
+	UpdateCredentials(ctx context.Context, did, accessToken, refreshToken string) error
+
 	// Listing & Search
 	List(ctx context.Context, req ListCommunitiesRequest) ([]*Community, int, error) // Returns communities + total count
 	Search(ctx context.Context, req SearchCommunitiesRequest) ([]*Community, int, error)
