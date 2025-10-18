@@ -5,6 +5,7 @@ import (
 	"Coves/internal/api/routes"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
+	"Coves/internal/atproto/utils"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
@@ -213,7 +214,7 @@ func TestCommunity_E2E(t *testing.T) {
 		t.Logf("\n📡 V2: Querying PDS for record in community's repository...")
 
 		collection := "social.coves.community.profile"
-		rkey := extractRKeyFromURI(community.RecordURI)
+		rkey := utils.ExtractRKeyFromURI(community.RecordURI)
 
 		// V2: Query community's repository (not instance repository!)
 		getRecordURL := fmt.Sprintf("%s/xrpc/com.atproto.repo.getRecord?repo=%s&collection=%s&rkey=%s",
@@ -423,7 +424,7 @@ func TestCommunity_E2E(t *testing.T) {
 			// NOTE: Using synthetic event for speed. Real Jetstream WebSocket testing
 			// happens in "Part 2: Real Jetstream Firehose Consumption" above.
 			t.Logf("🔄 Simulating Jetstream consumer indexing...")
-			rkey := extractRKeyFromURI(createResp.URI)
+			rkey := utils.ExtractRKeyFromURI(createResp.URI)
 			// V2: Event comes from community's DID (community owns the repo)
 			event := jetstream.JetstreamEvent{
 				Did:    createResp.DID,
@@ -626,7 +627,7 @@ func TestCommunity_E2E(t *testing.T) {
 				pdsURL = "http://localhost:3001"
 			}
 
-			rkey := extractRKeyFromURI(subscribeResp.URI)
+			rkey := utils.ExtractRKeyFromURI(subscribeResp.URI)
 			// CRITICAL: Use correct collection name (record type, not XRPC endpoint)
 			collection := "social.coves.community.subscription"
 
@@ -757,7 +758,7 @@ func TestCommunity_E2E(t *testing.T) {
 			}
 
 			// Index the subscription in AppView (simulate firehose event)
-			rkey := extractRKeyFromURI(subscription.RecordURI)
+			rkey := utils.ExtractRKeyFromURI(subscription.RecordURI)
 			subEvent := jetstream.JetstreamEvent{
 				Did:    instanceDID,
 				TimeUS: time.Now().UnixMicro(),
@@ -1331,7 +1332,7 @@ func TestCommunity_E2E(t *testing.T) {
 
 			// Simulate Jetstream consumer picking up the update event
 			t.Logf("🔄 Simulating Jetstream consumer indexing update...")
-			rkey := extractRKeyFromURI(updateResp.URI)
+			rkey := utils.ExtractRKeyFromURI(updateResp.URI)
 
 			// Fetch updated record from PDS
 			pdsURL := os.Getenv("PDS_URL")
@@ -1458,7 +1459,7 @@ func createAndIndexCommunity(t *testing.T, service communities.Service, consumer
 	// Fetch from PDS to get full record
 	// V2: Record lives in community's own repository (at://community.DID/...)
 	collection := "social.coves.community.profile"
-	rkey := extractRKeyFromURI(community.RecordURI)
+	rkey := utils.ExtractRKeyFromURI(community.RecordURI)
 
 	pdsResp, pdsErr := http.Get(fmt.Sprintf("%s/xrpc/com.atproto.repo.getRecord?repo=%s&collection=%s&rkey=%s",
 		pdsURL, community.DID, collection, rkey))
@@ -1504,14 +1505,6 @@ func createAndIndexCommunity(t *testing.T, service communities.Service, consumer
 	return community
 }
 
-func extractRKeyFromURI(uri string) string {
-	// at://did/collection/rkey -> rkey
-	parts := strings.Split(uri, "/")
-	if len(parts) >= 4 {
-		return parts[len(parts)-1]
-	}
-	return ""
-}
 
 // authenticateWithPDS authenticates with the PDS and returns access token and DID
 func authenticateWithPDS(pdsURL, handle, password string) (string, string, error) {

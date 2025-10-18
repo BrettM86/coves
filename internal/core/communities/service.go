@@ -1,6 +1,7 @@
 package communities
 
 import (
+	"Coves/internal/atproto/utils"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -455,7 +456,7 @@ func (s *communityService) UnsubscribeFromCommunity(ctx context.Context, userDID
 	}
 
 	// Extract rkey from record URI (at://did/collection/rkey)
-	rkey := extractRKeyFromURI(subscription.RecordURI)
+	rkey := utils.ExtractRKeyFromURI(subscription.RecordURI)
 	if rkey == "" {
 		return fmt.Errorf("invalid subscription record URI")
 	}
@@ -525,14 +526,8 @@ func (s *communityService) BlockCommunity(ctx context.Context, userDID, userAcce
 		return nil, NewValidationError("userAccessToken", "required")
 	}
 
-	// Resolve community identifier
+	// Resolve community identifier (also verifies community exists)
 	communityDID, err := s.ResolveCommunityIdentifier(ctx, communityIdentifier)
-	if err != nil {
-		return nil, err
-	}
-
-	// Verify community exists
-	_, err = s.repo.GetByDID(ctx, communityDID)
 	if err != nil {
 		return nil, err
 	}
@@ -567,9 +562,13 @@ func (s *communityService) BlockCommunity(ctx context.Context, userDID, userAcce
 			// Fetch and return existing block from our indexed view
 			existingBlock, getErr := s.repo.GetBlock(ctx, userDID, communityDID)
 			if getErr == nil {
+				// Block exists in our index - return it
 				return existingBlock, nil
 			}
-			// If we can't find it in our index, return the original PDS error
+			// Race condition: PDS has the block but Jetstream hasn't indexed it yet
+			// Return typed conflict error so handler can return 409 instead of 500
+			// This is normal in eventually-consistent systems
+			return nil, ErrBlockAlreadyExists
 		}
 		return nil, fmt.Errorf("failed to create block on PDS: %w", err)
 	}
@@ -608,7 +607,7 @@ func (s *communityService) UnblockCommunity(ctx context.Context, userDID, userAc
 	}
 
 	// Extract rkey from record URI (at://did/collection/rkey)
-	rkey := extractRKeyFromURI(block.RecordURI)
+	rkey := utils.ExtractRKeyFromURI(block.RecordURI)
 	if rkey == "" {
 		return fmt.Errorf("invalid block record URI")
 	}
@@ -872,11 +871,3 @@ func (s *communityService) callPDSWithAuth(ctx context.Context, method, endpoint
 
 // Helper functions
 
-func extractRKeyFromURI(uri string) string {
-	// at://did/collection/rkey -> rkey
-	parts := strings.Split(uri, "/")
-	if len(parts) >= 4 {
-		return parts[len(parts)-1]
-	}
-	return ""
-}

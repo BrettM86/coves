@@ -10,6 +10,11 @@ import (
 	"strings"
 )
 
+// Package-level compiled regex for DID validation (compiled once at startup)
+var (
+	didRegex = regexp.MustCompile(`^did:(plc|web):[a-zA-Z0-9._:%-]+$`)
+)
+
 // BlockHandler handles community blocking operations
 type BlockHandler struct {
 	service communities.Service
@@ -57,7 +62,6 @@ func (h *BlockHandler) HandleBlock(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate DID format with regex: did:method:identifier
-	didRegex := regexp.MustCompile(`^did:(plc|web):[a-zA-Z0-9._:%-]+$`)
 	if !didRegex.MatchString(req.Community) {
 		writeError(w, http.StatusBadRequest, "InvalidRequest", "invalid DID format")
 		return
@@ -132,7 +136,6 @@ func (h *BlockHandler) HandleUnblock(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate DID format with regex: did:method:identifier
-	didRegex := regexp.MustCompile(`^did:(plc|web):[a-zA-Z0-9._:%-]+$`)
 	if !didRegex.MatchString(req.Community) {
 		writeError(w, http.StatusBadRequest, "InvalidRequest", "invalid DID format")
 		return
