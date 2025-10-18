@@ -14,14 +14,15 @@ CREATE TABLE community_blocks (
 );
 
 -- Indexes for efficient queries
+-- Note: UNIQUE constraint on (user_did, community_did) already creates an index for those columns
 CREATE INDEX idx_blocks_user ON community_blocks(user_did);
 CREATE INDEX idx_blocks_community ON community_blocks(community_did);
-CREATE INDEX idx_blocks_user_community ON community_blocks(user_did, community_did);
+CREATE INDEX idx_blocks_record_uri ON community_blocks(record_uri);  -- For GetBlockByURI (Jetstream DELETE operations)
 CREATE INDEX idx_blocks_blocked_at ON community_blocks(blocked_at);
 
 -- +goose Down
 DROP INDEX IF EXISTS idx_blocks_blocked_at;
-DROP INDEX IF EXISTS idx_blocks_user_community;
+DROP INDEX IF EXISTS idx_blocks_record_uri;
 DROP INDEX IF EXISTS idx_blocks_community;
 DROP INDEX IF EXISTS idx_blocks_user;
 DROP TABLE IF EXISTS community_blocks;
