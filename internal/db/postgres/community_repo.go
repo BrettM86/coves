@@ -291,6 +291,32 @@ func (r *postgresCommunityRepo) Update(ctx context.Context, community *communiti
 	return community, nil
 }
 
+// UpdateCredentials atomically updates community's PDS access and refresh tokens
+// CRITICAL: Both tokens must be updated together because refresh tokens are single-use
+// After a successful token refresh, the old refresh token is immediately revoked by the PDS
+func (r *postgresCommunityRepo) UpdateCredentials(ctx context.Context, did, accessToken, refreshToken string) error {
+	query := `
+		UPDATE communities
+		SET
+			pds_access_token_encrypted = pgp_sym_encrypt($2, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1)),
+			pds_refresh_token_encrypted = pgp_sym_encrypt($3, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1)),
+			updated_at = NOW()
+		WHERE did = $1
+		RETURNING did`
+
+	var returnedDID string
+	err := r.db.QueryRowContext(ctx, query, did, accessToken, refreshToken).Scan(&returnedDID)
+
+	if err == sql.ErrNoRows {
+		return communities.ErrCommunityNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("failed to update credentials: %w", err)
+	}
+
+	return nil
+}
+
 // Delete removes a community from the database
 func (r *postgresCommunityRepo) Delete(ctx context.Context, did string) error {
 	query := `DELETE FROM communities WHERE did = $1`

@@ -2,7 +2,7 @@
 
 **Status:** Ongoing
 **Owner:** Platform Team
-**Last Updated:** 2025-10-16
+**Last Updated:** 2025-10-17
 
 ## Overview
 
@@ -49,14 +49,34 @@ Miscellaneous platform improvements, bug fixes, and technical debt that don't fi
 
 ---
 
-### Token Refresh Logic for Community Credentials
-**Added:** 2025-10-11 | **Effort:** 1-2 days | **Priority:** ALPHA BLOCKER
+### ✅ Token Refresh Logic for Community Credentials - COMPLETE
+**Added:** 2025-10-11 | **Completed:** 2025-10-17 | **Effort:** 1.5 days | **Status:** ✅ DONE
 
 **Problem:** Community PDS access tokens expire (~2hrs). Updates fail until manual intervention.
 
-**Solution:** Auto-refresh tokens before PDS operations. Parse JWT exp claim, use refresh token when expired, update DB.
+**Solution Implemented:**
+- ✅ Automatic token refresh before PDS operations (5-minute buffer before expiration)
+- ✅ JWT expiration parsing without signature verification (`parseJWTExpiration`, `needsRefresh`)
+- ✅ Token refresh using Indigo SDK (`atproto.ServerRefreshSession`)
+- ✅ Password fallback when refresh tokens expire (~2 months) via `atproto.ServerCreateSession`
+- ✅ Atomic credential updates (`UpdateCredentials` repository method)
+- ✅ Concurrency-safe with per-community mutex locking
+- ✅ Structured logging for monitoring (`[TOKEN-REFRESH]` events)
+- ✅ Integration tests for token expiration detection and credential updates
 
-**Code:** TODO in [communities/service.go:123](../internal/core/communities/service.go#L123)
+**Files Created:**
+- [internal/core/communities/token_utils.go](../internal/core/communities/token_utils.go) - JWT parsing utilities
+- [internal/core/communities/token_refresh.go](../internal/core/communities/token_refresh.go) - Refresh and re-auth logic
+- [tests/integration/token_refresh_test.go](../tests/integration/token_refresh_test.go) - Integration tests
+
+**Files Modified:**
+- [internal/core/communities/service.go](../internal/core/communities/service.go) - Added `ensureFreshToken` + concurrency control
+- [internal/core/communities/interfaces.go](../internal/core/communities/interfaces.go) - Added `UpdateCredentials` interface
+- [internal/db/postgres/community_repo.go](../internal/db/postgres/community_repo.go) - Implemented `UpdateCredentials`
+
+**Documentation:** See [IMPLEMENTATION_TOKEN_REFRESH.md](../docs/IMPLEMENTATION_TOKEN_REFRESH.md) for full details
+
+**Impact:** ✅ Communities can now be updated 24+ hours after creation without manual intervention
 
 ---
 
@@ -109,6 +129,56 @@ Miscellaneous platform improvements, bug fixes, and technical debt that don't fi
 - Handlers: New files needed
 
 **Impact:** Users can't avoid unwanted content without blocking
+
+---
+
+## 🔴 P1.5: Federation Blockers (Beta Launch)
+
+### Cross-PDS Write-Forward Support
+**Added:** 2025-10-17 | **Effort:** 3-4 hours | **Priority:** FEDERATION BLOCKER (Beta)
+
+**Problem:** Current write-forward implementation assumes all users are on the same PDS as the Coves instance. This breaks federation when users from external PDSs try to interact with communities.
+
+**Current Behavior:**
+- User on `pds.bsky.social` subscribes to community on `coves.social`
+- Coves calls `s.pdsURL` (instance default: `http://localhost:3001`)
+- Write goes to WRONG PDS → fails with 401/403
+
+**Impact:**
+- ✅ **Alpha**: Works fine (single PDS deployment)
+- ❌ **Beta**: Breaks federation (users on different PDSs can't subscribe/interact)
+
+**Root Cause:**
+- [service.go:736](../internal/core/communities/service.go#L736): `createRecordOnPDSAs` hardcodes `s.pdsURL`
+- [service.go:753](../internal/core/communities/service.go#L753): `putRecordOnPDSAs` hardcodes `s.pdsURL`
+- [service.go:767](../internal/core/communities/service.go#L767): `deleteRecordOnPDSAs` hardcodes `s.pdsURL`
+
+**Solution:**
+1. Add identity resolver dependency to `CommunityService`
+2. Before write-forward, resolve user's DID → extract PDS URL
+3. Call user's actual PDS instead of `s.pdsURL`
+
+**Implementation:**
+```go
+// Before write-forward to user's repo:
+userIdentity, err := s.identityResolver.ResolveDID(ctx, userDID)
+if err != nil {
+    return fmt.Errorf("failed to resolve user PDS: %w", err)
+}
+
+// Use user's actual PDS URL
+endpoint := fmt.Sprintf("%s/xrpc/com.atproto.repo.createRecord", userIdentity.PDSURL)
+```
+
+**Files to Modify:**
+- `internal/core/communities/service.go` - Add resolver, modify write-forward methods
+- `cmd/server/main.go` - Pass identity resolver to community service constructor
+- Tests - Add cross-PDS scenarios
+
+**Testing:**
+- User on external PDS subscribes to community
+- User on external PDS blocks community
+- Community updates still work (communities ARE on instance PDS)
 
 ---
 
@@ -222,6 +292,34 @@ Document: did:plc choice, pgcrypto encryption, Jetstream vs firehose, write-forw
 ---
 
 ## Recent Completions
+
+### ✅ Token Refresh for Community Credentials (2025-10-17)
+**Completed:** Automatic token refresh prevents communities from breaking after 2 hours
+
+**Implementation:**
+- ✅ JWT expiration parsing and refresh detection (5-minute buffer)
+- ✅ Token refresh using Indigo SDK (`atproto.ServerRefreshSession`)
+- ✅ Password fallback when refresh tokens expire (`atproto.ServerCreateSession`)
+- ✅ Atomic credential updates in database (`UpdateCredentials`)
+- ✅ Concurrency-safe with per-community mutex locking
+- ✅ Structured logging for monitoring (`[TOKEN-REFRESH]` events)
+- ✅ Integration tests for expiration detection and credential updates
+
+**Files Created:**
+- [internal/core/communities/token_utils.go](../internal/core/communities/token_utils.go)
+- [internal/core/communities/token_refresh.go](../internal/core/communities/token_refresh.go)
+- [tests/integration/token_refresh_test.go](../tests/integration/token_refresh_test.go)
+
+**Files Modified:**
+- [internal/core/communities/service.go](../internal/core/communities/service.go) - Added `ensureFreshToken` method
+- [internal/core/communities/interfaces.go](../internal/core/communities/interfaces.go) - Added `UpdateCredentials` interface
+- [internal/db/postgres/community_repo.go](../internal/db/postgres/community_repo.go) - Implemented `UpdateCredentials`
+
+**Documentation:** [IMPLEMENTATION_TOKEN_REFRESH.md](../docs/IMPLEMENTATION_TOKEN_REFRESH.md)
+
+**Impact:** Communities now work indefinitely without manual token management
+
+---
 
 ### ✅ OAuth Authentication for Community Actions (2025-10-16)
 **Completed:** Full OAuth JWT authentication flow for protected endpoints

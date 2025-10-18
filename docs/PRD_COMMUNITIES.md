@@ -2,7 +2,7 @@
 
 **Status:** In Development
 **Owner:** Platform Team
-**Last Updated:** 2025-10-16
+**Last Updated:** 2025-10-17
 
 ## Overview
 
@@ -33,12 +33,13 @@ Hosted By:   did:web:coves.social (instance manages credentials)
 
 ---
 
-## ✅ Completed Features (2025-10-10)
+## ✅ Completed Features (Updated 2025-10-17)
 
 ### Core Infrastructure
 - [x] **V2 Architecture:** Communities own their own repositories
 - [x] **PDS Account Provisioning:** Automatic account creation for each community
 - [x] **Credential Management:** Secure storage of community PDS credentials
+- [x] **Token Refresh:** Automatic refresh of expired access tokens (completed 2025-10-17)
 - [x] **Encryption at Rest:** PostgreSQL pgcrypto for sensitive credentials
 - [x] **Write-Forward Pattern:** Service → PDS → Firehose → AppView
 - [x] **Jetstream Consumer:** Real-time indexing from firehose
@@ -47,8 +48,11 @@ Hosted By:   did:web:coves.social (instance manages credentials)
 ### Security & Data Protection
 - [x] **Encrypted Credentials:** Access/refresh tokens encrypted in database
 - [x] **Credential Persistence:** PDS credentials survive server restarts
+- [x] **Automatic Token Refresh:** Tokens refresh 5 minutes before expiration (completed 2025-10-17)
+- [x] **Password Fallback:** Re-authentication when refresh tokens expire
+- [x] **Concurrency Safety:** Per-community mutex prevents refresh race conditions
 - [x] **JSON Exclusion:** Credentials never exposed in API responses (`json:"-"` tags)
-- [x] **Password Hashing:** bcrypt for PDS account passwords
+- [x] **Password Encryption:** Encrypted (not hashed) for session creation fallback
 - [x] **Timeout Handling:** 30s timeout for write operations, 10s for reads
 
 ### Database Schema
@@ -79,6 +83,7 @@ Hosted By:   did:web:coves.social (instance manages credentials)
 ### Testing Coverage
 - [x] **Integration Tests:** Full CRUD operations
 - [x] **Credential Tests:** Persistence, encryption, decryption
+- [x] **Token Refresh Tests:** JWT parsing, credential updates, concurrency (completed 2025-10-17)
 - [x] **V2 Validation Tests:** Rkey enforcement, self-ownership
 - [x] **Consumer Tests:** Firehose event processing
 - [x] **Repository Tests:** Database operations
@@ -112,12 +117,15 @@ Hosted By:   did:web:coves.social (instance manages credentials)
 ## ⚠️ Alpha Blockers (Must Complete Before Alpha Launch)
 
 ### Critical Missing Features
-- [ ] **Community Blocking:** Users can block communities from their feeds
-  - Lexicon: ❌ Need new record type (extend `social.coves.actor.block` or create new)
-  - Service: ❌ No implementation (`BlockCommunity()` / `UnblockCommunity()`)
-  - Handler: ❌ No endpoints
-  - Repository: ❌ No methods
-  - **Impact:** Users have no way to hide unwanted communities
+- [x] **Community Blocking:** ✅ COMPLETE - Users can block communities from their feeds
+  - ✅ Lexicon: `social.coves.community.block` record type implemented
+  - ✅ Service: `BlockCommunity()` / `UnblockCommunity()` / `GetBlockedCommunities()` / `IsBlocked()`
+  - ✅ Handlers: Block/unblock endpoints implemented
+  - ✅ Repository: Full blocking methods with indexing
+  - ✅ Jetstream Consumer: Real-time indexing of block events
+  - ✅ Integration tests: Comprehensive coverage
+  - **Completed:** 2025-10-16
+  - **Impact:** Users can now hide unwanted communities from their feeds
 
 ### ✅ Critical Infrastructure - RESOLVED (2025-10-16)
 - [x] **✅ Subscription Indexing & ContentVisibility - COMPLETE**
@@ -159,9 +167,14 @@ Hosted By:   did:web:coves.social (instance manages credentials)
   - ✅ All E2E tests pass with real PDS authentication
   - **Completed:** 2025-10-16
 
-- [ ] **Token Refresh Logic:** Auto-refresh expired PDS access tokens
-  - **Impact:** Communities break after ~2 hours when tokens expire
-  - **See:** [PRD_BACKLOG.md P1 Priority](docs/PRD_BACKLOG.md#L31-L38)
+- [x] **Token Refresh Logic:** ✅ COMPLETE - Auto-refresh expired PDS access tokens
+  - ✅ Automatic token refresh before PDS operations (5-minute buffer)
+  - ✅ Password fallback when refresh tokens expire (~2 months)
+  - ✅ Concurrency-safe with per-community mutex locking
+  - ✅ Atomic credential updates in database
+  - ✅ Integration tests and structured logging
+  - **Completed:** 2025-10-17
+  - **See:** [IMPLEMENTATION_TOKEN_REFRESH.md](docs/IMPLEMENTATION_TOKEN_REFRESH.md)
 
 ---
 
