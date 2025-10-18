@@ -31,6 +31,9 @@ var (
 	// ErrSubscriptionNotFound is returned when subscription doesn't exist
 	ErrSubscriptionNotFound = errors.New("subscription not found")
 
+	// ErrBlockNotFound is returned when block doesn't exist
+	ErrBlockNotFound = errors.New("block not found")
+
 	// ErrMembershipNotFound is returned when membership doesn't exist
 	ErrMembershipNotFound = errors.New("membership not found")
 
@@ -63,6 +66,7 @@ func NewValidationError(field, message string) *ValidationError {
 func IsNotFound(err error) bool {
 	return errors.Is(err, ErrCommunityNotFound) ||
 		errors.Is(err, ErrSubscriptionNotFound) ||
+		errors.Is(err, ErrBlockNotFound) ||
 		errors.Is(err, ErrMembershipNotFound)
 }
 

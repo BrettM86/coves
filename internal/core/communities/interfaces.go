@@ -26,6 +26,14 @@ type Repository interface {
 	ListSubscriptions(ctx context.Context, userDID string, limit, offset int) ([]*Subscription, error)
 	ListSubscribers(ctx context.Context, communityDID string, limit, offset int) ([]*Subscription, error)
 
+	// Community Blocks
+	BlockCommunity(ctx context.Context, block *CommunityBlock) (*CommunityBlock, error)
+	UnblockCommunity(ctx context.Context, userDID, communityDID string) error
+	GetBlock(ctx context.Context, userDID, communityDID string) (*CommunityBlock, error)
+	GetBlockByURI(ctx context.Context, recordURI string) (*CommunityBlock, error) // For Jetstream delete operations
+	ListBlockedCommunities(ctx context.Context, userDID string, limit, offset int) ([]*CommunityBlock, error)
+	IsBlocked(ctx context.Context, userDID, communityDID string) (bool, error)
+
 	// Memberships (active participation with reputation)
 	CreateMembership(ctx context.Context, membership *Membership) (*Membership, error)
 	GetMembership(ctx context.Context, userDID, communityDID string) (*Membership, error)
@@ -59,6 +67,12 @@ type Service interface {
 	UnsubscribeFromCommunity(ctx context.Context, userDID, userAccessToken, communityIdentifier string) error
 	GetUserSubscriptions(ctx context.Context, userDID string, limit, offset int) ([]*Subscription, error)
 	GetCommunitySubscribers(ctx context.Context, communityIdentifier string, limit, offset int) ([]*Subscription, error)
+
+	// Block operations (write-forward: creates record in user's PDS)
+	BlockCommunity(ctx context.Context, userDID, userAccessToken, communityIdentifier string) (*CommunityBlock, error)
+	UnblockCommunity(ctx context.Context, userDID, userAccessToken, communityIdentifier string) error
+	GetBlockedCommunities(ctx context.Context, userDID string, limit, offset int) ([]*CommunityBlock, error)
+	IsBlocked(ctx context.Context, userDID, communityIdentifier string) (bool, error)
 
 	// Membership operations (indexed from firehose, reputation managed internally)
 	GetMembership(ctx context.Context, userDID, communityIdentifier string) (*Membership, error)
