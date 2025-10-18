@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 )
 
 // BlockCommunity creates a new block record (idempotent)
@@ -123,13 +124,14 @@ func (r *postgresCommunityRepo) ListBlockedCommunities(ctx context.Context, user
 	defer func() {
 		if closeErr := rows.Close(); closeErr != nil {
 			// Log error but don't override the main error
-			fmt.Printf("Failed to close rows: %v\n", closeErr)
+			log.Printf("Failed to close rows: %v", closeErr)
 		}
 	}()
 
 	var blocks []*communities.CommunityBlock
 	for rows.Next() {
-		var block communities.CommunityBlock
+		// Allocate a new block for each iteration to avoid pointer reuse bug
+		block := &communities.CommunityBlock{}
 
 		err = rows.Scan(
 			&block.ID,
@@ -143,7 +145,7 @@ func (r *postgresCommunityRepo) ListBlockedCommunities(ctx context.Context, user
 			return nil, fmt.Errorf("failed to scan block: %w", err)
 		}
 
-		blocks = append(blocks, &block)
+		blocks = append(blocks, block)
 	}
 
 	if err = rows.Err(); err != nil {
