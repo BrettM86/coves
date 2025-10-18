@@ -18,6 +18,7 @@ func RegisterCommunityRoutes(r chi.Router, service communities.Service, authMidd
 	listHandler := community.NewListHandler(service)
 	searchHandler := community.NewSearchHandler(service)
 	subscribeHandler := community.NewSubscribeHandler(service)
+	blockHandler := community.NewBlockHandler(service)
 
 	// Query endpoints (GET) - public access
 	// social.coves.community.get - get a single community by identifier
@@ -41,6 +42,12 @@ func RegisterCommunityRoutes(r chi.Router, service communities.Service, authMidd
 
 	// social.coves.community.unsubscribe - unsubscribe from a community
 	r.With(authMiddleware.RequireAuth).Post("/xrpc/social.coves.community.unsubscribe", subscribeHandler.HandleUnsubscribe)
+
+	// social.coves.community.blockCommunity - block a community
+	r.With(authMiddleware.RequireAuth).Post("/xrpc/social.coves.community.blockCommunity", blockHandler.HandleBlock)
+
+	// social.coves.community.unblockCommunity - unblock a community
+	r.With(authMiddleware.RequireAuth).Post("/xrpc/social.coves.community.unblockCommunity", blockHandler.HandleUnblock)
 
 	// TODO: Add delete handler when implemented
 	// r.With(authMiddleware.RequireAuth).Post("/xrpc/social.coves.community.delete", deleteHandler.HandleDelete)
