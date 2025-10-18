@@ -554,9 +554,16 @@ func (s *communityService) BlockCommunity(ctx context.Context, userDID, userAcce
 	// 3. This avoids a race condition where two concurrent requests both pass the check
 	recordURI, recordCID, err := s.createRecordOnPDSAs(ctx, userDID, "social.coves.community.block", "", blockRecord, userAccessToken)
 	if err != nil {
-		// Check if this is a duplicate error from PDS
+		// Check if this is a duplicate/conflict error from PDS
+		// PDS should return 409 Conflict for duplicate records, but we also check common error messages
+		// for compatibility with different PDS implementations
 		errMsg := err.Error()
-		if strings.Contains(errMsg, "duplicate") || strings.Contains(errMsg, "already exists") {
+		isDuplicate := strings.Contains(errMsg, "status 409") || // HTTP 409 Conflict
+			strings.Contains(errMsg, "duplicate") ||
+			strings.Contains(errMsg, "already exists") ||
+			strings.Contains(errMsg, "AlreadyExists")
+
+		if isDuplicate {
 			// Fetch and return existing block from our indexed view
 			existingBlock, getErr := s.repo.GetBlock(ctx, userDID, communityDID)
 			if getErr == nil {
@@ -652,8 +659,15 @@ func (s *communityService) ResolveCommunityIdentifier(ctx context.Context, ident
 		return "", ErrInvalidInput
 	}
 
-	// If it's already a DID, return it
+	// If it's already a DID, verify the community exists
 	if strings.HasPrefix(identifier, "did:") {
+		_, err := s.repo.GetByDID(ctx, identifier)
+		if err != nil {
+			if IsNotFound(err) {
+				return "", fmt.Errorf("community not found: %w", err)
+			}
+			return "", fmt.Errorf("failed to verify community DID: %w", err)
+		}
 		return identifier, nil
 	}
 
