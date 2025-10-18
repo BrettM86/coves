@@ -23,8 +23,11 @@ func NewBlockHandler(service communities.Service) *BlockHandler {
 }
 
 // HandleBlock blocks a community
-// POST /xrpc/social.coves.community.block
-// Body: { "community": "did:plc:xxx" or "!gaming@coves.social" }
+// POST /xrpc/social.coves.community.blockCommunity
+//
+// Request body: { "community": "did:plc:xxx" }
+// Note: Per lexicon spec, only DIDs are accepted (not handles).
+// The block record's "subject" field requires format: "did".
 func (h *BlockHandler) HandleBlock(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -33,7 +36,7 @@ func (h *BlockHandler) HandleBlock(w http.ResponseWriter, r *http.Request) {
 
 	// Parse request body
 	var req struct {
-		Community string `json:"community"` // DID or handle
+		Community string `json:"community"` // DID only (per lexicon)
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -46,24 +49,17 @@ func (h *BlockHandler) HandleBlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate format (DID or handle) with proper regex patterns
-	if strings.HasPrefix(req.Community, "did:") {
-		// Validate DID format: did:method:identifier
-		// atProto supports did:plc and did:web
-		didRegex := regexp.MustCompile(`^did:(plc|web):[a-zA-Z0-9._:%-]+$`)
-		if !didRegex.MatchString(req.Community) {
-			writeError(w, http.StatusBadRequest, "InvalidRequest", "invalid DID format")
-			return
-		}
-	} else if strings.HasPrefix(req.Community, "!") {
-		// Validate handle format: !name@domain.tld
-		if !strings.Contains(req.Community, "@") {
-			writeError(w, http.StatusBadRequest, "InvalidRequest", "handle must contain @domain")
-			return
-		}
-	} else {
+	// Validate DID format (per lexicon: format must be "did")
+	if !strings.HasPrefix(req.Community, "did:") {
 		writeError(w, http.StatusBadRequest, "InvalidRequest",
-			"community must be a DID (did:plc:...) or handle (!name@instance.com)")
+			"community must be a DID (did:plc:... or did:web:...)")
+		return
+	}
+
+	// Validate DID format with regex: did:method:identifier
+	didRegex := regexp.MustCompile(`^did:(plc|web):[a-zA-Z0-9._:%-]+$`)
+	if !didRegex.MatchString(req.Community) {
+		writeError(w, http.StatusBadRequest, "InvalidRequest", "invalid DID format")
 		return
 	}
 
@@ -103,8 +99,10 @@ func (h *BlockHandler) HandleBlock(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleUnblock unblocks a community
-// POST /xrpc/social.coves.community.unblock
-// Body: { "community": "did:plc:xxx" or "!gaming@coves.social" }
+// POST /xrpc/social.coves.community.unblockCommunity
+//
+// Request body: { "community": "did:plc:xxx" }
+// Note: Per lexicon spec, only DIDs are accepted (not handles).
 func (h *BlockHandler) HandleUnblock(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -113,7 +111,7 @@ func (h *BlockHandler) HandleUnblock(w http.ResponseWriter, r *http.Request) {
 
 	// Parse request body
 	var req struct {
-		Community string `json:"community"`
+		Community string `json:"community"` // DID only (per lexicon)
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -126,23 +124,17 @@ func (h *BlockHandler) HandleUnblock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate format (DID or handle) with proper regex patterns
-	if strings.HasPrefix(req.Community, "did:") {
-		// Validate DID format: did:method:identifier
-		didRegex := regexp.MustCompile(`^did:(plc|web):[a-zA-Z0-9._:%-]+$`)
-		if !didRegex.MatchString(req.Community) {
-			writeError(w, http.StatusBadRequest, "InvalidRequest", "invalid DID format")
-			return
-		}
-	} else if strings.HasPrefix(req.Community, "!") {
-		// Validate handle format: !name@domain.tld
-		if !strings.Contains(req.Community, "@") {
-			writeError(w, http.StatusBadRequest, "InvalidRequest", "handle must contain @domain")
-			return
-		}
-	} else {
+	// Validate DID format (per lexicon: format must be "did")
+	if !strings.HasPrefix(req.Community, "did:") {
 		writeError(w, http.StatusBadRequest, "InvalidRequest",
-			"community must be a DID (did:plc:...) or handle (!name@instance.com)")
+			"community must be a DID (did:plc:... or did:web:...)")
+		return
+	}
+
+	// Validate DID format with regex: did:method:identifier
+	didRegex := regexp.MustCompile(`^did:(plc|web):[a-zA-Z0-9._:%-]+$`)
+	if !didRegex.MatchString(req.Community) {
+		writeError(w, http.StatusBadRequest, "InvalidRequest", "invalid DID format")
 		return
 	}
 

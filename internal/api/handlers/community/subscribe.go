@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 )
 
 // SubscribeHandler handles community subscriptions
@@ -22,7 +23,9 @@ func NewSubscribeHandler(service communities.Service) *SubscribeHandler {
 
 // HandleSubscribe subscribes a user to a community
 // POST /xrpc/social.coves.community.subscribe
-// Body: { "community": "did:plc:xxx" or "!gaming@coves.social" }
+//
+// Request body: { "community": "did:plc:xxx", "contentVisibility": 3 }
+// Note: Per lexicon spec, only DIDs are accepted for the "subject" field (not handles).
 func (h *SubscribeHandler) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -31,7 +34,7 @@ func (h *SubscribeHandler) HandleSubscribe(w http.ResponseWriter, r *http.Reques
 
 	// Parse request body
 	var req struct {
-		Community         string `json:"community"`
+		Community         string `json:"community"` // DID only (per lexicon)
 		ContentVisibility int    `json:"contentVisibility"` // Optional: 1-5 scale, defaults to 3
 	}
 
@@ -42,6 +45,13 @@ func (h *SubscribeHandler) HandleSubscribe(w http.ResponseWriter, r *http.Reques
 
 	if req.Community == "" {
 		writeError(w, http.StatusBadRequest, "InvalidRequest", "community is required")
+		return
+	}
+
+	// Validate DID format (per lexicon: subject field requires format "did")
+	if !strings.HasPrefix(req.Community, "did:") {
+		writeError(w, http.StatusBadRequest, "InvalidRequest",
+			"community must be a DID (did:plc:... or did:web:...)")
 		return
 	}
 
@@ -82,7 +92,9 @@ func (h *SubscribeHandler) HandleSubscribe(w http.ResponseWriter, r *http.Reques
 
 // HandleUnsubscribe unsubscribes a user from a community
 // POST /xrpc/social.coves.community.unsubscribe
-// Body: { "community": "did:plc:xxx" or "!gaming@coves.social" }
+//
+// Request body: { "community": "did:plc:xxx" }
+// Note: Per lexicon spec, only DIDs are accepted (not handles).
 func (h *SubscribeHandler) HandleUnsubscribe(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -91,7 +103,7 @@ func (h *SubscribeHandler) HandleUnsubscribe(w http.ResponseWriter, r *http.Requ
 
 	// Parse request body
 	var req struct {
-		Community string `json:"community"`
+		Community string `json:"community"` // DID only (per lexicon)
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -101,6 +113,13 @@ func (h *SubscribeHandler) HandleUnsubscribe(w http.ResponseWriter, r *http.Requ
 
 	if req.Community == "" {
 		writeError(w, http.StatusBadRequest, "InvalidRequest", "community is required")
+		return
+	}
+
+	// Validate DID format (per lexicon: subject field requires format "did")
+	if !strings.HasPrefix(req.Community, "did:") {
+		writeError(w, http.StatusBadRequest, "InvalidRequest",
+			"community must be a DID (did:plc:... or did:web:...)")
 		return
 	}
 
