@@ -516,6 +516,123 @@ func (s *communityService) ListCommunityMembers(ctx context.Context, communityId
 	return s.repo.ListMembers(ctx, communityDID, limit, offset)
 }
 
+// BlockCommunity blocks a community via write-forward to PDS
+func (s *communityService) BlockCommunity(ctx context.Context, userDID, userAccessToken, communityIdentifier string) (*CommunityBlock, error) {
+	if userDID == "" {
+		return nil, NewValidationError("userDid", "required")
+	}
+	if userAccessToken == "" {
+		return nil, NewValidationError("userAccessToken", "required")
+	}
+
+	// Resolve community identifier
+	communityDID, err := s.ResolveCommunityIdentifier(ctx, communityIdentifier)
+	if err != nil {
+		return nil, err
+	}
+
+	// Verify community exists
+	_, err = s.repo.GetByDID(ctx, communityDID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build block record
+	// CRITICAL: Collection is social.coves.community.block (RECORD TYPE)
+	// This record will be created in the USER's repository: at://user_did/social.coves.community.block/{tid}
+	// Following atProto conventions and Bluesky's app.bsky.graph.block pattern
+	blockRecord := map[string]interface{}{
+		"$type":     "social.coves.community.block",
+		"subject":   communityDID, // DID of community being blocked
+		"createdAt": time.Now().Format(time.RFC3339),
+	}
+
+	// Write-forward: create block record in user's repo using their access token
+	// Note: We don't check for existing blocks first because:
+	// 1. The PDS may reject duplicates (depending on implementation)
+	// 2. The repository layer handles idempotency with ON CONFLICT DO NOTHING
+	// 3. This avoids a race condition where two concurrent requests both pass the check
+	recordURI, recordCID, err := s.createRecordOnPDSAs(ctx, userDID, "social.coves.community.block", "", blockRecord, userAccessToken)
+	if err != nil {
+		// Check if this is a duplicate error from PDS
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "duplicate") || strings.Contains(errMsg, "already exists") {
+			// Fetch and return existing block from our indexed view
+			existingBlock, getErr := s.repo.GetBlock(ctx, userDID, communityDID)
+			if getErr == nil {
+				return existingBlock, nil
+			}
+			// If we can't find it in our index, return the original PDS error
+		}
+		return nil, fmt.Errorf("failed to create block on PDS: %w", err)
+	}
+
+	// Return block representation
+	block := &CommunityBlock{
+		UserDID:      userDID,
+		CommunityDID: communityDID,
+		BlockedAt:    time.Now(),
+		RecordURI:    recordURI,
+		RecordCID:    recordCID,
+	}
+
+	return block, nil
+}
+
+// UnblockCommunity removes a block via PDS delete
+func (s *communityService) UnblockCommunity(ctx context.Context, userDID, userAccessToken, communityIdentifier string) error {
+	if userDID == "" {
+		return NewValidationError("userDid", "required")
+	}
+	if userAccessToken == "" {
+		return NewValidationError("userAccessToken", "required")
+	}
+
+	// Resolve community identifier
+	communityDID, err := s.ResolveCommunityIdentifier(ctx, communityIdentifier)
+	if err != nil {
+		return err
+	}
+
+	// Get the block from AppView to find the record key
+	block, err := s.repo.GetBlock(ctx, userDID, communityDID)
+	if err != nil {
+		return err
+	}
+
+	// Extract rkey from record URI (at://did/collection/rkey)
+	rkey := extractRKeyFromURI(block.RecordURI)
+	if rkey == "" {
+		return fmt.Errorf("invalid block record URI")
+	}
+
+	// Write-forward: delete record from PDS using user's access token
+	if err := s.deleteRecordOnPDSAs(ctx, userDID, "social.coves.community.block", rkey, userAccessToken); err != nil {
+		return fmt.Errorf("failed to delete block on PDS: %w", err)
+	}
+
+	return nil
+}
+
+// GetBlockedCommunities queries AppView DB for user's blocks
+func (s *communityService) GetBlockedCommunities(ctx context.Context, userDID string, limit, offset int) ([]*CommunityBlock, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+
+	return s.repo.ListBlockedCommunities(ctx, userDID, limit, offset)
+}
+
+// IsBlocked checks if a user has blocked a community
+func (s *communityService) IsBlocked(ctx context.Context, userDID, communityIdentifier string) (bool, error) {
+	communityDID, err := s.ResolveCommunityIdentifier(ctx, communityIdentifier)
+	if err != nil {
+		return false, err
+	}
+
+	return s.repo.IsBlocked(ctx, userDID, communityDID)
+}
+
 // ValidateHandle checks if a community handle is valid
 func (s *communityService) ValidateHandle(handle string) error {
 	if handle == "" {
