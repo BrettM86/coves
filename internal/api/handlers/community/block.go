@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 )
 
@@ -45,8 +46,22 @@ func (h *BlockHandler) HandleBlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate format (DID or handle)
-	if !strings.HasPrefix(req.Community, "did:") && !strings.HasPrefix(req.Community, "!") {
+	// Validate format (DID or handle) with proper regex patterns
+	if strings.HasPrefix(req.Community, "did:") {
+		// Validate DID format: did:method:identifier
+		// atProto supports did:plc and did:web
+		didRegex := regexp.MustCompile(`^did:(plc|web):[a-zA-Z0-9._:%-]+$`)
+		if !didRegex.MatchString(req.Community) {
+			writeError(w, http.StatusBadRequest, "InvalidRequest", "invalid DID format")
+			return
+		}
+	} else if strings.HasPrefix(req.Community, "!") {
+		// Validate handle format: !name@domain.tld
+		if !strings.Contains(req.Community, "@") {
+			writeError(w, http.StatusBadRequest, "InvalidRequest", "handle must contain @domain")
+			return
+		}
+	} else {
 		writeError(w, http.StatusBadRequest, "InvalidRequest",
 			"community must be a DID (did:plc:...) or handle (!name@instance.com)")
 		return
@@ -111,8 +126,21 @@ func (h *BlockHandler) HandleUnblock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate format (DID or handle)
-	if !strings.HasPrefix(req.Community, "did:") && !strings.HasPrefix(req.Community, "!") {
+	// Validate format (DID or handle) with proper regex patterns
+	if strings.HasPrefix(req.Community, "did:") {
+		// Validate DID format: did:method:identifier
+		didRegex := regexp.MustCompile(`^did:(plc|web):[a-zA-Z0-9._:%-]+$`)
+		if !didRegex.MatchString(req.Community) {
+			writeError(w, http.StatusBadRequest, "InvalidRequest", "invalid DID format")
+			return
+		}
+	} else if strings.HasPrefix(req.Community, "!") {
+		// Validate handle format: !name@domain.tld
+		if !strings.Contains(req.Community, "@") {
+			writeError(w, http.StatusBadRequest, "InvalidRequest", "handle must contain @domain")
+			return
+		}
+	} else {
 		writeError(w, http.StatusBadRequest, "InvalidRequest",
 			"community must be a DID (did:plc:...) or handle (!name@instance.com)")
 		return
