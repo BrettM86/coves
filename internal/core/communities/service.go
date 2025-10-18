@@ -1,9 +1,11 @@
 package communities
 
 import (
+	"Coves/internal/atproto/utils"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -455,7 +457,7 @@ func (s *communityService) UnsubscribeFromCommunity(ctx context.Context, userDID
 	}
 
 	// Extract rkey from record URI (at://did/collection/rkey)
-	rkey := extractRKeyFromURI(subscription.RecordURI)
+	rkey := utils.ExtractRKeyFromURI(subscription.RecordURI)
 	if rkey == "" {
 		return fmt.Errorf("invalid subscription record URI")
 	}
@@ -516,6 +518,134 @@ func (s *communityService) ListCommunityMembers(ctx context.Context, communityId
 	return s.repo.ListMembers(ctx, communityDID, limit, offset)
 }
 
+// BlockCommunity blocks a community via write-forward to PDS
+func (s *communityService) BlockCommunity(ctx context.Context, userDID, userAccessToken, communityIdentifier string) (*CommunityBlock, error) {
+	if userDID == "" {
+		return nil, NewValidationError("userDid", "required")
+	}
+	if userAccessToken == "" {
+		return nil, NewValidationError("userAccessToken", "required")
+	}
+
+	// Resolve community identifier (also verifies community exists)
+	communityDID, err := s.ResolveCommunityIdentifier(ctx, communityIdentifier)
+	if err != nil {
+		return nil, err
+	}
+
+	// Build block record
+	// CRITICAL: Collection is social.coves.community.block (RECORD TYPE)
+	// This record will be created in the USER's repository: at://user_did/social.coves.community.block/{tid}
+	// Following atProto conventions and Bluesky's app.bsky.graph.block pattern
+	blockRecord := map[string]interface{}{
+		"$type":     "social.coves.community.block",
+		"subject":   communityDID, // DID of community being blocked
+		"createdAt": time.Now().Format(time.RFC3339),
+	}
+
+	// Write-forward: create block record in user's repo using their access token
+	// Note: We don't check for existing blocks first because:
+	// 1. The PDS may reject duplicates (depending on implementation)
+	// 2. The repository layer handles idempotency with ON CONFLICT DO NOTHING
+	// 3. This avoids a race condition where two concurrent requests both pass the check
+	recordURI, recordCID, err := s.createRecordOnPDSAs(ctx, userDID, "social.coves.community.block", "", blockRecord, userAccessToken)
+	if err != nil {
+		// Check if this is a duplicate/conflict error from PDS
+		// PDS should return 409 Conflict for duplicate records, but we also check common error messages
+		// for compatibility with different PDS implementations
+		errMsg := err.Error()
+		isDuplicate := strings.Contains(errMsg, "status 409") || // HTTP 409 Conflict
+			strings.Contains(errMsg, "duplicate") ||
+			strings.Contains(errMsg, "already exists") ||
+			strings.Contains(errMsg, "AlreadyExists")
+
+		if isDuplicate {
+			// Fetch and return existing block from our indexed view
+			existingBlock, getErr := s.repo.GetBlock(ctx, userDID, communityDID)
+			if getErr == nil {
+				// Block exists in our index - return it
+				return existingBlock, nil
+			}
+			// Only treat as "already exists" if the error is ErrBlockNotFound (race condition)
+			// Any other error (DB outage, connection failure, etc.) should bubble up
+			if errors.Is(getErr, ErrBlockNotFound) {
+				// Race condition: PDS has the block but Jetstream hasn't indexed it yet
+				// Return typed conflict error so handler can return 409 instead of 500
+				// This is normal in eventually-consistent systems
+				return nil, ErrBlockAlreadyExists
+			}
+			// Real datastore error - bubble it up so operators see the failure
+			return nil, fmt.Errorf("PDS reported duplicate block but failed to fetch from index: %w", getErr)
+		}
+		return nil, fmt.Errorf("failed to create block on PDS: %w", err)
+	}
+
+	// Return block representation
+	block := &CommunityBlock{
+		UserDID:      userDID,
+		CommunityDID: communityDID,
+		BlockedAt:    time.Now(),
+		RecordURI:    recordURI,
+		RecordCID:    recordCID,
+	}
+
+	return block, nil
+}
+
+// UnblockCommunity removes a block via PDS delete
+func (s *communityService) UnblockCommunity(ctx context.Context, userDID, userAccessToken, communityIdentifier string) error {
+	if userDID == "" {
+		return NewValidationError("userDid", "required")
+	}
+	if userAccessToken == "" {
+		return NewValidationError("userAccessToken", "required")
+	}
+
+	// Resolve community identifier
+	communityDID, err := s.ResolveCommunityIdentifier(ctx, communityIdentifier)
+	if err != nil {
+		return err
+	}
+
+	// Get the block from AppView to find the record key
+	block, err := s.repo.GetBlock(ctx, userDID, communityDID)
+	if err != nil {
+		return err
+	}
+
+	// Extract rkey from record URI (at://did/collection/rkey)
+	rkey := utils.ExtractRKeyFromURI(block.RecordURI)
+	if rkey == "" {
+		return fmt.Errorf("invalid block record URI")
+	}
+
+	// Write-forward: delete record from PDS using user's access token
+	if err := s.deleteRecordOnPDSAs(ctx, userDID, "social.coves.community.block", rkey, userAccessToken); err != nil {
+		return fmt.Errorf("failed to delete block on PDS: %w", err)
+	}
+
+	return nil
+}
+
+// GetBlockedCommunities queries AppView DB for user's blocks
+func (s *communityService) GetBlockedCommunities(ctx context.Context, userDID string, limit, offset int) ([]*CommunityBlock, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+
+	return s.repo.ListBlockedCommunities(ctx, userDID, limit, offset)
+}
+
+// IsBlocked checks if a user has blocked a community
+func (s *communityService) IsBlocked(ctx context.Context, userDID, communityIdentifier string) (bool, error) {
+	communityDID, err := s.ResolveCommunityIdentifier(ctx, communityIdentifier)
+	if err != nil {
+		return false, err
+	}
+
+	return s.repo.IsBlocked(ctx, userDID, communityDID)
+}
+
 // ValidateHandle checks if a community handle is valid
 func (s *communityService) ValidateHandle(handle string) error {
 	if handle == "" {
@@ -535,8 +665,15 @@ func (s *communityService) ResolveCommunityIdentifier(ctx context.Context, ident
 		return "", ErrInvalidInput
 	}
 
-	// If it's already a DID, return it
+	// If it's already a DID, verify the community exists
 	if strings.HasPrefix(identifier, "did:") {
+		_, err := s.repo.GetByDID(ctx, identifier)
+		if err != nil {
+			if IsNotFound(err) {
+				return "", fmt.Errorf("community not found: %w", err)
+			}
+			return "", fmt.Errorf("failed to verify community DID: %w", err)
+		}
 		return identifier, nil
 	}
 
@@ -594,22 +731,6 @@ func (s *communityService) validateCreateRequest(req CreateCommunityRequest) err
 
 // PDS write-forward helpers
 
-func (s *communityService) createRecordOnPDS(ctx context.Context, repoDID, collection, rkey string, record map[string]interface{}) (string, string, error) {
-	endpoint := fmt.Sprintf("%s/xrpc/com.atproto.repo.createRecord", strings.TrimSuffix(s.pdsURL, "/"))
-
-	payload := map[string]interface{}{
-		"repo":       repoDID,
-		"collection": collection,
-		"record":     record,
-	}
-
-	if rkey != "" {
-		payload["rkey"] = rkey
-	}
-
-	return s.callPDS(ctx, "POST", endpoint, payload)
-}
-
 // createRecordOnPDSAs creates a record with a specific access token (for V2 community auth)
 func (s *communityService) createRecordOnPDSAs(ctx context.Context, repoDID, collection, rkey string, record map[string]interface{}, accessToken string) (string, string, error) {
 	endpoint := fmt.Sprintf("%s/xrpc/com.atproto.repo.createRecord", strings.TrimSuffix(s.pdsURL, "/"))
@@ -641,21 +762,8 @@ func (s *communityService) putRecordOnPDSAs(ctx context.Context, repoDID, collec
 	return s.callPDSWithAuth(ctx, "POST", endpoint, payload, accessToken)
 }
 
-func (s *communityService) deleteRecordOnPDS(ctx context.Context, repoDID, collection, rkey string) error {
-	endpoint := fmt.Sprintf("%s/xrpc/com.atproto.repo.deleteRecord", strings.TrimSuffix(s.pdsURL, "/"))
-
-	payload := map[string]interface{}{
-		"repo":       repoDID,
-		"collection": collection,
-		"rkey":       rkey,
-	}
-
-	_, _, err := s.callPDS(ctx, "POST", endpoint, payload)
-	return err
-}
-
 // deleteRecordOnPDSAs deletes a record with a specific access token (for user-scoped deletions)
-func (s *communityService) deleteRecordOnPDSAs(ctx context.Context, repoDID, collection, rkey string, accessToken string) error {
+func (s *communityService) deleteRecordOnPDSAs(ctx context.Context, repoDID, collection, rkey, accessToken string) error {
 	endpoint := fmt.Sprintf("%s/xrpc/com.atproto.repo.deleteRecord", strings.TrimSuffix(s.pdsURL, "/"))
 
 	payload := map[string]interface{}{
@@ -666,11 +774,6 @@ func (s *communityService) deleteRecordOnPDSAs(ctx context.Context, repoDID, col
 
 	_, _, err := s.callPDSWithAuth(ctx, "POST", endpoint, payload, accessToken)
 	return err
-}
-
-func (s *communityService) callPDS(ctx context.Context, method, endpoint string, payload map[string]interface{}) (string, string, error) {
-	// Use instance's access token
-	return s.callPDSWithAuth(ctx, method, endpoint, payload, s.pdsAccessToken)
 }
 
 // callPDSWithAuth makes a PDS call with a specific access token (V2: for community authentication)
@@ -740,12 +843,3 @@ func (s *communityService) callPDSWithAuth(ctx context.Context, method, endpoint
 }
 
 // Helper functions
-
-func extractRKeyFromURI(uri string) string {
-	// at://did/collection/rkey -> rkey
-	parts := strings.Split(uri, "/")
-	if len(parts) >= 4 {
-		return parts[len(parts)-1]
-	}
-	return ""
-}

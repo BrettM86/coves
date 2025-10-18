@@ -5,6 +5,7 @@ import (
 	"Coves/internal/api/routes"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
+	"Coves/internal/atproto/utils"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
@@ -213,7 +214,7 @@ func TestCommunity_E2E(t *testing.T) {
 		t.Logf("\n📡 V2: Querying PDS for record in community's repository...")
 
 		collection := "social.coves.community.profile"
-		rkey := extractRKeyFromURI(community.RecordURI)
+		rkey := utils.ExtractRKeyFromURI(community.RecordURI)
 
 		// V2: Query community's repository (not instance repository!)
 		getRecordURL := fmt.Sprintf("%s/xrpc/com.atproto.repo.getRecord?repo=%s&collection=%s&rkey=%s",
@@ -423,7 +424,7 @@ func TestCommunity_E2E(t *testing.T) {
 			// NOTE: Using synthetic event for speed. Real Jetstream WebSocket testing
 			// happens in "Part 2: Real Jetstream Firehose Consumption" above.
 			t.Logf("🔄 Simulating Jetstream consumer indexing...")
-			rkey := extractRKeyFromURI(createResp.URI)
+			rkey := utils.ExtractRKeyFromURI(createResp.URI)
 			// V2: Event comes from community's DID (community owns the repo)
 			event := jetstream.JetstreamEvent{
 				Did:    createResp.DID,
@@ -626,7 +627,7 @@ func TestCommunity_E2E(t *testing.T) {
 				pdsURL = "http://localhost:3001"
 			}
 
-			rkey := extractRKeyFromURI(subscribeResp.URI)
+			rkey := utils.ExtractRKeyFromURI(subscribeResp.URI)
 			// CRITICAL: Use correct collection name (record type, not XRPC endpoint)
 			collection := "social.coves.community.subscription"
 
@@ -686,7 +687,7 @@ func TestCommunity_E2E(t *testing.T) {
 					CID:        subscribeResp.CID,
 					Record: map[string]interface{}{
 						"$type":             "social.coves.community.subscription",
-						"subject":         community.DID,
+						"subject":           community.DID,
 						"contentVisibility": float64(5), // JSON numbers are float64
 						"createdAt":         time.Now().Format(time.RFC3339),
 					},
@@ -757,7 +758,7 @@ func TestCommunity_E2E(t *testing.T) {
 			}
 
 			// Index the subscription in AppView (simulate firehose event)
-			rkey := extractRKeyFromURI(subscription.RecordURI)
+			rkey := utils.ExtractRKeyFromURI(subscription.RecordURI)
 			subEvent := jetstream.JetstreamEvent{
 				Did:    instanceDID,
 				TimeUS: time.Now().UnixMicro(),
@@ -770,7 +771,7 @@ func TestCommunity_E2E(t *testing.T) {
 					CID:        subscription.RecordCID,
 					Record: map[string]interface{}{
 						"$type":             "social.coves.community.subscription",
-						"subject":         community.DID,
+						"subject":           community.DID,
 						"contentVisibility": float64(3),
 						"createdAt":         time.Now().Format(time.RFC3339),
 					},
@@ -892,8 +893,8 @@ func TestCommunity_E2E(t *testing.T) {
 					Operation:  "delete",
 					Collection: "social.coves.community.subscription",
 					RKey:       rkey,
-					CID:        "",     // No CID on deletes
-					Record:     nil,    // No record data on deletes
+					CID:        "",  // No CID on deletes
+					Record:     nil, // No record data on deletes
 				},
 			}
 			if handleErr := consumer.HandleEvent(context.Background(), &deleteEvent); handleErr != nil {
@@ -931,6 +932,328 @@ func TestCommunity_E2E(t *testing.T) {
 			t.Logf("   ✓ Subscription deleted from PDS")
 			t.Logf("   ✓ Subscription removed from AppView")
 			t.Logf("   ✓ Subscriber count decremented")
+		})
+
+		t.Run("Block via XRPC endpoint", func(t *testing.T) {
+			// Create a community to block
+			community := createAndIndexCommunity(t, communityService, consumer, instanceDID, pdsURL)
+
+			t.Logf("🚫 Blocking community via XRPC endpoint...")
+			blockReq := map[string]interface{}{
+				"community": community.DID,
+			}
+
+			blockJSON, err := json.Marshal(blockReq)
+			if err != nil {
+				t.Fatalf("Failed to marshal block request: %v", err)
+			}
+
+			req, err := http.NewRequest("POST", httpServer.URL+"/xrpc/social.coves.community.blockCommunity", bytes.NewBuffer(blockJSON))
+			if err != nil {
+				t.Fatalf("Failed to create block request: %v", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+accessToken)
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("Failed to POST block: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			if resp.StatusCode != http.StatusOK {
+				body, readErr := io.ReadAll(resp.Body)
+				if readErr != nil {
+					t.Fatalf("Expected 200, got %d (failed to read body: %v)", resp.StatusCode, readErr)
+				}
+				t.Logf("❌ XRPC Block Failed")
+				t.Logf("   Status: %d", resp.StatusCode)
+				t.Logf("   Response: %s", string(body))
+				t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, string(body))
+			}
+
+			var blockResp struct {
+				Block struct {
+					RecordURI string `json:"recordUri"`
+					RecordCID string `json:"recordCid"`
+				} `json:"block"`
+			}
+
+			if err := json.NewDecoder(resp.Body).Decode(&blockResp); err != nil {
+				t.Fatalf("Failed to decode block response: %v", err)
+			}
+
+			t.Logf("✅ XRPC block response received:")
+			t.Logf("   RecordURI: %s", blockResp.Block.RecordURI)
+			t.Logf("   RecordCID: %s", blockResp.Block.RecordCID)
+
+			// Extract rkey from URI for verification
+			rkey := ""
+			if uriParts := strings.Split(blockResp.Block.RecordURI, "/"); len(uriParts) >= 4 {
+				rkey = uriParts[len(uriParts)-1]
+			}
+
+			// Verify the block record exists on PDS
+			t.Logf("🔍 Verifying block record exists on PDS...")
+			collection := "social.coves.community.block"
+			pdsResp, pdsErr := http.Get(fmt.Sprintf("%s/xrpc/com.atproto.repo.getRecord?repo=%s&collection=%s&rkey=%s",
+				pdsURL, instanceDID, collection, rkey))
+			if pdsErr != nil {
+				t.Fatalf("Failed to query PDS: %v", pdsErr)
+			}
+			defer func() {
+				if closeErr := pdsResp.Body.Close(); closeErr != nil {
+					t.Logf("Failed to close PDS response: %v", closeErr)
+				}
+			}()
+
+			if pdsResp.StatusCode != http.StatusOK {
+				body, readErr := io.ReadAll(pdsResp.Body)
+				if readErr != nil {
+					t.Fatalf("Block record not found on PDS (status: %d, failed to read body: %v)", pdsResp.StatusCode, readErr)
+				}
+				t.Fatalf("Block record not found on PDS (status: %d): %s", pdsResp.StatusCode, string(body))
+			}
+			t.Logf("✅ Block record exists on PDS")
+
+			// CRITICAL: Simulate Jetstream consumer indexing the block
+			t.Logf("🔄 Simulating Jetstream consumer indexing block event...")
+			blockEvent := jetstream.JetstreamEvent{
+				Did:    instanceDID,
+				TimeUS: time.Now().UnixMicro(),
+				Kind:   "commit",
+				Commit: &jetstream.CommitEvent{
+					Rev:        "test-block-rev",
+					Operation:  "create",
+					Collection: "social.coves.community.block",
+					RKey:       rkey,
+					CID:        blockResp.Block.RecordCID,
+					Record: map[string]interface{}{
+						"subject":   community.DID,
+						"createdAt": time.Now().Format(time.RFC3339),
+					},
+				},
+			}
+			if handleErr := consumer.HandleEvent(context.Background(), &blockEvent); handleErr != nil {
+				t.Fatalf("Failed to handle block event: %v", handleErr)
+			}
+
+			// Verify block was indexed in AppView
+			t.Logf("🔍 Verifying block indexed in AppView...")
+			block, err := communityRepo.GetBlock(ctx, instanceDID, community.DID)
+			if err != nil {
+				t.Fatalf("Failed to get block from AppView: %v", err)
+			}
+			if block.RecordURI != blockResp.Block.RecordURI {
+				t.Errorf("RecordURI mismatch: expected %s, got %s", blockResp.Block.RecordURI, block.RecordURI)
+			}
+
+			t.Logf("✅ TRUE E2E BLOCK FLOW COMPLETE:")
+			t.Logf("   Client → XRPC Block → PDS Create → Firehose → Consumer → AppView ✓")
+			t.Logf("   ✓ Block record created on PDS")
+			t.Logf("   ✓ Block indexed in AppView")
+		})
+
+		t.Run("Unblock via XRPC endpoint", func(t *testing.T) {
+			// Create a community and block it first
+			community := createAndIndexCommunity(t, communityService, consumer, instanceDID, pdsURL)
+
+			// Block the community
+			t.Logf("🚫 Blocking community first...")
+			blockReq := map[string]interface{}{
+				"community": community.DID,
+			}
+			blockJSON, err := json.Marshal(blockReq)
+			if err != nil {
+				t.Fatalf("Failed to marshal block request: %v", err)
+			}
+
+			blockHttpReq, err := http.NewRequest("POST", httpServer.URL+"/xrpc/social.coves.community.blockCommunity", bytes.NewBuffer(blockJSON))
+			if err != nil {
+				t.Fatalf("Failed to create block request: %v", err)
+			}
+			blockHttpReq.Header.Set("Content-Type", "application/json")
+			blockHttpReq.Header.Set("Authorization", "Bearer "+accessToken)
+
+			blockResp, err := http.DefaultClient.Do(blockHttpReq)
+			if err != nil {
+				t.Fatalf("Failed to POST block: %v", err)
+			}
+
+			var blockRespData struct {
+				Block struct {
+					RecordURI string `json:"recordUri"`
+				} `json:"block"`
+			}
+			if err := json.NewDecoder(blockResp.Body).Decode(&blockRespData); err != nil {
+				func() { _ = blockResp.Body.Close() }()
+				t.Fatalf("Failed to decode block response: %v", err)
+			}
+			func() { _ = blockResp.Body.Close() }()
+
+			rkey := ""
+			if uriParts := strings.Split(blockRespData.Block.RecordURI, "/"); len(uriParts) >= 4 {
+				rkey = uriParts[len(uriParts)-1]
+			}
+
+			// Index the block via consumer
+			blockEvent := jetstream.JetstreamEvent{
+				Did:    instanceDID,
+				TimeUS: time.Now().UnixMicro(),
+				Kind:   "commit",
+				Commit: &jetstream.CommitEvent{
+					Rev:        "test-block-rev",
+					Operation:  "create",
+					Collection: "social.coves.community.block",
+					RKey:       rkey,
+					CID:        "test-block-cid",
+					Record: map[string]interface{}{
+						"subject":   community.DID,
+						"createdAt": time.Now().Format(time.RFC3339),
+					},
+				},
+			}
+			if handleErr := consumer.HandleEvent(context.Background(), &blockEvent); handleErr != nil {
+				t.Fatalf("Failed to handle block event: %v", handleErr)
+			}
+
+			// Now unblock the community
+			t.Logf("✅ Unblocking community via XRPC endpoint...")
+			unblockReq := map[string]interface{}{
+				"community": community.DID,
+			}
+
+			unblockJSON, err := json.Marshal(unblockReq)
+			if err != nil {
+				t.Fatalf("Failed to marshal unblock request: %v", err)
+			}
+
+			req, err := http.NewRequest("POST", httpServer.URL+"/xrpc/social.coves.community.unblockCommunity", bytes.NewBuffer(unblockJSON))
+			if err != nil {
+				t.Fatalf("Failed to create unblock request: %v", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+accessToken)
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("Failed to POST unblock: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			if resp.StatusCode != http.StatusOK {
+				body, readErr := io.ReadAll(resp.Body)
+				if readErr != nil {
+					t.Fatalf("Expected 200, got %d (failed to read body: %v)", resp.StatusCode, readErr)
+				}
+				t.Logf("❌ XRPC Unblock Failed")
+				t.Logf("   Status: %d", resp.StatusCode)
+				t.Logf("   Response: %s", string(body))
+				t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, string(body))
+			}
+
+			var unblockResp struct {
+				Success bool `json:"success"`
+			}
+
+			if err := json.NewDecoder(resp.Body).Decode(&unblockResp); err != nil {
+				t.Fatalf("Failed to decode unblock response: %v", err)
+			}
+
+			if !unblockResp.Success {
+				t.Errorf("Expected success: true, got: %v", unblockResp.Success)
+			}
+
+			// Verify the block record was deleted from PDS
+			t.Logf("🔍 Verifying block record deleted from PDS...")
+			collection := "social.coves.community.block"
+			pdsResp, pdsErr := http.Get(fmt.Sprintf("%s/xrpc/com.atproto.repo.getRecord?repo=%s&collection=%s&rkey=%s",
+				pdsURL, instanceDID, collection, rkey))
+			if pdsErr != nil {
+				t.Fatalf("Failed to query PDS: %v", pdsErr)
+			}
+			defer func() {
+				if closeErr := pdsResp.Body.Close(); closeErr != nil {
+					t.Logf("Failed to close PDS response: %v", closeErr)
+				}
+			}()
+
+			if pdsResp.StatusCode == http.StatusOK {
+				t.Errorf("❌ Block record still exists on PDS (expected 404, got 200)")
+			} else {
+				t.Logf("✅ Block record successfully deleted from PDS (status: %d)", pdsResp.StatusCode)
+			}
+
+			// CRITICAL: Simulate Jetstream consumer indexing the DELETE event
+			t.Logf("🔄 Simulating Jetstream consumer indexing DELETE event...")
+			deleteEvent := jetstream.JetstreamEvent{
+				Did:    instanceDID,
+				TimeUS: time.Now().UnixMicro(),
+				Kind:   "commit",
+				Commit: &jetstream.CommitEvent{
+					Rev:        "test-unblock-rev",
+					Operation:  "delete",
+					Collection: "social.coves.community.block",
+					RKey:       rkey,
+					CID:        "",
+					Record:     nil,
+				},
+			}
+			if handleErr := consumer.HandleEvent(context.Background(), &deleteEvent); handleErr != nil {
+				t.Fatalf("Failed to handle delete event: %v", handleErr)
+			}
+
+			// Verify block was removed from AppView
+			t.Logf("🔍 Verifying block removed from AppView...")
+			_, err = communityRepo.GetBlock(ctx, instanceDID, community.DID)
+			if err == nil {
+				t.Errorf("❌ Block still exists in AppView (should be deleted)")
+			} else if !communities.IsNotFound(err) {
+				t.Fatalf("Unexpected error querying block: %v", err)
+			} else {
+				t.Logf("✅ Block removed from AppView")
+			}
+
+			t.Logf("✅ TRUE E2E UNBLOCK FLOW COMPLETE:")
+			t.Logf("   Client → XRPC Unblock → PDS Delete → Firehose → Consumer → AppView ✓")
+			t.Logf("   ✓ Block deleted from PDS")
+			t.Logf("   ✓ Block removed from AppView")
+		})
+
+		t.Run("Block fails without authentication", func(t *testing.T) {
+			// Create a community to attempt blocking
+			community := createAndIndexCommunity(t, communityService, consumer, instanceDID, pdsURL)
+
+			t.Logf("🔒 Attempting to block community without auth token...")
+			blockReq := map[string]interface{}{
+				"community": community.DID,
+			}
+
+			blockJSON, err := json.Marshal(blockReq)
+			if err != nil {
+				t.Fatalf("Failed to marshal block request: %v", err)
+			}
+
+			req, err := http.NewRequest("POST", httpServer.URL+"/xrpc/social.coves.community.blockCommunity", bytes.NewBuffer(blockJSON))
+			if err != nil {
+				t.Fatalf("Failed to create block request: %v", err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			// NO Authorization header
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("Failed to POST block: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			// Should fail with 401 Unauthorized
+			if resp.StatusCode != http.StatusUnauthorized {
+				body, _ := io.ReadAll(resp.Body)
+				t.Errorf("Expected 401 Unauthorized, got %d: %s", resp.StatusCode, string(body))
+			} else {
+				t.Logf("✅ Block correctly rejected without authentication (401)")
+			}
 		})
 
 		t.Run("Update via XRPC endpoint", func(t *testing.T) {
@@ -1009,7 +1332,7 @@ func TestCommunity_E2E(t *testing.T) {
 
 			// Simulate Jetstream consumer picking up the update event
 			t.Logf("🔄 Simulating Jetstream consumer indexing update...")
-			rkey := extractRKeyFromURI(updateResp.URI)
+			rkey := utils.ExtractRKeyFromURI(updateResp.URI)
 
 			// Fetch updated record from PDS
 			pdsURL := os.Getenv("PDS_URL")
@@ -1136,7 +1459,7 @@ func createAndIndexCommunity(t *testing.T, service communities.Service, consumer
 	// Fetch from PDS to get full record
 	// V2: Record lives in community's own repository (at://community.DID/...)
 	collection := "social.coves.community.profile"
-	rkey := extractRKeyFromURI(community.RecordURI)
+	rkey := utils.ExtractRKeyFromURI(community.RecordURI)
 
 	pdsResp, pdsErr := http.Get(fmt.Sprintf("%s/xrpc/com.atproto.repo.getRecord?repo=%s&collection=%s&rkey=%s",
 		pdsURL, community.DID, collection, rkey))
@@ -1180,15 +1503,6 @@ func createAndIndexCommunity(t *testing.T, service communities.Service, consumer
 	}
 
 	return community
-}
-
-func extractRKeyFromURI(uri string) string {
-	// at://did/collection/rkey -> rkey
-	parts := strings.Split(uri, "/")
-	if len(parts) >= 4 {
-		return parts[len(parts)-1]
-	}
-	return ""
 }
 
 // authenticateWithPDS authenticates with the PDS and returns access token and DID

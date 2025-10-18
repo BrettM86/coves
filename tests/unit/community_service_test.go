@@ -102,6 +102,30 @@ func (m *mockCommunityRepo) ListSubscribers(ctx context.Context, communityDID st
 	return nil, nil
 }
 
+func (m *mockCommunityRepo) BlockCommunity(ctx context.Context, block *communities.CommunityBlock) (*communities.CommunityBlock, error) {
+	return block, nil
+}
+
+func (m *mockCommunityRepo) UnblockCommunity(ctx context.Context, userDID, communityDID string) error {
+	return nil
+}
+
+func (m *mockCommunityRepo) GetBlock(ctx context.Context, userDID, communityDID string) (*communities.CommunityBlock, error) {
+	return nil, communities.ErrBlockNotFound
+}
+
+func (m *mockCommunityRepo) GetBlockByURI(ctx context.Context, recordURI string) (*communities.CommunityBlock, error) {
+	return nil, communities.ErrBlockNotFound
+}
+
+func (m *mockCommunityRepo) ListBlockedCommunities(ctx context.Context, userDID string, limit, offset int) ([]*communities.CommunityBlock, error) {
+	return nil, nil
+}
+
+func (m *mockCommunityRepo) IsBlocked(ctx context.Context, userDID, communityDID string) (bool, error) {
+	return false, nil
+}
+
 func (m *mockCommunityRepo) CreateMembership(ctx context.Context, membership *communities.Membership) (*communities.Membership, error) {
 	return membership, nil
 }
