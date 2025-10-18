@@ -12,8 +12,8 @@
         "properties": {
           "subject": {
             "type": "string",
-            "format": "at-identifier",
-            "description": "DID or handle of the community being subscribed to"
+            "format": "did",
+            "description": "DID of the community being subscribed to"
           },
           "createdAt": {
             "type": "string",
