@@ -123,7 +123,7 @@ func TestValidateRecord(t *testing.T) {
 			recordType: "social.coves.community.profile",
 			recordData: map[string]interface{}{
 				"$type":          "social.coves.community.profile",
-				"handle":         "programming.communities.coves.social",
+				"handle":         "programming.community.coves.social",
 				"name":           "programming",
 				"displayName":    "Programming Community",
 				"createdBy":      "did:plc:creator123",
