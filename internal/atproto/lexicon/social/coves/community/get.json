@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "query",
-      "description": "Get detailed information about a community",
+      "description": "Get detailed information about a community. Authentication optional; viewer state will be included if authenticated.",
       "parameters": {
         "type": "params",
         "required": ["community"],
@@ -89,12 +89,7 @@
         },
         "member": {
           "type": "boolean",
-          "description": "Whether the viewer has membership status"
-        },
-        "membershipUri": {
-          "type": "string",
-          "format": "at-uri",
-          "description": "AT-URI of the membership record if member"
+          "description": "Whether the viewer has membership status (AppView-computed)"
         },
         "reputation": {
           "type": "integer",

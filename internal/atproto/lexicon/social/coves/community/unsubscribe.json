@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "procedure",
-      "description": "Unsubscribe from a community",
+      "description": "Unsubscribe from a community. Requires authentication.",
       "input": {
         "encoding": "application/json",
         "schema": {
