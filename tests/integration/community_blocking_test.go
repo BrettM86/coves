@@ -22,7 +22,8 @@ func TestCommunityBlocking_Indexing(t *testing.T) {
 	defer cleanupBlockingTestDB(t, db)
 
 	repo := createBlockingTestCommunityRepo(t, db)
-	consumer := jetstream.NewCommunityEventConsumer(repo)
+	// Skip verification in tests
+	consumer := jetstream.NewCommunityEventConsumer(repo, "did:web:coves.local", true)
 
 	// Create test community
 	testDID := fmt.Sprintf("did:plc:test-community-%d", time.Now().UnixNano())

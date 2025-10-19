@@ -142,7 +142,8 @@ func TestCommunity_E2E(t *testing.T) {
 		svc.SetPDSAccessToken(accessToken)
 	}
 
-	consumer := jetstream.NewCommunityEventConsumer(communityRepo)
+	// Skip verification in tests
+	consumer := jetstream.NewCommunityEventConsumer(communityRepo, "did:web:coves.local", true)
 
 	// Setup HTTP server with XRPC routes
 	r := chi.NewRouter()

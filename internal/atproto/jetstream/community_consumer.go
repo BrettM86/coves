@@ -7,18 +7,65 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
+	"strings"
 	"time"
+
+	lru "github.com/hashicorp/golang-lru/v2"
+	"golang.org/x/net/publicsuffix"
+	"golang.org/x/time/rate"
 )
 
 // CommunityEventConsumer consumes community-related events from Jetstream
 type CommunityEventConsumer struct {
-	repo communities.Repository
+	repo             communities.Repository           // Repository for community operations
+	httpClient       *http.Client                     // Shared HTTP client with connection pooling
+	didCache         *lru.Cache[string, cachedDIDDoc] // Bounded LRU cache for .well-known verification results
+	wellKnownLimiter *rate.Limiter                    // Rate limiter for .well-known fetches
+	instanceDID      string                           // DID of this Coves instance
+	skipVerification bool                             // Skip did:web verification (for dev mode)
+}
+
+// cachedDIDDoc represents a cached verification result with expiration
+type cachedDIDDoc struct {
+	expiresAt time.Time // When this cache entry expires
+	valid     bool      // Whether verification passed
 }
 
 // NewCommunityEventConsumer creates a new Jetstream consumer for community events
-func NewCommunityEventConsumer(repo communities.Repository) *CommunityEventConsumer {
+// instanceDID: The DID of this Coves instance (for hostedBy verification)
+// skipVerification: Skip did:web verification (for dev mode)
+func NewCommunityEventConsumer(repo communities.Repository, instanceDID string, skipVerification bool) *CommunityEventConsumer {
+	// Create bounded LRU cache for DID document verification results
+	// Max 1000 entries to prevent unbounded memory growth (PR review feedback)
+	// Each entry ~100 bytes → max ~100KB memory overhead
+	cache, err := lru.New[string, cachedDIDDoc](1000)
+	if err != nil {
+		// This should never happen with a valid size, but handle gracefully
+		log.Printf("WARNING: Failed to create DID cache, verification will be slower: %v", err)
+		// Create minimal cache to avoid nil pointer
+		cache, _ = lru.New[string, cachedDIDDoc](1)
+	}
+
 	return &CommunityEventConsumer{
-		repo: repo,
+		repo:             repo,
+		instanceDID:      instanceDID,
+		skipVerification: skipVerification,
+		// Shared HTTP client with connection pooling for .well-known fetches
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 10,
+				IdleConnTimeout:     90 * time.Second,
+			},
+		},
+		// Bounded LRU cache for .well-known verification results (max 1000 entries)
+		// Automatically evicts least-recently-used entries when full
+		didCache: cache,
+		// Rate limiter: 10 requests per second, burst of 20
+		// Prevents DoS via excessive .well-known fetches
+		wellKnownLimiter: rate.NewLimiter(10, 20),
 	}
 }
 
@@ -80,6 +127,14 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 	profile, err := parseCommunityProfile(commit.Record)
 	if err != nil {
 		return fmt.Errorf("failed to parse community profile: %w", err)
+	}
+
+	// SECURITY: Verify hostedBy claim matches handle domain
+	// This prevents malicious instances from claiming to host communities for domains they don't own
+	if err := c.verifyHostedByClaim(ctx, profile.Handle, profile.HostedBy); err != nil {
+		log.Printf("🚨 SECURITY: Rejecting community %s - hostedBy verification failed: %v", did, err)
+		log.Printf("    Handle: %s, HostedBy: %s", profile.Handle, profile.HostedBy)
+		return fmt.Errorf("hostedBy verification failed: %w", err)
 	}
 
 	// Build AT-URI for this record
@@ -232,6 +287,191 @@ func (c *CommunityEventConsumer) deleteCommunity(ctx context.Context, did string
 
 	log.Printf("Deleted community: %s", did)
 	return nil
+}
+
+// verifyHostedByClaim verifies that the community's hostedBy claim matches the handle domain
+// This prevents malicious instances from claiming to host communities for domains they don't own
+func (c *CommunityEventConsumer) verifyHostedByClaim(ctx context.Context, handle, hostedByDID string) error {
+	// Skip verification in dev mode
+	if c.skipVerification {
+		return nil
+	}
+
+	// Add 15 second overall timeout to prevent slow verification from blocking consumer (PR review feedback)
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	// Verify hostedByDID is did:web format
+	if !strings.HasPrefix(hostedByDID, "did:web:") {
+		return fmt.Errorf("hostedByDID must use did:web method, got: %s", hostedByDID)
+	}
+
+	// Extract domain from did:web DID
+	hostedByDomain := strings.TrimPrefix(hostedByDID, "did:web:")
+
+	// Extract domain from community handle
+	// Handle format examples:
+	//   - "!gaming@coves.social" → domain: "coves.social"
+	//   - "gaming.communities.coves.social" → domain: "coves.social"
+	handleDomain := extractDomainFromHandle(handle)
+	if handleDomain == "" {
+		return fmt.Errorf("failed to extract domain from handle: %s", handle)
+	}
+
+	// Verify handle domain matches hostedBy domain
+	if handleDomain != hostedByDomain {
+		return fmt.Errorf("handle domain (%s) doesn't match hostedBy domain (%s)", handleDomain, hostedByDomain)
+	}
+
+	// Optional: Verify DID document exists and is valid
+	// This provides cryptographic proof of domain ownership
+	if err := c.verifyDIDDocument(ctx, hostedByDID, hostedByDomain); err != nil {
+		// Soft-fail: Log warning but don't reject the community
+		// This allows operation during network issues or .well-known misconfiguration
+		log.Printf("⚠️  WARNING: DID document verification failed for %s: %v", hostedByDomain, err)
+		log.Printf("    Community will be indexed, but hostedBy claim cannot be cryptographically verified")
+	}
+
+	return nil
+}
+
+// verifyDIDDocument fetches and validates the DID document from .well-known/did.json
+// This provides cryptographic proof that the instance controls the domain
+// Results are cached with TTL and rate-limited to prevent DoS attacks
+func (c *CommunityEventConsumer) verifyDIDDocument(ctx context.Context, did, domain string) error {
+	// Skip verification in dev mode
+	if c.skipVerification {
+		return nil
+	}
+
+	// Check bounded LRU cache first (thread-safe, no locks needed)
+	if cached, ok := c.didCache.Get(did); ok {
+		// Check if cache entry is still valid (not expired)
+		if time.Now().Before(cached.expiresAt) {
+			if !cached.valid {
+				return fmt.Errorf("cached verification failure for %s", did)
+			}
+			log.Printf("✓ DID document verification (cached): %s", domain)
+			return nil
+		}
+		// Cache entry expired - remove it to free up space for fresh entries
+		c.didCache.Remove(did)
+	}
+
+	// Rate limit .well-known fetches to prevent DoS
+	if err := c.wellKnownLimiter.Wait(ctx); err != nil {
+		return fmt.Errorf("rate limit exceeded for .well-known fetch: %w", err)
+	}
+
+	// Construct .well-known URL
+	didDocURL := fmt.Sprintf("https://%s/.well-known/did.json", domain)
+
+	// Create HTTP request with timeout
+	req, err := http.NewRequestWithContext(ctx, "GET", didDocURL, nil)
+	if err != nil {
+		// Cache the failure
+		c.cacheVerificationResult(did, false, 5*time.Minute)
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Fetch DID document using shared HTTP client
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		// Cache the failure (shorter TTL for network errors)
+		c.cacheVerificationResult(did, false, 5*time.Minute)
+		return fmt.Errorf("failed to fetch DID document from %s: %w", didDocURL, err)
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			log.Printf("Failed to close response body: %v", closeErr)
+		}
+	}()
+
+	// Verify HTTP status
+	if resp.StatusCode != http.StatusOK {
+		// Cache the failure
+		c.cacheVerificationResult(did, false, 5*time.Minute)
+		return fmt.Errorf("DID document returned HTTP %d from %s", resp.StatusCode, didDocURL)
+	}
+
+	// Parse DID document
+	var didDoc struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&didDoc); err != nil {
+		// Cache the failure
+		c.cacheVerificationResult(did, false, 5*time.Minute)
+		return fmt.Errorf("failed to parse DID document JSON: %w", err)
+	}
+
+	// Verify DID document ID matches claimed DID
+	if didDoc.ID != did {
+		// Cache the failure
+		c.cacheVerificationResult(did, false, 5*time.Minute)
+		return fmt.Errorf("DID document ID (%s) doesn't match claimed DID (%s)", didDoc.ID, did)
+	}
+
+	// Cache the success (1 hour TTL)
+	c.cacheVerificationResult(did, true, 1*time.Hour)
+
+	log.Printf("✓ DID document verified: %s", domain)
+	return nil
+}
+
+// cacheVerificationResult stores a verification result in the bounded LRU cache with the given TTL
+// The LRU cache is thread-safe and automatically evicts least-recently-used entries when full
+func (c *CommunityEventConsumer) cacheVerificationResult(did string, valid bool, ttl time.Duration) {
+	c.didCache.Add(did, cachedDIDDoc{
+		valid:     valid,
+		expiresAt: time.Now().Add(ttl),
+	})
+}
+
+// extractDomainFromHandle extracts the registrable domain from a community handle
+// Handles both formats:
+//   - Bluesky-style: "!gaming@coves.social" → "coves.social"
+//   - DNS-style: "gaming.communities.coves.social" → "coves.social"
+//
+// Uses golang.org/x/net/publicsuffix to correctly handle multi-part TLDs:
+//   - "gaming.communities.coves.co.uk" → "coves.co.uk" (not "co.uk")
+//   - "gaming.communities.example.com.au" → "example.com.au" (not "com.au")
+func extractDomainFromHandle(handle string) string {
+	// Remove leading ! if present
+	handle = strings.TrimPrefix(handle, "!")
+
+	// Check for @-separated format (e.g., "gaming@coves.social")
+	if strings.Contains(handle, "@") {
+		parts := strings.Split(handle, "@")
+		if len(parts) == 2 {
+			domain := parts[1]
+			// Validate and extract eTLD+1 from the @-domain part
+			registrable, err := publicsuffix.EffectiveTLDPlusOne(domain)
+			if err != nil {
+				// If publicsuffix fails, fall back to returning the full domain part
+				// This handles edge cases like localhost, IP addresses, etc.
+				return domain
+			}
+			return registrable
+		}
+		return ""
+	}
+
+	// For DNS-style handles (e.g., "gaming.communities.coves.social")
+	// Extract the registrable domain (eTLD+1) using publicsuffix
+	// This correctly handles multi-part TLDs like .co.uk, .com.au, etc.
+	registrable, err := publicsuffix.EffectiveTLDPlusOne(handle)
+	if err != nil {
+		// If publicsuffix fails (e.g., invalid TLD, localhost, IP address)
+		// fall back to naive extraction (last 2 parts)
+		// This maintains backward compatibility for edge cases
+		parts := strings.Split(handle, ".")
+		if len(parts) < 2 {
+			return "" // Invalid handle
+		}
+		return strings.Join(parts[len(parts)-2:], ".")
+	}
+
+	return registrable
 }
 
 // handleSubscription processes subscription create/delete events
