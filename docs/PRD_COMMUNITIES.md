@@ -257,8 +257,8 @@ Hosted By:   did:web:coves.social (instance manages credentials)
 - [ ] **Security Checklist:** Pre-launch security audit
 
 ### Infrastructure & DNS
-- [ ] **DNS Wildcard Setup:** Configure `*.communities.coves.social` for community handle resolution
-- [ ] **Well-Known Endpoint:** Implement `.well-known/atproto-did` handler for `*.communities.coves.social` subdomains
+- [ ] **DNS Wildcard Setup:** Configure `*.community.coves.social` for community handle resolution
+- [ ] **Well-Known Endpoint:** Implement `.well-known/atproto-did` handler for `*.community.coves.social` subdomains
 
 ---
 
@@ -310,7 +310,7 @@ Hosted By:   did:web:coves.social (instance manages credentials)
 **Status:** ✅ Implemented and tested
 
 **Required Fields:**
-- `handle` - atProto handle (DNS-resolvable, e.g., `gaming.communities.coves.social`)
+- `handle` - atProto handle (DNS-resolvable, e.g., `gaming.community.coves.social`)
 - `name` - Short community name for !mentions (e.g., `gaming`)
 - `createdBy` - DID of user who created community
 - `hostedBy` - DID of hosting instance
@@ -378,7 +378,7 @@ Hosted By:   did:web:coves.social (instance manages credentials)
 - Follows separation of concerns: protocol layer uses DNS handles, UI layer formats for display
 
 **Implementation:**
-- Lexicon: `handle` = `gaming.communities.coves.social` (DNS-resolvable)
+- Lexicon: `handle` = `gaming.community.coves.social` (DNS-resolvable)
 - Client derives display: `!${name}@${instance}` from `name` + parsed instance
 - Rich text facets can encode community mentions with `!` prefix for UX
 
