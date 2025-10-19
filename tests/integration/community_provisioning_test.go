@@ -29,7 +29,7 @@ func TestCommunityRepository_PasswordEncryption(t *testing.T) {
 
 		community := &communities.Community{
 			DID:                    generateTestDID(uniqueSuffix),
-			Handle:                 fmt.Sprintf("test-encryption-%s.communities.test.local", uniqueSuffix),
+			Handle:                 fmt.Sprintf("test-encryption-%s.community.test.local", uniqueSuffix),
 			Name:                   "test-encryption",
 			DisplayName:            "Test Encryption",
 			Description:            "Testing password encryption",
@@ -100,7 +100,7 @@ func TestCommunityRepository_PasswordEncryption(t *testing.T) {
 
 		community := &communities.Community{
 			DID:                    generateTestDID(uniqueSuffix),
-			Handle:                 fmt.Sprintf("test-empty-pass-%s.communities.test.local", uniqueSuffix),
+			Handle:                 fmt.Sprintf("test-empty-pass-%s.community.test.local", uniqueSuffix),
 			Name:                   "test-empty-pass",
 			DisplayName:            "Test Empty Password",
 			Description:            "Testing empty password handling",
@@ -332,7 +332,7 @@ func TestPasswordSecurity(t *testing.T) {
 
 			community := &communities.Community{
 				DID:                    generateTestDID(uniqueSuffix),
-				Handle:                 fmt.Sprintf("pwd-unique-%s.communities.test.local", uniqueSuffix),
+				Handle:                 fmt.Sprintf("pwd-unique-%s.community.test.local", uniqueSuffix),
 				Name:                   fmt.Sprintf("pwd-unique-%s", uniqueSuffix),
 				DisplayName:            fmt.Sprintf("Password Unique Test %d", i),
 				Description:            "Testing password uniqueness",
@@ -402,7 +402,7 @@ func TestPasswordSecurity(t *testing.T) {
 
 		community := &communities.Community{
 			DID:                    generateTestDID(uniqueSuffix),
-			Handle:                 fmt.Sprintf("test-pwd-len-%s.communities.test.local", uniqueSuffix),
+			Handle:                 fmt.Sprintf("test-pwd-len-%s.community.test.local", uniqueSuffix),
 			Name:                   "test-pwd-len",
 			DisplayName:            "Test Password Length",
 			Description:            "Testing password length requirements",
@@ -470,7 +470,7 @@ func TestConcurrentProvisioning(t *testing.T) {
 				uniqueSuffix := fmt.Sprintf("%d-%d", time.Now().UnixNano(), idx)
 				community := &communities.Community{
 					DID:                    generateTestDID(uniqueSuffix),
-					Handle:                 fmt.Sprintf("%s.communities.test.local", sameName),
+					Handle:                 fmt.Sprintf("%s.community.test.local", sameName),
 					Name:                   sameName,
 					DisplayName:            "Concurrent Test",
 					Description:            "Testing concurrent creation",
@@ -530,7 +530,7 @@ func TestConcurrentProvisioning(t *testing.T) {
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		community := &communities.Community{
 			DID:                    generateTestDID(uniqueSuffix),
-			Handle:                 fmt.Sprintf("read-test-%s.communities.test.local", uniqueSuffix),
+			Handle:                 fmt.Sprintf("read-test-%s.community.test.local", uniqueSuffix),
 			Name:                   "read-test",
 			DisplayName:            "Read Test",
 			Description:            "Testing concurrent reads",
@@ -719,7 +719,7 @@ func TestTokenValidation(t *testing.T) {
 
 		community := &communities.Community{
 			DID:                    generateTestDID(uniqueSuffix),
-			Handle:                 fmt.Sprintf("token-test-%s.communities.test.local", uniqueSuffix),
+			Handle:                 fmt.Sprintf("token-test-%s.community.test.local", uniqueSuffix),
 			Name:                   "token-test",
 			DisplayName:            "Token Test",
 			Description:            "Testing token storage",
@@ -784,7 +784,7 @@ func TestTokenValidation(t *testing.T) {
 
 		community := &communities.Community{
 			DID:                    generateTestDID(uniqueSuffix),
-			Handle:                 fmt.Sprintf("empty-token-%s.communities.test.local", uniqueSuffix),
+			Handle:                 fmt.Sprintf("empty-token-%s.community.test.local", uniqueSuffix),
 			Name:                   "empty-token",
 			DisplayName:            "Empty Token Test",
 			Description:            "Testing empty token handling",
@@ -832,7 +832,7 @@ func TestTokenValidation(t *testing.T) {
 
 		community := &communities.Community{
 			DID:                    generateTestDID(uniqueSuffix),
-			Handle:                 fmt.Sprintf("encrypted-token-%s.communities.test.local", uniqueSuffix),
+			Handle:                 fmt.Sprintf("encrypted-token-%s.community.test.local", uniqueSuffix),
 			Name:                   "encrypted-token",
 			DisplayName:            "Encrypted Token Test",
 			Description:            "Testing token encryption",
