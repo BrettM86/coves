@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "procedure",
-      "description": "Update community profile",
+      "description": "Update community profile. Requires authentication and moderator/admin permissions.",
       "input": {
         "encoding": "application/json",
         "schema": {
@@ -70,7 +70,8 @@
             },
             "visibility": {
               "type": "string",
-              "enum": ["public", "unlisted", "private"],
+              "knownValues": ["public", "unlisted", "private"],
+              "maxLength": 64,
               "description": "Community visibility level"
             },
             "allowExternalDiscovery": {

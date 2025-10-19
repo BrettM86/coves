@@ -1,6 +1,0 @@
-{
-  "$type": "social.coves.actor.membership",
-  "community": "did:plc:examplecommunity123",
-  "reputation": 150,
-  "createdAt": "2024-01-15T10:30:00Z"
-}

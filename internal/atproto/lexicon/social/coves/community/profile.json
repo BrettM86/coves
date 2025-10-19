@@ -8,7 +8,7 @@
       "key": "literal:self",
       "record": {
         "type": "object",
-        "required": ["handle", "name", "createdAt", "createdBy", "hostedBy", "visibility"],
+        "required": ["handle", "name", "createdAt", "createdBy", "hostedBy", "visibility", "moderationType"],
         "properties": {
           "handle": {
             "type": "string",
@@ -63,8 +63,9 @@
           },
           "visibility": {
             "type": "string",
-            "enum": ["public", "unlisted", "private"],
+            "knownValues": ["public", "unlisted", "private"],
             "default": "public",
+            "maxLength": 64,
             "description": "Community visibility level"
           },
           "federation": {
@@ -74,8 +75,10 @@
           },
           "moderationType": {
             "type": "string",
-            "enum": ["moderator", "sortition"],
-            "description": "Type of moderation system"
+            "knownValues": ["moderator", "sortition"],
+            "default": "moderator",
+            "maxLength": 64,
+            "description": "Type of moderation system (moderator=traditional moderator team, sortition=community tribunal)"
           },
           "contentWarnings": {
             "type": "array",

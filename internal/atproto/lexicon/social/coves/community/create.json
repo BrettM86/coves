@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "procedure",
-      "description": "Create a new community",
+      "description": "Create a new community. Requires authentication.",
       "input": {
         "encoding": "application/json",
         "schema": {
@@ -66,8 +66,9 @@
             },
             "visibility": {
               "type": "string",
-              "enum": ["public", "unlisted", "private"],
+              "knownValues": ["public", "unlisted", "private"],
               "default": "public",
+              "maxLength": 64,
               "description": "Community visibility level"
             },
             "allowExternalDiscovery": {

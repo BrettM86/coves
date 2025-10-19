@@ -390,6 +390,31 @@ Communities can be co-owned by multiple entities (users, instances, DAOs) with d
 
 ## Technical Decisions Log
 
+### 2025-10-18: Moderator Lexicon Extensibility
+**Decision:** Use `knownValues` instead of `enum` for moderator roles and permissions in `social.coves.community.moderator` record schema
+
+**Rationale:**
+- Moderator records are immutable once published (atProto record semantics)
+- Closed `enum` values cannot be extended without breaking schema evolution rules
+- Using `knownValues` allows adding new roles/permissions in Beta Phase 2 without requiring V2 schema migration
+- Zero cost to fix during alpha planning; expensive to migrate once records exist in production
+
+**Changes Made:**
+- `role` field: Changed from `enum: ["moderator", "admin"]` to `knownValues: ["moderator", "admin"]` with `maxLength: 64`
+- `permissions` array items: Changed from closed enum to `knownValues` with `maxLength: 64`
+
+**Future Extensibility Examples:**
+- **New roles**: "owner" (full transfer rights), "trainee" (limited trial moderator), "emeritus" (honorary former moderator)
+- **New permissions**: "manage_bots", "manage_flairs", "manage_automoderator", "manage_federation", "pin_posts"
+- Can add these values during Phase 2 (Moderator Tiers & Permissions) without breaking existing moderator records
+
+**atProto Style Guide Reference:**
+Per [atproto#4245](https://github.com/bluesky-social/atproto/discussions/4245): "Enum sets are 'closed' and can not be updated or extended without breaking schema evolution rules. For this reason they should almost always be avoided. For strings, `knownValues` provides more flexible alternative."
+
+**Implementation Status:** ✅ Fixed in lexicon before alpha launch
+
+---
+
 ### 2025-10-11: Moderator Records Storage Location
 **Decision:** Store moderator records in community's repository (`at://community_did/social.coves.community.moderator/{tid}`), not user's repository
 

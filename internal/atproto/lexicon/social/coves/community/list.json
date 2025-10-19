@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "query",
-      "description": "List communities with various sorting options",
+      "description": "List communities with various sorting options. Authentication optional; viewer state will be included if authenticated.",
       "parameters": {
         "type": "params",
         "properties": {
@@ -20,8 +20,9 @@
           },
           "sort": {
             "type": "string",
-            "enum": ["popular", "active", "new", "alphabetical"],
+            "knownValues": ["popular", "active", "new", "alphabetical"],
             "default": "popular",
+            "maxLength": 64,
             "description": "Sorting method"
           },
           "category": {

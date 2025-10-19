@@ -22,7 +22,8 @@
           },
           "role": {
             "type": "string",
-            "enum": ["moderator", "admin"],
+            "knownValues": ["moderator", "admin"],
+            "maxLength": 64,
             "description": "Level of moderation privileges"
           },
           "permissions": {
@@ -30,7 +31,7 @@
             "description": "Specific permissions granted",
             "items": {
               "type": "string",
-              "enum": [
+              "knownValues": [
                 "remove_posts",
                 "remove_comments",
                 "ban_users",
@@ -38,7 +39,8 @@
                 "manage_wiki",
                 "manage_moderators",
                 "manage_settings"
-              ]
+              ],
+              "maxLength": 64
             }
           },
           "createdAt": {
