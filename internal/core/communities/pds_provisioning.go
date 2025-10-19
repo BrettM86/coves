@@ -15,7 +15,7 @@ import (
 // CommunityPDSAccount represents PDS account credentials for a community
 type CommunityPDSAccount struct {
 	DID            string // Community's DID (owns the repository)
-	Handle         string // Community's handle (e.g., gaming.communities.coves.social)
+	Handle         string // Community's handle (e.g., gaming.community.coves.social)
 	Email          string // System email for PDS account
 	Password       string // Cleartext password (MUST be encrypted before database storage)
 	AccessToken    string // JWT for making API calls as the community
@@ -67,13 +67,15 @@ func (p *PDSAccountProvisioner) ProvisionCommunityAccount(
 	}
 
 	// 1. Generate unique handle for the community
-	// Format: {name}.communities.{instance-domain}
-	// Example: "gaming.communities.coves.social"
-	handle := fmt.Sprintf("%s.communities.%s", strings.ToLower(communityName), p.instanceDomain)
+	// Format: {name}.community.{instance-domain}
+	// Example: "gaming.community.coves.social"
+	// NOTE: Using SINGULAR "community" to follow atProto lexicon conventions
+	// (all record types use singular: app.bsky.feed.post, app.bsky.graph.follow, etc.)
+	handle := fmt.Sprintf("%s.community.%s", strings.ToLower(communityName), p.instanceDomain)
 
 	// 2. Generate system email for PDS account management
 	// This email is used for account operations, not for user communication
-	email := fmt.Sprintf("community-%s@communities.%s", strings.ToLower(communityName), p.instanceDomain)
+	email := fmt.Sprintf("community-%s@community.%s", strings.ToLower(communityName), p.instanceDomain)
 
 	// 3. Generate secure random password (32 characters)
 	// This password is never shown to users - it's for Coves to authenticate as the community
@@ -116,8 +118,8 @@ func (p *PDSAccountProvisioner) ProvisionCommunityAccount(
 	// The repository layer handles encryption using pgp_sym_encrypt()
 	return &CommunityPDSAccount{
 		DID:            output.Did,        // The community's DID (PDS-generated)
-		Handle:         output.Handle,     // e.g., gaming.communities.coves.social
-		Email:          email,             // community-gaming@communities.coves.social
+		Handle:         output.Handle,     // e.g., gaming.community.coves.social
+		Email:          email,             // community-gaming@community.coves.social
 		Password:       password,          // Cleartext - will be encrypted by repository
 		AccessToken:    output.AccessJwt,  // JWT for making API calls
 		RefreshToken:   output.RefreshJwt, // For refreshing sessions

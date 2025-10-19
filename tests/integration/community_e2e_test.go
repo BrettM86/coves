@@ -158,7 +158,7 @@ func TestCommunity_E2E(t *testing.T) {
 	// ====================================================================================
 	t.Run("1. Write-Forward to PDS", func(t *testing.T) {
 		// Use shorter names to avoid "Handle too long" errors
-		// atProto handles max: 63 chars, format: name.communities.coves.social
+		// atProto handles max: 63 chars, format: name.community.coves.social
 		communityName := fmt.Sprintf("e2e-%d", time.Now().Unix())
 
 		createReq := communities.CreateCommunityRequest{
@@ -190,9 +190,9 @@ func TestCommunity_E2E(t *testing.T) {
 
 		// V2: Verify PDS account was created for the community
 		t.Logf("\n🔍 V2: Verifying community PDS account exists...")
-		expectedHandle := fmt.Sprintf("%s.communities.%s", communityName, instanceDomain)
+		expectedHandle := fmt.Sprintf("%s.community.%s", communityName, instanceDomain)
 		t.Logf("   Expected handle: %s", expectedHandle)
-		t.Logf("   (Using subdomain: *.communities.%s)", instanceDomain)
+		t.Logf("   (Using subdomain: *.community.%s)", instanceDomain)
 
 		accountDID, accountHandle, err := queryPDSAccount(pdsURL, expectedHandle)
 		if err != nil {

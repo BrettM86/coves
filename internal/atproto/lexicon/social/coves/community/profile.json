@@ -14,7 +14,7 @@
             "type": "string",
             "maxLength": 253,
             "format": "handle",
-            "description": "atProto handle (e.g., gaming.communities.coves.social) - DNS-resolvable name for this community"
+            "description": "atProto handle (e.g., gaming.community.coves.social) - DNS-resolvable name for this community"
           },
           "name": {
             "type": "string",

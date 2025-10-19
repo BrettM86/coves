@@ -312,7 +312,7 @@ func (c *CommunityEventConsumer) verifyHostedByClaim(ctx context.Context, handle
 	// Extract domain from community handle
 	// Handle format examples:
 	//   - "!gaming@coves.social" → domain: "coves.social"
-	//   - "gaming.communities.coves.social" → domain: "coves.social"
+	//   - "gaming.community.coves.social" → domain: "coves.social"
 	handleDomain := extractDomainFromHandle(handle)
 	if handleDomain == "" {
 		return fmt.Errorf("failed to extract domain from handle: %s", handle)
@@ -430,11 +430,11 @@ func (c *CommunityEventConsumer) cacheVerificationResult(did string, valid bool,
 // extractDomainFromHandle extracts the registrable domain from a community handle
 // Handles both formats:
 //   - Bluesky-style: "!gaming@coves.social" → "coves.social"
-//   - DNS-style: "gaming.communities.coves.social" → "coves.social"
+//   - DNS-style: "gaming.community.coves.social" → "coves.social"
 //
 // Uses golang.org/x/net/publicsuffix to correctly handle multi-part TLDs:
-//   - "gaming.communities.coves.co.uk" → "coves.co.uk" (not "co.uk")
-//   - "gaming.communities.example.com.au" → "example.com.au" (not "com.au")
+//   - "gaming.community.coves.co.uk" → "coves.co.uk" (not "co.uk")
+//   - "gaming.community.example.com.au" → "example.com.au" (not "com.au")
 func extractDomainFromHandle(handle string) string {
 	// Remove leading ! if present
 	handle = strings.TrimPrefix(handle, "!")
@@ -456,7 +456,7 @@ func extractDomainFromHandle(handle string) string {
 		return ""
 	}
 
-	// For DNS-style handles (e.g., "gaming.communities.coves.social")
+	// For DNS-style handles (e.g., "gaming.community.coves.social")
 	// Extract the registrable domain (eTLD+1) using publicsuffix
 	// This correctly handles multi-part TLDs like .co.uk, .com.au, etc.
 	registrable, err := publicsuffix.EffectiveTLDPlusOne(handle)

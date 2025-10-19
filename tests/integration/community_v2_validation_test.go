@@ -34,7 +34,7 @@ func TestCommunityConsumer_V2RKeyValidation(t *testing.T) {
 				CID:        "bafyreigaming123",
 				Record: map[string]interface{}{
 					"$type":      "social.coves.community.profile",
-					"handle":     "gaming.communities.coves.social",
+					"handle":     "gaming.community.coves.social",
 					"name":       "gaming",
 					"createdBy":  "did:plc:user123",
 					"hostedBy":   "did:web:coves.social",
@@ -83,7 +83,7 @@ func TestCommunityConsumer_V2RKeyValidation(t *testing.T) {
 				CID:        "bafyreiv1community",
 				Record: map[string]interface{}{
 					"$type":      "social.coves.community.profile",
-					"handle":     "v1community.communities.coves.social",
+					"handle":     "v1community.community.coves.social",
 					"name":       "v1community",
 					"createdBy":  "did:plc:user456",
 					"hostedBy":   "did:web:coves.social",
@@ -129,7 +129,7 @@ func TestCommunityConsumer_V2RKeyValidation(t *testing.T) {
 				CID:        "bafyreicustom",
 				Record: map[string]interface{}{
 					"$type":      "social.coves.community.profile",
-					"handle":     "custom.communities.coves.social",
+					"handle":     "custom.community.coves.social",
 					"name":       "custom",
 					"createdBy":  "did:plc:user789",
 					"hostedBy":   "did:web:coves.social",
@@ -168,7 +168,7 @@ func TestCommunityConsumer_V2RKeyValidation(t *testing.T) {
 				CID:        "bafyreiupdate1",
 				Record: map[string]interface{}{
 					"$type":      "social.coves.community.profile",
-					"handle":     "updatetest.communities.coves.social",
+					"handle":     "updatetest.community.coves.social",
 					"name":       "updatetest",
 					"createdBy":  "did:plc:userUpdate",
 					"hostedBy":   "did:web:coves.social",
@@ -199,7 +199,7 @@ func TestCommunityConsumer_V2RKeyValidation(t *testing.T) {
 				CID:        "bafyreiupdate2",
 				Record: map[string]interface{}{
 					"$type":       "social.coves.community.profile",
-					"handle":      "updatetest.communities.coves.social",
+					"handle":      "updatetest.community.coves.social",
 					"name":        "updatetest",
 					"displayName": "Updated Name",
 					"createdBy":   "did:plc:userUpdate",
@@ -258,7 +258,7 @@ func TestCommunityConsumer_HandleField(t *testing.T) {
 				CID:        "bafyreihandle",
 				Record: map[string]interface{}{
 					"$type":      "social.coves.community.profile",
-					"handle":     "gamingtest.communities.coves.social", // atProto handle (DNS-resolvable)
+					"handle":     "gamingtest.community.coves.social", // atProto handle (DNS-resolvable)
 					"name":       "gamingtest",                          // Short name for !mentions
 					"createdBy":  "did:plc:user123",
 					"hostedBy":   "did:web:coves.social",
@@ -284,8 +284,8 @@ func TestCommunityConsumer_HandleField(t *testing.T) {
 		}
 
 		// Verify the atProto handle is stored
-		if community.Handle != "gamingtest.communities.coves.social" {
-			t.Errorf("Expected handle gamingtest.communities.coves.social, got %s", community.Handle)
+		if community.Handle != "gamingtest.community.coves.social" {
+			t.Errorf("Expected handle gamingtest.community.coves.social, got %s", community.Handle)
 		}
 
 		// Note: The DID is the authoritative identifier for atProto resolution

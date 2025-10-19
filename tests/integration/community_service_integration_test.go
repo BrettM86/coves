@@ -55,7 +55,7 @@ func TestCommunityService_CreateWithRealPDS(t *testing.T) {
 
 	t.Run("creates community with real PDS provisioning", func(t *testing.T) {
 		// Create provisioner and service (production code path)
-		// Use coves.social domain (configured in PDS_SERVICE_HANDLE_DOMAINS as .communities.coves.social)
+		// Use coves.social domain (configured in PDS_SERVICE_HANDLE_DOMAINS as .community.coves.social)
 		provisioner := communities.NewPDSAccountProvisioner("coves.social", pdsURL)
 		service := communities.NewCommunityService(
 			repo,
@@ -114,7 +114,7 @@ func TestCommunityService_CreateWithRealPDS(t *testing.T) {
 		t.Logf("✅ Real DID generated: %s", community.DID)
 
 		// Verify handle format
-		expectedHandle := fmt.Sprintf("%s.communities.coves.social", uniqueName)
+		expectedHandle := fmt.Sprintf("%s.community.coves.social", uniqueName)
 		if community.Handle != expectedHandle {
 			t.Errorf("Expected handle %s, got %s", expectedHandle, community.Handle)
 		}

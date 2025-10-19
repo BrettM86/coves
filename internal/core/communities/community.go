@@ -1,6 +1,8 @@
 package communities
 
 import (
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -21,13 +23,14 @@ type Community struct {
 	HostedByDID            string    `json:"hostedByDid" db:"hosted_by_did"`
 	PDSEmail               string    `json:"-" db:"pds_email"`
 	PDSPassword            string    `json:"-" db:"pds_password_encrypted"`
-	Name                   string    `json:"name" db:"name"`
+	Name                   string    `json:"name" db:"name"`                        // Short name (e.g., "gardening")
+	DisplayHandle          string    `json:"displayHandle,omitempty" db:"-"`        // UI hint: !gardening@coves.social (computed, not stored)
 	RecordCID              string    `json:"recordCid,omitempty" db:"record_cid"`
 	FederatedID            string    `json:"federatedId,omitempty" db:"federated_id"`
 	PDSAccessToken         string    `json:"-" db:"pds_access_token"`
 	SigningKeyPEM          string    `json:"-" db:"signing_key_encrypted"`
 	ModerationType         string    `json:"moderationType,omitempty" db:"moderation_type"`
-	Handle                 string    `json:"handle" db:"handle"`
+	Handle                 string    `json:"handle" db:"handle"`                    // Canonical atProto handle (e.g., gardening.community.coves.social)
 	PDSRefreshToken        string    `json:"-" db:"pds_refresh_token"`
 	Visibility             string    `json:"visibility" db:"visibility"`
 	RotationKeyPEM         string    `json:"-" db:"rotation_key_encrypted"`
@@ -134,4 +137,30 @@ type SearchCommunitiesRequest struct {
 	Visibility string `json:"visibility,omitempty"`
 	Limit      int    `json:"limit"`
 	Offset     int    `json:"offset"`
+}
+
+// GetDisplayHandle returns the user-facing display format for a community handle
+// Following Bluesky's pattern where client adds @ prefix for users, but for communities we use ! prefix
+// Example: "gardening.community.coves.social" -> "!gardening@coves.social"
+//
+// Handles various domain formats correctly:
+// - "gaming.community.coves.social" -> "!gaming@coves.social"
+// - "gaming.community.coves.co.uk" -> "!gaming@coves.co.uk"
+// - "test.community.dev.coves.social" -> "!test@dev.coves.social"
+func (c *Community) GetDisplayHandle() string {
+	// Find the ".community." substring in the handle
+	communityIndex := strings.Index(c.Handle, ".community.")
+	if communityIndex == -1 {
+		// Fallback if format doesn't match expected pattern
+		return c.Handle
+	}
+
+	// Extract name (everything before ".community.")
+	name := c.Handle[:communityIndex]
+
+	// Extract instance domain (everything after ".community.")
+	// len(".community.") = 11
+	instanceDomain := c.Handle[communityIndex+11:]
+
+	return fmt.Sprintf("!%s@%s", name, instanceDomain)
 }

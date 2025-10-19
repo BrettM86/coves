@@ -41,7 +41,7 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 				RKey:       "self",
 				CID:        "bafy123abc",
 				Record: map[string]interface{}{
-					"handle":      "gaming.communities.coves.social", // coves.social handle
+					"handle":      "gaming.community.coves.social", // coves.social handle
 					"name":        "gaming",
 					"displayName": "Nintendo Gaming",
 					"description": "Fake Nintendo community",
@@ -97,7 +97,7 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 				RKey:       "self",
 				CID:        "bafy123abc",
 				Record: map[string]interface{}{
-					"handle":      "gaming.communities.coves.social", // coves.social handle
+					"handle":      "gaming.community.coves.social", // coves.social handle
 					"name":        "gaming",
 					"displayName": "Gaming Community",
 					"description": "Legitimate coves.social community",
@@ -149,7 +149,7 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 				RKey:       "self",
 				CID:        "bafy123abc",
 				Record: map[string]interface{}{
-					"handle":      "gaming.communities.coves.social",
+					"handle":      "gaming.community.coves.social",
 					"name":        "gaming",
 					"displayName": "Test Community",
 					"description": "Test",
@@ -193,7 +193,7 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 				RKey:       "self",
 				CID:        "bafy123abc",
 				Record: map[string]interface{}{
-					"handle":      "gaming.communities.example.com",
+					"handle":      "gaming.community.example.com",
 					"name":        "gaming",
 					"displayName": "Test",
 					"description": "Test",
@@ -245,7 +245,7 @@ func TestExtractDomainFromHandle(t *testing.T) {
 	}{
 		{
 			name:          "DNS-style handle with subdomain",
-			handle:        "gaming.communities.coves.social",
+			handle:        "gaming.community.coves.social",
 			hostedByDID:   "did:web:coves.social",
 			shouldSucceed: true,
 		},
@@ -257,44 +257,44 @@ func TestExtractDomainFromHandle(t *testing.T) {
 		},
 		{
 			name:          "Multi-part subdomain",
-			handle:        "gaming.test.communities.example.com",
+			handle:        "gaming.test.community.example.com",
 			hostedByDID:   "did:web:example.com",
 			shouldSucceed: true,
 		},
 		{
 			name:          "Mismatched domain",
-			handle:        "gaming.communities.coves.social",
+			handle:        "gaming.community.coves.social",
 			hostedByDID:   "did:web:example.com",
 			shouldSucceed: false,
 		},
 		// CRITICAL: Multi-part TLD tests (PR review feedback)
 		{
 			name:          "Multi-part TLD: .co.uk",
-			handle:        "gaming.communities.coves.co.uk",
+			handle:        "gaming.community.coves.co.uk",
 			hostedByDID:   "did:web:coves.co.uk",
 			shouldSucceed: true,
 		},
 		{
 			name:          "Multi-part TLD: .com.au",
-			handle:        "gaming.communities.example.com.au",
+			handle:        "gaming.community.example.com.au",
 			hostedByDID:   "did:web:example.com.au",
 			shouldSucceed: true,
 		},
 		{
 			name:          "Multi-part TLD: Reject incorrect .co.uk extraction",
-			handle:        "gaming.communities.coves.co.uk",
+			handle:        "gaming.community.coves.co.uk",
 			hostedByDID:   "did:web:co.uk", // Wrong! Should be coves.co.uk
 			shouldSucceed: false,
 		},
 		{
 			name:          "Multi-part TLD: .org.uk",
-			handle:        "gaming.communities.myinstance.org.uk",
+			handle:        "gaming.community.myinstance.org.uk",
 			hostedByDID:   "did:web:myinstance.org.uk",
 			shouldSucceed: true,
 		},
 		{
 			name:          "Multi-part TLD: .ac.uk",
-			handle:        "gaming.communities.university.ac.uk",
+			handle:        "gaming.community.university.ac.uk",
 			hostedByDID:   "did:web:university.ac.uk",
 			shouldSucceed: true,
 		},

@@ -16,9 +16,15 @@ import (
 	"time"
 )
 
-// Community handle validation regex (DNS-valid handle: name.communities.instance.com)
+// Community handle validation regex (DNS-valid handle: name.community.instance.com)
 // Matches standard DNS hostname format (RFC 1035)
 var communityHandleRegex = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
+
+// DNS label validation (RFC 1035: 1-63 chars, alphanumeric + hyphen, can't start/end with hyphen)
+var dnsLabelRegex = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
+
+// Domain validation (simplified - checks for valid DNS hostname structure)
+var domainRegex = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
 
 type communityService struct {
 	// Interfaces and pointers first (better alignment)
@@ -125,7 +131,7 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 	// Build community profile record
 	profile := map[string]interface{}{
 		"$type":      "social.coves.community.profile",
-		"handle":     pdsAccount.Handle, // atProto handle (e.g., gaming.communities.coves.social)
+		"handle":     pdsAccount.Handle, // atProto handle (e.g., gaming.community.coves.social)
 		"name":       req.Name,          // Short name for !mentions (e.g., "gaming")
 		"visibility": req.Visibility,
 		"hostedBy":   s.instanceDID, // V2: Instance hosts, community owns
@@ -181,7 +187,7 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 	// Build Community object with PDS credentials AND cryptographic keys
 	community := &Community{
 		DID:                    pdsAccount.DID,    // Community's DID (owns the repo!)
-		Handle:                 pdsAccount.Handle, // atProto handle (e.g., gaming.communities.coves.social)
+		Handle:                 pdsAccount.Handle, // atProto handle (e.g., gaming.community.coves.social)
 		Name:                   req.Name,
 		DisplayName:            req.DisplayName,
 		Description:            req.Description,
@@ -824,37 +830,147 @@ func (s *communityService) ValidateHandle(handle string) error {
 	return nil
 }
 
-// ResolveCommunityIdentifier converts a handle or DID to a DID
+// ResolveCommunityIdentifier converts a community identifier to a DID
+// Following Bluesky's pattern with Coves extensions:
+//
+// Accepts (like Bluesky's at-identifier):
+//   1. DID: did:plc:abc123 (pass through)
+//   2. Canonical handle: gardening.community.coves.social (atProto standard)
+//   3. At-identifier: @gardening.community.coves.social (strip @ prefix)
+//
+// Coves-specific extensions:
+//   4. Scoped format: !gardening@coves.social (parse and resolve)
+//
+// Returns: DID string
 func (s *communityService) ResolveCommunityIdentifier(ctx context.Context, identifier string) (string, error) {
+	identifier = strings.TrimSpace(identifier)
+
 	if identifier == "" {
 		return "", ErrInvalidInput
 	}
 
-	// If it's already a DID, verify the community exists
+	// 1. DID - verify it exists and return (Bluesky standard)
 	if strings.HasPrefix(identifier, "did:") {
 		_, err := s.repo.GetByDID(ctx, identifier)
 		if err != nil {
 			if IsNotFound(err) {
-				return "", fmt.Errorf("community not found: %w", err)
+				return "", fmt.Errorf("community not found for DID %s: %w", identifier, err)
 			}
-			return "", fmt.Errorf("failed to verify community DID: %w", err)
+			return "", fmt.Errorf("failed to verify community DID %s: %w", identifier, err)
 		}
 		return identifier, nil
 	}
 
-	// If it's a handle, look it up in AppView DB
+	// 2. Scoped format: !name@instance (Coves-specific)
 	if strings.HasPrefix(identifier, "!") {
-		community, err := s.repo.GetByHandle(ctx, identifier)
+		return s.resolveScopedIdentifier(ctx, identifier)
+	}
+
+	// 3. At-identifier format: @handle (Bluesky standard - strip @ prefix)
+	if strings.HasPrefix(identifier, "@") {
+		identifier = strings.TrimPrefix(identifier, "@")
+	}
+
+	// 4. Canonical handle: name.community.instance.com (Bluesky standard)
+	if strings.Contains(identifier, ".") {
+		community, err := s.repo.GetByHandle(ctx, strings.ToLower(identifier))
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("community not found for handle %s: %w", identifier, err)
 		}
 		return community.DID, nil
 	}
 
-	return "", NewValidationError("identifier", "must be a DID or handle")
+	return "", NewValidationError("identifier", "must be a DID, handle, or scoped identifier (!name@instance)")
+}
+
+// resolveScopedIdentifier handles Coves-specific !name@instance format
+// Formats accepted:
+//   !gardening@coves.social  -> gardening.community.coves.social
+func (s *communityService) resolveScopedIdentifier(ctx context.Context, scoped string) (string, error) {
+	// Remove ! prefix
+	scoped = strings.TrimPrefix(scoped, "!")
+
+	var name string
+	var instanceDomain string
+
+	// Parse !name@instance
+	if !strings.Contains(scoped, "@") {
+		return "", NewValidationError("identifier", "scoped identifier must include @ symbol (!name@instance)")
+	}
+
+	parts := strings.SplitN(scoped, "@", 2)
+	name = strings.TrimSpace(parts[0])
+	instanceDomain = strings.TrimSpace(parts[1])
+
+	// Validate name format
+	if name == "" {
+		return "", NewValidationError("identifier", "community name cannot be empty")
+	}
+
+	// Validate name is a valid DNS label (RFC 1035)
+	// Must be 1-63 chars, alphanumeric + hyphen, can't start/end with hyphen
+	if !isValidDNSLabel(name) {
+		return "", NewValidationError("identifier", "community name must be valid DNS label (alphanumeric and hyphens only, 1-63 chars, cannot start or end with hyphen)")
+	}
+
+	// Validate instance domain format
+	if !isValidDomain(instanceDomain) {
+		return "", NewValidationError("identifier", "invalid instance domain format")
+	}
+
+	// Normalize domain to lowercase (DNS is case-insensitive)
+	// This fixes the bug where !gardening@Coves.social would fail lookup
+	instanceDomain = strings.ToLower(instanceDomain)
+
+	// Validate the instance matches this server
+	if !s.isLocalInstance(instanceDomain) {
+		return "", NewValidationError("identifier",
+			fmt.Sprintf("community is not hosted on this instance (expected @%s)", s.instanceDomain))
+	}
+
+	// Construct canonical handle: {name}.community.{instanceDomain}
+	// Both name and instanceDomain are normalized to lowercase for consistent DB lookup
+	canonicalHandle := fmt.Sprintf("%s.community.%s",
+		strings.ToLower(name),
+		instanceDomain) // Already normalized to lowercase on line 923
+
+	// Look up by canonical handle
+	community, err := s.repo.GetByHandle(ctx, canonicalHandle)
+	if err != nil {
+		return "", fmt.Errorf("community not found for scoped identifier !%s@%s: %w", name, instanceDomain, err)
+	}
+
+	return community.DID, nil
+}
+
+// isLocalInstance checks if the provided domain matches this instance
+func (s *communityService) isLocalInstance(domain string) bool {
+	// Normalize both domains
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	instanceDomain := strings.ToLower(s.instanceDomain)
+
+	// Direct match
+	return domain == instanceDomain
 }
 
 // Validation helpers
+
+// isValidDNSLabel validates that a string is a valid DNS label per RFC 1035
+// - 1-63 characters
+// - Alphanumeric and hyphens only
+// - Cannot start or end with hyphen
+func isValidDNSLabel(label string) bool {
+	return dnsLabelRegex.MatchString(label)
+}
+
+// isValidDomain validates that a string is a valid domain name
+// Simplified validation - checks basic DNS hostname structure
+func isValidDomain(domain string) bool {
+	if domain == "" || len(domain) > 253 {
+		return false
+	}
+	return domainRegex.MatchString(domain)
+}
 
 func (s *communityService) validateCreateRequest(req CreateCommunityRequest) error {
 	if req.Name == "" {
@@ -862,7 +978,7 @@ func (s *communityService) validateCreateRequest(req CreateCommunityRequest) err
 	}
 
 	// DNS label limit: 63 characters per label
-	// Community handle format: {name}.communities.{instanceDomain}
+	// Community handle format: {name}.community.{instanceDomain}
 	// The first label is just req.Name, so it must be <= 63 chars
 	if len(req.Name) > 63 {
 		return NewValidationError("name", "must be 63 characters or less (DNS label limit)")
