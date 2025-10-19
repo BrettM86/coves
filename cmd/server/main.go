@@ -148,12 +148,9 @@ func main() {
 	// We cannot allow arbitrary domains to prevent impersonation attacks
 	// Example attack: !leagueoflegends@riotgames.com on a non-Riot instance
 	//
-	// TODO (Security - V2.1): Implement did:web domain verification
-	// Currently, any self-hoster can set INSTANCE_DID=did:web:nintendo.com without
-	// actually owning nintendo.com. This allows domain impersonation attacks.
-	// Solution: Verify domain ownership by fetching https://domain/.well-known/did.json
-	// and ensuring it matches the claimed DID. See: https://atproto.com/specs/did-web
-	// Alternatively, switch to did:plc for instance DIDs (cryptographically unique).
+	// SECURITY: did:web domain verification is implemented in the Jetstream consumer
+	// See: internal/atproto/jetstream/community_consumer.go - verifyHostedByClaim()
+	// Communities with mismatched hostedBy domains are rejected during indexing
 	var instanceDomain string
 	if strings.HasPrefix(instanceDID, "did:web:") {
 		// Extract domain from did:web (this is the authoritative source)
@@ -229,7 +226,14 @@ func main() {
 		communityJetstreamURL = "ws://localhost:6008/subscribe?wantedCollections=social.coves.community.profile&wantedCollections=social.coves.community.subscription"
 	}
 
-	communityEventConsumer := jetstream.NewCommunityEventConsumer(communityRepo)
+	// Initialize community event consumer with did:web verification
+	skipDIDWebVerification := os.Getenv("SKIP_DID_WEB_VERIFICATION") == "true"
+	if skipDIDWebVerification {
+		log.Println("⚠️  WARNING: did:web domain verification is DISABLED (dev mode)")
+		log.Println("   Set SKIP_DID_WEB_VERIFICATION=false for production")
+	}
+
+	communityEventConsumer := jetstream.NewCommunityEventConsumer(communityRepo, instanceDID, skipDIDWebVerification)
 	communityJetstreamConnector := jetstream.NewCommunityJetstreamConnector(communityEventConsumer, communityJetstreamURL)
 
 	go func() {
