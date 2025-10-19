@@ -19,7 +19,8 @@ func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
 	}()
 
 	repo := postgres.NewCommunityRepository(db)
-	consumer := jetstream.NewCommunityEventConsumer(repo)
+	// Skip verification in tests
+	consumer := jetstream.NewCommunityEventConsumer(repo, "did:web:coves.local", true)
 	ctx := context.Background()
 
 	t.Run("creates community from firehose event", func(t *testing.T) {
@@ -215,7 +216,8 @@ func TestCommunityConsumer_HandleSubscription(t *testing.T) {
 	}()
 
 	repo := postgres.NewCommunityRepository(db)
-	consumer := jetstream.NewCommunityEventConsumer(repo)
+	// Skip verification in tests
+	consumer := jetstream.NewCommunityEventConsumer(repo, "did:web:coves.local", true)
 	ctx := context.Background()
 
 	t.Run("creates subscription from event", func(t *testing.T) {
@@ -299,7 +301,8 @@ func TestCommunityConsumer_IgnoresNonCommunityEvents(t *testing.T) {
 	}()
 
 	repo := postgres.NewCommunityRepository(db)
-	consumer := jetstream.NewCommunityEventConsumer(repo)
+	// Skip verification in tests
+	consumer := jetstream.NewCommunityEventConsumer(repo, "did:web:coves.local", true)
 	ctx := context.Background()
 
 	t.Run("ignores identity events", func(t *testing.T) {

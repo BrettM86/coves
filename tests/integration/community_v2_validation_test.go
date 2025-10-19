@@ -19,7 +19,8 @@ func TestCommunityConsumer_V2RKeyValidation(t *testing.T) {
 	}()
 
 	repo := postgres.NewCommunityRepository(db)
-	consumer := jetstream.NewCommunityEventConsumer(repo)
+	// Skip verification in tests
+	consumer := jetstream.NewCommunityEventConsumer(repo, "did:web:coves.local", true)
 	ctx := context.Background()
 
 	t.Run("accepts V2 community with rkey=self", func(t *testing.T) {
@@ -241,7 +242,8 @@ func TestCommunityConsumer_HandleField(t *testing.T) {
 	}()
 
 	repo := postgres.NewCommunityRepository(db)
-	consumer := jetstream.NewCommunityEventConsumer(repo)
+	// Skip verification in tests
+	consumer := jetstream.NewCommunityEventConsumer(repo, "did:web:coves.local", true)
 	ctx := context.Background()
 
 	t.Run("indexes community with atProto handle", func(t *testing.T) {
