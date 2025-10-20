@@ -11,7 +11,7 @@
           "postType": {
             "type": "string",
             "enum": ["text", "article", "image", "video", "microblog"],
-            "description": "Filter by a single post type"
+            "description": "Filter by a single post type (computed from embed structure)"
           },
           "postTypes": {
             "type": "array",
@@ -19,7 +19,7 @@
               "type": "string",
               "enum": ["text", "article", "image", "video", "microblog"]
             },
-            "description": "Filter by multiple post types"
+            "description": "Filter by multiple post types (computed from embed structure)"
           },
           "limit": {
             "type": "integer",
