@@ -12,6 +12,98 @@ Miscellaneous platform improvements, bug fixes, and technical debt that don't fi
 
 ## 🟡 P1: Important (Alpha Blockers)
 
+### at-identifier Handle Resolution in Endpoints
+**Added:** 2025-10-18 | **Effort:** 2-3 hours | **Priority:** ALPHA BLOCKER
+
+**Problem:**
+Current implementation rejects handles in endpoints that declare `"format": "at-identifier"` in their lexicon schemas, violating atProto best practices and breaking legitimate client usage.
+
+**Impact:**
+- ❌ Post creation fails when client sends community handle (e.g., `!gardening.communities.coves.social`)
+- ❌ Subscribe/unsubscribe endpoints reject handles despite lexicon declaring `at-identifier`
+- ❌ Block endpoints use `"format": "did"` but should use `at-identifier` for consistency
+- 🔴 **P0 Issue:** API contract violation - clients following the schema are rejected
+
+**Root Cause:**
+Handlers and services validate `strings.HasPrefix(req.Community, "did:")` instead of calling `ResolveCommunityIdentifier()`.
+
+**Affected Endpoints:**
+1. **Post Creation** - [create.go:54](../internal/api/handlers/post/create.go#L54), [service.go:51](../internal/core/posts/service.go#L51)
+   - Lexicon declares `at-identifier`: [post/create.json:16](../internal/atproto/lexicon/social/coves/post/create.json#L16)
+
+2. **Subscribe** - [subscribe.go:52](../internal/api/handlers/community/subscribe.go#L52)
+   - Lexicon declares `at-identifier`: [subscribe.json:16](../internal/atproto/lexicon/social/coves/community/subscribe.json#L16)
+
+3. **Unsubscribe** - [subscribe.go:120](../internal/api/handlers/community/subscribe.go#L120)
+   - Lexicon declares `at-identifier`: [unsubscribe.json:16](../internal/atproto/lexicon/social/coves/community/unsubscribe.json#L16)
+
+4. **Block/Unblock** - [block.go:58](../internal/api/handlers/community/block.go#L58), [block.go:132](../internal/api/handlers/community/block.go#L132)
+   - Lexicon declares `"format": "did"`: [block.json:15](../internal/atproto/lexicon/social/coves/community/block.json#L15)
+   - Should be changed to `at-identifier` for consistency and best practice
+
+**atProto Best Practice (from docs):**
+- ✅ API endpoints should accept both DIDs and handles via `at-identifier` format
+- ✅ Resolve handles to DIDs immediately at API boundary
+- ✅ Use DIDs internally for all business logic and storage
+- ✅ Handles are weak refs (changeable), DIDs are strong refs (permanent)
+- ⚠️ Bidirectional verification required (already handled by `identity.CachingResolver`)
+
+**Solution:**
+Replace direct DID validation with handle resolution using existing `ResolveCommunityIdentifier()`:
+
+```go
+// BEFORE (wrong) ❌
+if !strings.HasPrefix(req.Community, "did:") {
+    return error
+}
+
+// AFTER (correct) ✅
+communityDID, err := h.communityService.ResolveCommunityIdentifier(ctx, req.Community)
+if err != nil {
+    if communities.IsNotFound(err) {
+        writeError(w, http.StatusNotFound, "CommunityNotFound", "Community not found")
+        return
+    }
+    writeError(w, http.StatusBadRequest, "InvalidRequest", err.Error())
+    return
+}
+// Now use communityDID (guaranteed to be a DID)
+```
+
+**Implementation Plan:**
+1. ✅ **Phase 1 (Alpha Blocker):** Fix post creation endpoint
+   - Update handler validation in `internal/api/handlers/post/create.go`
+   - Update service validation in `internal/core/posts/service.go`
+   - Add integration tests for handle resolution in post creation
+
+2. 📋 **Phase 2 (Beta):** Fix subscription endpoints
+   - Update subscribe/unsubscribe handlers
+   - Add tests for handle resolution in subscriptions
+
+3. 📋 **Phase 3 (Beta):** Fix block endpoints
+   - Update lexicon from `"format": "did"` → `"format": "at-identifier"`
+   - Update block/unblock handlers
+   - Add tests for handle resolution in blocking
+
+**Files to Modify (Phase 1 - Post Creation):**
+- `internal/api/handlers/post/create.go` - Remove DID validation, add handle resolution
+- `internal/core/posts/service.go` - Remove DID validation, add handle resolution
+- `internal/core/posts/interfaces.go` - Add `CommunityService` dependency
+- `cmd/server/main.go` - Pass community service to post service constructor
+- `tests/integration/post_creation_test.go` - Add handle resolution test cases
+
+**Existing Infrastructure:**
+✅ `ResolveCommunityIdentifier()` already implemented at [service.go:843](../internal/core/communities/service.go#L843)
+✅ `identity.CachingResolver` handles bidirectional verification and caching
+✅ Supports both handle (`!name.communities.instance.com`) and DID formats
+
+**Current Status:**
+- ⚠️ **BLOCKING POST CREATION PR**: Identified as P0 issue in code review
+- 📋 Phase 1 (post creation) - To be implemented immediately
+- 📋 Phase 2-3 (other endpoints) - Deferred to Beta
+
+---
+
 ### did:web Domain Verification & hostedByDID Auto-Population
 **Added:** 2025-10-11 | **Updated:** 2025-10-16 | **Effort:** 2-3 days | **Priority:** ALPHA BLOCKER
 

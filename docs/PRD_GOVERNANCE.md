@@ -18,7 +18,7 @@ The governance system must balance three competing needs:
 **Current State (2025-10-15):**
 - Communities own their own atProto repositories (V2 architecture)
 - Instance holds PDS credentials for infrastructure management
-- Basic authorization exists: only `createdBy` user can update communities
+- Basic authorization exists: only `createdBy` user can update communities (Admins too?)
 - No moderator management system exists yet
 
 **Note:** Moderator management and advanced governance are **post-alpha** (Beta Phase 1) work. Alpha focuses on basic community CRUD operations.
@@ -28,12 +28,6 @@ The governance system must balance three competing needs:
 2. **Community lifecycle:** No way to transfer ownership or add co-managers
 3. **Scaling moderation:** Single-owner model doesn't scale to large communities
 4. **User expectations:** Forum users expect moderator teams, not single-admin models
-
-**User Stories:**
-- As a **self-hosted instance owner**, I want to create communities and assign moderators so I don't have to manage everything myself
-- As a **community creator**, I want to add trusted moderators to help manage the community
-- As a **moderator**, I want clear permissions on what I can/cannot do
-- As an **instance admin**, I need emergency moderation powers for compliance/safety
 
 ## Architecture Evolution
 
@@ -62,45 +56,6 @@ Three-tier permission model with clear role hierarchy:
    - Should NOT be used for day-to-day community management
    - Authority derived from instance DID matching `hostedBy`
 
-**Database Schema:**
-```
-community_moderators
-- id (UUID, primary key)
-- community_did (references communities.did)
-- moderator_did (user DID)
-- role (enum: 'creator', 'moderator')
-- added_by (DID of user who granted role)
-- added_at (timestamp)
-- UNIQUE(community_did, moderator_did)
-```
-
-**Authorization Checks:**
-- **Update community profile:** Creator OR Moderator
-- **Add/remove moderators:** Creator only
-- **Delete community:** Creator only
-- **Transfer creator role:** Creator only
-- **Instance moderation:** Instance admin only (emergency use)
-
-**Implementation Approach:**
-- Add `community_moderators` table to schema
-- Create authorization middleware for XRPC endpoints
-- Update service layer to check permissions before operations
-- Store moderator list in both AppView DB and optionally in atProto repository
-
-**Benefits:**
-- ✅ Familiar to forum users (creator/moderator model is standard)
-- ✅ Works for both centralized and self-hosted instances
-- ✅ Clear separation of concerns (community vs instance authority)
-- ✅ Easy to implement on top of existing V2 architecture
-- ✅ Provides foundation for future governance features
-
-**Limitations:**
-- ❌ Still centralized (creator has ultimate authority)
-- ❌ No democratic decision-making
-- ❌ Moderator removal is unilateral (creator decision)
-- ❌ No community input on governance changes
-
----
 
 ### V2: Moderator Tiers & Permissions
 
@@ -215,7 +170,139 @@ Communities can be co-owned by multiple entities (users, instances, DAOs) with d
 
 ---
 
+## Content Rules System
+
+**Status:** Designed (2025-10-18)
+**Priority:** Alpha - Enables community-specific content policies
+
+### Overview
+
+Content rules allow communities to define restrictions on what types of content can be posted, replacing the rejected `postType` enum approach with flexible, structure-based validation.
+
+### Lexicon Design
+
+Content rules are stored in `social.coves.community.profile` under the `contentRules` object:
+
+```json
+{
+  "contentRules": {
+    "allowedEmbedTypes": ["images"],      // Only images allowed
+    "requireText": true,                   // Posts must have text
+    "minTextLength": 50,                   // Minimum 50 characters
+    "maxTextLength": 5000,                 // Maximum 5000 characters
+    "requireTitle": false,                 // Title optional
+    "minImages": 1,                        // At least 1 image
+    "maxImages": 10,                       // Maximum 10 images
+    "allowFederated": false                // No federated posts
+  }
+}
+```
+
+### Example Community Configurations
+
+**"AskCoves" - Text-Only Q&A:**
+```json
+{
+  "contentRules": {
+    "allowedEmbedTypes": [],       // No embeds at all
+    "requireText": true,
+    "minTextLength": 50,           // Substantive questions only
+    "requireTitle": true,          // Must have question title
+    "allowFederated": false
+  }
+}
+```
+
+**"CovesPics" - Image Community:**
+```json
+{
+  "contentRules": {
+    "allowedEmbedTypes": ["images"],
+    "requireText": false,          // Description optional
+    "minImages": 1,                // Must have at least 1 image
+    "maxImages": 20,
+    "allowFederated": true         // Allow Bluesky image posts
+  }
+}
+```
+
+**"CovesGeneral" - No Restrictions:**
+```json
+{
+  "contentRules": null  // Or omit entirely - all content types allowed
+}
+```
+
+### Implementation Flow
+
+1. **Community Creation/Update:**
+   - Creator/moderator sets `contentRules` in community profile
+   - Rules stored in community's repository (`at://community_did/social.coves.community.profile/self`)
+   - AppView indexes rules for validation
+
+2. **Post Creation:**
+   - Handler receives post creation request
+   - Fetches community profile (including `contentRules`)
+   - Validates post structure against rules
+   - Returns `ContentRuleViolation` error if validation fails
+
+3. **Validation Logic:**
+   - Check embed types against `allowedEmbedTypes`
+   - Verify text requirements (`requireText`, `minTextLength`, `maxTextLength`)
+   - Check title requirements (`requireTitle`)
+   - Validate image counts (`minImages`, `maxImages`)
+   - Block federated posts if `allowFederated: false`
+
+4. **User Filtering (Client-Side):**
+   - AppView indexes derived post characteristics (has_embed, embed_type, text_length)
+   - UI can filter "show only videos" or "show only text posts"
+   - Filters don't need protocol support - just AppView queries
+
+### Benefits Over `postType` Enum
+
+✅ **More Flexible:** Communities can define granular rules (e.g., "text required but images optional")
+✅ **Extensible:** Add new rules without changing post lexicon
+✅ **Federation-Friendly:** Rules describe structure, not arbitrary types
+✅ **Client Freedom:** Different clients interpret same data differently
+✅ **Separation of Concerns:** Post structure (protocol) vs. community policy (governance)
+
+### Security Considerations
+
+- **Validation is advisory:** Malicious PDS could ignore rules, but AppView can filter out violating posts
+- **Rate limiting:** Prevent spam of posts that get rejected for rule violations
+- **Audit logging:** Track rule violations for moderation review
+
+---
+
 ## Implementation Roadmap
+
+### Phase 0: Content Rules System (Month 0 - Alpha Blocker)
+
+**Status:** Lexicon complete, implementation TODO
+**Priority:** CRITICAL - Required for alpha launch
+
+**Goals:**
+- Enable communities to restrict content types
+- Validate posts against community rules
+- Support common use cases (text-only, images-only, etc.)
+
+**Deliverables:**
+- [x] Lexicon: `contentRules` object in `social.coves.community.profile` ✅
+- [ ] Go structs: `ContentRules` type in community models
+- [ ] Repository: Parse and store `contentRules` from community profiles
+- [ ] Service: `ValidatePostAgainstRules(post, community)` function
+- [ ] Handler: Integrate validation into `social.coves.post.create`
+- [ ] AppView indexing: Index post characteristics (embed_type, text_length, etc.)
+- [ ] Tests: Comprehensive rule validation tests
+- [ ] Documentation: Content rules guide for community creators
+
+**Success Criteria:**
+- "AskCoves" text-only community rejects image posts
+- "CovesPics" image community requires at least one image
+- Validation errors are clear and actionable
+- No performance impact on post creation (< 10ms validation)
+
+---
 
 ### Phase 1: V1 Role-Based System (Months 0-3)
 
@@ -239,7 +326,7 @@ Communities can be co-owned by multiple entities (users, instances, DAOs) with d
 
 **Success Criteria:**
 - Community creators can add/remove moderators
-- Moderators can update community profile but not delete
+- Moderators can update community profile (including content rules) but not delete
 - Authorization prevents unauthorized operations
 - Works seamlessly for both centralized and self-hosted instances
 
@@ -389,31 +476,6 @@ Communities can be co-owned by multiple entities (users, instances, DAOs) with d
 ---
 
 ## Technical Decisions Log
-
-### 2025-10-18: Moderator Lexicon Extensibility
-**Decision:** Use `knownValues` instead of `enum` for moderator roles and permissions in `social.coves.community.moderator` record schema
-
-**Rationale:**
-- Moderator records are immutable once published (atProto record semantics)
-- Closed `enum` values cannot be extended without breaking schema evolution rules
-- Using `knownValues` allows adding new roles/permissions in Beta Phase 2 without requiring V2 schema migration
-- Zero cost to fix during alpha planning; expensive to migrate once records exist in production
-
-**Changes Made:**
-- `role` field: Changed from `enum: ["moderator", "admin"]` to `knownValues: ["moderator", "admin"]` with `maxLength: 64`
-- `permissions` array items: Changed from closed enum to `knownValues` with `maxLength: 64`
-
-**Future Extensibility Examples:**
-- **New roles**: "owner" (full transfer rights), "trainee" (limited trial moderator), "emeritus" (honorary former moderator)
-- **New permissions**: "manage_bots", "manage_flairs", "manage_automoderator", "manage_federation", "pin_posts"
-- Can add these values during Phase 2 (Moderator Tiers & Permissions) without breaking existing moderator records
-
-**atProto Style Guide Reference:**
-Per [atproto#4245](https://github.com/bluesky-social/atproto/discussions/4245): "Enum sets are 'closed' and can not be updated or extended without breaking schema evolution rules. For this reason they should almost always be avoided. For strings, `knownValues` provides more flexible alternative."
-
-**Implementation Status:** ✅ Fixed in lexicon before alpha launch
-
----
 
 ### 2025-10-11: Moderator Records Storage Location
 **Decision:** Store moderator records in community's repository (`at://community_did/social.coves.community.moderator/{tid}`), not user's repository
