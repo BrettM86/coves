@@ -7,6 +7,7 @@ import (
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/communities"
+	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
 	"bytes"
 	"context"
@@ -258,10 +259,39 @@ func main() {
 
 	log.Println("Started JWKS cache cleanup background job (runs hourly)")
 
+	// Initialize post service
+	postRepo := postgresRepo.NewPostRepository(db)
+	postService := posts.NewPostService(postRepo, communityService, defaultPDS)
+
+	// Start Jetstream consumer for posts
+	// This consumer indexes posts created in community repositories via the firehose
+	// Currently handles only CREATE operations - UPDATE/DELETE deferred until those features exist
+	postJetstreamURL := os.Getenv("POST_JETSTREAM_URL")
+	if postJetstreamURL == "" {
+		// Listen to post record creation events
+		postJetstreamURL = "ws://localhost:6008/subscribe?wantedCollections=social.coves.post.record"
+	}
+
+	postEventConsumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService)
+	postJetstreamConnector := jetstream.NewPostJetstreamConnector(postEventConsumer, postJetstreamURL)
+
+	go func() {
+		if startErr := postJetstreamConnector.Start(ctx); startErr != nil {
+			log.Printf("Post Jetstream consumer stopped: %v", startErr)
+		}
+	}()
+
+	log.Printf("Started Jetstream post consumer: %s", postJetstreamURL)
+	log.Println("  - Indexing: social.coves.post.record CREATE operations")
+	log.Println("  - UPDATE/DELETE indexing deferred until those features are implemented")
+
 	// Register XRPC routes
 	routes.RegisterUserRoutes(r, userService)
 	routes.RegisterCommunityRoutes(r, communityService, authMiddleware)
 	log.Println("Community XRPC endpoints registered with OAuth authentication")
+
+	routes.RegisterPostRoutes(r, postService, authMiddleware)
+	log.Println("Post XRPC endpoints registered with OAuth authentication")
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
