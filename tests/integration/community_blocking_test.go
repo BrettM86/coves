@@ -3,12 +3,13 @@ package integration
 import (
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/communities"
-	postgresRepo "Coves/internal/db/postgres"
 	"context"
 	"database/sql"
 	"fmt"
 	"testing"
 	"time"
+
+	postgresRepo "Coves/internal/db/postgres"
 )
 
 // TestCommunityBlocking_Indexing tests Jetstream indexing of block events

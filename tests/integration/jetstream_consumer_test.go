@@ -367,16 +367,4 @@ func TestUserServiceIdempotency(t *testing.T) {
 	})
 }
 
-// Helper function
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && anySubstring(s, substr)
-}
-
-func anySubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
+// Helper functions moved to helpers.go

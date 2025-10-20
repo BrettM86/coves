@@ -5,6 +5,7 @@ import (
 	"Coves/internal/core/communities"
 	"Coves/internal/db/postgres"
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -24,8 +25,13 @@ func TestCommunityConsumer_V2RKeyValidation(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("accepts V2 community with rkey=self", func(t *testing.T) {
+		// Use unique DID and handle to avoid conflicts with other test runs
+		timestamp := time.Now().UnixNano()
+		testDID := fmt.Sprintf("did:plc:testv2rkey%d", timestamp)
+		testHandle := fmt.Sprintf("testv2rkey%d.community.coves.social", timestamp)
+
 		event := &jetstream.JetstreamEvent{
-			Did:  "did:plc:community123",
+			Did:  testDID,
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
 				Operation:  "create",
@@ -34,8 +40,8 @@ func TestCommunityConsumer_V2RKeyValidation(t *testing.T) {
 				CID:        "bafyreigaming123",
 				Record: map[string]interface{}{
 					"$type":      "social.coves.community.profile",
-					"handle":     "gaming.community.coves.social",
-					"name":       "gaming",
+					"handle":     testHandle,
+					"name":       "testv2rkey",
 					"createdBy":  "did:plc:user123",
 					"hostedBy":   "did:web:coves.social",
 					"visibility": "public",
@@ -55,7 +61,7 @@ func TestCommunityConsumer_V2RKeyValidation(t *testing.T) {
 		}
 
 		// Verify community was indexed
-		community, err := repo.GetByDID(ctx, "did:plc:community123")
+		community, err := repo.GetByDID(ctx, testDID)
 		if err != nil {
 			t.Fatalf("Community should have been indexed: %v", err)
 		}
@@ -66,7 +72,7 @@ func TestCommunityConsumer_V2RKeyValidation(t *testing.T) {
 		}
 
 		// Verify record URI uses "self"
-		expectedURI := "at://did:plc:community123/social.coves.community.profile/self"
+		expectedURI := fmt.Sprintf("at://%s/social.coves.community.profile/self", testDID)
 		if community.RecordURI != expectedURI {
 			t.Errorf("Expected RecordURI %s, got %s", expectedURI, community.RecordURI)
 		}
@@ -259,7 +265,7 @@ func TestCommunityConsumer_HandleField(t *testing.T) {
 				Record: map[string]interface{}{
 					"$type":      "social.coves.community.profile",
 					"handle":     "gamingtest.community.coves.social", // atProto handle (DNS-resolvable)
-					"name":       "gamingtest",                          // Short name for !mentions
+					"name":       "gamingtest",                        // Short name for !mentions
 					"createdBy":  "did:plc:user123",
 					"hostedBy":   "did:web:coves.social",
 					"visibility": "public",
