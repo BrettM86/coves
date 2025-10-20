@@ -8,7 +8,7 @@
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["$type", "community", "postType", "createdAt"],
+        "required": ["$type", "community", "author", "createdAt"],
         "properties": {
           "$type": {
             "type": "string",
@@ -20,10 +20,10 @@
             "format": "at-identifier",
             "description": "DID or handle of the community this was posted to"
           },
-          "postType": {
+          "author": {
             "type": "string",
-            "enum": ["text", "article", "image", "video", "microblog"],
-            "description": "Discriminator for post type to enable filtering and specialized rendering"
+            "format": "did",
+            "description": "DID of the user who created this post. Server-populated from authenticated session; clients MUST NOT provide this field. Required for attribution, moderation, and accountability."
           },
           "title": {
             "type": "string",

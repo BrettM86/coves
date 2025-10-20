@@ -371,7 +371,7 @@ func TestGetDisplayHandle(t *testing.T) {
 		}{
 			{"nodots", "nodots"},         // No dots - should return as-is
 			{"single.dot", "single.dot"}, // Single dot - should return as-is
-			{"", ""},                      // Empty - should return as-is
+			{"", ""},                     // Empty - should return as-is
 		}
 
 		for _, tc := range testCases {

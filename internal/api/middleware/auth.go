@@ -158,6 +158,12 @@ func GetJWTClaims(r *http.Request) *auth.Claims {
 	return claims
 }
 
+// SetTestUserDID sets the user DID in the context for testing purposes
+// This function should ONLY be used in tests to mock authenticated users
+func SetTestUserDID(ctx context.Context, userDID string) context.Context {
+	return context.WithValue(ctx, UserDIDKey, userDID)
+}
+
 // GetUserAccessToken extracts the user's access token from the request context
 // Returns empty string if not authenticated
 func GetUserAccessToken(r *http.Request) string {

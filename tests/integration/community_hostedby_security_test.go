@@ -27,6 +27,7 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		communityDID := generateTestDID(uniqueSuffix)
+		uniqueHandle := fmt.Sprintf("gaming%s.community.coves.social", uniqueSuffix)
 
 		// Attempt to create community claiming to be hosted by nintendo.com
 		// but with a coves.social handle (ATTACK!)
@@ -41,7 +42,7 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 				RKey:       "self",
 				CID:        "bafy123abc",
 				Record: map[string]interface{}{
-					"handle":      "gaming.community.coves.social", // coves.social handle
+					"handle":      uniqueHandle, // coves.social handle
 					"name":        "gaming",
 					"displayName": "Nintendo Gaming",
 					"description": "Fake Nintendo community",
@@ -84,6 +85,7 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		communityDID := generateTestDID(uniqueSuffix)
+		uniqueHandle := fmt.Sprintf("gaming%s.community.coves.social", uniqueSuffix)
 
 		// Create community with matching hostedBy and handle domains
 		event := &jetstream.JetstreamEvent{
@@ -97,7 +99,7 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 				RKey:       "self",
 				CID:        "bafy123abc",
 				Record: map[string]interface{}{
-					"handle":      "gaming.community.coves.social", // coves.social handle
+					"handle":      uniqueHandle, // coves.social handle
 					"name":        "gaming",
 					"displayName": "Gaming Community",
 					"description": "Legitimate coves.social community",
@@ -136,6 +138,7 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		communityDID := generateTestDID(uniqueSuffix)
+		uniqueHandle := fmt.Sprintf("gaming%s.community.coves.social", uniqueSuffix)
 
 		// Attempt to use did:plc for hostedBy (not allowed)
 		event := &jetstream.JetstreamEvent{
@@ -149,7 +152,7 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 				RKey:       "self",
 				CID:        "bafy123abc",
 				Record: map[string]interface{}{
-					"handle":      "gaming.community.coves.social",
+					"handle":      uniqueHandle,
 					"name":        "gaming",
 					"displayName": "Test Community",
 					"description": "Test",
@@ -180,6 +183,7 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		communityDID := generateTestDID(uniqueSuffix)
+		uniqueHandle := fmt.Sprintf("gaming%s.community.example.com", uniqueSuffix)
 
 		// Even with mismatched domain, this should succeed with skipVerification=true
 		event := &jetstream.JetstreamEvent{
@@ -193,7 +197,7 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 				RKey:       "self",
 				CID:        "bafy123abc",
 				Record: map[string]interface{}{
-					"handle":      "gaming.community.example.com",
+					"handle":      uniqueHandle,
 					"name":        "gaming",
 					"displayName": "Test",
 					"description": "Test",

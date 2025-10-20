@@ -23,14 +23,14 @@ type Community struct {
 	HostedByDID            string    `json:"hostedByDid" db:"hosted_by_did"`
 	PDSEmail               string    `json:"-" db:"pds_email"`
 	PDSPassword            string    `json:"-" db:"pds_password_encrypted"`
-	Name                   string    `json:"name" db:"name"`                        // Short name (e.g., "gardening")
-	DisplayHandle          string    `json:"displayHandle,omitempty" db:"-"`        // UI hint: !gardening@coves.social (computed, not stored)
+	Name                   string    `json:"name" db:"name"`                 // Short name (e.g., "gardening")
+	DisplayHandle          string    `json:"displayHandle,omitempty" db:"-"` // UI hint: !gardening@coves.social (computed, not stored)
 	RecordCID              string    `json:"recordCid,omitempty" db:"record_cid"`
 	FederatedID            string    `json:"federatedId,omitempty" db:"federated_id"`
 	PDSAccessToken         string    `json:"-" db:"pds_access_token"`
 	SigningKeyPEM          string    `json:"-" db:"signing_key_encrypted"`
 	ModerationType         string    `json:"moderationType,omitempty" db:"moderation_type"`
-	Handle                 string    `json:"handle" db:"handle"`                    // Canonical atProto handle (e.g., gardening.community.coves.social)
+	Handle                 string    `json:"handle" db:"handle"` // Canonical atProto handle (e.g., gardening.community.coves.social)
 	PDSRefreshToken        string    `json:"-" db:"pds_refresh_token"`
 	Visibility             string    `json:"visibility" db:"visibility"`
 	RotationKeyPEM         string    `json:"-" db:"rotation_key_encrypted"`

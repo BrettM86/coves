@@ -73,6 +73,11 @@
             "ref": "#federationConfig",
             "description": "Federation and discovery configuration"
           },
+          "contentRules": {
+            "type": "ref",
+            "ref": "#contentRules",
+            "description": "Content posting rules and restrictions for this community"
+          },
           "moderationType": {
             "type": "string",
             "knownValues": ["moderator", "sortition"],
@@ -123,6 +128,55 @@
           "type": "boolean",
           "default": true,
           "description": "Whether other Coves instances can index and discover this community"
+        }
+      }
+    },
+    "contentRules": {
+      "type": "object",
+      "description": "Content posting rules and restrictions for this community. Rules are validated at post creation time.",
+      "properties": {
+        "allowedEmbedTypes": {
+          "type": "array",
+          "description": "Allowed embed types. Empty array = no embeds allowed. Null/undefined = all embed types allowed.",
+          "items": {
+            "type": "string",
+            "knownValues": ["images", "video", "external", "record"]
+          }
+        },
+        "requireText": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether posts must have text content (non-empty content field)"
+        },
+        "minTextLength": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Minimum character length for post content (0 = no minimum)"
+        },
+        "maxTextLength": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum character length for post content (overrides global limit if lower)"
+        },
+        "requireTitle": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether posts must have a title"
+        },
+        "minImages": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Minimum number of images required (0 = no minimum). Only enforced if images embed is present."
+        },
+        "maxImages": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of images allowed per post (overrides global limit if lower)"
+        },
+        "allowFederated": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether federated posts (e.g., from app.bsky) are allowed in this community"
         }
       }
     }

@@ -9,17 +9,12 @@
         "encoding": "application/json",
         "schema": {
           "type": "object",
-          "required": ["community", "postType"],
+          "required": ["community"],
           "properties": {
             "community": {
               "type": "string",
               "format": "at-identifier",
               "description": "DID or handle of the community to post in"
-            },
-            "postType": {
-              "type": "string",
-              "enum": ["text", "article", "image", "video", "microblog"],
-              "description": "Type of post to create"
             },
             "title": {
               "type": "string",
@@ -114,8 +109,8 @@
           "description": "Post content violates community rules"
         },
         {
-          "name": "InvalidPostType",
-          "description": "Community does not allow this post type"
+          "name": "ContentRuleViolation",
+          "description": "Post violates community content rules (e.g., embeds not allowed, text too short)"
         }
       ]
     }

@@ -32,7 +32,7 @@
     },
     "postView": {
       "type": "object",
-      "required": ["uri", "cid", "author", "record", "community", "postType", "createdAt", "indexedAt"],
+      "required": ["uri", "cid", "author", "record", "community", "createdAt", "indexedAt"],
       "properties": {
         "uri": {
           "type": "string",
@@ -53,10 +53,6 @@
         "community": {
           "type": "ref",
           "ref": "#communityRef"
-        },
-        "postType": {
-          "type": "string",
-          "enum": ["text", "image", "video", "article", "microblog"]
         },
         "title": {
           "type": "string"

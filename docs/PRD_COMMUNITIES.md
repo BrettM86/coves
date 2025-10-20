@@ -180,12 +180,34 @@ Hosted By:   did:web:coves.social (instance manages credentials)
 
 ## 📍 Beta Features (High Priority - Post Alpha)
 
+### Content Rules System
+**Status:** Lexicon complete (2025-10-18), implementation TODO
+**Priority:** CRITICAL for Alpha - Enables community content policies
+
+Communities can define content posting restrictions via the `contentRules` object in their profile:
+
+**Key Features:**
+- ✅ Lexicon: `contentRules` object defined in `social.coves.community.profile`
+- [ ] Validation: Post creation validates against community rules
+- [ ] AppView indexing: Index post characteristics (embed_type, text_length)
+- [ ] Error handling: Clear `ContentRuleViolation` errors
+
+**Example Use Cases:**
+- **Text-only communities:** "AskCoves" requires text, blocks all embeds
+- **Image communities:** "CovesPics" requires at least 1 image
+- **No restrictions:** General communities allow all content types
+
+**See:** [PRD_GOVERNANCE.md - Content Rules System](PRD_GOVERNANCE.md#content-rules-system) for full details
+
+---
+
 ### Posts in Communities
 **Status:** Lexicon designed, implementation TODO
 **Priority:** HIGHEST for Beta 1
 
-- [ ] `social.coves.post` already has `community` field ✅
-- [ ] Create post endpoint (decide: membership validation?)
+- [x] `social.coves.post` already has `community` field ✅
+- [x] Removed `postType` enum in favor of content rules ✅ (2025-10-18)
+- [ ] Create post endpoint with content rules validation
 - [ ] Feed generation for community posts
 - [ ] Post consumer (index community posts from firehose)
 - [ ] Community post count tracking
@@ -327,6 +349,13 @@ Hosted By:   did:web:coves.social (instance manages credentials)
 - `banner` - Blob reference for banner image
 - `moderationType` - `"moderator"` or `"sortition"`
 - `contentWarnings` - Array of content warning types
+- `contentRules` - Content posting restrictions (see [PRD_GOVERNANCE.md](PRD_GOVERNANCE.md#content-rules-system))
+  - `allowedEmbedTypes` - Array of allowed embed types (images, video, external, record)
+  - `requireText` - Whether text content is required
+  - `minTextLength` / `maxTextLength` - Text length constraints
+  - `requireTitle` - Whether title is required
+  - `minImages` / `maxImages` - Image count constraints
+  - `allowFederated` - Whether federated posts allowed
 - `memberCount` - Cached count
 - `subscriberCount` - Cached count
 
@@ -366,6 +395,35 @@ Hosted By:   did:web:coves.social (instance manages credentials)
 ---
 
 ## Technical Decisions Log
+
+### 2025-10-18: Content Rules Over Post Type Enum
+**Decision:** Remove `postType` enum from post creation; use flexible `contentRules` in community profile instead
+
+**Rationale:**
+- `postType` enum forced users to explicitly select type (bad UX - app should infer from structure)
+- Enum was rigid - couldn't support nuanced rules like "text required, images optional"
+- Content rules are more extensible (add new constraints without changing post lexicon)
+- Follows atProto philosophy: describe data structure, not UI intent
+- Enables both community restrictions ("text only") AND user filtering ("show videos only")
+
+**Implementation:**
+- Community profile contains optional `contentRules` object
+- Post validation checks structure against rules at creation time
+- AppView indexes post characteristics (embed_type, text_length) for filtering
+- Errors use `ContentRuleViolation` instead of `InvalidPostType`
+
+**Examples:**
+- "AskCoves": `allowedEmbedTypes: []` + `requireText: true` + `minTextLength: 50`
+- "CovesPics": `allowedEmbedTypes: ["images"]` + `minImages: 1`
+- General communities: `contentRules: null` (no restrictions)
+
+**Trade-offs Accepted:**
+- Validation logic more complex than simple enum check (but more powerful)
+- Communities can't programmatically restrict to exact "article" vs "text" types (but structure-based rules are better)
+
+**See:** [PRD_GOVERNANCE.md - Content Rules System](PRD_GOVERNANCE.md#content-rules-system)
+
+---
 
 ### 2025-10-11: Single Handle Field (atProto-Compliant)
 **Decision:** Use single `handle` field containing DNS-resolvable atProto handle; remove `atprotoHandle` field

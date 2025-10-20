@@ -1,0 +1,57 @@
+package post
+
+import (
+	"Coves/internal/core/posts"
+	"encoding/json"
+	"log"
+	"net/http"
+)
+
+type errorResponse struct {
+	Error   string `json:"error"`
+	Message string `json:"message"`
+}
+
+// writeError writes a JSON error response
+func writeError(w http.ResponseWriter, statusCode int, errorType, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	if err := json.NewEncoder(w).Encode(errorResponse{
+		Error:   errorType,
+		Message: message,
+	}); err != nil {
+		log.Printf("Failed to encode error response: %v", err)
+	}
+}
+
+// handleServiceError maps service errors to HTTP responses
+func handleServiceError(w http.ResponseWriter, err error) {
+	switch {
+	case err == posts.ErrCommunityNotFound:
+		writeError(w, http.StatusNotFound, "CommunityNotFound",
+			"Community not found")
+
+	case err == posts.ErrNotAuthorized:
+		writeError(w, http.StatusForbidden, "NotAuthorized",
+			"You are not authorized to post in this community")
+
+	case err == posts.ErrBanned:
+		writeError(w, http.StatusForbidden, "Banned",
+			"You are banned from this community")
+
+	case posts.IsContentRuleViolation(err):
+		writeError(w, http.StatusBadRequest, "ContentRuleViolation", err.Error())
+
+	case posts.IsValidationError(err):
+		writeError(w, http.StatusBadRequest, "InvalidRequest", err.Error())
+
+	case posts.IsNotFound(err):
+		writeError(w, http.StatusNotFound, "NotFound", err.Error())
+
+	default:
+		// Don't leak internal error details to clients
+		log.Printf("Unexpected error in post handler: %v", err)
+		writeError(w, http.StatusInternalServerError, "InternalServerError",
+			"An internal error occurred")
+	}
+}
