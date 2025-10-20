@@ -141,7 +141,7 @@ func TestValidateRecord(t *testing.T) {
 			recordData: map[string]interface{}{
 				"$type":     "social.coves.post.record",
 				"community": "did:plc:programming123",
-				"postType":  "text",
+				"author":    "did:plc:testauthor123",
 				"title":     "Test Post",
 				"content":   "This is a test post",
 				"createdAt": "2025-01-09T14:30:00Z",
@@ -149,18 +149,18 @@ func TestValidateRecord(t *testing.T) {
 			shouldFail: false,
 		},
 		{
-			name:       "Invalid post record - invalid enum value",
+			name:       "Invalid post record - missing required field",
 			recordType: "social.coves.post.record",
 			recordData: map[string]interface{}{
 				"$type":     "social.coves.post.record",
 				"community": "did:plc:programming123",
-				"postType":  "invalid-type",
+				// Missing required "author" field
 				"title":     "Test Post",
 				"content":   "This is a test post",
 				"createdAt": "2025-01-09T14:30:00Z",
 			},
 			shouldFail:    true,
-			errorContains: "string val not in required enum",
+			errorContains: "required field missing",
 		},
 	}
 

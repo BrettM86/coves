@@ -58,32 +58,26 @@ func TestValidatePost(t *testing.T) {
 
 	// Valid post
 	validPost := map[string]interface{}{
-		"$type":           "social.coves.post.record",
-		"community":       "did:plc:test123",
-		"postType":        "text",
-		"title":           "Test Post",
-		"text":            "This is a test",
-		"tags":            []string{"test"},
-		"language":        "en",
-		"contentWarnings": []string{},
-		"createdAt":       "2024-01-01T00:00:00Z",
+		"$type":     "social.coves.post.record",
+		"community": "did:plc:test123",
+		"author":    "did:plc:author123",
+		"title":     "Test Post",
+		"content":   "This is a test",
+		"createdAt": "2024-01-01T00:00:00Z",
 	}
 
 	if err := validator.ValidatePost(validPost); err != nil {
 		t.Errorf("Valid post failed validation: %v", err)
 	}
 
-	// Invalid post - invalid enum value
+	// Invalid post - missing required field (author)
 	invalidPost := map[string]interface{}{
-		"$type":           "social.coves.post.record",
-		"community":       "did:plc:test123",
-		"postType":        "invalid",
-		"title":           "Test Post",
-		"text":            "This is a test",
-		"tags":            []string{"test"},
-		"language":        "en",
-		"contentWarnings": []string{},
-		"createdAt":       "2024-01-01T00:00:00Z",
+		"$type":     "social.coves.post.record",
+		"community": "did:plc:test123",
+		// Missing required "author" field
+		"title":     "Test Post",
+		"content":   "This is a test",
+		"createdAt": "2024-01-01T00:00:00Z",
 	}
 
 	if err := validator.ValidatePost(invalidPost); err == nil {
