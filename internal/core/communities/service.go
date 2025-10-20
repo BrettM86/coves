@@ -244,6 +244,20 @@ func (s *communityService) GetCommunity(ctx context.Context, identifier string) 
 	return nil, NewValidationError("identifier", "must be a DID or handle")
 }
 
+// GetByDID retrieves a community by its DID
+// Exported for use by post service when validating community references
+func (s *communityService) GetByDID(ctx context.Context, did string) (*Community, error) {
+	if did == "" {
+		return nil, ErrInvalidInput
+	}
+
+	if !strings.HasPrefix(did, "did:") {
+		return nil, NewValidationError("did", "must be a valid DID")
+	}
+
+	return s.repo.GetByDID(ctx, did)
+}
+
 // UpdateCommunity updates a community via write-forward to PDS
 func (s *communityService) UpdateCommunity(ctx context.Context, req UpdateCommunityRequest) (*Community, error) {
 	if req.CommunityDID == "" {
@@ -262,7 +276,7 @@ func (s *communityService) UpdateCommunity(ctx context.Context, req UpdateCommun
 
 	// CRITICAL: Ensure fresh PDS access token before write operation
 	// Community PDS tokens expire every ~2 hours and must be refreshed
-	existing, err = s.ensureFreshToken(ctx, existing)
+	existing, err = s.EnsureFreshToken(ctx, existing)
 	if err != nil {
 		return nil, fmt.Errorf("failed to ensure fresh credentials: %w", err)
 	}
@@ -426,7 +440,9 @@ func (s *communityService) getOrCreateRefreshMutex(did string) *sync.Mutex {
 // ensureFreshToken checks if a community's access token needs refresh and updates if needed
 // Returns updated community with fresh credentials (or original if no refresh needed)
 // Thread-safe: Uses per-community mutex to prevent concurrent refresh attempts
-func (s *communityService) ensureFreshToken(ctx context.Context, community *Community) (*Community, error) {
+// EnsureFreshToken ensures the community's PDS access token is valid
+// Exported for use by post service when writing posts to community repos
+func (s *communityService) EnsureFreshToken(ctx context.Context, community *Community) (*Community, error) {
 	// Get or create mutex for this specific community DID
 	mutex := s.getOrCreateRefreshMutex(community.DID)
 
@@ -834,12 +850,12 @@ func (s *communityService) ValidateHandle(handle string) error {
 // Following Bluesky's pattern with Coves extensions:
 //
 // Accepts (like Bluesky's at-identifier):
-//   1. DID: did:plc:abc123 (pass through)
-//   2. Canonical handle: gardening.community.coves.social (atProto standard)
-//   3. At-identifier: @gardening.community.coves.social (strip @ prefix)
+//  1. DID: did:plc:abc123 (pass through)
+//  2. Canonical handle: gardening.community.coves.social (atProto standard)
+//  3. At-identifier: @gardening.community.coves.social (strip @ prefix)
 //
 // Coves-specific extensions:
-//   4. Scoped format: !gardening@coves.social (parse and resolve)
+//  4. Scoped format: !gardening@coves.social (parse and resolve)
 //
 // Returns: DID string
 func (s *communityService) ResolveCommunityIdentifier(ctx context.Context, identifier string) (string, error) {
@@ -867,9 +883,7 @@ func (s *communityService) ResolveCommunityIdentifier(ctx context.Context, ident
 	}
 
 	// 3. At-identifier format: @handle (Bluesky standard - strip @ prefix)
-	if strings.HasPrefix(identifier, "@") {
-		identifier = strings.TrimPrefix(identifier, "@")
-	}
+	identifier = strings.TrimPrefix(identifier, "@")
 
 	// 4. Canonical handle: name.community.instance.com (Bluesky standard)
 	if strings.Contains(identifier, ".") {
@@ -885,7 +899,8 @@ func (s *communityService) ResolveCommunityIdentifier(ctx context.Context, ident
 
 // resolveScopedIdentifier handles Coves-specific !name@instance format
 // Formats accepted:
-//   !gardening@coves.social  -> gardening.community.coves.social
+//
+//	!gardening@coves.social  -> gardening.community.coves.social
 func (s *communityService) resolveScopedIdentifier(ctx context.Context, scoped string) (string, error) {
 	// Remove ! prefix
 	scoped = strings.TrimPrefix(scoped, "!")

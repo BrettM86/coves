@@ -84,4 +84,10 @@ type Service interface {
 	// Validation helpers
 	ValidateHandle(handle string) error
 	ResolveCommunityIdentifier(ctx context.Context, identifier string) (string, error) // Returns DID from handle or DID
+
+	// Token management (for post service to use when writing to community repos)
+	EnsureFreshToken(ctx context.Context, community *Community) (*Community, error)
+
+	// Direct repository access (for post service)
+	GetByDID(ctx context.Context, did string) (*Community, error)
 }
