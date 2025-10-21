@@ -66,3 +66,64 @@ type PostRecord struct {
 	Facets         []interface{}          `json:"facets,omitempty"`
 	ContentLabels  []string               `json:"contentLabels,omitempty"`
 }
+
+// PostView represents the full view of a post with all metadata
+// Matches social.coves.post.get#postView lexicon
+// Used in feeds and get endpoints
+type PostView struct {
+	IndexedAt     time.Time     `json:"indexedAt"`
+	CreatedAt     time.Time     `json:"createdAt"`
+	Record        interface{}   `json:"record,omitempty"`
+	Embed         interface{}   `json:"embed,omitempty"`
+	Language      *string       `json:"language,omitempty"`
+	EditedAt      *time.Time    `json:"editedAt,omitempty"`
+	Title         *string       `json:"title,omitempty"`
+	Text          *string       `json:"text,omitempty"`
+	Viewer        *ViewerState  `json:"viewer,omitempty"`
+	Author        *AuthorView   `json:"author"`
+	Stats         *PostStats    `json:"stats,omitempty"`
+	Community     *CommunityRef `json:"community"`
+	RKey          string        `json:"rkey"`
+	CID           string        `json:"cid"`
+	URI           string        `json:"uri"`
+	TextFacets    []interface{} `json:"textFacets,omitempty"`
+	UpvoteCount   int           `json:"-"`
+	DownvoteCount int           `json:"-"`
+	Score         int           `json:"-"`
+	CommentCount  int           `json:"-"`
+}
+
+// AuthorView represents author information in post views
+type AuthorView struct {
+	DisplayName *string `json:"displayName,omitempty"`
+	Avatar      *string `json:"avatar,omitempty"`
+	Reputation  *int    `json:"reputation,omitempty"`
+	DID         string  `json:"did"`
+	Handle      string  `json:"handle"`
+}
+
+// CommunityRef represents minimal community info in post views
+type CommunityRef struct {
+	Avatar *string `json:"avatar,omitempty"`
+	DID    string  `json:"did"`
+	Name   string  `json:"name"`
+}
+
+// PostStats represents aggregated statistics
+type PostStats struct {
+	TagCounts    map[string]int `json:"tagCounts,omitempty"`
+	Upvotes      int            `json:"upvotes"`
+	Downvotes    int            `json:"downvotes"`
+	Score        int            `json:"score"`
+	CommentCount int            `json:"commentCount"`
+	ShareCount   int            `json:"shareCount,omitempty"`
+}
+
+// ViewerState represents the viewer's relationship with the post
+type ViewerState struct {
+	Vote     *string  `json:"vote,omitempty"`
+	VoteURI  *string  `json:"voteUri,omitempty"`
+	SavedURI *string  `json:"savedUri,omitempty"`
+	Tags     []string `json:"tags,omitempty"`
+	Saved    bool     `json:"saved"`
+}
