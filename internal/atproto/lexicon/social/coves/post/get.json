@@ -4,15 +4,20 @@
   "defs": {
     "main": {
       "type": "query",
-      "description": "Get a single post with all its details",
+      "description": "Get posts by AT-URI. Supports batch fetching for feed hydration. Returns posts in same order as input URIs.",
       "parameters": {
         "type": "params",
-        "required": ["uri"],
+        "required": ["uris"],
         "properties": {
-          "uri": {
-            "type": "string",
-            "format": "at-uri",
-            "description": "AT-URI of the post"
+          "uris": {
+            "type": "array",
+            "description": "List of post AT-URIs to fetch (max 25)",
+            "items": {
+              "type": "string",
+              "format": "at-uri"
+            },
+            "maxLength": 25,
+            "minLength": 1
           }
         }
       },
@@ -20,15 +25,22 @@
         "encoding": "application/json",
         "schema": {
           "type": "object",
-          "required": ["post"],
+          "required": ["posts"],
           "properties": {
-            "post": {
-              "type": "ref",
-              "ref": "#postView"
+            "posts": {
+              "type": "array",
+              "description": "Array of post views. May include notFound/blocked entries for missing posts.",
+              "items": {
+                "type": "union",
+                "refs": ["#postView", "#notFoundPost", "#blockedPost"]
+              }
             }
           }
         }
-      }
+      },
+      "errors": [
+        {"name": "InvalidRequest", "description": "Invalid URI format or empty array"}
+      ]
     },
     "postView": {
       "type": "object",
@@ -67,20 +79,16 @@
             "ref": "social.coves.richtext.facet"
           }
         },
-        "images": {
-          "type": "array",
-          "items": {
-            "type": "ref",
-            "ref": "#imageView"
-          }
-        },
-        "video": {
-          "type": "ref",
-          "ref": "#videoView"
-        },
-        "external": {
-          "type": "ref",
-          "ref": "#externalView"
+        "embed": {
+          "type": "union",
+          "description": "Embedded content (images, video, link preview, or quoted post)",
+          "refs": [
+            "social.coves.embed.images#view",
+            "social.coves.embed.video#view",
+            "social.coves.embed.external#view",
+            "social.coves.embed.record#view",
+            "social.coves.embed.recordWithMedia#view"
+          ]
         },
         "language": {
           "type": "string",
@@ -151,57 +159,71 @@
         }
       }
     },
-    "imageView": {
+    "notFoundPost": {
       "type": "object",
-      "required": ["fullsize"],
-      "properties": {
-        "fullsize": {
-          "type": "string",
-          "format": "uri"
-        },
-        "thumb": {
-          "type": "string",
-          "format": "uri"
-        },
-        "alt": {
-          "type": "string"
-        }
-      }
-    },
-    "videoView": {
-      "type": "object",
-      "required": ["url"],
-      "properties": {
-        "url": {
-          "type": "string",
-          "format": "uri"
-        },
-        "thumbnail": {
-          "type": "string",
-          "format": "uri"
-        },
-        "alt": {
-          "type": "string"
-        }
-      }
-    },
-    "externalView": {
-      "type": "object",
-      "required": ["uri"],
+      "description": "Post was not found (deleted, never indexed, or invalid URI)",
+      "required": ["uri", "notFound"],
       "properties": {
         "uri": {
           "type": "string",
-          "format": "uri"
+          "format": "at-uri"
         },
-        "title": {
-          "type": "string"
-        },
-        "description": {
-          "type": "string"
-        },
-        "thumb": {
+        "notFound": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    },
+    "blockedPost": {
+      "type": "object",
+      "description": "Post is blocked due to viewer blocking author/community, or community moderation",
+      "required": ["uri", "blocked"],
+      "properties": {
+        "uri": {
           "type": "string",
-          "format": "uri"
+          "format": "at-uri"
+        },
+        "blocked": {
+          "type": "boolean",
+          "const": true
+        },
+        "blockedBy": {
+          "type": "string",
+          "enum": ["author", "community", "moderator"],
+          "description": "What caused the block: viewer blocked author, viewer blocked community, or post was removed by moderators"
+        },
+        "author": {
+          "type": "ref",
+          "ref": "#blockedAuthor"
+        },
+        "community": {
+          "type": "ref",
+          "ref": "#blockedCommunity"
+        }
+      }
+    },
+    "blockedAuthor": {
+      "type": "object",
+      "description": "Minimal author info for blocked posts",
+      "required": ["did"],
+      "properties": {
+        "did": {
+          "type": "string",
+          "format": "did"
+        }
+      }
+    },
+    "blockedCommunity": {
+      "type": "object",
+      "description": "Minimal community info for blocked posts",
+      "required": ["did"],
+      "properties": {
+        "did": {
+          "type": "string",
+          "format": "did"
+        },
+        "name": {
+          "type": "string"
         }
       }
     },

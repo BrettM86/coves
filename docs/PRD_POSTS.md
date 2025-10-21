@@ -17,7 +17,7 @@
 - **at-identifier Support:** All 4 formats (DIDs, canonical, @-prefixed, scoped handles)
 
 ### ⚠️ DEFERRED TO BETA
-- Content rules validation (text-only, image-only communities)
+- Content rules validation (text-only, image-only communities) - Governence
 - Post read operations (get, list)
 - Post update/edit operations
 - Post deletion
@@ -379,7 +379,7 @@ CREATE INDEX idx_votes_voter_subject ON votes(voter_did, subject_uri) WHERE dele
 - [x] **Community Integration:** ✅ Posts correctly reference communities via at-identifiers
 - [x] **at-identifier Support:** ✅ All 4 formats supported (DIDs, canonical, @-prefixed, scoped)
 - [ ] **Content Rules Validation:** ⚠️ DEFERRED TO BETA - Posts validated against community content rules
-- [ ] **Vote System:** ⚠️ DEFERRED TO BETA - Upvote/downvote with community-level controls
+- [ ] **Vote System:** - Upvote/downvote with community-level controls
 - [ ] **Moderator Permissions:** ⚠️ DEFERRED TO BETA - Community moderators can delete posts
 
 ### Testing Requirements
@@ -392,17 +392,17 @@ CREATE INDEX idx_votes_voter_subject ON votes(voter_did, subject_uri) WHERE dele
 - [x] Handler security: All 4 at-identifier formats accepted ✅
 - [x] Consumer security: Rejects posts from wrong repository ✅
 - [x] Consumer security: Verifies community and author exist ✅
-- [ ] **Content rules validation:** Text-only community rejects image posts ⚠️ DEFERRED
-- [ ] **Content rules validation:** Image community rejects posts without images ⚠️ DEFERRED
-- [ ] **Content rules validation:** Post with too-short text rejected ⚠️ DEFERRED
-- [ ] **Content rules validation:** Federated post rejected if `allowFederated: false` ⚠️ DEFERRED
+- [ ] **Content rules validation:** Text-only community rejects image posts ⚠️ DEFERRED - Governence
+- [ ] **Content rules validation:** Image community rejects posts without images ⚠️ DEFERRED - Governence
+- [ ] **Content rules validation:** Post with too-short text rejected ⚠️ DEFERRED - Governence
+- [ ] **Content rules validation:** Federated post rejected if `allowFederated: false` ⚠️ DEFERRED - Governence
 - [ ] Update post within 24 hours → Edit reflected ⚠️ DEFERRED
 - [ ] Delete post as author → Hidden from queries ⚠️ DEFERRED
 - [ ] Delete post as moderator → Hidden from queries ⚠️ DEFERRED
-- [ ] Upvote post → Count increments ⚠️ DEFERRED
-- [ ] Downvote post → Count increments (if enabled) ⚠️ DEFERRED
-- [ ] Toggle vote → Counts update correctly ⚠️ DEFERRED
-- [ ] Community with downvotes disabled → Downvote returns error ⚠️ DEFERRED
+- [ ] Upvote post → Count increments
+- [ ] Downvote post → Count increments (if enabled)
+- [ ] Toggle vote → Counts update correctly ⚠️ DEFERRED - Governence
+- [ ] Community with downvotes disabled → Downvote returns error ⚠️ DEFERRED - Governence
 
 ---
 

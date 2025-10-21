@@ -330,7 +330,7 @@ func TestCommunityConsumer_IgnoresNonCommunityEvents(t *testing.T) {
 			Commit: &jetstream.CommitEvent{
 				Rev:        "rev300",
 				Operation:  "create",
-				Collection: "app.bsky.feed.post",
+				Collection: "app.bsky.communityFeed.post",
 				RKey:       "post123",
 				Record: map[string]interface{}{
 					"text": "Hello world",

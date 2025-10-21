@@ -7,6 +7,7 @@ import (
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/communities"
+	"Coves/internal/core/communityFeeds"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
 	"bytes"
@@ -263,6 +264,11 @@ func main() {
 	postRepo := postgresRepo.NewPostRepository(db)
 	postService := posts.NewPostService(postRepo, communityService, defaultPDS)
 
+	// Initialize feed service
+	feedRepo := postgresRepo.NewCommunityFeedRepository(db)
+	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
+	log.Println("✅ Feed service initialized")
+
 	// Start Jetstream consumer for posts
 	// This consumer indexes posts created in community repositories via the firehose
 	// Currently handles only CREATE operations - UPDATE/DELETE deferred until those features exist
@@ -292,6 +298,9 @@ func main() {
 
 	routes.RegisterPostRoutes(r, postService, authMiddleware)
 	log.Println("Post XRPC endpoints registered with OAuth authentication")
+
+	routes.RegisterCommunityFeedRoutes(r, feedService)
+	log.Println("Feed XRPC endpoints registered (public, no auth required)")
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
