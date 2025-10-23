@@ -6,6 +6,7 @@ import (
 	"Coves/internal/atproto/auth"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
+	"Coves/internal/core/aggregators"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/communityFeeds"
 	"Coves/internal/core/posts"
@@ -260,9 +261,14 @@ func main() {
 
 	log.Println("Started JWKS cache cleanup background job (runs hourly)")
 
-	// Initialize post service
+	// Initialize aggregator service
+	aggregatorRepo := postgresRepo.NewAggregatorRepository(db)
+	aggregatorService := aggregators.NewAggregatorService(aggregatorRepo, communityService)
+	log.Println("✅ Aggregator service initialized")
+
+	// Initialize post service (with aggregator support)
 	postRepo := postgresRepo.NewPostRepository(db)
-	postService := posts.NewPostService(postRepo, communityService, defaultPDS)
+	postService := posts.NewPostService(postRepo, communityService, aggregatorService, defaultPDS)
 
 	// Initialize feed service
 	feedRepo := postgresRepo.NewCommunityFeedRepository(db)
@@ -291,6 +297,32 @@ func main() {
 	log.Println("  - Indexing: social.coves.post.record CREATE operations")
 	log.Println("  - UPDATE/DELETE indexing deferred until those features are implemented")
 
+	// Start Jetstream consumer for aggregators
+	// This consumer indexes aggregator service declarations and authorization records
+	// Following Bluesky's pattern for feed generators and labelers
+	// NOTE: Uses the same Jetstream as communities, just filtering different collections
+	aggregatorJetstreamURL := communityJetstreamURL
+	// Override if specific URL needed for testing
+	if envURL := os.Getenv("AGGREGATOR_JETSTREAM_URL"); envURL != "" {
+		aggregatorJetstreamURL = envURL
+	} else if aggregatorJetstreamURL == "" {
+		// Fallback if community URL also not set
+		aggregatorJetstreamURL = "ws://localhost:6008/subscribe?wantedCollections=social.coves.aggregator.service&wantedCollections=social.coves.aggregator.authorization"
+	}
+
+	aggregatorEventConsumer := jetstream.NewAggregatorEventConsumer(aggregatorRepo)
+	aggregatorJetstreamConnector := jetstream.NewAggregatorJetstreamConnector(aggregatorEventConsumer, aggregatorJetstreamURL)
+
+	go func() {
+		if startErr := aggregatorJetstreamConnector.Start(ctx); startErr != nil {
+			log.Printf("Aggregator Jetstream consumer stopped: %v", startErr)
+		}
+	}()
+
+	log.Printf("Started Jetstream aggregator consumer: %s", aggregatorJetstreamURL)
+	log.Println("  - Indexing: social.coves.aggregator.service (service declarations)")
+	log.Println("  - Indexing: social.coves.aggregator.authorization (authorization records)")
+
 	// Register XRPC routes
 	routes.RegisterUserRoutes(r, userService)
 	routes.RegisterCommunityRoutes(r, communityService, authMiddleware)
@@ -301,6 +333,9 @@ func main() {
 
 	routes.RegisterCommunityFeedRoutes(r, feedService)
 	log.Println("Feed XRPC endpoints registered (public, no auth required)")
+
+	routes.RegisterAggregatorRoutes(r, aggregatorService)
+	log.Println("Aggregator XRPC endpoints registered (query endpoints public)")
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
