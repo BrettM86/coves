@@ -41,7 +41,7 @@ func TestPostHandler_SecurityValidation(t *testing.T) {
 	)
 
 	postRepo := postgres.NewPostRepository(db)
-	postService := posts.NewPostService(postRepo, communityService, "http://localhost:3001")
+	postService := posts.NewPostService(postRepo, communityService, nil, "http://localhost:3001") // nil aggregatorService for user-only tests
 
 	// Create handler
 	handler := post.NewCreateHandler(postService)
@@ -409,7 +409,7 @@ func TestPostHandler_SpecialCharacters(t *testing.T) {
 	)
 
 	postRepo := postgres.NewPostRepository(db)
-	postService := posts.NewPostService(postRepo, communityService, "http://localhost:3001")
+	postService := posts.NewPostService(postRepo, communityService, nil, "http://localhost:3001") // nil aggregatorService for user-only tests
 
 	handler := post.NewCreateHandler(postService)
 
@@ -465,6 +465,92 @@ func TestPostHandler_SpecialCharacters(t *testing.T) {
 				assert.NotEqual(t, http.StatusInternalServerError, rec.Code,
 					"Handler should not crash on injection attempt")
 			})
+		}
+	})
+}
+
+// TestPostService_DIDValidationSecurity tests service-layer DID validation (defense-in-depth)
+func TestPostService_DIDValidationSecurity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	db := setupTestDB(t)
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
+
+	// Setup services
+	communityRepo := postgres.NewCommunityRepository(db)
+	communityService := communities.NewCommunityService(
+		communityRepo,
+		"http://localhost:3001",
+		"did:web:test.coves.social",
+		"test.coves.social",
+		nil,
+	)
+
+	postRepo := postgres.NewPostRepository(db)
+	postService := posts.NewPostService(postRepo, communityService, nil, "http://localhost:3001")
+
+	t.Run("Reject posts when context DID is missing", func(t *testing.T) {
+		// Simulate bypassing handler - no DID in context
+		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		ctx := middleware.SetTestUserDID(req.Context(), "") // Empty DID
+
+		content := "Test post"
+		postReq := posts.CreatePostRequest{
+			Community: "did:plc:test123",
+			AuthorDID: "did:plc:alice",
+			Content:   &content,
+		}
+
+		_, err := postService.CreatePost(ctx, postReq)
+
+		// Should fail with authentication error
+		assert.Error(t, err)
+		assert.Contains(t, strings.ToLower(err.Error()), "authenticated")
+	})
+
+	t.Run("Reject posts when request DID doesn't match context DID", func(t *testing.T) {
+		// SECURITY TEST: This prevents DID spoofing attacks
+		// Simulates attack where handler is bypassed or compromised
+		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		ctx := middleware.SetTestUserDID(req.Context(), "did:plc:alice") // Authenticated as Alice
+
+		content := "Spoofed post"
+		postReq := posts.CreatePostRequest{
+			Community: "did:plc:test123",
+			AuthorDID: "did:plc:bob", // ❌ Trying to post as Bob!
+			Content:   &content,
+		}
+
+		_, err := postService.CreatePost(ctx, postReq)
+
+		// Should fail with DID mismatch error
+		assert.Error(t, err)
+		assert.Contains(t, strings.ToLower(err.Error()), "does not match")
+	})
+
+	t.Run("Accept posts when request DID matches context DID", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		ctx := middleware.SetTestUserDID(req.Context(), "did:plc:alice") // Authenticated as Alice
+
+		content := "Valid post"
+		postReq := posts.CreatePostRequest{
+			Community: "did:plc:test123",
+			AuthorDID: "did:plc:alice", // ✓ Matching DID
+			Content:   &content,
+		}
+
+		_, err := postService.CreatePost(ctx, postReq)
+
+		// May fail for other reasons (community not found), but NOT due to DID mismatch
+		if err != nil {
+			assert.NotContains(t, strings.ToLower(err.Error()), "does not match",
+				"Should not fail due to DID mismatch when DIDs match")
 		}
 	})
 }
