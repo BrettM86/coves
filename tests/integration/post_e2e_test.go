@@ -3,7 +3,6 @@ package integration
 import (
 	"Coves/internal/api/handlers/post"
 	"Coves/internal/api/middleware"
-	"Coves/internal/atproto/auth"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/communities"
@@ -13,7 +12,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -24,7 +22,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 	_ "github.com/lib/pq"
 	"github.com/pressly/goose/v3"
@@ -406,7 +403,7 @@ func TestPostCreation_E2E_LivePDS(t *testing.T) {
 		provisioner, // ✅ Real provisioner for creating communities on PDS
 	)
 
-	postService := posts.NewPostService(postRepo, communityService, pdsURL)
+	postService := posts.NewPostService(postRepo, communityService, nil, pdsURL) // nil aggregatorService for user-only tests
 
 	// Setup auth middleware (skip JWT verification for testing)
 	authMiddleware := middleware.NewAtProtoAuthMiddleware(nil, true)
@@ -608,46 +605,6 @@ func TestPostCreation_E2E_LivePDS(t *testing.T) {
 			}
 		})
 	})
-}
-
-// createSimpleTestJWT creates a minimal JWT for testing (Phase 1 - no signature)
-// In production, this would be a real OAuth token from PDS with proper signatures
-func createSimpleTestJWT(userDID string) string {
-	// Create minimal JWT claims using RegisteredClaims
-	// Use userDID as issuer since we don't have a proper PDS DID for testing
-	claims := auth.Claims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   userDID,
-			Issuer:    userDID, // Use DID as issuer for testing (valid per atProto)
-			Audience:  jwt.ClaimStrings{"did:web:test.coves.social"},
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Hour)),
-		},
-		Scope: "com.atproto.access",
-	}
-
-	// For Phase 1 testing, we create an unsigned JWT
-	// The middleware is configured with skipVerify=true for testing
-	header := map[string]interface{}{
-		"alg": "none",
-		"typ": "JWT",
-	}
-
-	headerJSON, _ := json.Marshal(header)
-	claimsJSON, _ := json.Marshal(claims)
-
-	// Base64url encode (without padding)
-	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
-	claimsB64 := base64.RawURLEncoding.EncodeToString(claimsJSON)
-
-	// For "alg: none", signature is empty
-	return headerB64 + "." + claimsB64 + "."
-}
-
-// generateTID generates a simple timestamp-based identifier for testing
-// In production, PDS generates proper TIDs
-func generateTID() string {
-	return fmt.Sprintf("3k%d", time.Now().UnixNano()/1000)
 }
 
 // subscribeToJetstreamForPost subscribes to real Jetstream firehose and processes post events

@@ -33,7 +33,7 @@ func TestCommunityIdentifierResolution(t *testing.T) {
 	// Get configuration from environment
 	pdsURL := os.Getenv("PDS_URL")
 	if pdsURL == "" {
-		pdsURL = "http://localhost:3000"
+		pdsURL = "http://localhost:3001" // Default to dev PDS port (see .env.dev)
 	}
 
 	instanceDomain := os.Getenv("INSTANCE_DOMAIN")

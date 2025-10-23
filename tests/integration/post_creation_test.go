@@ -43,7 +43,7 @@ func TestPostCreation_Basic(t *testing.T) {
 	)
 
 	postRepo := postgres.NewPostRepository(db)
-	postService := posts.NewPostService(postRepo, communityService, "http://localhost:3001")
+	postService := posts.NewPostService(postRepo, communityService, nil, "http://localhost:3001") // nil aggregatorService for user-only tests
 
 	ctx := context.Background()
 

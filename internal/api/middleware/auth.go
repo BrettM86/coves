@@ -151,6 +151,14 @@ func GetUserDID(r *http.Request) string {
 	return did
 }
 
+// GetAuthenticatedDID extracts the authenticated user's DID from the context
+// This is used by service layers for defense-in-depth validation
+// Returns empty string if not authenticated
+func GetAuthenticatedDID(ctx context.Context) string {
+	did, _ := ctx.Value(UserDIDKey).(string)
+	return did
+}
+
 // GetJWTClaims extracts the JWT claims from the request context
 // Returns nil if not authenticated
 func GetJWTClaims(r *http.Request) *auth.Claims {

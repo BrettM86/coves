@@ -1,6 +1,7 @@
 package post
 
 import (
+	"Coves/internal/core/aggregators"
 	"Coves/internal/core/posts"
 	"encoding/json"
 	"log"
@@ -47,6 +48,11 @@ func handleServiceError(w http.ResponseWriter, err error) {
 
 	case posts.IsNotFound(err):
 		writeError(w, http.StatusNotFound, "NotFound", err.Error())
+
+	// Check both aggregator and post rate limit errors
+	case aggregators.IsRateLimited(err) || err == posts.ErrRateLimitExceeded:
+		writeError(w, http.StatusTooManyRequests, "RateLimitExceeded",
+			"Rate limit exceeded. Please try again later.")
 
 	default:
 		// Don't leak internal error details to clients
