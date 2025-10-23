@@ -22,6 +22,9 @@ var (
 
 	// ErrNotFound is returned when a post is not found by URI
 	ErrNotFound = errors.New("post not found")
+
+	// ErrRateLimitExceeded is returned when an aggregator exceeds rate limits
+	ErrRateLimitExceeded = errors.New("rate limit exceeded")
 )
 
 // ValidationError represents a validation error with field context
