@@ -201,6 +201,44 @@ Communities can define content posting restrictions via the `contentRules` objec
 
 ---
 
+### Blob Upload Proxy System
+**Status:** Design documented, implementation TODO
+**Priority:** CRITICAL for Beta - Required for image/video posts in communities
+
+**Problem:** Users on external PDSs cannot directly upload blobs to community-owned PDS repositories because they lack authentication credentials for the community's PDS.
+
+**Solution:** Coves AppView acts as an authenticated proxy for blob uploads:
+
+**Flow:**
+1. User uploads blob to Coves AppView via `social.coves.blob.uploadForCommunity`
+2. AppView validates user can post to community (not banned, community accessible)
+3. AppView uses community's PDS credentials to upload blob via `com.atproto.repo.uploadBlob`
+4. AppView returns CID to user
+5. User creates post record referencing the CID
+6. Post and blob both live in community's PDS
+
+**Implementation Checklist:**
+- [ ] Handler: `social.coves.blob.uploadForCommunity` endpoint
+- [ ] Validation: Check user authorization to post in community
+- [ ] Credential Management: Reuse community token refresh logic
+- [ ] Upload Proxy: Forward blob to community's PDS with community credentials
+- [ ] Security: Size limits, content-type validation, rate limiting
+- [ ] Testing: E2E test with federated user uploading to community
+
+**Why This Approach:**
+- ✅ Works with federated users (any PDS)
+- ✅ Reuses existing community credential infrastructure
+- ✅ Matches V2 architecture (AppView orchestrates, communities own data)
+- ✅ Blobs stored on correct PDS (community's repository)
+- ❌ AppView becomes upload intermediary (bandwidth cost)
+
+**Alternative Considered:** Direct user uploads to community PDS
+- Rejected: Would require creating temporary user accounts on every community PDS (complex, insecure)
+
+**See:** Design discussion in context of ATProto blob architecture
+
+---
+
 ### Posts in Communities
 **Status:** Lexicon designed, implementation TODO
 **Priority:** HIGHEST for Beta 1
@@ -214,6 +252,8 @@ Communities can define content posting restrictions via the `contentRules` objec
 - [ ] Decide membership requirements for posting
 
 **Without posts, communities exist but can't be used!**
+
+**Depends on:** Blob Upload Proxy System (for image/video posts)
 
 ---
 
