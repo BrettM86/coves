@@ -1,0 +1,5 @@
+# Run Kagi News aggregator daily at 1 PM UTC (after Kagi updates around noon)
+0 13 * * * cd /app && /usr/local/bin/python -m src.main >> /var/log/cron.log 2>&1
+
+# Blank line required at end of crontab
+
