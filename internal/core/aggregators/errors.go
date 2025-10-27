@@ -7,15 +7,15 @@ import (
 
 // Domain errors
 var (
-	ErrAggregatorNotFound      = errors.New("aggregator not found")
-	ErrAuthorizationNotFound   = errors.New("authorization not found")
-	ErrNotAuthorized           = errors.New("aggregator not authorized for this community")
-	ErrAlreadyAuthorized       = errors.New("aggregator already authorized for this community")
-	ErrRateLimitExceeded       = errors.New("aggregator rate limit exceeded")
-	ErrInvalidConfig           = errors.New("invalid aggregator configuration")
-	ErrConfigSchemaValidation  = errors.New("configuration does not match aggregator's schema")
-	ErrNotModerator            = errors.New("user is not a moderator of this community")
-	ErrNotImplemented          = errors.New("feature not yet implemented") // For Phase 2 write-forward operations
+	ErrAggregatorNotFound     = errors.New("aggregator not found")
+	ErrAuthorizationNotFound  = errors.New("authorization not found")
+	ErrNotAuthorized          = errors.New("aggregator not authorized for this community")
+	ErrAlreadyAuthorized      = errors.New("aggregator already authorized for this community")
+	ErrRateLimitExceeded      = errors.New("aggregator rate limit exceeded")
+	ErrInvalidConfig          = errors.New("invalid aggregator configuration")
+	ErrConfigSchemaValidation = errors.New("configuration does not match aggregator's schema")
+	ErrNotModerator           = errors.New("user is not a moderator of this community")
+	ErrNotImplemented         = errors.New("feature not yet implemented") // For Phase 2 write-forward operations
 )
 
 // ValidationError represents a validation error with field details

@@ -272,13 +272,13 @@ func (c *AggregatorEventConsumer) deleteAuthorization(ctx context.Context, commu
 // AggregatorServiceRecord represents the service declaration record structure
 type AggregatorServiceRecord struct {
 	Type          string                 `json:"$type"`
-	DID           string                 `json:"did"`                      // DID of aggregator (must match repo DID)
+	DID           string                 `json:"did"` // DID of aggregator (must match repo DID)
 	DisplayName   string                 `json:"displayName"`
 	Description   string                 `json:"description,omitempty"`
-	Avatar        map[string]interface{} `json:"avatar,omitempty"`         // Blob reference (CID will be extracted)
-	ConfigSchema  map[string]interface{} `json:"configSchema,omitempty"`  // JSON Schema
-	MaintainerDID string                 `json:"maintainer,omitempty"`     // Fixed: was maintainerDid
-	SourceURL     string                 `json:"sourceUrl,omitempty"`      // Fixed: was homepageUrl
+	Avatar        map[string]interface{} `json:"avatar,omitempty"`       // Blob reference (CID will be extracted)
+	ConfigSchema  map[string]interface{} `json:"configSchema,omitempty"` // JSON Schema
+	MaintainerDID string                 `json:"maintainer,omitempty"`   // Fixed: was maintainerDid
+	SourceURL     string                 `json:"sourceUrl,omitempty"`    // Fixed: was homepageUrl
 	CreatedAt     string                 `json:"createdAt"`
 }
 
@@ -310,8 +310,8 @@ type AggregatorAuthorizationRecord struct {
 	Aggregator   string                 `json:"aggregatorDid"` // Aggregator DID - fixed field name
 	CommunityDid string                 `json:"communityDid"`  // Community DID (must match repo DID)
 	Enabled      bool                   `json:"enabled"`
-	Config       map[string]interface{} `json:"config,omitempty"`  // Aggregator-specific config
-	CreatedBy    string                 `json:"createdBy"`         // Required: DID of moderator who authorized
+	Config       map[string]interface{} `json:"config,omitempty"` // Aggregator-specific config
+	CreatedBy    string                 `json:"createdBy"`        // Required: DID of moderator who authorized
 	DisabledBy   string                 `json:"disabledBy,omitempty"`
 	DisabledAt   string                 `json:"disabledAt,omitempty"` // When authorization was disabled (for modlog/audit)
 	CreatedAt    string                 `json:"createdAt"`

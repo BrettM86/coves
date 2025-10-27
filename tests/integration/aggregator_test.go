@@ -45,17 +45,17 @@ func TestAggregatorRepository_Create(t *testing.T) {
 		schemaBytes, _ := json.Marshal(configSchema)
 
 		agg := &aggregators.Aggregator{
-			DID:          aggregatorDID,
-			DisplayName:  "Test RSS Aggregator",
-			Description:  "A test aggregator for integration testing",
-			AvatarURL:    "bafytest123",
-			ConfigSchema: schemaBytes,
+			DID:           aggregatorDID,
+			DisplayName:   "Test RSS Aggregator",
+			Description:   "A test aggregator for integration testing",
+			AvatarURL:     "bafytest123",
+			ConfigSchema:  schemaBytes,
 			MaintainerDID: "did:plc:maintainer123",
-			SourceURL:  "https://example.com/aggregator",
-		CreatedAt:    time.Now(),
-			IndexedAt:    time.Now(),
-			RecordURI:    fmt.Sprintf("at://%s/social.coves.aggregator.service/self", aggregatorDID),
-			RecordCID:    "bagtest456",
+			SourceURL:     "https://example.com/aggregator",
+			CreatedAt:     time.Now(),
+			IndexedAt:     time.Now(),
+			RecordURI:     fmt.Sprintf("at://%s/social.coves.aggregator.service/self", aggregatorDID),
+			RecordCID:     "bagtest456",
 		}
 
 		err := repo.CreateAggregator(ctx, agg)
@@ -87,7 +87,7 @@ func TestAggregatorRepository_Create(t *testing.T) {
 		agg := &aggregators.Aggregator{
 			DID:         aggregatorDID,
 			DisplayName: "Original Name",
-		CreatedAt:    time.Now(),
+			CreatedAt:   time.Now(),
 			IndexedAt:   time.Now(),
 			RecordURI:   fmt.Sprintf("at://%s/social.coves.aggregator.service/self", aggregatorDID),
 			RecordCID:   "bagtest789",
@@ -136,7 +136,7 @@ func TestAggregatorRepository_IsAggregator(t *testing.T) {
 		agg := &aggregators.Aggregator{
 			DID:         aggregatorDID,
 			DisplayName: "Test Aggregator",
-		CreatedAt:    time.Now(),
+			CreatedAt:   time.Now(),
 			IndexedAt:   time.Now(),
 			RecordURI:   fmt.Sprintf("at://%s/social.coves.aggregator.service/self", aggregatorDID),
 			RecordCID:   "bagtest123",
@@ -190,7 +190,7 @@ func TestAggregatorAuthorization_Create(t *testing.T) {
 		agg := &aggregators.Aggregator{
 			DID:         aggregatorDID,
 			DisplayName: "Test Aggregator",
-		CreatedAt:    time.Now(),
+			CreatedAt:   time.Now(),
 			IndexedAt:   time.Now(),
 			RecordURI:   fmt.Sprintf("at://%s/social.coves.aggregator.service/self", aggregatorDID),
 			RecordCID:   "bagtest123",
@@ -201,14 +201,14 @@ func TestAggregatorAuthorization_Create(t *testing.T) {
 
 		// Create community
 		community := &communities.Community{
-			DID:          communityDID,
-			Handle:       fmt.Sprintf("!test-comm-%s@coves.local", uniqueSuffix),
-			Name:         "test-comm",
-			OwnerDID:     "did:web:coves.local",
-			HostedByDID:  "did:web:coves.local",
-			Visibility:   "public",
-			CreatedAt:    time.Now(),
-			UpdatedAt:    time.Now(),
+			DID:         communityDID,
+			Handle:      fmt.Sprintf("!test-comm-%s@coves.local", uniqueSuffix),
+			Name:        "test-comm",
+			OwnerDID:    "did:web:coves.local",
+			HostedByDID: "did:web:coves.local",
+			Visibility:  "public",
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
 		}
 		if _, err := commRepo.Create(ctx, community); err != nil {
 			t.Fatalf("Failed to create community: %v", err)
@@ -261,7 +261,7 @@ func TestAggregatorAuthorization_Create(t *testing.T) {
 		agg := &aggregators.Aggregator{
 			DID:         aggregatorDID,
 			DisplayName: "Test Aggregator",
-		CreatedAt:    time.Now(),
+			CreatedAt:   time.Now(),
 			IndexedAt:   time.Now(),
 			RecordURI:   fmt.Sprintf("at://%s/social.coves.aggregator.service/self", aggregatorDID),
 			RecordCID:   "bagtest123",
@@ -272,14 +272,14 @@ func TestAggregatorAuthorization_Create(t *testing.T) {
 
 		// Create community
 		community := &communities.Community{
-			DID:          communityDID,
-			Handle:       fmt.Sprintf("!test-unique-%s@coves.local", uniqueSuffix),
-			Name:         "test-unique",
-			OwnerDID:     "did:web:coves.local",
-			HostedByDID:  "did:web:coves.local",
-			Visibility:   "public",
-			CreatedAt:    time.Now(),
-			UpdatedAt:    time.Now(),
+			DID:         communityDID,
+			Handle:      fmt.Sprintf("!test-unique-%s@coves.local", uniqueSuffix),
+			Name:        "test-unique",
+			OwnerDID:    "did:web:coves.local",
+			HostedByDID: "did:web:coves.local",
+			Visibility:  "public",
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
 		}
 		if _, err := commRepo.Create(ctx, community); err != nil {
 			t.Fatalf("Failed to create community: %v", err)
@@ -348,7 +348,7 @@ func TestAggregatorAuthorization_IsAuthorized(t *testing.T) {
 	agg := &aggregators.Aggregator{
 		DID:         aggregatorDID,
 		DisplayName: "Test Aggregator",
-		CreatedAt:    time.Now(),
+		CreatedAt:   time.Now(),
 		IndexedAt:   time.Now(),
 		RecordURI:   fmt.Sprintf("at://%s/social.coves.aggregator.service/self", aggregatorDID),
 		RecordCID:   "bagtest123",
@@ -358,14 +358,14 @@ func TestAggregatorAuthorization_IsAuthorized(t *testing.T) {
 	}
 
 	community := &communities.Community{
-		DID:          communityDID,
-		Handle:       fmt.Sprintf("!test-auth-%s@coves.local", uniqueSuffix),
-		Name:         "test-auth",
-		OwnerDID:     "did:web:coves.local",
-		HostedByDID:  "did:web:coves.local",
-		Visibility:   "public",
-		CreatedAt:    time.Now(),
-		UpdatedAt:    time.Now(),
+		DID:         communityDID,
+		Handle:      fmt.Sprintf("!test-auth-%s@coves.local", uniqueSuffix),
+		Name:        "test-auth",
+		OwnerDID:    "did:web:coves.local",
+		HostedByDID: "did:web:coves.local",
+		Visibility:  "public",
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
 	}
 	if _, err := commRepo.Create(ctx, community); err != nil {
 		t.Fatalf("Failed to create community: %v", err)
@@ -405,7 +405,7 @@ func TestAggregatorAuthorization_IsAuthorized(t *testing.T) {
 		agg2 := &aggregators.Aggregator{
 			DID:         aggregatorDID2,
 			DisplayName: "Test Aggregator 2",
-		CreatedAt:    time.Now(),
+			CreatedAt:   time.Now(),
 			IndexedAt:   time.Now(),
 			RecordURI:   fmt.Sprintf("at://%s/social.coves.aggregator.service/self", aggregatorDID2),
 			RecordCID:   "bagtest456",
@@ -415,14 +415,14 @@ func TestAggregatorAuthorization_IsAuthorized(t *testing.T) {
 		}
 
 		community2 := &communities.Community{
-			DID:          communityDID2,
-			Handle:       fmt.Sprintf("!test-disabled-%s@coves.local", uniqueSuffix2),
-			Name:         "test-disabled",
-			OwnerDID:     "did:web:coves.local",
-			HostedByDID:  "did:web:coves.local",
-			Visibility:   "public",
-			CreatedAt:    time.Now(),
-			UpdatedAt:    time.Now(),
+			DID:         communityDID2,
+			Handle:      fmt.Sprintf("!test-disabled-%s@coves.local", uniqueSuffix2),
+			Name:        "test-disabled",
+			OwnerDID:    "did:web:coves.local",
+			HostedByDID: "did:web:coves.local",
+			Visibility:  "public",
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
 		}
 		if _, err := commRepo.Create(ctx, community2); err != nil {
 			t.Fatalf("Failed to create community: %v", err)
@@ -488,7 +488,7 @@ func TestAggregatorService_PostCreationIntegration(t *testing.T) {
 	agg := &aggregators.Aggregator{
 		DID:         aggregatorDID,
 		DisplayName: "Test RSS Feed",
-		CreatedAt:    time.Now(),
+		CreatedAt:   time.Now(),
 		IndexedAt:   time.Now(),
 		RecordURI:   fmt.Sprintf("at://%s/social.coves.aggregator.service/self", aggregatorDID),
 		RecordCID:   "bagtest123",
@@ -499,14 +499,14 @@ func TestAggregatorService_PostCreationIntegration(t *testing.T) {
 
 	// Setup community
 	community := &communities.Community{
-		DID:          communityDID,
-		Handle:       fmt.Sprintf("!test-post-%s@coves.local", uniqueSuffix),
-		Name:         "test-post",
-		OwnerDID:     "did:web:coves.local",
-		HostedByDID:  "did:web:coves.local",
-		Visibility:   "public",
-		CreatedAt:    time.Now(),
-		UpdatedAt:    time.Now(),
+		DID:         communityDID,
+		Handle:      fmt.Sprintf("!test-post-%s@coves.local", uniqueSuffix),
+		Name:        "test-post",
+		OwnerDID:    "did:web:coves.local",
+		HostedByDID: "did:web:coves.local",
+		Visibility:  "public",
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
 	}
 	if _, err := commRepo.Create(ctx, community); err != nil {
 		t.Fatalf("Failed to create community: %v", err)
@@ -587,7 +587,7 @@ func TestAggregatorService_RateLimiting(t *testing.T) {
 	agg := &aggregators.Aggregator{
 		DID:         aggregatorDID,
 		DisplayName: "Rate Limited Aggregator",
-		CreatedAt:    time.Now(),
+		CreatedAt:   time.Now(),
 		IndexedAt:   time.Now(),
 		RecordURI:   fmt.Sprintf("at://%s/social.coves.aggregator.service/self", aggregatorDID),
 		RecordCID:   "bagtest123",
@@ -597,14 +597,14 @@ func TestAggregatorService_RateLimiting(t *testing.T) {
 	}
 
 	community := &communities.Community{
-		DID:          communityDID,
-		Handle:       fmt.Sprintf("!test-ratelimit-%s@coves.local", uniqueSuffix),
-		Name:         "test-ratelimit",
-		OwnerDID:     "did:web:coves.local",
-		HostedByDID:  "did:web:coves.local",
-		Visibility:   "public",
-		CreatedAt:    time.Now(),
-		UpdatedAt:    time.Now(),
+		DID:         communityDID,
+		Handle:      fmt.Sprintf("!test-ratelimit-%s@coves.local", uniqueSuffix),
+		Name:        "test-ratelimit",
+		OwnerDID:    "did:web:coves.local",
+		HostedByDID: "did:web:coves.local",
+		Visibility:  "public",
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
 	}
 	if _, err := commRepo.Create(ctx, community); err != nil {
 		t.Fatalf("Failed to create community: %v", err)
@@ -676,7 +676,7 @@ func TestAggregatorPostService_Integration(t *testing.T) {
 	agg := &aggregators.Aggregator{
 		DID:         aggregatorDID,
 		DisplayName: "Test Aggregator",
-		CreatedAt:    time.Now(),
+		CreatedAt:   time.Now(),
 		IndexedAt:   time.Now(),
 		RecordURI:   fmt.Sprintf("at://%s/social.coves.aggregator.service/self", aggregatorDID),
 		RecordCID:   "bagtest123",
@@ -726,7 +726,7 @@ func TestAggregatorTriggers(t *testing.T) {
 	agg := &aggregators.Aggregator{
 		DID:         aggregatorDID,
 		DisplayName: "Trigger Test Aggregator",
-		CreatedAt:    time.Now(),
+		CreatedAt:   time.Now(),
 		IndexedAt:   time.Now(),
 		RecordURI:   fmt.Sprintf("at://%s/social.coves.aggregator.service/self", aggregatorDID),
 		RecordCID:   "bagtest123",
@@ -742,14 +742,14 @@ func TestAggregatorTriggers(t *testing.T) {
 			communityDID := generateTestDID(commSuffix + "comm")
 
 			community := &communities.Community{
-				DID:          communityDID,
-				Handle:       fmt.Sprintf("!trigger-test-%s@coves.local", commSuffix),
-				Name:         fmt.Sprintf("trigger-test-%d", i),
-				OwnerDID:     "did:web:coves.local",
-				HostedByDID:  "did:web:coves.local",
-				Visibility:   "public",
-				CreatedAt:    time.Now(),
-				UpdatedAt:    time.Now(),
+				DID:         communityDID,
+				Handle:      fmt.Sprintf("!trigger-test-%s@coves.local", commSuffix),
+				Name:        fmt.Sprintf("trigger-test-%d", i),
+				OwnerDID:    "did:web:coves.local",
+				HostedByDID: "did:web:coves.local",
+				Visibility:  "public",
+				CreatedAt:   time.Now(),
+				UpdatedAt:   time.Now(),
 			}
 			if _, err := commRepo.Create(ctx, community); err != nil {
 				t.Fatalf("Failed to create community %d: %v", i, err)
@@ -760,8 +760,8 @@ func TestAggregatorTriggers(t *testing.T) {
 				CommunityDID:  communityDID,
 				Enabled:       true,
 				CreatedBy:     "did:plc:moderator123",
-			CreatedAt:     time.Now(),
-			IndexedAt:     time.Now(),
+				CreatedAt:     time.Now(),
+				IndexedAt:     time.Now(),
 				RecordURI:     fmt.Sprintf("at://%s/social.coves.aggregator.authorization/auth%d", communityDID, i),
 				RecordCID:     fmt.Sprintf("bagauth%d", i),
 			}
@@ -786,14 +786,14 @@ func TestAggregatorTriggers(t *testing.T) {
 
 		// Create community
 		community := &communities.Community{
-			DID:          communityDID,
-			Handle:       fmt.Sprintf("!post-trigger-%s@coves.local", uniqueSuffix),
-			Name:         "post-trigger",
-			OwnerDID:     "did:web:coves.local",
-			HostedByDID:  "did:web:coves.local",
-			Visibility:   "public",
-			CreatedAt:    time.Now(),
-			UpdatedAt:    time.Now(),
+			DID:         communityDID,
+			Handle:      fmt.Sprintf("!post-trigger-%s@coves.local", uniqueSuffix),
+			Name:        "post-trigger",
+			OwnerDID:    "did:web:coves.local",
+			HostedByDID: "did:web:coves.local",
+			Visibility:  "public",
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
 		}
 		if _, err := commRepo.Create(ctx, community); err != nil {
 			t.Fatalf("Failed to create community: %v", err)
