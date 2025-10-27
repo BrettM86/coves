@@ -6,7 +6,6 @@ import (
 	"Coves/internal/core/communityFeeds"
 	"Coves/internal/db/postgres"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -693,55 +692,4 @@ func TestGetCommunityFeed_HotCursorPrecision(t *testing.T) {
 	assert.True(t, allURIs[postC], "Post C missing")
 
 	t.Logf("SUCCESS: All posts with similar hot ranks preserved (precision bug fixed)")
-}
-
-// Helper: createFeedTestCommunity creates a test community and returns its DID
-func createFeedTestCommunity(db *sql.DB, ctx context.Context, name, ownerHandle string) (string, error) {
-	// Create owner user first (directly insert to avoid service dependencies)
-	ownerDID := fmt.Sprintf("did:plc:%s", ownerHandle)
-	_, err := db.ExecContext(ctx, `
-		INSERT INTO users (did, handle, pds_url, created_at)
-		VALUES ($1, $2, $3, NOW())
-		ON CONFLICT (did) DO NOTHING
-	`, ownerDID, ownerHandle, "https://bsky.social")
-	if err != nil {
-		return "", err
-	}
-
-	// Create community
-	communityDID := fmt.Sprintf("did:plc:community-%s", name)
-	_, err = db.ExecContext(ctx, `
-		INSERT INTO communities (did, name, owner_did, created_by_did, hosted_by_did, handle, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, NOW())
-		ON CONFLICT (did) DO NOTHING
-	`, communityDID, name, ownerDID, ownerDID, "did:web:test.coves.social", fmt.Sprintf("%s.coves.social", name))
-
-	return communityDID, err
-}
-
-// Helper: createTestPost creates a test post and returns its URI
-func createTestPost(t *testing.T, db *sql.DB, communityDID, authorDID, title string, score int, createdAt time.Time) string {
-	t.Helper()
-
-	ctx := context.Background()
-
-	// Create author user if not exists (directly insert to avoid service dependencies)
-	_, _ = db.ExecContext(ctx, `
-		INSERT INTO users (did, handle, pds_url, created_at)
-		VALUES ($1, $2, $3, NOW())
-		ON CONFLICT (did) DO NOTHING
-	`, authorDID, fmt.Sprintf("%s.bsky.social", authorDID), "https://bsky.social")
-
-	// Generate URI
-	rkey := fmt.Sprintf("post-%d", time.Now().UnixNano())
-	uri := fmt.Sprintf("at://%s/social.coves.post.record/%s", communityDID, rkey)
-
-	// Insert post
-	_, err := db.ExecContext(ctx, `
-		INSERT INTO posts (uri, cid, rkey, author_did, community_did, title, created_at, score, upvote_count)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-	`, uri, "bafytest", rkey, authorDID, communityDID, title, createdAt, score, score)
-	require.NoError(t, err)
-
-	return uri
 }

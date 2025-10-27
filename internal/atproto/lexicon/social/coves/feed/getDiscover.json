@@ -1,10 +1,10 @@
 {
   "lexicon": 1,
-  "id": "social.coves.feed.getTimeline",
+  "id": "social.coves.feed.getDiscover",
   "defs": {
     "main": {
       "type": "query",
-      "description": "Get the home timeline feed for the authenticated user",
+      "description": "Get the public discover feed showing posts from all communities",
       "parameters": {
         "type": "params",
         "properties": {
@@ -12,7 +12,7 @@
             "type": "string",
             "enum": ["hot", "top", "new"],
             "default": "hot",
-            "description": "Sort order for timeline feed"
+            "description": "Sort order for discover feed"
           },
           "timeframe": {
             "type": "string",
