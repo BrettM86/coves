@@ -55,7 +55,7 @@ type Service interface {
 
 	// Validation and authorization checks (used by post creation handler)
 	ValidateAggregatorPost(ctx context.Context, aggregatorDID, communityDID string) error // Checks authorization + rate limits
-	IsAggregator(ctx context.Context, did string) (bool, error) // Check if DID is a registered aggregator
+	IsAggregator(ctx context.Context, did string) (bool, error)                           // Check if DID is a registered aggregator
 
 	// Post tracking (called after successful post creation)
 	RecordAggregatorPost(ctx context.Context, aggregatorDID, communityDID, postURI, postCID string) error

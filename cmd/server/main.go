@@ -9,7 +9,9 @@ import (
 	"Coves/internal/core/aggregators"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/communityFeeds"
+	"Coves/internal/core/discover"
 	"Coves/internal/core/posts"
+	"Coves/internal/core/timeline"
 	"Coves/internal/core/users"
 	"bytes"
 	"context"
@@ -43,6 +45,15 @@ func main() {
 	defaultPDS := os.Getenv("PDS_URL")
 	if defaultPDS == "" {
 		defaultPDS = "http://localhost:3001" // Local dev PDS
+	}
+
+	// Cursor secret for HMAC signing (prevents cursor manipulation)
+	cursorSecret := os.Getenv("CURSOR_SECRET")
+	if cursorSecret == "" {
+		// Generate a random secret if not set (dev mode)
+		// IMPORTANT: In production, set CURSOR_SECRET to a strong random value
+		cursorSecret = "dev-cursor-secret-change-in-production"
+		log.Println("⚠️  WARNING: Using default cursor secret. Set CURSOR_SECRET env var in production!")
 	}
 
 	db, err := sql.Open("postgres", dbURL)
@@ -275,6 +286,16 @@ func main() {
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
 	log.Println("✅ Feed service initialized")
 
+	// Initialize timeline service (home feed from subscribed communities)
+	timelineRepo := postgresRepo.NewTimelineRepository(db, cursorSecret)
+	timelineService := timeline.NewTimelineService(timelineRepo)
+	log.Println("✅ Timeline service initialized")
+
+	// Initialize discover service (public feed from all communities)
+	discoverRepo := postgresRepo.NewDiscoverRepository(db, cursorSecret)
+	discoverService := discover.NewDiscoverService(discoverRepo)
+	log.Println("✅ Discover service initialized")
+
 	// Start Jetstream consumer for posts
 	// This consumer indexes posts created in community repositories via the firehose
 	// Currently handles only CREATE operations - UPDATE/DELETE deferred until those features exist
@@ -333,6 +354,12 @@ func main() {
 
 	routes.RegisterCommunityFeedRoutes(r, feedService)
 	log.Println("Feed XRPC endpoints registered (public, no auth required)")
+
+	routes.RegisterTimelineRoutes(r, timelineService, authMiddleware)
+	log.Println("Timeline XRPC endpoints registered (requires authentication)")
+
+	routes.RegisterDiscoverRoutes(r, discoverService)
+	log.Println("Discover XRPC endpoints registered (public, no auth required)")
 
 	routes.RegisterAggregatorRoutes(r, aggregatorService)
 	log.Println("Aggregator XRPC endpoints registered (query endpoints public)")

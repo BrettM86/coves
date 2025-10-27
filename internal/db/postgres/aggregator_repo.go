@@ -61,7 +61,6 @@ func (r *postgresAggregatorRepo) CreateAggregator(ctx context.Context, agg *aggr
 		nullString(agg.RecordURI),
 		nullString(agg.RecordCID),
 	)
-
 	if err != nil {
 		return fmt.Errorf("failed to create aggregator: %w", err)
 	}
@@ -230,7 +229,6 @@ func (r *postgresAggregatorRepo) UpdateAggregator(ctx context.Context, agg *aggr
 		nullString(agg.RecordURI),
 		nullString(agg.RecordCID),
 	)
-
 	if err != nil {
 		return fmt.Errorf("failed to update aggregator: %w", err)
 	}
@@ -393,7 +391,6 @@ func (r *postgresAggregatorRepo) CreateAuthorization(ctx context.Context, auth *
 		nullString(auth.RecordURI),
 		nullString(auth.RecordCID),
 	).Scan(&auth.ID)
-
 	if err != nil {
 		// Check for foreign key violations
 		if strings.Contains(err.Error(), "fk_aggregator") {
@@ -553,7 +550,6 @@ func (r *postgresAggregatorRepo) UpdateAuthorization(ctx context.Context, auth *
 		nullString(auth.RecordURI),
 		nullString(auth.RecordCID),
 	)
-
 	if err != nil {
 		return fmt.Errorf("failed to update authorization: %w", err)
 	}

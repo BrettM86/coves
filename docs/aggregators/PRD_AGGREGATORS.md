@@ -212,6 +212,69 @@ AppView-only tracking for rate limiting and stats (not from lexicon).
 
 ---
 
+## 🚨 Alpha Blockers
+
+### Aggregator User Registration
+**Status:** ❌ BLOCKING ALPHA - Must implement before aggregators can post
+**Priority:** CRITICAL
+**Discovered:** 2025-10-24 during Kagi News aggregator E2E testing
+
+**Problem:**
+Aggregators cannot create posts because they aren't indexed as users in the AppView database. The post consumer rejects posts with:
+```
+🚨 SECURITY: Rejecting post event: author not found: <aggregator-did> - cannot index post before author
+```
+
+This security check (in `post_consumer.go:181-196`) ensures referential integrity by requiring all post authors to exist as users before posts can be indexed.
+
+**Root Cause:**
+Users are normally indexed through Jetstream identity events when they create accounts on a PDS. Aggregators don't have PDSs connected to Jetstream, so they never emit identity events and are never automatically indexed.
+
+**Solution: Aggregator Registration Endpoint**
+
+Implement `social.coves.aggregator.register` XRPC endpoint to allow aggregators to self-register as users.
+
+**Implementation:**
+```go
+// Handler: internal/api/handlers/aggregator/register.go
+// POST /xrpc/social.coves.aggregator.register
+
+type RegisterRequest struct {
+    AggregatorDID string `json:"aggregatorDid"`
+    Handle        string `json:"handle"`
+}
+
+func (h *Handler) Register(ctx context.Context, req *RegisterRequest) error {
+    // 1. Validate aggregator DID format
+    // 2. Validate handle is available
+    // 3. Verify aggregator controls the DID (via DID document)
+    // 4. Create user entry in database
+    _, err := h.userService.CreateUser(ctx, users.CreateUserRequest{
+        DID:    req.AggregatorDID,
+        Handle: req.Handle,
+        PDSURL: "https://api.coves.social", // Aggregators "hosted" by Coves
+    })
+    return err
+}
+```
+
+**Acceptance Criteria:**
+- [ ] Endpoint implemented and tested
+- [ ] Aggregator can register with DID + handle
+- [ ] Registration validates DID ownership
+- [ ] Duplicate registrations handled gracefully
+- [ ] Kagi News aggregator can successfully post after registration
+- [ ] Documentation updated with registration flow
+
+**Alternative (Quick Fix for Testing):**
+Manual SQL insert for known aggregators during bootstrap:
+```sql
+INSERT INTO users (did, handle, pds_url, created_at, updated_at)
+VALUES ('did:plc:...', 'aggregator-name.coves.social', 'https://api.coves.social', NOW(), NOW());
+```
+
+---
+
 ### Phase 2: Aggregator SDK (Post-Alpha)
 **Deferred** - Will build SDK after Phase 1 is validated in production.
 
@@ -325,10 +388,11 @@ Monitors sports APIs, creates post-game threads with scores and stats.
 ### Alpha Goals
 - ✅ Lexicons validated
 - ✅ Database migrations tested
-- ⏳ Jetstream consumer indexes records
-- ⏳ Post creation validates aggregator auth
-- ⏳ Rate limiting prevents spam
-- ⏳ Integration tests passing
+- ✅ Jetstream consumer indexes records
+- ✅ Post creation validates aggregator auth
+- ✅ Rate limiting prevents spam
+- ✅ Integration tests passing
+- ❌ **BLOCKER:** Aggregator registration endpoint (see Alpha Blockers section)
 
 ### Beta Goals (Future)
 - First aggregator deployed in production

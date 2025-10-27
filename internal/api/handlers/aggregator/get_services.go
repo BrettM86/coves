@@ -105,16 +105,16 @@ type AggregatorView struct {
 
 // AggregatorViewDetailed matches social.coves.aggregator.defs#aggregatorViewDetailed (with stats)
 type AggregatorViewDetailed struct {
-	DID           string           `json:"did"`
-	DisplayName   string           `json:"displayName"`
-	Description   *string          `json:"description,omitempty"`
-	Avatar        *string          `json:"avatar,omitempty"`
-	ConfigSchema  interface{}      `json:"configSchema,omitempty"`
-	SourceURL     *string          `json:"sourceUrl,omitempty"`
-	MaintainerDID *string          `json:"maintainer,omitempty"`
-	CreatedAt     string           `json:"createdAt"`
-	RecordUri     string           `json:"recordUri"`
-	Stats         AggregatorStats  `json:"stats"`
+	DID           string          `json:"did"`
+	DisplayName   string          `json:"displayName"`
+	Description   *string         `json:"description,omitempty"`
+	Avatar        *string         `json:"avatar,omitempty"`
+	ConfigSchema  interface{}     `json:"configSchema,omitempty"`
+	SourceURL     *string         `json:"sourceUrl,omitempty"`
+	MaintainerDID *string         `json:"maintainer,omitempty"`
+	CreatedAt     string          `json:"createdAt"`
+	RecordUri     string          `json:"recordUri"`
+	Stats         AggregatorStats `json:"stats"`
 }
 
 // AggregatorStats matches social.coves.aggregator.defs#aggregatorStats
