@@ -13,6 +13,7 @@ import (
 	"Coves/internal/core/posts"
 	"Coves/internal/core/timeline"
 	"Coves/internal/core/users"
+	"Coves/internal/core/votes"
 	"bytes"
 	"context"
 	"database/sql"
@@ -281,6 +282,11 @@ func main() {
 	postRepo := postgresRepo.NewPostRepository(db)
 	postService := posts.NewPostService(postRepo, communityService, aggregatorService, defaultPDS)
 
+	// Initialize vote service
+	voteRepo := postgresRepo.NewVoteRepository(db)
+	voteService := votes.NewVoteService(voteRepo, postRepo, defaultPDS)
+	log.Println("✅ Vote service initialized")
+
 	// Initialize feed service
 	feedRepo := postgresRepo.NewCommunityFeedRepository(db)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
@@ -344,6 +350,27 @@ func main() {
 	log.Println("  - Indexing: social.coves.aggregator.service (service declarations)")
 	log.Println("  - Indexing: social.coves.aggregator.authorization (authorization records)")
 
+	// Start Jetstream consumer for votes
+	// This consumer indexes votes from user repositories and updates post vote counts
+	voteJetstreamURL := os.Getenv("VOTE_JETSTREAM_URL")
+	if voteJetstreamURL == "" {
+		// Listen to vote record CREATE/DELETE events from user repositories
+		voteJetstreamURL = "ws://localhost:6008/subscribe?wantedCollections=social.coves.interaction.vote"
+	}
+
+	voteEventConsumer := jetstream.NewVoteEventConsumer(voteRepo, userService, db)
+	voteJetstreamConnector := jetstream.NewVoteJetstreamConnector(voteEventConsumer, voteJetstreamURL)
+
+	go func() {
+		if startErr := voteJetstreamConnector.Start(ctx); startErr != nil {
+			log.Printf("Vote Jetstream consumer stopped: %v", startErr)
+		}
+	}()
+
+	log.Printf("Started Jetstream vote consumer: %s", voteJetstreamURL)
+	log.Println("  - Indexing: social.coves.interaction.vote CREATE/DELETE operations")
+	log.Println("  - Updating: Post vote counts atomically")
+
 	// Register XRPC routes
 	routes.RegisterUserRoutes(r, userService)
 	routes.RegisterCommunityRoutes(r, communityService, authMiddleware)
@@ -351,6 +378,9 @@ func main() {
 
 	routes.RegisterPostRoutes(r, postService, authMiddleware)
 	log.Println("Post XRPC endpoints registered with OAuth authentication")
+
+	routes.RegisterVoteRoutes(r, voteService, authMiddleware)
+	log.Println("Vote XRPC endpoints registered with OAuth authentication")
 
 	routes.RegisterCommunityFeedRoutes(r, feedService)
 	log.Println("Feed XRPC endpoints registered (public, no auth required)")

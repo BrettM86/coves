@@ -4,21 +4,44 @@
   "defs": {
     "main": {
       "type": "record",
-      "description": "An upvote on a post or comment",
+      "description": "A vote (upvote or downvote) on a post or comment",
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["subject", "createdAt"],
+        "required": ["subject", "direction", "createdAt"],
         "properties": {
           "subject": {
+            "type": "ref",
+            "ref": "#strongRef",
+            "description": "Strong reference to the post or comment being voted on"
+          },
+          "direction": {
             "type": "string",
-            "format": "at-uri",
-            "description": "AT-URI of the post or comment being voted on"
+            "enum": ["up", "down"],
+            "description": "Vote direction: up for upvote, down for downvote"
           },
           "createdAt": {
             "type": "string",
-            "format": "datetime"
+            "format": "datetime",
+            "description": "Timestamp when the vote was created"
           }
+        }
+      }
+    },
+    "strongRef": {
+      "type": "object",
+      "description": "Strong reference to a record (AT-URI + CID)",
+      "required": ["uri", "cid"],
+      "properties": {
+        "uri": {
+          "type": "string",
+          "format": "at-uri",
+          "description": "AT-URI of the record"
+        },
+        "cid": {
+          "type": "string",
+          "format": "cid",
+          "description": "CID of the record content"
         }
       }
     }

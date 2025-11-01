@@ -122,6 +122,25 @@ e2e-test: ## Run automated E2E tests (requires: make dev-up + make run in anothe
 	@echo ""
 	@echo "$(GREEN)✓ E2E tests complete!$(RESET)"
 
+e2e-vote-test: ## Run vote E2E tests (requires: make dev-up)
+	@echo "$(CYAN)========================================$(RESET)"
+	@echo "$(CYAN)  E2E Test: Vote System                $(RESET)"
+	@echo "$(CYAN)========================================$(RESET)"
+	@echo ""
+	@echo "$(CYAN)Prerequisites:$(RESET)"
+	@echo "  1. Run 'make dev-up' (starts PDS + Jetstream + PostgreSQL)"
+	@echo "  2. Test database will be used (port 5434)"
+	@echo ""
+	@echo "$(GREEN)Running vote E2E tests...$(RESET)"
+	@echo ""
+	@echo "$(CYAN)Running simulated E2E test (fast)...$(RESET)"
+	@go test ./tests/integration -run TestVote_E2E_WithJetstream -v
+	@echo ""
+	@echo "$(CYAN)Running live PDS E2E test (requires PDS + Jetstream)...$(RESET)"
+	@go test ./tests/integration -run TestVote_E2E_LivePDS -v || echo "$(YELLOW)Live PDS test skipped (run 'make dev-up' first)$(RESET)"
+	@echo ""
+	@echo "$(GREEN)✓ Vote E2E tests complete!$(RESET)"
+
 test-db-reset: ## Reset test database
 	@echo "$(GREEN)Resetting test database...$(RESET)"
 	@docker-compose -f docker-compose.dev.yml --env-file .env.dev --profile test rm -sf postgres-test
