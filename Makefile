@@ -191,9 +191,8 @@ build: ## Build the Coves server
 	@go build -o server ./cmd/server
 	@echo "$(GREEN)✓ Build complete: ./server$(RESET)"
 
-run: ## Run the Coves server (requires database running)
-	@echo "$(GREEN)Starting Coves server...$(RESET)"
-	@go run ./cmd/server
+run: ## Run the Coves server with dev environment (requires database running)
+	@./scripts/dev-run.sh
 
 ##@ Cleanup
 
@@ -225,6 +224,24 @@ fresh-start: ## Complete fresh start (reset everything, start clean)
 quick-restart: ## Quick restart of development stack (keeps data)
 	@make dev-down
 	@make dev-up
+
+##@ Mobile Testing
+
+mobile-setup: ## Setup Android port forwarding for USB-connected devices (recommended)
+	@echo "$(CYAN)Setting up Android mobile testing environment...$(RESET)"
+	@./scripts/setup-mobile-ports.sh
+
+mobile-reset: ## Remove all Android port forwarding
+	@echo "$(YELLOW)Removing Android port forwarding...$(RESET)"
+	@adb reverse --remove-all || echo "$(YELLOW)No device connected$(RESET)"
+	@echo "$(GREEN)✓ Port forwarding removed$(RESET)"
+
+ngrok-up: ## Start ngrok tunnels (for iOS or WiFi testing - requires paid plan for 3 tunnels)
+	@echo "$(GREEN)Starting ngrok tunnels for mobile testing...$(RESET)"
+	@./scripts/start-ngrok.sh
+
+ngrok-down: ## Stop all ngrok tunnels
+	@./scripts/stop-ngrok.sh
 
 ##@ Utilities
 

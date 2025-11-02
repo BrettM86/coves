@@ -64,11 +64,11 @@ services:
     image: ghcr.io/bluesky-social/pds:latest
     container_name: coves-dev-pds
     ports:
-      - "3001:3000"  # PDS XRPC API (avoiding production PDS on :3000)
+      - "3001:3001"  # PDS XRPC API (avoiding production PDS on :3000)
     environment:
       # PDS Configuration
       PDS_HOSTNAME: ${PDS_HOSTNAME:-localhost}
-      PDS_PORT: 3000
+      PDS_PORT: 3001  # Match external port for correct DID registration
       PDS_DATA_DIRECTORY: /pds
       PDS_BLOBSTORE_DISK_LOCATION: /pds/blocks
       PDS_DID_PLC_URL: ${PDS_DID_PLC_URL:-https://plc.directory}
@@ -101,7 +101,7 @@ services:
     networks:
       - coves-dev
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/xrpc/_health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3001/xrpc/_health"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -128,7 +128,7 @@ services:
       - "6009:6009"  # Metrics endpoint
     environment:
       # Point Jetstream at local PDS firehose
-      JETSTREAM_WS_URL: ws://pds:3000/xrpc/com.atproto.sync.subscribeRepos
+      JETSTREAM_WS_URL: ws://pds:3001/xrpc/com.atproto.sync.subscribeRepos
 
       # Server configuration
       JETSTREAM_LISTEN_ADDR: ":6008"
@@ -154,11 +154,10 @@ services:
     depends_on:
       pds:
         condition: service_healthy
+    # Health check disabled for dev - container has no HTTP clients installed
+    # Jetstream logs show it connects and runs successfully
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:6009/metrics"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      disable: true
     profiles:
       - jetstream
 
