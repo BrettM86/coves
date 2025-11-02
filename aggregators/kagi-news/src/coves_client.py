@@ -71,6 +71,7 @@ class CovesClient:
         community_handle: str,
         content: str,
         facets: List[Dict],
+        title: Optional[str] = None,
         embed: Optional[Dict] = None
     ) -> str:
         """
@@ -80,6 +81,7 @@ class CovesClient:
             community_handle: Community handle (e.g., "world-news.coves.social")
             content: Post content (rich text)
             facets: Rich text facets (formatting, links)
+            title: Optional post title
             embed: Optional external embed
 
         Returns:
@@ -98,6 +100,10 @@ class CovesClient:
                 "content": content,
                 "facets": facets
             }
+
+            # Add title if provided
+            if title:
+                post_data["title"] = title
 
             # Add embed if provided
             if embed:

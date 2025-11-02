@@ -181,6 +181,7 @@ class Aggregator:
                 try:
                     post_uri = self.coves_client.create_post(
                         community_handle=feed_config.community_handle,
+                        title=story.title,
                         content=rich_text["content"],
                         facets=rich_text["facets"],
                         embed=embed
