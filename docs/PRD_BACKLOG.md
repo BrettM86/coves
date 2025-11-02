@@ -10,6 +10,123 @@ Miscellaneous platform improvements, bug fixes, and technical debt that don't fi
 
 ---
 
+## 🔴 P0: Critical (Alpha Blockers)
+
+### OAuth DPoP Token Architecture - Voting Write-Forward
+**Added:** 2025-11-02 | **Effort:** 4-6 hours | **Priority:** ALPHA BLOCKER
+**Status:** ⚠️ ARCHITECTURE DECISION REQUIRED
+
+**Problem:**
+Our backend is attempting to use DPoP-bound OAuth tokens to write votes to users' PDSs, causing "Malformed token" errors. This violates atProto architecture patterns.
+
+**Current (Incorrect) Flow:**
+```
+Mobile Client (OAuth + DPoP) → Coves Backend → User's PDS ❌
+                                    ↓
+                            "Malformed token" error
+```
+
+**Root Cause:**
+- Mobile app uses OAuth with DPoP (Demonstrating Proof of Possession)
+- DPoP tokens are cryptographically bound to client's private key via `cnf.jkt` claim
+- Each PDS request requires **both**:
+  - `Authorization: Bearer <token>`
+  - `DPoP: <signed-proof-jwt>` (signature proves client has private key)
+- Backend cannot create DPoP proofs (doesn't have client's private key)
+- **DPoP tokens are intentionally non-transferable** (security feature to prevent token theft)
+
+**Evidence:**
+```json
+// Token decoded from mobile app session
+{
+  "sub": "did:plc:txrork7rurdueix27ulzi7ke",
+  "cnf": {
+    "jkt": "LSWROJhTkPn4yT18xUjiIz2Z7z7l_gozKfjjQTYgW9o"  // ← DPoP binding
+  },
+  "client_id": "https://lingering-darkness-50a6.brettmay0212.workers.dev/client-metadata.json",
+  "iss": "http://localhost:3001"
+}
+```
+
+**atProto Best Practice (from Bluesky social-app analysis):**
+- ✅ Clients write **directly to their own PDS** (no backend proxy)
+- ✅ AppView **only indexes** from Jetstream (eventual consistency)
+- ✅ PDS = User's personal data store (user controls writes)
+- ✅ AppView = Read-only aggregator/indexer
+- ❌ Backend should NOT proxy user write operations
+
+**Correct Architecture:**
+```
+Mobile Client → User's PDS (direct write with DPoP proof) ✓
+             ↓
+         Jetstream (firehose)
+             ↓
+    Coves AppView (indexes votes from firehose)
+```
+
+**Affected Endpoints:**
+1. **Vote Creation** - [create_vote.go:76](../internal/api/handlers/vote/create_vote.go#L76)
+   - Currently: Backend writes to PDS using user's token
+   - Should: Return error directing client to write directly
+
+2. **Vote Service** - [service.go:126](../internal/core/votes/service.go#L126)
+   - Currently: `createRecordOnPDSAs()` attempts write-forward
+   - Should: Remove write-forward, rely on Jetstream indexing only
+
+**Solution Options:**
+
+**Option A: Client Direct Write (RECOMMENDED - Follows Bluesky)**
+```typescript
+// Mobile client writes directly (like Bluesky social-app)
+const agent = new Agent(oauthSession)
+await agent.call('com.atproto.repo.createRecord', {
+  repo: userDid,
+  collection: 'social.coves.interaction.vote',
+  record: {
+    $type: 'social.coves.interaction.vote',
+    subject: { uri: postUri, cid: postCid },
+    direction: 'up',
+    createdAt: new Date().toISOString()
+  }
+})
+```
+
+Backend changes:
+- Remove write-forward code from vote service
+- Return error from XRPC endpoint: "Votes must be created directly at your PDS"
+- Index votes from Jetstream consumer (already implemented)
+
+**Option B: Backend App Passwords (NOT RECOMMENDED)**
+- User creates app-specific password
+- Backend uses password auth (gets regular JWTs, not DPoP)
+- Security downgrade, poor UX
+
+**Option C: Service Auth Token (Complex)**
+- Backend gets its own service credentials
+- Requires PDS to trust our AppView as delegated writer
+- Non-standard atProto pattern
+
+**Recommendation:** Option A (Client Direct Write)
+- Matches atProto architecture
+- Follows Bluesky social-app pattern
+- Best security (user controls their data)
+- Simplest implementation
+
+**Implementation Tasks:**
+1. Update Flutter OAuth package to expose `agent.call()` for custom lexicons
+2. Update mobile vote UI to write directly to PDS
+3. Remove write-forward code from backend vote service
+4. Update vote XRPC handler to return helpful error message
+5. Verify Jetstream consumer correctly indexes votes
+6. Update integration tests to match new flow
+
+**References:**
+- Bluesky social-app: Direct PDS writes via agent
+- atProto OAuth spec: DPoP binding prevents token reuse
+- atProto architecture: AppView = read-only indexer
+
+---
+
 ## 🟡 P1: Important (Alpha Blockers)
 
 ### at-identifier Handle Resolution in Endpoints
@@ -226,51 +343,77 @@ if err != nil {
 
 ## 🔴 P1.5: Federation Blockers (Beta Launch)
 
-### Cross-PDS Write-Forward Support
-**Added:** 2025-10-17 | **Effort:** 3-4 hours | **Priority:** FEDERATION BLOCKER (Beta)
+### Cross-PDS Write-Forward Support for Community Service
+**Added:** 2025-10-17 | **Updated:** 2025-11-02 | **Effort:** 3-4 hours | **Priority:** FEDERATION BLOCKER (Beta)
 
-**Problem:** Current write-forward implementation assumes all users are on the same PDS as the Coves instance. This breaks federation when users from external PDSs try to interact with communities.
+**Problem:** Community service write-forward methods assume all users are on the same PDS as the Coves instance. This breaks federation when users from external PDSs try to subscribe/block communities.
 
 **Current Behavior:**
 - User on `pds.bsky.social` subscribes to community on `coves.social`
 - Coves calls `s.pdsURL` (instance default: `http://localhost:3001`)
-- Write goes to WRONG PDS → fails with 401/403
+- Write goes to WRONG PDS → fails with `{"error":"InvalidToken","message":"Malformed token"}`
 
 **Impact:**
-- ✅ **Alpha**: Works fine (single PDS deployment)
-- ❌ **Beta**: Breaks federation (users on different PDSs can't subscribe/interact)
+- ✅ **Alpha**: Works fine (single PDS deployment, no federation)
+- ❌ **Beta**: Breaks federation (users on different PDSs can't subscribe/block)
 
 **Root Cause:**
-- [service.go:736](../internal/core/communities/service.go#L736): `createRecordOnPDSAs` hardcodes `s.pdsURL`
-- [service.go:753](../internal/core/communities/service.go#L753): `putRecordOnPDSAs` hardcodes `s.pdsURL`
-- [service.go:767](../internal/core/communities/service.go#L767): `deleteRecordOnPDSAs` hardcodes `s.pdsURL`
+- [service.go:1033](../internal/core/communities/service.go#L1033): `createRecordOnPDSAs` hardcodes `s.pdsURL`
+- [service.go:1050](../internal/core/communities/service.go#L1050): `putRecordOnPDSAs` hardcodes `s.pdsURL`
+- [service.go:1063](../internal/core/communities/service.go#L1063): `deleteRecordOnPDSAs` hardcodes `s.pdsURL`
+
+**Affected Operations:**
+- `SubscribeToCommunity` ([service.go:608](../internal/core/communities/service.go#L608))
+- `UnsubscribeFromCommunity` (calls `deleteRecordOnPDSAs`)
+- `BlockCommunity` ([service.go:739](../internal/core/communities/service.go#L739))
+- `UnblockCommunity` (calls `deleteRecordOnPDSAs`)
 
 **Solution:**
-1. Add identity resolver dependency to `CommunityService`
+1. Add `identityResolver identity.Resolver` to `communityService` struct
 2. Before write-forward, resolve user's DID → extract PDS URL
-3. Call user's actual PDS instead of `s.pdsURL`
+3. Call user's actual PDS instead of hardcoded `s.pdsURL`
 
-**Implementation:**
+**Implementation Pattern (from Vote Service):**
 ```go
-// Before write-forward to user's repo:
-userIdentity, err := s.identityResolver.ResolveDID(ctx, userDID)
-if err != nil {
-    return fmt.Errorf("failed to resolve user PDS: %w", err)
+// Add helper method to resolve user's PDS
+func (s *communityService) resolveUserPDS(ctx context.Context, userDID string) (string, error) {
+    identity, err := s.identityResolver.Resolve(ctx, userDID)
+    if err != nil {
+        return "", fmt.Errorf("failed to resolve user PDS: %w", err)
+    }
+    if identity.PDSURL == "" {
+        log.Printf("[COMMUNITY-PDS] WARNING: No PDS URL found for %s, using fallback: %s", userDID, s.pdsURL)
+        return s.pdsURL, nil
+    }
+    return identity.PDSURL, nil
 }
 
-// Use user's actual PDS URL
-endpoint := fmt.Sprintf("%s/xrpc/com.atproto.repo.createRecord", userIdentity.PDSURL)
+// Update write-forward methods:
+func (s *communityService) createRecordOnPDSAs(ctx context.Context, repoDID, collection, rkey string, record map[string]interface{}, accessToken string) (string, string, error) {
+    // Resolve user's actual PDS (critical for federation)
+    pdsURL, err := s.resolveUserPDS(ctx, repoDID)
+    if err != nil {
+        return "", "", fmt.Errorf("failed to resolve user PDS: %w", err)
+    }
+    endpoint := fmt.Sprintf("%s/xrpc/com.atproto.repo.createRecord", strings.TrimSuffix(pdsURL, "/"))
+    // ... rest of method
+}
 ```
 
 **Files to Modify:**
-- `internal/core/communities/service.go` - Add resolver, modify write-forward methods
+- `internal/core/communities/service.go` - Add resolver field + `resolveUserPDS` helper
+- `internal/core/communities/service.go` - Update `createRecordOnPDSAs`, `putRecordOnPDSAs`, `deleteRecordOnPDSAs`
 - `cmd/server/main.go` - Pass identity resolver to community service constructor
-- Tests - Add cross-PDS scenarios
+- Tests - Add cross-PDS subscription/block scenarios
 
 **Testing:**
-- User on external PDS subscribes to community
-- User on external PDS blocks community
-- Community updates still work (communities ARE on instance PDS)
+- User on external PDS subscribes to community → writes to their PDS
+- User on external PDS blocks community → writes to their PDS
+- Community profile updates still work (writes to community's own PDS)
+
+**Related:**
+- ✅ **Vote Service**: Fixed in Alpha (2025-11-02) - users can vote from any PDS
+- 🔴 **Community Service**: Deferred to Beta (no federation in Alpha)
 
 ---
 
@@ -369,17 +512,6 @@ Document: did:plc choice, pgcrypto encryption, Jetstream vs firehose, write-forw
 **Solution:** Query PLC directory for DID document, extract `serviceEndpoint`.
 
 **Code:** TODO in [jetstream/user_consumer.go:203](../internal/atproto/jetstream/user_consumer.go#L203)
-
----
-
-### PLC Directory Registration (Production)
-**Added:** 2025-10-11 | **Effort:** 1 day
-
-**Problem:** DID generator creates did:plc but doesn't register in prod mode.
-
-**Solution:** Implement PLC registration API call when `isDevEnv=false`.
-
-**Code:** TODO in [did/generator.go:46](../internal/atproto/did/generator.go#L46)
 
 ---
 
