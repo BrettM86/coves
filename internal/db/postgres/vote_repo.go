@@ -96,7 +96,7 @@ func (r *postgresVoteRepo) GetByURI(ctx context.Context, uri string) (*votes.Vot
 
 // GetByVoterAndSubject retrieves a user's vote on a specific subject
 // Used by service to check existing vote state before creating/toggling
-func (r *postgresVoteRepo) GetByVoterAndSubject(ctx context.Context, voterDID string, subjectURI string) (*votes.Vote, error) {
+func (r *postgresVoteRepo) GetByVoterAndSubject(ctx context.Context, voterDID, subjectURI string) (*votes.Vote, error) {
 	query := `
 		SELECT
 			id, uri, cid, rkey, voter_did,
@@ -170,7 +170,7 @@ func (r *postgresVoteRepo) ListBySubject(ctx context.Context, subjectURI string,
 	if err != nil {
 		return nil, fmt.Errorf("failed to list votes by subject: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var result []*votes.Vote
 	for rows.Next() {
@@ -211,7 +211,7 @@ func (r *postgresVoteRepo) ListByVoter(ctx context.Context, voterDID string, lim
 	if err != nil {
 		return nil, fmt.Errorf("failed to list votes by voter: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var result []*votes.Vote
 	for rows.Next() {

@@ -145,7 +145,7 @@ func (r *postgresAggregatorRepo) GetAggregatorsByDIDs(ctx context.Context, dids 
 	if err != nil {
 		return nil, fmt.Errorf("failed to get aggregators: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var results []*aggregators.Aggregator
 	for rows.Next() {
@@ -279,7 +279,7 @@ func (r *postgresAggregatorRepo) ListAggregators(ctx context.Context, limit, off
 	if err != nil {
 		return nil, fmt.Errorf("failed to list aggregators: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var aggs []*aggregators.Aggregator
 	for rows.Next() {
@@ -632,7 +632,7 @@ func (r *postgresAggregatorRepo) ListAuthorizationsForAggregator(ctx context.Con
 	if err != nil {
 		return nil, fmt.Errorf("failed to list authorizations for aggregator: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return scanAuthorizations(rows)
 }
@@ -662,7 +662,7 @@ func (r *postgresAggregatorRepo) ListAuthorizationsForCommunity(ctx context.Cont
 	if err != nil {
 		return nil, fmt.Errorf("failed to list authorizations for community: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	return scanAuthorizations(rows)
 }
@@ -730,7 +730,7 @@ func (r *postgresAggregatorRepo) GetRecentPosts(ctx context.Context, aggregatorD
 	if err != nil {
 		return nil, fmt.Errorf("failed to get recent posts: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var posts []*aggregators.AggregatorPost
 	for rows.Next() {

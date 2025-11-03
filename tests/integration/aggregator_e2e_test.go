@@ -50,7 +50,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 		t.Skipf("PDS not available at %s - run 'make dev-up' to start it", pdsURL)
 	}
 	if resp != nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 	db := setupTestDB(t)
 	defer func() {
@@ -513,7 +513,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 			// Views is []interface{}, unmarshal to check fields
 			viewJSON, _ := json.Marshal(response.Views[0])
 			var view aggregator.AggregatorView
-			json.Unmarshal(viewJSON, &view)
+			_ = json.Unmarshal(viewJSON, &view)
 
 			assert.Equal(t, aggregatorDID, view.DID)
 			assert.Equal(t, "RSS Feed Aggregator", view.DisplayName)
@@ -544,7 +544,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 
 			viewJSON, _ := json.Marshal(response.Views[0])
 			var detailedView aggregator.AggregatorViewDetailed
-			json.Unmarshal(viewJSON, &detailedView)
+			_ = json.Unmarshal(viewJSON, &detailedView)
 
 			assert.Equal(t, aggregatorDID, detailedView.DID)
 			assert.Equal(t, 1, detailedView.Stats.CommunitiesUsing)

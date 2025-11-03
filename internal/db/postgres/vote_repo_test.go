@@ -52,7 +52,7 @@ func createTestUser(t *testing.T, db *sql.DB, handle, did string) {
 
 func TestVoteRepo_Create(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	defer cleanupVotes(t, db)
 
 	repo := NewVoteRepository(db)
@@ -81,7 +81,7 @@ func TestVoteRepo_Create(t *testing.T) {
 
 func TestVoteRepo_Create_Idempotent(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	defer cleanupVotes(t, db)
 
 	repo := NewVoteRepository(db)
@@ -123,7 +123,7 @@ func TestVoteRepo_Create_Idempotent(t *testing.T) {
 
 func TestVoteRepo_Create_VoterNotFound(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	defer cleanupVotes(t, db)
 
 	repo := NewVoteRepository(db)
@@ -153,7 +153,7 @@ func TestVoteRepo_Create_VoterNotFound(t *testing.T) {
 
 func TestVoteRepo_GetByURI(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	defer cleanupVotes(t, db)
 
 	repo := NewVoteRepository(db)
@@ -187,7 +187,7 @@ func TestVoteRepo_GetByURI(t *testing.T) {
 
 func TestVoteRepo_GetByURI_NotFound(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	repo := NewVoteRepository(db)
 	ctx := context.Background()
@@ -198,7 +198,7 @@ func TestVoteRepo_GetByURI_NotFound(t *testing.T) {
 
 func TestVoteRepo_GetByVoterAndSubject(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	defer cleanupVotes(t, db)
 
 	repo := NewVoteRepository(db)
@@ -233,7 +233,7 @@ func TestVoteRepo_GetByVoterAndSubject(t *testing.T) {
 
 func TestVoteRepo_GetByVoterAndSubject_NotFound(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	repo := NewVoteRepository(db)
 	ctx := context.Background()
@@ -244,7 +244,7 @@ func TestVoteRepo_GetByVoterAndSubject_NotFound(t *testing.T) {
 
 func TestVoteRepo_Delete(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	defer cleanupVotes(t, db)
 
 	repo := NewVoteRepository(db)
@@ -283,7 +283,7 @@ func TestVoteRepo_Delete(t *testing.T) {
 
 func TestVoteRepo_Delete_Idempotent(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	defer cleanupVotes(t, db)
 
 	repo := NewVoteRepository(db)
@@ -316,7 +316,7 @@ func TestVoteRepo_Delete_Idempotent(t *testing.T) {
 
 func TestVoteRepo_ListBySubject(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	defer cleanupVotes(t, db)
 
 	repo := NewVoteRepository(db)
@@ -362,7 +362,7 @@ func TestVoteRepo_ListBySubject(t *testing.T) {
 
 func TestVoteRepo_ListByVoter(t *testing.T) {
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	defer cleanupVotes(t, db)
 
 	repo := NewVoteRepository(db)
