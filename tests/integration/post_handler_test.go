@@ -546,7 +546,6 @@ func TestPostService_DIDValidationSecurity(t *testing.T) {
 		}
 
 		_, err := postService.CreatePost(ctx, postReq)
-
 		// May fail for other reasons (community not found), but NOT due to DID mismatch
 		if err != nil {
 			assert.NotContains(t, strings.ToLower(err.Error()), "does not match",

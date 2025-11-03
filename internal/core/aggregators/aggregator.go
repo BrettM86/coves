@@ -6,47 +6,47 @@ import "time"
 // Aggregators are autonomous services that can post content to communities after authorization
 // Following Bluesky's pattern: app.bsky.feed.generator and app.bsky.labeler.service
 type Aggregator struct {
-	DID              string    `json:"did" db:"did"`                                // Aggregator's DID (primary key)
-	DisplayName      string    `json:"displayName" db:"display_name"`               // Human-readable name
-	Description      string    `json:"description,omitempty" db:"description"`      // What the aggregator does
-	AvatarURL        string    `json:"avatarUrl,omitempty" db:"avatar_url"`         // Optional avatar image URL
-	ConfigSchema     []byte    `json:"configSchema,omitempty" db:"config_schema"`   // JSON Schema for configuration (JSONB)
-	MaintainerDID    string    `json:"maintainerDid,omitempty" db:"maintainer_did"` // Contact for support/issues
-	SourceURL        string    `json:"sourceUrl,omitempty" db:"source_url"`         // Source code URL (transparency)
-	CommunitiesUsing int       `json:"communitiesUsing" db:"communities_using"`     // Auto-updated by trigger
-	PostsCreated     int       `json:"postsCreated" db:"posts_created"`             // Auto-updated by trigger
-	CreatedAt        time.Time `json:"createdAt" db:"created_at"`                   // When aggregator was created (from lexicon)
-	IndexedAt        time.Time `json:"indexedAt" db:"indexed_at"`                   // When we indexed this record
-	RecordURI        string    `json:"recordUri,omitempty" db:"record_uri"`         // at://did/social.coves.aggregator.service/self
-	RecordCID        string    `json:"recordCid,omitempty" db:"record_cid"`         // Content hash
+	CreatedAt        time.Time `json:"createdAt" db:"created_at"`
+	IndexedAt        time.Time `json:"indexedAt" db:"indexed_at"`
+	AvatarURL        string    `json:"avatarUrl,omitempty" db:"avatar_url"`
+	DID              string    `json:"did" db:"did"`
+	MaintainerDID    string    `json:"maintainerDid,omitempty" db:"maintainer_did"`
+	SourceURL        string    `json:"sourceUrl,omitempty" db:"source_url"`
+	Description      string    `json:"description,omitempty" db:"description"`
+	DisplayName      string    `json:"displayName" db:"display_name"`
+	RecordURI        string    `json:"recordUri,omitempty" db:"record_uri"`
+	RecordCID        string    `json:"recordCid,omitempty" db:"record_cid"`
+	ConfigSchema     []byte    `json:"configSchema,omitempty" db:"config_schema"`
+	CommunitiesUsing int       `json:"communitiesUsing" db:"communities_using"`
+	PostsCreated     int       `json:"postsCreated" db:"posts_created"`
 }
 
 // Authorization represents a community's authorization for an aggregator
 // Stored in community's repository: at://community_did/social.coves.aggregator.authorization/{rkey}
 type Authorization struct {
-	ID            int        `json:"id" db:"id"`                            // Database ID
-	AggregatorDID string     `json:"aggregatorDid" db:"aggregator_did"`     // Which aggregator
-	CommunityDID  string     `json:"communityDid" db:"community_did"`       // Which community
-	Enabled       bool       `json:"enabled" db:"enabled"`                  // Current status
-	Config        []byte     `json:"config,omitempty" db:"config"`          // Aggregator-specific config (JSONB)
-	CreatedBy     string     `json:"createdBy,omitempty" db:"created_by"`   // Moderator DID who enabled it
-	DisabledBy    string     `json:"disabledBy,omitempty" db:"disabled_by"` // Moderator DID who disabled it
-	CreatedAt     time.Time  `json:"createdAt" db:"created_at"`             // When authorization was created
-	DisabledAt    *time.Time `json:"disabledAt,omitempty" db:"disabled_at"` // When authorization was disabled (for modlog/audit)
-	IndexedAt     time.Time  `json:"indexedAt" db:"indexed_at"`             // When we indexed this record
-	RecordURI     string     `json:"recordUri,omitempty" db:"record_uri"`   // at://community_did/social.coves.aggregator.authorization/{rkey}
-	RecordCID     string     `json:"recordCid,omitempty" db:"record_cid"`   // Content hash
+	CreatedAt     time.Time  `json:"createdAt" db:"created_at"`
+	IndexedAt     time.Time  `json:"indexedAt" db:"indexed_at"`
+	DisabledAt    *time.Time `json:"disabledAt,omitempty" db:"disabled_at"`
+	AggregatorDID string     `json:"aggregatorDid" db:"aggregator_did"`
+	CommunityDID  string     `json:"communityDid" db:"community_did"`
+	CreatedBy     string     `json:"createdBy,omitempty" db:"created_by"`
+	DisabledBy    string     `json:"disabledBy,omitempty" db:"disabled_by"`
+	RecordURI     string     `json:"recordUri,omitempty" db:"record_uri"`
+	RecordCID     string     `json:"recordCid,omitempty" db:"record_cid"`
+	Config        []byte     `json:"config,omitempty" db:"config"`
+	ID            int        `json:"id" db:"id"`
+	Enabled       bool       `json:"enabled" db:"enabled"`
 }
 
 // AggregatorPost represents tracking of posts created by aggregators
 // AppView-only table for rate limiting and statistics
 type AggregatorPost struct {
-	ID            int       `json:"id" db:"id"`
+	CreatedAt     time.Time `json:"createdAt" db:"created_at"`
 	AggregatorDID string    `json:"aggregatorDid" db:"aggregator_did"`
 	CommunityDID  string    `json:"communityDid" db:"community_did"`
 	PostURI       string    `json:"postUri" db:"post_uri"`
 	PostCID       string    `json:"postCid" db:"post_cid"`
-	CreatedAt     time.Time `json:"createdAt" db:"created_at"`
+	ID            int       `json:"id" db:"id"`
 }
 
 // EnableAggregatorRequest represents input for enabling an aggregator in a community

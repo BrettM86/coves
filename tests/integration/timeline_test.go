@@ -1,6 +1,9 @@
 package integration
 
 import (
+	"Coves/internal/api/handlers/timeline"
+	"Coves/internal/api/middleware"
+	"Coves/internal/db/postgres"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,10 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"Coves/internal/api/handlers/timeline"
-	"Coves/internal/api/middleware"
 	timelineCore "Coves/internal/core/timeline"
-	"Coves/internal/db/postgres"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

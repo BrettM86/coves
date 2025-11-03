@@ -111,24 +111,24 @@ func (e *requestError) Error() string {
 
 // ListForCommunityResponse matches the lexicon output
 type ListForCommunityResponse struct {
+	Cursor      *string             `json:"cursor,omitempty"`
 	Aggregators []AuthorizationView `json:"aggregators"`
-	Cursor      *string             `json:"cursor,omitempty"` // Pagination cursor
 }
 
 // AuthorizationView matches social.coves.aggregator.defs#authorizationView
 // Shows authorization from community's perspective
 type AuthorizationView struct {
-	AggregatorDID   string      `json:"aggregatorDid"`
-	CommunityDID    string      `json:"communityDid"`
-	CommunityHandle *string     `json:"communityHandle,omitempty"` // Optional: populated when communities service integration is complete
-	CommunityName   *string     `json:"communityName,omitempty"`   // Optional: populated when communities service integration is complete
-	Enabled         bool        `json:"enabled"`
 	Config          interface{} `json:"config,omitempty"`
-	CreatedAt       string      `json:"createdAt"` // REQUIRED
+	CommunityHandle *string     `json:"communityHandle,omitempty"`
+	CommunityName   *string     `json:"communityName,omitempty"`
 	CreatedBy       *string     `json:"createdBy,omitempty"`
 	DisabledAt      *string     `json:"disabledAt,omitempty"`
 	DisabledBy      *string     `json:"disabledBy,omitempty"`
+	AggregatorDID   string      `json:"aggregatorDid"`
+	CommunityDID    string      `json:"communityDid"`
+	CreatedAt       string      `json:"createdAt"`
 	RecordUri       string      `json:"recordUri,omitempty"`
+	Enabled         bool        `json:"enabled"`
 }
 
 // toAuthorizationView converts domain model to API view

@@ -306,15 +306,15 @@ func parseAggregatorService(record interface{}) (*AggregatorServiceRecord, error
 
 // AggregatorAuthorizationRecord represents the authorization record structure
 type AggregatorAuthorizationRecord struct {
+	Config       map[string]interface{} `json:"config,omitempty"`
 	Type         string                 `json:"$type"`
-	Aggregator   string                 `json:"aggregatorDid"` // Aggregator DID - fixed field name
-	CommunityDid string                 `json:"communityDid"`  // Community DID (must match repo DID)
-	Enabled      bool                   `json:"enabled"`
-	Config       map[string]interface{} `json:"config,omitempty"` // Aggregator-specific config
-	CreatedBy    string                 `json:"createdBy"`        // Required: DID of moderator who authorized
+	Aggregator   string                 `json:"aggregatorDid"`
+	CommunityDid string                 `json:"communityDid"`
+	CreatedBy    string                 `json:"createdBy"`
 	DisabledBy   string                 `json:"disabledBy,omitempty"`
-	DisabledAt   string                 `json:"disabledAt,omitempty"` // When authorization was disabled (for modlog/audit)
+	DisabledAt   string                 `json:"disabledAt,omitempty"`
 	CreatedAt    string                 `json:"createdAt"`
+	Enabled      bool                   `json:"enabled"`
 }
 
 // parseAggregatorAuthorization parses an aggregator authorization record

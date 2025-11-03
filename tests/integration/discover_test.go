@@ -1,6 +1,8 @@
 package integration
 
 import (
+	"Coves/internal/api/handlers/discover"
+	"Coves/internal/db/postgres"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,9 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"Coves/internal/api/handlers/discover"
 	discoverCore "Coves/internal/core/discover"
-	"Coves/internal/db/postgres"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

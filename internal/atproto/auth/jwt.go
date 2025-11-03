@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -133,8 +134,19 @@ func validateClaims(claims *Claims) error {
 
 	// Validate issuer is either an HTTPS URL or a DID
 	// atProto uses DIDs (did:web:, did:plc:) or HTTPS URLs as issuer identifiers
-	if !strings.HasPrefix(claims.Issuer, "https://") && !strings.HasPrefix(claims.Issuer, "did:") {
-		return fmt.Errorf("issuer must be HTTPS URL or DID, got: %s", claims.Issuer)
+	// In dev mode (IS_DEV_ENV=true), allow HTTP for local PDS testing
+	isHTTP := strings.HasPrefix(claims.Issuer, "http://")
+	isHTTPS := strings.HasPrefix(claims.Issuer, "https://")
+	isDID := strings.HasPrefix(claims.Issuer, "did:")
+
+	if !isHTTPS && !isDID && !isHTTP {
+		return fmt.Errorf("issuer must be HTTPS URL, HTTP URL (dev only), or DID, got: %s", claims.Issuer)
+	}
+
+	// In production, reject HTTP issuers (only for non-dev environments)
+	// Check IS_DEV_ENV environment variable
+	if isHTTP && os.Getenv("IS_DEV_ENV") != "true" {
+		return fmt.Errorf("HTTP issuer not allowed in production, got: %s", claims.Issuer)
 	}
 
 	// Parse to ensure it's a valid URL

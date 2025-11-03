@@ -474,7 +474,8 @@ func (s *communityService) EnsureFreshToken(ctx context.Context, community *Comm
 	newAccessToken, newRefreshToken, err := refreshPDSToken(ctx, fresh.PDSURL, fresh.PDSAccessToken, fresh.PDSRefreshToken)
 	if err != nil {
 		// Check if refresh token expired (need password fallback)
-		if strings.Contains(err.Error(), "expired or invalid") {
+		// Match both "ExpiredToken" and "Token has expired" error messages
+		if strings.Contains(strings.ToLower(err.Error()), "expired") {
 			log.Printf("[TOKEN-REFRESH] Community: %s, Event: refresh_token_expired, Message: Re-authenticating with password", fresh.DID)
 
 			// Fallback: Re-authenticate with stored password

@@ -105,18 +105,18 @@ func (h *GetAuthorizationsHandler) parseRequest(r *http.Request) (aggregators.Ge
 
 // GetAuthorizationsResponse matches the lexicon output
 type GetAuthorizationsResponse struct {
+	Cursor         *string             `json:"cursor,omitempty"`
 	Authorizations []CommunityAuthView `json:"authorizations"`
-	Cursor         *string             `json:"cursor,omitempty"` // Pagination cursor
 }
 
 // CommunityAuthView matches social.coves.aggregator.defs#communityAuthView
 // Shows authorization from aggregator's perspective with nested aggregator details
 type CommunityAuthView struct {
-	Aggregator AggregatorView `json:"aggregator"` // REQUIRED: Nested full aggregator object
-	Enabled    bool           `json:"enabled"`    // REQUIRED
 	Config     interface{}    `json:"config,omitempty"`
-	CreatedAt  string         `json:"createdAt"` // REQUIRED
+	Aggregator AggregatorView `json:"aggregator"`
+	CreatedAt  string         `json:"createdAt"`
 	RecordUri  string         `json:"recordUri,omitempty"`
+	Enabled    bool           `json:"enabled"`
 }
 
 // toCommunityAuthView converts domain model to API view
