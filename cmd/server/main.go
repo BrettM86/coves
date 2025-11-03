@@ -13,7 +13,6 @@ import (
 	"Coves/internal/core/posts"
 	"Coves/internal/core/timeline"
 	"Coves/internal/core/users"
-	"Coves/internal/core/votes"
 	"bytes"
 	"context"
 	"database/sql"
@@ -282,10 +281,9 @@ func main() {
 	postRepo := postgresRepo.NewPostRepository(db)
 	postService := posts.NewPostService(postRepo, communityService, aggregatorService, defaultPDS)
 
-	// Initialize vote service
+	// Initialize vote repository (used by Jetstream consumer for indexing)
 	voteRepo := postgresRepo.NewVoteRepository(db)
-	voteService := votes.NewVoteService(voteRepo, postRepo, defaultPDS)
-	log.Println("✅ Vote service initialized")
+	log.Println("✅ Vote repository initialized (Jetstream indexing only)")
 
 	// Initialize feed service
 	feedRepo := postgresRepo.NewCommunityFeedRepository(db)
@@ -379,8 +377,8 @@ func main() {
 	routes.RegisterPostRoutes(r, postService, authMiddleware)
 	log.Println("Post XRPC endpoints registered with OAuth authentication")
 
-	routes.RegisterVoteRoutes(r, voteService, authMiddleware)
-	log.Println("Vote XRPC endpoints registered with OAuth authentication")
+	// Vote write endpoints removed - clients write directly to their PDS
+	// The AppView indexes votes from Jetstream (see vote consumer above)
 
 	routes.RegisterCommunityFeedRoutes(r, feedService)
 	log.Println("Feed XRPC endpoints registered (public, no auth required)")
