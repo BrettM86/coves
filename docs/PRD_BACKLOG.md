@@ -13,8 +13,8 @@ Miscellaneous platform improvements, bug fixes, and technical debt that don't fi
 ## 🔴 P0: Critical (Alpha Blockers)
 
 ### OAuth DPoP Token Architecture - Voting Write-Forward
-**Added:** 2025-11-02 | **Effort:** 4-6 hours | **Priority:** ALPHA BLOCKER
-**Status:** ⚠️ ARCHITECTURE DECISION REQUIRED
+**Added:** 2025-11-02 | **Completed:** 2025-11-02 | **Effort:** 2 hours | **Priority:** ALPHA BLOCKER
+**Status:** ✅ COMPLETE
 
 **Problem:**
 Our backend is attempting to use DPoP-bound OAuth tokens to write votes to users' PDSs, causing "Malformed token" errors. This violates atProto architecture patterns.
@@ -124,6 +124,83 @@ Backend changes:
 - Bluesky social-app: Direct PDS writes via agent
 - atProto OAuth spec: DPoP binding prevents token reuse
 - atProto architecture: AppView = read-only indexer
+
+---
+
+### OAuth DPoP Token Architecture - Community Subscriptions
+**Added:** 2025-11-02 | **Effort:** 1-2 hours | **Priority:** ALPHA BLOCKER
+**Status:** 📋 TODO (Waiting for frontend implementation)
+
+**Problem:**
+Same DPoP token issue as voting - backend cannot use user's DPoP-bound OAuth tokens to write subscription records to user's PDS.
+
+**Affected Operations:**
+- `SubscribeToCommunity()` - [service.go:564-624](../internal/core/communities/service.go#L564-L624)
+- `UnsubscribeFromCommunity()` - [service.go:626-660](../internal/core/communities/service.go#L626-L660)
+
+**Collection:** `social.coves.community.subscription`
+
+**Solution:**
+Client writes directly using `com.atproto.repo.createRecord`:
+```typescript
+await agent.call('com.atproto.repo.createRecord', {
+  repo: userDid,
+  collection: 'social.coves.community.subscription',
+  record: {
+    $type: 'social.coves.community.subscription',
+    subject: communityDid,
+    contentVisibility: 3,
+    createdAt: new Date().toISOString()
+  }
+})
+```
+
+**Backend Changes Needed:**
+1. Remove write-forward from `SubscribeToCommunity()` and `UnsubscribeFromCommunity()`
+2. Update handlers to return errors directing to client-direct pattern
+3. Verify Jetstream consumer indexes subscriptions (already working)
+
+**Files to Modify:**
+- `internal/core/communities/service.go`
+- `internal/api/handlers/community/subscribe.go`
+
+---
+
+### OAuth DPoP Token Architecture - Community Blocking
+**Added:** 2025-11-02 | **Effort:** 1-2 hours | **Priority:** ALPHA BLOCKER
+**Status:** 📋 TODO (Waiting for frontend implementation)
+
+**Problem:**
+Same DPoP token issue - backend cannot use user's DPoP-bound OAuth tokens to write block records to user's PDS.
+
+**Affected Operations:**
+- `BlockCommunity()` - [service.go:709-781](../internal/core/communities/service.go#L709-L781)
+- `UnblockCommunity()` - [service.go:783-816](../internal/core/communities/service.go#L783-L816)
+
+**Collection:** `social.coves.community.block`
+
+**Solution:**
+Client writes directly using `com.atproto.repo.createRecord`:
+```typescript
+await agent.call('com.atproto.repo.createRecord', {
+  repo: userDid,
+  collection: 'social.coves.community.block',
+  record: {
+    $type: 'social.coves.community.block',
+    subject: communityDid,
+    createdAt: new Date().toISOString()
+  }
+})
+```
+
+**Backend Changes Needed:**
+1. Remove write-forward from `BlockCommunity()` and `UnblockCommunity()`
+2. Update handlers to return errors directing to client-direct pattern
+3. Verify Jetstream consumer indexes blocks (already working)
+
+**Files to Modify:**
+- `internal/core/communities/service.go`
+- `internal/api/handlers/community/block.go`
 
 ---
 
