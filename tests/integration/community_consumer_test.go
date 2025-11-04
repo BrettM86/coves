@@ -39,8 +39,8 @@ func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
 				RKey:       "self",
 				CID:        "bafy123abc",
 				Record: map[string]interface{}{
-					"did":         communityDID, // Community's unique DID
-					"handle":      fmt.Sprintf("!test-community-%s@coves.local", uniqueSuffix),
+					// Note: No 'did', 'handle', 'memberCount', or 'subscriberCount' in record
+					// These are resolved/computed by AppView, not stored in immutable records
 					"name":        "test-community",
 					"displayName": "Test Community",
 					"description": "A test community",
@@ -51,9 +51,7 @@ func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
 					"federation": map[string]interface{}{
 						"allowExternalDiscovery": true,
 					},
-					"memberCount":     0,
-					"subscriberCount": 0,
-					"createdAt":       time.Now().Format(time.RFC3339),
+					"createdAt": time.Now().Format(time.RFC3339),
 				},
 			},
 		}
@@ -117,8 +115,8 @@ func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
 				RKey:       "self",
 				CID:        "bafy456def",
 				Record: map[string]interface{}{
-					"did":         communityDID, // Community's unique DID
-					"handle":      handle,
+					// Note: No 'did', 'handle', 'memberCount', or 'subscriberCount' in record
+					// These are resolved/computed by AppView, not stored in immutable records
 					"name":        "update-test",
 					"displayName": "Updated Name",
 					"description": "Updated description",
@@ -129,9 +127,7 @@ func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
 					"federation": map[string]interface{}{
 						"allowExternalDiscovery": false,
 					},
-					"memberCount":     5,
-					"subscriberCount": 10,
-					"createdAt":       time.Now().Format(time.RFC3339),
+					"createdAt": time.Now().Format(time.RFC3339),
 				},
 			},
 		}

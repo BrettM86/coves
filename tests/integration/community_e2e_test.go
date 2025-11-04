@@ -259,13 +259,10 @@ func TestCommunity_E2E(t *testing.T) {
 			t.Logf("   Record value:\n   %s", string(recordJSON))
 		}
 
-		// V2: DID is NOT in the record - it's in the repository URI
-		// The record should have handle, name, etc. but no 'did' field
-		// This matches Bluesky's app.bsky.actor.profile pattern
-		if pdsRecord.Value["handle"] != community.Handle {
-			t.Errorf("Community handle mismatch in PDS record: expected %s, got %v",
-				community.Handle, pdsRecord.Value["handle"])
-		}
+		// V2: DID and Handle are NOT in the record - they're resolved from the repository URI
+		// The record should have name, hostedBy, createdBy, etc. but no 'did' or 'handle' fields
+		// This matches Bluesky's app.bsky.actor.profile pattern (no handle in record)
+		// Handles are mutable and resolved from DIDs via PLC, so they shouldn't be stored in immutable records
 
 		// ====================================================================================
 		// Part 2: TRUE E2E - Real Jetstream Firehose Consumer
