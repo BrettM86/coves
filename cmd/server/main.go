@@ -247,7 +247,8 @@ func main() {
 		log.Println("   Set SKIP_DID_WEB_VERIFICATION=false for production")
 	}
 
-	communityEventConsumer := jetstream.NewCommunityEventConsumer(communityRepo, instanceDID, skipDIDWebVerification)
+	// Pass identity resolver to consumer for PLC handle resolution (source of truth)
+	communityEventConsumer := jetstream.NewCommunityEventConsumer(communityRepo, instanceDID, skipDIDWebVerification, identityResolver)
 	communityJetstreamConnector := jetstream.NewCommunityJetstreamConnector(communityEventConsumer, communityJetstreamURL)
 
 	go func() {

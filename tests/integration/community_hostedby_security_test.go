@@ -23,7 +23,8 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 
 	t.Run("rejects community with mismatched hostedBy domain", func(t *testing.T) {
 		// Create consumer with verification enabled
-		consumer := jetstream.NewCommunityEventConsumer(repo, "did:web:coves.social", false)
+		// Pass nil for identity resolver - not needed since consumer constructs handles from DIDs
+		consumer := jetstream.NewCommunityEventConsumer(repo, "did:web:coves.social", false, nil)
 
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		communityDID := generateTestDID(uniqueSuffix)
@@ -81,7 +82,8 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 
 	t.Run("accepts community with matching hostedBy domain", func(t *testing.T) {
 		// Create consumer with verification enabled
-		consumer := jetstream.NewCommunityEventConsumer(repo, "did:web:coves.social", false)
+		// Pass nil for identity resolver - not needed since consumer constructs handles from DIDs
+		consumer := jetstream.NewCommunityEventConsumer(repo, "did:web:coves.social", false, nil)
 
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		communityDID := generateTestDID(uniqueSuffix)
@@ -134,7 +136,8 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 
 	t.Run("rejects hostedBy with non-did:web format", func(t *testing.T) {
 		// Create consumer with verification enabled
-		consumer := jetstream.NewCommunityEventConsumer(repo, "did:web:coves.social", false)
+		// Pass nil for identity resolver - not needed since consumer constructs handles from DIDs
+		consumer := jetstream.NewCommunityEventConsumer(repo, "did:web:coves.social", false, nil)
 
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		communityDID := generateTestDID(uniqueSuffix)
@@ -179,7 +182,8 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 
 	t.Run("skip verification flag bypasses all checks", func(t *testing.T) {
 		// Create consumer with verification DISABLED
-		consumer := jetstream.NewCommunityEventConsumer(repo, "did:web:coves.social", true)
+		// Pass nil for identity resolver - not needed since consumer constructs handles from DIDs
+		consumer := jetstream.NewCommunityEventConsumer(repo, "did:web:coves.social", true, nil)
 
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		communityDID := generateTestDID(uniqueSuffix)
@@ -306,7 +310,8 @@ func TestExtractDomainFromHandle(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			consumer := jetstream.NewCommunityEventConsumer(repo, "did:web:coves.social", false)
+			// Pass nil for identity resolver - not needed since consumer constructs handles from DIDs
+			consumer := jetstream.NewCommunityEventConsumer(repo, "did:web:coves.social", false, nil)
 
 			uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 			communityDID := generateTestDID(uniqueSuffix)

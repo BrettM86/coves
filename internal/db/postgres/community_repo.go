@@ -22,6 +22,11 @@ func NewCommunityRepository(db *sql.DB) communities.Repository {
 
 // Create inserts a new community into the communities table
 func (r *postgresCommunityRepo) Create(ctx context.Context, community *communities.Community) (*communities.Community, error) {
+	// Validate that handle is always provided (constructed by consumer)
+	if community.Handle == "" {
+		return nil, fmt.Errorf("handle is required (should be constructed by consumer before insert)")
+	}
+
 	query := `
 		INSERT INTO communities (
 			did, handle, name, display_name, description, description_facets,
@@ -54,7 +59,7 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 
 	err := r.db.QueryRowContext(ctx, query,
 		community.DID,
-		community.Handle,
+		community.Handle, // Always non-empty - constructed by AppView consumer
 		community.Name,
 		nullString(community.DisplayName),
 		nullString(community.Description),

@@ -142,8 +142,8 @@ func TestCommunity_E2E(t *testing.T) {
 		svc.SetPDSAccessToken(accessToken)
 	}
 
-	// Skip verification in tests
-	consumer := jetstream.NewCommunityEventConsumer(communityRepo, "did:web:coves.local", true)
+	// Use real identity resolver with local PLC for production-like testing
+	consumer := jetstream.NewCommunityEventConsumer(communityRepo, "did:web:coves.local", true, identityResolver)
 
 	// Setup HTTP server with XRPC routes
 	r := chi.NewRouter()
@@ -434,13 +434,14 @@ func TestCommunity_E2E(t *testing.T) {
 					Collection: "social.coves.community.profile",
 					RKey:       rkey,
 					Record: map[string]interface{}{
-						"did":         createResp.DID,    // Community's DID from response
-						"handle":      createResp.Handle, // Community's handle from response
+						// Note: No 'did' or 'handle' in record (atProto best practice)
+						// These are mutable and resolved from DIDs, not stored in immutable records
 						"name":        createReq["name"],
 						"displayName": createReq["displayName"],
 						"description": createReq["description"],
 						"visibility":  createReq["visibility"],
 						// Server-side derives these from JWT auth (instanceDID is the authenticated user)
+						"owner":     instanceDID,
 						"createdBy": instanceDID,
 						"hostedBy":  instanceDID,
 						"federation": map[string]interface{}{
