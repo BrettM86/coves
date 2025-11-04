@@ -55,7 +55,7 @@ func TestPostHandler_SecurityValidation(t *testing.T) {
 		}
 
 		body, _ := json.Marshal(payload)
-		req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.post.create", bytes.NewReader(body))
+		req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.post.create", bytes.NewReader(body))
 
 		// Mock authenticated user context
 		ctx := middleware.SetTestUserDID(req.Context(), "did:plc:alice")
@@ -82,7 +82,7 @@ func TestPostHandler_SecurityValidation(t *testing.T) {
 		}
 
 		body, _ := json.Marshal(payload)
-		req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.post.create", bytes.NewReader(body))
+		req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.post.create", bytes.NewReader(body))
 
 		// No auth context set
 		rec := httptest.NewRecorder()
@@ -108,7 +108,7 @@ func TestPostHandler_SecurityValidation(t *testing.T) {
 		}
 
 		body, _ := json.Marshal(payload)
-		req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.post.create", bytes.NewReader(body))
+		req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.post.create", bytes.NewReader(body))
 
 		// Mock authenticated user context
 		ctx := middleware.SetTestUserDID(req.Context(), "did:plc:alice")
@@ -131,7 +131,7 @@ func TestPostHandler_SecurityValidation(t *testing.T) {
 		// Invalid JSON
 		invalidJSON := []byte(`{"community": "did:plc:test123", "content": `)
 
-		req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.post.create", bytes.NewReader(invalidJSON))
+		req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.post.create", bytes.NewReader(invalidJSON))
 
 		// Mock authenticated user context
 		ctx := middleware.SetTestUserDID(req.Context(), "did:plc:alice")
@@ -157,7 +157,7 @@ func TestPostHandler_SecurityValidation(t *testing.T) {
 		}
 
 		body, _ := json.Marshal(payload)
-		req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.post.create", bytes.NewReader(body))
+		req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.post.create", bytes.NewReader(body))
 
 		// Mock authenticated user context
 		ctx := middleware.SetTestUserDID(req.Context(), "did:plc:alice")
@@ -192,7 +192,7 @@ func TestPostHandler_SecurityValidation(t *testing.T) {
 				}
 
 				body, _ := json.Marshal(payload)
-				req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.post.create", bytes.NewReader(body))
+				req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.post.create", bytes.NewReader(body))
 
 				// Mock authenticated user context
 				ctx := middleware.SetTestUserDID(req.Context(), "did:plc:alice")
@@ -231,7 +231,7 @@ func TestPostHandler_SecurityValidation(t *testing.T) {
 				}
 
 				body, _ := json.Marshal(payload)
-				req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.post.create", bytes.NewReader(body))
+				req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.post.create", bytes.NewReader(body))
 
 				// Mock authenticated user context
 				ctx := middleware.SetTestUserDID(req.Context(), "did:plc:alice")
@@ -269,7 +269,7 @@ func TestPostHandler_SecurityValidation(t *testing.T) {
 				}
 
 				body, _ := json.Marshal(payload)
-				req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.post.create", bytes.NewReader(body))
+				req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.post.create", bytes.NewReader(body))
 
 				// Mock authenticated user context
 				ctx := middleware.SetTestUserDID(req.Context(), "did:plc:alice")
@@ -307,7 +307,7 @@ func TestPostHandler_SecurityValidation(t *testing.T) {
 				}
 
 				body, _ := json.Marshal(payload)
-				req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.post.create", bytes.NewReader(body))
+				req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.post.create", bytes.NewReader(body))
 
 				// Mock authenticated user context
 				ctx := middleware.SetTestUserDID(req.Context(), "did:plc:alice")
@@ -345,7 +345,7 @@ func TestPostHandler_SecurityValidation(t *testing.T) {
 				}
 
 				body, _ := json.Marshal(payload)
-				req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.post.create", bytes.NewReader(body))
+				req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.post.create", bytes.NewReader(body))
 
 				// Mock authenticated user context
 				ctx := middleware.SetTestUserDID(req.Context(), "did:plc:alice")
@@ -373,7 +373,7 @@ func TestPostHandler_SecurityValidation(t *testing.T) {
 
 		for _, method := range methods {
 			t.Run(method, func(t *testing.T) {
-				req := httptest.NewRequest(method, "/xrpc/social.coves.post.create", nil)
+				req := httptest.NewRequest(method, "/xrpc/social.coves.community.post.create", nil)
 				rec := httptest.NewRecorder()
 
 				handler.HandleCreate(rec, req)
@@ -422,7 +422,7 @@ func TestPostHandler_SpecialCharacters(t *testing.T) {
 		}
 
 		body, _ := json.Marshal(payload)
-		req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.post.create", bytes.NewReader(body))
+		req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.post.create", bytes.NewReader(body))
 
 		ctx := middleware.SetTestUserDID(req.Context(), "did:plc:alice")
 		req = req.WithContext(ctx)
@@ -452,7 +452,7 @@ func TestPostHandler_SpecialCharacters(t *testing.T) {
 				}
 
 				body, _ := json.Marshal(payload)
-				req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.post.create", bytes.NewReader(body))
+				req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.post.create", bytes.NewReader(body))
 
 				ctx := middleware.SetTestUserDID(req.Context(), "did:plc:alice")
 				req = req.WithContext(ctx)

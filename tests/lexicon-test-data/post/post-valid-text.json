@@ -1,10 +1,10 @@
 {
-  "$type": "social.coves.post.record",
+  "$type": "social.coves.community.post",
   "community": "did:plc:programming123",
-  "postType": "text",
+  "author": "did:plc:testauthor123",
   "title": "Best practices for error handling in Go",
-  "text": "I've been working with Go for a while now and wanted to share some thoughts on error handling patterns...",
-  "textFacets": [
+  "content": "I've been working with Go for a while now and wanted to share some thoughts on error handling patterns...",
+  "facets": [
     {
       "index": {
         "byteStart": 20,
@@ -18,7 +18,6 @@
     }
   ],
   "tags": ["golang", "error-handling", "best-practices"],
-  "language": "en",
-  "contentWarnings": [],
+  "langs": ["en"],
   "createdAt": "2025-01-09T14:30:00Z"
 }

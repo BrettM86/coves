@@ -33,7 +33,7 @@ import (
 // XRPC endpoint → AppView Service → PDS write → Jetstream consumer → DB indexing
 //
 // This is a TRUE E2E test that simulates what happens in production:
-// 1. Client calls POST /xrpc/social.coves.post.create with auth token
+// 1. Client calls POST /xrpc/social.coves.community.post.create with auth token
 // 2. Handler validates and calls PostService.CreatePost()
 // 3. Service writes post to community's PDS repository
 // 4. PDS broadcasts event to firehose/Jetstream
@@ -116,11 +116,11 @@ func TestPostCreation_E2E_WithJetstream(t *testing.T) {
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
 				Operation:  "create",
-				Collection: "social.coves.post.record",
+				Collection: "social.coves.community.post",
 				RKey:       rkey,
 				CID:        "bafy2bzaceabc123def456", // Fake CID
 				Record: map[string]interface{}{
-					"$type":     "social.coves.post.record",
+					"$type":     "social.coves.community.post",
 					"community": community.DID,
 					"author":    author.DID,
 					"title":     *postReq.Title,
@@ -138,7 +138,7 @@ func TestPostCreation_E2E_WithJetstream(t *testing.T) {
 		}
 
 		// STEP 4: Verify post was indexed in AppView database
-		expectedURI := fmt.Sprintf("at://%s/social.coves.post.record/%s", community.DID, rkey)
+		expectedURI := fmt.Sprintf("at://%s/social.coves.community.post/%s", community.DID, rkey)
 		indexedPost, err := postRepo.GetByURI(ctx, expectedURI)
 		if err != nil {
 			t.Fatalf("Post not indexed in AppView: %v", err)
@@ -187,11 +187,11 @@ func TestPostCreation_E2E_WithJetstream(t *testing.T) {
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
 				Operation:  "create",
-				Collection: "social.coves.post.record",
+				Collection: "social.coves.community.post",
 				RKey:       generateTID(),
 				CID:        "bafy2bzacefake",
 				Record: map[string]interface{}{
-					"$type":     "social.coves.post.record",
+					"$type":     "social.coves.community.post",
 					"community": community.DID, // Claims to be for this community
 					"author":    author.DID,
 					"title":     "Fake Post",
@@ -227,11 +227,11 @@ func TestPostCreation_E2E_WithJetstream(t *testing.T) {
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
 				Operation:  "create",
-				Collection: "social.coves.post.record",
+				Collection: "social.coves.community.post",
 				RKey:       rkey,
 				CID:        "bafy2bzaceidempotent",
 				Record: map[string]interface{}{
-					"$type":     "social.coves.post.record",
+					"$type":     "social.coves.community.post",
 					"community": community.DID,
 					"author":    author.DID,
 					"title":     "Duplicate Test",
@@ -256,7 +256,7 @@ func TestPostCreation_E2E_WithJetstream(t *testing.T) {
 		}
 
 		// Verify only one post in database
-		uri := fmt.Sprintf("at://%s/social.coves.post.record/%s", community.DID, rkey)
+		uri := fmt.Sprintf("at://%s/social.coves.community.post/%s", community.DID, rkey)
 		post, err := postRepo.GetByURI(ctx, uri)
 		if err != nil {
 			t.Fatalf("Post not found: %v", err)
@@ -281,11 +281,11 @@ func TestPostCreation_E2E_WithJetstream(t *testing.T) {
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
 				Operation:  "create",
-				Collection: "social.coves.post.record",
+				Collection: "social.coves.community.post",
 				RKey:       generateTID(),
 				CID:        "bafy2bzaceorphaned",
 				Record: map[string]interface{}{
-					"$type":     "social.coves.post.record",
+					"$type":     "social.coves.community.post",
 					"community": unknownCommunityDID,
 					"author":    author.DID,
 					"title":     "Orphaned Post",
@@ -313,7 +313,7 @@ func TestPostCreation_E2E_WithJetstream(t *testing.T) {
 }
 
 // TestPostCreation_E2E_LivePDS tests the COMPLETE end-to-end flow with a live PDS:
-// 1. HTTP POST to /xrpc/social.coves.post.create (with auth)
+// 1. HTTP POST to /xrpc/social.coves.community.post.create (with auth)
 // 2. Handler → Service → Write to community's PDS repository
 // 3. PDS → Jetstream firehose event
 // 4. Jetstream consumer → Index in AppView database
@@ -472,7 +472,7 @@ func TestPostCreation_E2E_LivePDS(t *testing.T) {
 		require.NoError(t, err)
 
 		// Create HTTP request
-		req := httptest.NewRequest("POST", "/xrpc/social.coves.post.create", bytes.NewReader(reqJSON))
+		req := httptest.NewRequest("POST", "/xrpc/social.coves.community.post.create", bytes.NewReader(reqJSON))
 		req.Header.Set("Content-Type", "application/json")
 
 		// Create a simple JWT for testing (Phase 1: no signature verification)
@@ -511,7 +511,7 @@ func TestPostCreation_E2E_LivePDS(t *testing.T) {
 			pdsHostname = strings.Split(pdsHostname, ":")[0] // Remove port
 
 			// Build Jetstream URL with filters for post records
-			jetstreamURL := fmt.Sprintf("ws://%s:6008/subscribe?wantedCollections=social.coves.post.record",
+			jetstreamURL := fmt.Sprintf("ws://%s:6008/subscribe?wantedCollections=social.coves.community.post",
 				pdsHostname)
 
 			t.Logf("   Jetstream URL: %s", jetstreamURL)
@@ -653,7 +653,7 @@ func subscribeToJetstreamForPost(
 
 			// Check if this is a post event for the target DID
 			if event.Did == targetDID && event.Kind == "commit" &&
-				event.Commit != nil && event.Commit.Collection == "social.coves.post.record" {
+				event.Commit != nil && event.Commit.Collection == "social.coves.community.post" {
 				// Process the event through the consumer
 				if err := consumer.HandleEvent(ctx, &event); err != nil {
 					return fmt.Errorf("failed to process event: %w", err)

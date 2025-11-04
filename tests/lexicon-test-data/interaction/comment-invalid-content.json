@@ -1,5 +1,14 @@
 {
-  "$type": "social.coves.interaction.comment",
-  "post": "at://did:plc:author123/social.coves.post.record/3k7a3dmb5bk2c",
+  "$type": "social.coves.feed.comment",
+  "reply": {
+    "root": {
+      "uri": "at://did:plc:test123/social.coves.community.post/3k7a3dmb5bk2c",
+      "cid": "bafyreigj3fwnwjuzr35k2kuzmb5dixxczrzjhqkr5srlqplsh6gq3bj3si"
+    },
+    "parent": {
+      "uri": "at://did:plc:test123/social.coves.community.post/3k7a3dmb5bk2c",
+      "cid": "bafyreigj3fwnwjuzr35k2kuzmb5dixxczrzjhqkr5srlqplsh6gq3bj3si"
+    }
+  },
   "createdAt": "2025-01-09T16:45:00Z"
 }

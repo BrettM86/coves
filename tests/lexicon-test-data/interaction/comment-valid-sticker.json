@@ -1,10 +1,15 @@
 {
-  "$type": "social.coves.interaction.comment",
-  "subject": "at://did:plc:author123/social.coves.post.record/3k7a3dmb5bk2c",
-  "content": {
-    "$type": "social.coves.interaction.comment#stickerContent",
-    "stickerId": "thumbs-up",
-    "stickerPackId": "default-pack"
+  "$type": "social.coves.feed.comment",
+  "reply": {
+    "root": {
+      "uri": "at://did:plc:test123/social.coves.community.post/3k7a3dmb5bk2c",
+      "cid": "bafyreigj3fwnwjuzr35k2kuzmb5dixxczrzjhqkr5srlqplsh6gq3bj3si"
+    },
+    "parent": {
+      "uri": "at://did:plc:test123/social.coves.community.post/3k7a3dmb5bk2c",
+      "cid": "bafyreigj3fwnwjuzr35k2kuzmb5dixxczrzjhqkr5srlqplsh6gq3bj3si"
+    }
   },
+  "content": "👍",
   "createdAt": "2025-01-09T16:50:00Z"
 }
