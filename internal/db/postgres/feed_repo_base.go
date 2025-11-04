@@ -12,8 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/lib/pq"
 )
 
 // feedRepoBase contains shared logic for timeline and discover feed repositories
@@ -283,7 +281,7 @@ func (r *feedRepoBase) scanFeedPost(rows *sql.Rows) (*posts.PostView, float64, e
 		communityRef    posts.CommunityRef
 		title, content  sql.NullString
 		facets, embed   sql.NullString
-		labels          pq.StringArray
+		labelsJSON      sql.NullString
 		editedAt        sql.NullTime
 		communityAvatar sql.NullString
 		hotRank         sql.NullFloat64
@@ -293,7 +291,7 @@ func (r *feedRepoBase) scanFeedPost(rows *sql.Rows) (*posts.PostView, float64, e
 		&postView.URI, &postView.CID, &postView.RKey,
 		&authorView.DID, &authorView.Handle,
 		&communityRef.DID, &communityRef.Name, &communityAvatar,
-		&title, &content, &facets, &embed, &labels,
+		&title, &content, &facets, &embed, &labelsJSON,
 		&postView.CreatedAt, &editedAt, &postView.IndexedAt,
 		&postView.UpvoteCount, &postView.DownvoteCount, &postView.Score, &postView.CommentCount,
 		&hotRank,
@@ -339,7 +337,7 @@ func (r *feedRepoBase) scanFeedPost(rows *sql.Rows) (*posts.PostView, float64, e
 
 	// Build the record (required by lexicon)
 	record := map[string]interface{}{
-		"$type":     "social.coves.post.record",
+		"$type":     "social.coves.community.post",
 		"community": communityRef.DID,
 		"author":    authorView.DID,
 		"createdAt": postView.CreatedAt.Format(time.RFC3339),
@@ -364,8 +362,13 @@ func (r *feedRepoBase) scanFeedPost(rows *sql.Rows) (*posts.PostView, float64, e
 			record["embed"] = embedData
 		}
 	}
-	if len(labels) > 0 {
-		record["contentLabels"] = labels
+	if labelsJSON.Valid {
+		// Labels are stored as JSONB containing full com.atproto.label.defs#selfLabels structure
+		// Deserialize and include in record
+		var selfLabels posts.SelfLabels
+		if err := json.Unmarshal([]byte(labelsJSON.String), &selfLabels); err == nil {
+			record["labels"] = selfLabels
+		}
 	}
 
 	postView.Record = record
