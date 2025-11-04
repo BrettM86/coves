@@ -47,33 +47,21 @@
     },
     "mention": {
       "type": "object",
-      "description": "Facet feature for user or community mentions",
-      "required": ["$type", "did"],
+      "description": "Facet feature for mention of a user or community. The text is usually a handle with '@' (user) or '!' (community) prefix, but the facet reference is a DID.",
+      "required": ["did"],
       "properties": {
-        "$type": {
-          "type": "string",
-          "const": "social.coves.richtext.facet#mention"
-        },
         "did": {
           "type": "string",
           "format": "did",
-          "description": "DID of the mentioned user (@) or community (!)"
-        },
-        "handle": {
-          "type": "string",
-          "description": "Handle at time of mention (may change)"
+          "description": "DID of the mentioned user or community"
         }
       }
     },
     "link": {
       "type": "object",
-      "description": "Facet feature for hyperlinks",
-      "required": ["$type", "uri"],
+      "description": "Facet feature for a URL. The text URL may have been simplified or truncated, but the facet reference should be a complete URL.",
+      "required": ["uri"],
       "properties": {
-        "$type": {
-          "type": "string",
-          "const": "social.coves.richtext.facet#link"
-        },
         "uri": {
           "type": "string",
           "format": "uri",
@@ -83,49 +71,24 @@
     },
     "bold": {
       "type": "object",
-      "description": "Bold text formatting",
-      "required": ["$type"],
-      "properties": {
-        "$type": {
-          "type": "string",
-          "const": "social.coves.richtext.facet#bold"
-        }
-      }
+      "description": "Bold text formatting"
     },
     "italic": {
       "type": "object",
-      "description": "Italic text formatting",
-      "required": ["$type"],
-      "properties": {
-        "$type": {
-          "type": "string",
-          "const": "social.coves.richtext.facet#italic"
-        }
-      }
+      "description": "Italic text formatting"
     },
     "strikethrough": {
       "type": "object",
-      "description": "Strikethrough text formatting",
-      "required": ["$type"],
-      "properties": {
-        "$type": {
-          "type": "string",
-          "const": "social.coves.richtext.facet#strikethrough"
-        }
-      }
+      "description": "Strikethrough text formatting"
     },
     "spoiler": {
       "type": "object",
       "description": "Hidden/spoiler text that requires user interaction to reveal",
-      "required": ["$type"],
       "properties": {
-        "$type": {
-          "type": "string",
-          "const": "social.coves.richtext.facet#spoiler"
-        },
         "reason": {
           "type": "string",
           "maxLength": 128,
+          "maxGraphemes": 32,
           "description": "Optional explanation of what's hidden"
         }
       }

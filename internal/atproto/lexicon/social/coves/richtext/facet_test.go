@@ -21,8 +21,7 @@ func TestFacetStructure(t *testing.T) {
 				},
 				"features": [{
 					"$type": "social.coves.richtext.facet#mention",
-					"did": "did:plc:example123",
-					"handle": "alice.bsky.social"
+					"did": "did:plc:example123"
 				}]
 			}`,
 			wantErr: false,
@@ -276,9 +275,8 @@ func TestFacetFeatureTypes(t *testing.T) {
 			name:     "mention",
 			typeName: "social.coves.richtext.facet#mention",
 			feature: map[string]interface{}{
-				"$type":  "social.coves.richtext.facet#mention",
-				"did":    "did:plc:example123",
-				"handle": "alice.bsky.social",
+				"$type": "social.coves.richtext.facet#mention",
+				"did":   "did:plc:example123",
 			},
 		},
 		{
