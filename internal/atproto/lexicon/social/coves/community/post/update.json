@@ -25,6 +25,7 @@
             "content": {
               "type": "string",
               "maxLength": 50000,
+              "maxGraphemes": 20000,
               "description": "Updated content - main text for text posts, description for media, etc."
             },
             "facets": {
@@ -72,6 +73,7 @@
             "editNote": {
               "type": "string",
               "maxLength": 300,
+              "maxGraphemes": 300,
               "description": "Optional note explaining the edit"
             }
           }

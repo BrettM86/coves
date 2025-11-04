@@ -22,16 +22,13 @@
         "alt": {
           "type": "string",
           "maxLength": 1000,
+          "maxGraphemes": 1000,
           "description": "Alt text describing video content"
         },
         "duration": {
           "type": "integer",
           "minimum": 0,
           "description": "Duration in seconds"
-        },
-        "aspectRatio": {
-          "type": "ref",
-          "ref": "social.coves.embed.image#aspectRatio"
         }
       }
     }

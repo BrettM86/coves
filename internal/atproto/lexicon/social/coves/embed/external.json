@@ -15,11 +15,13 @@
         "title": {
           "type": "string",
           "maxLength": 500,
+          "maxGraphemes": 500,
           "description": "Title of the linked content"
         },
         "description": {
           "type": "string",
           "maxLength": 1000,
+          "maxGraphemes": 1000,
           "description": "Description or excerpt of the linked content"
         },
         "thumb": {
@@ -34,7 +36,7 @@
         },
         "embedType": {
           "type": "string",
-          "enum": ["article", "image", "video-stream"],
+          "knownValues": ["article", "image", "video-stream"],
           "description": "Type hint for special handling of known providers"
         },
         "provider": {

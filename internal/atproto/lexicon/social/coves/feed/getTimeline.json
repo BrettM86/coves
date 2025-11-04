@@ -10,13 +10,13 @@
         "properties": {
           "sort": {
             "type": "string",
-            "enum": ["hot", "top", "new"],
+            "knownValues": ["hot", "top", "new"],
             "default": "hot",
             "description": "Sort order for timeline feed"
           },
           "timeframe": {
             "type": "string",
-            "enum": ["hour", "day", "week", "month", "year", "all"],
+            "knownValues": ["hour", "day", "week", "month", "year", "all"],
             "default": "day",
             "description": "Timeframe for top sorting (only applies when sort=top)"
           },

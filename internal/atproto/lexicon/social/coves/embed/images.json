@@ -33,6 +33,7 @@
         "alt": {
           "type": "string",
           "maxLength": 1000,
+          "maxGraphemes": 1000,
           "description": "Alt text for accessibility"
         },
         "aspectRatio": {

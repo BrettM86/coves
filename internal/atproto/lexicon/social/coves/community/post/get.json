@@ -189,7 +189,7 @@
         },
         "blockedBy": {
           "type": "string",
-          "enum": ["author", "community", "moderator"],
+          "knownValues": ["author", "community", "moderator"],
           "description": "What caused the block: viewer blocked author, viewer blocked community, or post was removed by moderators"
         },
         "author": {
@@ -266,7 +266,7 @@
       "properties": {
         "vote": {
           "type": "string",
-          "enum": ["up", "down"],
+          "knownValues": ["up", "down"],
           "description": "Viewer's vote on this post"
         },
         "voteUri": {
