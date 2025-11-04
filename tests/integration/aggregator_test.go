@@ -544,7 +544,7 @@ func TestAggregatorService_PostCreationIntegration(t *testing.T) {
 	})
 
 	t.Run("records aggregator post for rate limiting", func(t *testing.T) {
-		postURI := fmt.Sprintf("at://%s/social.coves.post.record/post1", communityDID)
+		postURI := fmt.Sprintf("at://%s/social.coves.community.post/post1", communityDID)
 
 		err := aggRepo.RecordAggregatorPost(ctx, aggregatorDID, communityDID, postURI, "bafy123")
 		if err != nil {
@@ -627,7 +627,7 @@ func TestAggregatorService_RateLimiting(t *testing.T) {
 	t.Run("allows posts within rate limit", func(t *testing.T) {
 		// Create 9 posts (under the 10/hour limit)
 		for i := 0; i < 9; i++ {
-			postURI := fmt.Sprintf("at://%s/social.coves.post.record/post%d", communityDID, i)
+			postURI := fmt.Sprintf("at://%s/social.coves.community.post/post%d", communityDID, i)
 			if err := aggRepo.RecordAggregatorPost(ctx, aggregatorDID, communityDID, postURI, "bafy123"); err != nil {
 				t.Fatalf("Failed to record post %d: %v", i, err)
 			}
@@ -642,7 +642,7 @@ func TestAggregatorService_RateLimiting(t *testing.T) {
 
 	t.Run("enforces rate limit at 10 posts/hour", func(t *testing.T) {
 		// Add one more post to hit the limit (total = 10)
-		postURI := fmt.Sprintf("at://%s/social.coves.post.record/post10", communityDID)
+		postURI := fmt.Sprintf("at://%s/social.coves.community.post/post10", communityDID)
 		if err := aggRepo.RecordAggregatorPost(ctx, aggregatorDID, communityDID, postURI, "bafy123"); err != nil {
 			t.Fatalf("Failed to record 10th post: %v", err)
 		}
@@ -801,7 +801,7 @@ func TestAggregatorTriggers(t *testing.T) {
 
 		// Record 5 posts
 		for i := 0; i < 5; i++ {
-			postURI := fmt.Sprintf("at://%s/social.coves.post.record/triggerpost%d", communityDID, i)
+			postURI := fmt.Sprintf("at://%s/social.coves.community.post/triggerpost%d", communityDID, i)
 			if err := aggRepo.RecordAggregatorPost(ctx, aggregatorDID, communityDID, postURI, "bafy123"); err != nil {
 				t.Fatalf("Failed to record post %d: %v", i, err)
 			}

@@ -1,6 +1,6 @@
 {
   "lexicon": 1,
-  "id": "social.coves.post.create",
+  "id": "social.coves.community.post.create",
   "defs": {
     "main": {
       "type": "procedure",
@@ -20,16 +20,17 @@
               "type": "string",
               "maxGraphemes": 300,
               "maxLength": 3000,
-              "description": "Post title (optional for microblog, image, and video posts)"
+              "description": "Post title (optional for media-only posts)"
             },
             "content": {
               "type": "string",
-              "maxLength": 50000,
-              "description": "Post content - main text for text posts, description for media, etc."
+              "maxGraphemes": 10000,
+              "maxLength": 100000,
+              "description": "Post content - supports rich text via facets"
             },
             "facets": {
               "type": "array",
-              "description": "Rich text annotations for content",
+              "description": "Annotations for rich text (mentions, links, tags)",
               "items": {
                 "type": "ref",
                 "ref": "social.coves.richtext.facet"
@@ -37,7 +38,7 @@
             },
             "embed": {
               "type": "union",
-              "description": "Embedded content - images, videos, external links, or quoted posts",
+              "description": "Embedded media, external links, or quoted posts",
               "refs": [
                 "social.coves.embed.images",
                 "social.coves.embed.video",
@@ -45,29 +46,29 @@
                 "social.coves.embed.post"
               ]
             },
-            "originalAuthor": {
-              "type": "ref",
-              "ref": "social.coves.post.record#originalAuthor",
-              "description": "For microblog posts - information about the original author"
-            },
-            "federatedFrom": {
-              "type": "ref",
-              "ref": "social.coves.federation.post",
-              "description": "Reference to original federated post (for microblog posts)"
-            },
-            "contentLabels": {
+            "langs": {
               "type": "array",
-              "description": "Self-applied content labels",
+              "description": "Languages used in the post content (ISO 639-1)",
+              "maxLength": 3,
               "items": {
                 "type": "string",
-                "knownValues": ["nsfw", "spoiler", "violence"],
-                "maxLength": 32
+                "format": "language"
               }
             },
-            "location": {
+            "labels": {
               "type": "ref",
-              "ref": "social.coves.actor.profile#geoLocation",
-              "description": "Geographic location where post was created"
+              "ref": "com.atproto.label.defs#selfLabels",
+              "description": "Self-applied content labels (NSFW, spoilers, etc.)"
+            },
+            "tags": {
+              "type": "array",
+              "description": "User-applied topic tags",
+              "maxLength": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 64,
+                "maxGraphemes": 64
+              }
             }
           }
         }

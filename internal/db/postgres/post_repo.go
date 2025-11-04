@@ -4,11 +4,8 @@ import (
 	"Coves/internal/core/posts"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
-
-	"github.com/lib/pq"
 )
 
 type postgresPostRepo struct {
@@ -36,14 +33,13 @@ func (r *postgresPostRepo) Create(ctx context.Context, post *posts.Post) error {
 		embedJSON.Valid = true
 	}
 
-	// Convert content labels to PostgreSQL array
-	var labelsArray pq.StringArray
+	// Store content labels as JSONB
+	// post.ContentLabels contains com.atproto.label.defs#selfLabels JSON: {"values":[{"val":"nsfw","neg":false}]}
+	// Store the full JSON blob to preserve the 'neg' field and future extensions
+	var labelsJSON sql.NullString
 	if post.ContentLabels != nil {
-		// Parse JSON array string to []string
-		var labels []string
-		if err := json.Unmarshal([]byte(*post.ContentLabels), &labels); err == nil {
-			labelsArray = labels
-		}
+		labelsJSON.String = *post.ContentLabels
+		labelsJSON.Valid = true
 	}
 
 	query := `
@@ -62,7 +58,7 @@ func (r *postgresPostRepo) Create(ctx context.Context, post *posts.Post) error {
 	err := r.db.QueryRowContext(
 		ctx, query,
 		post.URI, post.CID, post.RKey, post.AuthorDID, post.CommunityDID,
-		post.Title, post.Content, facetsJSON, embedJSON, labelsArray,
+		post.Title, post.Content, facetsJSON, embedJSON, labelsJSON,
 		post.CreatedAt,
 	).Scan(&post.ID, &post.IndexedAt)
 	if err != nil {
@@ -101,13 +97,12 @@ func (r *postgresPostRepo) GetByURI(ctx context.Context, uri string) (*posts.Pos
 	`
 
 	var post posts.Post
-	var facetsJSON, embedJSON sql.NullString
-	var contentLabels pq.StringArray
+	var facetsJSON, embedJSON, labelsJSON sql.NullString
 
 	err := r.db.QueryRowContext(ctx, query, uri).Scan(
 		&post.ID, &post.URI, &post.CID, &post.RKey,
 		&post.AuthorDID, &post.CommunityDID,
-		&post.Title, &post.Content, &facetsJSON, &embedJSON, &contentLabels,
+		&post.Title, &post.Content, &facetsJSON, &embedJSON, &labelsJSON,
 		&post.CreatedAt, &post.EditedAt, &post.IndexedAt, &post.DeletedAt,
 		&post.UpvoteCount, &post.DownvoteCount, &post.Score, &post.CommentCount,
 	)
@@ -126,12 +121,9 @@ func (r *postgresPostRepo) GetByURI(ctx context.Context, uri string) (*posts.Pos
 	if embedJSON.Valid {
 		post.Embed = &embedJSON.String
 	}
-	if len(contentLabels) > 0 {
-		labelsJSON, marshalErr := json.Marshal(contentLabels)
-		if marshalErr == nil {
-			labelsStr := string(labelsJSON)
-			post.ContentLabels = &labelsStr
-		}
+	if labelsJSON.Valid {
+		// Labels are stored as JSONB containing full com.atproto.label.defs#selfLabels structure
+		post.ContentLabels = &labelsJSON.String
 	}
 
 	return &post, nil

@@ -222,7 +222,7 @@ curl -X GET \
   "feed": [
     {
       "post": {
-        "uri": "at://did:plc:community-gaming/social.coves.post.record/3k...",
+        "uri": "at://did:plc:community-gaming/social.coves.community.post.record/3k...",
         "cid": "bafyrei...",
         "author": {
           "did": "did:plc:alice",

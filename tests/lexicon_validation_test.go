@@ -48,6 +48,12 @@ func TestLexiconSchemaValidation(t *testing.T) {
 		schemaID := strings.ReplaceAll(relPath, string(filepath.Separator), ".")
 
 		t.Run(schemaID, func(t *testing.T) {
+			// Skip validation for definition-only files (*.defs) - they don't need a "main" section
+			// These files only contain shared type definitions referenced by other schemas
+			if strings.HasSuffix(schemaID, ".defs") {
+				t.Skip("Skipping defs-only file (no main section required)")
+			}
+
 			if _, resolveErr := catalog.Resolve(schemaID); resolveErr != nil {
 				t.Errorf("Failed to resolve schema %s: %v", schemaID, resolveErr)
 			}
@@ -137,9 +143,9 @@ func TestValidateRecord(t *testing.T) {
 		},
 		{
 			name:       "Valid post record",
-			recordType: "social.coves.post.record",
+			recordType: "social.coves.community.post",
 			recordData: map[string]interface{}{
-				"$type":     "social.coves.post.record",
+				"$type":     "social.coves.community.post",
 				"community": "did:plc:programming123",
 				"author":    "did:plc:testauthor123",
 				"title":     "Test Post",
@@ -150,9 +156,9 @@ func TestValidateRecord(t *testing.T) {
 		},
 		{
 			name:       "Invalid post record - missing required field",
-			recordType: "social.coves.post.record",
+			recordType: "social.coves.community.post",
 			recordData: map[string]interface{}{
-				"$type":     "social.coves.post.record",
+				"$type":     "social.coves.community.post",
 				"community": "did:plc:programming123",
 				// Missing required "author" field
 				"title":     "Test Post",

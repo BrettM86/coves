@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"Coves/internal/api/middleware"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
@@ -97,7 +98,8 @@ func TestPostCreation_Basic(t *testing.T) {
 
 		// This will fail at token refresh step (expected for unit test)
 		// We're using a fake token that can't be parsed
-		_, err := postService.CreatePost(ctx, req)
+		authCtx := middleware.SetTestUserDID(ctx, testUserDID)
+		_, err := postService.CreatePost(authCtx, req)
 
 		// For now, we expect an error because token is fake
 		// In a full E2E test with real PDS, this would succeed
@@ -123,7 +125,8 @@ func TestPostCreation_Basic(t *testing.T) {
 
 		// Should resolve handle to DID and proceed
 		// Will still fail at token refresh (expected with fake token)
-		_, err := postService.CreatePost(ctx, req)
+		authCtx := middleware.SetTestUserDID(ctx, testUserDID)
+		_, err := postService.CreatePost(authCtx, req)
 		require.Error(t, err)
 		// Should fail at token refresh, not community resolution
 		assert.Contains(t, err.Error(), "failed to refresh community credentials")
@@ -152,7 +155,8 @@ func TestPostCreation_Basic(t *testing.T) {
 
 		// Should resolve handle to DID and proceed
 		// Will still fail at token refresh (expected with fake token)
-		_, err := postService.CreatePost(ctx, req)
+		authCtx := middleware.SetTestUserDID(ctx, testUserDID)
+		_, err := postService.CreatePost(authCtx, req)
 		require.Error(t, err)
 		// Should fail at token refresh, not community resolution
 		assert.Contains(t, err.Error(), "failed to refresh community credentials")
@@ -167,7 +171,8 @@ func TestPostCreation_Basic(t *testing.T) {
 			AuthorDID: testUserDID,
 		}
 
-		_, err := postService.CreatePost(ctx, req)
+		authCtx := middleware.SetTestUserDID(ctx, testUserDID)
+		_, err := postService.CreatePost(authCtx, req)
 		require.Error(t, err)
 		assert.True(t, posts.IsValidationError(err))
 	})
@@ -181,7 +186,8 @@ func TestPostCreation_Basic(t *testing.T) {
 			AuthorDID: testUserDID,
 		}
 
-		_, err := postService.CreatePost(ctx, req)
+		authCtx := middleware.SetTestUserDID(ctx, testUserDID)
+		_, err := postService.CreatePost(authCtx, req)
 		require.Error(t, err)
 		// Should fail with community not found (wrapped in error)
 		assert.Contains(t, err.Error(), "community not found")
@@ -196,7 +202,8 @@ func TestPostCreation_Basic(t *testing.T) {
 			AuthorDID: "", // Missing!
 		}
 
-		_, err := postService.CreatePost(ctx, req)
+		authCtx := middleware.SetTestUserDID(ctx, testUserDID)
+		_, err := postService.CreatePost(authCtx, req)
 		require.Error(t, err)
 		assert.True(t, posts.IsValidationError(err))
 		assert.Contains(t, err.Error(), "authorDid")
@@ -211,7 +218,8 @@ func TestPostCreation_Basic(t *testing.T) {
 			AuthorDID: testUserDID,
 		}
 
-		_, err := postService.CreatePost(ctx, req)
+		authCtx := middleware.SetTestUserDID(ctx, testUserDID)
+		_, err := postService.CreatePost(authCtx, req)
 		require.Error(t, err)
 		assert.Equal(t, posts.ErrCommunityNotFound, err)
 	})
@@ -226,7 +234,8 @@ func TestPostCreation_Basic(t *testing.T) {
 			AuthorDID: testUserDID,
 		}
 
-		_, err := postService.CreatePost(ctx, req)
+		authCtx := middleware.SetTestUserDID(ctx, testUserDID)
+		_, err := postService.CreatePost(authCtx, req)
 		require.Error(t, err)
 		assert.True(t, posts.IsValidationError(err))
 		assert.Contains(t, err.Error(), "too long")
@@ -236,13 +245,18 @@ func TestPostCreation_Basic(t *testing.T) {
 		content := "Post with invalid label"
 
 		req := posts.CreatePostRequest{
-			Community:     testCommunity.DID,
-			Content:       &content,
-			ContentLabels: []string{"invalid_label"}, // Not in known values!
-			AuthorDID:     testUserDID,
+			Community: testCommunity.DID,
+			Content:   &content,
+			Labels: &posts.SelfLabels{
+				Values: []posts.SelfLabel{
+					{Val: "invalid_label"}, // Not in known values!
+				},
+			},
+			AuthorDID: testUserDID,
 		}
 
-		_, err := postService.CreatePost(ctx, req)
+		authCtx := middleware.SetTestUserDID(ctx, testUserDID)
+		_, err := postService.CreatePost(authCtx, req)
 		require.Error(t, err)
 		assert.True(t, posts.IsValidationError(err))
 		assert.Contains(t, err.Error(), "unknown content label")
@@ -252,14 +266,20 @@ func TestPostCreation_Basic(t *testing.T) {
 		content := "Post with valid labels"
 
 		req := posts.CreatePostRequest{
-			Community:     testCommunity.DID,
-			Content:       &content,
-			ContentLabels: []string{"nsfw", "spoiler"},
-			AuthorDID:     testUserDID,
+			Community: testCommunity.DID,
+			Content:   &content,
+			Labels: &posts.SelfLabels{
+				Values: []posts.SelfLabel{
+					{Val: "nsfw"},
+					{Val: "spoiler"},
+				},
+			},
+			AuthorDID: testUserDID,
 		}
 
 		// Will fail at token refresh (expected with fake token)
-		_, err := postService.CreatePost(ctx, req)
+		authCtx := middleware.SetTestUserDID(ctx, testUserDID)
+		_, err := postService.CreatePost(authCtx, req)
 		require.Error(t, err)
 		// Should fail at token refresh, not validation
 		assert.Contains(t, err.Error(), "failed to refresh community credentials")
@@ -316,7 +336,7 @@ func TestPostRepository_Create(t *testing.T) {
 		title := "Test Title"
 
 		post := &posts.Post{
-			URI:          "at://" + testCommunityDID + "/social.coves.post.record/test123",
+			URI:          "at://" + testCommunityDID + "/social.coves.community.post/test123",
 			CID:          "bafy2test123",
 			RKey:         "test123",
 			AuthorDID:    testUserDID,
@@ -335,7 +355,7 @@ func TestPostRepository_Create(t *testing.T) {
 		content := "Duplicate post"
 
 		post1 := &posts.Post{
-			URI:          "at://" + testCommunityDID + "/social.coves.post.record/duplicate",
+			URI:          "at://" + testCommunityDID + "/social.coves.community.post/duplicate",
 			CID:          "bafy2duplicate1",
 			RKey:         "duplicate",
 			AuthorDID:    testUserDID,
@@ -348,7 +368,7 @@ func TestPostRepository_Create(t *testing.T) {
 
 		// Try to insert again with same URI
 		post2 := &posts.Post{
-			URI:          "at://" + testCommunityDID + "/social.coves.post.record/duplicate",
+			URI:          "at://" + testCommunityDID + "/social.coves.community.post/duplicate",
 			CID:          "bafy2duplicate2",
 			RKey:         "duplicate",
 			AuthorDID:    testUserDID,

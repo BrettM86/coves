@@ -1,6 +1,6 @@
 {
   "lexicon": 1,
-  "id": "social.coves.post.get",
+  "id": "social.coves.community.post.get",
   "defs": {
     "main": {
       "type": "query",

@@ -100,7 +100,7 @@ func TestGetTimeline_Basic(t *testing.T) {
 		assert.NotNil(t, feedPost.Post.Record, "Post %d should have Record field", i)
 		record, ok := feedPost.Post.Record.(map[string]interface{})
 		require.True(t, ok, "Record should be a map")
-		assert.Equal(t, "social.coves.post.record", record["$type"], "Record should have correct $type")
+		assert.Equal(t, "social.coves.community.post", record["$type"], "Record should have correct $type")
 		assert.NotEmpty(t, record["community"], "Record should have community")
 		assert.NotEmpty(t, record["author"], "Record should have author")
 		assert.NotEmpty(t, record["createdAt"], "Record should have createdAt")

@@ -81,12 +81,12 @@ func (v *LexiconValidator) ValidateCommunityProfile(profile map[string]interface
 
 // ValidatePost validates a post record
 func (v *LexiconValidator) ValidatePost(post map[string]interface{}) error {
-	return v.ValidateRecord(post, "social.coves.post.record")
+	return v.ValidateRecord(post, "social.coves.community.post")
 }
 
 // ValidateComment validates a comment record
 func (v *LexiconValidator) ValidateComment(comment map[string]interface{}) error {
-	return v.ValidateRecord(comment, "social.coves.interaction.comment")
+	return v.ValidateRecord(comment, "social.coves.feed.comment")
 }
 
 // ValidateVote validates a vote record
@@ -99,7 +99,7 @@ func (v *LexiconValidator) ValidateModerationAction(action map[string]interface{
 	return v.ValidateRecord(action, fmt.Sprintf("social.coves.moderation.%s", actionType))
 }
 
-// ResolveReference resolves a schema reference (e.g., "social.coves.post.get#postView")
+// ResolveReference resolves a schema reference (e.g., "social.coves.community.post.get#postView")
 func (v *LexiconValidator) ResolveReference(ref string) (interface{}, error) {
 	return v.catalog.Resolve(ref)
 }

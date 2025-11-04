@@ -1,6 +1,6 @@
 {
   "$type": "social.coves.actor.saved",
-  "subject": "at://did:plc:exampleuser/social.coves.post.record/3k7a3dmb5bk2c",
+  "subject": "at://$1/social.coves.community.post/3k7a3dmb5bk2c",
   "type": "post",
   "createdAt": "2025-01-09T14:30:00Z",
   "note": "Great tutorial on Go concurrency patterns"

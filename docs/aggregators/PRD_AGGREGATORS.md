@@ -23,7 +23,7 @@ Aggregators follow established atProto patterns for autonomous services (Feed Ge
 1. **Aggregators are Actors, Not a Separate System**
    - Each aggregator has its own DID
    - Authenticate as themselves via JWT
-   - Use existing `social.coves.post.create` endpoint
+   - Use existing `social.coves.community.post.create` endpoint
    - Post record's `author` field = aggregator DID (server-populated)
    - No separate posting API needed
 
@@ -89,7 +89,7 @@ Grants an aggregator permission to post with specific configuration.
 Aggregator Service (External)
   │
   │ 1. Authenticates as aggregator DID (JWT)
-  │ 2. Calls social.coves.post.create
+  │ 2. Calls social.coves.community.post.create
   ▼
 Coves AppView Handler
   │
@@ -120,7 +120,7 @@ Community Feed
 
 ### For Aggregators
 
-- **`social.coves.post.create`** - Modified to handle aggregator auth
+- **`social.coves.community.post.create`** - Modified to handle aggregator auth
 - **`social.coves.aggregator.getAuthorizations`** - Query authorized communities
 
 ### For Discovery
@@ -312,7 +312,7 @@ Potential first aggregator: RSS news bot for select communities.
 
 ---
 
-### 2025-10-19: Reuse `social.coves.post.create` Endpoint
+### 2025-10-19: Reuse `social.coves.community.post.create` Endpoint
 **Decision:** Aggregators use existing post creation endpoint.
 
 **Rationale:**

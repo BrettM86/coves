@@ -58,7 +58,7 @@ func TestValidatePost(t *testing.T) {
 
 	// Valid post
 	validPost := map[string]interface{}{
-		"$type":     "social.coves.post.record",
+		"$type":     "social.coves.community.post",
 		"community": "did:plc:test123",
 		"author":    "did:plc:author123",
 		"title":     "Test Post",
@@ -72,7 +72,7 @@ func TestValidatePost(t *testing.T) {
 
 	// Invalid post - missing required field (author)
 	invalidPost := map[string]interface{}{
-		"$type":     "social.coves.post.record",
+		"$type":     "social.coves.community.post",
 		"community": "did:plc:test123",
 		// Missing required "author" field
 		"title":     "Test Post",
@@ -94,7 +94,11 @@ func TestValidateRecordWithDifferentInputTypes(t *testing.T) {
 	// Test with JSON string
 	jsonString := `{
 		"$type": "social.coves.interaction.vote",
-		"subject": "at://did:plc:test/social.coves.post.text/abc123",
+		"subject": {
+			"uri": "at://did:plc:test/social.coves.community.post/abc123",
+			"cid": "bafyreigj3fwnwjuzr35k2kuzmb5dixxczrzjhqkr5srlqplsh6gq3bj3si"
+		},
+		"direction": "up",
 		"createdAt": "2024-01-01T00:00:00Z"
 	}`
 

@@ -332,7 +332,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 		reqJSON, err := json.Marshal(reqBody)
 		require.NoError(t, err)
 
-		req := httptest.NewRequest("POST", "/xrpc/social.coves.post.create", bytes.NewReader(reqJSON))
+		req := httptest.NewRequest("POST", "/xrpc/social.coves.community.post.create", bytes.NewReader(reqJSON))
 		req.Header.Set("Content-Type", "application/json")
 
 		// Create JWT for aggregator (not a user)
@@ -360,11 +360,11 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
 				Operation:  "create",
-				Collection: "social.coves.post.record",
+				Collection: "social.coves.community.post",
 				RKey:       rkey,
 				CID:        response.CID,
 				Record: map[string]interface{}{
-					"$type":     "social.coves.post.record",
+					"$type":     "social.coves.community.post",
 					"community": communityDID,
 					"author":    aggregatorDID, // Aggregator is the author
 					"title":     title,
@@ -422,7 +422,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 			reqJSON, err := json.Marshal(reqBody)
 			require.NoError(t, err)
 
-			req := httptest.NewRequest("POST", "/xrpc/social.coves.post.create", bytes.NewReader(reqJSON))
+			req := httptest.NewRequest("POST", "/xrpc/social.coves.community.post.create", bytes.NewReader(reqJSON))
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Authorization", "Bearer "+createSimpleTestJWT(aggregatorDID))
 
@@ -444,7 +444,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 		reqJSON, err := json.Marshal(reqBody)
 		require.NoError(t, err)
 
-		req := httptest.NewRequest("POST", "/xrpc/social.coves.post.create", bytes.NewReader(reqJSON))
+		req := httptest.NewRequest("POST", "/xrpc/social.coves.community.post.create", bytes.NewReader(reqJSON))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+createSimpleTestJWT(aggregatorDID))
 
@@ -465,7 +465,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 		reqJSON, err = json.Marshal(reqBody)
 		require.NoError(t, err)
 
-		req = httptest.NewRequest("POST", "/xrpc/social.coves.post.create", bytes.NewReader(reqJSON))
+		req = httptest.NewRequest("POST", "/xrpc/social.coves.community.post.create", bytes.NewReader(reqJSON))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+createSimpleTestJWT(aggregatorDID))
 
@@ -657,7 +657,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 		reqJSON, err := json.Marshal(reqBody)
 		require.NoError(t, err)
 
-		req := httptest.NewRequest("POST", "/xrpc/social.coves.post.create", bytes.NewReader(reqJSON))
+		req := httptest.NewRequest("POST", "/xrpc/social.coves.community.post.create", bytes.NewReader(reqJSON))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+createSimpleTestJWT(unauthorizedAggDID))
 
@@ -781,7 +781,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 		reqJSON, err := json.Marshal(reqBody)
 		require.NoError(t, err)
 
-		req := httptest.NewRequest("POST", "/xrpc/social.coves.post.create", bytes.NewReader(reqJSON))
+		req := httptest.NewRequest("POST", "/xrpc/social.coves.community.post.create", bytes.NewReader(reqJSON))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+createSimpleTestJWT(aggregatorDID))
 

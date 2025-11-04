@@ -17,7 +17,7 @@ class CovesClient:
 
     Handles:
     - Authentication with aggregator credentials
-    - Creating posts in communities (social.coves.post.create)
+    - Creating posts in communities (social.coves.community.post.create)
     - External embed formatting
     """
 
@@ -94,7 +94,7 @@ class CovesClient:
             self.authenticate()
 
         try:
-            # Prepare post data for social.coves.post.create endpoint
+            # Prepare post data for social.coves.community.post.create endpoint
             post_data = {
                 "community": community_handle,
                 "content": content,
@@ -114,7 +114,7 @@ class CovesClient:
             logger.info(f"Creating post in community: {community_handle}")
 
             # Make direct HTTP request to XRPC endpoint
-            url = f"{self.api_url}/xrpc/social.coves.post.create"
+            url = f"{self.api_url}/xrpc/social.coves.community.post.create"
             headers = {
                 "Authorization": f"Bearer {self.client._session.access_jwt}",
                 "Content-Type": "application/json"

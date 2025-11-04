@@ -67,7 +67,7 @@ func TestVoteRepo_Create(t *testing.T) {
 		CID:        "bafyreigtest123",
 		RKey:       "3k1234567890",
 		VoterDID:   voterDID,
-		SubjectURI: "at://did:plc:community/social.coves.post.record/abc123",
+		SubjectURI: "at://did:plc:community/social.coves.community.post/abc123",
 		SubjectCID: "bafyreigpost123",
 		Direction:  "up",
 		CreatedAt:  time.Now(),
@@ -95,7 +95,7 @@ func TestVoteRepo_Create_Idempotent(t *testing.T) {
 		CID:        "bafyreigtest456",
 		RKey:       "3k9876543210",
 		VoterDID:   voterDID,
-		SubjectURI: "at://did:plc:community/social.coves.post.record/xyz789",
+		SubjectURI: "at://did:plc:community/social.coves.community.post/xyz789",
 		SubjectCID: "bafyreigpost456",
 		Direction:  "down",
 		CreatedAt:  time.Now(),
@@ -136,7 +136,7 @@ func TestVoteRepo_Create_VoterNotFound(t *testing.T) {
 		CID:        "bafyreignovoter",
 		RKey:       "3k1111111111",
 		VoterDID:   "did:plc:nonexistentvoter",
-		SubjectURI: "at://did:plc:community/social.coves.post.record/test123",
+		SubjectURI: "at://did:plc:community/social.coves.community.post/test123",
 		SubjectCID: "bafyreigpost789",
 		Direction:  "up",
 		CreatedAt:  time.Now(),
@@ -168,7 +168,7 @@ func TestVoteRepo_GetByURI(t *testing.T) {
 		CID:        "bafyreigtest789",
 		RKey:       "3k5555555555",
 		VoterDID:   voterDID,
-		SubjectURI: "at://did:plc:community/social.coves.post.record/post123",
+		SubjectURI: "at://did:plc:community/social.coves.community.post/post123",
 		SubjectCID: "bafyreigpost999",
 		Direction:  "up",
 		CreatedAt:  time.Now(),
@@ -207,7 +207,7 @@ func TestVoteRepo_GetByVoterAndSubject(t *testing.T) {
 	voterDID := "did:plc:testvoter999"
 	createTestUser(t, db, "testvoter999.test", voterDID)
 
-	subjectURI := "at://did:plc:community/social.coves.post.record/subject123"
+	subjectURI := "at://did:plc:community/social.coves.community.post/subject123"
 
 	// Create vote
 	vote := &votes.Vote{
@@ -238,7 +238,7 @@ func TestVoteRepo_GetByVoterAndSubject_NotFound(t *testing.T) {
 	repo := NewVoteRepository(db)
 	ctx := context.Background()
 
-	_, err := repo.GetByVoterAndSubject(ctx, "did:plc:nobody", "at://did:plc:community/social.coves.post.record/nopost")
+	_, err := repo.GetByVoterAndSubject(ctx, "did:plc:nobody", "at://did:plc:community/social.coves.community.post/nopost")
 	assert.ErrorIs(t, err, votes.ErrVoteNotFound)
 }
 
@@ -259,7 +259,7 @@ func TestVoteRepo_Delete(t *testing.T) {
 		CID:        "bafyreigdelete",
 		RKey:       "3k7777777777",
 		VoterDID:   voterDID,
-		SubjectURI: "at://did:plc:community/social.coves.post.record/deletetest",
+		SubjectURI: "at://did:plc:community/social.coves.community.post/deletetest",
 		SubjectCID: "bafyreigdeletepost",
 		Direction:  "up",
 		CreatedAt:  time.Now(),
@@ -297,7 +297,7 @@ func TestVoteRepo_Delete_Idempotent(t *testing.T) {
 		CID:        "bafyreigdelete2",
 		RKey:       "3k8888888888",
 		VoterDID:   voterDID,
-		SubjectURI: "at://did:plc:community/social.coves.post.record/deletetest2",
+		SubjectURI: "at://did:plc:community/social.coves.community.post/deletetest2",
 		SubjectCID: "bafyreigdeletepost2",
 		Direction:  "down",
 		CreatedAt:  time.Now(),
@@ -327,7 +327,7 @@ func TestVoteRepo_ListBySubject(t *testing.T) {
 	createTestUser(t, db, "testvoterlist1.test", voterDID1)
 	createTestUser(t, db, "testvoterlist2.test", voterDID2)
 
-	subjectURI := "at://did:plc:community/social.coves.post.record/listtest"
+	subjectURI := "at://did:plc:community/social.coves.community.post/listtest"
 
 	// Create multiple votes on same subject
 	vote1 := &votes.Vote{
@@ -377,7 +377,7 @@ func TestVoteRepo_ListByVoter(t *testing.T) {
 		CID:        "bafyreigvoter1",
 		RKey:       "3k0000000001",
 		VoterDID:   voterDID,
-		SubjectURI: "at://did:plc:community/social.coves.post.record/post1",
+		SubjectURI: "at://did:plc:community/social.coves.community.post/post1",
 		SubjectCID: "bafyreigp1",
 		Direction:  "up",
 		CreatedAt:  time.Now(),
@@ -387,7 +387,7 @@ func TestVoteRepo_ListByVoter(t *testing.T) {
 		CID:        "bafyreigvoter2",
 		RKey:       "3k0000000002",
 		VoterDID:   voterDID,
-		SubjectURI: "at://did:plc:community/social.coves.post.record/post2",
+		SubjectURI: "at://did:plc:community/social.coves.community.post/post2",
 		SubjectCID: "bafyreigp2",
 		Direction:  "down",
 		CreatedAt:  time.Now(),

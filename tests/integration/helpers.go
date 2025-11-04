@@ -274,7 +274,7 @@ func createTestPost(t *testing.T, db *sql.DB, communityDID, authorDID, title str
 
 	// Generate URI
 	rkey := fmt.Sprintf("post-%d", time.Now().UnixNano())
-	uri := fmt.Sprintf("at://%s/social.coves.post.record/%s", communityDID, rkey)
+	uri := fmt.Sprintf("at://%s/social.coves.community.post/%s", communityDID, rkey)
 
 	// Insert post
 	_, err := db.ExecContext(ctx, `

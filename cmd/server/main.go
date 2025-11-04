@@ -306,7 +306,7 @@ func main() {
 	postJetstreamURL := os.Getenv("POST_JETSTREAM_URL")
 	if postJetstreamURL == "" {
 		// Listen to post record creation events
-		postJetstreamURL = "ws://localhost:6008/subscribe?wantedCollections=social.coves.post.record"
+		postJetstreamURL = "ws://localhost:6008/subscribe?wantedCollections=social.coves.community.post"
 	}
 
 	postEventConsumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService)
@@ -319,7 +319,7 @@ func main() {
 	}()
 
 	log.Printf("Started Jetstream post consumer: %s", postJetstreamURL)
-	log.Println("  - Indexing: social.coves.post.record CREATE operations")
+	log.Println("  - Indexing: social.coves.community.post CREATE operations")
 	log.Println("  - UPDATE/DELETE indexing deferred until those features are implemented")
 
 	// Start Jetstream consumer for aggregators

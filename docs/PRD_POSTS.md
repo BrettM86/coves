@@ -45,7 +45,7 @@ Post appears in feeds
 
 **Repository Structure:**
 ```
-Repository:  at://did:plc:community789/social.coves.post.record/3k2a4b5c6d7e
+Repository:  at://did:plc:community789/social.coves.community.post.record/3k2a4b5c6d7e
 Owner:       did:plc:community789 (community owns the post)
 Author:      did:plc:user123 (tracked in record metadata)
 Hosted By:   did:web:coves.social (instance manages community credentials)
@@ -77,7 +77,7 @@ Posts are validated against community-specific content rules at creation time. C
 
 **Implementation checklist:**
 - [x] Lexicon: `contentRules` in `social.coves.community.profile` ✅
-- [x] Lexicon: `postType` removed from `social.coves.post.create` ✅
+- [x] Lexicon: `postType` removed from `social.coves.community.post.create` ✅
 - [ ] Validation: `ValidatePostAgainstRules()` service function
 - [ ] Handler: Integrate validation in post creation endpoint
 - [ ] AppView: Index derived characteristics (embed_type, text_length, etc.)
@@ -90,11 +90,11 @@ Posts are validated against community-specific content rules at creation time. C
 **Priority:** CRITICAL - Posts are the foundation of the platform
 
 #### Create Post
-- [x] Lexicon: `social.coves.post.record` ✅
-- [x] Lexicon: `social.coves.post.create` ✅
+- [x] Lexicon: `social.coves.community.post.record` ✅
+- [x] Lexicon: `social.coves.community.post.create` ✅
 - [x] Removed `postType` enum in favor of content rules ✅ (2025-10-18)
 - [x] Removed `postType` from record and get lexicons ✅ (2025-10-18)
-- [x] **Handler:** `POST /xrpc/social.coves.post.create` ✅ (Alpha - see IMPLEMENTATION_POST_CREATION.md)
+- [x] **Handler:** `POST /xrpc/social.coves.community.post.create` ✅ (Alpha - see IMPLEMENTATION_POST_CREATION.md)
   - ✅ Accept: community (DID/handle), title (optional), content, facets, embed, contentLabels
   - ✅ Validate: User is authenticated, community exists, content within limits
   - ✅ Write: Create record in **community's PDS repository**
@@ -124,8 +124,8 @@ Posts are validated against community-specific content rules at creation time. C
 - [x] **E2E Test:** Create text post → Write to **community's PDS** → Index via Jetstream → Verify in AppView ✅
 
 #### Get Post
-- [x] Lexicon: `social.coves.post.get` ✅
-- [ ] **Handler:** `GET /xrpc/social.coves.post.get?uri=at://...`
+- [x] Lexicon: `social.coves.community.post.get` ✅
+- [ ] **Handler:** `GET /xrpc/social.coves.community.post.get?uri=at://...`
   - Accept: AT-URI of post
   - Return: Full post view with author, community, stats, viewer state
 - [ ] **Service Layer:** `PostService.Get(uri, viewerDID)`
@@ -139,8 +139,8 @@ Posts are validated against community-specific content rules at creation time. C
 - [ ] **E2E Test:** Get post by URI → Verify all fields populated
 
 #### Update Post
-- [x] Lexicon: `social.coves.post.update` ✅
-- [ ] **Handler:** `POST /xrpc/social.coves.post.update`
+- [x] Lexicon: `social.coves.community.post.update` ✅
+- [ ] **Handler:** `POST /xrpc/social.coves.community.post.update`
   - Accept: uri, title, content, facets, embed, contentLabels, editNote
   - Validate: User is post author, within 24-hour edit window
   - Write: Update record in **community's PDS**
@@ -157,8 +157,8 @@ Posts are validated against community-specific content rules at creation time. C
 - [ ] **E2E Test:** Update post → Verify edit reflected in AppView
 
 #### Delete Post
-- [x] Lexicon: `social.coves.post.delete` ✅
-- [ ] **Handler:** `POST /xrpc/social.coves.post.delete`
+- [x] Lexicon: `social.coves.community.post.delete` ✅
+- [ ] **Handler:** `POST /xrpc/social.coves.community.post.delete`
   - Accept: uri
   - Validate: User is post author OR community moderator
   - Write: Delete record from **community's PDS**
@@ -251,7 +251,7 @@ Posts are validated against community-specific content rules at creation time. C
 
 #### Post Event Handling
 - [x] **Consumer:** `PostConsumer.HandlePostEvent()` ✅ (2025-10-19)
-  - ✅ Listen for `social.coves.post.record` CREATE from **community repositories**
+  - ✅ Listen for `social.coves.community.post.record` CREATE from **community repositories**
   - ✅ Parse post record, extract author DID and community DID (from AT-URI owner)
   - ⚠️ **Derive post characteristics:** DEFERRED (embed_type, text_length, has_title, has_embed for content rules filtering)
   - ✅ Insert in AppView PostgreSQL (CREATE only - UPDATE/DELETE deferred)
@@ -447,7 +447,7 @@ CREATE INDEX idx_votes_voter_subject ON votes(voter_did, subject_uri) WHERE dele
 - [ ] **Tag Storage:** Tags live in **user's repository** (users own their tags)
 
 #### Crossposting
-- [x] Lexicon: `social.coves.post.crosspost` ✅
+- [x] Lexicon: `social.coves.community.post.crosspost` ✅
 - [ ] **Crosspost Tracking:** Share post to multiple communities
 - [ ] **Implementation:** Create new post record in each community's repository
 - [ ] **Crosspost Chain:** Track all crosspost relationships
@@ -461,7 +461,7 @@ CREATE INDEX idx_votes_voter_subject ON votes(voter_did, subject_uri) WHERE dele
 - [ ] **AppView Query:** Endpoint to fetch user's saved posts
 
 ### Post Search
-- [x] Lexicon: `social.coves.post.search` ✅
+- [x] Lexicon: `social.coves.community.post.search` ✅
 - [ ] **Search Parameters:**
   - Query string (q)
   - Filter by community
@@ -583,7 +583,7 @@ CREATE INDEX idx_votes_voter_subject ON votes(voter_did, subject_uri) WHERE dele
 - **Reuses Token Refresh:** Can leverage existing community credential management
 
 **Implementation Details:**
-- Post AT-URI: `at://community_did/social.coves.post.record/tid`
+- Post AT-URI: `at://community_did/social.coves.community.post.record/tid`
 - Write operations use community's PDS credentials (encrypted, stored in AppView)
 - Author tracked in post record's `author` field (DID)
 - Moderators can delete any post in their community
@@ -756,7 +756,7 @@ CREATE INDEX idx_votes_voter_subject ON votes(voter_did, subject_uri) WHERE dele
 
 ## Lexicon Summary
 
-### `social.coves.post.record`
+### `social.coves.community.post.record`
 **Status:** ✅ Defined, implementation TODO
 **Last Updated:** 2025-10-18 (removed `postType` enum)
 
@@ -781,7 +781,7 @@ CREATE INDEX idx_votes_voter_subject ON votes(voter_did, subject_uri) WHERE dele
 - Post "type" is derived from structure (has embed? what embed type? has title? text length?)
 - Community's `contentRules` validate post structure at creation time
 
-### `social.coves.post.create` (Procedure)
+### `social.coves.community.post.create` (Procedure)
 **Status:** ✅ Defined, implementation TODO
 **Last Updated:** 2025-10-18 (removed `postType` parameter)
 

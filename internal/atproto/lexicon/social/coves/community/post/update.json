@@ -1,6 +1,6 @@
 {
   "lexicon": 1,
-  "id": "social.coves.post.update",
+  "id": "social.coves.community.post.update",
   "defs": {
     "main": {
       "type": "procedure",
@@ -45,13 +45,28 @@
                 "social.coves.embed.post"
               ]
             },
-            "contentLabels": {
+            "labels": {
+              "type": "ref",
+              "ref": "com.atproto.label.defs#selfLabels",
+              "description": "Updated self-applied content labels"
+            },
+            "langs": {
               "type": "array",
-              "description": "Updated content labels",
+              "description": "Updated languages (ISO 639-1)",
+              "maxLength": 3,
               "items": {
                 "type": "string",
-                "knownValues": ["nsfw", "spoiler", "violence"],
-                "maxLength": 32
+                "format": "language"
+              }
+            },
+            "tags": {
+              "type": "array",
+              "description": "Updated topic tags",
+              "maxLength": 8,
+              "items": {
+                "type": "string",
+                "maxLength": 64,
+                "maxGraphemes": 64
               }
             },
             "editNote": {

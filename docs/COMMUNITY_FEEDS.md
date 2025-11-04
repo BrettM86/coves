@@ -182,7 +182,7 @@ type FeedViewPost struct {
 
 ```go
 type PostView struct {
-    URI        string         // at://did:plc:abc/social.coves.post.record/123
+    URI        string         // at://did:plc:abc/social.coves.community.post.record/123
     CID        string         // Content ID
     RKey       string         // Record key (TID)
     Author     *AuthorView    // Author with handle, avatar, reputation
@@ -247,7 +247,7 @@ GET /xrpc/social.coves.feed.getCommunity
   "feed": [
     {
       "post": {
-        "uri": "at://did:plc:gaming123/social.coves.post.record/abc",
+        "uri": "at://did:plc:gaming123/social.coves.community.post.record/abc",
         "cid": "bafyrei...",
         "author": {
           "did": "did:plc:alice",
@@ -473,7 +473,7 @@ Allow users to create custom algorithms:
 GET /xrpc/social.coves.feed.getSkeleton?feed=at://alice/feed/best-memes
   → Returns: [uri1, uri2, uri3, ...]
 
-GET /xrpc/social.coves.post.get?uris=[...]
+GET /xrpc/social.coves.community.post.get?uris=[...]
   → Returns: [full posts]
 ```
 
@@ -556,7 +556,7 @@ Show post's position in thread:
 
 ## Lexicon Updates
 
-### Updated: `social.coves.post.get`
+### Updated: `social.coves.community.post.get`
 
 **Changes:**
 1. ✅ Batch URIs: `uri` → `uris[]` (max 25)
@@ -638,7 +638,7 @@ GET /xrpc/social.coves.feed.getCommunity?community=gaming&sort=hot
 // Custom feed (power users)
 GET /xrpc/social.coves.feed.getSkeleton?feed=at://alice/feed/best-memes
   → Returns URIs
-GET /xrpc/social.coves.post.get?uris=[...]
+GET /xrpc/social.coves.community.post.get?uris=[...]
   → Hydrates posts
 ```
 

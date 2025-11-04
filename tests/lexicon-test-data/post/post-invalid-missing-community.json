@@ -1,10 +1,9 @@
 {
-  "$type": "social.coves.post.record",
-  "postType": "text",
+  "$type": "social.coves.community.post",
+  "author": "did:plc:testauthor123",
   "title": "Test Post",
-  "text": "This post is missing the required community field",
+  "content": "This post is missing the required community field",
   "tags": ["test"],
-  "language": "en",
-  "contentWarnings": [],
+  "langs": ["en"],
   "createdAt": "2025-01-09T14:30:00Z"
 }
