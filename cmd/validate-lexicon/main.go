@@ -119,6 +119,15 @@ func validateSchemaStructure(catalog *lexicon.BaseCatalog, schemaPath string, ve
 	}
 
 	for i, schemaID := range schemaIDs {
+		// Skip validation for definition-only files (*.defs) - they don't need a "main" section
+		// These files only contain shared type definitions referenced by other schemas
+		if strings.HasSuffix(schemaID, ".defs") {
+			if verbose {
+				fmt.Printf("  ⏭️  %s (defs-only file, skipping main validation)\n", schemaID)
+			}
+			continue
+		}
+
 		if _, err := catalog.Resolve(schemaID); err != nil {
 			validationErrors = append(validationErrors, fmt.Sprintf("Failed to resolve schema %s (from %s): %v", schemaID, schemaFiles[i], err))
 		} else if verbose {
@@ -415,17 +424,15 @@ func validateCrossReferences(catalog *lexicon.BaseCatalog, verbose bool) error {
 		"social.coves.richtext.facet#spoiler",
 
 		// Post types and views
-		"social.coves.post.get#postView",
-		"social.coves.post.get#authorView",
-		"social.coves.post.get#communityRef",
-		"social.coves.post.get#imageView",
-		"social.coves.post.get#videoView",
-		"social.coves.post.get#externalView",
-		"social.coves.post.get#postStats",
-		"social.coves.post.get#viewerState",
+		"social.coves.community.post.get#postView",
+		"social.coves.community.post.get#authorView",
+		"social.coves.community.post.get#communityRef",
+		"social.coves.community.post.get#postStats",
+		"social.coves.community.post.get#viewerState",
+		"social.coves.community.post.get#notFoundPost",
+		"social.coves.community.post.get#blockedPost",
 
-		// Post record types
-		"social.coves.post.record#originalAuthor",
+		// Post record types (removed - no longer exists in new structure)
 
 		// Actor definitions
 		"social.coves.actor.profile#geoLocation",

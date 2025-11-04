@@ -4,13 +4,13 @@
   "defs": {
     "main": {
       "type": "object",
-      "description": "Embedded reference to another post",
-      "required": ["uri"],
+      "description": "Embedded reference to another post (quoted post)",
+      "required": ["post"],
       "properties": {
-        "uri": {
-          "type": "string",
-          "format": "at-uri",
-          "description": "AT-URI of the post being embedded"
+        "post": {
+          "type": "ref",
+          "ref": "com.atproto.repo.strongRef",
+          "description": "Strong reference to the embedded post (includes URI and CID)"
         }
       }
     }
