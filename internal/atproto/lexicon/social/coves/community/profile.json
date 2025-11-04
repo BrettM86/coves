@@ -8,7 +8,7 @@
       "key": "literal:self",
       "record": {
         "type": "object",
-        "required": ["handle", "name", "createdAt", "createdBy", "hostedBy", "visibility", "moderationType"],
+        "required": ["handle", "name", "createdAt", "createdBy", "hostedBy"],
         "properties": {
           "handle": {
             "type": "string",

@@ -25,8 +25,9 @@
           },
           "sort": {
             "type": "string",
-            "enum": ["reputation", "recent", "alphabetical"],
-            "default": "reputation"
+            "knownValues": ["reputation", "recent", "alphabetical"],
+            "default": "reputation",
+            "maxLength": 64
           }
         }
       },
