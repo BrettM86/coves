@@ -20,6 +20,7 @@
         "name": {
           "type": "string",
           "maxLength": 64,
+          "maxGraphemes": 64,
           "description": "Short community name"
         },
         "displayName": {
@@ -87,6 +88,7 @@
         "name": {
           "type": "string",
           "maxLength": 64,
+          "maxGraphemes": 64,
           "description": "Short community name"
         },
         "displayName": {

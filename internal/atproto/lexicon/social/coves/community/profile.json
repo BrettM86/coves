@@ -13,6 +13,7 @@
           "name": {
             "type": "string",
             "maxLength": 64,
+            "maxGraphemes": 64,
             "description": "Short community name (local part of handle)"
           },
           "displayName": {

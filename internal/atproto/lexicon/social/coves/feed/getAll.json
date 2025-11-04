@@ -10,26 +10,26 @@
         "properties": {
           "sort": {
             "type": "string",
-            "enum": ["hot", "top", "new"],
+            "knownValues": ["hot", "top", "new"],
             "default": "hot",
             "description": "Sort order for global feed"
           },
           "postType": {
             "type": "string",
-            "enum": ["text", "article", "image", "video", "microblog"],
+            "knownValues": ["text", "article", "image", "video", "microblog"],
             "description": "Filter by a single post type (computed from embed structure)"
           },
           "postTypes": {
             "type": "array",
             "items": {
               "type": "string",
-              "enum": ["text", "article", "image", "video", "microblog"]
+              "knownValues": ["text", "article", "image", "video", "microblog"]
             },
             "description": "Filter by multiple post types (computed from embed structure)"
           },
           "timeframe": {
             "type": "string",
-            "enum": ["hour", "day", "week", "month", "year", "all"],
+            "knownValues": ["hour", "day", "week", "month", "year", "all"],
             "default": "day",
             "description": "Timeframe for top sorting (only applies when sort=top)"
           },
@@ -54,7 +54,7 @@
               "type": "array",
               "items": {
                 "type": "ref",
-                "ref": "social.coves.feed.getTimeline#feedViewPost"
+                "ref": "social.coves.feed.defs#feedViewPost"
               }
             },
             "cursor": {

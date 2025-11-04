@@ -43,7 +43,7 @@
               "type": "array",
               "items": {
                 "type": "ref",
-                "ref": "social.coves.community.list#communityView"
+                "ref": "social.coves.community.defs#communityView"
               }
             },
             "cursor": {

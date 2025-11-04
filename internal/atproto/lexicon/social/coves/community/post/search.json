@@ -25,7 +25,7 @@
           },
           "type": {
             "type": "string",
-            "enum": ["text", "image", "video", "article", "microblog"],
+            "knownValues": ["text", "image", "video", "article", "microblog"],
             "description": "Filter by post type"
           },
           "tags": {
@@ -37,12 +37,12 @@
           },
           "sort": {
             "type": "string",
-            "enum": ["relevance", "new", "top"],
+            "knownValues": ["relevance", "new", "top"],
             "default": "relevance"
           },
           "timeframe": {
             "type": "string",
-            "enum": ["hour", "day", "week", "month", "year", "all"],
+            "knownValues": ["hour", "day", "week", "month", "year", "all"],
             "default": "all"
           },
           "limit": {
