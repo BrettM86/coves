@@ -1,9 +1,0 @@
-{
-  "$type": "social.coves.community.moderator",
-  "user": "did:plc:moderator123",
-  "community": "did:plc:community123",
-  "role": "moderator",
-  "permissions": ["remove_posts", "invalid-permission"],
-  "createdAt": "2024-06-15T10:00:00Z",
-  "createdBy": "did:plc:owner123"
-}

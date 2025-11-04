@@ -1,7 +1,7 @@
 {
   "$type": "social.coves.moderation.tribunalVote",
   "tribunal": "at://did:plc:community123/social.coves.moderation.tribunal/3k7a3dmb5bk2c",
-  "subject": "at://$1/social.coves.community.post/3k7a2clb4bj2b",
+  "subject": "at://did:plc:testuser123/social.coves.community.post/3k7a2clb4bj2b",
   "decision": "remove",
   "reasoning": "The moderator's action was justified based on clear violation of Rule 2 (No Spam). The user posted the same promotional content across multiple communities within a short timeframe.",
   "precedents": [
