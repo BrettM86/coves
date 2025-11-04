@@ -12,7 +12,7 @@ import (
 )
 
 // VoteEventConsumer consumes vote-related events from Jetstream
-// Handles CREATE and DELETE operations for social.coves.interaction.vote
+// Handles CREATE and DELETE operations for social.coves.feed.vote
 type VoteEventConsumer struct {
 	voteRepo    votes.Repository
 	userService users.UserService
@@ -42,7 +42,7 @@ func (c *VoteEventConsumer) HandleEvent(ctx context.Context, event *JetstreamEve
 	commit := event.Commit
 
 	// Handle vote record operations
-	if commit.Collection == "social.coves.interaction.vote" {
+	if commit.Collection == "social.coves.feed.vote" {
 		switch commit.Operation {
 		case "create":
 			return c.createVote(ctx, event.Did, commit)
@@ -74,8 +74,8 @@ func (c *VoteEventConsumer) createVote(ctx context.Context, repoDID string, comm
 	}
 
 	// Build AT-URI for this vote
-	// Format: at://voter_did/social.coves.interaction.vote/rkey
-	uri := fmt.Sprintf("at://%s/social.coves.interaction.vote/%s", repoDID, commit.RKey)
+	// Format: at://voter_did/social.coves.feed.vote/rkey
+	uri := fmt.Sprintf("at://%s/social.coves.feed.vote/%s", repoDID, commit.RKey)
 
 	// Parse timestamp from record
 	createdAt, err := time.Parse(time.RFC3339, voteRecord.CreatedAt)
@@ -109,7 +109,7 @@ func (c *VoteEventConsumer) createVote(ctx context.Context, repoDID string, comm
 // deleteVote soft-deletes a vote and updates post counts
 func (c *VoteEventConsumer) deleteVote(ctx context.Context, repoDID string, commit *CommitEvent) error {
 	// Build AT-URI for the vote being deleted
-	uri := fmt.Sprintf("at://%s/social.coves.interaction.vote/%s", repoDID, commit.RKey)
+	uri := fmt.Sprintf("at://%s/social.coves.feed.vote/%s", repoDID, commit.RKey)
 
 	// Get existing vote to know its direction (for decrementing the right counter)
 	existingVote, err := c.voteRepo.GetByURI(ctx, uri)

@@ -63,7 +63,7 @@ func TestVoteRepo_Create(t *testing.T) {
 	createTestUser(t, db, "testvoter123.test", voterDID)
 
 	vote := &votes.Vote{
-		URI:        "at://did:plc:testvoter123/social.coves.interaction.vote/3k1234567890",
+		URI:        "at://did:plc:testvoter123/social.coves.feed.vote/3k1234567890",
 		CID:        "bafyreigtest123",
 		RKey:       "3k1234567890",
 		VoterDID:   voterDID,
@@ -91,7 +91,7 @@ func TestVoteRepo_Create_Idempotent(t *testing.T) {
 	createTestUser(t, db, "testvoter456.test", voterDID)
 
 	vote := &votes.Vote{
-		URI:        "at://did:plc:testvoter456/social.coves.interaction.vote/3k9876543210",
+		URI:        "at://did:plc:testvoter456/social.coves.feed.vote/3k9876543210",
 		CID:        "bafyreigtest456",
 		RKey:       "3k9876543210",
 		VoterDID:   voterDID,
@@ -132,7 +132,7 @@ func TestVoteRepo_Create_VoterNotFound(t *testing.T) {
 	// Don't create test user - vote should still be created (FK removed)
 	// This allows votes to be indexed before users in Jetstream
 	vote := &votes.Vote{
-		URI:        "at://did:plc:nonexistentvoter/social.coves.interaction.vote/3k1111111111",
+		URI:        "at://did:plc:nonexistentvoter/social.coves.feed.vote/3k1111111111",
 		CID:        "bafyreignovoter",
 		RKey:       "3k1111111111",
 		VoterDID:   "did:plc:nonexistentvoter",
@@ -164,7 +164,7 @@ func TestVoteRepo_GetByURI(t *testing.T) {
 
 	// Create vote
 	vote := &votes.Vote{
-		URI:        "at://did:plc:testvoter789/social.coves.interaction.vote/3k5555555555",
+		URI:        "at://did:plc:testvoter789/social.coves.feed.vote/3k5555555555",
 		CID:        "bafyreigtest789",
 		RKey:       "3k5555555555",
 		VoterDID:   voterDID,
@@ -192,7 +192,7 @@ func TestVoteRepo_GetByURI_NotFound(t *testing.T) {
 	repo := NewVoteRepository(db)
 	ctx := context.Background()
 
-	_, err := repo.GetByURI(ctx, "at://did:plc:nonexistent/social.coves.interaction.vote/nope")
+	_, err := repo.GetByURI(ctx, "at://did:plc:nonexistent/social.coves.feed.vote/nope")
 	assert.ErrorIs(t, err, votes.ErrVoteNotFound)
 }
 
@@ -211,7 +211,7 @@ func TestVoteRepo_GetByVoterAndSubject(t *testing.T) {
 
 	// Create vote
 	vote := &votes.Vote{
-		URI:        "at://did:plc:testvoter999/social.coves.interaction.vote/3k6666666666",
+		URI:        "at://did:plc:testvoter999/social.coves.feed.vote/3k6666666666",
 		CID:        "bafyreigtest999",
 		RKey:       "3k6666666666",
 		VoterDID:   voterDID,
@@ -255,7 +255,7 @@ func TestVoteRepo_Delete(t *testing.T) {
 
 	// Create vote
 	vote := &votes.Vote{
-		URI:        "at://did:plc:testvoterdelete/social.coves.interaction.vote/3k7777777777",
+		URI:        "at://did:plc:testvoterdelete/social.coves.feed.vote/3k7777777777",
 		CID:        "bafyreigdelete",
 		RKey:       "3k7777777777",
 		VoterDID:   voterDID,
@@ -293,7 +293,7 @@ func TestVoteRepo_Delete_Idempotent(t *testing.T) {
 	createTestUser(t, db, "testvoterdelete2.test", voterDID)
 
 	vote := &votes.Vote{
-		URI:        "at://did:plc:testvoterdelete2/social.coves.interaction.vote/3k8888888888",
+		URI:        "at://did:plc:testvoterdelete2/social.coves.feed.vote/3k8888888888",
 		CID:        "bafyreigdelete2",
 		RKey:       "3k8888888888",
 		VoterDID:   voterDID,
@@ -331,7 +331,7 @@ func TestVoteRepo_ListBySubject(t *testing.T) {
 
 	// Create multiple votes on same subject
 	vote1 := &votes.Vote{
-		URI:        "at://did:plc:testvoterlist1/social.coves.interaction.vote/3k9999999991",
+		URI:        "at://did:plc:testvoterlist1/social.coves.feed.vote/3k9999999991",
 		CID:        "bafyreiglist1",
 		RKey:       "3k9999999991",
 		VoterDID:   voterDID1,
@@ -341,7 +341,7 @@ func TestVoteRepo_ListBySubject(t *testing.T) {
 		CreatedAt:  time.Now(),
 	}
 	vote2 := &votes.Vote{
-		URI:        "at://did:plc:testvoterlist2/social.coves.interaction.vote/3k9999999992",
+		URI:        "at://did:plc:testvoterlist2/social.coves.feed.vote/3k9999999992",
 		CID:        "bafyreiglist2",
 		RKey:       "3k9999999992",
 		VoterDID:   voterDID2,
@@ -373,7 +373,7 @@ func TestVoteRepo_ListByVoter(t *testing.T) {
 
 	// Create multiple votes by same voter
 	vote1 := &votes.Vote{
-		URI:        "at://did:plc:testvoterlistvoter/social.coves.interaction.vote/3k0000000001",
+		URI:        "at://did:plc:testvoterlistvoter/social.coves.feed.vote/3k0000000001",
 		CID:        "bafyreigvoter1",
 		RKey:       "3k0000000001",
 		VoterDID:   voterDID,
@@ -383,7 +383,7 @@ func TestVoteRepo_ListByVoter(t *testing.T) {
 		CreatedAt:  time.Now(),
 	}
 	vote2 := &votes.Vote{
-		URI:        "at://did:plc:testvoterlistvoter/social.coves.interaction.vote/3k0000000002",
+		URI:        "at://did:plc:testvoterlistvoter/social.coves.feed.vote/3k0000000002",
 		CID:        "bafyreigvoter2",
 		RKey:       "3k0000000002",
 		VoterDID:   voterDID,

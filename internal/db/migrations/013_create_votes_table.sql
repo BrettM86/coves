@@ -3,7 +3,7 @@
 -- Votes are indexed from the firehose after being written to user repositories
 CREATE TABLE votes (
     id BIGSERIAL PRIMARY KEY,
-    uri TEXT UNIQUE NOT NULL,               -- AT-URI (at://voter_did/social.coves.interaction.vote/rkey)
+    uri TEXT UNIQUE NOT NULL,               -- AT-URI (at://voter_did/social.coves.feed.vote/rkey)
     cid TEXT NOT NULL,                      -- Content ID
     rkey TEXT NOT NULL,                     -- Record key (TID)
     voter_did TEXT NOT NULL,                -- User who voted (from AT-URI repo field)
@@ -18,10 +18,13 @@ CREATE TABLE votes (
     -- Timestamps
     created_at TIMESTAMPTZ NOT NULL,        -- Voter's timestamp from record
     indexed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), -- When indexed by AppView
-    deleted_at TIMESTAMPTZ,                 -- Soft delete (for firehose delete events)
+    deleted_at TIMESTAMPTZ                  -- Soft delete (for firehose delete events)
 
-    -- Foreign keys
-    CONSTRAINT fk_voter FOREIGN KEY (voter_did) REFERENCES users(did) ON DELETE CASCADE
+    -- NO foreign key constraint on voter_did to allow out-of-order indexing from Jetstream
+    -- Vote events may arrive before user events, which is acceptable since:
+    -- 1. Votes are authenticated by the user's PDS (security maintained)
+    -- 2. Orphaned votes from never-indexed users are harmless
+    -- 3. This prevents race conditions in the firehose consumer
 );
 
 -- Indexes for common query patterns
@@ -35,7 +38,7 @@ CREATE INDEX idx_votes_voter ON votes(voter_did, created_at DESC);
 
 -- Comment on table
 COMMENT ON TABLE votes IS 'Votes indexed from user repositories via Jetstream firehose consumer';
-COMMENT ON COLUMN votes.uri IS 'AT-URI in format: at://voter_did/social.coves.interaction.vote/rkey';
+COMMENT ON COLUMN votes.uri IS 'AT-URI in format: at://voter_did/social.coves.feed.vote/rkey';
 COMMENT ON COLUMN votes.subject_uri IS 'Strong reference to post/comment being voted on';
 COMMENT ON INDEX unique_voter_subject_active IS 'Ensures one active vote per user per subject (soft delete aware)';
 

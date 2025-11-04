@@ -353,7 +353,7 @@ func main() {
 	voteJetstreamURL := os.Getenv("VOTE_JETSTREAM_URL")
 	if voteJetstreamURL == "" {
 		// Listen to vote record CREATE/DELETE events from user repositories
-		voteJetstreamURL = "ws://localhost:6008/subscribe?wantedCollections=social.coves.interaction.vote"
+		voteJetstreamURL = "ws://localhost:6008/subscribe?wantedCollections=social.coves.feed.vote"
 	}
 
 	voteEventConsumer := jetstream.NewVoteEventConsumer(voteRepo, userService, db)
@@ -366,7 +366,7 @@ func main() {
 	}()
 
 	log.Printf("Started Jetstream vote consumer: %s", voteJetstreamURL)
-	log.Println("  - Indexing: social.coves.interaction.vote CREATE/DELETE operations")
+	log.Println("  - Indexing: social.coves.feed.vote CREATE/DELETE operations")
 	log.Println("  - Updating: Post vote counts atomically")
 
 	// Register XRPC routes

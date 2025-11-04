@@ -1,10 +1,10 @@
 {
   "lexicon": 1,
-  "id": "social.coves.interaction.vote",
+  "id": "social.coves.feed.vote",
   "defs": {
     "main": {
       "type": "record",
-      "description": "A vote (upvote or downvote) on a post or comment",
+      "description": "Record declaring a vote (upvote or downvote) on a post or comment. Requires authentication.",
       "key": "tid",
       "record": {
         "type": "object",
@@ -12,12 +12,12 @@
         "properties": {
           "subject": {
             "type": "ref",
-            "ref": "#strongRef",
+            "ref": "com.atproto.repo.strongRef",
             "description": "Strong reference to the post or comment being voted on"
           },
           "direction": {
             "type": "string",
-            "enum": ["up", "down"],
+            "knownValues": ["up", "down"],
             "description": "Vote direction: up for upvote, down for downvote"
           },
           "createdAt": {
@@ -25,23 +25,6 @@
             "format": "datetime",
             "description": "Timestamp when the vote was created"
           }
-        }
-      }
-    },
-    "strongRef": {
-      "type": "object",
-      "description": "Strong reference to a record (AT-URI + CID)",
-      "required": ["uri", "cid"],
-      "properties": {
-        "uri": {
-          "type": "string",
-          "format": "at-uri",
-          "description": "AT-URI of the record"
-        },
-        "cid": {
-          "type": "string",
-          "format": "cid",
-          "description": "CID of the record content"
         }
       }
     }

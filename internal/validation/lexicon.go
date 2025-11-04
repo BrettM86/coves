@@ -91,7 +91,7 @@ func (v *LexiconValidator) ValidateComment(comment map[string]interface{}) error
 
 // ValidateVote validates a vote record
 func (v *LexiconValidator) ValidateVote(vote map[string]interface{}) error {
-	return v.ValidateRecord(vote, "social.coves.interaction.vote")
+	return v.ValidateRecord(vote, "social.coves.feed.vote")
 }
 
 // ValidateModerationAction validates a moderation action (ban, tribunalVote, etc.)

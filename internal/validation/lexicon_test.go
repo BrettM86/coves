@@ -93,7 +93,7 @@ func TestValidateRecordWithDifferentInputTypes(t *testing.T) {
 
 	// Test with JSON string
 	jsonString := `{
-		"$type": "social.coves.interaction.vote",
+		"$type": "social.coves.feed.vote",
 		"subject": {
 			"uri": "at://did:plc:test/social.coves.community.post/abc123",
 			"cid": "bafyreigj3fwnwjuzr35k2kuzmb5dixxczrzjhqkr5srlqplsh6gq3bj3si"
@@ -102,13 +102,13 @@ func TestValidateRecordWithDifferentInputTypes(t *testing.T) {
 		"createdAt": "2024-01-01T00:00:00Z"
 	}`
 
-	if err := validator.ValidateRecord(jsonString, "social.coves.interaction.vote"); err != nil {
+	if err := validator.ValidateRecord(jsonString, "social.coves.feed.vote"); err != nil {
 		t.Errorf("Failed to validate JSON string: %v", err)
 	}
 
 	// Test with JSON bytes
 	jsonBytes := []byte(jsonString)
-	if err := validator.ValidateRecord(jsonBytes, "social.coves.interaction.vote"); err != nil {
+	if err := validator.ValidateRecord(jsonBytes, "social.coves.feed.vote"); err != nil {
 		t.Errorf("Failed to validate JSON bytes: %v", err)
 	}
 }
