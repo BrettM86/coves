@@ -21,7 +21,7 @@ func NewCreateHandler(service posts.Service) *CreateHandler {
 	}
 }
 
-// HandleCreate handles POST /xrpc/social.coves.post.create
+// HandleCreate handles POST /xrpc/social.coves.community.post.create
 // Creates a new post in a community's repository
 func (h *CreateHandler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	// 1. Check HTTP method

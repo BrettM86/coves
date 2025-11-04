@@ -172,14 +172,14 @@ Analysis of live Kagi News feeds confirms the following structure:
 │  3. Deduplication: Tracks posted items via JSON state file  │
 │  4. Feed Mapper: Maps feed URLs to community handles        │
 │  5. Post Formatter: Converts to Coves post format           │
-│  6. Post Publisher: Calls social.coves.post.create via XRPC │
+│  6. Post Publisher: Calls social.coves.community.post.create via XRPC │
 │  7. Blob Uploader: Handles image upload to ATProto          │
 └─────────────────────────────────────────────────────────────┘
                             │
                             │ Authenticated XRPC calls
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  Coves AppView (social.coves.post.create)                   │
+│  Coves AppView (social.coves.community.post.create)                   │
 │  - Validates aggregator authorization                        │
 │  - Creates post with author = did:plc:[aggregator-did]      │
 │  - Indexes to community feeds                                │
@@ -271,7 +271,7 @@ log_level: "info"
 
 ```json
 {
-  "$type": "social.coves.post.record",
+  "$type": "social.coves.community.post.record",
   "author": "did:plc:[aggregator-did]",
   "community": "world-news.coves.social",
   "title": "{Kagi story title}",

@@ -291,7 +291,7 @@ Content rules are stored in `social.coves.community.profile` under the `contentR
 - [ ] Go structs: `ContentRules` type in community models
 - [ ] Repository: Parse and store `contentRules` from community profiles
 - [ ] Service: `ValidatePostAgainstRules(post, community)` function
-- [ ] Handler: Integrate validation into `social.coves.post.create`
+- [ ] Handler: Integrate validation into `social.coves.community.post.create`
 - [ ] AppView indexing: Index post characteristics (embed_type, text_length, etc.)
 - [ ] Tests: Comprehensive rule validation tests
 - [ ] Documentation: Content rules guide for community creators
