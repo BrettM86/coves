@@ -46,48 +46,11 @@
               "type": "array",
               "items": {
                 "type": "ref",
-                "ref": "#communityView"
+                "ref": "social.coves.community.defs#communityView"
               }
             },
             "cursor": {
               "type": "string"
-            }
-          }
-        }
-      }
-    },
-    "communityView": {
-      "type": "object",
-      "required": ["did", "profile", "subscriberCount", "postCount"],
-      "properties": {
-        "did": {
-          "type": "string",
-          "format": "did"
-        },
-        "profile": {
-          "type": "ref",
-          "ref": "social.coves.community.profile"
-        },
-        "subscriberCount": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "memberCount": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "postCount": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "viewer": {
-          "type": "object",
-          "properties": {
-            "subscribed": {
-              "type": "boolean"
-            },
-            "member": {
-              "type": "boolean"
             }
           }
         }
