@@ -70,6 +70,18 @@ func setupTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
+// setupIdentityResolver creates an identity resolver configured for local PLC testing
+func setupIdentityResolver(db *sql.DB) interface{ Resolve(context.Context, string) (*identity.Identity, error) } {
+	plcURL := os.Getenv("PLC_DIRECTORY_URL")
+	if plcURL == "" {
+		plcURL = "http://localhost:3002" // Local PLC directory
+	}
+
+	config := identity.DefaultConfig()
+	config.PLCURL = plcURL
+	return identity.NewResolver(db, config)
+}
+
 // generateTestDID generates a unique test DID for integration tests
 // V2.0: No longer uses DID generator - just creates valid did:plc strings
 func generateTestDID(suffix string) string {

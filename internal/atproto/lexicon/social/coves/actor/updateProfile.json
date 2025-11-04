@@ -39,10 +39,6 @@
               "type": "blob",
               "accept": ["image/png", "image/jpeg", "image/webp"],
               "maxSize": 2000000
-            },
-            "location": {
-              "type": "ref",
-              "ref": "social.coves.actor.profile#geoLocation"
             }
           }
         }

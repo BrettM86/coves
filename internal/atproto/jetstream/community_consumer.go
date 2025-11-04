@@ -1,6 +1,7 @@
 package jetstream
 
 import (
+	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/utils"
 	"Coves/internal/core/communities"
 	"context"
@@ -19,6 +20,7 @@ import (
 // CommunityEventConsumer consumes community-related events from Jetstream
 type CommunityEventConsumer struct {
 	repo             communities.Repository           // Repository for community operations
+	identityResolver interface{ Resolve(context.Context, string) (*identity.Identity, error) } // For resolving handles from DIDs
 	httpClient       *http.Client                     // Shared HTTP client with connection pooling
 	didCache         *lru.Cache[string, cachedDIDDoc] // Bounded LRU cache for .well-known verification results
 	wellKnownLimiter *rate.Limiter                    // Rate limiter for .well-known fetches
@@ -35,7 +37,8 @@ type cachedDIDDoc struct {
 // NewCommunityEventConsumer creates a new Jetstream consumer for community events
 // instanceDID: The DID of this Coves instance (for hostedBy verification)
 // skipVerification: Skip did:web verification (for dev mode)
-func NewCommunityEventConsumer(repo communities.Repository, instanceDID string, skipVerification bool) *CommunityEventConsumer {
+// identityResolver: Optional resolver for resolving handles from DIDs (can be nil for tests)
+func NewCommunityEventConsumer(repo communities.Repository, instanceDID string, skipVerification bool, identityResolver interface{ Resolve(context.Context, string) (*identity.Identity, error) }) *CommunityEventConsumer {
 	// Create bounded LRU cache for DID document verification results
 	// Max 1000 entries to prevent unbounded memory growth (PR review feedback)
 	// Each entry ~100 bytes → max ~100KB memory overhead
@@ -49,6 +52,7 @@ func NewCommunityEventConsumer(repo communities.Repository, instanceDID string, 
 
 	return &CommunityEventConsumer{
 		repo:             repo,
+		identityResolver: identityResolver, // Optional - can be nil for tests
 		instanceDID:      instanceDID,
 		skipVerification: skipVerification,
 		// Shared HTTP client with connection pooling for .well-known fetches
@@ -127,6 +131,28 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 	profile, err := parseCommunityProfile(commit.Record)
 	if err != nil {
 		return fmt.Errorf("failed to parse community profile: %w", err)
+	}
+
+	// atProto Best Practice: Handles are NOT stored in records (they're mutable, resolved from DIDs)
+	// If handle is missing from record (new atProto-compliant records), resolve it from PLC/DID
+	if profile.Handle == "" {
+		if c.identityResolver != nil {
+			// Production: Resolve handle from PLC (source of truth)
+			// NO FALLBACK - if PLC is down, we fail and backfill later
+			// This prevents creating communities with incorrect handles in federated scenarios
+			identity, err := c.identityResolver.Resolve(ctx, did)
+			if err != nil {
+				return fmt.Errorf("failed to resolve handle from PLC for %s: %w (no fallback - will retry during backfill)", did, err)
+			}
+			profile.Handle = identity.Handle
+			log.Printf("✓ Resolved handle from PLC: %s (did=%s, method=%s)",
+				profile.Handle, did, identity.Method)
+		} else {
+			// Test mode only: construct deterministically when no resolver available
+			profile.Handle = constructHandleFromProfile(profile)
+			log.Printf("✓ Constructed handle (test mode): %s (name=%s, hostedBy=%s)",
+				profile.Handle, profile.Name, profile.HostedBy)
+		}
 	}
 
 	// SECURITY: Verify hostedBy claim matches handle domain
@@ -223,6 +249,28 @@ func (c *CommunityEventConsumer) updateCommunity(ctx context.Context, did string
 	profile, err := parseCommunityProfile(commit.Record)
 	if err != nil {
 		return fmt.Errorf("failed to parse community profile: %w", err)
+	}
+
+	// atProto Best Practice: Handles are NOT stored in records (they're mutable, resolved from DIDs)
+	// If handle is missing from record (new atProto-compliant records), resolve it from PLC/DID
+	if profile.Handle == "" {
+		if c.identityResolver != nil {
+			// Production: Resolve handle from PLC (source of truth)
+			// NO FALLBACK - if PLC is down, we fail and backfill later
+			// This prevents creating communities with incorrect handles in federated scenarios
+			identity, err := c.identityResolver.Resolve(ctx, did)
+			if err != nil {
+				return fmt.Errorf("failed to resolve handle from PLC for %s: %w (no fallback - will retry during backfill)", did, err)
+			}
+			profile.Handle = identity.Handle
+			log.Printf("✓ Resolved handle from PLC: %s (did=%s, method=%s)",
+				profile.Handle, did, identity.Method)
+		} else {
+			// Test mode only: construct deterministically when no resolver available
+			profile.Handle = constructHandleFromProfile(profile)
+			log.Printf("✓ Constructed handle (test mode): %s (name=%s, hostedBy=%s)",
+				profile.Handle, profile.Name, profile.HostedBy)
+		}
 	}
 
 	// V2: Repository DID IS the community DID
@@ -707,6 +755,22 @@ func parseCommunityProfile(record map[string]interface{}) (*CommunityProfile, er
 	}
 
 	return &profile, nil
+}
+
+// constructHandleFromProfile constructs a deterministic handle from profile data
+// Format: {name}.community.{instanceDomain}
+// Example: gaming.community.coves.social
+// This is ONLY used in test mode (when identity resolver is nil)
+// Production MUST resolve handles from PLC (source of truth)
+// Returns empty string if hostedBy is not did:web format (caller will fail validation)
+func constructHandleFromProfile(profile *CommunityProfile) string {
+	if !strings.HasPrefix(profile.HostedBy, "did:web:") {
+		// hostedBy must be did:web format for handle construction
+		// Return empty to trigger validation error in repository
+		return ""
+	}
+	instanceDomain := strings.TrimPrefix(profile.HostedBy, "did:web:")
+	return fmt.Sprintf("%s.community.%s", profile.Name, instanceDomain)
 }
 
 // extractContentVisibility extracts contentVisibility from subscription record with clamping

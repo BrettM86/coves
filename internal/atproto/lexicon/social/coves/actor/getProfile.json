@@ -19,82 +19,9 @@
       "output": {
         "encoding": "application/json",
         "schema": {
-          "type": "object",
-          "required": ["did", "profile"],
-          "properties": {
-            "did": {
-              "type": "string",
-              "format": "did"
-            },
-            "profile": {
-              "type": "ref",
-              "ref": "social.coves.actor.profile"
-            },
-            "stats": {
-              "type": "ref",
-              "ref": "#profileStats"
-            },
-            "viewer": {
-              "type": "ref",
-              "ref": "#viewerState",
-              "description": "Viewer's relationship to this profile"
-            }
-          }
-        }
-      }
-    },
-    "profileStats": {
-      "type": "object",
-      "description": "Aggregated statistics for a user profile",
-      "required": ["postCount", "commentCount", "communityCount", "savedCount", "reputation"],
-      "properties": {
-        "postCount": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "Total number of posts created"
-        },
-        "commentCount": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "Total number of comments made"
-        },
-        "communityCount": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "Number of communities subscribed to"
-        },
-        "savedCount": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "Number of saved items"
-        },
-        "reputation": {
-          "type": "integer",
-          "description": "Global reputation score"
-        },
-        "membershipCount": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "Number of communities with membership status"
-        }
-      }
-    },
-    "viewerState": {
-      "type": "object",
-      "description": "The viewing user's relationship to this profile",
-      "properties": {
-        "blocked": {
-          "type": "boolean",
-          "description": "Whether the viewer has blocked this user"
-        },
-        "blockedBy": {
-          "type": "boolean",
-          "description": "Whether the viewer is blocked by this user"
-        },
-        "blockUri": {
-          "type": "string",
-          "format": "at-uri",
-          "description": "AT-URI of the block record if viewer blocked this user"
+          "type": "ref",
+          "ref": "social.coves.actor.defs#profileViewDetailed",
+          "description": "Detailed profile view with stats and viewer state"
         }
       }
     }

@@ -131,8 +131,7 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 	// Build community profile record
 	profile := map[string]interface{}{
 		"$type":      "social.coves.community.profile",
-		"handle":     pdsAccount.Handle, // atProto handle (e.g., gaming.community.coves.social)
-		"name":       req.Name,          // Short name for !mentions (e.g., "gaming")
+		"name":       req.Name, // Short name for !mentions (e.g., "gaming")
 		"visibility": req.Visibility,
 		"hostedBy":   s.instanceDID, // V2: Instance hosts, community owns
 		"createdBy":  req.CreatedByDID,
@@ -158,10 +157,6 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 	if req.Language != "" {
 		profile["language"] = req.Language
 	}
-
-	// Initialize counts
-	profile["memberCount"] = 0
-	profile["subscriberCount"] = 0
 
 	// TODO: Handle avatar and banner blobs
 	// For now, we'll skip blob uploads. This would require:
@@ -290,7 +285,6 @@ func (s *communityService) UpdateCommunity(ctx context.Context, req UpdateCommun
 	// Build updated profile record (start with existing)
 	profile := map[string]interface{}{
 		"$type":     "social.coves.community.profile",
-		"handle":    existing.Handle,
 		"name":      existing.Name,
 		"owner":     existing.OwnerDID,
 		"createdBy": existing.CreatedByDID,
@@ -340,10 +334,6 @@ func (s *communityService) UpdateCommunity(ctx context.Context, req UpdateCommun
 	} else if len(existing.ContentWarnings) > 0 {
 		profile["contentWarnings"] = existing.ContentWarnings
 	}
-
-	// Preserve counts
-	profile["memberCount"] = existing.MemberCount
-	profile["subscriberCount"] = existing.SubscriberCount
 
 	// V2: Community profiles always use "self" as rkey
 	// (No need to extract from URI - it's always "self" for V2 communities)

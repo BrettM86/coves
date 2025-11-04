@@ -1,6 +1,0 @@
-{
-  "$type": "social.coves.actor.profile",
-  "handle": "invalid handle with spaces",
-  "displayName": "Test User",
-  "createdAt": "2024-01-01T00:00:00Z"
-}

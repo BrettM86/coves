@@ -8,14 +8,8 @@
       "key": "literal:self",
       "record": {
         "type": "object",
-        "required": ["handle", "createdAt"],
+        "required": ["createdAt"],
         "properties": {
-          "handle": {
-            "type": "string",
-            "format": "handle",
-            "maxLength": 253,
-            "description": "User's handle"
-          },
           "displayName": {
             "type": "string",
             "maxGraphemes": 64,
@@ -46,175 +40,10 @@
             "accept": ["image/png", "image/jpeg", "image/webp"],
             "maxSize": 2000000
           },
-          "verified": {
-            "type": "boolean",
-            "default": false,
-            "description": "Whether the user has completed phone verification"
-          },
-          "verifiedAt": {
-            "type": "string",
-            "format": "datetime",
-            "description": "When the user was verified"
-          },
-          "verificationExpiresAt": {
-            "type": "string",
-            "format": "datetime",
-            "description": "When verification expires"
-          },
-          "federatedFrom": {
-            "type": "string",
-            "knownValues": ["bluesky", "lemmy", "mastodon", "coves"],
-            "description": "Platform user federated from"
-          },
-          "federatedIdentity": {
-            "type": "ref",
-            "ref": "#federatedIdentity",
-            "description": "Identity information from federated platform"
-          },
-          "location": {
-            "type": "ref",
-            "ref": "#geoLocation"
-          },
           "createdAt": {
             "type": "string",
             "format": "datetime"
-          },
-          "moderatedCommunities": {
-            "type": "array",
-            "description": "Communities the user currently moderates",
-            "items": {
-              "type": "string",
-              "format": "did"
-            }
-          },
-          "moderationHistory": {
-            "type": "array",
-            "description": "Historical record of all moderation roles",
-            "items": {
-              "type": "ref",
-              "ref": "#moderationRole"
-            }
-          },
-          "violations": {
-            "type": "array",
-            "description": "Record of rule violations across communities",
-            "items": {
-              "type": "ref",
-              "ref": "#violation"
-            }
           }
-        }
-      }
-    },
-    "moderationRole": {
-      "type": "object",
-      "required": ["communityDid", "role", "startedAt"],
-      "properties": {
-        "communityDid": {
-          "type": "string",
-          "format": "did",
-          "description": "Community where moderation role was held"
-        },
-        "role": {
-          "type": "string",
-          "knownValues": ["moderator", "admin"],
-          "description": "Type of moderation role"
-        },
-        "startedAt": {
-          "type": "string",
-          "format": "datetime",
-          "description": "When the role began"
-        },
-        "endedAt": {
-          "type": "string",
-          "format": "datetime",
-          "description": "When the role ended (null if current)"
-        }
-      }
-    },
-    "violation": {
-      "type": "object",
-      "required": ["communityDid", "ruleViolated", "timestamp", "severity"],
-      "properties": {
-        "communityDid": {
-          "type": "string",
-          "format": "did",
-          "description": "Community where violation occurred"
-        },
-        "ruleViolated": {
-          "type": "string",
-          "description": "Description of the rule that was violated"
-        },
-        "timestamp": {
-          "type": "string",
-          "format": "datetime",
-          "description": "When the violation occurred"
-        },
-        "severity": {
-          "type": "string",
-          "knownValues": ["minor", "moderate", "major", "severe"],
-          "description": "Severity level of the violation"
-        },
-        "resolution": {
-          "type": "string",
-          "description": "How the violation was resolved"
-        },
-        "postUri": {
-          "type": "string",
-          "format": "at-uri",
-          "description": "Optional reference to the violating content"
-        }
-      }
-    },
-    "federatedIdentity": {
-      "type": "object",
-      "description": "Verified identity from a federated platform",
-      "required": ["did", "handle", "verifiedAt"],
-      "properties": {
-        "did": {
-          "type": "string",
-          "format": "did",
-          "description": "Original DID from the federated platform"
-        },
-        "handle": {
-          "type": "string",
-          "maxLength": 253,
-          "description": "Original handle from the federated platform"
-        },
-        "verifiedAt": {
-          "type": "string",
-          "format": "datetime",
-          "description": "When the federated identity was verified via OAuth"
-        },
-        "lastSyncedAt": {
-          "type": "string",
-          "format": "datetime",
-          "description": "Last time profile data was synced from the federated platform"
-        },
-        "homePDS": {
-          "type": "string",
-          "description": "Home PDS server URL for the federated account"
-        }
-      }
-    },
-    "geoLocation": {
-      "type": "object",
-      "description": "Geographic location information",
-      "properties": {
-        "country": {
-          "type": "string",
-          "maxLength": 2,
-          "description": "ISO 3166-1 alpha-2 country code"
-        },
-        "region": {
-          "type": "string",
-          "maxLength": 128,
-          "description": "State/province/region name"
-        },
-        "displayName": {
-          "type": "string",
-          "maxLength": 256,
-          "description": "Human-readable location name"
         }
       }
     }

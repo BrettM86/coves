@@ -25,7 +25,8 @@ func TestSubscriptionIndexing_ContentVisibility(t *testing.T) {
 
 	repo := createTestCommunityRepo(t, db)
 	// Skip verification in tests
-	consumer := jetstream.NewCommunityEventConsumer(repo, "did:web:coves.local", true)
+	// Pass nil for identity resolver - not needed since consumer constructs handles from DIDs
+	consumer := jetstream.NewCommunityEventConsumer(repo, "did:web:coves.local", true, nil)
 
 	// Create a test community first (with unique DID)
 	testDID := fmt.Sprintf("did:plc:test-community-%d", time.Now().UnixNano())
@@ -249,7 +250,8 @@ func TestSubscriptionIndexing_DeleteOperations(t *testing.T) {
 
 	repo := createTestCommunityRepo(t, db)
 	// Skip verification in tests
-	consumer := jetstream.NewCommunityEventConsumer(repo, "did:web:coves.local", true)
+	// Pass nil for identity resolver - not needed since consumer constructs handles from DIDs
+	consumer := jetstream.NewCommunityEventConsumer(repo, "did:web:coves.local", true, nil)
 
 	// Create test community (with unique DID)
 	testDID := fmt.Sprintf("did:plc:test-unsub-%d", time.Now().UnixNano())
@@ -364,7 +366,8 @@ func TestSubscriptionIndexing_SubscriberCount(t *testing.T) {
 
 	repo := createTestCommunityRepo(t, db)
 	// Skip verification in tests
-	consumer := jetstream.NewCommunityEventConsumer(repo, "did:web:coves.local", true)
+	// Pass nil for identity resolver - not needed since consumer constructs handles from DIDs
+	consumer := jetstream.NewCommunityEventConsumer(repo, "did:web:coves.local", true, nil)
 
 	// Create test community (with unique DID)
 	testDID := fmt.Sprintf("did:plc:test-subcount-%d", time.Now().UnixNano())

@@ -142,8 +142,8 @@ func TestCommunity_E2E(t *testing.T) {
 		svc.SetPDSAccessToken(accessToken)
 	}
 
-	// Skip verification in tests
-	consumer := jetstream.NewCommunityEventConsumer(communityRepo, "did:web:coves.local", true)
+	// Use real identity resolver with local PLC for production-like testing
+	consumer := jetstream.NewCommunityEventConsumer(communityRepo, "did:web:coves.local", true, identityResolver)
 
 	// Setup HTTP server with XRPC routes
 	r := chi.NewRouter()
@@ -259,13 +259,10 @@ func TestCommunity_E2E(t *testing.T) {
 			t.Logf("   Record value:\n   %s", string(recordJSON))
 		}
 
-		// V2: DID is NOT in the record - it's in the repository URI
-		// The record should have handle, name, etc. but no 'did' field
-		// This matches Bluesky's app.bsky.actor.profile pattern
-		if pdsRecord.Value["handle"] != community.Handle {
-			t.Errorf("Community handle mismatch in PDS record: expected %s, got %v",
-				community.Handle, pdsRecord.Value["handle"])
-		}
+		// V2: DID and Handle are NOT in the record - they're resolved from the repository URI
+		// The record should have name, hostedBy, createdBy, etc. but no 'did' or 'handle' fields
+		// This matches Bluesky's app.bsky.actor.profile pattern (no handle in record)
+		// Handles are mutable and resolved from DIDs via PLC, so they shouldn't be stored in immutable records
 
 		// ====================================================================================
 		// Part 2: TRUE E2E - Real Jetstream Firehose Consumer
@@ -437,13 +434,14 @@ func TestCommunity_E2E(t *testing.T) {
 					Collection: "social.coves.community.profile",
 					RKey:       rkey,
 					Record: map[string]interface{}{
-						"did":         createResp.DID,    // Community's DID from response
-						"handle":      createResp.Handle, // Community's handle from response
+						// Note: No 'did' or 'handle' in record (atProto best practice)
+						// These are mutable and resolved from DIDs, not stored in immutable records
 						"name":        createReq["name"],
 						"displayName": createReq["displayName"],
 						"description": createReq["description"],
 						"visibility":  createReq["visibility"],
 						// Server-side derives these from JWT auth (instanceDID is the authenticated user)
+						"owner":     instanceDID,
 						"createdBy": instanceDID,
 						"hostedBy":  instanceDID,
 						"federation": map[string]interface{}{

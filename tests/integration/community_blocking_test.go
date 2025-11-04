@@ -24,7 +24,8 @@ func TestCommunityBlocking_Indexing(t *testing.T) {
 
 	repo := createBlockingTestCommunityRepo(t, db)
 	// Skip verification in tests
-	consumer := jetstream.NewCommunityEventConsumer(repo, "did:web:coves.local", true)
+	// Pass nil for identity resolver - not needed since consumer constructs handles from DIDs
+	consumer := jetstream.NewCommunityEventConsumer(repo, "did:web:coves.local", true, nil)
 
 	// Create test community
 	testDID := fmt.Sprintf("did:plc:test-community-%d", time.Now().UnixNano())
