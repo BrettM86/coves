@@ -4,6 +4,19 @@ import (
 	"time"
 )
 
+// SelfLabels represents self-applied content labels per com.atproto.label.defs#selfLabels
+// This is the structured format used in atProto for content warnings
+type SelfLabels struct {
+	Values []SelfLabel `json:"values"`
+}
+
+// SelfLabel represents a single label value per com.atproto.label.defs#selfLabel
+// Neg is optional and negates the label when true
+type SelfLabel struct {
+	Val string `json:"val"`           // Required: label value (max 128 chars)
+	Neg *bool  `json:"neg,omitempty"` // Optional: negates the label if true
+}
+
 // Post represents a post in the AppView database
 // Posts are indexed from the firehose after being written to community repositories
 type Post struct {
@@ -12,7 +25,7 @@ type Post struct {
 	EditedAt      *time.Time `json:"editedAt,omitempty" db:"edited_at"`
 	Embed         *string    `json:"embed,omitempty" db:"embed"`
 	DeletedAt     *time.Time `json:"deletedAt,omitempty" db:"deleted_at"`
-	ContentLabels *string    `json:"contentLabels,omitempty" db:"content_labels"`
+	ContentLabels *string    `json:"labels,omitempty" db:"content_labels"`
 	Title         *string    `json:"title,omitempty" db:"title"`
 	Content       *string    `json:"content,omitempty" db:"content"`
 	ContentFacets *string    `json:"contentFacets,omitempty" db:"content_facets"`
@@ -29,7 +42,7 @@ type Post struct {
 }
 
 // CreatePostRequest represents input for creating a new post
-// Matches social.coves.post.create lexicon input schema
+// Matches social.coves.community.post.create lexicon input schema
 type CreatePostRequest struct {
 	OriginalAuthor interface{}            `json:"originalAuthor,omitempty"`
 	FederatedFrom  interface{}            `json:"federatedFrom,omitempty"`
@@ -40,12 +53,12 @@ type CreatePostRequest struct {
 	Community      string                 `json:"community"`
 	AuthorDID      string                 `json:"authorDid"`
 	Facets         []interface{}          `json:"facets,omitempty"`
-	ContentLabels  []string               `json:"contentLabels,omitempty"`
+	Labels         *SelfLabels            `json:"labels,omitempty"`
 }
 
 // CreatePostResponse represents the response from creating a post
-// Matches social.coves.post.create lexicon output schema
-type CreatePostResponse struct {
+// Matches social.coves.community.post.create lexicon output schema
+type CreatePostResponse struct{
 	URI string `json:"uri"` // AT-URI of created post
 	CID string `json:"cid"` // CID of created post
 }
@@ -64,11 +77,11 @@ type PostRecord struct {
 	Author         string                 `json:"author"`
 	CreatedAt      string                 `json:"createdAt"`
 	Facets         []interface{}          `json:"facets,omitempty"`
-	ContentLabels  []string               `json:"contentLabels,omitempty"`
+	Labels         *SelfLabels            `json:"labels,omitempty"`
 }
 
 // PostView represents the full view of a post with all metadata
-// Matches social.coves.post.get#postView lexicon
+// Matches social.coves.community.post.get#postView lexicon
 // Used in feeds and get endpoints
 type PostView struct {
 	IndexedAt     time.Time     `json:"indexedAt"`

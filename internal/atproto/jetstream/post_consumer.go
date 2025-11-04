@@ -13,9 +13,9 @@ import (
 )
 
 // PostEventConsumer consumes post-related events from Jetstream
-// Currently handles only CREATE operations for social.coves.post.record
+// Currently handles only CREATE operations for social.coves.community.post
 // UPDATE and DELETE handlers will be added when those features are implemented
-type PostEventConsumer struct {
+type PostEventConsumer struct{
 	postRepo      posts.Repository
 	communityRepo communities.Repository
 	userService   users.UserService
@@ -46,7 +46,7 @@ func (c *PostEventConsumer) HandleEvent(ctx context.Context, event *JetstreamEve
 
 	// Only handle post record creation for now
 	// UPDATE and DELETE will be added when we implement those features
-	if commit.Collection == "social.coves.post.record" && commit.Operation == "create" {
+	if commit.Collection == "social.coves.community.post" && commit.Operation == "create" {
 		return c.createPost(ctx, event.Did, commit)
 	}
 
@@ -73,8 +73,8 @@ func (c *PostEventConsumer) createPost(ctx context.Context, repoDID string, comm
 	}
 
 	// Build AT-URI for this post
-	// Format: at://community_did/social.coves.post.record/rkey
-	uri := fmt.Sprintf("at://%s/social.coves.post.record/%s", repoDID, commit.RKey)
+	// Format: at://community_did/social.coves.community.post/rkey
+	uri := fmt.Sprintf("at://%s/social.coves.community.post/%s", repoDID, commit.RKey)
 
 	// Parse timestamp from record
 	createdAt, err := time.Parse(time.RFC3339, postRecord.CreatedAt)
@@ -119,8 +119,8 @@ func (c *PostEventConsumer) createPost(ctx context.Context, repoDID string, comm
 		}
 	}
 
-	if len(postRecord.ContentLabels) > 0 {
-		labelsJSON, marshalErr := json.Marshal(postRecord.ContentLabels)
+	if postRecord.Labels != nil {
+		labelsJSON, marshalErr := json.Marshal(postRecord.Labels)
 		if marshalErr == nil {
 			labelsStr := string(labelsJSON)
 			post.ContentLabels = &labelsStr
@@ -151,7 +151,7 @@ func (c *PostEventConsumer) validatePostEvent(ctx context.Context, repoDID strin
 	// This prevents users from creating posts that appear to be from communities they don't control
 	//
 	// Example attack prevented:
-	//   - User creates post in their own repo (at://user_did/social.coves.post.record/xyz)
+	//   - User creates post in their own repo (at://user_did/social.coves.community.post/xyz)
 	//   - Claims it's for community X (community field = community_did)
 	//   - Without this check, fake post would be indexed
 	//
@@ -199,8 +199,8 @@ func (c *PostEventConsumer) validatePostEvent(ctx context.Context, repoDID strin
 }
 
 // PostRecordFromJetstream represents a post record as received from Jetstream
-// Matches the structure written to PDS via social.coves.post.record
-type PostRecordFromJetstream struct {
+// Matches the structure written to PDS via social.coves.community.post
+type PostRecordFromJetstream struct{
 	OriginalAuthor interface{}            `json:"originalAuthor,omitempty"`
 	FederatedFrom  interface{}            `json:"federatedFrom,omitempty"`
 	Location       interface{}            `json:"location,omitempty"`
@@ -212,7 +212,7 @@ type PostRecordFromJetstream struct {
 	Author         string                 `json:"author"`
 	CreatedAt      string                 `json:"createdAt"`
 	Facets         []interface{}          `json:"facets,omitempty"`
-	ContentLabels  []string               `json:"contentLabels,omitempty"`
+	Labels         *posts.SelfLabels      `json:"labels,omitempty"`
 }
 
 // parsePostRecord converts a raw Jetstream record map to a PostRecordFromJetstream

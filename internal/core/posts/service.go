@@ -145,14 +145,14 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 
 	// 8. Build post record for PDS
 	postRecord := PostRecord{
-		Type:           "social.coves.post.record",
+		Type:           "social.coves.community.post",
 		Community:      communityDID,
 		Author:         req.AuthorDID,
 		Title:          req.Title,
 		Content:        req.Content,
 		Facets:         req.Facets,
 		Embed:          req.Embed,
-		ContentLabels:  req.ContentLabels,
+		Labels:         req.Labels,
 		OriginalAuthor: req.OriginalAuthor,
 		FederatedFrom:  req.FederatedFrom,
 		Location:       req.Location,
@@ -187,9 +187,9 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 func (s *postService) validateCreateRequest(req CreatePostRequest) error {
 	// Global content limits (from lexicon)
 	const (
-		maxContentLength  = 50000 // 50k characters
-		maxTitleLength    = 3000  // 3k bytes
-		maxTitleGraphemes = 300   // 300 graphemes (simplified check)
+		maxContentLength  = 100000 // 100k characters - matches social.coves.community.post lexicon
+		maxTitleLength    = 3000   // 3k bytes
+		maxTitleGraphemes = 300    // 300 graphemes (simplified check)
 	)
 
 	// Validate community required
@@ -219,15 +219,17 @@ func (s *postService) validateCreateRequest(req CreatePostRequest) error {
 	}
 
 	// Validate content labels are from known values
-	validLabels := map[string]bool{
-		"nsfw":     true,
-		"spoiler":  true,
-		"violence": true,
-	}
-	for _, label := range req.ContentLabels {
-		if !validLabels[label] {
-			return NewValidationError("contentLabels",
-				fmt.Sprintf("unknown content label: %s (valid: nsfw, spoiler, violence)", label))
+	if req.Labels != nil {
+		validLabels := map[string]bool{
+			"nsfw":     true,
+			"spoiler":  true,
+			"violence": true,
+		}
+		for _, label := range req.Labels.Values {
+			if !validLabels[label.Val] {
+				return NewValidationError("labels",
+					fmt.Sprintf("unknown content label: %s (valid: nsfw, spoiler, violence)", label.Val))
+			}
 		}
 	}
 
@@ -257,9 +259,9 @@ func (s *postService) createPostOnPDS(
 	// IMPORTANT: repo is set to community DID, not author DID
 	// This writes the post to the community's repository
 	payload := map[string]interface{}{
-		"repo":       community.DID,              // Community's repository
-		"collection": "social.coves.post.record", // Collection type
-		"record":     record,                     // The post record
+		"repo":       community.DID,                   // Community's repository
+		"collection": "social.coves.community.post", // Collection type
+		"record":     record,                          // The post record
 		// "rkey" omitted - PDS will auto-generate TID
 	}
 
