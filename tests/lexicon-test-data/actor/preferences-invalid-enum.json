@@ -1,7 +1,0 @@
-{
-  "$type": "social.coves.actor.preferences",
-  "feedPreferences": {
-    "defaultFeed": "invalid-feed-type",
-    "defaultSort": "hot"
-  }
-}

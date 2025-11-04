@@ -435,9 +435,16 @@ func validateCrossReferences(catalog *lexicon.BaseCatalog, verbose bool) error {
 		// Post record types (removed - no longer exists in new structure)
 
 		// Actor definitions
-		"social.coves.actor.profile#geoLocation",
+		"social.coves.actor.defs#profileView",
+		"social.coves.actor.defs#profileViewDetailed",
+		"social.coves.actor.defs#profileStats",
+		"social.coves.actor.defs#viewerState",
 
 		// Community definitions
+		"social.coves.community.defs#communityView",
+		"social.coves.community.defs#communityViewDetailed",
+		"social.coves.community.defs#communityStats",
+		"social.coves.community.defs#viewerState",
 		"social.coves.community.rules#rule",
 	}
 

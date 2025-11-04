@@ -1,6 +1,5 @@
 {
   "$type": "social.coves.actor.profile",
-  "handle": "alice.example.com",
   "displayName": "Alice Johnson",
   "bio": "Software developer passionate about open-source",
   "createdAt": "2024-01-15T10:30:00Z"

@@ -72,9 +72,13 @@ func TestLexiconCrossReferences(t *testing.T) {
 
 	// Test specific cross-references that should work
 	crossRefs := map[string]string{
-		"social.coves.richtext.facet#byteSlice":  "byteSlice definition in facet schema",
-		"social.coves.actor.profile#geoLocation": "geoLocation definition in actor profile",
-		"social.coves.community.rules#rule":      "rule definition in community rules",
+		"social.coves.richtext.facet#byteSlice":     "byteSlice definition in facet schema",
+		"social.coves.community.rules#rule":         "rule definition in community rules",
+		"social.coves.actor.defs#profileView":       "profileView definition in actor defs",
+		"social.coves.actor.defs#profileStats":      "profileStats definition in actor defs",
+		"social.coves.actor.defs#viewerState":       "viewerState definition in actor defs",
+		"social.coves.community.defs#communityView": "communityView definition in community defs",
+		"social.coves.community.defs#communityStats": "communityStats definition in community defs",
 	}
 
 	for ref, description := range crossRefs {
@@ -108,7 +112,6 @@ func TestValidateRecord(t *testing.T) {
 			recordType: "social.coves.actor.profile",
 			recordData: map[string]interface{}{
 				"$type":       "social.coves.actor.profile",
-				"handle":      "alice.example.com",
 				"displayName": "Alice Johnson",
 				"createdAt":   "2024-01-15T10:30:00Z",
 			},
@@ -120,23 +123,22 @@ func TestValidateRecord(t *testing.T) {
 			recordData: map[string]interface{}{
 				"$type":       "social.coves.actor.profile",
 				"displayName": "Alice Johnson",
+				// Missing required createdAt
 			},
 			shouldFail:    true,
-			errorContains: "required field missing: handle",
+			errorContains: "required field missing",
 		},
 		{
 			name:       "Valid community profile",
 			recordType: "social.coves.community.profile",
 			recordData: map[string]interface{}{
 				"$type":          "social.coves.community.profile",
-				"handle":         "programming.community.coves.social",
 				"name":           "programming",
 				"displayName":    "Programming Community",
 				"createdBy":      "did:plc:creator123",
 				"hostedBy":       "did:plc:coves123",
 				"visibility":     "public",
 				"moderationType": "moderator",
-				"federatedFrom":  "coves",
 				"createdAt":      "2023-12-01T08:00:00Z",
 			},
 			shouldFail: false,
@@ -205,7 +207,6 @@ func TestValidateRecordWithStrictMode(t *testing.T) {
 	// Test with strict validation flags
 	recordData := map[string]interface{}{
 		"$type":       "social.coves.actor.profile",
-		"handle":      "alice.example.com",
 		"displayName": "Alice Johnson",
 		"createdAt":   "2024-01-15T10:30:00", // Missing timezone
 	}
