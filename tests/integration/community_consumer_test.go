@@ -88,7 +88,7 @@ func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
 	t.Run("updates existing community", func(t *testing.T) {
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		communityDID := generateTestDID(uniqueSuffix)
-		communityName := "update-test"
+		communityName := fmt.Sprintf("update-test-%s", uniqueSuffix)
 		expectedHandle := fmt.Sprintf("%s.community.coves.local", communityName)
 
 		// Set up mock resolver for this test DID
@@ -173,7 +173,7 @@ func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
 	t.Run("deletes community", func(t *testing.T) {
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		communityDID := generateTestDID(uniqueSuffix)
-		communityName := "delete-test"
+		communityName := fmt.Sprintf("delete-test-%s", uniqueSuffix)
 		expectedHandle := fmt.Sprintf("%s.community.coves.local", communityName)
 
 		// Set up mock resolver for this test DID
@@ -238,7 +238,7 @@ func TestCommunityConsumer_HandleSubscription(t *testing.T) {
 		// Create a community first
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		communityDID := generateTestDID(uniqueSuffix)
-		communityName := "sub-test"
+		communityName := fmt.Sprintf("sub-test-%s", uniqueSuffix)
 		expectedHandle := fmt.Sprintf("%s.community.coves.local", communityName)
 
 		// Set up mock resolver for this test DID
