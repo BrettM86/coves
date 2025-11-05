@@ -286,6 +286,10 @@ func main() {
 	voteRepo := postgresRepo.NewVoteRepository(db)
 	log.Println("✅ Vote repository initialized (Jetstream indexing only)")
 
+	// Initialize comment repository (used by Jetstream consumer for indexing)
+	commentRepo := postgresRepo.NewCommentRepository(db)
+	log.Println("✅ Comment repository initialized (Jetstream indexing only)")
+
 	// Initialize feed service
 	feedRepo := postgresRepo.NewCommunityFeedRepository(db)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
@@ -369,6 +373,27 @@ func main() {
 	log.Printf("Started Jetstream vote consumer: %s", voteJetstreamURL)
 	log.Println("  - Indexing: social.coves.feed.vote CREATE/DELETE operations")
 	log.Println("  - Updating: Post vote counts atomically")
+
+	// Start Jetstream consumer for comments
+	// This consumer indexes comments from user repositories and updates parent counts
+	commentJetstreamURL := os.Getenv("COMMENT_JETSTREAM_URL")
+	if commentJetstreamURL == "" {
+		// Listen to comment record CREATE/UPDATE/DELETE events from user repositories
+		commentJetstreamURL = "ws://localhost:6008/subscribe?wantedCollections=social.coves.feed.comment"
+	}
+
+	commentEventConsumer := jetstream.NewCommentEventConsumer(commentRepo, db)
+	commentJetstreamConnector := jetstream.NewCommentJetstreamConnector(commentEventConsumer, commentJetstreamURL)
+
+	go func() {
+		if startErr := commentJetstreamConnector.Start(ctx); startErr != nil {
+			log.Printf("Comment Jetstream consumer stopped: %v", startErr)
+		}
+	}()
+
+	log.Printf("Started Jetstream comment consumer: %s", commentJetstreamURL)
+	log.Println("  - Indexing: social.coves.feed.comment CREATE/UPDATE/DELETE operations")
+	log.Println("  - Updating: Post comment counts and comment reply counts atomically")
 
 	// Register XRPC routes
 	routes.RegisterUserRoutes(r, userService)

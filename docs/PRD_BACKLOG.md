@@ -418,6 +418,60 @@ if err != nil {
 
 ---
 
+### Post comment_count Reconciliation Missing
+**Added:** 2025-11-04 | **Effort:** 2-3 hours | **Priority:** ALPHA BLOCKER
+
+**Problem:**
+When comments arrive before their parent post is indexed (common with cross-repo Jetstream ordering), the post's `comment_count` is never reconciled. Later, when the post consumer indexes the post, there's no logic to count pre-existing comments. This causes posts to have permanently stale `comment_count` values.
+
+**End-User Impact:**
+- 🔴 Posts show "0 comments" when they actually have comments
+- ❌ Broken engagement signals (users don't know there are discussions)
+- ❌ UI inconsistency (thread page shows comments, but counter says "0")
+- ⚠️ Users may not click into posts thinking they're empty
+- 📉 Reduced engagement due to misleading counters
+
+**Root Cause:**
+- Comment consumer updates post counts when processing comment events ([comment_consumer.go:323-343](../internal/atproto/jetstream/comment_consumer.go#L323-L343))
+- If comment arrives BEFORE post is indexed, update query returns 0 rows (only logs warning)
+- When post consumer later indexes the post, it sets `comment_count = 0` with NO reconciliation
+- Comments already exist in DB, but post never "discovers" them
+
+**Solution:**
+Post consumer MUST implement the same reconciliation pattern as comment consumer (see [comment_consumer.go:292-305](../internal/atproto/jetstream/comment_consumer.go#L292-L305)):
+
+```go
+// After inserting new post, reconcile comment_count for out-of-order comments
+reconcileQuery := `
+    UPDATE posts
+    SET comment_count = (
+        SELECT COUNT(*)
+        FROM comments c
+        WHERE c.parent_uri = $1 AND c.deleted_at IS NULL
+    )
+    WHERE id = $2
+`
+_, reconcileErr := tx.ExecContext(ctx, reconcileQuery, postURI, postID)
+```
+
+**Affected Operations:**
+- Post indexing from Jetstream ([post_consumer.go](../internal/atproto/jetstream/post_consumer.go))
+- Any cross-repo event ordering (community DID ≠ author DID)
+
+**Current Status:**
+- 🔴 Issue documented with FIXME(P1) comment at [comment_consumer.go:311-321](../internal/atproto/jetstream/comment_consumer.go#L311-L321)
+- ⚠️ Test demonstrating limitation exists: `TestCommentConsumer_PostCountReconciliation_Limitation`
+- 📋 Fix required in post consumer (out of scope for comment system PR)
+
+**Files to Modify:**
+- `internal/atproto/jetstream/post_consumer.go` - Add reconciliation after post creation
+- `tests/integration/post_consumer_test.go` - Add test for out-of-order comment reconciliation
+
+**Similar Issue Fixed:**
+- ✅ Comment reply_count reconciliation - Fixed in comment system implementation (2025-11-04)
+
+---
+
 ## 🔴 P1.5: Federation Blockers (Beta Launch)
 
 ### Cross-PDS Write-Forward Support for Community Service
