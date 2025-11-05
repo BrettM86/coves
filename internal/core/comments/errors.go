@@ -42,3 +42,10 @@ func IsNotFound(err error) bool {
 func IsConflict(err error) bool {
 	return errors.Is(err, ErrCommentAlreadyExists)
 }
+
+// IsValidationError checks if an error is a validation error
+func IsValidationError(err error) bool {
+	return errors.Is(err, ErrInvalidReply) ||
+		errors.Is(err, ErrContentTooLong) ||
+		errors.Is(err, ErrContentEmpty)
+}

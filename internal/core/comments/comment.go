@@ -13,6 +13,10 @@ type Comment struct {
 	RKey          string     `json:"rkey" db:"rkey"`
 	CommenterDID  string     `json:"commenterDid" db:"commenter_did"`
 
+	// Author info (hydrated from users table for view building)
+	// Only populated by ListByParentWithHotRank, not persisted in comments table
+	CommenterHandle string   `json:"commenterHandle,omitempty" db:"-"`
+
 	// Threading (reply references)
 	RootURI       string     `json:"rootUri" db:"root_uri"`
 	RootCID       string     `json:"rootCid" db:"root_cid"`
