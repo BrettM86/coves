@@ -30,6 +30,8 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/pressly/goose/v3"
 
+	commentsAPI "Coves/internal/api/handlers/comments"
+	"Coves/internal/core/comments"
 	postgresRepo "Coves/internal/db/postgres"
 )
 
@@ -290,6 +292,10 @@ func main() {
 	commentRepo := postgresRepo.NewCommentRepository(db)
 	log.Println("✅ Comment repository initialized (Jetstream indexing only)")
 
+	// Initialize comment service (for query API)
+	commentService := comments.NewCommentService(commentRepo, userRepo, postRepo)
+	log.Println("✅ Comment service initialized")
+
 	// Initialize feed service
 	feedRepo := postgresRepo.NewCommunityFeedRepository(db)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
@@ -417,6 +423,16 @@ func main() {
 
 	routes.RegisterAggregatorRoutes(r, aggregatorService)
 	log.Println("Aggregator XRPC endpoints registered (query endpoints public)")
+
+	// Comment query API - supports optional authentication for viewer state
+	commentServiceAdapter := commentsAPI.NewServiceAdapter(commentService)
+	commentHandler := commentsAPI.NewGetCommentsHandler(commentServiceAdapter)
+	r.Handle(
+		"/xrpc/social.coves.community.comment.getComments",
+		commentsAPI.OptionalAuthMiddleware(authMiddleware, commentHandler.HandleGetComments),
+	)
+	log.Println("✅ Comment query API registered")
+	log.Println("  - GET /xrpc/social.coves.community.comment.getComments")
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
