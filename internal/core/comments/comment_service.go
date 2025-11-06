@@ -1,15 +1,23 @@
 package comments
 
 import (
-	"Coves/internal/core/communities"
-	"Coves/internal/core/posts"
-	"Coves/internal/core/users"
 	"context"
 	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"time"
+
+	"Coves/internal/core/communities"
+	"Coves/internal/core/posts"
+	"Coves/internal/core/users"
+)
+
+const (
+	// DefaultRepliesPerParent defines how many nested replies to load per parent comment
+	// This balances UX (showing enough context) with performance (limiting query size)
+	// Can be made configurable via constructor if needed in the future
+	DefaultRepliesPerParent = 5
 )
 
 // Service defines the business logic interface for comment operations
@@ -129,6 +137,26 @@ func (s *commentService) buildThreadViews(
 		return result
 	}
 
+	// Batch fetch vote states for all comments at this level (Phase 2B)
+	var voteStates map[string]interface{}
+	if viewerDID != nil {
+		commentURIs := make([]string, 0, len(comments))
+		for _, comment := range comments {
+			if comment.DeletedAt == nil {
+				commentURIs = append(commentURIs, comment.URI)
+			}
+		}
+
+		if len(commentURIs) > 0 {
+			var err error
+			voteStates, err = s.commentRepo.GetVoteStateForComments(ctx, *viewerDID, commentURIs)
+			if err != nil {
+				// Log error but don't fail the request - vote state is optional
+				log.Printf("Warning: Failed to fetch vote states for comments: %v", err)
+			}
+		}
+	}
+
 	// Build thread views for current level
 	threadViews := make([]*ThreadViewComment, 0, len(comments))
 	commentsByURI := make(map[string]*ThreadViewComment)
@@ -141,7 +169,7 @@ func (s *commentService) buildThreadViews(
 		}
 
 		// Build the comment view with author info and stats
-		commentView := s.buildCommentView(comment, viewerDID)
+		commentView := s.buildCommentView(comment, viewerDID, voteStates)
 
 		threadView := &ThreadViewComment{
 			Comment: commentView,
@@ -160,13 +188,11 @@ func (s *commentService) buildThreadViews(
 
 	// Batch load all replies for this level in a single query
 	if len(parentsWithReplies) > 0 {
-		const repliesPerParent = 5 // Load top 5 replies per comment
-
 		repliesByParent, err := s.commentRepo.ListByParentsBatch(
 			ctx,
 			parentsWithReplies,
 			sort,
-			repliesPerParent,
+			DefaultRepliesPerParent,
 		)
 
 		// Process replies if batch query succeeded
@@ -202,13 +228,18 @@ func (s *commentService) buildThreadViews(
 
 // buildCommentView converts a Comment entity to a CommentView with full metadata
 // Constructs author view, stats, and references to parent post/comment
-func (s *commentService) buildCommentView(comment *Comment, viewerDID *string) *CommentView {
+// voteStates map contains viewer's vote state for comments (from GetVoteStateForComments)
+func (s *commentService) buildCommentView(
+	comment *Comment,
+	viewerDID *string,
+	voteStates map[string]interface{},
+) *CommentView {
 	// Build author view from comment data
 	// CommenterHandle is hydrated by ListByParentWithHotRank via JOIN
 	authorView := &posts.AuthorView{
 		DID:    comment.CommenterDID,
 		Handle: comment.CommenterHandle,
-		// TODO: Add DisplayName, Avatar, Reputation when user service is integrated (Phase 2B)
+		// TODO: Add DisplayName, Avatar, Reputation when user service is integrated (Phase 2C)
 	}
 
 	// Build aggregated statistics
@@ -235,16 +266,31 @@ func (s *commentService) buildCommentView(comment *Comment, viewerDID *string) *
 		}
 	}
 
-	// Build viewer state (stubbed for now - Phase 2B)
-	// Future: Fetch viewer's vote state from GetVoteStateForComments
+	// Build viewer state - populate from vote states map (Phase 2B)
 	var viewer *CommentViewerState
 	if viewerDID != nil {
-		// TODO: Query voter state
-		// voteState, err := s.commentRepo.GetVoteStateForComments(ctx, *viewerDID, []string{comment.URI})
-		// For now, return empty viewer state to indicate authenticated request
 		viewer = &CommentViewerState{
 			Vote:    nil,
 			VoteURI: nil,
+		}
+
+		// Check if viewer has voted on this comment
+		if voteStates != nil {
+			if voteData, ok := voteStates[comment.URI]; ok {
+				voteMap, isMap := voteData.(map[string]interface{})
+				if isMap {
+					// Extract vote direction and URI
+					// Create copies before taking addresses to avoid pointer to loop variable issues
+					if direction, hasDirection := voteMap["direction"].(string); hasDirection {
+						directionCopy := direction
+						viewer.Vote = &directionCopy
+					}
+					if voteURI, hasVoteURI := voteMap["uri"].(string); hasVoteURI {
+						voteURICopy := voteURI
+						viewer.VoteURI = &voteURICopy
+					}
+				}
+			}
 		}
 	}
 
