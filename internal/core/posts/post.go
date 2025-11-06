@@ -13,8 +13,8 @@ type SelfLabels struct {
 // SelfLabel represents a single label value per com.atproto.label.defs#selfLabel
 // Neg is optional and negates the label when true
 type SelfLabel struct {
-	Val string `json:"val"`           // Required: label value (max 128 chars)
-	Neg *bool  `json:"neg,omitempty"` // Optional: negates the label if true
+	Neg *bool  `json:"neg,omitempty"`
+	Val string `json:"val"`
 }
 
 // Post represents a post in the AppView database
@@ -50,15 +50,15 @@ type CreatePostRequest struct {
 	Title          *string                `json:"title,omitempty"`
 	Content        *string                `json:"content,omitempty"`
 	Embed          map[string]interface{} `json:"embed,omitempty"`
+	Labels         *SelfLabels            `json:"labels,omitempty"`
 	Community      string                 `json:"community"`
 	AuthorDID      string                 `json:"authorDid"`
 	Facets         []interface{}          `json:"facets,omitempty"`
-	Labels         *SelfLabels            `json:"labels,omitempty"`
 }
 
 // CreatePostResponse represents the response from creating a post
 // Matches social.coves.community.post.create lexicon output schema
-type CreatePostResponse struct{
+type CreatePostResponse struct {
 	URI string `json:"uri"` // AT-URI of created post
 	CID string `json:"cid"` // CID of created post
 }
@@ -72,12 +72,12 @@ type PostRecord struct {
 	Title          *string                `json:"title,omitempty"`
 	Content        *string                `json:"content,omitempty"`
 	Embed          map[string]interface{} `json:"embed,omitempty"`
+	Labels         *SelfLabels            `json:"labels,omitempty"`
 	Type           string                 `json:"$type"`
 	Community      string                 `json:"community"`
 	Author         string                 `json:"author"`
 	CreatedAt      string                 `json:"createdAt"`
 	Facets         []interface{}          `json:"facets,omitempty"`
-	Labels         *SelfLabels            `json:"labels,omitempty"`
 }
 
 // PostView represents the full view of a post with all metadata

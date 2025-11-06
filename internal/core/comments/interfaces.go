@@ -42,4 +42,37 @@ type Repository interface {
 	// ListByCommenter retrieves all comments by a specific user
 	// Future: Used for user comment history
 	ListByCommenter(ctx context.Context, commenterDID string, limit, offset int) ([]*Comment, error)
+
+	// ListByParentWithHotRank retrieves direct replies to a post or comment with sorting and pagination
+	// Supports hot, top, and new sorting with cursor-based pagination
+	// Returns comments with author info hydrated and next page cursor
+	ListByParentWithHotRank(
+		ctx context.Context,
+		parentURI string,
+		sort string, // "hot", "top", "new"
+		timeframe string, // "hour", "day", "week", "month", "year", "all" (for "top" only)
+		limit int,
+		cursor *string,
+	) ([]*Comment, *string, error)
+
+	// GetByURIsBatch retrieves multiple comments by their AT-URIs in a single query
+	// Returns map[uri]*Comment for efficient lookups
+	// Used for hydrating comment threads without N+1 queries
+	GetByURIsBatch(ctx context.Context, uris []string) (map[string]*Comment, error)
+
+	// GetVoteStateForComments retrieves the viewer's votes on a batch of comments
+	// Returns map[commentURI]*Vote for efficient lookups
+	// Future: Used when votes table is implemented
+	GetVoteStateForComments(ctx context.Context, viewerDID string, commentURIs []string) (map[string]interface{}, error)
+
+	// ListByParentsBatch retrieves direct replies to multiple parents in a single query
+	// Returns map[parentURI][]*Comment grouped by parent
+	// Used to prevent N+1 queries when loading nested replies
+	// Limits results per parent to avoid memory exhaustion
+	ListByParentsBatch(
+		ctx context.Context,
+		parentURIs []string,
+		sort string,
+		limitPerParent int,
+	) (map[string][]*Comment, error)
 }

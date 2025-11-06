@@ -300,7 +300,6 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 			time.Now(),
 			commentID,
 		)
-
 		if err != nil {
 			return fmt.Errorf("failed to resurrect comment: %w", err)
 		}
@@ -329,7 +328,6 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 			comment.Content, comment.ContentFacets, comment.Embed, comment.ContentLabels, pq.Array(comment.Langs),
 			comment.CreatedAt, time.Now(),
 		).Scan(&commentID)
-
 		if err != nil {
 			return fmt.Errorf("failed to insert comment: %w", err)
 		}
@@ -593,14 +591,14 @@ func validateATURI(uri string) error {
 // CommentRecordFromJetstream represents a comment record as received from Jetstream
 // Matches social.coves.feed.comment lexicon
 type CommentRecordFromJetstream struct {
-	Type      string                 `json:"$type"`
-	Reply     ReplyRefFromJetstream  `json:"reply"`
-	Content   string                 `json:"content"`
-	Facets    []interface{}          `json:"facets,omitempty"`
-	Embed     map[string]interface{} `json:"embed,omitempty"`
-	Langs     []string               `json:"langs,omitempty"`
 	Labels    interface{}            `json:"labels,omitempty"`
+	Embed     map[string]interface{} `json:"embed,omitempty"`
+	Reply     ReplyRefFromJetstream  `json:"reply"`
+	Type      string                 `json:"$type"`
+	Content   string                 `json:"content"`
 	CreatedAt string                 `json:"createdAt"`
+	Facets    []interface{}          `json:"facets,omitempty"`
+	Langs     []string               `json:"langs,omitempty"`
 }
 
 // ReplyRefFromJetstream represents the threading structure
@@ -638,7 +636,7 @@ func parseCommentRecord(record map[string]interface{}) (*CommentRecordFromJetstr
 // Returns nil pointers for empty/nil fields (DRY helper to avoid duplication)
 func serializeOptionalFields(commentRecord *CommentRecordFromJetstream) (facetsJSON, embedJSON, labelsJSON *string) {
 	// Serialize facets if present
-	if commentRecord.Facets != nil && len(commentRecord.Facets) > 0 {
+	if len(commentRecord.Facets) > 0 {
 		if facetsBytes, err := json.Marshal(commentRecord.Facets); err == nil {
 			facetsStr := string(facetsBytes)
 			facetsJSON = &facetsStr
@@ -646,7 +644,7 @@ func serializeOptionalFields(commentRecord *CommentRecordFromJetstream) (facetsJ
 	}
 
 	// Serialize embed if present
-	if commentRecord.Embed != nil && len(commentRecord.Embed) > 0 {
+	if len(commentRecord.Embed) > 0 {
 		if embedBytes, err := json.Marshal(commentRecord.Embed); err == nil {
 			embedStr := string(embedBytes)
 			embedJSON = &embedStr

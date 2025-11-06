@@ -19,8 +19,10 @@ import (
 
 // CommunityEventConsumer consumes community-related events from Jetstream
 type CommunityEventConsumer struct {
-	repo             communities.Repository           // Repository for community operations
-	identityResolver interface{ Resolve(context.Context, string) (*identity.Identity, error) } // For resolving handles from DIDs
+	repo             communities.Repository // Repository for community operations
+	identityResolver interface {
+		Resolve(context.Context, string) (*identity.Identity, error)
+	} // For resolving handles from DIDs
 	httpClient       *http.Client                     // Shared HTTP client with connection pooling
 	didCache         *lru.Cache[string, cachedDIDDoc] // Bounded LRU cache for .well-known verification results
 	wellKnownLimiter *rate.Limiter                    // Rate limiter for .well-known fetches
@@ -38,7 +40,10 @@ type cachedDIDDoc struct {
 // instanceDID: The DID of this Coves instance (for hostedBy verification)
 // skipVerification: Skip did:web verification (for dev mode)
 // identityResolver: Optional resolver for resolving handles from DIDs (can be nil for tests)
-func NewCommunityEventConsumer(repo communities.Repository, instanceDID string, skipVerification bool, identityResolver interface{ Resolve(context.Context, string) (*identity.Identity, error) }) *CommunityEventConsumer {
+func NewCommunityEventConsumer(repo communities.Repository, instanceDID string, skipVerification bool, identityResolver interface {
+	Resolve(context.Context, string) (*identity.Identity, error)
+},
+) *CommunityEventConsumer {
 	// Create bounded LRU cache for DID document verification results
 	// Max 1000 entries to prevent unbounded memory growth (PR review feedback)
 	// Each entry ~100 bytes → max ~100KB memory overhead
