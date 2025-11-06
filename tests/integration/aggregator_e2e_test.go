@@ -75,7 +75,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 
 	// Setup consumers
 	aggregatorConsumer := jetstream.NewAggregatorEventConsumer(aggregatorRepo)
-	postConsumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService)
+	postConsumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService, db)
 
 	// Setup HTTP handlers
 	getServicesHandler := aggregator.NewGetServicesHandler(aggregatorService)

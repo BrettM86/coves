@@ -131,7 +131,7 @@ func TestPostCreation_E2E_WithJetstream(t *testing.T) {
 		}
 
 		// STEP 3: Process event through Jetstream consumer
-		consumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService)
+		consumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService, db)
 		err := consumer.HandleEvent(ctx, &jetstreamEvent)
 		if err != nil {
 			t.Fatalf("Jetstream consumer failed to process event: %v", err)
@@ -201,7 +201,7 @@ func TestPostCreation_E2E_WithJetstream(t *testing.T) {
 			},
 		}
 
-		consumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService)
+		consumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService, db)
 		err := consumer.HandleEvent(ctx, &maliciousEvent)
 
 		// Should get security error
@@ -241,7 +241,7 @@ func TestPostCreation_E2E_WithJetstream(t *testing.T) {
 			},
 		}
 
-		consumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService)
+		consumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService, db)
 
 		// First event - should succeed
 		err := consumer.HandleEvent(ctx, &event)
@@ -295,7 +295,7 @@ func TestPostCreation_E2E_WithJetstream(t *testing.T) {
 			},
 		}
 
-		consumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService)
+		consumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService, db)
 
 		// Should log warning but NOT fail (eventual consistency)
 		// Note: This will fail due to foreign key constraint in current schema
@@ -530,7 +530,7 @@ func TestPostCreation_E2E_LivePDS(t *testing.T) {
 			userService := users.NewUserService(userRepo, identityResolver, pdsURL)
 
 			// Create post consumer (same as main.go)
-			postConsumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService)
+			postConsumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService, db)
 
 			// Channels to receive the event
 			eventChan := make(chan *jetstream.JetstreamEvent, 10)

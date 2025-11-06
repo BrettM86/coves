@@ -322,7 +322,7 @@ func main() {
 		postJetstreamURL = "ws://localhost:6008/subscribe?wantedCollections=social.coves.community.post"
 	}
 
-	postEventConsumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService)
+	postEventConsumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService, db)
 	postJetstreamConnector := jetstream.NewPostJetstreamConnector(postEventConsumer, postJetstreamURL)
 
 	go func() {

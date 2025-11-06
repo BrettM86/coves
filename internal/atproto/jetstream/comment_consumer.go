@@ -1,6 +1,7 @@
 package jetstream
 
 import (
+	"Coves/internal/atproto/utils"
 	"Coves/internal/core/comments"
 	"context"
 	"database/sql"
@@ -356,7 +357,7 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 
 	// 2. Update parent counts atomically
 	// Parent could be a post (increment comment_count) or a comment (increment reply_count)
-	// Try posts table first
+	// Parse collection from parent URI to determine target table
 	//
 	// FIXME(P1): Post comment_count reconciliation not implemented
 	// When a comment arrives before its parent post (common with cross-repo Jetstream ordering),
@@ -369,15 +370,39 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 	// matches the post URI and set comment_count accordingly.
 	//
 	// Test demonstrating issue: TestCommentConsumer_PostCountReconciliation_Limitation
-	updatePostQuery := `
-		UPDATE posts
-		SET comment_count = comment_count + 1
-		WHERE uri = $1 AND deleted_at IS NULL
-	`
+	collection := utils.ExtractCollectionFromURI(comment.ParentURI)
 
-	result, err := tx.ExecContext(ctx, updatePostQuery, comment.ParentURI)
+	var updateQuery string
+	switch collection {
+	case "social.coves.community.post":
+		// Comment on post - update posts.comment_count
+		updateQuery = `
+			UPDATE posts
+			SET comment_count = comment_count + 1
+			WHERE uri = $1 AND deleted_at IS NULL
+		`
+
+	case "social.coves.feed.comment":
+		// Reply to comment - update comments.reply_count
+		updateQuery = `
+			UPDATE comments
+			SET reply_count = reply_count + 1
+			WHERE uri = $1 AND deleted_at IS NULL
+		`
+
+	default:
+		// Unknown or unsupported parent collection
+		// Comment is still indexed, we just don't update parent counts
+		log.Printf("Comment parent has unsupported collection: %s (comment indexed, parent count not updated)", collection)
+		if commitErr := tx.Commit(); commitErr != nil {
+			return fmt.Errorf("failed to commit transaction: %w", commitErr)
+		}
+		return nil
+	}
+
+	result, err := tx.ExecContext(ctx, updateQuery, comment.ParentURI)
 	if err != nil {
-		return fmt.Errorf("failed to update post comment count: %w", err)
+		return fmt.Errorf("failed to update parent count: %w", err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
@@ -385,28 +410,9 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 		return fmt.Errorf("failed to check update result: %w", err)
 	}
 
-	// If no post was updated, parent is probably a comment
+	// If parent not found, that's OK (parent might not be indexed yet)
 	if rowsAffected == 0 {
-		updateCommentQuery := `
-			UPDATE comments
-			SET reply_count = reply_count + 1
-			WHERE uri = $1 AND deleted_at IS NULL
-		`
-
-		result, err := tx.ExecContext(ctx, updateCommentQuery, comment.ParentURI)
-		if err != nil {
-			return fmt.Errorf("failed to update comment reply count: %w", err)
-		}
-
-		rowsAffected, err := result.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("failed to check update result: %w", err)
-		}
-
-		// If neither post nor comment was found, that's OK (parent might not be indexed yet)
-		if rowsAffected == 0 {
-			log.Printf("Warning: Parent not found or deleted: %s (comment indexed anyway)", comment.ParentURI)
-		}
+		log.Printf("Warning: Parent not found or deleted: %s (comment indexed anyway)", comment.ParentURI)
 	}
 
 	// Commit transaction
@@ -456,16 +462,40 @@ func (c *CommentEventConsumer) deleteCommentAndUpdateCounts(ctx context.Context,
 	}
 
 	// 2. Decrement parent counts atomically
-	// Parent could be a post or comment - try both (use GREATEST to prevent negative)
-	updatePostQuery := `
-		UPDATE posts
-		SET comment_count = GREATEST(0, comment_count - 1)
-		WHERE uri = $1 AND deleted_at IS NULL
-	`
+	// Parent could be a post or comment - parse collection to determine target table
+	collection := utils.ExtractCollectionFromURI(comment.ParentURI)
 
-	result, err = tx.ExecContext(ctx, updatePostQuery, comment.ParentURI)
+	var updateQuery string
+	switch collection {
+	case "social.coves.community.post":
+		// Comment on post - decrement posts.comment_count
+		updateQuery = `
+			UPDATE posts
+			SET comment_count = GREATEST(0, comment_count - 1)
+			WHERE uri = $1 AND deleted_at IS NULL
+		`
+
+	case "social.coves.feed.comment":
+		// Reply to comment - decrement comments.reply_count
+		updateQuery = `
+			UPDATE comments
+			SET reply_count = GREATEST(0, reply_count - 1)
+			WHERE uri = $1 AND deleted_at IS NULL
+		`
+
+	default:
+		// Unknown or unsupported parent collection
+		// Comment is still deleted, we just don't update parent counts
+		log.Printf("Comment parent has unsupported collection: %s (comment deleted, parent count not updated)", collection)
+		if commitErr := tx.Commit(); commitErr != nil {
+			return fmt.Errorf("failed to commit transaction: %w", commitErr)
+		}
+		return nil
+	}
+
+	result, err = tx.ExecContext(ctx, updateQuery, comment.ParentURI)
 	if err != nil {
-		return fmt.Errorf("failed to update post comment count: %w", err)
+		return fmt.Errorf("failed to update parent count: %w", err)
 	}
 
 	rowsAffected, err = result.RowsAffected()
@@ -473,28 +503,9 @@ func (c *CommentEventConsumer) deleteCommentAndUpdateCounts(ctx context.Context,
 		return fmt.Errorf("failed to check update result: %w", err)
 	}
 
-	// If no post was updated, parent is probably a comment
+	// If parent not found, that's OK (parent might be deleted)
 	if rowsAffected == 0 {
-		updateCommentQuery := `
-			UPDATE comments
-			SET reply_count = GREATEST(0, reply_count - 1)
-			WHERE uri = $1 AND deleted_at IS NULL
-		`
-
-		result, err := tx.ExecContext(ctx, updateCommentQuery, comment.ParentURI)
-		if err != nil {
-			return fmt.Errorf("failed to update comment reply count: %w", err)
-		}
-
-		rowsAffected, err := result.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("failed to check update result: %w", err)
-		}
-
-		// If neither was found, that's OK (parent might be deleted)
-		if rowsAffected == 0 {
-			log.Printf("Warning: Parent not found or deleted: %s (comment deleted anyway)", comment.ParentURI)
-		}
+		log.Printf("Warning: Parent not found or deleted: %s (comment deleted anyway)", comment.ParentURI)
 	}
 
 	// Commit transaction
