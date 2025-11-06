@@ -353,6 +353,7 @@ func (r *postgresCommentRepo) ListByCommenter(ctx context.Context, commenterDID 
 
 	return result, nil
 }
+
 // ListByParentWithHotRank retrieves direct replies to a post or comment with sorting and pagination
 // Supports three sort modes: hot (Lemmy algorithm), top (by score + timeframe), and new (by created_at)
 // Uses cursor-based pagination with composite keys for consistent ordering

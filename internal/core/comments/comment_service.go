@@ -22,22 +22,22 @@ type Service interface {
 
 // GetCommentsRequest defines the parameters for fetching comments
 type GetCommentsRequest struct {
-	PostURI    string  // AT-URI of the post to fetch comments for
-	Sort       string  // "hot", "top", "new" - sorting algorithm
-	Timeframe  string  // "hour", "day", "week", "month", "year", "all" - for "top" sort only
-	Depth      int     // 0-100 - how many levels of nested replies to load (default 10)
-	Limit      int     // 1-100 - max top-level comments per page (default 50)
-	Cursor     *string // Pagination cursor from previous response
-	ViewerDID  *string // Optional DID of authenticated viewer (for vote state)
+	Cursor    *string
+	ViewerDID *string
+	PostURI   string
+	Sort      string
+	Timeframe string
+	Depth     int
+	Limit     int
 }
 
 // commentService implements the Service interface
 // Coordinates between repository layer and view model construction
 type commentService struct {
-	commentRepo     Repository                   // Comment data access
-	userRepo        users.UserRepository         // User lookup for author hydration
-	postRepo        posts.Repository             // Post lookup for building post views
-	communityRepo   communities.Repository       // Community lookup for community hydration
+	commentRepo   Repository             // Comment data access
+	userRepo      users.UserRepository   // User lookup for author hydration
+	postRepo      posts.Repository       // Post lookup for building post views
+	communityRepo communities.Repository // Community lookup for community hydration
 }
 
 // NewCommentService creates a new comment service instance

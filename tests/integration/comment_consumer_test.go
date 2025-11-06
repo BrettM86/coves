@@ -45,7 +45,7 @@ func TestCommentConsumer_CreateComment(t *testing.T) {
 				RKey:       rkey,
 				CID:        "bafytest123",
 				Record: map[string]interface{}{
-					"$type": "social.coves.feed.comment",
+					"$type":   "social.coves.feed.comment",
 					"content": "This is a test comment on a post!",
 					"reply": map[string]interface{}{
 						"root": map[string]interface{}{
@@ -119,7 +119,7 @@ func TestCommentConsumer_CreateComment(t *testing.T) {
 				RKey:       rkey,
 				CID:        "bafytest456",
 				Record: map[string]interface{}{
-					"$type": "social.coves.feed.comment",
+					"$type":   "social.coves.feed.comment",
 					"content": "Idempotent test comment",
 					"reply": map[string]interface{}{
 						"root": map[string]interface{}{

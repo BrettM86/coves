@@ -369,13 +369,10 @@ func TestCommunityConsumer_IgnoresNonCommunityEvents(t *testing.T) {
 
 // mockIdentityResolver is a test double for identity resolution
 type mockIdentityResolver struct {
-	// Map of DID -> handle for successful resolutions
 	resolutions map[string]string
-	// If true, Resolve returns an error
-	shouldFail bool
-	// Track calls to verify invocation
-	callCount int
-	lastDID   string
+	lastDID     string
+	callCount   int
+	shouldFail  bool
 }
 
 func newMockIdentityResolver() *mockIdentityResolver {

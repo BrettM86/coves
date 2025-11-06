@@ -25,13 +25,13 @@ type Service interface {
 // GetCommentsRequest represents the query parameters for fetching comments
 // Matches social.coves.feed.getComments lexicon input
 type GetCommentsRequest struct {
-	PostURI   string  `json:"post"`              // Required: AT-URI of the post
-	Sort      string  `json:"sort,omitempty"`    // Optional: "hot", "top", "new" (default: "hot")
-	Timeframe string  `json:"timeframe,omitempty"` // Optional: For "top" sort - "hour", "day", "week", "month", "year", "all"
-	Depth     int     `json:"depth,omitempty"`   // Optional: Max nesting depth (default: 10)
-	Limit     int     `json:"limit,omitempty"`   // Optional: Max comments per page (default: 50, max: 100)
-	Cursor    *string `json:"cursor,omitempty"`  // Optional: Pagination cursor
-	ViewerDID *string `json:"-"`                 // Internal: Extracted from auth token
+	Cursor    *string `json:"cursor,omitempty"`
+	ViewerDID *string `json:"-"`
+	PostURI   string  `json:"post"`
+	Sort      string  `json:"sort,omitempty"`
+	Timeframe string  `json:"timeframe,omitempty"`
+	Depth     int     `json:"depth,omitempty"`
+	Limit     int     `json:"limit,omitempty"`
 }
 
 // NewGetCommentsHandler creates a new handler for fetching comments

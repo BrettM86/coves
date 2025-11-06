@@ -259,9 +259,9 @@ func (s *postService) createPostOnPDS(
 	// IMPORTANT: repo is set to community DID, not author DID
 	// This writes the post to the community's repository
 	payload := map[string]interface{}{
-		"repo":       community.DID,                   // Community's repository
+		"repo":       community.DID,                 // Community's repository
 		"collection": "social.coves.community.post", // Collection type
-		"record":     record,                          // The post record
+		"record":     record,                        // The post record
 		// "rkey" omitted - PDS will auto-generate TID
 	}
 

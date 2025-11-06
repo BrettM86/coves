@@ -8,19 +8,19 @@ import (
 // Matches social.coves.feed.getComments#commentView lexicon
 // Used in thread views and get endpoints
 type CommentView struct {
+	Embed         interface{}         `json:"embed,omitempty"`
+	Record        interface{}         `json:"record"`
+	Viewer        *CommentViewerState `json:"viewer,omitempty"`
+	Author        *posts.AuthorView   `json:"author"`
+	Post          *CommentRef         `json:"post"`
+	Parent        *CommentRef         `json:"parent,omitempty"`
+	Stats         *CommentStats       `json:"stats"`
+	Content       string              `json:"content"`
+	CreatedAt     string              `json:"createdAt"`
+	IndexedAt     string              `json:"indexedAt"`
 	URI           string              `json:"uri"`
 	CID           string              `json:"cid"`
-	Author        *posts.AuthorView   `json:"author"`
-	Record        interface{}         `json:"record"`                  // Original record verbatim
-	Post          *CommentRef         `json:"post"`                    // Reference to parent post
-	Parent        *CommentRef         `json:"parent,omitempty"`        // Parent comment if nested
-	Content       string              `json:"content"`
 	ContentFacets []interface{}       `json:"contentFacets,omitempty"`
-	Embed         interface{}         `json:"embed,omitempty"`
-	CreatedAt     string              `json:"createdAt"`               // RFC3339
-	IndexedAt     string              `json:"indexedAt"`               // RFC3339
-	Stats         *CommentStats       `json:"stats"`
-	Viewer        *CommentViewerState `json:"viewer,omitempty"`
 }
 
 // ThreadViewComment represents a comment with its nested replies
@@ -59,7 +59,7 @@ type CommentViewerState struct {
 // Matches social.coves.feed.getComments lexicon output
 // Includes the full comment thread tree and original post reference
 type GetCommentsResponse struct {
+	Post     interface{}          `json:"post"`
+	Cursor   *string              `json:"cursor,omitempty"`
 	Comments []*ThreadViewComment `json:"comments"`
-	Post     interface{}          `json:"post"`             // PostView from post handler
-	Cursor   *string              `json:"cursor,omitempty"` // Pagination cursor
 }

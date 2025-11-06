@@ -851,13 +851,13 @@ func (s *testCommentServiceAdapter) GetComments(r *http.Request, req *testGetCom
 }
 
 type testGetCommentsRequest struct {
+	Cursor    *string
+	ViewerDID *string
 	PostURI   string
 	Sort      string
 	Timeframe string
 	Depth     int
 	Limit     int
-	Cursor    *string
-	ViewerDID *string
 }
 
 func setupCommentServiceAdapter(db *sql.DB) *testCommentServiceAdapter {

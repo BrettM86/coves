@@ -15,7 +15,7 @@ import (
 // PostEventConsumer consumes post-related events from Jetstream
 // Currently handles only CREATE operations for social.coves.community.post
 // UPDATE and DELETE handlers will be added when those features are implemented
-type PostEventConsumer struct{
+type PostEventConsumer struct {
 	postRepo      posts.Repository
 	communityRepo communities.Repository
 	userService   users.UserService
@@ -200,19 +200,19 @@ func (c *PostEventConsumer) validatePostEvent(ctx context.Context, repoDID strin
 
 // PostRecordFromJetstream represents a post record as received from Jetstream
 // Matches the structure written to PDS via social.coves.community.post
-type PostRecordFromJetstream struct{
+type PostRecordFromJetstream struct {
 	OriginalAuthor interface{}            `json:"originalAuthor,omitempty"`
 	FederatedFrom  interface{}            `json:"federatedFrom,omitempty"`
 	Location       interface{}            `json:"location,omitempty"`
 	Title          *string                `json:"title,omitempty"`
 	Content        *string                `json:"content,omitempty"`
 	Embed          map[string]interface{} `json:"embed,omitempty"`
+	Labels         *posts.SelfLabels      `json:"labels,omitempty"`
 	Type           string                 `json:"$type"`
 	Community      string                 `json:"community"`
 	Author         string                 `json:"author"`
 	CreatedAt      string                 `json:"createdAt"`
 	Facets         []interface{}          `json:"facets,omitempty"`
-	Labels         *posts.SelfLabels      `json:"labels,omitempty"`
 }
 
 // parsePostRecord converts a raw Jetstream record map to a PostRecordFromJetstream

@@ -7,6 +7,7 @@ import (
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/aggregators"
+	"Coves/internal/core/comments"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/communityFeeds"
 	"Coves/internal/core/discover"
@@ -31,7 +32,7 @@ import (
 	"github.com/pressly/goose/v3"
 
 	commentsAPI "Coves/internal/api/handlers/comments"
-	"Coves/internal/core/comments"
+
 	postgresRepo "Coves/internal/db/postgres"
 )
 
