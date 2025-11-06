@@ -1,6 +1,7 @@
 package jetstream
 
 import (
+	"Coves/internal/atproto/utils"
 	"Coves/internal/core/users"
 	"Coves/internal/core/votes"
 	"context"
@@ -179,29 +180,61 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 		return fmt.Errorf("failed to insert vote: %w", err)
 	}
 
-	// 2. Update post vote counts atomically
-	// Increment upvote_count or downvote_count based on direction
-	// Also update score (upvote_count - downvote_count)
+	// 2. Update vote counts on the subject (post or comment)
+	// Parse collection from subject URI to determine target table
+	collection := utils.ExtractCollectionFromURI(vote.SubjectURI)
+
 	var updateQuery string
-	if vote.Direction == "up" {
-		updateQuery = `
-			UPDATE posts
-			SET upvote_count = upvote_count + 1,
-			    score = upvote_count + 1 - downvote_count
-			WHERE uri = $1 AND deleted_at IS NULL
-		`
-	} else { // "down"
-		updateQuery = `
-			UPDATE posts
-			SET downvote_count = downvote_count + 1,
-			    score = upvote_count - (downvote_count + 1)
-			WHERE uri = $1 AND deleted_at IS NULL
-		`
+	switch collection {
+	case "social.coves.community.post":
+		// Vote on post - update posts table
+		if vote.Direction == "up" {
+			updateQuery = `
+				UPDATE posts
+				SET upvote_count = upvote_count + 1,
+				    score = upvote_count + 1 - downvote_count
+				WHERE uri = $1 AND deleted_at IS NULL
+			`
+		} else { // "down"
+			updateQuery = `
+				UPDATE posts
+				SET downvote_count = downvote_count + 1,
+				    score = upvote_count - (downvote_count + 1)
+				WHERE uri = $1 AND deleted_at IS NULL
+			`
+		}
+
+	case "social.coves.feed.comment":
+		// Vote on comment - update comments table
+		if vote.Direction == "up" {
+			updateQuery = `
+				UPDATE comments
+				SET upvote_count = upvote_count + 1,
+				    score = upvote_count + 1 - downvote_count
+				WHERE uri = $1 AND deleted_at IS NULL
+			`
+		} else { // "down"
+			updateQuery = `
+				UPDATE comments
+				SET downvote_count = downvote_count + 1,
+				    score = upvote_count - (downvote_count + 1)
+				WHERE uri = $1 AND deleted_at IS NULL
+			`
+		}
+
+	default:
+		// Unknown or unsupported collection
+		// Vote is still indexed in votes table, we just don't update denormalized counts
+		log.Printf("Vote subject has unsupported collection: %s (vote indexed, counts not updated)", collection)
+		if commitErr := tx.Commit(); commitErr != nil {
+			return fmt.Errorf("failed to commit transaction: %w", commitErr)
+		}
+		return nil
 	}
 
 	result, err := tx.ExecContext(ctx, updateQuery, vote.SubjectURI)
 	if err != nil {
-		return fmt.Errorf("failed to update post counts: %w", err)
+		return fmt.Errorf("failed to update vote counts: %w", err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
@@ -209,10 +242,9 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 		return fmt.Errorf("failed to check update result: %w", err)
 	}
 
-	// If post doesn't exist or is deleted, that's OK (vote still indexed)
-	// Future: We could validate post exists before indexing vote
+	// If subject doesn't exist or is deleted, that's OK (vote still indexed)
 	if rowsAffected == 0 {
-		log.Printf("Warning: Post not found or deleted: %s (vote indexed anyway)", vote.SubjectURI)
+		log.Printf("Warning: Vote subject not found or deleted: %s (vote indexed anyway)", vote.SubjectURI)
 	}
 
 	// Commit transaction
@@ -261,29 +293,61 @@ func (c *VoteEventConsumer) deleteVoteAndUpdateCounts(ctx context.Context, vote 
 		return nil
 	}
 
-	// 2. Decrement post vote counts atomically
-	// Decrement upvote_count or downvote_count based on direction
-	// Also update score (use GREATEST to prevent negative counts)
+	// 2. Decrement vote counts on the subject (post or comment)
+	// Parse collection from subject URI to determine target table
+	collection := utils.ExtractCollectionFromURI(vote.SubjectURI)
+
 	var updateQuery string
-	if vote.Direction == "up" {
-		updateQuery = `
-			UPDATE posts
-			SET upvote_count = GREATEST(0, upvote_count - 1),
-			    score = GREATEST(0, upvote_count - 1) - downvote_count
-			WHERE uri = $1 AND deleted_at IS NULL
-		`
-	} else { // "down"
-		updateQuery = `
-			UPDATE posts
-			SET downvote_count = GREATEST(0, downvote_count - 1),
-			    score = upvote_count - GREATEST(0, downvote_count - 1)
-			WHERE uri = $1 AND deleted_at IS NULL
-		`
+	switch collection {
+	case "social.coves.community.post":
+		// Vote on post - update posts table
+		if vote.Direction == "up" {
+			updateQuery = `
+				UPDATE posts
+				SET upvote_count = GREATEST(0, upvote_count - 1),
+				    score = GREATEST(0, upvote_count - 1) - downvote_count
+				WHERE uri = $1 AND deleted_at IS NULL
+			`
+		} else { // "down"
+			updateQuery = `
+				UPDATE posts
+				SET downvote_count = GREATEST(0, downvote_count - 1),
+				    score = upvote_count - GREATEST(0, downvote_count - 1)
+				WHERE uri = $1 AND deleted_at IS NULL
+			`
+		}
+
+	case "social.coves.feed.comment":
+		// Vote on comment - update comments table
+		if vote.Direction == "up" {
+			updateQuery = `
+				UPDATE comments
+				SET upvote_count = GREATEST(0, upvote_count - 1),
+				    score = GREATEST(0, upvote_count - 1) - downvote_count
+				WHERE uri = $1 AND deleted_at IS NULL
+			`
+		} else { // "down"
+			updateQuery = `
+				UPDATE comments
+				SET downvote_count = GREATEST(0, downvote_count - 1),
+				    score = upvote_count - GREATEST(0, downvote_count - 1)
+				WHERE uri = $1 AND deleted_at IS NULL
+			`
+		}
+
+	default:
+		// Unknown or unsupported collection
+		// Vote is still deleted, we just don't update denormalized counts
+		log.Printf("Vote subject has unsupported collection: %s (vote deleted, counts not updated)", collection)
+		if commitErr := tx.Commit(); commitErr != nil {
+			return fmt.Errorf("failed to commit transaction: %w", commitErr)
+		}
+		return nil
 	}
 
 	result, err = tx.ExecContext(ctx, updateQuery, vote.SubjectURI)
 	if err != nil {
-		return fmt.Errorf("failed to update post counts: %w", err)
+		return fmt.Errorf("failed to update vote counts: %w", err)
 	}
 
 	rowsAffected, err = result.RowsAffected()
@@ -291,9 +355,9 @@ func (c *VoteEventConsumer) deleteVoteAndUpdateCounts(ctx context.Context, vote 
 		return fmt.Errorf("failed to check update result: %w", err)
 	}
 
-	// If post doesn't exist or is deleted, that's OK (vote still deleted)
+	// If subject doesn't exist or is deleted, that's OK (vote still deleted)
 	if rowsAffected == 0 {
-		log.Printf("Warning: Post not found or deleted: %s (vote deleted anyway)", vote.SubjectURI)
+		log.Printf("Warning: Vote subject not found or deleted: %s (vote deleted anyway)", vote.SubjectURI)
 	}
 
 	// Commit transaction
