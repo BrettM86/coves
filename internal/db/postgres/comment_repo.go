@@ -893,7 +893,7 @@ func (r *postgresCommentRepo) GetVoteStateForComments(ctx context.Context, viewe
 	// Note: This assumes votes table exists and is being indexed
 	// If votes table doesn't exist yet, this query will fail gracefully
 	query := `
-		SELECT subject_uri, direction, uri, cid, created_at
+		SELECT subject_uri, direction, uri
 		FROM votes
 		WHERE voter_did = $1 AND subject_uri = ANY($2) AND deleted_at IS NULL
 	`
@@ -916,10 +916,9 @@ func (r *postgresCommentRepo) GetVoteStateForComments(ctx context.Context, viewe
 	// Build result map with vote information
 	result := make(map[string]interface{})
 	for rows.Next() {
-		var subjectURI, direction, uri, cid string
-		var createdAt sql.NullTime
+		var subjectURI, direction, uri string
 
-		err := rows.Scan(&subjectURI, &direction, &uri, &cid, &createdAt)
+		err := rows.Scan(&subjectURI, &direction, &uri)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan vote: %w", err)
 		}
@@ -928,8 +927,6 @@ func (r *postgresCommentRepo) GetVoteStateForComments(ctx context.Context, viewe
 		result[subjectURI] = map[string]interface{}{
 			"direction": direction,
 			"uri":       uri,
-			"cid":       cid,
-			"createdAt": createdAt.Time,
 		}
 	}
 
