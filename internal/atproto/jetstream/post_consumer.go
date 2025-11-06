@@ -5,6 +5,7 @@ import (
 	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -19,6 +20,7 @@ type PostEventConsumer struct {
 	postRepo      posts.Repository
 	communityRepo communities.Repository
 	userService   users.UserService
+	db            *sql.DB // Direct DB access for atomic count reconciliation
 }
 
 // NewPostEventConsumer creates a new Jetstream consumer for post events
@@ -26,11 +28,13 @@ func NewPostEventConsumer(
 	postRepo posts.Repository,
 	communityRepo communities.Repository,
 	userService users.UserService,
+	db *sql.DB,
 ) *PostEventConsumer {
 	return &PostEventConsumer{
 		postRepo:      postRepo,
 		communityRepo: communityRepo,
 		userService:   userService,
+		db:            db,
 	}
 }
 
@@ -127,19 +131,105 @@ func (c *PostEventConsumer) createPost(ctx context.Context, repoDID string, comm
 		}
 	}
 
-	// Index in AppView database (idempotent - safe for Jetstream replays)
-	err = c.postRepo.Create(ctx, post)
-	if err != nil {
-		// Check if it already exists (idempotency)
-		if posts.IsConflict(err) {
-			log.Printf("Post already indexed: %s", uri)
-			return nil
-		}
-		return fmt.Errorf("failed to index post: %w", err)
+	// Atomically: Index post + Reconcile comment count for out-of-order arrivals
+	if err := c.indexPostAndReconcileCounts(ctx, post); err != nil {
+		return fmt.Errorf("failed to index post and reconcile counts: %w", err)
 	}
 
 	log.Printf("✓ Indexed post: %s (author: %s, community: %s, rkey: %s)",
 		uri, post.AuthorDID, post.CommunityDID, commit.RKey)
+	return nil
+}
+
+// indexPostAndReconcileCounts atomically indexes a post and reconciles comment counts
+// This fixes the race condition where comments arrive before their parent post
+func (c *PostEventConsumer) indexPostAndReconcileCounts(ctx context.Context, post *posts.Post) error {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && rollbackErr != sql.ErrTxDone {
+			log.Printf("Failed to rollback transaction: %v", rollbackErr)
+		}
+	}()
+
+	// 1. Insert the post (idempotent with RETURNING clause)
+	var facetsJSON, embedJSON, labelsJSON sql.NullString
+
+	if post.ContentFacets != nil {
+		facetsJSON.String = *post.ContentFacets
+		facetsJSON.Valid = true
+	}
+
+	if post.Embed != nil {
+		embedJSON.String = *post.Embed
+		embedJSON.Valid = true
+	}
+
+	if post.ContentLabels != nil {
+		labelsJSON.String = *post.ContentLabels
+		labelsJSON.Valid = true
+	}
+
+	insertQuery := `
+		INSERT INTO posts (
+			uri, cid, rkey, author_did, community_did,
+			title, content, content_facets, embed, content_labels,
+			created_at, indexed_at
+		) VALUES (
+			$1, $2, $3, $4, $5,
+			$6, $7, $8, $9, $10,
+			$11, NOW()
+		)
+		ON CONFLICT (uri) DO NOTHING
+		RETURNING id
+	`
+
+	var postID int64
+	insertErr := tx.QueryRowContext(
+		ctx, insertQuery,
+		post.URI, post.CID, post.RKey, post.AuthorDID, post.CommunityDID,
+		post.Title, post.Content, facetsJSON, embedJSON, labelsJSON,
+		post.CreatedAt,
+	).Scan(&postID)
+
+	// If no rows returned, post already exists (idempotent - OK for Jetstream replays)
+	if insertErr == sql.ErrNoRows {
+		log.Printf("Post already indexed: %s (idempotent)", post.URI)
+		if commitErr := tx.Commit(); commitErr != nil {
+			return fmt.Errorf("failed to commit transaction: %w", commitErr)
+		}
+		return nil
+	}
+
+	if insertErr != nil {
+		return fmt.Errorf("failed to insert post: %w", insertErr)
+	}
+
+	// 2. Reconcile comment_count for this newly inserted post
+	// In case any comments arrived out-of-order before this post was indexed
+	// This is the CRITICAL FIX for the race condition identified in the PR review
+	reconcileQuery := `
+		UPDATE posts
+		SET comment_count = (
+			SELECT COUNT(*)
+			FROM comments c
+			WHERE c.parent_uri = $1 AND c.deleted_at IS NULL
+		)
+		WHERE id = $2
+	`
+	_, reconcileErr := tx.ExecContext(ctx, reconcileQuery, post.URI, postID)
+	if reconcileErr != nil {
+		log.Printf("Warning: Failed to reconcile comment_count for %s: %v", post.URI, reconcileErr)
+		// Continue anyway - this is a best-effort reconciliation
+	}
+
+	// Commit transaction
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
 	return nil
 }
 
