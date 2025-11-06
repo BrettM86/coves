@@ -64,4 +64,15 @@ type Repository interface {
 	// Returns map[commentURI]*Vote for efficient lookups
 	// Future: Used when votes table is implemented
 	GetVoteStateForComments(ctx context.Context, viewerDID string, commentURIs []string) (map[string]interface{}, error)
+
+	// ListByParentsBatch retrieves direct replies to multiple parents in a single query
+	// Returns map[parentURI][]*Comment grouped by parent
+	// Used to prevent N+1 queries when loading nested replies
+	// Limits results per parent to avoid memory exhaustion
+	ListByParentsBatch(
+		ctx context.Context,
+		parentURIs []string,
+		sort string,
+		limitPerParent int,
+	) (map[string][]*Comment, error)
 }

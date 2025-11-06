@@ -393,7 +393,7 @@ func (r *postgresCommentRepo) ListByParentWithHotRank(
 			c.created_at, c.indexed_at, c.deleted_at,
 			c.upvote_count, c.downvote_count, c.score, c.reply_count,
 			log(greatest(2, c.score + 2)) / power(((EXTRACT(EPOCH FROM (NOW() - c.created_at)) / 3600) + 2), 1.8) as hot_rank,
-			u.handle as author_handle
+			COALESCE(u.handle, c.commenter_did) as author_handle
 		FROM comments c`
 	} else {
 		selectClause = `
@@ -404,14 +404,15 @@ func (r *postgresCommentRepo) ListByParentWithHotRank(
 			c.created_at, c.indexed_at, c.deleted_at,
 			c.upvote_count, c.downvote_count, c.score, c.reply_count,
 			NULL::numeric as hot_rank,
-			u.handle as author_handle
+			COALESCE(u.handle, c.commenter_did) as author_handle
 		FROM comments c`
 	}
 
 	// Build complete query with JOINs and filters
+	// LEFT JOIN prevents data loss when user record hasn't been indexed yet (out-of-order Jetstream events)
 	query := fmt.Sprintf(`
 		%s
-		INNER JOIN users u ON c.commenter_did = u.did
+		LEFT JOIN users u ON c.commenter_did = u.did
 		WHERE c.parent_uri = $1 AND c.deleted_at IS NULL
 			%s
 			%s
@@ -542,6 +543,12 @@ func (r *postgresCommentRepo) buildCommentTimeFilter(timeframe string) string {
 func (r *postgresCommentRepo) parseCommentCursor(cursor *string, sort string) (string, []interface{}, error) {
 	if cursor == nil || *cursor == "" {
 		return "", nil, nil
+	}
+
+	// Validate cursor size to prevent DoS via massive base64 strings
+	const maxCursorSize = 1024
+	if len(*cursor) > maxCursorSize {
+		return "", nil, fmt.Errorf("cursor too large: maximum %d bytes", maxCursorSize)
 	}
 
 	// Decode base64 cursor
@@ -684,6 +691,8 @@ func (r *postgresCommentRepo) GetByURIsBatch(ctx context.Context, uris []string)
 		return make(map[string]*comments.Comment), nil
 	}
 
+	// LEFT JOIN prevents data loss when user record hasn't been indexed yet (out-of-order Jetstream events)
+	// COALESCE falls back to DID when handle is NULL (user not yet in users table)
 	query := `
 		SELECT
 			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
@@ -691,9 +700,9 @@ func (r *postgresCommentRepo) GetByURIsBatch(ctx context.Context, uris []string)
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
 			c.created_at, c.indexed_at, c.deleted_at,
 			c.upvote_count, c.downvote_count, c.score, c.reply_count,
-			u.handle as author_handle
+			COALESCE(u.handle, c.commenter_did) as author_handle
 		FROM comments c
-		INNER JOIN users u ON c.commenter_did = u.did
+		LEFT JOIN users u ON c.commenter_did = u.did
 		WHERE c.uri = ANY($1) AND c.deleted_at IS NULL
 	`
 
@@ -727,6 +736,140 @@ func (r *postgresCommentRepo) GetByURIsBatch(ctx context.Context, uris []string)
 
 		comment.Langs = langs
 		result[comment.URI] = &comment
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating comments: %w", err)
+	}
+
+	return result, nil
+}
+
+// ListByParentsBatch retrieves direct replies to multiple parents in a single query
+// Groups results by parent URI to prevent N+1 queries when loading nested replies
+// Uses window functions to limit results per parent efficiently
+func (r *postgresCommentRepo) ListByParentsBatch(
+	ctx context.Context,
+	parentURIs []string,
+	sort string,
+	limitPerParent int,
+) (map[string][]*comments.Comment, error) {
+	if len(parentURIs) == 0 {
+		return make(map[string][]*comments.Comment), nil
+	}
+
+	// Build ORDER BY clause based on sort type
+	// windowOrderBy must inline expressions (can't use SELECT aliases in window functions)
+	var windowOrderBy string
+	var selectClause string
+	switch sort {
+	case "hot":
+		selectClause = `
+			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
+			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
+			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
+			c.created_at, c.indexed_at, c.deleted_at,
+			c.upvote_count, c.downvote_count, c.score, c.reply_count,
+			log(greatest(2, c.score + 2)) / power(((EXTRACT(EPOCH FROM (NOW() - c.created_at)) / 3600) + 2), 1.8) as hot_rank,
+			COALESCE(u.handle, c.commenter_did) as author_handle`
+		// CRITICAL: Must inline hot_rank formula - PostgreSQL doesn't allow SELECT aliases in window ORDER BY
+		windowOrderBy = `log(greatest(2, c.score + 2)) / power(((EXTRACT(EPOCH FROM (NOW() - c.created_at)) / 3600) + 2), 1.8) DESC, c.score DESC, c.created_at DESC`
+	case "top":
+		selectClause = `
+			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
+			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
+			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
+			c.created_at, c.indexed_at, c.deleted_at,
+			c.upvote_count, c.downvote_count, c.score, c.reply_count,
+			NULL::numeric as hot_rank,
+			COALESCE(u.handle, c.commenter_did) as author_handle`
+		windowOrderBy = `c.score DESC, c.created_at DESC`
+	case "new":
+		selectClause = `
+			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
+			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
+			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
+			c.created_at, c.indexed_at, c.deleted_at,
+			c.upvote_count, c.downvote_count, c.score, c.reply_count,
+			NULL::numeric as hot_rank,
+			COALESCE(u.handle, c.commenter_did) as author_handle`
+		windowOrderBy = `c.created_at DESC`
+	default:
+		// Default to hot
+		selectClause = `
+			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
+			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
+			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
+			c.created_at, c.indexed_at, c.deleted_at,
+			c.upvote_count, c.downvote_count, c.score, c.reply_count,
+			log(greatest(2, c.score + 2)) / power(((EXTRACT(EPOCH FROM (NOW() - c.created_at)) / 3600) + 2), 1.8) as hot_rank,
+			COALESCE(u.handle, c.commenter_did) as author_handle`
+		// CRITICAL: Must inline hot_rank formula - PostgreSQL doesn't allow SELECT aliases in window ORDER BY
+		windowOrderBy = `log(greatest(2, c.score + 2)) / power(((EXTRACT(EPOCH FROM (NOW() - c.created_at)) / 3600) + 2), 1.8) DESC, c.score DESC, c.created_at DESC`
+	}
+
+	// Use window function to limit results per parent
+	// This is more efficient than LIMIT in a subquery per parent
+	// LEFT JOIN prevents data loss when user record hasn't been indexed yet (out-of-order Jetstream events)
+	query := fmt.Sprintf(`
+		WITH ranked_comments AS (
+			SELECT
+				%s,
+				ROW_NUMBER() OVER (
+					PARTITION BY c.parent_uri
+					ORDER BY %s
+				) as rn
+			FROM comments c
+			LEFT JOIN users u ON c.commenter_did = u.did
+			WHERE c.parent_uri = ANY($1) AND c.deleted_at IS NULL
+		)
+		SELECT
+			id, uri, cid, rkey, commenter_did,
+			root_uri, root_cid, parent_uri, parent_cid,
+			content, content_facets, embed, content_labels, langs,
+			created_at, indexed_at, deleted_at,
+			upvote_count, downvote_count, score, reply_count,
+			hot_rank, author_handle
+		FROM ranked_comments
+		WHERE rn <= $2
+		ORDER BY parent_uri, rn
+	`, selectClause, windowOrderBy)
+
+	rows, err := r.db.QueryContext(ctx, query, pq.Array(parentURIs), limitPerParent)
+	if err != nil {
+		return nil, fmt.Errorf("failed to batch query comments by parents: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("Failed to close rows: %v", err)
+		}
+	}()
+
+	// Group results by parent URI
+	result := make(map[string][]*comments.Comment)
+	for rows.Next() {
+		var comment comments.Comment
+		var langs pq.StringArray
+		var hotRank sql.NullFloat64
+		var authorHandle string
+
+		err := rows.Scan(
+			&comment.ID, &comment.URI, &comment.CID, &comment.RKey, &comment.CommenterDID,
+			&comment.RootURI, &comment.RootCID, &comment.ParentURI, &comment.ParentCID,
+			&comment.Content, &comment.ContentFacets, &comment.Embed, &comment.ContentLabels, &langs,
+			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt,
+			&comment.UpvoteCount, &comment.DownvoteCount, &comment.Score, &comment.ReplyCount,
+			&hotRank, &authorHandle,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan comment: %w", err)
+		}
+
+		comment.Langs = langs
+		comment.CommenterHandle = authorHandle
+
+		// Group by parent URI
+		result[comment.ParentURI] = append(result[comment.ParentURI], &comment)
 	}
 
 	if err = rows.Err(); err != nil {

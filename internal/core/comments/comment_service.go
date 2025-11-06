@@ -1,10 +1,13 @@
 package comments
 
 import (
+	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
+	"Coves/internal/core/users"
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
@@ -31,18 +34,25 @@ type GetCommentsRequest struct {
 // commentService implements the Service interface
 // Coordinates between repository layer and view model construction
 type commentService struct {
-	commentRepo Repository  // Comment data access
-	userRepo    interface{} // User lookup (stubbed for now - Phase 2B)
-	postRepo    interface{} // Post lookup (stubbed for now - Phase 2B)
+	commentRepo     Repository                   // Comment data access
+	userRepo        users.UserRepository         // User lookup for author hydration
+	postRepo        posts.Repository             // Post lookup for building post views
+	communityRepo   communities.Repository       // Community lookup for community hydration
 }
 
 // NewCommentService creates a new comment service instance
-// userRepo and postRepo are interface{} for now to allow incremental implementation
-func NewCommentService(commentRepo Repository, userRepo, postRepo interface{}) Service {
+// All repositories are required for proper view construction per lexicon requirements
+func NewCommentService(
+	commentRepo Repository,
+	userRepo users.UserRepository,
+	postRepo posts.Repository,
+	communityRepo communities.Repository,
+) Service {
 	return &commentService{
-		commentRepo: commentRepo,
-		userRepo:    userRepo,
-		postRepo:    postRepo,
+		commentRepo:   commentRepo,
+		userRepo:      userRepo,
+		postRepo:      postRepo,
+		communityRepo: communityRepo,
 	}
 }
 
@@ -54,14 +64,27 @@ func NewCommentService(commentRepo Repository, userRepo, postRepo interface{}) S
 // 4. Build view models with author info and stats
 // 5. Return response with pagination cursor
 func (s *commentService) GetComments(ctx context.Context, req *GetCommentsRequest) (*GetCommentsResponse, error) {
-	// 1. Validate inputs and apply defaults/bounds
+	// 1. Validate inputs and apply defaults/bounds FIRST (before expensive operations)
 	if err := validateGetCommentsRequest(req); err != nil {
 		return nil, fmt.Errorf("invalid request: %w", err)
 	}
 
-	// 2. Fetch post for context (stubbed for now - just create minimal response)
-	// Future: s.fetchPost(ctx, req.PostURI)
-	// For now, we'll return nil for Post field per the instructions
+	// Add timeout to prevent runaway queries with deep nesting
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	// 2. Fetch post for context
+	post, err := s.postRepo.GetByURI(ctx, req.PostURI)
+	if err != nil {
+		// Translate post not-found errors to comment-layer errors for proper HTTP status
+		if posts.IsNotFound(err) {
+			return nil, ErrRootNotFound
+		}
+		return nil, fmt.Errorf("failed to fetch post: %w", err)
+	}
+
+	// Build post view for response (hydrates author handle and community name)
+	postView := s.buildPostView(ctx, post, req.ViewerDID)
 
 	// 3. Fetch top-level comments with pagination
 	// Uses repository's hot rank sorting and cursor-based pagination
@@ -84,14 +107,14 @@ func (s *commentService) GetComments(ctx context.Context, req *GetCommentsReques
 	// 5. Return response with comments, post reference, and cursor
 	return &GetCommentsResponse{
 		Comments: threadViews,
-		Post:     nil, // TODO: Fetch and include PostView (Phase 2B)
+		Post:     postView,
 		Cursor:   nextCursor,
 	}, nil
 }
 
-// buildThreadViews recursively constructs threaded comment views with nested replies
-// Loads replies iteratively up to the specified depth limit
-// Each level fetches a limited number of replies to prevent N+1 query explosions
+// buildThreadViews constructs threaded comment views with nested replies using batch loading
+// Uses batch queries to prevent N+1 query problem when loading nested replies
+// Loads replies level-by-level up to the specified depth limit
 func (s *commentService) buildThreadViews(
 	ctx context.Context,
 	comments []*Comment,
@@ -106,7 +129,11 @@ func (s *commentService) buildThreadViews(
 		return result
 	}
 
-	// Convert each comment to a thread view
+	// Build thread views for current level
+	threadViews := make([]*ThreadViewComment, 0, len(comments))
+	commentsByURI := make(map[string]*ThreadViewComment)
+	parentsWithReplies := make([]string, 0)
+
 	for _, comment := range comments {
 		// Skip deleted comments (soft-deleted records)
 		if comment.DeletedAt != nil {
@@ -122,40 +149,55 @@ func (s *commentService) buildThreadViews(
 			HasMore: comment.ReplyCount > 0 && remainingDepth == 0,
 		}
 
-		// Recursively load replies if depth remains and comment has replies
+		threadViews = append(threadViews, threadView)
+		commentsByURI[comment.URI] = threadView
+
+		// Collect parent URIs that have replies and depth remaining
 		if remainingDepth > 0 && comment.ReplyCount > 0 {
-			// Load first 5 replies per comment (configurable constant)
-			// This prevents excessive nesting while showing conversation flow
-			const repliesPerLevel = 5
-
-			replies, _, err := s.commentRepo.ListByParentWithHotRank(
-				ctx,
-				comment.URI,
-				sort,
-				"", // No timeframe filter for nested replies
-				repliesPerLevel,
-				nil, // No cursor for nested replies (top 5 only)
-			)
-
-			// Only recurse if we successfully fetched replies
-			if err == nil && len(replies) > 0 {
-				threadView.Replies = s.buildThreadViews(
-					ctx,
-					replies,
-					remainingDepth-1,
-					sort,
-					viewerDID,
-				)
-
-				// HasMore indicates if there are additional replies beyond what we loaded
-				threadView.HasMore = comment.ReplyCount > len(replies)
-			}
+			parentsWithReplies = append(parentsWithReplies, comment.URI)
 		}
-
-		result = append(result, threadView)
 	}
 
-	return result
+	// Batch load all replies for this level in a single query
+	if len(parentsWithReplies) > 0 {
+		const repliesPerParent = 5 // Load top 5 replies per comment
+
+		repliesByParent, err := s.commentRepo.ListByParentsBatch(
+			ctx,
+			parentsWithReplies,
+			sort,
+			repliesPerParent,
+		)
+
+		// Process replies if batch query succeeded
+		if err == nil {
+			// Group child comments by parent for recursive processing
+			for parentURI, replies := range repliesByParent {
+				threadView := commentsByURI[parentURI]
+				if threadView != nil && len(replies) > 0 {
+					// Recursively build views for child comments
+					threadView.Replies = s.buildThreadViews(
+						ctx,
+						replies,
+						remainingDepth-1,
+						sort,
+						viewerDID,
+					)
+
+					// Update HasMore based on actual reply count vs loaded count
+					// Get the original comment to check reply count
+					for _, comment := range comments {
+						if comment.URI == parentURI {
+							threadView.HasMore = comment.ReplyCount > len(replies)
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return threadViews
 }
 
 // buildCommentView converts a Comment entity to a CommentView with full metadata
@@ -206,11 +248,15 @@ func (s *commentService) buildCommentView(comment *Comment, viewerDID *string) *
 		}
 	}
 
+	// Build minimal comment record to satisfy lexicon contract
+	// The record field is required by social.coves.community.comment.defs#commentView
+	commentRecord := s.buildCommentRecord(comment)
+
 	return &CommentView{
 		URI:       comment.URI,
 		CID:       comment.CID,
 		Author:    authorView,
-		Record:    nil, // TODO: Parse and include original record if needed (Phase 2B)
+		Record:    commentRecord,
 		Post:      postRef,
 		Parent:    parentRef,
 		Content:   comment.Content,
@@ -219,6 +265,134 @@ func (s *commentService) buildCommentView(comment *Comment, viewerDID *string) *
 		Stats:     stats,
 		Viewer:    viewer,
 	}
+}
+
+// buildCommentRecord constructs a minimal CommentRecord from a Comment entity
+// Satisfies the lexicon requirement that commentView.record is a required field
+// TODO (Phase 2C): Unmarshal JSON fields (embed, facets, labels) for complete record
+func (s *commentService) buildCommentRecord(comment *Comment) *CommentRecord {
+	record := &CommentRecord{
+		Type: "social.coves.feed.comment",
+		Reply: ReplyRef{
+			Root: StrongRef{
+				URI: comment.RootURI,
+				CID: comment.RootCID,
+			},
+			Parent: StrongRef{
+				URI: comment.ParentURI,
+				CID: comment.ParentCID,
+			},
+		},
+		Content:   comment.Content,
+		CreatedAt: comment.CreatedAt.Format(time.RFC3339),
+		Langs:     comment.Langs,
+	}
+
+	// TODO (Phase 2C): Parse JSON fields from database for complete record:
+	// - Unmarshal comment.Embed (*string) → record.Embed (map[string]interface{})
+	// - Unmarshal comment.ContentFacets (*string) → record.Facets ([]interface{})
+	// - Unmarshal comment.ContentLabels (*string) → record.Labels (*SelfLabels)
+	// These fields are stored as JSONB in the database and need proper deserialization
+
+	return record
+}
+
+// buildPostView converts a Post entity to a PostView for the comment response
+// Hydrates author handle and community name per lexicon requirements
+func (s *commentService) buildPostView(ctx context.Context, post *posts.Post, viewerDID *string) *posts.PostView {
+	// Build author view - fetch user to get handle (required by lexicon)
+	// The lexicon marks authorView.handle with format:"handle", so DIDs are invalid
+	authorHandle := post.AuthorDID // Fallback if user not found
+	if user, err := s.userRepo.GetByDID(ctx, post.AuthorDID); err == nil {
+		authorHandle = user.Handle
+	} else {
+		// Log warning but don't fail the entire request
+		log.Printf("Warning: Failed to fetch user for post author %s: %v", post.AuthorDID, err)
+	}
+
+	authorView := &posts.AuthorView{
+		DID:    post.AuthorDID,
+		Handle: authorHandle,
+		// TODO (Phase 2C): Add DisplayName, Avatar, Reputation from user profile
+	}
+
+	// Build community reference - fetch community to get name (required by lexicon)
+	// The lexicon marks communityRef.name as required, so DIDs are insufficient
+	communityName := post.CommunityDID // Fallback if community not found
+	if community, err := s.communityRepo.GetByDID(ctx, post.CommunityDID); err == nil {
+		communityName = community.Handle // Use handle as display name
+		// TODO (Phase 2C): Use community.DisplayName or community.Name if available
+	} else {
+		// Log warning but don't fail the entire request
+		log.Printf("Warning: Failed to fetch community for post %s: %v", post.CommunityDID, err)
+	}
+
+	communityRef := &posts.CommunityRef{
+		DID:  post.CommunityDID,
+		Name: communityName,
+		// TODO (Phase 2C): Add Avatar from community profile
+	}
+
+	// Build aggregated statistics
+	stats := &posts.PostStats{
+		Upvotes:      post.UpvoteCount,
+		Downvotes:    post.DownvoteCount,
+		Score:        post.Score,
+		CommentCount: post.CommentCount,
+	}
+
+	// Build viewer state if authenticated
+	var viewer *posts.ViewerState
+	if viewerDID != nil {
+		// TODO (Phase 2B): Query viewer's vote state
+		viewer = &posts.ViewerState{
+			Vote:    nil,
+			VoteURI: nil,
+			Saved:   false,
+		}
+	}
+
+	// Build minimal post record to satisfy lexicon contract
+	// The record field is required by social.coves.community.post.get#postView
+	postRecord := s.buildPostRecord(post)
+
+	return &posts.PostView{
+		URI:       post.URI,
+		CID:       post.CID,
+		RKey:      post.RKey,
+		Author:    authorView,
+		Record:    postRecord,
+		Community: communityRef,
+		Title:     post.Title,
+		Text:      post.Content,
+		CreatedAt: post.CreatedAt,
+		IndexedAt: post.IndexedAt,
+		EditedAt:  post.EditedAt,
+		Stats:     stats,
+		Viewer:    viewer,
+	}
+}
+
+// buildPostRecord constructs a minimal PostRecord from a Post entity
+// Satisfies the lexicon requirement that postView.record is a required field
+// TODO (Phase 2C): Unmarshal JSON fields (embed, facets, labels) for complete record
+func (s *commentService) buildPostRecord(post *posts.Post) *posts.PostRecord {
+	record := &posts.PostRecord{
+		Type:      "social.coves.community.post",
+		Community: post.CommunityDID,
+		Author:    post.AuthorDID,
+		CreatedAt: post.CreatedAt.Format(time.RFC3339),
+		Title:     post.Title,
+		Content:   post.Content,
+	}
+
+	// TODO (Phase 2C): Parse JSON fields from database for complete record:
+	// - Unmarshal post.Embed (*string) → record.Embed (map[string]interface{})
+	// - Unmarshal post.ContentFacets (*string) → record.Facets ([]interface{})
+	// - Unmarshal post.ContentLabels (*string) → record.Labels (*SelfLabels)
+	// These fields are stored as JSONB in the database and need proper deserialization
+
+	return record
 }
 
 // validateGetCommentsRequest validates and normalizes request parameters

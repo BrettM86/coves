@@ -293,8 +293,9 @@ func main() {
 	log.Println("✅ Comment repository initialized (Jetstream indexing only)")
 
 	// Initialize comment service (for query API)
-	commentService := comments.NewCommentService(commentRepo, userRepo, postRepo)
-	log.Println("✅ Comment service initialized")
+	// Requires user and community repos for proper author/community hydration per lexicon
+	commentService := comments.NewCommentService(commentRepo, userRepo, postRepo, communityRepo)
+	log.Println("✅ Comment service initialized (with author/community hydration)")
 
 	// Initialize feed service
 	feedRepo := postgresRepo.NewCommunityFeedRepository(db)
@@ -425,13 +426,17 @@ func main() {
 	log.Println("Aggregator XRPC endpoints registered (query endpoints public)")
 
 	// Comment query API - supports optional authentication for viewer state
+	// Stricter rate limiting for expensive nested comment queries
+	commentRateLimiter := middleware.NewRateLimiter(20, 1*time.Minute)
 	commentServiceAdapter := commentsAPI.NewServiceAdapter(commentService)
 	commentHandler := commentsAPI.NewGetCommentsHandler(commentServiceAdapter)
 	r.Handle(
 		"/xrpc/social.coves.community.comment.getComments",
-		commentsAPI.OptionalAuthMiddleware(authMiddleware, commentHandler.HandleGetComments),
+		commentRateLimiter.Middleware(
+			commentsAPI.OptionalAuthMiddleware(authMiddleware, commentHandler.HandleGetComments),
+		),
 	)
-	log.Println("✅ Comment query API registered")
+	log.Println("✅ Comment query API registered (20 req/min rate limit)")
 	log.Println("  - GET /xrpc/social.coves.community.comment.getComments")
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {

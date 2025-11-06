@@ -776,7 +776,10 @@ func TestCommentQuery_HTTPHandler(t *testing.T) {
 // Helper: setupCommentService creates a comment service for testing
 func setupCommentService(db *sql.DB) comments.Service {
 	commentRepo := postgres.NewCommentRepository(db)
-	return comments.NewCommentService(commentRepo, nil, nil)
+	postRepo := postgres.NewPostRepository(db)
+	userRepo := postgres.NewUserRepository(db)
+	communityRepo := postgres.NewCommunityRepository(db)
+	return comments.NewCommentService(commentRepo, userRepo, postRepo, communityRepo)
 }
 
 // Helper: createTestCommentWithScore creates a comment with specific vote counts
@@ -859,7 +862,10 @@ type testGetCommentsRequest struct {
 
 func setupCommentServiceAdapter(db *sql.DB) *testCommentServiceAdapter {
 	commentRepo := postgres.NewCommentRepository(db)
-	service := comments.NewCommentService(commentRepo, nil, nil)
+	postRepo := postgres.NewPostRepository(db)
+	userRepo := postgres.NewUserRepository(db)
+	communityRepo := postgres.NewCommunityRepository(db)
+	service := comments.NewCommentService(commentRepo, userRepo, postRepo, communityRepo)
 	return &testCommentServiceAdapter{service: service}
 }
 
