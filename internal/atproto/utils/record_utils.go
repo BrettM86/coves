@@ -16,6 +16,25 @@ func ExtractRKeyFromURI(uri string) string {
 	return ""
 }
 
+// ExtractCollectionFromURI extracts the collection from an AT-URI
+// Format: at://did/collection/rkey -> collection
+//
+// Returns:
+//   - Collection name (e.g., "social.coves.feed.comment") if URI is well-formed
+//   - Empty string if URI is malformed or doesn't contain a collection segment
+//
+// Note: Empty string indicates "unknown/unsupported collection" and should be
+// handled as an invalid or unparseable URI by the caller. Callers should validate
+// the return value before using it for database queries or business logic.
+func ExtractCollectionFromURI(uri string) string {
+	withoutScheme := strings.TrimPrefix(uri, "at://")
+	parts := strings.Split(withoutScheme, "/")
+	if len(parts) >= 2 {
+		return parts[1]
+	}
+	return ""
+}
+
 // StringFromNull converts sql.NullString to string
 // Returns empty string if the NullString is not valid
 func StringFromNull(ns sql.NullString) string {
