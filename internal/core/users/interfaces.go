@@ -8,6 +8,7 @@ type UserRepository interface {
 	GetByDID(ctx context.Context, did string) (*User, error)
 	GetByHandle(ctx context.Context, handle string) (*User, error)
 	UpdateHandle(ctx context.Context, did, newHandle string) (*User, error)
+	GetByDIDs(ctx context.Context, dids []string) (map[string]*User, error)
 }
 
 // UserService defines the interface for user business logic

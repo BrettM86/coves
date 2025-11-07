@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"github.com/lib/pq"
 )
 
 type postgresUserRepo struct {
@@ -102,4 +104,40 @@ func (r *postgresUserRepo) UpdateHandle(ctx context.Context, did, newHandle stri
 	}
 
 	return user, nil
+}
+
+// GetByDIDs retrieves multiple users by their DIDs in a single query
+// Returns a map of DID -> User for efficient lookups
+// Missing users are not included in the result map (no error for missing users)
+func (r *postgresUserRepo) GetByDIDs(ctx context.Context, dids []string) (map[string]*users.User, error) {
+	if len(dids) == 0 {
+		return make(map[string]*users.User), nil
+	}
+
+	// Build parameterized query with IN clause
+	// Use ANY($1) for PostgreSQL array support with pq.Array() for type conversion
+	query := `SELECT did, handle, pds_url, created_at, updated_at FROM users WHERE did = ANY($1)`
+
+	rows, err := r.db.QueryContext(ctx, query, pq.Array(dids))
+	if err != nil {
+		return nil, fmt.Errorf("failed to query users by DIDs: %w", err)
+	}
+	defer rows.Close()
+
+	// Build map of results
+	result := make(map[string]*users.User, len(dids))
+	for rows.Next() {
+		user := &users.User{}
+		err := rows.Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan user row: %w", err)
+		}
+		result[user.DID] = user
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating user rows: %w", err)
+	}
+
+	return result, nil
 }
