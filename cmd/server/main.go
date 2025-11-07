@@ -300,7 +300,7 @@ func main() {
 	log.Println("✅ Comment service initialized (with author/community hydration)")
 
 	// Initialize feed service
-	feedRepo := postgresRepo.NewCommunityFeedRepository(db)
+	feedRepo := postgresRepo.NewCommunityFeedRepository(db, cursorSecret)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
 	log.Println("✅ Feed service initialized")
 
