@@ -1,13 +1,12 @@
 package post
 
 import (
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/posts"
 	"encoding/json"
 	"log"
 	"net/http"
 	"strings"
-
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/posts"
 )
 
 // CreateHandler handles post creation requests

@@ -1,6 +1,9 @@
 package jetstream
 
 import (
+	"Coves/internal/core/communities"
+	"Coves/internal/core/posts"
+	"Coves/internal/core/users"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -8,10 +11,6 @@ import (
 	"log"
 	"strings"
 	"time"
-
-	"Coves/internal/core/communities"
-	"Coves/internal/core/posts"
-	"Coves/internal/core/users"
 )
 
 // PostEventConsumer consumes post-related events from Jetstream

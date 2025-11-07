@@ -1,11 +1,10 @@
 package community
 
 import (
-	"encoding/json"
-	"net/http"
-
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/communities"
+	"encoding/json"
+	"net/http"
 )
 
 // UpdateHandler handles community updates

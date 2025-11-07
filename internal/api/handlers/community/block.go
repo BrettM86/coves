@@ -1,14 +1,13 @@
 package community
 
 import (
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/communities"
 	"encoding/json"
 	"log"
 	"net/http"
 	"regexp"
 	"strings"
-
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/communities"
 )
 
 // Package-level compiled regex for DID validation (compiled once at startup)

@@ -1,6 +1,10 @@
 package integration
 
 import (
+	"Coves/internal/api/handlers/communityFeed"
+	"Coves/internal/core/communities"
+	"Coves/internal/core/communityFeeds"
+	"Coves/internal/db/postgres"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,11 +12,6 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
-
-	"Coves/internal/api/handlers/communityFeed"
-	"Coves/internal/core/communities"
-	"Coves/internal/core/communityFeeds"
-	"Coves/internal/db/postgres"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

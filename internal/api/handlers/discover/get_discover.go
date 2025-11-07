@@ -1,12 +1,11 @@
 package discover
 
 import (
+	"Coves/internal/core/discover"
 	"encoding/json"
 	"log"
 	"net/http"
 	"strconv"
-
-	"Coves/internal/core/discover"
 )
 
 // GetDiscoverHandler handles discover feed retrieval

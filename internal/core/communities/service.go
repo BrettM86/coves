@@ -1,6 +1,7 @@
 package communities
 
 import (
+	"Coves/internal/atproto/utils"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -13,8 +14,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"Coves/internal/atproto/utils"
 )
 
 // Community handle validation regex (DNS-valid handle: name.community.instance.com)

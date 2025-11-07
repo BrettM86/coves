@@ -1,6 +1,8 @@
 package jetstream
 
 import (
+	"Coves/internal/atproto/utils"
+	"Coves/internal/core/comments"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -8,9 +10,6 @@ import (
 	"log"
 	"strings"
 	"time"
-
-	"Coves/internal/atproto/utils"
-	"Coves/internal/core/comments"
 
 	"github.com/lib/pq"
 )
