@@ -458,46 +458,60 @@ func (s *commentService) buildPostView(ctx context.Context, post *posts.Post, vi
 	}
 
 	// Build community reference - fetch community to get name and avatar (required by lexicon)
-	// The lexicon marks communityRef.name as required, so DIDs are insufficient
-	communityName := post.CommunityDID // Fallback if community not found
-	var avatarURL *string
-
-	if community, err := s.communityRepo.GetByDID(ctx, post.CommunityDID); err == nil {
-		// Use display name if available, otherwise fall back to handle or short name
-		if community.DisplayName != "" {
-			communityName = community.DisplayName
-		} else if community.Name != "" {
-			communityName = community.Name
-		} else {
-			communityName = community.Handle
+	// The lexicon marks communityRef.name and handle as required, so DIDs alone are insufficient
+	// DATA INTEGRITY: Community should always exist for posts. If missing, it indicates orphaned data.
+	community, err := s.communityRepo.GetByDID(ctx, post.CommunityDID)
+	if err != nil {
+		// This indicates a data integrity issue: post references non-existent community
+		// Log as ERROR (not warning) since this should never happen in normal operation
+		log.Printf("ERROR: Data integrity issue - post %s references non-existent community %s: %v",
+			post.URI, post.CommunityDID, err)
+		// Use DID as fallback for both handle and name to prevent breaking the API
+		// This allows the response to be returned while surfacing the integrity issue in logs
+		community = &communities.Community{
+			DID:    post.CommunityDID,
+			Handle: post.CommunityDID, // Fallback: use DID as handle
+			Name:   post.CommunityDID, // Fallback: use DID as name
 		}
+	}
 
-		// Build avatar URL from CID if available
-		// Avatar is stored as blob in community's repository
-		// Format: https://{pds}/xrpc/com.atproto.sync.getBlob?did={community_did}&cid={avatar_cid}
-		if community.AvatarCID != "" && community.PDSURL != "" {
-			// Validate HTTPS for security (prevent mixed content warnings, MitM attacks)
-			if !strings.HasPrefix(community.PDSURL, "https://") {
-				log.Printf("Warning: Skipping non-HTTPS PDS URL for community %s", community.DID)
-			} else if !strings.HasPrefix(community.AvatarCID, "baf") {
-				// Validate CID format (IPFS CIDs start with "baf" for CIDv1 base32)
-				log.Printf("Warning: Invalid CID format for community %s", community.DID)
-			} else {
-				// Use proper URL escaping to prevent injection attacks
-				avatarURLString := fmt.Sprintf("%s/xrpc/com.atproto.sync.getBlob?did=%s&cid=%s",
-					strings.TrimSuffix(community.PDSURL, "/"),
-					url.QueryEscape(community.DID),
-					url.QueryEscape(community.AvatarCID))
-				avatarURL = &avatarURLString
-			}
-		}
+	// Capture handle for communityRef (required by lexicon)
+	communityHandle := community.Handle
+
+	// Determine display name: prefer DisplayName, fall back to Name, then Handle
+	var communityName string
+	if community.DisplayName != "" {
+		communityName = community.DisplayName
+	} else if community.Name != "" {
+		communityName = community.Name
 	} else {
-		// Log warning but don't fail the entire request
-		log.Printf("Warning: Failed to fetch community for post %s: %v", post.CommunityDID, err)
+		communityName = community.Handle
+	}
+
+	// Build avatar URL from CID if available
+	// Avatar is stored as blob in community's repository
+	// Format: https://{pds}/xrpc/com.atproto.sync.getBlob?did={community_did}&cid={avatar_cid}
+	var avatarURL *string
+	if community.AvatarCID != "" && community.PDSURL != "" {
+		// Validate HTTPS for security (prevent mixed content warnings, MitM attacks)
+		if !strings.HasPrefix(community.PDSURL, "https://") {
+			log.Printf("Warning: Skipping non-HTTPS PDS URL for community %s", community.DID)
+		} else if !strings.HasPrefix(community.AvatarCID, "baf") {
+			// Validate CID format (IPFS CIDs start with "baf" for CIDv1 base32)
+			log.Printf("Warning: Invalid CID format for community %s", community.DID)
+		} else {
+			// Use proper URL escaping to prevent injection attacks
+			avatarURLString := fmt.Sprintf("%s/xrpc/com.atproto.sync.getBlob?did=%s&cid=%s",
+				strings.TrimSuffix(community.PDSURL, "/"),
+				url.QueryEscape(community.DID),
+				url.QueryEscape(community.AvatarCID))
+			avatarURL = &avatarURLString
+		}
 	}
 
 	communityRef := &posts.CommunityRef{
 		DID:    post.CommunityDID,
+		Handle: communityHandle,
 		Name:   communityName,
 		Avatar: avatarURL,
 	}
