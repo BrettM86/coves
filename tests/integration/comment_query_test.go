@@ -633,6 +633,12 @@ func TestCommentQuery_InvalidInputs(t *testing.T) {
 	ctx := context.Background()
 	service := setupCommentService(db)
 
+	// Create a real post for validation tests that should succeed after normalization
+	testUser := createTestUser(t, db, "validation.test", "did:plc:validation123")
+	testCommunity, err := createFeedTestCommunity(db, ctx, "validationcomm", "ownervalidation.test")
+	require.NoError(t, err, "Failed to create test community")
+	validPostURI := createTestPost(t, db, testCommunity, testUser.DID, "Validation Test Post", 0, time.Now())
+
 	t.Run("Invalid post URI", func(t *testing.T) {
 		req := &comments.GetCommentsRequest{
 			PostURI: "not-an-at-uri",
@@ -648,7 +654,7 @@ func TestCommentQuery_InvalidInputs(t *testing.T) {
 
 	t.Run("Negative depth", func(t *testing.T) {
 		req := &comments.GetCommentsRequest{
-			PostURI: "at://did:plc:test/social.coves.feed.post/abc123",
+			PostURI: validPostURI, // Use real post so validation can succeed
 			Sort:    "hot",
 			Depth:   -5,
 			Limit:   50,
@@ -663,7 +669,7 @@ func TestCommentQuery_InvalidInputs(t *testing.T) {
 
 	t.Run("Depth exceeds max", func(t *testing.T) {
 		req := &comments.GetCommentsRequest{
-			PostURI: "at://did:plc:test/social.coves.feed.post/abc123",
+			PostURI: validPostURI, // Use real post so validation can succeed
 			Sort:    "hot",
 			Depth:   150, // Exceeds max of 100
 			Limit:   50,
@@ -677,7 +683,7 @@ func TestCommentQuery_InvalidInputs(t *testing.T) {
 
 	t.Run("Limit exceeds max", func(t *testing.T) {
 		req := &comments.GetCommentsRequest{
-			PostURI: "at://did:plc:test/social.coves.feed.post/abc123",
+			PostURI: validPostURI, // Use real post so validation can succeed
 			Sort:    "hot",
 			Depth:   10,
 			Limit:   150, // Exceeds max of 100

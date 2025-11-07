@@ -17,7 +17,7 @@ import (
 
 // mockCommentRepo is a mock implementation of the comment Repository interface
 type mockCommentRepo struct {
-	comments               map[string]*Comment
+	comments                    map[string]*Comment
 	listByParentWithHotRankFunc func(ctx context.Context, parentURI string, sort string, timeframe string, limit int, cursor *string) ([]*Comment, *string, error)
 	listByParentsBatchFunc      func(ctx context.Context, parentURIs []string, sort string, limitPerParent int) (map[string][]*Comment, error)
 	getVoteStateForCommentsFunc func(ctx context.Context, viewerDID string, commentURIs []string) (map[string]interface{}, error)
@@ -151,6 +151,16 @@ func (m *mockUserRepo) UpdateHandle(ctx context.Context, did, newHandle string) 
 		return u, nil
 	}
 	return nil, errors.New("user not found")
+}
+
+func (m *mockUserRepo) GetByDIDs(ctx context.Context, dids []string) (map[string]*users.User, error) {
+	result := make(map[string]*users.User, len(dids))
+	for _, did := range dids {
+		if u, ok := m.users[did]; ok {
+			result[did] = u
+		}
+	}
+	return result, nil
 }
 
 // mockPostRepo is a mock implementation of the posts.Repository interface
@@ -336,19 +346,19 @@ func createTestPost(uri string, authorDID string, communityDID string) *posts.Po
 	title := "Test Post"
 	content := "Test content"
 	return &posts.Post{
-		URI:          uri,
-		CID:          "bafytest123",
-		RKey:         "testrkey",
-		AuthorDID:    authorDID,
-		CommunityDID: communityDID,
-		Title:        &title,
-		Content:      &content,
-		CreatedAt:    time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
-		IndexedAt:    time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
-		UpvoteCount:  10,
+		URI:           uri,
+		CID:           "bafytest123",
+		RKey:          "testrkey",
+		AuthorDID:     authorDID,
+		CommunityDID:  communityDID,
+		Title:         &title,
+		Content:       &content,
+		CreatedAt:     time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		IndexedAt:     time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		UpvoteCount:   10,
 		DownvoteCount: 2,
-		Score:        8,
-		CommentCount: 5,
+		Score:         8,
+		CommentCount:  5,
 	}
 }
 
@@ -928,7 +938,7 @@ func TestCommentService_buildCommentView_BasicFields(t *testing.T) {
 	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo).(*commentService)
 
 	// Execute
-	result := service.buildCommentView(comment, nil, nil)
+	result := service.buildCommentView(comment, nil, nil, make(map[string]*users.User))
 
 	// Verify basic fields
 	assert.Equal(t, commentURI, result.URI)
@@ -960,7 +970,7 @@ func TestCommentService_buildCommentView_TopLevelComment(t *testing.T) {
 	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo).(*commentService)
 
 	// Execute
-	result := service.buildCommentView(comment, nil, nil)
+	result := service.buildCommentView(comment, nil, nil, make(map[string]*users.User))
 
 	// Verify - parent should be nil for top-level comments
 	assert.NotNil(t, result.Post)
@@ -985,7 +995,7 @@ func TestCommentService_buildCommentView_NestedComment(t *testing.T) {
 	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo).(*commentService)
 
 	// Execute
-	result := service.buildCommentView(comment, nil, nil)
+	result := service.buildCommentView(comment, nil, nil, make(map[string]*users.User))
 
 	// Verify - both post and parent should be present
 	assert.NotNil(t, result.Post)
@@ -1019,7 +1029,7 @@ func TestCommentService_buildCommentView_WithViewerVote(t *testing.T) {
 	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo).(*commentService)
 
 	// Execute
-	result := service.buildCommentView(comment, &viewerDID, voteStates)
+	result := service.buildCommentView(comment, &viewerDID, voteStates, make(map[string]*users.User))
 
 	// Verify viewer state
 	assert.NotNil(t, result.Viewer)
@@ -1048,7 +1058,7 @@ func TestCommentService_buildCommentView_NoViewerVote(t *testing.T) {
 	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo).(*commentService)
 
 	// Execute
-	result := service.buildCommentView(comment, &viewerDID, voteStates)
+	result := service.buildCommentView(comment, &viewerDID, voteStates, make(map[string]*users.User))
 
 	// Verify viewer state exists but has no votes
 	assert.NotNil(t, result.Viewer)
@@ -1136,4 +1146,263 @@ func TestValidateGetCommentsRequest_InvalidTimeframe(t *testing.T) {
 	err := validateGetCommentsRequest(req)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid timeframe")
+}
+
+// Test suite for mockUserRepo.GetByDIDs
+
+func TestMockUserRepo_GetByDIDs_EmptyArray(t *testing.T) {
+	userRepo := newMockUserRepo()
+	ctx := context.Background()
+
+	result, err := userRepo.GetByDIDs(ctx, []string{})
+
+	assert.NoError(t, err)
+	assert.NotNil(t, result)
+	assert.Len(t, result, 0)
+}
+
+func TestMockUserRepo_GetByDIDs_SingleDID(t *testing.T) {
+	userRepo := newMockUserRepo()
+	ctx := context.Background()
+
+	// Add test user
+	testUser := createTestUser("did:plc:user1", "user1.test")
+	_, _ = userRepo.Create(ctx, testUser)
+
+	result, err := userRepo.GetByDIDs(ctx, []string{"did:plc:user1"})
+
+	assert.NoError(t, err)
+	assert.Len(t, result, 1)
+	assert.Equal(t, "user1.test", result["did:plc:user1"].Handle)
+}
+
+func TestMockUserRepo_GetByDIDs_MultipleDIDs(t *testing.T) {
+	userRepo := newMockUserRepo()
+	ctx := context.Background()
+
+	// Add multiple test users
+	user1 := createTestUser("did:plc:user1", "user1.test")
+	user2 := createTestUser("did:plc:user2", "user2.test")
+	user3 := createTestUser("did:plc:user3", "user3.test")
+	_, _ = userRepo.Create(ctx, user1)
+	_, _ = userRepo.Create(ctx, user2)
+	_, _ = userRepo.Create(ctx, user3)
+
+	result, err := userRepo.GetByDIDs(ctx, []string{"did:plc:user1", "did:plc:user2", "did:plc:user3"})
+
+	assert.NoError(t, err)
+	assert.Len(t, result, 3)
+	assert.Equal(t, "user1.test", result["did:plc:user1"].Handle)
+	assert.Equal(t, "user2.test", result["did:plc:user2"].Handle)
+	assert.Equal(t, "user3.test", result["did:plc:user3"].Handle)
+}
+
+func TestMockUserRepo_GetByDIDs_MissingDIDs(t *testing.T) {
+	userRepo := newMockUserRepo()
+	ctx := context.Background()
+
+	// Add only one user
+	user1 := createTestUser("did:plc:user1", "user1.test")
+	_, _ = userRepo.Create(ctx, user1)
+
+	// Query for two users, one missing
+	result, err := userRepo.GetByDIDs(ctx, []string{"did:plc:user1", "did:plc:missing"})
+
+	assert.NoError(t, err)
+	assert.Len(t, result, 1)
+	assert.Equal(t, "user1.test", result["did:plc:user1"].Handle)
+	assert.Nil(t, result["did:plc:missing"]) // Missing users not in map
+}
+
+func TestMockUserRepo_GetByDIDs_PreservesAllFields(t *testing.T) {
+	userRepo := newMockUserRepo()
+	ctx := context.Background()
+
+	// Create user with all fields populated
+	testUser := &users.User{
+		DID:       "did:plc:user1",
+		Handle:    "user1.test",
+		PDSURL:    "https://pds.example.com",
+		CreatedAt: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		UpdatedAt: time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC),
+	}
+	_, _ = userRepo.Create(ctx, testUser)
+
+	result, err := userRepo.GetByDIDs(ctx, []string{"did:plc:user1"})
+
+	assert.NoError(t, err)
+	user := result["did:plc:user1"]
+	assert.Equal(t, "did:plc:user1", user.DID)
+	assert.Equal(t, "user1.test", user.Handle)
+	assert.Equal(t, "https://pds.example.com", user.PDSURL)
+	assert.Equal(t, testUser.CreatedAt, user.CreatedAt)
+	assert.Equal(t, testUser.UpdatedAt, user.UpdatedAt)
+}
+
+// Test suite for JSON deserialization in buildCommentView and buildCommentRecord
+
+func TestBuildCommentView_ValidFacetsDeserialization(t *testing.T) {
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	postURI := "at://did:plc:post123/app.bsky.feed.post/test"
+	facetsJSON := `[{"index":{"byteStart":0,"byteEnd":10},"features":[{"$type":"app.bsky.richtext.facet#mention","did":"did:plc:user123"}]}]`
+
+	comment := createTestComment("at://did:plc:commenter123/comment/1", "did:plc:commenter123", "commenter.test", postURI, postURI, 0)
+	comment.ContentFacets = &facetsJSON
+
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo).(*commentService)
+
+	result := service.buildCommentView(comment, nil, nil, make(map[string]*users.User))
+
+	assert.NotNil(t, result.ContentFacets)
+	assert.Len(t, result.ContentFacets, 1)
+}
+
+func TestBuildCommentView_ValidEmbedDeserialization(t *testing.T) {
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	postURI := "at://did:plc:post123/app.bsky.feed.post/test"
+	embedJSON := `{"$type":"app.bsky.embed.images","images":[{"alt":"test","image":{"$type":"blob","ref":"bafytest"}}]}`
+
+	comment := createTestComment("at://did:plc:commenter123/comment/1", "did:plc:commenter123", "commenter.test", postURI, postURI, 0)
+	comment.Embed = &embedJSON
+
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo).(*commentService)
+
+	result := service.buildCommentView(comment, nil, nil, make(map[string]*users.User))
+
+	assert.NotNil(t, result.Embed)
+	embedMap, ok := result.Embed.(map[string]interface{})
+	assert.True(t, ok)
+	assert.Equal(t, "app.bsky.embed.images", embedMap["$type"])
+}
+
+func TestBuildCommentRecord_ValidLabelsDeserialization(t *testing.T) {
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	postURI := "at://did:plc:post123/app.bsky.feed.post/test"
+	labelsJSON := `{"$type":"com.atproto.label.defs#selfLabels","values":[{"val":"nsfw"}]}`
+
+	comment := createTestComment("at://did:plc:commenter123/comment/1", "did:plc:commenter123", "commenter.test", postURI, postURI, 0)
+	comment.ContentLabels = &labelsJSON
+
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo).(*commentService)
+
+	record := service.buildCommentRecord(comment)
+
+	assert.NotNil(t, record.Labels)
+}
+
+func TestBuildCommentView_MalformedJSONLogsWarning(t *testing.T) {
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	postURI := "at://did:plc:post123/app.bsky.feed.post/test"
+	malformedJSON := `{"invalid": json`
+
+	comment := createTestComment("at://did:plc:commenter123/comment/1", "did:plc:commenter123", "commenter.test", postURI, postURI, 0)
+	comment.ContentFacets = &malformedJSON
+
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo).(*commentService)
+
+	// Should not panic, should log warning and return view with nil facets
+	result := service.buildCommentView(comment, nil, nil, make(map[string]*users.User))
+
+	assert.NotNil(t, result)
+	assert.Nil(t, result.ContentFacets)
+}
+
+func TestBuildCommentView_EmptyStringVsNilHandling(t *testing.T) {
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	postURI := "at://did:plc:post123/app.bsky.feed.post/test"
+
+	tests := []struct {
+		name               string
+		facetsValue        *string
+		embedValue         *string
+		labelsValue        *string
+		expectFacetsNil    bool
+		expectEmbedNil     bool
+		expectRecordLabels bool
+	}{
+		{
+			name:               "All nil",
+			facetsValue:        nil,
+			embedValue:         nil,
+			labelsValue:        nil,
+			expectFacetsNil:    true,
+			expectEmbedNil:     true,
+			expectRecordLabels: false,
+		},
+		{
+			name:               "All empty strings",
+			facetsValue:        strPtr(""),
+			embedValue:         strPtr(""),
+			labelsValue:        strPtr(""),
+			expectFacetsNil:    true,
+			expectEmbedNil:     true,
+			expectRecordLabels: false,
+		},
+		{
+			name:               "Valid JSON strings",
+			facetsValue:        strPtr(`[]`),
+			embedValue:         strPtr(`{}`),
+			labelsValue:        strPtr(`{"$type":"com.atproto.label.defs#selfLabels","values":[]}`),
+			expectFacetsNil:    false,
+			expectEmbedNil:     false,
+			expectRecordLabels: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			comment := createTestComment("at://did:plc:commenter123/comment/1", "did:plc:commenter123", "commenter.test", postURI, postURI, 0)
+			comment.ContentFacets = tt.facetsValue
+			comment.Embed = tt.embedValue
+			comment.ContentLabels = tt.labelsValue
+
+			service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo).(*commentService)
+
+			result := service.buildCommentView(comment, nil, nil, make(map[string]*users.User))
+
+			if tt.expectFacetsNil {
+				assert.Nil(t, result.ContentFacets)
+			} else {
+				assert.NotNil(t, result.ContentFacets)
+			}
+
+			if tt.expectEmbedNil {
+				assert.Nil(t, result.Embed)
+			} else {
+				assert.NotNil(t, result.Embed)
+			}
+
+			record := service.buildCommentRecord(comment)
+			if tt.expectRecordLabels {
+				assert.NotNil(t, record.Labels)
+			} else {
+				assert.Nil(t, record.Labels)
+			}
+		})
+	}
+}
+
+// Helper function to create string pointers
+func strPtr(s string) *string {
+	return &s
 }

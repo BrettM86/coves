@@ -313,6 +313,170 @@ func TestDuplicateCreation(t *testing.T) {
 	})
 }
 
+// TestUserRepository_GetByDIDs tests the batch user retrieval functionality
+func TestUserRepository_GetByDIDs(t *testing.T) {
+	db := setupTestDB(t)
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
+
+	userRepo := postgres.NewUserRepository(db)
+	ctx := context.Background()
+
+	// Create test users
+	user1 := &users.User{
+		DID:    "did:plc:getbydids1",
+		Handle: "user1.test",
+		PDSURL: "https://pds1.example.com",
+	}
+	user2 := &users.User{
+		DID:    "did:plc:getbydids2",
+		Handle: "user2.test",
+		PDSURL: "https://pds2.example.com",
+	}
+	user3 := &users.User{
+		DID:    "did:plc:getbydids3",
+		Handle: "user3.test",
+		PDSURL: "https://pds3.example.com",
+	}
+
+	_, err := userRepo.Create(ctx, user1)
+	if err != nil {
+		t.Fatalf("Failed to create user1: %v", err)
+	}
+	_, err = userRepo.Create(ctx, user2)
+	if err != nil {
+		t.Fatalf("Failed to create user2: %v", err)
+	}
+	_, err = userRepo.Create(ctx, user3)
+	if err != nil {
+		t.Fatalf("Failed to create user3: %v", err)
+	}
+
+	t.Run("Empty array returns empty map", func(t *testing.T) {
+		result, err := userRepo.GetByDIDs(ctx, []string{})
+		if err != nil {
+			t.Errorf("Expected no error for empty array, got: %v", err)
+		}
+		if result == nil {
+			t.Error("Expected non-nil map, got nil")
+		}
+		if len(result) != 0 {
+			t.Errorf("Expected empty map, got length: %d", len(result))
+		}
+	})
+
+	t.Run("Single DID returns one user", func(t *testing.T) {
+		result, err := userRepo.GetByDIDs(ctx, []string{"did:plc:getbydids1"})
+		if err != nil {
+			t.Fatalf("Failed to get user by DID: %v", err)
+		}
+		if len(result) != 1 {
+			t.Errorf("Expected 1 user, got %d", len(result))
+		}
+		if user, found := result["did:plc:getbydids1"]; !found {
+			t.Error("Expected user1 to be in result")
+		} else if user.Handle != "user1.test" {
+			t.Errorf("Expected handle user1.test, got %s", user.Handle)
+		}
+	})
+
+	t.Run("Multiple DIDs returns multiple users", func(t *testing.T) {
+		result, err := userRepo.GetByDIDs(ctx, []string{
+			"did:plc:getbydids1",
+			"did:plc:getbydids2",
+			"did:plc:getbydids3",
+		})
+		if err != nil {
+			t.Fatalf("Failed to get users by DIDs: %v", err)
+		}
+		if len(result) != 3 {
+			t.Errorf("Expected 3 users, got %d", len(result))
+		}
+		if result["did:plc:getbydids1"].Handle != "user1.test" {
+			t.Errorf("User1 handle mismatch")
+		}
+		if result["did:plc:getbydids2"].Handle != "user2.test" {
+			t.Errorf("User2 handle mismatch")
+		}
+		if result["did:plc:getbydids3"].Handle != "user3.test" {
+			t.Errorf("User3 handle mismatch")
+		}
+	})
+
+	t.Run("Missing DIDs not in result map", func(t *testing.T) {
+		result, err := userRepo.GetByDIDs(ctx, []string{
+			"did:plc:getbydids1",
+			"did:plc:nonexistent",
+		})
+		if err != nil {
+			t.Fatalf("Failed to get users by DIDs: %v", err)
+		}
+		if len(result) != 1 {
+			t.Errorf("Expected 1 user (missing not included), got %d", len(result))
+		}
+		if _, found := result["did:plc:nonexistent"]; found {
+			t.Error("Expected nonexistent user to not be in result")
+		}
+	})
+
+	t.Run("Preserves all user fields correctly", func(t *testing.T) {
+		result, err := userRepo.GetByDIDs(ctx, []string{"did:plc:getbydids1"})
+		if err != nil {
+			t.Fatalf("Failed to get user by DID: %v", err)
+		}
+		user := result["did:plc:getbydids1"]
+		if user.DID != "did:plc:getbydids1" {
+			t.Errorf("DID mismatch: expected did:plc:getbydids1, got %s", user.DID)
+		}
+		if user.Handle != "user1.test" {
+			t.Errorf("Handle mismatch: expected user1.test, got %s", user.Handle)
+		}
+		if user.PDSURL != "https://pds1.example.com" {
+			t.Errorf("PDSURL mismatch: expected https://pds1.example.com, got %s", user.PDSURL)
+		}
+		if user.CreatedAt.IsZero() {
+			t.Error("CreatedAt should not be zero")
+		}
+		if user.UpdatedAt.IsZero() {
+			t.Error("UpdatedAt should not be zero")
+		}
+	})
+
+	t.Run("Validates batch size limit", func(t *testing.T) {
+		// Create array exceeding MaxBatchSize (1000)
+		largeDIDs := make([]string, 1001)
+		for i := 0; i < 1001; i++ {
+			largeDIDs[i] = fmt.Sprintf("did:plc:test%d", i)
+		}
+
+		_, err := userRepo.GetByDIDs(ctx, largeDIDs)
+		if err == nil {
+			t.Error("Expected error for batch size exceeding limit, got nil")
+		}
+		if !strings.Contains(err.Error(), "exceeds maximum") {
+			t.Errorf("Expected batch size error, got: %v", err)
+		}
+	})
+
+	t.Run("Validates DID format", func(t *testing.T) {
+		invalidDIDs := []string{
+			"did:plc:getbydids1",
+			"invalid-did", // Invalid DID format
+		}
+
+		_, err := userRepo.GetByDIDs(ctx, invalidDIDs)
+		if err == nil {
+			t.Error("Expected error for invalid DID format, got nil")
+		}
+		if !strings.Contains(err.Error(), "invalid DID format") {
+			t.Errorf("Expected invalid DID format error, got: %v", err)
+		}
+	})
+}
+
 // TestHandleValidation tests atProto handle validation rules
 func TestHandleValidation(t *testing.T) {
 	db := setupTestDB(t)
