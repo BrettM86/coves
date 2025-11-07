@@ -2,6 +2,7 @@ package comments
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -157,6 +158,31 @@ func (s *commentService) buildThreadViews(
 		}
 	}
 
+	// Batch fetch user data for all comment authors (Phase 2C)
+	// Collect unique author DIDs to prevent duplicate queries
+	authorDIDs := make([]string, 0, len(comments))
+	seenDIDs := make(map[string]bool)
+	for _, comment := range comments {
+		if comment.DeletedAt == nil && !seenDIDs[comment.CommenterDID] {
+			authorDIDs = append(authorDIDs, comment.CommenterDID)
+			seenDIDs[comment.CommenterDID] = true
+		}
+	}
+
+	// Fetch all users in one query to avoid N+1 problem
+	var usersByDID map[string]*users.User
+	if len(authorDIDs) > 0 {
+		var err error
+		usersByDID, err = s.userRepo.GetByDIDs(ctx, authorDIDs)
+		if err != nil {
+			// Log error but don't fail the request - user data is optional
+			log.Printf("Warning: Failed to batch fetch users for comment authors: %v", err)
+			usersByDID = make(map[string]*users.User)
+		}
+	} else {
+		usersByDID = make(map[string]*users.User)
+	}
+
 	// Build thread views for current level
 	threadViews := make([]*ThreadViewComment, 0, len(comments))
 	commentsByURI := make(map[string]*ThreadViewComment)
@@ -169,7 +195,7 @@ func (s *commentService) buildThreadViews(
 		}
 
 		// Build the comment view with author info and stats
-		commentView := s.buildCommentView(comment, viewerDID, voteStates)
+		commentView := s.buildCommentView(comment, viewerDID, voteStates, usersByDID)
 
 		threadView := &ThreadViewComment{
 			Comment: commentView,
@@ -229,17 +255,29 @@ func (s *commentService) buildThreadViews(
 // buildCommentView converts a Comment entity to a CommentView with full metadata
 // Constructs author view, stats, and references to parent post/comment
 // voteStates map contains viewer's vote state for comments (from GetVoteStateForComments)
+// usersByDID map contains pre-loaded user data for batch author hydration (Phase 2C)
 func (s *commentService) buildCommentView(
 	comment *Comment,
 	viewerDID *string,
 	voteStates map[string]interface{},
+	usersByDID map[string]*users.User,
 ) *CommentView {
-	// Build author view from comment data
-	// CommenterHandle is hydrated by ListByParentWithHotRank via JOIN
+	// Build author view from comment data with full user hydration (Phase 2C)
+	// CommenterHandle is hydrated by ListByParentWithHotRank via JOIN (fallback)
+	// Prefer handle from usersByDID map for consistency
+	authorHandle := comment.CommenterHandle
+	if user, found := usersByDID[comment.CommenterDID]; found {
+		authorHandle = user.Handle
+	}
+
 	authorView := &posts.AuthorView{
 		DID:    comment.CommenterDID,
-		Handle: comment.CommenterHandle,
-		// TODO: Add DisplayName, Avatar, Reputation when user service is integrated (Phase 2C)
+		Handle: authorHandle,
+		// DisplayName, Avatar, Reputation will be populated when user profile schema is extended
+		// Currently User model only has DID, Handle, PDSURL fields
+		DisplayName: nil,
+		Avatar:      nil,
+		Reputation:  nil,
 	}
 
 	// Build aggregated statistics
@@ -298,24 +336,49 @@ func (s *commentService) buildCommentView(
 	// The record field is required by social.coves.community.comment.defs#commentView
 	commentRecord := s.buildCommentRecord(comment)
 
+	// Deserialize contentFacets from JSONB (Phase 2C)
+	// Parse facets from database JSON string to populate contentFacets field
+	var contentFacets []interface{}
+	if comment.ContentFacets != nil && *comment.ContentFacets != "" {
+		if err := json.Unmarshal([]byte(*comment.ContentFacets), &contentFacets); err != nil {
+			// Log error but don't fail request - facets are optional
+			log.Printf("Warning: Failed to unmarshal content facets for comment %s: %v", comment.URI, err)
+		}
+	}
+
+	// Deserialize embed from JSONB (Phase 2C)
+	// Parse embed from database JSON string to populate embed field
+	var embed interface{}
+	if comment.Embed != nil && *comment.Embed != "" {
+		var embedMap map[string]interface{}
+		if err := json.Unmarshal([]byte(*comment.Embed), &embedMap); err != nil {
+			// Log error but don't fail request - embed is optional
+			log.Printf("Warning: Failed to unmarshal embed for comment %s: %v", comment.URI, err)
+		} else {
+			embed = embedMap
+		}
+	}
+
 	return &CommentView{
-		URI:       comment.URI,
-		CID:       comment.CID,
-		Author:    authorView,
-		Record:    commentRecord,
-		Post:      postRef,
-		Parent:    parentRef,
-		Content:   comment.Content,
-		CreatedAt: comment.CreatedAt.Format(time.RFC3339),
-		IndexedAt: comment.IndexedAt.Format(time.RFC3339),
-		Stats:     stats,
-		Viewer:    viewer,
+		URI:           comment.URI,
+		CID:           comment.CID,
+		Author:        authorView,
+		Record:        commentRecord,
+		Post:          postRef,
+		Parent:        parentRef,
+		Content:       comment.Content,
+		ContentFacets: contentFacets,
+		Embed:         embed,
+		CreatedAt:     comment.CreatedAt.Format(time.RFC3339),
+		IndexedAt:     comment.IndexedAt.Format(time.RFC3339),
+		Stats:         stats,
+		Viewer:        viewer,
 	}
 }
 
-// buildCommentRecord constructs a minimal CommentRecord from a Comment entity
+// buildCommentRecord constructs a complete CommentRecord from a Comment entity
 // Satisfies the lexicon requirement that commentView.record is a required field
-// TODO (Phase 2C): Unmarshal JSON fields (embed, facets, labels) for complete record
+// Deserializes JSONB fields (embed, facets, labels) for complete record (Phase 2C)
 func (s *commentService) buildCommentRecord(comment *Comment) *CommentRecord {
 	record := &CommentRecord{
 		Type: "social.coves.feed.comment",
@@ -334,11 +397,38 @@ func (s *commentService) buildCommentRecord(comment *Comment) *CommentRecord {
 		Langs:     comment.Langs,
 	}
 
-	// TODO (Phase 2C): Parse JSON fields from database for complete record:
-	// - Unmarshal comment.Embed (*string) → record.Embed (map[string]interface{})
-	// - Unmarshal comment.ContentFacets (*string) → record.Facets ([]interface{})
-	// - Unmarshal comment.ContentLabels (*string) → record.Labels (*SelfLabels)
-	// These fields are stored as JSONB in the database and need proper deserialization
+	// Deserialize facets from JSONB (Phase 2C)
+	if comment.ContentFacets != nil && *comment.ContentFacets != "" {
+		var facets []interface{}
+		if err := json.Unmarshal([]byte(*comment.ContentFacets), &facets); err != nil {
+			// Log error but don't fail request - facets are optional
+			log.Printf("Warning: Failed to unmarshal facets for record %s: %v", comment.URI, err)
+		} else {
+			record.Facets = facets
+		}
+	}
+
+	// Deserialize embed from JSONB (Phase 2C)
+	if comment.Embed != nil && *comment.Embed != "" {
+		var embed map[string]interface{}
+		if err := json.Unmarshal([]byte(*comment.Embed), &embed); err != nil {
+			// Log error but don't fail request - embed is optional
+			log.Printf("Warning: Failed to unmarshal embed for record %s: %v", comment.URI, err)
+		} else {
+			record.Embed = embed
+		}
+	}
+
+	// Deserialize labels from JSONB (Phase 2C)
+	if comment.ContentLabels != nil && *comment.ContentLabels != "" {
+		var labels SelfLabels
+		if err := json.Unmarshal([]byte(*comment.ContentLabels), &labels); err != nil {
+			// Log error but don't fail request - labels are optional
+			log.Printf("Warning: Failed to unmarshal labels for record %s: %v", comment.URI, err)
+		} else {
+			record.Labels = &labels
+		}
+	}
 
 	return record
 }
@@ -359,24 +449,47 @@ func (s *commentService) buildPostView(ctx context.Context, post *posts.Post, vi
 	authorView := &posts.AuthorView{
 		DID:    post.AuthorDID,
 		Handle: authorHandle,
-		// TODO (Phase 2C): Add DisplayName, Avatar, Reputation from user profile
+		// DisplayName, Avatar, Reputation will be populated when user profile schema is extended
+		// Currently User model only has DID, Handle, PDSURL fields
+		DisplayName: nil,
+		Avatar:      nil,
+		Reputation:  nil,
 	}
 
-	// Build community reference - fetch community to get name (required by lexicon)
+	// Build community reference - fetch community to get name and avatar (required by lexicon)
 	// The lexicon marks communityRef.name as required, so DIDs are insufficient
 	communityName := post.CommunityDID // Fallback if community not found
+	var avatarURL *string
+
 	if community, err := s.communityRepo.GetByDID(ctx, post.CommunityDID); err == nil {
-		communityName = community.Handle // Use handle as display name
-		// TODO (Phase 2C): Use community.DisplayName or community.Name if available
+		// Use display name if available, otherwise fall back to handle or short name
+		if community.DisplayName != "" {
+			communityName = community.DisplayName
+		} else if community.Name != "" {
+			communityName = community.Name
+		} else {
+			communityName = community.Handle
+		}
+
+		// Build avatar URL from CID if available
+		// Avatar is stored as blob in community's repository
+		// Format: https://{pds}/xrpc/com.atproto.sync.getBlob?did={community_did}&cid={avatar_cid}
+		if community.AvatarCID != "" && community.PDSURL != "" {
+			avatarURLString := fmt.Sprintf("%s/xrpc/com.atproto.sync.getBlob?did=%s&cid=%s",
+				strings.TrimSuffix(community.PDSURL, "/"),
+				community.DID,
+				community.AvatarCID)
+			avatarURL = &avatarURLString
+		}
 	} else {
 		// Log warning but don't fail the entire request
 		log.Printf("Warning: Failed to fetch community for post %s: %v", post.CommunityDID, err)
 	}
 
 	communityRef := &posts.CommunityRef{
-		DID:  post.CommunityDID,
-		Name: communityName,
-		// TODO (Phase 2C): Add Avatar from community profile
+		DID:    post.CommunityDID,
+		Name:   communityName,
+		Avatar: avatarURL,
 	}
 
 	// Build aggregated statistics
