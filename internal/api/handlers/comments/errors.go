@@ -1,10 +1,11 @@
 package comments
 
 import (
-	"Coves/internal/core/comments"
 	"encoding/json"
 	"log"
 	"net/http"
+
+	"Coves/internal/core/comments"
 )
 
 // errorResponse represents a standardized JSON error response

@@ -1,11 +1,12 @@
 package communityFeed
 
 import (
-	"Coves/internal/core/communityFeeds"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
+
+	"Coves/internal/core/communityFeeds"
 )
 
 // ErrorResponse represents an XRPC error response

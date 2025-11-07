@@ -1,6 +1,18 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+
 	"Coves/internal/api/middleware"
 	"Coves/internal/api/routes"
 	"Coves/internal/atproto/auth"
@@ -14,17 +26,6 @@ import (
 	"Coves/internal/core/posts"
 	"Coves/internal/core/timeline"
 	"Coves/internal/core/users"
-	"bytes"
-	"context"
-	"database/sql"
-	"encoding/json"
-	"fmt"
-	"io"
-	"log"
-	"net/http"
-	"os"
-	"strings"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"

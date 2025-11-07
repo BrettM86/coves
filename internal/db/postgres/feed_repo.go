@@ -1,8 +1,6 @@
 package postgres
 
 import (
-	"Coves/internal/core/communityFeeds"
-	"Coves/internal/core/posts"
 	"context"
 	"database/sql"
 	"encoding/base64"
@@ -11,6 +9,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"Coves/internal/core/communityFeeds"
+	"Coves/internal/core/posts"
 )
 
 type postgresFeedRepo struct {

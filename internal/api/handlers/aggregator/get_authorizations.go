@@ -1,11 +1,12 @@
 package aggregator
 
 import (
-	"Coves/internal/core/aggregators"
 	"encoding/json"
 	"log"
 	"net/http"
 	"strconv"
+
+	"Coves/internal/core/aggregators"
 )
 
 // GetAuthorizationsHandler handles listing authorizations for an aggregator

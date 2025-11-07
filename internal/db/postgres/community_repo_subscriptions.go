@@ -1,12 +1,13 @@
 package postgres
 
 import (
-	"Coves/internal/core/communities"
 	"context"
 	"database/sql"
 	"fmt"
 	"log"
 	"strings"
+
+	"Coves/internal/core/communities"
 )
 
 // Subscribe creates a new subscription record

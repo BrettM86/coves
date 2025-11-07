@@ -1,12 +1,13 @@
 package integration
 
 import (
-	"Coves/internal/core/communities"
-	"Coves/internal/db/postgres"
 	"context"
 	"fmt"
 	"testing"
 	"time"
+
+	"Coves/internal/core/communities"
+	"Coves/internal/db/postgres"
 )
 
 // TestCommunityRepository_CredentialPersistence tests that PDS credentials are properly persisted

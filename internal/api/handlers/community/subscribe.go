@@ -1,12 +1,13 @@
 package community
 
 import (
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/communities"
 	"encoding/json"
 	"log"
 	"net/http"
 	"strings"
+
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/communities"
 )
 
 // SubscribeHandler handles community subscriptions

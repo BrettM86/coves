@@ -1,14 +1,6 @@
 package integration
 
 import (
-	"Coves/internal/api/middleware"
-	"Coves/internal/api/routes"
-	"Coves/internal/atproto/identity"
-	"Coves/internal/atproto/jetstream"
-	"Coves/internal/atproto/utils"
-	"Coves/internal/core/communities"
-	"Coves/internal/core/users"
-	"Coves/internal/db/postgres"
 	"bytes"
 	"context"
 	"database/sql"
@@ -22,6 +14,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"Coves/internal/api/middleware"
+	"Coves/internal/api/routes"
+	"Coves/internal/atproto/identity"
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/atproto/utils"
+	"Coves/internal/core/communities"
+	"Coves/internal/core/users"
+	"Coves/internal/db/postgres"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"

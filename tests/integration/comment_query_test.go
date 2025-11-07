@@ -1,9 +1,6 @@
 package integration
 
 import (
-	"Coves/internal/atproto/jetstream"
-	"Coves/internal/core/comments"
-	"Coves/internal/db/postgres"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -13,6 +10,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/core/comments"
+	"Coves/internal/db/postgres"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

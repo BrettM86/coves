@@ -1,12 +1,13 @@
 package routes
 
 import (
-	"Coves/internal/core/users"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
 	"time"
+
+	"Coves/internal/core/users"
 
 	"github.com/go-chi/chi/v5"
 )

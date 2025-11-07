@@ -1,11 +1,12 @@
 package timeline
 
 import (
-	"Coves/internal/core/timeline"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
+
+	"Coves/internal/core/timeline"
 )
 
 // XRPCError represents an XRPC error response

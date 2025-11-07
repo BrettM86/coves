@@ -1,14 +1,15 @@
 package jetstream
 
 import (
-	"Coves/internal/atproto/identity"
-	"Coves/internal/core/users"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
 	"time"
+
+	"Coves/internal/atproto/identity"
+	"Coves/internal/core/users"
 
 	"github.com/gorilla/websocket"
 )

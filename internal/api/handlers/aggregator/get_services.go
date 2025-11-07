@@ -1,11 +1,12 @@
 package aggregator
 
 import (
-	"Coves/internal/core/aggregators"
 	"encoding/json"
 	"log"
 	"net/http"
 	"strings"
+
+	"Coves/internal/core/aggregators"
 )
 
 // GetServicesHandler handles aggregator service details retrieval

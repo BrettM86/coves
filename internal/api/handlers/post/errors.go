@@ -1,11 +1,12 @@
 package post
 
 import (
-	"Coves/internal/core/aggregators"
-	"Coves/internal/core/posts"
 	"encoding/json"
 	"log"
 	"net/http"
+
+	"Coves/internal/core/aggregators"
+	"Coves/internal/core/posts"
 )
 
 type errorResponse struct {

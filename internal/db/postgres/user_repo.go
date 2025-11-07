@@ -1,11 +1,13 @@
 package postgres
 
 import (
-	"Coves/internal/core/users"
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"strings"
+
+	"Coves/internal/core/users"
 
 	"github.com/lib/pq"
 )
@@ -137,7 +139,11 @@ func (r *postgresUserRepo) GetByDIDs(ctx context.Context, dids []string) (map[st
 	if err != nil {
 		return nil, fmt.Errorf("failed to query users by DIDs: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			log.Printf("Warning: Failed to close rows: %v", closeErr)
+		}
+	}()
 
 	// Build map of results
 	result := make(map[string]*users.User, len(dids))

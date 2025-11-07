@@ -1,11 +1,12 @@
 package postgres
 
 import (
-	"Coves/internal/core/posts"
 	"context"
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"Coves/internal/core/posts"
 )
 
 type postgresPostRepo struct {

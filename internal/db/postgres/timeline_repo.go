@@ -1,10 +1,11 @@
 package postgres
 
 import (
-	"Coves/internal/core/timeline"
 	"context"
 	"database/sql"
 	"fmt"
+
+	"Coves/internal/core/timeline"
 )
 
 type postgresTimelineRepo struct {
