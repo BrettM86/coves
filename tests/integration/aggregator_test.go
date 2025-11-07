@@ -1,15 +1,14 @@
 package integration
 
 import (
+	"Coves/internal/core/aggregators"
+	"Coves/internal/core/communities"
+	"Coves/internal/db/postgres"
 	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
-
-	"Coves/internal/core/aggregators"
-	"Coves/internal/core/communities"
-	"Coves/internal/db/postgres"
 )
 
 // TestAggregatorRepository_Create tests basic aggregator creation

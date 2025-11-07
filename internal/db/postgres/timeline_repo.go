@@ -1,11 +1,10 @@
 package postgres
 
 import (
+	"Coves/internal/core/timeline"
 	"context"
 	"database/sql"
 	"fmt"
-
-	"Coves/internal/core/timeline"
 )
 
 type postgresTimelineRepo struct {
@@ -52,7 +51,7 @@ func (r *postgresTimelineRepo) GetTimeline(ctx context.Context, req timeline.Get
 		SELECT
 			p.uri, p.cid, p.rkey,
 			p.author_did, u.handle as author_handle,
-			p.community_did, c.name as community_name, c.avatar_cid as community_avatar,
+			p.community_did, c.handle as community_handle, c.name as community_name, c.avatar_cid as community_avatar,
 			p.title, p.content, p.content_facets, p.embed, p.content_labels,
 			p.created_at, p.edited_at, p.indexed_at,
 			p.upvote_count, p.downvote_count, p.score, p.comment_count,
@@ -63,7 +62,7 @@ func (r *postgresTimelineRepo) GetTimeline(ctx context.Context, req timeline.Get
 		SELECT
 			p.uri, p.cid, p.rkey,
 			p.author_did, u.handle as author_handle,
-			p.community_did, c.name as community_name, c.avatar_cid as community_avatar,
+			p.community_did, c.handle as community_handle, c.name as community_name, c.avatar_cid as community_avatar,
 			p.title, p.content, p.content_facets, p.embed, p.content_labels,
 			p.created_at, p.edited_at, p.indexed_at,
 			p.upvote_count, p.downvote_count, p.score, p.comment_count,

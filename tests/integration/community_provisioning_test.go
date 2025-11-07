@@ -1,14 +1,13 @@
 package integration
 
 import (
+	"Coves/internal/core/communities"
+	"Coves/internal/db/postgres"
 	"context"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
-
-	"Coves/internal/core/communities"
-	"Coves/internal/db/postgres"
 )
 
 // TestCommunityRepository_PasswordEncryption verifies P0 fix:

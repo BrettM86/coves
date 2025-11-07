@@ -1,11 +1,10 @@
 package community
 
 import (
+	"Coves/internal/core/communities"
 	"encoding/json"
 	"net/http"
 	"strconv"
-
-	"Coves/internal/core/communities"
 )
 
 // SearchHandler handles community search

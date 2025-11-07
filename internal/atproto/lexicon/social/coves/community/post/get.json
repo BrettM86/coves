@@ -150,6 +150,11 @@
           "type": "string",
           "format": "did"
         },
+        "handle": {
+          "type": "string",
+          "format": "handle",
+          "description": "Current handle resolved from DID"
+        },
         "name": {
           "type": "string"
         },

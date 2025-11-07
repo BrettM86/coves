@@ -1,15 +1,14 @@
 package integration
 
 import (
+	"Coves/internal/core/communities"
+	"Coves/internal/db/postgres"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
-
-	"Coves/internal/core/communities"
-	"Coves/internal/db/postgres"
 )
 
 // TestTokenRefresh_ExpirationDetection tests the NeedsRefresh function with various token states

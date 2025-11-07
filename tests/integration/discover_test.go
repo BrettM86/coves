@@ -1,6 +1,8 @@
 package integration
 
 import (
+	"Coves/internal/api/handlers/discover"
+	"Coves/internal/db/postgres"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,9 +10,6 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
-
-	"Coves/internal/api/handlers/discover"
-	"Coves/internal/db/postgres"
 
 	discoverCore "Coves/internal/core/discover"
 

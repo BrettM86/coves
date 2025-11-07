@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"Coves/internal/core/posts"
 	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
@@ -11,8 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"Coves/internal/core/posts"
 )
 
 // feedRepoBase contains shared logic for timeline and discover feed repositories
@@ -284,6 +283,7 @@ func (r *feedRepoBase) scanFeedPost(rows *sql.Rows) (*posts.PostView, float64, e
 		facets, embed   sql.NullString
 		labelsJSON      sql.NullString
 		editedAt        sql.NullTime
+		communityHandle sql.NullString
 		communityAvatar sql.NullString
 		hotRank         sql.NullFloat64
 	)
@@ -291,7 +291,7 @@ func (r *feedRepoBase) scanFeedPost(rows *sql.Rows) (*posts.PostView, float64, e
 	err := rows.Scan(
 		&postView.URI, &postView.CID, &postView.RKey,
 		&authorView.DID, &authorView.Handle,
-		&communityRef.DID, &communityRef.Name, &communityAvatar,
+		&communityRef.DID, &communityHandle, &communityRef.Name, &communityAvatar,
 		&title, &content, &facets, &embed, &labelsJSON,
 		&postView.CreatedAt, &editedAt, &postView.IndexedAt,
 		&postView.UpvoteCount, &postView.DownvoteCount, &postView.Score, &postView.CommentCount,
@@ -305,6 +305,9 @@ func (r *feedRepoBase) scanFeedPost(rows *sql.Rows) (*posts.PostView, float64, e
 	postView.Author = &authorView
 
 	// Build community ref
+	if communityHandle.Valid {
+		communityRef.Handle = communityHandle.String
+	}
 	communityRef.Avatar = nullStringPtr(communityAvatar)
 	postView.Community = &communityRef
 
@@ -381,4 +384,13 @@ func (r *feedRepoBase) scanFeedPost(rows *sql.Rows) (*posts.PostView, float64, e
 	}
 
 	return &postView, hotRankValue, nil
+}
+
+// nullStringPtr converts sql.NullString to *string
+// Helper function used by feed scanning logic across all feed types
+func nullStringPtr(ns sql.NullString) *string {
+	if !ns.Valid {
+		return nil
+	}
+	return &ns.String
 }

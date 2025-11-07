@@ -1,14 +1,13 @@
 package comments
 
 import (
+	"Coves/internal/core/communities"
+	"Coves/internal/core/posts"
+	"Coves/internal/core/users"
 	"context"
 	"errors"
 	"testing"
 	"time"
-
-	"Coves/internal/core/communities"
-	"Coves/internal/core/posts"
-	"Coves/internal/core/users"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -18,7 +17,7 @@ import (
 // mockCommentRepo is a mock implementation of the comment Repository interface
 type mockCommentRepo struct {
 	comments                    map[string]*Comment
-	listByParentWithHotRankFunc func(ctx context.Context, parentURI string, sort string, timeframe string, limit int, cursor *string) ([]*Comment, *string, error)
+	listByParentWithHotRankFunc func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string) ([]*Comment, *string, error)
 	listByParentsBatchFunc      func(ctx context.Context, parentURIs []string, sort string, limitPerParent int) (map[string][]*Comment, error)
 	getVoteStateForCommentsFunc func(ctx context.Context, viewerDID string, commentURIs []string) (map[string]interface{}, error)
 }
@@ -342,7 +341,7 @@ func (m *mockCommunityRepo) IncrementPostCount(ctx context.Context, communityDID
 
 // Helper functions to create test data
 
-func createTestPost(uri string, authorDID string, communityDID string) *posts.Post {
+func createTestPost(uri, authorDID, communityDID string) *posts.Post {
 	title := "Test Post"
 	content := "Test content"
 	return &posts.Post{
@@ -362,7 +361,7 @@ func createTestPost(uri string, authorDID string, communityDID string) *posts.Po
 	}
 }
 
-func createTestComment(uri string, commenterDID string, commenterHandle string, rootURI string, parentURI string, replyCount int) *Comment {
+func createTestComment(uri, commenterDID, commenterHandle, rootURI, parentURI string, replyCount int) *Comment {
 	return &Comment{
 		URI:             uri,
 		CID:             "bafycomment123",
@@ -384,7 +383,7 @@ func createTestComment(uri string, commenterDID string, commenterHandle string, 
 	}
 }
 
-func createTestUser(did string, handle string) *users.User {
+func createTestUser(did, handle string) *users.User {
 	return &users.User{
 		DID:       did,
 		Handle:    handle,
@@ -394,7 +393,7 @@ func createTestUser(did string, handle string) *users.User {
 	}
 }
 
-func createTestCommunity(did string, handle string) *communities.Community {
+func createTestCommunity(did, handle string) *communities.Community {
 	return &communities.Community{
 		DID:          did,
 		Handle:       handle,
@@ -438,7 +437,7 @@ func TestCommentService_GetComments_ValidRequest(t *testing.T) {
 	comment1 := createTestComment("at://did:plc:commenter123/comment/1", commenterDID, "commenter.test", postURI, postURI, 0)
 	comment2 := createTestComment("at://did:plc:commenter123/comment/2", commenterDID, "commenter.test", postURI, postURI, 0)
 
-	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI string, sort string, timeframe string, limit int, cursor *string) ([]*Comment, *string, error) {
+	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string) ([]*Comment, *string, error) {
 		if parentURI == postURI {
 			return []*Comment{comment1, comment2}, nil, nil
 		}
@@ -556,7 +555,7 @@ func TestCommentService_GetComments_EmptyComments(t *testing.T) {
 	community := createTestCommunity(communityDID, "test.community.coves.social")
 	_, _ = communityRepo.Create(context.Background(), community)
 
-	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI string, sort string, timeframe string, limit int, cursor *string) ([]*Comment, *string, error) {
+	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string) ([]*Comment, *string, error) {
 		return []*Comment{}, nil, nil
 	}
 
@@ -605,7 +604,7 @@ func TestCommentService_GetComments_WithViewerVotes(t *testing.T) {
 	comment1URI := "at://did:plc:commenter123/comment/1"
 	comment1 := createTestComment(comment1URI, commenterDID, "commenter.test", postURI, postURI, 0)
 
-	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI string, sort string, timeframe string, limit int, cursor *string) ([]*Comment, *string, error) {
+	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string) ([]*Comment, *string, error) {
 		if parentURI == postURI {
 			return []*Comment{comment1}, nil, nil
 		}
@@ -673,7 +672,7 @@ func TestCommentService_GetComments_WithoutViewer(t *testing.T) {
 
 	comment1 := createTestComment("at://did:plc:commenter123/comment/1", commenterDID, "commenter.test", postURI, postURI, 0)
 
-	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI string, sort string, timeframe string, limit int, cursor *string) ([]*Comment, *string, error) {
+	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string) ([]*Comment, *string, error) {
 		if parentURI == postURI {
 			return []*Comment{comment1}, nil, nil
 		}
@@ -741,7 +740,7 @@ func TestCommentService_GetComments_SortingOptions(t *testing.T) {
 
 				comment1 := createTestComment("at://did:plc:commenter123/comment/1", commenterDID, "commenter.test", postURI, postURI, 0)
 
-				commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI string, sort string, timeframe string, limit int, cursor *string) ([]*Comment, *string, error) {
+				commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string) ([]*Comment, *string, error) {
 					return []*Comment{comment1}, nil, nil
 				}
 			}
@@ -791,7 +790,7 @@ func TestCommentService_GetComments_RepositoryError(t *testing.T) {
 	_, _ = communityRepo.Create(context.Background(), community)
 
 	// Mock repository error
-	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI string, sort string, timeframe string, limit int, cursor *string) ([]*Comment, *string, error) {
+	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string) ([]*Comment, *string, error) {
 		return nil, nil, errors.New("database error")
 	}
 
@@ -1332,10 +1331,10 @@ func TestBuildCommentView_EmptyStringVsNilHandling(t *testing.T) {
 	postURI := "at://did:plc:post123/app.bsky.feed.post/test"
 
 	tests := []struct {
-		name               string
 		facetsValue        *string
 		embedValue         *string
 		labelsValue        *string
+		name               string
 		expectFacetsNil    bool
 		expectEmbedNil     bool
 		expectRecordLabels bool

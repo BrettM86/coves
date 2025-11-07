@@ -1,6 +1,8 @@
 package integration
 
 import (
+	"Coves/internal/core/communities"
+	"Coves/internal/db/postgres"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -10,9 +12,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"Coves/internal/core/communities"
-	"Coves/internal/db/postgres"
 )
 
 // TestCommunityService_CreateWithRealPDS tests the complete service layer flow

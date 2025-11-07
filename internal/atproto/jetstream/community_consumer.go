@@ -1,6 +1,9 @@
 package jetstream
 
 import (
+	"Coves/internal/atproto/identity"
+	"Coves/internal/atproto/utils"
+	"Coves/internal/core/communities"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,10 +11,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"Coves/internal/atproto/identity"
-	"Coves/internal/atproto/utils"
-	"Coves/internal/core/communities"
 
 	lru "github.com/hashicorp/golang-lru/v2"
 	"golang.org/x/net/publicsuffix"

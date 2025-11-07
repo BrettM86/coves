@@ -119,6 +119,7 @@ type AuthorView struct {
 type CommunityRef struct {
 	Avatar *string `json:"avatar,omitempty"`
 	DID    string  `json:"did"`
+	Handle string  `json:"handle"`
 	Name   string  `json:"name"`
 }
 

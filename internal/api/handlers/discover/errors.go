@@ -1,12 +1,11 @@
 package discover
 
 import (
+	"Coves/internal/core/discover"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
-
-	"Coves/internal/core/discover"
 )
 
 // XRPCError represents an XRPC error response

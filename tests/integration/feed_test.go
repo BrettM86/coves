@@ -1,6 +1,10 @@
 package integration
 
 import (
+	"Coves/internal/api/handlers/communityFeed"
+	"Coves/internal/core/communities"
+	"Coves/internal/core/communityFeeds"
+	"Coves/internal/db/postgres"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,11 +12,6 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
-
-	"Coves/internal/api/handlers/communityFeed"
-	"Coves/internal/core/communities"
-	"Coves/internal/core/communityFeeds"
-	"Coves/internal/db/postgres"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -28,7 +27,7 @@ func TestGetCommunityFeed_Hot(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	// Setup services
-	feedRepo := postgres.NewCommunityFeedRepository(db)
+	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
 	communityRepo := postgres.NewCommunityRepository(db)
 	communityService := communities.NewCommunityService(
 		communityRepo,
@@ -86,6 +85,12 @@ func TestGetCommunityFeed_Hot(t *testing.T) {
 		assert.NotEmpty(t, record["community"], "Record should have community")
 		assert.NotEmpty(t, record["author"], "Record should have author")
 		assert.NotEmpty(t, record["createdAt"], "Record should have createdAt")
+
+		// Verify community reference includes handle (following atProto pattern)
+		assert.NotNil(t, feedPost.Post.Community, "Post %d should have community reference", i)
+		assert.NotEmpty(t, feedPost.Post.Community.Handle, "Post %d community should have handle", i)
+		assert.NotEmpty(t, feedPost.Post.Community.DID, "Post %d community should have DID", i)
+		assert.NotEmpty(t, feedPost.Post.Community.Name, "Post %d community should have name", i)
 	}
 }
 
@@ -99,7 +104,7 @@ func TestGetCommunityFeed_Top_WithTimeframe(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	// Setup services
-	feedRepo := postgres.NewCommunityFeedRepository(db)
+	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
 	communityRepo := postgres.NewCommunityRepository(db)
 	communityService := communities.NewCommunityService(
 		communityRepo,
@@ -175,7 +180,7 @@ func TestGetCommunityFeed_New(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	// Setup services
-	feedRepo := postgres.NewCommunityFeedRepository(db)
+	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
 	communityRepo := postgres.NewCommunityRepository(db)
 	communityService := communities.NewCommunityService(
 		communityRepo,
@@ -231,7 +236,7 @@ func TestGetCommunityFeed_Pagination(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	// Setup services
-	feedRepo := postgres.NewCommunityFeedRepository(db)
+	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
 	communityRepo := postgres.NewCommunityRepository(db)
 	communityService := communities.NewCommunityService(
 		communityRepo,
@@ -322,7 +327,7 @@ func TestGetCommunityFeed_InvalidCommunity(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	// Setup services
-	feedRepo := postgres.NewCommunityFeedRepository(db)
+	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
 	communityRepo := postgres.NewCommunityRepository(db)
 	communityService := communities.NewCommunityService(
 		communityRepo,
@@ -358,7 +363,7 @@ func TestGetCommunityFeed_InvalidCursor(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	// Setup services
-	feedRepo := postgres.NewCommunityFeedRepository(db)
+	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
 	communityRepo := postgres.NewCommunityRepository(db)
 	communityService := communities.NewCommunityService(
 		communityRepo,
@@ -414,7 +419,7 @@ func TestGetCommunityFeed_EmptyFeed(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	// Setup services
-	feedRepo := postgres.NewCommunityFeedRepository(db)
+	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
 	communityRepo := postgres.NewCommunityRepository(db)
 	communityService := communities.NewCommunityService(
 		communityRepo,
@@ -458,7 +463,7 @@ func TestGetCommunityFeed_LimitValidation(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	// Setup services
-	feedRepo := postgres.NewCommunityFeedRepository(db)
+	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
 	communityRepo := postgres.NewCommunityRepository(db)
 	communityService := communities.NewCommunityService(
 		communityRepo,
@@ -511,7 +516,7 @@ func TestGetCommunityFeed_HotPaginationBug(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	// Setup services
-	feedRepo := postgres.NewCommunityFeedRepository(db)
+	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
 	communityRepo := postgres.NewCommunityRepository(db)
 	communityService := communities.NewCommunityService(
 		communityRepo,
@@ -612,7 +617,7 @@ func TestGetCommunityFeed_HotCursorPrecision(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	// Setup services
-	feedRepo := postgres.NewCommunityFeedRepository(db)
+	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
 	communityRepo := postgres.NewCommunityRepository(db)
 	communityService := communities.NewCommunityService(
 		communityRepo,

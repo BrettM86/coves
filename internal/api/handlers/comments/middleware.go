@@ -1,9 +1,8 @@
 package comments
 
 import (
-	"net/http"
-
 	"Coves/internal/api/middleware"
+	"net/http"
 )
 
 // OptionalAuthMiddleware wraps the existing OptionalAuth middleware from the middleware package.
