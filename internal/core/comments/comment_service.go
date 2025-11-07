@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"strings"
 	"time"
 
@@ -475,11 +476,20 @@ func (s *commentService) buildPostView(ctx context.Context, post *posts.Post, vi
 		// Avatar is stored as blob in community's repository
 		// Format: https://{pds}/xrpc/com.atproto.sync.getBlob?did={community_did}&cid={avatar_cid}
 		if community.AvatarCID != "" && community.PDSURL != "" {
-			avatarURLString := fmt.Sprintf("%s/xrpc/com.atproto.sync.getBlob?did=%s&cid=%s",
-				strings.TrimSuffix(community.PDSURL, "/"),
-				community.DID,
-				community.AvatarCID)
-			avatarURL = &avatarURLString
+			// Validate HTTPS for security (prevent mixed content warnings, MitM attacks)
+			if !strings.HasPrefix(community.PDSURL, "https://") {
+				log.Printf("Warning: Skipping non-HTTPS PDS URL for community %s", community.DID)
+			} else if !strings.HasPrefix(community.AvatarCID, "baf") {
+				// Validate CID format (IPFS CIDs start with "baf" for CIDv1 base32)
+				log.Printf("Warning: Invalid CID format for community %s", community.DID)
+			} else {
+				// Use proper URL escaping to prevent injection attacks
+				avatarURLString := fmt.Sprintf("%s/xrpc/com.atproto.sync.getBlob?did=%s&cid=%s",
+					strings.TrimSuffix(community.PDSURL, "/"),
+					url.QueryEscape(community.DID),
+					url.QueryEscape(community.AvatarCID))
+				avatarURL = &avatarURLString
+			}
 		}
 	} else {
 		// Log warning but don't fail the entire request

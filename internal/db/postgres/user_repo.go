@@ -106,12 +106,27 @@ func (r *postgresUserRepo) UpdateHandle(ctx context.Context, did, newHandle stri
 	return user, nil
 }
 
+const MaxBatchSize = 1000
+
 // GetByDIDs retrieves multiple users by their DIDs in a single query
 // Returns a map of DID -> User for efficient lookups
 // Missing users are not included in the result map (no error for missing users)
 func (r *postgresUserRepo) GetByDIDs(ctx context.Context, dids []string) (map[string]*users.User, error) {
 	if len(dids) == 0 {
 		return make(map[string]*users.User), nil
+	}
+
+	// Validate batch size to prevent excessive memory usage and query timeouts
+	if len(dids) > MaxBatchSize {
+		return nil, fmt.Errorf("batch size %d exceeds maximum %d", len(dids), MaxBatchSize)
+	}
+
+	// Validate DID format to prevent SQL injection and malformed queries
+	// All atProto DIDs must start with "did:" prefix
+	for _, did := range dids {
+		if !strings.HasPrefix(did, "did:") {
+			return nil, fmt.Errorf("invalid DID format: %s", did)
+		}
 	}
 
 	// Build parameterized query with IN clause
