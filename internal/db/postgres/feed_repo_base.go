@@ -285,13 +285,14 @@ func (r *feedRepoBase) scanFeedPost(rows *sql.Rows) (*posts.PostView, float64, e
 		editedAt        sql.NullTime
 		communityHandle sql.NullString
 		communityAvatar sql.NullString
+		communityPDSURL sql.NullString
 		hotRank         sql.NullFloat64
 	)
 
 	err := rows.Scan(
 		&postView.URI, &postView.CID, &postView.RKey,
 		&authorView.DID, &authorView.Handle,
-		&communityRef.DID, &communityHandle, &communityRef.Name, &communityAvatar,
+		&communityRef.DID, &communityHandle, &communityRef.Name, &communityAvatar, &communityPDSURL,
 		&title, &content, &facets, &embed, &labelsJSON,
 		&postView.CreatedAt, &editedAt, &postView.IndexedAt,
 		&postView.UpvoteCount, &postView.DownvoteCount, &postView.Score, &postView.CommentCount,
@@ -309,6 +310,9 @@ func (r *feedRepoBase) scanFeedPost(rows *sql.Rows) (*posts.PostView, float64, e
 		communityRef.Handle = communityHandle.String
 	}
 	communityRef.Avatar = nullStringPtr(communityAvatar)
+	if communityPDSURL.Valid {
+		communityRef.PDSURL = communityPDSURL.String
+	}
 	postView.Community = &communityRef
 
 	// Set optional fields

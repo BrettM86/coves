@@ -2,6 +2,7 @@ package timeline
 
 import (
 	"Coves/internal/api/middleware"
+	"Coves/internal/core/posts"
 	"Coves/internal/core/timeline"
 	"encoding/json"
 	"log"
@@ -50,6 +51,13 @@ func (h *GetTimelineHandler) HandleGetTimeline(w http.ResponseWriter, r *http.Re
 	if err != nil {
 		handleServiceError(w, err)
 		return
+	}
+
+	// Transform blob refs to URLs for all posts
+	for _, feedPost := range response.Feed {
+		if feedPost.Post != nil {
+			posts.TransformBlobRefsToURLs(feedPost.Post)
+		}
 	}
 
 	// Return feed

@@ -2,6 +2,7 @@ package discover
 
 import (
 	"Coves/internal/core/discover"
+	"Coves/internal/core/posts"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -37,6 +38,13 @@ func (h *GetDiscoverHandler) HandleGetDiscover(w http.ResponseWriter, r *http.Re
 	if err != nil {
 		handleServiceError(w, err)
 		return
+	}
+
+	// Transform blob refs to URLs for all posts
+	for _, feedPost := range response.Feed {
+		if feedPost.Post != nil {
+			posts.TransformBlobRefsToURLs(feedPost.Post)
+		}
 	}
 
 	// Return feed

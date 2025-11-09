@@ -2,6 +2,7 @@ package communityFeed
 
 import (
 	"Coves/internal/core/communityFeeds"
+	"Coves/internal/core/posts"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -44,6 +45,13 @@ func (h *GetCommunityHandler) HandleGetCommunity(w http.ResponseWriter, r *http.
 	if err != nil {
 		handleServiceError(w, err)
 		return
+	}
+
+	// Transform blob refs to URLs for all posts
+	for _, feedPost := range response.Feed {
+		if feedPost.Post != nil {
+			posts.TransformBlobRefsToURLs(feedPost.Post)
+		}
 	}
 
 	// Return feed
