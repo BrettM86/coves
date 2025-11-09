@@ -11,12 +11,31 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
+
+// getTestPDSURL returns the PDS URL for testing from env var or default
+func getTestPDSURL() string {
+	pdsURL := os.Getenv("PDS_URL")
+	if pdsURL == "" {
+		pdsURL = "http://localhost:3001"
+	}
+	return pdsURL
+}
+
+// getTestInstanceDID returns the instance DID for testing from env var or default
+func getTestInstanceDID() string {
+	instanceDID := os.Getenv("INSTANCE_DID")
+	if instanceDID == "" {
+		instanceDID = "did:web:test.coves.social"
+	}
+	return instanceDID
+}
 
 // createTestUser creates a test user in the database for use in integration tests
 // Returns the created user or fails the test
@@ -33,7 +52,7 @@ func createTestUser(t *testing.T, db *sql.DB, handle, did string) *users.User {
 	`
 
 	user := &users.User{}
-	err := db.QueryRowContext(ctx, query, did, handle, "http://localhost:3001").Scan(
+	err := db.QueryRowContext(ctx, query, did, handle, getTestPDSURL()).Scan(
 		&user.DID,
 		&user.Handle,
 		&user.PDSURL,
@@ -105,7 +124,7 @@ func createSimpleTestJWT(userDID string) string {
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userDID,
 			Issuer:    userDID, // Use DID as issuer for testing (valid per atProto)
-			Audience:  jwt.ClaimStrings{"did:web:test.coves.social"},
+			Audience:  jwt.ClaimStrings{getTestInstanceDID()},
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Hour)),
 		},
@@ -237,13 +256,17 @@ func writePDSRecord(pdsURL, accessToken, repo, collection, rkey string, record i
 // createFeedTestCommunity creates a test community for feed tests
 // Returns the community DID or an error
 func createFeedTestCommunity(db *sql.DB, ctx context.Context, name, ownerHandle string) (string, error) {
+	// Get configuration from env vars
+	pdsURL := getTestPDSURL()
+	instanceDID := getTestInstanceDID()
+
 	// Create owner user first (directly insert to avoid service dependencies)
 	ownerDID := fmt.Sprintf("did:plc:%s", ownerHandle)
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO users (did, handle, pds_url, created_at)
 		VALUES ($1, $2, $3, NOW())
 		ON CONFLICT (did) DO NOTHING
-	`, ownerDID, ownerHandle, "https://bsky.social")
+	`, ownerDID, ownerHandle, pdsURL)
 	if err != nil {
 		return "", err
 	}
@@ -251,10 +274,10 @@ func createFeedTestCommunity(db *sql.DB, ctx context.Context, name, ownerHandle 
 	// Create community
 	communityDID := fmt.Sprintf("did:plc:community-%s", name)
 	_, err = db.ExecContext(ctx, `
-		INSERT INTO communities (did, name, owner_did, created_by_did, hosted_by_did, handle, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, NOW())
+		INSERT INTO communities (did, name, owner_did, created_by_did, hosted_by_did, handle, pds_url, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
 		ON CONFLICT (did) DO NOTHING
-	`, communityDID, name, ownerDID, ownerDID, "did:web:test.coves.social", fmt.Sprintf("%s.coves.social", name))
+	`, communityDID, name, ownerDID, ownerDID, instanceDID, fmt.Sprintf("%s.coves.social", name), pdsURL)
 
 	return communityDID, err
 }
@@ -270,7 +293,7 @@ func createTestPost(t *testing.T, db *sql.DB, communityDID, authorDID, title str
 		INSERT INTO users (did, handle, pds_url, created_at)
 		VALUES ($1, $2, $3, NOW())
 		ON CONFLICT (did) DO NOTHING
-	`, authorDID, fmt.Sprintf("%s.bsky.social", authorDID), "https://bsky.social")
+	`, authorDID, fmt.Sprintf("%s.bsky.social", authorDID), getTestPDSURL())
 
 	// Generate URI
 	rkey := fmt.Sprintf("post-%d", time.Now().UnixNano())

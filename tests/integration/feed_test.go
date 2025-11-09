@@ -699,3 +699,102 @@ func TestGetCommunityFeed_HotCursorPrecision(t *testing.T) {
 
 	t.Logf("SUCCESS: All posts with similar hot ranks preserved (precision bug fixed)")
 }
+
+// TestGetCommunityFeed_BlobURLTransformation tests that blob refs are transformed to URLs
+func TestGetCommunityFeed_BlobURLTransformation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	db := setupTestDB(t)
+	t.Cleanup(func() { _ = db.Close() })
+
+	// Setup services
+	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
+	communityRepo := postgres.NewCommunityRepository(db)
+	communityService := communities.NewCommunityService(
+		communityRepo,
+		"http://localhost:3001",
+		"did:web:test.coves.social",
+		"test.coves.social",
+		nil,
+	)
+	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
+	handler := communityFeed.NewGetCommunityHandler(feedService)
+
+	// Setup test data
+	ctx := context.Background()
+	testID := time.Now().UnixNano()
+	communityDID, err := createFeedTestCommunity(db, ctx, fmt.Sprintf("blobtest-%d", testID), fmt.Sprintf("blobtest-%d.test", testID))
+	require.NoError(t, err)
+
+	// Create author user
+	authorDID := "did:plc:blobauthor"
+	_, _ = db.ExecContext(ctx, `
+		INSERT INTO users (did, handle, pds_url, created_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (did) DO NOTHING
+	`, authorDID, "blobauthor.bsky.social", "https://bsky.social")
+
+	// Create a post with an external embed containing a blob thumbnail
+	rkey := fmt.Sprintf("post-%d", time.Now().UnixNano())
+	uri := fmt.Sprintf("at://%s/social.coves.community.post/%s", communityDID, rkey)
+
+	embedJSON := `{
+		"$type": "social.coves.embed.external",
+		"external": {
+			"uri": "https://example.com/article",
+			"title": "Example Article",
+			"description": "A test article",
+			"thumb": {
+				"$type": "blob",
+				"ref": {
+					"$link": "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"
+				},
+				"mimeType": "image/jpeg",
+				"size": 52813
+			}
+		}
+	}`
+
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO posts (uri, cid, rkey, author_did, community_did, title, embed, created_at, score, upvote_count)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), 10, 10)
+	`, uri, "bafytest", rkey, authorDID, communityDID, "Post with blob thumb", embedJSON)
+	require.NoError(t, err)
+
+	// Request community feed
+	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/xrpc/social.coves.communityFeed.getCommunity?community=%s&sort=new&limit=10", communityDID), nil)
+	rec := httptest.NewRecorder()
+	handler.HandleGetCommunity(rec, req)
+
+	// Assertions
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	var response communityFeeds.FeedResponse
+	err = json.Unmarshal(rec.Body.Bytes(), &response)
+	require.NoError(t, err)
+
+	require.Len(t, response.Feed, 1, "Should have one post")
+
+	// Verify blob ref was transformed to URL
+	feedPost := response.Feed[0]
+	require.NotNil(t, feedPost.Post.Embed, "Post should have embed")
+
+	embedMap, ok := feedPost.Post.Embed.(map[string]interface{})
+	require.True(t, ok, "Embed should be a map")
+
+	assert.Equal(t, "social.coves.embed.external", embedMap["$type"], "Embed type should be external")
+
+	external, ok := embedMap["external"].(map[string]interface{})
+	require.True(t, ok, "External should be a map")
+
+	// CRITICAL: Thumb should now be a URL string, not a blob object
+	thumbURL, ok := external["thumb"].(string)
+	require.True(t, ok, "Thumb should be a string URL after transformation")
+
+	expectedURL := "http://localhost:3001/xrpc/com.atproto.sync.getBlob?did=did:plc:community-blobtest-" + fmt.Sprint(testID) + "&cid=bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"
+	assert.Equal(t, expectedURL, thumbURL, "Thumb URL should match expected format")
+
+	t.Logf("SUCCESS: Blob ref transformed to URL: %s", thumbURL)
+}
