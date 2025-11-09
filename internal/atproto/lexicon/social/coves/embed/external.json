@@ -5,6 +5,17 @@
     "main": {
       "type": "object",
       "description": "External link embed with preview metadata and provider support",
+      "required": ["external"],
+      "properties": {
+        "external": {
+          "type": "ref",
+          "ref": "#external"
+        }
+      }
+    },
+    "external": {
+      "type": "object",
+      "description": "External link metadata",
       "required": ["uri"],
       "properties": {
         "uri": {
@@ -36,8 +47,8 @@
         },
         "embedType": {
           "type": "string",
-          "knownValues": ["article", "image", "video-stream"],
-          "description": "Type hint for special handling of known providers"
+          "knownValues": ["article", "image", "video", "website"],
+          "description": "Type hint for content rendering and filtering"
         },
         "provider": {
           "type": "string",
