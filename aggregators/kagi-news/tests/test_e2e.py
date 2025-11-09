@@ -398,7 +398,7 @@ def test_coves_client_external_embed_format(aggregator_credentials):
     Verifies:
     - Embed structure matches social.coves.embed.external
     - All required fields are present
-    - Optional thumbnail is included when provided
+    - Thumbnails are handled by server's unfurl service (not included in client)
     """
     handle, password = aggregator_credentials
 
@@ -408,26 +408,17 @@ def test_coves_client_external_embed_format(aggregator_credentials):
         password=password
     )
 
-    # Test with thumbnail
+    # Create external embed (server will handle thumbnail extraction)
     embed = client.create_external_embed(
         uri="https://example.com/story",
         title="Test Story",
-        description="Test description",
-        thumb="https://example.com/image.jpg"
+        description="Test description"
     )
 
     assert embed["$type"] == "social.coves.embed.external"
     assert embed["external"]["uri"] == "https://example.com/story"
     assert embed["external"]["title"] == "Test Story"
     assert embed["external"]["description"] == "Test description"
-    assert embed["external"]["thumb"] == "https://example.com/image.jpg"
-
-    # Test without thumbnail
-    embed_no_thumb = client.create_external_embed(
-        uri="https://example.com/story2",
-        title="Test Story 2",
-        description="Test description 2"
-    )
-
-    assert "thumb" not in embed_no_thumb["external"]
+    # Thumbnail is not included - server's unfurl service handles it
+    assert "thumb" not in embed["external"]
     print("\n✅ External embed format correct")

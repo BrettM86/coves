@@ -601,6 +601,66 @@ func (s *communityService) createRecordOnPDSAs(ctx context.Context, repoDID, col
 
 ---
 
+### Unfurl Cache Cleanup Background Job
+**Added:** 2025-11-07 | **Effort:** 2-3 hours | **Priority:** Performance/Maintenance
+
+**Problem:** The `unfurl_cache` table will grow indefinitely as expired entries are not deleted. While the cache uses lazy expiration (checking `expires_at` on read), old records remain in the database consuming disk space.
+
+**Impact:**
+- 📊 ~1KB per cached URL
+- 📈 At 10K cached URLs = ~10MB (negligible for alpha)
+- ⚠️ At 1M cached URLs = ~1GB (potential issue at scale)
+- 🐌 Table bloat can slow down queries over time
+
+**Current Mitigation:**
+- ✅ Lazy expiration: Cache hits check `expires_at` and refetch if expired
+- ✅ Indexed on `expires_at` for efficient expiration queries
+- ✅ Not critical for alpha (growth is gradual)
+
+**Solution (Beta/Production):**
+Implement background cleanup job to delete expired entries:
+
+```go
+// Periodic cleanup (run daily or weekly)
+func (r *unfurlRepository) CleanupExpired(ctx context.Context) (int64, error) {
+    query := `DELETE FROM unfurl_cache WHERE expires_at < NOW()`
+    result, err := r.db.ExecContext(ctx, query)
+    if err != nil {
+        return 0, err
+    }
+    return result.RowsAffected()
+}
+```
+
+**Implementation Options:**
+1. **Cron job**: Separate process runs cleanup on schedule
+2. **Background goroutine**: Service-level background task with configurable interval
+3. **PostgreSQL pg_cron extension**: Database-level scheduled cleanup
+
+**Recommended Approach:**
+- Phase 1 (Beta): Background goroutine running weekly cleanup
+- Phase 2 (Production): Migrate to pg_cron or external cron for reliability
+
+**Configuration:**
+```bash
+UNFURL_CACHE_CLEANUP_ENABLED=true
+UNFURL_CACHE_CLEANUP_INTERVAL=168h  # 7 days
+```
+
+**Monitoring:**
+- Log cleanup operations: `[UNFURL-CACHE-CLEANUP] Deleted 1234 expired entries`
+- Track table size growth over time
+- Alert if table exceeds threshold (e.g., 100MB)
+
+**Files to Create:**
+- `internal/core/unfurl/cleanup.go` - Background cleanup service
+
+**Related:**
+- Implemented in oEmbed unfurling feature (2025-11-07)
+- Cache table: [migration XXX_create_unfurl_cache.sql](../internal/db/migrations/)
+
+---
+
 ## 🔵 P3: Technical Debt
 
 ### Consolidate Environment Variable Validation

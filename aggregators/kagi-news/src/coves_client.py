@@ -72,7 +72,8 @@ class CovesClient:
         content: str,
         facets: List[Dict],
         title: Optional[str] = None,
-        embed: Optional[Dict] = None
+        embed: Optional[Dict] = None,
+        thumbnail_url: Optional[str] = None
     ) -> str:
         """
         Create a post in a community.
@@ -83,6 +84,7 @@ class CovesClient:
             facets: Rich text facets (formatting, links)
             title: Optional post title
             embed: Optional external embed
+            thumbnail_url: Optional thumbnail URL (for trusted aggregators only)
 
         Returns:
             AT Proto URI of created post (e.g., "at://did:plc:.../social.coves.post/...")
@@ -108,6 +110,10 @@ class CovesClient:
             # Add embed if provided
             if embed:
                 post_data["embed"] = embed
+
+            # Add thumbnail URL at top level if provided (for trusted aggregators)
+            if thumbnail_url:
+                post_data["thumbnailUrl"] = thumbnail_url
 
             # Use Coves-specific endpoint (not direct PDS write)
             # This provides validation, authorization, and business logic
@@ -141,22 +147,20 @@ class CovesClient:
         self,
         uri: str,
         title: str,
-        description: str,
-        thumb: Optional[str] = None
+        description: str
     ) -> Dict:
         """
         Create external embed object for hot-linked content.
 
         Args:
-            uri: External URL (story link)
-            title: Story title
-            description: Story description/summary
-            thumb: Optional thumbnail image URL
+            uri: URL of the external content
+            title: Title of the content
+            description: Description/summary
 
         Returns:
-            External embed dictionary
+            Embed dictionary ready for post creation
         """
-        embed = {
+        return {
             "$type": "social.coves.embed.external",
             "external": {
                 "uri": uri,
@@ -164,11 +168,6 @@ class CovesClient:
                 "description": description
             }
         }
-
-        if thumb:
-            embed["external"]["thumb"] = thumb
-
-        return embed
 
     def _get_timestamp(self) -> str:
         """

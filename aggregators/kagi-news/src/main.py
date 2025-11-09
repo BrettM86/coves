@@ -173,18 +173,19 @@ class Aggregator:
                 embed = self.coves_client.create_external_embed(
                     uri=story.link,
                     title=story.title,
-                    description=story.summary[:200] if len(story.summary) > 200 else story.summary,
-                    thumb=story.image_url
+                    description=story.summary[:200] if len(story.summary) > 200 else story.summary
                 )
 
                 # Post to community
+                # Pass thumbnail URL from RSS feed at top level for trusted aggregator upload
                 try:
                     post_uri = self.coves_client.create_post(
                         community_handle=feed_config.community_handle,
                         title=story.title,
                         content=rich_text["content"],
                         facets=rich_text["facets"],
-                        embed=embed
+                        embed=embed,
+                        thumbnail_url=story.image_url  # From RSS feed - server will validate and upload
                     )
 
                     # Mark as posted (only if successful)

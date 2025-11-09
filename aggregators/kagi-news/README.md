@@ -8,7 +8,7 @@ This aggregator:
 - Fetches RSS feeds from Kagi News daily via CRON
 - Parses HTML descriptions to extract structured content (highlights, perspectives, sources)
 - Formats posts using Coves rich text with facets (bold, italic, links)
-- Hot-links images from Kagi's proxy (no blob upload)
+- Thumbnails are automatically extracted by the server's unfurl service
 - Posts to configured communities via XRPC
 
 ## Project Structure

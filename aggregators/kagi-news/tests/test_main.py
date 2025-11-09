@@ -404,13 +404,13 @@ class TestAggregator:
         mock_client.create_post.return_value = "at://did:plc:test/social.coves.post/abc123"
 
         # Mock create_external_embed to return proper embed structure
+        # Note: Thumbnails are handled by server's unfurl service, not client
         mock_client.create_external_embed.return_value = {
             "$type": "social.coves.embed.external",
             "external": {
                 "uri": sample_story.link,
                 "title": sample_story.title,
-                "description": sample_story.summary,
-                "thumb": sample_story.image_url
+                "description": sample_story.summary
             }
         }
 
@@ -457,4 +457,5 @@ class TestAggregator:
             assert call_kwargs["embed"]["$type"] == "social.coves.embed.external"
             assert call_kwargs["embed"]["external"]["uri"] == sample_story.link
             assert call_kwargs["embed"]["external"]["title"] == sample_story.title
-            assert call_kwargs["embed"]["external"]["thumb"] == sample_story.image_url
+            # Thumbnail is not included - server's unfurl service handles it
+            assert "thumb" not in call_kwargs["embed"]["external"]
