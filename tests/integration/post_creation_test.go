@@ -44,7 +44,7 @@ func TestPostCreation_Basic(t *testing.T) {
 	)
 
 	postRepo := postgres.NewPostRepository(db)
-	postService := posts.NewPostService(postRepo, communityService, nil, "http://localhost:3001") // nil aggregatorService for user-only tests
+	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, "http://localhost:3001") // nil aggregatorService, blobService, unfurlService for user-only tests
 
 	ctx := context.Background()
 
@@ -225,8 +225,8 @@ func TestPostCreation_Basic(t *testing.T) {
 	})
 
 	t.Run("Reject post with too-long content", func(t *testing.T) {
-		// Create content longer than 50k characters
-		longContent := string(make([]byte, 50001))
+		// Create content longer than 100k characters (maxContentLength = 100000)
+		longContent := string(make([]byte, 100001))
 
 		req := posts.CreatePostRequest{
 			Community: testCommunity.DID,
