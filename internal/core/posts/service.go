@@ -3,7 +3,9 @@ package posts
 import (
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/aggregators"
+	"Coves/internal/core/blobs"
 	"Coves/internal/core/communities"
+	"Coves/internal/core/unfurl"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -11,6 +13,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -18,21 +21,27 @@ type postService struct {
 	repo              Repository
 	communityService  communities.Service
 	aggregatorService aggregators.Service
+	blobService       blobs.Service
+	unfurlService     unfurl.Service
 	pdsURL            string
 }
 
 // NewPostService creates a new post service
-// aggregatorService can be nil if aggregator support is not needed (e.g., in tests or minimal setups)
+// aggregatorService, blobService, and unfurlService can be nil if not needed (e.g., in tests or minimal setups)
 func NewPostService(
 	repo Repository,
 	communityService communities.Service,
 	aggregatorService aggregators.Service, // Optional: can be nil
+	blobService blobs.Service, // Optional: can be nil
+	unfurlService unfurl.Service, // Optional: can be nil
 	pdsURL string,
 ) Service {
 	return &postService{
 		repo:              repo,
 		communityService:  communityService,
 		aggregatorService: aggregatorService,
+		blobService:       blobService,
+		unfurlService:     unfurlService,
 		pdsURL:            pdsURL,
 	}
 }
@@ -48,7 +57,12 @@ func NewPostService(
 // 7. If aggregator: record post for rate limiting
 // 8. Return URI/CID (AppView indexes asynchronously via Jetstream)
 func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*CreatePostResponse, error) {
-	// 1. SECURITY: Extract authenticated DID from context (set by JWT middleware)
+	// 1. Validate basic input (before DID checks to give clear validation errors)
+	if err := s.validateCreateRequest(req); err != nil {
+		return nil, err
+	}
+
+	// 2. SECURITY: Extract authenticated DID from context (set by JWT middleware)
 	// Defense-in-depth: verify service layer receives correct DID even if handler is bypassed
 	authenticatedDID := middleware.GetAuthenticatedDID(ctx)
 	if authenticatedDID == "" {
@@ -63,21 +77,19 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 		return nil, fmt.Errorf("authenticated DID does not match author DID")
 	}
 
-	// 2. Validate basic input
-	if err := s.validateCreateRequest(req); err != nil {
-		return nil, err
-	}
+	// 3. Determine actor type: Kagi aggregator, other aggregator, or regular user
+	kagiAggregatorDID := os.Getenv("KAGI_AGGREGATOR_DID")
+	isTrustedKagi := kagiAggregatorDID != "" && req.AuthorDID == kagiAggregatorDID
 
-	// 3. SECURITY: Check if the authenticated DID is a registered aggregator
-	// This is server-side verification - we query the database to confirm
-	// the DID from the JWT corresponds to a registered aggregator service
-	// If aggregatorService is nil (tests or environments without aggregators), treat all posts as user posts
-	isAggregator := false
-	if s.aggregatorService != nil {
-		var err error
-		isAggregator, err = s.aggregatorService.IsAggregator(ctx, req.AuthorDID)
+	// Check if this is a non-Kagi aggregator (requires database lookup)
+	var isOtherAggregator bool
+	var err error
+	if !isTrustedKagi && s.aggregatorService != nil {
+		isOtherAggregator, err = s.aggregatorService.IsAggregator(ctx, req.AuthorDID)
 		if err != nil {
-			return nil, fmt.Errorf("failed to check if author is aggregator: %w", err)
+			log.Printf("[POST-CREATE] Warning: failed to check if DID is aggregator: %v", err)
+			// Don't fail the request - treat as regular user if check fails
+			isOtherAggregator = false
 		}
 	}
 
@@ -100,7 +112,17 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 		return nil, fmt.Errorf("failed to resolve community identifier: %w", err)
 	}
 
-	// 5. Fetch community from AppView (includes all metadata)
+	// 5. AUTHORIZATION: For non-Kagi aggregators, validate authorization and rate limits
+	// Kagi is exempted from database checks via env var (temporary until XRPC endpoint is ready)
+	if isOtherAggregator && s.aggregatorService != nil {
+		if err := s.aggregatorService.ValidateAggregatorPost(ctx, req.AuthorDID, communityDID); err != nil {
+			log.Printf("[POST-CREATE] Aggregator authorization failed: %s -> %s: %v", req.AuthorDID, communityDID, err)
+			return nil, fmt.Errorf("aggregator not authorized: %w", err)
+		}
+		log.Printf("[POST-CREATE] Aggregator authorized: %s -> %s", req.AuthorDID, communityDID)
+	}
+
+	// 6. Fetch community from AppView (includes all metadata)
 	community, err := s.communityService.GetByDID(ctx, communityDID)
 	if err != nil {
 		if communities.IsNotFound(err) {
@@ -109,25 +131,18 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 		return nil, fmt.Errorf("failed to fetch community: %w", err)
 	}
 
-	// 6. Apply validation based on actor type (aggregator vs user)
-	if isAggregator {
-		// AGGREGATOR VALIDATION FLOW
-		// Following Bluesky's pattern: feed generators and labelers are authorized services
-		log.Printf("[POST-CREATE] Aggregator detected: %s posting to community: %s", req.AuthorDID, communityDID)
-
-		// Check authorization exists and is enabled, and verify rate limits
-		if err := s.aggregatorService.ValidateAggregatorPost(ctx, req.AuthorDID, communityDID); err != nil {
-			if aggregators.IsUnauthorized(err) {
-				return nil, ErrNotAuthorized
-			}
-			if aggregators.IsRateLimited(err) {
-				return nil, ErrRateLimitExceeded
-			}
-			return nil, fmt.Errorf("aggregator validation failed: %w", err)
-		}
-
+	// 7. Apply validation based on actor type (aggregator vs user)
+	if isTrustedKagi {
+		// TRUSTED AGGREGATOR VALIDATION FLOW
+		// Kagi aggregator is authorized via KAGI_AGGREGATOR_DID env var (temporary)
+		// TODO: Replace with proper XRPC aggregator authorization endpoint
+		log.Printf("[POST-CREATE] Trusted Kagi aggregator detected: %s posting to community: %s", req.AuthorDID, communityDID)
 		// Aggregators skip membership checks and visibility restrictions
 		// They are authorized services, not community members
+	} else if isOtherAggregator {
+		// OTHER AGGREGATOR VALIDATION FLOW
+		// Authorization and rate limits already validated above via ValidateAggregatorPost
+		log.Printf("[POST-CREATE] Authorized aggregator detected: %s posting to community: %s", req.AuthorDID, communityDID)
 	} else {
 		// USER VALIDATION FLOW
 		// Check community visibility (Alpha: public/unlisted only)
@@ -137,13 +152,13 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 		}
 	}
 
-	// 7. Ensure community has fresh PDS credentials (token refresh if needed)
+	// 8. Ensure community has fresh PDS credentials (token refresh if needed)
 	community, err = s.communityService.EnsureFreshToken(ctx, community)
 	if err != nil {
 		return nil, fmt.Errorf("failed to refresh community credentials: %w", err)
 	}
 
-	// 8. Build post record for PDS
+	// 9. Build post record for PDS
 	postRecord := PostRecord{
 		Type:           "social.coves.community.post",
 		Community:      communityDID,
@@ -151,7 +166,7 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 		Title:          req.Title,
 		Content:        req.Content,
 		Facets:         req.Facets,
-		Embed:          req.Embed,
+		Embed:          req.Embed, // Start with user-provided embed
 		Labels:         req.Labels,
 		OriginalAuthor: req.OriginalAuthor,
 		FederatedFrom:  req.FederatedFrom,
@@ -159,23 +174,135 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
 	}
 
-	// 9. Write to community's PDS repository
+	// 10. Validate and enhance external embeds
+	if postRecord.Embed != nil {
+		if embedType, ok := postRecord.Embed["$type"].(string); ok && embedType == "social.coves.embed.external" {
+			if external, ok := postRecord.Embed["external"].(map[string]interface{}); ok {
+				// SECURITY: Validate thumb field (must be blob, not URL string)
+				// This validation happens BEFORE unfurl to catch client errors early
+				if existingThumb := external["thumb"]; existingThumb != nil {
+					if thumbStr, isString := existingThumb.(string); isString {
+						return nil, NewValidationError("thumb",
+							fmt.Sprintf("thumb must be a blob reference (with $type, ref, mimeType, size), not URL string: %s", thumbStr))
+					}
+
+					// Validate blob structure if provided
+					if thumbMap, isMap := existingThumb.(map[string]interface{}); isMap {
+						// Check for $type field
+						if thumbType, ok := thumbMap["$type"].(string); !ok || thumbType != "blob" {
+							return nil, NewValidationError("thumb",
+								fmt.Sprintf("thumb must have $type: blob (got: %v)", thumbType))
+						}
+						// Check for required blob fields
+						if _, hasRef := thumbMap["ref"]; !hasRef {
+							return nil, NewValidationError("thumb", "thumb blob missing required 'ref' field")
+						}
+						if _, hasMimeType := thumbMap["mimeType"]; !hasMimeType {
+							return nil, NewValidationError("thumb", "thumb blob missing required 'mimeType' field")
+						}
+						log.Printf("[POST-CREATE] Client provided valid thumbnail blob")
+					} else {
+						return nil, NewValidationError("thumb",
+							fmt.Sprintf("thumb must be a blob object, got: %T", existingThumb))
+					}
+				}
+
+				// TRUSTED AGGREGATOR: Allow Kagi aggregator to provide thumbnail URLs directly
+				// This bypasses unfurl for more accurate RSS-sourced thumbnails
+				if req.ThumbnailURL != nil && *req.ThumbnailURL != "" && isTrustedKagi {
+					log.Printf("[AGGREGATOR-THUMB] Trusted aggregator provided thumbnail: %s", *req.ThumbnailURL)
+
+					if s.blobService != nil {
+						blobCtx, blobCancel := context.WithTimeout(ctx, 15*time.Second)
+						defer blobCancel()
+
+						blob, blobErr := s.blobService.UploadBlobFromURL(blobCtx, community, *req.ThumbnailURL)
+						if blobErr != nil {
+							log.Printf("[AGGREGATOR-THUMB] Failed to upload thumbnail: %v", blobErr)
+							// No fallback - aggregators only use RSS feed thumbnails
+						} else {
+							external["thumb"] = blob
+							log.Printf("[AGGREGATOR-THUMB] Successfully uploaded thumbnail from trusted aggregator")
+						}
+					}
+				}
+
+				// Unfurl enhancement (optional, only if URL is supported)
+				// Skip unfurl for trusted aggregators - they provide their own metadata
+				if !isTrustedKagi {
+					if uri, ok := external["uri"].(string); ok && uri != "" {
+						// Check if we support unfurling this URL
+						if s.unfurlService != nil && s.unfurlService.IsSupported(uri) {
+							log.Printf("[POST-CREATE] Unfurling URL: %s", uri)
+
+							// Unfurl with timeout (non-fatal if it fails)
+							unfurlCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+							defer cancel()
+
+							result, err := s.unfurlService.UnfurlURL(unfurlCtx, uri)
+							if err != nil {
+								// Log but don't fail - user can still post with manual metadata
+								log.Printf("[POST-CREATE] Warning: Failed to unfurl URL %s: %v", uri, err)
+							} else {
+								// Enhance embed with fetched metadata (only if client didn't provide)
+								// Note: We respect client-provided values, even empty strings
+								// If client sends title="", we assume they want no title
+								if external["title"] == nil {
+									external["title"] = result.Title
+								}
+								if external["description"] == nil {
+									external["description"] = result.Description
+								}
+								// Always set metadata fields (provider, domain, type)
+								external["embedType"] = result.Type
+								external["provider"] = result.Provider
+								external["domain"] = result.Domain
+
+								// Upload thumbnail from unfurl if client didn't provide one
+								// (Thumb validation already happened above)
+								if external["thumb"] == nil {
+									if result.ThumbnailURL != "" && s.blobService != nil {
+										blobCtx, blobCancel := context.WithTimeout(ctx, 15*time.Second)
+										defer blobCancel()
+
+										blob, blobErr := s.blobService.UploadBlobFromURL(blobCtx, community, result.ThumbnailURL)
+										if blobErr != nil {
+											log.Printf("[POST-CREATE] Warning: Failed to upload thumbnail for %s: %v", uri, blobErr)
+										} else {
+											external["thumb"] = blob
+											log.Printf("[POST-CREATE] Uploaded thumbnail blob for %s", uri)
+										}
+									}
+								}
+
+								log.Printf("[POST-CREATE] Successfully enhanced embed with unfurl data (provider: %s, type: %s)",
+									result.Provider, result.Type)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 11. Write to community's PDS repository
 	uri, cid, err := s.createPostOnPDS(ctx, community, postRecord)
 	if err != nil {
 		return nil, fmt.Errorf("failed to write post to PDS: %w", err)
 	}
 
-	// 10. If aggregator, record post for rate limiting and statistics
-	if isAggregator && s.aggregatorService != nil {
-		if err := s.aggregatorService.RecordAggregatorPost(ctx, req.AuthorDID, communityDID, uri, cid); err != nil {
-			// Log error but don't fail the request (post was already created on PDS)
-			log.Printf("[POST-CREATE] Warning: failed to record aggregator post for rate limiting: %v", err)
+	// 12. Record aggregator post for rate limiting (non-Kagi aggregators only)
+	// Kagi is exempted from rate limiting via env var (temporary)
+	if isOtherAggregator && s.aggregatorService != nil {
+		if recordErr := s.aggregatorService.RecordAggregatorPost(ctx, req.AuthorDID, communityDID, uri, cid); recordErr != nil {
+			// Log but don't fail - post was already created successfully
+			log.Printf("[POST-CREATE] Warning: failed to record aggregator post for rate limiting: %v", recordErr)
 		}
 	}
 
-	// 11. Return response (AppView will index via Jetstream consumer)
-	log.Printf("[POST-CREATE] Author: %s (aggregator=%v), Community: %s, URI: %s",
-		req.AuthorDID, isAggregator, communityDID, uri)
+	// 13. Return response (AppView will index via Jetstream consumer)
+	log.Printf("[POST-CREATE] Author: %s (trustedKagi=%v, otherAggregator=%v), Community: %s, URI: %s",
+		req.AuthorDID, isTrustedKagi, isOtherAggregator, communityDID, uri)
 
 	return &CreatePostResponse{
 		URI: uri,

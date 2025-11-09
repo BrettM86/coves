@@ -49,6 +49,11 @@ func handleServiceError(w http.ResponseWriter, err error) {
 	case posts.IsNotFound(err):
 		writeError(w, http.StatusNotFound, "NotFound", err.Error())
 
+	// Check aggregator authorization errors
+	case aggregators.IsUnauthorized(err):
+		writeError(w, http.StatusForbidden, "NotAuthorized",
+			"Aggregator not authorized to post in this community")
+
 	// Check both aggregator and post rate limit errors
 	case aggregators.IsRateLimited(err) || err == posts.ErrRateLimitExceeded:
 		writeError(w, http.StatusTooManyRequests, "RateLimitExceeded",
