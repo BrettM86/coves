@@ -1,6 +1,12 @@
 package posts
 
-import "context"
+import (
+	"context"
+)
+
+// Service constructor accepts optional blobs.Service and unfurl.Service for embed enhancement.
+// When unfurlService is provided, external embeds will be automatically enriched with metadata.
+// When blobService is provided, thumbnails from unfurled URLs will be uploaded as blobs.
 
 // Service defines the business logic interface for posts
 // Coordinates between Repository, community service, and PDS

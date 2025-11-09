@@ -50,6 +50,7 @@ type CreatePostRequest struct {
 	Title          *string                `json:"title,omitempty"`
 	Content        *string                `json:"content,omitempty"`
 	Embed          map[string]interface{} `json:"embed,omitempty"`
+	ThumbnailURL   *string                `json:"thumbnailUrl,omitempty"`
 	Labels         *SelfLabels            `json:"labels,omitempty"`
 	Community      string                 `json:"community"`
 	AuthorDID      string                 `json:"authorDid"`
@@ -121,6 +122,7 @@ type CommunityRef struct {
 	DID    string  `json:"did"`
 	Handle string  `json:"handle"`
 	Name   string  `json:"name"`
+	PDSURL string  `json:"-"` // Not exposed to API, used for blob URL transformation
 }
 
 // PostStats represents aggregated statistics

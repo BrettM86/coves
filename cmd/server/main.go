@@ -7,12 +7,14 @@ import (
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/aggregators"
+	"Coves/internal/core/blobs"
 	"Coves/internal/core/comments"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/communityFeeds"
 	"Coves/internal/core/discover"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/timeline"
+	"Coves/internal/core/unfurl"
 	"Coves/internal/core/users"
 	"bytes"
 	"context"
@@ -281,9 +283,24 @@ func main() {
 	aggregatorService := aggregators.NewAggregatorService(aggregatorRepo, communityService)
 	log.Println("✅ Aggregator service initialized")
 
+	// Initialize unfurl cache repository
+	unfurlRepo := unfurl.NewRepository(db)
+
+	// Initialize blob upload service
+	blobService := blobs.NewBlobService(defaultPDS)
+
+	// Initialize unfurl service with configuration
+	unfurlService := unfurl.NewService(
+		unfurlRepo,
+		unfurl.WithTimeout(10*time.Second),
+		unfurl.WithUserAgent("CovesBot/1.0 (+https://coves.social)"),
+		unfurl.WithCacheTTL(24*time.Hour),
+	)
+	log.Println("✅ Unfurl and blob services initialized")
+
 	// Initialize post service (with aggregator support)
 	postRepo := postgresRepo.NewPostRepository(db)
-	postService := posts.NewPostService(postRepo, communityService, aggregatorService, defaultPDS)
+	postService := posts.NewPostService(postRepo, communityService, aggregatorService, blobService, unfurlService, defaultPDS)
 
 	// Initialize vote repository (used by Jetstream consumer for indexing)
 	voteRepo := postgresRepo.NewVoteRepository(db)
