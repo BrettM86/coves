@@ -106,13 +106,24 @@ func fetchOEmbed(ctx context.Context, urlStr string, timeout time.Duration, user
 	return &oembed, nil
 }
 
+// normalizeURL converts protocol-relative URLs to HTTPS
+// Examples:
+//   "//example.com/image.jpg" -> "https://example.com/image.jpg"
+//   "https://example.com/image.jpg" -> "https://example.com/image.jpg" (unchanged)
+func normalizeURL(urlStr string) string {
+	if strings.HasPrefix(urlStr, "//") {
+		return "https:" + urlStr
+	}
+	return urlStr
+}
+
 // mapOEmbedToResult converts oEmbed response to UnfurlResult
 func mapOEmbedToResult(oembed *oEmbedResponse, originalURL string) *UnfurlResult {
 	result := &UnfurlResult{
 		URI:          originalURL,
 		Title:        oembed.Title,
 		Description:  oembed.Description,
-		ThumbnailURL: oembed.ThumbnailURL,
+		ThumbnailURL: normalizeURL(oembed.ThumbnailURL),
 		Provider:     strings.ToLower(oembed.ProviderName),
 		Domain:       extractDomain(originalURL),
 		Width:        oembed.Width,
@@ -186,7 +197,7 @@ func fetchOpenGraph(ctx context.Context, urlStr string, timeout time.Duration, u
 		URI:          urlStr,
 		Title:        og.Title,
 		Description:  og.Description,
-		ThumbnailURL: og.Image,
+		ThumbnailURL: normalizeURL(og.Image),
 		Provider:     "opengraph",
 		Domain:       extractDomain(urlStr),
 	}
