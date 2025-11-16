@@ -78,7 +78,8 @@ class KagiHTMLParser:
             Perspective(
                 actor=p['actor'],
                 description=p['description'],
-                source_url=p['source_url']
+                source_url=p['source_url'],
+                source_name=p.get('source_name', '')
             )
             for p in parsed['perspectives']
         ]
@@ -230,9 +231,10 @@ class KagiHTMLParser:
         actor, rest = full_text.split(':', 1)
         actor = actor.strip()
 
-        # Find the <a> tag for source URL
+        # Find the <a> tag for source URL and name
         a_tag = li.find('a')
         source_url = a_tag['href'] if a_tag and a_tag.get('href') else ""
+        source_name = a_tag.get_text(strip=True) if a_tag else ""
 
         # Extract description (between colon and source link)
         # Remove the source citation part in parentheses
@@ -250,7 +252,8 @@ class KagiHTMLParser:
         return {
             'actor': actor,
             'description': description,
-            'source_url': source_url
+            'source_url': source_url,
+            'source_name': source_name
         }
 
     def _extract_sources(self, soup: BeautifulSoup) -> List[Dict]:

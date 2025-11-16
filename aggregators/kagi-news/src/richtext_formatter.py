@@ -42,7 +42,7 @@ class RichTextFormatter:
             builder.add_bold("Highlights:")
             builder.add_text("\n")
             for highlight in story.highlights:
-                builder.add_text(f"• {highlight}\n")
+                builder.add_text(f"• {highlight}\n\n")
             builder.add_text("\n")
 
         # Perspectives (if present)
@@ -53,12 +53,16 @@ class RichTextFormatter:
                 # Bold the actor name
                 actor_with_colon = f"{perspective.actor}:"
                 builder.add_bold(actor_with_colon)
-                builder.add_text(f" {perspective.description} (")
+                builder.add_text(f" {perspective.description}")
 
-                # Add link to source
-                source_link_text = "Source"
-                builder.add_link(source_link_text, perspective.source_url)
-                builder.add_text(")\n")
+                # Add link to source if available
+                if perspective.source_url:
+                    builder.add_text(" (")
+                    source_link_text = perspective.source_name if perspective.source_name else "Source"
+                    builder.add_link(source_link_text, perspective.source_url)
+                    builder.add_text(")")
+
+                builder.add_text("\n\n")
             builder.add_text("\n")
 
         # Quote (if present)
@@ -74,7 +78,7 @@ class RichTextFormatter:
             for source in story.sources:
                 builder.add_text("• ")
                 builder.add_link(source.title, source.url)
-                builder.add_text(f" - {source.domain}\n")
+                builder.add_text(f" - {source.domain}\n\n")
             builder.add_text("\n")
 
         # Kagi News attribution

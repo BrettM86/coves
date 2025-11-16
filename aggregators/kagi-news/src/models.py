@@ -20,6 +20,7 @@ class Perspective:
     actor: str
     description: str
     source_url: str
+    source_name: str = ""  # Name of the source (e.g., "The Straits Times")
 
 
 @dataclass
