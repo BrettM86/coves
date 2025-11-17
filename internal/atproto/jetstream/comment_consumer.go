@@ -17,7 +17,7 @@ import (
 // Constants for comment validation and processing
 const (
 	// CommentCollection is the lexicon collection identifier for comments
-	CommentCollection = "social.coves.feed.comment"
+	CommentCollection = "social.coves.community.comment"
 
 	// ATProtoScheme is the URI scheme for atProto AT-URIs
 	ATProtoScheme = "at://"
@@ -28,7 +28,7 @@ const (
 )
 
 // CommentEventConsumer consumes comment-related events from Jetstream
-// Handles CREATE, UPDATE, and DELETE operations for social.coves.feed.comment
+// Handles CREATE, UPDATE, and DELETE operations for social.coves.community.comment
 type CommentEventConsumer struct {
 	commentRepo comments.Repository
 	db          *sql.DB // Direct DB access for atomic count updates
@@ -89,8 +89,8 @@ func (c *CommentEventConsumer) createComment(ctx context.Context, repoDID string
 	}
 
 	// Build AT-URI for this comment
-	// Format: at://commenter_did/social.coves.feed.comment/rkey
-	uri := fmt.Sprintf("at://%s/social.coves.feed.comment/%s", repoDID, commit.RKey)
+	// Format: at://commenter_did/social.coves.community.comment/rkey
+	uri := fmt.Sprintf("at://%s/social.coves.community.comment/%s", repoDID, commit.RKey)
 
 	// Parse timestamp from record
 	createdAt, err := time.Parse(time.RFC3339, commentRecord.CreatedAt)
@@ -149,7 +149,7 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 	}
 
 	// Build AT-URI for the comment being updated
-	uri := fmt.Sprintf("at://%s/social.coves.feed.comment/%s", repoDID, commit.RKey)
+	uri := fmt.Sprintf("at://%s/social.coves.community.comment/%s", repoDID, commit.RKey)
 
 	// Fetch existing comment to validate threading references are immutable
 	existingComment, err := c.commentRepo.GetByURI(ctx, uri)
@@ -202,7 +202,7 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 // deleteComment soft-deletes a comment and updates parent counts
 func (c *CommentEventConsumer) deleteComment(ctx context.Context, repoDID string, commit *CommitEvent) error {
 	// Build AT-URI for the comment being deleted
-	uri := fmt.Sprintf("at://%s/social.coves.feed.comment/%s", repoDID, commit.RKey)
+	uri := fmt.Sprintf("at://%s/social.coves.community.comment/%s", repoDID, commit.RKey)
 
 	// Get existing comment to know its parent (for decrementing the right counter)
 	existingComment, err := c.commentRepo.GetByURI(ctx, uri)
@@ -382,7 +382,7 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 			WHERE uri = $1 AND deleted_at IS NULL
 		`
 
-	case "social.coves.feed.comment":
+	case "social.coves.community.comment":
 		// Reply to comment - update comments.reply_count
 		updateQuery = `
 			UPDATE comments
@@ -475,7 +475,7 @@ func (c *CommentEventConsumer) deleteCommentAndUpdateCounts(ctx context.Context,
 			WHERE uri = $1 AND deleted_at IS NULL
 		`
 
-	case "social.coves.feed.comment":
+	case "social.coves.community.comment":
 		// Reply to comment - decrement comments.reply_count
 		updateQuery = `
 			UPDATE comments
@@ -600,7 +600,7 @@ func validateATURI(uri string) error {
 }
 
 // CommentRecordFromJetstream represents a comment record as received from Jetstream
-// Matches social.coves.feed.comment lexicon
+// Matches social.coves.community.comment lexicon
 type CommentRecordFromJetstream struct {
 	Labels    interface{}            `json:"labels,omitempty"`
 	Embed     map[string]interface{} `json:"embed,omitempty"`

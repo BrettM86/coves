@@ -381,7 +381,7 @@ func (s *commentService) buildCommentView(
 // Deserializes JSONB fields (embed, facets, labels) for complete record (Phase 2C)
 func (s *commentService) buildCommentRecord(comment *Comment) *CommentRecord {
 	record := &CommentRecord{
-		Type: "social.coves.feed.comment",
+		Type: "social.coves.community.comment",
 		Reply: ReplyRef{
 			Root: StrongRef{
 				URI: comment.RootURI,

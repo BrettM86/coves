@@ -204,7 +204,7 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 			`
 		}
 
-	case "social.coves.feed.comment":
+	case "social.coves.community.comment":
 		// Vote on comment - update comments table
 		if vote.Direction == "up" {
 			updateQuery = `
@@ -317,7 +317,7 @@ func (c *VoteEventConsumer) deleteVoteAndUpdateCounts(ctx context.Context, vote 
 			`
 		}
 
-	case "social.coves.feed.comment":
+	case "social.coves.community.comment":
 		// Vote on comment - update comments table
 		if vote.Direction == "up" {
 			updateQuery = `

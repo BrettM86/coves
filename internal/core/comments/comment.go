@@ -33,7 +33,7 @@ type Comment struct {
 
 // CommentRecord represents the atProto record structure indexed from Jetstream
 // This is the data structure that gets stored in the user's repository
-// Matches social.coves.feed.comment lexicon
+// Matches social.coves.community.comment lexicon
 type CommentRecord struct {
 	Embed     map[string]interface{} `json:"embed,omitempty"`
 	Labels    *SelfLabels            `json:"labels,omitempty"`

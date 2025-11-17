@@ -86,7 +86,7 @@ func (v *LexiconValidator) ValidatePost(post map[string]interface{}) error {
 
 // ValidateComment validates a comment record
 func (v *LexiconValidator) ValidateComment(comment map[string]interface{}) error {
-	return v.ValidateRecord(comment, "social.coves.feed.comment")
+	return v.ValidateRecord(comment, "social.coves.community.comment")
 }
 
 // ValidateVote validates a vote record
