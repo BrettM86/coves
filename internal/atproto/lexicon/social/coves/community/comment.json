@@ -1,6 +1,6 @@
 {
   "lexicon": 1,
-  "id": "social.coves.feed.comment",
+  "id": "social.coves.community.comment",
   "defs": {
     "main": {
       "type": "record",
