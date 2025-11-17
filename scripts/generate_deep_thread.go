@@ -84,7 +84,7 @@ func createUser(db *sql.DB, handle string, idx int) (*User, error) {
 
 func createComment(db *sql.DB, user *User, content, parentURI, parentCID string, createdAt time.Time) (*Comment, error) {
 	rkey := generateTID()
-	uri := fmt.Sprintf("at://%s/social.coves.feed.comment/%s", user.DID, rkey)
+	uri := fmt.Sprintf("at://%s/social.coves.community.comment/%s", user.DID, rkey)
 	cid := fmt.Sprintf("bafy%s", rkey)
 
 	comment := &Comment{
