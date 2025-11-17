@@ -108,8 +108,9 @@ func fetchOEmbed(ctx context.Context, urlStr string, timeout time.Duration, user
 
 // normalizeURL converts protocol-relative URLs to HTTPS
 // Examples:
-//   "//example.com/image.jpg" -> "https://example.com/image.jpg"
-//   "https://example.com/image.jpg" -> "https://example.com/image.jpg" (unchanged)
+//
+//	"//example.com/image.jpg" -> "https://example.com/image.jpg"
+//	"https://example.com/image.jpg" -> "https://example.com/image.jpg" (unchanged)
 func normalizeURL(urlStr string) string {
 	if strings.HasPrefix(urlStr, "//") {
 		return "https:" + urlStr
