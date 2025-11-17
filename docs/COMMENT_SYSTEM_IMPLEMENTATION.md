@@ -308,7 +308,7 @@ The lexicon was already defined and follows atProto best practices:
 ```json
 {
   "lexicon": 1,
-  "id": "social.coves.feed.comment",
+  "id": "social.coves.community.comment",
   "defs": {
     "main": {
       "type": "record",
@@ -365,7 +365,7 @@ The lexicon was already defined and follows atProto best practices:
 ```sql
 CREATE TABLE comments (
     id BIGSERIAL PRIMARY KEY,
-    uri TEXT UNIQUE NOT NULL,               -- AT-URI (at://commenter_did/social.coves.feed.comment/rkey)
+    uri TEXT UNIQUE NOT NULL,               -- AT-URI (at://commenter_did/social.coves.community.comment/rkey)
     cid TEXT NOT NULL,                      -- Content ID
     rkey TEXT NOT NULL,                     -- Record key (TID)
     commenter_did TEXT NOT NULL,            -- User who commented (from AT-URI repo field)
@@ -559,7 +559,7 @@ func (c *CommentEventConsumer) HandleEvent(ctx context.Context, event *Jetstream
         return nil
     }
 
-    if event.Commit.Collection == "social.coves.feed.comment" {
+    if event.Commit.Collection == "social.coves.community.comment" {
         switch event.Commit.Operation {
         case "create":
             return c.createComment(ctx, event.Did, commit)
@@ -653,7 +653,7 @@ Follows the standard Jetstream connector pattern with:
 - Auto-reconnect on errors (5-second retry)
 - Ping/pong keepalive (30-second ping, 60-second read deadline)
 - Graceful shutdown via context cancellation
-- Subscribes to: `wantedCollections=social.coves.feed.comment`
+- Subscribes to: `wantedCollections=social.coves.community.comment`
 
 ---
 
@@ -669,7 +669,7 @@ log.Println("✅ Comment repository initialized (Jetstream indexing only)")
 // Start Jetstream consumer for comments
 commentJetstreamURL := os.Getenv("COMMENT_JETSTREAM_URL")
 if commentJetstreamURL == "" {
-    commentJetstreamURL = "ws://localhost:6008/subscribe?wantedCollections=social.coves.feed.comment"
+    commentJetstreamURL = "ws://localhost:6008/subscribe?wantedCollections=social.coves.community.comment"
 }
 
 commentEventConsumer := jetstream.NewCommentEventConsumer(commentRepo, db)
@@ -682,7 +682,7 @@ go func() {
 }()
 
 log.Printf("Started Jetstream comment consumer: %s", commentJetstreamURL)
-log.Println("  - Indexing: social.coves.feed.comment CREATE/UPDATE/DELETE operations")
+log.Println("  - Indexing: social.coves.community.comment CREATE/UPDATE/DELETE operations")
 log.Println("  - Updating: Post comment counts and comment reply counts atomically")
 ```
 
@@ -835,7 +835,7 @@ The comment implementation closely follows the vote system pattern:
 | Aspect | Votes | Comments |
 |--------|-------|----------|
 | **Location** | User repositories | User repositories |
-| **Lexicon** | `social.coves.feed.vote` | `social.coves.feed.comment` |
+| **Lexicon** | `social.coves.feed.vote` | `social.coves.community.comment` |
 | **Operations** | CREATE, DELETE | CREATE, UPDATE, DELETE |
 | **Mutability** | Immutable | Editable |
 | **Foreign Keys** | None (out-of-order indexing) | None (out-of-order indexing) |
@@ -1197,16 +1197,19 @@ if comment.ContentFacets != nil && *comment.ContentFacets != "" {
 
 ---
 
-### 📋 Phase 4: Namespace Migration (Separate Task)
+### ✅ Phase 4: Namespace Migration (COMPLETED)
+
+**Completed:** 2025-11-16
 
 **Scope:**
-- Migrate existing `social.coves.feed.comment` records to `social.coves.community.comment`
-- Update all AT-URIs in database
-- Update Jetstream consumer collection filter
-- Migration script with rollback capability
-- Zero-downtime deployment strategy
+- ✅ Migrated `social.coves.community.comment` namespace to `social.coves.community.comment`
+- ✅ Updated lexicon definitions (record and query schemas)
+- ✅ Updated Jetstream consumer collection filter
+- ✅ Updated all code references (consumer, service, validation layers)
+- ✅ Updated integration tests and test data generation scripts
+- ✅ Created database migration (018_migrate_comment_namespace.sql)
 
-**Note:** Currently out of scope - will be tackled separately when needed.
+**Note:** Since we're pre-production, no historical data migration was needed. Migration script updates URIs in comments table (uri, root_uri, parent_uri columns).
 
 ---
 
@@ -1456,7 +1459,7 @@ go build ./cmd/server
 ### Environment Variables
 ```bash
 # Jetstream URL (optional, defaults to localhost:6008)
-export COMMENT_JETSTREAM_URL="ws://localhost:6008/subscribe?wantedCollections=social.coves.feed.comment"
+export COMMENT_JETSTREAM_URL="ws://localhost:6008/subscribe?wantedCollections=social.coves.community.comment"
 
 # Database URL
 export TEST_DATABASE_URL="postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
