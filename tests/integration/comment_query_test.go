@@ -538,7 +538,7 @@ func TestCommentQuery_DeletedComments(t *testing.T) {
 	commentURIs := make([]string, 5)
 	for i := 0; i < 5; i++ {
 		rkey := generateTID()
-		uri := fmt.Sprintf("at://%s/social.coves.feed.comment/%s", testUser.DID, rkey)
+		uri := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, rkey)
 		commentURIs[i] = uri
 
 		event := &jetstream.JetstreamEvent{
@@ -546,11 +546,11 @@ func TestCommentQuery_DeletedComments(t *testing.T) {
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       rkey,
 				CID:        fmt.Sprintf("bafyc%d", i),
 				Record: map[string]interface{}{
-					"$type":   "social.coves.feed.comment",
+					"$type":   "social.coves.community.comment",
 					"content": fmt.Sprintf("Comment %d", i),
 					"reply": map[string]interface{}{
 						"root": map[string]interface{}{
@@ -576,7 +576,7 @@ func TestCommentQuery_DeletedComments(t *testing.T) {
 		Kind: "commit",
 		Commit: &jetstream.CommitEvent{
 			Operation:  "delete",
-			Collection: "social.coves.feed.comment",
+			Collection: "social.coves.community.comment",
 			RKey:       strings.Split(commentURIs[1], "/")[4],
 		},
 	}
@@ -587,7 +587,7 @@ func TestCommentQuery_DeletedComments(t *testing.T) {
 		Kind: "commit",
 		Commit: &jetstream.CommitEvent{
 			Operation:  "delete",
-			Collection: "social.coves.feed.comment",
+			Collection: "social.coves.community.comment",
 			RKey:       strings.Split(commentURIs[3], "/")[4],
 		},
 	}
@@ -794,7 +794,7 @@ func createTestCommentWithScore(t *testing.T, db *sql.DB, commenterDID, rootURI,
 
 	ctx := context.Background()
 	rkey := generateTID()
-	uri := fmt.Sprintf("at://%s/social.coves.feed.comment/%s", commenterDID, rkey)
+	uri := fmt.Sprintf("at://%s/social.coves.community.comment/%s", commenterDID, rkey)
 
 	// Insert comment directly for speed
 	_, err := db.ExecContext(ctx, `

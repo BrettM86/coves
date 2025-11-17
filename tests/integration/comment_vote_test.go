@@ -43,7 +43,7 @@ func TestCommentVote_CreateAndUpdate(t *testing.T) {
 	t.Run("Upvote on comment increments count", func(t *testing.T) {
 		// Create a comment
 		commentRKey := generateTID()
-		commentURI := fmt.Sprintf("at://%s/social.coves.feed.comment/%s", testUser.DID, commentRKey)
+		commentURI := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, commentRKey)
 		commentCID := "bafycomment123"
 
 		commentEvent := &jetstream.JetstreamEvent{
@@ -52,11 +52,11 @@ func TestCommentVote_CreateAndUpdate(t *testing.T) {
 			Commit: &jetstream.CommitEvent{
 				Rev:        "test-rev",
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       commentRKey,
 				CID:        commentCID,
 				Record: map[string]interface{}{
-					"$type":   "social.coves.feed.comment",
+					"$type":   "social.coves.community.comment",
 					"content": "Comment to vote on",
 					"reply": map[string]interface{}{
 						"root": map[string]interface{}{
@@ -143,7 +143,7 @@ func TestCommentVote_CreateAndUpdate(t *testing.T) {
 	t.Run("Downvote on comment increments downvote count", func(t *testing.T) {
 		// Create a comment
 		commentRKey := generateTID()
-		commentURI := fmt.Sprintf("at://%s/social.coves.feed.comment/%s", testUser.DID, commentRKey)
+		commentURI := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, commentRKey)
 		commentCID := "bafycomment456"
 
 		commentEvent := &jetstream.JetstreamEvent{
@@ -152,11 +152,11 @@ func TestCommentVote_CreateAndUpdate(t *testing.T) {
 			Commit: &jetstream.CommitEvent{
 				Rev:        "test-rev",
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       commentRKey,
 				CID:        commentCID,
 				Record: map[string]interface{}{
-					"$type":   "social.coves.feed.comment",
+					"$type":   "social.coves.community.comment",
 					"content": "Comment to downvote",
 					"reply": map[string]interface{}{
 						"root": map[string]interface{}{
@@ -221,7 +221,7 @@ func TestCommentVote_CreateAndUpdate(t *testing.T) {
 	t.Run("Delete vote decrements comment counts", func(t *testing.T) {
 		// Create comment
 		commentRKey := generateTID()
-		commentURI := fmt.Sprintf("at://%s/social.coves.feed.comment/%s", testUser.DID, commentRKey)
+		commentURI := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, commentRKey)
 		commentCID := "bafycomment789"
 
 		commentEvent := &jetstream.JetstreamEvent{
@@ -230,11 +230,11 @@ func TestCommentVote_CreateAndUpdate(t *testing.T) {
 			Commit: &jetstream.CommitEvent{
 				Rev:        "test-rev",
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       commentRKey,
 				CID:        commentCID,
 				Record: map[string]interface{}{
-					"$type":   "social.coves.feed.comment",
+					"$type":   "social.coves.community.comment",
 					"content": "Comment for vote deletion test",
 					"reply": map[string]interface{}{
 						"root": map[string]interface{}{
@@ -353,7 +353,7 @@ func TestCommentVote_ViewerState(t *testing.T) {
 	t.Run("Viewer with vote sees vote state", func(t *testing.T) {
 		// Create comment
 		commentRKey := generateTID()
-		commentURI := fmt.Sprintf("at://%s/social.coves.feed.comment/%s", testUser.DID, commentRKey)
+		commentURI := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, commentRKey)
 		commentCID := "bafycomment111"
 
 		commentEvent := &jetstream.JetstreamEvent{
@@ -362,11 +362,11 @@ func TestCommentVote_ViewerState(t *testing.T) {
 			Commit: &jetstream.CommitEvent{
 				Rev:        "test-rev",
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       commentRKey,
 				CID:        commentCID,
 				Record: map[string]interface{}{
-					"$type":   "social.coves.feed.comment",
+					"$type":   "social.coves.community.comment",
 					"content": "Comment with viewer vote",
 					"reply": map[string]interface{}{
 						"root": map[string]interface{}{
@@ -465,7 +465,7 @@ func TestCommentVote_ViewerState(t *testing.T) {
 	t.Run("Viewer without vote sees empty state", func(t *testing.T) {
 		// Create comment (no vote)
 		commentRKey := generateTID()
-		commentURI := fmt.Sprintf("at://%s/social.coves.feed.comment/%s", testUser.DID, commentRKey)
+		commentURI := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, commentRKey)
 
 		commentEvent := &jetstream.JetstreamEvent{
 			Did:  testUser.DID,
@@ -473,11 +473,11 @@ func TestCommentVote_ViewerState(t *testing.T) {
 			Commit: &jetstream.CommitEvent{
 				Rev:        "test-rev",
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       commentRKey,
 				CID:        "bafycomment222",
 				Record: map[string]interface{}{
-					"$type":   "social.coves.feed.comment",
+					"$type":   "social.coves.community.comment",
 					"content": "Comment without viewer vote",
 					"reply": map[string]interface{}{
 						"root": map[string]interface{}{
