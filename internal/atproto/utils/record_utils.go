@@ -20,7 +20,7 @@ func ExtractRKeyFromURI(uri string) string {
 // Format: at://did/collection/rkey -> collection
 //
 // Returns:
-//   - Collection name (e.g., "social.coves.feed.comment") if URI is well-formed
+//   - Collection name (e.g., "social.coves.community.comment") if URI is well-formed
 //   - Empty string if URI is malformed or doesn't contain a collection segment
 //
 // Note: Empty string indicates "unknown/unsupported collection" and should be

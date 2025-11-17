@@ -5,7 +5,7 @@ import (
 )
 
 // CommentView represents the full view of a comment with all metadata
-// Matches social.coves.feed.getComments#commentView lexicon
+// Matches social.coves.community.comment.getComments#commentView lexicon
 // Used in thread views and get endpoints
 type CommentView struct {
 	Embed         interface{}         `json:"embed,omitempty"`
@@ -24,7 +24,7 @@ type CommentView struct {
 }
 
 // ThreadViewComment represents a comment with its nested replies
-// Matches social.coves.feed.getComments#threadViewComment lexicon
+// Matches social.coves.community.comment.getComments#threadViewComment lexicon
 // Supports recursive threading for comment trees
 type ThreadViewComment struct {
 	Comment *CommentView         `json:"comment"`

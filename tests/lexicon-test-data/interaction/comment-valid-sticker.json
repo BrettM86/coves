@@ -1,5 +1,5 @@
 {
-  "$type": "social.coves.feed.comment",
+  "$type": "social.coves.community.comment",
   "reply": {
     "root": {
       "uri": "at://did:plc:test123/social.coves.community.post/3k7a3dmb5bk2c",

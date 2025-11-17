@@ -32,7 +32,7 @@ func TestCommentConsumer_CreateComment(t *testing.T) {
 
 	t.Run("Create comment on post", func(t *testing.T) {
 		rkey := generateTID()
-		uri := fmt.Sprintf("at://%s/social.coves.feed.comment/%s", testUser.DID, rkey)
+		uri := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, rkey)
 
 		// Simulate Jetstream comment create event
 		event := &jetstream.JetstreamEvent{
@@ -41,11 +41,11 @@ func TestCommentConsumer_CreateComment(t *testing.T) {
 			Commit: &jetstream.CommitEvent{
 				Rev:        "test-rev",
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       rkey,
 				CID:        "bafytest123",
 				Record: map[string]interface{}{
-					"$type":   "social.coves.feed.comment",
+					"$type":   "social.coves.community.comment",
 					"content": "This is a test comment on a post!",
 					"reply": map[string]interface{}{
 						"root": map[string]interface{}{
@@ -115,11 +115,11 @@ func TestCommentConsumer_CreateComment(t *testing.T) {
 			Commit: &jetstream.CommitEvent{
 				Rev:        "test-rev",
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       rkey,
 				CID:        "bafytest456",
 				Record: map[string]interface{}{
-					"$type":   "social.coves.feed.comment",
+					"$type":   "social.coves.community.comment",
 					"content": "Idempotent test comment",
 					"reply": map[string]interface{}{
 						"root": map[string]interface{}{
@@ -191,14 +191,14 @@ func TestCommentConsumer_Threading(t *testing.T) {
 	t.Run("Create nested comment replies", func(t *testing.T) {
 		// Create first-level comment on post
 		comment1Rkey := generateTID()
-		comment1URI := fmt.Sprintf("at://%s/social.coves.feed.comment/%s", testUser.DID, comment1Rkey)
+		comment1URI := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, comment1Rkey)
 
 		event1 := &jetstream.JetstreamEvent{
 			Did:  testUser.DID,
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       comment1Rkey,
 				CID:        "bafycomment1",
 				Record: map[string]interface{}{
@@ -225,14 +225,14 @@ func TestCommentConsumer_Threading(t *testing.T) {
 
 		// Create second-level comment (reply to first comment)
 		comment2Rkey := generateTID()
-		comment2URI := fmt.Sprintf("at://%s/social.coves.feed.comment/%s", testUser.DID, comment2Rkey)
+		comment2URI := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, comment2Rkey)
 
 		event2 := &jetstream.JetstreamEvent{
 			Did:  testUser.DID,
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       comment2Rkey,
 				CID:        "bafycomment2",
 				Record: map[string]interface{}{
@@ -346,7 +346,7 @@ func TestCommentConsumer_UpdateComment(t *testing.T) {
 
 	t.Run("Update comment content preserves vote counts", func(t *testing.T) {
 		rkey := generateTID()
-		uri := fmt.Sprintf("at://%s/social.coves.feed.comment/%s", testUser.DID, rkey)
+		uri := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, rkey)
 
 		// Create initial comment
 		createEvent := &jetstream.JetstreamEvent{
@@ -354,7 +354,7 @@ func TestCommentConsumer_UpdateComment(t *testing.T) {
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       rkey,
 				CID:        "bafyoriginal",
 				Record: map[string]interface{}{
@@ -395,7 +395,7 @@ func TestCommentConsumer_UpdateComment(t *testing.T) {
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
 				Operation:  "update",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       rkey,
 				CID:        "bafyupdated",
 				Record: map[string]interface{}{
@@ -472,7 +472,7 @@ func TestCommentConsumer_DeleteComment(t *testing.T) {
 
 	t.Run("Delete comment decrements parent count", func(t *testing.T) {
 		rkey := generateTID()
-		uri := fmt.Sprintf("at://%s/social.coves.feed.comment/%s", testUser.DID, rkey)
+		uri := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, rkey)
 
 		// Create comment
 		createEvent := &jetstream.JetstreamEvent{
@@ -480,7 +480,7 @@ func TestCommentConsumer_DeleteComment(t *testing.T) {
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       rkey,
 				CID:        "bafydelete",
 				Record: map[string]interface{}{
@@ -518,7 +518,7 @@ func TestCommentConsumer_DeleteComment(t *testing.T) {
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
 				Operation:  "delete",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       rkey,
 			},
 		}
@@ -559,7 +559,7 @@ func TestCommentConsumer_DeleteComment(t *testing.T) {
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       rkey,
 				CID:        "bafyidempdelete",
 				Record: map[string]interface{}{
@@ -590,7 +590,7 @@ func TestCommentConsumer_DeleteComment(t *testing.T) {
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
 				Operation:  "delete",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       rkey,
 			},
 		}
@@ -651,7 +651,7 @@ func TestCommentConsumer_SecurityValidation(t *testing.T) {
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       generateTID(),
 				CID:        "bafyinvalid",
 				Record: map[string]interface{}{
@@ -683,7 +683,7 @@ func TestCommentConsumer_SecurityValidation(t *testing.T) {
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       generateTID(),
 				CID:        "bafyinvalid2",
 				Record: map[string]interface{}{
@@ -715,7 +715,7 @@ func TestCommentConsumer_SecurityValidation(t *testing.T) {
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       generateTID(),
 				CID:        "bafyinvalid3",
 				Record: map[string]interface{}{
@@ -747,7 +747,7 @@ func TestCommentConsumer_SecurityValidation(t *testing.T) {
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       generateTID(),
 				CID:        "bafyinvalid4",
 				Record: map[string]interface{}{
@@ -779,7 +779,7 @@ func TestCommentConsumer_SecurityValidation(t *testing.T) {
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       generateTID(),
 				CID:        "bafytoobig",
 				Record: map[string]interface{}{
@@ -814,7 +814,7 @@ func TestCommentConsumer_SecurityValidation(t *testing.T) {
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       generateTID(),
 				CID:        "bafymalformed",
 				Record: map[string]interface{}{
@@ -849,7 +849,7 @@ func TestCommentConsumer_SecurityValidation(t *testing.T) {
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       generateTID(),
 				CID:        "bafymalformed2",
 				Record: map[string]interface{}{
@@ -911,7 +911,7 @@ func TestCommentRepository_Queries(t *testing.T) {
 	//  |- Comment 4
 
 	comment1 := &comments.Comment{
-		URI:          fmt.Sprintf("at://%s/social.coves.feed.comment/1", testUser.DID),
+		URI:          fmt.Sprintf("at://%s/social.coves.community.comment/1", testUser.DID),
 		CID:          "bafyc1",
 		RKey:         "1",
 		CommenterDID: testUser.DID,
@@ -925,7 +925,7 @@ func TestCommentRepository_Queries(t *testing.T) {
 	}
 
 	comment2 := &comments.Comment{
-		URI:          fmt.Sprintf("at://%s/social.coves.feed.comment/2", testUser.DID),
+		URI:          fmt.Sprintf("at://%s/social.coves.community.comment/2", testUser.DID),
 		CID:          "bafyc2",
 		RKey:         "2",
 		CommenterDID: testUser.DID,
@@ -939,7 +939,7 @@ func TestCommentRepository_Queries(t *testing.T) {
 	}
 
 	comment3 := &comments.Comment{
-		URI:          fmt.Sprintf("at://%s/social.coves.feed.comment/3", testUser.DID),
+		URI:          fmt.Sprintf("at://%s/social.coves.community.comment/3", testUser.DID),
 		CID:          "bafyc3",
 		RKey:         "3",
 		CommenterDID: testUser.DID,
@@ -953,7 +953,7 @@ func TestCommentRepository_Queries(t *testing.T) {
 	}
 
 	comment4 := &comments.Comment{
-		URI:          fmt.Sprintf("at://%s/social.coves.feed.comment/4", testUser.DID),
+		URI:          fmt.Sprintf("at://%s/social.coves.community.comment/4", testUser.DID),
 		CID:          "bafyc4",
 		RKey:         "4",
 		CommenterDID: testUser.DID,
@@ -1074,10 +1074,10 @@ func TestCommentConsumer_OutOfOrderReconciliation(t *testing.T) {
 		//           When C1 finally arrives, its reply_count should be 1, not 0
 
 		parentRkey := generateTID()
-		parentURI := fmt.Sprintf("at://%s/social.coves.feed.comment/%s", testUser.DID, parentRkey)
+		parentURI := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, parentRkey)
 
 		childRkey := generateTID()
-		childURI := fmt.Sprintf("at://%s/social.coves.feed.comment/%s", testUser.DID, childRkey)
+		childURI := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, childRkey)
 
 		// Step 1: Index child FIRST (before parent exists)
 		childEvent := &jetstream.JetstreamEvent{
@@ -1086,11 +1086,11 @@ func TestCommentConsumer_OutOfOrderReconciliation(t *testing.T) {
 			Commit: &jetstream.CommitEvent{
 				Rev:        "child-rev",
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       childRkey,
 				CID:        "bafychild",
 				Record: map[string]interface{}{
-					"$type":   "social.coves.feed.comment",
+					"$type":   "social.coves.community.comment",
 					"content": "This is a reply to a comment that doesn't exist yet!",
 					"reply": map[string]interface{}{
 						"root": map[string]interface{}{
@@ -1128,11 +1128,11 @@ func TestCommentConsumer_OutOfOrderReconciliation(t *testing.T) {
 			Commit: &jetstream.CommitEvent{
 				Rev:        "parent-rev",
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       parentRkey,
 				CID:        "bafyparent",
 				Record: map[string]interface{}{
-					"$type":   "social.coves.feed.comment",
+					"$type":   "social.coves.community.comment",
 					"content": "This is the parent comment arriving late",
 					"reply": map[string]interface{}{
 						"root": map[string]interface{}{
@@ -1178,7 +1178,7 @@ func TestCommentConsumer_OutOfOrderReconciliation(t *testing.T) {
 
 	t.Run("Multiple children arrive before parent", func(t *testing.T) {
 		parentRkey := generateTID()
-		parentURI := fmt.Sprintf("at://%s/social.coves.feed.comment/%s", testUser.DID, parentRkey)
+		parentURI := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, parentRkey)
 
 		// Index 3 children before parent
 		for i := 1; i <= 3; i++ {
@@ -1189,11 +1189,11 @@ func TestCommentConsumer_OutOfOrderReconciliation(t *testing.T) {
 				Commit: &jetstream.CommitEvent{
 					Rev:        fmt.Sprintf("child-%d-rev", i),
 					Operation:  "create",
-					Collection: "social.coves.feed.comment",
+					Collection: "social.coves.community.comment",
 					RKey:       childRkey,
 					CID:        fmt.Sprintf("bafychild%d", i),
 					Record: map[string]interface{}{
-						"$type":   "social.coves.feed.comment",
+						"$type":   "social.coves.community.comment",
 						"content": fmt.Sprintf("Reply %d before parent", i),
 						"reply": map[string]interface{}{
 							"root": map[string]interface{}{
@@ -1223,11 +1223,11 @@ func TestCommentConsumer_OutOfOrderReconciliation(t *testing.T) {
 			Commit: &jetstream.CommitEvent{
 				Rev:        "parent2-rev",
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       parentRkey,
 				CID:        "bafyparent2",
 				Record: map[string]interface{}{
-					"$type":   "social.coves.feed.comment",
+					"$type":   "social.coves.community.comment",
 					"content": "Parent with 3 pre-existing children",
 					"reply": map[string]interface{}{
 						"root": map[string]interface{}{
@@ -1283,7 +1283,7 @@ func TestCommentConsumer_Resurrection(t *testing.T) {
 	postURI := createTestPost(t, db, testCommunity, testUser.DID, "Resurrection Test", 0, time.Now())
 
 	rkey := generateTID()
-	commentURI := fmt.Sprintf("at://%s/social.coves.feed.comment/%s", testUser.DID, rkey)
+	commentURI := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, rkey)
 
 	t.Run("Recreate deleted comment with same rkey", func(t *testing.T) {
 		// Step 1: Create initial comment
@@ -1293,11 +1293,11 @@ func TestCommentConsumer_Resurrection(t *testing.T) {
 			Commit: &jetstream.CommitEvent{
 				Rev:        "v1",
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       rkey,
 				CID:        "bafyoriginal",
 				Record: map[string]interface{}{
-					"$type":   "social.coves.feed.comment",
+					"$type":   "social.coves.community.comment",
 					"content": "Original comment content",
 					"reply": map[string]interface{}{
 						"root": map[string]interface{}{
@@ -1338,7 +1338,7 @@ func TestCommentConsumer_Resurrection(t *testing.T) {
 			Commit: &jetstream.CommitEvent{
 				Rev:        "v2",
 				Operation:  "delete",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       rkey,
 			},
 		}
@@ -1365,11 +1365,11 @@ func TestCommentConsumer_Resurrection(t *testing.T) {
 			Commit: &jetstream.CommitEvent{
 				Rev:        "v3",
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       rkey, // Same rkey!
 				CID:        "bafyresurrected",
 				Record: map[string]interface{}{
-					"$type":   "social.coves.feed.comment",
+					"$type":   "social.coves.community.comment",
 					"content": "Resurrected comment with new content",
 					"reply": map[string]interface{}{
 						"root": map[string]interface{}{
@@ -1424,7 +1424,7 @@ func TestCommentConsumer_Resurrection(t *testing.T) {
 		post2URI := createTestPost(t, db, testCommunity, testUser.DID, "Post 2", 0, time.Now())
 
 		rkey2 := generateTID()
-		commentURI2 := fmt.Sprintf("at://%s/social.coves.feed.comment/%s", testUser.DID, rkey2)
+		commentURI2 := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, rkey2)
 
 		// Step 1: Create comment on Post 1
 		createEvent := &jetstream.JetstreamEvent{
@@ -1433,11 +1433,11 @@ func TestCommentConsumer_Resurrection(t *testing.T) {
 			Commit: &jetstream.CommitEvent{
 				Rev:        "v1",
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       rkey2,
 				CID:        "bafyv1",
 				Record: map[string]interface{}{
-					"$type":   "social.coves.feed.comment",
+					"$type":   "social.coves.community.comment",
 					"content": "Original on Post 1",
 					"reply": map[string]interface{}{
 						"root": map[string]interface{}{
@@ -1476,7 +1476,7 @@ func TestCommentConsumer_Resurrection(t *testing.T) {
 			Commit: &jetstream.CommitEvent{
 				Rev:        "v2",
 				Operation:  "delete",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       rkey2,
 			},
 		}
@@ -1502,11 +1502,11 @@ func TestCommentConsumer_Resurrection(t *testing.T) {
 			Commit: &jetstream.CommitEvent{
 				Rev:        "v3",
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       rkey2, // Same rkey!
 				CID:        "bafyv3",
 				Record: map[string]interface{}{
-					"$type":   "social.coves.feed.comment",
+					"$type":   "social.coves.community.comment",
 					"content": "New comment on Post 2",
 					"reply": map[string]interface{}{
 						"root": map[string]interface{}{
@@ -1588,7 +1588,7 @@ func TestCommentConsumer_ThreadingImmutability(t *testing.T) {
 	postURI2 := createTestPost(t, db, testCommunity, testUser.DID, "Post 2", 0, time.Now())
 
 	rkey := generateTID()
-	commentURI := fmt.Sprintf("at://%s/social.coves.feed.comment/%s", testUser.DID, rkey)
+	commentURI := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, rkey)
 
 	t.Run("Reject UPDATE that changes parent URI", func(t *testing.T) {
 		// Create comment on Post 1
@@ -1598,11 +1598,11 @@ func TestCommentConsumer_ThreadingImmutability(t *testing.T) {
 			Commit: &jetstream.CommitEvent{
 				Rev:        "v1",
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       rkey,
 				CID:        "bafycomment1",
 				Record: map[string]interface{}{
-					"$type":   "social.coves.feed.comment",
+					"$type":   "social.coves.community.comment",
 					"content": "Comment on Post 1",
 					"reply": map[string]interface{}{
 						"root": map[string]interface{}{
@@ -1631,11 +1631,11 @@ func TestCommentConsumer_ThreadingImmutability(t *testing.T) {
 			Commit: &jetstream.CommitEvent{
 				Rev:        "v2",
 				Operation:  "update",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       rkey,
 				CID:        "bafycomment2",
 				Record: map[string]interface{}{
-					"$type":   "social.coves.feed.comment",
+					"$type":   "social.coves.community.comment",
 					"content": "Trying to hijack this comment to Post 2",
 					"reply": map[string]interface{}{
 						"root": map[string]interface{}{
@@ -1679,7 +1679,7 @@ func TestCommentConsumer_ThreadingImmutability(t *testing.T) {
 
 	t.Run("Allow UPDATE that only changes content (threading unchanged)", func(t *testing.T) {
 		rkey2 := generateTID()
-		commentURI2 := fmt.Sprintf("at://%s/social.coves.feed.comment/%s", testUser.DID, rkey2)
+		commentURI2 := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, rkey2)
 
 		// Create comment
 		createEvent := &jetstream.JetstreamEvent{
@@ -1688,11 +1688,11 @@ func TestCommentConsumer_ThreadingImmutability(t *testing.T) {
 			Commit: &jetstream.CommitEvent{
 				Rev:        "v1",
 				Operation:  "create",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       rkey2,
 				CID:        "bafycomment3",
 				Record: map[string]interface{}{
-					"$type":   "social.coves.feed.comment",
+					"$type":   "social.coves.community.comment",
 					"content": "Original content",
 					"reply": map[string]interface{}{
 						"root": map[string]interface{}{
@@ -1721,11 +1721,11 @@ func TestCommentConsumer_ThreadingImmutability(t *testing.T) {
 			Commit: &jetstream.CommitEvent{
 				Rev:        "v2",
 				Operation:  "update",
-				Collection: "social.coves.feed.comment",
+				Collection: "social.coves.community.comment",
 				RKey:       rkey2,
 				CID:        "bafycomment4",
 				Record: map[string]interface{}{
-					"$type":   "social.coves.feed.comment",
+					"$type":   "social.coves.community.comment",
 					"content": "Updated content",
 					"reply": map[string]interface{}{
 						"root": map[string]interface{}{
