@@ -376,22 +376,24 @@ func (c *CommunityEventConsumer) verifyHostedByClaim(ctx context.Context, handle
 		return fmt.Errorf("handle domain (%s) doesn't match hostedBy domain (%s)", handleDomain, hostedByDomain)
 	}
 
-	// Optional: Verify DID document exists and is valid
-	// This provides cryptographic proof of domain ownership
-	if err := c.verifyDIDDocument(ctx, hostedByDID, hostedByDomain); err != nil {
-		// Soft-fail: Log warning but don't reject the community
-		// This allows operation during network issues or .well-known misconfiguration
-		log.Printf("⚠️  WARNING: DID document verification failed for %s: %v", hostedByDomain, err)
-		log.Printf("    Community will be indexed, but hostedBy claim cannot be cryptographically verified")
+	// SECURITY: Verify DID document exists and is valid (Bluesky-compatible security model)
+	// MANDATORY bidirectional verification: DID document must claim this handle in alsoKnownAs
+	// This matches Bluesky's security requirements and prevents domain impersonation
+	if err := c.verifyDIDDocument(ctx, hostedByDID, hostedByDomain, handle); err != nil {
+		log.Printf("🚨 SECURITY: Rejecting community - bidirectional DID verification failed: %v", err)
+		return fmt.Errorf("bidirectional DID verification required: %w", err)
 	}
 
 	return nil
 }
 
 // verifyDIDDocument fetches and validates the DID document from .well-known/did.json
-// This provides cryptographic proof that the instance controls the domain
+// Implements Bluesky's bidirectional verification model:
+//   1. Verify DID document exists at https://domain/.well-known/did.json
+//   2. Verify DID document ID matches claimed DID
+//   3. Verify DID document claims the handle in alsoKnownAs field
 // Results are cached with TTL and rate-limited to prevent DoS attacks
-func (c *CommunityEventConsumer) verifyDIDDocument(ctx context.Context, did, domain string) error {
+func (c *CommunityEventConsumer) verifyDIDDocument(ctx context.Context, did, domain, handle string) error {
 	// Skip verification in dev mode
 	if c.skipVerification {
 		return nil
@@ -449,7 +451,8 @@ func (c *CommunityEventConsumer) verifyDIDDocument(ctx context.Context, did, dom
 
 	// Parse DID document
 	var didDoc struct {
-		ID string `json:"id"`
+		ID           string   `json:"id"`
+		AlsoKnownAs  []string `json:"alsoKnownAs"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&didDoc); err != nil {
 		// Cache the failure
@@ -464,8 +467,29 @@ func (c *CommunityEventConsumer) verifyDIDDocument(ctx context.Context, did, dom
 		return fmt.Errorf("DID document ID (%s) doesn't match claimed DID (%s)", didDoc.ID, did)
 	}
 
-	// Cache the success (1 hour TTL)
-	c.cacheVerificationResult(did, true, 1*time.Hour)
+	// SECURITY: Bidirectional verification - DID document must claim this handle
+	// Prevents impersonation where someone points DNS to another user's DID
+	// Format: handle "coves.social" or "!community@coves.social" → check for "at://coves.social"
+	handleDomain := extractDomainFromHandle(handle)
+	expectedAlias := fmt.Sprintf("at://%s", handleDomain)
+
+	found := false
+	for _, alias := range didDoc.AlsoKnownAs {
+		if alias == expectedAlias {
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		// Cache the failure
+		c.cacheVerificationResult(did, false, 5*time.Minute)
+		return fmt.Errorf("DID document does not claim handle domain %s in alsoKnownAs (expected %s, got %v)",
+			handleDomain, expectedAlias, didDoc.AlsoKnownAs)
+	}
+
+	// Cache the success (24 hour TTL - matches Bluesky recommendations)
+	c.cacheVerificationResult(did, true, 24*time.Hour)
 
 	log.Printf("✓ DID document verified: %s", domain)
 	return nil

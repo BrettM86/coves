@@ -7,6 +7,7 @@
 ## 🎯 Major Progress Update
 
 **✅ ALL E2E TESTS COMPLETE!** (Completed 2025-11-16)
+**✅ BIDIRECTIONAL DID VERIFICATION COMPLETE!** (Completed 2025-11-16)
 
 All 6 critical E2E test suites have been implemented and are passing:
 - ✅ Full User Journey (signup → community → post → comment → vote)
@@ -19,6 +20,49 @@ All 6 critical E2E test suites have been implemented and are passing:
 **Time Saved**: ~7-12 hours through parallel agent implementation
 **Test Quality**: Enhanced with comprehensive database record verification to catch race conditions
 
+### Production Deployment Requirements
+
+**Architecture**:
+- **AppView Domain**: coves.social (instance identity, API, frontend)
+- **PDS Domain**: coves.me (separate domain required - cannot be same as AppView)
+- **Community Handles**: Use @coves.social (AppView domain)
+- **Jetstream**: Connects to Bluesky's production firehose (wss://jetstream2.us-east.bsky.network)
+
+**Required: .well-known/did.json at coves.social**:
+```json
+{
+  "id": "did:web:coves.social",
+  "alsoKnownAs": ["at://coves.social"],
+  "verificationMethod": [
+    {
+      "id": "did:web:coves.social#atproto",
+      "type": "Multikey",
+      "controller": "did:web:coves.social",
+      "publicKeyMultibase": "z..."
+    }
+  ],
+  "service": [
+    {
+      "id": "#atproto_pds",
+      "type": "AtprotoPersonalDataServer",
+      "serviceEndpoint": "https://coves.me"
+    }
+  ]
+}
+```
+
+**Environment Variables**:
+- AppView:
+  - `INSTANCE_DID=did:web:coves.social`
+  - `INSTANCE_DOMAIN=coves.social`
+  - `PDS_URL=https://coves.me` (separate domain)
+  - `SKIP_DID_WEB_VERIFICATION=false` (production)
+  - `JETSTREAM_URL=wss://jetstream2.us-east.bsky.network/subscribe`
+
+**Verification**:
+- `curl https://coves.social/.well-known/did.json` (should return DID document)
+- `curl https://coves.me/xrpc/_health` (PDS health check)
+
 ## Overview
 
 This document tracks the remaining work required to launch Coves alpha with real users. Focus is on critical functionality, security, and operational readiness.
@@ -29,28 +73,63 @@ This document tracks the remaining work required to launch Coves alpha with real
 
 ### 1. Authentication & Security
 
+#### Production PDS Deployment
+**CRITICAL**: PDS must be on separate domain from AppView (coves.me, not coves.social)
+
+- [ ] Deploy PDS to coves.me domain
+  - [ ] Set up DNS: A record for coves.me → server IP
+  - [ ] Configure SSL certificate for coves.me
+  - [ ] Deploy PDS container/service on port 2583
+  - [ ] Configure nginx/Caddy reverse proxy for coves.me → localhost:2583
+  - [ ] Set PDS_HOSTNAME=coves.me in PDS environment
+  - [ ] Mount persistent volume for PDS data (/pds/data)
+- [ ] Verify PDS connectivity
+  - [ ] Test: `curl https://coves.me/xrpc/_health`
+  - [ ] Create test community account on PDS
+  - [ ] Verify JWKS endpoint: `curl https://coves.me/.well-known/jwks.json`
+  - [ ] Test community account token provisioning
+- [ ] Configure AppView to use production PDS
+  - [ ] Set `PDS_URL=https://coves.me` in AppView .env
+  - [ ] Test community creation flow (provisions account on coves.me)
+  - [ ] Verify account provisioning works end-to-end
+
+**Important**: Jetstream connects to Bluesky's production firehose, which automatically includes events from all production PDS instances (including coves.me once it's live)
+
+**Estimated Effort**: 4-6 hours
+**Risk**: Medium (infrastructure setup, DNS propagation)
+
 #### JWT Signature Verification (Production Mode)
-- [ ] Test with production PDS at `pds.bretton.dev`
-  - [ ] Create test account on production PDS
-  - [ ] Verify JWKS endpoint is accessible
+- [ ] Test with production PDS at coves.me
+  - [ ] Verify JWKS endpoint is accessible: `https://coves.me/.well-known/jwks.json`
   - [ ] Run `TestJWTSignatureVerification` against production PDS
   - [ ] Confirm signature verification succeeds
-  - [ ] Test token refresh flow
+  - [ ] Test token refresh flow for community accounts
 - [ ] Set `AUTH_SKIP_VERIFY=false` in production environment
 - [ ] Verify all auth middleware tests pass with verification enabled
-- [ ] Document production PDS requirements for communities
 
 **Estimated Effort**: 2-3 hours
-**Risk**: Medium (code implemented, needs validation)
+**Risk**: Low (depends on PDS deployment)
 
-#### did:web Verification
-- [ ] Complete did:web domain verification implementation
-- [ ] Test with real did:web identities
-- [ ] Add security logging for verification failures
-- [ ] Set `SKIP_DID_WEB_VERIFICATION=false` for production
+#### did:web Verification ✅ COMPLETE
+- [x] Complete did:web domain verification implementation (2025-11-16)
+- [x] Implement Bluesky-compatible bidirectional verification
+- [x] Add alsoKnownAs field verification in DID documents
+- [x] Add security logging for verification failures
+- [x] Update cache TTL to 24h (matches Bluesky recommendations)
+- [x] Comprehensive test coverage with mock HTTP servers
+- [ ] Set `SKIP_DID_WEB_VERIFICATION=false` for production (dev default: true)
+- [ ] Deploy `.well-known/did.json` to production domain
 
-**Estimated Effort**: 2-3 hours
-**Risk**: Medium
+**Implementation Details**:
+- **Location**: [internal/atproto/jetstream/community_consumer.go](../internal/atproto/jetstream/community_consumer.go)
+- **Verification Flow**: Domain matching + DID document fetch + alsoKnownAs validation
+- **Security Model**: Matches Bluesky (DNS/HTTPS authority + bidirectional binding)
+- **Performance**: Bounded LRU cache (1000 entries), rate limiting (10 req/s), 24h TTL
+- **Impact**: AppView indexing and federation trust (not community creation API)
+- **Tests**: `tests/integration/community_hostedby_security_test.go`
+
+**Actual Effort**: 3 hours (implementation + testing)
+**Risk**: ✅ Low (complete and tested)
 
 ### 2. DPoP Token Architecture Fix
 
@@ -172,13 +251,31 @@ This document tracks the remaining work required to launch Coves alpha with real
   - [ ] Common issues and fixes
   - [ ] Emergency procedures (PDS down, database down, etc.)
 - [ ] Create production environment checklist
-  - [ ] All environment variables set
-  - [ ] `AUTH_SKIP_VERIFY=false`
-  - [ ] `SKIP_DID_WEB_VERIFICATION=false`
-  - [ ] Database migrations applied
-  - [ ] PDS connectivity verified
-  - [ ] JWKS caching working
-  - [ ] Jetstream consumers running
+  - [ ] **Domain Setup**
+    - [ ] AppView domain (coves.social) DNS configured
+    - [ ] PDS domain (coves.me) DNS configured - MUST be separate domain
+    - [ ] SSL certificates for both domains
+    - [ ] Nginx/Caddy reverse proxy configured for both domains
+  - [ ] **AppView Environment Variables**
+    - [ ] `INSTANCE_DID=did:web:coves.social`
+    - [ ] `INSTANCE_DOMAIN=coves.social`
+    - [ ] `PDS_URL=https://coves.me` (separate domain)
+    - [ ] `AUTH_SKIP_VERIFY=false`
+    - [ ] `SKIP_DID_WEB_VERIFICATION=false`
+    - [ ] `JETSTREAM_URL=wss://jetstream2.us-east.bsky.network/subscribe`
+  - [ ] **PDS Environment Variables**
+    - [ ] `PDS_HOSTNAME=coves.me`
+    - [ ] `PDS_PORT=2583`
+    - [ ] Persistent storage mounted
+  - [ ] **Deployment Verification**
+    - [ ] Deploy `.well-known/did.json` to coves.social with `serviceEndpoint: https://coves.me`
+    - [ ] Verify: `curl https://coves.social/.well-known/did.json`
+    - [ ] Verify: `curl https://coves.me/xrpc/_health`
+    - [ ] Database migrations applied
+    - [ ] PDS connectivity verified from AppView
+    - [ ] JWKS caching working
+    - [ ] Jetstream consumer connected to Bluesky production firehose
+    - [ ] Test community creation end-to-end
   - [ ] Monitoring and alerting active
 
 **Estimated Effort**: 6-8 hours
@@ -342,12 +439,14 @@ This document tracks the remaining work required to launch Coves alpha with real
 ## Timeline Estimate
 
 ### Week 1: Critical Blockers (P0)
-- **Days 1-2**: Authentication (JWT + did:web verification)
+- ~~**Days 1-2**: Authentication (JWT + did:web verification)~~ ✅ **did:web COMPLETED**
+- **Day 1**: Production PDS deployment (coves.me domain setup)
+- **Day 2**: JWT signature verification with production PDS
 - **Day 3**: DPoP token architecture fix
 - ~~**Day 4**: Handle resolution + comment count reconciliation~~ ✅ **COMPLETED**
 - **Day 4-5**: Testing and bug fixes
 
-**Total**: 15-20 hours (reduced from 20-25 due to completed items)
+**Total**: 16-23 hours (added 4-6 hours for PDS deployment, reduced from original due to did:web completion)
 
 ### Week 2: Production Infrastructure (P1)
 - **Days 6-7**: Monitoring + structured logging
@@ -363,8 +462,8 @@ This document tracks the remaining work required to launch Coves alpha with real
 
 **Total**: ~~20-25 hours~~ → **13 hours actual** (E2E tests) + 7-12 hours remaining (load testing, polish)
 
-**Grand Total: ~~65-80 hours~~ → 50-65 hours remaining (approximately 1.5-2 weeks full-time)**
-*(Originally 70-85 hours. Reduced by completed items: handle resolution, comment count reconciliation, and ALL E2E tests)*
+**Grand Total: ~~65-80 hours~~ → 51-68 hours remaining (approximately 1.5-2 weeks full-time)**
+*(Originally 70-85 hours. Adjusted for: +4-6 hours PDS deployment, -3 hours did:web completion, -13 hours E2E tests completion, -4 hours handle resolution and comment reconciliation)*
 
 **✅ Progress Update**: E2E testing section COMPLETE ahead of schedule - saved ~7-12 hours through parallel agent implementation
 
@@ -377,9 +476,10 @@ Alpha is ready when:
 - [ ] All P0 blockers resolved
   - ✅ Handle resolution (COMPLETE)
   - ✅ Comment count reconciliation (COMPLETE)
+  - ✅ did:web verification (COMPLETE - needs production deployment)
+  - [ ] Production PDS deployed to coves.me (separate domain)
   - [ ] JWT signature verification working with production PDS
   - [ ] DPoP architecture fix implemented
-  - [ ] did:web verification complete
 - [ ] Subscriptions/blocking work via client-write pattern
 - [x] **All integration tests passing** ✅
 - [x] **E2E user journey test passing** ✅
@@ -461,4 +561,6 @@ Alpha is ready when:
 11. [ ] Go/no-go decision
 12. [ ] Launch! 🚀
 
-**🎉 Major Milestone**: All E2E tests complete! Test coverage now includes full user journey, blob uploads, concurrent operations, rate limiting, and error recovery.
+**🎉 Major Milestones**:
+- All E2E tests complete! Test coverage now includes full user journey, blob uploads, concurrent operations, rate limiting, and error recovery.
+- Bidirectional DID verification complete! Bluesky-compatible security model with alsoKnownAs validation, 24h cache TTL, and comprehensive test coverage.

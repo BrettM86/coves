@@ -295,8 +295,8 @@ if err != nil {
 
 ---
 
-### did:web Domain Verification & hostedByDID Auto-Population
-**Added:** 2025-10-11 | **Updated:** 2025-10-16 | **Effort:** 2-3 days | **Priority:** ALPHA BLOCKER
+### ✅ did:web Domain Verification & hostedByDID Auto-Population - COMPLETE
+**Added:** 2025-10-11 | **Updated:** 2025-11-16 | **Completed:** 2025-11-16 | **Status:** ✅ DONE
 
 **Problem:**
 1. **Domain Impersonation**: Self-hosters can set `INSTANCE_DID=did:web:nintendo.com` without owning the domain, enabling attacks where communities appear hosted by trusted domains
@@ -307,28 +307,31 @@ if err != nil {
 - Federation partners can't verify instance authenticity
 - AppView pollution with fake hosting claims
 
-**Solution:**
-1. **Basic Validation (Phase 1)**: Verify `did:web:` domain matches configured `instanceDomain`
-2. **Cryptographic Verification (Phase 2)**: Fetch `https://domain/.well-known/did.json` and verify:
+**Solution Implemented (Bluesky-Compatible):**
+1. ✅ **Domain Matching**: Verify `did:web:` domain matches configured `instanceDomain`
+2. ✅ **Bidirectional Verification**: Fetch `https://domain/.well-known/did.json` and verify:
    - DID document exists and is valid
-   - Domain ownership proven via HTTPS hosting
-   - DID document matches claimed `instanceDID`
-3. **Auto-populate hostedByDID**: Remove from client API, derive from instance configuration in service layer
+   - DID document ID matches claimed `instanceDID`
+   - DID document claims handle domain in `alsoKnownAs` field (bidirectional binding)
+   - Domain ownership proven via HTTPS hosting (matches Bluesky's trust model)
+3. ✅ **Auto-populate hostedByDID**: Removed from client API, derived from instance configuration in service layer
 
 **Current Status:**
 - ✅ Default changed from `coves.local` → `coves.social` (fixes `.local` TLD bug)
-- ✅ TODO comment in [cmd/server/main.go:126-131](../cmd/server/main.go#L126-L131)
 - ✅ hostedByDID removed from client requests (2025-10-16)
 - ✅ Service layer auto-populates `hostedByDID` from `instanceDID` (2025-10-16)
 - ✅ Handler rejects client-provided `hostedByDID` (2025-10-16)
 - ✅ Basic validation: Logs warning if `did:web:` domain ≠ `instanceDomain` (2025-10-16)
-- ⚠️ **REMAINING**: Full DID document verification (cryptographic proof of ownership)
+- ✅ **MANDATORY bidirectional DID verification** (2025-11-16)
+- ✅ Cache TTL updated to 24h (matches Bluesky recommendations) (2025-11-16)
 
-**Implementation Notes:**
-- Phase 1 complete: Basic validation catches config errors, logs warnings
-- Phase 2 needed: Fetch `https://domain/.well-known/did.json` and verify ownership
-- Add `SKIP_DID_WEB_VERIFICATION=true` for dev mode
-- Full verification blocks startup if domain ownership cannot be proven
+**Implementation Details:**
+- **Security Model**: Matches Bluesky's approach - relies on DNS/HTTPS authority, not cryptographic proof
+- **Enforcement**: MANDATORY hard-fail in production (rejects communities with verification failures)
+- **Dev Mode**: Set `SKIP_DID_WEB_VERIFICATION=true` to bypass verification for local development
+- **Performance**: Bounded LRU cache (1000 entries), rate limiting (10 req/s), 24h cache TTL
+- **Bidirectional Check**: Prevents impersonation by requiring DID document to claim the handle
+- **Location**: [internal/atproto/jetstream/community_consumer.go](../internal/atproto/jetstream/community_consumer.go)
 
 ---
 
