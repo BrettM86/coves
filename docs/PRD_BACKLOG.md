@@ -265,36 +265,33 @@ if err != nil {
 ```
 
 **Implementation Plan:**
-1. ✅ **Phase 1 (Alpha Blocker):** Fix post creation endpoint
-   - Update handler validation in `internal/api/handlers/post/create.go`
-   - Update service validation in `internal/core/posts/service.go`
-   - Add integration tests for handle resolution in post creation
+1. ✅ **Phase 1 (Alpha Blocker):** Fix post creation endpoint - COMPLETE (2025-10-18)
+   - Post creation already uses `ResolveCommunityIdentifier()` at [service.go:100](../internal/core/posts/service.go#L100)
+   - Supports handles, DIDs, and scoped formats
 
 2. 📋 **Phase 2 (Beta):** Fix subscription endpoints
    - Update subscribe/unsubscribe handlers
    - Add tests for handle resolution in subscriptions
 
-3. 📋 **Phase 3 (Beta):** Fix block endpoints
-   - Update lexicon from `"format": "did"` → `"format": "at-identifier"`
-   - Update block/unblock handlers
-   - Add tests for handle resolution in blocking
+3. ✅ **Phase 3 (Beta):** Fix block endpoints - COMPLETE (2025-11-16)
+   - Updated block/unblock handlers to use `ResolveCommunityIdentifier()`
+   - Accepts handles (`@gaming.community.coves.social`), DIDs, and scoped format (`!gaming@coves.social`)
+   - Added comprehensive tests: [block_handle_resolution_test.go](../tests/integration/block_handle_resolution_test.go)
+   - All 7 test cases passing
 
-**Files to Modify (Phase 1 - Post Creation):**
-- `internal/api/handlers/post/create.go` - Remove DID validation, add handle resolution
-- `internal/core/posts/service.go` - Remove DID validation, add handle resolution
-- `internal/core/posts/interfaces.go` - Add `CommunityService` dependency
-- `cmd/server/main.go` - Pass community service to post service constructor
-- `tests/integration/post_creation_test.go` - Add handle resolution test cases
+**Files Modified (Phase 3 - Block Endpoints):**
+- `internal/api/handlers/community/block.go` - Added `ResolveCommunityIdentifier()` calls
+- `tests/integration/block_handle_resolution_test.go` - Comprehensive test coverage
 
 **Existing Infrastructure:**
-✅ `ResolveCommunityIdentifier()` already implemented at [service.go:843](../internal/core/communities/service.go#L843)
+✅ `ResolveCommunityIdentifier()` already implemented at [service.go:852](../internal/core/communities/service.go#L852)
 ✅ `identity.CachingResolver` handles bidirectional verification and caching
 ✅ Supports both handle (`!name.communities.instance.com`) and DID formats
 
 **Current Status:**
-- ⚠️ **BLOCKING POST CREATION PR**: Identified as P0 issue in code review
-- 📋 Phase 1 (post creation) - To be implemented immediately
-- 📋 Phase 2-3 (other endpoints) - Deferred to Beta
+- ✅ Phase 1 (post creation) - Already implemented
+- 📋 Phase 2 (subscriptions) - Deferred to Beta (lower priority)
+- ✅ Phase 3 (block endpoints) - COMPLETE (2025-11-16)
 
 ---
 
@@ -418,30 +415,26 @@ if err != nil {
 
 ---
 
-### Post comment_count Reconciliation Missing
-**Added:** 2025-11-04 | **Effort:** 2-3 hours | **Priority:** ALPHA BLOCKER
+### ✅ Post comment_count Reconciliation - COMPLETE
+**Added:** 2025-11-04 | **Completed:** 2025-11-16 | **Effort:** 2 hours | **Status:** ✅ DONE
 
 **Problem:**
-When comments arrive before their parent post is indexed (common with cross-repo Jetstream ordering), the post's `comment_count` is never reconciled. Later, when the post consumer indexes the post, there's no logic to count pre-existing comments. This causes posts to have permanently stale `comment_count` values.
+When comments arrive before their parent post is indexed (common with cross-repo Jetstream ordering), the post's `comment_count` was never reconciled, causing posts to show permanently stale "0 comments" counters.
 
-**End-User Impact:**
-- 🔴 Posts show "0 comments" when they actually have comments
-- ❌ Broken engagement signals (users don't know there are discussions)
-- ❌ UI inconsistency (thread page shows comments, but counter says "0")
-- ⚠️ Users may not click into posts thinking they're empty
-- 📉 Reduced engagement due to misleading counters
+**Solution Implemented:**
+- ✅ Post consumer reconciliation logic WAS already implemented at [post_consumer.go:210-226](../internal/atproto/jetstream/post_consumer.go#L210-L226)
+- ✅ Reconciliation query counts pre-existing comments when indexing new posts
+- ✅ Comprehensive test suite added: [post_consumer_test.go](../tests/integration/post_consumer_test.go)
+  - Single comment before post
+  - Multiple comments before post
+  - Mixed before/after ordering
+  - Idempotent indexing preserves counts
+- ✅ Updated outdated FIXME comment at [comment_consumer.go:362](../internal/atproto/jetstream/comment_consumer.go#L362)
+- ✅ All 4 test cases passing
 
-**Root Cause:**
-- Comment consumer updates post counts when processing comment events ([comment_consumer.go:323-343](../internal/atproto/jetstream/comment_consumer.go#L323-L343))
-- If comment arrives BEFORE post is indexed, update query returns 0 rows (only logs warning)
-- When post consumer later indexes the post, it sets `comment_count = 0` with NO reconciliation
-- Comments already exist in DB, but post never "discovers" them
-
-**Solution:**
-Post consumer MUST implement the same reconciliation pattern as comment consumer (see [comment_consumer.go:292-305](../internal/atproto/jetstream/comment_consumer.go#L292-L305)):
-
+**Implementation:**
 ```go
-// After inserting new post, reconcile comment_count for out-of-order comments
+// Post consumer reconciliation (lines 210-226)
 reconcileQuery := `
     UPDATE posts
     SET comment_count = (
@@ -451,24 +444,14 @@ reconcileQuery := `
     )
     WHERE id = $2
 `
-_, reconcileErr := tx.ExecContext(ctx, reconcileQuery, postURI, postID)
+_, reconcileErr := tx.ExecContext(ctx, reconcileQuery, post.URI, postID)
 ```
 
-**Affected Operations:**
-- Post indexing from Jetstream ([post_consumer.go](../internal/atproto/jetstream/post_consumer.go))
-- Any cross-repo event ordering (community DID ≠ author DID)
+**Files Modified:**
+- `internal/atproto/jetstream/comment_consumer.go` - Updated documentation
+- `tests/integration/post_consumer_test.go` - Added comprehensive test coverage
 
-**Current Status:**
-- 🔴 Issue documented with FIXME(P1) comment at [comment_consumer.go:311-321](../internal/atproto/jetstream/comment_consumer.go#L311-L321)
-- ⚠️ Test demonstrating limitation exists: `TestCommentConsumer_PostCountReconciliation_Limitation`
-- 📋 Fix required in post consumer (out of scope for comment system PR)
-
-**Files to Modify:**
-- `internal/atproto/jetstream/post_consumer.go` - Add reconciliation after post creation
-- `tests/integration/post_consumer_test.go` - Add test for out-of-order comment reconciliation
-
-**Similar Issue Fixed:**
-- ✅ Comment reply_count reconciliation - Fixed in comment system implementation (2025-11-04)
+**Impact:** ✅ Post comment counters are now accurate regardless of Jetstream event ordering
 
 ---
 

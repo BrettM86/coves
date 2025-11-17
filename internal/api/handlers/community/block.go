@@ -6,13 +6,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"regexp"
-	"strings"
-)
-
-// Package-level compiled regex for DID validation (compiled once at startup)
-var (
-	didRegex = regexp.MustCompile(`^did:(plc|web):[a-zA-Z0-9._:%-]+$`)
 )
 
 // BlockHandler handles community blocking operations
@@ -30,9 +23,9 @@ func NewBlockHandler(service communities.Service) *BlockHandler {
 // HandleBlock blocks a community
 // POST /xrpc/social.coves.community.blockCommunity
 //
-// Request body: { "community": "did:plc:xxx" }
-// Note: Per lexicon spec, only DIDs are accepted (not handles).
-// The block record's "subject" field requires format: "did".
+// Request body: { "community": "at-identifier" }
+// Accepts DIDs (did:plc:xxx), handles (@gaming.community.coves.social), or scoped (!gaming@coves.social)
+// The block record's "subject" field requires format: "did", so we resolve the identifier internally.
 func (h *BlockHandler) HandleBlock(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -41,7 +34,7 @@ func (h *BlockHandler) HandleBlock(w http.ResponseWriter, r *http.Request) {
 
 	// Parse request body
 	var req struct {
-		Community string `json:"community"` // DID only (per lexicon)
+		Community string `json:"community"` // at-identifier (DID or handle)
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -51,19 +44,6 @@ func (h *BlockHandler) HandleBlock(w http.ResponseWriter, r *http.Request) {
 
 	if req.Community == "" {
 		writeError(w, http.StatusBadRequest, "InvalidRequest", "community is required")
-		return
-	}
-
-	// Validate DID format (per lexicon: format must be "did")
-	if !strings.HasPrefix(req.Community, "did:") {
-		writeError(w, http.StatusBadRequest, "InvalidRequest",
-			"community must be a DID (did:plc:... or did:web:...)")
-		return
-	}
-
-	// Validate DID format with regex: did:method:identifier
-	if !didRegex.MatchString(req.Community) {
-		writeError(w, http.StatusBadRequest, "InvalidRequest", "invalid DID format")
 		return
 	}
 
@@ -80,8 +60,25 @@ func (h *BlockHandler) HandleBlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Block via service (write-forward to PDS)
-	block, err := h.service.BlockCommunity(r.Context(), userDID, userAccessToken, req.Community)
+	// Resolve community identifier (handle or DID) to DID
+	// This allows users to block by handle: @gaming.community.coves.social or !gaming@coves.social
+	communityDID, err := h.service.ResolveCommunityIdentifier(r.Context(), req.Community)
+	if err != nil {
+		if communities.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "CommunityNotFound", "Community not found")
+			return
+		}
+		if communities.IsValidationError(err) {
+			writeError(w, http.StatusBadRequest, "InvalidRequest", err.Error())
+			return
+		}
+		log.Printf("Failed to resolve community identifier %s: %v", req.Community, err)
+		writeError(w, http.StatusInternalServerError, "InternalError", "Failed to resolve community")
+		return
+	}
+
+	// Block via service (write-forward to PDS) using resolved DID
+	block, err := h.service.BlockCommunity(r.Context(), userDID, userAccessToken, communityDID)
 	if err != nil {
 		handleServiceError(w, err)
 		return
@@ -105,8 +102,8 @@ func (h *BlockHandler) HandleBlock(w http.ResponseWriter, r *http.Request) {
 // HandleUnblock unblocks a community
 // POST /xrpc/social.coves.community.unblockCommunity
 //
-// Request body: { "community": "did:plc:xxx" }
-// Note: Per lexicon spec, only DIDs are accepted (not handles).
+// Request body: { "community": "at-identifier" }
+// Accepts DIDs (did:plc:xxx), handles (@gaming.community.coves.social), or scoped (!gaming@coves.social)
 func (h *BlockHandler) HandleUnblock(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -115,7 +112,7 @@ func (h *BlockHandler) HandleUnblock(w http.ResponseWriter, r *http.Request) {
 
 	// Parse request body
 	var req struct {
-		Community string `json:"community"` // DID only (per lexicon)
+		Community string `json:"community"` // at-identifier (DID or handle)
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -125,19 +122,6 @@ func (h *BlockHandler) HandleUnblock(w http.ResponseWriter, r *http.Request) {
 
 	if req.Community == "" {
 		writeError(w, http.StatusBadRequest, "InvalidRequest", "community is required")
-		return
-	}
-
-	// Validate DID format (per lexicon: format must be "did")
-	if !strings.HasPrefix(req.Community, "did:") {
-		writeError(w, http.StatusBadRequest, "InvalidRequest",
-			"community must be a DID (did:plc:... or did:web:...)")
-		return
-	}
-
-	// Validate DID format with regex: did:method:identifier
-	if !didRegex.MatchString(req.Community) {
-		writeError(w, http.StatusBadRequest, "InvalidRequest", "invalid DID format")
 		return
 	}
 
@@ -154,8 +138,25 @@ func (h *BlockHandler) HandleUnblock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Unblock via service (delete record on PDS)
-	err := h.service.UnblockCommunity(r.Context(), userDID, userAccessToken, req.Community)
+	// Resolve community identifier (handle or DID) to DID
+	// This allows users to unblock by handle: @gaming.community.coves.social or !gaming@coves.social
+	communityDID, err := h.service.ResolveCommunityIdentifier(r.Context(), req.Community)
+	if err != nil {
+		if communities.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "CommunityNotFound", "Community not found")
+			return
+		}
+		if communities.IsValidationError(err) {
+			writeError(w, http.StatusBadRequest, "InvalidRequest", err.Error())
+			return
+		}
+		log.Printf("Failed to resolve community identifier %s: %v", req.Community, err)
+		writeError(w, http.StatusInternalServerError, "InternalError", "Failed to resolve community")
+		return
+	}
+
+	// Unblock via service (delete record on PDS) using resolved DID
+	err = h.service.UnblockCommunity(r.Context(), userDID, userAccessToken, communityDID)
 	if err != nil {
 		handleServiceError(w, err)
 		return

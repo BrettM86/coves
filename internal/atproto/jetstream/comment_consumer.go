@@ -359,17 +359,13 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 	// Parent could be a post (increment comment_count) or a comment (increment reply_count)
 	// Parse collection from parent URI to determine target table
 	//
-	// FIXME(P1): Post comment_count reconciliation not implemented
-	// When a comment arrives before its parent post (common with cross-repo Jetstream ordering),
-	// the post update below returns 0 rows and we only log a warning. Later, when the post
-	// is indexed by the post consumer, there's NO reconciliation logic to count pre-existing
-	// comments. This causes posts to have permanently stale comment_count values.
+	// NOTE: Post comment_count reconciliation IS implemented in post_consumer.go:210-226
+	// When a comment arrives before its parent post, the post update below returns 0 rows
+	// and we log a warning. Later, when the post is indexed, the post consumer reconciles
+	// comment_count by counting all pre-existing comments. This ensures accurate counts
+	// despite out-of-order Jetstream event delivery.
 	//
-	// FIX REQUIRED: Post consumer MUST implement the same reconciliation pattern as comments
-	// (see lines 292-305 above). When indexing a new post, count any comments where parent_uri
-	// matches the post URI and set comment_count accordingly.
-	//
-	// Test demonstrating issue: TestCommentConsumer_PostCountReconciliation_Limitation
+	// Test coverage: TestPostConsumer_CommentCountReconciliation in post_consumer_test.go
 	collection := utils.ExtractCollectionFromURI(comment.ParentURI)
 
 	var updateQuery string
