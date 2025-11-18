@@ -31,7 +31,11 @@ aggregators/kagi-news/
 │       ├── sample_rss_item.xml
 │       └── world.xml
 ├── scripts/
-│   └── generate_did.py        # Helper to generate aggregator DID (TODO)
+│   └── setup.sh               # Automated Coves registration script
+├── Dockerfile                 # Docker image definition
+├── docker-compose.yml         # Docker Compose configuration
+├── docker-entrypoint.sh       # Container entrypoint script
+├── .dockerignore              # Docker build exclusions
 ├── requirements.txt           # Python dependencies
 ├── config.example.yaml        # Example configuration
 ├── .env.example               # Environment variables template
@@ -39,12 +43,70 @@ aggregators/kagi-news/
 └── README.md
 ```
 
+## Registration with Coves
+
+Before running the aggregator, you must register it with a Coves instance. This creates a DID for your aggregator and registers it with Coves.
+
+### Quick Setup (Automated)
+
+The automated setup script handles the entire registration process:
+
+```bash
+cd scripts
+chmod +x setup.sh
+./setup.sh
+```
+
+This will:
+1. **Create a PDS account** for your aggregator (generates a DID)
+2. **Generate `.well-known/atproto-did`** file for domain verification
+3. **Pause for manual upload** - you'll upload the file to your web server
+4. **Register with Coves** instance via XRPC
+5. **Create service declaration** record (indexed by Jetstream)
+
+**Manual step required:** During the process, you'll need to upload the `.well-known/atproto-did` file to your domain so it's accessible at `https://yourdomain.com/.well-known/atproto-did`.
+
+After completion, you'll have a `kagi-aggregator-config.env` file with:
+- Aggregator DID and credentials
+- Access/refresh JWTs
+- Service declaration URI
+
+**Keep this file secure!** It contains your aggregator's credentials.
+
+### Manual Setup (Step-by-step)
+
+Alternatively, use the generic setup scripts from the main Coves repo for more control:
+
+```bash
+# From the Coves project root
+cd scripts/aggregator-setup
+
+# Follow the 4-step process
+./1-create-pds-account.sh
+./2-setup-wellknown.sh
+./3-register-with-coves.sh
+./4-create-service-declaration.sh
+```
+
+See [scripts/aggregator-setup/README.md](../../scripts/aggregator-setup/README.md) for detailed documentation on each step.
+
+### What Happens During Registration?
+
+1. **PDS Account Creation**: Your aggregator gets a `did:plc:...` identifier
+2. **Domain Verification**: Proves you control your aggregator's domain
+3. **Coves Registration**: Inserts your DID into the Coves instance's `users` table
+4. **Service Declaration**: Creates a record that gets indexed into the `aggregators` table
+5. **Ready for Authorization**: Community moderators can now authorize your aggregator
+
+Once registered and authorized by a community, your aggregator can post content.
+
 ## Setup
 
 ### Prerequisites
 
 - Python 3.11+
 - python3-venv package (`apt install python3.12-venv`)
+- **Completed registration** (see above)
 
 ### Installation
 
@@ -83,6 +145,131 @@ pytest tests/test_html_parser.py -v
 # Run with coverage
 pytest --cov=src --cov-report=html
 ```
+
+## Deployment
+
+### Docker Deployment (Recommended for Production)
+
+The easiest way to deploy the Kagi aggregator is using Docker. The cron job runs inside the container automatically.
+
+#### Prerequisites
+
+- Docker and Docker Compose installed
+- Completed registration (you have `.env` with credentials)
+- `config.yaml` configured with your feed mappings
+
+#### Quick Start
+
+1. **Configure your environment:**
+   ```bash
+   # Copy and edit configuration
+   cp config.example.yaml config.yaml
+   cp .env.example .env
+
+   # Edit .env with your aggregator credentials
+   nano .env
+   ```
+
+2. **Start the aggregator:**
+   ```bash
+   docker compose up -d
+   ```
+
+3. **View logs:**
+   ```bash
+   docker compose logs -f
+   ```
+
+4. **Stop the aggregator:**
+   ```bash
+   docker compose down
+   ```
+
+#### Configuration
+
+The `docker-compose.yml` file supports these environment variables:
+
+- **`AGGREGATOR_HANDLE`** (required): Your aggregator's handle
+- **`AGGREGATOR_PASSWORD`** (required): Your aggregator's password
+- **`COVES_API_URL`** (optional): Override Coves API endpoint (defaults to `https://api.coves.social`)
+- **`RUN_ON_STARTUP`** (optional): Set to `true` to run immediately on container start (useful for testing)
+
+#### Testing the Setup
+
+Run the aggregator immediately without waiting for cron:
+
+```bash
+# Run once and exit
+docker compose run --rm kagi-aggregator python -m src.main
+
+# Or set RUN_ON_STARTUP=true in .env and restart
+docker compose restart
+```
+
+#### Production Deployment
+
+For production, consider:
+
+1. **Using Docker Secrets** for credentials:
+   ```yaml
+   secrets:
+     aggregator_credentials:
+       file: ./secrets/aggregator.env
+   ```
+
+2. **Setting up log rotation** (already configured in docker-compose.yml):
+   - Max size: 10MB per file
+   - Max files: 3
+
+3. **Monitoring health checks:**
+   ```bash
+   docker inspect --format='{{.State.Health.Status}}' kagi-news-aggregator
+   ```
+
+4. **Auto-restart on failure** (already enabled with `restart: unless-stopped`)
+
+#### Viewing Cron Logs
+
+```bash
+# Follow cron execution logs
+docker compose logs -f kagi-aggregator
+
+# View last 100 lines
+docker compose logs --tail=100 kagi-aggregator
+```
+
+#### Updating the Aggregator
+
+```bash
+# Pull latest code
+git pull
+
+# Rebuild and restart
+docker compose up -d --build
+```
+
+### Manual Deployment (Alternative)
+
+If you prefer running without Docker, use the traditional approach:
+
+1. **Install dependencies:**
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install -r requirements.txt
+   ```
+
+2. **Configure crontab:**
+   ```bash
+   # Edit the crontab file with your paths
+   # Then install it:
+   crontab crontab
+   ```
+
+3. **Verify cron is running:**
+   ```bash
+   crontab -l
+   ```
 
 ## Development Status
 
