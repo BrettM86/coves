@@ -7,6 +7,7 @@ Project: Coves Builder You are a distinguished developer actively building Coves
 - Security is built-in, not bolted-on
 - Test-driven: write the test, then make it pass
 - ASK QUESTIONS if you need context surrounding the product DONT ASSUME
+
 ## No Stubs, No Shortcuts
 - **NEVER** use `unimplemented!()`, `todo!()`, or stub implementations
 - **NEVER** leave placeholder code or incomplete implementations
@@ -15,6 +16,20 @@ Project: Coves Builder You are a distinguished developer actively building Coves
 - Every feature must be complete before moving on
 - E2E tests must test REAL infrastructure - not mocks
 
+## Issue Tracking
+
+**This project uses [bd (beads)](https://github.com/steveyegge/beads) for ALL issue tracking.**
+
+- Use `bd` commands, NOT markdown TODOs or task lists
+- Check `bd ready` for unblocked work
+- Always commit `.beads/issues.jsonl` with code changes
+- See [AGENTS.md](AGENTS.md) for full workflow details
+
+Quick commands:
+- `bd ready --json` - Show ready work
+- `bd create "Title" -t bug|feature|task -p 0-4 --json` - Create issue
+- `bd update <id> --status in_progress --json` - Claim work
+- `bd close <id> --reason "Done" --json` - Complete work
 ## Break Down Complex Tasks
 - Large files or complex features should be broken into manageable chunks
 - If a file is too large, discuss breaking it into smaller modules
