@@ -1,0 +1,48 @@
+services:
+  kagi-aggregator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kagi-news-aggregator
+    restart: unless-stopped
+
+    # Environment variables - override in .env file or here
+    environment:
+      # Required: Aggregator credentials
+      - AGGREGATOR_HANDLE=${AGGREGATOR_HANDLE}
+      - AGGREGATOR_PASSWORD=${AGGREGATOR_PASSWORD}
+
+      # Optional: Override Coves API URL
+      - COVES_API_URL=${COVES_API_URL:-https://api.coves.social}
+
+      # Optional: Run immediately on startup (useful for testing)
+      - RUN_ON_STARTUP=${RUN_ON_STARTUP:-false}
+
+    # Mount config file if you want to modify it without rebuilding
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data  # For state persistence (if implemented)
+
+    # Use env_file to load credentials from .env
+    env_file:
+      - .env
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "pgrep", "cron"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+# Optional: Networks for multi-container setups
+# networks:
+#   coves:
+#     external: true
