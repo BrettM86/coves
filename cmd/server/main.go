@@ -440,8 +440,8 @@ func main() {
 	routes.RegisterDiscoverRoutes(r, discoverService)
 	log.Println("Discover XRPC endpoints registered (public, no auth required)")
 
-	routes.RegisterAggregatorRoutes(r, aggregatorService)
-	log.Println("Aggregator XRPC endpoints registered (query endpoints public)")
+	routes.RegisterAggregatorRoutes(r, aggregatorService, userService, identityResolver)
+	log.Println("Aggregator XRPC endpoints registered (query endpoints public, registration endpoint public)")
 
 	// Comment query API - supports optional authentication for viewer state
 	// Stricter rate limiting for expensive nested comment queries

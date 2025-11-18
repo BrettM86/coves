@@ -2,7 +2,12 @@ package routes
 
 import (
 	"Coves/internal/api/handlers/aggregator"
+	"Coves/internal/api/middleware"
+	"Coves/internal/atproto/identity"
 	"Coves/internal/core/aggregators"
+	"Coves/internal/core/users"
+	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -12,11 +17,16 @@ import (
 func RegisterAggregatorRoutes(
 	r chi.Router,
 	aggregatorService aggregators.Service,
+	userService users.UserService,
+	identityResolver identity.Resolver,
 ) {
 	// Create query handlers
 	getServicesHandler := aggregator.NewGetServicesHandler(aggregatorService)
 	getAuthorizationsHandler := aggregator.NewGetAuthorizationsHandler(aggregatorService)
 	listForCommunityHandler := aggregator.NewListForCommunityHandler(aggregatorService)
+
+	// Create registration handler
+	registerHandler := aggregator.NewRegisterHandler(userService, identityResolver)
 
 	// Query endpoints (public - no auth required)
 	// GET /xrpc/social.coves.aggregator.getServices?dids=did:plc:abc,did:plc:def
@@ -30,6 +40,14 @@ func RegisterAggregatorRoutes(
 	// GET /xrpc/social.coves.aggregator.listForCommunity?communityDid=did:plc:xyz&enabledOnly=true
 	// Lists aggregators authorized by a community
 	r.Get("/xrpc/social.coves.aggregator.listForCommunity", listForCommunityHandler.HandleListForCommunity)
+
+	// Registration endpoint (public - no auth required)
+	// Aggregators register themselves after creating their own PDS accounts
+	// POST /xrpc/social.coves.aggregator.register
+	// Rate limited to 10 requests per 10 minutes per IP to prevent abuse
+	registrationRateLimiter := middleware.NewRateLimiter(10, 10*time.Minute)
+	r.Post("/xrpc/social.coves.aggregator.register",
+		registrationRateLimiter.Middleware(http.HandlerFunc(registerHandler.HandleRegister)).ServeHTTP)
 
 	// Write endpoints (Phase 2 - require authentication and moderator permissions)
 	// TODO: Implement after Jetstream consumer is ready
