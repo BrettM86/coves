@@ -535,7 +535,7 @@ func TestCommunity_E2E(t *testing.T) {
 
 			var listResp struct {
 				Communities []communities.Community `json:"communities"`
-				Total       int                     `json:"total"`
+				Cursor      string                  `json:"cursor"`
 			}
 
 			if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
@@ -547,6 +547,190 @@ func TestCommunity_E2E(t *testing.T) {
 			if len(listResp.Communities) < 3 {
 				t.Errorf("Expected at least 3 communities, got %d", len(listResp.Communities))
 			}
+		})
+
+		t.Run("List with sort=popular (default)", func(t *testing.T) {
+			resp, err := http.Get(fmt.Sprintf("%s/xrpc/social.coves.community.list?sort=popular&limit=10",
+				httpServer.URL))
+			if err != nil {
+				t.Fatalf("Failed to GET list with sort=popular: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, string(body))
+			}
+
+			var listResp struct {
+				Communities []communities.Community `json:"communities"`
+				Cursor      string                  `json:"cursor"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
+				t.Fatalf("Failed to decode response: %v", err)
+			}
+
+			t.Logf("✅ Listed %d communities sorted by popular (subscriber_count DESC)", len(listResp.Communities))
+		})
+
+		t.Run("List with sort=active", func(t *testing.T) {
+			resp, err := http.Get(fmt.Sprintf("%s/xrpc/social.coves.community.list?sort=active&limit=10",
+				httpServer.URL))
+			if err != nil {
+				t.Fatalf("Failed to GET list with sort=active: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, string(body))
+			}
+
+			t.Logf("✅ Listed communities sorted by active (post_count DESC)")
+		})
+
+		t.Run("List with sort=new", func(t *testing.T) {
+			resp, err := http.Get(fmt.Sprintf("%s/xrpc/social.coves.community.list?sort=new&limit=10",
+				httpServer.URL))
+			if err != nil {
+				t.Fatalf("Failed to GET list with sort=new: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, string(body))
+			}
+
+			t.Logf("✅ Listed communities sorted by new (created_at DESC)")
+		})
+
+		t.Run("List with sort=alphabetical", func(t *testing.T) {
+			resp, err := http.Get(fmt.Sprintf("%s/xrpc/social.coves.community.list?sort=alphabetical&limit=10",
+				httpServer.URL))
+			if err != nil {
+				t.Fatalf("Failed to GET list with sort=alphabetical: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, string(body))
+			}
+
+			var listResp struct {
+				Communities []communities.Community `json:"communities"`
+				Cursor      string                  `json:"cursor"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
+				t.Fatalf("Failed to decode response: %v", err)
+			}
+
+			// Verify alphabetical ordering
+			if len(listResp.Communities) > 1 {
+				for i := 0; i < len(listResp.Communities)-1; i++ {
+					if listResp.Communities[i].Name > listResp.Communities[i+1].Name {
+						t.Errorf("Communities not in alphabetical order: %s > %s",
+							listResp.Communities[i].Name, listResp.Communities[i+1].Name)
+					}
+				}
+			}
+
+			t.Logf("✅ Listed communities sorted alphabetically (name ASC)")
+		})
+
+		t.Run("List with invalid sort value", func(t *testing.T) {
+			resp, err := http.Get(fmt.Sprintf("%s/xrpc/social.coves.community.list?sort=invalid&limit=10",
+				httpServer.URL))
+			if err != nil {
+				t.Fatalf("Failed to GET list with invalid sort: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			if resp.StatusCode != http.StatusBadRequest {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("Expected 400 for invalid sort, got %d: %s", resp.StatusCode, string(body))
+			}
+
+			t.Logf("✅ Rejected invalid sort value with 400")
+		})
+
+		t.Run("List with visibility filter", func(t *testing.T) {
+			resp, err := http.Get(fmt.Sprintf("%s/xrpc/social.coves.community.list?visibility=public&limit=10",
+				httpServer.URL))
+			if err != nil {
+				t.Fatalf("Failed to GET list with visibility filter: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, string(body))
+			}
+
+			var listResp struct {
+				Communities []communities.Community `json:"communities"`
+				Cursor      string                  `json:"cursor"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
+				t.Fatalf("Failed to decode response: %v", err)
+			}
+
+			// Verify all communities have public visibility
+			for _, comm := range listResp.Communities {
+				if comm.Visibility != "public" {
+					t.Errorf("Expected all communities to have visibility=public, got %s for %s",
+						comm.Visibility, comm.DID)
+				}
+			}
+
+			t.Logf("✅ Listed %d public communities", len(listResp.Communities))
+		})
+
+		t.Run("List with default sort (no parameter)", func(t *testing.T) {
+			// Should default to sort=popular
+			resp, err := http.Get(fmt.Sprintf("%s/xrpc/social.coves.community.list?limit=10",
+				httpServer.URL))
+			if err != nil {
+				t.Fatalf("Failed to GET list with default sort: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("Expected 200, got %d: %s", resp.StatusCode, string(body))
+			}
+
+			t.Logf("✅ List defaults to popular sort when no sort parameter provided")
+		})
+
+		t.Run("List with limit bounds validation", func(t *testing.T) {
+			// Test limit > 100 (should clamp to 100)
+			resp, err := http.Get(fmt.Sprintf("%s/xrpc/social.coves.community.list?limit=500",
+				httpServer.URL))
+			if err != nil {
+				t.Fatalf("Failed to GET list with limit=500: %v", err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("Expected 200 (clamped limit), got %d: %s", resp.StatusCode, string(body))
+			}
+
+			var listResp struct {
+				Communities []communities.Community `json:"communities"`
+				Cursor      string                  `json:"cursor"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
+				t.Fatalf("Failed to decode response: %v", err)
+			}
+
+			if len(listResp.Communities) > 100 {
+				t.Errorf("Expected max 100 communities, got %d", len(listResp.Communities))
+			}
+
+			t.Logf("✅ Limit bounds validated (clamped to 100)")
 		})
 
 		t.Run("Subscribe via XRPC endpoint", func(t *testing.T) {

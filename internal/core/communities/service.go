@@ -528,7 +528,7 @@ func (s *communityService) EnsureFreshToken(ctx context.Context, community *Comm
 }
 
 // ListCommunities queries AppView DB for communities with filters
-func (s *communityService) ListCommunities(ctx context.Context, req ListCommunitiesRequest) ([]*Community, int, error) {
+func (s *communityService) ListCommunities(ctx context.Context, req ListCommunitiesRequest) ([]*Community, error) {
 	// Set defaults
 	if req.Limit <= 0 || req.Limit > 100 {
 		req.Limit = 50
