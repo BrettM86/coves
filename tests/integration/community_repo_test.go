@@ -358,17 +358,13 @@ func TestCommunityRepository_List(t *testing.T) {
 			Offset: 0,
 		}
 
-		results, total, err := repo.List(ctx, req)
+		results, err := repo.List(ctx, req)
 		if err != nil {
 			t.Fatalf("Failed to list communities: %v", err)
 		}
 
 		if len(results) != 3 {
 			t.Errorf("Expected 3 communities, got %d", len(results))
-		}
-
-		if total < 5 {
-			t.Errorf("Expected total >= 5, got %d", total)
 		}
 	})
 
@@ -399,7 +395,7 @@ func TestCommunityRepository_List(t *testing.T) {
 			Visibility: "public",
 		}
 
-		results, _, err := repo.List(ctx, req)
+		results, err := repo.List(ctx, req)
 		if err != nil {
 			t.Fatalf("Failed to list public communities: %v", err)
 		}
