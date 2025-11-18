@@ -344,7 +344,7 @@ func (r *postgresCommunityRepo) Delete(ctx context.Context, did string) error {
 }
 
 // List retrieves communities with filtering and pagination
-func (r *postgresCommunityRepo) List(ctx context.Context, req communities.ListCommunitiesRequest) ([]*communities.Community, int, error) {
+func (r *postgresCommunityRepo) List(ctx context.Context, req communities.ListCommunitiesRequest) ([]*communities.Community, error) {
 	// Build query with filters
 	whereClauses := []string{}
 	args := []interface{}{}
@@ -356,37 +356,42 @@ func (r *postgresCommunityRepo) List(ctx context.Context, req communities.ListCo
 		argCount++
 	}
 
-	if req.HostedBy != "" {
-		whereClauses = append(whereClauses, fmt.Sprintf("hosted_by_did = $%d", argCount))
-		args = append(args, req.HostedBy)
-		argCount++
-	}
+	// TODO: Add category filter when DB schema supports it
+	// if req.Category != "" { ... }
+
+	// TODO: Add language filter when DB schema supports it
+	// if req.Language != "" { ... }
 
 	whereClause := ""
 	if len(whereClauses) > 0 {
 		whereClause = "WHERE " + strings.Join(whereClauses, " AND ")
 	}
 
-	// Get total count
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM communities %s", whereClause)
-	var totalCount int
-	err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&totalCount)
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to count communities: %w", err)
-	}
-
-	// Build sort clause
-	sortColumn := "created_at"
-	if req.SortBy != "" {
-		switch req.SortBy {
-		case "member_count", "subscriber_count", "post_count", "created_at":
-			sortColumn = req.SortBy
-		}
-	}
-
+	// Build sort clause - map sort enum to DB columns
+	sortColumn := "subscriber_count" // default: popular
 	sortOrder := "DESC"
-	if strings.ToUpper(req.SortOrder) == "ASC" {
+
+	switch req.Sort {
+	case "popular":
+		// Most subscribers (default)
+		sortColumn = "subscriber_count"
+		sortOrder = "DESC"
+	case "active":
+		// Most posts/activity
+		sortColumn = "post_count"
+		sortOrder = "DESC"
+	case "new":
+		// Recently created
+		sortColumn = "created_at"
+		sortOrder = "DESC"
+	case "alphabetical":
+		// Sorted by name A-Z
+		sortColumn = "name"
 		sortOrder = "ASC"
+	default:
+		// Fallback to popular if empty or invalid (should be validated in handler)
+		sortColumn = "subscriber_count"
+		sortOrder = "DESC"
 	}
 
 	// Get communities with pagination
@@ -407,7 +412,7 @@ func (r *postgresCommunityRepo) List(ctx context.Context, req communities.ListCo
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, 0, fmt.Errorf("failed to list communities: %w", err)
+		return nil, fmt.Errorf("failed to list communities: %w", err)
 	}
 	defer func() {
 		if closeErr := rows.Close(); closeErr != nil {
@@ -436,7 +441,7 @@ func (r *postgresCommunityRepo) List(ctx context.Context, req communities.ListCo
 			&recordURI, &recordCID,
 		)
 		if scanErr != nil {
-			return nil, 0, fmt.Errorf("failed to scan community: %w", scanErr)
+			return nil, fmt.Errorf("failed to scan community: %w", scanErr)
 		}
 
 		// Map nullable fields
@@ -458,10 +463,10 @@ func (r *postgresCommunityRepo) List(ctx context.Context, req communities.ListCo
 	}
 
 	if err = rows.Err(); err != nil {
-		return nil, 0, fmt.Errorf("error iterating communities: %w", err)
+		return nil, fmt.Errorf("error iterating communities: %w", err)
 	}
 
-	return result, totalCount, nil
+	return result, nil
 }
 
 // Search searches communities by name/description using fuzzy matching

@@ -16,7 +16,7 @@ type Repository interface {
 	UpdateCredentials(ctx context.Context, did, accessToken, refreshToken string) error
 
 	// Listing & Search
-	List(ctx context.Context, req ListCommunitiesRequest) ([]*Community, int, error) // Returns communities + total count
+	List(ctx context.Context, req ListCommunitiesRequest) ([]*Community, error)
 	Search(ctx context.Context, req SearchCommunitiesRequest) ([]*Community, int, error)
 
 	// Subscriptions (lightweight feed follows)
@@ -62,7 +62,7 @@ type Service interface {
 	CreateCommunity(ctx context.Context, req CreateCommunityRequest) (*Community, error)
 	GetCommunity(ctx context.Context, identifier string) (*Community, error) // identifier can be DID or handle
 	UpdateCommunity(ctx context.Context, req UpdateCommunityRequest) (*Community, error)
-	ListCommunities(ctx context.Context, req ListCommunitiesRequest) ([]*Community, int, error)
+	ListCommunities(ctx context.Context, req ListCommunitiesRequest) ([]*Community, error)
 	SearchCommunities(ctx context.Context, req SearchCommunitiesRequest) ([]*Community, int, error)
 
 	// Subscription operations (write-forward: creates record in user's PDS)

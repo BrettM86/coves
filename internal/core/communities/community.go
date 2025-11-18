@@ -123,12 +123,12 @@ type UpdateCommunityRequest struct {
 
 // ListCommunitiesRequest represents query parameters for listing communities
 type ListCommunitiesRequest struct {
-	Visibility string `json:"visibility,omitempty"`
-	HostedBy   string `json:"hostedBy,omitempty"`
-	SortBy     string `json:"sortBy,omitempty"`
-	SortOrder  string `json:"sortOrder,omitempty"`
-	Limit      int    `json:"limit"`
-	Offset     int    `json:"offset"`
+	Sort       string `json:"sort,omitempty"`       // Enum: popular, active, new, alphabetical
+	Visibility string `json:"visibility,omitempty"` // Filter: public, unlisted, private
+	Category   string `json:"category,omitempty"`   // Optional: filter by category (future)
+	Language   string `json:"language,omitempty"`   // Optional: filter by language (future)
+	Limit      int    `json:"limit"`                // 1-100, default 50
+	Offset     int    `json:"offset"`               // Pagination offset
 }
 
 // SearchCommunitiesRequest represents query parameters for searching communities
@@ -159,8 +159,8 @@ func (c *Community) GetDisplayHandle() string {
 	name := c.Handle[:communityIndex]
 
 	// Extract instance domain (everything after ".community.")
-	// len(".community.") = 11
-	instanceDomain := c.Handle[communityIndex+11:]
+	communitySegment := ".community."
+	instanceDomain := c.Handle[communityIndex+len(communitySegment):]
 
 	return fmt.Sprintf("!%s@%s", name, instanceDomain)
 }

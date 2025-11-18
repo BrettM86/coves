@@ -18,6 +18,11 @@
             "type": "string",
             "description": "Pagination cursor"
           },
+          "visibility": {
+            "type": "string",
+            "knownValues": ["public", "unlisted", "private"],
+            "description": "Filter communities by visibility level"
+          },
           "sort": {
             "type": "string",
             "knownValues": ["popular", "active", "new", "alphabetical"],
