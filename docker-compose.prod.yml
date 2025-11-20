@@ -1,0 +1,205 @@
+# Coves Production Stack
+#
+# Architecture:
+#   - coves.social: AppView domain (API, frontend, .well-known/did.json)
+#   - coves.me: PDS domain (must be separate from AppView)
+#
+# Hardware: AMD Epyc 7351p (16c/32t), 256GB RAM, 2x500GB NVMe RAID
+#
+# Usage:
+#   docker-compose -f docker-compose.prod.yml up -d
+#
+# Prerequisites:
+#   1. DNS configured for both domains
+#   2. SSL certificates (Caddy handles this automatically)
+#   3. .env.prod file with secrets
+#   4. .well-known/did.json deployed to coves.social
+
+services:
+  # PostgreSQL Database for AppView
+  postgres:
+    image: postgres:15
+    container_name: coves-prod-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      # Mount backup directory for pg_dump
+      - ./backups:/backups
+    networks:
+      - coves-internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Generous limits for 256GB server
+    deploy:
+      resources:
+        limits:
+          memory: 32G
+        reservations:
+          memory: 4G
+
+  # Coves AppView (Go Server)
+  appview:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: coves/appview:${VERSION:-latest}
+    container_name: coves-prod-appview
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"  # Only expose to localhost (Caddy proxies)
+    environment:
+      # Database
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+
+      # Instance identity
+      INSTANCE_DID: did:web:coves.social
+      INSTANCE_DOMAIN: coves.social
+
+      # PDS connection (separate domain!)
+      PDS_URL: https://coves.me
+
+      # Jetstream (Bluesky production firehose)
+      JETSTREAM_URL: wss://jetstream2.us-east.bsky.network/subscribe
+
+      # Security - MUST be false in production
+      AUTH_SKIP_VERIFY: "false"
+      SKIP_DID_WEB_VERIFICATION: "false"
+
+      # OAuth (for community account provisioning)
+      OAUTH_CLIENT_ID: ${OAUTH_CLIENT_ID}
+      OAUTH_REDIRECT_URI: ${OAUTH_REDIRECT_URI}
+      OAUTH_PRIVATE_JWK: ${OAUTH_PRIVATE_JWK}
+
+      # Application settings
+      PORT: 8080
+      ENV: production
+      LOG_LEVEL: info
+
+      # Encryption key for community credentials
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+    networks:
+      - coves-internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/xrpc/_health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # Go is memory-efficient, but give it room for connection pools
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+        reservations:
+          memory: 512M
+
+  # Bluesky PDS (Personal Data Server)
+  # Handles community accounts and their repositories
+  pds:
+    image: ghcr.io/bluesky-social/pds:latest
+    container_name: coves-prod-pds
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"  # Only expose to localhost (Caddy proxies)
+    environment:
+      # PDS identity
+      PDS_HOSTNAME: coves.me
+      PDS_PORT: 3000
+      PDS_DATA_DIRECTORY: /pds
+      PDS_BLOBSTORE_DISK_LOCATION: /pds/blocks
+
+      # PLC Directory (production)
+      PDS_DID_PLC_URL: https://plc.directory
+
+      # Handle domains
+      # Community handles use @community.coves.social (AppView domain)
+      PDS_SERVICE_HANDLE_DOMAINS: .coves.social
+
+      # Security (set real values in .env.prod)
+      PDS_JWT_SECRET: ${PDS_JWT_SECRET}
+      PDS_ADMIN_PASSWORD: ${PDS_ADMIN_PASSWORD}
+      PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX: ${PDS_ROTATION_KEY}
+
+      # Email (optional, for account recovery)
+      PDS_EMAIL_SMTP_URL: ${PDS_EMAIL_SMTP_URL:-}
+      PDS_EMAIL_FROM_ADDRESS: ${PDS_EMAIL_FROM_ADDRESS:-noreply@coves.me}
+
+      # Production mode
+      PDS_DEV_MODE: "false"
+      PDS_INVITE_REQUIRED: "false"  # Set to true if you want invite-only
+
+      # Logging
+      NODE_ENV: production
+      LOG_ENABLED: "true"
+      LOG_LEVEL: info
+    volumes:
+      - pds-data:/pds
+    networks:
+      - coves-internal
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/xrpc/_health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    # PDS (Node.js) needs memory for blob handling
+    deploy:
+      resources:
+        limits:
+          memory: 16G
+        reservations:
+          memory: 1G
+
+  # Caddy Reverse Proxy
+  # Handles HTTPS automatically via Let's Encrypt
+  # Uses Cloudflare plugin for wildcard SSL certificates (*.coves.social)
+  caddy:
+    # Pre-built Caddy with Cloudflare DNS plugin
+    # Updates automatically with docker-compose pull
+    # Alternative: build your own with Dockerfile.caddy
+    image: ghcr.io/slothcroissant/caddy-cloudflaredns:latest
+    container_name: coves-prod-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Required for wildcard SSL via DNS challenge
+      # Create at: Cloudflare Dashboard → My Profile → API Tokens → Create Token
+      # Permissions: Zone:DNS:Edit for coves.social zone
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+      # Static files (.well-known, client-metadata.json, oauth callback)
+      - ./static:/srv:ro
+    networks:
+      - coves-internal
+    depends_on:
+      - appview
+      - pds
+
+networks:
+  coves-internal:
+    driver: bridge
+    name: coves-prod-network
+
+volumes:
+  postgres-data:
+    name: coves-prod-postgres-data
+  pds-data:
+    name: coves-prod-pds-data
+  caddy-data:
+    name: coves-prod-caddy-data
+  caddy-config:
+    name: coves-prod-caddy-config

@@ -20,6 +20,7 @@ go.work
 .env.local
 .env.development
 .env.production
+.env.prod
 .env.test
 
 # IDE

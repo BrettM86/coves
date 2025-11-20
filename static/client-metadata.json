@@ -1,0 +1,18 @@
+{
+  "client_id": "https://coves.social/client-metadata.json",
+  "client_name": "Coves",
+  "client_uri": "https://coves.social",
+  "logo_uri": "https://coves.social/logo.png",
+  "tos_uri": "https://coves.social/terms",
+  "policy_uri": "https://coves.social/privacy",
+  "redirect_uris": [
+    "https://coves.social/oauth/callback",
+    "social.coves:/oauth/callback"
+  ],
+  "scope": "atproto transition:generic",
+  "grant_types": ["authorization_code", "refresh_token"],
+  "response_types": ["code"],
+  "application_type": "native",
+  "token_endpoint_auth_method": "none",
+  "dpop_bound_access_tokens": true
+}

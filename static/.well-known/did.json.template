@@ -1,0 +1,19 @@
+{
+  "id": "did:web:coves.social",
+  "alsoKnownAs": ["at://coves.social"],
+  "verificationMethod": [
+    {
+      "id": "did:web:coves.social#atproto",
+      "type": "Multikey",
+      "controller": "did:web:coves.social",
+      "publicKeyMultibase": "REPLACE_WITH_YOUR_PUBLIC_KEY"
+    }
+  ],
+  "service": [
+    {
+      "id": "#atproto_pds",
+      "type": "AtprotoPersonalDataServer",
+      "serviceEndpoint": "https://coves.me"
+    }
+  ]
+}
