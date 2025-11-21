@@ -457,16 +457,23 @@ func main() {
 	log.Println("✅ Comment query API registered (20 req/min rate limit)")
 	log.Println("  - GET /xrpc/social.coves.community.comment.getComments")
 
-	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+	// Health check endpoints
+	healthHandler := func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write([]byte("OK")); err != nil {
 			log.Printf("Failed to write health check response: %v", err)
 		}
-	})
+	}
+	r.Get("/health", healthHandler)
+	r.Get("/xrpc/_health", healthHandler)
 
-	port := os.Getenv("APPVIEW_PORT")
+	// Check PORT first (docker-compose), then APPVIEW_PORT (legacy)
+	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8081" // Match .env.dev default
+		port = os.Getenv("APPVIEW_PORT")
+	}
+	if port == "" {
+		port = "8080"
 	}
 
 	fmt.Printf("Coves AppView starting on port %s\n", port)
