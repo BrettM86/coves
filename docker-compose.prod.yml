@@ -127,6 +127,7 @@ services:
       PDS_PORT: 3000
       PDS_DATA_DIRECTORY: /pds
       PDS_BLOBSTORE_DISK_LOCATION: /pds/blocks
+      PDS_BLOB_UPLOAD_LIMIT: 104857600  # 100 MB
 
       # PLC Directory (production)
       PDS_DID_PLC_URL: https://plc.directory

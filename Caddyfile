@@ -110,13 +110,13 @@ coves.me {
         health_timeout 5s
 
         # Headers for proper client IP handling
+        header_up Host {host}
         header_up X-Real-IP {remote_host}
         header_up X-Forwarded-For {remote_host}
         header_up X-Forwarded-Proto {scheme}
 
-        # WebSocket support for firehose
-        header_up Connection {>Connection}
-        header_up Upgrade {>Upgrade}
+        # Note: Caddy v2 handles WebSocket upgrades automatically
+        # No need for explicit Connection/Upgrade headers
     }
 
     # Logging (Docker captures stdout/stderr)
