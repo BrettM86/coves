@@ -133,8 +133,8 @@ services:
 
       # Handle domains
       # Community handles use @community.coves.social (AppView domain)
-      # Include both root domain and subdomains
-      PDS_SERVICE_HANDLE_DOMAINS: .coves.social,coves.social
+      # Note: Root domain (coves.social) handle works via .well-known resolution
+      PDS_SERVICE_HANDLE_DOMAINS: .coves.social
 
       # Security (set real values in .env.prod)
       PDS_JWT_SECRET: ${PDS_JWT_SECRET}
@@ -162,6 +162,9 @@ services:
       # Report service (for reporting content)
       PDS_REPORT_SERVICE_URL: https://mod.bsky.app
       PDS_REPORT_SERVICE_DID: did:plc:ar7c4by46qjdydhdevvrndac
+
+      # Relay crawlers (for federation with Bluesky network)
+      PDS_CRAWLERS: https://bsky.network
     volumes:
       - pds-data:/pds
     networks:
