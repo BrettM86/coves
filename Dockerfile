@@ -42,7 +42,8 @@ WORKDIR /app
 COPY --from=builder /build/coves-server /app/coves-server
 
 # Copy migrations (needed for goose)
-COPY --from=builder /build/internal/db/migrations /app/migrations
+# Must maintain path structure as app looks for internal/db/migrations
+COPY --from=builder /build/internal/db/migrations /app/internal/db/migrations
 
 # Set ownership
 RUN chown -R coves:coves /app

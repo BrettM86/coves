@@ -68,6 +68,13 @@ services:
       # Jetstream (Bluesky production firehose)
       JETSTREAM_URL: wss://jetstream2.us-east.bsky.network/subscribe
 
+      # Custom lexicon consumers (use production Jetstream with collection filters)
+      COMMUNITY_JETSTREAM_URL: wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=social.coves.community.profile&wantedCollections=social.coves.community.subscription
+      POST_JETSTREAM_URL: wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=social.coves.community.post
+      AGGREGATOR_JETSTREAM_URL: wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=social.coves.aggregator.service&wantedCollections=social.coves.aggregator.authorization
+      VOTE_JETSTREAM_URL: wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=social.coves.feed.vote
+      COMMENT_JETSTREAM_URL: wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=social.coves.community.comment
+
       # Security - MUST be false in production
       AUTH_SKIP_VERIFY: "false"
       SKIP_DID_WEB_VERIFICATION: "false"
@@ -84,6 +91,9 @@ services:
 
       # Encryption key for community credentials
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+
+      # Cursor encryption for pagination
+      CURSOR_SECRET: ${CURSOR_SECRET}
     networks:
       - coves-internal
     depends_on:
@@ -131,8 +141,9 @@ services:
       PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX: ${PDS_ROTATION_KEY}
 
       # Email (optional, for account recovery)
-      PDS_EMAIL_SMTP_URL: ${PDS_EMAIL_SMTP_URL:-}
-      PDS_EMAIL_FROM_ADDRESS: ${PDS_EMAIL_FROM_ADDRESS:-noreply@coves.me}
+      # NOTE: Must set BOTH or NEITHER - PDS fails with partial config
+      # PDS_EMAIL_SMTP_URL: ${PDS_EMAIL_SMTP_URL}
+      # PDS_EMAIL_FROM_ADDRESS: ${PDS_EMAIL_FROM_ADDRESS}
 
       # Production mode
       PDS_DEV_MODE: "false"
