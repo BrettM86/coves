@@ -133,7 +133,8 @@ services:
 
       # Handle domains
       # Community handles use @community.coves.social (AppView domain)
-      PDS_SERVICE_HANDLE_DOMAINS: .coves.social
+      # Include both root domain and subdomains
+      PDS_SERVICE_HANDLE_DOMAINS: .coves.social,coves.social
 
       # Security (set real values in .env.prod)
       PDS_JWT_SECRET: ${PDS_JWT_SECRET}
