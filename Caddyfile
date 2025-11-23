@@ -48,6 +48,7 @@
 coves.social {
     # Serve .well-known files for DID verification
     handle /.well-known/* {
+        header Access-Control-Allow-Origin "*"
         root * /srv
         file_server
     }
