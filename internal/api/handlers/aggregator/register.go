@@ -195,7 +195,7 @@ func (h *RegisterHandler) verifyDomainOwnership(ctx context.Context, expectedDID
 	if err != nil {
 		return fmt.Errorf("failed to fetch .well-known/atproto-did from %s: %w", domain, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	// Check status code
 	if resp.StatusCode != http.StatusOK {

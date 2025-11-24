@@ -1,14 +1,13 @@
 package comments
 
 import (
+	"Coves/internal/core/communities"
+	"Coves/internal/core/posts"
+	"Coves/internal/core/users"
 	"context"
 	"errors"
 	"testing"
 	"time"
-
-	"Coves/internal/core/communities"
-	"Coves/internal/core/posts"
-	"Coves/internal/core/users"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -232,8 +231,8 @@ func (m *mockCommunityRepo) UpdateCredentials(ctx context.Context, did, accessTo
 	return nil
 }
 
-func (m *mockCommunityRepo) List(ctx context.Context, req communities.ListCommunitiesRequest) ([]*communities.Community, int, error) {
-	return nil, 0, nil
+func (m *mockCommunityRepo) List(ctx context.Context, req communities.ListCommunitiesRequest) ([]*communities.Community, error) {
+	return nil, nil
 }
 
 func (m *mockCommunityRepo) Search(ctx context.Context, req communities.SearchCommunitiesRequest) ([]*communities.Community, int, error) {

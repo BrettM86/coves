@@ -1,6 +1,7 @@
 package users
 
 import (
+	"Coves/internal/atproto/identity"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -11,8 +12,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-
-	"Coves/internal/atproto/identity"
 )
 
 // atProto handle validation regex (per official atProto spec: https://atproto.com/specs/handle)

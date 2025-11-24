@@ -1,11 +1,10 @@
 package community
 
 import (
+	"Coves/internal/core/communities"
 	"encoding/json"
 	"log"
 	"net/http"
-
-	"Coves/internal/core/communities"
 )
 
 // XRPCError represents an XRPC error response

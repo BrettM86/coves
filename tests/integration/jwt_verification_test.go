@@ -1,6 +1,8 @@
 package integration
 
 import (
+	"Coves/internal/api/middleware"
+	"Coves/internal/atproto/auth"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -8,9 +10,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"Coves/internal/api/middleware"
-	"Coves/internal/atproto/auth"
 )
 
 // TestJWTSignatureVerification tests end-to-end JWT signature verification
@@ -46,7 +45,7 @@ func TestJWTSignatureVerification(t *testing.T) {
 	// Check if JWKS is available (production PDS) or symmetric secret (dev PDS)
 	jwksResp, _ := http.Get(pdsURL + "/oauth/jwks")
 	if jwksResp != nil {
-		defer jwksResp.Body.Close()
+		defer func() { _ = jwksResp.Body.Close() }()
 	}
 
 	t.Run("JWT parsing and middleware integration", func(t *testing.T) {

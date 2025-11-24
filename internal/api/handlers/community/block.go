@@ -1,12 +1,11 @@
 package community
 
 import (
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/communities"
 	"encoding/json"
 	"log"
 	"net/http"
-
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/communities"
 )
 
 // BlockHandler handles community blocking operations

@@ -1,6 +1,9 @@
 package integration
 
 import (
+	"Coves/internal/api/handlers/community"
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/communities"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,9 +12,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"Coves/internal/api/handlers/community"
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/communities"
 	postgresRepo "Coves/internal/db/postgres"
 )
 
@@ -73,7 +73,7 @@ func TestBlockHandler_HandleResolution(t *testing.T) {
 		// We expect 401 (no auth) but verify the error is NOT "Community not found"
 		// If handle resolution worked, we'd get past that validation
 		resp := w.Result()
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode == http.StatusNotFound {
 			t.Errorf("Handle resolution failed - got 404 CommunityNotFound")
@@ -82,7 +82,7 @@ func TestBlockHandler_HandleResolution(t *testing.T) {
 		// Expected: 401 Unauthorized (because we didn't add auth context)
 		if resp.StatusCode != http.StatusUnauthorized {
 			var errorResp map[string]interface{}
-			json.NewDecoder(resp.Body).Decode(&errorResp)
+			_ = json.NewDecoder(resp.Body).Decode(&errorResp)
 			t.Logf("Response status: %d, body: %+v", resp.StatusCode, errorResp)
 		}
 	})
@@ -100,7 +100,7 @@ func TestBlockHandler_HandleResolution(t *testing.T) {
 		blockHandler.HandleBlock(w, req)
 
 		resp := w.Result()
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode == http.StatusNotFound {
 			t.Errorf("@-prefixed handle resolution failed - got 404 CommunityNotFound")
@@ -121,7 +121,7 @@ func TestBlockHandler_HandleResolution(t *testing.T) {
 		blockHandler.HandleBlock(w, req)
 
 		resp := w.Result()
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode == http.StatusNotFound {
 			t.Errorf("Scoped format resolution failed - got 404 CommunityNotFound")
@@ -141,7 +141,7 @@ func TestBlockHandler_HandleResolution(t *testing.T) {
 		blockHandler.HandleBlock(w, req)
 
 		resp := w.Result()
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode == http.StatusNotFound {
 			t.Errorf("DID resolution failed - got 404 CommunityNotFound")
@@ -202,7 +202,7 @@ func TestBlockHandler_HandleResolution(t *testing.T) {
 				blockHandler.HandleBlock(w, req)
 
 				resp := w.Result()
-				defer resp.Body.Close()
+				defer func() { _ = resp.Body.Close() }()
 
 				// Should return 400 Bad Request for validation errors
 				if resp.StatusCode != http.StatusBadRequest {
@@ -210,7 +210,7 @@ func TestBlockHandler_HandleResolution(t *testing.T) {
 				}
 
 				var errorResp map[string]interface{}
-				json.NewDecoder(resp.Body).Decode(&errorResp)
+				_ = json.NewDecoder(resp.Body).Decode(&errorResp)
 
 				if errorCode, ok := errorResp["error"].(string); !ok || errorCode != "InvalidRequest" {
 					t.Errorf("Expected error code 'InvalidRequest', got %v", errorResp["error"])
@@ -242,7 +242,7 @@ func TestBlockHandler_HandleResolution(t *testing.T) {
 		blockHandler.HandleBlock(w, req)
 
 		resp := w.Result()
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		// Expected: 401 (auth check happens before resolution)
 		// In a real scenario with auth, invalid handle would return 404
@@ -299,7 +299,7 @@ func TestUnblockHandler_HandleResolution(t *testing.T) {
 		blockHandler.HandleUnblock(w, req)
 
 		resp := w.Result()
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		// Should NOT be 404 (handle resolution should work)
 		if resp.StatusCode == http.StatusNotFound {
@@ -309,7 +309,7 @@ func TestUnblockHandler_HandleResolution(t *testing.T) {
 		// Expected: 401 (no auth context)
 		if resp.StatusCode != http.StatusUnauthorized {
 			var errorResp map[string]interface{}
-			json.NewDecoder(resp.Body).Decode(&errorResp)
+			_ = json.NewDecoder(resp.Body).Decode(&errorResp)
 			t.Logf("Response: status=%d, body=%+v", resp.StatusCode, errorResp)
 		}
 	})
@@ -328,7 +328,7 @@ func TestUnblockHandler_HandleResolution(t *testing.T) {
 		blockHandler.HandleUnblock(w, req)
 
 		resp := w.Result()
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		// Expected: 401 (auth check happens before resolution)
 		if resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusNotFound {

@@ -1,6 +1,14 @@
 package integration
 
 import (
+	"Coves/internal/api/middleware"
+	"Coves/internal/api/routes"
+	"Coves/internal/atproto/identity"
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/core/communities"
+	"Coves/internal/core/posts"
+	"Coves/internal/core/users"
+	"Coves/internal/db/postgres"
 	"bytes"
 	"context"
 	"database/sql"
@@ -14,15 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"Coves/internal/api/middleware"
-	"Coves/internal/api/routes"
-	"Coves/internal/atproto/identity"
-	"Coves/internal/atproto/jetstream"
-	"Coves/internal/core/communities"
-	"Coves/internal/core/posts"
 	timelineCore "Coves/internal/core/timeline"
-	"Coves/internal/core/users"
-	"Coves/internal/db/postgres"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
@@ -234,7 +234,7 @@ func TestFullUserJourney_E2E(t *testing.T) {
 
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		require.Equal(t, http.StatusOK, resp.StatusCode, "Community creation should succeed")
 
@@ -318,7 +318,7 @@ func TestFullUserJourney_E2E(t *testing.T) {
 
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		require.Equal(t, http.StatusOK, resp.StatusCode, "Post creation should succeed")
 
@@ -425,7 +425,7 @@ func TestFullUserJourney_E2E(t *testing.T) {
 
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		require.Equal(t, http.StatusOK, resp.StatusCode, "Subscription should succeed")
 

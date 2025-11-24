@@ -1,15 +1,14 @@
 package integration
 
 import (
+	"Coves/internal/core/communities"
+	"Coves/internal/db/postgres"
 	"context"
 	"fmt"
 	"os"
 	"strings"
 	"testing"
 	"time"
-
-	"Coves/internal/core/communities"
-	"Coves/internal/db/postgres"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

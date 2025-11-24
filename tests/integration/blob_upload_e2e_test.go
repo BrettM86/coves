@@ -1,6 +1,13 @@
 package integration
 
 import (
+	"Coves/internal/atproto/identity"
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/core/blobs"
+	"Coves/internal/core/communities"
+	"Coves/internal/core/posts"
+	"Coves/internal/core/users"
+	"Coves/internal/db/postgres"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -14,14 +21,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"Coves/internal/atproto/identity"
-	"Coves/internal/atproto/jetstream"
-	"Coves/internal/core/blobs"
-	"Coves/internal/core/communities"
-	"Coves/internal/core/posts"
-	"Coves/internal/core/users"
-	"Coves/internal/db/postgres"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -49,7 +48,7 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 	if err != nil {
 		t.Skipf("PDS not running at %s: %v. Run 'make dev-up' to start PDS.", pdsURL, err)
 	}
-	defer healthResp.Body.Close()
+	defer func() { _ = healthResp.Body.Close() }()
 	if healthResp.StatusCode != http.StatusOK {
 		t.Skipf("PDS health check failed at %s: status %d", pdsURL, healthResp.StatusCode)
 	}
@@ -357,7 +356,7 @@ func TestBlobUpload_E2E_CommentWithImage(t *testing.T) {
 	if err != nil {
 		t.Skipf("PDS not running at %s: %v. Run 'make dev-up' to start PDS.", pdsURL, err)
 	}
-	defer healthResp.Body.Close()
+	defer func() { _ = healthResp.Body.Close() }()
 	if healthResp.StatusCode != http.StatusOK {
 		t.Skipf("PDS health check failed at %s: status %d", pdsURL, healthResp.StatusCode)
 	}
@@ -545,16 +544,16 @@ func TestBlobUpload_Validation(t *testing.T) {
 
 	t.Run("Accept matching image formats with correct MIME types", func(t *testing.T) {
 		testCases := []struct {
+			createFunc func(*testing.T, int, int, color.Color) []byte
 			format     string
 			mimeType   string
-			createFunc func(*testing.T, int, int, color.Color) []byte
 		}{
-			{"PNG", "image/png", createTestPNG},
-			{"JPEG", "image/jpeg", createTestJPEG},
+			{createTestPNG, "PNG", "image/png"},
+			{createTestJPEG, "JPEG", "image/jpeg"},
 			// Note: WebP requires external library (golang.org/x/image/webp)
 			// For now, we test that the MIME type is accepted even with PNG data
 			// In production, actual WebP validation would happen at PDS
-			{"WebP (MIME only)", "image/webp", createTestPNG},
+			{createTestPNG, "WebP (MIME only)", "image/webp"},
 		}
 
 		for _, tc := range testCases {

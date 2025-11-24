@@ -1,6 +1,11 @@
 package posts
 
 import (
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/aggregators"
+	"Coves/internal/core/blobs"
+	"Coves/internal/core/communities"
+	"Coves/internal/core/unfurl"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -10,12 +15,6 @@ import (
 	"net/http"
 	"os"
 	"time"
-
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/aggregators"
-	"Coves/internal/core/blobs"
-	"Coves/internal/core/communities"
-	"Coves/internal/core/unfurl"
 )
 
 type postService struct {

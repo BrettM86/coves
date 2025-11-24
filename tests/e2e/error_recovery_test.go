@@ -1,6 +1,10 @@
 package e2e
 
 import (
+	"Coves/internal/atproto/identity"
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/core/users"
+	"Coves/internal/db/postgres"
 	"context"
 	"database/sql"
 	"fmt"
@@ -11,11 +15,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"Coves/internal/atproto/identity"
-	"Coves/internal/atproto/jetstream"
-	"Coves/internal/core/users"
-	"Coves/internal/db/postgres"
 
 	_ "github.com/lib/pq"
 	"github.com/pressly/goose/v3"
@@ -138,8 +137,8 @@ func testMalformedJetstreamEvents(t *testing.T) {
 
 	testCases := []struct {
 		name      string
-		event     jetstream.JetstreamEvent
 		shouldLog string
+		event     jetstream.JetstreamEvent
 	}{
 		{
 			name: "Nil identity data",
@@ -348,14 +347,14 @@ func testPDSUnavailability(t *testing.T) {
 		if shouldFail.Load() {
 			t.Logf("Mock PDS: Simulating unavailability (request #%d)", requestCount.Load())
 			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Write([]byte(`{"error":"ServiceUnavailable","message":"PDS temporarily unavailable"}`))
+			_, _ = w.Write([]byte(`{"error":"ServiceUnavailable","message":"PDS temporarily unavailable"}`))
 			return
 		}
 
 		t.Logf("Mock PDS: Serving request successfully (request #%d)", requestCount.Load())
 		// Simulate successful PDS response
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"did":"did:plc:pdstest123","handle":"pds.test"}`))
+		_, _ = w.Write([]byte(`{"did":"did:plc:pdstest123","handle":"pds.test"}`))
 	}))
 	defer mockPDS.Close()
 

@@ -1,13 +1,12 @@
 package postgres
 
 import (
+	"Coves/internal/core/users"
 	"context"
 	"database/sql"
 	"fmt"
 	"log"
 	"strings"
-
-	"Coves/internal/core/users"
 
 	"github.com/lib/pq"
 )

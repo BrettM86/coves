@@ -1,17 +1,16 @@
 package integration
 
 import (
-	"context"
-	"fmt"
-	"strings"
-	"testing"
-
 	"Coves/internal/api/middleware"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"context"
+	"fmt"
+	"strings"
+	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

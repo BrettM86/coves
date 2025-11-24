@@ -69,7 +69,7 @@ func TestAggregatorRegistration_Success(t *testing.T) {
 
 	// Setup test database
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	testDID := "did:plc:test123"
 	testHandle := "aggregator.bsky.social"
@@ -78,7 +78,7 @@ func TestAggregatorRegistration_Success(t *testing.T) {
 	wellKnownServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.well-known/atproto-did" {
 			w.Header().Set("Content-Type", "text/plain")
-			w.Write([]byte(testDID))
+			_, _ = w.Write([]byte(testDID))
 		} else {
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -161,13 +161,13 @@ func TestAggregatorRegistration_DomainVerificationFailed(t *testing.T) {
 
 	// Setup test database
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Setup test server that returns wrong DID
 	wellKnownServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.well-known/atproto-did" {
 			w.Header().Set("Content-Type", "text/plain")
-			w.Write([]byte("did:plc:wrongdid"))
+			_, _ = w.Write([]byte("did:plc:wrongdid"))
 		} else {
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -228,7 +228,7 @@ func TestAggregatorRegistration_InvalidDID(t *testing.T) {
 	}
 
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	tests := []struct {
 		name   string
@@ -290,7 +290,7 @@ func TestAggregatorRegistration_AlreadyRegistered(t *testing.T) {
 	}
 
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Pre-create user with same DID
 	existingDID := "did:plc:existing123"
@@ -300,7 +300,7 @@ func TestAggregatorRegistration_AlreadyRegistered(t *testing.T) {
 	wellKnownServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.well-known/atproto-did" {
 			w.Header().Set("Content-Type", "text/plain")
-			w.Write([]byte(existingDID))
+			_, _ = w.Write([]byte(existingDID))
 		} else {
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -374,7 +374,7 @@ func TestAggregatorRegistration_WellKnownNotAccessible(t *testing.T) {
 	}
 
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	// Setup test server that returns 404 for .well-known
 	wellKnownServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -436,7 +436,7 @@ func TestAggregatorRegistration_WellKnownTooLarge(t *testing.T) {
 	}
 
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	testDID := "did:plc:toolarge"
 
@@ -501,7 +501,7 @@ func TestAggregatorRegistration_DIDResolutionFailed(t *testing.T) {
 	}
 
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	testDID := "did:plc:nonexistent"
 
@@ -509,7 +509,7 @@ func TestAggregatorRegistration_DIDResolutionFailed(t *testing.T) {
 	wellKnownServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.well-known/atproto-did" {
 			w.Header().Set("Content-Type", "text/plain")
-			w.Write([]byte(testDID))
+			_, _ = w.Write([]byte(testDID))
 		} else {
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -577,7 +577,7 @@ func TestAggregatorRegistration_LargeWellKnownResponse(t *testing.T) {
 	}
 
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	testDID := "did:plc:largedos123"
 
@@ -673,7 +673,7 @@ func TestAggregatorRegistration_E2E_WithRealInfrastructure(t *testing.T) {
 	// with real .well-known server and real identity resolution
 
 	db := setupTestDB(t)
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	testDID := "did:plc:e2etest123"
 	testHandle := "e2ebot.bsky.social"
@@ -683,7 +683,7 @@ func TestAggregatorRegistration_E2E_WithRealInfrastructure(t *testing.T) {
 	wellKnownServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.well-known/atproto-did" {
 			w.Header().Set("Content-Type", "text/plain")
-			w.Write([]byte(testDID))
+			_, _ = w.Write([]byte(testDID))
 		} else {
 			w.WriteHeader(http.StatusNotFound)
 		}

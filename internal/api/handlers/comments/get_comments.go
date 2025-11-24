@@ -3,13 +3,12 @@
 package comments
 
 import (
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/comments"
 	"encoding/json"
 	"log"
 	"net/http"
 	"strconv"
-
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/comments"
 )
 
 // GetCommentsHandler handles comment retrieval for posts

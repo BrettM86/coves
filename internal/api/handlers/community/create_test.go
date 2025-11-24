@@ -1,6 +1,8 @@
 package community
 
 import (
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/communities"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -8,9 +10,6 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
-
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/communities"
 )
 
 // mockCommunityService implements communities.Service for testing
@@ -42,8 +41,8 @@ func (m *mockCommunityService) UpdateCommunity(ctx context.Context, req communit
 	return nil, nil
 }
 
-func (m *mockCommunityService) ListCommunities(ctx context.Context, req communities.ListCommunitiesRequest) ([]*communities.Community, int, error) {
-	return nil, 0, nil
+func (m *mockCommunityService) ListCommunities(ctx context.Context, req communities.ListCommunitiesRequest) ([]*communities.Community, error) {
+	return nil, nil
 }
 
 func (m *mockCommunityService) SearchCommunities(ctx context.Context, req communities.SearchCommunitiesRequest) ([]*communities.Community, int, error) {
@@ -111,10 +110,10 @@ func TestCreateHandler_AllowlistRestriction(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		allowedDIDs    []string
 		requestDID     string
-		expectedStatus int
 		expectedError  string
+		allowedDIDs    []string
+		expectedStatus int
 	}{
 		{
 			name:           "allowed DID can create community",

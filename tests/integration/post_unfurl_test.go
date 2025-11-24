@@ -1,12 +1,6 @@
 package integration
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"testing"
-	"time"
-
 	"Coves/internal/api/middleware"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
@@ -15,6 +9,11 @@ import (
 	"Coves/internal/core/unfurl"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"context"
+	"encoding/json"
+	"fmt"
+	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

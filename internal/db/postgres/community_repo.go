@@ -1,13 +1,12 @@
 package postgres
 
 import (
+	"Coves/internal/core/communities"
 	"context"
 	"database/sql"
 	"fmt"
 	"log"
 	"strings"
-
-	"Coves/internal/core/communities"
 
 	"github.com/lib/pq"
 )
@@ -369,8 +368,7 @@ func (r *postgresCommunityRepo) List(ctx context.Context, req communities.ListCo
 	}
 
 	// Build sort clause - map sort enum to DB columns
-	sortColumn := "subscriber_count" // default: popular
-	sortOrder := "DESC"
+	var sortColumn, sortOrder string
 
 	switch req.Sort {
 	case "popular":

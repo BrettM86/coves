@@ -1,10 +1,9 @@
 package communityFeeds
 
 import (
+	"Coves/internal/core/communities"
 	"context"
 	"fmt"
-
-	"Coves/internal/core/communities"
 )
 
 type feedService struct {

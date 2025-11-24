@@ -1,14 +1,13 @@
 package integration
 
 import (
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/core/communities"
+	"Coves/internal/db/postgres"
 	"context"
 	"fmt"
 	"testing"
 	"time"
-
-	"Coves/internal/atproto/jetstream"
-	"Coves/internal/core/communities"
-	"Coves/internal/db/postgres"
 )
 
 // TestCommunityConsumer_V2RKeyValidation tests that only V2 communities (rkey="self") are accepted

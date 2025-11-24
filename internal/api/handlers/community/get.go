@@ -1,10 +1,9 @@
 package community
 
 import (
+	"Coves/internal/core/communities"
 	"encoding/json"
 	"net/http"
-
-	"Coves/internal/core/communities"
 )
 
 // GetHandler handles community retrieval

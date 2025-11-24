@@ -1,6 +1,8 @@
 package integration
 
 import (
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/db/postgres"
 	"context"
 	"fmt"
 	"net/http"
@@ -8,9 +10,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"Coves/internal/atproto/jetstream"
-	"Coves/internal/db/postgres"
 )
 
 // TestHostedByVerification_DomainMatching tests that hostedBy domain must match handle domain
@@ -257,7 +256,7 @@ func TestBidirectionalDIDVerification(t *testing.T) {
 				// Return a DID document with matching alsoKnownAs
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
-				fmt.Fprintf(w, `{
+				_, _ = fmt.Fprintf(w, `{
 					"id": "did:web:example.com",
 					"alsoKnownAs": ["at://example.com"],
 					"verificationMethod": [],
@@ -332,7 +331,7 @@ func TestBidirectionalDIDVerification(t *testing.T) {
 				// Return a DID document WITHOUT alsoKnownAs field
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
-				fmt.Fprintf(w, `{
+				_, _ = fmt.Fprintf(w, `{
 					"id": "did:web:example.com",
 					"verificationMethod": [],
 					"service": []

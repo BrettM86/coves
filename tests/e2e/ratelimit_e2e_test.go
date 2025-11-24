@@ -1,14 +1,13 @@
 package e2e
 
 import (
+	"Coves/internal/api/middleware"
 	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
-
-	"Coves/internal/api/middleware"
 
 	"github.com/stretchr/testify/assert"
 )

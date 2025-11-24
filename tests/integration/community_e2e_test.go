@@ -1,6 +1,14 @@
 package integration
 
 import (
+	"Coves/internal/api/middleware"
+	"Coves/internal/api/routes"
+	"Coves/internal/atproto/identity"
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/atproto/utils"
+	"Coves/internal/core/communities"
+	"Coves/internal/core/users"
+	"Coves/internal/db/postgres"
 	"bytes"
 	"context"
 	"database/sql"
@@ -14,15 +22,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"Coves/internal/api/middleware"
-	"Coves/internal/api/routes"
-	"Coves/internal/atproto/identity"
-	"Coves/internal/atproto/jetstream"
-	"Coves/internal/atproto/utils"
-	"Coves/internal/core/communities"
-	"Coves/internal/core/users"
-	"Coves/internal/db/postgres"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
@@ -535,8 +534,8 @@ func TestCommunity_E2E(t *testing.T) {
 			}
 
 			var listResp struct {
-				Communities []communities.Community `json:"communities"`
 				Cursor      string                  `json:"cursor"`
+				Communities []communities.Community `json:"communities"`
 			}
 
 			if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
@@ -564,8 +563,8 @@ func TestCommunity_E2E(t *testing.T) {
 			}
 
 			var listResp struct {
-				Communities []communities.Community `json:"communities"`
 				Cursor      string                  `json:"cursor"`
+				Communities []communities.Community `json:"communities"`
 			}
 			if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
 				t.Fatalf("Failed to decode response: %v", err)
@@ -620,8 +619,8 @@ func TestCommunity_E2E(t *testing.T) {
 			}
 
 			var listResp struct {
-				Communities []communities.Community `json:"communities"`
 				Cursor      string                  `json:"cursor"`
+				Communities []communities.Community `json:"communities"`
 			}
 			if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
 				t.Fatalf("Failed to decode response: %v", err)
@@ -670,8 +669,8 @@ func TestCommunity_E2E(t *testing.T) {
 			}
 
 			var listResp struct {
-				Communities []communities.Community `json:"communities"`
 				Cursor      string                  `json:"cursor"`
+				Communities []communities.Community `json:"communities"`
 			}
 			if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
 				t.Fatalf("Failed to decode response: %v", err)
@@ -720,8 +719,8 @@ func TestCommunity_E2E(t *testing.T) {
 			}
 
 			var listResp struct {
-				Communities []communities.Community `json:"communities"`
 				Cursor      string                  `json:"cursor"`
+				Communities []communities.Community `json:"communities"`
 			}
 			if err := json.NewDecoder(resp.Body).Decode(&listResp); err != nil {
 				t.Fatalf("Failed to decode response: %v", err)

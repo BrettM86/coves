@@ -1,13 +1,12 @@
 package integration
 
 import (
+	"Coves/internal/atproto/identity"
 	"context"
 	"fmt"
 	"os"
 	"testing"
 	"time"
-
-	"Coves/internal/atproto/identity"
 )
 
 // uniqueID generates a unique identifier for test isolation

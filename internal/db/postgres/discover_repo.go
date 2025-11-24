@@ -1,11 +1,10 @@
 package postgres
 
 import (
+	"Coves/internal/core/discover"
 	"context"
 	"database/sql"
 	"fmt"
-
-	"Coves/internal/core/discover"
 )
 
 type postgresDiscoverRepo struct {

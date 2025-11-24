@@ -1,17 +1,16 @@
 package integration
 
 import (
-	"context"
-	"fmt"
-	"sync"
-	"testing"
-	"time"
-
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/comments"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"context"
+	"fmt"
+	"sync"
+	"testing"
+	"time"
 )
 
 // TestConcurrentVoting_MultipleUsersOnSamePost tests race conditions when multiple users
@@ -611,8 +610,8 @@ func TestConcurrentCommunityCreation_DuplicateHandle(t *testing.T) {
 		wg.Add(numAttempts)
 
 		type result struct {
-			success bool
 			err     error
+			success bool
 		}
 		results := make(chan result, numAttempts)
 
