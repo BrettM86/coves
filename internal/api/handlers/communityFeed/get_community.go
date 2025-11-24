@@ -1,12 +1,13 @@
 package communityFeed
 
 import (
-	"Coves/internal/core/communityFeeds"
-	"Coves/internal/core/posts"
 	"encoding/json"
 	"log"
 	"net/http"
 	"strconv"
+
+	"Coves/internal/core/communityFeeds"
+	"Coves/internal/core/posts"
 )
 
 // GetCommunityHandler handles community feed retrieval

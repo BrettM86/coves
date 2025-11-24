@@ -1,10 +1,11 @@
 package timeline
 
 import (
-	"Coves/internal/core/posts"
 	"context"
 	"errors"
 	"time"
+
+	"Coves/internal/core/posts"
 )
 
 // Repository defines timeline data access interface

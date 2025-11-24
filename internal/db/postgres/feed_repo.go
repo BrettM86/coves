@@ -1,10 +1,11 @@
 package postgres
 
 import (
-	"Coves/internal/core/communityFeeds"
 	"context"
 	"database/sql"
 	"fmt"
+
+	"Coves/internal/core/communityFeeds"
 )
 
 type postgresFeedRepo struct {

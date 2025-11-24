@@ -1,10 +1,11 @@
 package community
 
 import (
-	"Coves/internal/core/communities"
 	"encoding/json"
 	"net/http"
 	"strconv"
+
+	"Coves/internal/core/communities"
 )
 
 // ListHandler handles listing communities

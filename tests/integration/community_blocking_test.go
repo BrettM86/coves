@@ -1,13 +1,14 @@
 package integration
 
 import (
-	"Coves/internal/atproto/jetstream"
-	"Coves/internal/core/communities"
 	"context"
 	"database/sql"
 	"fmt"
 	"testing"
 	"time"
+
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/core/communities"
 
 	postgresRepo "Coves/internal/db/postgres"
 )

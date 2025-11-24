@@ -1,13 +1,14 @@
 package comments
 
 import (
-	"Coves/internal/core/communities"
-	"Coves/internal/core/posts"
-	"Coves/internal/core/users"
 	"context"
 	"errors"
 	"testing"
 	"time"
+
+	"Coves/internal/core/communities"
+	"Coves/internal/core/posts"
+	"Coves/internal/core/users"
 
 	"github.com/stretchr/testify/assert"
 )

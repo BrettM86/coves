@@ -1,7 +1,6 @@
 package unit
 
 import (
-	"Coves/internal/core/communities"
 	"context"
 	"fmt"
 	"net/http"
@@ -10,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"Coves/internal/core/communities"
 )
 
 // mockCommunityRepo is a minimal mock for testing service layer

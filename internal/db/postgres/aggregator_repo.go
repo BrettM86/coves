@@ -1,12 +1,13 @@
 package postgres
 
 import (
-	"Coves/internal/core/aggregators"
 	"context"
 	"database/sql"
 	"fmt"
 	"strings"
 	"time"
+
+	"Coves/internal/core/aggregators"
 )
 
 type postgresAggregatorRepo struct {

@@ -1,11 +1,12 @@
 package middleware
 
 import (
-	"Coves/internal/atproto/auth"
 	"context"
 	"log"
 	"net/http"
 	"strings"
+
+	"Coves/internal/atproto/auth"
 )
 
 // Context keys for storing user information

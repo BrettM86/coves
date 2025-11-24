@@ -1,15 +1,16 @@
 package jetstream
 
 import (
-	"Coves/internal/atproto/utils"
-	"Coves/internal/core/users"
-	"Coves/internal/core/votes"
 	"context"
 	"database/sql"
 	"fmt"
 	"log"
 	"strings"
 	"time"
+
+	"Coves/internal/atproto/utils"
+	"Coves/internal/core/users"
+	"Coves/internal/core/votes"
 )
 
 // VoteEventConsumer consumes vote-related events from Jetstream

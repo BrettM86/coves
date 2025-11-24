@@ -1,12 +1,13 @@
 package jetstream
 
 import (
-	"Coves/internal/core/aggregators"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"time"
+
+	"Coves/internal/core/aggregators"
 )
 
 // AggregatorEventConsumer consumes aggregator-related events from Jetstream

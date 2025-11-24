@@ -1,7 +1,6 @@
 package blobs
 
 import (
-	"Coves/internal/core/communities"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -10,6 +9,8 @@ import (
 	"log"
 	"net/http"
 	"time"
+
+	"Coves/internal/core/communities"
 )
 
 // Service defines the interface for blob operations

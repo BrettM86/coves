@@ -1,14 +1,6 @@
 package integration
 
 import (
-	"Coves/internal/api/handlers/post"
-	"Coves/internal/api/middleware"
-	"Coves/internal/atproto/identity"
-	"Coves/internal/atproto/jetstream"
-	"Coves/internal/core/communities"
-	"Coves/internal/core/posts"
-	"Coves/internal/core/users"
-	"Coves/internal/db/postgres"
 	"bytes"
 	"context"
 	"database/sql"
@@ -21,6 +13,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"Coves/internal/api/handlers/post"
+	"Coves/internal/api/middleware"
+	"Coves/internal/atproto/identity"
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/core/communities"
+	"Coves/internal/core/posts"
+	"Coves/internal/core/users"
+	"Coves/internal/db/postgres"
 
 	"github.com/gorilla/websocket"
 	_ "github.com/lib/pq"

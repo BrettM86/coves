@@ -1,12 +1,13 @@
 package postgres
 
 import (
-	"Coves/internal/core/votes"
 	"context"
 	"database/sql"
 	"os"
 	"testing"
 	"time"
+
+	"Coves/internal/core/votes"
 
 	_ "github.com/lib/pq"
 	"github.com/pressly/goose/v3"

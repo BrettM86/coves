@@ -1,9 +1,6 @@
 package comments
 
 import (
-	"Coves/internal/core/communities"
-	"Coves/internal/core/posts"
-	"Coves/internal/core/users"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +9,10 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"Coves/internal/core/communities"
+	"Coves/internal/core/posts"
+	"Coves/internal/core/users"
 )
 
 const (

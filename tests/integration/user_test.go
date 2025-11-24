@@ -1,10 +1,6 @@
 package integration
 
 import (
-	"Coves/internal/api/routes"
-	"Coves/internal/atproto/identity"
-	"Coves/internal/core/users"
-	"Coves/internal/db/postgres"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -14,6 +10,11 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"Coves/internal/api/routes"
+	"Coves/internal/atproto/identity"
+	"Coves/internal/core/users"
+	"Coves/internal/db/postgres"
 
 	"github.com/go-chi/chi/v5"
 	_ "github.com/lib/pq"

@@ -1,8 +1,6 @@
 package integration
 
 import (
-	"Coves/internal/atproto/jetstream"
-	"Coves/internal/db/postgres"
 	"context"
 	"fmt"
 	"net/http"
@@ -10,6 +8,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/db/postgres"
 )
 
 // TestHostedByVerification_DomainMatching tests that hostedBy domain must match handle domain

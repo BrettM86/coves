@@ -1,15 +1,16 @@
 package integration
 
 import (
-	"Coves/internal/atproto/identity"
-	"Coves/internal/atproto/jetstream"
-	"Coves/internal/core/communities"
-	"Coves/internal/db/postgres"
 	"context"
 	"errors"
 	"fmt"
 	"testing"
 	"time"
+
+	"Coves/internal/atproto/identity"
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/core/communities"
+	"Coves/internal/db/postgres"
 )
 
 func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {

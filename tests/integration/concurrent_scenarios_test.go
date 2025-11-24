@@ -1,16 +1,17 @@
 package integration
 
 import (
-	"Coves/internal/atproto/jetstream"
-	"Coves/internal/core/comments"
-	"Coves/internal/core/communities"
-	"Coves/internal/core/users"
-	"Coves/internal/db/postgres"
 	"context"
 	"fmt"
 	"sync"
 	"testing"
 	"time"
+
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/core/comments"
+	"Coves/internal/core/communities"
+	"Coves/internal/core/users"
+	"Coves/internal/db/postgres"
 )
 
 // TestConcurrentVoting_MultipleUsersOnSamePost tests race conditions when multiple users

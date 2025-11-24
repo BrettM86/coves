@@ -1,10 +1,6 @@
 package integration
 
 import (
-	"Coves/internal/api/handlers/community"
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/communities"
-	postgresRepo "Coves/internal/db/postgres"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -12,6 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"Coves/internal/api/handlers/community"
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/communities"
+	postgresRepo "Coves/internal/db/postgres"
 )
 
 // TestBlockHandler_HandleResolution tests that the block handler accepts handles

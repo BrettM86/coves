@@ -1,7 +1,6 @@
 package postgres
 
 import (
-	"Coves/internal/core/posts"
 	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
@@ -12,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"Coves/internal/core/posts"
 )
 
 // feedRepoBase contains shared logic for timeline and discover feed repositories

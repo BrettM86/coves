@@ -1,9 +1,6 @@
 package integration
 
 import (
-	"Coves/internal/api/handlers/timeline"
-	"Coves/internal/api/middleware"
-	"Coves/internal/db/postgres"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,6 +8,10 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"Coves/internal/api/handlers/timeline"
+	"Coves/internal/api/middleware"
+	"Coves/internal/db/postgres"
 
 	timelineCore "Coves/internal/core/timeline"
 

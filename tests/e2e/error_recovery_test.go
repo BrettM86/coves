@@ -1,10 +1,6 @@
 package e2e
 
 import (
-	"Coves/internal/atproto/identity"
-	"Coves/internal/atproto/jetstream"
-	"Coves/internal/core/users"
-	"Coves/internal/db/postgres"
 	"context"
 	"database/sql"
 	"fmt"
@@ -15,6 +11,11 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"Coves/internal/atproto/identity"
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/core/users"
+	"Coves/internal/db/postgres"
 
 	_ "github.com/lib/pq"
 	"github.com/pressly/goose/v3"

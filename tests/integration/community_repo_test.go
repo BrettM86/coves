@@ -1,12 +1,13 @@
 package integration
 
 import (
-	"Coves/internal/core/communities"
-	"Coves/internal/db/postgres"
 	"context"
 	"fmt"
 	"testing"
 	"time"
+
+	"Coves/internal/core/communities"
+	"Coves/internal/db/postgres"
 )
 
 func TestCommunityRepository_Create(t *testing.T) {

@@ -1,13 +1,14 @@
 package postgres
 
 import (
-	"Coves/internal/core/comments"
 	"context"
 	"database/sql"
 	"encoding/base64"
 	"fmt"
 	"log"
 	"strings"
+
+	"Coves/internal/core/comments"
 
 	"github.com/lib/pq"
 )

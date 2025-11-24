@@ -1,13 +1,14 @@
 package integration
 
 import (
-	"Coves/internal/atproto/jetstream"
-	"Coves/internal/core/comments"
-	"Coves/internal/db/postgres"
 	"context"
 	"fmt"
 	"testing"
 	"time"
+
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/core/comments"
+	"Coves/internal/db/postgres"
 )
 
 func TestCommentConsumer_CreateComment(t *testing.T) {

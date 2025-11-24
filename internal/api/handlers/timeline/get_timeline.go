@@ -1,14 +1,15 @@
 package timeline
 
 import (
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/posts"
-	"Coves/internal/core/timeline"
 	"encoding/json"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/posts"
+	"Coves/internal/core/timeline"
 )
 
 // GetTimelineHandler handles timeline feed retrieval

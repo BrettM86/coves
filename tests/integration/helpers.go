@@ -1,8 +1,6 @@
 package integration
 
 import (
-	"Coves/internal/atproto/auth"
-	"Coves/internal/core/users"
 	"bytes"
 	"context"
 	"database/sql"
@@ -15,6 +13,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"Coves/internal/atproto/auth"
+	"Coves/internal/core/users"
 
 	"github.com/golang-jwt/jwt/v5"
 )

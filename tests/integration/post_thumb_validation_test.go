@@ -1,17 +1,18 @@
 package integration
 
 import (
-	"Coves/internal/api/handlers/post"
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/communities"
-	"Coves/internal/core/posts"
-	"Coves/internal/db/postgres"
 	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"Coves/internal/api/handlers/post"
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/communities"
+	"Coves/internal/core/posts"
+	"Coves/internal/db/postgres"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

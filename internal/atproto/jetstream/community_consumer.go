@@ -1,9 +1,6 @@
 package jetstream
 
 import (
-	"Coves/internal/atproto/identity"
-	"Coves/internal/atproto/utils"
-	"Coves/internal/core/communities"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,6 +8,10 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"Coves/internal/atproto/identity"
+	"Coves/internal/atproto/utils"
+	"Coves/internal/core/communities"
 
 	lru "github.com/hashicorp/golang-lru/v2"
 	"golang.org/x/net/publicsuffix"
@@ -389,9 +390,10 @@ func (c *CommunityEventConsumer) verifyHostedByClaim(ctx context.Context, handle
 
 // verifyDIDDocument fetches and validates the DID document from .well-known/did.json
 // Implements Bluesky's bidirectional verification model:
-//   1. Verify DID document exists at https://domain/.well-known/did.json
-//   2. Verify DID document ID matches claimed DID
-//   3. Verify DID document claims the handle in alsoKnownAs field
+//  1. Verify DID document exists at https://domain/.well-known/did.json
+//  2. Verify DID document ID matches claimed DID
+//  3. Verify DID document claims the handle in alsoKnownAs field
+//
 // Results are cached with TTL and rate-limited to prevent DoS attacks
 func (c *CommunityEventConsumer) verifyDIDDocument(ctx context.Context, did, domain, handle string) error {
 	// Skip verification in dev mode
@@ -451,8 +453,8 @@ func (c *CommunityEventConsumer) verifyDIDDocument(ctx context.Context, did, dom
 
 	// Parse DID document
 	var didDoc struct {
-		ID           string   `json:"id"`
-		AlsoKnownAs  []string `json:"alsoKnownAs"`
+		ID          string   `json:"id"`
+		AlsoKnownAs []string `json:"alsoKnownAs"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&didDoc); err != nil {
 		// Cache the failure

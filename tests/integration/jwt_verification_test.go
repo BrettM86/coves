@@ -1,8 +1,6 @@
 package integration
 
 import (
-	"Coves/internal/atproto/auth"
-	"Coves/internal/api/middleware"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +8,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"Coves/internal/api/middleware"
+	"Coves/internal/atproto/auth"
 )
 
 // TestJWTSignatureVerification tests end-to-end JWT signature verification

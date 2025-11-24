@@ -1,8 +1,9 @@
 package comments
 
 import (
-	"Coves/internal/core/comments"
 	"net/http"
+
+	"Coves/internal/core/comments"
 )
 
 // ServiceAdapter adapts the core comments.Service to the handler's Service interface

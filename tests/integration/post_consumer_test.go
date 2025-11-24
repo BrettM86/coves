@@ -1,13 +1,14 @@
 package integration
 
 import (
-	"Coves/internal/atproto/jetstream"
-	"Coves/internal/core/users"
-	"Coves/internal/db/postgres"
 	"context"
 	"fmt"
 	"testing"
 	"time"
+
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/core/users"
+	"Coves/internal/db/postgres"
 )
 
 // TestPostConsumer_CommentCountReconciliation tests that post comment_count

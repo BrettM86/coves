@@ -1,10 +1,11 @@
 package aggregator
 
 import (
-	"Coves/internal/core/aggregators"
 	"encoding/json"
 	"log"
 	"net/http"
+
+	"Coves/internal/core/aggregators"
 )
 
 // ErrorResponse represents an XRPC error response

@@ -1,13 +1,14 @@
 package integration
 
 import (
+	"context"
+	"testing"
+	"time"
+
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
-	"context"
-	"testing"
-	"time"
 )
 
 func TestUserIndexingFromJetstream(t *testing.T) {
