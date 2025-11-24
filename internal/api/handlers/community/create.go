@@ -1,21 +1,38 @@
 package community
 
 import (
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/communities"
 	"encoding/json"
 	"net/http"
+
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/communities"
 )
 
 // CreateHandler handles community creation
 type CreateHandler struct {
-	service communities.Service
+	service                  communities.Service
+	allowedCommunityCreators map[string]bool // nil = allow all
 }
 
 // NewCreateHandler creates a new create handler
-func NewCreateHandler(service communities.Service) *CreateHandler {
+// allowedCreators is a list of DIDs that can create communities. If empty, anyone can create.
+func NewCreateHandler(service communities.Service, allowedCreators []string) *CreateHandler {
+	var allowedMap map[string]bool
+	if len(allowedCreators) > 0 {
+		allowedMap = make(map[string]bool)
+		for _, did := range allowedCreators {
+			if did != "" { // Skip empty strings
+				allowedMap[did] = true
+			}
+		}
+		// If all entries were empty, treat as no restriction
+		if len(allowedMap) == 0 {
+			allowedMap = nil
+		}
+	}
 	return &CreateHandler{
-		service: service,
+		service:                  service,
+		allowedCommunityCreators: allowedMap,
 	}
 }
 
@@ -39,6 +56,13 @@ func (h *CreateHandler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	userDID := middleware.GetUserDID(r)
 	if userDID == "" {
 		writeError(w, http.StatusUnauthorized, "AuthRequired", "Authentication required")
+		return
+	}
+
+	// Check if user is allowed to create communities (if restriction is enabled)
+	if h.allowedCommunityCreators != nil && !h.allowedCommunityCreators[userDID] {
+		writeError(w, http.StatusForbidden, "CommunityCreationRestricted",
+			"Community creation is restricted to authorized users")
 		return
 	}
 

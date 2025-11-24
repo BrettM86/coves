@@ -1,6 +1,18 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+
 	"Coves/internal/api/middleware"
 	"Coves/internal/api/routes"
 	"Coves/internal/atproto/auth"
@@ -16,17 +28,6 @@ import (
 	"Coves/internal/core/timeline"
 	"Coves/internal/core/unfurl"
 	"Coves/internal/core/users"
-	"bytes"
-	"context"
-	"database/sql"
-	"encoding/json"
-	"fmt"
-	"io"
-	"log"
-	"net/http"
-	"os"
-	"strings"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
@@ -183,6 +184,20 @@ func main() {
 	}
 
 	log.Printf("Instance domain: %s (extracted from DID: %s)", instanceDomain, instanceDID)
+
+	// Community creation restriction - if set, only these DIDs can create communities
+	var allowedCommunityCreators []string
+	if communityCreators := os.Getenv("COMMUNITY_CREATORS"); communityCreators != "" {
+		for _, did := range strings.Split(communityCreators, ",") {
+			did = strings.TrimSpace(did)
+			if did != "" {
+				allowedCommunityCreators = append(allowedCommunityCreators, did)
+			}
+		}
+		log.Printf("Community creation restricted to %d DIDs", len(allowedCommunityCreators))
+	} else {
+		log.Println("Community creation open to all authenticated users")
+	}
 
 	// V2.0: Initialize PDS account provisioner for communities (simplified)
 	// PDS handles all DID and key generation - no Coves-side cryptography needed
@@ -422,7 +437,7 @@ func main() {
 
 	// Register XRPC routes
 	routes.RegisterUserRoutes(r, userService)
-	routes.RegisterCommunityRoutes(r, communityService, authMiddleware)
+	routes.RegisterCommunityRoutes(r, communityService, authMiddleware, allowedCommunityCreators)
 	log.Println("Community XRPC endpoints registered with OAuth authentication")
 
 	routes.RegisterPostRoutes(r, postService, authMiddleware)

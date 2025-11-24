@@ -1,15 +1,6 @@
 package integration
 
 import (
-	"Coves/internal/api/middleware"
-	"Coves/internal/api/routes"
-	"Coves/internal/atproto/identity"
-	"Coves/internal/atproto/jetstream"
-	"Coves/internal/core/communities"
-	"Coves/internal/core/posts"
-	timelineCore "Coves/internal/core/timeline"
-	"Coves/internal/core/users"
-	"Coves/internal/db/postgres"
 	"bytes"
 	"context"
 	"database/sql"
@@ -22,6 +13,16 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"Coves/internal/api/middleware"
+	"Coves/internal/api/routes"
+	"Coves/internal/atproto/identity"
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/core/communities"
+	"Coves/internal/core/posts"
+	timelineCore "Coves/internal/core/timeline"
+	"Coves/internal/core/users"
+	"Coves/internal/db/postgres"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
@@ -140,7 +141,7 @@ func TestFullUserJourney_E2E(t *testing.T) {
 	// Setup HTTP server with all routes
 	authMiddleware := middleware.NewAtProtoAuthMiddleware(nil, true) // Skip JWT verification for testing
 	r := chi.NewRouter()
-	routes.RegisterCommunityRoutes(r, communityService, authMiddleware)
+	routes.RegisterCommunityRoutes(r, communityService, authMiddleware, nil) // nil = allow all community creators
 	routes.RegisterPostRoutes(r, postService, authMiddleware)
 	routes.RegisterTimelineRoutes(r, timelineService, authMiddleware)
 	httpServer := httptest.NewServer(r)
@@ -795,7 +796,8 @@ func simulateCommunityIndexing(t *testing.T, db *sql.DB, did, handle, ownerDID s
 
 // Helper: Simulate post indexing for test speed
 func simulatePostIndexing(t *testing.T, db *sql.DB, consumer *jetstream.PostEventConsumer,
-	ctx context.Context, communityDID, authorDID, uri, cid, title, content string) {
+	ctx context.Context, communityDID, authorDID, uri, cid, title, content string,
+) {
 	t.Helper()
 
 	rkey := strings.Split(uri, "/")[4]
