@@ -1,0 +1,23 @@
+{
+  "@context": [
+    "https://www.w3.org/ns/did/v1",
+    "https://w3id.org/security/multikey/v1"
+  ],
+  "id": "did:web:coves.social",
+  "alsoKnownAs": ["at://coves.social"],
+  "verificationMethod": [
+    {
+      "id": "did:web:coves.social#atproto",
+      "type": "Multikey",
+      "controller": "did:web:coves.social",
+      "publicKeyMultibase": "zQ3shu1T3Y3MYoC1n7fCqkZqyrk8FiY3PV3BYM2JwyqcXFY6s"
+    }
+  ],
+  "service": [
+    {
+      "id": "#atproto_pds",
+      "type": "AtprotoPersonalDataServer",
+      "serviceEndpoint": "https://pds.coves.me"
+    }
+  ]
+}

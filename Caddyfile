@@ -4,7 +4,8 @@
 # Domain architecture:
 #   - coves.social: AppView (API, web app)
 #   - *.coves.social: Community handles (route atproto-did to PDS)
-#   - coves.me: PDS (data storage)
+#   - pds.coves.me: PDS canonical hostname (for relay registration)
+#   - coves.me: PDS legacy hostname (kept for compatibility)
 
 # Community handle subdomains (e.g., gaming.coves.social)
 # These need to route /.well-known/atproto-did to PDS for handle resolution
@@ -102,8 +103,9 @@ coves.social {
     encode gzip zstd
 }
 
-# PDS Domain
-coves.me {
+# PDS Domain (both hostnames point to same PDS)
+# pds.coves.me is the canonical hostname for relay registration
+pds.coves.me, coves.me {
     reverse_proxy pds:3000 {
         # Health check
         health_uri /xrpc/_health

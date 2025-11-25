@@ -2,7 +2,8 @@
 #
 # Architecture:
 #   - coves.social: AppView domain (API, frontend, .well-known/did.json)
-#   - coves.me: PDS domain (must be separate from AppView)
+#   - pds.coves.me: PDS domain (canonical hostname for relay registration)
+#   - coves.me: PDS domain (legacy, kept for compatibility)
 #
 # Hardware: AMD Epyc 7351p (16c/32t), 256GB RAM, 2x500GB NVMe RAID
 #
@@ -122,8 +123,8 @@ services:
     ports:
       - "127.0.0.1:3000:3000"  # Only expose to localhost (Caddy proxies)
     environment:
-      # PDS identity
-      PDS_HOSTNAME: coves.me
+      # PDS identity (use pds.coves.me for fresh relay registration)
+      PDS_HOSTNAME: pds.coves.me
       PDS_PORT: 3000
       PDS_DATA_DIRECTORY: /pds
       PDS_BLOBSTORE_DISK_LOCATION: /pds/blocks
@@ -165,7 +166,7 @@ services:
       PDS_REPORT_SERVICE_DID: did:plc:ar7c4by46qjdydhdevvrndac
 
       # Relay crawlers (for federation with Bluesky network)
-      PDS_CRAWLERS: https://bsky.network
+      PDS_CRAWLERS: https://bsky.network,https://relay1.us-east.bsky.network,https://relay1.us-west.bsky.network,https://relay.fire.hose.cam,https://relay.upcloud.world
     volumes:
       - pds-data:/pds
     networks:
