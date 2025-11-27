@@ -93,7 +93,7 @@ Check AppView logs:
 
 Query via API:
 ```bash
-curl "http://localhost:8081/xrpc/social.coves.actor.getProfile?actor=alice.local.coves.dev"
+curl "http://localhost:8081/xrpc/social.coves.actor.getprofile?actor=alice.local.coves.dev"
 ```
 
 Expected response:

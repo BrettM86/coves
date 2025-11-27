@@ -28,14 +28,14 @@ func NewUserHandler(userService users.UserService) *UserHandler {
 func RegisterUserRoutes(r chi.Router, service users.UserService) {
 	h := NewUserHandler(service)
 
-	// social.coves.actor.getProfile - query endpoint
-	r.Get("/xrpc/social.coves.actor.getProfile", h.GetProfile)
+	// social.coves.actor.getprofile - query endpoint
+	r.Get("/xrpc/social.coves.actor.getprofile", h.GetProfile)
 
 	// social.coves.actor.signup - procedure endpoint
 	r.Post("/xrpc/social.coves.actor.signup", h.Signup)
 }
 
-// GetProfile handles social.coves.actor.getProfile
+// GetProfile handles social.coves.actor.getprofile
 // Query endpoint that retrieves a user profile by DID or handle
 func (h *UserHandler) GetProfile(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()

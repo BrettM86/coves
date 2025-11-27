@@ -1,6 +1,6 @@
 {
   "lexicon": 1,
-  "id": "social.coves.actor.getProfile",
+  "id": "social.coves.actor.getprofile",
   "defs": {
     "main": {
       "type": "query",
