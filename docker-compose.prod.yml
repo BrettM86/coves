@@ -95,6 +95,9 @@ services:
 
       # Cursor encryption for pagination
       CURSOR_SECRET: ${CURSOR_SECRET}
+
+      # Restrict community creation to instance DID only
+      COMMUNITY_CREATORS: did:web:coves.social
     networks:
       - coves-internal
     depends_on:
