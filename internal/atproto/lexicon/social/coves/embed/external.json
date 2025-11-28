@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "object",
-      "description": "External link embed with preview metadata and provider support",
+      "description": "External link embed with optional aggregated sources for megathreads",
       "required": ["external"],
       "properties": {
         "external": {
@@ -15,13 +15,13 @@
     },
     "external": {
       "type": "object",
-      "description": "External link metadata",
+      "description": "Primary external link metadata",
       "required": ["uri"],
       "properties": {
         "uri": {
           "type": "string",
           "format": "uri",
-          "description": "URI of the external content"
+          "description": "URI of the primary external content"
         },
         "title": {
           "type": "string",
@@ -39,11 +39,12 @@
           "type": "blob",
           "accept": ["image/png", "image/jpeg", "image/webp"],
           "maxSize": 1000000,
-          "description": "Thumbnail image for the link"
+          "description": "Thumbnail image for the post (applies to primary link)"
         },
         "domain": {
           "type": "string",
-          "description": "Domain of the linked content"
+          "maxLength": 253,
+          "description": "Domain of the linked content (e.g., nytimes.com)"
         },
         "embedType": {
           "type": "string",
@@ -52,6 +53,7 @@
         },
         "provider": {
           "type": "string",
+          "maxLength": 100,
           "description": "Service provider name (e.g., imgur, streamable)"
         },
         "images": {
@@ -67,6 +69,43 @@
           "type": "integer",
           "minimum": 0,
           "description": "Total number of items if more than displayed (for galleries)"
+        },
+        "sources": {
+          "type": "array",
+          "description": "Aggregated source links for megathreads. Each source references an original article and optionally the Coves post that shared it",
+          "maxLength": 50,
+          "items": {
+            "type": "ref",
+            "ref": "#source"
+          }
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "description": "A source link aggregated into a megathread",
+      "required": ["uri"],
+      "properties": {
+        "uri": {
+          "type": "string",
+          "format": "uri",
+          "description": "URI of the source article"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 500,
+          "maxGraphemes": 500,
+          "description": "Title of the source article"
+        },
+        "domain": {
+          "type": "string",
+          "maxLength": 253,
+          "description": "Domain of the source (e.g., nytimes.com)"
+        },
+        "sourcePost": {
+          "type": "ref",
+          "ref": "com.atproto.repo.strongRef",
+          "description": "Reference to the Coves post that originally shared this link. Used for feed deprioritization of rolled-up posts"
         }
       }
     }
