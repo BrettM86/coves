@@ -1,11 +1,11 @@
 module Coves
 
-go 1.24
+go 1.24.0
 
 toolchain go1.25.1
 
 require (
-	github.com/bluesky-social/indigo v0.0.0-20251127021457-6f2658724b36
+	github.com/bluesky-social/indigo v0.0.0-20251010013709-8f2296eee90f
 	github.com/go-chi/chi/v5 v5.2.1
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/google/uuid v1.6.0
