@@ -48,3 +48,6 @@ Thumbs.db
 # Build artifacts
 /validate-lexicon
 /bin/
+
+# Go build cache
+.cache/
