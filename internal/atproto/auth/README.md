@@ -110,6 +110,133 @@ Public keys are fetched from PDS authorization servers and cached for 1 hour. Th
 5. Find matching key by `kid` from JWT header
 6. Cache the JWKS for 1 hour
 
+## DPoP Token Binding
+
+DPoP (Demonstrating Proof-of-Possession) binds access tokens to client-controlled cryptographic keys, preventing token theft and replay attacks.
+
+### What is DPoP?
+
+DPoP is an OAuth extension (RFC 9449) that adds proof-of-possession semantics to bearer tokens. When a PDS issues a DPoP-bound access token:
+
+1. Access token contains `cnf.jkt` claim (JWK thumbprint of client's public key)
+2. Client creates a DPoP proof JWT signed with their private key
+3. Server verifies the proof signature and checks it matches the token's `cnf.jkt`
+
+### CRITICAL: DPoP Security Model
+
+> ⚠️ **DPoP is an ADDITIONAL security layer, NOT a replacement for token signature verification.**
+
+The correct verification order is:
+1. **ALWAYS verify the access token signature first** (via JWKS, HS256 shared secret, or DID resolution)
+2. **If the verified token has `cnf.jkt`, REQUIRE valid DPoP proof**
+3. **NEVER use DPoP as a fallback when signature verification fails**
+
+**Why This Matters**: An attacker could create a fake token with `sub: "did:plc:victim"` and their own `cnf.jkt`, then present a valid DPoP proof signed with their key. If we accept DPoP as a fallback, the attacker can impersonate any user.
+
+### How DPoP Works
+
+```
+┌─────────────┐                          ┌─────────────┐
+│   Client    │                          │   Server    │
+│             │                          │  (Coves)    │
+└─────────────┘                          └─────────────┘
+       │                                        │
+       │ 1. Authorization: Bearer <token>       │
+       │    DPoP: <proof-jwt>                  │
+       │───────────────────────────────────────>│
+       │                                        │
+       │                                        │ 2. VERIFY token signature
+       │                                        │    (REQUIRED - no fallback!)
+       │                                        │
+       │                                        │ 3. If token has cnf.jkt:
+       │                                        │    - Verify DPoP proof
+       │                                        │    - Check thumbprint match
+       │                                        │
+       │                              200 OK    │
+       │<───────────────────────────────────────│
+```
+
+### When DPoP is Required
+
+DPoP verification is **REQUIRED** when:
+- Access token signature has been verified AND
+- Access token contains `cnf.jkt` claim (DPoP-bound)
+
+If the token has `cnf.jkt` but no DPoP header is present, the request is **REJECTED**.
+
+### Replay Protection
+
+DPoP proofs include a unique `jti` (JWT ID) claim. The server tracks seen `jti` values to prevent replay attacks:
+
+```go
+// Create a verifier with replay protection (default)
+verifier := auth.NewDPoPVerifier()
+defer verifier.Stop() // Stop cleanup goroutine on shutdown
+
+// The verifier automatically rejects reused jti values within the proof validity window (5 minutes)
+```
+
+### DPoP Implementation
+
+The `dpop.go` module provides:
+
+```go
+// Create a verifier with replay protection
+verifier := auth.NewDPoPVerifier()
+defer verifier.Stop()
+
+// Verify the DPoP proof
+proof, err := verifier.VerifyDPoPProof(dpopHeader, "POST", "https://coves.social/xrpc/...")
+if err != nil {
+    // Invalid proof (includes replay detection)
+}
+
+// Verify it binds to the VERIFIED access token
+expectedThumbprint, err := auth.ExtractCnfJkt(claims)
+if err != nil {
+    // Token not DPoP-bound
+}
+
+if err := verifier.VerifyTokenBinding(proof, expectedThumbprint); err != nil {
+    // Proof doesn't match token
+}
+```
+
+### DPoP Proof Format
+
+The DPoP header contains a JWT with:
+
+**Header**:
+- `typ`: `"dpop+jwt"` (required)
+- `alg`: `"ES256"` (or other supported algorithm)
+- `jwk`: Client's public key (JWK format)
+
+**Claims**:
+- `jti`: Unique proof identifier (tracked for replay protection)
+- `htm`: HTTP method (e.g., `"POST"`)
+- `htu`: HTTP URI (without query/fragment)
+- `iat`: Timestamp (must be recent, within 5 minutes)
+
+**Example**:
+```json
+{
+  "typ": "dpop+jwt",
+  "alg": "ES256",
+  "jwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "...",
+    "y": "..."
+  }
+}
+{
+  "jti": "unique-id-123",
+  "htm": "POST",
+  "htu": "https://coves.social/xrpc/social.coves.community.create",
+  "iat": 1700000000
+}
+```
+
 ## Security Considerations
 
 ### ✅ Implemented
@@ -120,10 +247,15 @@ Public keys are fetched from PDS authorization servers and cached for 1 hour. Th
 - Required claims validation (sub, iss)
 - Key caching with TTL
 - Secure error messages (no internal details leaked)
+- **DPoP proof verification** (proof-of-possession for token binding)
+- **DPoP thumbprint validation** (prevents token theft attacks)
+- **DPoP freshness checks** (5-minute proof validity window)
+- **DPoP replay protection** (jti tracking with in-memory cache)
+- **Secure DPoP model** (DPoP required AFTER signature verification, never as fallback)
 
 ### ⚠️ Not Yet Implemented
 
-- DPoP validation (for replay attack prevention)
+- Server-issued DPoP nonces (additional replay protection)
 - Scope validation (checking `scope` claim)
 - Audience validation (checking `aud` claim)
 - Rate limiting per DID
@@ -186,7 +318,7 @@ Missing or invalid token:
 
 ## Future Enhancements
 
-- [ ] DPoP proof validation
+- [ ] DPoP nonce validation (server-managed nonce for additional replay protection)
 - [ ] Scope-based authorization
 - [ ] Audience claim validation
 - [ ] Token revocation support
