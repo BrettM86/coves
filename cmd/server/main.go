@@ -36,6 +36,8 @@ import (
 	commentsAPI "Coves/internal/api/handlers/comments"
 
 	postgresRepo "Coves/internal/db/postgres"
+
+	indigoIdentity "github.com/bluesky-social/indigo/atproto/identity"
 )
 
 func main() {
@@ -142,10 +144,29 @@ func main() {
 		log.Println("   Set AUTH_SKIP_VERIFY=false for production")
 	}
 
-	jwksCacheTTL := 1 * time.Hour // Cache public keys for 1 hour
+	// Initialize Indigo directory for DID resolution (used by auth)
+	plcURL := os.Getenv("PLC_DIRECTORY_URL")
+	if plcURL == "" {
+		plcURL = "https://plc.directory"
+	}
+	indigoDir := &indigoIdentity.BaseDirectory{
+		PLCURL:     plcURL,
+		HTTPClient: http.Client{Timeout: 10 * time.Second},
+	}
+
+	// Initialize JWT config early to cache HS256_ISSUERS and PDS_JWT_SECRET
+	// This avoids reading env vars on every request
+	auth.InitJWTConfig()
+
+	// Create combined key fetcher for both DID and URL issuers
+	// - DID issuers (did:plc:, did:web:) → resolved via DID document keys (ES256)
+	// - URL issuers → JWKS endpoint (fallback for legacy tokens)
+	jwksCacheTTL := 1 * time.Hour
 	jwksFetcher := auth.NewCachedJWKSFetcher(jwksCacheTTL)
-	authMiddleware := middleware.NewAtProtoAuthMiddleware(jwksFetcher, skipVerify)
-	log.Println("✅ atProto auth middleware initialized")
+	keyFetcher := auth.NewCombinedKeyFetcher(indigoDir, jwksFetcher)
+
+	authMiddleware := middleware.NewAtProtoAuthMiddleware(keyFetcher, skipVerify)
+	log.Println("✅ atProto auth middleware initialized (DID + JWKS key resolution)")
 
 	// Initialize repositories and services
 	userRepo := postgresRepo.NewUserRepository(db)
