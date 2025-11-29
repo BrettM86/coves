@@ -87,7 +87,10 @@ type JWTHeader struct {
 // Claims represents the standard JWT claims we care about
 type Claims struct {
 	jwt.RegisteredClaims
-	Scope string `json:"scope,omitempty"`
+	// Confirmation claim for DPoP token binding (RFC 9449)
+	// Contains "jkt" (JWK thumbprint) when token is bound to a DPoP key
+	Confirmation map[string]interface{} `json:"cnf,omitempty"`
+	Scope        string                 `json:"scope,omitempty"`
 }
 
 // stripBearerPrefix removes the "Bearer " prefix from a token string

@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -208,13 +207,9 @@ func TestVerifyJWT_HS256_Valid(t *testing.T) {
 	issuer := "https://pds.coves.social"
 
 	ResetJWTConfigForTesting()
-	os.Setenv("PDS_JWT_SECRET", secret)
-	os.Setenv("HS256_ISSUERS", issuer)
-	defer func() {
-		os.Unsetenv("PDS_JWT_SECRET")
-		os.Unsetenv("HS256_ISSUERS")
-		ResetJWTConfigForTesting()
-	}()
+	t.Setenv("PDS_JWT_SECRET", secret)
+	t.Setenv("HS256_ISSUERS", issuer)
+	t.Cleanup(ResetJWTConfigForTesting)
 
 	tokenString := createHS256Token(t, "did:plc:test123", issuer, secret, 1*time.Hour)
 
@@ -237,13 +232,9 @@ func TestVerifyJWT_HS256_WrongSecret(t *testing.T) {
 	issuer := "https://pds.coves.social"
 
 	ResetJWTConfigForTesting()
-	os.Setenv("PDS_JWT_SECRET", "correct-secret")
-	os.Setenv("HS256_ISSUERS", issuer)
-	defer func() {
-		os.Unsetenv("PDS_JWT_SECRET")
-		os.Unsetenv("HS256_ISSUERS")
-		ResetJWTConfigForTesting()
-	}()
+	t.Setenv("PDS_JWT_SECRET", "correct-secret")
+	t.Setenv("HS256_ISSUERS", issuer)
+	t.Cleanup(ResetJWTConfigForTesting)
 
 	// Create token with wrong secret
 	tokenString := createHS256Token(t, "did:plc:test123", issuer, "wrong-secret", 1*time.Hour)
@@ -260,12 +251,9 @@ func TestVerifyJWT_HS256_SecretNotConfigured(t *testing.T) {
 	issuer := "https://pds.coves.social"
 
 	ResetJWTConfigForTesting()
-	os.Unsetenv("PDS_JWT_SECRET") // Ensure secret is not set
-	os.Setenv("HS256_ISSUERS", issuer)
-	defer func() {
-		os.Unsetenv("HS256_ISSUERS")
-		ResetJWTConfigForTesting()
-	}()
+	t.Setenv("PDS_JWT_SECRET", "") // Ensure secret is not set (empty = not configured)
+	t.Setenv("HS256_ISSUERS", issuer)
+	t.Cleanup(ResetJWTConfigForTesting)
 
 	tokenString := createHS256Token(t, "did:plc:test123", issuer, "any-secret", 1*time.Hour)
 
@@ -286,13 +274,9 @@ func TestVerifyJWT_AlgorithmConfusionAttack_HS256WithNonWhitelistedIssuer(t *tes
 	// An attacker tries to use HS256 with an issuer that should use RS256/ES256
 
 	ResetJWTConfigForTesting()
-	os.Setenv("PDS_JWT_SECRET", "some-secret")
-	os.Setenv("HS256_ISSUERS", "https://trusted.example.com") // Different from token issuer
-	defer func() {
-		os.Unsetenv("PDS_JWT_SECRET")
-		os.Unsetenv("HS256_ISSUERS")
-		ResetJWTConfigForTesting()
-	}()
+	t.Setenv("PDS_JWT_SECRET", "some-secret")
+	t.Setenv("HS256_ISSUERS", "https://trusted.example.com") // Different from token issuer
+	t.Cleanup(ResetJWTConfigForTesting)
 
 	// Create HS256 token with non-whitelisted issuer (simulating attack)
 	tokenString := createHS256Token(t, "did:plc:attacker", "https://victim-pds.example.com", "some-secret", 1*time.Hour)
@@ -311,12 +295,9 @@ func TestVerifyJWT_AlgorithmConfusionAttack_EmptyWhitelist(t *testing.T) {
 	// SECURITY TEST: When no issuers are whitelisted for HS256, all HS256 tokens should be rejected
 
 	ResetJWTConfigForTesting()
-	os.Setenv("PDS_JWT_SECRET", "some-secret")
-	os.Unsetenv("HS256_ISSUERS") // Empty whitelist
-	defer func() {
-		os.Unsetenv("PDS_JWT_SECRET")
-		ResetJWTConfigForTesting()
-	}()
+	t.Setenv("PDS_JWT_SECRET", "some-secret")
+	t.Setenv("HS256_ISSUERS", "") // Empty whitelist
+	t.Cleanup(ResetJWTConfigForTesting)
 
 	tokenString := createHS256Token(t, "did:plc:test123", "https://any-pds.example.com", "some-secret", 1*time.Hour)
 
@@ -332,13 +313,9 @@ func TestVerifyJWT_IssuerRequiresHS256ButTokenUsesRS256(t *testing.T) {
 	issuer := "https://pds.coves.social"
 
 	ResetJWTConfigForTesting()
-	os.Setenv("PDS_JWT_SECRET", "test-secret")
-	os.Setenv("HS256_ISSUERS", issuer)
-	defer func() {
-		os.Unsetenv("PDS_JWT_SECRET")
-		os.Unsetenv("HS256_ISSUERS")
-		ResetJWTConfigForTesting()
-	}()
+	t.Setenv("PDS_JWT_SECRET", "test-secret")
+	t.Setenv("HS256_ISSUERS", issuer)
+	t.Cleanup(ResetJWTConfigForTesting)
 
 	// Create RS256-signed token (can't actually sign without RSA key, but we can test the header check)
 	claims := &Claims{
@@ -414,11 +391,8 @@ func TestParseJWTHeader_InvalidFormat(t *testing.T) {
 
 func TestIsHS256IssuerWhitelisted_Whitelisted(t *testing.T) {
 	ResetJWTConfigForTesting()
-	os.Setenv("HS256_ISSUERS", "https://pds1.example.com,https://pds2.example.com")
-	defer func() {
-		os.Unsetenv("HS256_ISSUERS")
-		ResetJWTConfigForTesting()
-	}()
+	t.Setenv("HS256_ISSUERS", "https://pds1.example.com,https://pds2.example.com")
+	t.Cleanup(ResetJWTConfigForTesting)
 
 	if !isHS256IssuerWhitelisted("https://pds1.example.com") {
 		t.Error("Expected pds1 to be whitelisted")
@@ -430,11 +404,8 @@ func TestIsHS256IssuerWhitelisted_Whitelisted(t *testing.T) {
 
 func TestIsHS256IssuerWhitelisted_NotWhitelisted(t *testing.T) {
 	ResetJWTConfigForTesting()
-	os.Setenv("HS256_ISSUERS", "https://pds1.example.com")
-	defer func() {
-		os.Unsetenv("HS256_ISSUERS")
-		ResetJWTConfigForTesting()
-	}()
+	t.Setenv("HS256_ISSUERS", "https://pds1.example.com")
+	t.Cleanup(ResetJWTConfigForTesting)
 
 	if isHS256IssuerWhitelisted("https://attacker.example.com") {
 		t.Error("Expected non-whitelisted issuer to return false")
@@ -443,8 +414,8 @@ func TestIsHS256IssuerWhitelisted_NotWhitelisted(t *testing.T) {
 
 func TestIsHS256IssuerWhitelisted_EmptyWhitelist(t *testing.T) {
 	ResetJWTConfigForTesting()
-	os.Unsetenv("HS256_ISSUERS")
-	defer ResetJWTConfigForTesting()
+	t.Setenv("HS256_ISSUERS", "") // Empty whitelist
+	t.Cleanup(ResetJWTConfigForTesting)
 
 	if isHS256IssuerWhitelisted("https://any.example.com") {
 		t.Error("Expected false when whitelist is empty (safe default)")
@@ -453,11 +424,8 @@ func TestIsHS256IssuerWhitelisted_EmptyWhitelist(t *testing.T) {
 
 func TestIsHS256IssuerWhitelisted_WhitespaceHandling(t *testing.T) {
 	ResetJWTConfigForTesting()
-	os.Setenv("HS256_ISSUERS", "  https://pds1.example.com  ,  https://pds2.example.com  ")
-	defer func() {
-		os.Unsetenv("HS256_ISSUERS")
-		ResetJWTConfigForTesting()
-	}()
+	t.Setenv("HS256_ISSUERS", "  https://pds1.example.com  ,  https://pds2.example.com  ")
+	t.Cleanup(ResetJWTConfigForTesting)
 
 	if !isHS256IssuerWhitelisted("https://pds1.example.com") {
 		t.Error("Expected whitespace-trimmed issuer to be whitelisted")
@@ -469,11 +437,8 @@ func TestIsHS256IssuerWhitelisted_WhitespaceHandling(t *testing.T) {
 func TestShouldUseHS256_WithKid_AlwaysFalse(t *testing.T) {
 	// Tokens with kid should NEVER use HS256, regardless of issuer whitelist
 	ResetJWTConfigForTesting()
-	os.Setenv("HS256_ISSUERS", "https://whitelisted.example.com")
-	defer func() {
-		os.Unsetenv("HS256_ISSUERS")
-		ResetJWTConfigForTesting()
-	}()
+	t.Setenv("HS256_ISSUERS", "https://whitelisted.example.com")
+	t.Cleanup(ResetJWTConfigForTesting)
 
 	header := &JWTHeader{
 		Alg: AlgorithmHS256,
@@ -488,11 +453,8 @@ func TestShouldUseHS256_WithKid_AlwaysFalse(t *testing.T) {
 
 func TestShouldUseHS256_WithoutKid_WhitelistedIssuer(t *testing.T) {
 	ResetJWTConfigForTesting()
-	os.Setenv("HS256_ISSUERS", "https://my-pds.example.com")
-	defer func() {
-		os.Unsetenv("HS256_ISSUERS")
-		ResetJWTConfigForTesting()
-	}()
+	t.Setenv("HS256_ISSUERS", "https://my-pds.example.com")
+	t.Cleanup(ResetJWTConfigForTesting)
 
 	header := &JWTHeader{
 		Alg: AlgorithmHS256,
@@ -506,11 +468,8 @@ func TestShouldUseHS256_WithoutKid_WhitelistedIssuer(t *testing.T) {
 
 func TestShouldUseHS256_WithoutKid_NotWhitelisted(t *testing.T) {
 	ResetJWTConfigForTesting()
-	os.Setenv("HS256_ISSUERS", "https://my-pds.example.com")
-	defer func() {
-		os.Unsetenv("HS256_ISSUERS")
-		ResetJWTConfigForTesting()
-	}()
+	t.Setenv("HS256_ISSUERS", "https://my-pds.example.com")
+	t.Cleanup(ResetJWTConfigForTesting)
 
 	header := &JWTHeader{
 		Alg: AlgorithmHS256,
