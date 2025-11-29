@@ -12,10 +12,77 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
+
+// jwtConfig holds cached JWT configuration to avoid reading env vars on every request
+type jwtConfig struct {
+	hs256Issuers map[string]struct{} // Set of whitelisted HS256 issuers
+	pdsJWTSecret []byte              // Cached PDS_JWT_SECRET
+	isDevEnv     bool                // Cached IS_DEV_ENV
+}
+
+var (
+	cachedConfig *jwtConfig
+	configOnce   sync.Once
+)
+
+// InitJWTConfig initializes the JWT configuration from environment variables.
+// This should be called once at startup. If not called explicitly, it will be
+// initialized lazily on first use.
+func InitJWTConfig() {
+	configOnce.Do(func() {
+		cachedConfig = &jwtConfig{
+			hs256Issuers: make(map[string]struct{}),
+			isDevEnv:     os.Getenv("IS_DEV_ENV") == "true",
+		}
+
+		// Parse HS256_ISSUERS into a set for O(1) lookup
+		if issuers := os.Getenv("HS256_ISSUERS"); issuers != "" {
+			for _, issuer := range strings.Split(issuers, ",") {
+				issuer = strings.TrimSpace(issuer)
+				if issuer != "" {
+					cachedConfig.hs256Issuers[issuer] = struct{}{}
+				}
+			}
+		}
+
+		// Cache PDS_JWT_SECRET
+		if secret := os.Getenv("PDS_JWT_SECRET"); secret != "" {
+			cachedConfig.pdsJWTSecret = []byte(secret)
+		}
+	})
+}
+
+// getConfig returns the cached config, initializing if needed
+func getConfig() *jwtConfig {
+	InitJWTConfig()
+	return cachedConfig
+}
+
+// ResetJWTConfigForTesting resets the cached config to allow re-initialization.
+// This should ONLY be used in tests.
+func ResetJWTConfigForTesting() {
+	cachedConfig = nil
+	configOnce = sync.Once{}
+}
+
+// Algorithm constants for JWT signing methods
+const (
+	AlgorithmHS256 = "HS256"
+	AlgorithmRS256 = "RS256"
+	AlgorithmES256 = "ES256"
+)
+
+// JWTHeader represents the parsed JWT header
+type JWTHeader struct {
+	Alg string `json:"alg"`
+	Kid string `json:"kid"`
+	Typ string `json:"typ,omitempty"`
+}
 
 // Claims represents the standard JWT claims we care about
 type Claims struct {
@@ -23,12 +90,68 @@ type Claims struct {
 	Scope string `json:"scope,omitempty"`
 }
 
+// stripBearerPrefix removes the "Bearer " prefix from a token string
+func stripBearerPrefix(tokenString string) string {
+	tokenString = strings.TrimPrefix(tokenString, "Bearer ")
+	return strings.TrimSpace(tokenString)
+}
+
+// ParseJWTHeader extracts and parses the JWT header from a token string
+// This is a reusable function for getting algorithm and key ID information
+func ParseJWTHeader(tokenString string) (*JWTHeader, error) {
+	tokenString = stripBearerPrefix(tokenString)
+
+	parts := strings.Split(tokenString, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid JWT format: expected 3 parts, got %d", len(parts))
+	}
+
+	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode JWT header: %w", err)
+	}
+
+	var header JWTHeader
+	if err := json.Unmarshal(headerBytes, &header); err != nil {
+		return nil, fmt.Errorf("failed to parse JWT header: %w", err)
+	}
+
+	return &header, nil
+}
+
+// shouldUseHS256 determines if a token should use HS256 verification
+// This prevents algorithm confusion attacks by using multiple signals:
+// 1. If the token has a `kid` (key ID), it MUST use asymmetric verification
+// 2. If no `kid`, only allow HS256 from whitelisted issuers (your own PDS)
+//
+// This approach supports open federation because:
+// - External PDSes publish keys via JWKS and include `kid` in their tokens
+// - Only your own PDS (which shares PDS_JWT_SECRET) uses HS256 without `kid`
+func shouldUseHS256(header *JWTHeader, issuer string) bool {
+	// If token has a key ID, it MUST use asymmetric verification
+	// This is the primary defense against algorithm confusion attacks
+	if header.Kid != "" {
+		return false
+	}
+
+	// No kid - check if issuer is whitelisted for HS256
+	// This should only include your own PDS URL(s)
+	return isHS256IssuerWhitelisted(issuer)
+}
+
+// isHS256IssuerWhitelisted checks if the issuer is in the HS256 whitelist
+// Only your own PDS should be in this list - external PDSes should use JWKS
+func isHS256IssuerWhitelisted(issuer string) bool {
+	cfg := getConfig()
+	_, whitelisted := cfg.hs256Issuers[issuer]
+	return whitelisted
+}
+
 // ParseJWT parses a JWT token without verification (Phase 1)
 // Returns the claims if the token is valid JSON and has required fields
 func ParseJWT(tokenString string) (*Claims, error) {
 	// Remove "Bearer " prefix if present
-	tokenString = strings.TrimPrefix(tokenString, "Bearer ")
-	tokenString = strings.TrimSpace(tokenString)
+	tokenString = stripBearerPrefix(tokenString)
 
 	// Parse without verification first to extract claims
 	parser := jwt.NewParser(jwt.WithoutClaimsValidation())
@@ -67,21 +190,93 @@ func ParseJWT(tokenString string) (*Claims, error) {
 
 // VerifyJWT verifies a JWT token's signature and claims (Phase 2)
 // Fetches the public key from the issuer's JWKS endpoint and validates the signature
+// For HS256 tokens from whitelisted issuers, uses the shared PDS_JWT_SECRET
+//
+// SECURITY: Algorithm is determined by the issuer whitelist, NOT the token header,
+// to prevent algorithm confusion attacks where an attacker could re-sign a token
+// with HS256 using a public key as the secret.
 func VerifyJWT(ctx context.Context, tokenString string, keyFetcher JWKSFetcher) (*Claims, error) {
-	// First parse to get the issuer
+	// Strip Bearer prefix once at the start
+	tokenString = stripBearerPrefix(tokenString)
+
+	// First parse to get the issuer (needed to determine expected algorithm)
 	claims, err := ParseJWT(tokenString)
 	if err != nil {
 		return nil, err
 	}
 
-	// Fetch the public key from the issuer
-	publicKey, err := keyFetcher.FetchPublicKey(ctx, claims.Issuer, tokenString)
+	// Parse header to get the claimed algorithm (for validation)
+	header, err := ParseJWTHeader(tokenString)
+	if err != nil {
+		return nil, err
+	}
+
+	// SECURITY: Determine verification method based on token characteristics
+	// 1. Tokens with `kid` MUST use asymmetric verification (supports federation)
+	// 2. Tokens without `kid` can use HS256 only from whitelisted issuers (your own PDS)
+	useHS256 := shouldUseHS256(header, claims.Issuer)
+
+	if useHS256 {
+		// Verify token actually claims to use HS256
+		if header.Alg != AlgorithmHS256 {
+			return nil, fmt.Errorf("expected HS256 for issuer %s but token uses %s", claims.Issuer, header.Alg)
+		}
+		return verifyHS256Token(tokenString)
+	}
+
+	// Token must use asymmetric verification
+	// Reject HS256 tokens that don't meet the criteria above
+	if header.Alg == AlgorithmHS256 {
+		if header.Kid != "" {
+			return nil, fmt.Errorf("HS256 tokens with kid must use asymmetric verification")
+		}
+		return nil, fmt.Errorf("HS256 not allowed for issuer %s (not in HS256_ISSUERS whitelist)", claims.Issuer)
+	}
+
+	// For RSA/ECDSA, fetch public key from JWKS and verify
+	return verifyAsymmetricToken(ctx, tokenString, claims.Issuer, keyFetcher)
+}
+
+// verifyHS256Token verifies a JWT using HMAC-SHA256 with the shared secret
+func verifyHS256Token(tokenString string) (*Claims, error) {
+	cfg := getConfig()
+	if len(cfg.pdsJWTSecret) == 0 {
+		return nil, fmt.Errorf("HS256 verification failed: PDS_JWT_SECRET not configured")
+	}
+
+	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return cfg.pdsJWTSecret, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("HS256 verification failed: %w", err)
+	}
+
+	if !token.Valid {
+		return nil, fmt.Errorf("HS256 verification failed: token signature invalid")
+	}
+
+	verifiedClaims, ok := token.Claims.(*Claims)
+	if !ok {
+		return nil, fmt.Errorf("HS256 verification failed: invalid claims type")
+	}
+
+	if err := validateClaims(verifiedClaims); err != nil {
+		return nil, err
+	}
+
+	return verifiedClaims, nil
+}
+
+// verifyAsymmetricToken verifies a JWT using RSA or ECDSA with a public key from JWKS
+func verifyAsymmetricToken(ctx context.Context, tokenString, issuer string, keyFetcher JWKSFetcher) (*Claims, error) {
+	publicKey, err := keyFetcher.FetchPublicKey(ctx, issuer, tokenString)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch public key: %w", err)
 	}
 
-	// Now parse and verify with the public key
-	tokenString = strings.TrimPrefix(tokenString, "Bearer ")
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
 		// Validate signing method - support both RSA and ECDSA (atProto uses ES256 primarily)
 		switch token.Method.(type) {
@@ -93,19 +288,18 @@ func VerifyJWT(ctx context.Context, tokenString string, keyFetcher JWKSFetcher) 
 		return publicKey, nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to verify JWT: %w", err)
+		return nil, fmt.Errorf("asymmetric verification failed: %w", err)
 	}
 
 	if !token.Valid {
-		return nil, fmt.Errorf("token is invalid")
+		return nil, fmt.Errorf("asymmetric verification failed: token signature invalid")
 	}
 
 	verifiedClaims, ok := token.Claims.(*Claims)
 	if !ok {
-		return nil, fmt.Errorf("invalid claims type after verification")
+		return nil, fmt.Errorf("asymmetric verification failed: invalid claims type")
 	}
 
-	// Additional validation
 	if err := validateClaims(verifiedClaims); err != nil {
 		return nil, err
 	}
@@ -144,8 +338,8 @@ func validateClaims(claims *Claims) error {
 	}
 
 	// In production, reject HTTP issuers (only for non-dev environments)
-	// Check IS_DEV_ENV environment variable
-	if isHTTP && os.Getenv("IS_DEV_ENV") != "true" {
+	cfg := getConfig()
+	if isHTTP && !cfg.isDevEnv {
 		return fmt.Errorf("HTTP issuer not allowed in production, got: %s", claims.Issuer)
 	}
 
@@ -273,23 +467,9 @@ func (j *JWKS) FindKeyByID(kid string) (*JWK, error) {
 
 // ExtractKeyID extracts the key ID from a JWT token header
 func ExtractKeyID(tokenString string) (string, error) {
-	tokenString = strings.TrimPrefix(tokenString, "Bearer ")
-	parts := strings.Split(tokenString, ".")
-	if len(parts) != 3 {
-		return "", fmt.Errorf("invalid JWT format")
-	}
-
-	// Decode header
-	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	header, err := ParseJWTHeader(tokenString)
 	if err != nil {
-		return "", fmt.Errorf("failed to decode header: %w", err)
-	}
-
-	var header struct {
-		Kid string `json:"kid"`
-	}
-	if err := json.Unmarshal(headerBytes, &header); err != nil {
-		return "", fmt.Errorf("failed to unmarshal header: %w", err)
+		return "", err
 	}
 
 	if header.Kid == "" {

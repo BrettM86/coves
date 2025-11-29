@@ -96,6 +96,12 @@ services:
       # Cursor encryption for pagination
       CURSOR_SECRET: ${CURSOR_SECRET}
 
+      # PDS JWT secret for verifying HS256 tokens from the PDS
+      # Must match the PDS_JWT_SECRET configured on the PDS
+      PDS_JWT_SECRET: ${PDS_JWT_SECRET}
+      # Whitelist PDS issuer(s) allowed to use HS256 (no kid)
+      HS256_ISSUERS: ${HS256_ISSUERS}
+
       # Restrict community creation to instance DID only
       COMMUNITY_CREATORS: did:web:coves.social
     networks:
