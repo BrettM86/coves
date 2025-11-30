@@ -263,6 +263,10 @@ func (s *postService) createPostOnRemotePDS(
     req, _ := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(jsonData))
 
     // Use service auth token instead of community credentials
+    // NOTE: Auth scheme depends on target PDS implementation:
+    // - Standard atproto service auth uses "Bearer" scheme
+    // - Our AppView uses "DPoP" scheme when DPoP-bound tokens are required
+    // For server-to-server with standard PDS, use Bearer; adjust based on target.
     req.Header.Set("Authorization", "Bearer "+serviceAuthToken)
     req.Header.Set("Content-Type", "application/json")
 
@@ -726,7 +730,8 @@ If federation causes critical issues:
 **Request to Remote PDS:**
 ```http
 POST https://covesinstance.com/xrpc/com.atproto.server.getServiceAuth
-Authorization: Bearer {coves-social-instance-jwt}
+Authorization: DPoP {coves-social-instance-jwt}
+DPoP: {coves-social-dpop-proof}
 Content-Type: application/json
 
 {
@@ -749,7 +754,8 @@ Content-Type: application/json
 **Using Token to Create Post:**
 ```http
 POST https://covesinstance.com/xrpc/com.atproto.repo.createRecord
-Authorization: Bearer {service-auth-token}
+Authorization: DPoP {service-auth-token}
+DPoP: {service-auth-dpop-proof}
 Content-Type: application/json
 
 {

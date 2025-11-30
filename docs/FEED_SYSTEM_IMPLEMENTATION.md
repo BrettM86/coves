@@ -203,17 +203,20 @@ Both repositories include:
 # Get personalized timeline (hot posts from subscriptions)
 curl -X GET \
   'http://localhost:8081/xrpc/social.coves.feed.getTimeline?sort=hot&limit=15' \
-  -H 'Authorization: Bearer eyJhbGc...'
+  -H 'Authorization: DPoP eyJhbGc...' \
+  -H 'DPoP: eyJhbGc...'
 
 # Get top posts from last week
 curl -X GET \
   'http://localhost:8081/xrpc/social.coves.feed.getTimeline?sort=top&timeframe=week&limit=20' \
-  -H 'Authorization: Bearer eyJhbGc...'
+  -H 'Authorization: DPoP eyJhbGc...' \
+  -H 'DPoP: eyJhbGc...'
 
 # Get newest posts with pagination
 curl -X GET \
   'http://localhost:8081/xrpc/social.coves.feed.getTimeline?sort=new&limit=10&cursor=<cursor>' \
-  -H 'Authorization: Bearer eyJhbGc...'
+  -H 'Authorization: DPoP eyJhbGc...' \
+  -H 'DPoP: eyJhbGc...'
 ```
 
 **Response:**
@@ -313,7 +316,7 @@ score = upvotes / (age_in_hours + 2)^1.5
 - ✅ Context timeout support
 
 ### Authentication (Timeline)
-- ✅ JWT Bearer token required
+- ✅ DPoP-bound access token required
 - ✅ DID extracted from auth context
 - ✅ Validates token signature (when AUTH_SKIP_VERIFY=false)
 - ✅ Returns 401 on auth failure

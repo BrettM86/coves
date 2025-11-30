@@ -47,7 +47,7 @@ This implementation follows a phased approach for maintainability and proper sco
 - Lexicon definitions: `social.coves.community.comment.defs` and `getComments`
 - Database query methods with Lemmy hot ranking algorithm
 - Service layer with iterative loading strategy for nested replies
-- XRPC HTTP handler with optional authentication
+- XRPC HTTP handler with optional DPoP authentication
 - Comprehensive integration test suite (11 test scenarios)
 
 **What works:**
@@ -55,7 +55,7 @@ This implementation follows a phased approach for maintainability and proper sco
 - Nested replies up to configurable depth (default 10, max 100)
 - Lemmy hot ranking: `log(greatest(2, score + 2)) / power(time_decay, 1.8)`
 - Cursor-based pagination for stable scrolling
-- Optional authentication for viewer state (stubbed for Phase 2B)
+- Optional DPoP authentication for viewer state (stubbed for Phase 2B)
 - Timeframe filtering for "top" sort (hour/day/week/month/year/all)
 
 **Endpoints:**
@@ -63,7 +63,7 @@ This implementation follows a phased approach for maintainability and proper sco
   - Required: `post` (AT-URI)
   - Optional: `sort` (hot/top/new), `depth` (0-100), `limit` (1-100), `cursor`, `timeframe`
   - Returns: Array of `threadViewComment` with nested replies + post context
-  - Supports Bearer token for authenticated requests (viewer state)
+  - Supports DPoP-bound access token for authenticated requests (viewer state)
 
 **Files created (9):**
 1. `internal/atproto/lexicon/social/coves/community/comment/defs.json` - View definitions
@@ -976,9 +976,9 @@ After Phase 2B implementation, a thorough PR review identified several critical 
 **8. Viewer Authentication Validation (Non-Issue - Architecture Working as Designed)**
 - **Initial Concern:** ViewerDID field trusted without verification in service layer
 - **Investigation:** Authentication IS properly validated at middleware layer
-  - `OptionalAuth` middleware extracts and validates JWT Bearer tokens
+  - `OptionalAuth` middleware extracts and validates DPoP-bound access tokens
   - Uses PDS public keys (JWKS) for signature verification
-  - Validates token expiration, DID format, issuer
+  - Validates DPoP proof, token expiration, DID format, issuer
   - Only injects verified DIDs into request context
   - Handler extracts DID using `middleware.GetUserDID(r)`
 - **Architecture:** Follows industry best practices (authentication at perimeter)

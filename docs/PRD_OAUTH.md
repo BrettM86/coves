@@ -10,7 +10,7 @@
 - ✅ Auth middleware protecting community endpoints
 - ✅ Handlers updated to use `GetUserDID(r)`
 - ✅ Comprehensive middleware auth tests (11 test cases)
-- ✅ E2E tests updated to use Bearer tokens
+- ✅ E2E tests updated to use DPoP-bound tokens
 - ✅ Security logging with IP, method, path, issuer
 - ✅ Scope validation (atproto required)
 - ✅ Issuer HTTPS validation
@@ -163,7 +163,7 @@ Third-party clients send two headers:
 Authorization: DPoP eyJhbGciOiJFUzI1NiIsInR5cCI6ImF0K2p3dCIsImtpZCI6ImRpZDpwbGM6YWxpY2UjYXRwcm90by1wZHMifQ...
 ```
 
-Format: `DPoP <access_token>`
+Format: `DPoP <access_token>` (note: uses "DPoP" scheme, not "Bearer")
 
 The access token is a JWT containing:
 ```json
@@ -753,7 +753,7 @@ if userDID == "" {
 - [x] All community endpoints reject requests without valid JWT structure
 - [x] Integration tests pass with mock tokens (11/11 middleware tests passing)
 - [x] Zero security regressions from X-User-DID (JWT validation is strictly better)
-- [x] E2E tests updated to use proper Bearer token authentication
+- [x] E2E tests updated to use proper DPoP token authentication
 - [x] Build succeeds without compilation errors
 
 ### Phase 2 (Beta) - ✅ READY FOR TESTING

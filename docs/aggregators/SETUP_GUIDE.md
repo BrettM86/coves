@@ -256,6 +256,7 @@ Write a `social.coves.aggregator.service` record to your repository. This contai
 
 **Request**:
 ```bash
+# Note: This calls the PDS directly, so it uses Bearer authorization (not DPoP)
 curl -X POST https://bsky.social/xrpc/com.atproto.repo.createRecord \
   -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
@@ -354,8 +355,9 @@ Once authorized, you can post to communities using the standard post creation en
 
 **Request**:
 ```bash
+# Note: This calls the Coves API, so it uses DPoP authorization
 curl -X POST https://api.coves.social/xrpc/social.coves.community.post.create \
-  -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+  -H "Authorization: DPoP YOUR_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "communityDid": "did:plc:community123...",
