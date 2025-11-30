@@ -314,6 +314,27 @@ func (v *DPoPVerifier) VerifyTokenBinding(proof *DPoPProof, expectedThumbprint s
 	return nil
 }
 
+// VerifyAccessTokenHash verifies the DPoP proof's ath (access token hash) claim
+// matches the SHA-256 hash of the presented access token.
+// Per RFC 9449 section 4.2, if ath is present, the RS MUST verify it.
+func (v *DPoPVerifier) VerifyAccessTokenHash(proof *DPoPProof, accessToken string) error {
+	// If ath claim is not present, that's acceptable per RFC 9449
+	// (ath is only required when the RS mandates it)
+	if proof.Claims.AccessTokenHash == "" {
+		return nil
+	}
+
+	// Calculate the expected ath: base64url(SHA-256(access_token))
+	hash := sha256.Sum256([]byte(accessToken))
+	expectedAth := base64.RawURLEncoding.EncodeToString(hash[:])
+
+	if proof.Claims.AccessTokenHash != expectedAth {
+		return fmt.Errorf("DPoP proof ath mismatch: proof bound to different access token")
+	}
+
+	return nil
+}
+
 // CalculateJWKThumbprint calculates the JWK thumbprint per RFC 7638
 // The thumbprint is the base64url-encoded SHA-256 hash of the canonical JWK representation
 func CalculateJWKThumbprint(jwk map[string]interface{}) (string, error) {

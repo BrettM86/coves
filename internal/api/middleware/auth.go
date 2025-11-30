@@ -53,6 +53,9 @@ func (m *AtProtoAuthMiddleware) Stop() {
 // RequireAuth middleware ensures the user is authenticated with a valid JWT
 // If not authenticated, returns 401
 // If authenticated, injects user DID and JWT claims into context
+//
+// Only accepts DPoP authorization scheme per RFC 9449:
+// - Authorization: DPoP <token> (DPoP-bound tokens)
 func (m *AtProtoAuthMiddleware) RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Extract Authorization header
@@ -62,14 +65,13 @@ func (m *AtProtoAuthMiddleware) RequireAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		// Must be Bearer token
-		if !strings.HasPrefix(authHeader, "Bearer ") {
-			writeAuthError(w, "Invalid Authorization header format. Expected: Bearer <token>")
+		// Only accept DPoP scheme per RFC 9449
+		// HTTP auth schemes are case-insensitive per RFC 7235
+		token, ok := extractDPoPToken(authHeader)
+		if !ok {
+			writeAuthError(w, "Invalid Authorization header format. Expected: DPoP <token>")
 			return
 		}
-
-		token := strings.TrimPrefix(authHeader, "Bearer ")
-		token = strings.TrimSpace(token)
 
 		var claims *auth.Claims
 		var err error
@@ -116,7 +118,7 @@ func (m *AtProtoAuthMiddleware) RequireAuth(next http.Handler) http.Handler {
 					return
 				}
 
-				proof, err := m.verifyDPoPBinding(r, claims, dpopHeader)
+				proof, err := m.verifyDPoPBinding(r, claims, dpopHeader, token)
 				if err != nil {
 					log.Printf("[AUTH_FAILURE] type=dpop_verification_failed ip=%s method=%s path=%s error=%v",
 						r.RemoteAddr, r.Method, r.URL.Path, err)
@@ -154,18 +156,22 @@ func (m *AtProtoAuthMiddleware) RequireAuth(next http.Handler) http.Handler {
 
 // OptionalAuth middleware loads user info if authenticated, but doesn't require it
 // Useful for endpoints that work for both authenticated and anonymous users
+//
+// Only accepts DPoP authorization scheme per RFC 9449:
+// - Authorization: DPoP <token> (DPoP-bound tokens)
 func (m *AtProtoAuthMiddleware) OptionalAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Extract Authorization header
 		authHeader := r.Header.Get("Authorization")
-		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
-			// Not authenticated - continue without user context
+
+		// Only accept DPoP scheme per RFC 9449
+		// HTTP auth schemes are case-insensitive per RFC 7235
+		token, ok := extractDPoPToken(authHeader)
+		if !ok {
+			// Not authenticated or invalid format - continue without user context
 			next.ServeHTTP(w, r)
 			return
 		}
-
-		token := strings.TrimPrefix(authHeader, "Bearer ")
-		token = strings.TrimSpace(token)
 
 		var claims *auth.Claims
 		var err error
@@ -202,7 +208,7 @@ func (m *AtProtoAuthMiddleware) OptionalAuth(next http.Handler) http.Handler {
 					return
 				}
 
-				proof, err := m.verifyDPoPBinding(r, claims, dpopHeader)
+				proof, err := m.verifyDPoPBinding(r, claims, dpopHeader, token)
 				if err != nil {
 					// DPoP verification failed - cannot trust this token
 					log.Printf("[AUTH_WARNING] Optional auth: DPoP verification failed - treating as unauthenticated: %v", err)
@@ -280,7 +286,7 @@ func GetDPoPProof(r *http.Request) *auth.DPoPProof {
 //
 // This prevents token theft attacks by proving the client possesses the private key
 // corresponding to the public key thumbprint in the token's cnf.jkt claim.
-func (m *AtProtoAuthMiddleware) verifyDPoPBinding(r *http.Request, claims *auth.Claims, dpopProofHeader string) (*auth.DPoPProof, error) {
+func (m *AtProtoAuthMiddleware) verifyDPoPBinding(r *http.Request, claims *auth.Claims, dpopProofHeader, accessToken string) (*auth.DPoPProof, error) {
 	// Extract the cnf.jkt claim from the already-verified token
 	jkt, err := auth.ExtractCnfJkt(claims)
 	if err != nil {
@@ -288,24 +294,17 @@ func (m *AtProtoAuthMiddleware) verifyDPoPBinding(r *http.Request, claims *auth.
 	}
 
 	// Build the HTTP URI for DPoP verification
-	// Use the full URL including scheme and host
-	scheme := strings.TrimSpace(r.URL.Scheme)
-	if forwardedProto := r.Header.Get("X-Forwarded-Proto"); forwardedProto != "" {
-		// Forwarded proto may contain a comma-separated list; use the first entry
-		parts := strings.Split(forwardedProto, ",")
-		if len(parts) > 0 && strings.TrimSpace(parts[0]) != "" {
-			scheme = strings.ToLower(strings.TrimSpace(parts[0]))
-		}
+	// Use the full URL including scheme and host, respecting proxy headers
+	scheme, host := extractSchemeAndHost(r)
+
+	// Use EscapedPath to preserve percent-encoding (P3 fix)
+	// r.URL.Path is decoded, but DPoP proofs contain the raw encoded path
+	path := r.URL.EscapedPath()
+	if path == "" {
+		path = r.URL.Path // Fallback if EscapedPath returns empty
 	}
-	if scheme == "" {
-		if r.TLS != nil {
-			scheme = "https"
-		} else {
-			scheme = "http"
-		}
-	}
-	scheme = strings.ToLower(scheme)
-	httpURI := scheme + "://" + r.Host + r.URL.Path
+
+	httpURI := scheme + "://" + host + path
 
 	// Verify the DPoP proof
 	proof, err := m.dpopVerifier.VerifyDPoPProof(dpopProofHeader, r.Method, httpURI)
@@ -313,12 +312,79 @@ func (m *AtProtoAuthMiddleware) verifyDPoPBinding(r *http.Request, claims *auth.
 		return nil, fmt.Errorf("DPoP proof verification failed: %w", err)
 	}
 
-	// Verify the binding between the proof and the token
+	// Verify the binding between the proof and the token (cnf.jkt)
 	if err := m.dpopVerifier.VerifyTokenBinding(proof, jkt); err != nil {
 		return nil, fmt.Errorf("DPoP binding verification failed: %w", err)
 	}
 
+	// Verify the access token hash (ath) if present in the proof
+	// Per RFC 9449 section 4.2, if ath is present, it MUST match the access token
+	if err := m.dpopVerifier.VerifyAccessTokenHash(proof, accessToken); err != nil {
+		return nil, fmt.Errorf("DPoP ath verification failed: %w", err)
+	}
+
 	return proof, nil
+}
+
+// extractSchemeAndHost extracts the scheme and host from the request,
+// respecting proxy headers (X-Forwarded-Proto, X-Forwarded-Host, Forwarded).
+// This is critical for DPoP verification when behind TLS-terminating proxies.
+func extractSchemeAndHost(r *http.Request) (scheme, host string) {
+	// Start with request defaults
+	scheme = r.URL.Scheme
+	host = r.Host
+
+	// Check X-Forwarded-Proto for scheme (most common)
+	if forwardedProto := r.Header.Get("X-Forwarded-Proto"); forwardedProto != "" {
+		parts := strings.Split(forwardedProto, ",")
+		if len(parts) > 0 && strings.TrimSpace(parts[0]) != "" {
+			scheme = strings.ToLower(strings.TrimSpace(parts[0]))
+		}
+	}
+
+	// Check X-Forwarded-Host for host (common with nginx/traefik)
+	if forwardedHost := r.Header.Get("X-Forwarded-Host"); forwardedHost != "" {
+		parts := strings.Split(forwardedHost, ",")
+		if len(parts) > 0 && strings.TrimSpace(parts[0]) != "" {
+			host = strings.TrimSpace(parts[0])
+		}
+	}
+
+	// Check standard Forwarded header (RFC 7239) - takes precedence if present
+	// Format: Forwarded: for=192.0.2.60;proto=http;by=203.0.113.43;host=example.com
+	// RFC 7239 allows: mixed-case keys (Proto, PROTO), quoted values (host="example.com")
+	if forwarded := r.Header.Get("Forwarded"); forwarded != "" {
+		// Parse the first entry (comma-separated list)
+		firstEntry := strings.Split(forwarded, ",")[0]
+		for _, part := range strings.Split(firstEntry, ";") {
+			part = strings.TrimSpace(part)
+			// Split on first '=' to properly handle key=value pairs
+			if idx := strings.Index(part, "="); idx != -1 {
+				key := strings.ToLower(strings.TrimSpace(part[:idx]))
+				value := strings.TrimSpace(part[idx+1:])
+				// Strip optional quotes per RFC 7239 section 4
+				value = strings.Trim(value, "\"")
+
+				switch key {
+				case "proto":
+					scheme = strings.ToLower(value)
+				case "host":
+					host = value
+				}
+			}
+		}
+	}
+
+	// Fallback scheme detection from TLS
+	if scheme == "" {
+		if r.TLS != nil {
+			scheme = "https"
+		} else {
+			scheme = "http"
+		}
+	}
+
+	return strings.ToLower(scheme), host
 }
 
 // writeAuthError writes a JSON error response for authentication failures
@@ -330,4 +396,31 @@ func writeAuthError(w http.ResponseWriter, message string) {
 	if _, err := w.Write([]byte(response)); err != nil {
 		log.Printf("Failed to write auth error response: %v", err)
 	}
+}
+
+// extractDPoPToken extracts the token from a DPoP Authorization header.
+// HTTP auth schemes are case-insensitive per RFC 7235, so "DPoP", "dpop", "DPOP" are all valid.
+// Returns the token and true if valid DPoP scheme, empty string and false otherwise.
+func extractDPoPToken(authHeader string) (string, bool) {
+	if authHeader == "" {
+		return "", false
+	}
+
+	// Split on first space: "DPoP <token>" -> ["DPoP", "<token>"]
+	parts := strings.SplitN(authHeader, " ", 2)
+	if len(parts) != 2 {
+		return "", false
+	}
+
+	// Case-insensitive scheme comparison per RFC 7235
+	if !strings.EqualFold(parts[0], "DPoP") {
+		return "", false
+	}
+
+	token := strings.TrimSpace(parts[1])
+	if token == "" {
+		return "", false
+	}
+
+	return token, true
 }
