@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	indigoCrypto "github.com/bluesky-social/indigo/atproto/atcrypto"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -273,8 +274,22 @@ func verifyHS256Token(tokenString string) (*Claims, error) {
 	return verifiedClaims, nil
 }
 
-// verifyAsymmetricToken verifies a JWT using RSA or ECDSA with a public key from JWKS
+// verifyAsymmetricToken verifies a JWT using RSA or ECDSA with a public key from JWKS.
+// For ES256K (secp256k1), uses indigo's crypto package since golang-jwt doesn't support it.
 func verifyAsymmetricToken(ctx context.Context, tokenString, issuer string, keyFetcher JWKSFetcher) (*Claims, error) {
+	// Parse header to check algorithm
+	header, err := ParseJWTHeader(tokenString)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse JWT header: %w", err)
+	}
+
+	// ES256K (secp256k1) requires special handling via indigo's crypto package
+	// golang-jwt doesn't recognize ES256K as a valid signing method
+	if header.Alg == "ES256K" {
+		return verifyES256KToken(ctx, tokenString, issuer, keyFetcher)
+	}
+
+	// For standard algorithms (ES256, ES384, ES512, RS256, etc.), use golang-jwt
 	publicKey, err := keyFetcher.FetchPublicKey(ctx, issuer, tokenString)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch public key: %w", err)
@@ -308,6 +323,174 @@ func verifyAsymmetricToken(ctx context.Context, tokenString, issuer string, keyF
 	}
 
 	return verifiedClaims, nil
+}
+
+// verifyES256KToken verifies a JWT signed with ES256K (secp256k1) using indigo's crypto package.
+// This is necessary because golang-jwt doesn't support ES256K as a signing method.
+func verifyES256KToken(ctx context.Context, tokenString, issuer string, keyFetcher JWKSFetcher) (*Claims, error) {
+	// Fetch the public key - for ES256K, the fetcher returns a JWK map or indigo PublicKey
+	keyData, err := keyFetcher.FetchPublicKey(ctx, issuer, tokenString)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch public key for ES256K: %w", err)
+	}
+
+	// Convert to indigo PublicKey based on what the fetcher returned
+	var pubKey indigoCrypto.PublicKey
+	switch k := keyData.(type) {
+	case indigoCrypto.PublicKey:
+		// Already an indigo PublicKey (from DIDKeyFetcher or updated JWKSFetcher)
+		pubKey = k
+	case map[string]interface{}:
+		// Raw JWK map - parse with indigo
+		pubKey, err = parseJWKMapToIndigoPublicKey(k)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse ES256K JWK: %w", err)
+		}
+	default:
+		return nil, fmt.Errorf("ES256K verification requires indigo PublicKey or JWK map, got %T", keyData)
+	}
+
+	// Verify signature using indigo
+	if err := verifyJWTSignatureWithIndigoKey(tokenString, pubKey); err != nil {
+		return nil, fmt.Errorf("ES256K signature verification failed: %w", err)
+	}
+
+	// Parse claims (signature already verified)
+	claims, err := parseJWTClaimsManually(tokenString)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse ES256K JWT claims: %w", err)
+	}
+
+	if err := validateClaims(claims); err != nil {
+		return nil, err
+	}
+
+	return claims, nil
+}
+
+// parseJWKMapToIndigoPublicKey converts a JWK map to an indigo PublicKey.
+// This uses indigo's crypto package which supports all atProto curves including secp256k1.
+func parseJWKMapToIndigoPublicKey(jwkMap map[string]interface{}) (indigoCrypto.PublicKey, error) {
+	// Convert map to JSON bytes for indigo's parser
+	jwkBytes, err := json.Marshal(jwkMap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize JWK: %w", err)
+	}
+
+	// Parse with indigo's crypto package - supports all atProto curves
+	pubKey, err := indigoCrypto.ParsePublicJWKBytes(jwkBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse JWK with indigo: %w", err)
+	}
+
+	return pubKey, nil
+}
+
+// verifyJWTSignatureWithIndigoKey verifies a JWT signature using indigo's crypto package.
+// This works for all ECDSA algorithms including ES256K (secp256k1).
+func verifyJWTSignatureWithIndigoKey(tokenString string, pubKey indigoCrypto.PublicKey) error {
+	parts := strings.Split(tokenString, ".")
+	if len(parts) != 3 {
+		return fmt.Errorf("invalid JWT format: expected 3 parts, got %d", len(parts))
+	}
+
+	// The signing input is "header.payload" (without decoding)
+	signingInput := parts[0] + "." + parts[1]
+
+	// Decode the signature from base64url
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return fmt.Errorf("failed to decode JWT signature: %w", err)
+	}
+
+	// Use indigo's verification - HashAndVerifyLenient handles hashing internally
+	// and accepts both low-S and high-S signatures for maximum compatibility
+	if err := pubKey.HashAndVerifyLenient([]byte(signingInput), signature); err != nil {
+		return fmt.Errorf("signature verification failed: %w", err)
+	}
+
+	return nil
+}
+
+// parseJWTClaimsManually parses JWT claims without using golang-jwt.
+// This is used for ES256K tokens where golang-jwt would reject the algorithm.
+func parseJWTClaimsManually(tokenString string) (*Claims, error) {
+	parts := strings.Split(tokenString, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid JWT format: expected 3 parts, got %d", len(parts))
+	}
+
+	// Decode claims
+	claimsBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode JWT claims: %w", err)
+	}
+
+	// Parse into raw map first
+	var rawClaims map[string]interface{}
+	if err := json.Unmarshal(claimsBytes, &rawClaims); err != nil {
+		return nil, fmt.Errorf("failed to parse JWT claims: %w", err)
+	}
+
+	// Build Claims struct
+	claims := &Claims{}
+
+	// Extract sub (subject/DID)
+	if sub, ok := rawClaims["sub"].(string); ok {
+		claims.Subject = sub
+	}
+
+	// Extract iss (issuer)
+	if iss, ok := rawClaims["iss"].(string); ok {
+		claims.Issuer = iss
+	}
+
+	// Extract aud (audience) - can be string or array
+	switch aud := rawClaims["aud"].(type) {
+	case string:
+		claims.Audience = jwt.ClaimStrings{aud}
+	case []interface{}:
+		for _, a := range aud {
+			if s, ok := a.(string); ok {
+				claims.Audience = append(claims.Audience, s)
+			}
+		}
+	}
+
+	// Extract exp (expiration)
+	if exp, ok := rawClaims["exp"].(float64); ok {
+		t := time.Unix(int64(exp), 0)
+		claims.ExpiresAt = jwt.NewNumericDate(t)
+	}
+
+	// Extract iat (issued at)
+	if iat, ok := rawClaims["iat"].(float64); ok {
+		t := time.Unix(int64(iat), 0)
+		claims.IssuedAt = jwt.NewNumericDate(t)
+	}
+
+	// Extract nbf (not before)
+	if nbf, ok := rawClaims["nbf"].(float64); ok {
+		t := time.Unix(int64(nbf), 0)
+		claims.NotBefore = jwt.NewNumericDate(t)
+	}
+
+	// Extract jti (JWT ID)
+	if jti, ok := rawClaims["jti"].(string); ok {
+		claims.ID = jti
+	}
+
+	// Extract scope
+	if scope, ok := rawClaims["scope"].(string); ok {
+		claims.Scope = scope
+	}
+
+	// Extract cnf (confirmation) for DPoP binding
+	if cnf, ok := rawClaims["cnf"].(map[string]interface{}); ok {
+		claims.Confirmation = cnf
+	}
+
+	return claims, nil
 }
 
 // validateClaims performs additional validation on JWT claims
@@ -381,16 +564,59 @@ type JWK struct {
 	Y   string `json:"y,omitempty"`   // EC y coordinate
 }
 
-// ToPublicKey converts a JWK to a public key (RSA or ECDSA)
+// ToPublicKey converts a JWK to a public key (RSA, ECDSA, or indigo for secp256k1).
+//
+// Returns:
+//   - *rsa.PublicKey for RSA keys
+//   - *ecdsa.PublicKey for NIST EC curves (P-256, P-384, P-521)
+//   - map[string]interface{} for secp256k1 (ES256K) - parsed by indigo
 func (j *JWK) ToPublicKey() (interface{}, error) {
 	switch j.Kty {
 	case "RSA":
 		return j.toRSAPublicKey()
 	case "EC":
+		// For secp256k1, return raw JWK map for indigo to parse
+		if j.Crv == "secp256k1" {
+			return j.toJWKMap(), nil
+		}
 		return j.toECPublicKey()
 	default:
 		return nil, fmt.Errorf("unsupported key type: %s", j.Kty)
 	}
+}
+
+// toJWKMap converts the JWK struct to a map for indigo parsing
+func (j *JWK) toJWKMap() map[string]interface{} {
+	m := map[string]interface{}{
+		"kty": j.Kty,
+	}
+	if j.Kid != "" {
+		m["kid"] = j.Kid
+	}
+	if j.Alg != "" {
+		m["alg"] = j.Alg
+	}
+	if j.Use != "" {
+		m["use"] = j.Use
+	}
+	// RSA fields
+	if j.N != "" {
+		m["n"] = j.N
+	}
+	if j.E != "" {
+		m["e"] = j.E
+	}
+	// EC fields
+	if j.Crv != "" {
+		m["crv"] = j.Crv
+	}
+	if j.X != "" {
+		m["x"] = j.X
+	}
+	if j.Y != "" {
+		m["y"] = j.Y
+	}
+	return m
 }
 
 // toRSAPublicKey converts a JWK to an RSA public key

@@ -9,7 +9,7 @@ import (
 	"math/big"
 	"strings"
 
-	"github.com/bluesky-social/indigo/atproto/atcrypto"
+	indigoCrypto "github.com/bluesky-social/indigo/atproto/atcrypto"
 	indigoIdentity "github.com/bluesky-social/indigo/atproto/identity"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 )
@@ -32,7 +32,10 @@ func NewDIDKeyFetcher(directory indigoIdentity.Directory) *DIDKeyFetcher {
 
 // FetchPublicKey fetches the public key for verifying a JWT from the issuer's DID document.
 // For DID issuers (did:plc: or did:web:), resolves the DID and extracts the signing key.
-// Returns an *ecdsa.PublicKey suitable for use with jwt-go.
+//
+// Returns:
+//   - indigoCrypto.PublicKey for secp256k1 (ES256K) keys - use indigo for verification
+//   - *ecdsa.PublicKey for NIST curves (P-256, P-384, P-521) - compatible with golang-jwt
 func (f *DIDKeyFetcher) FetchPublicKey(ctx context.Context, issuer, token string) (interface{}, error) {
 	// Only handle DID issuers
 	if !strings.HasPrefix(issuer, "did:") {
@@ -57,18 +60,25 @@ func (f *DIDKeyFetcher) FetchPublicKey(ctx context.Context, issuer, token string
 		return nil, fmt.Errorf("failed to get public key from DID document: %w", err)
 	}
 
-	// Convert to JWK format to extract coordinates
+	// Convert to JWK format to check curve type
 	jwk, err := pubKey.JWK()
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert public key to JWK: %w", err)
 	}
 
-	// Convert atcrypto JWK to Go ecdsa.PublicKey
+	// For secp256k1 (ES256K), return indigo's PublicKey directly
+	// since Go's crypto/ecdsa doesn't support this curve
+	if jwk.Curve == "secp256k1" {
+		return pubKey, nil
+	}
+
+	// For NIST curves, convert to Go's ecdsa.PublicKey for golang-jwt compatibility
 	return atcryptoJWKToECDSA(jwk)
 }
 
-// atcryptoJWKToECDSA converts an atcrypto.JWK to a Go ecdsa.PublicKey
-func atcryptoJWKToECDSA(jwk *atcrypto.JWK) (*ecdsa.PublicKey, error) {
+// atcryptoJWKToECDSA converts an indigoCrypto.JWK to a Go ecdsa.PublicKey.
+// Note: secp256k1 is handled separately in FetchPublicKey by returning indigo's PublicKey directly.
+func atcryptoJWKToECDSA(jwk *indigoCrypto.JWK) (*ecdsa.PublicKey, error) {
 	if jwk.KeyType != "EC" {
 		return nil, fmt.Errorf("unsupported JWK key type: %s (expected EC)", jwk.KeyType)
 	}
@@ -91,13 +101,9 @@ func atcryptoJWKToECDSA(jwk *atcrypto.JWK) (*ecdsa.PublicKey, error) {
 		ecCurve = elliptic.P384()
 	case "P-521":
 		ecCurve = elliptic.P521()
-	case "secp256k1":
-		// secp256k1 (K-256) is used by some atproto implementations
-		// Go's standard library doesn't include secp256k1, but we can still
-		// construct the key - jwt-go may not support it directly
-		return nil, fmt.Errorf("secp256k1 curve requires special handling for JWT verification")
 	default:
-		return nil, fmt.Errorf("unsupported JWK curve: %s", jwk.Curve)
+		// secp256k1 should be handled before calling this function
+		return nil, fmt.Errorf("unsupported JWK curve for Go ecdsa: %s (secp256k1 uses indigo)", jwk.Curve)
 	}
 
 	// Create the public key
