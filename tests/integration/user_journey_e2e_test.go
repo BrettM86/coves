@@ -116,9 +116,10 @@ func TestFullUserJourney_E2E(t *testing.T) {
 	userService := users.NewUserService(userRepo, identityResolver, pdsURL)
 
 	// Extract instance domain and DID
+	// IMPORTANT: Instance domain must match PDS_SERVICE_HANDLE_DOMAINS config (.community.coves.social)
 	instanceDID := os.Getenv("INSTANCE_DID")
 	if instanceDID == "" {
-		instanceDID = "did:web:test.coves.social"
+		instanceDID = "did:web:coves.social" // Must match PDS handle domain config
 	}
 	var instanceDomain string
 	if strings.HasPrefix(instanceDID, "did:web:") {
@@ -139,7 +140,11 @@ func TestFullUserJourney_E2E(t *testing.T) {
 	voteConsumer := jetstream.NewVoteEventConsumer(voteRepo, userService, db)
 
 	// Setup HTTP server with all routes
-	authMiddleware := middleware.NewAtProtoAuthMiddleware(nil, true) // Skip JWT verification for testing
+	// IMPORTANT: skipVerify=true because PDS password auth returns Bearer tokens (not DPoP-bound).
+	// E2E tests use Bearer tokens with DPoP scheme header, which only works with skipVerify=true.
+	// In production, skipVerify=false requires proper DPoP-bound tokens from OAuth flow.
+	authMiddleware := middleware.NewAtProtoAuthMiddleware(nil, true)
+	defer authMiddleware.Stop() // Clean up DPoP replay cache goroutine
 	r := chi.NewRouter()
 	routes.RegisterCommunityRoutes(r, communityService, authMiddleware, nil) // nil = allow all community creators
 	routes.RegisterPostRoutes(r, postService, authMiddleware)
@@ -149,23 +154,27 @@ func TestFullUserJourney_E2E(t *testing.T) {
 
 	// Cleanup test data from previous runs (clean up ALL journey test data)
 	timestamp := time.Now().Unix()
-	// Clean up previous test runs - use pattern that matches ANY journey test data
-	_, _ = db.Exec("DELETE FROM votes WHERE voter_did LIKE '%alice-journey-%' OR voter_did LIKE '%bob-journey-%'")
-	_, _ = db.Exec("DELETE FROM comments WHERE author_did LIKE '%alice-journey-%' OR author_did LIKE '%bob-journey-%'")
-	_, _ = db.Exec("DELETE FROM posts WHERE community_did LIKE '%gaming-journey-%'")
-	_, _ = db.Exec("DELETE FROM community_subscriptions WHERE user_did LIKE '%alice-journey-%' OR user_did LIKE '%bob-journey-%'")
-	_, _ = db.Exec("DELETE FROM communities WHERE handle LIKE 'gaming-journey-%'")
-	_, _ = db.Exec("DELETE FROM users WHERE handle LIKE '%alice-journey-%' OR handle LIKE '%bob-journey-%'")
+	// Clean up previous test runs - use pattern that matches journey test data
+	// Handles are now shorter: alice{4-digit}.local.coves.dev, bob{4-digit}.local.coves.dev
+	_, _ = db.Exec("DELETE FROM votes WHERE voter_did LIKE '%alice%.local.coves.dev%' OR voter_did LIKE '%bob%.local.coves.dev%'")
+	_, _ = db.Exec("DELETE FROM comments WHERE author_did LIKE '%alice%.local.coves.dev%' OR author_did LIKE '%bob%.local.coves.dev%'")
+	_, _ = db.Exec("DELETE FROM posts WHERE community_did LIKE '%gj%'")
+	_, _ = db.Exec("DELETE FROM community_subscriptions WHERE user_did LIKE '%alice%.local.coves.dev%' OR user_did LIKE '%bob%.local.coves.dev%'")
+	_, _ = db.Exec("DELETE FROM communities WHERE handle LIKE 'gj%'")
+	_, _ = db.Exec("DELETE FROM users WHERE handle LIKE 'alice%.local.coves.dev' OR handle LIKE 'bob%.local.coves.dev'")
 
 	// Defer cleanup for current test run using specific timestamp pattern
 	defer func() {
-		pattern := fmt.Sprintf("%%journey-%d%%", timestamp)
-		_, _ = db.Exec("DELETE FROM votes WHERE voter_did LIKE $1", pattern)
-		_, _ = db.Exec("DELETE FROM comments WHERE author_did LIKE $1", pattern)
-		_, _ = db.Exec("DELETE FROM posts WHERE community_did LIKE $1", pattern)
-		_, _ = db.Exec("DELETE FROM community_subscriptions WHERE user_did LIKE $1", pattern)
-		_, _ = db.Exec("DELETE FROM communities WHERE did LIKE $1 OR handle LIKE $1", pattern, pattern)
-		_, _ = db.Exec("DELETE FROM users WHERE did LIKE $1 OR handle LIKE $1", pattern, pattern)
+		shortTS := timestamp % 10000
+		alicePattern := fmt.Sprintf("%%alice%d%%", shortTS)
+		bobPattern := fmt.Sprintf("%%bob%d%%", shortTS)
+		gjPattern := fmt.Sprintf("%%gj%d%%", shortTS)
+		_, _ = db.Exec("DELETE FROM votes WHERE voter_did LIKE $1 OR voter_did LIKE $2", alicePattern, bobPattern)
+		_, _ = db.Exec("DELETE FROM comments WHERE author_did LIKE $1 OR author_did LIKE $2", alicePattern, bobPattern)
+		_, _ = db.Exec("DELETE FROM posts WHERE community_did LIKE $1", gjPattern)
+		_, _ = db.Exec("DELETE FROM community_subscriptions WHERE user_did LIKE $1 OR user_did LIKE $2", alicePattern, bobPattern)
+		_, _ = db.Exec("DELETE FROM communities WHERE handle LIKE $1", gjPattern)
+		_, _ = db.Exec("DELETE FROM users WHERE handle LIKE $1 OR handle LIKE $2", alicePattern, bobPattern)
 	}()
 
 	// Test variables to track state across steps
@@ -190,8 +199,10 @@ func TestFullUserJourney_E2E(t *testing.T) {
 	t.Run("1. User A - Signup and Authenticate", func(t *testing.T) {
 		t.Log("\n👤 Part 1: User A creates account and authenticates...")
 
-		userAHandle = fmt.Sprintf("alice-journey-%d.local.coves.dev", timestamp)
-		email := fmt.Sprintf("alice-journey-%d@test.com", timestamp)
+		// Use short handle format to stay under PDS 34-char limit
+		shortTS := timestamp % 10000 // Use last 4 digits
+		userAHandle = fmt.Sprintf("alice%d.local.coves.dev", shortTS)
+		email := fmt.Sprintf("alice%d@test.com", shortTS)
 		password := "test-password-alice-123"
 
 		// Create account on PDS
@@ -215,7 +226,10 @@ func TestFullUserJourney_E2E(t *testing.T) {
 	t.Run("2. User A - Create Community", func(t *testing.T) {
 		t.Log("\n🏘️  Part 2: User A creates a community...")
 
-		communityName := fmt.Sprintf("gaming-journey-%d", timestamp%10000) // Keep name short
+		// Community handle will be {name}.community.coves.social
+		// Max 34 chars total, so name must be short (34 - 23 = 11 chars max)
+		shortTS := timestamp % 10000
+		communityName := fmt.Sprintf("gj%d", shortTS) // "gj9261" = 6 chars -> handle = 29 chars
 
 		createReq := map[string]interface{}{
 			"name":                   communityName,
@@ -230,7 +244,7 @@ func TestFullUserJourney_E2E(t *testing.T) {
 			httpServer.URL+"/xrpc/social.coves.community.create",
 			bytes.NewBuffer(reqBody))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+userAToken)
+		req.Header.Set("Authorization", "DPoP "+userAToken)
 
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
@@ -314,7 +328,7 @@ func TestFullUserJourney_E2E(t *testing.T) {
 			httpServer.URL+"/xrpc/social.coves.community.post.create",
 			bytes.NewBuffer(reqBody))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+userAToken)
+		req.Header.Set("Authorization", "DPoP "+userAToken)
 
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
@@ -381,8 +395,10 @@ func TestFullUserJourney_E2E(t *testing.T) {
 	t.Run("4. User B - Signup and Authenticate", func(t *testing.T) {
 		t.Log("\n👤 Part 4: User B creates account and authenticates...")
 
-		userBHandle = fmt.Sprintf("bob-journey-%d.local.coves.dev", timestamp)
-		email := fmt.Sprintf("bob-journey-%d@test.com", timestamp)
+		// Use short handle format to stay under PDS 34-char limit
+		shortTS := timestamp % 10000 // Use last 4 digits
+		userBHandle = fmt.Sprintf("bob%d.local.coves.dev", shortTS)
+		email := fmt.Sprintf("bob%d@test.com", shortTS)
 		password := "test-password-bob-123"
 
 		// Create account on PDS
@@ -421,7 +437,7 @@ func TestFullUserJourney_E2E(t *testing.T) {
 			httpServer.URL+"/xrpc/social.coves.community.subscribe",
 			bytes.NewBuffer(reqBody))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+userBToken)
+		req.Header.Set("Authorization", "DPoP "+userBToken)
 
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
@@ -653,19 +669,19 @@ func TestFullUserJourney_E2E(t *testing.T) {
 	t.Run("9. User B - Verify Timeline Feed Shows Subscribed Community Posts", func(t *testing.T) {
 		t.Log("\n📰 Part 9: User B checks timeline feed...")
 
-		req := httptest.NewRequest(http.MethodGet,
-			"/xrpc/social.coves.feed.getTimeline?sort=new&limit=10", nil)
-		req = req.WithContext(middleware.SetTestUserDID(req.Context(), userBDID))
-		rec := httptest.NewRecorder()
+		// Use HTTP client to properly go through auth middleware with DPoP token
+		req, _ := http.NewRequest(http.MethodGet,
+			httpServer.URL+"/xrpc/social.coves.feed.getTimeline?sort=new&limit=10", nil)
+		req.Header.Set("Authorization", "DPoP "+userBToken)
 
-		// Call timeline handler directly
-		timelineHandler := httpServer.Config.Handler
-		timelineHandler.ServeHTTP(rec, req)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
 
-		require.Equal(t, http.StatusOK, rec.Code, "Timeline request should succeed")
+		require.Equal(t, http.StatusOK, resp.StatusCode, "Timeline request should succeed")
 
 		var response timelineCore.TimelineResponse
-		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&response))
 
 		// User B should see the post from the community they subscribed to
 		require.NotEmpty(t, response.Feed, "Timeline should contain posts")
@@ -679,9 +695,11 @@ func TestFullUserJourney_E2E(t *testing.T) {
 					"Post author should be User A")
 				assert.Equal(t, communityDID, feedPost.Post.Community.DID,
 					"Post community should match")
-				assert.Equal(t, 1, feedPost.Post.UpvoteCount,
+				// Check stats (counts are in Stats struct, not direct fields)
+				require.NotNil(t, feedPost.Post.Stats, "Post should have stats")
+				assert.Equal(t, 1, feedPost.Post.Stats.Upvotes,
 					"Post should show 1 upvote from User B")
-				assert.Equal(t, 1, feedPost.Post.CommentCount,
+				assert.Equal(t, 1, feedPost.Post.Stats.CommentCount,
 					"Post should show 1 comment from User B")
 				break
 			}
@@ -788,7 +806,7 @@ func simulateCommunityIndexing(t *testing.T, db *sql.DB, did, handle, ownerDID s
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
 		ON CONFLICT (did) DO NOTHING
 	`, did, handle, strings.Split(handle, ".")[0], "Test Community", did, ownerDID,
-		"did:web:test.coves.social", "public", "moderator",
+		"did:web:coves.social", "public", "moderator",
 		fmt.Sprintf("at://%s/social.coves.community.profile/self", did), "fakecid")
 
 	require.NoError(t, err, "Failed to simulate community indexing")

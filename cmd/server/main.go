@@ -25,7 +25,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -511,9 +513,41 @@ func main() {
 		port = "8080"
 	}
 
-	fmt.Printf("Coves AppView starting on port %s\n", port)
-	fmt.Printf("Default PDS: %s\n", defaultPDS)
-	log.Fatal(http.ListenAndServe(":"+port, r))
+	// Create HTTP server for graceful shutdown
+	server := &http.Server{
+		Addr:    ":" + port,
+		Handler: r,
+	}
+
+	// Channel to listen for shutdown signals
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+
+	// Start server in goroutine
+	go func() {
+		fmt.Printf("Coves AppView starting on port %s\n", port)
+		fmt.Printf("Default PDS: %s\n", defaultPDS)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server error: %v", err)
+		}
+	}()
+
+	// Wait for shutdown signal
+	<-stop
+	log.Println("Shutting down server...")
+
+	// Graceful shutdown with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Stop auth middleware background goroutines (DPoP replay cache cleanup)
+	authMiddleware.Stop()
+	log.Println("Auth middleware stopped")
+
+	if err := server.Shutdown(ctx); err != nil {
+		log.Fatalf("Server shutdown error: %v", err)
+	}
+	log.Println("Server stopped gracefully")
 }
 
 // authenticateWithPDS creates a session on the PDS and returns an access token
