@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	indigoCrypto "github.com/bluesky-social/indigo/atproto/atcrypto"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
@@ -918,4 +919,390 @@ func encodeJSON(t *testing.T, v interface{}) string {
 		t.Fatalf("Failed to marshal JSON: %v", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(data)
+}
+
+// === ES256K (secp256k1) Test Helpers ===
+
+// testES256KKey holds a test ES256K key pair using indigo
+type testES256KKey struct {
+	privateKey indigoCrypto.PrivateKey
+	publicKey  indigoCrypto.PublicKey
+	jwk        map[string]interface{}
+	thumbprint string
+}
+
+// generateTestES256KKey generates a test ES256K (secp256k1) key pair and JWK
+func generateTestES256KKey(t *testing.T) *testES256KKey {
+	t.Helper()
+
+	privateKey, err := indigoCrypto.GeneratePrivateKeyK256()
+	if err != nil {
+		t.Fatalf("Failed to generate ES256K test key: %v", err)
+	}
+
+	publicKey, err := privateKey.PublicKey()
+	if err != nil {
+		t.Fatalf("Failed to get public key from ES256K private key: %v", err)
+	}
+
+	// Get the JWK representation
+	jwkStruct, err := publicKey.JWK()
+	if err != nil {
+		t.Fatalf("Failed to get JWK from ES256K public key: %v", err)
+	}
+	jwk := map[string]interface{}{
+		"kty": jwkStruct.KeyType,
+		"crv": jwkStruct.Curve,
+		"x":   jwkStruct.X,
+		"y":   jwkStruct.Y,
+	}
+
+	// Calculate thumbprint
+	thumbprint, err := CalculateJWKThumbprint(jwk)
+	if err != nil {
+		t.Fatalf("Failed to calculate ES256K thumbprint: %v", err)
+	}
+
+	return &testES256KKey{
+		privateKey: privateKey,
+		publicKey:  publicKey,
+		jwk:        jwk,
+		thumbprint: thumbprint,
+	}
+}
+
+// createES256KDPoPProof creates a DPoP proof JWT using ES256K for testing
+func createES256KDPoPProof(t *testing.T, key *testES256KKey, method, uri string, iat time.Time, jti string) string {
+	t.Helper()
+
+	// Build claims
+	claims := map[string]interface{}{
+		"jti": jti,
+		"iat": iat.Unix(),
+		"htm": method,
+		"htu": uri,
+	}
+
+	// Build header
+	header := map[string]interface{}{
+		"typ": "dpop+jwt",
+		"alg": "ES256K",
+		"jwk": key.jwk,
+	}
+
+	// Encode header and claims
+	headerJSON, err := json.Marshal(header)
+	if err != nil {
+		t.Fatalf("Failed to marshal header: %v", err)
+	}
+	claimsJSON, err := json.Marshal(claims)
+	if err != nil {
+		t.Fatalf("Failed to marshal claims: %v", err)
+	}
+
+	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
+	claimsB64 := base64.RawURLEncoding.EncodeToString(claimsJSON)
+
+	// Sign with indigo
+	signingInput := headerB64 + "." + claimsB64
+	signature, err := key.privateKey.HashAndSign([]byte(signingInput))
+	if err != nil {
+		t.Fatalf("Failed to sign ES256K proof: %v", err)
+	}
+
+	signatureB64 := base64.RawURLEncoding.EncodeToString(signature)
+	return signingInput + "." + signatureB64
+}
+
+// === ES256K Tests ===
+
+func TestVerifyDPoPProof_ES256K_Valid(t *testing.T) {
+	verifier := NewDPoPVerifier()
+	key := generateTestES256KKey(t)
+
+	method := "POST"
+	uri := "https://api.example.com/resource"
+	iat := time.Now()
+	jti := uuid.New().String()
+
+	proof := createES256KDPoPProof(t, key, method, uri, iat, jti)
+
+	result, err := verifier.VerifyDPoPProof(proof, method, uri)
+	if err != nil {
+		t.Fatalf("VerifyDPoPProof failed for valid ES256K proof: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("Expected non-nil proof result")
+	}
+
+	if result.Claims.HTTPMethod != method {
+		t.Errorf("Expected method %s, got %s", method, result.Claims.HTTPMethod)
+	}
+
+	if result.Claims.HTTPURI != uri {
+		t.Errorf("Expected URI %s, got %s", uri, result.Claims.HTTPURI)
+	}
+
+	if result.Thumbprint != key.thumbprint {
+		t.Errorf("Expected thumbprint %s, got %s", key.thumbprint, result.Thumbprint)
+	}
+}
+
+func TestVerifyDPoPProof_ES256K_InvalidSignature(t *testing.T) {
+	verifier := NewDPoPVerifier()
+	key := generateTestES256KKey(t)
+	wrongKey := generateTestES256KKey(t)
+
+	method := "POST"
+	uri := "https://api.example.com/resource"
+	iat := time.Now()
+	jti := uuid.New().String()
+
+	// Create proof with one key
+	proof := createES256KDPoPProof(t, key, method, uri, iat, jti)
+
+	// Tamper by replacing JWK with wrong key
+	parts := splitJWT(proof)
+	header := parseJWTHeader(t, parts[0])
+	header["jwk"] = wrongKey.jwk
+	modifiedHeader := encodeJSON(t, header)
+	tamperedProof := modifiedHeader + "." + parts[1] + "." + parts[2]
+
+	_, err := verifier.VerifyDPoPProof(tamperedProof, method, uri)
+	if err == nil {
+		t.Error("Expected error for invalid ES256K signature, got nil")
+	}
+	if err != nil && !contains(err.Error(), "signature verification failed") {
+		t.Errorf("Expected signature verification error, got: %v", err)
+	}
+}
+
+func TestCalculateJWKThumbprint_ES256K(t *testing.T) {
+	// Test thumbprint calculation for secp256k1 keys
+	key := generateTestES256KKey(t)
+
+	thumbprint, err := CalculateJWKThumbprint(key.jwk)
+	if err != nil {
+		t.Fatalf("CalculateJWKThumbprint failed for ES256K: %v", err)
+	}
+
+	if thumbprint == "" {
+		t.Error("Expected non-empty thumbprint for ES256K key")
+	}
+
+	// Verify it's valid base64url
+	_, err = base64.RawURLEncoding.DecodeString(thumbprint)
+	if err != nil {
+		t.Errorf("ES256K thumbprint is not valid base64url: %v", err)
+	}
+
+	// Verify length (SHA-256 produces 32 bytes = 43 base64url chars)
+	if len(thumbprint) != 43 {
+		t.Errorf("Expected ES256K thumbprint length 43, got %d", len(thumbprint))
+	}
+}
+
+// === Algorithm-Curve Binding Tests ===
+
+func TestVerifyDPoPProof_AlgorithmCurveMismatch_ES256KWithP256Key(t *testing.T) {
+	verifier := NewDPoPVerifier()
+	key := generateTestES256Key(t) // P-256 key
+
+	method := "POST"
+	uri := "https://api.example.com/resource"
+	iat := time.Now()
+	jti := uuid.New().String()
+
+	// Create a proof claiming ES256K but using P-256 key
+	claims := &DPoPClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			ID:       jti,
+			IssuedAt: jwt.NewNumericDate(iat),
+		},
+		HTTPMethod: method,
+		HTTPURI:    uri,
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
+	token.Header["typ"] = "dpop+jwt"
+	token.Header["alg"] = "ES256K" // Claim ES256K
+	token.Header["jwk"] = key.jwk  // But use P-256 key
+
+	proof, err := token.SignedString(key.privateKey)
+	if err != nil {
+		t.Fatalf("Failed to create test proof: %v", err)
+	}
+
+	_, err = verifier.VerifyDPoPProof(proof, method, uri)
+	if err == nil {
+		t.Error("Expected error for ES256K algorithm with P-256 curve, got nil")
+	}
+	if err != nil && !contains(err.Error(), "requires curve secp256k1") {
+		t.Errorf("Expected curve mismatch error, got: %v", err)
+	}
+}
+
+func TestVerifyDPoPProof_AlgorithmCurveMismatch_ES256WithSecp256k1Key(t *testing.T) {
+	verifier := NewDPoPVerifier()
+	key := generateTestES256KKey(t) // secp256k1 key
+
+	method := "POST"
+	uri := "https://api.example.com/resource"
+	iat := time.Now()
+	jti := uuid.New().String()
+
+	// Build claims
+	claims := map[string]interface{}{
+		"jti": jti,
+		"iat": iat.Unix(),
+		"htm": method,
+		"htu": uri,
+	}
+
+	// Build header claiming ES256 but using secp256k1 key
+	header := map[string]interface{}{
+		"typ": "dpop+jwt",
+		"alg": "ES256", // Claim ES256
+		"jwk": key.jwk, // But use secp256k1 key
+	}
+
+	headerJSON, _ := json.Marshal(header)
+	claimsJSON, _ := json.Marshal(claims)
+
+	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
+	claimsB64 := base64.RawURLEncoding.EncodeToString(claimsJSON)
+
+	signingInput := headerB64 + "." + claimsB64
+	signature, err := key.privateKey.HashAndSign([]byte(signingInput))
+	if err != nil {
+		t.Fatalf("Failed to sign: %v", err)
+	}
+
+	proof := signingInput + "." + base64.RawURLEncoding.EncodeToString(signature)
+
+	_, err = verifier.VerifyDPoPProof(proof, method, uri)
+	if err == nil {
+		t.Error("Expected error for ES256 algorithm with secp256k1 curve, got nil")
+	}
+	if err != nil && !contains(err.Error(), "requires curve P-256") {
+		t.Errorf("Expected curve mismatch error, got: %v", err)
+	}
+}
+
+// === exp/nbf Validation Tests ===
+
+func TestVerifyDPoPProof_ExpiredWithExpClaim(t *testing.T) {
+	verifier := NewDPoPVerifier()
+	key := generateTestES256Key(t)
+
+	method := "POST"
+	uri := "https://api.example.com/resource"
+	iat := time.Now().Add(-2 * time.Minute)
+	exp := time.Now().Add(-1 * time.Minute) // Expired 1 minute ago
+	jti := uuid.New().String()
+
+	claims := &DPoPClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        jti,
+			IssuedAt:  jwt.NewNumericDate(iat),
+			ExpiresAt: jwt.NewNumericDate(exp),
+		},
+		HTTPMethod: method,
+		HTTPURI:    uri,
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
+	token.Header["typ"] = "dpop+jwt"
+	token.Header["jwk"] = key.jwk
+
+	proof, err := token.SignedString(key.privateKey)
+	if err != nil {
+		t.Fatalf("Failed to create test proof: %v", err)
+	}
+
+	_, err = verifier.VerifyDPoPProof(proof, method, uri)
+	if err == nil {
+		t.Error("Expected error for expired proof with exp claim, got nil")
+	}
+	if err != nil && !contains(err.Error(), "expired") {
+		t.Errorf("Expected expiration error, got: %v", err)
+	}
+}
+
+func TestVerifyDPoPProof_NotYetValidWithNbfClaim(t *testing.T) {
+	verifier := NewDPoPVerifier()
+	key := generateTestES256Key(t)
+
+	method := "POST"
+	uri := "https://api.example.com/resource"
+	iat := time.Now()
+	nbf := time.Now().Add(5 * time.Minute) // Not valid for another 5 minutes
+	jti := uuid.New().String()
+
+	claims := &DPoPClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        jti,
+			IssuedAt:  jwt.NewNumericDate(iat),
+			NotBefore: jwt.NewNumericDate(nbf),
+		},
+		HTTPMethod: method,
+		HTTPURI:    uri,
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
+	token.Header["typ"] = "dpop+jwt"
+	token.Header["jwk"] = key.jwk
+
+	proof, err := token.SignedString(key.privateKey)
+	if err != nil {
+		t.Fatalf("Failed to create test proof: %v", err)
+	}
+
+	_, err = verifier.VerifyDPoPProof(proof, method, uri)
+	if err == nil {
+		t.Error("Expected error for not-yet-valid proof with nbf claim, got nil")
+	}
+	if err != nil && !contains(err.Error(), "not valid before") {
+		t.Errorf("Expected not-before error, got: %v", err)
+	}
+}
+
+func TestVerifyDPoPProof_ValidWithExpClaimInFuture(t *testing.T) {
+	verifier := NewDPoPVerifier()
+	key := generateTestES256Key(t)
+
+	method := "POST"
+	uri := "https://api.example.com/resource"
+	iat := time.Now()
+	exp := time.Now().Add(5 * time.Minute) // Valid for 5 more minutes
+	jti := uuid.New().String()
+
+	claims := &DPoPClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        jti,
+			IssuedAt:  jwt.NewNumericDate(iat),
+			ExpiresAt: jwt.NewNumericDate(exp),
+		},
+		HTTPMethod: method,
+		HTTPURI:    uri,
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
+	token.Header["typ"] = "dpop+jwt"
+	token.Header["jwk"] = key.jwk
+
+	proof, err := token.SignedString(key.privateKey)
+	if err != nil {
+		t.Fatalf("Failed to create test proof: %v", err)
+	}
+
+	result, err := verifier.VerifyDPoPProof(proof, method, uri)
+	if err != nil {
+		t.Fatalf("VerifyDPoPProof failed for valid proof with exp in future: %v", err)
+	}
+
+	if result == nil {
+		t.Error("Expected non-nil result for valid proof")
+	}
 }

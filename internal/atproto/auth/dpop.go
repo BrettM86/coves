@@ -1,13 +1,10 @@
 package auth
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"math/big"
 	"strings"
 	"sync"
 	"time"
@@ -171,28 +168,28 @@ func (v *DPoPVerifier) Stop() {
 	}
 }
 
-// VerifyDPoPProof verifies a DPoP proof JWT and returns the parsed proof
+// VerifyDPoPProof verifies a DPoP proof JWT and returns the parsed proof.
+// This supports all atProto-compatible ECDSA algorithms including ES256K (secp256k1).
 func (v *DPoPVerifier) VerifyDPoPProof(dpopProof, httpMethod, httpURI string) (*DPoPProof, error) {
-	// Parse the DPoP JWT without verification first to extract the header
-	parser := jwt.NewParser(jwt.WithoutClaimsValidation())
-	token, _, err := parser.ParseUnverified(dpopProof, &DPoPClaims{})
+	// Manually parse the JWT to support ES256K (which golang-jwt doesn't recognize)
+	header, claims, err := parseJWTHeaderAndClaims(dpopProof)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse DPoP proof: %w", err)
 	}
 
-	// Extract and validate the header
-	header, ok := token.Header["typ"].(string)
-	if !ok || header != "dpop+jwt" {
-		return nil, fmt.Errorf("invalid DPoP proof: typ must be 'dpop+jwt', got '%s'", header)
+	// Extract and validate the typ header
+	typ, ok := header["typ"].(string)
+	if !ok || typ != "dpop+jwt" {
+		return nil, fmt.Errorf("invalid DPoP proof: typ must be 'dpop+jwt', got '%s'", typ)
 	}
 
-	alg, ok := token.Header["alg"].(string)
+	alg, ok := header["alg"].(string)
 	if !ok {
 		return nil, fmt.Errorf("invalid DPoP proof: missing alg header")
 	}
 
-	// Extract the JWK from the header
-	jwkRaw, ok := token.Header["jwk"]
+	// Extract the JWK from the header first (needed for algorithm-curve validation)
+	jwkRaw, ok := header["jwk"]
 	if !ok {
 		return nil, fmt.Errorf("invalid DPoP proof: missing jwk header")
 	}
@@ -202,8 +199,15 @@ func (v *DPoPVerifier) VerifyDPoPProof(dpopProof, httpMethod, httpURI string) (*
 		return nil, fmt.Errorf("invalid DPoP proof: jwk must be an object")
 	}
 
-	// Parse the public key from JWK
-	publicKey, err := parseJWKToPublicKey(jwkMap)
+	// Validate the algorithm is supported and matches the JWK curve
+	// This is critical for security - prevents algorithm confusion attacks
+	if err := validateAlgorithmCurveBinding(alg, jwkMap); err != nil {
+		return nil, fmt.Errorf("invalid DPoP proof: %w", err)
+	}
+
+	// Parse the public key using indigo's crypto package
+	// This supports all atProto curves including secp256k1 (ES256K)
+	publicKey, err := parseJWKToIndigoPublicKey(jwkMap)
 	if err != nil {
 		return nil, fmt.Errorf("invalid DPoP proof JWK: %w", err)
 	}
@@ -214,33 +218,10 @@ func (v *DPoPVerifier) VerifyDPoPProof(dpopProof, httpMethod, httpURI string) (*
 		return nil, fmt.Errorf("failed to calculate JWK thumbprint: %w", err)
 	}
 
-	// Now verify the signature
-	verifiedToken, err := jwt.ParseWithClaims(dpopProof, &DPoPClaims{}, func(token *jwt.Token) (interface{}, error) {
-		// Verify the signing method matches what we expect
-		switch alg {
-		case "ES256":
-			if _, ok := token.Method.(*jwt.SigningMethodECDSA); !ok {
-				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-			}
-		case "ES384", "ES512":
-			if _, ok := token.Method.(*jwt.SigningMethodECDSA); !ok {
-				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-			}
-		case "RS256", "RS384", "RS512", "PS256", "PS384", "PS512":
-			// RSA methods - we primarily support ES256 for atproto
-			return nil, fmt.Errorf("RSA algorithms not yet supported for DPoP: %s", alg)
-		default:
-			return nil, fmt.Errorf("unsupported DPoP algorithm: %s", alg)
-		}
-		return publicKey, nil
-	})
-	if err != nil {
+	// Verify the signature using indigo's crypto package
+	// This works for all ECDSA algorithms including ES256K
+	if err := verifyJWTSignatureWithIndigo(dpopProof, publicKey); err != nil {
 		return nil, fmt.Errorf("DPoP proof signature verification failed: %w", err)
-	}
-
-	claims, ok := verifiedToken.Claims.(*DPoPClaims)
-	if !ok {
-		return nil, fmt.Errorf("invalid DPoP claims type")
 	}
 
 	// Validate the claims
@@ -291,6 +272,23 @@ func (v *DPoPVerifier) validateDPoPClaims(claims *DPoPClaims, expectedMethod, ex
 	// Check proof age (not too old)
 	if now.Sub(iat) > v.MaxProofAge {
 		return fmt.Errorf("DPoP proof is too old (issued %v ago, max %v)", now.Sub(iat), v.MaxProofAge)
+	}
+
+	// SECURITY: Validate exp claim if present (RFC standard JWT validation)
+	// While DPoP proofs typically use iat + MaxProofAge, if exp is included it must be honored
+	if claims.ExpiresAt != nil {
+		expWithSkew := claims.ExpiresAt.Time.Add(v.MaxClockSkew)
+		if now.After(expWithSkew) {
+			return fmt.Errorf("DPoP proof expired at %v", claims.ExpiresAt.Time)
+		}
+	}
+
+	// SECURITY: Validate nbf claim if present (RFC standard JWT validation)
+	if claims.NotBefore != nil {
+		nbfWithSkew := claims.NotBefore.Time.Add(-v.MaxClockSkew)
+		if now.Before(nbfWithSkew) {
+			return fmt.Errorf("DPoP proof not valid before %v", claims.NotBefore.Time)
+		}
 	}
 
 	// SECURITY: Check for replay attack using jti
@@ -417,67 +415,180 @@ func CalculateJWKThumbprint(jwk map[string]interface{}) (string, error) {
 	return thumbprint, nil
 }
 
-// parseJWKToPublicKey parses a JWK map to a Go public key
-func parseJWKToPublicKey(jwkMap map[string]interface{}) (interface{}, error) {
+// validateAlgorithmCurveBinding validates that the JWT algorithm matches the JWK curve.
+// This is critical for security - an attacker could claim alg: "ES256K" but provide
+// a P-256 key, potentially bypassing algorithm binding requirements.
+func validateAlgorithmCurveBinding(alg string, jwkMap map[string]interface{}) error {
+	kty, ok := jwkMap["kty"].(string)
+	if !ok {
+		return fmt.Errorf("JWK missing kty")
+	}
+
+	// ECDSA algorithms require EC key type
+	switch alg {
+	case "ES256K", "ES256", "ES384", "ES512":
+		if kty != "EC" {
+			return fmt.Errorf("algorithm %s requires EC key type, got %s", alg, kty)
+		}
+	case "RS256", "RS384", "RS512", "PS256", "PS384", "PS512":
+		return fmt.Errorf("RSA algorithms not yet supported for DPoP: %s", alg)
+	default:
+		return fmt.Errorf("unsupported DPoP algorithm: %s", alg)
+	}
+
+	// Validate curve matches algorithm
+	crv, ok := jwkMap["crv"].(string)
+	if !ok {
+		return fmt.Errorf("EC JWK missing crv")
+	}
+
+	var expectedCurve string
+	switch alg {
+	case "ES256K":
+		expectedCurve = "secp256k1"
+	case "ES256":
+		expectedCurve = "P-256"
+	case "ES384":
+		expectedCurve = "P-384"
+	case "ES512":
+		expectedCurve = "P-521"
+	}
+
+	if crv != expectedCurve {
+		return fmt.Errorf("algorithm %s requires curve %s, got %s", alg, expectedCurve, crv)
+	}
+
+	return nil
+}
+
+// parseJWKToIndigoPublicKey parses a JWK map to an indigo PublicKey.
+// This returns indigo's PublicKey interface which supports all atProto curves
+// including secp256k1 (ES256K), P-256 (ES256), P-384 (ES384), and P-521 (ES512).
+func parseJWKToIndigoPublicKey(jwkMap map[string]interface{}) (indigoCrypto.PublicKey, error) {
 	// Convert map to JSON bytes for indigo's parser
 	jwkBytes, err := json.Marshal(jwkMap)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize JWK: %w", err)
 	}
 
-	// Try to parse with indigo's crypto package
+	// Parse with indigo's crypto package - this supports all atProto curves
+	// including secp256k1 (ES256K) which Go's crypto/elliptic doesn't support
 	pubKey, err := indigoCrypto.ParsePublicJWKBytes(jwkBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse JWK: %w", err)
 	}
 
-	// Convert indigo's PublicKey to Go's ecdsa.PublicKey
-	jwk, err := pubKey.JWK()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get JWK from public key: %w", err)
-	}
-
-	// Use our existing conversion function
-	return atcryptoJWKToECDSAFromIndigoJWK(jwk)
+	return pubKey, nil
 }
 
-// atcryptoJWKToECDSAFromIndigoJWK converts an indigo JWK to Go ecdsa.PublicKey
-func atcryptoJWKToECDSAFromIndigoJWK(jwk *indigoCrypto.JWK) (*ecdsa.PublicKey, error) {
-	if jwk.KeyType != "EC" {
-		return nil, fmt.Errorf("unsupported JWK key type: %s (expected EC)", jwk.KeyType)
+// parseJWTHeaderAndClaims manually parses a JWT's header and claims without using golang-jwt.
+// This is necessary to support ES256K (secp256k1) which golang-jwt doesn't recognize.
+func parseJWTHeaderAndClaims(tokenString string) (map[string]interface{}, *DPoPClaims, error) {
+	parts := strings.Split(tokenString, ".")
+	if len(parts) != 3 {
+		return nil, nil, fmt.Errorf("invalid JWT format: expected 3 parts, got %d", len(parts))
 	}
 
-	xBytes, err := base64.RawURLEncoding.DecodeString(jwk.X)
+	// Decode header
+	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		return nil, fmt.Errorf("invalid JWK X coordinate: %w", err)
+		return nil, nil, fmt.Errorf("failed to decode JWT header: %w", err)
 	}
-	yBytes, err := base64.RawURLEncoding.DecodeString(jwk.Y)
+
+	var header map[string]interface{}
+	if err := json.Unmarshal(headerBytes, &header); err != nil {
+		return nil, nil, fmt.Errorf("failed to parse JWT header: %w", err)
+	}
+
+	// Decode claims
+	claimsBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return nil, fmt.Errorf("invalid JWK Y coordinate: %w", err)
+		return nil, nil, fmt.Errorf("failed to decode JWT claims: %w", err)
 	}
 
-	var curve ecdsa.PublicKey
-	switch jwk.Curve {
-	case "P-256":
-		curve.Curve = ecdsaP256Curve()
-	case "P-384":
-		curve.Curve = ecdsaP384Curve()
-	case "P-521":
-		curve.Curve = ecdsaP521Curve()
-	default:
-		return nil, fmt.Errorf("unsupported curve: %s", jwk.Curve)
+	// Parse into raw map first to extract standard claims
+	var rawClaims map[string]interface{}
+	if err := json.Unmarshal(claimsBytes, &rawClaims); err != nil {
+		return nil, nil, fmt.Errorf("failed to parse JWT claims: %w", err)
 	}
 
-	curve.X = new(big.Int).SetBytes(xBytes)
-	curve.Y = new(big.Int).SetBytes(yBytes)
+	// Build DPoPClaims struct
+	claims := &DPoPClaims{}
 
-	return &curve, nil
+	// Extract jti
+	if jti, ok := rawClaims["jti"].(string); ok {
+		claims.ID = jti
+	}
+
+	// Extract iat (issued at)
+	if iat, ok := rawClaims["iat"].(float64); ok {
+		t := time.Unix(int64(iat), 0)
+		claims.IssuedAt = jwt.NewNumericDate(t)
+	}
+
+	// Extract exp (expiration) if present
+	if exp, ok := rawClaims["exp"].(float64); ok {
+		t := time.Unix(int64(exp), 0)
+		claims.ExpiresAt = jwt.NewNumericDate(t)
+	}
+
+	// Extract nbf (not before) if present
+	if nbf, ok := rawClaims["nbf"].(float64); ok {
+		t := time.Unix(int64(nbf), 0)
+		claims.NotBefore = jwt.NewNumericDate(t)
+	}
+
+	// Extract htm (HTTP method)
+	if htm, ok := rawClaims["htm"].(string); ok {
+		claims.HTTPMethod = htm
+	}
+
+	// Extract htu (HTTP URI)
+	if htu, ok := rawClaims["htu"].(string); ok {
+		claims.HTTPURI = htu
+	}
+
+	// Extract ath (access token hash) if present
+	if ath, ok := rawClaims["ath"].(string); ok {
+		claims.AccessTokenHash = ath
+	}
+
+	return header, claims, nil
 }
 
-// Helper functions for elliptic curves
-func ecdsaP256Curve() elliptic.Curve { return elliptic.P256() }
-func ecdsaP384Curve() elliptic.Curve { return elliptic.P384() }
-func ecdsaP521Curve() elliptic.Curve { return elliptic.P521() }
+// verifyJWTSignatureWithIndigo verifies a JWT signature using indigo's crypto package.
+// This is used instead of golang-jwt for algorithms not supported by golang-jwt (like ES256K).
+// It parses the JWT, extracts the signing input and signature, and uses indigo's
+// PublicKey.HashAndVerifyLenient() for verification.
+//
+// JWT format: header.payload.signature (all base64url-encoded)
+// Signature is verified over the raw bytes of "header.payload"
+// (indigo's HashAndVerifyLenient handles SHA-256 hashing internally)
+func verifyJWTSignatureWithIndigo(tokenString string, pubKey indigoCrypto.PublicKey) error {
+	// Split the JWT into parts
+	parts := strings.Split(tokenString, ".")
+	if len(parts) != 3 {
+		return fmt.Errorf("invalid JWT format: expected 3 parts, got %d", len(parts))
+	}
+
+	// The signing input is "header.payload" (without decoding)
+	signingInput := parts[0] + "." + parts[1]
+
+	// Decode the signature from base64url
+	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return fmt.Errorf("failed to decode JWT signature: %w", err)
+	}
+
+	// Use indigo's verification - HashAndVerifyLenient handles hashing internally
+	// and accepts both low-S and high-S signatures for maximum compatibility
+	err = pubKey.HashAndVerifyLenient([]byte(signingInput), signature)
+	if err != nil {
+		return fmt.Errorf("signature verification failed: %w", err)
+	}
+
+	return nil
+}
 
 // stripQueryFragment removes query and fragment from a URI
 func stripQueryFragment(uri string) string {

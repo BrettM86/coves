@@ -75,10 +75,13 @@ coves.social {
             health_interval 30s
             health_timeout 5s
 
-            # Headers
+            # Headers for proper DPoP verification
+            # Host headers are critical for DPoP htu (HTTP URI) matching
+            header_up Host {host}
             header_up X-Real-IP {remote_host}
             header_up X-Forwarded-For {remote_host}
             header_up X-Forwarded-Proto {scheme}
+            header_up X-Forwarded-Host {host}
         }
     }
 
