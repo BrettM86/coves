@@ -175,7 +175,7 @@ Once authorized, your aggregator can post using:
 
 ```bash
 curl -X POST https://api.coves.social/xrpc/social.coves.community.post.create \
-  -H "Authorization: Bearer $AGGREGATOR_ACCESS_JWT" \
+  -H "Authorization: DPoP $AGGREGATOR_ACCESS_JWT" \
   -H "Content-Type: application/json" \
   -d '{
     "communityDid": "did:plc:...",

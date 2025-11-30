@@ -1,6 +1,6 @@
 # atProto OAuth Authentication
 
-This package implements third-party OAuth authentication for Coves, validating JWT Bearer tokens from mobile apps and other atProto clients.
+This package implements third-party OAuth authentication for Coves, validating DPoP-bound access tokens from mobile apps and other atProto clients.
 
 ## Architecture
 
@@ -17,11 +17,12 @@ This is **third-party authentication** (validating incoming requests), not first
 ```
 Client Request
     ↓
-Authorization: Bearer <jwt>
+Authorization: DPoP <access_token>
+DPoP: <proof-jwt>
     ↓
 Auth Middleware
     ↓
-Extract JWT → Parse Claims → Verify Signature (via JWKS)
+Extract JWT → Parse Claims → Verify Signature (via JWKS) → Verify DPoP Proof
     ↓
 Inject DID into Context → Call Handler
 ```
@@ -71,7 +72,8 @@ Include the JWT in the `Authorization` header:
 
 ```bash
 curl -X POST https://coves.social/xrpc/social.coves.community.create \
-  -H "Authorization: Bearer eyJhbGc..." \
+  -H "Authorization: DPoP eyJhbGc..." \
+  -H "DPoP: eyJhbGc..." \
   -H "Content-Type: application/json" \
   -d '{"name":"Gaming","hostedByDid":"did:plc:..."}'
 ```
@@ -141,7 +143,7 @@ The correct verification order is:
 │             │                          │  (Coves)    │
 └─────────────┘                          └─────────────┘
        │                                        │
-       │ 1. Authorization: Bearer <token>       │
+       │ 1. Authorization: DPoP <token>         │
        │    DPoP: <proof-jwt>                  │
        │───────────────────────────────────────>│
        │                                        │
@@ -276,7 +278,8 @@ go test ./internal/atproto/auth/... -v
    # Create a test JWT (use jwt.io or a tool)
    export AUTH_SKIP_VERIFY=true
    curl -X POST http://localhost:8081/xrpc/social.coves.community.create \
-     -H "Authorization: Bearer <test-jwt>" \
+     -H "Authorization: DPoP <test-jwt>" \
+     -H "DPoP: <test-dpop-proof>" \
      -d '{"name":"Test","hostedByDid":"did:plc:test"}'
    ```
 
@@ -285,7 +288,8 @@ go test ./internal/atproto/auth/... -v
    # Use a real JWT from a PDS
    export AUTH_SKIP_VERIFY=false
    curl -X POST http://localhost:8081/xrpc/social.coves.community.create \
-     -H "Authorization: Bearer <real-jwt>" \
+     -H "Authorization: DPoP <real-jwt>" \
+     -H "DPoP: <real-dpop-proof>" \
      -d '{"name":"Test","hostedByDid":"did:plc:test"}'
    ```
 
@@ -311,7 +315,7 @@ Missing or invalid token:
 
 ### Common Issues
 
-1. **Missing Authorization header** → Add `Authorization: Bearer <token>`
+1. **Missing Authorization header** → Add `Authorization: DPoP <token>` and `DPoP: <proof>`
 2. **Token expired** → Get a new token from PDS
 3. **Invalid signature** → Ensure token is from a valid PDS
 4. **JWKS fetch fails** → Check PDS availability and network connectivity

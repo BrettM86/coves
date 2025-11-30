@@ -83,6 +83,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 	listForCommunityHandler := aggregator.NewListForCommunityHandler(aggregatorService)
 	createPostHandler := post.NewCreateHandler(postService)
 	authMiddleware := middleware.NewAtProtoAuthMiddleware(nil, true) // Skip JWT verification for testing
+	defer authMiddleware.Stop()                                      // Clean up DPoP replay cache goroutine
 
 	ctx := context.Background()
 
@@ -337,7 +338,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 
 		// Create JWT for aggregator (not a user)
 		aggregatorJWT := createSimpleTestJWT(aggregatorDID)
-		req.Header.Set("Authorization", "Bearer "+aggregatorJWT)
+		req.Header.Set("Authorization", "DPoP "+aggregatorJWT)
 
 		// Execute request through auth middleware + handler
 		rr := httptest.NewRecorder()
@@ -424,7 +425,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 
 			req := httptest.NewRequest("POST", "/xrpc/social.coves.community.post.create", bytes.NewReader(reqJSON))
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("Authorization", "Bearer "+createSimpleTestJWT(aggregatorDID))
+			req.Header.Set("Authorization", "DPoP "+createSimpleTestJWT(aggregatorDID))
 
 			rr := httptest.NewRecorder()
 			handler := authMiddleware.RequireAuth(http.HandlerFunc(createPostHandler.HandleCreate))
@@ -446,7 +447,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 
 		req := httptest.NewRequest("POST", "/xrpc/social.coves.community.post.create", bytes.NewReader(reqJSON))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+createSimpleTestJWT(aggregatorDID))
+		req.Header.Set("Authorization", "DPoP "+createSimpleTestJWT(aggregatorDID))
 
 		rr := httptest.NewRecorder()
 		handler := authMiddleware.RequireAuth(http.HandlerFunc(createPostHandler.HandleCreate))
@@ -467,7 +468,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 
 		req = httptest.NewRequest("POST", "/xrpc/social.coves.community.post.create", bytes.NewReader(reqJSON))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+createSimpleTestJWT(aggregatorDID))
+		req.Header.Set("Authorization", "DPoP "+createSimpleTestJWT(aggregatorDID))
 
 		rr = httptest.NewRecorder()
 		handler = authMiddleware.RequireAuth(http.HandlerFunc(createPostHandler.HandleCreate))
@@ -659,7 +660,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 
 		req := httptest.NewRequest("POST", "/xrpc/social.coves.community.post.create", bytes.NewReader(reqJSON))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+createSimpleTestJWT(unauthorizedAggDID))
+		req.Header.Set("Authorization", "DPoP "+createSimpleTestJWT(unauthorizedAggDID))
 
 		rr := httptest.NewRecorder()
 		handler := authMiddleware.RequireAuth(http.HandlerFunc(createPostHandler.HandleCreate))
@@ -783,7 +784,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 
 		req := httptest.NewRequest("POST", "/xrpc/social.coves.community.post.create", bytes.NewReader(reqJSON))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+createSimpleTestJWT(aggregatorDID))
+		req.Header.Set("Authorization", "DPoP "+createSimpleTestJWT(aggregatorDID))
 
 		rr := httptest.NewRecorder()
 		handler := authMiddleware.RequireAuth(http.HandlerFunc(createPostHandler.HandleCreate))

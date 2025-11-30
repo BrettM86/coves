@@ -466,6 +466,7 @@ func TestBlobUpload_PDS_MockServer(t *testing.T) {
 		assert.Equal(t, "POST", r.Method, "Should be POST request")
 		assert.Equal(t, "/xrpc/com.atproto.repo.uploadBlob", r.URL.Path, "Should hit uploadBlob endpoint")
 		assert.Equal(t, "image/png", r.Header.Get("Content-Type"), "Should have correct content type")
+		// Note: This is a PDS call, so it uses Bearer (not DPoP)
 		assert.Contains(t, r.Header.Get("Authorization"), "Bearer ", "Should have auth header")
 
 		// Return mock blob reference

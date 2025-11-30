@@ -104,6 +104,7 @@ func TestJWTSignatureVerification(t *testing.T) {
 		t.Log("Testing auth middleware with skipVerify=true (dev mode)...")
 
 		authMiddleware := middleware.NewAtProtoAuthMiddleware(jwksFetcher, true) // skipVerify=true for dev PDS
+		defer authMiddleware.Stop()                                               // Clean up DPoP replay cache goroutine
 
 		handlerCalled := false
 		var extractedDID string
@@ -116,7 +117,7 @@ func TestJWTSignatureVerification(t *testing.T) {
 		}))
 
 		req := httptest.NewRequest("GET", "/test", nil)
-		req.Header.Set("Authorization", "Bearer "+accessToken)
+		req.Header.Set("Authorization", "DPoP "+accessToken)
 		w := httptest.NewRecorder()
 
 		testHandler.ServeHTTP(w, req)
@@ -166,6 +167,7 @@ func TestJWTSignatureVerification(t *testing.T) {
 		// Tampered payload should fail JWT parsing even without signature check
 		jwksFetcher := auth.NewCachedJWKSFetcher(1 * time.Hour)
 		authMiddleware := middleware.NewAtProtoAuthMiddleware(jwksFetcher, true)
+		defer authMiddleware.Stop() // Clean up DPoP replay cache goroutine
 
 		handlerCalled := false
 		testHandler := authMiddleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -174,7 +176,7 @@ func TestJWTSignatureVerification(t *testing.T) {
 		}))
 
 		req := httptest.NewRequest("GET", "/test", nil)
-		req.Header.Set("Authorization", "Bearer "+tamperedToken)
+		req.Header.Set("Authorization", "DPoP "+tamperedToken)
 		w := httptest.NewRecorder()
 
 		testHandler.ServeHTTP(w, req)

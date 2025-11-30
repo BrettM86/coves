@@ -407,6 +407,7 @@ func TestPostCreation_E2E_LivePDS(t *testing.T) {
 
 	// Setup auth middleware (skip JWT verification for testing)
 	authMiddleware := middleware.NewAtProtoAuthMiddleware(nil, true)
+	defer authMiddleware.Stop() // Clean up DPoP replay cache goroutine
 
 	// Setup HTTP handler
 	createHandler := post.NewCreateHandler(postService)
@@ -478,7 +479,7 @@ func TestPostCreation_E2E_LivePDS(t *testing.T) {
 		// Create a simple JWT for testing (Phase 1: no signature verification)
 		// In production, this would be a real OAuth token from PDS
 		testJWT := createSimpleTestJWT(author.DID)
-		req.Header.Set("Authorization", "Bearer "+testJWT)
+		req.Header.Set("Authorization", "DPoP "+testJWT)
 
 		// Execute request through auth middleware + handler
 		rr := httptest.NewRecorder()
