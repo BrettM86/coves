@@ -1,0 +1,11 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appID": "TEAM_ID.social.coves",
+        "paths": ["/app/oauth/callback"]
+      }
+    ]
+  }
+}
