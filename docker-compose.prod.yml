@@ -62,6 +62,7 @@ services:
       # Instance identity
       INSTANCE_DID: did:web:coves.social
       INSTANCE_DOMAIN: coves.social
+      APPVIEW_PUBLIC_URL: https://coves.social
 
       # PDS connection (separate domain!)
       PDS_URL: https://coves.me
