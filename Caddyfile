@@ -60,14 +60,7 @@ coves.social {
         file_server
     }
 
-    # Serve OAuth callback page
-    handle /oauth/callback {
-        root * /srv
-        rewrite * /oauth/callback.html
-        file_server
-    }
-
-    # Proxy all other requests to AppView
+    # Proxy all requests to AppView
     handle {
         reverse_proxy appview:8080 {
             # Health check
