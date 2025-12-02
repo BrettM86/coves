@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -11,6 +12,130 @@ import (
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 )
+
+// mobileCallbackTemplate is the intermediate page shown after OAuth completes
+// before redirecting to the mobile app via custom scheme.
+// This prevents the browser from showing a stale PDS page after the redirect.
+var mobileCallbackTemplate = template.Must(template.New("mobile_callback").Parse(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Login Complete - Coves</title>
+  <meta http-equiv="refresh" content="1;url={{.DeepLink}}">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0B0F14;
+      color: #e4e6e7;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 24px;
+    }
+    .card {
+      text-align: center;
+      max-width: 320px;
+    }
+    .logo {
+      width: 80px;
+      height: 80px;
+      margin: 0 auto 16px;
+    }
+    .checkmark {
+      width: 64px;
+      height: 64px;
+      margin: 0 auto 24px;
+      background: #FF6B35;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      animation: scale-in 0.3s ease-out;
+    }
+    .checkmark svg {
+      width: 32px;
+      height: 32px;
+      stroke: white;
+      stroke-width: 3;
+      fill: none;
+    }
+    @keyframes scale-in {
+      0% { transform: scale(0); }
+      50% { transform: scale(1.1); }
+      100% { transform: scale(1); }
+    }
+    h1 {
+      font-size: 24px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #e4e6e7;
+    }
+    .subtitle {
+      font-size: 16px;
+      color: #B6C2D2;
+      margin-bottom: 24px;
+    }
+    .handle {
+      font-size: 14px;
+      color: #7CB9E8;
+      background: #1A1F26;
+      padding: 8px 16px;
+      border-radius: 8px;
+      margin-bottom: 24px;
+      display: inline-block;
+    }
+    .hint {
+      font-size: 13px;
+      color: #6B7280;
+      line-height: 1.5;
+    }
+    .spinner {
+      width: 20px;
+      height: 20px;
+      border: 2px solid #2A2F36;
+      border-top-color: #FF6B35;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      display: inline-block;
+      vertical-align: middle;
+      margin-right: 8px;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="checkmark">
+      <svg viewBox="0 0 24 24">
+        <polyline points="20 6 9 17 4 12"></polyline>
+      </svg>
+    </div>
+    <h1>Login Complete</h1>
+    <p class="subtitle">
+      <span class="spinner"></span>
+      Returning to Coves...
+    </p>
+    {{if .Handle}}
+    <div class="handle">@{{.Handle}}</div>
+    {{end}}
+    <p class="hint">If the app doesn't open automatically,<br>you can close this window.</p>
+  </div>
+  <script>
+    // Redirect to app immediately
+    window.location.href = {{.DeepLink}};
+    // Try to close window after a delay
+    setTimeout(function() {
+      window.close();
+    }, 1500);
+  </script>
+</body>
+</html>
+`))
 
 // MobileOAuthStore interface for mobile-specific OAuth operations
 // This extends the base OAuth store with mobile CSRF tracking
@@ -483,8 +608,24 @@ func (h *OAuthHandler) handleMobileCallback(w http.ResponseWriter, r *http.Reque
 	// Log mobile redirect (sanitized - no token or session ID to avoid leaking credentials)
 	slog.Info("redirecting to mobile app", "did", sessData.AccountDID, "handle", handle)
 
-	// Redirect to mobile app deep link
-	http.Redirect(w, r, deepLink, http.StatusFound)
+	// Serve intermediate page that redirects to the app
+	// This prevents the browser from showing a stale PDS page after the custom scheme redirect
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
+
+	data := struct {
+		DeepLink string
+		Handle   string
+	}{
+		DeepLink: deepLink,
+		Handle:   handle,
+	}
+
+	if err := mobileCallbackTemplate.Execute(w, data); err != nil {
+		slog.Error("failed to render mobile callback template", "error", err)
+		// Fallback to direct redirect if template fails
+		http.Redirect(w, r, deepLink, http.StatusFound)
+	}
 }
 
 // HandleLogout revokes the session and clears cookies
