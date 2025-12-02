@@ -3,9 +3,9 @@ package main
 import (
 	"Coves/internal/api/middleware"
 	"Coves/internal/api/routes"
-	"Coves/internal/atproto/auth"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
+	"Coves/internal/atproto/oauth"
 	"Coves/internal/core/aggregators"
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/comments"
@@ -18,7 +18,9 @@ import (
 	"Coves/internal/core/users"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -38,8 +40,6 @@ import (
 	commentsAPI "Coves/internal/api/handlers/comments"
 
 	postgresRepo "Coves/internal/db/postgres"
-
-	indigoIdentity "github.com/bluesky-social/indigo/atproto/identity"
 )
 
 func main() {
@@ -137,38 +137,67 @@ func main() {
 
 	identityResolver := identity.NewResolver(db, identityConfig)
 
-	// Initialize atProto auth middleware for JWT validation
-	// Phase 1: Set skipVerify=true to test JWT parsing only
-	// Phase 2: Set skipVerify=false to enable full signature verification
-	skipVerify := os.Getenv("AUTH_SKIP_VERIFY") == "true"
-	if skipVerify {
-		log.Println("⚠️  WARNING: JWT signature verification is DISABLED (Phase 1 testing)")
-		log.Println("   Set AUTH_SKIP_VERIFY=false for production")
-	}
-
-	// Initialize Indigo directory for DID resolution (used by auth)
+	// Get PLC URL for OAuth and other services
 	plcURL := os.Getenv("PLC_DIRECTORY_URL")
 	if plcURL == "" {
 		plcURL = "https://plc.directory"
 	}
-	indigoDir := &indigoIdentity.BaseDirectory{
-		PLCURL:     plcURL,
-		HTTPClient: http.Client{Timeout: 10 * time.Second},
+
+	// Initialize OAuth client for sealed session tokens
+	// Mobile apps authenticate via OAuth flow and receive sealed session tokens
+	// These tokens are encrypted references to OAuth sessions stored in the database
+	oauthSealSecret := os.Getenv("OAUTH_SEAL_SECRET")
+	if oauthSealSecret == "" {
+		if os.Getenv("IS_DEV_ENV") != "true" {
+			log.Fatal("OAUTH_SEAL_SECRET is required in production mode")
+		}
+		// Generate RANDOM secret for dev mode
+		randomBytes := make([]byte, 32)
+		if _, err := rand.Read(randomBytes); err != nil {
+			log.Fatal("Failed to generate random seal secret: ", err)
+		}
+		oauthSealSecret = base64.StdEncoding.EncodeToString(randomBytes)
+		log.Println("⚠️  DEV MODE: Generated random OAuth seal secret (won't persist across restarts)")
 	}
 
-	// Initialize JWT config early to cache HS256_ISSUERS and PDS_JWT_SECRET
-	// This avoids reading env vars on every request
-	auth.InitJWTConfig()
+	isDevMode := os.Getenv("IS_DEV_ENV") == "true"
+	oauthConfig := &oauth.OAuthConfig{
+		PublicURL:       os.Getenv("APPVIEW_PUBLIC_URL"),
+		SealSecret:      oauthSealSecret,
+		Scopes:          []string{"atproto", "transition:generic"},
+		DevMode:         isDevMode,
+		AllowPrivateIPs: isDevMode, // Allow private IPs only in dev mode
+		PLCURL:          plcURL,
+		// SessionTTL and SealedTokenTTL will use defaults if not set (7 days and 14 days)
+	}
 
-	// Create combined key fetcher for both DID and URL issuers
-	// - DID issuers (did:plc:, did:web:) → resolved via DID document keys (ES256)
-	// - URL issuers → JWKS endpoint (fallback for legacy tokens)
-	jwksCacheTTL := 1 * time.Hour
-	jwksFetcher := auth.NewCachedJWKSFetcher(jwksCacheTTL)
-	keyFetcher := auth.NewCombinedKeyFetcher(indigoDir, jwksFetcher)
+	// Create PostgreSQL-backed OAuth session store (using default 7-day TTL)
+	baseOAuthStore := oauth.NewPostgresOAuthStore(db, 0)
+	// Wrap with MobileAwareStoreWrapper to capture OAuth state for mobile CSRF validation.
+	// This intercepts SaveAuthRequestInfo to save mobile CSRF data when present in context.
+	oauthStore := oauth.NewMobileAwareStoreWrapper(baseOAuthStore)
 
-	authMiddleware := middleware.NewAtProtoAuthMiddleware(keyFetcher, skipVerify)
-	log.Println("✅ atProto auth middleware initialized (DID + JWKS key resolution)")
+	if oauthConfig.PublicURL == "" {
+		oauthConfig.PublicURL = "http://localhost:8080"
+		oauthConfig.DevMode = true // Force dev mode for localhost
+	}
+
+	// Optional: confidential client secret for production
+	oauthConfig.ClientSecret = os.Getenv("OAUTH_CLIENT_SECRET")
+	oauthConfig.ClientKID = os.Getenv("OAUTH_CLIENT_KID")
+
+	oauthClient, err := oauth.NewOAuthClient(oauthConfig, oauthStore)
+	if err != nil {
+		log.Fatalf("Failed to initialize OAuth client: %v", err)
+	}
+
+	// Create OAuth handler for HTTP endpoints
+	oauthHandler := oauth.NewOAuthHandler(oauthClient, oauthStore)
+
+	// Create OAuth auth middleware
+	// Validates sealed session tokens and loads OAuth sessions from database
+	authMiddleware := middleware.NewOAuthAuthMiddleware(oauthClient, oauthStore)
+	log.Println("✅ OAuth auth middleware initialized (sealed session tokens)")
 
 	// Initialize repositories and services
 	userRepo := postgresRepo.NewUserRepository(db)
@@ -303,17 +332,37 @@ func main() {
 	log.Println("  - Indexing: social.coves.community.profile (community profiles)")
 	log.Println("  - Indexing: social.coves.community.subscription (user subscriptions)")
 
-	// Start JWKS cache cleanup background job
+	// Start OAuth session cleanup background job with cancellable context
+	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
 	go func() {
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
-		for range ticker.C {
-			jwksFetcher.CleanupExpiredCache()
-			log.Println("JWKS cache cleanup completed")
+		for {
+			select {
+			case <-cleanupCtx.Done():
+				log.Println("OAuth cleanup job stopped")
+				return
+			case <-ticker.C:
+				// Check if store implements cleanup methods
+				// Use UnwrapPostgresStore to get the underlying store from the wrapper
+				if cleanupStore := oauthStore.UnwrapPostgresStore(); cleanupStore != nil {
+					sessions, sessErr := cleanupStore.CleanupExpiredSessions(cleanupCtx)
+					if sessErr != nil {
+						log.Printf("Error cleaning up expired OAuth sessions: %v", sessErr)
+					}
+					requests, reqErr := cleanupStore.CleanupExpiredAuthRequests(cleanupCtx)
+					if reqErr != nil {
+						log.Printf("Error cleaning up expired OAuth auth requests: %v", reqErr)
+					}
+					if sessions > 0 || requests > 0 {
+						log.Printf("OAuth cleanup: removed %d expired sessions, %d expired auth requests", sessions, requests)
+					}
+				}
+			}
 		}
 	}()
 
-	log.Println("Started JWKS cache cleanup background job (runs hourly)")
+	log.Println("Started OAuth session cleanup background job (runs hourly)")
 
 	// Initialize aggregator service
 	aggregatorRepo := postgresRepo.NewAggregatorRepository(db)
@@ -494,6 +543,47 @@ func main() {
 	log.Println("✅ Comment query API registered (20 req/min rate limit)")
 	log.Println("  - GET /xrpc/social.coves.community.comment.getComments")
 
+	// Configure allowed CORS origins for OAuth callback
+	// SECURITY: Never use wildcard "*" with credentials - only allow specific origins
+	var oauthAllowedOrigins []string
+	appviewPublicURL := os.Getenv("APPVIEW_PUBLIC_URL")
+	if appviewPublicURL == "" {
+		appviewPublicURL = "http://localhost:8080"
+	}
+	oauthAllowedOrigins = append(oauthAllowedOrigins, appviewPublicURL)
+
+	// In dev mode, also allow common localhost origins for testing
+	if oauthConfig.DevMode {
+		oauthAllowedOrigins = append(oauthAllowedOrigins,
+			"http://localhost:3000",
+			"http://localhost:3001",
+			"http://localhost:5173",
+			"http://127.0.0.1:8080",
+			"http://127.0.0.1:3000",
+			"http://127.0.0.1:3001",
+			"http://127.0.0.1:5173",
+		)
+		log.Printf("🧪 DEV MODE: OAuth CORS allows localhost origins for testing")
+	}
+	log.Printf("OAuth CORS allowed origins: %v", oauthAllowedOrigins)
+
+	// Register OAuth routes for authentication flow
+	routes.RegisterOAuthRoutes(r, oauthHandler, oauthAllowedOrigins)
+	log.Println("✅ OAuth endpoints registered")
+	log.Println("  - GET /oauth/client-metadata.json")
+	log.Println("  - GET /oauth/jwks.json")
+	log.Println("  - GET /oauth/login")
+	log.Println("  - GET /oauth/mobile/login")
+	log.Println("  - GET /oauth/callback")
+	log.Println("  - POST /oauth/logout")
+	log.Println("  - POST /oauth/refresh")
+
+	// Register well-known routes for mobile app deep linking
+	routes.RegisterWellKnownRoutes(r)
+	log.Println("✅ Well-known endpoints registered (mobile Universal Links & App Links)")
+	log.Println("  - GET /.well-known/apple-app-site-association (iOS Universal Links)")
+	log.Println("  - GET /.well-known/assetlinks.json (Android App Links)")
+
 	// Health check endpoints
 	healthHandler := func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -540,9 +630,8 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Stop auth middleware background goroutines (DPoP replay cache cleanup)
-	authMiddleware.Stop()
-	log.Println("Auth middleware stopped")
+	// Stop OAuth cleanup background job
+	cleanupCancel()
 
 	if err := server.Shutdown(ctx); err != nil {
 		log.Fatalf("Server shutdown error: %v", err)
