@@ -83,7 +83,6 @@ services:
       # OAuth (for community account provisioning)
       OAUTH_CLIENT_ID: ${OAUTH_CLIENT_ID}
       OAUTH_REDIRECT_URI: ${OAUTH_REDIRECT_URI}
-      OAUTH_PRIVATE_JWK: ${OAUTH_PRIVATE_JWK}
 
       # Application settings
       PORT: 8080

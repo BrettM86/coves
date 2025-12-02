@@ -57,43 +57,6 @@ func TestHandleClientMetadata(t *testing.T) {
 	assert.Contains(t, metadata.Scope, "atproto")
 }
 
-// TestHandleJWKS tests the JWKS endpoint
-func TestHandleJWKS(t *testing.T) {
-	// Create a test OAuth client configuration (public client, no keys)
-	config := &OAuthConfig{
-		PublicURL:       "https://coves.social",
-		Scopes:          []string{"atproto"},
-		DevMode:         false,
-		AllowPrivateIPs: false,
-		SealSecret:      "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=",
-	}
-
-	client, err := NewOAuthClient(config, oauth.NewMemStore())
-	require.NoError(t, err)
-
-	handler := NewOAuthHandler(client, oauth.NewMemStore())
-
-	// Create test request
-	req := httptest.NewRequest(http.MethodGet, "/oauth/jwks.json", nil)
-	rec := httptest.NewRecorder()
-
-	// Call handler
-	handler.HandleJWKS(rec, req)
-
-	// Check response
-	assert.Equal(t, http.StatusOK, rec.Code)
-	assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
-
-	// Parse response
-	var jwks oauth.JWKS
-	err = json.NewDecoder(rec.Body).Decode(&jwks)
-	require.NoError(t, err)
-
-	// Public client should have empty JWKS
-	assert.NotNil(t, jwks.Keys)
-	assert.Equal(t, 0, len(jwks.Keys))
-}
-
 // TestHandleLogin tests the login endpoint
 func TestHandleLogin(t *testing.T) {
 	config := &OAuthConfig{

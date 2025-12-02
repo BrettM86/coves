@@ -46,12 +46,6 @@ func NewOAuthHandler(client *OAuthClient, store oauth.ClientAuthStore) *OAuthHan
 func (h *OAuthHandler) HandleClientMetadata(w http.ResponseWriter, r *http.Request) {
 	metadata := h.client.ClientMetadata()
 
-	// For confidential clients in production, set JWKS URI based on request host
-	if h.client.IsConfidential() && !h.client.Config.DevMode {
-		jwksURI := fmt.Sprintf("https://%s/oauth/jwks.json", r.Host)
-		metadata.JWKSURI = &jwksURI
-	}
-
 	// Validate metadata before returning (skip in dev mode - localhost doesn't need https validation)
 	if !h.client.Config.DevMode {
 		if err := metadata.Validate(h.client.ClientApp.Config.ClientID); err != nil {
@@ -64,19 +58,6 @@ func (h *OAuthHandler) HandleClientMetadata(w http.ResponseWriter, r *http.Reque
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(metadata); err != nil {
 		slog.Error("failed to encode client metadata", "error", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-}
-
-// HandleJWKS serves the public JWKS for confidential clients
-// GET /oauth/jwks.json
-func (h *OAuthHandler) HandleJWKS(w http.ResponseWriter, r *http.Request) {
-	jwks := h.client.PublicJWKS()
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(jwks); err != nil {
-		slog.Error("failed to encode JWKS", "error", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}

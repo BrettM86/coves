@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/bluesky-social/indigo/atproto/atcrypto"
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/identity"
 )
@@ -21,8 +20,6 @@ type OAuthClient struct {
 // OAuthConfig holds Coves OAuth client configuration
 type OAuthConfig struct {
 	PublicURL       string
-	ClientSecret    string
-	ClientKID       string
 	SealSecret      string
 	PLCURL          string
 	Scopes          []string
@@ -84,21 +81,9 @@ func NewOAuthClient(config *OAuthConfig, store oauth.ClientAuthStore) (*OAuthCli
 		callbackURL := "http://localhost:3000/oauth/callback"
 		clientConfig = oauth.NewLocalhostConfig(callbackURL, config.Scopes)
 	} else {
-		// Production mode: HTTPS with client secret
+		// Production mode: public OAuth client with HTTPS
 		callbackURL := config.PublicURL + "/oauth/callback"
 		clientConfig = oauth.NewPublicConfig(config.PublicURL, callbackURL, config.Scopes)
-
-		// Set up confidential client if client secret is provided
-		if config.ClientSecret != "" && config.ClientKID != "" {
-			privKey, err := atcrypto.ParsePrivateMultibase(config.ClientSecret)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse client secret: %w", err)
-			}
-
-			if err := clientConfig.SetClientSecret(privKey, config.ClientKID); err != nil {
-				return nil, fmt.Errorf("failed to set client secret: %w", err)
-			}
-		}
 	}
 
 	// Set user agent
@@ -144,23 +129,7 @@ func (c *OAuthClient) ClientMetadata() oauth.ClientMetadata {
 		metadata.ClientURI = strPtr(c.Config.PublicURL)
 	}
 
-	// For confidential clients, set JWKS URI
-	if c.ClientApp.Config.IsConfidential() && !c.Config.DevMode {
-		jwksURI := c.Config.PublicURL + "/.well-known/oauth-jwks.json"
-		metadata.JWKSURI = &jwksURI
-	}
-
 	return metadata
-}
-
-// PublicJWKS returns the public JWKS for this client (for confidential clients)
-func (c *OAuthClient) PublicJWKS() oauth.JWKS {
-	return c.ClientApp.Config.PublicJWKS()
-}
-
-// IsConfidential returns true if this is a confidential OAuth client
-func (c *OAuthClient) IsConfidential() bool {
-	return c.ClientApp.Config.IsConfidential()
 }
 
 // strPtr is a helper to get a pointer to a string

@@ -28,10 +28,6 @@ func RegisterOAuthRoutes(r chi.Router, handler *oauth.OAuthHandler, allowedOrigi
 
 	// OAuth metadata endpoints - public, no extra rate limiting (use global limit)
 	r.Get("/oauth/client-metadata.json", handler.HandleClientMetadata)
-	r.Get("/oauth/jwks.json", handler.HandleJWKS)
-
-	// Alternative well-known paths for OAuth metadata
-	r.Get("/.well-known/oauth-jwks.json", handler.HandleJWKS)
 	r.Get("/.well-known/oauth-protected-resource", handler.HandleProtectedResourceMetadata)
 
 	// OAuth flow endpoints - stricter rate limiting for authentication attempts

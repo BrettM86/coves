@@ -182,10 +182,6 @@ func main() {
 		oauthConfig.DevMode = true // Force dev mode for localhost
 	}
 
-	// Optional: confidential client secret for production
-	oauthConfig.ClientSecret = os.Getenv("OAUTH_CLIENT_SECRET")
-	oauthConfig.ClientKID = os.Getenv("OAUTH_CLIENT_KID")
-
 	oauthClient, err := oauth.NewOAuthClient(oauthConfig, oauthStore)
 	if err != nil {
 		log.Fatalf("Failed to initialize OAuth client: %v", err)
