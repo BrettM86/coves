@@ -3,7 +3,6 @@ package integration
 import (
 	"Coves/internal/api/handlers/aggregator"
 	"Coves/internal/api/handlers/post"
-	"Coves/internal/api/middleware"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/aggregators"
@@ -82,8 +81,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 	getAuthorizationsHandler := aggregator.NewGetAuthorizationsHandler(aggregatorService)
 	listForCommunityHandler := aggregator.NewListForCommunityHandler(aggregatorService)
 	createPostHandler := post.NewCreateHandler(postService)
-	authMiddleware := middleware.NewAtProtoAuthMiddleware(nil, true) // Skip JWT verification for testing
-	defer authMiddleware.Stop()                                      // Clean up DPoP replay cache goroutine
+	e2eAuth := NewE2EOAuthMiddleware()
 
 	ctx := context.Background()
 
@@ -99,7 +97,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 	// Part 1: Service Declaration via Real PDS
 	// ====================================================================================
 	// Store DIDs, tokens, and URIs for use across all test parts
-	var aggregatorDID, aggregatorToken, aggregatorHandle, communityDID, communityToken, authorizationRkey string
+	var aggregatorDID, aggregatorToken, aggregatorAPIToken, aggregatorHandle, communityDID, communityToken, authorizationRkey string
 
 	t.Run("1. Service Declaration - PDS Account → Write Record → Jetstream → AppView DB", func(t *testing.T) {
 		t.Log("\n📝 Part 1: Create aggregator account and publish service declaration to PDS...")
@@ -118,6 +116,9 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 		require.NotEmpty(t, aggregatorDID, "Should receive DID")
 
 		t.Logf("✓ Created aggregator account: %s (%s)", aggregatorHandle, aggregatorDID)
+
+		// Register aggregator user with OAuth middleware for API requests
+		aggregatorAPIToken = e2eAuth.AddUser(aggregatorDID)
 
 		// STEP 2: Write service declaration to aggregator's repository on PDS
 		configSchema := map[string]interface{}{
@@ -335,14 +336,11 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 
 		req := httptest.NewRequest("POST", "/xrpc/social.coves.community.post.create", bytes.NewReader(reqJSON))
 		req.Header.Set("Content-Type", "application/json")
-
-		// Create JWT for aggregator (not a user)
-		aggregatorJWT := createSimpleTestJWT(aggregatorDID)
-		req.Header.Set("Authorization", "DPoP "+aggregatorJWT)
+		req.Header.Set("Authorization", "Bearer "+aggregatorAPIToken)
 
 		// Execute request through auth middleware + handler
 		rr := httptest.NewRecorder()
-		handler := authMiddleware.RequireAuth(http.HandlerFunc(createPostHandler.HandleCreate))
+		handler := e2eAuth.RequireAuth(http.HandlerFunc(createPostHandler.HandleCreate))
 		handler.ServeHTTP(rr, req)
 
 		// STEP 2: Verify post creation succeeded
@@ -425,10 +423,10 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 
 			req := httptest.NewRequest("POST", "/xrpc/social.coves.community.post.create", bytes.NewReader(reqJSON))
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("Authorization", "DPoP "+createSimpleTestJWT(aggregatorDID))
+			req.Header.Set("Authorization", "Bearer "+aggregatorAPIToken)
 
 			rr := httptest.NewRecorder()
-			handler := authMiddleware.RequireAuth(http.HandlerFunc(createPostHandler.HandleCreate))
+			handler := e2eAuth.RequireAuth(http.HandlerFunc(createPostHandler.HandleCreate))
 			handler.ServeHTTP(rr, req)
 
 			require.Equal(t, http.StatusOK, rr.Code, "Post %d should succeed", i)
@@ -447,10 +445,10 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 
 		req := httptest.NewRequest("POST", "/xrpc/social.coves.community.post.create", bytes.NewReader(reqJSON))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "DPoP "+createSimpleTestJWT(aggregatorDID))
+		req.Header.Set("Authorization", "Bearer "+aggregatorAPIToken)
 
 		rr := httptest.NewRecorder()
-		handler := authMiddleware.RequireAuth(http.HandlerFunc(createPostHandler.HandleCreate))
+		handler := e2eAuth.RequireAuth(http.HandlerFunc(createPostHandler.HandleCreate))
 		handler.ServeHTTP(rr, req)
 
 		require.Equal(t, http.StatusOK, rr.Code, "10th post should succeed (at limit)")
@@ -468,10 +466,10 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 
 		req = httptest.NewRequest("POST", "/xrpc/social.coves.community.post.create", bytes.NewReader(reqJSON))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "DPoP "+createSimpleTestJWT(aggregatorDID))
+		req.Header.Set("Authorization", "Bearer "+aggregatorAPIToken)
 
 		rr = httptest.NewRecorder()
-		handler = authMiddleware.RequireAuth(http.HandlerFunc(createPostHandler.HandleCreate))
+		handler = e2eAuth.RequireAuth(http.HandlerFunc(createPostHandler.HandleCreate))
 		handler.ServeHTTP(rr, req)
 
 		// Should be rate limited
@@ -649,6 +647,9 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 		err := aggregatorConsumer.HandleEvent(ctx, &unAuthAggEvent)
 		require.NoError(t, err)
 
+		// Register unauthorized aggregator with OAuth middleware
+		unauthorizedAPIToken := e2eAuth.AddUser(unauthorizedAggDID)
+
 		// Try to create post without authorization
 		reqBody := map[string]interface{}{
 			"community": communityDID,
@@ -660,10 +661,10 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 
 		req := httptest.NewRequest("POST", "/xrpc/social.coves.community.post.create", bytes.NewReader(reqJSON))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "DPoP "+createSimpleTestJWT(unauthorizedAggDID))
+		req.Header.Set("Authorization", "Bearer "+unauthorizedAPIToken)
 
 		rr := httptest.NewRecorder()
-		handler := authMiddleware.RequireAuth(http.HandlerFunc(createPostHandler.HandleCreate))
+		handler := e2eAuth.RequireAuth(http.HandlerFunc(createPostHandler.HandleCreate))
 		handler.ServeHTTP(rr, req)
 
 		// Should be forbidden
@@ -784,10 +785,10 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 
 		req := httptest.NewRequest("POST", "/xrpc/social.coves.community.post.create", bytes.NewReader(reqJSON))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "DPoP "+createSimpleTestJWT(aggregatorDID))
+		req.Header.Set("Authorization", "Bearer "+aggregatorAPIToken)
 
 		rr := httptest.NewRecorder()
-		handler := authMiddleware.RequireAuth(http.HandlerFunc(createPostHandler.HandleCreate))
+		handler := e2eAuth.RequireAuth(http.HandlerFunc(createPostHandler.HandleCreate))
 		handler.ServeHTTP(rr, req)
 
 		assert.Equal(t, http.StatusForbidden, rr.Code, "Should reject post from disabled aggregator")

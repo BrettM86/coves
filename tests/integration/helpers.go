@@ -1,12 +1,12 @@
 package integration
 
 import (
-	"Coves/internal/atproto/auth"
+	"Coves/internal/api/middleware"
+	"Coves/internal/atproto/oauth"
 	"Coves/internal/core/users"
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,7 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
+	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
+	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 
 // getTestPDSURL returns the PDS URL for testing from env var or default
@@ -113,40 +114,6 @@ func authenticateWithPDS(pdsURL, handle, password string) (string, string, error
 	}
 
 	return sessionResp.AccessJwt, sessionResp.DID, nil
-}
-
-// createSimpleTestJWT creates a minimal JWT for testing (Phase 1 - no signature)
-// In production, this would be a real OAuth token from PDS with proper signatures
-func createSimpleTestJWT(userDID string) string {
-	// Create minimal JWT claims using RegisteredClaims
-	// Use userDID as issuer since we don't have a proper PDS DID for testing
-	claims := auth.Claims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   userDID,
-			Issuer:    userDID, // Use DID as issuer for testing (valid per atProto)
-			Audience:  jwt.ClaimStrings{getTestInstanceDID()},
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Hour)),
-		},
-		Scope: "com.atproto.access",
-	}
-
-	// For Phase 1 testing, we create an unsigned JWT
-	// The middleware is configured with skipVerify=true for testing
-	header := map[string]interface{}{
-		"alg": "none",
-		"typ": "JWT",
-	}
-
-	headerJSON, _ := json.Marshal(header)
-	claimsJSON, _ := json.Marshal(claims)
-
-	// Base64url encode (without padding)
-	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
-	claimsB64 := base64.RawURLEncoding.EncodeToString(claimsJSON)
-
-	// For "alg: none", signature is empty
-	return headerB64 + "." + claimsB64 + "."
 }
 
 // generateTID generates a simple timestamp-based identifier for testing
@@ -309,4 +276,136 @@ func createTestPost(t *testing.T, db *sql.DB, communityDID, authorDID, title str
 	}
 
 	return uri
+}
+
+// MockSessionUnsealer is a mock implementation of SessionUnsealer for testing
+// It returns predefined sessions based on token value
+type MockSessionUnsealer struct {
+	sessions map[string]*oauth.SealedSession
+}
+
+// NewMockSessionUnsealer creates a new mock unsealer
+func NewMockSessionUnsealer() *MockSessionUnsealer {
+	return &MockSessionUnsealer{
+		sessions: make(map[string]*oauth.SealedSession),
+	}
+}
+
+// AddSession adds a token -> session mapping
+func (m *MockSessionUnsealer) AddSession(token, did, sessionID string) {
+	m.sessions[token] = &oauth.SealedSession{
+		DID:       did,
+		SessionID: sessionID,
+		ExpiresAt: time.Now().Add(1 * time.Hour).Unix(),
+	}
+}
+
+// UnsealSession returns the predefined session for a token
+func (m *MockSessionUnsealer) UnsealSession(token string) (*oauth.SealedSession, error) {
+	if sess, ok := m.sessions[token]; ok {
+		return sess, nil
+	}
+	return nil, fmt.Errorf("unknown token")
+}
+
+// MockOAuthStore is a mock implementation of ClientAuthStore for testing
+type MockOAuthStore struct {
+	sessions map[string]*oauthlib.ClientSessionData
+}
+
+// NewMockOAuthStore creates a new mock OAuth store
+func NewMockOAuthStore() *MockOAuthStore {
+	return &MockOAuthStore{
+		sessions: make(map[string]*oauthlib.ClientSessionData),
+	}
+}
+
+// AddSession adds a session to the store
+func (m *MockOAuthStore) AddSession(did, sessionID, accessToken string) {
+	key := did + ":" + sessionID
+	parsedDID, _ := syntax.ParseDID(did)
+	m.sessions[key] = &oauthlib.ClientSessionData{
+		AccountDID:  parsedDID,
+		SessionID:   sessionID,
+		AccessToken: accessToken,
+	}
+}
+
+// GetSession implements ClientAuthStore
+func (m *MockOAuthStore) GetSession(ctx context.Context, did syntax.DID, sessionID string) (*oauthlib.ClientSessionData, error) {
+	key := did.String() + ":" + sessionID
+	if sess, ok := m.sessions[key]; ok {
+		return sess, nil
+	}
+	return nil, fmt.Errorf("session not found")
+}
+
+// SaveSession implements ClientAuthStore
+func (m *MockOAuthStore) SaveSession(ctx context.Context, sess oauthlib.ClientSessionData) error {
+	key := sess.AccountDID.String() + ":" + sess.SessionID
+	m.sessions[key] = &sess
+	return nil
+}
+
+// DeleteSession implements ClientAuthStore
+func (m *MockOAuthStore) DeleteSession(ctx context.Context, did syntax.DID, sessionID string) error {
+	key := did.String() + ":" + sessionID
+	delete(m.sessions, key)
+	return nil
+}
+
+// GetAuthRequestInfo implements ClientAuthStore
+func (m *MockOAuthStore) GetAuthRequestInfo(ctx context.Context, state string) (*oauthlib.AuthRequestData, error) {
+	return nil, fmt.Errorf("not implemented in mock")
+}
+
+// SaveAuthRequestInfo implements ClientAuthStore
+func (m *MockOAuthStore) SaveAuthRequestInfo(ctx context.Context, info oauthlib.AuthRequestData) error {
+	return nil
+}
+
+// DeleteAuthRequestInfo implements ClientAuthStore
+func (m *MockOAuthStore) DeleteAuthRequestInfo(ctx context.Context, state string) error {
+	return nil
+}
+
+// CreateTestOAuthMiddleware creates an OAuth middleware with mock implementations for testing
+// The returned middleware accepts a test token that maps to the specified userDID
+func CreateTestOAuthMiddleware(userDID string) (*middleware.OAuthAuthMiddleware, string) {
+	unsealer := NewMockSessionUnsealer()
+	store := NewMockOAuthStore()
+
+	testToken := "test-token-" + userDID
+	sessionID := "test-session-123"
+
+	// Add the test session
+	unsealer.AddSession(testToken, userDID, sessionID)
+	store.AddSession(userDID, sessionID, "test-access-token")
+
+	authMiddleware := middleware.NewOAuthAuthMiddleware(unsealer, store)
+	return authMiddleware, testToken
+}
+
+// E2EOAuthMiddleware wraps OAuth middleware for E2E testing with multiple users
+type E2EOAuthMiddleware struct {
+	*middleware.OAuthAuthMiddleware
+	unsealer *MockSessionUnsealer
+	store    *MockOAuthStore
+}
+
+// NewE2EOAuthMiddleware creates an OAuth middleware for E2E testing
+func NewE2EOAuthMiddleware() *E2EOAuthMiddleware {
+	unsealer := NewMockSessionUnsealer()
+	store := NewMockOAuthStore()
+	m := middleware.NewOAuthAuthMiddleware(unsealer, store)
+	return &E2EOAuthMiddleware{m, unsealer, store}
+}
+
+// AddUser registers a user DID and returns the token to use in Authorization header
+func (e *E2EOAuthMiddleware) AddUser(did string) string {
+	token := "test-token-" + did
+	sessionID := "session-" + did
+	e.unsealer.AddSession(token, did, sessionID)
+	e.store.AddSession(did, sessionID, "access-token-"+did)
+	return token
 }

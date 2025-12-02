@@ -2,7 +2,6 @@ package integration
 
 import (
 	"Coves/internal/api/handlers/post"
-	"Coves/internal/api/middleware"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/communities"
@@ -405,9 +404,8 @@ func TestPostCreation_E2E_LivePDS(t *testing.T) {
 
 	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, pdsURL) // nil aggregatorService, blobService, unfurlService for user-only tests
 
-	// Setup auth middleware (skip JWT verification for testing)
-	authMiddleware := middleware.NewAtProtoAuthMiddleware(nil, true)
-	defer authMiddleware.Stop() // Clean up DPoP replay cache goroutine
+	// Setup OAuth auth middleware for E2E testing
+	e2eAuth := NewE2EOAuthMiddleware()
 
 	// Setup HTTP handler
 	createHandler := post.NewCreateHandler(postService)
@@ -476,14 +474,14 @@ func TestPostCreation_E2E_LivePDS(t *testing.T) {
 		req := httptest.NewRequest("POST", "/xrpc/social.coves.community.post.create", bytes.NewReader(reqJSON))
 		req.Header.Set("Content-Type", "application/json")
 
-		// Create a simple JWT for testing (Phase 1: no signature verification)
-		// In production, this would be a real OAuth token from PDS
-		testJWT := createSimpleTestJWT(author.DID)
-		req.Header.Set("Authorization", "DPoP "+testJWT)
+		// Register the author user with OAuth middleware and get test token
+		// For Coves API handlers, use Bearer scheme with OAuth middleware
+		token := e2eAuth.AddUser(author.DID)
+		req.Header.Set("Authorization", "Bearer "+token)
 
 		// Execute request through auth middleware + handler
 		rr := httptest.NewRecorder()
-		handler := authMiddleware.RequireAuth(http.HandlerFunc(createHandler.HandleCreate))
+		handler := e2eAuth.RequireAuth(http.HandlerFunc(createHandler.HandleCreate))
 		handler.ServeHTTP(rr, req)
 
 		// Check response

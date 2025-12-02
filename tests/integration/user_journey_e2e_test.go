@@ -1,7 +1,6 @@
 package integration
 
 import (
-	"Coves/internal/api/middleware"
 	"Coves/internal/api/routes"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
@@ -22,14 +21,14 @@ import (
 	"testing"
 	"time"
 
-	timelineCore "Coves/internal/core/timeline"
-
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 	_ "github.com/lib/pq"
 	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	timelineCore "Coves/internal/core/timeline"
 )
 
 // TestFullUserJourney_E2E tests the complete user experience from signup to interaction:
@@ -139,16 +138,12 @@ func TestFullUserJourney_E2E(t *testing.T) {
 	commentConsumer := jetstream.NewCommentEventConsumer(commentRepo, db)
 	voteConsumer := jetstream.NewVoteEventConsumer(voteRepo, userService, db)
 
-	// Setup HTTP server with all routes
-	// IMPORTANT: skipVerify=true because PDS password auth returns Bearer tokens (not DPoP-bound).
-	// E2E tests use Bearer tokens with DPoP scheme header, which only works with skipVerify=true.
-	// In production, skipVerify=false requires proper DPoP-bound tokens from OAuth flow.
-	authMiddleware := middleware.NewAtProtoAuthMiddleware(nil, true)
-	defer authMiddleware.Stop() // Clean up DPoP replay cache goroutine
+	// Setup HTTP server with all routes using OAuth middleware
+	e2eAuth := NewE2EOAuthMiddleware()
 	r := chi.NewRouter()
-	routes.RegisterCommunityRoutes(r, communityService, authMiddleware, nil) // nil = allow all community creators
-	routes.RegisterPostRoutes(r, postService, authMiddleware)
-	routes.RegisterTimelineRoutes(r, timelineService, authMiddleware)
+	routes.RegisterCommunityRoutes(r, communityService, e2eAuth.OAuthAuthMiddleware, nil) // nil = allow all community creators
+	routes.RegisterPostRoutes(r, postService, e2eAuth.OAuthAuthMiddleware)
+	routes.RegisterTimelineRoutes(r, timelineService, e2eAuth.OAuthAuthMiddleware)
 	httpServer := httptest.NewServer(r)
 	defer httpServer.Close()
 
@@ -181,10 +176,12 @@ func TestFullUserJourney_E2E(t *testing.T) {
 	var (
 		userAHandle     string
 		userADID        string
-		userAToken      string
+		userAToken      string // PDS access token for direct PDS requests
+		userAAPIToken   string // Coves API token for Coves API requests
 		userBHandle     string
 		userBDID        string
-		userBToken      string
+		userBToken      string // PDS access token for direct PDS requests
+		userBAPIToken   string // Coves API token for Coves API requests
 		communityDID    string
 		communityHandle string
 		postURI         string
@@ -217,6 +214,9 @@ func TestFullUserJourney_E2E(t *testing.T) {
 		userA := createTestUser(t, db, userAHandle, userADID)
 		require.NotNil(t, userA)
 
+		// Register user with OAuth middleware for Coves API requests
+		userAAPIToken = e2eAuth.AddUser(userADID)
+
 		t.Logf("✅ User A indexed in AppView")
 	})
 
@@ -244,7 +244,7 @@ func TestFullUserJourney_E2E(t *testing.T) {
 			httpServer.URL+"/xrpc/social.coves.community.create",
 			bytes.NewBuffer(reqBody))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "DPoP "+userAToken)
+		req.Header.Set("Authorization", "Bearer "+userAAPIToken)
 
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
@@ -328,7 +328,7 @@ func TestFullUserJourney_E2E(t *testing.T) {
 			httpServer.URL+"/xrpc/social.coves.community.post.create",
 			bytes.NewBuffer(reqBody))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "DPoP "+userAToken)
+		req.Header.Set("Authorization", "Bearer "+userAAPIToken)
 
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
@@ -413,6 +413,9 @@ func TestFullUserJourney_E2E(t *testing.T) {
 		userB := createTestUser(t, db, userBHandle, userBDID)
 		require.NotNil(t, userB)
 
+		// Register user with OAuth middleware for Coves API requests
+		userBAPIToken = e2eAuth.AddUser(userBDID)
+
 		t.Logf("✅ User B indexed in AppView")
 	})
 
@@ -437,7 +440,7 @@ func TestFullUserJourney_E2E(t *testing.T) {
 			httpServer.URL+"/xrpc/social.coves.community.subscribe",
 			bytes.NewBuffer(reqBody))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "DPoP "+userBToken)
+		req.Header.Set("Authorization", "Bearer "+userBAPIToken)
 
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
@@ -669,10 +672,10 @@ func TestFullUserJourney_E2E(t *testing.T) {
 	t.Run("9. User B - Verify Timeline Feed Shows Subscribed Community Posts", func(t *testing.T) {
 		t.Log("\n📰 Part 9: User B checks timeline feed...")
 
-		// Use HTTP client to properly go through auth middleware with DPoP token
+		// Use HTTP client to properly go through auth middleware with Bearer token
 		req, _ := http.NewRequest(http.MethodGet,
 			httpServer.URL+"/xrpc/social.coves.feed.getTimeline?sort=new&limit=10", nil)
-		req.Header.Set("Authorization", "DPoP "+userBToken)
+		req.Header.Set("Authorization", "Bearer "+userBAPIToken)
 
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)

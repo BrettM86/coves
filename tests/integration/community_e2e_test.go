@@ -1,7 +1,6 @@
 package integration
 
 import (
-	"Coves/internal/api/middleware"
 	"Coves/internal/api/routes"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
@@ -108,13 +107,10 @@ func TestCommunity_E2E(t *testing.T) {
 
 	t.Logf("✅ Authenticated - Instance DID: %s", instanceDID)
 
-	// Initialize auth middleware with skipVerify=true
-	// IMPORTANT: PDS password authentication returns Bearer tokens (not DPoP-bound tokens).
-	// E2E tests use these Bearer tokens with the DPoP scheme header, which only works
-	// because skipVerify=true bypasses signature and DPoP binding verification.
-	// In production, skipVerify=false requires proper DPoP-bound tokens from OAuth flow.
-	authMiddleware := middleware.NewAtProtoAuthMiddleware(nil, true)
-	defer authMiddleware.Stop() // Clean up DPoP replay cache goroutine
+	// Initialize OAuth auth middleware for E2E testing
+	e2eAuth := NewE2EOAuthMiddleware()
+	// Register the instance user for OAuth authentication
+	token := e2eAuth.AddUser(instanceDID)
 
 	// V2.0: Extract instance domain for community provisioning
 	var instanceDomain string
@@ -152,7 +148,7 @@ func TestCommunity_E2E(t *testing.T) {
 
 	// Setup HTTP server with XRPC routes
 	r := chi.NewRouter()
-	routes.RegisterCommunityRoutes(r, communityService, authMiddleware, nil) // nil = allow all community creators
+	routes.RegisterCommunityRoutes(r, communityService, e2eAuth.OAuthAuthMiddleware, nil) // nil = allow all community creators
 	httpServer := httptest.NewServer(r)
 	defer httpServer.Close()
 
@@ -387,8 +383,8 @@ func TestCommunity_E2E(t *testing.T) {
 				t.Fatalf("Failed to create request: %v", err)
 			}
 			req.Header.Set("Content-Type", "application/json")
-			// Use real PDS access token for E2E authentication
-			req.Header.Set("Authorization", "DPoP "+accessToken)
+			// Use OAuth token for Coves API authentication
+			req.Header.Set("Authorization", "Bearer "+token)
 
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
@@ -773,8 +769,8 @@ func TestCommunity_E2E(t *testing.T) {
 				t.Fatalf("Failed to create request: %v", err)
 			}
 			req.Header.Set("Content-Type", "application/json")
-			// Use real PDS access token for E2E authentication
-			req.Header.Set("Authorization", "DPoP "+accessToken)
+			// Use OAuth token for Coves API authentication
+			req.Header.Set("Authorization", "Bearer "+token)
 
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
@@ -1008,8 +1004,8 @@ func TestCommunity_E2E(t *testing.T) {
 				t.Fatalf("Failed to create request: %v", err)
 			}
 			req.Header.Set("Content-Type", "application/json")
-			// Use real PDS access token for E2E authentication
-			req.Header.Set("Authorization", "DPoP "+accessToken)
+			// Use OAuth token for Coves API authentication
+			req.Header.Set("Authorization", "Bearer "+token)
 
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
@@ -1141,7 +1137,7 @@ func TestCommunity_E2E(t *testing.T) {
 				t.Fatalf("Failed to create block request: %v", err)
 			}
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("Authorization", "DPoP "+accessToken)
+			req.Header.Set("Authorization", "Bearer "+token)
 
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
@@ -1261,7 +1257,7 @@ func TestCommunity_E2E(t *testing.T) {
 				t.Fatalf("Failed to create block request: %v", err)
 			}
 			blockHttpReq.Header.Set("Content-Type", "application/json")
-			blockHttpReq.Header.Set("Authorization", "DPoP "+accessToken)
+			blockHttpReq.Header.Set("Authorization", "Bearer "+token)
 
 			blockResp, err := http.DefaultClient.Do(blockHttpReq)
 			if err != nil {
@@ -1321,7 +1317,7 @@ func TestCommunity_E2E(t *testing.T) {
 				t.Fatalf("Failed to create unblock request: %v", err)
 			}
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("Authorization", "DPoP "+accessToken)
+			req.Header.Set("Authorization", "Bearer "+token)
 
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
@@ -1477,8 +1473,8 @@ func TestCommunity_E2E(t *testing.T) {
 				t.Fatalf("Failed to create request: %v", err)
 			}
 			req.Header.Set("Content-Type", "application/json")
-			// Use real PDS access token for E2E authentication
-			req.Header.Set("Authorization", "DPoP "+accessToken)
+			// Use OAuth token for Coves API authentication
+			req.Header.Set("Authorization", "Bearer "+token)
 
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
