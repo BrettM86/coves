@@ -171,20 +171,27 @@ func TestParseSessionToken(t *testing.T) {
 }
 
 // TestIsMobileRedirectURI tests mobile redirect URI validation with EXACT URI matching
-// Only Universal Links (HTTPS) are allowed - custom schemes are blocked for security
+// Per atproto spec, custom schemes must match client_id hostname in reverse-domain order
 func TestIsMobileRedirectURI(t *testing.T) {
 	tests := []struct {
 		uri      string
 		expected bool
 	}{
-		{"https://coves.social/app/oauth/callback", true}, // Universal Link - allowed
-		{"coves-app://oauth/callback", false},             // Custom scheme - blocked (insecure)
-		{"coves://oauth/callback", false},                 // Custom scheme - blocked (insecure)
-		{"coves-app://callback", false},                   // Custom scheme - blocked
-		{"coves://oauth", false},                          // Custom scheme - blocked
-		{"myapp://oauth", false},                          // Not in allowlist
-		{"https://example.com", false},                    // Wrong domain
-		{"http://localhost", false},                       // HTTP not allowed
+		// Custom scheme per atproto spec (reverse domain of coves.social)
+		{"social.coves:/callback", true},
+		{"social.coves://callback", true},
+		{"social.coves:/oauth/callback", true},
+		{"social.coves://oauth/callback", true},
+		// Universal Link - allowed (strongest security)
+		{"https://coves.social/app/oauth/callback", true},
+		// Wrong custom schemes - not reverse-domain of coves.social
+		{"coves-app://oauth/callback", false},
+		{"coves://oauth/callback", false},
+		{"coves.social://callback", false}, // Not reversed
+		{"myapp://oauth", false},
+		// Wrong domain/scheme
+		{"https://example.com", false},
+		{"http://localhost", false},
 		{"", false},
 		{"not-a-uri", false},
 	}

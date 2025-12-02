@@ -10,35 +10,38 @@ import (
 )
 
 // allowedMobileRedirectURIs contains the EXACT allowed redirect URIs for mobile apps.
-// SECURITY: Only Universal Links (HTTPS) are allowed - cryptographically bound to app.
 //
-// Universal Links provide strong security guarantees:
+// Per atproto OAuth spec (https://atproto.com/specs/oauth#mobile-clients):
+// - Custom URL schemes are allowed for native mobile apps
+// - The scheme must match the client_id hostname in REVERSE-DOMAIN order
+// - For client_id https://coves.social/..., the scheme is "social.coves"
+//
+// We support two redirect URI types:
+// 1. Custom scheme: social.coves:/callback (per atproto spec, simpler for mobile)
+// 2. Universal Links: https://coves.social/app/oauth/callback (cryptographically bound)
+//
+// Universal Links provide stronger security guarantees but require:
 // - iOS: Verified via /.well-known/apple-app-site-association
 // - Android: Verified via /.well-known/assetlinks.json
-// - System verifies domain ownership before routing to app
-// - Prevents malicious apps from intercepting OAuth callbacks
-//
-// Custom URL schemes (coves-app://, coves://) are NOT allowed because:
-// - Any app can register the same scheme and intercept tokens
-// - No cryptographic binding to app identity
-// - Token theft is trivial for malicious apps
-//
-// See: https://atproto.com/specs/oauth#mobile-clients
 var allowedMobileRedirectURIs = map[string]bool{
-	// Universal Links only - cryptographically bound to app
+	// Custom scheme per atproto spec (reverse-domain of coves.social)
+	"social.coves:/callback":                  true,
+	"social.coves://callback":                 true, // Some platforms add double slash
+	"social.coves:/oauth/callback":            true, // Alternative path
+	"social.coves://oauth/callback":           true,
+	// Universal Links - cryptographically bound to app (preferred for security)
 	"https://coves.social/app/oauth/callback": true,
 }
 
 // isAllowedMobileRedirectURI validates that the redirect URI is in the exact allowlist.
-// SECURITY: Exact URI matching prevents token theft by rogue apps that register the same scheme.
+// SECURITY: Exact URI matching prevents token theft by rogue apps.
 //
-// Custom URL schemes are NOT cryptographically bound to apps:
-// - Any app on the device can register "coves-app://" or "coves://"
-// - A malicious app can intercept deep links intended for Coves
-// - Without exact URI matching, the attacker receives the sealed token
+// Per atproto OAuth spec, custom schemes must match the client_id hostname
+// in reverse-domain order (social.coves for coves.social), which provides
+// some protection as malicious apps would need to know the specific scheme.
 //
-// This function performs EXACT matching (not scheme-only) as a security measure.
-// For production, migrate to Universal Links (iOS) or App Links (Android).
+// Universal Links (https://) provide stronger security as they're cryptographically
+// bound to the app via .well-known verification files.
 func isAllowedMobileRedirectURI(redirectURI string) bool {
 	// Normalize and check exact match
 	return allowedMobileRedirectURIs[redirectURI]
