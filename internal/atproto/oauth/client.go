@@ -82,8 +82,10 @@ func NewOAuthClient(config *OAuthConfig, store oauth.ClientAuthStore) (*OAuthCli
 		clientConfig = oauth.NewLocalhostConfig(callbackURL, config.Scopes)
 	} else {
 		// Production mode: public OAuth client with HTTPS
+		// client_id must be the URL of the client metadata document per atproto OAuth spec
+		clientID := config.PublicURL + "/oauth/client-metadata.json"
 		callbackURL := config.PublicURL + "/oauth/callback"
-		clientConfig = oauth.NewPublicConfig(config.PublicURL, callbackURL, config.Scopes)
+		clientConfig = oauth.NewPublicConfig(clientID, callbackURL, config.Scopes)
 	}
 
 	// Set user agent
