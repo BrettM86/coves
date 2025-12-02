@@ -17,6 +17,6 @@ import (
 // The middleware extracts the viewer DID from the Authorization header if present and valid,
 // making it available via middleware.GetUserDID(r) in the handler.
 // If no valid token is present, the request continues as anonymous (empty DID).
-func OptionalAuthMiddleware(authMiddleware *middleware.AtProtoAuthMiddleware, next http.HandlerFunc) http.Handler {
+func OptionalAuthMiddleware(authMiddleware *middleware.OAuthAuthMiddleware, next http.HandlerFunc) http.Handler {
 	return authMiddleware.OptionalAuth(http.HandlerFunc(next))
 }

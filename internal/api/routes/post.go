@@ -10,7 +10,7 @@ import (
 
 // RegisterPostRoutes registers post-related XRPC endpoints on the router
 // Implements social.coves.community.post.* lexicon endpoints
-func RegisterPostRoutes(r chi.Router, service posts.Service, authMiddleware *middleware.AtProtoAuthMiddleware) {
+func RegisterPostRoutes(r chi.Router, service posts.Service, authMiddleware *middleware.OAuthAuthMiddleware) {
 	// Initialize handlers
 	createHandler := post.NewCreateHandler(service)
 

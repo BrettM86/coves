@@ -12,7 +12,7 @@ import (
 func RegisterTimelineRoutes(
 	r chi.Router,
 	timelineService timelineCore.Service,
-	authMiddleware *middleware.AtProtoAuthMiddleware,
+	authMiddleware *middleware.OAuthAuthMiddleware,
 ) {
 	// Create handlers
 	getTimelineHandler := timeline.NewGetTimelineHandler(timelineService)

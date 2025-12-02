@@ -1,13 +1,10 @@
 package middleware
 
 import (
-	"Coves/internal/atproto/auth"
+	"Coves/internal/atproto/oauth"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -15,69 +12,158 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/google/uuid"
+	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
+	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 
-// mockJWKSFetcher is a test double for JWKSFetcher
-type mockJWKSFetcher struct {
-	shouldFail bool
+// mockOAuthClient is a test double for OAuthClient
+type mockOAuthClient struct {
+	sealSecret     []byte
+	shouldFailSeal bool
 }
 
-func (m *mockJWKSFetcher) FetchPublicKey(ctx context.Context, issuer, token string) (interface{}, error) {
-	if m.shouldFail {
-		return nil, fmt.Errorf("mock fetch failure")
+func newMockOAuthClient() *mockOAuthClient {
+	// Create a 32-byte seal secret for testing
+	secret := []byte("test-secret-key-32-bytes-long!!")
+	return &mockOAuthClient{
+		sealSecret: secret,
 	}
-	// Return nil - we won't actually verify signatures in Phase 1 tests
-	return nil, nil
 }
 
-// createTestToken creates a test JWT with the given DID
-func createTestToken(did string) string {
-	claims := jwt.MapClaims{
-		"sub":   did,
-		"iss":   "https://test.pds.local",
-		"scope": "atproto",
-		"exp":   time.Now().Add(1 * time.Hour).Unix(),
-		"iat":   time.Now().Unix(),
+func (m *mockOAuthClient) UnsealSession(token string) (*oauth.SealedSession, error) {
+	if m.shouldFailSeal {
+		return nil, fmt.Errorf("mock unseal failure")
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodNone, claims)
-	tokenString, _ := token.SignedString(jwt.UnsafeAllowNoneSignatureType)
-	return tokenString
+	// For testing, we'll decode a simple format: base64(did|sessionID|expiresAt)
+	// In production this would be AES-GCM encrypted
+	// Using pipe separator to avoid conflicts with colon in DIDs
+	decoded, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil {
+		return nil, fmt.Errorf("invalid token encoding: %w", err)
+	}
+
+	parts := strings.Split(string(decoded), "|")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid token format")
+	}
+
+	var expiresAt int64
+	_, _ = fmt.Sscanf(parts[2], "%d", &expiresAt)
+
+	// Check expiration
+	if expiresAt <= time.Now().Unix() {
+		return nil, fmt.Errorf("token expired")
+	}
+
+	return &oauth.SealedSession{
+		DID:       parts[0],
+		SessionID: parts[1],
+		ExpiresAt: expiresAt,
+	}, nil
 }
 
-// TestRequireAuth_ValidToken tests that valid tokens are accepted with DPoP scheme (Phase 1)
+// Helper to create a test sealed token
+func (m *mockOAuthClient) createTestToken(did, sessionID string, ttl time.Duration) string {
+	expiresAt := time.Now().Add(ttl).Unix()
+	payload := fmt.Sprintf("%s|%s|%d", did, sessionID, expiresAt)
+	return base64.RawURLEncoding.EncodeToString([]byte(payload))
+}
+
+// mockOAuthStore is a test double for ClientAuthStore
+type mockOAuthStore struct {
+	sessions map[string]*oauthlib.ClientSessionData
+}
+
+func newMockOAuthStore() *mockOAuthStore {
+	return &mockOAuthStore{
+		sessions: make(map[string]*oauthlib.ClientSessionData),
+	}
+}
+
+func (m *mockOAuthStore) GetSession(ctx context.Context, did syntax.DID, sessionID string) (*oauthlib.ClientSessionData, error) {
+	key := did.String() + ":" + sessionID
+	session, ok := m.sessions[key]
+	if !ok {
+		return nil, fmt.Errorf("session not found")
+	}
+	return session, nil
+}
+
+func (m *mockOAuthStore) SaveSession(ctx context.Context, session oauthlib.ClientSessionData) error {
+	key := session.AccountDID.String() + ":" + session.SessionID
+	m.sessions[key] = &session
+	return nil
+}
+
+func (m *mockOAuthStore) DeleteSession(ctx context.Context, did syntax.DID, sessionID string) error {
+	key := did.String() + ":" + sessionID
+	delete(m.sessions, key)
+	return nil
+}
+
+func (m *mockOAuthStore) GetAuthRequestInfo(ctx context.Context, state string) (*oauthlib.AuthRequestData, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (m *mockOAuthStore) SaveAuthRequestInfo(ctx context.Context, info oauthlib.AuthRequestData) error {
+	return fmt.Errorf("not implemented")
+}
+
+func (m *mockOAuthStore) DeleteAuthRequestInfo(ctx context.Context, state string) error {
+	return fmt.Errorf("not implemented")
+}
+
+// TestRequireAuth_ValidToken tests that valid sealed tokens are accepted
 func TestRequireAuth_ValidToken(t *testing.T) {
-	fetcher := &mockJWKSFetcher{}
-	middleware := NewAtProtoAuthMiddleware(fetcher, true) // skipVerify=true
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+
+	// Create a test session
+	did := syntax.DID("did:plc:test123")
+	sessionID := "session123"
+	session := &oauthlib.ClientSessionData{
+		AccountDID:  did,
+		SessionID:   sessionID,
+		AccessToken: "test_access_token",
+		HostURL:     "https://pds.example.com",
+	}
+	_ = store.SaveSession(context.Background(), *session)
+
+	middleware := NewOAuthAuthMiddleware(client, store)
 
 	handlerCalled := false
 	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handlerCalled = true
 
 		// Verify DID was extracted and injected into context
-		did := GetUserDID(r)
-		if did != "did:plc:test123" {
-			t.Errorf("expected DID 'did:plc:test123', got %s", did)
+		extractedDID := GetUserDID(r)
+		if extractedDID != "did:plc:test123" {
+			t.Errorf("expected DID 'did:plc:test123', got %s", extractedDID)
 		}
 
-		// Verify claims were injected
-		claims := GetJWTClaims(r)
-		if claims == nil {
-			t.Error("expected claims to be non-nil")
+		// Verify OAuth session was injected
+		oauthSession := GetOAuthSession(r)
+		if oauthSession == nil {
+			t.Error("expected OAuth session to be non-nil")
 			return
 		}
-		if claims.Subject != "did:plc:test123" {
-			t.Errorf("expected claims.Subject 'did:plc:test123', got %s", claims.Subject)
+		if oauthSession.SessionID != sessionID {
+			t.Errorf("expected session ID '%s', got %s", sessionID, oauthSession.SessionID)
+		}
+
+		// Verify access token is available
+		accessToken := GetUserAccessToken(r)
+		if accessToken != "test_access_token" {
+			t.Errorf("expected access token 'test_access_token', got %s", accessToken)
 		}
 
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	token := createTestToken("did:plc:test123")
+	token := client.createTestToken("did:plc:test123", sessionID, time.Hour)
 	req := httptest.NewRequest("GET", "/test", nil)
-	req.Header.Set("Authorization", "DPoP "+token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -93,8 +179,9 @@ func TestRequireAuth_ValidToken(t *testing.T) {
 
 // TestRequireAuth_MissingAuthHeader tests that missing Authorization header is rejected
 func TestRequireAuth_MissingAuthHeader(t *testing.T) {
-	fetcher := &mockJWKSFetcher{}
-	middleware := NewAtProtoAuthMiddleware(fetcher, true)
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+	middleware := NewOAuthAuthMiddleware(client, store)
 
 	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("handler should not be called")
@@ -111,17 +198,18 @@ func TestRequireAuth_MissingAuthHeader(t *testing.T) {
 	}
 }
 
-// TestRequireAuth_InvalidAuthHeaderFormat tests that non-DPoP tokens are rejected (including Bearer)
+// TestRequireAuth_InvalidAuthHeaderFormat tests that non-Bearer tokens are rejected
 func TestRequireAuth_InvalidAuthHeaderFormat(t *testing.T) {
-	fetcher := &mockJWKSFetcher{}
-	middleware := NewAtProtoAuthMiddleware(fetcher, true)
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+	middleware := NewOAuthAuthMiddleware(client, store)
 
 	tests := []struct {
 		name   string
 		header string
 	}{
 		{"Basic auth", "Basic dGVzdDp0ZXN0"},
-		{"Bearer scheme", "Bearer some-token"},
+		{"DPoP scheme", "DPoP some-token"},
 		{"Invalid format", "InvalidFormat"},
 	}
 
@@ -144,50 +232,32 @@ func TestRequireAuth_InvalidAuthHeaderFormat(t *testing.T) {
 	}
 }
 
-// TestRequireAuth_BearerRejectionErrorMessage verifies that Bearer tokens are rejected
-// with a helpful error message guiding users to use DPoP scheme
-func TestRequireAuth_BearerRejectionErrorMessage(t *testing.T) {
-	fetcher := &mockJWKSFetcher{}
-	middleware := NewAtProtoAuthMiddleware(fetcher, true)
-
-	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("handler should not be called")
-	}))
-
-	req := httptest.NewRequest("GET", "/test", nil)
-	req.Header.Set("Authorization", "Bearer some-token")
-	w := httptest.NewRecorder()
-
-	handler.ServeHTTP(w, req)
-
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("expected status 401, got %d", w.Code)
-	}
-
-	// Verify error message guides user to use DPoP
-	body := w.Body.String()
-	if !strings.Contains(body, "Expected: DPoP") {
-		t.Errorf("error message should guide user to use DPoP, got: %s", body)
-	}
-}
-
-// TestRequireAuth_CaseInsensitiveScheme verifies that DPoP scheme matching is case-insensitive
-// per RFC 7235 which states HTTP auth schemes are case-insensitive
+// TestRequireAuth_CaseInsensitiveScheme verifies that Bearer scheme matching is case-insensitive
 func TestRequireAuth_CaseInsensitiveScheme(t *testing.T) {
-	fetcher := &mockJWKSFetcher{}
-	middleware := NewAtProtoAuthMiddleware(fetcher, true)
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
 
-	// Create a valid JWT for testing
-	validToken := createValidJWT(t, "did:plc:test123", time.Hour)
+	// Create a test session
+	did := syntax.DID("did:plc:test123")
+	sessionID := "session123"
+	session := &oauthlib.ClientSessionData{
+		AccountDID:  did,
+		SessionID:   sessionID,
+		AccessToken: "test_access_token",
+	}
+	_ = store.SaveSession(context.Background(), *session)
+
+	middleware := NewOAuthAuthMiddleware(client, store)
+	token := client.createTestToken("did:plc:test123", sessionID, time.Hour)
 
 	testCases := []struct {
 		name   string
 		scheme string
 	}{
-		{"lowercase", "dpop"},
-		{"uppercase", "DPOP"},
-		{"mixed_case", "DpOp"},
-		{"standard", "DPoP"},
+		{"lowercase", "bearer"},
+		{"uppercase", "BEARER"},
+		{"mixed_case", "BeArEr"},
+		{"standard", "Bearer"},
 	}
 
 	for _, tc := range testCases {
@@ -199,7 +269,7 @@ func TestRequireAuth_CaseInsensitiveScheme(t *testing.T) {
 			}))
 
 			req := httptest.NewRequest("GET", "/test", nil)
-			req.Header.Set("Authorization", tc.scheme+" "+validToken)
+			req.Header.Set("Authorization", tc.scheme+" "+token)
 			w := httptest.NewRecorder()
 
 			handler.ServeHTTP(w, req)
@@ -212,17 +282,18 @@ func TestRequireAuth_CaseInsensitiveScheme(t *testing.T) {
 	}
 }
 
-// TestRequireAuth_MalformedToken tests that malformed JWTs are rejected
-func TestRequireAuth_MalformedToken(t *testing.T) {
-	fetcher := &mockJWKSFetcher{}
-	middleware := NewAtProtoAuthMiddleware(fetcher, true)
+// TestRequireAuth_InvalidToken tests that malformed sealed tokens are rejected
+func TestRequireAuth_InvalidToken(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+	middleware := NewOAuthAuthMiddleware(client, store)
 
 	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("handler should not be called")
 	}))
 
 	req := httptest.NewRequest("GET", "/test", nil)
-	req.Header.Set("Authorization", "DPoP not-a-valid-jwt")
+	req.Header.Set("Authorization", "Bearer not-a-valid-sealed-token")
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -232,29 +303,32 @@ func TestRequireAuth_MalformedToken(t *testing.T) {
 	}
 }
 
-// TestRequireAuth_ExpiredToken tests that expired tokens are rejected
+// TestRequireAuth_ExpiredToken tests that expired sealed tokens are rejected
 func TestRequireAuth_ExpiredToken(t *testing.T) {
-	fetcher := &mockJWKSFetcher{}
-	middleware := NewAtProtoAuthMiddleware(fetcher, true)
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+
+	// Create a test session
+	did := syntax.DID("did:plc:test123")
+	sessionID := "session123"
+	session := &oauthlib.ClientSessionData{
+		AccountDID:  did,
+		SessionID:   sessionID,
+		AccessToken: "test_access_token",
+	}
+	_ = store.SaveSession(context.Background(), *session)
+
+	middleware := NewOAuthAuthMiddleware(client, store)
 
 	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("handler should not be called for expired token")
 	}))
 
-	// Create expired token
-	claims := jwt.MapClaims{
-		"sub":   "did:plc:test123",
-		"iss":   "https://test.pds.local",
-		"scope": "atproto",
-		"exp":   time.Now().Add(-1 * time.Hour).Unix(), // Expired 1 hour ago
-		"iat":   time.Now().Add(-2 * time.Hour).Unix(),
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodNone, claims)
-	tokenString, _ := token.SignedString(jwt.UnsafeAllowNoneSignatureType)
+	// Create expired token (expired 1 hour ago)
+	token := client.createTestToken("did:plc:test123", sessionID, -time.Hour)
 
 	req := httptest.NewRequest("GET", "/test", nil)
-	req.Header.Set("Authorization", "DPoP "+tokenString)
+	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -264,29 +338,21 @@ func TestRequireAuth_ExpiredToken(t *testing.T) {
 	}
 }
 
-// TestRequireAuth_MissingDID tests that tokens without DID are rejected
-func TestRequireAuth_MissingDID(t *testing.T) {
-	fetcher := &mockJWKSFetcher{}
-	middleware := NewAtProtoAuthMiddleware(fetcher, true)
+// TestRequireAuth_SessionNotFound tests that tokens with non-existent sessions are rejected
+func TestRequireAuth_SessionNotFound(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+	middleware := NewOAuthAuthMiddleware(client, store)
 
 	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("handler should not be called")
 	}))
 
-	// Create token without sub claim
-	claims := jwt.MapClaims{
-		// "sub" missing
-		"iss":   "https://test.pds.local",
-		"scope": "atproto",
-		"exp":   time.Now().Add(1 * time.Hour).Unix(),
-		"iat":   time.Now().Unix(),
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodNone, claims)
-	tokenString, _ := token.SignedString(jwt.UnsafeAllowNoneSignatureType)
+	// Create token for session that doesn't exist in store
+	token := client.createTestToken("did:plc:nonexistent", "session999", time.Hour)
 
 	req := httptest.NewRequest("GET", "/test", nil)
-	req.Header.Set("Authorization", "DPoP "+tokenString)
+	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -296,27 +362,75 @@ func TestRequireAuth_MissingDID(t *testing.T) {
 	}
 }
 
-// TestOptionalAuth_WithToken tests that OptionalAuth accepts valid DPoP tokens
+// TestRequireAuth_DIDMismatch tests that session DID must match token DID
+func TestRequireAuth_DIDMismatch(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+
+	// Create a session with different DID than token
+	did := syntax.DID("did:plc:different")
+	sessionID := "session123"
+	session := &oauthlib.ClientSessionData{
+		AccountDID:  did,
+		SessionID:   sessionID,
+		AccessToken: "test_access_token",
+	}
+	// Store with key that matches token DID
+	key := "did:plc:test123:" + sessionID
+	store.sessions[key] = session
+
+	middleware := NewOAuthAuthMiddleware(client, store)
+
+	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called when DID mismatches")
+	}))
+
+	token := client.createTestToken("did:plc:test123", sessionID, time.Hour)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", w.Code)
+	}
+}
+
+// TestOptionalAuth_WithToken tests that OptionalAuth accepts valid Bearer tokens
 func TestOptionalAuth_WithToken(t *testing.T) {
-	fetcher := &mockJWKSFetcher{}
-	middleware := NewAtProtoAuthMiddleware(fetcher, true)
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+
+	// Create a test session
+	did := syntax.DID("did:plc:test123")
+	sessionID := "session123"
+	session := &oauthlib.ClientSessionData{
+		AccountDID:  did,
+		SessionID:   sessionID,
+		AccessToken: "test_access_token",
+	}
+	_ = store.SaveSession(context.Background(), *session)
+
+	middleware := NewOAuthAuthMiddleware(client, store)
 
 	handlerCalled := false
 	handler := middleware.OptionalAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handlerCalled = true
 
 		// Verify DID was extracted
-		did := GetUserDID(r)
-		if did != "did:plc:test123" {
-			t.Errorf("expected DID 'did:plc:test123', got %s", did)
+		extractedDID := GetUserDID(r)
+		if extractedDID != "did:plc:test123" {
+			t.Errorf("expected DID 'did:plc:test123', got %s", extractedDID)
 		}
 
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	token := createTestToken("did:plc:test123")
+	token := client.createTestToken("did:plc:test123", sessionID, time.Hour)
 	req := httptest.NewRequest("GET", "/test", nil)
-	req.Header.Set("Authorization", "DPoP "+token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -332,8 +446,9 @@ func TestOptionalAuth_WithToken(t *testing.T) {
 
 // TestOptionalAuth_WithoutToken tests that OptionalAuth allows requests without tokens
 func TestOptionalAuth_WithoutToken(t *testing.T) {
-	fetcher := &mockJWKSFetcher{}
-	middleware := NewAtProtoAuthMiddleware(fetcher, true)
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+	middleware := NewOAuthAuthMiddleware(client, store)
 
 	handlerCalled := false
 	handler := middleware.OptionalAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -365,8 +480,9 @@ func TestOptionalAuth_WithoutToken(t *testing.T) {
 
 // TestOptionalAuth_InvalidToken tests that OptionalAuth continues without auth on invalid token
 func TestOptionalAuth_InvalidToken(t *testing.T) {
-	fetcher := &mockJWKSFetcher{}
-	middleware := NewAtProtoAuthMiddleware(fetcher, true)
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+	middleware := NewOAuthAuthMiddleware(client, store)
 
 	handlerCalled := false
 	handler := middleware.OptionalAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -382,7 +498,7 @@ func TestOptionalAuth_InvalidToken(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest("GET", "/test", nil)
-	req.Header.Set("Authorization", "DPoP not-a-valid-jwt")
+	req.Header.Set("Authorization", "Bearer not-a-valid-sealed-token")
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -406,701 +522,368 @@ func TestGetUserDID_NotAuthenticated(t *testing.T) {
 	}
 }
 
-// TestGetJWTClaims_NotAuthenticated tests that GetJWTClaims returns nil when not authenticated
-func TestGetJWTClaims_NotAuthenticated(t *testing.T) {
+// TestGetOAuthSession_NotAuthenticated tests that GetOAuthSession returns nil when not authenticated
+func TestGetOAuthSession_NotAuthenticated(t *testing.T) {
 	req := httptest.NewRequest("GET", "/test", nil)
-	claims := GetJWTClaims(req)
+	session := GetOAuthSession(req)
 
-	if claims != nil {
-		t.Errorf("expected nil claims, got %+v", claims)
+	if session != nil {
+		t.Errorf("expected nil session, got %+v", session)
 	}
 }
 
-// TestGetDPoPProof_NotAuthenticated tests that GetDPoPProof returns nil when no DPoP was verified
-func TestGetDPoPProof_NotAuthenticated(t *testing.T) {
+// TestGetUserAccessToken_NotAuthenticated tests that GetUserAccessToken returns empty when not authenticated
+func TestGetUserAccessToken_NotAuthenticated(t *testing.T) {
 	req := httptest.NewRequest("GET", "/test", nil)
-	proof := GetDPoPProof(req)
+	token := GetUserAccessToken(req)
 
-	if proof != nil {
-		t.Errorf("expected nil proof, got %+v", proof)
+	if token != "" {
+		t.Errorf("expected empty token, got %s", token)
 	}
 }
 
-// TestRequireAuth_WithDPoP_SecurityModel tests the correct DPoP security model:
-// Token MUST be verified first, then DPoP is checked as an additional layer.
-// DPoP is NOT a fallback for failed token verification.
-func TestRequireAuth_WithDPoP_SecurityModel(t *testing.T) {
-	// Generate an ECDSA key pair for DPoP
-	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("failed to generate key: %v", err)
+// TestSetTestUserDID tests the testing helper function
+func TestSetTestUserDID(t *testing.T) {
+	ctx := context.Background()
+	ctx = SetTestUserDID(ctx, "did:plc:testuser")
+
+	did, ok := ctx.Value(UserDIDKey).(string)
+	if !ok {
+		t.Error("DID not found in context")
 	}
-
-	// Calculate JWK thumbprint for cnf.jkt
-	jwk := ecdsaPublicKeyToJWK(&privateKey.PublicKey)
-	thumbprint, err := auth.CalculateJWKThumbprint(jwk)
-	if err != nil {
-		t.Fatalf("failed to calculate thumbprint: %v", err)
+	if did != "did:plc:testuser" {
+		t.Errorf("expected 'did:plc:testuser', got %s", did)
 	}
-
-	t.Run("DPoP_is_NOT_fallback_for_failed_verification", func(t *testing.T) {
-		// SECURITY TEST: When token verification fails, DPoP should NOT be used as fallback
-		// This prevents an attacker from forging a token with their own cnf.jkt
-
-		// Create a DPoP-bound access token (unsigned - will fail verification)
-		claims := auth.Claims{
-			RegisteredClaims: jwt.RegisteredClaims{
-				Subject:   "did:plc:attacker",
-				Issuer:    "https://external.pds.local",
-				ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Hour)),
-				IssuedAt:  jwt.NewNumericDate(time.Now()),
-			},
-			Scope: "atproto",
-			Confirmation: map[string]interface{}{
-				"jkt": thumbprint,
-			},
-		}
-
-		token := jwt.NewWithClaims(jwt.SigningMethodNone, claims)
-		tokenString, _ := token.SignedString(jwt.UnsafeAllowNoneSignatureType)
-
-		// Create valid DPoP proof (attacker has the private key)
-		dpopProof := createDPoPProof(t, privateKey, "GET", "https://test.local/api/endpoint")
-
-		// Mock fetcher that fails (simulating external PDS without JWKS)
-		fetcher := &mockJWKSFetcher{shouldFail: true}
-		middleware := NewAtProtoAuthMiddleware(fetcher, false) // skipVerify=false
-
-		handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			t.Error("SECURITY VULNERABILITY: handler was called despite token verification failure")
-		}))
-
-		req := httptest.NewRequest("GET", "https://test.local/api/endpoint", nil)
-		req.Header.Set("Authorization", "DPoP "+tokenString)
-		req.Header.Set("DPoP", dpopProof)
-		w := httptest.NewRecorder()
-
-		handler.ServeHTTP(w, req)
-
-		// MUST reject - token verification failed, DPoP cannot substitute for signature verification
-		if w.Code != http.StatusUnauthorized {
-			t.Errorf("SECURITY: expected 401 for unverified token, got %d", w.Code)
-		}
-	})
-
-	t.Run("DPoP_required_when_cnf_jkt_present_in_verified_token", func(t *testing.T) {
-		// When token has cnf.jkt, DPoP header MUST be present
-		// This test uses skipVerify=true to simulate a verified token
-
-		claims := auth.Claims{
-			RegisteredClaims: jwt.RegisteredClaims{
-				Subject:   "did:plc:test123",
-				Issuer:    "https://test.pds.local",
-				ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Hour)),
-				IssuedAt:  jwt.NewNumericDate(time.Now()),
-			},
-			Scope: "atproto",
-			Confirmation: map[string]interface{}{
-				"jkt": thumbprint,
-			},
-		}
-
-		token := jwt.NewWithClaims(jwt.SigningMethodNone, claims)
-		tokenString, _ := token.SignedString(jwt.UnsafeAllowNoneSignatureType)
-
-		// NO DPoP header - should fail when skipVerify is false
-		// Note: with skipVerify=true, DPoP is not checked
-		fetcher := &mockJWKSFetcher{}
-		middleware := NewAtProtoAuthMiddleware(fetcher, true) // skipVerify=true for parsing
-
-		handlerCalled := false
-		handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			handlerCalled = true
-			w.WriteHeader(http.StatusOK)
-		}))
-
-		req := httptest.NewRequest("GET", "https://test.local/api/endpoint", nil)
-		req.Header.Set("Authorization", "DPoP "+tokenString)
-		// No DPoP header
-		w := httptest.NewRecorder()
-
-		handler.ServeHTTP(w, req)
-
-		// With skipVerify=true, DPoP is not checked, so this should succeed
-		if !handlerCalled {
-			t.Error("handler should be called when skipVerify=true")
-		}
-	})
 }
 
-// TestRequireAuth_TokenVerificationFails_DPoPNotUsedAsFallback is the key security test.
-// It ensures that DPoP cannot be used as a fallback when token signature verification fails.
-func TestRequireAuth_TokenVerificationFails_DPoPNotUsedAsFallback(t *testing.T) {
-	// Generate a key pair (attacker's key)
-	attackerKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	jwk := ecdsaPublicKeyToJWK(&attackerKey.PublicKey)
-	thumbprint, _ := auth.CalculateJWKThumbprint(jwk)
-
-	// Create a FORGED token claiming to be the victim
-	claims := auth.Claims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   "did:plc:victim_user", // Attacker claims to be victim
-			Issuer:    "https://untrusted.pds",
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Hour)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-		},
-		Scope: "atproto",
-		Confirmation: map[string]interface{}{
-			"jkt": thumbprint, // Attacker uses their own key
-		},
+// TestExtractBearerToken tests the Bearer token extraction logic
+func TestExtractBearerToken(t *testing.T) {
+	tests := []struct {
+		name        string
+		authHeader  string
+		expectToken string
+		expectOK    bool
+	}{
+		{"valid bearer", "Bearer token123", "token123", true},
+		{"lowercase bearer", "bearer token123", "token123", true},
+		{"uppercase bearer", "BEARER token123", "token123", true},
+		{"mixed case", "BeArEr token123", "token123", true},
+		{"empty header", "", "", false},
+		{"wrong scheme", "DPoP token123", "", false},
+		{"no token", "Bearer", "", false},
+		{"no space", "Bearertoken123", "", false},
+		{"extra spaces", "Bearer  token123  ", "token123", true},
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodNone, claims)
-	tokenString, _ := token.SignedString(jwt.UnsafeAllowNoneSignatureType)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			token, ok := extractBearerToken(tt.authHeader)
+			if ok != tt.expectOK {
+				t.Errorf("expected ok=%v, got %v", tt.expectOK, ok)
+			}
+			if token != tt.expectToken {
+				t.Errorf("expected token '%s', got '%s'", tt.expectToken, token)
+			}
+		})
+	}
+}
 
-	// Attacker creates a valid DPoP proof with their key
-	dpopProof := createDPoPProof(t, attackerKey, "POST", "https://api.example.com/protected")
+// TestRequireAuth_ValidCookie tests that valid session cookies are accepted
+func TestRequireAuth_ValidCookie(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
 
-	// Fetcher fails (external PDS without JWKS)
-	fetcher := &mockJWKSFetcher{shouldFail: true}
-	middleware := NewAtProtoAuthMiddleware(fetcher, false) // skipVerify=false - REAL verification
+	// Create a test session
+	did := syntax.DID("did:plc:test123")
+	sessionID := "session123"
+	session := &oauthlib.ClientSessionData{
+		AccountDID:  did,
+		SessionID:   sessionID,
+		AccessToken: "test_access_token",
+		HostURL:     "https://pds.example.com",
+	}
+	_ = store.SaveSession(context.Background(), *session)
 
+	middleware := NewOAuthAuthMiddleware(client, store)
+
+	handlerCalled := false
 	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatalf("CRITICAL SECURITY FAILURE: Request authenticated as %s despite forged token!",
-			GetUserDID(r))
+		handlerCalled = true
+
+		// Verify DID was extracted and injected into context
+		extractedDID := GetUserDID(r)
+		if extractedDID != "did:plc:test123" {
+			t.Errorf("expected DID 'did:plc:test123', got %s", extractedDID)
+		}
+
+		// Verify OAuth session was injected
+		oauthSession := GetOAuthSession(r)
+		if oauthSession == nil {
+			t.Error("expected OAuth session to be non-nil")
+			return
+		}
+		if oauthSession.SessionID != sessionID {
+			t.Errorf("expected session ID '%s', got %s", sessionID, oauthSession.SessionID)
+		}
+
+		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest("POST", "https://api.example.com/protected", nil)
-	req.Header.Set("Authorization", "DPoP "+tokenString)
-	req.Header.Set("DPoP", dpopProof)
+	token := client.createTestToken("did:plc:test123", sessionID, time.Hour)
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.AddCookie(&http.Cookie{
+		Name:  "coves_session",
+		Value: token,
+	})
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
 
-	// MUST reject - the token signature was never verified
+	if !handlerCalled {
+		t.Error("handler was not called")
+	}
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestRequireAuth_HeaderPrecedenceOverCookie tests that Authorization header takes precedence over cookie
+func TestRequireAuth_HeaderPrecedenceOverCookie(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+
+	// Create two test sessions
+	did1 := syntax.DID("did:plc:header")
+	sessionID1 := "session_header"
+	session1 := &oauthlib.ClientSessionData{
+		AccountDID:  did1,
+		SessionID:   sessionID1,
+		AccessToken: "header_token",
+		HostURL:     "https://pds.example.com",
+	}
+	_ = store.SaveSession(context.Background(), *session1)
+
+	did2 := syntax.DID("did:plc:cookie")
+	sessionID2 := "session_cookie"
+	session2 := &oauthlib.ClientSessionData{
+		AccountDID:  did2,
+		SessionID:   sessionID2,
+		AccessToken: "cookie_token",
+		HostURL:     "https://pds.example.com",
+	}
+	_ = store.SaveSession(context.Background(), *session2)
+
+	middleware := NewOAuthAuthMiddleware(client, store)
+
+	handlerCalled := false
+	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+
+		// Should get header DID, not cookie DID
+		extractedDID := GetUserDID(r)
+		if extractedDID != "did:plc:header" {
+			t.Errorf("expected header DID 'did:plc:header', got %s", extractedDID)
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	headerToken := client.createTestToken("did:plc:header", sessionID1, time.Hour)
+	cookieToken := client.createTestToken("did:plc:cookie", sessionID2, time.Hour)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+headerToken)
+	req.AddCookie(&http.Cookie{
+		Name:  "coves_session",
+		Value: cookieToken,
+	})
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if !handlerCalled {
+		t.Error("handler was not called")
+	}
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+}
+
+// TestRequireAuth_MissingBothHeaderAndCookie tests that missing both auth methods is rejected
+func TestRequireAuth_MissingBothHeaderAndCookie(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+	middleware := NewOAuthAuthMiddleware(client, store)
+
+	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called")
+	}))
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	// No Authorization header and no cookie
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
 	if w.Code != http.StatusUnauthorized {
-		t.Errorf("SECURITY VULNERABILITY: Expected 401, got %d. Token was not properly verified!", w.Code)
+		t.Errorf("expected status 401, got %d", w.Code)
 	}
 }
 
-// TestVerifyDPoPBinding_UsesForwardedProto ensures we honor the external HTTPS
-// scheme when TLS is terminated upstream and X-Forwarded-Proto is present.
-func TestVerifyDPoPBinding_UsesForwardedProto(t *testing.T) {
-	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("failed to generate key: %v", err)
-	}
+// TestRequireAuth_InvalidCookie tests that malformed cookie tokens are rejected
+func TestRequireAuth_InvalidCookie(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+	middleware := NewOAuthAuthMiddleware(client, store)
 
-	jwk := ecdsaPublicKeyToJWK(&privateKey.PublicKey)
-	thumbprint, err := auth.CalculateJWKThumbprint(jwk)
-	if err != nil {
-		t.Fatalf("failed to calculate thumbprint: %v", err)
-	}
+	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called")
+	}))
 
-	claims := &auth.Claims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   "did:plc:test123",
-			Issuer:    "https://test.pds.local",
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Hour)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-		},
-		Scope: "atproto",
-		Confirmation: map[string]interface{}{
-			"jkt": thumbprint,
-		},
-	}
-
-	middleware := NewAtProtoAuthMiddleware(&mockJWKSFetcher{}, false)
-	defer middleware.Stop()
-
-	externalURI := "https://api.example.com/protected/resource"
-	dpopProof := createDPoPProof(t, privateKey, "GET", externalURI)
-
-	req := httptest.NewRequest("GET", "http://internal-service/protected/resource", nil)
-	req.Host = "api.example.com"
-	req.Header.Set("X-Forwarded-Proto", "https")
-
-	// Pass a fake access token - ath verification will pass since we don't include ath in the DPoP proof
-	fakeAccessToken := "fake-access-token-for-testing"
-	proof, err := middleware.verifyDPoPBinding(req, claims, dpopProof, fakeAccessToken)
-	if err != nil {
-		t.Fatalf("expected DPoP verification to succeed with forwarded proto, got %v", err)
-	}
-
-	if proof == nil || proof.Claims == nil {
-		t.Fatal("expected DPoP proof to be returned")
-	}
-}
-
-// TestVerifyDPoPBinding_UsesForwardedHost ensures we honor X-Forwarded-Host header
-// when behind a TLS-terminating proxy that rewrites the Host header.
-func TestVerifyDPoPBinding_UsesForwardedHost(t *testing.T) {
-	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("failed to generate key: %v", err)
-	}
-
-	jwk := ecdsaPublicKeyToJWK(&privateKey.PublicKey)
-	thumbprint, err := auth.CalculateJWKThumbprint(jwk)
-	if err != nil {
-		t.Fatalf("failed to calculate thumbprint: %v", err)
-	}
-
-	claims := &auth.Claims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   "did:plc:test123",
-			Issuer:    "https://test.pds.local",
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Hour)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-		},
-		Scope: "atproto",
-		Confirmation: map[string]interface{}{
-			"jkt": thumbprint,
-		},
-	}
-
-	middleware := NewAtProtoAuthMiddleware(&mockJWKSFetcher{}, false)
-	defer middleware.Stop()
-
-	// External URI that the client uses
-	externalURI := "https://api.example.com/protected/resource"
-	dpopProof := createDPoPProof(t, privateKey, "GET", externalURI)
-
-	// Request hits internal service with internal hostname, but X-Forwarded-Host has public hostname
-	req := httptest.NewRequest("GET", "http://internal-service:8080/protected/resource", nil)
-	req.Host = "internal-service:8080" // Internal host after proxy
-	req.Header.Set("X-Forwarded-Proto", "https")
-	req.Header.Set("X-Forwarded-Host", "api.example.com") // Original public host
-
-	fakeAccessToken := "fake-access-token-for-testing"
-	proof, err := middleware.verifyDPoPBinding(req, claims, dpopProof, fakeAccessToken)
-	if err != nil {
-		t.Fatalf("expected DPoP verification to succeed with X-Forwarded-Host, got %v", err)
-	}
-
-	if proof == nil || proof.Claims == nil {
-		t.Fatal("expected DPoP proof to be returned")
-	}
-}
-
-// TestVerifyDPoPBinding_UsesStandardForwardedHeader tests RFC 7239 Forwarded header parsing
-func TestVerifyDPoPBinding_UsesStandardForwardedHeader(t *testing.T) {
-	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("failed to generate key: %v", err)
-	}
-
-	jwk := ecdsaPublicKeyToJWK(&privateKey.PublicKey)
-	thumbprint, err := auth.CalculateJWKThumbprint(jwk)
-	if err != nil {
-		t.Fatalf("failed to calculate thumbprint: %v", err)
-	}
-
-	claims := &auth.Claims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   "did:plc:test123",
-			Issuer:    "https://test.pds.local",
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Hour)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-		},
-		Scope: "atproto",
-		Confirmation: map[string]interface{}{
-			"jkt": thumbprint,
-		},
-	}
-
-	middleware := NewAtProtoAuthMiddleware(&mockJWKSFetcher{}, false)
-	defer middleware.Stop()
-
-	// External URI
-	externalURI := "https://api.example.com/protected/resource"
-	dpopProof := createDPoPProof(t, privateKey, "GET", externalURI)
-
-	// Request with standard Forwarded header (RFC 7239)
-	req := httptest.NewRequest("GET", "http://internal-service/protected/resource", nil)
-	req.Host = "internal-service"
-	req.Header.Set("Forwarded", "for=192.0.2.60;proto=https;host=api.example.com")
-
-	fakeAccessToken := "fake-access-token-for-testing"
-	proof, err := middleware.verifyDPoPBinding(req, claims, dpopProof, fakeAccessToken)
-	if err != nil {
-		t.Fatalf("expected DPoP verification to succeed with Forwarded header, got %v", err)
-	}
-
-	if proof == nil {
-		t.Fatal("expected DPoP proof to be returned")
-	}
-}
-
-// TestVerifyDPoPBinding_ForwardedMixedCaseAndQuotes tests RFC 7239 edge cases:
-// mixed-case keys (Proto vs proto) and quoted values (host="example.com")
-func TestVerifyDPoPBinding_ForwardedMixedCaseAndQuotes(t *testing.T) {
-	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("failed to generate key: %v", err)
-	}
-
-	jwk := ecdsaPublicKeyToJWK(&privateKey.PublicKey)
-	thumbprint, err := auth.CalculateJWKThumbprint(jwk)
-	if err != nil {
-		t.Fatalf("failed to calculate thumbprint: %v", err)
-	}
-
-	claims := &auth.Claims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   "did:plc:test123",
-			Issuer:    "https://test.pds.local",
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Hour)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-		},
-		Scope: "atproto",
-		Confirmation: map[string]interface{}{
-			"jkt": thumbprint,
-		},
-	}
-
-	middleware := NewAtProtoAuthMiddleware(&mockJWKSFetcher{}, false)
-	defer middleware.Stop()
-
-	// External URI that the client uses
-	externalURI := "https://api.example.com/protected/resource"
-	dpopProof := createDPoPProof(t, privateKey, "GET", externalURI)
-
-	// Request with RFC 7239 Forwarded header using:
-	// - Mixed-case keys: "Proto" instead of "proto", "Host" instead of "host"
-	// - Quoted value: Host="api.example.com" (legal per RFC 7239 section 4)
-	req := httptest.NewRequest("GET", "http://internal-service/protected/resource", nil)
-	req.Host = "internal-service"
-	req.Header.Set("Forwarded", `for=192.0.2.60;Proto=https;Host="api.example.com"`)
-
-	fakeAccessToken := "fake-access-token-for-testing"
-	proof, err := middleware.verifyDPoPBinding(req, claims, dpopProof, fakeAccessToken)
-	if err != nil {
-		t.Fatalf("expected DPoP verification to succeed with mixed-case/quoted Forwarded header, got %v", err)
-	}
-
-	if proof == nil {
-		t.Fatal("expected DPoP proof to be returned")
-	}
-}
-
-// TestVerifyDPoPBinding_AthValidation tests access token hash (ath) claim validation
-func TestVerifyDPoPBinding_AthValidation(t *testing.T) {
-	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("failed to generate key: %v", err)
-	}
-
-	jwk := ecdsaPublicKeyToJWK(&privateKey.PublicKey)
-	thumbprint, err := auth.CalculateJWKThumbprint(jwk)
-	if err != nil {
-		t.Fatalf("failed to calculate thumbprint: %v", err)
-	}
-
-	claims := &auth.Claims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   "did:plc:test123",
-			Issuer:    "https://test.pds.local",
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Hour)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-		},
-		Scope: "atproto",
-		Confirmation: map[string]interface{}{
-			"jkt": thumbprint,
-		},
-	}
-
-	middleware := NewAtProtoAuthMiddleware(&mockJWKSFetcher{}, false)
-	defer middleware.Stop()
-
-	accessToken := "real-access-token-12345"
-
-	t.Run("ath_matches_access_token", func(t *testing.T) {
-		// Create DPoP proof with ath claim matching the access token
-		dpopProof := createDPoPProofWithAth(t, privateKey, "GET", "https://api.example.com/resource", accessToken)
-
-		req := httptest.NewRequest("GET", "https://api.example.com/resource", nil)
-		req.Host = "api.example.com"
-
-		proof, err := middleware.verifyDPoPBinding(req, claims, dpopProof, accessToken)
-		if err != nil {
-			t.Fatalf("expected verification to succeed with matching ath, got %v", err)
-		}
-		if proof == nil {
-			t.Fatal("expected proof to be returned")
-		}
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.AddCookie(&http.Cookie{
+		Name:  "coves_session",
+		Value: "not-a-valid-sealed-token",
 	})
+	w := httptest.NewRecorder()
 
-	t.Run("ath_mismatch_rejected", func(t *testing.T) {
-		// Create DPoP proof with ath for a DIFFERENT token
-		differentToken := "different-token-67890"
-		dpopProof := createDPoPProofWithAth(t, privateKey, "POST", "https://api.example.com/resource", differentToken)
+	handler.ServeHTTP(w, req)
 
-		req := httptest.NewRequest("POST", "https://api.example.com/resource", nil)
-		req.Host = "api.example.com"
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", w.Code)
+	}
+}
 
-		// Try to use with the original access token - should fail
-		_, err := middleware.verifyDPoPBinding(req, claims, dpopProof, accessToken)
-		if err == nil {
-			t.Fatal("SECURITY: expected verification to fail when ath doesn't match access token")
+// TestOptionalAuth_WithCookie tests that OptionalAuth accepts valid session cookies
+func TestOptionalAuth_WithCookie(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+
+	// Create a test session
+	did := syntax.DID("did:plc:test123")
+	sessionID := "session123"
+	session := &oauthlib.ClientSessionData{
+		AccountDID:  did,
+		SessionID:   sessionID,
+		AccessToken: "test_access_token",
+	}
+	_ = store.SaveSession(context.Background(), *session)
+
+	middleware := NewOAuthAuthMiddleware(client, store)
+
+	handlerCalled := false
+	handler := middleware.OptionalAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+
+		// Verify DID was extracted
+		extractedDID := GetUserDID(r)
+		if extractedDID != "did:plc:test123" {
+			t.Errorf("expected DID 'did:plc:test123', got %s", extractedDID)
 		}
-		if !strings.Contains(err.Error(), "ath") {
-			t.Errorf("error should mention ath mismatch, got: %v", err)
-		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	token := client.createTestToken("did:plc:test123", sessionID, time.Hour)
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.AddCookie(&http.Cookie{
+		Name:  "coves_session",
+		Value: token,
 	})
-}
+	w := httptest.NewRecorder()
 
-// TestMiddlewareStop tests that the middleware can be stopped properly
-func TestMiddlewareStop(t *testing.T) {
-	fetcher := &mockJWKSFetcher{}
-	middleware := NewAtProtoAuthMiddleware(fetcher, false)
+	handler.ServeHTTP(w, req)
 
-	// Stop should not panic and should clean up resources
-	middleware.Stop()
-
-	// Calling Stop again should also be safe (idempotent-ish)
-	// Note: The underlying DPoPVerifier.Stop() closes a channel, so this might panic
-	// if not handled properly. We test that at least one Stop works.
-}
-
-// TestOptionalAuth_DPoPBoundToken_NoDPoPHeader tests that OptionalAuth treats
-// tokens with cnf.jkt but no DPoP header as unauthenticated (potential token theft)
-func TestOptionalAuth_DPoPBoundToken_NoDPoPHeader(t *testing.T) {
-	// Generate a key pair for DPoP binding
-	privateKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	jwk := ecdsaPublicKeyToJWK(&privateKey.PublicKey)
-	thumbprint, _ := auth.CalculateJWKThumbprint(jwk)
-
-	// Create a DPoP-bound token (has cnf.jkt)
-	claims := auth.Claims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   "did:plc:user123",
-			Issuer:    "https://test.pds.local",
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(1 * time.Hour)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-		},
-		Scope: "atproto",
-		Confirmation: map[string]interface{}{
-			"jkt": thumbprint,
-		},
+	if !handlerCalled {
+		t.Error("handler was not called")
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodNone, claims)
-	tokenString, _ := token.SignedString(jwt.UnsafeAllowNoneSignatureType)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+}
 
-	// Use skipVerify=true to simulate a verified token
-	// (In production, skipVerify would be false and VerifyJWT would be called)
-	// However, for this test we need skipVerify=false to trigger DPoP checking
-	// But the fetcher will fail, so let's use skipVerify=true and verify the logic
-	// Actually, the DPoP check only happens when skipVerify=false
+// TestOptionalAuth_InvalidCookie tests that OptionalAuth continues without auth on invalid cookie
+func TestOptionalAuth_InvalidCookie(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+	middleware := NewOAuthAuthMiddleware(client, store)
 
-	t.Run("with_skipVerify_false", func(t *testing.T) {
-		// This will fail at JWT verification level, but that's expected
-		// The important thing is the code path for DPoP checking
-		fetcher := &mockJWKSFetcher{shouldFail: true}
-		middleware := NewAtProtoAuthMiddleware(fetcher, false)
-		defer middleware.Stop()
+	handlerCalled := false
+	handler := middleware.OptionalAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
 
-		handlerCalled := false
-		var capturedDID string
-		handler := middleware.OptionalAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			handlerCalled = true
-			capturedDID = GetUserDID(r)
-			w.WriteHeader(http.StatusOK)
-		}))
-
-		req := httptest.NewRequest("GET", "/test", nil)
-		req.Header.Set("Authorization", "DPoP "+tokenString)
-		// Deliberately NOT setting DPoP header
-		w := httptest.NewRecorder()
-
-		handler.ServeHTTP(w, req)
-
-		// Handler should be called (optional auth doesn't block)
-		if !handlerCalled {
-			t.Error("handler should be called")
+		// Verify no DID is set (invalid cookie ignored)
+		did := GetUserDID(r)
+		if did != "" {
+			t.Errorf("expected empty DID for invalid cookie, got %s", did)
 		}
 
-		// But since JWT verification fails, user should not be authenticated
-		if capturedDID != "" {
-			t.Errorf("expected empty DID when verification fails, got %s", capturedDID)
-		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.AddCookie(&http.Cookie{
+		Name:  "coves_session",
+		Value: "not-a-valid-sealed-token",
 	})
+	w := httptest.NewRecorder()
 
-	t.Run("with_skipVerify_true_dpop_not_checked", func(t *testing.T) {
-		// When skipVerify=true, DPoP is not checked (Phase 1 mode)
-		fetcher := &mockJWKSFetcher{}
-		middleware := NewAtProtoAuthMiddleware(fetcher, true)
-		defer middleware.Stop()
+	handler.ServeHTTP(w, req)
 
-		handlerCalled := false
-		var capturedDID string
-		handler := middleware.OptionalAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			handlerCalled = true
-			capturedDID = GetUserDID(r)
-			w.WriteHeader(http.StatusOK)
-		}))
-
-		req := httptest.NewRequest("GET", "/test", nil)
-		req.Header.Set("Authorization", "DPoP "+tokenString)
-		// No DPoP header
-		w := httptest.NewRecorder()
-
-		handler.ServeHTTP(w, req)
-
-		if !handlerCalled {
-			t.Error("handler should be called")
-		}
-
-		// With skipVerify=true, DPoP check is bypassed - token is trusted
-		if capturedDID != "did:plc:user123" {
-			t.Errorf("expected DID when skipVerify=true, got %s", capturedDID)
-		}
-	})
-}
-
-// TestDPoPReplayProtection tests that the same DPoP proof cannot be used twice
-func TestDPoPReplayProtection(t *testing.T) {
-	// This tests the NonceCache functionality
-	cache := auth.NewNonceCache(5 * time.Minute)
-	defer cache.Stop()
-
-	jti := "unique-proof-id-123"
-
-	// First use should succeed
-	if !cache.CheckAndStore(jti) {
-		t.Error("First use of jti should succeed")
+	if !handlerCalled {
+		t.Error("handler was not called")
 	}
 
-	// Second use should fail (replay detected)
-	if cache.CheckAndStore(jti) {
-		t.Error("SECURITY: Replay attack not detected - same jti accepted twice")
-	}
-
-	// Different jti should succeed
-	if !cache.CheckAndStore("different-jti-456") {
-		t.Error("Different jti should succeed")
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
 	}
 }
 
-// Helper: createDPoPProof creates a DPoP proof JWT for testing
-func createDPoPProof(t *testing.T, privateKey *ecdsa.PrivateKey, method, uri string) string {
-	// Create JWK from public key
-	jwk := ecdsaPublicKeyToJWK(&privateKey.PublicKey)
-
-	// Create DPoP claims with UUID for jti to ensure uniqueness across tests
-	claims := auth.DPoPClaims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			IssuedAt: jwt.NewNumericDate(time.Now()),
-			ID:       uuid.New().String(),
-		},
-		HTTPMethod: method,
-		HTTPURI:    uri,
+// TestWriteAuthError_JSONEscaping tests that writeAuthError properly escapes messages
+func TestWriteAuthError_JSONEscaping(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+	}{
+		{"simple message", "Missing authentication"},
+		{"message with quotes", `Invalid "token" format`},
+		{"message with newlines", "Invalid\ntoken\nformat"},
+		{"message with backslashes", `Invalid \ token`},
+		{"message with special chars", `Invalid <script>alert("xss")</script> token`},
+		{"message with unicode", "Invalid token: \u2028\u2029"},
 	}
 
-	// Create token with custom header
-	token := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
-	token.Header["typ"] = "dpop+jwt"
-	token.Header["jwk"] = jwk
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			writeAuthError(w, tt.message)
 
-	// Sign with private key
-	signedToken, err := token.SignedString(privateKey)
-	if err != nil {
-		t.Fatalf("failed to sign DPoP proof: %v", err)
+			// Verify status code
+			if w.Code != http.StatusUnauthorized {
+				t.Errorf("expected status 401, got %d", w.Code)
+			}
+
+			// Verify content type
+			if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+				t.Errorf("expected Content-Type 'application/json', got %s", ct)
+			}
+
+			// Verify response is valid JSON
+			var response map[string]string
+			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+				t.Fatalf("response is not valid JSON: %v\nBody: %s", err, w.Body.String())
+			}
+
+			// Verify fields
+			if response["error"] != "AuthenticationRequired" {
+				t.Errorf("expected error 'AuthenticationRequired', got %s", response["error"])
+			}
+			if response["message"] != tt.message {
+				t.Errorf("expected message %q, got %q", tt.message, response["message"])
+			}
+		})
 	}
-
-	return signedToken
-}
-
-// Helper: createDPoPProofWithAth creates a DPoP proof JWT with ath (access token hash) claim
-func createDPoPProofWithAth(t *testing.T, privateKey *ecdsa.PrivateKey, method, uri, accessToken string) string {
-	// Create JWK from public key
-	jwk := ecdsaPublicKeyToJWK(&privateKey.PublicKey)
-
-	// Calculate ath: base64url(SHA-256(access_token))
-	hash := sha256.Sum256([]byte(accessToken))
-	ath := base64.RawURLEncoding.EncodeToString(hash[:])
-
-	// Create DPoP claims with ath
-	claims := auth.DPoPClaims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			IssuedAt: jwt.NewNumericDate(time.Now()),
-			ID:       uuid.New().String(),
-		},
-		HTTPMethod:      method,
-		HTTPURI:         uri,
-		AccessTokenHash: ath,
-	}
-
-	// Create token with custom header
-	token := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
-	token.Header["typ"] = "dpop+jwt"
-	token.Header["jwk"] = jwk
-
-	// Sign with private key
-	signedToken, err := token.SignedString(privateKey)
-	if err != nil {
-		t.Fatalf("failed to sign DPoP proof: %v", err)
-	}
-
-	return signedToken
-}
-
-// Helper: ecdsaPublicKeyToJWK converts an ECDSA public key to JWK map
-func ecdsaPublicKeyToJWK(pubKey *ecdsa.PublicKey) map[string]interface{} {
-	// Get curve name
-	var crv string
-	switch pubKey.Curve {
-	case elliptic.P256():
-		crv = "P-256"
-	case elliptic.P384():
-		crv = "P-384"
-	case elliptic.P521():
-		crv = "P-521"
-	default:
-		panic("unsupported curve")
-	}
-
-	// Encode coordinates
-	xBytes := pubKey.X.Bytes()
-	yBytes := pubKey.Y.Bytes()
-
-	// Ensure proper byte length (pad if needed)
-	keySize := (pubKey.Curve.Params().BitSize + 7) / 8
-	xPadded := make([]byte, keySize)
-	yPadded := make([]byte, keySize)
-	copy(xPadded[keySize-len(xBytes):], xBytes)
-	copy(yPadded[keySize-len(yBytes):], yBytes)
-
-	return map[string]interface{}{
-		"kty": "EC",
-		"crv": crv,
-		"x":   base64.RawURLEncoding.EncodeToString(xPadded),
-		"y":   base64.RawURLEncoding.EncodeToString(yPadded),
-	}
-}
-
-// Helper: createValidJWT creates a valid unsigned JWT token for testing
-// This is used with skipVerify=true middleware where signature verification is skipped
-func createValidJWT(t *testing.T, subject string, expiry time.Duration) string {
-	t.Helper()
-
-	claims := auth.Claims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   subject,
-			Issuer:    "https://test.pds.local",
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(expiry)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-		},
-		Scope: "atproto",
-	}
-
-	// Create unsigned token (for skipVerify=true tests)
-	token := jwt.NewWithClaims(jwt.SigningMethodNone, claims)
-	signedToken, err := token.SignedString(jwt.UnsafeAllowNoneSignatureType)
-	if err != nil {
-		t.Fatalf("failed to create test JWT: %v", err)
-	}
-
-	return signedToken
 }
