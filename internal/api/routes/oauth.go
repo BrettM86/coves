@@ -38,11 +38,12 @@ func RegisterOAuthRoutes(r chi.Router, handler *oauth.OAuthHandler, allowedOrigi
 	// Use login limiter since callback completes the authentication flow
 	r.With(corsMiddleware(allowedOrigins), loginLimiter.Middleware).Get("/oauth/callback", handler.HandleCallback)
 
-	// Mobile Universal Link callback route
-	// This route is used for iOS Universal Links and Android App Links
-	// Path must match the path in .well-known/apple-app-site-association
-	// Uses the same handler as web callback - the system routes it to the mobile app
-	r.With(loginLimiter.Middleware).Get("/app/oauth/callback", handler.HandleCallback)
+	// Mobile Universal Link callback route (fallback when app doesn't intercept)
+	// This route exists for iOS Universal Links and Android App Links.
+	// When properly configured, the mobile OS intercepts this URL and opens the app
+	// BEFORE the request reaches the server. If this handler is reached, it means
+	// Universal Links failed to intercept.
+	r.With(loginLimiter.Middleware).Get("/app/oauth/callback", handler.HandleMobileDeepLinkFallback)
 
 	// Session management - dedicated rate limits
 	r.With(logoutLimiter.Middleware).Post("/oauth/logout", handler.HandleLogout)

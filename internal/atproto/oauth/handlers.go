@@ -688,3 +688,21 @@ func (h *OAuthHandler) HandleProtectedResourceMetadata(w http.ResponseWriter, r 
 		return
 	}
 }
+
+// HandleMobileDeepLinkFallback handles requests to /app/oauth/callback when
+// Universal Links fail to intercept the redirect.
+//
+// If this handler is reached, it means the mobile app did NOT intercept the
+// Universal Link redirect. The OAuth flow succeeded server-side, but the
+// credentials couldn't be delivered to the app.
+func (h *OAuthHandler) HandleMobileDeepLinkFallback(w http.ResponseWriter, r *http.Request) {
+	// Log the failure for debugging
+	slog.Warn("Universal Link not intercepted - mobile app did not handle redirect",
+		"path", r.URL.Path,
+		"has_token", r.URL.Query().Get("token") != "",
+		"has_did", r.URL.Query().Get("did") != "",
+	)
+
+	http.Error(w, "Universal Link not intercepted: The mobile app should have opened this URL. "+
+		"Check that Universal Links (iOS) or App Links (Android) are properly configured.", http.StatusBadRequest)
+}
