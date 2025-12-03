@@ -64,8 +64,9 @@ func (r *postgresVoteRepo) Create(ctx context.Context, vote *votes.Vote) error {
 	return nil
 }
 
-// GetByURI retrieves a vote by its AT-URI
+// GetByURI retrieves an active vote by its AT-URI
 // Used by Jetstream consumer for DELETE operations
+// Returns ErrVoteNotFound for soft-deleted votes
 func (r *postgresVoteRepo) GetByURI(ctx context.Context, uri string) (*votes.Vote, error) {
 	query := `
 		SELECT
@@ -73,7 +74,7 @@ func (r *postgresVoteRepo) GetByURI(ctx context.Context, uri string) (*votes.Vot
 			subject_uri, subject_cid, direction,
 			created_at, indexed_at, deleted_at
 		FROM votes
-		WHERE uri = $1
+		WHERE uri = $1 AND deleted_at IS NULL
 	`
 
 	var vote votes.Vote

@@ -604,17 +604,40 @@ func TestVoteE2E_ToggleDifferentDirection(t *testing.T) {
 		t.Logf("Failed to close response body: %v", closeErr)
 	}
 
-	// Simulate Jetstream UPDATE event (PDS updates the existing record)
-	t.Logf("\n🔄 Simulating Jetstream UPDATE event...")
-	updateEvent := jetstream.JetstreamEvent{
+	// The service flow for direction change is:
+	// 1. DELETE old vote on PDS
+	// 2. CREATE new vote with NEW rkey on PDS
+	// So we simulate DELETE + CREATE events (not UPDATE)
+
+	// Simulate Jetstream DELETE event for old vote
+	t.Logf("\n🔄 Simulating Jetstream DELETE event for old upvote...")
+	deleteEvent := jetstream.JetstreamEvent{
+		Did:    userDID,
+		TimeUS: time.Now().UnixMicro(),
+		Kind:   "commit",
+		Commit: &jetstream.CommitEvent{
+			Rev:        "test-vote-rev-delete",
+			Operation:  "delete",
+			Collection: "social.coves.feed.vote",
+			RKey:       rkey, // Old upvote rkey
+		},
+	}
+	if handleErr := voteConsumer.HandleEvent(ctx, &deleteEvent); handleErr != nil {
+		t.Fatalf("Failed to handle delete event: %v", handleErr)
+	}
+
+	// Simulate Jetstream CREATE event for new downvote
+	t.Logf("\n🔄 Simulating Jetstream CREATE event for new downvote...")
+	newRkey := utils.ExtractRKeyFromURI(downvoteResp.URI)
+	createEvent := jetstream.JetstreamEvent{
 		Did:    userDID,
 		TimeUS: time.Now().UnixMicro(),
 		Kind:   "commit",
 		Commit: &jetstream.CommitEvent{
 			Rev:        "test-vote-rev-down",
-			Operation:  "update",
+			Operation:  "create",
 			Collection: "social.coves.feed.vote",
-			RKey:       rkey, // Same rkey as before
+			RKey:       newRkey, // NEW rkey from downvote response
 			CID:        downvoteResp.CID,
 			Record: map[string]interface{}{
 				"$type": "social.coves.feed.vote",
@@ -622,24 +645,31 @@ func TestVoteE2E_ToggleDifferentDirection(t *testing.T) {
 					"uri": postURI,
 					"cid": postCID,
 				},
-				"direction": "down", // Changed direction
+				"direction": "down",
 				"createdAt": time.Now().Format(time.RFC3339),
 			},
 		},
 	}
-	if handleErr := voteConsumer.HandleEvent(ctx, &updateEvent); handleErr != nil {
-		t.Fatalf("Failed to handle update event: %v", handleErr)
+	if handleErr := voteConsumer.HandleEvent(ctx, &createEvent); handleErr != nil {
+		t.Fatalf("Failed to handle create event: %v", handleErr)
 	}
 
-	// Verify vote direction changed in AppView
-	t.Logf("\n🔍 Verifying vote direction changed in AppView...")
-	updatedVote, err := voteRepo.GetByURI(ctx, upvoteResp.URI)
+	// Verify old upvote was deleted
+	t.Logf("\n🔍 Verifying old upvote was deleted...")
+	_, err = voteRepo.GetByURI(ctx, upvoteResp.URI)
+	if err == nil {
+		t.Error("Expected old upvote to be deleted, but it still exists")
+	}
+
+	// Verify new downvote was indexed
+	t.Logf("\n🔍 Verifying new downvote indexed in AppView...")
+	newVote, err := voteRepo.GetByURI(ctx, downvoteResp.URI)
 	if err != nil {
-		t.Fatalf("Vote not found after update: %v", err)
+		t.Fatalf("New downvote not found: %v", err)
 	}
 
-	if updatedVote.Direction != "down" {
-		t.Errorf("Expected direction 'down', got %s", updatedVote.Direction)
+	if newVote.Direction != "down" {
+		t.Errorf("Expected direction 'down', got %s", newVote.Direction)
 	}
 
 	// Verify post counts updated
