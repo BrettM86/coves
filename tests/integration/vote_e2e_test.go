@@ -85,7 +85,7 @@ func TestVoteE2E_CreateUpvote(t *testing.T) {
 	oauthClient := SetupOAuthTestClient(t, oauthStore)
 
 	// Setup services
-	voteService := votes.NewService(voteRepo, oauthClient, oauthStore, nil)
+	voteService := votes.NewService(voteRepo, nil, oauthClient, oauthStore, nil)
 
 	// Create test user on PDS
 	testUserHandle := fmt.Sprintf("voter-%d.local.coves.dev", time.Now().Unix())
@@ -310,7 +310,7 @@ func TestVoteE2E_ToggleSameDirection(t *testing.T) {
 
 	oauthStore := SetupOAuthTestStore(t, db)
 	oauthClient := SetupOAuthTestClient(t, oauthStore)
-	voteService := votes.NewService(voteRepo, oauthClient, oauthStore, nil)
+	voteService := votes.NewService(voteRepo, nil, oauthClient, oauthStore, nil)
 
 	// Create test user
 	testUserHandle := fmt.Sprintf("toggle-%d.local.coves.dev", time.Now().Unix())
@@ -469,7 +469,7 @@ func TestVoteE2E_ToggleDifferentDirection(t *testing.T) {
 
 	oauthStore := SetupOAuthTestStore(t, db)
 	oauthClient := SetupOAuthTestClient(t, oauthStore)
-	voteService := votes.NewService(voteRepo, oauthClient, oauthStore, nil)
+	voteService := votes.NewService(voteRepo, nil, oauthClient, oauthStore, nil)
 
 	// Create test user
 	testUserHandle := fmt.Sprintf("flip-%d.local.coves.dev", time.Now().Unix())
@@ -648,7 +648,7 @@ func TestVoteE2E_DeleteVote(t *testing.T) {
 
 	oauthStore := SetupOAuthTestStore(t, db)
 	oauthClient := SetupOAuthTestClient(t, oauthStore)
-	voteService := votes.NewService(voteRepo, oauthClient, oauthStore, nil)
+	voteService := votes.NewService(voteRepo, nil, oauthClient, oauthStore, nil)
 
 	// Create test user
 	testUserHandle := fmt.Sprintf("delete-%d.local.coves.dev", time.Now().Unix())

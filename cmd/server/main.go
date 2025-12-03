@@ -389,13 +389,39 @@ func main() {
 	voteRepo := postgresRepo.NewVoteRepository(db)
 	log.Println("✅ Vote repository initialized (Jetstream indexing only)")
 
-	// Initialize vote service (for XRPC API endpoints)
-	voteService := votes.NewService(voteRepo, oauthClient, oauthStore, nil)
-	log.Println("✅ Vote service initialized (with OAuth authentication)")
-
 	// Initialize comment repository (used by Jetstream consumer for indexing)
 	commentRepo := postgresRepo.NewCommentRepository(db)
 	log.Println("✅ Comment repository initialized (Jetstream indexing only)")
+
+	// Initialize subject validator for votes (checks posts and comments exist)
+	subjectValidator := votes.NewCompositeSubjectValidator(
+		// Post existence checker
+		func(ctx context.Context, uri string) (bool, error) {
+			_, err := postRepo.GetByURI(ctx, uri)
+			if err != nil {
+				if err == posts.ErrNotFound {
+					return false, nil
+				}
+				return false, err
+			}
+			return true, nil
+		},
+		// Comment existence checker
+		func(ctx context.Context, uri string) (bool, error) {
+			_, err := commentRepo.GetByURI(ctx, uri)
+			if err != nil {
+				if err == comments.ErrCommentNotFound {
+					return false, nil
+				}
+				return false, err
+			}
+			return true, nil
+		},
+	)
+
+	// Initialize vote service (for XRPC API endpoints)
+	voteService := votes.NewService(voteRepo, subjectValidator, oauthClient, oauthStore, nil)
+	log.Println("✅ Vote service initialized (with OAuth authentication and subject validation)")
 
 	// Initialize comment service (for query API)
 	// Requires user and community repos for proper author/community hydration per lexicon
