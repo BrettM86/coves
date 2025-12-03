@@ -322,12 +322,18 @@ func NewMockOAuthStore() *MockOAuthStore {
 
 // AddSession adds a session to the store
 func (m *MockOAuthStore) AddSession(did, sessionID, accessToken string) {
+	m.AddSessionWithPDS(did, sessionID, accessToken, getTestPDSURL())
+}
+
+// AddSessionWithPDS adds a session to the store with a specific PDS URL
+func (m *MockOAuthStore) AddSessionWithPDS(did, sessionID, accessToken, pdsURL string) {
 	key := did + ":" + sessionID
 	parsedDID, _ := syntax.ParseDID(did)
 	m.sessions[key] = &oauthlib.ClientSessionData{
 		AccountDID:  parsedDID,
 		SessionID:   sessionID,
 		AccessToken: accessToken,
+		HostURL:     pdsURL,
 	}
 }
 
@@ -407,5 +413,15 @@ func (e *E2EOAuthMiddleware) AddUser(did string) string {
 	sessionID := "session-" + did
 	e.unsealer.AddSession(token, did, sessionID)
 	e.store.AddSession(did, sessionID, "access-token-"+did)
+	return token
+}
+
+// AddUserWithPDSToken registers a user with their real PDS access token
+// Use this for E2E tests that need to write to the real PDS
+func (e *E2EOAuthMiddleware) AddUserWithPDSToken(did, pdsAccessToken, pdsURL string) string {
+	token := "test-token-" + did
+	sessionID := "session-" + did
+	e.unsealer.AddSession(token, did, sessionID)
+	e.store.AddSessionWithPDS(did, sessionID, pdsAccessToken, pdsURL)
 	return token
 }
