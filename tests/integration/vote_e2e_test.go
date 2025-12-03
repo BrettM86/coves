@@ -85,7 +85,7 @@ func TestVoteE2E_CreateUpvote(t *testing.T) {
 	oauthClient := SetupOAuthTestClient(t, oauthStore)
 
 	// Setup services
-	voteService := votes.NewService(voteRepo, nil, oauthClient, oauthStore, nil)
+	voteService := votes.NewService(voteRepo, oauthClient, oauthStore, nil)
 
 	// Create test user on PDS
 	testUserHandle := fmt.Sprintf("voter-%d.local.coves.dev", time.Now().Unix())
@@ -173,8 +173,8 @@ func TestVoteE2E_CreateUpvote(t *testing.T) {
 		CID string `json:"cid"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&voteResp); err != nil {
-		t.Fatalf("Failed to decode vote response: %v", err)
+	if decodeErr := json.NewDecoder(resp.Body).Decode(&voteResp); decodeErr != nil {
+		t.Fatalf("Failed to decode vote response: %v", decodeErr)
 	}
 
 	t.Logf("✅ XRPC response received:")
@@ -310,7 +310,7 @@ func TestVoteE2E_ToggleSameDirection(t *testing.T) {
 
 	oauthStore := SetupOAuthTestStore(t, db)
 	oauthClient := SetupOAuthTestClient(t, oauthStore)
-	voteService := votes.NewService(voteRepo, nil, oauthClient, oauthStore, nil)
+	voteService := votes.NewService(voteRepo, oauthClient, oauthStore, nil)
 
 	// Create test user
 	testUserHandle := fmt.Sprintf("toggle-%d.local.coves.dev", time.Now().Unix())
@@ -366,8 +366,12 @@ func TestVoteE2E_ToggleSameDirection(t *testing.T) {
 		URI string `json:"uri"`
 		CID string `json:"cid"`
 	}
-	json.NewDecoder(resp.Body).Decode(&firstVoteResp)
-	resp.Body.Close()
+	if decodeErr := json.NewDecoder(resp.Body).Decode(&firstVoteResp); decodeErr != nil {
+		t.Fatalf("Failed to decode first vote response: %v", decodeErr)
+	}
+	if closeErr := resp.Body.Close(); closeErr != nil {
+		t.Logf("Failed to close response body: %v", closeErr)
+	}
 
 	t.Logf("✅ First vote created: %s", firstVoteResp.URI)
 
@@ -394,7 +398,9 @@ func TestVoteE2E_ToggleSameDirection(t *testing.T) {
 			},
 		},
 	}
-	voteConsumer.HandleEvent(ctx, &voteEvent)
+	if handleErr := voteConsumer.HandleEvent(ctx, &voteEvent); handleErr != nil {
+		t.Fatalf("Failed to handle first vote event: %v", handleErr)
+	}
 
 	// Second upvote (same direction) - should toggle off (delete)
 	t.Logf("\n📝 Creating second upvote (toggle off)...")
@@ -408,7 +414,11 @@ func TestVoteE2E_ToggleSameDirection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to toggle vote: %v", err)
 	}
-	defer resp2.Body.Close()
+	defer func() {
+		if closeErr := resp2.Body.Close(); closeErr != nil {
+			t.Logf("Failed to close response body: %v", closeErr)
+		}
+	}()
 
 	if resp2.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp2.Body)
@@ -430,7 +440,9 @@ func TestVoteE2E_ToggleSameDirection(t *testing.T) {
 			RKey:       rkey,
 		},
 	}
-	voteConsumer.HandleEvent(ctx, &deleteEvent)
+	if handleErr := voteConsumer.HandleEvent(ctx, &deleteEvent); handleErr != nil {
+		t.Fatalf("Failed to handle delete event: %v", handleErr)
+	}
 
 	// Verify vote was removed from AppView
 	t.Logf("\n🔍 Verifying vote removed from AppView...")
@@ -469,7 +481,7 @@ func TestVoteE2E_ToggleDifferentDirection(t *testing.T) {
 
 	oauthStore := SetupOAuthTestStore(t, db)
 	oauthClient := SetupOAuthTestClient(t, oauthStore)
-	voteService := votes.NewService(voteRepo, nil, oauthClient, oauthStore, nil)
+	voteService := votes.NewService(voteRepo, oauthClient, oauthStore, nil)
 
 	// Create test user
 	testUserHandle := fmt.Sprintf("flip-%d.local.coves.dev", time.Now().Unix())
@@ -516,13 +528,20 @@ func TestVoteE2E_ToggleDifferentDirection(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Failed to create upvote: %v", err)
+	}
 	var upvoteResp struct {
 		URI string `json:"uri"`
 		CID string `json:"cid"`
 	}
-	json.NewDecoder(resp.Body).Decode(&upvoteResp)
-	resp.Body.Close()
+	if decodeErr := json.NewDecoder(resp.Body).Decode(&upvoteResp); decodeErr != nil {
+		t.Fatalf("Failed to decode upvote response: %v", decodeErr)
+	}
+	if closeErr := resp.Body.Close(); closeErr != nil {
+		t.Logf("Failed to close response body: %v", closeErr)
+	}
 
 	// Index upvote
 	rkey := utils.ExtractRKeyFromURI(upvoteResp.URI)
@@ -547,7 +566,9 @@ func TestVoteE2E_ToggleDifferentDirection(t *testing.T) {
 			},
 		},
 	}
-	voteConsumer.HandleEvent(ctx, &upvoteEvent)
+	if handleErr := voteConsumer.HandleEvent(ctx, &upvoteEvent); handleErr != nil {
+		t.Fatalf("Failed to handle upvote event: %v", handleErr)
+	}
 
 	t.Logf("✅ Upvote created and indexed")
 
@@ -568,13 +589,20 @@ func TestVoteE2E_ToggleDifferentDirection(t *testing.T) {
 	req2.Header.Set("Content-Type", "application/json")
 	req2.Header.Set("Authorization", "Bearer "+token)
 
-	resp2, _ := http.DefaultClient.Do(req2)
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("Failed to create downvote: %v", err)
+	}
 	var downvoteResp struct {
 		URI string `json:"uri"`
 		CID string `json:"cid"`
 	}
-	json.NewDecoder(resp2.Body).Decode(&downvoteResp)
-	resp2.Body.Close()
+	if decodeErr := json.NewDecoder(resp2.Body).Decode(&downvoteResp); decodeErr != nil {
+		t.Fatalf("Failed to decode downvote response: %v", decodeErr)
+	}
+	if closeErr := resp2.Body.Close(); closeErr != nil {
+		t.Logf("Failed to close response body: %v", closeErr)
+	}
 
 	// Simulate Jetstream UPDATE event (PDS updates the existing record)
 	t.Logf("\n🔄 Simulating Jetstream UPDATE event...")
@@ -599,7 +627,9 @@ func TestVoteE2E_ToggleDifferentDirection(t *testing.T) {
 			},
 		},
 	}
-	voteConsumer.HandleEvent(ctx, &updateEvent)
+	if handleErr := voteConsumer.HandleEvent(ctx, &updateEvent); handleErr != nil {
+		t.Fatalf("Failed to handle update event: %v", handleErr)
+	}
 
 	// Verify vote direction changed in AppView
 	t.Logf("\n🔍 Verifying vote direction changed in AppView...")
@@ -648,7 +678,7 @@ func TestVoteE2E_DeleteVote(t *testing.T) {
 
 	oauthStore := SetupOAuthTestStore(t, db)
 	oauthClient := SetupOAuthTestClient(t, oauthStore)
-	voteService := votes.NewService(voteRepo, nil, oauthClient, oauthStore, nil)
+	voteService := votes.NewService(voteRepo, oauthClient, oauthStore, nil)
 
 	// Create test user
 	testUserHandle := fmt.Sprintf("delete-%d.local.coves.dev", time.Now().Unix())
@@ -695,13 +725,20 @@ func TestVoteE2E_DeleteVote(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	resp, _ := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Failed to create vote: %v", err)
+	}
 	var voteResp struct {
 		URI string `json:"uri"`
 		CID string `json:"cid"`
 	}
-	json.NewDecoder(resp.Body).Decode(&voteResp)
-	resp.Body.Close()
+	if decodeErr := json.NewDecoder(resp.Body).Decode(&voteResp); decodeErr != nil {
+		t.Fatalf("Failed to decode vote response: %v", decodeErr)
+	}
+	if closeErr := resp.Body.Close(); closeErr != nil {
+		t.Logf("Failed to close response body: %v", closeErr)
+	}
 
 	// Index vote
 	rkey := utils.ExtractRKeyFromURI(voteResp.URI)
@@ -726,7 +763,9 @@ func TestVoteE2E_DeleteVote(t *testing.T) {
 			},
 		},
 	}
-	voteConsumer.HandleEvent(ctx, &voteEvent)
+	if handleErr := voteConsumer.HandleEvent(ctx, &voteEvent); handleErr != nil {
+		t.Fatalf("Failed to handle vote event: %v", handleErr)
+	}
 
 	t.Logf("✅ Vote created and indexed")
 
@@ -746,8 +785,15 @@ func TestVoteE2E_DeleteVote(t *testing.T) {
 	deleteHttpReq.Header.Set("Content-Type", "application/json")
 	deleteHttpReq.Header.Set("Authorization", "Bearer "+token)
 
-	deleteResp, _ := http.DefaultClient.Do(deleteHttpReq)
-	defer deleteResp.Body.Close()
+	deleteResp, err := http.DefaultClient.Do(deleteHttpReq)
+	if err != nil {
+		t.Fatalf("Failed to delete vote: %v", err)
+	}
+	defer func() {
+		if closeErr := deleteResp.Body.Close(); closeErr != nil {
+			t.Logf("Failed to close response body: %v", closeErr)
+		}
+	}()
 
 	if deleteResp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(deleteResp.Body)
@@ -756,7 +802,9 @@ func TestVoteE2E_DeleteVote(t *testing.T) {
 
 	// Per lexicon, delete returns empty object {}
 	var deleteRespBody map[string]interface{}
-	json.NewDecoder(deleteResp.Body).Decode(&deleteRespBody)
+	if decodeErr := json.NewDecoder(deleteResp.Body).Decode(&deleteRespBody); decodeErr != nil {
+		t.Fatalf("Failed to decode delete response: %v", decodeErr)
+	}
 
 	if len(deleteRespBody) != 0 {
 		t.Errorf("Expected empty object per lexicon, got %v", deleteRespBody)
@@ -777,7 +825,9 @@ func TestVoteE2E_DeleteVote(t *testing.T) {
 			RKey:       rkey,
 		},
 	}
-	voteConsumer.HandleEvent(ctx, &deleteEvent)
+	if handleErr := voteConsumer.HandleEvent(ctx, &deleteEvent); handleErr != nil {
+		t.Fatalf("Failed to handle delete event: %v", handleErr)
+	}
 
 	// Verify vote removed from AppView
 	t.Logf("\n🔍 Verifying vote removed from AppView...")

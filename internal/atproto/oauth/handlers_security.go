@@ -25,10 +25,10 @@ import (
 // - Android: Verified via /.well-known/assetlinks.json
 var allowedMobileRedirectURIs = map[string]bool{
 	// Custom scheme per atproto spec (reverse-domain of coves.social)
-	"social.coves:/callback":                  true,
-	"social.coves://callback":                 true, // Some platforms add double slash
-	"social.coves:/oauth/callback":            true, // Alternative path
-	"social.coves://oauth/callback":           true,
+	"social.coves:/callback":        true,
+	"social.coves://callback":       true, // Some platforms add double slash
+	"social.coves:/oauth/callback":  true, // Alternative path
+	"social.coves://oauth/callback": true,
 	// Universal Links - cryptographically bound to app (preferred for security)
 	"https://coves.social/app/oauth/callback": true,
 }

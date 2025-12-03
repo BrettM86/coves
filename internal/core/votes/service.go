@@ -10,11 +10,11 @@ import (
 // Implements write-forward pattern: validates requests, then forwards to user's PDS
 //
 // Architecture:
-// - Service validates input and checks authorization
-// - Queries user's PDS directly via com.atproto.repo.listRecords to check existing votes
-//   (avoids eventual consistency issues with AppView database)
-// - Creates/deletes vote records via com.atproto.repo.createRecord/deleteRecord
-// - AppView indexes resulting records from Jetstream firehose for aggregate counts
+//   - Service validates input and checks authorization
+//   - Queries user's PDS directly via com.atproto.repo.listRecords to check existing votes
+//     (avoids eventual consistency issues with AppView database)
+//   - Creates/deletes vote records via com.atproto.repo.createRecord/deleteRecord
+//   - AppView indexes resulting records from Jetstream firehose for aggregate counts
 type Service interface {
 	// CreateVote creates a new vote or toggles off an existing vote
 	// Returns URI and CID of created vote, or empty strings if toggled off
@@ -22,7 +22,11 @@ type Service interface {
 	// Validation:
 	// - Direction must be "up" or "down" (returns ErrInvalidDirection)
 	// - Subject URI must be valid AT-URI (returns ErrInvalidSubject)
-	// - Subject must exist (returns ErrSubjectNotFound)
+	// - Subject CID must be provided (returns ErrInvalidSubject)
+	//
+	// Note: Subject existence is NOT validated. Votes on non-existent or deleted
+	// subjects are allowed - the Jetstream consumer handles orphaned votes correctly
+	// by only updating counts for non-deleted subjects.
 	//
 	// Behavior:
 	// - If no vote exists: creates new vote with given direction

@@ -45,10 +45,6 @@
       },
       "errors": [
         {
-          "name": "SubjectNotFound",
-          "description": "The subject post or comment was not found"
-        },
-        {
           "name": "NotAuthorized",
           "description": "User is not authorized to vote on this content"
         },

@@ -344,17 +344,11 @@ func TestCreateVoteHandler_MethodNotAllowed(t *testing.T) {
 
 func TestCreateVoteHandler_ServiceError(t *testing.T) {
 	tests := []struct {
-		name           string
 		serviceError   error
-		expectedStatus int
+		name           string
 		expectedError  string
+		expectedStatus int
 	}{
-		{
-			name:           "subject not found",
-			serviceError:   votes.ErrSubjectNotFound,
-			expectedStatus: http.StatusNotFound,
-			expectedError:  "SubjectNotFound", // Per lexicon: social.coves.feed.vote.create#SubjectNotFound
-		},
 		{
 			name:           "invalid direction",
 			serviceError:   votes.ErrInvalidDirection,

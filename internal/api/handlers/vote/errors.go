@@ -34,9 +34,6 @@ func handleServiceError(w http.ResponseWriter, err error) {
 	case errors.Is(err, votes.ErrVoteNotFound):
 		// Matches: social.coves.feed.vote.delete#VoteNotFound
 		writeError(w, http.StatusNotFound, "VoteNotFound", "No vote found for this subject")
-	case errors.Is(err, votes.ErrSubjectNotFound):
-		// Matches: social.coves.feed.vote.create#SubjectNotFound
-		writeError(w, http.StatusNotFound, "SubjectNotFound", "The subject post or comment was not found")
 	case errors.Is(err, votes.ErrInvalidDirection):
 		writeError(w, http.StatusBadRequest, "InvalidRequest", "Vote direction must be 'up' or 'down'")
 	case errors.Is(err, votes.ErrInvalidSubject):

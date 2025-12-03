@@ -6,9 +6,6 @@ var (
 	// ErrVoteNotFound indicates the requested vote doesn't exist
 	ErrVoteNotFound = errors.New("vote not found")
 
-	// ErrSubjectNotFound indicates the post/comment being voted on doesn't exist
-	ErrSubjectNotFound = errors.New("subject not found")
-
 	// ErrInvalidDirection indicates the vote direction is not "up" or "down"
 	ErrInvalidDirection = errors.New("invalid vote direction: must be 'up' or 'down'")
 

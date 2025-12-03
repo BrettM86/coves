@@ -19,25 +19,22 @@ import (
 
 // voteService implements the Service interface for vote operations
 type voteService struct {
-	repo             Repository
-	subjectValidator SubjectValidator
-	oauthClient      *oauthclient.OAuthClient
-	oauthStore       oauth.ClientAuthStore
-	logger           *slog.Logger
+	repo        Repository
+	oauthClient *oauthclient.OAuthClient
+	oauthStore  oauth.ClientAuthStore
+	logger      *slog.Logger
 }
 
 // NewService creates a new vote service instance
-// subjectValidator can be nil to skip subject existence checks (not recommended for production)
-func NewService(repo Repository, subjectValidator SubjectValidator, oauthClient *oauthclient.OAuthClient, oauthStore oauth.ClientAuthStore, logger *slog.Logger) Service {
+func NewService(repo Repository, oauthClient *oauthclient.OAuthClient, oauthStore oauth.ClientAuthStore, logger *slog.Logger) Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &voteService{
-		repo:             repo,
-		subjectValidator: subjectValidator,
-		oauthClient:      oauthClient,
-		oauthStore:       oauthStore,
-		logger:           logger,
+		repo:        repo,
+		oauthClient: oauthClient,
+		oauthStore:  oauthStore,
+		logger:      logger,
 	}
 }
 
@@ -65,20 +62,10 @@ func (s *voteService) CreateVote(ctx context.Context, session *oauth.ClientSessi
 		return nil, ErrInvalidSubject
 	}
 
-	// Validate subject exists in AppView (post or comment)
-	// This prevents creating votes on non-existent content
-	if s.subjectValidator != nil {
-		exists, err := s.subjectValidator.SubjectExists(ctx, req.Subject.URI)
-		if err != nil {
-			s.logger.Error("failed to validate subject existence",
-				"error", err,
-				"subject", req.Subject.URI)
-			return nil, fmt.Errorf("failed to validate subject: %w", err)
-		}
-		if !exists {
-			return nil, ErrSubjectNotFound
-		}
-	}
+	// Note: We intentionally don't validate subject existence here.
+	// The vote record goes to the user's PDS regardless. The Jetstream consumer
+	// handles orphaned votes correctly by only updating counts for non-deleted subjects.
+	// This avoids race conditions and eventual consistency issues.
 
 	// Check for existing vote by querying PDS directly (source of truth)
 	// This avoids eventual consistency issues with the AppView database
@@ -284,6 +271,7 @@ func (s *voteService) getVoteFromPDS(ctx context.Context, session *oauth.ClientS
 
 		// Parse the listRecords response
 		var result struct {
+			Cursor  string `json:"cursor"`
 			Records []struct {
 				URI   string `json:"uri"`
 				CID   string `json:"cid"`
@@ -297,7 +285,6 @@ func (s *voteService) getVoteFromPDS(ctx context.Context, session *oauth.ClientS
 					CreatedAt string `json:"createdAt"`
 				} `json:"value"`
 			} `json:"records"`
-			Cursor string `json:"cursor"`
 		}
 
 		if err := json.Unmarshal(body, &result); err != nil {

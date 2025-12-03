@@ -1,17 +1,8 @@
 package votes
 
 import (
-	"context"
 	"time"
 )
-
-// SubjectValidator validates that vote subjects (posts/comments) exist
-// This prevents creating votes on non-existent content
-type SubjectValidator interface {
-	// SubjectExists checks if a post or comment exists at the given URI
-	// Returns true if found, false if not found
-	SubjectExists(ctx context.Context, uri string) (bool, error)
-}
 
 // Vote represents a vote in the AppView database
 // Votes are indexed from the firehose after being written to user repositories

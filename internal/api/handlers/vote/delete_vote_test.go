@@ -239,22 +239,16 @@ func TestDeleteVoteHandler_MethodNotAllowed(t *testing.T) {
 
 func TestDeleteVoteHandler_ServiceError(t *testing.T) {
 	tests := []struct {
-		name           string
 		serviceError   error
-		expectedStatus int
+		name           string
 		expectedError  string
+		expectedStatus int
 	}{
 		{
 			name:           "vote not found",
 			serviceError:   votes.ErrVoteNotFound,
 			expectedStatus: http.StatusNotFound,
 			expectedError:  "VoteNotFound", // Per lexicon: social.coves.feed.vote.delete#VoteNotFound
-		},
-		{
-			name:           "subject not found",
-			serviceError:   votes.ErrSubjectNotFound,
-			expectedStatus: http.StatusNotFound,
-			expectedError:  "SubjectNotFound", // Per lexicon: social.coves.feed.vote.create#SubjectNotFound
 		},
 		{
 			name:           "invalid subject",
