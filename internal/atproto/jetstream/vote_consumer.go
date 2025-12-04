@@ -99,11 +99,14 @@ func (c *VoteEventConsumer) createVote(ctx context.Context, repoDID string, comm
 	}
 
 	// Atomically: Index vote + Update post counts
-	if err := c.indexVoteAndUpdateCounts(ctx, vote); err != nil {
+	wasNew, err := c.indexVoteAndUpdateCounts(ctx, vote)
+	if err != nil {
 		return fmt.Errorf("failed to index vote and update counts: %w", err)
 	}
 
-	log.Printf("✓ Indexed vote: %s (%s on %s)", uri, vote.Direction, vote.SubjectURI)
+	if wasNew {
+		log.Printf("✓ Indexed vote: %s (%s on %s)", uri, vote.Direction, vote.SubjectURI)
+	}
 	return nil
 }
 
@@ -133,10 +136,11 @@ func (c *VoteEventConsumer) deleteVote(ctx context.Context, repoDID string, comm
 }
 
 // indexVoteAndUpdateCounts atomically indexes a vote and updates post vote counts
-func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *votes.Vote) error {
+// Returns (true, nil) if vote was newly inserted, (false, nil) if already existed (idempotent)
+func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *votes.Vote) (bool, error) {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
+		return false, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer func() {
 		if rollbackErr := tx.Rollback(); rollbackErr != nil && rollbackErr != sql.ErrTxDone {
@@ -144,7 +148,63 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 		}
 	}()
 
-	// 1. Index the vote (idempotent with ON CONFLICT DO NOTHING)
+	// 1. Check for existing active vote with different URI (stale record)
+	// This handles cases where:
+	// - User voted on another client and we missed the delete event
+	// - Vote was reindexed but user created a new vote with different rkey
+	// - Any other state mismatch between PDS and AppView
+	var existingDirection sql.NullString
+	checkQuery := `
+		SELECT direction FROM votes
+		WHERE voter_did = $1
+		  AND subject_uri = $2
+		  AND deleted_at IS NULL
+		  AND uri != $3
+		LIMIT 1
+	`
+	if err := tx.QueryRowContext(ctx, checkQuery, vote.VoterDID, vote.SubjectURI, vote.URI).Scan(&existingDirection); err != nil && err != sql.ErrNoRows {
+		return false, fmt.Errorf("failed to check existing vote: %w", err)
+	}
+
+	// If there's a stale vote, soft-delete it and adjust counts
+	if existingDirection.Valid {
+		softDeleteQuery := `
+			UPDATE votes
+			SET deleted_at = NOW()
+			WHERE voter_did = $1
+			  AND subject_uri = $2
+			  AND deleted_at IS NULL
+			  AND uri != $3
+		`
+		if _, err := tx.ExecContext(ctx, softDeleteQuery, vote.VoterDID, vote.SubjectURI, vote.URI); err != nil {
+			return false, fmt.Errorf("failed to soft-delete existing votes: %w", err)
+		}
+
+		// Decrement the old vote's count (will be re-incremented below if same direction)
+		collection := utils.ExtractCollectionFromURI(vote.SubjectURI)
+		var decrementQuery string
+		if existingDirection.String == "up" {
+			if collection == "social.coves.community.post" {
+				decrementQuery = `UPDATE posts SET upvote_count = GREATEST(0, upvote_count - 1), score = upvote_count - 1 - downvote_count WHERE uri = $1 AND deleted_at IS NULL`
+			} else if collection == "social.coves.community.comment" {
+				decrementQuery = `UPDATE comments SET upvote_count = GREATEST(0, upvote_count - 1), score = upvote_count - 1 - downvote_count WHERE uri = $1 AND deleted_at IS NULL`
+			}
+		} else {
+			if collection == "social.coves.community.post" {
+				decrementQuery = `UPDATE posts SET downvote_count = GREATEST(0, downvote_count - 1), score = upvote_count - (downvote_count - 1) WHERE uri = $1 AND deleted_at IS NULL`
+			} else if collection == "social.coves.community.comment" {
+				decrementQuery = `UPDATE comments SET downvote_count = GREATEST(0, downvote_count - 1), score = upvote_count - (downvote_count - 1) WHERE uri = $1 AND deleted_at IS NULL`
+			}
+		}
+		if decrementQuery != "" {
+			if _, err := tx.ExecContext(ctx, decrementQuery, vote.SubjectURI); err != nil {
+				return false, fmt.Errorf("failed to decrement old vote count: %w", err)
+			}
+		}
+		log.Printf("Cleaned up stale vote for %s on %s (was %s)", vote.VoterDID, vote.SubjectURI, existingDirection.String)
+	}
+
+	// 2. Index the vote (idempotent with ON CONFLICT DO NOTHING)
 	query := `
 		INSERT INTO votes (
 			uri, cid, rkey, voter_did,
@@ -169,18 +229,18 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 
 	// If no rows returned, vote already exists (idempotent - OK for Jetstream replays)
 	if err == sql.ErrNoRows {
-		log.Printf("Vote already indexed: %s (idempotent)", vote.URI)
+		// Silently handle idempotent case - no log needed for replayed events
 		if commitErr := tx.Commit(); commitErr != nil {
-			return fmt.Errorf("failed to commit transaction: %w", commitErr)
+			return false, fmt.Errorf("failed to commit transaction: %w", commitErr)
 		}
-		return nil
+		return false, nil // Vote already existed
 	}
 
 	if err != nil {
-		return fmt.Errorf("failed to insert vote: %w", err)
+		return false, fmt.Errorf("failed to insert vote: %w", err)
 	}
 
-	// 2. Update vote counts on the subject (post or comment)
+	// 3. Update vote counts on the subject (post or comment)
 	// Parse collection from subject URI to determine target table
 	collection := utils.ExtractCollectionFromURI(vote.SubjectURI)
 
@@ -227,19 +287,19 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 		// Vote is still indexed in votes table, we just don't update denormalized counts
 		log.Printf("Vote subject has unsupported collection: %s (vote indexed, counts not updated)", collection)
 		if commitErr := tx.Commit(); commitErr != nil {
-			return fmt.Errorf("failed to commit transaction: %w", commitErr)
+			return false, fmt.Errorf("failed to commit transaction: %w", commitErr)
 		}
-		return nil
+		return true, nil // Vote was newly indexed
 	}
 
 	result, err := tx.ExecContext(ctx, updateQuery, vote.SubjectURI)
 	if err != nil {
-		return fmt.Errorf("failed to update vote counts: %w", err)
+		return false, fmt.Errorf("failed to update vote counts: %w", err)
 	}
 
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("failed to check update result: %w", err)
+		return false, fmt.Errorf("failed to check update result: %w", err)
 	}
 
 	// If subject doesn't exist or is deleted, that's OK (vote still indexed)
@@ -249,10 +309,10 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 
 	// Commit transaction
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
+		return false, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	return nil
+	return true, nil // Vote was newly indexed
 }
 
 // deleteVoteAndUpdateCounts atomically soft-deletes a vote and updates post vote counts
