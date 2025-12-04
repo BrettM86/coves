@@ -3,6 +3,7 @@ package oauth
 import (
 	"encoding/base64"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"time"
 
@@ -22,6 +23,7 @@ type OAuthConfig struct {
 	PublicURL       string
 	SealSecret      string
 	PLCURL          string
+	PDSURL          string // For dev mode: resolve handles via local PDS
 	Scopes          []string
 	SessionTTL      time.Duration
 	SealedTokenTTL  time.Duration
@@ -77,9 +79,14 @@ func NewOAuthClient(config *OAuthConfig, store oauth.ClientAuthStore) (*OAuthCli
 	// Create indigo client config
 	var clientConfig oauth.ClientConfig
 	if config.DevMode {
-		// Dev mode: localhost with HTTP
-		callbackURL := "http://localhost:3000/oauth/callback"
+		// Dev mode: loopback with HTTP
+		// IMPORTANT: Use 127.0.0.1 instead of localhost per RFC 8252 - PDS rejects localhost
+		// The callback URL must match the APPVIEW_PUBLIC_URL from .env.dev
+		callbackURL := config.PublicURL + "/oauth/callback"
 		clientConfig = oauth.NewLocalhostConfig(callbackURL, config.Scopes)
+		slog.Info("dev mode: OAuth client configured",
+			"callback_url", callbackURL,
+			"client_id", clientConfig.ClientID)
 	} else {
 		// Production mode: public OAuth client with HTTPS
 		// client_id must be the URL of the client metadata document per atproto OAuth spec
@@ -112,6 +119,10 @@ func NewOAuthClient(config *OAuthConfig, store oauth.ClientAuthStore) (*OAuthCli
 		// Use pointer since CacheDirectory methods have pointer receivers
 		cacheDir := identity.NewCacheDirectory(baseDir, 100_000, time.Hour*24, time.Minute*2, time.Minute*5)
 		clientApp.Dir = &cacheDir
+		// Log the PLC URL being used for OAuth directory resolution
+		fmt.Printf("🔐 OAuth client directory configured with PLC URL: %s (AllowPrivateIPs: %v)\n", config.PLCURL, config.AllowPrivateIPs)
+	} else {
+		fmt.Println("⚠️  OAuth client using DEFAULT PLC directory (production plc.directory)")
 	}
 
 	return &OAuthClient{

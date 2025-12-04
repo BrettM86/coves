@@ -58,6 +58,7 @@ services:
 
   # Bluesky Personal Data Server (PDS)
   # Handles user repositories, DIDs, and CAR files
+  # NOTE: When using --profile plc, PDS waits for PLC directory to be healthy
   pds:
     image: ghcr.io/bluesky-social/pds:latest
     container_name: coves-dev-pds
@@ -69,7 +70,10 @@ services:
       PDS_PORT: 3001  # Match external port for correct DID registration
       PDS_DATA_DIRECTORY: /pds
       PDS_BLOBSTORE_DISK_LOCATION: /pds/blocks
-      PDS_DID_PLC_URL: ${PDS_DID_PLC_URL:-https://plc.directory}
+      # IMPORTANT: For local E2E testing, this MUST point to local PLC directory
+      # Default to local PLC (http://plc-directory:3000) for full local stack
+      # The container hostname 'plc-directory' is used for Docker network communication
+      PDS_DID_PLC_URL: ${PDS_DID_PLC_URL:-http://plc-directory:3000}
       # PDS_CRAWLERS not needed - we're not using a relay for local dev
 
       # Note: PDS uses its own internal SQLite database and CAR file storage

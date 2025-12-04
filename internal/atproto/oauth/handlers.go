@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
@@ -146,9 +147,11 @@ type MobileOAuthStore interface {
 
 // OAuthHandler handles OAuth-related HTTP endpoints
 type OAuthHandler struct {
-	client      *OAuthClient
-	store       oauth.ClientAuthStore
-	mobileStore MobileOAuthStore // For server-side CSRF validation
+	client          *OAuthClient
+	store           oauth.ClientAuthStore
+	mobileStore     MobileOAuthStore    // For server-side CSRF validation
+	devResolver     *DevHandleResolver  // For dev mode: resolve handles via local PDS
+	devAuthResolver *DevAuthResolver    // For dev mode: bypass HTTPS validation for localhost OAuth
 }
 
 // NewOAuthHandler creates a new OAuth handler
@@ -161,6 +164,20 @@ func NewOAuthHandler(client *OAuthClient, store oauth.ClientAuthStore) *OAuthHan
 	// Check if the store implements MobileOAuthStore for server-side CSRF
 	if mobileStore, ok := store.(MobileOAuthStore); ok {
 		handler.mobileStore = mobileStore
+	}
+
+	// In dev mode, create resolvers for local PDS/PLC
+	// This is needed because:
+	// 1. Local handles (e.g., user.local.coves.dev) can't be resolved via DNS/HTTP
+	// 2. Indigo's OAuth library requires HTTPS, which localhost doesn't have
+	if client.Config.DevMode {
+		if client.Config.PDSURL != "" {
+			handler.devResolver = NewDevHandleResolver(client.Config.PDSURL, client.Config.AllowPrivateIPs)
+			slog.Info("dev mode: handle resolution via local PDS enabled", "pds_url", client.Config.PDSURL)
+		}
+		// Create dev auth resolver to bypass HTTPS validation (pass PDS URL for handle resolution)
+		handler.devAuthResolver = NewDevAuthResolver(client.Config.PDSURL, client.Config.AllowPrivateIPs)
+		slog.Info("dev mode: localhost OAuth auth resolver enabled", "pds_url", client.Config.PDSURL)
 	}
 
 	return handler
@@ -203,12 +220,29 @@ func (h *OAuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Start OAuth flow
-	redirectURL, err := h.client.ClientApp.StartAuthFlow(ctx, identifier)
-	if err != nil {
-		slog.Error("failed to start OAuth flow", "error", err, "identifier", identifier)
-		http.Error(w, fmt.Sprintf("failed to start OAuth flow: %v", err), http.StatusBadRequest)
-		return
+	var redirectURL string
+	var err error
+
+	// DEV MODE: Use custom OAuth flow that bypasses HTTPS validation
+	// This is needed because:
+	// 1. Local handles can't be resolved via DNS/HTTP well-known
+	// 2. Indigo's OAuth library requires HTTPS for auth servers
+	if h.devAuthResolver != nil {
+		slog.Info("dev mode: using localhost OAuth flow", "identifier", identifier)
+		redirectURL, err = h.devAuthResolver.StartDevAuthFlow(ctx, h.client, identifier, h.client.ClientApp.Dir)
+		if err != nil {
+			slog.Error("dev mode: failed to start OAuth flow", "error", err, "identifier", identifier)
+			http.Error(w, fmt.Sprintf("failed to start OAuth flow: %v", err), http.StatusBadRequest)
+			return
+		}
+	} else {
+		// Production mode: use standard indigo OAuth flow
+		redirectURL, err = h.client.ClientApp.StartAuthFlow(ctx, identifier)
+		if err != nil {
+			slog.Error("failed to start OAuth flow", "error", err, "identifier", identifier)
+			http.Error(w, fmt.Sprintf("failed to start OAuth flow: %v", err), http.StatusBadRequest)
+			return
+		}
 	}
 
 	// Log OAuth flow initiation (sanitized - no full URL to avoid leaking state)
@@ -222,6 +256,18 @@ func (h *OAuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 // GET /oauth/mobile/login?handle=user.bsky.social&redirect_uri=coves-app://callback
 func (h *OAuthHandler) HandleMobileLogin(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	// DEV MODE: Redirect localhost to 127.0.0.1 for cookie consistency
+	// The OAuth callback URL uses 127.0.0.1 (per RFC 8252), so cookies must be set
+	// on 127.0.0.1. If user calls localhost, redirect to 127.0.0.1 first.
+	if h.client.Config.DevMode && strings.Contains(r.Host, "localhost") {
+		// Use the configured PublicURL host for consistency
+		redirectURL := h.client.Config.PublicURL + r.URL.RequestURI()
+		slog.Info("dev mode: redirecting localhost to PublicURL host for cookie consistency",
+			"from", r.Host, "to", h.client.Config.PublicURL)
+		http.Redirect(w, r, redirectURL, http.StatusFound)
+		return
+	}
 
 	// Get handle or DID from query params
 	identifier := r.URL.Query().Get("handle")
@@ -276,12 +322,28 @@ func (h *OAuthHandler) HandleMobileLogin(w http.ResponseWriter, r *http.Request)
 		RedirectURI: mobileRedirectURI,
 	})
 
-	// Start OAuth flow (the store wrapper will save mobile data when auth request is saved)
-	redirectURL, err := h.client.ClientApp.StartAuthFlow(mobileCtx, identifier)
-	if err != nil {
-		slog.Error("failed to start OAuth flow", "error", err, "identifier", identifier)
-		http.Error(w, fmt.Sprintf("failed to start OAuth flow: %v", err), http.StatusBadRequest)
-		return
+	var redirectURL string
+
+	// DEV MODE: Use custom OAuth flow that bypasses HTTPS validation
+	// This is needed because:
+	// 1. Local handles can't be resolved via DNS/HTTP well-known
+	// 2. Indigo's OAuth library requires HTTPS for auth servers
+	if h.devAuthResolver != nil {
+		slog.Info("dev mode: using localhost OAuth flow for mobile", "identifier", identifier)
+		redirectURL, err = h.devAuthResolver.StartDevAuthFlow(mobileCtx, h.client, identifier, h.client.ClientApp.Dir)
+		if err != nil {
+			slog.Error("dev mode: failed to start OAuth flow", "error", err, "identifier", identifier)
+			http.Error(w, fmt.Sprintf("failed to start OAuth flow: %v", err), http.StatusBadRequest)
+			return
+		}
+	} else {
+		// Production mode: use standard indigo OAuth flow
+		redirectURL, err = h.client.ClientApp.StartAuthFlow(mobileCtx, identifier)
+		if err != nil {
+			slog.Error("failed to start OAuth flow", "error", err, "identifier", identifier)
+			http.Error(w, fmt.Sprintf("failed to start OAuth flow: %v", err), http.StatusBadRequest)
+			return
+		}
 	}
 
 	// Log mobile OAuth flow initiation (sanitized - no full URLs or sensitive params)
@@ -384,6 +446,35 @@ func (h *OAuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		// Check if the handle is the special "handle.invalid" value
 		// This indicates that bidirectional verification failed (DID->handle->DID roundtrip failed)
 		if ident.Handle.String() == "handle.invalid" {
+			// DEV MODE: For local handles, verify via PDS instead of DNS/HTTP
+			// Local handles like "user.local.coves.dev" can't be resolved via DNS
+			if h.devResolver != nil {
+				// Get the handle from DID document (alsoKnownAs)
+				declaredHandle := ""
+				if len(ident.AlsoKnownAs) > 0 {
+					// Extract handle from at:// URI
+					for _, aka := range ident.AlsoKnownAs {
+						if len(aka) > 5 && aka[:5] == "at://" {
+							declaredHandle = aka[5:]
+							break
+						}
+					}
+				}
+
+				if declaredHandle != "" {
+					// Verify handle via PDS
+					resolvedDID, err := h.devResolver.ResolveHandle(ctx, declaredHandle)
+					if err == nil && resolvedDID == sessData.AccountDID.String() {
+						slog.Info("OAuth callback successful (dev mode: handle verified via PDS)",
+							"did", sessData.AccountDID, "handle", declaredHandle)
+						goto handleVerificationPassed
+					}
+					slog.Warn("dev mode: PDS handle verification failed",
+						"did", sessData.AccountDID, "handle", declaredHandle,
+						"resolved_did", resolvedDID, "error", err)
+				}
+			}
+
 			slog.Warn("OAuth callback: bidirectional handle verification failed",
 				"did", sessData.AccountDID,
 				"handle", "handle.invalid",
@@ -401,6 +492,7 @@ func (h *OAuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 			"did", sessData.AccountDID)
 		slog.Info("OAuth callback successful (no handle verification)", "did", sessData.AccountDID)
 	}
+handleVerificationPassed:
 
 	// Check if this is a mobile callback (check for mobile_redirect_uri cookie)
 	mobileRedirect, err := r.Cookie("mobile_redirect_uri")

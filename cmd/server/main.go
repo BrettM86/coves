@@ -143,6 +143,7 @@ func main() {
 	if plcURL == "" {
 		plcURL = "https://plc.directory"
 	}
+	log.Printf("🔐 OAuth will use PLC directory: %s", plcURL)
 
 	// Initialize OAuth client for sealed session tokens
 	// Mobile apps authenticate via OAuth flow and receive sealed session tokens
@@ -162,6 +163,7 @@ func main() {
 	}
 
 	isDevMode := os.Getenv("IS_DEV_ENV") == "true"
+	pdsURL := os.Getenv("PDS_URL") // For dev mode: resolve handles via local PDS
 	oauthConfig := &oauth.OAuthConfig{
 		PublicURL:       os.Getenv("APPVIEW_PUBLIC_URL"),
 		SealSecret:      oauthSealSecret,
@@ -169,6 +171,7 @@ func main() {
 		DevMode:         isDevMode,
 		AllowPrivateIPs: isDevMode, // Allow private IPs only in dev mode
 		PLCURL:          plcURL,
+		PDSURL:          pdsURL, // For dev mode handle resolution
 		// SessionTTL and SealedTokenTTL will use defaults if not set (7 days and 14 days)
 	}
 

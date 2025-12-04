@@ -1,4 +1,4 @@
-.PHONY: help dev-up dev-down dev-logs dev-status dev-reset test e2e-test clean
+.PHONY: help dev-up dev-down dev-logs dev-status dev-reset test e2e-test clean verify-stack create-test-account mobile-full-setup
 
 # Default target - show help
 .DEFAULT_GOAL := help
@@ -186,10 +186,15 @@ lint-fix: ## Run golangci-lint and auto-fix issues
 
 ##@ Build & Run
 
-build: ## Build the Coves server
-	@echo "$(GREEN)Building Coves server...$(RESET)"
+build: ## Build the Coves server (production - no dev code)
+	@echo "$(GREEN)Building Coves server (production)...$(RESET)"
 	@go build -o server ./cmd/server
 	@echo "$(GREEN)✓ Build complete: ./server$(RESET)"
+
+build-dev: ## Build the Coves server with dev mode (includes localhost OAuth resolvers)
+	@echo "$(GREEN)Building Coves server (dev mode)...$(RESET)"
+	@go build -tags dev -o server ./cmd/server
+	@echo "$(GREEN)✓ Build complete: ./server (with dev tags)$(RESET)"
 
 run: ## Run the Coves server with dev environment (requires database running)
 	@./scripts/dev-run.sh
@@ -235,6 +240,23 @@ mobile-reset: ## Remove all Android port forwarding
 	@echo "$(YELLOW)Removing Android port forwarding...$(RESET)"
 	@adb reverse --remove-all || echo "$(YELLOW)No device connected$(RESET)"
 	@echo "$(GREEN)✓ Port forwarding removed$(RESET)"
+
+verify-stack: ## Verify local development stack (PLC, PDS, configs)
+	@./scripts/verify-local-stack.sh
+
+create-test-account: ## Create a test account on local PDS for OAuth testing
+	@./scripts/create-test-account.sh
+
+mobile-full-setup: verify-stack create-test-account mobile-setup ## Full mobile setup: verify stack, create account, setup ports
+	@echo ""
+	@echo "$(GREEN)═══════════════════════════════════════════════════════════$(RESET)"
+	@echo "$(GREEN)  Mobile development environment ready!                     $(RESET)"
+	@echo "$(GREEN)═══════════════════════════════════════════════════════════$(RESET)"
+	@echo ""
+	@echo "$(CYAN)Run the Flutter app with:$(RESET)"
+	@echo "  $(YELLOW)cd /home/bretton/Code/coves-mobile$(RESET)"
+	@echo "  $(YELLOW)flutter run --dart-define=ENVIRONMENT=local$(RESET)"
+	@echo ""
 
 ngrok-up: ## Start ngrok tunnels (for iOS or WiFi testing - requires paid plan for 3 tunnels)
 	@echo "$(GREEN)Starting ngrok tunnels for mobile testing...$(RESET)"
