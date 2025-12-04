@@ -44,6 +44,20 @@ type Service interface {
 	// - Deletes the user's vote record from their PDS
 	// - AppView will soft-delete via Jetstream consumer
 	DeleteVote(ctx context.Context, session *oauthlib.ClientSessionData, req DeleteVoteRequest) error
+
+	// EnsureCachePopulated fetches the user's votes from their PDS if not already cached.
+	// This should be called before rendering feeds to ensure vote state is available.
+	// If cache is already populated and not expired, this is a no-op.
+	EnsureCachePopulated(ctx context.Context, session *oauthlib.ClientSessionData) error
+
+	// GetViewerVote returns the viewer's vote for a specific subject, or nil if not voted.
+	// Returns from cache if available, otherwise returns nil (caller should ensure cache is populated).
+	GetViewerVote(userDID, subjectURI string) *CachedVote
+
+	// GetViewerVotesForSubjects returns the viewer's votes for multiple subjects.
+	// Returns a map of subjectURI -> CachedVote for subjects the user has voted on.
+	// This is efficient for batch lookups when rendering feeds.
+	GetViewerVotesForSubjects(userDID string, subjectURIs []string) map[string]*CachedVote
 }
 
 // CreateVoteRequest contains the parameters for creating a vote

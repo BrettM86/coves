@@ -396,12 +396,17 @@ func main() {
 	commentRepo := postgresRepo.NewCommentRepository(db)
 	log.Println("✅ Comment repository initialized (Jetstream indexing only)")
 
+	// Initialize vote cache (stores user votes from PDS to avoid eventual consistency issues)
+	// TTL of 10 minutes - cache is also updated on vote create/delete
+	voteCache := votes.NewVoteCache(10*time.Minute, nil)
+	log.Println("✅ Vote cache initialized (10 minute TTL)")
+
 	// Initialize vote service (for XRPC API endpoints)
 	// Note: We don't validate subject existence - the vote goes to the user's PDS regardless.
 	// The Jetstream consumer handles orphaned votes correctly by only updating counts for
 	// non-deleted subjects. This avoids race conditions and eventual consistency issues.
-	voteService := votes.NewService(voteRepo, oauthClient, oauthStore, nil)
-	log.Println("✅ Vote service initialized (with OAuth authentication)")
+	voteService := votes.NewService(voteRepo, oauthClient, oauthStore, voteCache, nil)
+	log.Println("✅ Vote service initialized (with OAuth authentication and vote cache)")
 
 	// Initialize comment service (for query API)
 	// Requires user and community repos for proper author/community hydration per lexicon
@@ -524,11 +529,11 @@ func main() {
 	routes.RegisterVoteRoutes(r, voteService, authMiddleware)
 	log.Println("Vote XRPC endpoints registered with OAuth authentication")
 
-	routes.RegisterCommunityFeedRoutes(r, feedService)
-	log.Println("Feed XRPC endpoints registered (public, no auth required)")
+	routes.RegisterCommunityFeedRoutes(r, feedService, voteService, authMiddleware)
+	log.Println("Feed XRPC endpoints registered (public with optional auth for viewer vote state)")
 
-	routes.RegisterTimelineRoutes(r, timelineService, authMiddleware)
-	log.Println("Timeline XRPC endpoints registered (requires authentication)")
+	routes.RegisterTimelineRoutes(r, timelineService, voteService, authMiddleware)
+	log.Println("Timeline XRPC endpoints registered (requires authentication, includes viewer vote state)")
 
 	routes.RegisterDiscoverRoutes(r, discoverService)
 	log.Println("Discover XRPC endpoints registered (public, no auth required)")

@@ -4,6 +4,7 @@ import (
 	"Coves/internal/api/handlers/timeline"
 	"Coves/internal/api/middleware"
 	timelineCore "Coves/internal/core/timeline"
+	"Coves/internal/core/votes"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -12,10 +13,11 @@ import (
 func RegisterTimelineRoutes(
 	r chi.Router,
 	timelineService timelineCore.Service,
+	voteService votes.Service,
 	authMiddleware *middleware.OAuthAuthMiddleware,
 ) {
 	// Create handlers
-	getTimelineHandler := timeline.NewGetTimelineHandler(timelineService)
+	getTimelineHandler := timeline.NewGetTimelineHandler(timelineService, voteService)
 
 	// GET /xrpc/social.coves.feed.getTimeline
 	// Requires authentication - user must be logged in to see their timeline

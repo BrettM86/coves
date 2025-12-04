@@ -30,10 +30,11 @@ type voteService struct {
 	oauthStore       oauth.ClientAuthStore
 	logger           *slog.Logger
 	pdsClientFactory PDSClientFactory // Optional, for testing. If nil, uses OAuth.
+	cache            *VoteCache       // In-memory cache of user votes from PDS
 }
 
 // NewService creates a new vote service instance
-func NewService(repo Repository, oauthClient *oauthclient.OAuthClient, oauthStore oauth.ClientAuthStore, logger *slog.Logger) Service {
+func NewService(repo Repository, oauthClient *oauthclient.OAuthClient, oauthStore oauth.ClientAuthStore, cache *VoteCache, logger *slog.Logger) Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -41,18 +42,20 @@ func NewService(repo Repository, oauthClient *oauthclient.OAuthClient, oauthStor
 		repo:        repo,
 		oauthClient: oauthClient,
 		oauthStore:  oauthStore,
+		cache:       cache,
 		logger:      logger,
 	}
 }
 
 // NewServiceWithPDSFactory creates a vote service with a custom PDS client factory.
 // This is primarily for testing with password-based authentication.
-func NewServiceWithPDSFactory(repo Repository, logger *slog.Logger, factory PDSClientFactory) Service {
+func NewServiceWithPDSFactory(repo Repository, cache *VoteCache, logger *slog.Logger, factory PDSClientFactory) Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &voteService{
 		repo:             repo,
+		cache:            cache,
 		logger:           logger,
 		pdsClientFactory: factory,
 	}
@@ -150,6 +153,11 @@ func (s *voteService) CreateVote(ctx context.Context, session *oauth.ClientSessi
 				"subject", req.Subject.URI,
 				"direction", req.Direction)
 
+			// Update cache - remove the vote
+			if s.cache != nil {
+				s.cache.RemoveVote(session.AccountDID.String(), req.Subject.URI)
+			}
+
 			// Return empty response to indicate deletion
 			return &CreateVoteResponse{
 				URI: "",
@@ -196,6 +204,15 @@ func (s *voteService) CreateVote(ctx context.Context, session *oauth.ClientSessi
 		"direction", req.Direction,
 		"uri", uri,
 		"cid", cid)
+
+	// Update cache - add the new vote
+	if s.cache != nil {
+		s.cache.SetVote(session.AccountDID.String(), req.Subject.URI, &CachedVote{
+			Direction: req.Direction,
+			URI:       uri,
+			RKey:      extractRKeyFromURI(uri),
+		})
+	}
 
 	return &CreateVoteResponse{
 		URI: uri,
@@ -252,6 +269,11 @@ func (s *voteService) DeleteVote(ctx context.Context, session *oauth.ClientSessi
 		"voter", session.AccountDID,
 		"subject", req.Subject.URI,
 		"uri", existing.URI)
+
+	// Update cache - remove the vote
+	if s.cache != nil {
+		s.cache.RemoveVote(session.AccountDID.String(), req.Subject.URI)
+	}
 
 	return nil
 }
@@ -349,4 +371,64 @@ func (s *voteService) findExistingVote(ctx context.Context, pdsClient pds.Client
 
 	// No vote found for this subject after checking all pages
 	return nil, nil
+}
+
+// EnsureCachePopulated fetches the user's votes from their PDS if not already cached.
+func (s *voteService) EnsureCachePopulated(ctx context.Context, session *oauth.ClientSessionData) error {
+	if s.cache == nil {
+		return nil // No cache configured
+	}
+
+	// Check if already cached
+	if s.cache.IsCached(session.AccountDID.String()) {
+		return nil
+	}
+
+	// Create PDS client for this session
+	pdsClient, err := s.getPDSClient(ctx, session)
+	if err != nil {
+		s.logger.Error("failed to create PDS client for cache population",
+			"error", err,
+			"user", session.AccountDID)
+		return fmt.Errorf("failed to create PDS client: %w", err)
+	}
+
+	// Fetch and cache votes from PDS
+	if err := s.cache.FetchAndCacheFromPDS(ctx, pdsClient); err != nil {
+		s.logger.Error("failed to populate vote cache from PDS",
+			"error", err,
+			"user", session.AccountDID)
+		return fmt.Errorf("failed to populate vote cache: %w", err)
+	}
+
+	return nil
+}
+
+// GetViewerVote returns the viewer's vote for a specific subject, or nil if not voted.
+func (s *voteService) GetViewerVote(userDID, subjectURI string) *CachedVote {
+	if s.cache == nil {
+		return nil
+	}
+	return s.cache.GetVote(userDID, subjectURI)
+}
+
+// GetViewerVotesForSubjects returns the viewer's votes for multiple subjects.
+func (s *voteService) GetViewerVotesForSubjects(userDID string, subjectURIs []string) map[string]*CachedVote {
+	result := make(map[string]*CachedVote)
+	if s.cache == nil {
+		return result
+	}
+
+	allVotes := s.cache.GetVotesForUser(userDID)
+	if allVotes == nil {
+		return result
+	}
+
+	for _, uri := range subjectURIs {
+		if vote, exists := allVotes[uri]; exists {
+			result[uri] = vote
+		}
+	}
+
+	return result
 }

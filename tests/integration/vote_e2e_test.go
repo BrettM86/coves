@@ -81,7 +81,7 @@ func TestVoteE2E_CreateUpvote(t *testing.T) {
 	postRepo := postgres.NewPostRepository(db)
 
 	// Setup services with password-based PDS client factory for E2E testing
-	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, PasswordAuthPDSClientFactory())
+	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, nil, PasswordAuthPDSClientFactory())
 
 	// Create test user on PDS
 	testUserHandle := fmt.Sprintf("voter-%d.local.coves.dev", time.Now().Unix())
@@ -304,7 +304,7 @@ func TestVoteE2E_ToggleSameDirection(t *testing.T) {
 	voteRepo := postgres.NewVoteRepository(db)
 	postRepo := postgres.NewPostRepository(db)
 
-	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, PasswordAuthPDSClientFactory())
+	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, nil, PasswordAuthPDSClientFactory())
 
 	// Create test user
 	testUserHandle := fmt.Sprintf("toggle-%d.local.coves.dev", time.Now().Unix())
@@ -473,7 +473,7 @@ func TestVoteE2E_ToggleDifferentDirection(t *testing.T) {
 	voteRepo := postgres.NewVoteRepository(db)
 	postRepo := postgres.NewPostRepository(db)
 
-	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, PasswordAuthPDSClientFactory())
+	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, nil, PasswordAuthPDSClientFactory())
 
 	// Create test user
 	testUserHandle := fmt.Sprintf("flip-%d.local.coves.dev", time.Now().Unix())
@@ -698,7 +698,7 @@ func TestVoteE2E_DeleteVote(t *testing.T) {
 	voteRepo := postgres.NewVoteRepository(db)
 	postRepo := postgres.NewPostRepository(db)
 
-	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, PasswordAuthPDSClientFactory())
+	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, nil, PasswordAuthPDSClientFactory())
 
 	// Create test user
 	testUserHandle := fmt.Sprintf("delete-%d.local.coves.dev", time.Now().Unix())

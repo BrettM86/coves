@@ -2,7 +2,9 @@ package routes
 
 import (
 	"Coves/internal/api/handlers/communityFeed"
+	"Coves/internal/api/middleware"
 	"Coves/internal/core/communityFeeds"
+	"Coves/internal/core/votes"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -11,13 +13,13 @@ import (
 func RegisterCommunityFeedRoutes(
 	r chi.Router,
 	feedService communityFeeds.Service,
+	voteService votes.Service,
+	authMiddleware *middleware.OAuthAuthMiddleware,
 ) {
 	// Create handlers
-	getCommunityHandler := communityFeed.NewGetCommunityHandler(feedService)
+	getCommunityHandler := communityFeed.NewGetCommunityHandler(feedService, voteService)
 
 	// GET /xrpc/social.coves.communityFeed.getCommunity
-	// Public endpoint - basic community sorting only for Alpha
-	// TODO(feed-generator): Add OptionalAuth middleware when implementing viewer-specific state
-	//                       (blocks, upvotes, saves, etc.) in feed generator skeleton
-	r.Get("/xrpc/social.coves.communityFeed.getCommunity", getCommunityHandler.HandleGetCommunity)
+	// Public endpoint with optional auth for viewer-specific state (vote state)
+	r.With(authMiddleware.OptionalAuth).Get("/xrpc/social.coves.communityFeed.getCommunity", getCommunityHandler.HandleGetCommunity)
 }
