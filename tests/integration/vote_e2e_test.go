@@ -80,12 +80,8 @@ func TestVoteE2E_CreateUpvote(t *testing.T) {
 	voteRepo := postgres.NewVoteRepository(db)
 	postRepo := postgres.NewPostRepository(db)
 
-	// Setup OAuth client and store for vote service
-	oauthStore := SetupOAuthTestStore(t, db)
-	oauthClient := SetupOAuthTestClient(t, oauthStore)
-
-	// Setup services
-	voteService := votes.NewService(voteRepo, oauthClient, oauthStore, nil)
+	// Setup services with password-based PDS client factory for E2E testing
+	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, PasswordAuthPDSClientFactory())
 
 	// Create test user on PDS
 	testUserHandle := fmt.Sprintf("voter-%d.local.coves.dev", time.Now().Unix())
@@ -308,9 +304,7 @@ func TestVoteE2E_ToggleSameDirection(t *testing.T) {
 	voteRepo := postgres.NewVoteRepository(db)
 	postRepo := postgres.NewPostRepository(db)
 
-	oauthStore := SetupOAuthTestStore(t, db)
-	oauthClient := SetupOAuthTestClient(t, oauthStore)
-	voteService := votes.NewService(voteRepo, oauthClient, oauthStore, nil)
+	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, PasswordAuthPDSClientFactory())
 
 	// Create test user
 	testUserHandle := fmt.Sprintf("toggle-%d.local.coves.dev", time.Now().Unix())
@@ -479,9 +473,7 @@ func TestVoteE2E_ToggleDifferentDirection(t *testing.T) {
 	voteRepo := postgres.NewVoteRepository(db)
 	postRepo := postgres.NewPostRepository(db)
 
-	oauthStore := SetupOAuthTestStore(t, db)
-	oauthClient := SetupOAuthTestClient(t, oauthStore)
-	voteService := votes.NewService(voteRepo, oauthClient, oauthStore, nil)
+	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, PasswordAuthPDSClientFactory())
 
 	// Create test user
 	testUserHandle := fmt.Sprintf("flip-%d.local.coves.dev", time.Now().Unix())
@@ -706,9 +698,7 @@ func TestVoteE2E_DeleteVote(t *testing.T) {
 	voteRepo := postgres.NewVoteRepository(db)
 	postRepo := postgres.NewPostRepository(db)
 
-	oauthStore := SetupOAuthTestStore(t, db)
-	oauthClient := SetupOAuthTestClient(t, oauthStore)
-	voteService := votes.NewService(voteRepo, oauthClient, oauthStore, nil)
+	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, PasswordAuthPDSClientFactory())
 
 	// Create test user
 	testUserHandle := fmt.Sprintf("delete-%d.local.coves.dev", time.Now().Unix())

@@ -1,13 +1,9 @@
 package votes
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
 	"strings"
 	"time"
 
@@ -15,14 +11,25 @@ import (
 	"github.com/bluesky-social/indigo/atproto/syntax"
 
 	oauthclient "Coves/internal/atproto/oauth"
+	"Coves/internal/atproto/pds"
 )
+
+const (
+	// voteCollection is the AT Protocol collection for vote records
+	voteCollection = "social.coves.feed.vote"
+)
+
+// PDSClientFactory creates PDS clients from session data.
+// Used to allow injection of different auth mechanisms (OAuth for production, password for tests).
+type PDSClientFactory func(ctx context.Context, session *oauth.ClientSessionData) (pds.Client, error)
 
 // voteService implements the Service interface for vote operations
 type voteService struct {
-	repo        Repository
-	oauthClient *oauthclient.OAuthClient
-	oauthStore  oauth.ClientAuthStore
-	logger      *slog.Logger
+	repo             Repository
+	oauthClient      *oauthclient.OAuthClient
+	oauthStore       oauth.ClientAuthStore
+	logger           *slog.Logger
+	pdsClientFactory PDSClientFactory // Optional, for testing. If nil, uses OAuth.
 }
 
 // NewService creates a new vote service instance
@@ -36,6 +43,41 @@ func NewService(repo Repository, oauthClient *oauthclient.OAuthClient, oauthStor
 		oauthStore:  oauthStore,
 		logger:      logger,
 	}
+}
+
+// NewServiceWithPDSFactory creates a vote service with a custom PDS client factory.
+// This is primarily for testing with password-based authentication.
+func NewServiceWithPDSFactory(repo Repository, logger *slog.Logger, factory PDSClientFactory) Service {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &voteService{
+		repo:             repo,
+		logger:           logger,
+		pdsClientFactory: factory,
+	}
+}
+
+// getPDSClient creates a PDS client from an OAuth session.
+// If a custom factory was provided (for testing), uses that.
+// Otherwise, uses DPoP authentication via indigo's APIClient for proper OAuth token handling.
+func (s *voteService) getPDSClient(ctx context.Context, session *oauth.ClientSessionData) (pds.Client, error) {
+	// Use custom factory if provided (e.g., for testing with password auth)
+	if s.pdsClientFactory != nil {
+		return s.pdsClientFactory(ctx, session)
+	}
+
+	// Production path: use OAuth with DPoP
+	if s.oauthClient == nil || s.oauthClient.ClientApp == nil {
+		return nil, fmt.Errorf("OAuth client not configured")
+	}
+
+	client, err := pds.NewFromOAuthSession(ctx, s.oauthClient.ClientApp, session)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create PDS client: %w", err)
+	}
+
+	return client, nil
 }
 
 // CreateVote creates a new vote or toggles off an existing vote
@@ -62,6 +104,15 @@ func (s *voteService) CreateVote(ctx context.Context, session *oauth.ClientSessi
 		return nil, ErrInvalidSubject
 	}
 
+	// Create PDS client for this session
+	pdsClient, err := s.getPDSClient(ctx, session)
+	if err != nil {
+		s.logger.Error("failed to create PDS client",
+			"error", err,
+			"voter", session.AccountDID)
+		return nil, fmt.Errorf("failed to create PDS client: %w", err)
+	}
+
 	// Note: We intentionally don't validate subject existence here.
 	// The vote record goes to the user's PDS regardless. The Jetstream consumer
 	// handles orphaned votes correctly by only updating counts for non-deleted subjects.
@@ -69,7 +120,7 @@ func (s *voteService) CreateVote(ctx context.Context, session *oauth.ClientSessi
 
 	// Check for existing vote by querying PDS directly (source of truth)
 	// This avoids eventual consistency issues with the AppView database
-	existing, err := s.getVoteFromPDS(ctx, session, req.Subject.URI)
+	existing, err := s.findExistingVote(ctx, pdsClient, req.Subject.URI)
 	if err != nil {
 		s.logger.Error("failed to check existing vote on PDS",
 			"error", err,
@@ -83,11 +134,14 @@ func (s *voteService) CreateVote(ctx context.Context, session *oauth.ClientSessi
 		// Vote exists - check if same direction
 		if existing.Direction == req.Direction {
 			// Same direction - toggle off (delete)
-			if err := s.deleteVoteRecord(ctx, session, existing.RKey); err != nil {
+			if err := pdsClient.DeleteRecord(ctx, voteCollection, existing.RKey); err != nil {
 				s.logger.Error("failed to delete vote on PDS",
 					"error", err,
 					"voter", session.AccountDID,
 					"rkey", existing.RKey)
+				if pds.IsAuthError(err) {
+					return nil, ErrNotAuthorized
+				}
 				return nil, fmt.Errorf("failed to delete vote: %w", err)
 			}
 
@@ -104,11 +158,14 @@ func (s *voteService) CreateVote(ctx context.Context, session *oauth.ClientSessi
 		}
 
 		// Different direction - delete old vote first, then create new one
-		if err := s.deleteVoteRecord(ctx, session, existing.RKey); err != nil {
+		if err := pdsClient.DeleteRecord(ctx, voteCollection, existing.RKey); err != nil {
 			s.logger.Error("failed to delete existing vote on PDS",
 				"error", err,
 				"voter", session.AccountDID,
 				"rkey", existing.RKey)
+			if pds.IsAuthError(err) {
+				return nil, ErrNotAuthorized
+			}
 			return nil, fmt.Errorf("failed to delete existing vote: %w", err)
 		}
 
@@ -120,13 +177,16 @@ func (s *voteService) CreateVote(ctx context.Context, session *oauth.ClientSessi
 	}
 
 	// Create new vote
-	uri, cid, err := s.createVoteRecord(ctx, session, req)
+	uri, cid, err := s.createVoteRecord(ctx, pdsClient, req)
 	if err != nil {
 		s.logger.Error("failed to create vote on PDS",
 			"error", err,
 			"voter", session.AccountDID,
 			"subject", req.Subject.URI,
 			"direction", req.Direction)
+		if pds.IsAuthError(err) {
+			return nil, ErrNotAuthorized
+		}
 		return nil, fmt.Errorf("failed to create vote: %w", err)
 	}
 
@@ -153,9 +213,18 @@ func (s *voteService) DeleteVote(ctx context.Context, session *oauth.ClientSessi
 		return ErrInvalidSubject
 	}
 
+	// Create PDS client for this session
+	pdsClient, err := s.getPDSClient(ctx, session)
+	if err != nil {
+		s.logger.Error("failed to create PDS client",
+			"error", err,
+			"voter", session.AccountDID)
+		return fmt.Errorf("failed to create PDS client: %w", err)
+	}
+
 	// Find existing vote by querying PDS directly (source of truth)
 	// This avoids eventual consistency issues with the AppView database
-	existing, err := s.getVoteFromPDS(ctx, session, req.Subject.URI)
+	existing, err := s.findExistingVote(ctx, pdsClient, req.Subject.URI)
 	if err != nil {
 		s.logger.Error("failed to find vote on PDS",
 			"error", err,
@@ -168,11 +237,14 @@ func (s *voteService) DeleteVote(ctx context.Context, session *oauth.ClientSessi
 	}
 
 	// Delete the vote record from user's PDS
-	if err := s.deleteVoteRecord(ctx, session, existing.RKey); err != nil {
+	if err := pdsClient.DeleteRecord(ctx, voteCollection, existing.RKey); err != nil {
 		s.logger.Error("failed to delete vote on PDS",
 			"error", err,
 			"voter", session.AccountDID,
 			"rkey", existing.RKey)
+		if pds.IsAuthError(err) {
+			return ErrNotAuthorized
+		}
 		return fmt.Errorf("failed to delete vote: %w", err)
 	}
 
@@ -184,14 +256,14 @@ func (s *voteService) DeleteVote(ctx context.Context, session *oauth.ClientSessi
 	return nil
 }
 
-// createVoteRecord writes a vote record to the user's PDS
-func (s *voteService) createVoteRecord(ctx context.Context, session *oauth.ClientSessionData, req CreateVoteRequest) (string, string, error) {
+// createVoteRecord writes a vote record to the user's PDS using PDSClient
+func (s *voteService) createVoteRecord(ctx context.Context, pdsClient pds.Client, req CreateVoteRequest) (string, string, error) {
 	// Generate TID for the record key
 	tid := syntax.NewTIDNow(0)
 
 	// Build vote record following the lexicon schema
 	record := VoteRecord{
-		Type: "social.coves.feed.vote",
+		Type: voteCollection,
 		Subject: StrongRef{
 			URI: req.Subject.URI,
 			CID: req.Subject.CID,
@@ -200,100 +272,55 @@ func (s *voteService) createVoteRecord(ctx context.Context, session *oauth.Clien
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 
-	// Call com.atproto.repo.createRecord on the user's PDS
-	endpoint := fmt.Sprintf("%s/xrpc/com.atproto.repo.createRecord", strings.TrimSuffix(session.HostURL, "/"))
-
-	payload := map[string]interface{}{
-		"repo":       session.AccountDID.String(),
-		"collection": "social.coves.feed.vote",
-		"rkey":       tid.String(),
-		"record":     record,
-	}
-
-	uri, cid, err := s.callPDSWithAuth(ctx, "POST", endpoint, payload, session.AccessToken)
+	uri, cid, err := pdsClient.CreateRecord(ctx, voteCollection, tid.String(), record)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("createRecord failed: %w", err)
 	}
 
 	return uri, cid, nil
 }
 
-// getVoteFromPDS queries the user's PDS directly to find an existing vote for a subject.
+// existingVote represents a vote record found on the PDS
+type existingVote struct {
+	URI       string
+	CID       string
+	RKey      string
+	Direction string
+}
+
+// findExistingVote queries the user's PDS directly to find an existing vote for a subject.
 // This avoids eventual consistency issues with the AppView database populated by Jetstream.
 // Paginates through all vote records to handle users with >100 votes.
 // Returns the vote record with rkey, or nil if no vote exists for the subject.
-func (s *voteService) getVoteFromPDS(ctx context.Context, session *oauth.ClientSessionData, subjectURI string) (*existingVote, error) {
-	baseURL := fmt.Sprintf("%s/xrpc/com.atproto.repo.listRecords?repo=%s&collection=social.coves.feed.vote&limit=100",
-		strings.TrimSuffix(session.HostURL, "/"),
-		session.AccountDID.String())
-
-	client := &http.Client{Timeout: 10 * time.Second}
+func (s *voteService) findExistingVote(ctx context.Context, pdsClient pds.Client, subjectURI string) (*existingVote, error) {
 	cursor := ""
+	const pageSize = 100
 
 	// Paginate through all vote records
 	for {
-		endpoint := baseURL
-		if cursor != "" {
-			endpoint = fmt.Sprintf("%s&cursor=%s", baseURL, cursor)
-		}
-
-		req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+		result, err := pdsClient.ListRecords(ctx, voteCollection, pageSize, cursor)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create request: %w", err)
-		}
-		req.Header.Set("Authorization", "Bearer "+session.AccessToken)
-
-		resp, err := client.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("failed to call PDS: %w", err)
-		}
-
-		body, err := io.ReadAll(resp.Body)
-		closeErr := resp.Body.Close()
-		if closeErr != nil {
-			s.logger.Warn("failed to close response body", "error", closeErr)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("failed to read response: %w", err)
-		}
-
-		// Handle auth errors - map to ErrNotAuthorized per lexicon
-		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-			s.logger.Warn("PDS auth failure",
-				"status", resp.StatusCode,
-				"did", session.AccountDID)
-			return nil, ErrNotAuthorized
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("PDS returned status %d: %s", resp.StatusCode, string(body))
-		}
-
-		// Parse the listRecords response
-		var result struct {
-			Cursor  string `json:"cursor"`
-			Records []struct {
-				URI   string `json:"uri"`
-				CID   string `json:"cid"`
-				Value struct {
-					Type    string `json:"$type"`
-					Subject struct {
-						URI string `json:"uri"`
-						CID string `json:"cid"`
-					} `json:"subject"`
-					Direction string `json:"direction"`
-					CreatedAt string `json:"createdAt"`
-				} `json:"value"`
-			} `json:"records"`
-		}
-
-		if err := json.Unmarshal(body, &result); err != nil {
-			return nil, fmt.Errorf("failed to parse PDS response: %w", err)
+			// Check for auth errors using typed errors
+			if pds.IsAuthError(err) {
+				return nil, ErrNotAuthorized
+			}
+			return nil, fmt.Errorf("listRecords failed: %w", err)
 		}
 
 		// Search for the vote matching our subject in this page
 		for _, rec := range result.Records {
-			if rec.Value.Subject.URI == subjectURI {
+			// Extract subject from record value
+			subject, ok := rec.Value["subject"].(map[string]any)
+			if !ok {
+				continue
+			}
+
+			subjectURIValue, ok := subject["uri"].(string)
+			if !ok {
+				continue
+			}
+
+			if subjectURIValue == subjectURI {
 				// Extract rkey from the URI (at://did/collection/rkey)
 				parts := strings.Split(rec.URI, "/")
 				if len(parts) < 5 {
@@ -301,11 +328,14 @@ func (s *voteService) getVoteFromPDS(ctx context.Context, session *oauth.ClientS
 				}
 				rkey := parts[len(parts)-1]
 
+				// Extract direction
+				direction, _ := rec.Value["direction"].(string)
+
 				return &existingVote{
 					URI:       rec.URI,
 					CID:       rec.CID,
 					RKey:      rkey,
-					Direction: rec.Value.Direction,
+					Direction: direction,
 				}, nil
 			}
 		}
@@ -319,96 +349,4 @@ func (s *voteService) getVoteFromPDS(ctx context.Context, session *oauth.ClientS
 
 	// No vote found for this subject after checking all pages
 	return nil, nil
-}
-
-// existingVote represents a vote record found on the PDS
-type existingVote struct {
-	URI       string
-	CID       string
-	RKey      string
-	Direction string
-}
-
-// deleteVoteRecord removes a vote record from the user's PDS
-func (s *voteService) deleteVoteRecord(ctx context.Context, session *oauth.ClientSessionData, rkey string) error {
-	// Call com.atproto.repo.deleteRecord on the user's PDS
-	endpoint := fmt.Sprintf("%s/xrpc/com.atproto.repo.deleteRecord", strings.TrimSuffix(session.HostURL, "/"))
-
-	payload := map[string]interface{}{
-		"repo":       session.AccountDID.String(),
-		"collection": "social.coves.feed.vote",
-		"rkey":       rkey,
-	}
-
-	_, _, err := s.callPDSWithAuth(ctx, "POST", endpoint, payload, session.AccessToken)
-	return err
-}
-
-// callPDSWithAuth makes an authenticated HTTP call to the PDS
-// Returns URI and CID from the response (for create/update operations)
-func (s *voteService) callPDSWithAuth(ctx context.Context, method, endpoint string, payload map[string]interface{}, accessToken string) (string, string, error) {
-	jsonData, err := json.Marshal(payload)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to marshal payload: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return "", "", fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	// Add OAuth bearer token for authentication
-	if accessToken != "" {
-		req.Header.Set("Authorization", "Bearer "+accessToken)
-	}
-
-	// Set reasonable timeout for PDS operations
-	timeout := 10 * time.Second
-	if strings.Contains(endpoint, "createRecord") || strings.Contains(endpoint, "putRecord") {
-		timeout = 15 * time.Second // Slightly longer for write operations
-	}
-
-	client := &http.Client{Timeout: timeout}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to call PDS: %w", err)
-	}
-	defer func() {
-		if closeErr := resp.Body.Close(); closeErr != nil {
-			s.logger.Warn("failed to close response body", "error", closeErr)
-		}
-	}()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to read response: %w", err)
-	}
-
-	// Handle auth errors - map to ErrNotAuthorized per lexicon
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		s.logger.Warn("PDS auth failure during write operation",
-			"status", resp.StatusCode,
-			"endpoint", endpoint)
-		return "", "", ErrNotAuthorized
-	}
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return "", "", fmt.Errorf("PDS returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	// Parse response to extract URI and CID (for create/update operations)
-	var result struct {
-		URI string `json:"uri"`
-		CID string `json:"cid"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		// For delete operations, there might not be a response body with URI/CID
-		if method == "POST" && strings.Contains(endpoint, "deleteRecord") {
-			return "", "", nil
-		}
-		return "", "", fmt.Errorf("failed to parse PDS response: %w", err)
-	}
-
-	return result.URI, result.CID, nil
 }
