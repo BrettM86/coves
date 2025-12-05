@@ -1,6 +1,9 @@
 package comments
 
-import "context"
+import (
+	"context"
+	"database/sql"
+)
 
 // Repository defines the data access interface for comments
 // Used by Jetstream consumer to index comments from firehose
@@ -25,7 +28,14 @@ type Repository interface {
 
 	// Delete soft-deletes a comment (sets deleted_at)
 	// Called by Jetstream consumer after comment is deleted from PDS
+	// Deprecated: Use SoftDeleteWithReason for new code to preserve thread structure
 	Delete(ctx context.Context, uri string) error
+
+	// SoftDeleteWithReason performs a soft delete that blanks content but preserves thread structure
+	// This allows deleted comments to appear as "[deleted]" placeholders in thread views
+	// reason: "author" (user deleted) or "moderator" (mod removed)
+	// deletedByDID: DID of the actor who performed the deletion
+	SoftDeleteWithReason(ctx context.Context, uri, reason, deletedByDID string) error
 
 	// ListByRoot retrieves all comments in a thread (flat)
 	// Used for fetching entire comment threads on posts
@@ -75,4 +85,16 @@ type Repository interface {
 		sort string,
 		limitPerParent int,
 	) (map[string][]*Comment, error)
+}
+
+// RepositoryTx provides transaction-aware operations for consumers that need atomicity
+// Used by Jetstream consumer to perform atomic delete + count updates
+// Implementations that support transactions should also implement this interface
+type RepositoryTx interface {
+	// SoftDeleteWithReasonTx performs a soft delete within a transaction
+	// If tx is nil, executes directly against the database
+	// Returns rows affected count for callers that need to check idempotency
+	// reason: must be DeletionReasonAuthor or DeletionReasonModerator
+	// deletedByDID: DID of the actor who performed the deletion
+	SoftDeleteWithReasonTx(ctx context.Context, tx *sql.Tx, uri, reason, deletedByDID string) (int64, error)
 }
