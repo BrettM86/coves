@@ -252,13 +252,16 @@ func (s *commentService) buildThreadViews(
 	parentsWithReplies := make([]string, 0)
 
 	for _, comment := range comments {
-		// Skip deleted comments (soft-deleted records)
-		if comment.DeletedAt != nil {
-			continue
-		}
+		var commentView *CommentView
 
-		// Build the comment view with author info and stats
-		commentView := s.buildCommentView(comment, viewerDID, voteStates, usersByDID)
+		// Build appropriate view based on deletion status
+		if comment.DeletedAt != nil {
+			// Deleted comment - build placeholder view to preserve thread structure
+			commentView = s.buildDeletedCommentView(comment)
+		} else {
+			// Active comment - build full view with author info and stats
+			commentView = s.buildCommentView(comment, viewerDID, voteStates, usersByDID)
+		}
 
 		threadView := &ThreadViewComment{
 			Comment: commentView,
@@ -270,6 +273,7 @@ func (s *commentService) buildThreadViews(
 		commentsByURI[comment.URI] = threadView
 
 		// Collect parent URIs that have replies and depth remaining
+		// Include deleted comments so their children are still loaded
 		if remainingDepth > 0 && comment.ReplyCount > 0 {
 			parentsWithReplies = append(parentsWithReplies, comment.URI)
 		}
@@ -436,6 +440,70 @@ func (s *commentService) buildCommentView(
 		IndexedAt:     comment.IndexedAt.Format(time.RFC3339),
 		Stats:         stats,
 		Viewer:        viewer,
+	}
+}
+
+// buildDeletedCommentView creates a placeholder view for a deleted comment
+// Preserves threading structure while hiding content
+// Shows as "[deleted]" in the UI with minimal metadata
+func (s *commentService) buildDeletedCommentView(comment *Comment) *CommentView {
+	// Build minimal author view - just DID for attribution
+	// Frontend will display "[deleted]" or "[deleted by @user]" based on deletion_reason
+	authorView := &posts.AuthorView{
+		DID:         comment.CommenterDID,
+		Handle:      "", // Empty - frontend handles display
+		DisplayName: nil,
+		Avatar:      nil,
+		Reputation:  nil,
+	}
+
+	// Build minimal stats - preserve reply count for threading indication
+	stats := &CommentStats{
+		Upvotes:    0,
+		Downvotes:  0,
+		Score:      0,
+		ReplyCount: comment.ReplyCount, // Keep this to show threading
+	}
+
+	// Build reference to parent post (always present)
+	postRef := &CommentRef{
+		URI: comment.RootURI,
+		CID: comment.RootCID,
+	}
+
+	// Build reference to parent comment (only if nested)
+	var parentRef *CommentRef
+	if comment.ParentURI != comment.RootURI {
+		parentRef = &CommentRef{
+			URI: comment.ParentURI,
+			CID: comment.ParentCID,
+		}
+	}
+
+	// Format deletion timestamp for frontend
+	var deletedAtStr *string
+	if comment.DeletedAt != nil {
+		ts := comment.DeletedAt.Format(time.RFC3339)
+		deletedAtStr = &ts
+	}
+
+	return &CommentView{
+		URI:            comment.URI,
+		CID:            comment.CID,
+		Author:         authorView,
+		Record:         nil, // No record for deleted comments
+		Post:           postRef,
+		Parent:         parentRef,
+		Content:        "", // Blanked content
+		ContentFacets:  nil,
+		Embed:          nil,
+		CreatedAt:      comment.CreatedAt.Format(time.RFC3339),
+		IndexedAt:      comment.IndexedAt.Format(time.RFC3339),
+		Stats:          stats,
+		Viewer:         nil, // No viewer state for deleted comments
+		IsDeleted:      true,
+		DeletionReason: comment.DeletionReason,
+		DeletedAt:      deletedAtStr,
 	}
 }
 
