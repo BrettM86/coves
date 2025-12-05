@@ -444,7 +444,7 @@ func TestCommentService_GetComments_ValidRequest(t *testing.T) {
 		return []*Comment{}, nil, nil
 	}
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
 
 	// Execute
 	req := &GetCommentsRequest{
@@ -472,7 +472,7 @@ func TestCommentService_GetComments_InvalidPostURI(t *testing.T) {
 	postRepo := newMockPostRepo()
 	communityRepo := newMockCommunityRepo()
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
 
 	tests := []struct {
 		name    string
@@ -516,7 +516,7 @@ func TestCommentService_GetComments_PostNotFound(t *testing.T) {
 	postRepo := newMockPostRepo()
 	communityRepo := newMockCommunityRepo()
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
 
 	// Execute
 	req := &GetCommentsRequest{
@@ -559,7 +559,7 @@ func TestCommentService_GetComments_EmptyComments(t *testing.T) {
 		return []*Comment{}, nil, nil
 	}
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
 
 	// Execute
 	req := &GetCommentsRequest{
@@ -622,7 +622,7 @@ func TestCommentService_GetComments_WithViewerVotes(t *testing.T) {
 		}, nil
 	}
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
 
 	// Execute
 	req := &GetCommentsRequest{
@@ -679,7 +679,7 @@ func TestCommentService_GetComments_WithoutViewer(t *testing.T) {
 		return []*Comment{}, nil, nil
 	}
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
 
 	// Execute without viewer
 	req := &GetCommentsRequest{
@@ -745,7 +745,7 @@ func TestCommentService_GetComments_SortingOptions(t *testing.T) {
 				}
 			}
 
-			service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo)
+			service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
 
 			req := &GetCommentsRequest{
 				PostURI:   postURI,
@@ -794,7 +794,7 @@ func TestCommentService_GetComments_RepositoryError(t *testing.T) {
 		return nil, nil, errors.New("database error")
 	}
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
 
 	// Execute
 	req := &GetCommentsRequest{
@@ -821,7 +821,7 @@ func TestCommentService_buildThreadViews_EmptyInput(t *testing.T) {
 	postRepo := newMockPostRepo()
 	communityRepo := newMockCommunityRepo()
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo).(*commentService)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
 	// Execute
 	result := service.buildThreadViews(context.Background(), []*Comment{}, 10, "hot", nil)
@@ -848,7 +848,7 @@ func TestCommentService_buildThreadViews_SkipsDeletedComments(t *testing.T) {
 	// Create a normal comment
 	normalComment := createTestComment("at://did:plc:commenter123/comment/2", "did:plc:commenter123", "commenter.test", postURI, postURI, 0)
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo).(*commentService)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
 	// Execute
 	result := service.buildThreadViews(context.Background(), []*Comment{deletedComment, normalComment}, 10, "hot", nil)
@@ -882,7 +882,7 @@ func TestCommentService_buildThreadViews_WithNestedReplies(t *testing.T) {
 		}, nil
 	}
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo).(*commentService)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
 	// Execute with depth > 0 to load replies
 	result := service.buildThreadViews(context.Background(), []*Comment{parentComment}, 1, "hot", nil)
@@ -909,7 +909,7 @@ func TestCommentService_buildThreadViews_DepthLimit(t *testing.T) {
 	// Comment with replies but depth = 0
 	parentComment := createTestComment("at://did:plc:commenter123/comment/1", "did:plc:commenter123", "commenter.test", postURI, postURI, 5)
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo).(*commentService)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
 	// Execute with depth = 0 (should not load replies)
 	result := service.buildThreadViews(context.Background(), []*Comment{parentComment}, 0, "hot", nil)
@@ -934,7 +934,7 @@ func TestCommentService_buildCommentView_BasicFields(t *testing.T) {
 
 	comment := createTestComment(commentURI, "did:plc:commenter123", "commenter.test", postURI, postURI, 0)
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo).(*commentService)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
 	// Execute
 	result := service.buildCommentView(comment, nil, nil, make(map[string]*users.User))
@@ -966,7 +966,7 @@ func TestCommentService_buildCommentView_TopLevelComment(t *testing.T) {
 	// Top-level comment (parent = root)
 	comment := createTestComment(commentURI, "did:plc:commenter123", "commenter.test", postURI, postURI, 0)
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo).(*commentService)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
 	// Execute
 	result := service.buildCommentView(comment, nil, nil, make(map[string]*users.User))
@@ -991,7 +991,7 @@ func TestCommentService_buildCommentView_NestedComment(t *testing.T) {
 	// Nested comment (parent != root)
 	comment := createTestComment(childCommentURI, "did:plc:commenter123", "commenter.test", postURI, parentCommentURI, 0)
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo).(*commentService)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
 	// Execute
 	result := service.buildCommentView(comment, nil, nil, make(map[string]*users.User))
@@ -1025,7 +1025,7 @@ func TestCommentService_buildCommentView_WithViewerVote(t *testing.T) {
 		},
 	}
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo).(*commentService)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
 	// Execute
 	result := service.buildCommentView(comment, &viewerDID, voteStates, make(map[string]*users.User))
@@ -1054,7 +1054,7 @@ func TestCommentService_buildCommentView_NoViewerVote(t *testing.T) {
 	// Empty vote states
 	voteStates := map[string]interface{}{}
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo).(*commentService)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
 	// Execute
 	result := service.buildCommentView(comment, &viewerDID, voteStates, make(map[string]*users.User))
@@ -1252,7 +1252,7 @@ func TestBuildCommentView_ValidFacetsDeserialization(t *testing.T) {
 	comment := createTestComment("at://did:plc:commenter123/comment/1", "did:plc:commenter123", "commenter.test", postURI, postURI, 0)
 	comment.ContentFacets = &facetsJSON
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo).(*commentService)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
 	result := service.buildCommentView(comment, nil, nil, make(map[string]*users.User))
 
@@ -1272,7 +1272,7 @@ func TestBuildCommentView_ValidEmbedDeserialization(t *testing.T) {
 	comment := createTestComment("at://did:plc:commenter123/comment/1", "did:plc:commenter123", "commenter.test", postURI, postURI, 0)
 	comment.Embed = &embedJSON
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo).(*commentService)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
 	result := service.buildCommentView(comment, nil, nil, make(map[string]*users.User))
 
@@ -1294,7 +1294,7 @@ func TestBuildCommentRecord_ValidLabelsDeserialization(t *testing.T) {
 	comment := createTestComment("at://did:plc:commenter123/comment/1", "did:plc:commenter123", "commenter.test", postURI, postURI, 0)
 	comment.ContentLabels = &labelsJSON
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo).(*commentService)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
 	record := service.buildCommentRecord(comment)
 
@@ -1313,7 +1313,7 @@ func TestBuildCommentView_MalformedJSONLogsWarning(t *testing.T) {
 	comment := createTestComment("at://did:plc:commenter123/comment/1", "did:plc:commenter123", "commenter.test", postURI, postURI, 0)
 	comment.ContentFacets = &malformedJSON
 
-	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo).(*commentService)
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
 	// Should not panic, should log warning and return view with nil facets
 	result := service.buildCommentView(comment, nil, nil, make(map[string]*users.User))
@@ -1375,7 +1375,7 @@ func TestBuildCommentView_EmptyStringVsNilHandling(t *testing.T) {
 			comment.Embed = tt.embedValue
 			comment.ContentLabels = tt.labelsValue
 
-			service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo).(*commentService)
+			service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
 			result := service.buildCommentView(comment, nil, nil, make(map[string]*users.User))
 
