@@ -785,7 +785,8 @@ func setupCommentService(db *sql.DB) comments.Service {
 	postRepo := postgres.NewPostRepository(db)
 	userRepo := postgres.NewUserRepository(db)
 	communityRepo := postgres.NewCommunityRepository(db)
-	return comments.NewCommentService(commentRepo, userRepo, postRepo, communityRepo)
+	// Use factory constructor with nil factory - these tests only use the read path (GetComments)
+	return comments.NewCommentServiceWithPDSFactory(commentRepo, userRepo, postRepo, communityRepo, nil, nil)
 }
 
 // Helper: createTestCommentWithScore creates a comment with specific vote counts
@@ -871,7 +872,8 @@ func setupCommentServiceAdapter(db *sql.DB) *testCommentServiceAdapter {
 	postRepo := postgres.NewPostRepository(db)
 	userRepo := postgres.NewUserRepository(db)
 	communityRepo := postgres.NewCommunityRepository(db)
-	service := comments.NewCommentService(commentRepo, userRepo, postRepo, communityRepo)
+	// Use factory constructor with nil factory - these tests only use the read path (GetComments)
+	service := comments.NewCommentServiceWithPDSFactory(commentRepo, userRepo, postRepo, communityRepo, nil, nil)
 	return &testCommentServiceAdapter{service: service}
 }
 

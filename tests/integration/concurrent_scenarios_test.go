@@ -454,7 +454,8 @@ func TestConcurrentCommenting_MultipleUsersOnSamePost(t *testing.T) {
 		}
 
 		// Verify all comments are retrievable via service
-		commentService := comments.NewCommentService(commentRepo, userRepo, postRepo, communityRepo)
+		// Use factory constructor with nil factory - this test only uses the read path (GetComments)
+		commentService := comments.NewCommentServiceWithPDSFactory(commentRepo, userRepo, postRepo, communityRepo, nil, nil)
 		response, err := commentService.GetComments(ctx, &comments.GetCommentsRequest{
 			PostURI:   postURI,
 			Sort:      "new",
