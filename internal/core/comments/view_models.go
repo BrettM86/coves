@@ -7,20 +7,24 @@ import (
 // CommentView represents the full view of a comment with all metadata
 // Matches social.coves.community.comment.getComments#commentView lexicon
 // Used in thread views and get endpoints
+// For deleted comments, IsDeleted=true and content-related fields are empty/nil
 type CommentView struct {
-	Embed         interface{}         `json:"embed,omitempty"`
-	Record        interface{}         `json:"record"`
-	Viewer        *CommentViewerState `json:"viewer,omitempty"`
-	Author        *posts.AuthorView   `json:"author"`
-	Post          *CommentRef         `json:"post"`
-	Parent        *CommentRef         `json:"parent,omitempty"`
-	Stats         *CommentStats       `json:"stats"`
-	Content       string              `json:"content"`
-	CreatedAt     string              `json:"createdAt"`
-	IndexedAt     string              `json:"indexedAt"`
-	URI           string              `json:"uri"`
-	CID           string              `json:"cid"`
-	ContentFacets []interface{}       `json:"contentFacets,omitempty"`
+	Embed          interface{}         `json:"embed,omitempty"`
+	Record         interface{}         `json:"record"`
+	Viewer         *CommentViewerState `json:"viewer,omitempty"`
+	Author         *posts.AuthorView   `json:"author"`
+	Post           *CommentRef         `json:"post"`
+	Parent         *CommentRef         `json:"parent,omitempty"`
+	Stats          *CommentStats       `json:"stats"`
+	Content        string              `json:"content"`
+	CreatedAt      string              `json:"createdAt"`
+	IndexedAt      string              `json:"indexedAt"`
+	URI            string              `json:"uri"`
+	CID            string              `json:"cid"`
+	ContentFacets  []interface{}       `json:"contentFacets,omitempty"`
+	IsDeleted      bool                `json:"isDeleted,omitempty"`
+	DeletionReason *string             `json:"deletionReason,omitempty"`
+	DeletedAt      *string             `json:"deletedAt,omitempty"`
 }
 
 // ThreadViewComment represents a comment with its nested replies

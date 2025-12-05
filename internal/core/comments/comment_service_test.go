@@ -5,6 +5,7 @@ import (
 	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
 	"time"
@@ -51,6 +52,32 @@ func (m *mockCommentRepo) GetByURI(ctx context.Context, uri string) (*Comment, e
 func (m *mockCommentRepo) Delete(ctx context.Context, uri string) error {
 	delete(m.comments, uri)
 	return nil
+}
+
+func (m *mockCommentRepo) SoftDeleteWithReason(ctx context.Context, uri, reason, deletedByDID string) error {
+	// Validate deletion reason
+	if reason != DeletionReasonAuthor && reason != DeletionReasonModerator {
+		return errors.New("invalid deletion reason: " + reason)
+	}
+	_, err := m.SoftDeleteWithReasonTx(ctx, nil, uri, reason, deletedByDID)
+	return err
+}
+
+// SoftDeleteWithReasonTx implements RepositoryTx interface for transactional deletes
+func (m *mockCommentRepo) SoftDeleteWithReasonTx(ctx context.Context, tx *sql.Tx, uri, reason, deletedByDID string) (int64, error) {
+	if c, ok := m.comments[uri]; ok {
+		if c.DeletedAt != nil {
+			// Already deleted - idempotent
+			return 0, nil
+		}
+		now := time.Now()
+		c.DeletedAt = &now
+		c.DeletionReason = &reason
+		c.DeletedBy = &deletedByDID
+		c.Content = ""
+		return 1, nil
+	}
+	return 0, nil
 }
 
 func (m *mockCommentRepo) ListByRoot(ctx context.Context, rootURI string, limit, offset int) ([]*Comment, error) {
@@ -831,7 +858,7 @@ func TestCommentService_buildThreadViews_EmptyInput(t *testing.T) {
 	assert.Len(t, result, 0)
 }
 
-func TestCommentService_buildThreadViews_SkipsDeletedComments(t *testing.T) {
+func TestCommentService_buildThreadViews_IncludesDeletedCommentsAsPlaceholders(t *testing.T) {
 	// Setup
 	commentRepo := newMockCommentRepo()
 	userRepo := newMockUserRepo()
@@ -840,10 +867,13 @@ func TestCommentService_buildThreadViews_SkipsDeletedComments(t *testing.T) {
 
 	postURI := "at://did:plc:post123/app.bsky.feed.post/test"
 	deletedAt := time.Now()
+	deletionReason := DeletionReasonAuthor
 
 	// Create a deleted comment
 	deletedComment := createTestComment("at://did:plc:commenter123/comment/1", "did:plc:commenter123", "commenter.test", postURI, postURI, 0)
 	deletedComment.DeletedAt = &deletedAt
+	deletedComment.DeletionReason = &deletionReason
+	deletedComment.Content = "" // Content is blanked on deletion
 
 	// Create a normal comment
 	normalComment := createTestComment("at://did:plc:commenter123/comment/2", "did:plc:commenter123", "commenter.test", postURI, postURI, 0)
@@ -853,9 +883,19 @@ func TestCommentService_buildThreadViews_SkipsDeletedComments(t *testing.T) {
 	// Execute
 	result := service.buildThreadViews(context.Background(), []*Comment{deletedComment, normalComment}, 10, "hot", nil)
 
-	// Verify - should only include non-deleted comment
-	assert.Len(t, result, 1)
-	assert.Equal(t, normalComment.URI, result[0].Comment.URI)
+	// Verify - both comments should be included to preserve thread structure
+	assert.Len(t, result, 2)
+
+	// First comment should be the deleted one with placeholder info
+	assert.Equal(t, deletedComment.URI, result[0].Comment.URI)
+	assert.True(t, result[0].Comment.IsDeleted)
+	assert.Equal(t, DeletionReasonAuthor, *result[0].Comment.DeletionReason)
+	assert.Empty(t, result[0].Comment.Content)
+
+	// Second comment should be the normal one
+	assert.Equal(t, normalComment.URI, result[1].Comment.URI)
+	assert.False(t, result[1].Comment.IsDeleted)
+	assert.Nil(t, result[1].Comment.DeletionReason)
 }
 
 func TestCommentService_buildThreadViews_WithNestedReplies(t *testing.T) {

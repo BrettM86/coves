@@ -4,6 +4,12 @@ import (
 	"time"
 )
 
+// Deletion reason constants
+const (
+	DeletionReasonAuthor    = "author"    // User deleted their own comment
+	DeletionReasonModerator = "moderator" // Community moderator removed the comment
+)
+
 // Comment represents a comment in the AppView database
 // Comments are indexed from the firehose after being written to user repositories
 type Comment struct {
@@ -11,6 +17,8 @@ type Comment struct {
 	CreatedAt       time.Time  `json:"createdAt" db:"created_at"`
 	ContentFacets   *string    `json:"contentFacets,omitempty" db:"content_facets"`
 	DeletedAt       *time.Time `json:"deletedAt,omitempty" db:"deleted_at"`
+	DeletionReason  *string    `json:"deletionReason,omitempty" db:"deletion_reason"`
+	DeletedBy       *string    `json:"deletedBy,omitempty" db:"deleted_by"`
 	ContentLabels   *string    `json:"labels,omitempty" db:"content_labels"`
 	Embed           *string    `json:"embed,omitempty" db:"embed"`
 	CommenterHandle string     `json:"commenterHandle,omitempty" db:"-"`

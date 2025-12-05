@@ -120,7 +120,7 @@ func (r *postgresCommentRepo) GetByURI(ctx context.Context, uri string) (*commen
 			id, uri, cid, rkey, commenter_did,
 			root_uri, root_cid, parent_uri, parent_cid,
 			content, content_facets, embed, content_labels, langs,
-			created_at, indexed_at, deleted_at,
+			created_at, indexed_at, deleted_at, deletion_reason, deleted_by,
 			upvote_count, downvote_count, score, reply_count
 		FROM comments
 		WHERE uri = $1
@@ -133,7 +133,7 @@ func (r *postgresCommentRepo) GetByURI(ctx context.Context, uri string) (*commen
 		&comment.ID, &comment.URI, &comment.CID, &comment.RKey, &comment.CommenterDID,
 		&comment.RootURI, &comment.RootCID, &comment.ParentURI, &comment.ParentCID,
 		&comment.Content, &comment.ContentFacets, &comment.Embed, &comment.ContentLabels, &langs,
-		&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt,
+		&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy,
 		&comment.UpvoteCount, &comment.DownvoteCount, &comment.Score, &comment.ReplyCount,
 	)
 
@@ -152,6 +152,7 @@ func (r *postgresCommentRepo) GetByURI(ctx context.Context, uri string) (*commen
 // Delete soft-deletes a comment (sets deleted_at)
 // Called by Jetstream consumer after comment is deleted from PDS
 // Idempotent: Returns success if comment already deleted
+// Deprecated: Use SoftDeleteWithReason for new code to preserve thread structure
 func (r *postgresCommentRepo) Delete(ctx context.Context, uri string) error {
 	query := `
 		UPDATE comments
@@ -177,18 +178,72 @@ func (r *postgresCommentRepo) Delete(ctx context.Context, uri string) error {
 	return nil
 }
 
-// ListByRoot retrieves all active comments in a thread (flat)
+// SoftDeleteWithReason performs a soft delete that blanks content but preserves thread structure
+// This allows deleted comments to appear as "[deleted]" placeholders in thread views
+// Idempotent: Returns success if comment already deleted
+// Validates that reason is a known deletion reason constant
+func (r *postgresCommentRepo) SoftDeleteWithReason(ctx context.Context, uri, reason, deletedByDID string) error {
+	// Validate deletion reason
+	if reason != comments.DeletionReasonAuthor && reason != comments.DeletionReasonModerator {
+		return fmt.Errorf("invalid deletion reason: %s", reason)
+	}
+
+	_, err := r.SoftDeleteWithReasonTx(ctx, nil, uri, reason, deletedByDID)
+	return err
+}
+
+// SoftDeleteWithReasonTx performs a soft delete within an optional transaction
+// If tx is nil, executes directly against the database
+// Returns rows affected count for callers that need to check idempotency
+// This method is used by both the repository and the Jetstream consumer
+func (r *postgresCommentRepo) SoftDeleteWithReasonTx(ctx context.Context, tx *sql.Tx, uri, reason, deletedByDID string) (int64, error) {
+	query := `
+		UPDATE comments
+		SET
+			content = '',
+			content_facets = NULL,
+			embed = NULL,
+			content_labels = NULL,
+			deleted_at = NOW(),
+			deletion_reason = $2,
+			deleted_by = $3
+		WHERE uri = $1 AND deleted_at IS NULL
+	`
+
+	var result sql.Result
+	var err error
+
+	if tx != nil {
+		result, err = tx.ExecContext(ctx, query, uri, reason, deletedByDID)
+	} else {
+		result, err = r.db.ExecContext(ctx, query, uri, reason, deletedByDID)
+	}
+
+	if err != nil {
+		return 0, fmt.Errorf("failed to soft delete comment: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("failed to check delete result: %w", err)
+	}
+
+	return rowsAffected, nil
+}
+
+// ListByRoot retrieves all comments in a thread (flat), including deleted ones
 // Used for fetching entire comment threads on posts
+// Includes deleted comments to preserve thread structure (shown as "[deleted]" placeholders)
 func (r *postgresCommentRepo) ListByRoot(ctx context.Context, rootURI string, limit, offset int) ([]*comments.Comment, error) {
 	query := `
 		SELECT
 			id, uri, cid, rkey, commenter_did,
 			root_uri, root_cid, parent_uri, parent_cid,
 			content, content_facets, embed, content_labels, langs,
-			created_at, indexed_at, deleted_at,
+			created_at, indexed_at, deleted_at, deletion_reason, deleted_by,
 			upvote_count, downvote_count, score, reply_count
 		FROM comments
-		WHERE root_uri = $1 AND deleted_at IS NULL
+		WHERE root_uri = $1
 		ORDER BY created_at ASC
 		LIMIT $2 OFFSET $3
 	`
@@ -212,7 +267,7 @@ func (r *postgresCommentRepo) ListByRoot(ctx context.Context, rootURI string, li
 			&comment.ID, &comment.URI, &comment.CID, &comment.RKey, &comment.CommenterDID,
 			&comment.RootURI, &comment.RootCID, &comment.ParentURI, &comment.ParentCID,
 			&comment.Content, &comment.ContentFacets, &comment.Embed, &comment.ContentLabels, &langs,
-			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt,
+			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy,
 			&comment.UpvoteCount, &comment.DownvoteCount, &comment.Score, &comment.ReplyCount,
 		)
 		if err != nil {
@@ -230,18 +285,19 @@ func (r *postgresCommentRepo) ListByRoot(ctx context.Context, rootURI string, li
 	return result, nil
 }
 
-// ListByParent retrieves direct replies to a post or comment
+// ListByParent retrieves direct replies to a post or comment, including deleted ones
 // Used for building nested/threaded comment views
+// Includes deleted comments to preserve thread structure (shown as "[deleted]" placeholders)
 func (r *postgresCommentRepo) ListByParent(ctx context.Context, parentURI string, limit, offset int) ([]*comments.Comment, error) {
 	query := `
 		SELECT
 			id, uri, cid, rkey, commenter_did,
 			root_uri, root_cid, parent_uri, parent_cid,
 			content, content_facets, embed, content_labels, langs,
-			created_at, indexed_at, deleted_at,
+			created_at, indexed_at, deleted_at, deletion_reason, deleted_by,
 			upvote_count, downvote_count, score, reply_count
 		FROM comments
-		WHERE parent_uri = $1 AND deleted_at IS NULL
+		WHERE parent_uri = $1
 		ORDER BY created_at ASC
 		LIMIT $2 OFFSET $3
 	`
@@ -265,7 +321,7 @@ func (r *postgresCommentRepo) ListByParent(ctx context.Context, parentURI string
 			&comment.ID, &comment.URI, &comment.CID, &comment.RKey, &comment.CommenterDID,
 			&comment.RootURI, &comment.RootCID, &comment.ParentURI, &comment.ParentCID,
 			&comment.Content, &comment.ContentFacets, &comment.Embed, &comment.ContentLabels, &langs,
-			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt,
+			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy,
 			&comment.UpvoteCount, &comment.DownvoteCount, &comment.Score, &comment.ReplyCount,
 		)
 		if err != nil {
@@ -302,14 +358,14 @@ func (r *postgresCommentRepo) CountByParent(ctx context.Context, parentURI strin
 }
 
 // ListByCommenter retrieves all active comments by a specific user
-// Future: Used for user comment history
+// Used for user comment history - filters out deleted comments
 func (r *postgresCommentRepo) ListByCommenter(ctx context.Context, commenterDID string, limit, offset int) ([]*comments.Comment, error) {
 	query := `
 		SELECT
 			id, uri, cid, rkey, commenter_did,
 			root_uri, root_cid, parent_uri, parent_cid,
 			content, content_facets, embed, content_labels, langs,
-			created_at, indexed_at, deleted_at,
+			created_at, indexed_at, deleted_at, deletion_reason, deleted_by,
 			upvote_count, downvote_count, score, reply_count
 		FROM comments
 		WHERE commenter_did = $1 AND deleted_at IS NULL
@@ -336,7 +392,7 @@ func (r *postgresCommentRepo) ListByCommenter(ctx context.Context, commenterDID 
 			&comment.ID, &comment.URI, &comment.CID, &comment.RKey, &comment.CommenterDID,
 			&comment.RootURI, &comment.RootCID, &comment.ParentURI, &comment.ParentCID,
 			&comment.Content, &comment.ContentFacets, &comment.Embed, &comment.ContentLabels, &langs,
-			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt,
+			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy,
 			&comment.UpvoteCount, &comment.DownvoteCount, &comment.Score, &comment.ReplyCount,
 		)
 		if err != nil {
@@ -391,7 +447,7 @@ func (r *postgresCommentRepo) ListByParentWithHotRank(
 			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
 			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
-			c.created_at, c.indexed_at, c.deleted_at,
+			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
 			c.upvote_count, c.downvote_count, c.score, c.reply_count,
 			log(greatest(2, c.score + 2)) / power(((EXTRACT(EPOCH FROM (NOW() - c.created_at)) / 3600) + 2), 1.8) as hot_rank,
 			COALESCE(u.handle, c.commenter_did) as author_handle
@@ -402,7 +458,7 @@ func (r *postgresCommentRepo) ListByParentWithHotRank(
 			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
 			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
-			c.created_at, c.indexed_at, c.deleted_at,
+			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
 			c.upvote_count, c.downvote_count, c.score, c.reply_count,
 			NULL::numeric as hot_rank,
 			COALESCE(u.handle, c.commenter_did) as author_handle
@@ -411,10 +467,11 @@ func (r *postgresCommentRepo) ListByParentWithHotRank(
 
 	// Build complete query with JOINs and filters
 	// LEFT JOIN prevents data loss when user record hasn't been indexed yet (out-of-order Jetstream events)
+	// Includes deleted comments to preserve thread structure (shown as "[deleted]" placeholders)
 	query := fmt.Sprintf(`
 		%s
 		LEFT JOIN users u ON c.commenter_did = u.did
-		WHERE c.parent_uri = $1 AND c.deleted_at IS NULL
+		WHERE c.parent_uri = $1
 			%s
 			%s
 		ORDER BY %s
@@ -449,7 +506,7 @@ func (r *postgresCommentRepo) ListByParentWithHotRank(
 			&comment.ID, &comment.URI, &comment.CID, &comment.RKey, &comment.CommenterDID,
 			&comment.RootURI, &comment.RootCID, &comment.ParentURI, &comment.ParentCID,
 			&comment.Content, &comment.ContentFacets, &comment.Embed, &comment.ContentLabels, &langs,
-			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt,
+			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy,
 			&comment.UpvoteCount, &comment.DownvoteCount, &comment.Score, &comment.ReplyCount,
 			&hotRank, &authorHandle,
 		)
@@ -687,6 +744,7 @@ func (r *postgresCommentRepo) buildCommentCursor(comment *comments.Comment, sort
 
 // GetByURIsBatch retrieves multiple comments by their AT-URIs in a single query
 // Returns map[uri]*Comment for efficient lookups without N+1 queries
+// Includes deleted comments to preserve thread structure
 func (r *postgresCommentRepo) GetByURIsBatch(ctx context.Context, uris []string) (map[string]*comments.Comment, error) {
 	if len(uris) == 0 {
 		return make(map[string]*comments.Comment), nil
@@ -694,17 +752,18 @@ func (r *postgresCommentRepo) GetByURIsBatch(ctx context.Context, uris []string)
 
 	// LEFT JOIN prevents data loss when user record hasn't been indexed yet (out-of-order Jetstream events)
 	// COALESCE falls back to DID when handle is NULL (user not yet in users table)
+	// Includes deleted comments to preserve thread structure (shown as "[deleted]" placeholders)
 	query := `
 		SELECT
 			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
 			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
-			c.created_at, c.indexed_at, c.deleted_at,
+			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
 			c.upvote_count, c.downvote_count, c.score, c.reply_count,
 			COALESCE(u.handle, c.commenter_did) as author_handle
 		FROM comments c
 		LEFT JOIN users u ON c.commenter_did = u.did
-		WHERE c.uri = ANY($1) AND c.deleted_at IS NULL
+		WHERE c.uri = ANY($1)
 	`
 
 	rows, err := r.db.QueryContext(ctx, query, pq.Array(uris))
@@ -727,7 +786,7 @@ func (r *postgresCommentRepo) GetByURIsBatch(ctx context.Context, uris []string)
 			&comment.ID, &comment.URI, &comment.CID, &comment.RKey, &comment.CommenterDID,
 			&comment.RootURI, &comment.RootCID, &comment.ParentURI, &comment.ParentCID,
 			&comment.Content, &comment.ContentFacets, &comment.Embed, &comment.ContentLabels, &langs,
-			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt,
+			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy,
 			&comment.UpvoteCount, &comment.DownvoteCount, &comment.Score, &comment.ReplyCount,
 			&authorHandle,
 		)
@@ -769,7 +828,7 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
 			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
-			c.created_at, c.indexed_at, c.deleted_at,
+			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
 			c.upvote_count, c.downvote_count, c.score, c.reply_count,
 			log(greatest(2, c.score + 2)) / power(((EXTRACT(EPOCH FROM (NOW() - c.created_at)) / 3600) + 2), 1.8) as hot_rank,
 			COALESCE(u.handle, c.commenter_did) as author_handle`
@@ -780,7 +839,7 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
 			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
-			c.created_at, c.indexed_at, c.deleted_at,
+			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
 			c.upvote_count, c.downvote_count, c.score, c.reply_count,
 			NULL::numeric as hot_rank,
 			COALESCE(u.handle, c.commenter_did) as author_handle`
@@ -790,7 +849,7 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
 			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
-			c.created_at, c.indexed_at, c.deleted_at,
+			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
 			c.upvote_count, c.downvote_count, c.score, c.reply_count,
 			NULL::numeric as hot_rank,
 			COALESCE(u.handle, c.commenter_did) as author_handle`
@@ -801,7 +860,7 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
 			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
-			c.created_at, c.indexed_at, c.deleted_at,
+			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
 			c.upvote_count, c.downvote_count, c.score, c.reply_count,
 			log(greatest(2, c.score + 2)) / power(((EXTRACT(EPOCH FROM (NOW() - c.created_at)) / 3600) + 2), 1.8) as hot_rank,
 			COALESCE(u.handle, c.commenter_did) as author_handle`
@@ -812,6 +871,7 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 	// Use window function to limit results per parent
 	// This is more efficient than LIMIT in a subquery per parent
 	// LEFT JOIN prevents data loss when user record hasn't been indexed yet (out-of-order Jetstream events)
+	// Includes deleted comments to preserve thread structure (shown as "[deleted]" placeholders)
 	query := fmt.Sprintf(`
 		WITH ranked_comments AS (
 			SELECT
@@ -822,13 +882,13 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 				) as rn
 			FROM comments c
 			LEFT JOIN users u ON c.commenter_did = u.did
-			WHERE c.parent_uri = ANY($1) AND c.deleted_at IS NULL
+			WHERE c.parent_uri = ANY($1)
 		)
 		SELECT
 			id, uri, cid, rkey, commenter_did,
 			root_uri, root_cid, parent_uri, parent_cid,
 			content, content_facets, embed, content_labels, langs,
-			created_at, indexed_at, deleted_at,
+			created_at, indexed_at, deleted_at, deletion_reason, deleted_by,
 			upvote_count, downvote_count, score, reply_count,
 			hot_rank, author_handle
 		FROM ranked_comments
@@ -858,7 +918,7 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 			&comment.ID, &comment.URI, &comment.CID, &comment.RKey, &comment.CommenterDID,
 			&comment.RootURI, &comment.RootCID, &comment.ParentURI, &comment.ParentCID,
 			&comment.Content, &comment.ContentFacets, &comment.Embed, &comment.ContentLabels, &langs,
-			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt,
+			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy,
 			&comment.UpvoteCount, &comment.DownvoteCount, &comment.Score, &comment.ReplyCount,
 			&hotRank, &authorHandle,
 		)
