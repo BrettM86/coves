@@ -9,9 +9,17 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/bluesky-social/indigo/atproto/auth/oauth"
+	"github.com/bluesky-social/indigo/atproto/syntax"
+	"github.com/rivo/uniseg"
+
+	oauthclient "Coves/internal/atproto/oauth"
+	"Coves/internal/atproto/pds"
 )
 
 const (
@@ -19,7 +27,17 @@ const (
 	// This balances UX (showing enough context) with performance (limiting query size)
 	// Can be made configurable via constructor if needed in the future
 	DefaultRepliesPerParent = 5
+
+	// commentCollection is the AT Protocol collection for comment records
+	commentCollection = "social.coves.community.comment"
+
+	// maxCommentGraphemes is the maximum length for comment content in graphemes
+	maxCommentGraphemes = 10000
 )
+
+// PDSClientFactory creates PDS clients from session data.
+// Used to allow injection of different auth mechanisms (OAuth for production, password for tests).
+type PDSClientFactory func(ctx context.Context, session *oauth.ClientSessionData) (pds.Client, error)
 
 // Service defines the business logic interface for comment operations
 // Orchestrates repository calls and builds view models for API responses
@@ -27,6 +45,15 @@ type Service interface {
 	// GetComments retrieves and builds a threaded comment tree for a post
 	// Supports hot, top, and new sorting with configurable depth and pagination
 	GetComments(ctx context.Context, req *GetCommentsRequest) (*GetCommentsResponse, error)
+
+	// CreateComment creates a new comment or reply
+	CreateComment(ctx context.Context, session *oauth.ClientSessionData, req CreateCommentRequest) (*CreateCommentResponse, error)
+
+	// UpdateComment updates an existing comment's content
+	UpdateComment(ctx context.Context, session *oauth.ClientSessionData, req UpdateCommentRequest) (*UpdateCommentResponse, error)
+
+	// DeleteComment soft-deletes a comment
+	DeleteComment(ctx context.Context, session *oauth.ClientSessionData, req DeleteCommentRequest) error
 }
 
 // GetCommentsRequest defines the parameters for fetching comments
@@ -43,10 +70,14 @@ type GetCommentsRequest struct {
 // commentService implements the Service interface
 // Coordinates between repository layer and view model construction
 type commentService struct {
-	commentRepo   Repository             // Comment data access
-	userRepo      users.UserRepository   // User lookup for author hydration
-	postRepo      posts.Repository       // Post lookup for building post views
-	communityRepo communities.Repository // Community lookup for community hydration
+	commentRepo      Repository                // Comment data access
+	userRepo         users.UserRepository      // User lookup for author hydration
+	postRepo         posts.Repository          // Post lookup for building post views
+	communityRepo    communities.Repository    // Community lookup for community hydration
+	oauthClient      *oauthclient.OAuthClient  // OAuth client for PDS authentication
+	oauthStore       oauth.ClientAuthStore     // OAuth session store
+	logger           *slog.Logger              // Structured logger
+	pdsClientFactory PDSClientFactory          // Optional, for testing. If nil, uses OAuth.
 }
 
 // NewCommentService creates a new comment service instance
@@ -56,12 +87,44 @@ func NewCommentService(
 	userRepo users.UserRepository,
 	postRepo posts.Repository,
 	communityRepo communities.Repository,
+	oauthClient *oauthclient.OAuthClient,
+	oauthStore oauth.ClientAuthStore,
+	logger *slog.Logger,
 ) Service {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &commentService{
 		commentRepo:   commentRepo,
 		userRepo:      userRepo,
 		postRepo:      postRepo,
 		communityRepo: communityRepo,
+		oauthClient:   oauthClient,
+		oauthStore:    oauthStore,
+		logger:        logger,
+	}
+}
+
+// NewCommentServiceWithPDSFactory creates a comment service with a custom PDS client factory.
+// This is primarily for testing with password-based authentication.
+func NewCommentServiceWithPDSFactory(
+	commentRepo Repository,
+	userRepo users.UserRepository,
+	postRepo posts.Repository,
+	communityRepo communities.Repository,
+	logger *slog.Logger,
+	factory PDSClientFactory,
+) Service {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &commentService{
+		commentRepo:      commentRepo,
+		userRepo:         userRepo,
+		postRepo:         postRepo,
+		communityRepo:    communityRepo,
+		logger:           logger,
+		pdsClientFactory: factory,
 	}
 }
 
@@ -431,6 +494,315 @@ func (s *commentService) buildCommentRecord(comment *Comment) *CommentRecord {
 	}
 
 	return record
+}
+
+// getPDSClient creates a PDS client from an OAuth session.
+// If a custom factory was provided (for testing), uses that.
+// Otherwise, uses DPoP authentication via indigo's APIClient for proper OAuth token handling.
+func (s *commentService) getPDSClient(ctx context.Context, session *oauth.ClientSessionData) (pds.Client, error) {
+	// Use custom factory if provided (e.g., for testing with password auth)
+	if s.pdsClientFactory != nil {
+		return s.pdsClientFactory(ctx, session)
+	}
+
+	// Production path: use OAuth with DPoP
+	if s.oauthClient == nil || s.oauthClient.ClientApp == nil {
+		return nil, fmt.Errorf("OAuth client not configured")
+	}
+
+	client, err := pds.NewFromOAuthSession(ctx, s.oauthClient.ClientApp, session)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create PDS client: %w", err)
+	}
+
+	return client, nil
+}
+
+// CreateComment creates a new comment on a post or reply to another comment
+func (s *commentService) CreateComment(ctx context.Context, session *oauth.ClientSessionData, req CreateCommentRequest) (*CreateCommentResponse, error) {
+	// Validate content not empty
+	content := strings.TrimSpace(req.Content)
+	if content == "" {
+		return nil, ErrContentEmpty
+	}
+
+	// Validate content length (max 10000 graphemes)
+	if uniseg.GraphemeClusterCount(content) > maxCommentGraphemes {
+		return nil, ErrContentTooLong
+	}
+
+	// Validate reply references
+	if err := validateReplyRef(req.Reply); err != nil {
+		return nil, err
+	}
+
+	// Create PDS client for this session
+	pdsClient, err := s.getPDSClient(ctx, session)
+	if err != nil {
+		s.logger.Error("failed to create PDS client",
+			"error", err,
+			"commenter", session.AccountDID)
+		return nil, fmt.Errorf("failed to create PDS client: %w", err)
+	}
+
+	// Generate TID for the record key
+	tid := syntax.NewTIDNow(0)
+
+	// Build comment record following the lexicon schema
+	record := CommentRecord{
+		Type:      commentCollection,
+		Reply:     req.Reply,
+		Content:   content,
+		Facets:    req.Facets,
+		Embed:     req.Embed,
+		Langs:     req.Langs,
+		Labels:    req.Labels,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	// Create the comment record on the user's PDS
+	uri, cid, err := pdsClient.CreateRecord(ctx, commentCollection, tid.String(), record)
+	if err != nil {
+		s.logger.Error("failed to create comment on PDS",
+			"error", err,
+			"commenter", session.AccountDID,
+			"root", req.Reply.Root.URI,
+			"parent", req.Reply.Parent.URI)
+		if pds.IsAuthError(err) {
+			return nil, ErrNotAuthorized
+		}
+		return nil, fmt.Errorf("failed to create comment: %w", err)
+	}
+
+	s.logger.Info("comment created",
+		"commenter", session.AccountDID,
+		"uri", uri,
+		"cid", cid,
+		"root", req.Reply.Root.URI,
+		"parent", req.Reply.Parent.URI)
+
+	return &CreateCommentResponse{
+		URI: uri,
+		CID: cid,
+	}, nil
+}
+
+// UpdateComment updates an existing comment's content
+func (s *commentService) UpdateComment(ctx context.Context, session *oauth.ClientSessionData, req UpdateCommentRequest) (*UpdateCommentResponse, error) {
+	// Validate URI format
+	if req.URI == "" {
+		return nil, ErrCommentNotFound
+	}
+	if !strings.HasPrefix(req.URI, "at://") {
+		return nil, ErrCommentNotFound
+	}
+
+	// Extract DID and rkey from URI (at://did/collection/rkey)
+	parts := strings.Split(req.URI, "/")
+	if len(parts) < 5 || parts[3] != commentCollection {
+		return nil, ErrCommentNotFound
+	}
+	did := parts[2]
+	rkey := parts[4]
+
+	// Verify ownership: URI must belong to the authenticated user
+	if did != session.AccountDID.String() {
+		return nil, ErrNotAuthorized
+	}
+
+	// Validate new content
+	content := strings.TrimSpace(req.Content)
+	if content == "" {
+		return nil, ErrContentEmpty
+	}
+
+	// Validate content length (max 10000 graphemes)
+	if uniseg.GraphemeClusterCount(content) > maxCommentGraphemes {
+		return nil, ErrContentTooLong
+	}
+
+	// Create PDS client for this session
+	pdsClient, err := s.getPDSClient(ctx, session)
+	if err != nil {
+		s.logger.Error("failed to create PDS client",
+			"error", err,
+			"commenter", session.AccountDID)
+		return nil, fmt.Errorf("failed to create PDS client: %w", err)
+	}
+
+	// Fetch existing record from PDS to get the reply refs (immutable)
+	existingRecord, err := pdsClient.GetRecord(ctx, commentCollection, rkey)
+	if err != nil {
+		s.logger.Error("failed to fetch existing comment from PDS",
+			"error", err,
+			"uri", req.URI,
+			"rkey", rkey)
+		if pds.IsAuthError(err) {
+			return nil, ErrNotAuthorized
+		}
+		if errors.Is(err, pds.ErrNotFound) {
+			return nil, ErrCommentNotFound
+		}
+		return nil, fmt.Errorf("failed to fetch existing comment: %w", err)
+	}
+
+	// Extract reply refs from existing record (must be preserved)
+	replyData, ok := existingRecord.Value["reply"].(map[string]interface{})
+	if !ok {
+		s.logger.Error("invalid reply structure in existing comment",
+			"uri", req.URI)
+		return nil, fmt.Errorf("invalid existing comment structure")
+	}
+
+	// Parse reply refs
+	var reply ReplyRef
+	replyJSON, err := json.Marshal(replyData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal reply data: %w", err)
+	}
+	if err := json.Unmarshal(replyJSON, &reply); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal reply data: %w", err)
+	}
+
+	// Extract original createdAt timestamp (immutable)
+	createdAt, _ := existingRecord.Value["createdAt"].(string)
+	if createdAt == "" {
+		createdAt = time.Now().UTC().Format(time.RFC3339)
+	}
+
+	// Build updated comment record
+	updatedRecord := CommentRecord{
+		Type:      commentCollection,
+		Reply:     reply, // Preserve original reply refs
+		Content:   content,
+		Facets:    req.Facets,
+		Embed:     req.Embed,
+		Langs:     req.Langs,
+		Labels:    req.Labels,
+		CreatedAt: createdAt, // Preserve original timestamp
+	}
+
+	// Update the record on PDS (putRecord)
+	// Note: This creates a new CID even though the URI stays the same
+	// TODO: Use PutRecord instead of CreateRecord for proper update semantics with optimistic locking.
+	// PutRecord should accept the existing CID (existingRecord.CID) to ensure concurrent updates are detected.
+	// However, PutRecord is not yet implemented in internal/atproto/pds/client.go.
+	uri, cid, err := pdsClient.CreateRecord(ctx, commentCollection, rkey, updatedRecord)
+	if err != nil {
+		s.logger.Error("failed to update comment on PDS",
+			"error", err,
+			"uri", req.URI,
+			"rkey", rkey)
+		if pds.IsAuthError(err) {
+			return nil, ErrNotAuthorized
+		}
+		return nil, fmt.Errorf("failed to update comment: %w", err)
+	}
+
+	s.logger.Info("comment updated",
+		"commenter", session.AccountDID,
+		"uri", uri,
+		"new_cid", cid,
+		"old_cid", existingRecord.CID)
+
+	return &UpdateCommentResponse{
+		URI: uri,
+		CID: cid,
+	}, nil
+}
+
+// DeleteComment soft-deletes a comment by removing it from the user's PDS
+func (s *commentService) DeleteComment(ctx context.Context, session *oauth.ClientSessionData, req DeleteCommentRequest) error {
+	// Validate URI format
+	if req.URI == "" {
+		return ErrCommentNotFound
+	}
+	if !strings.HasPrefix(req.URI, "at://") {
+		return ErrCommentNotFound
+	}
+
+	// Extract DID and rkey from URI (at://did/collection/rkey)
+	parts := strings.Split(req.URI, "/")
+	if len(parts) < 5 || parts[3] != commentCollection {
+		return ErrCommentNotFound
+	}
+	did := parts[2]
+	rkey := parts[4]
+
+	// Verify ownership: URI must belong to the authenticated user
+	if did != session.AccountDID.String() {
+		return ErrNotAuthorized
+	}
+
+	// Create PDS client for this session
+	pdsClient, err := s.getPDSClient(ctx, session)
+	if err != nil {
+		s.logger.Error("failed to create PDS client",
+			"error", err,
+			"commenter", session.AccountDID)
+		return fmt.Errorf("failed to create PDS client: %w", err)
+	}
+
+	// Verify comment exists on PDS before deleting
+	_, err = pdsClient.GetRecord(ctx, commentCollection, rkey)
+	if err != nil {
+		s.logger.Error("failed to verify comment exists on PDS",
+			"error", err,
+			"uri", req.URI,
+			"rkey", rkey)
+		if pds.IsAuthError(err) {
+			return ErrNotAuthorized
+		}
+		if errors.Is(err, pds.ErrNotFound) {
+			return ErrCommentNotFound
+		}
+		return fmt.Errorf("failed to verify comment: %w", err)
+	}
+
+	// Delete the comment record from user's PDS
+	if err := pdsClient.DeleteRecord(ctx, commentCollection, rkey); err != nil {
+		s.logger.Error("failed to delete comment on PDS",
+			"error", err,
+			"uri", req.URI,
+			"rkey", rkey)
+		if pds.IsAuthError(err) {
+			return ErrNotAuthorized
+		}
+		return fmt.Errorf("failed to delete comment: %w", err)
+	}
+
+	s.logger.Info("comment deleted",
+		"commenter", session.AccountDID,
+		"uri", req.URI)
+
+	return nil
+}
+
+// validateReplyRef validates that reply references are well-formed
+func validateReplyRef(reply ReplyRef) error {
+	// Validate root reference
+	if reply.Root.URI == "" {
+		return ErrInvalidReply
+	}
+	if !strings.HasPrefix(reply.Root.URI, "at://") {
+		return ErrInvalidReply
+	}
+	if reply.Root.CID == "" {
+		return ErrInvalidReply
+	}
+
+	// Validate parent reference
+	if reply.Parent.URI == "" {
+		return ErrInvalidReply
+	}
+	if !strings.HasPrefix(reply.Parent.URI, "at://") {
+		return ErrInvalidReply
+	}
+	if reply.Parent.CID == "" {
+		return ErrInvalidReply
+	}
+
+	return nil
 }
 
 // buildPostView converts a Post entity to a PostView for the comment response

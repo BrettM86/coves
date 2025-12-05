@@ -417,7 +417,8 @@ func TestCommentVote_ViewerState(t *testing.T) {
 		}
 
 		// Query comments with viewer authentication
-		commentService := comments.NewCommentService(commentRepo, userRepo, postRepo, communityRepo)
+		// Use factory constructor with nil factory - this test only uses the read path (GetComments)
+		commentService := comments.NewCommentServiceWithPDSFactory(commentRepo, userRepo, postRepo, communityRepo, nil, nil)
 		response, err := commentService.GetComments(ctx, &comments.GetCommentsRequest{
 			PostURI:   testPostURI,
 			Sort:      "new",
@@ -499,7 +500,8 @@ func TestCommentVote_ViewerState(t *testing.T) {
 		}
 
 		// Query with authentication but no vote
-		commentService := comments.NewCommentService(commentRepo, userRepo, postRepo, communityRepo)
+		// Use factory constructor with nil factory - this test only uses the read path (GetComments)
+		commentService := comments.NewCommentServiceWithPDSFactory(commentRepo, userRepo, postRepo, communityRepo, nil, nil)
 		response, err := commentService.GetComments(ctx, &comments.GetCommentsRequest{
 			PostURI:   testPostURI,
 			Sort:      "new",
@@ -542,7 +544,8 @@ func TestCommentVote_ViewerState(t *testing.T) {
 
 	t.Run("Unauthenticated request has no viewer state", func(t *testing.T) {
 		// Query without authentication
-		commentService := comments.NewCommentService(commentRepo, userRepo, postRepo, communityRepo)
+		// Use factory constructor with nil factory - this test only uses the read path (GetComments)
+		commentService := comments.NewCommentServiceWithPDSFactory(commentRepo, userRepo, postRepo, communityRepo, nil, nil)
 		response, err := commentService.GetComments(ctx, &comments.GetCommentsRequest{
 			PostURI:   testPostURI,
 			Sort:      "new",
