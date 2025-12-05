@@ -806,3 +806,172 @@ func TestCommentWrite_CannotDeleteOthersComment(t *testing.T) {
 func parseTestDID(did string) (syntax.DID, error) {
 	return syntax.ParseDID(did)
 }
+
+// TestCommentWrite_ConcurrentModificationDetection tests that PutRecord's swapRecord
+// CID validation correctly detects concurrent modifications.
+// This verifies the optimistic locking mechanism that prevents lost updates.
+func TestCommentWrite_ConcurrentModificationDetection(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping E2E test in short mode")
+	}
+
+	db := setupTestDB(t)
+	defer func() { _ = db.Close() }()
+
+	ctx := context.Background()
+	pdsURL := getTestPDSURL()
+
+	// Setup repositories and service
+	commentRepo := postgres.NewCommentRepository(db)
+
+	commentPDSFactory := func(ctx context.Context, session *oauthlib.ClientSessionData) (pds.Client, error) {
+		if session.AccessToken == "" {
+			return nil, fmt.Errorf("session has no access token")
+		}
+		if session.HostURL == "" {
+			return nil, fmt.Errorf("session has no host URL")
+		}
+		return pds.NewFromAccessToken(session.HostURL, session.AccountDID.String(), session.AccessToken)
+	}
+
+	commentService := comments.NewCommentServiceWithPDSFactory(
+		commentRepo,
+		nil,
+		nil,
+		nil,
+		nil,
+		commentPDSFactory,
+	)
+
+	// Create test user
+	testUserHandle := fmt.Sprintf("concurrency-%d.local.coves.dev", time.Now().Unix())
+	testUserEmail := fmt.Sprintf("concurrency-%d@test.local", time.Now().Unix())
+	testUserPassword := "test-password-123"
+
+	pdsAccessToken, userDID, err := createPDSAccount(pdsURL, testUserHandle, testUserEmail, testUserPassword)
+	if err != nil {
+		t.Skipf("PDS not available: %v", err)
+	}
+
+	// Setup OAuth
+	mockStore := NewMockOAuthStore()
+	mockStore.AddSessionWithPDS(userDID, "session-"+userDID, pdsAccessToken, pdsURL)
+
+	parsedDID, _ := parseTestDID(userDID)
+	session, _ := mockStore.GetSession(ctx, parsedDID, "session-"+userDID)
+
+	// Step 1: Create a comment
+	t.Logf("\n📝 Step 1: Creating initial comment...")
+	createReq := comments.CreateCommentRequest{
+		Reply: comments.ReplyRef{
+			Root: comments.StrongRef{
+				URI: "at://did:plc:test/social.coves.community.post/test123",
+				CID: "bafypost",
+			},
+			Parent: comments.StrongRef{
+				URI: "at://did:plc:test/social.coves.community.post/test123",
+				CID: "bafypost",
+			},
+		},
+		Content: "Original content for concurrency test",
+		Langs:   []string{"en"},
+	}
+
+	createResp, err := commentService.CreateComment(ctx, session, createReq)
+	if err != nil {
+		t.Fatalf("Failed to create comment: %v", err)
+	}
+	t.Logf("✅ Comment created: URI=%s, CID=%s", createResp.URI, createResp.CID)
+	originalCID := createResp.CID
+
+	// Step 2: Update the comment (this changes the CID)
+	t.Logf("\n📝 Step 2: Updating comment (this changes CID)...")
+	updateReq := comments.UpdateCommentRequest{
+		URI:     createResp.URI,
+		Content: "Updated content - CID has changed",
+	}
+
+	updateResp, err := commentService.UpdateComment(ctx, session, updateReq)
+	if err != nil {
+		t.Fatalf("Failed to update comment: %v", err)
+	}
+	t.Logf("✅ Comment updated: New CID=%s", updateResp.CID)
+	newCID := updateResp.CID
+
+	// Verify CIDs are different
+	if originalCID == newCID {
+		t.Fatalf("CIDs should be different after update: original=%s, new=%s", originalCID, newCID)
+	}
+
+	// Step 3: Simulate concurrent modification detection using direct PDS client
+	// Create a PDS client and attempt to update with the stale (original) CID
+	t.Logf("\n🔍 Step 3: Testing concurrent modification detection with stale CID...")
+
+	pdsClient, err := pds.NewFromAccessToken(pdsURL, userDID, pdsAccessToken)
+	if err != nil {
+		t.Fatalf("Failed to create PDS client: %v", err)
+	}
+
+	rkey := utils.ExtractRKeyFromURI(createResp.URI)
+
+	// Try to update with the ORIGINAL (now stale) CID - this should fail with 409
+	staleRecord := map[string]interface{}{
+		"$type": "social.coves.community.comment",
+		"reply": map[string]interface{}{
+			"root": map[string]interface{}{
+				"uri": "at://did:plc:test/social.coves.community.post/test123",
+				"cid": "bafypost",
+			},
+			"parent": map[string]interface{}{
+				"uri": "at://did:plc:test/social.coves.community.post/test123",
+				"cid": "bafypost",
+			},
+		},
+		"content":   "This update should fail - using stale CID",
+		"createdAt": time.Now().UTC().Format(time.RFC3339),
+	}
+
+	_, _, err = pdsClient.PutRecord(ctx, "social.coves.community.comment", rkey, staleRecord, originalCID)
+
+	// Verify we get ErrConflict
+	if err == nil {
+		t.Fatal("Expected ErrConflict when updating with stale CID, got nil")
+	}
+
+	if !errors.Is(err, pds.ErrConflict) {
+		t.Errorf("Expected pds.ErrConflict, got: %v", err)
+	}
+
+	t.Logf("✅ Correctly detected concurrent modification!")
+	t.Logf("   Error: %v", err)
+
+	// Step 4: Verify that updating with the correct CID succeeds
+	t.Logf("\n📝 Step 4: Verifying update with correct CID succeeds...")
+	correctRecord := map[string]interface{}{
+		"$type": "social.coves.community.comment",
+		"reply": map[string]interface{}{
+			"root": map[string]interface{}{
+				"uri": "at://did:plc:test/social.coves.community.post/test123",
+				"cid": "bafypost",
+			},
+			"parent": map[string]interface{}{
+				"uri": "at://did:plc:test/social.coves.community.post/test123",
+				"cid": "bafypost",
+			},
+		},
+		"content":   "This update should succeed - using correct CID",
+		"createdAt": time.Now().UTC().Format(time.RFC3339),
+	}
+
+	_, finalCID, err := pdsClient.PutRecord(ctx, "social.coves.community.comment", rkey, correctRecord, newCID)
+	if err != nil {
+		t.Fatalf("Update with correct CID should succeed, got: %v", err)
+	}
+
+	t.Logf("✅ Update with correct CID succeeded: New CID=%s", finalCID)
+
+	t.Logf("\n✅ CONCURRENT MODIFICATION DETECTION TEST COMPLETE:")
+	t.Logf("   ✓ PutRecord with stale CID correctly returns ErrConflict")
+	t.Logf("   ✓ PutRecord with correct CID succeeds")
+	t.Logf("   ✓ Optimistic locking prevents lost updates")
+}

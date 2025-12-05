@@ -29,6 +29,9 @@ var (
 
 	// ErrCommentAlreadyExists indicates a comment with this URI already exists
 	ErrCommentAlreadyExists = errors.New("comment already exists")
+
+	// ErrConcurrentModification indicates the comment was modified since it was loaded
+	ErrConcurrentModification = errors.New("comment was modified by another operation")
 )
 
 // IsNotFound checks if an error is a "not found" error
@@ -40,7 +43,8 @@ func IsNotFound(err error) bool {
 
 // IsConflict checks if an error is a conflict/already exists error
 func IsConflict(err error) bool {
-	return errors.Is(err, ErrCommentAlreadyExists)
+	return errors.Is(err, ErrCommentAlreadyExists) ||
+		errors.Is(err, ErrConcurrentModification)
 }
 
 // IsValidationError checks if an error is a validation error

@@ -17,6 +17,9 @@ var (
 
 	// ErrBadRequest indicates the request was malformed or invalid (HTTP 400).
 	ErrBadRequest = errors.New("bad request")
+
+	// ErrConflict indicates the record was modified by another operation (HTTP 409).
+	ErrConflict = errors.New("record was modified by another operation")
 )
 
 // IsAuthError returns true if the error is an authentication/authorization error.

@@ -750,12 +750,8 @@ func (s *commentService) UpdateComment(ctx context.Context, session *oauth.Clien
 		CreatedAt: createdAt, // Preserve original timestamp
 	}
 
-	// Update the record on PDS (putRecord)
-	// Note: This creates a new CID even though the URI stays the same
-	// TODO: Use PutRecord instead of CreateRecord for proper update semantics with optimistic locking.
-	// PutRecord should accept the existing CID (existingRecord.CID) to ensure concurrent updates are detected.
-	// However, PutRecord is not yet implemented in internal/atproto/pds/client.go.
-	uri, cid, err := pdsClient.CreateRecord(ctx, commentCollection, rkey, updatedRecord)
+	// Update the record on PDS with optimistic locking via swapRecord CID
+	uri, cid, err := pdsClient.PutRecord(ctx, commentCollection, rkey, updatedRecord, existingRecord.CID)
 	if err != nil {
 		s.logger.Error("failed to update comment on PDS",
 			"error", err,
@@ -763,6 +759,9 @@ func (s *commentService) UpdateComment(ctx context.Context, session *oauth.Clien
 			"rkey", rkey)
 		if pds.IsAuthError(err) {
 			return nil, ErrNotAuthorized
+		}
+		if errors.Is(err, pds.ErrConflict) {
+			return nil, ErrConcurrentModification
 		}
 		return nil, fmt.Errorf("failed to update comment: %w", err)
 	}

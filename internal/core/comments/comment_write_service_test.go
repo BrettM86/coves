@@ -24,6 +24,7 @@ type mockPDSClient struct {
 	createError error                             // Error to return on CreateRecord
 	getError    error                             // Error to return on GetRecord
 	deleteError error                             // Error to return on DeleteRecord
+	putError    error                             // Error to return on PutRecord
 	did         string                            // DID of the authenticated user
 	hostURL     string                            // PDS host URL
 }
@@ -111,6 +112,22 @@ func (m *mockPDSClient) DeleteRecord(ctx context.Context, collection, rkey strin
 
 func (m *mockPDSClient) ListRecords(ctx context.Context, collection string, limit int, cursor string) (*pds.ListRecordsResponse, error) {
 	return &pds.ListRecordsResponse{}, nil
+}
+
+func (m *mockPDSClient) PutRecord(ctx context.Context, collection, rkey string, record any, swapRecord string) (string, string, error) {
+	if m.putError != nil {
+		return "", "", m.putError
+	}
+
+	// Store record (same logic as CreateRecord)
+	if m.records[collection] == nil {
+		m.records[collection] = make(map[string]interface{})
+	}
+	m.records[collection][rkey] = record
+
+	uri := fmt.Sprintf("at://%s/%s/%s", m.did, collection, rkey)
+	cid := fmt.Sprintf("bafytest%d", time.Now().UnixNano())
+	return uri, cid, nil
 }
 
 // mockPDSClientFactory creates mock PDS clients for testing

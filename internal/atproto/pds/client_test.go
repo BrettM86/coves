@@ -959,6 +959,12 @@ func TestWrapAPIError(t *testing.T) {
 			wantTyped: ErrBadRequest,
 		},
 		{
+			name:      "409 maps to ErrConflict",
+			err:       &atclient.APIError{StatusCode: 409, Name: "InvalidSwap", Message: "Record CID mismatch"},
+			operation: "putRecord",
+			wantTyped: ErrConflict,
+		},
+		{
 			name:      "500 wraps without typed error",
 			err:       &atclient.APIError{StatusCode: 500, Name: "InternalError", Message: "Server error"},
 			operation: "listRecords",
@@ -1161,6 +1167,231 @@ func TestClient_TypedErrors_ListRecords(t *testing.T) {
 
 			ctx := context.Background()
 			_, err := c.ListRecords(ctx, "test.collection", 10, "")
+
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Errorf("expected errors.Is(%v, %v) to be true", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestClient_PutRecord tests the PutRecord method with a mock server.
+func TestClient_PutRecord(t *testing.T) {
+	tests := []struct {
+		name           string
+		collection     string
+		rkey           string
+		record         map[string]any
+		swapRecord     string
+		serverResponse map[string]any
+		serverStatus   int
+		wantURI        string
+		wantCID        string
+		wantErr        bool
+	}{
+		{
+			name:       "successful put with swapRecord",
+			collection: "social.coves.comment",
+			rkey:       "3kjzl5kcb2s2v",
+			record: map[string]any{
+				"$type":   "social.coves.comment",
+				"content": "Updated comment content",
+			},
+			swapRecord: "bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua",
+			serverResponse: map[string]any{
+				"uri": "at://did:plc:test/social.coves.comment/3kjzl5kcb2s2v",
+				"cid": "bafyreihd4q3yqcfvnv5zlp6n4fqzh6z4p4m3mwc7vvr6k2j6y6v2a3b4c5",
+			},
+			serverStatus: http.StatusOK,
+			wantURI:      "at://did:plc:test/social.coves.comment/3kjzl5kcb2s2v",
+			wantCID:      "bafyreihd4q3yqcfvnv5zlp6n4fqzh6z4p4m3mwc7vvr6k2j6y6v2a3b4c5",
+			wantErr:      false,
+		},
+		{
+			name:       "successful put without swapRecord",
+			collection: "social.coves.comment",
+			rkey:       "3kjzl5kcb2s2v",
+			record: map[string]any{
+				"$type":   "social.coves.comment",
+				"content": "Updated comment",
+			},
+			swapRecord: "",
+			serverResponse: map[string]any{
+				"uri": "at://did:plc:test/social.coves.comment/3kjzl5kcb2s2v",
+				"cid": "bafyreihd4q3yqcfvnv5zlp6n4fqzh6z4p4m3mwc7vvr6k2j6y6v2a3b4c5",
+			},
+			serverStatus: http.StatusOK,
+			wantURI:      "at://did:plc:test/social.coves.comment/3kjzl5kcb2s2v",
+			wantCID:      "bafyreihd4q3yqcfvnv5zlp6n4fqzh6z4p4m3mwc7vvr6k2j6y6v2a3b4c5",
+			wantErr:      false,
+		},
+		{
+			name:       "conflict error (409)",
+			collection: "social.coves.comment",
+			rkey:       "test",
+			record:     map[string]any{"$type": "social.coves.comment"},
+			swapRecord: "bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua",
+			serverResponse: map[string]any{
+				"error":   "InvalidSwap",
+				"message": "Record CID does not match",
+			},
+			serverStatus: http.StatusConflict,
+			wantErr:      true,
+		},
+		{
+			name:       "server error",
+			collection: "social.coves.comment",
+			rkey:       "test",
+			record:     map[string]any{"$type": "social.coves.comment"},
+			swapRecord: "",
+			serverResponse: map[string]any{
+				"error":   "InvalidRequest",
+				"message": "Invalid record",
+			},
+			serverStatus: http.StatusBadRequest,
+			wantErr:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create mock server
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Verify method
+				if r.Method != http.MethodPost {
+					t.Errorf("expected POST request, got %s", r.Method)
+				}
+
+				// Verify path
+				expectedPath := "/xrpc/com.atproto.repo.putRecord"
+				if r.URL.Path != expectedPath {
+					t.Errorf("path = %q, want %q", r.URL.Path, expectedPath)
+				}
+
+				// Verify request body
+				var payload map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Fatalf("failed to decode request body: %v", err)
+				}
+
+				// Check required fields
+				if payload["collection"] != tt.collection {
+					t.Errorf("collection = %v, want %v", payload["collection"], tt.collection)
+				}
+				if payload["rkey"] != tt.rkey {
+					t.Errorf("rkey = %v, want %v", payload["rkey"], tt.rkey)
+				}
+
+				// Check swapRecord inclusion
+				if tt.swapRecord != "" {
+					if payload["swapRecord"] != tt.swapRecord {
+						t.Errorf("swapRecord = %v, want %v", payload["swapRecord"], tt.swapRecord)
+					}
+				} else {
+					if _, exists := payload["swapRecord"]; exists {
+						t.Error("swapRecord should not be included when empty")
+					}
+				}
+
+				// Send response
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.serverStatus)
+				json.NewEncoder(w).Encode(tt.serverResponse)
+			}))
+			defer server.Close()
+
+			// Create client
+			apiClient := atclient.NewAPIClient(server.URL)
+			apiClient.Auth = &bearerAuth{token: "test-token"}
+
+			c := &client{
+				apiClient: apiClient,
+				did:       "did:plc:test",
+				host:      server.URL,
+			}
+
+			// Execute PutRecord
+			ctx := context.Background()
+			uri, cid, err := c.PutRecord(ctx, tt.collection, tt.rkey, tt.record, tt.swapRecord)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if uri != tt.wantURI {
+				t.Errorf("uri = %q, want %q", uri, tt.wantURI)
+			}
+
+			if cid != tt.wantCID {
+				t.Errorf("cid = %q, want %q", cid, tt.wantCID)
+			}
+		})
+	}
+}
+
+// TestClient_TypedErrors_PutRecord tests that PutRecord returns typed errors.
+func TestClient_TypedErrors_PutRecord(t *testing.T) {
+	tests := []struct {
+		name         string
+		serverStatus int
+		wantErr      error
+	}{
+		{
+			name:         "401 returns ErrUnauthorized",
+			serverStatus: http.StatusUnauthorized,
+			wantErr:      ErrUnauthorized,
+		},
+		{
+			name:         "403 returns ErrForbidden",
+			serverStatus: http.StatusForbidden,
+			wantErr:      ErrForbidden,
+		},
+		{
+			name:         "409 returns ErrConflict",
+			serverStatus: http.StatusConflict,
+			wantErr:      ErrConflict,
+		},
+		{
+			name:         "400 returns ErrBadRequest",
+			serverStatus: http.StatusBadRequest,
+			wantErr:      ErrBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.serverStatus)
+				json.NewEncoder(w).Encode(map[string]any{
+					"error":   "TestError",
+					"message": "Test error message",
+				})
+			}))
+			defer server.Close()
+
+			apiClient := atclient.NewAPIClient(server.URL)
+			apiClient.Auth = &bearerAuth{token: "test-token"}
+
+			c := &client{
+				apiClient: apiClient,
+				did:       "did:plc:test",
+				host:      server.URL,
+			}
+
+			ctx := context.Background()
+			_, _, err := c.PutRecord(ctx, "test.collection", "rkey", map[string]any{}, "")
 
 			if err == nil {
 				t.Fatal("expected error, got nil")

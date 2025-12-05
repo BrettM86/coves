@@ -31,6 +31,10 @@ type Client interface {
 	// GetRecord retrieves a single record by collection and rkey.
 	GetRecord(ctx context.Context, collection string, rkey string) (*RecordResponse, error)
 
+	// PutRecord creates or updates a record with optional optimistic locking.
+	// If swapRecord CID is provided, the operation fails if the current CID doesn't match.
+	PutRecord(ctx context.Context, collection string, rkey string, record any, swapRecord string) (uri string, cid string, err error)
+
 	// DID returns the authenticated user's DID.
 	DID() string
 
@@ -89,6 +93,8 @@ func wrapAPIError(err error, operation string) error {
 			return fmt.Errorf("%s: %w: %s", operation, ErrForbidden, apiErr.Message)
 		case 404:
 			return fmt.Errorf("%s: %w: %s", operation, ErrNotFound, apiErr.Message)
+		case 409:
+			return fmt.Errorf("%s: %w: %s", operation, ErrConflict, apiErr.Message)
 		}
 	}
 
@@ -217,4 +223,31 @@ func (c *client) GetRecord(ctx context.Context, collection string, rkey string) 
 		CID:   result.CID,
 		Value: result.Value,
 	}, nil
+}
+
+// PutRecord creates or updates a record with optional optimistic locking.
+func (c *client) PutRecord(ctx context.Context, collection string, rkey string, record any, swapRecord string) (string, string, error) {
+	payload := map[string]any{
+		"repo":       c.did,
+		"collection": collection,
+		"rkey":       rkey,
+		"record":     record,
+	}
+
+	// Optional: optimistic locking via CID swap check
+	if swapRecord != "" {
+		payload["swapRecord"] = swapRecord
+	}
+
+	var result struct {
+		URI string `json:"uri"`
+		CID string `json:"cid"`
+	}
+
+	err := c.apiClient.Post(ctx, syntax.NSID("com.atproto.repo.putRecord"), payload, &result)
+	if err != nil {
+		return "", "", wrapAPIError(err, "putRecord")
+	}
+
+	return result.URI, result.CID, nil
 }
