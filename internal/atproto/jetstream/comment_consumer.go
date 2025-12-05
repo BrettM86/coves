@@ -260,6 +260,7 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 		// Comment was soft-deleted, now being recreated (resurrection)
 		// This is a NEW record with same rkey - update ALL fields including threading refs
 		// User may have deleted old comment and created a new one on a different parent/root
+		// Clear deletion metadata to restore the comment
 		log.Printf("Resurrecting previously deleted comment: %s", comment.URI)
 		commentID = existingID
 
@@ -280,6 +281,8 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 				created_at = $12,
 				indexed_at = $13,
 				deleted_at = NULL,
+				deletion_reason = NULL,
+				deleted_by = NULL,
 				reply_count = 0
 			WHERE id = $14
 		`
@@ -420,6 +423,8 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 }
 
 // deleteCommentAndUpdateCounts atomically soft-deletes a comment and updates parent counts
+// Blanks content to preserve thread structure while respecting user privacy
+// The comment remains in the database but is shown as "[deleted]" in thread views
 func (c *CommentEventConsumer) deleteCommentAndUpdateCounts(ctx context.Context, comment *comments.Comment) error {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -431,21 +436,18 @@ func (c *CommentEventConsumer) deleteCommentAndUpdateCounts(ctx context.Context,
 		}
 	}()
 
-	// 1. Soft-delete the comment (idempotent)
-	deleteQuery := `
-		UPDATE comments
-		SET deleted_at = $2
-		WHERE uri = $1 AND deleted_at IS NULL
-	`
-
-	result, err := tx.ExecContext(ctx, deleteQuery, comment.URI, time.Now())
-	if err != nil {
-		return fmt.Errorf("failed to delete comment: %w", err)
+	// 1. Soft-delete the comment: blank content but preserve structure
+	// DELETE event from Jetstream = author deleted their own comment
+	// Content is blanked to respect user privacy while preserving thread structure
+	// Use the repository's transaction-aware method for DRY
+	repoTx, ok := c.commentRepo.(comments.RepositoryTx)
+	if !ok {
+		return fmt.Errorf("comment repository does not support transactional operations")
 	}
 
-	rowsAffected, err := result.RowsAffected()
+	rowsAffected, err := repoTx.SoftDeleteWithReasonTx(ctx, tx, comment.URI, comments.DeletionReasonAuthor, comment.CommenterDID)
 	if err != nil {
-		return fmt.Errorf("failed to check delete result: %w", err)
+		return fmt.Errorf("failed to delete comment: %w", err)
 	}
 
 	// Idempotent: If no rows affected, comment already deleted
@@ -462,6 +464,7 @@ func (c *CommentEventConsumer) deleteCommentAndUpdateCounts(ctx context.Context,
 	collection := utils.ExtractCollectionFromURI(comment.ParentURI)
 
 	var updateQuery string
+	var result sql.Result
 	switch collection {
 	case "social.coves.community.post":
 		// Comment on post - decrement posts.comment_count
