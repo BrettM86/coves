@@ -15,8 +15,8 @@ var (
 	// ErrRootNotFound indicates the root post doesn't exist
 	ErrRootNotFound = errors.New("root post not found")
 
-	// ErrContentTooLong indicates comment content exceeds 3000 graphemes
-	ErrContentTooLong = errors.New("comment content exceeds 3000 graphemes")
+	// ErrContentTooLong indicates comment content exceeds 10000 graphemes
+	ErrContentTooLong = errors.New("comment content exceeds 10000 graphemes")
 
 	// ErrContentEmpty indicates comment content is empty
 	ErrContentEmpty = errors.New("comment content is required")

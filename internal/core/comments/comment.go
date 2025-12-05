@@ -35,14 +35,14 @@ type Comment struct {
 // This is the data structure that gets stored in the user's repository
 // Matches social.coves.community.comment lexicon
 type CommentRecord struct {
-	Embed     map[string]interface{} `json:"embed,omitempty"`
-	Labels    *SelfLabels            `json:"labels,omitempty"`
-	Reply     ReplyRef               `json:"reply"`
-	Type      string                 `json:"$type"`
-	Content   string                 `json:"content"`
-	CreatedAt string                 `json:"createdAt"`
-	Facets    []interface{}          `json:"facets,omitempty"`
-	Langs     []string               `json:"langs,omitempty"`
+	Embed     interface{}  `json:"embed,omitempty"`
+	Labels    *SelfLabels  `json:"labels,omitempty"`
+	Reply     ReplyRef     `json:"reply"`
+	Type      string       `json:"$type"`
+	Content   string       `json:"content"`
+	CreatedAt string       `json:"createdAt"`
+	Facets    []interface{} `json:"facets,omitempty"`
+	Langs     []string     `json:"langs,omitempty"`
 }
 
 // ReplyRef represents the threading structure from the comment lexicon
