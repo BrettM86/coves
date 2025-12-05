@@ -408,10 +408,11 @@ func main() {
 	voteService := votes.NewService(voteRepo, oauthClient, oauthStore, voteCache, nil)
 	log.Println("✅ Vote service initialized (with OAuth authentication and vote cache)")
 
-	// Initialize comment service (for query API)
+	// Initialize comment service (for query and write APIs)
 	// Requires user and community repos for proper author/community hydration per lexicon
-	commentService := comments.NewCommentService(commentRepo, userRepo, postRepo, communityRepo)
-	log.Println("✅ Comment service initialized (with author/community hydration)")
+	// OAuth client and store are needed for write operations (create, update, delete)
+	commentService := comments.NewCommentService(commentRepo, userRepo, postRepo, communityRepo, oauthClient, oauthStore, nil)
+	log.Println("✅ Comment service initialized (with author/community hydration and write support)")
 
 	// Initialize feed service
 	feedRepo := postgresRepo.NewCommunityFeedRepository(db, cursorSecret)
@@ -528,6 +529,13 @@ func main() {
 
 	routes.RegisterVoteRoutes(r, voteService, authMiddleware)
 	log.Println("Vote XRPC endpoints registered with OAuth authentication")
+
+	// Register comment write routes (create, update, delete)
+	routes.RegisterCommentRoutes(r, commentService, authMiddleware)
+	log.Println("Comment write XRPC endpoints registered")
+	log.Println("  - POST /xrpc/social.coves.community.comment.create")
+	log.Println("  - POST /xrpc/social.coves.community.comment.update")
+	log.Println("  - POST /xrpc/social.coves.community.comment.delete")
 
 	routes.RegisterCommunityFeedRoutes(r, feedService, voteService, authMiddleware)
 	log.Println("Feed XRPC endpoints registered (public with optional auth for viewer vote state)")
