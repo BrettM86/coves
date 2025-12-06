@@ -310,6 +310,8 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 
 	} else if checkErr == sql.ErrNoRows {
 		// Comment doesn't exist - insert new comment
+		// Use ON CONFLICT DO NOTHING to handle race conditions gracefully
+		// (e.g., duplicate Jetstream events from reconnections/retries)
 		insertQuery := `
 			INSERT INTO comments (
 				uri, cid, rkey, commenter_did,
@@ -322,6 +324,7 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 				$9, $10, $11, $12, $13,
 				$14, $15
 			)
+			ON CONFLICT (uri) DO NOTHING
 			RETURNING id
 		`
 
@@ -332,6 +335,15 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 			comment.Content, comment.ContentFacets, comment.Embed, comment.ContentLabels, pq.Array(comment.Langs),
 			comment.CreatedAt, time.Now(),
 		).Scan(&commentID)
+		if err == sql.ErrNoRows {
+			// ON CONFLICT triggered - comment was inserted by concurrent process
+			// This is an idempotent replay, skip gracefully
+			log.Printf("Comment already indexed (concurrent insert): %s", comment.URI)
+			if commitErr := tx.Commit(); commitErr != nil {
+				return fmt.Errorf("failed to commit transaction: %w", commitErr)
+			}
+			return nil
+		}
 		if err != nil {
 			return fmt.Errorf("failed to insert comment: %w", err)
 		}
