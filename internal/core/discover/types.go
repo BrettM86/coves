@@ -39,6 +39,11 @@ type FeedViewPost struct {
 	Reply  *ReplyRef       `json:"reply,omitempty"`
 }
 
+// GetPost returns the underlying PostView for viewer state enrichment
+func (f *FeedViewPost) GetPost() *posts.PostView {
+	return f.Post
+}
+
 // FeedReason is a union type for feed context
 type FeedReason struct {
 	Repost    *ReasonRepost    `json:"-"`

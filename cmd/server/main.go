@@ -543,8 +543,8 @@ func main() {
 	routes.RegisterTimelineRoutes(r, timelineService, voteService, authMiddleware)
 	log.Println("Timeline XRPC endpoints registered (requires authentication, includes viewer vote state)")
 
-	routes.RegisterDiscoverRoutes(r, discoverService)
-	log.Println("Discover XRPC endpoints registered (public, no auth required)")
+	routes.RegisterDiscoverRoutes(r, discoverService, voteService, authMiddleware)
+	log.Println("Discover XRPC endpoints registered (public with optional auth for viewer vote state)")
 
 	routes.RegisterAggregatorRoutes(r, aggregatorService, userService, identityResolver)
 	log.Println("Aggregator XRPC endpoints registered (query endpoints public, registration endpoint public)")

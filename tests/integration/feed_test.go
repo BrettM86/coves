@@ -37,7 +37,7 @@ func TestGetCommunityFeed_Hot(t *testing.T) {
 		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
-	handler := communityFeed.NewGetCommunityHandler(feedService)
+	handler := communityFeed.NewGetCommunityHandler(feedService, nil)
 
 	// Setup test data: community, users, and posts
 	ctx := context.Background()
@@ -114,7 +114,7 @@ func TestGetCommunityFeed_Top_WithTimeframe(t *testing.T) {
 		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
-	handler := communityFeed.NewGetCommunityHandler(feedService)
+	handler := communityFeed.NewGetCommunityHandler(feedService, nil)
 
 	// Setup test data
 	ctx := context.Background()
@@ -190,7 +190,7 @@ func TestGetCommunityFeed_New(t *testing.T) {
 		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
-	handler := communityFeed.NewGetCommunityHandler(feedService)
+	handler := communityFeed.NewGetCommunityHandler(feedService, nil)
 
 	// Setup test data
 	ctx := context.Background()
@@ -246,7 +246,7 @@ func TestGetCommunityFeed_Pagination(t *testing.T) {
 		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
-	handler := communityFeed.NewGetCommunityHandler(feedService)
+	handler := communityFeed.NewGetCommunityHandler(feedService, nil)
 
 	// Setup test data with many posts
 	ctx := context.Background()
@@ -337,7 +337,7 @@ func TestGetCommunityFeed_InvalidCommunity(t *testing.T) {
 		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
-	handler := communityFeed.NewGetCommunityHandler(feedService)
+	handler := communityFeed.NewGetCommunityHandler(feedService, nil)
 
 	// Request feed for non-existent community
 	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.communityFeed.getCommunity?community=did:plc:nonexistent&sort=hot&limit=10", nil)
@@ -373,7 +373,7 @@ func TestGetCommunityFeed_InvalidCursor(t *testing.T) {
 		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
-	handler := communityFeed.NewGetCommunityHandler(feedService)
+	handler := communityFeed.NewGetCommunityHandler(feedService, nil)
 
 	// Setup test community
 	ctx := context.Background()
@@ -429,7 +429,7 @@ func TestGetCommunityFeed_EmptyFeed(t *testing.T) {
 		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
-	handler := communityFeed.NewGetCommunityHandler(feedService)
+	handler := communityFeed.NewGetCommunityHandler(feedService, nil)
 
 	// Create community with no posts
 	ctx := context.Background()
@@ -473,7 +473,7 @@ func TestGetCommunityFeed_LimitValidation(t *testing.T) {
 		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
-	handler := communityFeed.NewGetCommunityHandler(feedService)
+	handler := communityFeed.NewGetCommunityHandler(feedService, nil)
 
 	// Setup test community
 	ctx := context.Background()
@@ -526,7 +526,7 @@ func TestGetCommunityFeed_HotPaginationBug(t *testing.T) {
 		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
-	handler := communityFeed.NewGetCommunityHandler(feedService)
+	handler := communityFeed.NewGetCommunityHandler(feedService, nil)
 
 	// Setup test data
 	ctx := context.Background()
@@ -627,7 +627,7 @@ func TestGetCommunityFeed_HotCursorPrecision(t *testing.T) {
 		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
-	handler := communityFeed.NewGetCommunityHandler(feedService)
+	handler := communityFeed.NewGetCommunityHandler(feedService, nil)
 
 	// Setup test data
 	ctx := context.Background()
@@ -720,7 +720,7 @@ func TestGetCommunityFeed_BlobURLTransformation(t *testing.T) {
 		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
-	handler := communityFeed.NewGetCommunityHandler(feedService)
+	handler := communityFeed.NewGetCommunityHandler(feedService, nil)
 
 	// Setup test data
 	ctx := context.Background()

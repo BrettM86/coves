@@ -1,8 +1,10 @@
 package discover
 
 import (
+	"Coves/internal/api/handlers/common"
 	"Coves/internal/core/discover"
 	"Coves/internal/core/posts"
+	"Coves/internal/core/votes"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -11,19 +13,21 @@ import (
 
 // GetDiscoverHandler handles discover feed retrieval
 type GetDiscoverHandler struct {
-	service discover.Service
+	service     discover.Service
+	voteService votes.Service
 }
 
 // NewGetDiscoverHandler creates a new discover handler
-func NewGetDiscoverHandler(service discover.Service) *GetDiscoverHandler {
+func NewGetDiscoverHandler(service discover.Service, voteService votes.Service) *GetDiscoverHandler {
 	return &GetDiscoverHandler{
-		service: service,
+		service:     service,
+		voteService: voteService,
 	}
 }
 
 // HandleGetDiscover retrieves posts from all communities (public feed)
 // GET /xrpc/social.coves.feed.getDiscover?sort=hot&limit=15&cursor=...
-// Public endpoint - no authentication required
+// Public endpoint with optional auth - if authenticated, includes viewer vote state
 func (h *GetDiscoverHandler) HandleGetDiscover(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -39,6 +43,9 @@ func (h *GetDiscoverHandler) HandleGetDiscover(w http.ResponseWriter, r *http.Re
 		handleServiceError(w, err)
 		return
 	}
+
+	// Populate viewer vote state if authenticated
+	common.PopulateViewerVoteState(r.Context(), r, h.voteService, response.Feed)
 
 	// Transform blob refs to URLs for all posts
 	for _, feedPost := range response.Feed {

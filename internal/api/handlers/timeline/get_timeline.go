@@ -1,6 +1,7 @@
 package timeline
 
 import (
+	"Coves/internal/api/handlers/common"
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/timeline"
@@ -56,40 +57,8 @@ func (h *GetTimelineHandler) HandleGetTimeline(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Populate viewer vote state if authenticated and vote service available
-	if h.voteService != nil {
-		session := middleware.GetOAuthSession(r)
-		if session != nil {
-			// Ensure vote cache is populated from PDS
-			if err := h.voteService.EnsureCachePopulated(r.Context(), session); err != nil {
-				// Log but don't fail - viewer state is optional
-				log.Printf("Warning: failed to populate vote cache: %v", err)
-			} else {
-				// Collect post URIs to batch lookup
-				postURIs := make([]string, 0, len(response.Feed))
-				for _, feedPost := range response.Feed {
-					if feedPost.Post != nil {
-						postURIs = append(postURIs, feedPost.Post.URI)
-					}
-				}
-
-				// Get viewer votes for all posts
-				viewerVotes := h.voteService.GetViewerVotesForSubjects(userDID, postURIs)
-
-				// Populate viewer state on each post
-				for _, feedPost := range response.Feed {
-					if feedPost.Post != nil {
-						if vote, exists := viewerVotes[feedPost.Post.URI]; exists {
-							feedPost.Post.Viewer = &posts.ViewerState{
-								Vote:    &vote.Direction,
-								VoteURI: &vote.URI,
-							}
-						}
-					}
-				}
-			}
-		}
-	}
+	// Populate viewer vote state if authenticated
+	common.PopulateViewerVoteState(r.Context(), r, h.voteService, response.Feed)
 
 	// Transform blob refs to URLs for all posts
 	for _, feedPost := range response.Feed {
