@@ -32,6 +32,7 @@ linters-settings:
 run:
   timeout: 5m
   tests: true
+  go: "1.24"  # Match golangci-lint's build version to avoid version check failures
 
 issues:
   exclude-use-default: false
