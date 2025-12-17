@@ -37,6 +37,18 @@ func (m *mockVoteService) DeleteVote(ctx context.Context, session *oauthlib.Clie
 	return nil
 }
 
+func (m *mockVoteService) EnsureCachePopulated(ctx context.Context, session *oauthlib.ClientSessionData) error {
+	return nil
+}
+
+func (m *mockVoteService) GetViewerVote(userDID, subjectURI string) *votes.CachedVote {
+	return nil
+}
+
+func (m *mockVoteService) GetViewerVotesForSubjects(userDID string, subjectURIs []string) map[string]*votes.CachedVote {
+	return nil
+}
+
 func TestCreateVoteHandler_Success(t *testing.T) {
 	mockService := &mockVoteService{}
 	handler := NewCreateVoteHandler(mockService)
