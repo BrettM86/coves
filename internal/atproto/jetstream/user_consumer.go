@@ -13,6 +13,13 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// SessionHandleUpdater is an interface for updating OAuth session handles
+// when identity changes occur. This keeps active sessions in sync with
+// the user's current handle.
+type SessionHandleUpdater interface {
+	UpdateHandleByDID(ctx context.Context, did, newHandle string) (int64, error)
+}
+
 // JetstreamEvent represents an event from the Jetstream firehose
 // Jetstream documentation: https://docs.bsky.app/docs/advanced-guides/jetstream
 type JetstreamEvent struct {
@@ -50,20 +57,36 @@ type CommitEvent struct {
 
 // UserEventConsumer consumes user-related events from Jetstream
 type UserEventConsumer struct {
-	userService      users.UserService
-	identityResolver identity.Resolver
-	wsURL            string
-	pdsFilter        string // Optional: only index users from specific PDS
+	userService          users.UserService
+	identityResolver     identity.Resolver
+	sessionHandleUpdater SessionHandleUpdater // Optional: updates OAuth sessions on handle change
+	wsURL                string
+	pdsFilter            string // Optional: only index users from specific PDS
+}
+
+// ConsumerOption is a functional option for configuring UserEventConsumer
+type ConsumerOption func(*UserEventConsumer)
+
+// WithSessionHandleUpdater sets the session handle updater for syncing OAuth sessions
+// when identity changes occur. If not set, OAuth sessions won't be updated on handle changes.
+func WithSessionHandleUpdater(updater SessionHandleUpdater) ConsumerOption {
+	return func(c *UserEventConsumer) {
+		c.sessionHandleUpdater = updater
+	}
 }
 
 // NewUserEventConsumer creates a new Jetstream consumer for user events
-func NewUserEventConsumer(userService users.UserService, identityResolver identity.Resolver, wsURL, pdsFilter string) *UserEventConsumer {
-	return &UserEventConsumer{
+func NewUserEventConsumer(userService users.UserService, identityResolver identity.Resolver, wsURL, pdsFilter string, opts ...ConsumerOption) *UserEventConsumer {
+	c := &UserEventConsumer{
 		userService:      userService,
 		identityResolver: identityResolver,
 		wsURL:            wsURL,
 		pdsFilter:        pdsFilter,
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 // Start begins consuming events from Jetstream
@@ -245,6 +268,15 @@ func (c *UserEventConsumer) handleIdentityEvent(ctx context.Context, event *Jets
 		// DID: did:plc:abc123 → alice.bsky.social (must be removed)
 		if purgeErr := c.identityResolver.Purge(ctx, did); purgeErr != nil {
 			log.Printf("Warning: failed to purge DID cache for %s: %v", did, purgeErr)
+		}
+
+		// Update OAuth session handles to keep mobile/web sessions in sync
+		if c.sessionHandleUpdater != nil {
+			if sessionsUpdated, updateErr := c.sessionHandleUpdater.UpdateHandleByDID(ctx, did, handle); updateErr != nil {
+				log.Printf("Warning: failed to update OAuth session handles for %s: %v", did, updateErr)
+			} else if sessionsUpdated > 0 {
+				log.Printf("Updated %d OAuth session(s) with new handle: %s", sessionsUpdated, handle)
+			}
 		}
 
 		log.Printf("Updated handle and purged cache: %s → %s", existingUser.Handle, handle)

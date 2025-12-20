@@ -445,6 +445,35 @@ func (s *PostgresOAuthStore) CleanupExpiredAuthRequests(ctx context.Context) (in
 	return rows, nil
 }
 
+// UpdateHandleByDID updates the handle for all OAuth sessions belonging to a DID.
+// This is called when identity events indicate a handle change, keeping active
+// sessions in sync with the user's current handle.
+// Returns the number of sessions updated.
+func (s *PostgresOAuthStore) UpdateHandleByDID(ctx context.Context, did, newHandle string) (int64, error) {
+	query := `
+		UPDATE oauth_sessions
+		SET handle = $2, updated_at = NOW()
+		WHERE did = $1 AND expires_at > NOW()
+	`
+
+	result, err := s.db.ExecContext(ctx, query, did, newHandle)
+	if err != nil {
+		return 0, fmt.Errorf("failed to update session handle: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rows > 0 {
+		slog.Info("updated OAuth session handles for identity change",
+			"did", did, "new_handle", newHandle, "sessions_updated", rows)
+	}
+
+	return rows, nil
+}
+
 // MobileOAuthData holds mobile-specific OAuth flow data
 type MobileOAuthData struct {
 	CSRFToken   string

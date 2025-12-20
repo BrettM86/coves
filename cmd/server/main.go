@@ -289,7 +289,13 @@ func main() {
 
 	pdsFilter := os.Getenv("JETSTREAM_PDS_FILTER") // Optional: filter to specific PDS
 
-	userConsumer := jetstream.NewUserEventConsumer(userService, identityResolver, jetstreamURL, pdsFilter)
+	// Create user consumer with session handle updater to sync OAuth sessions on handle changes
+	var consumerOpts []jetstream.ConsumerOption
+	if sessionUpdater, ok := baseOAuthStore.(jetstream.SessionHandleUpdater); ok {
+		consumerOpts = append(consumerOpts, jetstream.WithSessionHandleUpdater(sessionUpdater))
+		log.Println("✅ OAuth session handle sync enabled for identity changes")
+	}
+	userConsumer := jetstream.NewUserEventConsumer(userService, identityResolver, jetstreamURL, pdsFilter, consumerOpts...)
 	ctx := context.Background()
 	go func() {
 		if startErr := userConsumer.Start(ctx); startErr != nil {

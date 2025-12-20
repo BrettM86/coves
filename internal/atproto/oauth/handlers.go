@@ -433,6 +433,8 @@ func (h *OAuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	// Bidirectional handle verification: ensure the DID actually controls a valid handle
 	// This prevents impersonation via compromised PDS that issues tokens with invalid handle mappings
 	// Per AT Protocol spec: "Bidirectional verification required; confirm DID document claims handle"
+	// verifiedHandle stores the successfully verified handle for use in mobile callback
+	verifiedHandle := ""
 	if h.client.ClientApp.Dir != nil {
 		ident, err := h.client.ClientApp.Dir.LookupDID(ctx, sessData.AccountDID)
 		if err != nil {
@@ -467,6 +469,7 @@ func (h *OAuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 					if err == nil && resolvedDID == sessData.AccountDID.String() {
 						slog.Info("OAuth callback successful (dev mode: handle verified via PDS)",
 							"did", sessData.AccountDID, "handle", declaredHandle)
+						verifiedHandle = declaredHandle
 						goto handleVerificationPassed
 					}
 					slog.Warn("dev mode: PDS handle verification failed",
@@ -485,6 +488,7 @@ func (h *OAuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 		// Success: handle is valid and bidirectionally verified
 		slog.Info("OAuth callback successful", "did", sessData.AccountDID, "handle", ident.Handle)
+		verifiedHandle = ident.Handle.String()
 	} else {
 		// No directory client available - log warning but proceed
 		// This should only happen in testing scenarios
@@ -601,7 +605,7 @@ handleVerificationPassed:
 
 		// All security checks passed - proceed with mobile flow
 		// Mobile flow: seal the session and redirect to deep link
-		h.handleMobileCallback(w, r, sessData, mobileRedirect.Value, csrfCookie.Value)
+		h.handleMobileCallback(w, r, sessData, mobileRedirect.Value, csrfCookie.Value, verifiedHandle)
 		return
 	}
 
@@ -649,7 +653,7 @@ func (h *OAuthHandler) handleWebCallback(w http.ResponseWriter, r *http.Request,
 }
 
 // handleMobileCallback handles the mobile OAuth callback flow
-func (h *OAuthHandler) handleMobileCallback(w http.ResponseWriter, r *http.Request, sessData *oauth.ClientSessionData, mobileRedirectURIEncoded, csrfToken string) {
+func (h *OAuthHandler) handleMobileCallback(w http.ResponseWriter, r *http.Request, sessData *oauth.ClientSessionData, mobileRedirectURIEncoded, csrfToken, verifiedHandle string) {
 	// Decode the mobile redirect URI
 	mobileRedirectURI, err := url.QueryUnescape(mobileRedirectURIEncoded)
 	if err != nil {
@@ -678,9 +682,12 @@ func (h *OAuthHandler) handleMobileCallback(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Get account handle for convenience
-	handle := ""
-	if ident, err := h.client.ClientApp.Dir.LookupDID(r.Context(), sessData.AccountDID); err == nil {
-		handle = ident.Handle.String()
+	// Use the already-verified handle if available (important for dev mode where LookupDID returns "handle.invalid")
+	handle := verifiedHandle
+	if handle == "" {
+		if ident, err := h.client.ClientApp.Dir.LookupDID(r.Context(), sessData.AccountDID); err == nil {
+			handle = ident.Handle.String()
+		}
 	}
 
 	// Clear all mobile cookies to prevent reuse (defense in depth)
