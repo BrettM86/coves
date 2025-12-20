@@ -49,7 +49,8 @@ dev-up: ## Start PDS + PostgreSQL + Jetstream + PLC Directory for local developm
 
 dev-down: ## Stop all development services
 	@echo "$(YELLOW)Stopping Coves development stack...$(RESET)"
-	@docker-compose -f docker-compose.dev.yml --env-file .env.dev down
+	@docker-compose -f docker-compose.dev.yml --env-file .env.dev down --remove-orphans
+	@docker network rm coves-dev-network 2>/dev/null || true
 	@echo "$(GREEN)✓ Development stack stopped$(RESET)"
 
 dev-logs: ## Tail logs from all development services
