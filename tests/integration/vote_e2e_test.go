@@ -84,7 +84,7 @@ func TestVoteE2E_CreateUpvote(t *testing.T) {
 	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, nil, PasswordAuthPDSClientFactory())
 
 	// Create test user on PDS
-	testUserHandle := fmt.Sprintf("voter-%d.local.coves.dev", time.Now().Unix())
+	testUserHandle := fmt.Sprintf("vot%d.local.coves.dev", time.Now().UnixNano()%1000000)
 	testUserEmail := fmt.Sprintf("voter-%d@test.local", time.Now().Unix())
 	testUserPassword := "test-password-123"
 
@@ -307,7 +307,7 @@ func TestVoteE2E_ToggleSameDirection(t *testing.T) {
 	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, nil, PasswordAuthPDSClientFactory())
 
 	// Create test user
-	testUserHandle := fmt.Sprintf("toggle-%d.local.coves.dev", time.Now().Unix())
+	testUserHandle := fmt.Sprintf("tog%d.local.coves.dev", time.Now().UnixNano()%1000000)
 	testUserEmail := fmt.Sprintf("toggle-%d@test.local", time.Now().Unix())
 	testUserPassword := "test-password-123"
 
@@ -476,7 +476,7 @@ func TestVoteE2E_ToggleDifferentDirection(t *testing.T) {
 	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, nil, PasswordAuthPDSClientFactory())
 
 	// Create test user
-	testUserHandle := fmt.Sprintf("flip-%d.local.coves.dev", time.Now().Unix())
+	testUserHandle := fmt.Sprintf("flp%d.local.coves.dev", time.Now().UnixNano()%1000000)
 	testUserEmail := fmt.Sprintf("flip-%d@test.local", time.Now().Unix())
 	testUserPassword := "test-password-123"
 
@@ -701,7 +701,7 @@ func TestVoteE2E_DeleteVote(t *testing.T) {
 	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, nil, PasswordAuthPDSClientFactory())
 
 	// Create test user
-	testUserHandle := fmt.Sprintf("delete-%d.local.coves.dev", time.Now().Unix())
+	testUserHandle := fmt.Sprintf("dlt%d.local.coves.dev", time.Now().UnixNano()%1000000)
 	testUserEmail := fmt.Sprintf("delete-%d@test.local", time.Now().Unix())
 	testUserPassword := "test-password-123"
 
@@ -888,7 +888,7 @@ func TestVoteE2E_JetstreamIndexing(t *testing.T) {
 	voteRepo := postgres.NewVoteRepository(db)
 
 	// Create test user on PDS
-	testUserHandle := fmt.Sprintf("jetstream-%d.local.coves.dev", time.Now().Unix())
+	testUserHandle := fmt.Sprintf("jet%d.local.coves.dev", time.Now().UnixNano()%1000000)
 	testUserEmail := fmt.Sprintf("jetstream-%d@test.local", time.Now().Unix())
 	testUserPassword := "test-password-123"
 

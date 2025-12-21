@@ -437,9 +437,9 @@ func TestConcurrentCommenting_MultipleUsersOnSamePost(t *testing.T) {
 		var actualCommentCount int
 		var distinctCommenters int
 		err = db.QueryRow(`
-			SELECT COUNT(*), COUNT(DISTINCT author_did)
+			SELECT COUNT(*), COUNT(DISTINCT commenter_did)
 			FROM comments
-			WHERE post_uri = $1 AND parent_comment_uri IS NULL
+			WHERE root_uri = $1 AND parent_uri = root_uri
 		`, postURI).Scan(&actualCommentCount, &distinctCommenters)
 		if err != nil {
 			t.Fatalf("Failed to query comment records: %v", err)

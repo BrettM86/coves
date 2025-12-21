@@ -468,8 +468,11 @@ func TestExtractDomainFromHandle(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Pass nil for identity resolver - not needed since consumer constructs handles from DIDs
-			consumer := jetstream.NewCommunityEventConsumer(repo, "did:web:coves.social", false, nil)
+			// For tests that should succeed (domain matches), skip DID verification since we're using fake domains
+			// For tests that should fail (domain mismatch), enable verification so domain check runs
+			// (domain mismatch fails before DID fetch, so no network call is made)
+			skipVerification := tc.shouldSucceed
+			consumer := jetstream.NewCommunityEventConsumer(repo, "did:web:coves.social", skipVerification, nil)
 
 			uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 			communityDID := generateTestDID(uniqueSuffix)

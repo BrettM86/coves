@@ -195,7 +195,16 @@ func TestOAuthE2E_TokenExpiration(t *testing.T) {
 	assert.Equal(t, oauth.ErrSessionNotFound, err, "Should return ErrSessionNotFound for expired session")
 
 	// Test cleanup of expired sessions
-	cleaned, err := store.(*oauth.PostgresOAuthStore).CleanupExpiredSessions(ctx)
+	// Need to access the underlying PostgresOAuthStore through the wrapper
+	var pgStore *oauth.PostgresOAuthStore
+	if wrapper, ok := store.(*oauth.MobileAwareStoreWrapper); ok {
+		pgStore, _ = wrapper.ClientAuthStore.(*oauth.PostgresOAuthStore)
+	} else {
+		pgStore, _ = store.(*oauth.PostgresOAuthStore)
+	}
+	require.NotNil(t, pgStore, "Should be able to access PostgresOAuthStore")
+
+	cleaned, err := pgStore.CleanupExpiredSessions(ctx)
 	require.NoError(t, err, "Cleanup should succeed")
 	assert.Greater(t, cleaned, int64(0), "Should have cleaned up at least one session")
 
@@ -464,12 +473,17 @@ func TestOAuthE2E_AuthRequestStorage(t *testing.T) {
 
 	// Test cleanup of expired auth requests
 	// Create an auth request and manually set created_at to the past
+	// Use unique state to avoid conflicts with previous test runs
+	oldState := fmt.Sprintf("old-state-%d", time.Now().UnixNano())
 	oldAuthRequest := oauthlib.AuthRequestData{
-		State:         "old-state-12345",
+		State:         oldState,
 		PKCEVerifier:  "old-verifier",
 		AuthServerURL: "http://localhost:3001",
 		Scopes:        []string{"atproto"},
 	}
+
+	// Clean up any existing state first
+	_ = store.DeleteAuthRequestInfo(ctx, oldState)
 
 	err = store.SaveAuthRequestInfo(ctx, oldAuthRequest)
 	require.NoError(t, err)
@@ -481,7 +495,16 @@ func TestOAuthE2E_AuthRequestStorage(t *testing.T) {
 	require.NoError(t, err)
 
 	// Cleanup expired requests
-	cleaned, err := store.(*oauth.PostgresOAuthStore).CleanupExpiredAuthRequests(ctx)
+	// Need to access the underlying PostgresOAuthStore through the wrapper
+	var pgStore *oauth.PostgresOAuthStore
+	if wrapper, ok := store.(*oauth.MobileAwareStoreWrapper); ok {
+		pgStore, _ = wrapper.ClientAuthStore.(*oauth.PostgresOAuthStore)
+	} else {
+		pgStore, _ = store.(*oauth.PostgresOAuthStore)
+	}
+	require.NotNil(t, pgStore, "Should be able to access PostgresOAuthStore")
+
+	cleaned, err := pgStore.CleanupExpiredAuthRequests(ctx)
 	require.NoError(t, err, "Cleanup should succeed")
 	assert.Greater(t, cleaned, int64(0), "Should have cleaned up at least one auth request")
 

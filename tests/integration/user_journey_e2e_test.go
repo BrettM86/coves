@@ -152,7 +152,7 @@ func TestFullUserJourney_E2E(t *testing.T) {
 	// Clean up previous test runs - use pattern that matches journey test data
 	// Handles are now shorter: alice{4-digit}.local.coves.dev, bob{4-digit}.local.coves.dev
 	_, _ = db.Exec("DELETE FROM votes WHERE voter_did LIKE '%alice%.local.coves.dev%' OR voter_did LIKE '%bob%.local.coves.dev%'")
-	_, _ = db.Exec("DELETE FROM comments WHERE author_did LIKE '%alice%.local.coves.dev%' OR author_did LIKE '%bob%.local.coves.dev%'")
+	_, _ = db.Exec("DELETE FROM comments WHERE commenter_did LIKE '%alice%.local.coves.dev%' OR commenter_did LIKE '%bob%.local.coves.dev%'")
 	_, _ = db.Exec("DELETE FROM posts WHERE community_did LIKE '%gj%'")
 	_, _ = db.Exec("DELETE FROM community_subscriptions WHERE user_did LIKE '%alice%.local.coves.dev%' OR user_did LIKE '%bob%.local.coves.dev%'")
 	_, _ = db.Exec("DELETE FROM communities WHERE handle LIKE 'gj%'")
@@ -165,7 +165,7 @@ func TestFullUserJourney_E2E(t *testing.T) {
 		bobPattern := fmt.Sprintf("%%bob%d%%", shortTS)
 		gjPattern := fmt.Sprintf("%%gj%d%%", shortTS)
 		_, _ = db.Exec("DELETE FROM votes WHERE voter_did LIKE $1 OR voter_did LIKE $2", alicePattern, bobPattern)
-		_, _ = db.Exec("DELETE FROM comments WHERE author_did LIKE $1 OR author_did LIKE $2", alicePattern, bobPattern)
+		_, _ = db.Exec("DELETE FROM comments WHERE commenter_did LIKE $1 OR commenter_did LIKE $2", alicePattern, bobPattern)
 		_, _ = db.Exec("DELETE FROM posts WHERE community_did LIKE $1", gjPattern)
 		_, _ = db.Exec("DELETE FROM community_subscriptions WHERE user_did LIKE $1 OR user_did LIKE $2", alicePattern, bobPattern)
 		_, _ = db.Exec("DELETE FROM communities WHERE handle LIKE $1", gjPattern)

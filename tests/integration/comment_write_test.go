@@ -95,7 +95,7 @@ func TestCommentWrite_CreateTopLevelComment(t *testing.T) {
 	)
 
 	// Create test user on PDS
-	testUserHandle := fmt.Sprintf("commenter-%d.local.coves.dev", time.Now().Unix())
+	testUserHandle := fmt.Sprintf("cmw%d.local.coves.dev", time.Now().UnixNano()%1000000)
 	testUserEmail := fmt.Sprintf("commenter-%d@test.local", time.Now().Unix())
 	testUserPassword := "test-password-123"
 
@@ -315,7 +315,7 @@ func TestCommentWrite_CreateNestedReply(t *testing.T) {
 	)
 
 	// Create test user
-	testUserHandle := fmt.Sprintf("replier-%d.local.coves.dev", time.Now().Unix())
+	testUserHandle := fmt.Sprintf("rpl%d.local.coves.dev", time.Now().UnixNano()%1000000)
 	testUserEmail := fmt.Sprintf("replier-%d@test.local", time.Now().Unix())
 	testUserPassword := "test-password-123"
 
@@ -464,7 +464,7 @@ func TestCommentWrite_UpdateComment(t *testing.T) {
 	)
 
 	// Create test user
-	testUserHandle := fmt.Sprintf("updater-%d.local.coves.dev", time.Now().Unix())
+	testUserHandle := fmt.Sprintf("upd%d.local.coves.dev", time.Now().UnixNano()%1000000)
 	testUserEmail := fmt.Sprintf("updater-%d@test.local", time.Now().Unix())
 	testUserPassword := "test-password-123"
 
@@ -522,15 +522,20 @@ func TestCommentWrite_UpdateComment(t *testing.T) {
 
 	// Verify the update on PDS
 	rkey := utils.ExtractRKeyFromURI(updateResp.URI)
-	pdsResp, _ := http.Get(fmt.Sprintf("%s/xrpc/com.atproto.repo.getRecord?repo=%s&collection=social.coves.community.comment&rkey=%s",
+	pdsResp, err := http.Get(fmt.Sprintf("%s/xrpc/com.atproto.repo.getRecord?repo=%s&collection=social.coves.community.comment&rkey=%s",
 		pdsURL, userDID, rkey))
+	if err != nil {
+		t.Fatalf("Failed to get record from PDS: %v", err)
+	}
 	defer pdsResp.Body.Close()
 
 	var pdsRecord struct {
 		Value map[string]interface{} `json:"value"`
 		CID   string                 `json:"cid"`
 	}
-	json.NewDecoder(pdsResp.Body).Decode(&pdsRecord)
+	if err := json.NewDecoder(pdsResp.Body).Decode(&pdsRecord); err != nil {
+		t.Fatalf("Failed to decode PDS response: %v", err)
+	}
 
 	if pdsRecord.Value["content"] != "Updated content - this has been edited" {
 		t.Errorf("Expected updated content, got %v", pdsRecord.Value["content"])
@@ -579,7 +584,7 @@ func TestCommentWrite_DeleteComment(t *testing.T) {
 	)
 
 	// Create test user
-	testUserHandle := fmt.Sprintf("deleter-%d.local.coves.dev", time.Now().Unix())
+	testUserHandle := fmt.Sprintf("del%d.local.coves.dev", time.Now().UnixNano()%1000000)
 	testUserEmail := fmt.Sprintf("deleter-%d@test.local", time.Now().Unix())
 	testUserPassword := "test-password-123"
 
@@ -634,8 +639,11 @@ func TestCommentWrite_DeleteComment(t *testing.T) {
 
 	// Verify deletion on PDS
 	rkey := utils.ExtractRKeyFromURI(createResp.URI)
-	pdsResp, _ := http.Get(fmt.Sprintf("%s/xrpc/com.atproto.repo.getRecord?repo=%s&collection=social.coves.community.comment&rkey=%s",
+	pdsResp, err := http.Get(fmt.Sprintf("%s/xrpc/com.atproto.repo.getRecord?repo=%s&collection=social.coves.community.comment&rkey=%s",
 		pdsURL, userDID, rkey))
+	if err != nil {
+		t.Fatalf("Failed to get record from PDS: %v", err)
+	}
 	defer pdsResp.Body.Close()
 
 	if pdsResp.StatusCode != http.StatusBadRequest && pdsResp.StatusCode != http.StatusNotFound {
@@ -682,7 +690,7 @@ func TestCommentWrite_CannotUpdateOthersComment(t *testing.T) {
 	)
 
 	// Create first user (comment owner)
-	ownerHandle := fmt.Sprintf("owner-%d.local.coves.dev", time.Now().Unix())
+	ownerHandle := fmt.Sprintf("own%d.local.coves.dev", time.Now().UnixNano()%1000000)
 	ownerEmail := fmt.Sprintf("owner-%d@test.local", time.Now().Unix())
 	_, ownerDID, err := createPDSAccount(pdsURL, ownerHandle, ownerEmail, "password123")
 	if err != nil {
@@ -690,7 +698,7 @@ func TestCommentWrite_CannotUpdateOthersComment(t *testing.T) {
 	}
 
 	// Create second user (attacker)
-	attackerHandle := fmt.Sprintf("attacker-%d.local.coves.dev", time.Now().Unix())
+	attackerHandle := fmt.Sprintf("atk%d.local.coves.dev", time.Now().UnixNano()%1000000)
 	attackerEmail := fmt.Sprintf("attacker-%d@test.local", time.Now().Unix())
 	attackerToken, attackerDID, err := createPDSAccount(pdsURL, attackerHandle, attackerEmail, "password123")
 	if err != nil {
@@ -760,7 +768,7 @@ func TestCommentWrite_CannotDeleteOthersComment(t *testing.T) {
 	)
 
 	// Create first user (comment owner)
-	ownerHandle := fmt.Sprintf("owner-%d.local.coves.dev", time.Now().Unix())
+	ownerHandle := fmt.Sprintf("own%d.local.coves.dev", time.Now().UnixNano()%1000000)
 	ownerEmail := fmt.Sprintf("owner-%d@test.local", time.Now().Unix())
 	_, ownerDID, err := createPDSAccount(pdsURL, ownerHandle, ownerEmail, "password123")
 	if err != nil {
@@ -768,7 +776,7 @@ func TestCommentWrite_CannotDeleteOthersComment(t *testing.T) {
 	}
 
 	// Create second user (attacker)
-	attackerHandle := fmt.Sprintf("attacker-%d.local.coves.dev", time.Now().Unix())
+	attackerHandle := fmt.Sprintf("atk%d.local.coves.dev", time.Now().UnixNano()%1000000)
 	attackerEmail := fmt.Sprintf("attacker-%d@test.local", time.Now().Unix())
 	attackerToken, attackerDID, err := createPDSAccount(pdsURL, attackerHandle, attackerEmail, "password123")
 	if err != nil {
@@ -844,7 +852,7 @@ func TestCommentWrite_ConcurrentModificationDetection(t *testing.T) {
 	)
 
 	// Create test user
-	testUserHandle := fmt.Sprintf("concurrency-%d.local.coves.dev", time.Now().Unix())
+	testUserHandle := fmt.Sprintf("cnc%d.local.coves.dev", time.Now().UnixNano()%1000000)
 	testUserEmail := fmt.Sprintf("concurrency-%d@test.local", time.Now().Unix())
 	testUserPassword := "test-password-123"
 

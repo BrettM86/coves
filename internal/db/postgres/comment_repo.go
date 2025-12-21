@@ -467,11 +467,12 @@ func (r *postgresCommentRepo) ListByParentWithHotRank(
 
 	// Build complete query with JOINs and filters
 	// LEFT JOIN prevents data loss when user record hasn't been indexed yet (out-of-order Jetstream events)
-	// Includes deleted comments to preserve thread structure (shown as "[deleted]" placeholders)
+	// Excludes deleted top-level comments - deleted nested comments are preserved via ListByParentsBatch
 	query := fmt.Sprintf(`
 		%s
 		LEFT JOIN users u ON c.commenter_did = u.did
 		WHERE c.parent_uri = $1
+			AND c.deleted_at IS NULL
 			%s
 			%s
 		ORDER BY %s
