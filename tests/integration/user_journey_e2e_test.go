@@ -215,7 +215,8 @@ func TestFullUserJourney_E2E(t *testing.T) {
 		require.NotNil(t, userA)
 
 		// Register user with OAuth middleware for Coves API requests
-		userAAPIToken = e2eAuth.AddUser(userADID)
+		// Use AddUserWithPDSToken to store the real PDS access token for write-forward
+		userAAPIToken = e2eAuth.AddUserWithPDSToken(userADID, userAToken, pdsURL)
 
 		t.Logf("✅ User A indexed in AppView")
 	})
@@ -414,7 +415,8 @@ func TestFullUserJourney_E2E(t *testing.T) {
 		require.NotNil(t, userB)
 
 		// Register user with OAuth middleware for Coves API requests
-		userBAPIToken = e2eAuth.AddUser(userBDID)
+		// Use AddUserWithPDSToken to store the real PDS access token for write-forward
+		userBAPIToken = e2eAuth.AddUserWithPDSToken(userBDID, userBToken, pdsURL)
 
 		t.Logf("✅ User B indexed in AppView")
 	})
