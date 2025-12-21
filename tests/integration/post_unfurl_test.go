@@ -87,7 +87,7 @@ func TestPostUnfurl_Streamable(t *testing.T) {
 	// Create test community
 	testCommunity := &communities.Community{
 		DID:             generateTestDID("unfurlcommunity"),
-		Handle:          "unfurlcommunity.community.test.coves.social",
+		Handle:          "c-unfurlcommunity.test.coves.social",
 		Name:            "unfurlcommunity",
 		DisplayName:     "Unfurl Test Community",
 		Description:     "A community for testing unfurl",
@@ -382,7 +382,7 @@ func TestPostUnfurl_UnsupportedURL(t *testing.T) {
 	// Create test community
 	testCommunity := &communities.Community{
 		DID:             generateTestDID("unsupportedcommunity"),
-		Handle:          "unsupportedcommunity.community.test.coves.social",
+		Handle:          "c-unsupportedcommunity.test.coves.social",
 		Name:            "unsupportedcommunity",
 		DisplayName:     "Unsupported URL Test",
 		Visibility:      "public",
@@ -488,7 +488,7 @@ func TestPostUnfurl_UserProvidedMetadata(t *testing.T) {
 
 	testCommunity := &communities.Community{
 		DID:             generateTestDID("metadatacommunity"),
-		Handle:          "metadatacommunity.community.test.coves.social",
+		Handle:          "c-metadatacommunity.test.coves.social",
 		Name:            "metadatacommunity",
 		DisplayName:     "Metadata Test",
 		Visibility:      "public",
@@ -598,7 +598,7 @@ func TestPostUnfurl_MissingEmbedType(t *testing.T) {
 
 	testCommunity := &communities.Community{
 		DID:             generateTestDID("noembedcommunity"),
-		Handle:          "noembedcommunity.community.test.coves.social",
+		Handle:          "c-noembedcommunity.test.coves.social",
 		Name:            "noembedcommunity",
 		DisplayName:     "No Embed Test",
 		Visibility:      "public",
@@ -872,7 +872,7 @@ func TestPostUnfurl_E2E_WithJetstream(t *testing.T) {
 	testCommunityDID := generateTestDID("e2eunfurlcommunity")
 	community := &communities.Community{
 		DID:             testCommunityDID,
-		Handle:          "e2eunfurlcommunity.community.test.coves.social",
+		Handle:          "c-e2eunfurlcommunity.test.coves.social",
 		Name:            "e2eunfurlcommunity",
 		DisplayName:     "E2E Unfurl Test",
 		OwnerDID:        testCommunityDID,

@@ -2,6 +2,7 @@ package communities
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
@@ -141,26 +142,35 @@ type SearchCommunitiesRequest struct {
 
 // GetDisplayHandle returns the user-facing display format for a community handle
 // Following Bluesky's pattern where client adds @ prefix for users, but for communities we use ! prefix
-// Example: "gardening.community.coves.social" -> "!gardening@coves.social"
+// Example: "c-gardening.coves.social" -> "!gardening@coves.social"
 //
 // Handles various domain formats correctly:
-// - "gaming.community.coves.social" -> "!gaming@coves.social"
-// - "gaming.community.coves.co.uk" -> "!gaming@coves.co.uk"
-// - "test.community.dev.coves.social" -> "!test@dev.coves.social"
+// - "c-gaming.coves.social" -> "!gaming@coves.social"
+// - "c-gaming.coves.co.uk" -> "!gaming@coves.co.uk"
+// - "c-test.dev.coves.social" -> "!test@dev.coves.social"
 func (c *Community) GetDisplayHandle() string {
-	// Find the ".community." substring in the handle
-	communityIndex := strings.Index(c.Handle, ".community.")
-	if communityIndex == -1 {
-		// Fallback if format doesn't match expected pattern
+	// Handle format: c-{name}.{instance}
+	if !strings.HasPrefix(c.Handle, "c-") {
+		log.Printf("DEBUG: GetDisplayHandle: handle %q missing c- prefix, returning raw handle", c.Handle)
+		return c.Handle // Fallback for invalid format
+	}
+
+	// Remove "c-" prefix and find first dot
+	afterPrefix := c.Handle[2:]
+	dotIndex := strings.Index(afterPrefix, ".")
+	if dotIndex == -1 {
+		log.Printf("DEBUG: GetDisplayHandle: handle %q has no dot after c- prefix, returning raw handle", c.Handle)
 		return c.Handle
 	}
 
-	// Extract name (everything before ".community.")
-	name := c.Handle[:communityIndex]
+	// Edge case: "c-." would result in empty name
+	if dotIndex == 0 {
+		log.Printf("DEBUG: GetDisplayHandle: handle %q has empty name after c- prefix, returning raw handle", c.Handle)
+		return c.Handle
+	}
 
-	// Extract instance domain (everything after ".community.")
-	communitySegment := ".community."
-	instanceDomain := c.Handle[communityIndex+len(communitySegment):]
+	name := afterPrefix[:dotIndex]
+	instanceDomain := afterPrefix[dotIndex+1:]
 
 	return fmt.Sprintf("!%s@%s", name, instanceDomain)
 }

@@ -115,7 +115,7 @@ func TestFullUserJourney_E2E(t *testing.T) {
 	userService := users.NewUserService(userRepo, identityResolver, pdsURL)
 
 	// Extract instance domain and DID
-	// IMPORTANT: Instance domain must match PDS_SERVICE_HANDLE_DOMAINS config (.community.coves.social)
+	// IMPORTANT: Instance domain must match PDS_SERVICE_HANDLE_DOMAINS config (c-{name}.coves.social)
 	instanceDID := os.Getenv("INSTANCE_DID")
 	if instanceDID == "" {
 		instanceDID = "did:web:coves.social" // Must match PDS handle domain config
@@ -226,7 +226,7 @@ func TestFullUserJourney_E2E(t *testing.T) {
 	t.Run("2. User A - Create Community", func(t *testing.T) {
 		t.Log("\n🏘️  Part 2: User A creates a community...")
 
-		// Community handle will be {name}.community.coves.social
+		// Community handle will be {name}c-{name}.coves.social
 		// Max 34 chars total, so name must be short (34 - 23 = 11 chars max)
 		shortTS := timestamp % 10000
 		communityName := fmt.Sprintf("gj%d", shortTS) // "gj9261" = 6 chars -> handle = 29 chars

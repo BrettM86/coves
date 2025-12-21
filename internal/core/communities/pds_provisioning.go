@@ -67,15 +67,14 @@ func (p *PDSAccountProvisioner) ProvisionCommunityAccount(
 	}
 
 	// 1. Generate unique handle for the community
-	// Format: {name}.community.{instance-domain}
-	// Example: "gaming.community.coves.social"
-	// NOTE: Using SINGULAR "community" to follow atProto lexicon conventions
-	// (all record types use singular: app.bsky.feed.post, app.bsky.graph.follow, etc.)
-	handle := fmt.Sprintf("%s.community.%s", strings.ToLower(communityName), p.instanceDomain)
+	// Format: c-{name}.{instance-domain}
+	// Example: "c-gaming.coves.social"
+	// Uses c- prefix to distinguish from user handles while keeping single-level subdomain
+	handle := fmt.Sprintf("c-%s.%s", strings.ToLower(communityName), p.instanceDomain)
 
 	// 2. Generate system email for PDS account management
 	// This email is used for account operations, not for user communication
-	email := fmt.Sprintf("community-%s@community.%s", strings.ToLower(communityName), p.instanceDomain)
+	email := fmt.Sprintf("c-%s@%s", strings.ToLower(communityName), p.instanceDomain)
 
 	// 3. Generate secure random password (32 characters)
 	// This password is never shown to users - it's for Coves to authenticate as the community

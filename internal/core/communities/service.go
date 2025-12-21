@@ -891,7 +891,7 @@ func (s *communityService) ResolveCommunityIdentifier(ctx context.Context, ident
 // resolveScopedIdentifier handles Coves-specific !name@instance format
 // Formats accepted:
 //
-//	!gardening@coves.social  -> gardening.community.coves.social
+//	!gardening@coves.social  -> c-gardening.coves.social
 func (s *communityService) resolveScopedIdentifier(ctx context.Context, scoped string) (string, error) {
 	// Remove ! prefix
 	scoped = strings.TrimPrefix(scoped, "!")
@@ -934,11 +934,11 @@ func (s *communityService) resolveScopedIdentifier(ctx context.Context, scoped s
 			fmt.Sprintf("community is not hosted on this instance (expected @%s)", s.instanceDomain))
 	}
 
-	// Construct canonical handle: {name}.community.{instanceDomain}
+	// Construct canonical handle: c-{name}.{instanceDomain}
 	// Both name and instanceDomain are normalized to lowercase for consistent DB lookup
-	canonicalHandle := fmt.Sprintf("%s.community.%s",
+	canonicalHandle := fmt.Sprintf("c-%s.%s",
 		strings.ToLower(name),
-		instanceDomain) // Already normalized to lowercase on line 923
+		instanceDomain) // Already normalized to lowercase above
 
 	// Look up by canonical handle
 	community, err := s.repo.GetByHandle(ctx, canonicalHandle)

@@ -255,7 +255,7 @@ func TestPostHandler_SecurityValidation(t *testing.T) {
 	})
 
 	t.Run("Accept valid scoped handle format", func(t *testing.T) {
-		// Scoped format: !name@instance (gets converted to name.community.instance internally)
+		// Scoped format: !name@instance (gets converted to c-name.instance internally)
 		validScopedHandles := []string{
 			"!mycommunity@bsky.social",  // Scoped format
 			"!gaming@test.coves.social", // Scoped format
@@ -293,10 +293,10 @@ func TestPostHandler_SecurityValidation(t *testing.T) {
 	})
 
 	t.Run("Accept valid canonical handle format", func(t *testing.T) {
-		// Canonical format: name.community.instance (DNS-resolvable atProto handle)
+		// Canonical format: c-name.instance (DNS-resolvable atProto handle)
 		validCanonicalHandles := []string{
-			"gaming.community.test.coves.social",
-			"books.community.bsky.social",
+			"c-gaming.test.coves.social",
+			"c-books.bsky.social",
 		}
 
 		for _, validHandle := range validCanonicalHandles {
@@ -331,10 +331,10 @@ func TestPostHandler_SecurityValidation(t *testing.T) {
 	})
 
 	t.Run("Accept valid @-prefixed handle format", func(t *testing.T) {
-		// @-prefixed format: @name.community.instance (atProto standard, @ gets stripped)
+		// @-prefixed format: @c-name.instance (atProto standard, @ gets stripped)
 		validAtHandles := []string{
-			"@gaming.community.test.coves.social",
-			"@books.community.bsky.social",
+			"@c-gaming.test.coves.social",
+			"@c-books.bsky.social",
 		}
 
 		for _, validHandle := range validAtHandles {

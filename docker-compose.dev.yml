@@ -85,8 +85,8 @@ services:
       PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX: ${PDS_PLC_ROTATION_KEY:-af514fb84c4356241deed29feb392d1ee359f99c05a7b8f7bff2e5f2614f64b2}
 
       # Service endpoints
-      # Allow both user handles (.local.coves.dev) and community handles (.community.coves.social)
-      PDS_SERVICE_HANDLE_DOMAINS: ${PDS_SERVICE_HANDLE_DOMAINS:-.local.coves.dev,.community.coves.social}
+      # Allow both user handles (.local.coves.dev) and community handles (c-*.coves.social)
+      PDS_SERVICE_HANDLE_DOMAINS: ${PDS_SERVICE_HANDLE_DOMAINS:-.local.coves.dev,.coves.social}
 
       # Dev mode settings (allows HTTP instead of HTTPS)
       PDS_DEV_MODE: "true"

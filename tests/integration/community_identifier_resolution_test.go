@@ -102,14 +102,14 @@ func TestCommunityIdentifierResolution(t *testing.T) {
 
 		t.Run("resolves uppercase canonical handle (case-insensitive)", func(t *testing.T) {
 			// Use actual community handle in uppercase
-			upperHandle := fmt.Sprintf("%s.COMMUNITY.%s", uniqueName, strings.ToUpper(instanceDomain))
+			upperHandle := fmt.Sprintf("c-%s.%s", uniqueName, strings.ToUpper(instanceDomain))
 			did, err := service.ResolveCommunityIdentifier(ctx, upperHandle)
 			require.NoError(t, err)
 			assert.Equal(t, community.DID, did)
 		})
 
 		t.Run("rejects non-existent canonical handle", func(t *testing.T) {
-			_, err := service.ResolveCommunityIdentifier(ctx, fmt.Sprintf("nonexistent.community.%s", instanceDomain))
+			_, err := service.ResolveCommunityIdentifier(ctx, fmt.Sprintf("c-nonexistent.%s", instanceDomain))
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "community not found")
 		})
@@ -124,7 +124,7 @@ func TestCommunityIdentifierResolution(t *testing.T) {
 		})
 
 		t.Run("resolves @-prefixed handle with uppercase (case-insensitive)", func(t *testing.T) {
-			atHandle := "@" + fmt.Sprintf("%s.COMMUNITY.%s", uniqueName, strings.ToUpper(instanceDomain))
+			atHandle := "@" + fmt.Sprintf("c-%s.%s", uniqueName, strings.ToUpper(instanceDomain))
 			did, err := service.ResolveCommunityIdentifier(ctx, atHandle)
 			require.NoError(t, err)
 			assert.Equal(t, community.DID, did)
@@ -330,22 +330,22 @@ func TestGetDisplayHandle(t *testing.T) {
 	}{
 		{
 			name:            "standard two-part domain",
-			handle:          "gardening.community.coves.social",
+			handle:          "c-gardening.coves.social",
 			expectedDisplay: "!gardening@coves.social",
 		},
 		{
 			name:            "multi-part TLD",
-			handle:          "gaming.community.coves.co.uk",
+			handle:          "c-gaming.coves.co.uk",
 			expectedDisplay: "!gaming@coves.co.uk",
 		},
 		{
 			name:            "subdomain instance",
-			handle:          "test.community.dev.coves.social",
+			handle:          "c-test.dev.coves.social",
 			expectedDisplay: "!test@dev.coves.social",
 		},
 		{
 			name:            "single part name",
-			handle:          "a.community.coves.social",
+			handle:          "c-a.coves.social",
 			expectedDisplay: "!a@coves.social",
 		},
 	}
@@ -368,10 +368,15 @@ func TestGetDisplayHandle(t *testing.T) {
 		testCases := []struct {
 			handle   string
 			fallback string
+			desc     string
 		}{
-			{"nodots", "nodots"},         // No dots - should return as-is
-			{"single.dot", "single.dot"}, // Single dot - should return as-is
-			{"", ""},                     // Empty - should return as-is
+			{"nodots", "nodots", "No dots - should return as-is"},
+			{"single.dot", "single.dot", "Single dot without c- prefix - should return as-is"},
+			{"", "", "Empty - should return as-is"},
+			{"c-", "c-", "Prefix only, no name - should return as-is"},
+			{"c-.", "c-.", "Prefix with empty name - should return as-is"},
+			{"c-.coves.social", "c-.coves.social", "Prefix with dot but no name - should return as-is"},
+			{"c-nodot", "c-nodot", "Prefix but no dot after name - should return as-is"},
 		}
 
 		for _, tc := range testCases {
@@ -379,7 +384,7 @@ func TestGetDisplayHandle(t *testing.T) {
 				Handle: tc.handle,
 			}
 			result := community.GetDisplayHandle()
-			assert.Equal(t, tc.fallback, result, "Should fallback to original handle for: %s", tc.handle)
+			assert.Equal(t, tc.fallback, result, "Should fallback to original handle for: %s (%s)", tc.handle, tc.desc)
 		}
 	})
 }
@@ -433,7 +438,7 @@ func TestIdentifierResolution_ErrorContext(t *testing.T) {
 	})
 
 	t.Run("handle error includes identifier", func(t *testing.T) {
-		testHandle := fmt.Sprintf("nonexistent.community.%s", instanceDomain)
+		testHandle := fmt.Sprintf("c-nonexistent.%s", instanceDomain)
 		_, err := service.ResolveCommunityIdentifier(ctx, testHandle)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "community not found")

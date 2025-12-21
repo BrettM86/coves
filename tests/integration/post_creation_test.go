@@ -67,7 +67,7 @@ func TestPostCreation_Basic(t *testing.T) {
 	// Setup: Create test community (insert directly to DB for speed)
 	testCommunity := &communities.Community{
 		DID:            generateTestDID("testcommunity"),
-		Handle:         "testcommunity.community.test.coves.social", // Canonical atProto handle (no ! prefix, .community. format)
+		Handle:         "c-testcommunity.test.coves.social", // Canonical atProto handle (no ! prefix, c- format)
 		Name:           "testcommunity",
 		DisplayName:    "Test Community",
 		Description:    "A community for testing posts",
@@ -134,16 +134,17 @@ func TestPostCreation_Basic(t *testing.T) {
 
 	t.Run("Create text post with ! prefix handle", func(t *testing.T) {
 		// Test that we can also use ! prefix with scoped format: !name@instance
-		// This is Coves-specific UX shorthand for name.community.instance
+		// This is Coves-specific UX shorthand for c-name.instance
 
 		content := "Post using !-prefixed handle"
 		title := "Prefixed Handle Test"
 
-		// Extract name from handle: "gardening.community.coves.social" -> "gardening"
+		// Extract name from handle: "c-gardening.coves.social" -> "gardening"
 		// Scoped format: !gardening@coves.social
 		handleParts := strings.Split(testCommunity.Handle, ".")
-		communityName := handleParts[0]
-		instanceDomain := strings.Join(handleParts[2:], ".") // Skip ".community."
+		communityNameWithPrefix := handleParts[0] // "c-gardening"
+		communityName := strings.TrimPrefix(communityNameWithPrefix, "c-") // "gardening"
+		instanceDomain := strings.Join(handleParts[1:], ".") // "coves.social"
 		scopedHandle := fmt.Sprintf("!%s@%s", communityName, instanceDomain)
 
 		req := posts.CreatePostRequest{
@@ -181,7 +182,7 @@ func TestPostCreation_Basic(t *testing.T) {
 		content := "Post with non-existent handle"
 
 		req := posts.CreatePostRequest{
-			Community: "nonexistent.community.test.coves.social", // Valid canonical handle format, but doesn't exist
+			Community: "c-nonexistent.test.coves.social", // Valid canonical handle format, but doesn't exist
 			Content:   &content,
 			AuthorDID: testUserDID,
 		}
@@ -320,7 +321,7 @@ func TestPostRepository_Create(t *testing.T) {
 	testCommunityDID := generateTestDID("testcommunity2")
 	_, err = communityRepo.Create(ctx, &communities.Community{
 		DID:          testCommunityDID,
-		Handle:       "testcommunity2.community.test.coves.social", // Canonical format (no ! prefix)
+		Handle:       "c-testcommunity2.test.coves.social", // Canonical format (no ! prefix)
 		Name:         "testcommunity2",
 		Visibility:   "public",
 		CreatedByDID: testUserDID,

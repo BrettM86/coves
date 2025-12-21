@@ -211,10 +211,10 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 		t.Log("\n🔐 Part 2: Create community account and authorize aggregator...")
 
 		// STEP 1: Create community account on real PDS
-		// Use PDS configured domain (.community.coves.social for communities)
+		// Use PDS configured domain (c-{name}.coves.social for communities)
 		// Keep handle short to avoid PDS "handle too long" error
 		timestamp := time.Now().Unix() % 100000 // Last 5 digits
-		communityHandle := fmt.Sprintf("e2e-%d.community.coves.social", timestamp)
+		communityHandle := fmt.Sprintf("c-e2e-%d.coves.social", timestamp)
 		communityEmail := fmt.Sprintf("comm-%d@test.com", timestamp)
 		communityPassword := "community-test-password-123"
 

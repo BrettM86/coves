@@ -50,9 +50,30 @@ func NewCommunityEventConsumer(repo communities.Repository, instanceDID string, 
 	cache, err := lru.New[string, cachedDIDDoc](1000)
 	if err != nil {
 		// This should never happen with a valid size, but handle gracefully
-		log.Printf("WARNING: Failed to create DID cache, verification will be slower: %v", err)
+		log.Printf("WARNING: Failed to create DID cache (size=1000), verification will be slower: %v", err)
 		// Create minimal cache to avoid nil pointer
-		cache, _ = lru.New[string, cachedDIDDoc](1)
+		cache, fallbackErr := lru.New[string, cachedDIDDoc](1)
+		if fallbackErr != nil {
+			// Both attempts failed - this indicates a serious issue with the LRU library
+			log.Printf("CRITICAL: Failed to create fallback DID cache (size=1): %v", fallbackErr)
+			panic(fmt.Sprintf("cannot create LRU cache: primary error=%v, fallback error=%v", err, fallbackErr))
+		}
+		return &CommunityEventConsumer{
+			repo:             repo,
+			identityResolver: identityResolver,
+			instanceDID:      instanceDID,
+			skipVerification: skipVerification,
+			httpClient: &http.Client{
+				Timeout: 10 * time.Second,
+				Transport: &http.Transport{
+					MaxIdleConns:        100,
+					MaxIdleConnsPerHost: 10,
+					IdleConnTimeout:     90 * time.Second,
+				},
+			},
+			didCache:         cache,
+			wellKnownLimiter: rate.NewLimiter(10, 20),
+		}
 	}
 
 	return &CommunityEventConsumer{
@@ -219,7 +240,9 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 	// Handle description facets (rich text)
 	if profile.DescriptionFacets != nil {
 		facetsJSON, marshalErr := json.Marshal(profile.DescriptionFacets)
-		if marshalErr == nil {
+		if marshalErr != nil {
+			log.Printf("WARNING: Failed to marshal description facets for community %s: %v (facets will be omitted)", did, marshalErr)
+		} else {
 			community.DescriptionFacets = facetsJSON
 		}
 	}
@@ -508,11 +531,11 @@ func (c *CommunityEventConsumer) cacheVerificationResult(did string, valid bool,
 // extractDomainFromHandle extracts the registrable domain from a community handle
 // Handles both formats:
 //   - Bluesky-style: "!gaming@coves.social" → "coves.social"
-//   - DNS-style: "gaming.community.coves.social" → "coves.social"
+//   - DNS-style: "c-gaming.coves.social" → "coves.social"
 //
 // Uses golang.org/x/net/publicsuffix to correctly handle multi-part TLDs:
-//   - "gaming.community.coves.co.uk" → "coves.co.uk" (not "co.uk")
-//   - "gaming.community.example.com.au" → "example.com.au" (not "com.au")
+//   - "c-gaming.coves.co.uk" → "coves.co.uk" (not "co.uk")
+//   - "c-gaming.example.com.au" → "example.com.au" (not "com.au")
 func extractDomainFromHandle(handle string) string {
 	// Remove leading ! if present
 	handle = strings.TrimPrefix(handle, "!")
@@ -527,6 +550,7 @@ func extractDomainFromHandle(handle string) string {
 			if err != nil {
 				// If publicsuffix fails, fall back to returning the full domain part
 				// This handles edge cases like localhost, IP addresses, etc.
+				log.Printf("DEBUG: publicsuffix failed for @-format handle domain %q, using raw domain: %v", domain, err)
 				return domain
 			}
 			return registrable
@@ -534,19 +558,23 @@ func extractDomainFromHandle(handle string) string {
 		return ""
 	}
 
-	// For DNS-style handles (e.g., "gaming.community.coves.social")
+	// For DNS-style handles (e.g., "c-gaming.coves.social")
 	// Extract the registrable domain (eTLD+1) using publicsuffix
 	// This correctly handles multi-part TLDs like .co.uk, .com.au, etc.
 	registrable, err := publicsuffix.EffectiveTLDPlusOne(handle)
 	if err != nil {
 		// If publicsuffix fails (e.g., invalid TLD, localhost, IP address)
 		// fall back to naive extraction (last 2 parts)
-		// This maintains backward compatibility for edge cases
+		// WARNING: This is incorrect for multi-part TLDs (.co.uk -> would return "co.uk")
+		// but maintains compatibility for localhost/dev environments
 		parts := strings.Split(handle, ".")
 		if len(parts) < 2 {
+			log.Printf("DEBUG: Invalid handle format (no dots): %q", handle)
 			return "" // Invalid handle
 		}
-		return strings.Join(parts[len(parts)-2:], ".")
+		fallbackDomain := strings.Join(parts[len(parts)-2:], ".")
+		log.Printf("DEBUG: publicsuffix failed for handle %q, using naive fallback: %q (error: %v)", handle, fallbackDomain, err)
+		return fallbackDomain
 	}
 
 	return registrable
@@ -788,19 +816,22 @@ func parseCommunityProfile(record map[string]interface{}) (*CommunityProfile, er
 }
 
 // constructHandleFromProfile constructs a deterministic handle from profile data
-// Format: {name}.community.{instanceDomain}
-// Example: gaming.community.coves.social
+// Format: c-{name}.{instanceDomain}
+// Example: c-gaming.coves.social
 // This is ONLY used in test mode (when identity resolver is nil)
 // Production MUST resolve handles from PLC (source of truth)
 // Returns empty string if hostedBy is not did:web format (caller will fail validation)
 func constructHandleFromProfile(profile *CommunityProfile) string {
 	if !strings.HasPrefix(profile.HostedBy, "did:web:") {
 		// hostedBy must be did:web format for handle construction
+		// Log warning since this indicates invalid community data
+		log.Printf("WARNING: constructHandleFromProfile: hostedBy %q is not did:web format, cannot construct handle for community %q",
+			profile.HostedBy, profile.Name)
 		// Return empty to trigger validation error in repository
 		return ""
 	}
 	instanceDomain := strings.TrimPrefix(profile.HostedBy, "did:web:")
-	return fmt.Sprintf("%s.community.%s", profile.Name, instanceDomain)
+	return fmt.Sprintf("c-%s.%s", profile.Name, instanceDomain)
 }
 
 // extractContentVisibility extracts contentVisibility from subscription record with clamping

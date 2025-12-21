@@ -109,8 +109,8 @@ func TestCommunity_E2E(t *testing.T) {
 
 	// Initialize OAuth auth middleware for E2E testing
 	e2eAuth := NewE2EOAuthMiddleware()
-	// Register the instance user for OAuth authentication
-	token := e2eAuth.AddUser(instanceDID)
+	// Register the instance user with their REAL PDS access token for write-forward operations
+	token := e2eAuth.AddUserWithPDSToken(instanceDID, accessToken, pdsURL)
 
 	// V2.0: Extract instance domain for community provisioning
 	var instanceDomain string
@@ -159,7 +159,7 @@ func TestCommunity_E2E(t *testing.T) {
 	// ====================================================================================
 	t.Run("1. Write-Forward to PDS", func(t *testing.T) {
 		// Use shorter names to avoid "Handle too long" errors
-		// atProto handles max: 63 chars, format: name.community.coves.social
+		// atProto handles max: 63 chars, format: c-name.coves.social
 		communityName := fmt.Sprintf("e2e-%d", time.Now().Unix())
 
 		createReq := communities.CreateCommunityRequest{
@@ -191,9 +191,9 @@ func TestCommunity_E2E(t *testing.T) {
 
 		// V2: Verify PDS account was created for the community
 		t.Logf("\n🔍 V2: Verifying community PDS account exists...")
-		expectedHandle := fmt.Sprintf("%s.community.%s", communityName, instanceDomain)
+		expectedHandle := fmt.Sprintf("c-%s.%s", communityName, instanceDomain)
 		t.Logf("   Expected handle: %s", expectedHandle)
-		t.Logf("   (Using subdomain: *.community.%s)", instanceDomain)
+		t.Logf("   (Using subdomain: c-*.%s)", instanceDomain)
 
 		accountDID, accountHandle, err := queryPDSAccount(pdsURL, expectedHandle)
 		if err != nil {

@@ -31,7 +31,7 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		communityDID := generateTestDID(uniqueSuffix)
-		uniqueHandle := fmt.Sprintf("gaming%s.community.coves.social", uniqueSuffix)
+		uniqueHandle := fmt.Sprintf("c-gaming%s.coves.social", uniqueSuffix)
 
 		// Attempt to create community claiming to be hosted by nintendo.com
 		// but with a coves.social handle (ATTACK!)
@@ -91,7 +91,7 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		communityDID := generateTestDID(uniqueSuffix)
-		uniqueHandle := fmt.Sprintf("gaming%s.community.coves.social", uniqueSuffix)
+		uniqueHandle := fmt.Sprintf("c-gaming%s.coves.social", uniqueSuffix)
 
 		// Create community with matching hostedBy and handle domains
 		event := &jetstream.JetstreamEvent{
@@ -145,7 +145,7 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		communityDID := generateTestDID(uniqueSuffix)
-		uniqueHandle := fmt.Sprintf("gaming%s.community.coves.social", uniqueSuffix)
+		uniqueHandle := fmt.Sprintf("c-gaming%s.coves.social", uniqueSuffix)
 
 		// Attempt to use did:plc for hostedBy (not allowed)
 		event := &jetstream.JetstreamEvent{
@@ -191,7 +191,7 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		communityDID := generateTestDID(uniqueSuffix)
-		uniqueHandle := fmt.Sprintf("gaming%s.community.example.com", uniqueSuffix)
+		uniqueHandle := fmt.Sprintf("c-gaming%s.example.com", uniqueSuffix)
 
 		// Even with mismatched domain, this should succeed with skipVerification=true
 		event := &jetstream.JetstreamEvent{
@@ -278,7 +278,7 @@ func TestBidirectionalDIDVerification(t *testing.T) {
 
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		communityDID := generateTestDID(uniqueSuffix)
-		uniqueHandle := fmt.Sprintf("gaming%s.community.%s", uniqueSuffix, mockDomain)
+		uniqueHandle := fmt.Sprintf("c-gaming%s.%s", uniqueSuffix, mockDomain)
 
 		event := &jetstream.JetstreamEvent{
 			Did:    communityDID,
@@ -351,7 +351,7 @@ func TestBidirectionalDIDVerification(t *testing.T) {
 
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		communityDID := generateTestDID(uniqueSuffix)
-		uniqueHandle := fmt.Sprintf("gaming%s.community.%s", uniqueSuffix, mockDomain)
+		uniqueHandle := fmt.Sprintf("c-gaming%s.%s", uniqueSuffix, mockDomain)
 
 		event := &jetstream.JetstreamEvent{
 			Did:    communityDID,
@@ -411,7 +411,7 @@ func TestExtractDomainFromHandle(t *testing.T) {
 	}{
 		{
 			name:          "DNS-style handle with subdomain",
-			handle:        "gaming.community.coves.social",
+			handle:        "c-gaming.coves.social",
 			hostedByDID:   "did:web:coves.social",
 			shouldSucceed: true,
 		},
@@ -423,44 +423,44 @@ func TestExtractDomainFromHandle(t *testing.T) {
 		},
 		{
 			name:          "Multi-part subdomain",
-			handle:        "gaming.test.community.example.com",
+			handle:        "c-gaming.test.example.com",
 			hostedByDID:   "did:web:example.com",
 			shouldSucceed: true,
 		},
 		{
 			name:          "Mismatched domain",
-			handle:        "gaming.community.coves.social",
+			handle:        "c-gaming.coves.social",
 			hostedByDID:   "did:web:example.com",
 			shouldSucceed: false,
 		},
 		// CRITICAL: Multi-part TLD tests (PR review feedback)
 		{
 			name:          "Multi-part TLD: .co.uk",
-			handle:        "gaming.community.coves.co.uk",
+			handle:        "c-gaming.coves.co.uk",
 			hostedByDID:   "did:web:coves.co.uk",
 			shouldSucceed: true,
 		},
 		{
 			name:          "Multi-part TLD: .com.au",
-			handle:        "gaming.community.example.com.au",
+			handle:        "c-gaming.example.com.au",
 			hostedByDID:   "did:web:example.com.au",
 			shouldSucceed: true,
 		},
 		{
 			name:          "Multi-part TLD: Reject incorrect .co.uk extraction",
-			handle:        "gaming.community.coves.co.uk",
+			handle:        "c-gaming.coves.co.uk",
 			hostedByDID:   "did:web:co.uk", // Wrong! Should be coves.co.uk
 			shouldSucceed: false,
 		},
 		{
 			name:          "Multi-part TLD: .org.uk",
-			handle:        "gaming.community.myinstance.org.uk",
+			handle:        "c-gaming.myinstance.org.uk",
 			hostedByDID:   "did:web:myinstance.org.uk",
 			shouldSucceed: true,
 		},
 		{
 			name:          "Multi-part TLD: .ac.uk",
-			handle:        "gaming.community.university.ac.uk",
+			handle:        "c-gaming.university.ac.uk",
 			hostedByDID:   "did:web:university.ac.uk",
 			shouldSucceed: true,
 		},

@@ -458,7 +458,7 @@ func TestCommentService_GetComments_ValidRequest(t *testing.T) {
 	author := createTestUser(authorDID, "author.test")
 	_, _ = userRepo.Create(context.Background(), author)
 
-	community := createTestCommunity(communityDID, "test.community.coves.social")
+	community := createTestCommunity(communityDID, "c-test.coves.social")
 	_, _ = communityRepo.Create(context.Background(), community)
 
 	comment1 := createTestComment("at://did:plc:commenter123/comment/1", commenterDID, "commenter.test", postURI, postURI, 0)
@@ -579,7 +579,7 @@ func TestCommentService_GetComments_EmptyComments(t *testing.T) {
 	author := createTestUser(authorDID, "author.test")
 	_, _ = userRepo.Create(context.Background(), author)
 
-	community := createTestCommunity(communityDID, "test.community.coves.social")
+	community := createTestCommunity(communityDID, "c-test.coves.social")
 	_, _ = communityRepo.Create(context.Background(), community)
 
 	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string) ([]*Comment, *string, error) {
@@ -625,7 +625,7 @@ func TestCommentService_GetComments_WithViewerVotes(t *testing.T) {
 	author := createTestUser(authorDID, "author.test")
 	_, _ = userRepo.Create(context.Background(), author)
 
-	community := createTestCommunity(communityDID, "test.community.coves.social")
+	community := createTestCommunity(communityDID, "c-test.coves.social")
 	_, _ = communityRepo.Create(context.Background(), community)
 
 	comment1URI := "at://did:plc:commenter123/comment/1"
@@ -694,7 +694,7 @@ func TestCommentService_GetComments_WithoutViewer(t *testing.T) {
 	author := createTestUser(authorDID, "author.test")
 	_, _ = userRepo.Create(context.Background(), author)
 
-	community := createTestCommunity(communityDID, "test.community.coves.social")
+	community := createTestCommunity(communityDID, "c-test.coves.social")
 	_, _ = communityRepo.Create(context.Background(), community)
 
 	comment1 := createTestComment("at://did:plc:commenter123/comment/1", commenterDID, "commenter.test", postURI, postURI, 0)
@@ -762,7 +762,7 @@ func TestCommentService_GetComments_SortingOptions(t *testing.T) {
 				author := createTestUser(authorDID, "author.test")
 				_, _ = userRepo.Create(context.Background(), author)
 
-				community := createTestCommunity(communityDID, "test.community.coves.social")
+				community := createTestCommunity(communityDID, "c-test.coves.social")
 				_, _ = communityRepo.Create(context.Background(), community)
 
 				comment1 := createTestComment("at://did:plc:commenter123/comment/1", commenterDID, "commenter.test", postURI, postURI, 0)
@@ -813,7 +813,7 @@ func TestCommentService_GetComments_RepositoryError(t *testing.T) {
 	author := createTestUser(authorDID, "author.test")
 	_, _ = userRepo.Create(context.Background(), author)
 
-	community := createTestCommunity(communityDID, "test.community.coves.social")
+	community := createTestCommunity(communityDID, "c-test.coves.social")
 	_, _ = communityRepo.Create(context.Background(), community)
 
 	// Mock repository error

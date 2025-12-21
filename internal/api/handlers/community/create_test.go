@@ -23,7 +23,7 @@ func (m *mockCommunityService) CreateCommunity(ctx context.Context, req communit
 	}
 	return &communities.Community{
 		DID:         "did:plc:test123",
-		Handle:      "test.community.coves.social",
+		Handle:      "c-test.coves.social",
 		RecordURI:   "at://did:plc:test123/social.coves.community.profile/self",
 		RecordCID:   "bafytest123",
 		DisplayName: req.DisplayName,

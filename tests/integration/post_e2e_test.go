@@ -71,7 +71,7 @@ func TestPostCreation_E2E_WithJetstream(t *testing.T) {
 	// In real E2E, this would be a real community provisioned on PDS
 	community := &communities.Community{
 		DID:             "did:plc:gaming123",
-		Handle:          "gaming.community.test.coves.social",
+		Handle:          "c-gaming.test.coves.social",
 		Name:            "gaming",
 		DisplayName:     "Gaming Community",
 		OwnerDID:        "did:plc:gaming123",

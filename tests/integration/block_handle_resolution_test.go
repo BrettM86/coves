@@ -231,7 +231,7 @@ func TestBlockHandler_HandleResolution(t *testing.T) {
 		// To properly test invalid handle → 404, we'd need to add auth middleware context
 		// For now, we just verify that the resolution code doesn't crash
 		reqBody := map[string]string{
-			"community": "nonexistent.community.coves.social",
+			"community": "c-nonexistent.coves.social",
 		}
 		reqJSON, _ := json.Marshal(reqBody)
 
@@ -317,7 +317,7 @@ func TestUnblockHandler_HandleResolution(t *testing.T) {
 	t.Run("Unblock with invalid handle", func(t *testing.T) {
 		// Note: Without auth context, returns 401 before reaching resolution
 		reqBody := map[string]string{
-			"community": "fake.community.coves.social",
+			"community": "c-fake.coves.social",
 		}
 		reqJSON, _ := json.Marshal(reqBody)
 

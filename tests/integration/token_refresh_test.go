@@ -110,7 +110,7 @@ func TestTokenRefresh_UpdateCredentials(t *testing.T) {
 	// Create a test community first
 	community := &communities.Community{
 		DID:             "did:plc:test123",
-		Handle:          "test.community.coves.social",
+		Handle:          "c-test.coves.social",
 		Name:            "test",
 		OwnerDID:        "did:plc:test123",
 		CreatedByDID:    "did:plc:creator",
@@ -186,7 +186,7 @@ func TestTokenRefresh_E2E_UpdateAfterTokenRefresh(t *testing.T) {
 
 	community := &communities.Community{
 		DID:             "did:plc:expiring123",
-		Handle:          "expiring.community.coves.social",
+		Handle:          "c-expiring.coves.social",
 		Name:            "expiring",
 		OwnerDID:        "did:plc:expiring123",
 		CreatedByDID:    "did:plc:creator",

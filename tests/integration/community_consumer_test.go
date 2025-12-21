@@ -27,7 +27,7 @@ func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		communityDID := generateTestDID(uniqueSuffix)
 		communityName := fmt.Sprintf("test-community-%s", uniqueSuffix)
-		expectedHandle := fmt.Sprintf("%s.community.coves.local", communityName)
+		expectedHandle := fmt.Sprintf("c-%s.coves.local", communityName)
 
 		// Set up mock resolver for this test DID
 		mockResolver := newMockIdentityResolver()
@@ -89,7 +89,7 @@ func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		communityDID := generateTestDID(uniqueSuffix)
 		communityName := fmt.Sprintf("update-test-%s", uniqueSuffix)
-		expectedHandle := fmt.Sprintf("%s.community.coves.local", communityName)
+		expectedHandle := fmt.Sprintf("c-%s.coves.local", communityName)
 
 		// Set up mock resolver for this test DID
 		mockResolver := newMockIdentityResolver()
@@ -174,7 +174,7 @@ func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		communityDID := generateTestDID(uniqueSuffix)
 		communityName := fmt.Sprintf("delete-test-%s", uniqueSuffix)
-		expectedHandle := fmt.Sprintf("%s.community.coves.local", communityName)
+		expectedHandle := fmt.Sprintf("c-%s.coves.local", communityName)
 
 		// Set up mock resolver for this test DID
 		mockResolver := newMockIdentityResolver()
@@ -239,7 +239,7 @@ func TestCommunityConsumer_HandleSubscription(t *testing.T) {
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		communityDID := generateTestDID(uniqueSuffix)
 		communityName := fmt.Sprintf("sub-test-%s", uniqueSuffix)
-		expectedHandle := fmt.Sprintf("%s.community.coves.local", communityName)
+		expectedHandle := fmt.Sprintf("c-%s.coves.local", communityName)
 
 		// Set up mock resolver for this test DID
 		mockResolver := newMockIdentityResolver()
@@ -418,7 +418,7 @@ func TestCommunityConsumer_PLCHandleResolution(t *testing.T) {
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
 		communityDID := generateTestDID(uniqueSuffix)
 		communityName := fmt.Sprintf("test-plc-%s", uniqueSuffix)
-		expectedHandle := fmt.Sprintf("%s.community.coves.social", communityName)
+		expectedHandle := fmt.Sprintf("c-%s.coves.social", communityName)
 
 		// Create mock resolver
 		mockResolver := newMockIdentityResolver()
