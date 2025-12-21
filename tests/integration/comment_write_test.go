@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -941,13 +942,17 @@ func TestCommentWrite_ConcurrentModificationDetection(t *testing.T) {
 
 	_, _, err = pdsClient.PutRecord(ctx, "social.coves.community.comment", rkey, staleRecord, originalCID)
 
-	// Verify we get ErrConflict
+	// Verify we get an error indicating CID mismatch
+	// PDS returns 400 "bad request" with message "Record was at <cid>" when swap CID doesn't match
 	if err == nil {
-		t.Fatal("Expected ErrConflict when updating with stale CID, got nil")
+		t.Fatal("Expected error when updating with stale CID, got nil")
 	}
 
-	if !errors.Is(err, pds.ErrConflict) {
-		t.Errorf("Expected pds.ErrConflict, got: %v", err)
+	// Check for either ErrConflict (409) or CID mismatch error (400)
+	errMsg := err.Error()
+	isCIDMismatch := strings.Contains(errMsg, "Record was at") || errors.Is(err, pds.ErrConflict)
+	if !isCIDMismatch {
+		t.Errorf("Expected CID mismatch or ErrConflict, got: %v", err)
 	}
 
 	t.Logf("✅ Correctly detected concurrent modification!")

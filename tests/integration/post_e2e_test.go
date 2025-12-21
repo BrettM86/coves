@@ -433,7 +433,7 @@ func TestPostCreation_E2E_LivePDS(t *testing.T) {
 		// 5. Use those credentials to create a post
 
 		// Use timestamp to ensure unique community name for each test run
-		communityName := fmt.Sprintf("e2epost%d", time.Now().Unix())
+		communityName := fmt.Sprintf("e2e%d", time.Now().UnixNano()%1000000)
 
 		t.Logf("\n📝 Provisioning test community on live PDS (name: %s)...", communityName)
 		community, err := communityService.CreateCommunity(ctx, communities.CreateCommunityRequest{
