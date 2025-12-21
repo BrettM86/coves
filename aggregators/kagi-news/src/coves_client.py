@@ -147,7 +147,8 @@ class CovesClient:
         self,
         uri: str,
         title: str,
-        description: str
+        description: str,
+        sources: Optional[List[Dict]] = None
     ) -> Dict:
         """
         Create external embed object for hot-linked content.
@@ -156,17 +157,23 @@ class CovesClient:
             uri: URL of the external content
             title: Title of the content
             description: Description/summary
+            sources: Optional list of source dicts with uri, title, domain
 
         Returns:
             Embed dictionary ready for post creation
         """
+        external = {
+            "uri": uri,
+            "title": title,
+            "description": description
+        }
+
+        if sources:
+            external["sources"] = sources
+
         return {
             "$type": "social.coves.embed.external",
-            "external": {
-                "uri": uri,
-                "title": title,
-                "description": description
-            }
+            "external": external
         }
 
     def _get_timestamp(self) -> str:

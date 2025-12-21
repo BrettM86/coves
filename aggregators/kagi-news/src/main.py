@@ -169,11 +169,17 @@ class Aggregator:
                 # Format as rich text
                 rich_text = self.richtext_formatter.format_full(story)
 
-                # Create external embed
+                # Create external embed with sources
+                sources = [
+                    {"uri": s.url, "title": s.title, "domain": s.domain}
+                    for s in story.sources
+                ] if story.sources else None
+
                 embed = self.coves_client.create_external_embed(
                     uri=story.link,
                     title=story.title,
-                    description=story.summary[:200] if len(story.summary) > 200 else story.summary
+                    description=story.summary[:200] if len(story.summary) > 200 else story.summary,
+                    sources=sources
                 )
 
                 # Post to community

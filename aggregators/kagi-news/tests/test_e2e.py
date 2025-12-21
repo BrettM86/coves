@@ -421,4 +421,79 @@ def test_coves_client_external_embed_format(aggregator_credentials):
     assert embed["external"]["description"] == "Test description"
     # Thumbnail is not included - server's unfurl service handles it
     assert "thumb" not in embed["external"]
-    print("\n✅ External embed format correct")
+    # Sources should not be present when not provided
+    assert "sources" not in embed["external"]
+    print("\n✅ External embed format correct (no sources)")
+
+
+def test_coves_client_external_embed_with_sources(aggregator_credentials):
+    """
+    Test external embed formatting with sources.
+
+    Verifies:
+    - Embed structure matches social.coves.embed.external
+    - Sources array is included when provided
+    - Each source has uri, title, domain
+    """
+    handle, password = aggregator_credentials
+
+    client = CovesClient(
+        api_url="http://localhost:8081",
+        handle=handle,
+        password=password
+    )
+
+    # Create external embed with sources
+    sources = [
+        {"uri": "https://source1.com/article", "title": "Source 1 Article", "domain": "source1.com"},
+        {"uri": "https://source2.com/story", "title": "Source 2 Story", "domain": "source2.com"},
+    ]
+
+    embed = client.create_external_embed(
+        uri="https://example.com/story",
+        title="Test Story With Sources",
+        description="Test description with sources",
+        sources=sources
+    )
+
+    assert embed["$type"] == "social.coves.embed.external"
+    assert embed["external"]["uri"] == "https://example.com/story"
+    assert embed["external"]["title"] == "Test Story With Sources"
+    assert embed["external"]["description"] == "Test description with sources"
+    # Sources should be present
+    assert "sources" in embed["external"]
+    assert len(embed["external"]["sources"]) == 2
+    assert embed["external"]["sources"][0]["uri"] == "https://source1.com/article"
+    assert embed["external"]["sources"][0]["title"] == "Source 1 Article"
+    assert embed["external"]["sources"][0]["domain"] == "source1.com"
+    assert embed["external"]["sources"][1]["uri"] == "https://source2.com/story"
+    print("\n✅ External embed format correct (with sources)")
+
+
+def test_coves_client_external_embed_with_empty_sources(aggregator_credentials):
+    """
+    Test external embed formatting with empty sources list.
+
+    Verifies:
+    - Empty sources list is not included in embed (regression test)
+    """
+    handle, password = aggregator_credentials
+
+    client = CovesClient(
+        api_url="http://localhost:8081",
+        handle=handle,
+        password=password
+    )
+
+    # Create external embed with empty sources list
+    embed = client.create_external_embed(
+        uri="https://example.com/story",
+        title="Test Story",
+        description="Test description",
+        sources=[]
+    )
+
+    assert embed["$type"] == "social.coves.embed.external"
+    # Empty sources list should not be included
+    assert "sources" not in embed["external"]
+    print("\n✅ External embed format correct (empty sources excluded)")
