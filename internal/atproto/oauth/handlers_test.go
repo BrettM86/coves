@@ -49,7 +49,8 @@ func TestHandleClientMetadata(t *testing.T) {
 	require.NoError(t, err)
 
 	// Validate metadata
-	assert.Equal(t, "https://coves.social", metadata.ClientID)
+	// Per atproto OAuth spec, client_id for public clients is the client metadata URL
+	assert.Equal(t, "https://coves.social/oauth/client-metadata.json", metadata.ClientID)
 	assert.Contains(t, metadata.RedirectURIs, "https://coves.social/oauth/callback")
 	assert.Contains(t, metadata.GrantTypes, "authorization_code")
 	assert.Contains(t, metadata.GrantTypes, "refresh_token")

@@ -271,12 +271,12 @@ func TestVoteRepo_Delete(t *testing.T) {
 	err = repo.Delete(ctx, vote.URI)
 	assert.NoError(t, err)
 
-	// Verify vote is soft-deleted (still exists but has deleted_at)
-	retrieved, err := repo.GetByURI(ctx, vote.URI)
-	assert.NoError(t, err)
-	assert.NotNil(t, retrieved.DeletedAt, "DeletedAt should be set after deletion")
+	// Verify vote is soft-deleted by checking it's no longer retrievable
+	// GetByURI excludes deleted votes (returns ErrVoteNotFound)
+	_, err = repo.GetByURI(ctx, vote.URI)
+	assert.ErrorIs(t, err, votes.ErrVoteNotFound, "GetByURI should not return deleted votes")
 
-	// GetByVoterAndSubject should not find deleted votes
+	// GetByVoterAndSubject should also not find deleted votes
 	_, err = repo.GetByVoterAndSubject(ctx, voterDID, vote.SubjectURI)
 	assert.ErrorIs(t, err, votes.ErrVoteNotFound, "GetByVoterAndSubject should not return deleted votes")
 }

@@ -335,6 +335,8 @@ func TestPostgresOAuthStore_DeleteAuthRequestInfo_NotFound(t *testing.T) {
 func TestPostgresOAuthStore_CleanupExpiredSessions(t *testing.T) {
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
+	// Clean up before AND after to ensure test isolation
+	cleanupOAuth(t, db)
 	defer cleanupOAuth(t, db)
 
 	storeInterface := NewPostgresOAuthStore(db, 0) // Use default TTL

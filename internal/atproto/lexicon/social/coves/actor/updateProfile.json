@@ -1,6 +1,6 @@
 {
   "lexicon": 1,
-  "id": "social.coves.actor.updateprofile",
+  "id": "social.coves.actor.updateProfile",
   "defs": {
     "main": {
       "type": "procedure",
