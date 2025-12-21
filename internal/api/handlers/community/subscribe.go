@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"strings"
 )
 
 // SubscribeHandler handles community subscriptions
@@ -24,8 +23,12 @@ func NewSubscribeHandler(service communities.Service) *SubscribeHandler {
 // HandleSubscribe subscribes a user to a community
 // POST /xrpc/social.coves.community.subscribe
 //
-// Request body: { "community": "did:plc:xxx", "contentVisibility": 3 }
-// Note: Per lexicon spec, only DIDs are accepted for the "subject" field (not handles).
+// Request body: { "community": "<identifier>", "contentVisibility": 3 }
+// Where <identifier> can be:
+//   - DID: did:plc:xxx
+//   - Canonical handle: c-name.coves.social
+//   - Scoped identifier: !name@coves.social
+//   - At-identifier: @c-name.coves.social
 func (h *SubscribeHandler) HandleSubscribe(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -34,7 +37,7 @@ func (h *SubscribeHandler) HandleSubscribe(w http.ResponseWriter, r *http.Reques
 
 	// Parse request body
 	var req struct {
-		Community         string `json:"community"`         // DID only (per lexicon)
+		Community         string `json:"community"`         // DID, handle, or scoped identifier
 		ContentVisibility int    `json:"contentVisibility"` // Optional: 1-5 scale, defaults to 3
 	}
 
@@ -45,13 +48,6 @@ func (h *SubscribeHandler) HandleSubscribe(w http.ResponseWriter, r *http.Reques
 
 	if req.Community == "" {
 		writeError(w, http.StatusBadRequest, "InvalidRequest", "community is required")
-		return
-	}
-
-	// Validate DID format (per lexicon: subject field requires format "did")
-	if !strings.HasPrefix(req.Community, "did:") {
-		writeError(w, http.StatusBadRequest, "InvalidRequest",
-			"community must be a DID (did:plc:... or did:web:...)")
 		return
 	}
 
@@ -70,6 +66,7 @@ func (h *SubscribeHandler) HandleSubscribe(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Subscribe via service (write-forward to PDS)
+	// Service handles identifier resolution (DIDs, handles, scoped identifiers)
 	subscription, err := h.service.SubscribeToCommunity(r.Context(), userDID, userAccessToken, req.Community, req.ContentVisibility)
 	if err != nil {
 		handleServiceError(w, err)
@@ -93,8 +90,12 @@ func (h *SubscribeHandler) HandleSubscribe(w http.ResponseWriter, r *http.Reques
 // HandleUnsubscribe unsubscribes a user from a community
 // POST /xrpc/social.coves.community.unsubscribe
 //
-// Request body: { "community": "did:plc:xxx" }
-// Note: Per lexicon spec, only DIDs are accepted (not handles).
+// Request body: { "community": "<identifier>" }
+// Where <identifier> can be:
+//   - DID: did:plc:xxx
+//   - Canonical handle: c-name.coves.social
+//   - Scoped identifier: !name@coves.social
+//   - At-identifier: @c-name.coves.social
 func (h *SubscribeHandler) HandleUnsubscribe(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -103,7 +104,7 @@ func (h *SubscribeHandler) HandleUnsubscribe(w http.ResponseWriter, r *http.Requ
 
 	// Parse request body
 	var req struct {
-		Community string `json:"community"` // DID only (per lexicon)
+		Community string `json:"community"` // DID, handle, or scoped identifier
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -113,13 +114,6 @@ func (h *SubscribeHandler) HandleUnsubscribe(w http.ResponseWriter, r *http.Requ
 
 	if req.Community == "" {
 		writeError(w, http.StatusBadRequest, "InvalidRequest", "community is required")
-		return
-	}
-
-	// Validate DID format (per lexicon: subject field requires format "did")
-	if !strings.HasPrefix(req.Community, "did:") {
-		writeError(w, http.StatusBadRequest, "InvalidRequest",
-			"community must be a DID (did:plc:... or did:web:...)")
 		return
 	}
 
@@ -137,6 +131,7 @@ func (h *SubscribeHandler) HandleUnsubscribe(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Unsubscribe via service (delete record on PDS)
+	// Service handles identifier resolution (DIDs, handles, scoped identifiers)
 	err := h.service.UnsubscribeFromCommunity(r.Context(), userDID, userAccessToken, req.Community)
 	if err != nil {
 		handleServiceError(w, err)

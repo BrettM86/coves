@@ -221,22 +221,55 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 }
 
 // GetCommunity retrieves a community from AppView DB
-// identifier can be either a DID or handle
+// identifier can be:
+//   - DID: did:plc:xxx
+//   - Scoped handle: !name@instance
+//   - At-identifier: @c-name.domain
+//   - Canonical handle: c-name.domain
 func (s *communityService) GetCommunity(ctx context.Context, identifier string) (*Community, error) {
+	originalIdentifier := identifier
+	identifier = strings.TrimSpace(identifier)
+
 	if identifier == "" {
 		return nil, ErrInvalidInput
 	}
 
-	// Determine if identifier is DID or handle
+	// 1. DID format
 	if strings.HasPrefix(identifier, "did:") {
-		return s.repo.GetByDID(ctx, identifier)
+		community, err := s.repo.GetByDID(ctx, identifier)
+		if err != nil {
+			return nil, fmt.Errorf("community not found for identifier %q: %w", originalIdentifier, err)
+		}
+		return community, nil
 	}
 
+	// 2. Scoped format: !name@instance
 	if strings.HasPrefix(identifier, "!") {
-		return s.repo.GetByHandle(ctx, identifier)
+		// Resolve scoped identifier to DID, then fetch
+		did, err := s.resolveScopedIdentifier(ctx, identifier)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve identifier %q: %w", originalIdentifier, err)
+		}
+		community, err := s.repo.GetByDID(ctx, did)
+		if err != nil {
+			return nil, fmt.Errorf("community not found for identifier %q: %w", originalIdentifier, err)
+		}
+		return community, nil
 	}
 
-	return nil, NewValidationError("identifier", "must be a DID or handle")
+	// 3. At-identifier format: @handle (strip @ prefix)
+	identifier = strings.TrimPrefix(identifier, "@")
+
+	// 4. Canonical handle format: c-name.domain
+	if strings.Contains(identifier, ".") {
+		community, err := s.repo.GetByHandle(ctx, strings.ToLower(identifier))
+		if err != nil {
+			return nil, fmt.Errorf("community not found for identifier %q: %w", originalIdentifier, err)
+		}
+		return community, nil
+	}
+
+	return nil, NewValidationError("identifier", "must be a DID, handle, or scoped identifier (!name@instance)")
 }
 
 // GetByDID retrieves a community by its DID

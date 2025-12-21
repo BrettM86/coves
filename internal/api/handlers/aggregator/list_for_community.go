@@ -2,6 +2,7 @@ package aggregator
 
 import (
 	"Coves/internal/core/aggregators"
+	"Coves/internal/core/communities"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -10,13 +11,15 @@ import (
 
 // ListForCommunityHandler handles listing aggregators for a community
 type ListForCommunityHandler struct {
-	service aggregators.Service
+	service          aggregators.Service
+	communityService communities.Service
 }
 
 // NewListForCommunityHandler creates a new list for community handler
-func NewListForCommunityHandler(service aggregators.Service) *ListForCommunityHandler {
+func NewListForCommunityHandler(service aggregators.Service, communityService communities.Service) *ListForCommunityHandler {
 	return &ListForCommunityHandler{
-		service: service,
+		service:          service,
+		communityService: communityService,
 	}
 }
 
@@ -36,9 +39,13 @@ func (h *ListForCommunityHandler) HandleListForCommunity(w http.ResponseWriter, 
 		return
 	}
 
-	// Resolve community identifier to DID (handles both DIDs and handles)
-	// TODO: Implement identifier resolution service - for now, assume it's a DID
-	req.CommunityDID = communityIdentifier
+	// Resolve community identifier to DID (supports DIDs, handles, scoped identifiers)
+	communityDID, err := h.communityService.ResolveCommunityIdentifier(r.Context(), communityIdentifier)
+	if err != nil {
+		handleServiceError(w, err)
+		return
+	}
+	req.CommunityDID = communityDID
 
 	// Get authorizations from service
 	// Note: Community handle/name fields will be empty until we integrate with communities service

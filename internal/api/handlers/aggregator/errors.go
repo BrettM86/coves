@@ -2,6 +2,7 @@ package aggregator
 
 import (
 	"Coves/internal/core/aggregators"
+	"Coves/internal/core/communities"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -26,13 +27,19 @@ func writeError(w http.ResponseWriter, statusCode int, errorType, message string
 }
 
 // handleServiceError maps service errors to HTTP responses
+// Handles errors from both aggregators and communities packages
 func handleServiceError(w http.ResponseWriter, err error) {
 	if err == nil {
 		return
 	}
 
 	// Map domain errors to HTTP status codes
+	// Check community errors first (for ResolveCommunityIdentifier calls)
 	switch {
+	case communities.IsNotFound(err):
+		writeError(w, http.StatusNotFound, "CommunityNotFound", err.Error())
+	case communities.IsValidationError(err):
+		writeError(w, http.StatusBadRequest, "InvalidRequest", err.Error())
 	case aggregators.IsNotFound(err):
 		writeError(w, http.StatusNotFound, "NotFound", err.Error())
 	case aggregators.IsValidationError(err):

@@ -79,7 +79,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 	// Setup HTTP handlers
 	getServicesHandler := aggregator.NewGetServicesHandler(aggregatorService)
 	getAuthorizationsHandler := aggregator.NewGetAuthorizationsHandler(aggregatorService)
-	listForCommunityHandler := aggregator.NewListForCommunityHandler(aggregatorService)
+	listForCommunityHandler := aggregator.NewListForCommunityHandler(aggregatorService, communityService)
 	createPostHandler := post.NewCreateHandler(postService)
 	e2eAuth := NewE2EOAuthMiddleware()
 
@@ -97,7 +97,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 	// Part 1: Service Declaration via Real PDS
 	// ====================================================================================
 	// Store DIDs, tokens, and URIs for use across all test parts
-	var aggregatorDID, aggregatorToken, aggregatorAPIToken, aggregatorHandle, communityDID, communityToken, authorizationRkey string
+	var aggregatorDID, aggregatorToken, aggregatorAPIToken, aggregatorHandle, communityDID, communityToken, communityHandle, authorizationRkey string
 
 	t.Run("1. Service Declaration - PDS Account → Write Record → Jetstream → AppView DB", func(t *testing.T) {
 		t.Log("\n📝 Part 1: Create aggregator account and publish service declaration to PDS...")
@@ -214,7 +214,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 		// Use PDS configured domain (c-{name}.coves.social for communities)
 		// Keep handle short to avoid PDS "handle too long" error
 		timestamp := time.Now().Unix() % 100000 // Last 5 digits
-		communityHandle := fmt.Sprintf("c-e2e-%d.coves.social", timestamp)
+		communityHandle = fmt.Sprintf("c-e2e-%d.coves.social", timestamp)
 		communityEmail := fmt.Sprintf("comm-%d@test.com", timestamp)
 		communityPassword := "community-test-password-123"
 
@@ -584,8 +584,8 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 			t.Log("✓ getAuthorizations works")
 		})
 
-		// Test 5.4: listForCommunity endpoint
-		t.Run("listForCommunity - List aggregators for community", func(t *testing.T) {
+		// Test 5.4: listForCommunity endpoint with DID
+		t.Run("listForCommunity - List aggregators for community by DID", func(t *testing.T) {
 			req := httptest.NewRequest("GET", fmt.Sprintf("/xrpc/social.coves.aggregator.listForCommunity?community=%s", communityDID), nil)
 			rr := httptest.NewRecorder()
 
@@ -613,7 +613,39 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 				}
 			}
 
-			t.Log("✓ listForCommunity works")
+			t.Log("✓ listForCommunity works with DID")
+		})
+
+		// Test 5.5: listForCommunity endpoint with canonical handle
+		t.Run("listForCommunity - List aggregators for community by handle", func(t *testing.T) {
+			req := httptest.NewRequest("GET", fmt.Sprintf("/xrpc/social.coves.aggregator.listForCommunity?community=%s", communityHandle), nil)
+			rr := httptest.NewRecorder()
+
+			listForCommunityHandler.HandleListForCommunity(rr, req)
+
+			require.Equal(t, http.StatusOK, rr.Code, "listForCommunity should accept canonical handle format")
+
+			var response map[string]interface{}
+			err := json.NewDecoder(rr.Body).Decode(&response)
+			require.NoError(t, err)
+
+			aggsInterface, ok := response["aggregators"]
+			require.True(t, ok, "Response should have 'aggregators' field")
+			require.NotNil(t, aggsInterface)
+
+			t.Log("✓ listForCommunity works with canonical handle")
+		})
+
+		// Test 5.6: listForCommunity with non-existent community returns error
+		t.Run("listForCommunity - Returns 404 for non-existent community", func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/xrpc/social.coves.aggregator.listForCommunity?community=c-nonexistent.coves.social", nil)
+			rr := httptest.NewRecorder()
+
+			listForCommunityHandler.HandleListForCommunity(rr, req)
+
+			require.Equal(t, http.StatusNotFound, rr.Code, "Should return 404 for non-existent community")
+
+			t.Log("✓ listForCommunity properly returns 404 for non-existent community")
 		})
 
 		t.Log("✅ All XRPC query endpoints work correctly")

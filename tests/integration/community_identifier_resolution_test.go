@@ -452,3 +452,143 @@ func TestIdentifierResolution_ErrorContext(t *testing.T) {
 		assert.Contains(t, err.Error(), instanceDomain) // Should mention expected instance
 	})
 }
+
+// TestGetCommunity_IdentifierResolution tests all formats accepted by GetCommunity
+// This is distinct from ResolveCommunityIdentifier - GetCommunity returns the full Community object
+func TestGetCommunity_IdentifierResolution(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	db := setupTestDB(t)
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
+
+	repo := postgres.NewCommunityRepository(db)
+	ctx := context.Background()
+
+	pdsURL := os.Getenv("PDS_URL")
+	if pdsURL == "" {
+		pdsURL = "http://localhost:3001"
+	}
+
+	instanceDomain := os.Getenv("INSTANCE_DOMAIN")
+	if instanceDomain == "" {
+		instanceDomain = "coves.social"
+	}
+
+	instanceDID := os.Getenv("INSTANCE_DID")
+	if instanceDID == "" {
+		instanceDID = "did:web:" + instanceDomain
+	}
+
+	provisioner := communities.NewPDSAccountProvisioner(instanceDomain, pdsURL)
+	service := communities.NewCommunityService(
+		repo,
+		pdsURL,
+		instanceDID,
+		instanceDomain,
+		provisioner,
+	)
+
+	// Create a test community
+	uniqueName := fmt.Sprintf("gettest%d", time.Now().UnixNano()%1000000)
+	req := communities.CreateCommunityRequest{
+		Name:                   uniqueName,
+		DisplayName:            "GetCommunity Test",
+		Description:            "Testing GetCommunity identifier resolution",
+		Visibility:             "public",
+		CreatedByDID:           "did:plc:testowner456",
+		HostedByDID:            instanceDID,
+		AllowExternalDiscovery: true,
+	}
+
+	community, err := service.CreateCommunity(ctx, req)
+	require.NoError(t, err, "Failed to create test community")
+	require.NotNil(t, community)
+
+	t.Run("DID format", func(t *testing.T) {
+		t.Run("returns community for valid DID", func(t *testing.T) {
+			result, err := service.GetCommunity(ctx, community.DID)
+			require.NoError(t, err)
+			assert.Equal(t, community.DID, result.DID)
+			assert.Equal(t, community.Handle, result.Handle)
+		})
+
+		t.Run("error includes identifier for non-existent DID", func(t *testing.T) {
+			testDID := "did:plc:nonexistent789"
+			_, err := service.GetCommunity(ctx, testDID)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), testDID)
+		})
+	})
+
+	t.Run("Canonical handle format", func(t *testing.T) {
+		t.Run("returns community for canonical handle", func(t *testing.T) {
+			result, err := service.GetCommunity(ctx, community.Handle)
+			require.NoError(t, err)
+			assert.Equal(t, community.DID, result.DID)
+		})
+
+		t.Run("case-insensitive handle resolution", func(t *testing.T) {
+			upperHandle := strings.ToUpper(community.Handle)
+			result, err := service.GetCommunity(ctx, upperHandle)
+			require.NoError(t, err)
+			assert.Equal(t, community.DID, result.DID)
+		})
+
+		t.Run("error includes identifier for non-existent handle", func(t *testing.T) {
+			testHandle := fmt.Sprintf("c-nonexistent.%s", instanceDomain)
+			_, err := service.GetCommunity(ctx, testHandle)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), testHandle)
+		})
+	})
+
+	t.Run("At-identifier format", func(t *testing.T) {
+		t.Run("strips @ prefix and returns community", func(t *testing.T) {
+			atHandle := "@" + community.Handle
+			result, err := service.GetCommunity(ctx, atHandle)
+			require.NoError(t, err)
+			assert.Equal(t, community.DID, result.DID)
+		})
+	})
+
+	t.Run("Scoped identifier format", func(t *testing.T) {
+		t.Run("resolves scoped identifier and returns community", func(t *testing.T) {
+			scopedID := fmt.Sprintf("!%s@%s", uniqueName, instanceDomain)
+			result, err := service.GetCommunity(ctx, scopedID)
+			require.NoError(t, err)
+			assert.Equal(t, community.DID, result.DID)
+		})
+
+		t.Run("error includes identifier for non-existent scoped ID", func(t *testing.T) {
+			scopedID := fmt.Sprintf("!nonexistent@%s", instanceDomain)
+			_, err := service.GetCommunity(ctx, scopedID)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), scopedID)
+		})
+	})
+
+	t.Run("Edge cases", func(t *testing.T) {
+		t.Run("rejects empty identifier", func(t *testing.T) {
+			_, err := service.GetCommunity(ctx, "")
+			require.Error(t, err)
+		})
+
+		t.Run("trims whitespace from identifier", func(t *testing.T) {
+			result, err := service.GetCommunity(ctx, "  "+community.Handle+"  ")
+			require.NoError(t, err)
+			assert.Equal(t, community.DID, result.DID)
+		})
+
+		t.Run("rejects identifier without dots", func(t *testing.T) {
+			_, err := service.GetCommunity(ctx, "nodots")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "must be a DID, handle, or scoped identifier")
+		})
+	})
+}

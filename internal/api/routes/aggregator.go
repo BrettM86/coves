@@ -5,6 +5,7 @@ import (
 	"Coves/internal/api/middleware"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/aggregators"
+	"Coves/internal/core/communities"
 	"Coves/internal/core/users"
 	"net/http"
 	"time"
@@ -17,13 +18,14 @@ import (
 func RegisterAggregatorRoutes(
 	r chi.Router,
 	aggregatorService aggregators.Service,
+	communityService communities.Service,
 	userService users.UserService,
 	identityResolver identity.Resolver,
 ) {
 	// Create query handlers
 	getServicesHandler := aggregator.NewGetServicesHandler(aggregatorService)
 	getAuthorizationsHandler := aggregator.NewGetAuthorizationsHandler(aggregatorService)
-	listForCommunityHandler := aggregator.NewListForCommunityHandler(aggregatorService)
+	listForCommunityHandler := aggregator.NewListForCommunityHandler(aggregatorService, communityService)
 
 	// Create registration handler
 	registerHandler := aggregator.NewRegisterHandler(userService, identityResolver)

@@ -552,7 +552,7 @@ func main() {
 	routes.RegisterDiscoverRoutes(r, discoverService, voteService, authMiddleware)
 	log.Println("Discover XRPC endpoints registered (public with optional auth for viewer vote state)")
 
-	routes.RegisterAggregatorRoutes(r, aggregatorService, userService, identityResolver)
+	routes.RegisterAggregatorRoutes(r, aggregatorService, communityService, userService, identityResolver)
 	log.Println("Aggregator XRPC endpoints registered (query endpoints public, registration endpoint public)")
 
 	// Comment query API - supports optional authentication for viewer state
