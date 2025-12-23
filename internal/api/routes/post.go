@@ -10,12 +10,14 @@ import (
 
 // RegisterPostRoutes registers post-related XRPC endpoints on the router
 // Implements social.coves.community.post.* lexicon endpoints
-func RegisterPostRoutes(r chi.Router, service posts.Service, authMiddleware *middleware.OAuthAuthMiddleware) {
+// authMiddleware can be either OAuthAuthMiddleware or DualAuthMiddleware
+func RegisterPostRoutes(r chi.Router, service posts.Service, authMiddleware middleware.AuthMiddleware) {
 	// Initialize handlers
 	createHandler := post.NewCreateHandler(service)
 
 	// Procedure endpoints (POST) - require authentication
 	// social.coves.community.post.create - create a new post in a community
+	// Supports both OAuth (users) and service JWT (aggregators) authentication
 	r.With(authMiddleware.RequireAuth).Post("/xrpc/social.coves.community.post.create", createHandler.HandleCreate)
 
 	// Future endpoints (Beta):

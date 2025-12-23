@@ -887,3 +887,807 @@ func TestWriteAuthError_JSONEscaping(t *testing.T) {
 		})
 	}
 }
+
+// Mock ServiceAuthValidator for testing
+type mockServiceAuthValidator struct {
+	shouldFail bool
+	returnDID  syntax.DID
+}
+
+func (m *mockServiceAuthValidator) Validate(ctx context.Context, tokenString string, lexMethod *syntax.NSID) (syntax.DID, error) {
+	if m.shouldFail {
+		return "", fmt.Errorf("mock validation failure")
+	}
+	return m.returnDID, nil
+}
+
+// Mock AggregatorChecker for testing
+type mockAggregatorChecker struct {
+	aggregators map[string]bool
+	shouldFail  bool
+}
+
+func (m *mockAggregatorChecker) IsAggregator(ctx context.Context, did string) (bool, error) {
+	if m.shouldFail {
+		return false, fmt.Errorf("mock aggregator check failure")
+	}
+	isAgg, exists := m.aggregators[did]
+	return exists && isAgg, nil
+}
+
+// TestIsJWTFormat tests the JWT format detection
+func TestIsJWTFormat(t *testing.T) {
+	tests := []struct {
+		name     string
+		token    string
+		expected bool
+	}{
+		{"valid JWT format", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U", true},
+		{"simple three parts", "part1.part2.part3", true},
+		{"two parts only", "part1.part2", false},
+		{"four parts", "part1.part2.part3.part4", false},
+		{"no dots", "nodots", false},
+		{"sealed token format", "dGVzdC1zZWFsZWQtdG9rZW4", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isJWTFormat(tt.token)
+			if result != tt.expected {
+				t.Errorf("expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
+// TestDualAuthMiddleware_ServiceJWT_ValidAggregator tests service JWT auth for valid aggregators
+func TestDualAuthMiddleware_ServiceJWT_ValidAggregator(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+
+	did := syntax.DID("did:plc:aggregator123")
+	validator := &mockServiceAuthValidator{
+		returnDID: did,
+	}
+	aggregatorChecker := &mockAggregatorChecker{
+		aggregators: map[string]bool{
+			"did:plc:aggregator123": true,
+		},
+	}
+
+	middleware := NewDualAuthMiddleware(client, store, validator, aggregatorChecker)
+
+	handlerCalled := false
+	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+
+		// Verify DID was extracted
+		extractedDID := GetUserDID(r)
+		if extractedDID != "did:plc:aggregator123" {
+			t.Errorf("expected DID 'did:plc:aggregator123', got %s", extractedDID)
+		}
+
+		// Verify it's marked as aggregator auth
+		if !IsAggregatorAuth(r) {
+			t.Error("expected IsAggregatorAuth to be true")
+		}
+
+		// Verify auth method
+		authMethod := GetAuthMethod(r)
+		if authMethod != AuthMethodServiceJWT {
+			t.Errorf("expected auth method %s, got %s", AuthMethodServiceJWT, authMethod)
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if !handlerCalled {
+		t.Error("handler was not called")
+	}
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestDualAuthMiddleware_ServiceJWT_InvalidJWT tests service JWT auth with invalid JWT
+func TestDualAuthMiddleware_ServiceJWT_InvalidJWT(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+
+	validator := &mockServiceAuthValidator{
+		shouldFail: true,
+	}
+	aggregatorChecker := &mockAggregatorChecker{
+		aggregators: make(map[string]bool),
+	}
+
+	middleware := NewDualAuthMiddleware(client, store, validator, aggregatorChecker)
+
+	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called")
+	}))
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer invalid.jwt.token")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", w.Code)
+	}
+
+	var response map[string]string
+	_ = json.Unmarshal(w.Body.Bytes(), &response)
+	if response["message"] != "Invalid or expired service JWT" {
+		t.Errorf("unexpected error message: %s", response["message"])
+	}
+}
+
+// TestDualAuthMiddleware_ServiceJWT_NotAggregator tests service JWT auth with non-aggregator DID
+func TestDualAuthMiddleware_ServiceJWT_NotAggregator(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+
+	did := syntax.DID("did:plc:regularuser")
+	validator := &mockServiceAuthValidator{
+		returnDID: did,
+	}
+	aggregatorChecker := &mockAggregatorChecker{
+		aggregators: map[string]bool{
+			"did:plc:aggregator123": true,
+		},
+	}
+
+	middleware := NewDualAuthMiddleware(client, store, validator, aggregatorChecker)
+
+	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called")
+	}))
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", w.Code)
+	}
+
+	var response map[string]string
+	_ = json.Unmarshal(w.Body.Bytes(), &response)
+	if response["message"] != "Not a registered aggregator" {
+		t.Errorf("unexpected error message: %s", response["message"])
+	}
+}
+
+// TestDualAuthMiddleware_ServiceJWT_AggregatorCheckFailure tests service JWT auth when aggregator check fails
+func TestDualAuthMiddleware_ServiceJWT_AggregatorCheckFailure(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+
+	did := syntax.DID("did:plc:aggregator123")
+	validator := &mockServiceAuthValidator{
+		returnDID: did,
+	}
+	aggregatorChecker := &mockAggregatorChecker{
+		shouldFail: true,
+	}
+
+	middleware := NewDualAuthMiddleware(client, store, validator, aggregatorChecker)
+
+	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called")
+	}))
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", w.Code)
+	}
+
+	var response map[string]string
+	_ = json.Unmarshal(w.Body.Bytes(), &response)
+	if response["message"] != "Failed to verify aggregator status" {
+		t.Errorf("unexpected error message: %s", response["message"])
+	}
+}
+
+// TestDualAuthMiddleware_OAuth_ValidToken tests OAuth auth path through dual middleware
+func TestDualAuthMiddleware_OAuth_ValidToken(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+
+	// Create a test session
+	did := syntax.DID("did:plc:user123")
+	sessionID := "session123"
+	session := &oauthlib.ClientSessionData{
+		AccountDID:  did,
+		SessionID:   sessionID,
+		AccessToken: "test_access_token",
+		HostURL:     "https://pds.example.com",
+	}
+	_ = store.SaveSession(context.Background(), *session)
+
+	validator := &mockServiceAuthValidator{}
+	aggregatorChecker := &mockAggregatorChecker{
+		aggregators: make(map[string]bool),
+	}
+
+	middleware := NewDualAuthMiddleware(client, store, validator, aggregatorChecker)
+
+	handlerCalled := false
+	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+
+		// Verify DID was extracted
+		extractedDID := GetUserDID(r)
+		if extractedDID != "did:plc:user123" {
+			t.Errorf("expected DID 'did:plc:user123', got %s", extractedDID)
+		}
+
+		// Verify it's NOT marked as aggregator auth
+		if IsAggregatorAuth(r) {
+			t.Error("expected IsAggregatorAuth to be false")
+		}
+
+		// Verify auth method
+		authMethod := GetAuthMethod(r)
+		if authMethod != AuthMethodOAuth {
+			t.Errorf("expected auth method %s, got %s", AuthMethodOAuth, authMethod)
+		}
+
+		// Verify OAuth session is available
+		oauthSession := GetOAuthSession(r)
+		if oauthSession == nil {
+			t.Error("expected OAuth session to be non-nil")
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	token := client.createTestToken("did:plc:user123", sessionID, time.Hour)
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if !handlerCalled {
+		t.Error("handler was not called")
+	}
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestDualAuthMiddleware_OAuth_Cookie tests OAuth auth via cookie through dual middleware
+func TestDualAuthMiddleware_OAuth_Cookie(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+
+	// Create a test session
+	did := syntax.DID("did:plc:user123")
+	sessionID := "session123"
+	session := &oauthlib.ClientSessionData{
+		AccountDID:  did,
+		SessionID:   sessionID,
+		AccessToken: "test_access_token",
+	}
+	_ = store.SaveSession(context.Background(), *session)
+
+	validator := &mockServiceAuthValidator{}
+	aggregatorChecker := &mockAggregatorChecker{
+		aggregators: make(map[string]bool),
+	}
+
+	middleware := NewDualAuthMiddleware(client, store, validator, aggregatorChecker)
+
+	handlerCalled := false
+	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+
+		// Verify DID was extracted
+		extractedDID := GetUserDID(r)
+		if extractedDID != "did:plc:user123" {
+			t.Errorf("expected DID 'did:plc:user123', got %s", extractedDID)
+		}
+
+		// Verify auth method
+		authMethod := GetAuthMethod(r)
+		if authMethod != AuthMethodOAuth {
+			t.Errorf("expected auth method %s, got %s", AuthMethodOAuth, authMethod)
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	token := client.createTestToken("did:plc:user123", sessionID, time.Hour)
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.AddCookie(&http.Cookie{
+		Name:  "coves_session",
+		Value: token,
+	})
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if !handlerCalled {
+		t.Error("handler was not called")
+	}
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestDualAuthMiddleware_MissingAuth tests that missing auth is rejected
+func TestDualAuthMiddleware_MissingAuth(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+	validator := &mockServiceAuthValidator{}
+	aggregatorChecker := &mockAggregatorChecker{
+		aggregators: make(map[string]bool),
+	}
+
+	middleware := NewDualAuthMiddleware(client, store, validator, aggregatorChecker)
+
+	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called")
+	}))
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", w.Code)
+	}
+}
+
+// TestIsAggregatorAuth_NotAuthenticated tests IsAggregatorAuth with no auth
+func TestIsAggregatorAuth_NotAuthenticated(t *testing.T) {
+	req := httptest.NewRequest("GET", "/test", nil)
+	isAgg := IsAggregatorAuth(req)
+
+	if isAgg {
+		t.Error("expected false for unauthenticated request")
+	}
+}
+
+// TestGetAuthMethod_NotAuthenticated tests GetAuthMethod with no auth
+func TestGetAuthMethod_NotAuthenticated(t *testing.T) {
+	req := httptest.NewRequest("GET", "/test", nil)
+	method := GetAuthMethod(req)
+
+	if method != "" {
+		t.Errorf("expected empty string, got %s", method)
+	}
+}
+
+// TestDualAuthMiddleware_MalformedToken tests that tokens that are neither valid OAuth nor JWT are rejected
+func TestDualAuthMiddleware_MalformedToken(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+	validator := &mockServiceAuthValidator{}
+	aggregatorChecker := &mockAggregatorChecker{
+		aggregators: make(map[string]bool),
+	}
+
+	middleware := NewDualAuthMiddleware(client, store, validator, aggregatorChecker)
+
+	tests := []struct {
+		name  string
+		token string
+	}{
+		{"random string", "not-valid-token"},
+		{"base64 garbage", "dGhpcyBpcyBub3QgYSB2YWxpZCB0b2tlbg=="},
+		{"partial JWT", "header.payload"},
+		{"too many dots", "part1.part2.part3.part4"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("handler should not be called for malformed token")
+			}))
+
+			req := httptest.NewRequest("GET", "/test", nil)
+			req.Header.Set("Authorization", "Bearer "+tt.token)
+			w := httptest.NewRecorder()
+
+			handler.ServeHTTP(w, req)
+
+			if w.Code != http.StatusUnauthorized {
+				t.Errorf("expected status 401, got %d", w.Code)
+			}
+		})
+	}
+}
+
+// TestDualAuthMiddleware_OAuth_ExpiredToken tests that OAuth expired tokens are rejected
+func TestDualAuthMiddleware_OAuth_ExpiredToken(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+
+	// Create a test session
+	did := syntax.DID("did:plc:user123")
+	sessionID := "session123"
+	session := &oauthlib.ClientSessionData{
+		AccountDID:  did,
+		SessionID:   sessionID,
+		AccessToken: "test_access_token",
+	}
+	_ = store.SaveSession(context.Background(), *session)
+
+	validator := &mockServiceAuthValidator{}
+	aggregatorChecker := &mockAggregatorChecker{
+		aggregators: make(map[string]bool),
+	}
+
+	middleware := NewDualAuthMiddleware(client, store, validator, aggregatorChecker)
+
+	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called for expired token")
+	}))
+
+	// Create expired token (expired 1 hour ago)
+	token := client.createTestToken("did:plc:user123", sessionID, -time.Hour)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", w.Code)
+	}
+}
+
+// TestDualAuthMiddleware_OAuth_SessionNotFound tests that OAuth tokens with non-existent sessions are rejected
+func TestDualAuthMiddleware_OAuth_SessionNotFound(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+
+	validator := &mockServiceAuthValidator{}
+	aggregatorChecker := &mockAggregatorChecker{
+		aggregators: make(map[string]bool),
+	}
+
+	middleware := NewDualAuthMiddleware(client, store, validator, aggregatorChecker)
+
+	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called for non-existent session")
+	}))
+
+	// Create token for session that doesn't exist in store
+	token := client.createTestToken("did:plc:nonexistent", "session999", time.Hour)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", w.Code)
+	}
+}
+
+// TestHelperFunctions_WithOAuthContext tests helper functions with OAuth authenticated context
+func TestHelperFunctions_WithOAuthContext(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+
+	// Create a test session
+	did := syntax.DID("did:plc:user123")
+	sessionID := "session123"
+	session := &oauthlib.ClientSessionData{
+		AccountDID:  did,
+		SessionID:   sessionID,
+		AccessToken: "test_access_token",
+	}
+	_ = store.SaveSession(context.Background(), *session)
+
+	validator := &mockServiceAuthValidator{}
+	aggregatorChecker := &mockAggregatorChecker{
+		aggregators: make(map[string]bool),
+	}
+
+	middleware := NewDualAuthMiddleware(client, store, validator, aggregatorChecker)
+
+	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Test IsAggregatorAuth - should be false for OAuth
+		if IsAggregatorAuth(r) {
+			t.Error("IsAggregatorAuth should return false for OAuth")
+		}
+
+		// Test GetAuthMethod - should be "oauth"
+		authMethod := GetAuthMethod(r)
+		if authMethod != AuthMethodOAuth {
+			t.Errorf("GetAuthMethod should return %s, got %s", AuthMethodOAuth, authMethod)
+		}
+
+		// Test GetUserDID
+		userDID := GetUserDID(r)
+		if userDID != "did:plc:user123" {
+			t.Errorf("GetUserDID should return did:plc:user123, got %s", userDID)
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	token := client.createTestToken("did:plc:user123", sessionID, time.Hour)
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+}
+
+// TestHelperFunctions_WithServiceJWTContext tests helper functions with service JWT authenticated context
+func TestHelperFunctions_WithServiceJWTContext(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+
+	did := syntax.DID("did:plc:aggregator123")
+	validator := &mockServiceAuthValidator{
+		returnDID: did,
+	}
+	aggregatorChecker := &mockAggregatorChecker{
+		aggregators: map[string]bool{
+			"did:plc:aggregator123": true,
+		},
+	}
+
+	middleware := NewDualAuthMiddleware(client, store, validator, aggregatorChecker)
+
+	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Test IsAggregatorAuth - should be true for service JWT
+		if !IsAggregatorAuth(r) {
+			t.Error("IsAggregatorAuth should return true for service JWT")
+		}
+
+		// Test GetAuthMethod - should be "service_jwt"
+		authMethod := GetAuthMethod(r)
+		if authMethod != AuthMethodServiceJWT {
+			t.Errorf("GetAuthMethod should return %s, got %s", AuthMethodServiceJWT, authMethod)
+		}
+
+		// Test GetUserDID
+		userDID := GetUserDID(r)
+		if userDID != "did:plc:aggregator123" {
+			t.Errorf("GetUserDID should return did:plc:aggregator123, got %s", userDID)
+		}
+
+		// OAuth-specific helpers should return empty/nil for service JWT
+		oauthSession := GetOAuthSession(r)
+		if oauthSession != nil {
+			t.Error("GetOAuthSession should return nil for service JWT auth")
+		}
+
+		accessToken := GetUserAccessToken(r)
+		if accessToken != "" {
+			t.Error("GetUserAccessToken should return empty string for service JWT auth")
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+}
+
+// TestGetAuthenticatedDID tests the context-based DID extraction used by service layers
+func TestGetAuthenticatedDID(t *testing.T) {
+	t.Run("returns DID when authenticated", func(t *testing.T) {
+		ctx := context.WithValue(context.Background(), UserDIDKey, "did:plc:test123")
+		did := GetAuthenticatedDID(ctx)
+		if did != "did:plc:test123" {
+			t.Errorf("expected did:plc:test123, got %s", did)
+		}
+	})
+
+	t.Run("returns empty string when not authenticated", func(t *testing.T) {
+		ctx := context.Background()
+		did := GetAuthenticatedDID(ctx)
+		if did != "" {
+			t.Errorf("expected empty string, got %s", did)
+		}
+	})
+
+	t.Run("returns empty string when wrong type in context", func(t *testing.T) {
+		ctx := context.WithValue(context.Background(), UserDIDKey, 12345) // wrong type
+		did := GetAuthenticatedDID(ctx)
+		if did != "" {
+			t.Errorf("expected empty string for wrong type, got %s", did)
+		}
+	})
+}
+
+// TestDualAuthMiddleware_OAuth_DIDMismatch tests the DID mismatch case in dual auth OAuth path
+func TestDualAuthMiddleware_OAuth_DIDMismatch(t *testing.T) {
+	mockClient := newMockOAuthClient()
+	mockStore := newMockOAuthStore()
+
+	// Create a session where the stored AccountDID differs from what the token claims
+	// Token will claim did:plc:token_did, but session.AccountDID will be different
+	sessionKey := "did:plc:token_did:session123" // GetSession looks up by "did:sessionID"
+	mockStore.sessions[sessionKey] = &oauthlib.ClientSessionData{
+		AccountDID:  syntax.DID("did:plc:different_did"), // Mismatch with token DID!
+		SessionID:   "session123",
+		AccessToken: "test_token",
+	}
+
+	mockValidator := &mockServiceAuthValidator{}
+	mockAggChecker := &mockAggregatorChecker{}
+
+	middleware := NewDualAuthMiddleware(mockClient, mockStore, mockValidator, mockAggChecker)
+
+	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called for DID mismatch")
+	}))
+
+	// Create token with did:plc:token_did - this will be checked against session.AccountDID
+	token := mockClient.createTestToken("did:plc:token_did", "session123", time.Hour)
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401 for DID mismatch, got %d", w.Code)
+	}
+
+	var response map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if response["message"] != "Session DID mismatch" {
+		t.Errorf("expected 'Session DID mismatch' message, got %s", response["message"])
+	}
+}
+
+// TestDualAuthMiddleware_HeaderPrecedenceOverCookie tests that Authorization header takes precedence over cookie
+// This prevents cookie injection attacks by ensuring explicit headers are prioritized
+func TestDualAuthMiddleware_HeaderPrecedenceOverCookie(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+
+	// Create two test sessions
+	did1 := syntax.DID("did:plc:header")
+	sessionID1 := "session_header"
+	session1 := &oauthlib.ClientSessionData{
+		AccountDID:  did1,
+		SessionID:   sessionID1,
+		AccessToken: "header_token",
+		HostURL:     "https://pds.example.com",
+	}
+	_ = store.SaveSession(context.Background(), *session1)
+
+	did2 := syntax.DID("did:plc:cookie")
+	sessionID2 := "session_cookie"
+	session2 := &oauthlib.ClientSessionData{
+		AccountDID:  did2,
+		SessionID:   sessionID2,
+		AccessToken: "cookie_token",
+		HostURL:     "https://pds.example.com",
+	}
+	_ = store.SaveSession(context.Background(), *session2)
+
+	validator := &mockServiceAuthValidator{}
+	aggregatorChecker := &mockAggregatorChecker{
+		aggregators: make(map[string]bool),
+	}
+
+	middleware := NewDualAuthMiddleware(client, store, validator, aggregatorChecker)
+
+	handlerCalled := false
+	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+
+		// Should get header DID, not cookie DID
+		extractedDID := GetUserDID(r)
+		if extractedDID != "did:plc:header" {
+			t.Errorf("expected header DID 'did:plc:header', got %s", extractedDID)
+		}
+
+		// Verify auth method is OAuth (not service JWT)
+		authMethod := GetAuthMethod(r)
+		if authMethod != AuthMethodOAuth {
+			t.Errorf("expected auth method %s, got %s", AuthMethodOAuth, authMethod)
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	headerToken := client.createTestToken("did:plc:header", sessionID1, time.Hour)
+	cookieToken := client.createTestToken("did:plc:cookie", sessionID2, time.Hour)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+headerToken)
+	req.AddCookie(&http.Cookie{
+		Name:  "coves_session",
+		Value: cookieToken,
+	})
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if !handlerCalled {
+		t.Error("handler was not called")
+	}
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+}
+
+// TestDualAuthMiddleware_InvalidAuthHeaderFormat tests that non-Bearer schemes and malformed headers are rejected
+func TestDualAuthMiddleware_InvalidAuthHeaderFormat(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+	validator := &mockServiceAuthValidator{}
+	aggregatorChecker := &mockAggregatorChecker{
+		aggregators: make(map[string]bool),
+	}
+
+	middleware := NewDualAuthMiddleware(client, store, validator, aggregatorChecker)
+
+	tests := []struct {
+		name   string
+		header string
+	}{
+		{"Basic auth", "Basic dXNlcjpwYXNz"},
+		{"DPoP scheme", "DPoP some-token"},
+		{"Invalid format", "InvalidFormat"},
+		{"No space", "Bearertoken"},
+		{"Missing token", "Bearer "},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				t.Error("handler should not be called for invalid auth header format")
+			}))
+
+			req := httptest.NewRequest("GET", "/test", nil)
+			req.Header.Set("Authorization", tt.header)
+			w := httptest.NewRecorder()
+
+			handler.ServeHTTP(w, req)
+
+			if w.Code != http.StatusUnauthorized {
+				t.Errorf("expected status 401 for header %q, got %d", tt.header, w.Code)
+			}
+		})
+	}
+}

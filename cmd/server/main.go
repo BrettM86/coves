@@ -22,6 +22,9 @@ import (
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/atproto/oauth"
+
+	indigoauth "github.com/bluesky-social/indigo/atproto/auth"
+	indigoidentity "github.com/bluesky-social/indigo/atproto/identity"
 	"Coves/internal/core/aggregators"
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/blueskypost"
@@ -201,6 +204,16 @@ func main() {
 	authMiddleware := middleware.NewOAuthAuthMiddleware(oauthClient, oauthStore)
 	log.Println("✅ OAuth auth middleware initialized (sealed session tokens)")
 
+	// Create identity directory for service auth validator
+	// This is used to verify DIDs in service JWTs for aggregator authentication
+	// Note: The 10-second timeout here is for HTTP requests made by the identity resolver itself,
+	// not for the auth middleware's request context. The middleware passes r.Context() to the validator,
+	// which properly respects request cancellation. This timeout is a safety net for slow DID resolution.
+	identityDir := &indigoidentity.BaseDirectory{
+		PLCURL:     plcURL,
+		HTTPClient: http.Client{Timeout: 10 * time.Second},
+	}
+
 	// Initialize repositories and services
 	userRepo := postgresRepo.NewUserRepository(db)
 	userService := users.NewUserService(userRepo, identityResolver, defaultPDS)
@@ -377,6 +390,29 @@ func main() {
 	aggregatorService := aggregators.NewAggregatorService(aggregatorRepo, communityService)
 	log.Println("✅ Aggregator service initialized")
 
+	// Get instance DID for service auth validator audience
+	serviceDID := instanceDID // Use instance DID as the service audience
+
+	// Create ServiceAuthValidator for aggregator JWT authentication
+	// This validates service JWTs signed by aggregator PDSs
+	serviceValidator := &indigoauth.ServiceAuthValidator{
+		Audience:        serviceDID,
+		Dir:             identityDir,
+		TimestampLeeway: 30 * time.Second,
+	}
+	log.Printf("✅ Service auth validator initialized (audience: %s)", serviceDID)
+
+	// Create DualAuthMiddleware that supports both OAuth and service JWT
+	// OAuth tokens are for user authentication (sealed session tokens)
+	// Service JWTs are for aggregator authentication (PDS-signed tokens)
+	dualAuth := middleware.NewDualAuthMiddleware(
+		oauthClient,      // SessionUnsealer for OAuth
+		oauthStore,       // ClientAuthStore for OAuth sessions
+		serviceValidator, // ServiceAuthValidator for JWT validation
+		aggregatorRepo,   // AggregatorChecker - uses repo directly since it implements the interface
+	)
+	log.Println("✅ Dual auth middleware initialized (OAuth + service JWT)")
+
 	// Initialize unfurl cache repository
 	unfurlRepo := unfurl.NewRepository(db)
 
@@ -542,8 +578,8 @@ func main() {
 	routes.RegisterCommunityRoutes(r, communityService, authMiddleware, allowedCommunityCreators)
 	log.Println("Community XRPC endpoints registered with OAuth authentication")
 
-	routes.RegisterPostRoutes(r, postService, authMiddleware)
-	log.Println("Post XRPC endpoints registered with OAuth authentication")
+	routes.RegisterPostRoutes(r, postService, dualAuth)
+	log.Println("Post XRPC endpoints registered with dual auth (OAuth + service JWT for aggregators)")
 
 	routes.RegisterVoteRoutes(r, voteService, authMiddleware)
 	log.Println("Vote XRPC endpoints registered with OAuth authentication")
