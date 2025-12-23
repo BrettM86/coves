@@ -467,46 +467,12 @@ func (s *postService) createPostOnPDS(
 // tryConvertBlueskyURLToPostEmbed attempts to convert a Bluesky URL in an external embed to a post embed.
 // Returns true if the conversion was successful and the postRecord was modified.
 // Returns false if the URL is not a Bluesky URL or if conversion failed (caller should continue with external embed).
-func (s *postService) tryConvertBlueskyURLToPostEmbed(ctx context.Context, external map[string]interface{}, postRecord *PostRecord) bool {
-	// Check if we have a Bluesky service
-	if s.blueskyService == nil {
-		return false
-	}
-
-	// Extract URI from external embed
-	uri, ok := external["uri"].(string)
-	if !ok || uri == "" {
-		return false
-	}
-
-	// Check if this is a Bluesky URL
-	if !s.blueskyService.IsBlueskyURL(uri) {
-		return false
-	}
-
-	log.Printf("[POST-CREATE] Detected Bluesky URL: %s", uri)
-
-	// Convert bsky.app URL to AT-URI
-	parseCtx, parseCancel := context.WithTimeout(ctx, 5*time.Second)
-	defer parseCancel()
-
-	atURI, err := s.blueskyService.ParseBlueskyURL(parseCtx, uri)
-	if err != nil {
-		log.Printf("[POST-CREATE] WARNING: Bluesky URL parsing failed for %s - falling back to external embed: %v", uri, err)
-		// Return false to continue with external embed - don't fail the post creation
-		return false
-	}
-
-	// Replace external embed with post embed
-	postRecord.Embed = map[string]interface{}{
-		"$type": "social.coves.embed.post",
-		"post": map[string]interface{}{
-			"uri": atURI,
-			"cid": "", // Will be populated at resolution time
-		},
-	}
-	log.Printf("[POST-CREATE] Converted Bluesky URL to post embed: %s", atURI)
-
-	// Return true to signal that we successfully converted to post embed
-	return true
+//
+// Phase 1: Disabled - just keep URL as external/text.
+// The social.coves.embed.post lexicon requires a valid CID in strongRef, which we don't have
+// until we call ResolvePost. For Phase 1 (text-only), we skip this conversion.
+// Phase 2 will properly resolve the post, get the CID, and create the embed.
+// See issue: Coves-p44
+func (s *postService) tryConvertBlueskyURLToPostEmbed(_ context.Context, _ map[string]interface{}, _ *PostRecord) bool {
+	return false
 }
