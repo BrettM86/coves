@@ -3,6 +3,7 @@ package routes
 import (
 	"Coves/internal/api/handlers/communityFeed"
 	"Coves/internal/api/middleware"
+	"Coves/internal/core/blueskypost"
 	"Coves/internal/core/communityFeeds"
 	"Coves/internal/core/votes"
 
@@ -14,10 +15,11 @@ func RegisterCommunityFeedRoutes(
 	r chi.Router,
 	feedService communityFeeds.Service,
 	voteService votes.Service,
+	blueskyService blueskypost.Service,
 	authMiddleware *middleware.OAuthAuthMiddleware,
 ) {
 	// Create handlers
-	getCommunityHandler := communityFeed.NewGetCommunityHandler(feedService, voteService)
+	getCommunityHandler := communityFeed.NewGetCommunityHandler(feedService, voteService, blueskyService)
 
 	// GET /xrpc/social.coves.communityFeed.getCommunity
 	// Public endpoint with optional auth for viewer-specific state (vote state)

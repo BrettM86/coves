@@ -1,29 +1,36 @@
 package timeline
 
 import (
-	"Coves/internal/api/handlers/common"
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/posts"
-	"Coves/internal/core/timeline"
-	"Coves/internal/core/votes"
 	"encoding/json"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"Coves/internal/api/handlers/common"
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/blueskypost"
+	"Coves/internal/core/posts"
+	"Coves/internal/core/timeline"
+	"Coves/internal/core/votes"
 )
 
 // GetTimelineHandler handles timeline feed retrieval
 type GetTimelineHandler struct {
-	service     timeline.Service
-	voteService votes.Service
+	service        timeline.Service
+	voteService    votes.Service
+	blueskyService blueskypost.Service
 }
 
 // NewGetTimelineHandler creates a new timeline handler
-func NewGetTimelineHandler(service timeline.Service, voteService votes.Service) *GetTimelineHandler {
+func NewGetTimelineHandler(service timeline.Service, voteService votes.Service, blueskyService blueskypost.Service) *GetTimelineHandler {
+	if blueskyService == nil {
+		log.Printf("[TIMELINE-HANDLER] WARNING: blueskyService is nil - Bluesky post embeds will not be resolved")
+	}
 	return &GetTimelineHandler{
-		service:     service,
-		voteService: voteService,
+		service:        service,
+		voteService:    voteService,
+		blueskyService: blueskyService,
 	}
 }
 
@@ -60,10 +67,11 @@ func (h *GetTimelineHandler) HandleGetTimeline(w http.ResponseWriter, r *http.Re
 	// Populate viewer vote state if authenticated
 	common.PopulateViewerVoteState(r.Context(), r, h.voteService, response.Feed)
 
-	// Transform blob refs to URLs for all posts
+	// Transform blob refs to URLs and resolve post embeds for all posts
 	for _, feedPost := range response.Feed {
 		if feedPost.Post != nil {
 			posts.TransformBlobRefsToURLs(feedPost.Post)
+			posts.TransformPostEmbeds(r.Context(), feedPost.Post, h.blueskyService)
 		}
 	}
 

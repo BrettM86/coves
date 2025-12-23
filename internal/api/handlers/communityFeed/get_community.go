@@ -1,27 +1,34 @@
 package communityFeed
 
 import (
-	"Coves/internal/api/handlers/common"
-	"Coves/internal/core/communityFeeds"
-	"Coves/internal/core/posts"
-	"Coves/internal/core/votes"
 	"encoding/json"
 	"log"
 	"net/http"
 	"strconv"
+
+	"Coves/internal/api/handlers/common"
+	"Coves/internal/core/blueskypost"
+	"Coves/internal/core/communityFeeds"
+	"Coves/internal/core/posts"
+	"Coves/internal/core/votes"
 )
 
 // GetCommunityHandler handles community feed retrieval
 type GetCommunityHandler struct {
-	service     communityFeeds.Service
-	voteService votes.Service
+	service        communityFeeds.Service
+	voteService    votes.Service
+	blueskyService blueskypost.Service
 }
 
 // NewGetCommunityHandler creates a new community feed handler
-func NewGetCommunityHandler(service communityFeeds.Service, voteService votes.Service) *GetCommunityHandler {
+func NewGetCommunityHandler(service communityFeeds.Service, voteService votes.Service, blueskyService blueskypost.Service) *GetCommunityHandler {
+	if blueskyService == nil {
+		log.Printf("[COMMUNITY-HANDLER] WARNING: blueskyService is nil - Bluesky post embeds will not be resolved")
+	}
 	return &GetCommunityHandler{
-		service:     service,
-		voteService: voteService,
+		service:        service,
+		voteService:    voteService,
+		blueskyService: blueskyService,
 	}
 }
 
@@ -50,10 +57,11 @@ func (h *GetCommunityHandler) HandleGetCommunity(w http.ResponseWriter, r *http.
 	// Populate viewer vote state if authenticated
 	common.PopulateViewerVoteState(r.Context(), r, h.voteService, response.Feed)
 
-	// Transform blob refs to URLs for all posts
+	// Transform blob refs to URLs and resolve post embeds for all posts
 	for _, feedPost := range response.Feed {
 		if feedPost.Post != nil {
 			posts.TransformBlobRefsToURLs(feedPost.Post)
+			posts.TransformPostEmbeds(r.Context(), feedPost.Post, h.blueskyService)
 		}
 	}
 

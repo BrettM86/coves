@@ -3,6 +3,7 @@ package routes
 import (
 	"Coves/internal/api/handlers/discover"
 	"Coves/internal/api/middleware"
+	"Coves/internal/core/blueskypost"
 	discoverCore "Coves/internal/core/discover"
 	"Coves/internal/core/votes"
 
@@ -22,10 +23,11 @@ func RegisterDiscoverRoutes(
 	r chi.Router,
 	discoverService discoverCore.Service,
 	voteService votes.Service,
+	blueskyService blueskypost.Service,
 	authMiddleware *middleware.OAuthAuthMiddleware,
 ) {
 	// Create handlers
-	getDiscoverHandler := discover.NewGetDiscoverHandler(discoverService, voteService)
+	getDiscoverHandler := discover.NewGetDiscoverHandler(discoverService, voteService, blueskyService)
 
 	// GET /xrpc/social.coves.feed.getDiscover
 	// Public endpoint with optional auth for viewer-specific state (vote state)

@@ -1,27 +1,34 @@
 package discover
 
 import (
-	"Coves/internal/api/handlers/common"
-	"Coves/internal/core/discover"
-	"Coves/internal/core/posts"
-	"Coves/internal/core/votes"
 	"encoding/json"
 	"log"
 	"net/http"
 	"strconv"
+
+	"Coves/internal/api/handlers/common"
+	"Coves/internal/core/blueskypost"
+	"Coves/internal/core/discover"
+	"Coves/internal/core/posts"
+	"Coves/internal/core/votes"
 )
 
 // GetDiscoverHandler handles discover feed retrieval
 type GetDiscoverHandler struct {
-	service     discover.Service
-	voteService votes.Service
+	service        discover.Service
+	voteService    votes.Service
+	blueskyService blueskypost.Service
 }
 
 // NewGetDiscoverHandler creates a new discover handler
-func NewGetDiscoverHandler(service discover.Service, voteService votes.Service) *GetDiscoverHandler {
+func NewGetDiscoverHandler(service discover.Service, voteService votes.Service, blueskyService blueskypost.Service) *GetDiscoverHandler {
+	if blueskyService == nil {
+		log.Printf("[DISCOVER-HANDLER] WARNING: blueskyService is nil - Bluesky post embeds will not be resolved")
+	}
 	return &GetDiscoverHandler{
-		service:     service,
-		voteService: voteService,
+		service:        service,
+		voteService:    voteService,
+		blueskyService: blueskyService,
 	}
 }
 
@@ -47,10 +54,11 @@ func (h *GetDiscoverHandler) HandleGetDiscover(w http.ResponseWriter, r *http.Re
 	// Populate viewer vote state if authenticated
 	common.PopulateViewerVoteState(r.Context(), r, h.voteService, response.Feed)
 
-	// Transform blob refs to URLs for all posts
+	// Transform blob refs to URLs and resolve post embeds for all posts
 	for _, feedPost := range response.Feed {
 		if feedPost.Post != nil {
 			posts.TransformBlobRefsToURLs(feedPost.Post)
+			posts.TransformPostEmbeds(r.Context(), feedPost.Post, h.blueskyService)
 		}
 	}
 

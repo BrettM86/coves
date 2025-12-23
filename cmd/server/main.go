@@ -1,22 +1,6 @@
 package main
 
 import (
-	"Coves/internal/api/middleware"
-	"Coves/internal/api/routes"
-	"Coves/internal/atproto/identity"
-	"Coves/internal/atproto/jetstream"
-	"Coves/internal/atproto/oauth"
-	"Coves/internal/core/aggregators"
-	"Coves/internal/core/blobs"
-	"Coves/internal/core/comments"
-	"Coves/internal/core/communities"
-	"Coves/internal/core/communityFeeds"
-	"Coves/internal/core/discover"
-	"Coves/internal/core/posts"
-	"Coves/internal/core/timeline"
-	"Coves/internal/core/unfurl"
-	"Coves/internal/core/users"
-	"Coves/internal/core/votes"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -32,6 +16,24 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"Coves/internal/api/middleware"
+	"Coves/internal/api/routes"
+	"Coves/internal/atproto/identity"
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/atproto/oauth"
+	"Coves/internal/core/aggregators"
+	"Coves/internal/core/blobs"
+	"Coves/internal/core/blueskypost"
+	"Coves/internal/core/comments"
+	"Coves/internal/core/communities"
+	"Coves/internal/core/communityFeeds"
+	"Coves/internal/core/discover"
+	"Coves/internal/core/posts"
+	"Coves/internal/core/timeline"
+	"Coves/internal/core/unfurl"
+	"Coves/internal/core/users"
+	"Coves/internal/core/votes"
 
 	"github.com/go-chi/chi/v5"
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
@@ -390,9 +392,19 @@ func main() {
 	)
 	log.Println("✅ Unfurl and blob services initialized")
 
+	// Initialize Bluesky post cache repository and service
+	blueskyRepo := blueskypost.NewRepository(db)
+	blueskyService := blueskypost.NewService(
+		blueskyRepo,
+		identityResolver,
+		blueskypost.WithTimeout(10*time.Second),
+		blueskypost.WithCacheTTL(1*time.Hour), // 1 hour cache (shorter than unfurl)
+	)
+	log.Println("✅ Bluesky post service initialized")
+
 	// Initialize post service (with aggregator support)
 	postRepo := postgresRepo.NewPostRepository(db)
-	postService := posts.NewPostService(postRepo, communityService, aggregatorService, blobService, unfurlService, defaultPDS)
+	postService := posts.NewPostService(postRepo, communityService, aggregatorService, blobService, unfurlService, blueskyService, defaultPDS)
 
 	// Initialize vote repository (used by Jetstream consumer for indexing)
 	voteRepo := postgresRepo.NewVoteRepository(db)
@@ -543,13 +555,13 @@ func main() {
 	log.Println("  - POST /xrpc/social.coves.community.comment.update")
 	log.Println("  - POST /xrpc/social.coves.community.comment.delete")
 
-	routes.RegisterCommunityFeedRoutes(r, feedService, voteService, authMiddleware)
+	routes.RegisterCommunityFeedRoutes(r, feedService, voteService, blueskyService, authMiddleware)
 	log.Println("Feed XRPC endpoints registered (public with optional auth for viewer vote state)")
 
-	routes.RegisterTimelineRoutes(r, timelineService, voteService, authMiddleware)
+	routes.RegisterTimelineRoutes(r, timelineService, voteService, blueskyService, authMiddleware)
 	log.Println("Timeline XRPC endpoints registered (requires authentication, includes viewer vote state)")
 
-	routes.RegisterDiscoverRoutes(r, discoverService, voteService, authMiddleware)
+	routes.RegisterDiscoverRoutes(r, discoverService, voteService, blueskyService, authMiddleware)
 	log.Println("Discover XRPC endpoints registered (public with optional auth for viewer vote state)")
 
 	routes.RegisterAggregatorRoutes(r, aggregatorService, communityService, userService, identityResolver)

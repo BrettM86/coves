@@ -1,11 +1,6 @@
 package posts
 
 import (
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/aggregators"
-	"Coves/internal/core/blobs"
-	"Coves/internal/core/communities"
-	"Coves/internal/core/unfurl"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -15,6 +10,13 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/aggregators"
+	"Coves/internal/core/blobs"
+	"Coves/internal/core/blueskypost"
+	"Coves/internal/core/communities"
+	"Coves/internal/core/unfurl"
 )
 
 type postService struct {
@@ -23,17 +25,19 @@ type postService struct {
 	aggregatorService aggregators.Service
 	blobService       blobs.Service
 	unfurlService     unfurl.Service
+	blueskyService    blueskypost.Service
 	pdsURL            string
 }
 
 // NewPostService creates a new post service
-// aggregatorService, blobService, and unfurlService can be nil if not needed (e.g., in tests or minimal setups)
+// aggregatorService, blobService, unfurlService, and blueskyService can be nil if not needed (e.g., in tests or minimal setups)
 func NewPostService(
 	repo Repository,
 	communityService communities.Service,
 	aggregatorService aggregators.Service, // Optional: can be nil
 	blobService blobs.Service, // Optional: can be nil
 	unfurlService unfurl.Service, // Optional: can be nil
+	blueskyService blueskypost.Service, // Optional: can be nil
 	pdsURL string,
 ) Service {
 	return &postService{
@@ -42,6 +46,7 @@ func NewPostService(
 		aggregatorService: aggregatorService,
 		blobService:       blobService,
 		unfurlService:     unfurlService,
+		blueskyService:    blueskyService,
 		pdsURL:            pdsURL,
 	}
 }
@@ -58,7 +63,7 @@ func NewPostService(
 // 8. Return URI/CID (AppView indexes asynchronously via Jetstream)
 func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*CreatePostResponse, error) {
 	// 1. Validate basic input (before DID checks to give clear validation errors)
-	if err := s.validateCreateRequest(req); err != nil {
+	if err := s.validateCreateRequest(&req); err != nil {
 		return nil, err
 	}
 
@@ -178,105 +183,109 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 	if postRecord.Embed != nil {
 		if embedType, ok := postRecord.Embed["$type"].(string); ok && embedType == "social.coves.embed.external" {
 			if external, ok := postRecord.Embed["external"].(map[string]interface{}); ok {
-				// SECURITY: Validate thumb field (must be blob, not URL string)
-				// This validation happens BEFORE unfurl to catch client errors early
-				if existingThumb := external["thumb"]; existingThumb != nil {
-					if thumbStr, isString := existingThumb.(string); isString {
-						return nil, NewValidationError("thumb",
-							fmt.Sprintf("thumb must be a blob reference (with $type, ref, mimeType, size), not URL string: %s", thumbStr))
-					}
-
-					// Validate blob structure if provided
-					if thumbMap, isMap := existingThumb.(map[string]interface{}); isMap {
-						// Check for $type field
-						if thumbType, ok := thumbMap["$type"].(string); !ok || thumbType != "blob" {
+				// Check if this is a Bluesky post URL and convert to post embed
+				if !s.tryConvertBlueskyURLToPostEmbed(ctx, external, &postRecord) {
+					// Not a Bluesky URL or conversion failed - continue with normal external embed processing
+					// SECURITY: Validate thumb field (must be blob, not URL string)
+					// This validation happens BEFORE unfurl to catch client errors early
+					if existingThumb := external["thumb"]; existingThumb != nil {
+						if thumbStr, isString := existingThumb.(string); isString {
 							return nil, NewValidationError("thumb",
-								fmt.Sprintf("thumb must have $type: blob (got: %v)", thumbType))
+								fmt.Sprintf("thumb must be a blob reference (with $type, ref, mimeType, size), not URL string: %s", thumbStr))
 						}
-						// Check for required blob fields
-						if _, hasRef := thumbMap["ref"]; !hasRef {
-							return nil, NewValidationError("thumb", "thumb blob missing required 'ref' field")
-						}
-						if _, hasMimeType := thumbMap["mimeType"]; !hasMimeType {
-							return nil, NewValidationError("thumb", "thumb blob missing required 'mimeType' field")
-						}
-						log.Printf("[POST-CREATE] Client provided valid thumbnail blob")
-					} else {
-						return nil, NewValidationError("thumb",
-							fmt.Sprintf("thumb must be a blob object, got: %T", existingThumb))
-					}
-				}
 
-				// TRUSTED AGGREGATOR: Allow Kagi aggregator to provide thumbnail URLs directly
-				// This bypasses unfurl for more accurate RSS-sourced thumbnails
-				if req.ThumbnailURL != nil && *req.ThumbnailURL != "" && isTrustedKagi {
-					log.Printf("[AGGREGATOR-THUMB] Trusted aggregator provided thumbnail: %s", *req.ThumbnailURL)
-
-					if s.blobService != nil {
-						blobCtx, blobCancel := context.WithTimeout(ctx, 15*time.Second)
-						defer blobCancel()
-
-						blob, blobErr := s.blobService.UploadBlobFromURL(blobCtx, community, *req.ThumbnailURL)
-						if blobErr != nil {
-							log.Printf("[AGGREGATOR-THUMB] Failed to upload thumbnail: %v", blobErr)
-							// No fallback - aggregators only use RSS feed thumbnails
+						// Validate blob structure if provided
+						if thumbMap, isMap := existingThumb.(map[string]interface{}); isMap {
+							// Check for $type field
+							if thumbType, ok := thumbMap["$type"].(string); !ok || thumbType != "blob" {
+								return nil, NewValidationError("thumb",
+									fmt.Sprintf("thumb must have $type: blob (got: %v)", thumbType))
+							}
+							// Check for required blob fields
+							if _, hasRef := thumbMap["ref"]; !hasRef {
+								return nil, NewValidationError("thumb", "thumb blob missing required 'ref' field")
+							}
+							if _, hasMimeType := thumbMap["mimeType"]; !hasMimeType {
+								return nil, NewValidationError("thumb", "thumb blob missing required 'mimeType' field")
+							}
+							log.Printf("[POST-CREATE] Client provided valid thumbnail blob")
 						} else {
-							external["thumb"] = blob
-							log.Printf("[AGGREGATOR-THUMB] Successfully uploaded thumbnail from trusted aggregator")
+							return nil, NewValidationError("thumb",
+								fmt.Sprintf("thumb must be a blob object, got: %T", existingThumb))
 						}
 					}
-				}
 
-				// Unfurl enhancement (optional, only if URL is supported)
-				// Skip unfurl for trusted aggregators - they provide their own metadata
-				if !isTrustedKagi {
-					if uri, ok := external["uri"].(string); ok && uri != "" {
-						// Check if we support unfurling this URL
-						if s.unfurlService != nil && s.unfurlService.IsSupported(uri) {
-							log.Printf("[POST-CREATE] Unfurling URL: %s", uri)
+					// TRUSTED AGGREGATOR: Allow Kagi aggregator to provide thumbnail URLs directly
+					// This bypasses unfurl for more accurate RSS-sourced thumbnails
+					if req.ThumbnailURL != nil && *req.ThumbnailURL != "" && isTrustedKagi {
+						log.Printf("[AGGREGATOR-THUMB] Trusted aggregator provided thumbnail: %s", *req.ThumbnailURL)
 
-							// Unfurl with timeout (non-fatal if it fails)
-							unfurlCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-							defer cancel()
+						if s.blobService != nil {
+							blobCtx, blobCancel := context.WithTimeout(ctx, 15*time.Second)
+							defer blobCancel()
 
-							result, err := s.unfurlService.UnfurlURL(unfurlCtx, uri)
-							if err != nil {
-								// Log but don't fail - user can still post with manual metadata
-								log.Printf("[POST-CREATE] Warning: Failed to unfurl URL %s: %v", uri, err)
+							blob, blobErr := s.blobService.UploadBlobFromURL(blobCtx, community, *req.ThumbnailURL)
+							if blobErr != nil {
+								log.Printf("[AGGREGATOR-THUMB] Failed to upload thumbnail: %v", blobErr)
+								// No fallback - aggregators only use RSS feed thumbnails
 							} else {
-								// Enhance embed with fetched metadata (only if client didn't provide)
-								// Note: We respect client-provided values, even empty strings
-								// If client sends title="", we assume they want no title
-								if external["title"] == nil {
-									external["title"] = result.Title
-								}
-								if external["description"] == nil {
-									external["description"] = result.Description
-								}
-								// Always set metadata fields (provider, domain, type)
-								external["embedType"] = result.Type
-								external["provider"] = result.Provider
-								external["domain"] = result.Domain
+								external["thumb"] = blob
+								log.Printf("[AGGREGATOR-THUMB] Successfully uploaded thumbnail from trusted aggregator")
+							}
+						}
+					}
 
-								// Upload thumbnail from unfurl if client didn't provide one
-								// (Thumb validation already happened above)
-								if external["thumb"] == nil {
-									if result.ThumbnailURL != "" && s.blobService != nil {
-										blobCtx, blobCancel := context.WithTimeout(ctx, 15*time.Second)
-										defer blobCancel()
+					// Unfurl enhancement (optional, only if URL is supported)
+					// Skip unfurl for trusted aggregators - they provide their own metadata
+					if !isTrustedKagi {
+						if uri, ok := external["uri"].(string); ok && uri != "" {
+							// Check if we support unfurling this URL
+							if s.unfurlService != nil && s.unfurlService.IsSupported(uri) {
+								log.Printf("[POST-CREATE] Unfurling URL: %s", uri)
 
-										blob, blobErr := s.blobService.UploadBlobFromURL(blobCtx, community, result.ThumbnailURL)
-										if blobErr != nil {
-											log.Printf("[POST-CREATE] Warning: Failed to upload thumbnail for %s: %v", uri, blobErr)
-										} else {
-											external["thumb"] = blob
-											log.Printf("[POST-CREATE] Uploaded thumbnail blob for %s", uri)
+								// Unfurl with timeout (non-fatal if it fails)
+								unfurlCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+								defer cancel()
+
+								result, err := s.unfurlService.UnfurlURL(unfurlCtx, uri)
+								if err != nil {
+									// Log but don't fail - user can still post with manual metadata
+									log.Printf("[POST-CREATE] Warning: Failed to unfurl URL %s: %v", uri, err)
+								} else {
+									// Enhance embed with fetched metadata (only if client didn't provide)
+									// Note: We respect client-provided values, even empty strings
+									// If client sends title="", we assume they want no title
+									if external["title"] == nil {
+										external["title"] = result.Title
+									}
+									if external["description"] == nil {
+										external["description"] = result.Description
+									}
+									// Always set metadata fields (provider, domain, type)
+									external["embedType"] = result.Type
+									external["provider"] = result.Provider
+									external["domain"] = result.Domain
+
+									// Upload thumbnail from unfurl if client didn't provide one
+									// (Thumb validation already happened above)
+									if external["thumb"] == nil {
+										if result.ThumbnailURL != "" && s.blobService != nil {
+											blobCtx, blobCancel := context.WithTimeout(ctx, 15*time.Second)
+											defer blobCancel()
+
+											blob, blobErr := s.blobService.UploadBlobFromURL(blobCtx, community, result.ThumbnailURL)
+											if blobErr != nil {
+												log.Printf("[POST-CREATE] Warning: Failed to upload thumbnail for %s: %v", uri, blobErr)
+											} else {
+												external["thumb"] = blob
+												log.Printf("[POST-CREATE] Uploaded thumbnail blob for %s", uri)
+											}
 										}
 									}
-								}
 
-								log.Printf("[POST-CREATE] Successfully enhanced embed with unfurl data (provider: %s, type: %s)",
-									result.Provider, result.Type)
+									log.Printf("[POST-CREATE] Successfully enhanced embed with unfurl data (provider: %s, type: %s)",
+										result.Provider, result.Type)
+								}
 							}
 						}
 					}
@@ -311,7 +320,7 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 }
 
 // validateCreateRequest validates basic input requirements
-func (s *postService) validateCreateRequest(req CreatePostRequest) error {
+func (s *postService) validateCreateRequest(req *CreatePostRequest) error {
 	// Global content limits (from lexicon)
 	const (
 		maxContentLength  = 100000 // 100k characters - matches social.coves.community.post lexicon
@@ -453,4 +462,51 @@ func (s *postService) createPostOnPDS(
 	}
 
 	return result.URI, result.CID, nil
+}
+
+// tryConvertBlueskyURLToPostEmbed attempts to convert a Bluesky URL in an external embed to a post embed.
+// Returns true if the conversion was successful and the postRecord was modified.
+// Returns false if the URL is not a Bluesky URL or if conversion failed (caller should continue with external embed).
+func (s *postService) tryConvertBlueskyURLToPostEmbed(ctx context.Context, external map[string]interface{}, postRecord *PostRecord) bool {
+	// Check if we have a Bluesky service
+	if s.blueskyService == nil {
+		return false
+	}
+
+	// Extract URI from external embed
+	uri, ok := external["uri"].(string)
+	if !ok || uri == "" {
+		return false
+	}
+
+	// Check if this is a Bluesky URL
+	if !s.blueskyService.IsBlueskyURL(uri) {
+		return false
+	}
+
+	log.Printf("[POST-CREATE] Detected Bluesky URL: %s", uri)
+
+	// Convert bsky.app URL to AT-URI
+	parseCtx, parseCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer parseCancel()
+
+	atURI, err := s.blueskyService.ParseBlueskyURL(parseCtx, uri)
+	if err != nil {
+		log.Printf("[POST-CREATE] WARNING: Bluesky URL parsing failed for %s - falling back to external embed: %v", uri, err)
+		// Return false to continue with external embed - don't fail the post creation
+		return false
+	}
+
+	// Replace external embed with post embed
+	postRecord.Embed = map[string]interface{}{
+		"$type": "social.coves.embed.post",
+		"post": map[string]interface{}{
+			"uri": atURI,
+			"cid": "", // Will be populated at resolution time
+		},
+	}
+	log.Printf("[POST-CREATE] Converted Bluesky URL to post embed: %s", atURI)
+
+	// Return true to signal that we successfully converted to post embed
+	return true
 }
