@@ -80,7 +80,7 @@ func TestGetDiscover_ShowsAllCommunities(t *testing.T) {
 	// Setup services
 	discoverRepo := postgres.NewDiscoverRepository(db, "test-cursor-secret")
 	discoverService := discoverCore.NewDiscoverService(discoverRepo)
-	handler := discover.NewGetDiscoverHandler(discoverService, nil) // nil vote service - tests don't need vote state
+	handler := discover.NewGetDiscoverHandler(discoverService, nil, nil) // nil vote/bluesky services - tests don't need them
 
 	ctx := context.Background()
 	testID := time.Now().UnixNano()
@@ -151,7 +151,7 @@ func TestGetDiscover_NoAuthRequired(t *testing.T) {
 	// Setup services
 	discoverRepo := postgres.NewDiscoverRepository(db, "test-cursor-secret")
 	discoverService := discoverCore.NewDiscoverService(discoverRepo)
-	handler := discover.NewGetDiscoverHandler(discoverService, nil) // nil vote service - tests don't need vote state
+	handler := discover.NewGetDiscoverHandler(discoverService, nil, nil) // nil vote/bluesky services - tests don't need them
 
 	ctx := context.Background()
 	testID := time.Now().UnixNano()
@@ -198,7 +198,7 @@ func TestGetDiscover_HotSort(t *testing.T) {
 	// Setup services
 	discoverRepo := postgres.NewDiscoverRepository(db, "test-cursor-secret")
 	discoverService := discoverCore.NewDiscoverService(discoverRepo)
-	handler := discover.NewGetDiscoverHandler(discoverService, nil)
+	handler := discover.NewGetDiscoverHandler(discoverService, nil, nil) // nil vote/bluesky services
 
 	ctx := context.Background()
 	testID := time.Now().UnixNano()
@@ -248,7 +248,7 @@ func TestGetDiscover_Pagination(t *testing.T) {
 	// Setup services
 	discoverRepo := postgres.NewDiscoverRepository(db, "test-cursor-secret")
 	discoverService := discoverCore.NewDiscoverService(discoverRepo)
-	handler := discover.NewGetDiscoverHandler(discoverService, nil)
+	handler := discover.NewGetDiscoverHandler(discoverService, nil, nil)
 
 	ctx := context.Background()
 	testID := time.Now().UnixNano()
@@ -305,7 +305,7 @@ func TestGetDiscover_LimitValidation(t *testing.T) {
 	// Setup services
 	discoverRepo := postgres.NewDiscoverRepository(db, "test-cursor-secret")
 	discoverService := discoverCore.NewDiscoverService(discoverRepo)
-	handler := discover.NewGetDiscoverHandler(discoverService, nil)
+	handler := discover.NewGetDiscoverHandler(discoverService, nil, nil)
 
 	t.Run("Limit exceeds maximum", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.feed.getDiscover?sort=new&limit=100", nil)
@@ -352,7 +352,7 @@ func TestGetDiscover_ViewerVoteState(t *testing.T) {
 	// Setup handler with mock vote service
 	discoverRepo := postgres.NewDiscoverRepository(db, "test-cursor-secret")
 	discoverService := discoverCore.NewDiscoverService(discoverRepo)
-	handler := discover.NewGetDiscoverHandler(discoverService, mockVotes)
+	handler := discover.NewGetDiscoverHandler(discoverService, mockVotes, nil)
 
 	// Create request with authenticated user context
 	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.feed.getDiscover?sort=new&limit=50", nil)
@@ -436,7 +436,7 @@ func TestGetDiscover_NoViewerStateWithoutAuth(t *testing.T) {
 	// Setup handler with mock vote service
 	discoverRepo := postgres.NewDiscoverRepository(db, "test-cursor-secret")
 	discoverService := discoverCore.NewDiscoverService(discoverRepo)
-	handler := discover.NewGetDiscoverHandler(discoverService, mockVotes)
+	handler := discover.NewGetDiscoverHandler(discoverService, mockVotes, nil)
 
 	// Create request WITHOUT auth context
 	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.feed.getDiscover?sort=new&limit=50", nil)

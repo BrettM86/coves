@@ -273,7 +273,8 @@ func TestMapAPIPostToResult_MediaInAPIEmbed(t *testing.T) {
 }
 
 func TestMapAPIPostToResult_QuotedPost(t *testing.T) {
-	// Create a quoted post structure
+	// Create a quoted post structure using record#view format
+	// For record#view, the viewRecord fields are directly on blueskyAPIEmbedRecord
 	apiPost := &blueskyAPIPost{
 		URI: "at://did:plc:alice123/app.bsky.feed.post/abc123",
 		CID: "cid123",
@@ -288,19 +289,18 @@ func TestMapAPIPostToResult_QuotedPost(t *testing.T) {
 		Embed: &blueskyAPIEmbed{
 			Type: "app.bsky.embed.record#view",
 			Record: &blueskyAPIEmbedRecord{
-				Record: blueskyAPIPost{
-					URI: "at://did:plc:bob456/app.bsky.feed.post/xyz789",
-					CID: "cid789",
-					Author: blueskyAPIAuthor{
-						DID:    "did:plc:bob456",
-						Handle: "bob.bsky.social",
-					},
-					Record: blueskyAPIRecord{
-						Text:      "Original post",
-						CreatedAt: "2025-12-20T08:00:00Z",
-					},
-					LikeCount: 100,
+				// viewRecord fields directly on blueskyAPIEmbedRecord
+				URI: "at://did:plc:bob456/app.bsky.feed.post/xyz789",
+				CID: "cid789",
+				Author: &blueskyAPIAuthor{
+					DID:    "did:plc:bob456",
+					Handle: "bob.bsky.social",
 				},
+				Value: &blueskyAPIRecordValue{
+					Text:      "Original post",
+					CreatedAt: "2025-12-20T08:00:00Z",
+				},
+				LikeCount: 100,
 			},
 		},
 	}
@@ -329,6 +329,102 @@ func TestMapAPIPostToResult_QuotedPost(t *testing.T) {
 	}
 
 	// Verify no nested quoted posts (1 level deep only)
+	if result.QuotedPost.QuotedPost != nil {
+		t.Error("Quoted posts should not be nested more than 1 level deep")
+	}
+}
+
+func TestMapAPIPostToResult_QuotedPostWithMedia(t *testing.T) {
+	// Test recordWithMedia#view format where the quoted post is nested differently
+	// This is the format used when a post has both an image and a quoted post
+	apiPost := &blueskyAPIPost{
+		URI: "at://did:plc:alice123/app.bsky.feed.post/abc123",
+		CID: "cid123",
+		Author: blueskyAPIAuthor{
+			DID:    "did:plc:alice123",
+			Handle: "alice.bsky.social",
+		},
+		Record: blueskyAPIRecord{
+			Text:      "Quote with image attached!",
+			CreatedAt: "2025-12-21T10:30:00Z",
+		},
+		Embed: &blueskyAPIEmbed{
+			Type: "app.bsky.embed.recordWithMedia#view",
+			// Media attached to the quoting post
+			Media: &blueskyAPIEmbedMedia{
+				Type: "app.bsky.embed.images#view",
+				Images: []json.RawMessage{
+					json.RawMessage(`{"thumb":"image1.jpg"}`),
+				},
+			},
+			// For recordWithMedia, the quoted post is nested inside embed.record.record
+			Record: &blueskyAPIEmbedRecord{
+				Record: &blueskyAPIViewRecord{
+					URI: "at://did:plc:bob456/app.bsky.feed.post/xyz789",
+					CID: "cid789",
+					Author: blueskyAPIAuthor{
+						DID:         "did:plc:bob456",
+						Handle:      "bob.bsky.social",
+						DisplayName: "Bob",
+					},
+					Value: &blueskyAPIRecordValue{
+						Text:      "Original quoted post",
+						CreatedAt: "2025-12-20T08:00:00Z",
+					},
+					LikeCount:   50,
+					ReplyCount:  5,
+					RepostCount: 10,
+					Embeds: []json.RawMessage{
+						json.RawMessage(`{"$type":"app.bsky.embed.images#view"}`),
+					},
+				},
+			},
+		},
+	}
+
+	result := mapAPIPostToResult(apiPost)
+
+	// Verify main post
+	if result.Text != "Quote with image attached!" {
+		t.Errorf("Expected main post text %q, got %q", "Quote with image attached!", result.Text)
+	}
+
+	// Verify main post has media
+	if !result.HasMedia {
+		t.Error("Expected main post to have media")
+	}
+	if result.MediaCount != 1 {
+		t.Errorf("Expected media count 1, got %d", result.MediaCount)
+	}
+
+	// Verify quoted post exists
+	if result.QuotedPost == nil {
+		t.Fatal("Expected quoted post, got nil")
+	}
+
+	// Verify quoted post content
+	if result.QuotedPost.Text != "Original quoted post" {
+		t.Errorf("Expected quoted post text %q, got %q", "Original quoted post", result.QuotedPost.Text)
+	}
+	if result.QuotedPost.Author == nil {
+		t.Fatal("Expected quoted post author, got nil")
+	}
+	if result.QuotedPost.Author.Handle != "bob.bsky.social" {
+		t.Errorf("Expected quoted post handle %q, got %q", "bob.bsky.social", result.QuotedPost.Author.Handle)
+	}
+	if result.QuotedPost.Author.DisplayName != "Bob" {
+		t.Errorf("Expected quoted post display name %q, got %q", "Bob", result.QuotedPost.Author.DisplayName)
+	}
+	if result.QuotedPost.LikeCount != 50 {
+		t.Errorf("Expected quoted post like count 50, got %d", result.QuotedPost.LikeCount)
+	}
+
+	// Verify quoted post has its own media indicator
+	if !result.QuotedPost.HasMedia {
+		t.Error("Expected quoted post to indicate it has media")
+	}
+
+	// Verify no nested quoted posts
 	if result.QuotedPost.QuotedPost != nil {
 		t.Error("Quoted posts should not be nested more than 1 level deep")
 	}

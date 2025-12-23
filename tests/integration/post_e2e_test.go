@@ -402,7 +402,7 @@ func TestPostCreation_E2E_LivePDS(t *testing.T) {
 		provisioner, // ✅ Real provisioner for creating communities on PDS
 	)
 
-	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, pdsURL) // nil aggregatorService, blobService, unfurlService for user-only tests
+	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, pdsURL) // nil aggregatorService, blobService, unfurlService, blueskyService for user-only tests
 
 	// Setup OAuth auth middleware for E2E testing
 	e2eAuth := NewE2EOAuthMiddleware()

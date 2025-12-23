@@ -129,7 +129,7 @@ func TestFullUserJourney_E2E(t *testing.T) {
 
 	provisioner := communities.NewPDSAccountProvisioner(instanceDomain, pdsURL)
 	communityService := communities.NewCommunityService(communityRepo, pdsURL, instanceDID, instanceDomain, provisioner)
-	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, pdsURL)
+	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, pdsURL)
 	timelineService := timelineCore.NewTimelineService(timelineRepo)
 
 	// Setup consumers
@@ -143,7 +143,7 @@ func TestFullUserJourney_E2E(t *testing.T) {
 	r := chi.NewRouter()
 	routes.RegisterCommunityRoutes(r, communityService, e2eAuth.OAuthAuthMiddleware, nil) // nil = allow all community creators
 	routes.RegisterPostRoutes(r, postService, e2eAuth.OAuthAuthMiddleware)
-	routes.RegisterTimelineRoutes(r, timelineService, nil, e2eAuth.OAuthAuthMiddleware)
+	routes.RegisterTimelineRoutes(r, timelineService, nil, nil, e2eAuth.OAuthAuthMiddleware)
 	httpServer := httptest.NewServer(r)
 	defer httpServer.Close()
 

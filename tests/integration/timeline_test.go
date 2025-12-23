@@ -30,7 +30,7 @@ func TestGetTimeline_Basic(t *testing.T) {
 	// Setup services
 	timelineRepo := postgres.NewTimelineRepository(db, "test-cursor-secret")
 	timelineService := timelineCore.NewTimelineService(timelineRepo)
-	handler := timeline.NewGetTimelineHandler(timelineService, nil)
+	handler := timeline.NewGetTimelineHandler(timelineService, nil, nil)
 
 	ctx := context.Background()
 	testID := time.Now().UnixNano()
@@ -119,7 +119,7 @@ func TestGetTimeline_HotSort(t *testing.T) {
 	// Setup services
 	timelineRepo := postgres.NewTimelineRepository(db, "test-cursor-secret")
 	timelineService := timelineCore.NewTimelineService(timelineRepo)
-	handler := timeline.NewGetTimelineHandler(timelineService, nil)
+	handler := timeline.NewGetTimelineHandler(timelineService, nil, nil)
 
 	ctx := context.Background()
 	testID := time.Now().UnixNano()
@@ -190,7 +190,7 @@ func TestGetTimeline_Pagination(t *testing.T) {
 	// Setup services
 	timelineRepo := postgres.NewTimelineRepository(db, "test-cursor-secret")
 	timelineService := timelineCore.NewTimelineService(timelineRepo)
-	handler := timeline.NewGetTimelineHandler(timelineService, nil)
+	handler := timeline.NewGetTimelineHandler(timelineService, nil, nil)
 
 	ctx := context.Background()
 	testID := time.Now().UnixNano()
@@ -266,7 +266,7 @@ func TestGetTimeline_EmptyWhenNoSubscriptions(t *testing.T) {
 	// Setup services
 	timelineRepo := postgres.NewTimelineRepository(db, "test-cursor-secret")
 	timelineService := timelineCore.NewTimelineService(timelineRepo)
-	handler := timeline.NewGetTimelineHandler(timelineService, nil)
+	handler := timeline.NewGetTimelineHandler(timelineService, nil, nil)
 
 	ctx := context.Background()
 	testID := time.Now().UnixNano()
@@ -308,7 +308,7 @@ func TestGetTimeline_Unauthorized(t *testing.T) {
 	// Setup services
 	timelineRepo := postgres.NewTimelineRepository(db, "test-cursor-secret")
 	timelineService := timelineCore.NewTimelineService(timelineRepo)
-	handler := timeline.NewGetTimelineHandler(timelineService, nil)
+	handler := timeline.NewGetTimelineHandler(timelineService, nil, nil)
 
 	// Request timeline WITHOUT auth context
 	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.feed.getTimeline?sort=new&limit=10", nil)
@@ -337,7 +337,7 @@ func TestGetTimeline_LimitValidation(t *testing.T) {
 	// Setup services
 	timelineRepo := postgres.NewTimelineRepository(db, "test-cursor-secret")
 	timelineService := timelineCore.NewTimelineService(timelineRepo)
-	handler := timeline.NewGetTimelineHandler(timelineService, nil)
+	handler := timeline.NewGetTimelineHandler(timelineService, nil, nil)
 
 	ctx := context.Background()
 	testID := time.Now().UnixNano()
@@ -388,7 +388,7 @@ func TestGetTimeline_MultiCommunity_E2E(t *testing.T) {
 	// Setup services
 	timelineRepo := postgres.NewTimelineRepository(db, "test-cursor-secret")
 	timelineService := timelineCore.NewTimelineService(timelineRepo)
-	handler := timeline.NewGetTimelineHandler(timelineService, nil)
+	handler := timeline.NewGetTimelineHandler(timelineService, nil, nil)
 
 	ctx := context.Background()
 	testID := time.Now().UnixNano()

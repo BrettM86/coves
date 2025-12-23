@@ -41,7 +41,7 @@ func TestPostHandler_SecurityValidation(t *testing.T) {
 	)
 
 	postRepo := postgres.NewPostRepository(db)
-	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, "http://localhost:3001") // nil aggregatorService, blobService, unfurlService for user-only tests
+	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, "http://localhost:3001") // nil optional services
 
 	// Create handler
 	handler := post.NewCreateHandler(postService)
@@ -409,7 +409,7 @@ func TestPostHandler_SpecialCharacters(t *testing.T) {
 	)
 
 	postRepo := postgres.NewPostRepository(db)
-	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, "http://localhost:3001") // nil aggregatorService, blobService, unfurlService for user-only tests
+	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, "http://localhost:3001") // nil optional services
 
 	handler := post.NewCreateHandler(postService)
 
@@ -493,7 +493,7 @@ func TestPostService_DIDValidationSecurity(t *testing.T) {
 	)
 
 	postRepo := postgres.NewPostRepository(db)
-	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, "http://localhost:3001")
+	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, "http://localhost:3001")
 
 	t.Run("Reject posts when context DID is missing", func(t *testing.T) {
 		// Simulate bypassing handler - no DID in context

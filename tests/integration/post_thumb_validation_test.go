@@ -65,7 +65,7 @@ func TestPostHandler_ThumbValidation(t *testing.T) {
 
 	postRepo := postgres.NewPostRepository(db)
 	// No blobService or unfurlService for these validation tests
-	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, "http://localhost:3001")
+	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, "http://localhost:3001")
 
 	handler := post.NewCreateHandler(postService)
 

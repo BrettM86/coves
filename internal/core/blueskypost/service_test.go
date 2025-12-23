@@ -275,8 +275,8 @@ func TestService_WithOptions(t *testing.T) {
 		t.Errorf("Expected timeout %v, got %v", customTimeout, svc.timeout)
 	}
 
-	if svc.cacheTTL != customCacheTTL {
-		t.Errorf("Expected cache TTL %v, got %v", customCacheTTL, svc.cacheTTL)
+	if svc.maxCacheTTL != customCacheTTL {
+		t.Errorf("Expected max cache TTL %v, got %v", customCacheTTL, svc.maxCacheTTL)
 	}
 }
 
@@ -286,14 +286,14 @@ func TestService_DefaultOptions(t *testing.T) {
 	svc := NewService(repo, resolver).(*service)
 
 	expectedTimeout := 10 * time.Second
-	expectedCacheTTL := 1 * time.Hour
+	expectedMaxCacheTTL := 24 * time.Hour // maxCacheTTL defaults to ttlOldPost (fallback for unknown age)
 
 	if svc.timeout != expectedTimeout {
 		t.Errorf("Expected default timeout %v, got %v", expectedTimeout, svc.timeout)
 	}
 
-	if svc.cacheTTL != expectedCacheTTL {
-		t.Errorf("Expected default cache TTL %v, got %v", expectedCacheTTL, svc.cacheTTL)
+	if svc.maxCacheTTL != expectedMaxCacheTTL {
+		t.Errorf("Expected default max cache TTL %v, got %v", expectedMaxCacheTTL, svc.maxCacheTTL)
 	}
 
 	if svc.circuitBreaker == nil {
@@ -394,6 +394,93 @@ func TestService_ResolvePost_CacheBypass(t *testing.T) {
 	}
 	if got2.Text != "Post 2" {
 		t.Errorf("Expected Post 2, got %q", got2.Text)
+	}
+}
+
+func TestCalculateCacheTTL(t *testing.T) {
+	maxTTL := 24 * time.Hour
+
+	tests := []struct {
+		name     string
+		result   *BlueskyPostResult
+		expected time.Duration
+	}{
+		{
+			name:     "nil result returns unavailable TTL",
+			result:   nil,
+			expected: 15 * time.Minute,
+		},
+		{
+			name: "unavailable post returns unavailable TTL",
+			result: &BlueskyPostResult{
+				URI:         "at://did:plc:test/app.bsky.feed.post/abc",
+				Unavailable: true,
+			},
+			expected: 15 * time.Minute,
+		},
+		{
+			name: "zero CreatedAt returns maxTTL",
+			result: &BlueskyPostResult{
+				URI:  "at://did:plc:test/app.bsky.feed.post/abc",
+				Text: "Test post",
+				// CreatedAt is zero value
+			},
+			expected: maxTTL,
+		},
+		{
+			name: "fresh post (< 24h) returns 15 min TTL",
+			result: &BlueskyPostResult{
+				URI:       "at://did:plc:test/app.bsky.feed.post/abc",
+				Text:      "Fresh post",
+				CreatedAt: time.Now().Add(-1 * time.Hour), // 1 hour ago
+			},
+			expected: 15 * time.Minute,
+		},
+		{
+			name: "recent post (1-7 days) returns 1 hour TTL",
+			result: &BlueskyPostResult{
+				URI:       "at://did:plc:test/app.bsky.feed.post/abc",
+				Text:      "Recent post",
+				CreatedAt: time.Now().Add(-3 * 24 * time.Hour), // 3 days ago
+			},
+			expected: 1 * time.Hour,
+		},
+		{
+			name: "old post (7+ days) returns 24 hour TTL",
+			result: &BlueskyPostResult{
+				URI:       "at://did:plc:test/app.bsky.feed.post/abc",
+				Text:      "Old post",
+				CreatedAt: time.Now().Add(-14 * 24 * time.Hour), // 14 days ago
+			},
+			expected: 24 * time.Hour,
+		},
+		{
+			name: "post at exactly 24h boundary uses recent TTL",
+			result: &BlueskyPostResult{
+				URI:       "at://did:plc:test/app.bsky.feed.post/abc",
+				Text:      "Boundary post",
+				CreatedAt: time.Now().Add(-24*time.Hour - 1*time.Minute), // just over 24h
+			},
+			expected: 1 * time.Hour,
+		},
+		{
+			name: "post at exactly 7 day boundary uses old TTL",
+			result: &BlueskyPostResult{
+				URI:       "at://did:plc:test/app.bsky.feed.post/abc",
+				Text:      "7 day boundary post",
+				CreatedAt: time.Now().Add(-7*24*time.Hour - 1*time.Minute), // just over 7 days
+			},
+			expected: 24 * time.Hour,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := CalculateCacheTTL(tt.result, maxTTL)
+			if got != tt.expected {
+				t.Errorf("CalculateCacheTTL() = %v, want %v", got, tt.expected)
+			}
+		})
 	}
 }
 

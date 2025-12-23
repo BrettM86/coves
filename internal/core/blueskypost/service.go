@@ -9,13 +9,25 @@ import (
 	"time"
 )
 
+// Cache TTL constants for age-based decay
+const (
+	// TTL for posts less than 24 hours old (engagement still changing rapidly)
+	ttlFreshPost = 15 * time.Minute
+	// TTL for posts 1-7 days old (engagement settling down)
+	ttlRecentPost = 1 * time.Hour
+	// TTL for posts older than 7 days (stable, unlikely to change much)
+	ttlOldPost = 24 * time.Hour
+	// TTL for unavailable posts (shorter to allow re-checking)
+	ttlUnavailable = 15 * time.Minute
+)
+
 // service implements the Service interface
 type service struct {
 	repo             Repository
 	identityResolver identity.Resolver
 	circuitBreaker   *circuitBreaker
 	timeout          time.Duration
-	cacheTTL         time.Duration
+	maxCacheTTL      time.Duration // maximum TTL (used as fallback if age unknown)
 }
 
 // NewService creates a new Bluesky post service
@@ -31,7 +43,7 @@ func NewService(repo Repository, identityResolver identity.Resolver, opts ...Ser
 		repo:             repo,
 		identityResolver: identityResolver,
 		timeout:          10 * time.Second,
-		cacheTTL:         1 * time.Hour, // 1 hour cache (shorter than unfurl since posts can be deleted)
+		maxCacheTTL:      ttlOldPost, // max TTL for fallback; actual TTL is age-based
 		circuitBreaker:   newCircuitBreaker(),
 	}
 
@@ -52,10 +64,40 @@ func WithTimeout(timeout time.Duration) ServiceOption {
 	}
 }
 
-// WithCacheTTL sets the cache TTL
+// WithCacheTTL sets the maximum cache TTL (used as fallback when post age is unknown)
 func WithCacheTTL(ttl time.Duration) ServiceOption {
 	return func(s *service) {
-		s.cacheTTL = ttl
+		s.maxCacheTTL = ttl
+	}
+}
+
+// CalculateCacheTTL determines the appropriate cache TTL based on post age.
+// Newer posts get shorter TTLs since their engagement counts change rapidly.
+// Older posts get longer TTLs since they're more stable.
+// Unavailable posts get short TTLs to allow re-checking.
+func CalculateCacheTTL(result *BlueskyPostResult, maxTTL time.Duration) time.Duration {
+	// Unavailable posts: short TTL to allow re-checking if they come back
+	if result == nil || result.Unavailable {
+		return ttlUnavailable
+	}
+
+	// If we don't have a creation time, use max TTL as fallback
+	if result.CreatedAt.IsZero() {
+		return maxTTL
+	}
+
+	postAge := time.Since(result.CreatedAt)
+
+	switch {
+	case postAge < 24*time.Hour:
+		// Fresh posts: 15 min TTL (engagement changing rapidly)
+		return ttlFreshPost
+	case postAge < 7*24*time.Hour:
+		// Recent posts (1-7 days): 1 hour TTL
+		return ttlRecentPost
+	default:
+		// Old posts (7+ days): 24 hour TTL
+		return ttlOldPost
 	}
 }
 
@@ -107,13 +149,15 @@ func (s *service) ResolvePost(ctx context.Context, atURI string) (*BlueskyPostRe
 
 	s.circuitBreaker.recordSuccess(provider)
 
-	// 4. Cache the result (even if unavailable, to prevent repeated fetches)
-	if cacheErr := s.repo.Set(ctx, atURI, result, s.cacheTTL); cacheErr != nil {
+	// 4. Cache the result with age-based TTL
+	// Newer posts get shorter TTLs (engagement changing), older posts get longer TTLs (stable)
+	cacheTTL := CalculateCacheTTL(result, s.maxCacheTTL)
+	if cacheErr := s.repo.Set(ctx, atURI, result, cacheTTL); cacheErr != nil {
 		// Log but don't fail - cache is best-effort
 		log.Printf("[BLUESKY] Warning: Failed to cache result for %s: %v", atURI, cacheErr)
 	}
 
-	log.Printf("[BLUESKY] Successfully resolved %s (unavailable: %v)", atURI, result.Unavailable)
+	log.Printf("[BLUESKY] Successfully resolved %s (unavailable: %v, cacheTTL: %v)", atURI, result.Unavailable, cacheTTL)
 
 	return result, nil
 }

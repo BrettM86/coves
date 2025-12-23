@@ -44,7 +44,7 @@ func TestPostCreation_Basic(t *testing.T) {
 	)
 
 	postRepo := postgres.NewPostRepository(db)
-	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, "http://localhost:3001") // nil aggregatorService, blobService, unfurlService for user-only tests
+	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, "http://localhost:3001") // nil aggregatorService, blobService, unfurlService, blueskyService for user-only tests
 
 	ctx := context.Background()
 

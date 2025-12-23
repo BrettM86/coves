@@ -70,7 +70,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 	userService := users.NewUserService(userRepo, identityResolver, "http://localhost:3001")
 	communityService := communities.NewCommunityService(communityRepo, "http://localhost:3001", "did:web:test.coves.social", "coves.social", nil)
 	aggregatorService := aggregators.NewAggregatorService(aggregatorRepo, communityService)
-	postService := posts.NewPostService(postRepo, communityService, aggregatorService, nil, nil, "http://localhost:3001")
+	postService := posts.NewPostService(postRepo, communityService, aggregatorService, nil, nil, nil, "http://localhost:3001")
 
 	// Setup consumers
 	aggregatorConsumer := jetstream.NewAggregatorEventConsumer(aggregatorRepo)

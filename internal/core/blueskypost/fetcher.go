@@ -66,13 +66,54 @@ type recordEmbedRecord struct {
 type blueskyAPIEmbed struct {
 	Video  json.RawMessage        `json:"video,omitempty"`
 	Record *blueskyAPIEmbedRecord `json:"record,omitempty"`
+	Media  *blueskyAPIEmbedMedia  `json:"media,omitempty"`
 	Type   string                 `json:"$type"`
 	Images []json.RawMessage      `json:"images,omitempty"`
 }
 
+// blueskyAPIEmbedMedia represents media in a recordWithMedia embed
+type blueskyAPIEmbedMedia struct {
+	Type   string            `json:"$type"`
+	Images []json.RawMessage `json:"images,omitempty"`
+	Video  json.RawMessage   `json:"video,omitempty"`
+}
+
 // blueskyAPIEmbedRecord represents a quoted post embed in the API response
+// For record#view: this directly contains the viewRecord fields
+// For recordWithMedia#view: this contains a nested "record" field with viewRecord
 type blueskyAPIEmbedRecord struct {
-	Record blueskyAPIPost `json:"record"`
+	// For recordWithMedia#view - nested structure
+	Record *blueskyAPIViewRecord `json:"record,omitempty"`
+
+	// For record#view - direct viewRecord fields
+	URI       string                   `json:"uri,omitempty"`
+	CID       string                   `json:"cid,omitempty"`
+	Author    *blueskyAPIAuthor        `json:"author,omitempty"`
+	Value     *blueskyAPIRecordValue   `json:"value,omitempty"`
+	LikeCount int                      `json:"likeCount,omitempty"`
+	ReplyCount int                     `json:"replyCount,omitempty"`
+	RepostCount int                    `json:"repostCount,omitempty"`
+	IndexedAt string                   `json:"indexedAt,omitempty"`
+	Embeds    []json.RawMessage        `json:"embeds,omitempty"`
+}
+
+// blueskyAPIViewRecord represents the viewRecord structure for quoted posts
+type blueskyAPIViewRecord struct {
+	URI         string                 `json:"uri"`
+	CID         string                 `json:"cid"`
+	Author      blueskyAPIAuthor       `json:"author"`
+	Value       *blueskyAPIRecordValue `json:"value,omitempty"`
+	LikeCount   int                    `json:"likeCount"`
+	ReplyCount  int                    `json:"replyCount"`
+	RepostCount int                    `json:"repostCount"`
+	IndexedAt   string                 `json:"indexedAt"`
+	Embeds      []json.RawMessage      `json:"embeds,omitempty"`
+}
+
+// blueskyAPIRecordValue represents the actual post content in a viewRecord
+type blueskyAPIRecordValue struct {
+	Text      string `json:"text"`
+	CreatedAt string `json:"createdAt"`
 }
 
 // fetchBlueskyPost fetches a Bluesky post from the public API
@@ -194,14 +235,129 @@ func mapAPIPostToResult(post *blueskyAPIPost) *BlueskyPostResult {
 
 		// Handle quoted post (1 level deep only)
 		// Support both pure record embeds and recordWithMedia embeds
-		if post.Embed.Record != nil &&
-			(post.Embed.Type == "app.bsky.embed.record#view" ||
-				post.Embed.Type == "app.bsky.embed.recordWithMedia#view") {
-			quotedPost := mapAPIPostToResult(&post.Embed.Record.Record)
-			// Don't recurse deeper than 1 level
-			quotedPost.QuotedPost = nil
-			result.QuotedPost = quotedPost
+		if post.Embed.Record != nil {
+			var quotedPost *BlueskyPostResult
+
+			switch post.Embed.Type {
+			case "app.bsky.embed.record#view":
+				// For record#view: viewRecord fields are directly on embed.record
+				quotedPost = mapViewRecordToResult(post.Embed.Record)
+
+			case "app.bsky.embed.recordWithMedia#view":
+				// For recordWithMedia#view: viewRecord is nested in embed.record.record
+				if post.Embed.Record.Record != nil {
+					quotedPost = mapNestedViewRecordToResult(post.Embed.Record.Record)
+				}
+
+				// Also check for media in the recordWithMedia embed
+				if post.Embed.Media != nil {
+					if len(post.Embed.Media.Images) > 0 {
+						result.HasMedia = true
+						if result.MediaCount == 0 {
+							result.MediaCount = len(post.Embed.Media.Images)
+						}
+					}
+					if len(post.Embed.Media.Video) > 0 {
+						result.HasMedia = true
+						if result.MediaCount == 0 {
+							result.MediaCount = 1
+						}
+					}
+				}
+			}
+
+			if quotedPost != nil {
+				// Don't recurse deeper than 1 level
+				quotedPost.QuotedPost = nil
+				result.QuotedPost = quotedPost
+			}
 		}
+	}
+
+	return result
+}
+
+// mapViewRecordToResult maps a blueskyAPIEmbedRecord (with direct viewRecord fields) to BlueskyPostResult
+// This is used for app.bsky.embed.record#view where the viewRecord fields are at the top level
+func mapViewRecordToResult(embedRecord *blueskyAPIEmbedRecord) *BlueskyPostResult {
+	if embedRecord == nil {
+		return nil
+	}
+
+	result := &BlueskyPostResult{
+		URI:         embedRecord.URI,
+		CID:         embedRecord.CID,
+		ReplyCount:  embedRecord.ReplyCount,
+		RepostCount: embedRecord.RepostCount,
+		LikeCount:   embedRecord.LikeCount,
+	}
+
+	// Map author if present
+	if embedRecord.Author != nil {
+		result.Author = &Author{
+			DID:         embedRecord.Author.DID,
+			Handle:      embedRecord.Author.Handle,
+			DisplayName: embedRecord.Author.DisplayName,
+			Avatar:      embedRecord.Author.Avatar,
+		}
+	}
+
+	// Map value (actual post content) if present
+	if embedRecord.Value != nil {
+		result.Text = embedRecord.Value.Text
+		if embedRecord.Value.CreatedAt != "" {
+			createdAt, err := time.Parse(time.RFC3339, embedRecord.Value.CreatedAt)
+			if err == nil {
+				result.CreatedAt = createdAt
+			}
+		}
+	}
+
+	// Check for media in embeds array
+	if len(embedRecord.Embeds) > 0 {
+		result.HasMedia = true
+		result.MediaCount = len(embedRecord.Embeds)
+	}
+
+	return result
+}
+
+// mapNestedViewRecordToResult maps a blueskyAPIViewRecord to BlueskyPostResult
+// This is used for app.bsky.embed.recordWithMedia#view where the viewRecord is nested
+func mapNestedViewRecordToResult(viewRecord *blueskyAPIViewRecord) *BlueskyPostResult {
+	if viewRecord == nil {
+		return nil
+	}
+
+	result := &BlueskyPostResult{
+		URI:         viewRecord.URI,
+		CID:         viewRecord.CID,
+		ReplyCount:  viewRecord.ReplyCount,
+		RepostCount: viewRecord.RepostCount,
+		LikeCount:   viewRecord.LikeCount,
+		Author: &Author{
+			DID:         viewRecord.Author.DID,
+			Handle:      viewRecord.Author.Handle,
+			DisplayName: viewRecord.Author.DisplayName,
+			Avatar:      viewRecord.Author.Avatar,
+		},
+	}
+
+	// Map value (actual post content) if present
+	if viewRecord.Value != nil {
+		result.Text = viewRecord.Value.Text
+		if viewRecord.Value.CreatedAt != "" {
+			createdAt, err := time.Parse(time.RFC3339, viewRecord.Value.CreatedAt)
+			if err == nil {
+				result.CreatedAt = createdAt
+			}
+		}
+	}
+
+	// Check for media in embeds array
+	if len(viewRecord.Embeds) > 0 {
+		result.HasMedia = true
+		result.MediaCount = len(viewRecord.Embeds)
 	}
 
 	return result

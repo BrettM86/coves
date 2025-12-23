@@ -65,6 +65,7 @@ func TestPostUnfurl_Streamable(t *testing.T) {
 		nil, // aggregatorService not needed
 		nil, // blobService not needed
 		unfurlService,
+		nil, // blueskyService not needed
 		"http://localhost:3001",
 	)
 
@@ -362,6 +363,7 @@ func TestPostUnfurl_UnsupportedURL(t *testing.T) {
 		nil, // aggregatorService
 		nil, // blobService
 		nil, // unfurlService - intentionally nil to test graceful handling
+		nil, // blueskyService
 		"http://localhost:3001",
 	)
 
@@ -468,6 +470,7 @@ func TestPostUnfurl_UserProvidedMetadata(t *testing.T) {
 		nil,
 		nil,
 		unfurlService,
+		nil, // blueskyService
 		"http://localhost:3001",
 	)
 
@@ -579,6 +582,7 @@ func TestPostUnfurl_MissingEmbedType(t *testing.T) {
 		nil,
 		nil,
 		unfurlService,
+		nil, // blueskyService
 		"http://localhost:3001",
 	)
 
