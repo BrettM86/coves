@@ -13,15 +13,17 @@ type postgresTimelineRepo struct {
 
 // sortClauses maps sort types to safe SQL ORDER BY clauses
 // This whitelist prevents SQL injection via dynamic ORDER BY construction
+// Note: Hot ranking uses (score + 1) to ensure new posts with 0 votes still appear
 var timelineSortClauses = map[string]string{
-	"hot": `(p.score / POWER(EXTRACT(EPOCH FROM (NOW() - p.created_at))/3600 + 2, 1.5)) DESC, p.created_at DESC, p.uri DESC`,
+	"hot": `((p.score + 1) / POWER(EXTRACT(EPOCH FROM (NOW() - p.created_at))/3600 + 2, 1.5)) DESC, p.created_at DESC, p.uri DESC`,
 	"top": `p.score DESC, p.created_at DESC, p.uri DESC`,
 	"new": `p.created_at DESC, p.uri DESC`,
 }
 
 // hotRankExpression is the SQL expression for computing the hot rank
 // NOTE: Uses NOW() which means hot_rank changes over time - this is expected behavior
-const timelineHotRankExpression = `(p.score / POWER(EXTRACT(EPOCH FROM (NOW() - p.created_at))/3600 + 2, 1.5))`
+// Uses (score + 1) so new posts with 0 votes still get a positive rank
+const timelineHotRankExpression = `((p.score + 1) / POWER(EXTRACT(EPOCH FROM (NOW() - p.created_at))/3600 + 2, 1.5))`
 
 // NewTimelineRepository creates a new PostgreSQL timeline repository
 func NewTimelineRepository(db *sql.DB, cursorSecret string) timeline.Repository {

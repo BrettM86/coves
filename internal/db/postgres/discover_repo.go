@@ -12,14 +12,17 @@ type postgresDiscoverRepo struct {
 }
 
 // sortClauses maps sort types to safe SQL ORDER BY clauses
+// Note: Hot ranking uses (score + 1) to ensure new posts with 0 votes still appear
+// (otherwise 0/time_decay = 0 and they sink to the bottom)
 var discoverSortClauses = map[string]string{
-	"hot": `(p.score / POWER(EXTRACT(EPOCH FROM (NOW() - p.created_at))/3600 + 2, 1.5)) DESC, p.created_at DESC, p.uri DESC`,
+	"hot": `((p.score + 1) / POWER(EXTRACT(EPOCH FROM (NOW() - p.created_at))/3600 + 2, 1.5)) DESC, p.created_at DESC, p.uri DESC`,
 	"top": `p.score DESC, p.created_at DESC, p.uri DESC`,
 	"new": `p.created_at DESC, p.uri DESC`,
 }
 
 // hotRankExpression for discover feed
-const discoverHotRankExpression = `(p.score / POWER(EXTRACT(EPOCH FROM (NOW() - p.created_at))/3600 + 2, 1.5))`
+// Uses (score + 1) so new posts with 0 votes still get a positive rank
+const discoverHotRankExpression = `((p.score + 1) / POWER(EXTRACT(EPOCH FROM (NOW() - p.created_at))/3600 + 2, 1.5))`
 
 // NewDiscoverRepository creates a new PostgreSQL discover repository
 func NewDiscoverRepository(db *sql.DB, cursorSecret string) discover.Repository {

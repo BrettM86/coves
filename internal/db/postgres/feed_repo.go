@@ -13,8 +13,9 @@ type postgresFeedRepo struct {
 
 // sortClauses maps sort types to safe SQL ORDER BY clauses
 // This whitelist prevents SQL injection via dynamic ORDER BY construction
+// Note: Hot ranking uses (score + 1) to ensure new posts with 0 votes still appear
 var communityFeedSortClauses = map[string]string{
-	"hot": `(p.score / POWER(EXTRACT(EPOCH FROM (NOW() - p.created_at))/3600 + 2, 1.5)) DESC, p.created_at DESC, p.uri DESC`,
+	"hot": `((p.score + 1) / POWER(EXTRACT(EPOCH FROM (NOW() - p.created_at))/3600 + 2, 1.5)) DESC, p.created_at DESC, p.uri DESC`,
 	"top": `p.score DESC, p.created_at DESC, p.uri DESC`,
 	"new": `p.created_at DESC, p.uri DESC`,
 }
@@ -23,7 +24,8 @@ var communityFeedSortClauses = map[string]string{
 // NOTE: Uses NOW() which means hot_rank changes over time - this is expected behavior
 // for hot sorting (posts naturally age out). Slight time drift between cursor creation
 // and usage may cause minor reordering but won't drop posts entirely (unlike using raw score).
-const communityFeedHotRankExpression = `(p.score / POWER(EXTRACT(EPOCH FROM (NOW() - p.created_at))/3600 + 2, 1.5))`
+// Uses (score + 1) so new posts with 0 votes still get a positive rank
+const communityFeedHotRankExpression = `((p.score + 1) / POWER(EXTRACT(EPOCH FROM (NOW() - p.created_at))/3600 + 2, 1.5))`
 
 // NewCommunityFeedRepository creates a new PostgreSQL feed repository
 func NewCommunityFeedRepository(db *sql.DB, cursorSecret string) communityFeeds.Repository {
