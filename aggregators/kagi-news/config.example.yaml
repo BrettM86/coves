@@ -1,29 +1,30 @@
 # Kagi News RSS Aggregator Configuration
 
 # Coves API endpoint
-coves_api_url: "https://api.coves.social"
+coves_api_url: "https://coves.social"
 
 # Feed-to-community mappings
+# Handle format: c-{name}.{instance} (e.g., c-worldnews.coves.social)
 feeds:
   - name: "World News"
     url: "https://news.kagi.com/world.xml"
-    community_handle: "world-news.coves.social"
+    community_handle: "c-worldnews.coves.social"
+    enabled: true
+
+  - name: "US News"
+    url: "https://news.kagi.com/usa.xml"
+    community_handle: "c-usnews.coves.social"
     enabled: true
 
   - name: "Tech News"
     url: "https://news.kagi.com/tech.xml"
-    community_handle: "tech.coves.social"
+    community_handle: "c-tech.coves.social"
     enabled: true
-
-  - name: "Business News"
-    url: "https://news.kagi.com/business.xml"
-    community_handle: "business.coves.social"
-    enabled: false
 
   - name: "Science News"
     url: "https://news.kagi.com/science.xml"
-    community_handle: "science.coves.social"
-    enabled: false
+    community_handle: "c-science.coves.social"
+    enabled: true
 
 # Logging configuration
 log_level: "info"  # debug, info, warning, error
