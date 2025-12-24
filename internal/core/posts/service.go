@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -468,11 +469,72 @@ func (s *postService) createPostOnPDS(
 // Returns true if the conversion was successful and the postRecord was modified.
 // Returns false if the URL is not a Bluesky URL or if conversion failed (caller should continue with external embed).
 //
-// Phase 1: Disabled - just keep URL as external/text.
-// The social.coves.embed.post lexicon requires a valid CID in strongRef, which we don't have
-// until we call ResolvePost. For Phase 1 (text-only), we skip this conversion.
-// Phase 2 will properly resolve the post, get the CID, and create the embed.
-// See issue: Coves-p44
-func (s *postService) tryConvertBlueskyURLToPostEmbed(_ context.Context, _ map[string]interface{}, _ *PostRecord) bool {
-	return false
+// A strongRef is an AT Protocol reference containing both URI (at://did/collection/rkey) and CID
+// (content identifier hash). This function resolves the Bluesky URL to obtain both values,
+// enabling rich embedded quote posts instead of plain external links.
+func (s *postService) tryConvertBlueskyURLToPostEmbed(ctx context.Context, external map[string]interface{}, postRecord *PostRecord) bool {
+	// 1. Check if blueskyService is available
+	if s.blueskyService == nil {
+		log.Printf("[POST-CREATE] BlueskyService unavailable, keeping as external embed")
+		return false
+	}
+
+	// 2. Extract and validate URL
+	url, ok := external["uri"].(string)
+	if !ok || url == "" {
+		return false
+	}
+
+	// 3. Check if it's a Bluesky URL
+	if !s.blueskyService.IsBlueskyURL(url) {
+		return false
+	}
+
+	// 4. Parse URL to AT-URI (resolves handle to DID if needed)
+	atURI, err := s.blueskyService.ParseBlueskyURL(ctx, url)
+	if err != nil {
+		log.Printf("[POST-CREATE] Failed to parse Bluesky URL %s: %v", url, err)
+		return false // Fall back to external embed
+	}
+
+	// 5. Resolve post to get CID
+	result, err := s.blueskyService.ResolvePost(ctx, atURI)
+	if err != nil {
+		// Differentiate error types for better debugging
+		if errors.Is(err, blueskypost.ErrCircuitOpen) {
+			log.Printf("[POST-CREATE] WARN: Bluesky circuit breaker OPEN, keeping as external embed: %s", atURI)
+		} else {
+			log.Printf("[POST-CREATE] Failed to resolve Bluesky post %s: %v", atURI, err)
+		}
+		return false // Fall back to external embed
+	}
+
+	if result == nil {
+		log.Printf("[POST-CREATE] ERROR: ResolvePost returned nil result for %s", atURI)
+		return false
+	}
+
+	// 6. Handle unavailable posts - keep as external embed since we can't get a valid CID
+	if result.Unavailable {
+		log.Printf("[POST-CREATE] Bluesky post unavailable (deleted/private), keeping as external embed: %s", atURI)
+		return false
+	}
+
+	// 7. Validate we have both URI and CID
+	if result.URI == "" || result.CID == "" {
+		log.Printf("[POST-CREATE] ERROR: Bluesky post missing URI or CID (internal bug): uri=%q, cid=%q", result.URI, result.CID)
+		return false
+	}
+
+	// 8. Convert embed to social.coves.embed.post with strongRef
+	postRecord.Embed = map[string]interface{}{
+		"$type": "social.coves.embed.post",
+		"post": map[string]interface{}{
+			"uri": result.URI,
+			"cid": result.CID,
+		},
+	}
+
+	log.Printf("[POST-CREATE] Converted Bluesky URL to post embed: %s (cid: %s)", result.URI, result.CID)
+	return true
 }

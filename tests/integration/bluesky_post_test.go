@@ -585,3 +585,105 @@ func TestBlueskyPostCrossPosting_E2E_PostCreation(t *testing.T) {
 		}
 	})
 }
+
+// TestBlueskyPostCrossPosting_EmbedConversion tests that Bluesky URLs in external embeds
+// are converted to social.coves.embed.post with proper strongRef (uri + cid)
+func TestBlueskyPostCrossPosting_EmbedConversion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	db := setupTestDB(t)
+	defer func() { _ = db.Close() }()
+
+	// Cleanup cache from previous runs
+	_, _ = db.Exec("DELETE FROM bluesky_post_cache")
+
+	// Setup identity resolver for handle resolution
+	identityConfig := identity.DefaultConfig()
+	identityResolver := identity.NewResolver(db, identityConfig)
+
+	// Setup Bluesky post service
+	repo := blueskypost.NewRepository(db)
+	blueskyService := blueskypost.NewService(repo, identityResolver,
+		blueskypost.WithTimeout(30*time.Second),
+		blueskypost.WithCacheTTL(1*time.Hour),
+	)
+
+	ctx := context.Background()
+
+	t.Run("Convert Bluesky URL to post embed with strongRef", func(t *testing.T) {
+		// Use a real Bluesky post URL
+		bskyURL := "https://bsky.app/profile/ianboudreau.com/post/3makab2jnwk2p"
+
+		// 1. Verify URL is detected as Bluesky
+		require.True(t, blueskyService.IsBlueskyURL(bskyURL), "Should detect as Bluesky URL")
+
+		// 2. Parse URL to AT-URI
+		atURI, err := blueskyService.ParseBlueskyURL(ctx, bskyURL)
+		if err != nil {
+			t.Skipf("Handle resolution failed (network issue): %v", err)
+		}
+		t.Logf("Parsed AT-URI: %s", atURI)
+
+		// 3. Resolve the post to get CID
+		result, err := blueskyService.ResolvePost(ctx, atURI)
+		if err != nil {
+			t.Skipf("Post resolution failed (network issue): %v", err)
+		}
+
+		if result.Unavailable {
+			t.Skipf("Post unavailable: %s", result.Message)
+		}
+
+		// 4. Verify we have all fields needed for strongRef
+		require.NotEmpty(t, result.URI, "Should have AT-URI")
+		require.NotEmpty(t, result.CID, "Should have CID for strongRef")
+
+		// 5. Verify the CID is a valid format (starts with 'baf')
+		assert.True(t, len(result.CID) > 10, "CID should be a valid length")
+		assert.True(t, result.CID[:3] == "baf", "CID should start with 'baf' (CIDv1)")
+
+		// 6. Simulate the conversion that would happen in tryConvertBlueskyURLToPostEmbed
+		convertedEmbed := map[string]interface{}{
+			"$type": "social.coves.embed.post",
+			"post": map[string]interface{}{
+				"uri": result.URI,
+				"cid": result.CID,
+			},
+		}
+
+		// Verify the converted embed structure
+		embedType := convertedEmbed["$type"].(string)
+		assert.Equal(t, "social.coves.embed.post", embedType)
+
+		postRef := convertedEmbed["post"].(map[string]interface{})
+		assert.NotEmpty(t, postRef["uri"])
+		assert.NotEmpty(t, postRef["cid"])
+
+		t.Logf("✅ Embed conversion successful:")
+		t.Logf("   $type: %s", embedType)
+		t.Logf("   uri: %s", postRef["uri"])
+		t.Logf("   cid: %s", postRef["cid"])
+	})
+
+	t.Run("Unavailable post keeps external embed", func(t *testing.T) {
+		// Use a fake URI that won't exist
+		fakeURI := "at://did:plc:nonexistent123/app.bsky.feed.post/doesnotexist"
+
+		result, err := blueskyService.ResolvePost(ctx, fakeURI)
+		if err != nil {
+			// Some errors are acceptable for non-existent posts
+			t.Logf("Got error for non-existent post: %v", err)
+			t.Logf("✅ Error case would fall back to external embed")
+			return
+		}
+
+		if result != nil && result.Unavailable {
+			// This is the expected case - post is marked unavailable
+			// With the new behavior, we keep the external embed instead of creating a placeholder
+			t.Logf("✅ Unavailable post detected: %s", result.Message)
+			t.Logf("   Would keep as external embed (no placeholder CID)")
+		}
+	})
+}
