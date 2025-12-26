@@ -4,6 +4,7 @@ import (
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/blueskypost"
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"testing"
@@ -21,10 +22,12 @@ import (
 //
 // Use this for tests that need to resolve real Bluesky handles like "ianboudreau.com".
 // Do NOT use for tests involving local Coves identities (use local PLC instead).
-func productionPLCIdentityResolver() identity.Resolver {
+//
+// NOTE: Requires a database connection for the identity cache. Pass the test db.
+func productionPLCIdentityResolver(db *sql.DB) identity.Resolver {
 	config := identity.DefaultConfig()
 	config.PLCURL = "https://plc.directory" // Production PLC - READ ONLY
-	return identity.NewResolver(nil, config)
+	return identity.NewResolver(db, config)
 }
 
 // TestBlueskyPostCrossPosting_URLParsing tests URL detection and parsing
@@ -37,7 +40,7 @@ func TestBlueskyPostCrossPosting_URLParsing(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	// Use production PLC resolver for real Bluesky handles (READ-ONLY)
-	identityResolver := productionPLCIdentityResolver()
+	identityResolver := productionPLCIdentityResolver(db)
 
 	// Setup Bluesky post service
 	repo := blueskypost.NewRepository(db)
@@ -119,7 +122,7 @@ func TestBlueskyPostCrossPosting_LiveAPI(t *testing.T) {
 	_, _ = db.Exec("DELETE FROM bluesky_post_cache")
 
 	// Use production PLC resolver for real Bluesky handles (READ-ONLY)
-	identityResolver := productionPLCIdentityResolver()
+	identityResolver := productionPLCIdentityResolver(db)
 
 	repo := blueskypost.NewRepository(db)
 	service := blueskypost.NewService(repo, identityResolver,
@@ -238,6 +241,20 @@ func TestBlueskyPostCrossPosting_LiveAPI(t *testing.T) {
 
 		assert.Equal(t, "davidpfau.com", result.Author.Handle)
 		assert.NotEmpty(t, result.Text)
+
+		// Verify external embed is extracted
+		if result.Embed != nil {
+			assert.NotEmpty(t, result.Embed.URI, "External embed should have URI")
+			t.Logf("  External embed URI: %s", result.Embed.URI)
+			if result.Embed.Title != "" {
+				t.Logf("  External embed title: %s", result.Embed.Title)
+			}
+			if result.Embed.Thumb != "" {
+				t.Logf("  External embed thumb: %s", result.Embed.Thumb)
+			}
+		} else {
+			t.Log("  Note: No external embed found (post may have been modified)")
+		}
 
 		t.Logf("✓ Successfully fetched post with link embed:")
 		t.Logf("  Author: @%s", result.Author.Handle)
@@ -385,7 +402,7 @@ func TestBlueskyPostCrossPosting_CircuitBreaker(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	// Use production PLC resolver for real Bluesky handles (READ-ONLY)
-	identityResolver := productionPLCIdentityResolver()
+	identityResolver := productionPLCIdentityResolver(db)
 
 	repo := blueskypost.NewRepository(db)
 	service := blueskypost.NewService(repo, identityResolver,
@@ -542,7 +559,7 @@ func TestBlueskyPostCrossPosting_E2E_PostCreation(t *testing.T) {
 	_, _ = db.Exec("DELETE FROM bluesky_post_cache WHERE at_uri LIKE 'at://did:plc:%'")
 
 	// Use production PLC resolver for real Bluesky handles (READ-ONLY)
-	identityResolver := productionPLCIdentityResolver()
+	identityResolver := productionPLCIdentityResolver(db)
 
 	repo := blueskypost.NewRepository(db)
 	service := blueskypost.NewService(repo, identityResolver,
@@ -611,7 +628,7 @@ func TestBlueskyPostCrossPosting_EmbedConversion(t *testing.T) {
 	_, _ = db.Exec("DELETE FROM bluesky_post_cache")
 
 	// Use production PLC resolver for real Bluesky handles (READ-ONLY)
-	identityResolver := productionPLCIdentityResolver()
+	identityResolver := productionPLCIdentityResolver(db)
 
 	// Setup Bluesky post service
 	repo := blueskypost.NewRepository(db)

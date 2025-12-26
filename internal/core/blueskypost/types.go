@@ -54,6 +54,10 @@ type BlueskyPostResult struct {
 
 	// Unavailable indicates the post could not be resolved (deleted, private, blocked, etc.)
 	Unavailable bool `json:"unavailable"`
+
+	// Embed contains the post's external link embed, if present
+	// This captures link cards from the original Bluesky post
+	Embed *ExternalEmbed `json:"embed,omitempty"`
 }
 
 // Author represents a Bluesky post author's identity.
@@ -69,4 +73,20 @@ type Author struct {
 
 	// Avatar is the URL to the user's avatar image (may be empty)
 	Avatar string `json:"avatar,omitempty"`
+}
+
+// ExternalEmbed represents an external link embed from a Bluesky post.
+// This captures link cards (URLs with title, description, and thumbnail).
+type ExternalEmbed struct {
+	// URI is the URL of the external link
+	URI string `json:"uri"`
+
+	// Title is the page title (from og:title or <title>)
+	Title string `json:"title,omitempty"`
+
+	// Description is the page description (from og:description or meta description)
+	Description string `json:"description,omitempty"`
+
+	// Thumb is the URL to the thumbnail image (from og:image)
+	Thumb string `json:"thumb,omitempty"`
 }

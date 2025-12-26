@@ -601,3 +601,82 @@ func TestMapAPIPostToResult_NilSafety(t *testing.T) {
 		t.Error("Expected no quoted post with nil embeds")
 	}
 }
+
+func TestMapAPIPostToResult_ExternalEmbed(t *testing.T) {
+	// Test that external link embeds are correctly extracted
+	apiPost := &blueskyAPIPost{
+		URI: "at://did:plc:test/app.bsky.feed.post/test",
+		CID: "bafyreiabc123",
+		Author: blueskyAPIAuthor{
+			DID:         "did:plc:test",
+			Handle:      "english.lemonde.fr",
+			DisplayName: "Le Monde",
+		},
+		Record: blueskyAPIRecord{
+			Text:      "Check out this article",
+			CreatedAt: "2025-12-21T10:30:00Z",
+		},
+		Embed: &blueskyAPIEmbed{
+			Type: "app.bsky.embed.external#view",
+			External: &blueskyAPIExternal{
+				URI:         "https://www.lemonde.fr/en/international/article/2025/12/22/nba-article.html",
+				Title:       "NBA and Fiba announce search for teams",
+				Description: "The NBA and FIBA have announced a joint search for teams interested in joining a potential European league.",
+				Thumb:       "https://cdn.lemonde.fr/thumbnail.jpg",
+			},
+		},
+		ReplyCount:  10,
+		RepostCount: 5,
+		LikeCount:   100,
+	}
+
+	result := mapAPIPostToResult(apiPost)
+
+	// Verify basic fields
+	if result.URI != "at://did:plc:test/app.bsky.feed.post/test" {
+		t.Errorf("Expected URI 'at://did:plc:test/app.bsky.feed.post/test', got %s", result.URI)
+	}
+	if result.Author.Handle != "english.lemonde.fr" {
+		t.Errorf("Expected Handle 'english.lemonde.fr', got %s", result.Author.Handle)
+	}
+
+	// Verify external embed is extracted
+	if result.Embed == nil {
+		t.Fatal("Expected Embed to be set for external link post")
+	}
+	if result.Embed.URI != "https://www.lemonde.fr/en/international/article/2025/12/22/nba-article.html" {
+		t.Errorf("Expected external URI, got %s", result.Embed.URI)
+	}
+	if result.Embed.Title != "NBA and Fiba announce search for teams" {
+		t.Errorf("Expected external title, got %s", result.Embed.Title)
+	}
+	if result.Embed.Description != "The NBA and FIBA have announced a joint search for teams interested in joining a potential European league." {
+		t.Errorf("Expected external description, got %s", result.Embed.Description)
+	}
+	if result.Embed.Thumb != "https://cdn.lemonde.fr/thumbnail.jpg" {
+		t.Errorf("Expected external thumb, got %s", result.Embed.Thumb)
+	}
+}
+
+func TestMapAPIPostToResult_ExternalEmbedNil(t *testing.T) {
+	// Test that posts without external embeds don't have Embed set
+	apiPost := &blueskyAPIPost{
+		URI: "at://did:plc:test/app.bsky.feed.post/test",
+		CID: "bafyreiabc123",
+		Author: blueskyAPIAuthor{
+			DID:    "did:plc:test",
+			Handle: "user.bsky.social",
+		},
+		Record: blueskyAPIRecord{
+			Text:      "Just a regular post without links",
+			CreatedAt: "2025-12-21T10:30:00Z",
+		},
+		Embed: nil,
+	}
+
+	result := mapAPIPostToResult(apiPost)
+
+	if result.Embed != nil {
+		t.Errorf("Expected Embed to be nil for post without external embed, got %+v", result.Embed)
+	}
+}

@@ -64,11 +64,20 @@ type recordEmbedRecord struct {
 
 // blueskyAPIEmbed represents resolved embed data in the API response
 type blueskyAPIEmbed struct {
-	Video  json.RawMessage        `json:"video,omitempty"`
-	Record *blueskyAPIEmbedRecord `json:"record,omitempty"`
-	Media  *blueskyAPIEmbedMedia  `json:"media,omitempty"`
-	Type   string                 `json:"$type"`
-	Images []json.RawMessage      `json:"images,omitempty"`
+	Video    json.RawMessage        `json:"video,omitempty"`
+	Record   *blueskyAPIEmbedRecord `json:"record,omitempty"`
+	Media    *blueskyAPIEmbedMedia  `json:"media,omitempty"`
+	External *blueskyAPIExternal    `json:"external,omitempty"`
+	Type     string                 `json:"$type"`
+	Images   []json.RawMessage      `json:"images,omitempty"`
+}
+
+// blueskyAPIExternal represents an external link embed in the API response
+type blueskyAPIExternal struct {
+	URI         string `json:"uri"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	Thumb       string `json:"thumb,omitempty"`
 }
 
 // blueskyAPIEmbedMedia represents media in a recordWithMedia embed
@@ -230,6 +239,16 @@ func mapAPIPostToResult(post *blueskyAPIPost) *BlueskyPostResult {
 			result.HasMedia = true
 			if result.MediaCount == 0 {
 				result.MediaCount = 1
+			}
+		}
+
+		// Extract external link embed (app.bsky.embed.external#view)
+		if post.Embed.External != nil && post.Embed.External.URI != "" {
+			result.Embed = &ExternalEmbed{
+				URI:         post.Embed.External.URI,
+				Title:       post.Embed.External.Title,
+				Description: post.Embed.External.Description,
+				Thumb:       post.Embed.External.Thumb,
 			}
 		}
 
