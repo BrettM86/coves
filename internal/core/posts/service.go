@@ -182,8 +182,9 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 
 	// 10. Validate and enhance external embeds
 	if postRecord.Embed != nil {
-		if embedType, ok := postRecord.Embed["$type"].(string); ok && embedType == "social.coves.embed.external" {
-			if external, ok := postRecord.Embed["external"].(map[string]interface{}); ok {
+		embedType, typeOk := postRecord.Embed["$type"].(string)
+		if typeOk && embedType == "social.coves.embed.external" {
+			if external, extOk := postRecord.Embed["external"].(map[string]interface{}); extOk {
 				// Check if this is a Bluesky post URL and convert to post embed
 				if !s.tryConvertBlueskyURLToPostEmbed(ctx, external, &postRecord) {
 					// Not a Bluesky URL or conversion failed - continue with normal external embed processing
@@ -481,13 +482,7 @@ func (s *postService) tryConvertBlueskyURLToPostEmbed(ctx context.Context, exter
 
 	// 2. Extract and validate URL
 	url, ok := external["uri"].(string)
-	if !ok {
-		if external["uri"] != nil {
-			log.Printf("[POST-CREATE] DEBUG: External embed URI is not a string (type: %T)", external["uri"])
-		}
-		return false
-	}
-	if url == "" {
+	if !ok || url == "" {
 		return false
 	}
 

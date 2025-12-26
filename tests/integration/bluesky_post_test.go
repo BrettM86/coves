@@ -13,6 +13,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// productionPLCIdentityResolver creates an identity resolver that uses the production
+// PLC directory (https://plc.directory) for resolving real Bluesky handles.
+//
+// READ-ONLY: This resolver only performs HTTP GET requests to look up existing identities.
+// It does NOT write to the production PLC directory.
+//
+// Use this for tests that need to resolve real Bluesky handles like "ianboudreau.com".
+// Do NOT use for tests involving local Coves identities (use local PLC instead).
+func productionPLCIdentityResolver() identity.Resolver {
+	config := identity.DefaultConfig()
+	config.PLCURL = "https://plc.directory" // Production PLC - READ ONLY
+	return identity.NewResolver(nil, config)
+}
+
 // TestBlueskyPostCrossPosting_URLParsing tests URL detection and parsing
 func TestBlueskyPostCrossPosting_URLParsing(t *testing.T) {
 	if testing.Short() {
@@ -22,9 +36,8 @@ func TestBlueskyPostCrossPosting_URLParsing(t *testing.T) {
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
-	// Setup identity resolver for handle resolution
-	identityConfig := identity.DefaultConfig()
-	identityResolver := identity.NewResolver(db, identityConfig)
+	// Use production PLC resolver for real Bluesky handles (READ-ONLY)
+	identityResolver := productionPLCIdentityResolver()
 
 	// Setup Bluesky post service
 	repo := blueskypost.NewRepository(db)
@@ -105,9 +118,8 @@ func TestBlueskyPostCrossPosting_LiveAPI(t *testing.T) {
 	// Cleanup cache from previous runs
 	_, _ = db.Exec("DELETE FROM bluesky_post_cache")
 
-	// Setup services
-	identityConfig := identity.DefaultConfig()
-	identityResolver := identity.NewResolver(db, identityConfig)
+	// Use production PLC resolver for real Bluesky handles (READ-ONLY)
+	identityResolver := productionPLCIdentityResolver()
 
 	repo := blueskypost.NewRepository(db)
 	service := blueskypost.NewService(repo, identityResolver,
@@ -372,8 +384,8 @@ func TestBlueskyPostCrossPosting_CircuitBreaker(t *testing.T) {
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
-	identityConfig := identity.DefaultConfig()
-	identityResolver := identity.NewResolver(db, identityConfig)
+	// Use production PLC resolver for real Bluesky handles (READ-ONLY)
+	identityResolver := productionPLCIdentityResolver()
 
 	repo := blueskypost.NewRepository(db)
 	service := blueskypost.NewService(repo, identityResolver,
@@ -529,9 +541,8 @@ func TestBlueskyPostCrossPosting_E2E_PostCreation(t *testing.T) {
 	// Cleanup cache
 	_, _ = db.Exec("DELETE FROM bluesky_post_cache WHERE at_uri LIKE 'at://did:plc:%'")
 
-	// Setup services
-	identityConfig := identity.DefaultConfig()
-	identityResolver := identity.NewResolver(db, identityConfig)
+	// Use production PLC resolver for real Bluesky handles (READ-ONLY)
+	identityResolver := productionPLCIdentityResolver()
 
 	repo := blueskypost.NewRepository(db)
 	service := blueskypost.NewService(repo, identityResolver,
@@ -599,9 +610,8 @@ func TestBlueskyPostCrossPosting_EmbedConversion(t *testing.T) {
 	// Cleanup cache from previous runs
 	_, _ = db.Exec("DELETE FROM bluesky_post_cache")
 
-	// Setup identity resolver for handle resolution
-	identityConfig := identity.DefaultConfig()
-	identityResolver := identity.NewResolver(db, identityConfig)
+	// Use production PLC resolver for real Bluesky handles (READ-ONLY)
+	identityResolver := productionPLCIdentityResolver()
 
 	// Setup Bluesky post service
 	repo := blueskypost.NewRepository(db)

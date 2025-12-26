@@ -429,10 +429,30 @@ func main() {
 	log.Println("✅ Unfurl and blob services initialized")
 
 	// Initialize Bluesky post cache repository and service
+	//
+	// Production PLC Read-Only Resolver
+	// ==================================
+	// This resolver is used ONLY for resolving real Bluesky handles (e.g., "bretton.dev")
+	// that exist on the production AT Protocol network.
+	//
+	// READ-ONLY GUARANTEE: The identity.Resolver interface only supports read operations:
+	//   - Resolve(), ResolveHandle(), ResolveDID() - HTTP GET lookups only
+	//   - Purge() - clears local cache, does NOT write to PLC
+	//
+	// DO NOT use this resolver for:
+	//   - Integration tests (use local PLC at localhost:3002 via identityResolver)
+	//   - Creating/registering new DIDs (handled by separate PLC client)
+	//
+	// Safe in dev/test: only performs HTTP GET to resolve existing Bluesky identities.
+	productionPLCConfig := identity.DefaultConfig()
+	productionPLCConfig.PLCURL = "https://plc.directory" // Production PLC - READ ONLY
+	productionPLCResolver := identity.NewResolver(db, productionPLCConfig)
+	log.Println("✅ Production PLC resolver initialized (READ-ONLY for Bluesky handle resolution)")
+
 	blueskyRepo := blueskypost.NewRepository(db)
 	blueskyService := blueskypost.NewService(
 		blueskyRepo,
-		identityResolver,
+		productionPLCResolver, // READ-ONLY: resolves real Bluesky handles like "bretton.dev"
 		blueskypost.WithTimeout(10*time.Second),
 		blueskypost.WithCacheTTL(1*time.Hour), // 1 hour cache (shorter than unfurl)
 	)
