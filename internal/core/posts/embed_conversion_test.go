@@ -89,6 +89,25 @@ func TestTryConvertBlueskyURLToPostEmbed(t *testing.T) {
 		assert.Nil(t, postRecord.Embed, "Should not modify embed")
 	})
 
+	t.Run("returns false when URI is not a string type", func(t *testing.T) {
+		mockSvc := &mockBlueskyService{
+			isBlueskyURLResult: true,
+		}
+		svc := &postService{
+			blueskyService: mockSvc,
+		}
+
+		external := map[string]interface{}{
+			"uri": 12345, // int instead of string
+		}
+		postRecord := &PostRecord{}
+
+		result := svc.tryConvertBlueskyURLToPostEmbed(ctx, external, postRecord)
+
+		assert.False(t, result, "Should return false when uri is not a string")
+		assert.Nil(t, postRecord.Embed, "Should not modify embed")
+	})
+
 	t.Run("returns false when URL is not Bluesky", func(t *testing.T) {
 		mockSvc := &mockBlueskyService{
 			isBlueskyURLResult: false, // not a Bluesky URL

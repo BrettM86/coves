@@ -481,7 +481,13 @@ func (s *postService) tryConvertBlueskyURLToPostEmbed(ctx context.Context, exter
 
 	// 2. Extract and validate URL
 	url, ok := external["uri"].(string)
-	if !ok || url == "" {
+	if !ok {
+		if external["uri"] != nil {
+			log.Printf("[POST-CREATE] DEBUG: External embed URI is not a string (type: %T)", external["uri"])
+		}
+		return false
+	}
+	if url == "" {
 		return false
 	}
 
@@ -493,7 +499,12 @@ func (s *postService) tryConvertBlueskyURLToPostEmbed(ctx context.Context, exter
 	// 4. Parse URL to AT-URI (resolves handle to DID if needed)
 	atURI, err := s.blueskyService.ParseBlueskyURL(ctx, url)
 	if err != nil {
-		log.Printf("[POST-CREATE] Failed to parse Bluesky URL %s: %v", url, err)
+		// Differentiate between timeout and other errors
+		if errors.Is(err, context.DeadlineExceeded) {
+			log.Printf("[POST-CREATE] WARN: Bluesky URL parse timed out, keeping as external embed: %s", url)
+		} else {
+			log.Printf("[POST-CREATE] Failed to parse Bluesky URL %s: %v", url, err)
+		}
 		return false // Fall back to external embed
 	}
 
@@ -516,7 +527,7 @@ func (s *postService) tryConvertBlueskyURLToPostEmbed(ctx context.Context, exter
 
 	// 6. Handle unavailable posts - keep as external embed since we can't get a valid CID
 	if result.Unavailable {
-		log.Printf("[POST-CREATE] Bluesky post unavailable (deleted/private), keeping as external embed: %s", atURI)
+		log.Printf("[POST-CREATE] Bluesky post unavailable, keeping as external embed: %s (reason: %s)", atURI, result.Message)
 		return false
 	}
 
