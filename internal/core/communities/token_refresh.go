@@ -13,7 +13,7 @@ import (
 // refreshPDSToken exchanges a refresh token for new access and refresh tokens
 // Uses com.atproto.server.refreshSession endpoint via Indigo SDK
 // CRITICAL: Refresh tokens are single-use - old refresh token is revoked on success
-func refreshPDSToken(ctx context.Context, pdsURL, currentAccessToken, refreshToken string) (newAccessToken, newRefreshToken string, err error) {
+func refreshPDSToken(ctx context.Context, pdsURL, refreshToken string) (newAccessToken, newRefreshToken string, err error) {
 	if pdsURL == "" {
 		return "", "", fmt.Errorf("PDS URL is required")
 	}
@@ -21,13 +21,15 @@ func refreshPDSToken(ctx context.Context, pdsURL, currentAccessToken, refreshTok
 		return "", "", fmt.Errorf("refresh token is required")
 	}
 
-	// Create XRPC client with auth credentials
-	// The refresh endpoint requires authentication with the refresh token
+	// Create XRPC client with refresh token as the auth credential
+	// IMPORTANT: The xrpc client always sends AccessJwt as the Authorization header,
+	// but refreshSession requires the refresh token in that header.
+	// So we put the refresh token in AccessJwt to make it work correctly.
 	client := &xrpc.Client{
 		Host: pdsURL,
 		Auth: &xrpc.AuthInfo{
-			AccessJwt:  currentAccessToken, // Can be expired (not used for refresh auth)
-			RefreshJwt: refreshToken,       // This is what authenticates the refresh request
+			AccessJwt:  refreshToken, // Refresh token goes here (sent as Authorization header)
+			RefreshJwt: refreshToken, // Also set here for completeness
 		},
 	}
 
