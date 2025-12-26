@@ -90,20 +90,35 @@ type blueskyAPIEmbedMedia struct {
 // blueskyAPIEmbedRecord represents a quoted post embed in the API response
 // For record#view: this directly contains the viewRecord fields
 // For recordWithMedia#view: this contains a nested "record" field with viewRecord
+// For record#viewBlocked: contains blocked=true and limited author info
+// For record#viewNotFound: contains notFound=true
 type blueskyAPIEmbedRecord struct {
+	// Type identifies the record view type ($type field)
+	// Can be: app.bsky.embed.record#viewRecord, #viewBlocked, #viewNotFound, #viewDetached
+	Type string `json:"$type,omitempty"`
+
+	// Blocked is true when there is a block relationship between viewer and quoted post author
+	Blocked bool `json:"blocked,omitempty"`
+
+	// NotFound is true when the quoted post has been deleted
+	NotFound bool `json:"notFound,omitempty"`
+
+	// Detached is true when the quoted post has been detached (removed from quote context)
+	Detached bool `json:"detached,omitempty"`
+
 	// For recordWithMedia#view - nested structure
 	Record *blueskyAPIViewRecord `json:"record,omitempty"`
 
 	// For record#view - direct viewRecord fields
-	URI       string                   `json:"uri,omitempty"`
-	CID       string                   `json:"cid,omitempty"`
-	Author    *blueskyAPIAuthor        `json:"author,omitempty"`
-	Value     *blueskyAPIRecordValue   `json:"value,omitempty"`
-	LikeCount int                      `json:"likeCount,omitempty"`
-	ReplyCount int                     `json:"replyCount,omitempty"`
-	RepostCount int                    `json:"repostCount,omitempty"`
-	IndexedAt string                   `json:"indexedAt,omitempty"`
-	Embeds    []json.RawMessage        `json:"embeds,omitempty"`
+	URI        string                 `json:"uri,omitempty"`
+	CID        string                 `json:"cid,omitempty"`
+	Author     *blueskyAPIAuthor      `json:"author,omitempty"`
+	Value      *blueskyAPIRecordValue `json:"value,omitempty"`
+	LikeCount  int                    `json:"likeCount,omitempty"`
+	ReplyCount int                    `json:"replyCount,omitempty"`
+	RepostCount int                   `json:"repostCount,omitempty"`
+	IndexedAt  string                 `json:"indexedAt,omitempty"`
+	Embeds     []json.RawMessage      `json:"embeds,omitempty"`
 }
 
 // blueskyAPIViewRecord represents the viewRecord structure for quoted posts
@@ -297,10 +312,45 @@ func mapAPIPostToResult(post *blueskyAPIPost) *BlueskyPostResult {
 }
 
 // mapViewRecordToResult maps a blueskyAPIEmbedRecord (with direct viewRecord fields) to BlueskyPostResult
-// This is used for app.bsky.embed.record#view where the viewRecord fields are at the top level
+// This is used for app.bsky.embed.record#view where the viewRecord fields are at the top level.
+// Handles unavailable states: blocked (#viewBlocked), deleted (#viewNotFound), and detached (#viewDetached).
 func mapViewRecordToResult(embedRecord *blueskyAPIEmbedRecord) *BlueskyPostResult {
 	if embedRecord == nil {
 		return nil
+	}
+
+	// Handle blocked quoted posts (app.bsky.embed.record#viewBlocked)
+	if embedRecord.Blocked || embedRecord.Type == "app.bsky.embed.record#viewBlocked" {
+		result := &BlueskyPostResult{
+			URI:         embedRecord.URI,
+			Unavailable: true,
+			Message:     "This post is from a blocked account",
+		}
+		// Include author DID if available (handle won't be available for blocked users)
+		if embedRecord.Author != nil {
+			result.Author = &Author{
+				DID: embedRecord.Author.DID,
+			}
+		}
+		return result
+	}
+
+	// Handle deleted/not found quoted posts (app.bsky.embed.record#viewNotFound)
+	if embedRecord.NotFound || embedRecord.Type == "app.bsky.embed.record#viewNotFound" {
+		return &BlueskyPostResult{
+			URI:         embedRecord.URI,
+			Unavailable: true,
+			Message:     "This post has been deleted",
+		}
+	}
+
+	// Handle detached quoted posts (app.bsky.embed.record#viewDetached)
+	if embedRecord.Detached || embedRecord.Type == "app.bsky.embed.record#viewDetached" {
+		return &BlueskyPostResult{
+			URI:         embedRecord.URI,
+			Unavailable: true,
+			Message:     "This post is unavailable",
+		}
 	}
 
 	result := &BlueskyPostResult{
@@ -328,17 +378,59 @@ func mapViewRecordToResult(embedRecord *blueskyAPIEmbedRecord) *BlueskyPostResul
 			createdAt, err := time.Parse(time.RFC3339, embedRecord.Value.CreatedAt)
 			if err == nil {
 				result.CreatedAt = createdAt
+			} else {
+				log.Printf("[BLUESKY] Warning: Failed to parse CreatedAt timestamp %q for quoted post %s: %v",
+					embedRecord.Value.CreatedAt, embedRecord.URI, err)
 			}
 		}
 	}
 
-	// Check for media in embeds array
+	// Check for media in embeds array and extract external embed if present
 	if len(embedRecord.Embeds) > 0 {
 		result.HasMedia = true
 		result.MediaCount = len(embedRecord.Embeds)
+
+		// Try to extract external embed from the embeds array
+		result.Embed = extractExternalEmbedFromEmbeds(embedRecord.Embeds)
 	}
 
 	return result
+}
+
+// extractExternalEmbedFromEmbeds parses the embeds array and extracts external link embed if present.
+// This is used for quoted posts where embeds are in a nested json.RawMessage array,
+// unlike top-level posts where External is directly available on blueskyAPIEmbed.
+// Returns nil if no external embed is found.
+func extractExternalEmbedFromEmbeds(embeds []json.RawMessage) *ExternalEmbed {
+	for _, embedRaw := range embeds {
+		// Parse the embed to check its type
+		var embedWrapper struct {
+			Type     string `json:"$type"`
+			External *struct {
+				URI         string `json:"uri"`
+				Title       string `json:"title"`
+				Description string `json:"description"`
+				Thumb       string `json:"thumb"`
+			} `json:"external"`
+		}
+
+		if err := json.Unmarshal(embedRaw, &embedWrapper); err != nil {
+			log.Printf("[BLUESKY] Warning: Failed to unmarshal embed in quoted post: %v", err)
+			continue
+		}
+
+		// Check for external embed type
+		if embedWrapper.Type == "app.bsky.embed.external#view" && embedWrapper.External != nil {
+			return &ExternalEmbed{
+				URI:         embedWrapper.External.URI,
+				Title:       embedWrapper.External.Title,
+				Description: embedWrapper.External.Description,
+				Thumb:       embedWrapper.External.Thumb,
+			}
+		}
+	}
+
+	return nil
 }
 
 // mapNestedViewRecordToResult maps a blueskyAPIViewRecord to BlueskyPostResult
@@ -369,14 +461,20 @@ func mapNestedViewRecordToResult(viewRecord *blueskyAPIViewRecord) *BlueskyPostR
 			createdAt, err := time.Parse(time.RFC3339, viewRecord.Value.CreatedAt)
 			if err == nil {
 				result.CreatedAt = createdAt
+			} else {
+				log.Printf("[BLUESKY] Warning: Failed to parse CreatedAt timestamp %q for quoted post %s: %v",
+					viewRecord.Value.CreatedAt, viewRecord.URI, err)
 			}
 		}
 	}
 
-	// Check for media in embeds array
+	// Check for media in embeds array and extract external embed if present
 	if len(viewRecord.Embeds) > 0 {
 		result.HasMedia = true
 		result.MediaCount = len(viewRecord.Embeds)
+
+		// Try to extract external embed from the embeds array
+		result.Embed = extractExternalEmbedFromEmbeds(viewRecord.Embeds)
 	}
 
 	return result
