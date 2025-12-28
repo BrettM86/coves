@@ -7,18 +7,26 @@ This directory contains scripts to help you set up and register your aggregator 
 Aggregators are automated services that post content to Coves communities. They are similar to Bluesky's feed generators and labelers. To use aggregators with Coves, you need to:
 
 1. Create a PDS account for your aggregator (gets you a DID)
-2. Prove you own a domain via `.well-known/atproto-did`
+2. **(Optional)** Verify a custom domain via `.well-known/atproto-did`
 3. Register with a Coves instance
 4. Create a service declaration record
+5. **Generate an API key** for authentication
 
 These scripts automate this process for you.
 
+### Handle Options
+
+You have two choices for your aggregator's handle:
+
+1. **PDS-assigned handle** (simpler): Use the handle from your PDS, e.g., `my-aggregator.bsky.social`. No domain verification needed—skip steps 2-3.
+
+2. **Custom domain handle** (branded): Use your own domain, e.g., `news.example.com`. Requires hosting a `.well-known/atproto-did` file on your domain.
+
 ## Prerequisites
 
-- **Domain ownership**: You must own a domain where you can host the `.well-known/atproto-did` file
-- **Web server**: Ability to serve static files over HTTPS
 - **Tools**: `curl`, `jq` (for JSON processing)
 - **Account**: Email address for creating the PDS account
+- **(For custom domain only)**: Domain ownership and ability to serve HTTPS files
 
 ## Quick Start
 
@@ -33,15 +41,19 @@ chmod +x *.sh
 # Step 1: Create PDS account
 ./1-create-pds-account.sh
 
-# Step 2: Generate .well-known file
-./2-setup-wellknown.sh
-
-# Step 3: Register with Coves (after uploading .well-known)
-./3-register-with-coves.sh
+# Steps 2-3: OPTIONAL - Only if you want a custom domain handle
+# ./2-setup-wellknown.sh
+# ./3-register-with-coves.sh  (after uploading .well-known)
 
 # Step 4: Create service declaration
 ./4-create-service-declaration.sh
+
+# Step 5: Generate API key (requires browser for OAuth)
+./5-create-api-key.sh
 ```
+
+**Minimal setup** (PDS handle only): Steps 1, 4, 5
+**Custom domain**: Steps 1, 2, 3, 4, 5
 
 ### Automated Setup Example
 
@@ -134,34 +146,67 @@ curl https://yourdomain.com/.well-known/atproto-did
 - Updates `aggregator-config.env` with record URI and CID
 - Prints record details
 
+### 5-create-api-key.sh
+
+**Purpose**: Generates an API key for aggregator authentication
+
+**Prerequisites**:
+- Steps 1-4 completed
+- Aggregator indexed by Coves (usually takes a few seconds after step 4)
+- Web browser for OAuth login
+
+**What it does**:
+1. Guides you through OAuth login in your browser
+2. Provides the JavaScript to call the `createApiKey` endpoint
+3. Validates the API key format
+4. Saves the key to your config file
+
+**Outputs**:
+- Updates `aggregator-config.env` with `COVES_API_KEY`
+- Provides instructions for updating your `.env` file
+
+**Important Notes**:
+- The API key is shown **ONCE** and cannot be retrieved later
+- API keys replace password-based authentication
+- Keys can be revoked and regenerated at any time
+- Store securely - never commit to version control
+
 ## Configuration File
 
-After running the scripts, you'll have an `aggregator-config.env` file with:
+After running all scripts, you'll have an `aggregator-config.env` file with:
 
 ```bash
+# Identity
 AGGREGATOR_DID="did:plc:..."
-AGGREGATOR_HANDLE="mynewsbot.bsky.social"
+AGGREGATOR_HANDLE="mynewsbot.example.com"
 AGGREGATOR_PDS_URL="https://bsky.social"
-AGGREGATOR_EMAIL="bot@example.com"
-AGGREGATOR_PASSWORD="..."
-AGGREGATOR_ACCESS_JWT="..."
-AGGREGATOR_REFRESH_JWT="..."
-AGGREGATOR_DOMAIN="rss-bot.example.com"
-COVES_INSTANCE_URL="https://api.coves.social"
+AGGREGATOR_DOMAIN="mynewsbot.example.com"
+
+# Coves Instance
+COVES_INSTANCE_URL="https://coves.social"
 SERVICE_DECLARATION_URI="at://did:plc:.../social.coves.aggregator.service/self"
 SERVICE_DECLARATION_CID="..."
+
+# API Key (from Step 5)
+COVES_API_KEY="ckapi_..."
 ```
 
-**Use this in your aggregator code** to authenticate and post.
+**For your aggregator's `.env` file, you only need:**
+
+```bash
+COVES_API_KEY=ckapi_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+COVES_API_URL=https://coves.social
+```
 
 ## What Happens Next?
 
-After completing all 4 steps:
+After completing all 5 steps:
 
 1. **Your aggregator is registered** in the Coves instance's `users` table
 2. **Your service declaration is indexed** in the `aggregators` table (takes a few seconds)
-3. **Community moderators can now authorize** your aggregator for their communities
-4. **Once authorized**, your aggregator can post to those communities
+3. **Your API key is stored** and can be used for authentication
+4. **Community moderators can authorize** your aggregator for their communities
+5. **Your aggregator can post** to authorized communities (or all if you're a trusted aggregator)
 
 ## Creating an Authorization
 
@@ -171,20 +216,20 @@ See `docs/aggregators/SETUP_GUIDE.md` for more information on the authorization 
 
 ## Posting to Communities
 
-Once authorized, your aggregator can post using:
+Once authorized, your aggregator can post using your API key:
 
 ```bash
-curl -X POST https://api.coves.social/xrpc/social.coves.community.post.create \
-  -H "Authorization: DPoP $AGGREGATOR_ACCESS_JWT" \
+curl -X POST https://coves.social/xrpc/social.coves.community.post.create \
+  -H "Authorization: Bearer $COVES_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "communityDid": "did:plc:...",
-    "post": {
-      "text": "Your post content",
-      "createdAt": "2024-01-15T12:00:00Z"
-    }
+    "community": "c-worldnews.coves.social",
+    "content": "Your post content",
+    "facets": []
   }'
 ```
+
+The API key handles all authentication - no OAuth token refresh needed.
 
 ## Troubleshooting
 

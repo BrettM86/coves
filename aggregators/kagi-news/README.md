@@ -47,6 +47,13 @@ aggregators/kagi-news/
 
 Before running the aggregator, you must register it with a Coves instance. This creates a DID for your aggregator and registers it with Coves.
 
+### Handle Options
+
+You have two choices:
+
+1. **PDS-assigned handle** (simpler): Use `my-aggregator.bsky.social`. No domain verification needed.
+2. **Custom domain** (branded): Use `news.example.com`. Requires hosting a `.well-known/atproto-did` file.
+
 ### Quick Setup (Automated)
 
 The automated setup script handles the entire registration process:
@@ -59,19 +66,20 @@ chmod +x setup.sh
 
 This will:
 1. **Create a PDS account** for your aggregator (generates a DID)
-2. **Generate `.well-known/atproto-did`** file for domain verification
-3. **Pause for manual upload** - you'll upload the file to your web server
-4. **Register with Coves** instance via XRPC
-5. **Create service declaration** record (indexed by Jetstream)
+2. **(Optional)** Generate `.well-known/atproto-did` file for custom domain handle
+3. **(Optional)** Pause for manual upload if using custom domain
+4. **Create service declaration** record (indexed by Jetstream)
+5. **Generate an API key** for authentication (requires browser OAuth)
 
-**Manual step required:** During the process, you'll need to upload the `.well-known/atproto-did` file to your domain so it's accessible at `https://yourdomain.com/.well-known/atproto-did`.
+**Manual steps required:**
+- **(If using custom domain)** Upload `.well-known/atproto-did` to your domain
+- Complete OAuth login in browser to generate API key
 
-After completion, you'll have a `kagi-aggregator-config.env` file with:
-- Aggregator DID and credentials
-- Access/refresh JWTs
-- Service declaration URI
+After completion, you'll have:
+- `kagi-aggregator-config.env` - Full configuration with API key
+- `COVES_API_KEY` - Your authentication token for posting
 
-**Keep this file secure!** It contains your aggregator's credentials.
+**Keep the API key secure!** It cannot be retrieved after generation.
 
 ### Manual Setup (Step-by-step)
 
@@ -81,11 +89,12 @@ Alternatively, use the generic setup scripts from the main Coves repo for more c
 # From the Coves project root
 cd scripts/aggregator-setup
 
-# Follow the 4-step process
+# Follow the 5-step process
 ./1-create-pds-account.sh
 ./2-setup-wellknown.sh
 ./3-register-with-coves.sh
 ./4-create-service-declaration.sh
+./5-create-api-key.sh
 ```
 
 See [scripts/aggregator-setup/README.md](../../scripts/aggregator-setup/README.md) for detailed documentation on each step.
@@ -96,7 +105,8 @@ See [scripts/aggregator-setup/README.md](../../scripts/aggregator-setup/README.m
 2. **Domain Verification**: Proves you control your aggregator's domain
 3. **Coves Registration**: Inserts your DID into the Coves instance's `users` table
 4. **Service Declaration**: Creates a record that gets indexed into the `aggregators` table
-5. **Ready for Authorization**: Community moderators can now authorize your aggregator
+5. **API Key Generation**: Creates a secure API key for authentication
+6. **Ready for Authorization**: Community moderators can now authorize your aggregator
 
 Once registered and authorized by a community, your aggregator can post content.
 
@@ -128,7 +138,7 @@ Once registered and authorized by a community, your aggregator can post content.
    ```
 
 4. Edit `config.yaml` to map RSS feeds to communities
-5. Set environment variables in `.env` (aggregator DID and private key)
+5. Set `COVES_API_KEY` in `.env` (from registration step 5)
 
 ## Running Tests
 
@@ -189,8 +199,7 @@ The easiest way to deploy the Kagi aggregator is using Docker. The cron job runs
 
 The `docker-compose.yml` file supports these environment variables:
 
-- **`AGGREGATOR_HANDLE`** (required): Your aggregator's handle
-- **`AGGREGATOR_PASSWORD`** (required): Your aggregator's password
+- **`COVES_API_KEY`** (required): Your aggregator's API key (format: `ckapi_...`)
 - **`COVES_API_URL`** (optional): Override Coves API endpoint (defaults to `https://api.coves.social`)
 - **`RUN_ON_STARTUP`** (optional): Set to `true` to run immediately on container start (useful for testing)
 
