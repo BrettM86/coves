@@ -20,6 +20,11 @@ fi
 echo "API Key prefix: ${COVES_API_KEY:0:12}..."
 echo "Cron schedule loaded from /etc/cron.d/kagi-aggregator"
 
+# Export environment variables for cron
+# Cron runs in a separate environment and doesn't inherit container env vars
+echo "Exporting environment variables for cron..."
+printenv | grep -E '^(COVES_|PATH=)' > /etc/environment
+
 # Start cron in the background
 echo "Starting cron daemon..."
 cron
