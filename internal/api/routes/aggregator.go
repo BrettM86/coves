@@ -64,13 +64,14 @@ func RegisterAggregatorRoutes(
 func RegisterAggregatorAPIKeyRoutes(
 	r chi.Router,
 	authMiddleware middleware.AuthMiddleware,
-	apiKeyService *aggregators.APIKeyService,
+	apiKeyService aggregators.APIKeyServiceInterface,
 	aggregatorService aggregators.Service,
 ) {
 	// Create API key handlers
 	createAPIKeyHandler := aggregator.NewCreateAPIKeyHandler(apiKeyService, aggregatorService)
 	getAPIKeyHandler := aggregator.NewGetAPIKeyHandler(apiKeyService, aggregatorService)
 	revokeAPIKeyHandler := aggregator.NewRevokeAPIKeyHandler(apiKeyService, aggregatorService)
+	metricsHandler := aggregator.NewMetricsHandler(apiKeyService)
 
 	// API key management endpoints (require OAuth authentication)
 	// POST /xrpc/social.coves.aggregator.createApiKey
@@ -87,4 +88,9 @@ func RegisterAggregatorAPIKeyRoutes(
 	// Revokes the authenticated aggregator's API key
 	r.With(authMiddleware.RequireAuth).Post("/xrpc/social.coves.aggregator.revokeApiKey",
 		revokeAPIKeyHandler.HandleRevokeAPIKey)
+
+	// GET /xrpc/social.coves.aggregator.getMetrics
+	// Returns operational metrics for the API key service (internal monitoring endpoint)
+	// No authentication required - metrics are non-sensitive operational data
+	r.Get("/xrpc/social.coves.aggregator.getMetrics", metricsHandler.HandleMetrics)
 }

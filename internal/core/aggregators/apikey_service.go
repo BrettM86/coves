@@ -73,8 +73,7 @@ func (s *APIKeyService) GenerateKey(ctx context.Context, aggregatorDID string, o
 
 	// Validate OAuth session matches the aggregator
 	if oauthSession.AccountDID.String() != aggregatorDID {
-		return "", "", fmt.Errorf("OAuth session DID mismatch: session is for %s but requesting key for %s",
-			oauthSession.AccountDID.String(), aggregatorDID)
+		return "", "", ErrOAuthSessionMismatch
 	}
 
 	// Generate random key
@@ -108,30 +107,36 @@ func (s *APIKeyService) GenerateKey(ctx context.Context, aggregatorDID string, o
 		DPoPPDSNonce:            oauthSession.DPoPHostNonce,
 	}
 
-	// Store key hash and OAuth credentials in aggregators table
-	if err := s.repo.SetAPIKey(ctx, aggregatorDID, keyPrefix, keyHash, oauthCreds); err != nil {
-		return "", "", fmt.Errorf("failed to store API key: %w", err)
+	// Validate OAuth credentials before proceeding
+	if err := oauthCreds.Validate(); err != nil {
+		return "", "", fmt.Errorf("invalid OAuth credentials: %w", err)
 	}
 
-	// Also store the session in the OAuth store under the API key session ID
-	// This allows RefreshTokensIfNeeded to resume the session for token refresh
-	// IMPORTANT: This MUST succeed - without it, token refresh will fail after ~1 hour
-	// when the access token expires, making the API key unusable
+	// Store the OAuth session in the store FIRST (before API key)
+	// This prevents a race condition where the API key exists but can't refresh tokens.
+	// Order: OAuth session → API key (if session fails, no dangling API key)
 	apiKeySession := *oauthSession // Copy session data
 	apiKeySession.SessionID = DefaultSessionID
 	if err := s.oauthApp.Store.SaveSession(ctx, apiKeySession); err != nil {
-		slog.Error("failed to store API key session in OAuth store - API key will not be able to refresh tokens",
+		slog.Error("failed to store OAuth session for API key - aborting key creation",
 			"did", aggregatorDID,
 			"error", err,
 		)
-		// Revoke the key we just created since it won't work properly
-		if revokeErr := s.repo.RevokeAPIKey(ctx, aggregatorDID); revokeErr != nil {
-			slog.Error("failed to revoke API key after session save failure",
+		return "", "", fmt.Errorf("failed to store OAuth session for token refresh: %w", err)
+	}
+
+	// Now store key hash and OAuth credentials in aggregators table
+	// If this fails, we have an orphaned OAuth session, but that's less problematic
+	// than having an API key that can't refresh tokens.
+	if err := s.repo.SetAPIKey(ctx, aggregatorDID, keyPrefix, keyHash, oauthCreds); err != nil {
+		// Best effort cleanup of the OAuth session we just stored
+		if deleteErr := s.oauthApp.Store.DeleteSession(ctx, oauthSession.AccountDID, DefaultSessionID); deleteErr != nil {
+			slog.Warn("failed to cleanup OAuth session after API key storage failure",
 				"did", aggregatorDID,
-				"error", revokeErr,
+				"error", deleteErr,
 			)
 		}
-		return "", "", fmt.Errorf("failed to store OAuth session for token refresh: %w", err)
+		return "", "", fmt.Errorf("failed to store API key: %w", err)
 	}
 
 	slog.Info("API key generated for aggregator",
@@ -143,19 +148,25 @@ func (s *APIKeyService) GenerateKey(ctx context.Context, aggregatorDID string, o
 	return plainKey, keyPrefix, nil
 }
 
-// ValidateKey validates an API key and returns the associated aggregator.
+// ValidateKey validates an API key and returns the associated aggregator credentials.
 // Returns ErrAPIKeyInvalid if the key is not found or revoked.
-func (s *APIKeyService) ValidateKey(ctx context.Context, plainKey string) (*Aggregator, error) {
-	// Validate key format
+func (s *APIKeyService) ValidateKey(ctx context.Context, plainKey string) (*AggregatorCredentials, error) {
+	// Validate key format - log invalid attempts for security monitoring
 	if len(plainKey) != APIKeyTotalLength || plainKey[:6] != APIKeyPrefix {
+		// Log for security monitoring (potential brute-force detection)
+		// Don't log the full key, just metadata about the attempt
+		slog.Warn("[SECURITY] invalid API key format attempt",
+			"key_length", len(plainKey),
+			"has_valid_prefix", len(plainKey) >= 6 && plainKey[:6] == APIKeyPrefix,
+		)
 		return nil, ErrAPIKeyInvalid
 	}
 
 	// Hash the provided key
 	keyHash := hashAPIKey(plainKey)
 
-	// Look up aggregator by hash
-	aggregator, err := s.repo.GetByAPIKeyHash(ctx, keyHash)
+	// Look up aggregator credentials by hash
+	creds, err := s.repo.GetCredentialsByAPIKeyHash(ctx, keyHash)
 	if err != nil {
 		if IsNotFound(err) {
 			return nil, ErrAPIKeyInvalid
@@ -172,30 +183,32 @@ func (s *APIKeyService) ValidateKey(ctx context.Context, plainKey string) (*Aggr
 
 	// Update last used timestamp (async, don't block on error)
 	// Use a bounded timeout to prevent goroutine accumulation if DB is slow/down
+	// Extract trace info from context before spawning goroutine for log correlation
+	aggregatorDID := creds.DID // capture for goroutine
 	go func() {
 		updateCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		if updateErr := s.repo.UpdateAPIKeyLastUsed(updateCtx, aggregator.DID); updateErr != nil {
+		if updateErr := s.repo.UpdateAPIKeyLastUsed(updateCtx, aggregatorDID); updateErr != nil {
 			// Increment failure counter for monitoring visibility
 			failCount := s.failedLastUsedUpdates.Add(1)
 			slog.Error("failed to update API key last used",
-				"did", aggregator.DID,
+				"did", aggregatorDID,
 				"error", updateErr,
 				"total_failures", failCount,
 			)
 		}
 	}()
 
-	return aggregator, nil
+	return creds, nil
 }
 
 // RefreshTokensIfNeeded checks if the OAuth tokens are expired or expiring soon,
 // and refreshes them if necessary.
-func (s *APIKeyService) RefreshTokensIfNeeded(ctx context.Context, aggregator *Aggregator) error {
+func (s *APIKeyService) RefreshTokensIfNeeded(ctx context.Context, creds *AggregatorCredentials) error {
 	// Check if tokens need refresh
-	if aggregator.OAuthTokenExpiresAt != nil {
-		if time.Until(*aggregator.OAuthTokenExpiresAt) > TokenRefreshBuffer {
+	if creds.OAuthTokenExpiresAt != nil {
+		if time.Until(*creds.OAuthTokenExpiresAt) > TokenRefreshBuffer {
 			// Tokens still valid
 			return nil
 		}
@@ -203,12 +216,12 @@ func (s *APIKeyService) RefreshTokensIfNeeded(ctx context.Context, aggregator *A
 
 	// Need to refresh tokens
 	slog.Info("refreshing OAuth tokens for aggregator",
-		"did", aggregator.DID,
-		"expires_at", aggregator.OAuthTokenExpiresAt,
+		"did", creds.DID,
+		"expires_at", creds.OAuthTokenExpiresAt,
 	)
 
 	// Parse DID
-	did, err := syntax.ParseDID(aggregator.DID)
+	did, err := syntax.ParseDID(creds.DID)
 	if err != nil {
 		return fmt.Errorf("failed to parse aggregator DID: %w", err)
 	}
@@ -218,7 +231,7 @@ func (s *APIKeyService) RefreshTokensIfNeeded(ctx context.Context, aggregator *A
 	session, err := s.oauthApp.ResumeSession(ctx, did, DefaultSessionID)
 	if err != nil {
 		slog.Error("failed to resume OAuth session for token refresh",
-			"did", aggregator.DID,
+			"did", creds.DID,
 			"error", err,
 		)
 		return fmt.Errorf("failed to resume session: %w", err)
@@ -228,7 +241,7 @@ func (s *APIKeyService) RefreshTokensIfNeeded(ctx context.Context, aggregator *A
 	newAccessToken, err := session.RefreshTokens(ctx)
 	if err != nil {
 		slog.Error("failed to refresh OAuth tokens",
-			"did", aggregator.DID,
+			"did", creds.DID,
 			"error", err,
 		)
 		return fmt.Errorf("failed to refresh tokens: %w", err)
@@ -239,31 +252,32 @@ func (s *APIKeyService) RefreshTokensIfNeeded(ctx context.Context, aggregator *A
 	newExpiry := time.Now().Add(1 * time.Hour)
 
 	// Update tokens in database
-	if err := s.repo.UpdateOAuthTokens(ctx, aggregator.DID, newAccessToken, session.Data.RefreshToken, newExpiry); err != nil {
+	if err := s.repo.UpdateOAuthTokens(ctx, creds.DID, newAccessToken, session.Data.RefreshToken, newExpiry); err != nil {
 		return fmt.Errorf("failed to update tokens: %w", err)
 	}
 
-	// Update nonces - increment counter on failure for monitoring
-	if err := s.repo.UpdateOAuthNonces(ctx, aggregator.DID, session.Data.DPoPAuthServerNonce, session.Data.DPoPHostNonce); err != nil {
+	// Update nonces in our database as a secondary copy for visibility/backup.
+	// The authoritative nonces are in indigo's OAuth store (via SaveSession above).
+	// Session resumption uses s.oauthApp.ResumeSession which reads from indigo's store,
+	// so this failure is non-critical - hence warning level, not error.
+	if err := s.repo.UpdateOAuthNonces(ctx, creds.DID, session.Data.DPoPAuthServerNonce, session.Data.DPoPHostNonce); err != nil {
 		failCount := s.failedNonceUpdates.Add(1)
-		slog.Warn("failed to update OAuth nonces - may affect DPoP replay protection",
-			"did", aggregator.DID,
+		slog.Warn("failed to update OAuth nonces in aggregators table",
+			"did", creds.DID,
 			"error", err,
 			"total_failures", failCount,
 		)
-		// Non-fatal: nonces will be updated on next refresh, but persistent failures
-		// could indicate a DB issue that needs attention
 	}
 
-	// Update aggregator in memory
-	aggregator.OAuthAccessToken = newAccessToken
-	aggregator.OAuthRefreshToken = session.Data.RefreshToken
-	aggregator.OAuthTokenExpiresAt = &newExpiry
-	aggregator.OAuthDPoPAuthServerNonce = session.Data.DPoPAuthServerNonce
-	aggregator.OAuthDPoPPDSNonce = session.Data.DPoPHostNonce
+	// Update credentials in memory
+	creds.OAuthAccessToken = newAccessToken
+	creds.OAuthRefreshToken = session.Data.RefreshToken
+	creds.OAuthTokenExpiresAt = &newExpiry
+	creds.OAuthDPoPAuthServerNonce = session.Data.DPoPAuthServerNonce
+	creds.OAuthDPoPPDSNonce = session.Data.DPoPHostNonce
 
 	slog.Info("OAuth tokens refreshed for aggregator",
-		"did", aggregator.DID,
+		"did", creds.DID,
 		"new_expires_at", newExpiry,
 	)
 
@@ -272,13 +286,13 @@ func (s *APIKeyService) RefreshTokensIfNeeded(ctx context.Context, aggregator *A
 
 // GetAccessToken returns a valid access token for the aggregator,
 // refreshing if necessary.
-func (s *APIKeyService) GetAccessToken(ctx context.Context, aggregator *Aggregator) (string, error) {
+func (s *APIKeyService) GetAccessToken(ctx context.Context, creds *AggregatorCredentials) (string, error) {
 	// Ensure tokens are fresh
-	if err := s.RefreshTokensIfNeeded(ctx, aggregator); err != nil {
+	if err := s.RefreshTokensIfNeeded(ctx, creds); err != nil {
 		return "", fmt.Errorf("failed to ensure fresh tokens: %w", err)
 	}
 
-	return aggregator.OAuthAccessToken, nil
+	return creds.OAuthAccessToken, nil
 }
 
 // RevokeKey revokes an API key for an aggregator.
@@ -295,20 +309,25 @@ func (s *APIKeyService) RevokeKey(ctx context.Context, aggregatorDID string) err
 	return nil
 }
 
-// GetAggregator retrieves the full aggregator object by DID.
-// This is used by the adapter to get the full aggregator for token refresh.
+// GetAggregator retrieves the public aggregator information by DID.
+// For credential/authentication data, use GetAggregatorCredentials instead.
 func (s *APIKeyService) GetAggregator(ctx context.Context, aggregatorDID string) (*Aggregator, error) {
 	return s.repo.GetAggregator(ctx, aggregatorDID)
 }
 
+// GetAggregatorCredentials retrieves credentials for an aggregator by DID.
+func (s *APIKeyService) GetAggregatorCredentials(ctx context.Context, aggregatorDID string) (*AggregatorCredentials, error) {
+	return s.repo.GetAggregatorCredentials(ctx, aggregatorDID)
+}
+
 // GetAPIKeyInfo returns information about an aggregator's API key (without the actual key).
 func (s *APIKeyService) GetAPIKeyInfo(ctx context.Context, aggregatorDID string) (*APIKeyInfo, error) {
-	aggregator, err := s.repo.GetAggregator(ctx, aggregatorDID)
+	creds, err := s.repo.GetAggregatorCredentials(ctx, aggregatorDID)
 	if err != nil {
 		return nil, err
 	}
 
-	if aggregator.APIKeyHash == "" {
+	if creds.APIKeyHash == "" {
 		return &APIKeyInfo{
 			HasKey: false,
 		}, nil
@@ -316,11 +335,11 @@ func (s *APIKeyService) GetAPIKeyInfo(ctx context.Context, aggregatorDID string)
 
 	return &APIKeyInfo{
 		HasKey:     true,
-		KeyPrefix:  aggregator.APIKeyPrefix,
-		CreatedAt:  aggregator.APIKeyCreatedAt,
-		LastUsedAt: aggregator.APIKeyLastUsed,
-		IsRevoked:  aggregator.APIKeyRevokedAt != nil,
-		RevokedAt:  aggregator.APIKeyRevokedAt,
+		KeyPrefix:  creds.APIKeyPrefix,
+		CreatedAt:  creds.APIKeyCreatedAt,
+		LastUsedAt: creds.APIKeyLastUsed,
+		IsRevoked:  creds.APIKeyRevokedAt != nil,
+		RevokedAt:  creds.APIKeyRevokedAt,
 	}, nil
 }
 

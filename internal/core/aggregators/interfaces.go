@@ -3,6 +3,8 @@ package aggregators
 import (
 	"context"
 	"time"
+
+	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 )
 
 // Repository defines the interface for aggregator data persistence
@@ -38,6 +40,13 @@ type Repository interface {
 	// API Key Authentication
 	// GetByAPIKeyHash looks up an aggregator by their API key hash for authentication
 	GetByAPIKeyHash(ctx context.Context, keyHash string) (*Aggregator, error)
+	// GetAggregatorCredentials retrieves only the credential fields for an aggregator.
+	// Used by APIKeyService for authentication operations where full aggregator is not needed.
+	GetAggregatorCredentials(ctx context.Context, did string) (*AggregatorCredentials, error)
+	// GetCredentialsByAPIKeyHash looks up aggregator credentials by their API key hash.
+	// Returns ErrAPIKeyRevoked if the key has been revoked.
+	// Returns ErrAPIKeyInvalid if no aggregator found with that hash.
+	GetCredentialsByAPIKeyHash(ctx context.Context, keyHash string) (*AggregatorCredentials, error)
 	// SetAPIKey stores API key credentials and OAuth session for an aggregator
 	SetAPIKey(ctx context.Context, did, keyPrefix, keyHash string, oauthCreds *OAuthCredentials) error
 	// UpdateOAuthTokens updates OAuth tokens after a refresh operation
@@ -73,4 +82,24 @@ type Service interface {
 
 	// Post tracking (called after successful post creation)
 	RecordAggregatorPost(ctx context.Context, aggregatorDID, communityDID, postURI, postCID string) error
+}
+
+// APIKeyServiceInterface defines the interface for API key operations used by handlers.
+// This interface enables easier testing by allowing mock implementations.
+type APIKeyServiceInterface interface {
+	// GenerateKey creates a new API key for an aggregator.
+	// Returns the plain-text key (only shown once) and the key prefix for reference.
+	GenerateKey(ctx context.Context, aggregatorDID string, oauthSession *oauth.ClientSessionData) (plainKey string, keyPrefix string, err error)
+
+	// GetAPIKeyInfo returns information about an aggregator's API key (without the actual key).
+	GetAPIKeyInfo(ctx context.Context, aggregatorDID string) (*APIKeyInfo, error)
+
+	// RevokeKey revokes an API key for an aggregator.
+	RevokeKey(ctx context.Context, aggregatorDID string) error
+
+	// GetFailedLastUsedUpdates returns the count of failed last_used timestamp updates.
+	GetFailedLastUsedUpdates() int64
+
+	// GetFailedNonceUpdates returns the count of failed OAuth nonce updates.
+	GetFailedNonceUpdates() int64
 }

@@ -1,22 +1,22 @@
 package aggregator
 
 import (
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/aggregators"
-	"encoding/json"
 	"log"
 	"net/http"
 	"time"
+
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/aggregators"
 )
 
 // RevokeAPIKeyHandler handles API key revocation for aggregators
 type RevokeAPIKeyHandler struct {
-	apiKeyService     *aggregators.APIKeyService
+	apiKeyService     aggregators.APIKeyServiceInterface
 	aggregatorService aggregators.Service
 }
 
 // NewRevokeAPIKeyHandler creates a new handler for API key revocation
-func NewRevokeAPIKeyHandler(apiKeyService *aggregators.APIKeyService, aggregatorService aggregators.Service) *RevokeAPIKeyHandler {
+func NewRevokeAPIKeyHandler(apiKeyService aggregators.APIKeyServiceInterface, aggregatorService aggregators.Service) *RevokeAPIKeyHandler {
 	return &RevokeAPIKeyHandler{
 		apiKeyService:     apiKeyService,
 		aggregatorService: aggregatorService,
@@ -90,11 +90,7 @@ func (h *RevokeAPIKeyHandler) HandleRevokeAPIKey(w http.ResponseWriter, r *http.
 		RevokedAt: time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("ERROR: Failed to encode response: %v", err)
-	}
+	writeJSONResponse(w, http.StatusOK, response)
 }
 
 // formatTimestamp returns current time in ISO8601 format

@@ -390,6 +390,10 @@ func main() {
 	aggregatorService := aggregators.NewAggregatorService(aggregatorRepo, communityService)
 	log.Println("✅ Aggregator service initialized")
 
+	// Initialize API key service for aggregator authentication
+	apiKeyService := aggregators.NewAPIKeyService(aggregatorRepo, oauthClient.ClientApp)
+	log.Println("✅ API key service initialized")
+
 	// Get instance DID for service auth validator audience
 	serviceDID := instanceDID // Use instance DID as the service audience
 
@@ -402,16 +406,18 @@ func main() {
 	}
 	log.Printf("✅ Service auth validator initialized (audience: %s)", serviceDID)
 
-	// Create DualAuthMiddleware that supports both OAuth and service JWT
+	// Create DualAuthMiddleware that supports OAuth, service JWT, and API keys
 	// OAuth tokens are for user authentication (sealed session tokens)
 	// Service JWTs are for aggregator authentication (PDS-signed tokens)
+	// API keys are for aggregator bot authentication (stateless, cryptographic)
+	apiKeyValidator := middleware.NewAPIKeyValidatorAdapter(apiKeyService)
 	dualAuth := middleware.NewDualAuthMiddleware(
 		oauthClient,      // SessionUnsealer for OAuth
 		oauthStore,       // ClientAuthStore for OAuth sessions
 		serviceValidator, // ServiceAuthValidator for JWT validation
 		aggregatorRepo,   // AggregatorChecker - uses repo directly since it implements the interface
-	)
-	log.Println("✅ Dual auth middleware initialized (OAuth + service JWT)")
+	).WithAPIKeyValidator(apiKeyValidator)
+	log.Println("✅ Dual auth middleware initialized (OAuth + service JWT + API keys)")
 
 	// Initialize unfurl cache repository
 	unfurlRepo := unfurl.NewRepository(db)
@@ -622,6 +628,13 @@ func main() {
 
 	routes.RegisterAggregatorRoutes(r, aggregatorService, communityService, userService, identityResolver)
 	log.Println("Aggregator XRPC endpoints registered (query endpoints public, registration endpoint public)")
+
+	routes.RegisterAggregatorAPIKeyRoutes(r, authMiddleware, apiKeyService, aggregatorService)
+	log.Println("✅ Aggregator API key endpoints registered")
+	log.Println("  - POST /xrpc/social.coves.aggregator.createApiKey (requires OAuth)")
+	log.Println("  - GET /xrpc/social.coves.aggregator.getApiKey (requires OAuth)")
+	log.Println("  - POST /xrpc/social.coves.aggregator.revokeApiKey (requires OAuth)")
+	log.Println("  - GET /xrpc/social.coves.aggregator.getMetrics (public)")
 
 	// Comment query API - supports optional authentication for viewer state
 	// Stricter rate limiting for expensive nested comment queries

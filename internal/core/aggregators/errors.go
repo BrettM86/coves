@@ -18,11 +18,12 @@ var (
 	ErrNotImplemented         = errors.New("feature not yet implemented") // For Phase 2 write-forward operations
 
 	// API Key authentication errors
-	ErrAPIKeyRevoked      = errors.New("API key has been revoked")
-	ErrAPIKeyInvalid      = errors.New("invalid API key")
-	ErrAPIKeyNotFound     = errors.New("API key not found for this aggregator")
-	ErrOAuthTokenExpired  = errors.New("OAuth token has expired and needs refresh")
-	ErrOAuthRefreshFailed = errors.New("failed to refresh OAuth token")
+	ErrAPIKeyRevoked         = errors.New("API key has been revoked")
+	ErrAPIKeyInvalid         = errors.New("invalid API key")
+	ErrAPIKeyNotFound        = errors.New("API key not found for this aggregator")
+	ErrOAuthTokenExpired     = errors.New("OAuth token has expired and needs refresh")
+	ErrOAuthRefreshFailed    = errors.New("failed to refresh OAuth token")
+	ErrOAuthSessionMismatch  = errors.New("OAuth session DID does not match aggregator DID")
 )
 
 // ValidationError represents a validation error with field details

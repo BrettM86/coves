@@ -3,6 +3,7 @@ package aggregator
 import (
 	"Coves/internal/core/aggregators"
 	"Coves/internal/core/communities"
+	"bytes"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -14,16 +15,37 @@ type ErrorResponse struct {
 	Message string `json:"message"`
 }
 
-// writeError writes a JSON error response
-func writeError(w http.ResponseWriter, statusCode int, errorType, message string) {
+// writeJSONResponse buffers the JSON encoding before sending headers.
+// This ensures that encoding failures don't result in partial responses
+// with already-sent headers. Returns true if the response was written
+// successfully, false otherwise.
+func writeJSONResponse(w http.ResponseWriter, statusCode int, data interface{}) bool {
+	// Buffer the JSON first to detect encoding errors before sending headers
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(data); err != nil {
+		log.Printf("ERROR: Failed to encode JSON response: %v", err)
+		// Send a proper error response since we haven't sent headers yet
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"InternalServerError","message":"Failed to encode response"}`))
+		return false
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	if err := json.NewEncoder(w).Encode(ErrorResponse{
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		log.Printf("ERROR: Failed to write response body: %v", err)
+		return false
+	}
+	return true
+}
+
+// writeError writes a JSON error response with proper buffering
+func writeError(w http.ResponseWriter, statusCode int, errorType, message string) {
+	writeJSONResponse(w, statusCode, ErrorResponse{
 		Error:   errorType,
 		Message: message,
-	}); err != nil {
-		log.Printf("ERROR: Failed to encode error response: %v", err)
-	}
+	})
 }
 
 // handleServiceError maps service errors to HTTP responses

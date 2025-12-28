@@ -69,43 +69,19 @@ func (r *postgresAggregatorRepo) CreateAggregator(ctx context.Context, agg *aggr
 }
 
 // GetAggregator retrieves an aggregator by DID
-// Includes API key and OAuth columns (decrypted) for GetAPIKeyInfo and token refresh operations
+// Returns only public/display fields - use GetAggregatorCredentials for authentication data
 func (r *postgresAggregatorRepo) GetAggregator(ctx context.Context, did string) (*aggregators.Aggregator, error) {
 	query := `
 		SELECT
 			did, display_name, description, avatar_url, config_schema,
 			maintainer_did, source_url, communities_using, posts_created,
-			created_at, indexed_at, record_uri, record_cid,
-			api_key_prefix, api_key_hash, api_key_created_at, api_key_revoked_at, api_key_last_used_at,
-			CASE
-				WHEN oauth_access_token_encrypted IS NOT NULL
-				THEN pgp_sym_decrypt(oauth_access_token_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
-				ELSE NULL
-			END as oauth_access_token,
-			CASE
-				WHEN oauth_refresh_token_encrypted IS NOT NULL
-				THEN pgp_sym_decrypt(oauth_refresh_token_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
-				ELSE NULL
-			END as oauth_refresh_token,
-			oauth_token_expires_at,
-			oauth_pds_url, oauth_auth_server_iss, oauth_auth_server_token_endpoint,
-			CASE
-				WHEN oauth_dpop_private_key_encrypted IS NOT NULL
-				THEN pgp_sym_decrypt(oauth_dpop_private_key_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
-				ELSE NULL
-			END as oauth_dpop_private_key_multibase,
-			oauth_dpop_authserver_nonce, oauth_dpop_pds_nonce
+			created_at, indexed_at, record_uri, record_cid
 		FROM aggregators
 		WHERE did = $1`
 
 	agg := &aggregators.Aggregator{}
 	var description, avatarURL, maintainerDID, sourceURL, recordURI, recordCID sql.NullString
-	var apiKeyPrefix, apiKeyHash sql.NullString
-	var oauthAccessToken, oauthRefreshToken sql.NullString
-	var oauthPDSURL, oauthAuthServerIss, oauthAuthServerTokenEndpoint sql.NullString
-	var oauthDPoPPrivateKey, oauthDPoPAuthServerNonce, oauthDPoPPDSNonce sql.NullString
 	var configSchema []byte
-	var apiKeyCreatedAt, apiKeyRevokedAt, apiKeyLastUsed, oauthTokenExpiresAt sql.NullTime
 
 	err := r.db.QueryRowContext(ctx, query, did).Scan(
 		&agg.DID,
@@ -121,20 +97,6 @@ func (r *postgresAggregatorRepo) GetAggregator(ctx context.Context, did string) 
 		&agg.IndexedAt,
 		&recordURI,
 		&recordCID,
-		&apiKeyPrefix,
-		&apiKeyHash,
-		&apiKeyCreatedAt,
-		&apiKeyRevokedAt,
-		&apiKeyLastUsed,
-		&oauthAccessToken,
-		&oauthRefreshToken,
-		&oauthTokenExpiresAt,
-		&oauthPDSURL,
-		&oauthAuthServerIss,
-		&oauthAuthServerTokenEndpoint,
-		&oauthDPoPPrivateKey,
-		&oauthDPoPAuthServerNonce,
-		&oauthDPoPPDSNonce,
 	)
 
 	if err == sql.ErrNoRows {
@@ -151,37 +113,9 @@ func (r *postgresAggregatorRepo) GetAggregator(ctx context.Context, did string) 
 	agg.SourceURL = sourceURL.String
 	agg.RecordURI = recordURI.String
 	agg.RecordCID = recordCID.String
-	agg.APIKeyPrefix = apiKeyPrefix.String
-	agg.APIKeyHash = apiKeyHash.String
-	agg.OAuthAccessToken = oauthAccessToken.String
-	agg.OAuthRefreshToken = oauthRefreshToken.String
-	agg.OAuthPDSURL = oauthPDSURL.String
-	agg.OAuthAuthServerIss = oauthAuthServerIss.String
-	agg.OAuthAuthServerTokenEndpoint = oauthAuthServerTokenEndpoint.String
-	agg.OAuthDPoPPrivateKeyMultibase = oauthDPoPPrivateKey.String
-	agg.OAuthDPoPAuthServerNonce = oauthDPoPAuthServerNonce.String
-	agg.OAuthDPoPPDSNonce = oauthDPoPPDSNonce.String
 
 	if configSchema != nil {
 		agg.ConfigSchema = configSchema
-	}
-
-	// Map nullable time fields
-	if apiKeyCreatedAt.Valid {
-		t := apiKeyCreatedAt.Time
-		agg.APIKeyCreatedAt = &t
-	}
-	if apiKeyRevokedAt.Valid {
-		t := apiKeyRevokedAt.Time
-		agg.APIKeyRevokedAt = &t
-	}
-	if apiKeyLastUsed.Valid {
-		t := apiKeyLastUsed.Time
-		agg.APIKeyLastUsed = &t
-	}
-	if oauthTokenExpiresAt.Valid {
-		t := oauthTokenExpiresAt.Time
-		agg.OAuthTokenExpiresAt = &t
 	}
 
 	return agg, nil
@@ -828,42 +762,21 @@ func (r *postgresAggregatorRepo) GetRecentPosts(ctx context.Context, aggregatorD
 // GetByAPIKeyHash looks up an aggregator by their API key hash for authentication
 // Returns ErrAggregatorNotFound if no aggregator exists with that key hash
 // Returns ErrAPIKeyRevoked if the API key has been revoked
+// Note: Returns only public Aggregator fields - use GetCredentialsByAPIKeyHash for credentials
 func (r *postgresAggregatorRepo) GetByAPIKeyHash(ctx context.Context, keyHash string) (*aggregators.Aggregator, error) {
 	query := `
 		SELECT
 			did, display_name, description, avatar_url, config_schema,
 			maintainer_did, source_url, communities_using, posts_created,
 			created_at, indexed_at, record_uri, record_cid,
-			api_key_prefix, api_key_hash, api_key_created_at, api_key_revoked_at, api_key_last_used_at,
-			CASE
-				WHEN oauth_access_token_encrypted IS NOT NULL
-				THEN pgp_sym_decrypt(oauth_access_token_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
-				ELSE NULL
-			END as oauth_access_token,
-			CASE
-				WHEN oauth_refresh_token_encrypted IS NOT NULL
-				THEN pgp_sym_decrypt(oauth_refresh_token_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
-				ELSE NULL
-			END as oauth_refresh_token,
-			oauth_token_expires_at,
-			oauth_pds_url, oauth_auth_server_iss, oauth_auth_server_token_endpoint,
-			CASE
-				WHEN oauth_dpop_private_key_encrypted IS NOT NULL
-				THEN pgp_sym_decrypt(oauth_dpop_private_key_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
-				ELSE NULL
-			END as oauth_dpop_private_key_multibase,
-			oauth_dpop_authserver_nonce, oauth_dpop_pds_nonce
+			api_key_revoked_at
 		FROM aggregators
 		WHERE api_key_hash = $1`
 
 	agg := &aggregators.Aggregator{}
 	var description, avatarURL, maintainerDID, sourceURL, recordURI, recordCID sql.NullString
-	var apiKeyPrefix, apiKeyHash sql.NullString
-	var oauthAccessToken, oauthRefreshToken sql.NullString
-	var oauthPDSURL, oauthAuthServerIss, oauthAuthServerTokenEndpoint sql.NullString
-	var oauthDPoPPrivateKey, oauthDPoPAuthServerNonce, oauthDPoPPDSNonce sql.NullString
 	var configSchema []byte
-	var apiKeyCreatedAt, apiKeyRevokedAt, apiKeyLastUsed, oauthTokenExpiresAt sql.NullTime
+	var apiKeyRevokedAt sql.NullTime
 
 	err := r.db.QueryRowContext(ctx, query, keyHash).Scan(
 		&agg.DID,
@@ -879,20 +792,7 @@ func (r *postgresAggregatorRepo) GetByAPIKeyHash(ctx context.Context, keyHash st
 		&agg.IndexedAt,
 		&recordURI,
 		&recordCID,
-		&apiKeyPrefix,
-		&apiKeyHash,
-		&apiKeyCreatedAt,
 		&apiKeyRevokedAt,
-		&apiKeyLastUsed,
-		&oauthAccessToken,
-		&oauthRefreshToken,
-		&oauthTokenExpiresAt,
-		&oauthPDSURL,
-		&oauthAuthServerIss,
-		&oauthAuthServerTokenEndpoint,
-		&oauthDPoPPrivateKey,
-		&oauthDPoPAuthServerNonce,
-		&oauthDPoPPDSNonce,
 	)
 
 	if err == sql.ErrNoRows {
@@ -902,6 +802,11 @@ func (r *postgresAggregatorRepo) GetByAPIKeyHash(ctx context.Context, keyHash st
 		return nil, fmt.Errorf("failed to get aggregator by API key hash: %w", err)
 	}
 
+	// Check if API key is revoked before returning
+	if apiKeyRevokedAt.Valid {
+		return nil, aggregators.ErrAPIKeyRevoked
+	}
+
 	// Map nullable string fields
 	agg.Description = description.String
 	agg.AvatarURL = avatarURL.String
@@ -909,42 +814,9 @@ func (r *postgresAggregatorRepo) GetByAPIKeyHash(ctx context.Context, keyHash st
 	agg.SourceURL = sourceURL.String
 	agg.RecordURI = recordURI.String
 	agg.RecordCID = recordCID.String
-	agg.APIKeyPrefix = apiKeyPrefix.String
-	agg.APIKeyHash = apiKeyHash.String
-	agg.OAuthAccessToken = oauthAccessToken.String
-	agg.OAuthRefreshToken = oauthRefreshToken.String
-	agg.OAuthPDSURL = oauthPDSURL.String
-	agg.OAuthAuthServerIss = oauthAuthServerIss.String
-	agg.OAuthAuthServerTokenEndpoint = oauthAuthServerTokenEndpoint.String
-	agg.OAuthDPoPPrivateKeyMultibase = oauthDPoPPrivateKey.String
-	agg.OAuthDPoPAuthServerNonce = oauthDPoPAuthServerNonce.String
-	agg.OAuthDPoPPDSNonce = oauthDPoPPDSNonce.String
 
 	if configSchema != nil {
 		agg.ConfigSchema = configSchema
-	}
-
-	// Map nullable time fields
-	if apiKeyCreatedAt.Valid {
-		t := apiKeyCreatedAt.Time
-		agg.APIKeyCreatedAt = &t
-	}
-	if apiKeyRevokedAt.Valid {
-		t := apiKeyRevokedAt.Time
-		agg.APIKeyRevokedAt = &t
-	}
-	if apiKeyLastUsed.Valid {
-		t := apiKeyLastUsed.Time
-		agg.APIKeyLastUsed = &t
-	}
-	if oauthTokenExpiresAt.Valid {
-		t := oauthTokenExpiresAt.Time
-		agg.OAuthTokenExpiresAt = &t
-	}
-
-	// Check if API key is revoked
-	if agg.APIKeyRevokedAt != nil {
-		return nil, aggregators.ErrAPIKeyRevoked
 	}
 
 	return agg, nil
@@ -1098,6 +970,198 @@ func (r *postgresAggregatorRepo) RevokeAPIKey(ctx context.Context, did string) e
 	}
 
 	return nil
+}
+
+// GetAggregatorCredentials retrieves only credential data for an aggregator
+// Used by APIKeyService for authentication operations where full aggregator is not needed
+func (r *postgresAggregatorRepo) GetAggregatorCredentials(ctx context.Context, did string) (*aggregators.AggregatorCredentials, error) {
+	query := `
+		SELECT
+			did,
+			api_key_prefix, api_key_hash, api_key_created_at, api_key_revoked_at, api_key_last_used_at,
+			CASE
+				WHEN oauth_access_token_encrypted IS NOT NULL
+				THEN pgp_sym_decrypt(oauth_access_token_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
+				ELSE NULL
+			END as oauth_access_token,
+			CASE
+				WHEN oauth_refresh_token_encrypted IS NOT NULL
+				THEN pgp_sym_decrypt(oauth_refresh_token_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
+				ELSE NULL
+			END as oauth_refresh_token,
+			oauth_token_expires_at,
+			oauth_pds_url, oauth_auth_server_iss, oauth_auth_server_token_endpoint,
+			CASE
+				WHEN oauth_dpop_private_key_encrypted IS NOT NULL
+				THEN pgp_sym_decrypt(oauth_dpop_private_key_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
+				ELSE NULL
+			END as oauth_dpop_private_key_multibase,
+			oauth_dpop_authserver_nonce, oauth_dpop_pds_nonce
+		FROM aggregators
+		WHERE did = $1`
+
+	creds := &aggregators.AggregatorCredentials{}
+	var apiKeyPrefix, apiKeyHash sql.NullString
+	var oauthAccessToken, oauthRefreshToken sql.NullString
+	var oauthPDSURL, oauthAuthServerIss, oauthAuthServerTokenEndpoint sql.NullString
+	var oauthDPoPPrivateKey, oauthDPoPAuthServerNonce, oauthDPoPPDSNonce sql.NullString
+	var apiKeyCreatedAt, apiKeyRevokedAt, apiKeyLastUsed, oauthTokenExpiresAt sql.NullTime
+
+	err := r.db.QueryRowContext(ctx, query, did).Scan(
+		&creds.DID,
+		&apiKeyPrefix,
+		&apiKeyHash,
+		&apiKeyCreatedAt,
+		&apiKeyRevokedAt,
+		&apiKeyLastUsed,
+		&oauthAccessToken,
+		&oauthRefreshToken,
+		&oauthTokenExpiresAt,
+		&oauthPDSURL,
+		&oauthAuthServerIss,
+		&oauthAuthServerTokenEndpoint,
+		&oauthDPoPPrivateKey,
+		&oauthDPoPAuthServerNonce,
+		&oauthDPoPPDSNonce,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, aggregators.ErrAggregatorNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get aggregator credentials: %w", err)
+	}
+
+	// Map nullable string fields
+	creds.APIKeyPrefix = apiKeyPrefix.String
+	creds.APIKeyHash = apiKeyHash.String
+	creds.OAuthAccessToken = oauthAccessToken.String
+	creds.OAuthRefreshToken = oauthRefreshToken.String
+	creds.OAuthPDSURL = oauthPDSURL.String
+	creds.OAuthAuthServerIss = oauthAuthServerIss.String
+	creds.OAuthAuthServerTokenEndpoint = oauthAuthServerTokenEndpoint.String
+	creds.OAuthDPoPPrivateKeyMultibase = oauthDPoPPrivateKey.String
+	creds.OAuthDPoPAuthServerNonce = oauthDPoPAuthServerNonce.String
+	creds.OAuthDPoPPDSNonce = oauthDPoPPDSNonce.String
+
+	// Map nullable time fields
+	if apiKeyCreatedAt.Valid {
+		t := apiKeyCreatedAt.Time
+		creds.APIKeyCreatedAt = &t
+	}
+	if apiKeyRevokedAt.Valid {
+		t := apiKeyRevokedAt.Time
+		creds.APIKeyRevokedAt = &t
+	}
+	if apiKeyLastUsed.Valid {
+		t := apiKeyLastUsed.Time
+		creds.APIKeyLastUsed = &t
+	}
+	if oauthTokenExpiresAt.Valid {
+		t := oauthTokenExpiresAt.Time
+		creds.OAuthTokenExpiresAt = &t
+	}
+
+	return creds, nil
+}
+
+// GetCredentialsByAPIKeyHash looks up credentials by API key hash for authentication
+// Returns ErrAPIKeyRevoked if the API key has been revoked
+// Returns ErrAPIKeyInvalid if no aggregator found with that hash
+func (r *postgresAggregatorRepo) GetCredentialsByAPIKeyHash(ctx context.Context, keyHash string) (*aggregators.AggregatorCredentials, error) {
+	query := `
+		SELECT
+			did,
+			api_key_prefix, api_key_hash, api_key_created_at, api_key_revoked_at, api_key_last_used_at,
+			CASE
+				WHEN oauth_access_token_encrypted IS NOT NULL
+				THEN pgp_sym_decrypt(oauth_access_token_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
+				ELSE NULL
+			END as oauth_access_token,
+			CASE
+				WHEN oauth_refresh_token_encrypted IS NOT NULL
+				THEN pgp_sym_decrypt(oauth_refresh_token_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
+				ELSE NULL
+			END as oauth_refresh_token,
+			oauth_token_expires_at,
+			oauth_pds_url, oauth_auth_server_iss, oauth_auth_server_token_endpoint,
+			CASE
+				WHEN oauth_dpop_private_key_encrypted IS NOT NULL
+				THEN pgp_sym_decrypt(oauth_dpop_private_key_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
+				ELSE NULL
+			END as oauth_dpop_private_key_multibase,
+			oauth_dpop_authserver_nonce, oauth_dpop_pds_nonce
+		FROM aggregators
+		WHERE api_key_hash = $1`
+
+	creds := &aggregators.AggregatorCredentials{}
+	var apiKeyPrefix, apiKeyHash sql.NullString
+	var oauthAccessToken, oauthRefreshToken sql.NullString
+	var oauthPDSURL, oauthAuthServerIss, oauthAuthServerTokenEndpoint sql.NullString
+	var oauthDPoPPrivateKey, oauthDPoPAuthServerNonce, oauthDPoPPDSNonce sql.NullString
+	var apiKeyCreatedAt, apiKeyRevokedAt, apiKeyLastUsed, oauthTokenExpiresAt sql.NullTime
+
+	err := r.db.QueryRowContext(ctx, query, keyHash).Scan(
+		&creds.DID,
+		&apiKeyPrefix,
+		&apiKeyHash,
+		&apiKeyCreatedAt,
+		&apiKeyRevokedAt,
+		&apiKeyLastUsed,
+		&oauthAccessToken,
+		&oauthRefreshToken,
+		&oauthTokenExpiresAt,
+		&oauthPDSURL,
+		&oauthAuthServerIss,
+		&oauthAuthServerTokenEndpoint,
+		&oauthDPoPPrivateKey,
+		&oauthDPoPAuthServerNonce,
+		&oauthDPoPPDSNonce,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, aggregators.ErrAPIKeyInvalid
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get credentials by API key hash: %w", err)
+	}
+
+	// Map nullable string fields
+	creds.APIKeyPrefix = apiKeyPrefix.String
+	creds.APIKeyHash = apiKeyHash.String
+	creds.OAuthAccessToken = oauthAccessToken.String
+	creds.OAuthRefreshToken = oauthRefreshToken.String
+	creds.OAuthPDSURL = oauthPDSURL.String
+	creds.OAuthAuthServerIss = oauthAuthServerIss.String
+	creds.OAuthAuthServerTokenEndpoint = oauthAuthServerTokenEndpoint.String
+	creds.OAuthDPoPPrivateKeyMultibase = oauthDPoPPrivateKey.String
+	creds.OAuthDPoPAuthServerNonce = oauthDPoPAuthServerNonce.String
+	creds.OAuthDPoPPDSNonce = oauthDPoPPDSNonce.String
+
+	// Map nullable time fields
+	if apiKeyCreatedAt.Valid {
+		t := apiKeyCreatedAt.Time
+		creds.APIKeyCreatedAt = &t
+	}
+	if apiKeyRevokedAt.Valid {
+		t := apiKeyRevokedAt.Time
+		creds.APIKeyRevokedAt = &t
+	}
+	if apiKeyLastUsed.Valid {
+		t := apiKeyLastUsed.Time
+		creds.APIKeyLastUsed = &t
+	}
+	if oauthTokenExpiresAt.Valid {
+		t := oauthTokenExpiresAt.Time
+		creds.OAuthTokenExpiresAt = &t
+	}
+
+	// Check if API key is revoked
+	if creds.APIKeyRevokedAt != nil {
+		return nil, aggregators.ErrAPIKeyRevoked
+	}
+
+	return creds, nil
 }
 
 // ===== Helper Functions =====

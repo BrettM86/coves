@@ -1,22 +1,22 @@
 package aggregator
 
 import (
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/aggregators"
-	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
-	"strings"
+
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/aggregators"
 )
 
 // CreateAPIKeyHandler handles API key creation for aggregators
 type CreateAPIKeyHandler struct {
-	apiKeyService     *aggregators.APIKeyService
+	apiKeyService     aggregators.APIKeyServiceInterface
 	aggregatorService aggregators.Service
 }
 
 // NewCreateAPIKeyHandler creates a new handler for API key creation
-func NewCreateAPIKeyHandler(apiKeyService *aggregators.APIKeyService, aggregatorService aggregators.Service) *CreateAPIKeyHandler {
+func NewCreateAPIKeyHandler(apiKeyService aggregators.APIKeyServiceInterface, aggregatorService aggregators.Service) *CreateAPIKeyHandler {
 	return &CreateAPIKeyHandler{
 		apiKeyService:     apiKeyService,
 		aggregatorService: aggregatorService,
@@ -76,12 +76,11 @@ func (h *CreateAPIKeyHandler) HandleCreateAPIKey(w http.ResponseWriter, r *http.
 		log.Printf("ERROR: Failed to generate API key for %s: %v", userDID, err)
 
 		// Differentiate error types for appropriate HTTP status codes
-		errStr := err.Error()
 		switch {
-		case aggregators.IsNotFound(err) || strings.Contains(errStr, "failed to get aggregator"):
+		case aggregators.IsNotFound(err):
 			// Aggregator not found in database - should not happen if IsAggregator check passed
 			writeError(w, http.StatusForbidden, "AggregatorRequired", "User is not a registered aggregator")
-		case strings.Contains(errStr, "DID mismatch"):
+		case errors.Is(err, aggregators.ErrOAuthSessionMismatch):
 			// OAuth session DID doesn't match the requested aggregator DID
 			writeError(w, http.StatusBadRequest, "SessionMismatch", "OAuth session does not match the requested aggregator")
 		default:
@@ -99,9 +98,5 @@ func (h *CreateAPIKeyHandler) HandleCreateAPIKey(w http.ResponseWriter, r *http.
 		CreatedAt: formatTimestamp(),
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("ERROR: Failed to encode response: %v", err)
-	}
+	writeJSONResponse(w, http.StatusOK, response)
 }

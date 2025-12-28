@@ -50,13 +50,15 @@ func newTestAPIKeyService(repo aggregators.Repository) *aggregators.APIKeyServic
 
 // mockAPIKeyServiceRepository implements aggregators.Repository for testing
 type mockAPIKeyServiceRepository struct {
-	getAggregatorFunc        func(ctx context.Context, did string) (*aggregators.Aggregator, error)
-	getByAPIKeyHashFunc      func(ctx context.Context, keyHash string) (*aggregators.Aggregator, error)
-	setAPIKeyFunc            func(ctx context.Context, did, keyPrefix, keyHash string, oauthCreds *aggregators.OAuthCredentials) error
-	updateOAuthTokensFunc    func(ctx context.Context, did, accessToken, refreshToken string, expiresAt time.Time) error
-	updateOAuthNoncesFunc    func(ctx context.Context, did, authServerNonce, pdsNonce string) error
-	updateAPIKeyLastUsedFunc func(ctx context.Context, did string) error
-	revokeAPIKeyFunc         func(ctx context.Context, did string) error
+	getAggregatorFunc              func(ctx context.Context, did string) (*aggregators.Aggregator, error)
+	getByAPIKeyHashFunc            func(ctx context.Context, keyHash string) (*aggregators.Aggregator, error)
+	getCredentialsByAPIKeyHashFunc func(ctx context.Context, keyHash string) (*aggregators.AggregatorCredentials, error)
+	getAggregatorCredentialsFunc   func(ctx context.Context, did string) (*aggregators.AggregatorCredentials, error)
+	setAPIKeyFunc                  func(ctx context.Context, did, keyPrefix, keyHash string, oauthCreds *aggregators.OAuthCredentials) error
+	updateOAuthTokensFunc          func(ctx context.Context, did, accessToken, refreshToken string, expiresAt time.Time) error
+	updateOAuthNoncesFunc          func(ctx context.Context, did, authServerNonce, pdsNonce string) error
+	updateAPIKeyLastUsedFunc       func(ctx context.Context, did string) error
+	revokeAPIKeyFunc               func(ctx context.Context, did string) error
 }
 
 func (m *mockAPIKeyServiceRepository) GetAggregator(ctx context.Context, did string) (*aggregators.Aggregator, error) {
@@ -181,6 +183,20 @@ func (m *mockAPIKeyServiceRepository) GetRecentPosts(ctx context.Context, aggreg
 	return nil, nil
 }
 
+func (m *mockAPIKeyServiceRepository) GetAggregatorCredentials(ctx context.Context, did string) (*aggregators.AggregatorCredentials, error) {
+	if m.getAggregatorCredentialsFunc != nil {
+		return m.getAggregatorCredentialsFunc(ctx, did)
+	}
+	return &aggregators.AggregatorCredentials{DID: did}, nil
+}
+
+func (m *mockAPIKeyServiceRepository) GetCredentialsByAPIKeyHash(ctx context.Context, keyHash string) (*aggregators.AggregatorCredentials, error) {
+	if m.getCredentialsByAPIKeyHashFunc != nil {
+		return m.getCredentialsByAPIKeyHashFunc(ctx, keyHash)
+	}
+	return nil, aggregators.ErrAggregatorNotFound
+}
+
 // =============================================================================
 // ValidateKey Delegation Tests
 // =============================================================================
@@ -189,12 +205,11 @@ func TestAPIKeyValidatorAdapter_ValidateKey_DelegatesToService(t *testing.T) {
 	expectedDID := "did:plc:aggregator123"
 
 	repo := &mockAPIKeyServiceRepository{
-		getByAPIKeyHashFunc: func(ctx context.Context, keyHash string) (*aggregators.Aggregator, error) {
-			return &aggregators.Aggregator{
+		getCredentialsByAPIKeyHashFunc: func(ctx context.Context, keyHash string) (*aggregators.AggregatorCredentials, error) {
+			return &aggregators.AggregatorCredentials{
 				DID:          expectedDID,
 				APIKeyHash:   keyHash,
 				APIKeyPrefix: "ckapi_0123",
-				DisplayName:  "Test Aggregator",
 			}, nil
 		},
 		updateAPIKeyLastUsedFunc: func(ctx context.Context, did string) error {
@@ -246,7 +261,7 @@ func TestAPIKeyValidatorAdapter_ValidateKey_InvalidKey(t *testing.T) {
 
 func TestAPIKeyValidatorAdapter_ValidateKey_NotFound(t *testing.T) {
 	repo := &mockAPIKeyServiceRepository{
-		getByAPIKeyHashFunc: func(ctx context.Context, keyHash string) (*aggregators.Aggregator, error) {
+		getCredentialsByAPIKeyHashFunc: func(ctx context.Context, keyHash string) (*aggregators.AggregatorCredentials, error) {
 			return nil, aggregators.ErrAggregatorNotFound
 		},
 	}
@@ -267,7 +282,7 @@ func TestAPIKeyValidatorAdapter_ValidateKey_NotFound(t *testing.T) {
 
 func TestAPIKeyValidatorAdapter_ValidateKey_Revoked(t *testing.T) {
 	repo := &mockAPIKeyServiceRepository{
-		getByAPIKeyHashFunc: func(ctx context.Context, keyHash string) (*aggregators.Aggregator, error) {
+		getCredentialsByAPIKeyHashFunc: func(ctx context.Context, keyHash string) (*aggregators.AggregatorCredentials, error) {
 			return nil, aggregators.ErrAPIKeyRevoked
 		},
 	}
@@ -289,7 +304,7 @@ func TestAPIKeyValidatorAdapter_ValidateKey_RepositoryError(t *testing.T) {
 	expectedError := errors.New("database connection failed")
 
 	repo := &mockAPIKeyServiceRepository{
-		getByAPIKeyHashFunc: func(ctx context.Context, keyHash string) (*aggregators.Aggregator, error) {
+		getCredentialsByAPIKeyHashFunc: func(ctx context.Context, keyHash string) (*aggregators.AggregatorCredentials, error) {
 			return nil, expectedError
 		},
 	}
@@ -314,8 +329,8 @@ func TestAPIKeyValidatorAdapter_RefreshTokensIfNeeded_DelegatesToService(t *test
 	aggregatorDID := "did:plc:aggregator123"
 
 	repo := &mockAPIKeyServiceRepository{
-		getAggregatorFunc: func(ctx context.Context, did string) (*aggregators.Aggregator, error) {
-			return &aggregators.Aggregator{
+		getAggregatorCredentialsFunc: func(ctx context.Context, did string) (*aggregators.AggregatorCredentials, error) {
+			return &aggregators.AggregatorCredentials{
 				DID:                 did,
 				APIKeyHash:          "somehash",
 				OAuthTokenExpiresAt: &expiresAt,
@@ -334,7 +349,7 @@ func TestAPIKeyValidatorAdapter_RefreshTokensIfNeeded_DelegatesToService(t *test
 
 func TestAPIKeyValidatorAdapter_RefreshTokensIfNeeded_AggregatorNotFound(t *testing.T) {
 	repo := &mockAPIKeyServiceRepository{
-		getAggregatorFunc: func(ctx context.Context, did string) (*aggregators.Aggregator, error) {
+		getAggregatorCredentialsFunc: func(ctx context.Context, did string) (*aggregators.AggregatorCredentials, error) {
 			return nil, aggregators.ErrAggregatorNotFound
 		},
 	}
@@ -355,8 +370,8 @@ func TestAPIKeyValidatorAdapter_RefreshTokensIfNeeded_NoAPIKey(t *testing.T) {
 	aggregatorDID := "did:plc:aggregator123"
 
 	repo := &mockAPIKeyServiceRepository{
-		getAggregatorFunc: func(ctx context.Context, did string) (*aggregators.Aggregator, error) {
-			return &aggregators.Aggregator{
+		getAggregatorCredentialsFunc: func(ctx context.Context, did string) (*aggregators.AggregatorCredentials, error) {
+			return &aggregators.AggregatorCredentials{
 				DID:        did,
 				APIKeyHash: "", // No API key
 			}, nil
@@ -378,8 +393,8 @@ func TestAPIKeyValidatorAdapter_RefreshTokensIfNeeded_RevokedAPIKey(t *testing.T
 	revokedAt := time.Now().Add(-1 * time.Hour)
 
 	repo := &mockAPIKeyServiceRepository{
-		getAggregatorFunc: func(ctx context.Context, did string) (*aggregators.Aggregator, error) {
-			return &aggregators.Aggregator{
+		getAggregatorCredentialsFunc: func(ctx context.Context, did string) (*aggregators.AggregatorCredentials, error) {
+			return &aggregators.AggregatorCredentials{
 				DID:             did,
 				APIKeyHash:      "somehash",
 				APIKeyRevokedAt: &revokedAt, // Key is revoked
@@ -401,7 +416,7 @@ func TestAPIKeyValidatorAdapter_RefreshTokensIfNeeded_RepositoryError(t *testing
 	expectedError := errors.New("database connection failed")
 
 	repo := &mockAPIKeyServiceRepository{
-		getAggregatorFunc: func(ctx context.Context, did string) (*aggregators.Aggregator, error) {
+		getAggregatorCredentialsFunc: func(ctx context.Context, did string) (*aggregators.AggregatorCredentials, error) {
 			return nil, expectedError
 		},
 	}
@@ -509,17 +524,17 @@ func TestAPIKeyValidatorAdapter_FullValidationFlow(t *testing.T) {
 	validationCount := 0
 
 	repo := &mockAPIKeyServiceRepository{
-		getByAPIKeyHashFunc: func(ctx context.Context, keyHash string) (*aggregators.Aggregator, error) {
+		getCredentialsByAPIKeyHashFunc: func(ctx context.Context, keyHash string) (*aggregators.AggregatorCredentials, error) {
 			validationCount++
-			return &aggregators.Aggregator{
+			return &aggregators.AggregatorCredentials{
 				DID:                 aggregatorDID,
 				APIKeyHash:          keyHash,
 				APIKeyPrefix:        "ckapi_0123",
 				OAuthTokenExpiresAt: &expiresAt,
 			}, nil
 		},
-		getAggregatorFunc: func(ctx context.Context, did string) (*aggregators.Aggregator, error) {
-			return &aggregators.Aggregator{
+		getAggregatorCredentialsFunc: func(ctx context.Context, did string) (*aggregators.AggregatorCredentials, error) {
+			return &aggregators.AggregatorCredentials{
 				DID:                 did,
 				APIKeyHash:          "somehash",
 				OAuthTokenExpiresAt: &expiresAt,

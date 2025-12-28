@@ -1,21 +1,21 @@
 package aggregator
 
 import (
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/aggregators"
-	"encoding/json"
 	"log"
 	"net/http"
+
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/aggregators"
 )
 
 // GetAPIKeyHandler handles API key info retrieval for aggregators
 type GetAPIKeyHandler struct {
-	apiKeyService     *aggregators.APIKeyService
+	apiKeyService     aggregators.APIKeyServiceInterface
 	aggregatorService aggregators.Service
 }
 
 // NewGetAPIKeyHandler creates a new handler for API key info retrieval
-func NewGetAPIKeyHandler(apiKeyService *aggregators.APIKeyService, aggregatorService aggregators.Service) *GetAPIKeyHandler {
+func NewGetAPIKeyHandler(apiKeyService aggregators.APIKeyServiceInterface, aggregatorService aggregators.Service) *GetAPIKeyHandler {
 	return &GetAPIKeyHandler{
 		apiKeyService:     apiKeyService,
 		aggregatorService: aggregatorService,
@@ -105,9 +105,5 @@ func (h *GetAPIKeyHandler) HandleGetAPIKey(w http.ResponseWriter, r *http.Reques
 		response.KeyInfo = view
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("ERROR: Failed to encode response: %v", err)
-	}
+	writeJSONResponse(w, http.StatusOK, response)
 }

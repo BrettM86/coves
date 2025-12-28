@@ -26,52 +26,88 @@ type Aggregator struct {
 	// Stats
 	CommunitiesUsing int `json:"communitiesUsing" db:"communities_using"`
 	PostsCreated     int `json:"postsCreated" db:"posts_created"`
-
-	// API Key Authentication (not exposed in JSON responses)
-	APIKeyPrefix    string     `json:"-" db:"api_key_prefix"`
-	APIKeyHash      string     `json:"-" db:"api_key_hash"`
-	APIKeyCreatedAt *time.Time `json:"-" db:"api_key_created_at"`
-	APIKeyRevokedAt *time.Time `json:"-" db:"api_key_revoked_at"`
-	APIKeyLastUsed  *time.Time `json:"-" db:"api_key_last_used_at"`
-
-	// OAuth Session Credentials (sensitive - not exposed in JSON)
-	OAuthAccessToken            string     `json:"-" db:"oauth_access_token"`
-	OAuthRefreshToken           string     `json:"-" db:"oauth_refresh_token"`
-	OAuthTokenExpiresAt         *time.Time `json:"-" db:"oauth_token_expires_at"`
-	OAuthPDSURL                 string     `json:"-" db:"oauth_pds_url"`
-	OAuthAuthServerIss          string     `json:"-" db:"oauth_auth_server_iss"`
-	OAuthAuthServerTokenEndpoint string     `json:"-" db:"oauth_auth_server_token_endpoint"`
-	OAuthDPoPPrivateKeyMultibase string     `json:"-" db:"oauth_dpop_private_key_multibase"`
-	OAuthDPoPAuthServerNonce    string     `json:"-" db:"oauth_dpop_authserver_nonce"`
-	OAuthDPoPPDSNonce           string     `json:"-" db:"oauth_dpop_pds_nonce"`
 }
 
 // OAuthCredentials holds OAuth session data for aggregator authentication
 // Used when setting up or refreshing API key authentication
 type OAuthCredentials struct {
-	AccessToken            string
-	RefreshToken           string
-	TokenExpiresAt         time.Time
-	PDSURL                 string
-	AuthServerIss          string
+	AccessToken             string
+	RefreshToken            string
+	TokenExpiresAt          time.Time
+	PDSURL                  string
+	AuthServerIss           string
 	AuthServerTokenEndpoint string
 	DPoPPrivateKeyMultibase string
-	DPoPAuthServerNonce    string
-	DPoPPDSNonce           string
+	DPoPAuthServerNonce     string
+	DPoPPDSNonce            string
 }
 
-// HasActiveAPIKey returns true if the aggregator has an active (non-revoked) API key
-func (a *Aggregator) HasActiveAPIKey() bool {
-	return a.APIKeyHash != "" && a.APIKeyRevokedAt == nil
+// Validate checks that all required OAuthCredentials fields are present and valid.
+// Returns an error describing the first validation failure, or nil if valid.
+func (c *OAuthCredentials) Validate() error {
+	if c.AccessToken == "" {
+		return NewValidationError("accessToken", "access token is required")
+	}
+	if c.RefreshToken == "" {
+		return NewValidationError("refreshToken", "refresh token is required")
+	}
+	if c.TokenExpiresAt.IsZero() {
+		return NewValidationError("tokenExpiresAt", "token expiry time is required")
+	}
+	if c.PDSURL == "" {
+		return NewValidationError("pdsUrl", "PDS URL is required")
+	}
+	if c.AuthServerIss == "" {
+		return NewValidationError("authServerIss", "auth server issuer is required")
+	}
+	if c.AuthServerTokenEndpoint == "" {
+		return NewValidationError("authServerTokenEndpoint", "auth server token endpoint is required")
+	}
+	if c.DPoPPrivateKeyMultibase == "" {
+		return NewValidationError("dpopPrivateKey", "DPoP private key is required")
+	}
+	return nil
 }
 
-// IsOAuthTokenExpired returns true if the OAuth access token has expired
-func (a *Aggregator) IsOAuthTokenExpired() bool {
-	if a.OAuthTokenExpiresAt == nil {
+// AggregatorCredentials holds sensitive authentication data for aggregators.
+// This is the preferred type for authentication operations - separates concerns
+// from the public Aggregator type and prevents credential leakage.
+type AggregatorCredentials struct {
+	DID string `db:"did"`
+
+	// API Key Authentication
+	APIKeyPrefix    string     `db:"api_key_prefix"`
+	APIKeyHash      string     `db:"api_key_hash"`
+	APIKeyCreatedAt *time.Time `db:"api_key_created_at"`
+	APIKeyRevokedAt *time.Time `db:"api_key_revoked_at"`
+	APIKeyLastUsed  *time.Time `db:"api_key_last_used_at"`
+
+	// OAuth Session Credentials
+	OAuthAccessToken             string     `db:"oauth_access_token"`
+	OAuthRefreshToken            string     `db:"oauth_refresh_token"`
+	OAuthTokenExpiresAt          *time.Time `db:"oauth_token_expires_at"`
+	OAuthPDSURL                  string     `db:"oauth_pds_url"`
+	OAuthAuthServerIss           string     `db:"oauth_auth_server_iss"`
+	OAuthAuthServerTokenEndpoint string     `db:"oauth_auth_server_token_endpoint"`
+	OAuthDPoPPrivateKeyMultibase string     `db:"oauth_dpop_private_key_multibase"`
+	OAuthDPoPAuthServerNonce     string     `db:"oauth_dpop_authserver_nonce"`
+	OAuthDPoPPDSNonce            string     `db:"oauth_dpop_pds_nonce"`
+}
+
+// HasActiveAPIKey returns true if the credentials have an active (non-revoked) API key.
+// An active key has a non-empty hash and has not been revoked.
+func (c *AggregatorCredentials) HasActiveAPIKey() bool {
+	return c.APIKeyHash != "" && c.APIKeyRevokedAt == nil
+}
+
+// IsOAuthTokenExpired returns true if the OAuth access token has expired or will expire soon.
+// Uses a 5-minute buffer before actual expiry to allow proactive token refresh,
+// accounting for clock skew and network latency during refresh operations.
+func (c *AggregatorCredentials) IsOAuthTokenExpired() bool {
+	if c.OAuthTokenExpiresAt == nil {
 		return true
 	}
-	// Consider expired if within 5 minutes of expiry (buffer for clock skew)
-	return time.Now().Add(5 * time.Minute).After(*a.OAuthTokenExpiresAt)
+	return time.Now().Add(5 * time.Minute).After(*c.OAuthTokenExpiresAt)
 }
 
 // Authorization represents a community's authorization for an aggregator

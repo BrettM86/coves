@@ -19,34 +19,27 @@ func NewAPIKeyValidatorAdapter(service *aggregators.APIKeyService) *APIKeyValida
 
 // ValidateKey validates an API key and returns the aggregator DID if valid
 func (a *APIKeyValidatorAdapter) ValidateKey(ctx context.Context, plainKey string) (string, error) {
-	aggregator, err := a.service.ValidateKey(ctx, plainKey)
+	creds, err := a.service.ValidateKey(ctx, plainKey)
 	if err != nil {
 		return "", err
 	}
-	return aggregator.DID, nil
+	return creds.DID, nil
 }
 
 // RefreshTokensIfNeeded refreshes OAuth tokens for the aggregator if they are expired
 func (a *APIKeyValidatorAdapter) RefreshTokensIfNeeded(ctx context.Context, aggregatorDID string) error {
-	// Get the full aggregator object needed for token refresh
-	// Note: This is a second database lookup after ValidateKey. In practice, we may want to cache
-	// the aggregator data from ValidateKey to avoid this. For now, we accept the extra lookup
-	// since token refresh is not on the hot path.
-	aggregator, err := a.service.GetAggregator(ctx, aggregatorDID)
+	creds, err := a.service.GetAggregatorCredentials(ctx, aggregatorDID)
 	if err != nil {
 		return err
 	}
 
-	// If API key is revoked, return an error - don't silently allow continuation
-	if aggregator.APIKeyRevokedAt != nil {
+	if creds.APIKeyRevokedAt != nil {
 		return aggregators.ErrAPIKeyRevoked
 	}
 
-	// If no API key exists, return an error
-	if aggregator.APIKeyHash == "" {
+	if creds.APIKeyHash == "" {
 		return aggregators.ErrAPIKeyInvalid
 	}
 
-	// Call the actual token refresh on the service
-	return a.service.RefreshTokensIfNeeded(ctx, aggregator)
+	return a.service.RefreshTokensIfNeeded(ctx, creds)
 }

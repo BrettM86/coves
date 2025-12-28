@@ -34,13 +34,15 @@ func newTestAPIKeyService(repo Repository) *APIKeyService {
 
 // mockRepository implements Repository interface for testing
 type mockRepository struct {
-	getAggregatorFunc        func(ctx context.Context, did string) (*Aggregator, error)
-	getByAPIKeyHashFunc      func(ctx context.Context, keyHash string) (*Aggregator, error)
-	setAPIKeyFunc            func(ctx context.Context, did, keyPrefix, keyHash string, oauthCreds *OAuthCredentials) error
-	updateOAuthTokensFunc    func(ctx context.Context, did, accessToken, refreshToken string, expiresAt time.Time) error
-	updateOAuthNoncesFunc    func(ctx context.Context, did, authServerNonce, pdsNonce string) error
-	updateAPIKeyLastUsedFunc func(ctx context.Context, did string) error
-	revokeAPIKeyFunc         func(ctx context.Context, did string) error
+	getAggregatorFunc             func(ctx context.Context, did string) (*Aggregator, error)
+	getByAPIKeyHashFunc           func(ctx context.Context, keyHash string) (*Aggregator, error)
+	getCredentialsByAPIKeyHashFunc func(ctx context.Context, keyHash string) (*AggregatorCredentials, error)
+	getAggregatorCredentialsFunc  func(ctx context.Context, did string) (*AggregatorCredentials, error)
+	setAPIKeyFunc                 func(ctx context.Context, did, keyPrefix, keyHash string, oauthCreds *OAuthCredentials) error
+	updateOAuthTokensFunc         func(ctx context.Context, did, accessToken, refreshToken string, expiresAt time.Time) error
+	updateOAuthNoncesFunc         func(ctx context.Context, did, authServerNonce, pdsNonce string) error
+	updateAPIKeyLastUsedFunc      func(ctx context.Context, did string) error
+	revokeAPIKeyFunc              func(ctx context.Context, did string) error
 }
 
 func (m *mockRepository) GetAggregator(ctx context.Context, did string) (*Aggregator, error) {
@@ -165,6 +167,20 @@ func (m *mockRepository) GetRecentPosts(ctx context.Context, aggregatorDID, comm
 	return nil, nil
 }
 
+func (m *mockRepository) GetAggregatorCredentials(ctx context.Context, did string) (*AggregatorCredentials, error) {
+	if m.getAggregatorCredentialsFunc != nil {
+		return m.getAggregatorCredentialsFunc(ctx, did)
+	}
+	return &AggregatorCredentials{DID: did}, nil
+}
+
+func (m *mockRepository) GetCredentialsByAPIKeyHash(ctx context.Context, keyHash string) (*AggregatorCredentials, error) {
+	if m.getCredentialsByAPIKeyHashFunc != nil {
+		return m.getCredentialsByAPIKeyHashFunc(ctx, keyHash)
+	}
+	return nil, ErrAggregatorNotFound
+}
+
 func TestHashAPIKey(t *testing.T) {
 	plainKey := "ckapi_abcdef1234567890abcdef1234567890"
 
@@ -236,25 +252,29 @@ func TestValidateKey_FormatValidation(t *testing.T) {
 	}
 }
 
-func TestAggregator_HasActiveAPIKey(t *testing.T) {
+// =============================================================================
+// AggregatorCredentials Tests
+// =============================================================================
+
+func TestAggregatorCredentials_HasActiveAPIKey(t *testing.T) {
 	tests := []struct {
-		name      string
-		agg       Aggregator
+		name       string
+		creds      AggregatorCredentials
 		wantActive bool
 	}{
 		{
-			name:      "no key hash",
-			agg:       Aggregator{},
+			name:       "no key hash",
+			creds:      AggregatorCredentials{},
 			wantActive: false,
 		},
 		{
-			name:      "has key hash, not revoked",
-			agg:       Aggregator{APIKeyHash: "somehash"},
+			name:       "has key hash, not revoked",
+			creds:      AggregatorCredentials{APIKeyHash: "somehash"},
 			wantActive: true,
 		},
 		{
 			name: "has key hash, revoked",
-			agg: Aggregator{
+			creds: AggregatorCredentials{
 				APIKeyHash:      "somehash",
 				APIKeyRevokedAt: ptrTime(),
 			},
@@ -264,7 +284,7 @@ func TestAggregator_HasActiveAPIKey(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tt.agg.HasActiveAPIKey()
+			got := tt.creds.HasActiveAPIKey()
 			if got != tt.wantActive {
 				t.Errorf("HasActiveAPIKey() = %v, want %v", got, tt.wantActive)
 			}
@@ -272,48 +292,48 @@ func TestAggregator_HasActiveAPIKey(t *testing.T) {
 	}
 }
 
-func TestAggregator_IsOAuthTokenExpired(t *testing.T) {
+func TestAggregatorCredentials_IsOAuthTokenExpired(t *testing.T) {
 	tests := []struct {
 		name        string
-		agg         Aggregator
+		creds       AggregatorCredentials
 		wantExpired bool
 	}{
 		{
 			name:        "nil expiry",
-			agg:         Aggregator{},
+			creds:       AggregatorCredentials{},
 			wantExpired: true,
 		},
 		{
 			name: "expired in the past",
-			agg: Aggregator{
+			creds: AggregatorCredentials{
 				OAuthTokenExpiresAt: ptrTimeOffset(-1 * time.Hour),
 			},
 			wantExpired: true,
 		},
 		{
 			name: "within 5 minute buffer (4 minutes remaining)",
-			agg: Aggregator{
+			creds: AggregatorCredentials{
 				OAuthTokenExpiresAt: ptrTimeOffset(4 * time.Minute),
 			},
 			wantExpired: true, // Should be expired because within buffer
 		},
 		{
 			name: "exactly at 5 minute buffer",
-			agg: Aggregator{
+			creds: AggregatorCredentials{
 				OAuthTokenExpiresAt: ptrTimeOffset(5 * time.Minute),
 			},
 			wantExpired: true, // Edge case - at exactly buffer time
 		},
 		{
 			name: "beyond 5 minute buffer (6 minutes remaining)",
-			agg: Aggregator{
+			creds: AggregatorCredentials{
 				OAuthTokenExpiresAt: ptrTimeOffset(6 * time.Minute),
 			},
 			wantExpired: false, // Should not be expired
 		},
 		{
 			name: "well beyond buffer (1 hour remaining)",
-			agg: Aggregator{
+			creds: AggregatorCredentials{
 				OAuthTokenExpiresAt: ptrTimeOffset(1 * time.Hour),
 			},
 			wantExpired: false,
@@ -322,7 +342,7 @@ func TestAggregator_IsOAuthTokenExpired(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tt.agg.IsOAuthTokenExpired()
+			got := tt.creds.IsOAuthTokenExpired()
 			if got != tt.wantExpired {
 				t.Errorf("IsOAuthTokenExpired() = %v, want %v", got, tt.wantExpired)
 			}
@@ -377,7 +397,7 @@ func TestAPIKeyService_ValidateKey_InvalidFormat(t *testing.T) {
 
 func TestAPIKeyService_ValidateKey_NotFound(t *testing.T) {
 	repo := &mockRepository{
-		getByAPIKeyHashFunc: func(ctx context.Context, keyHash string) (*Aggregator, error) {
+		getCredentialsByAPIKeyHashFunc: func(ctx context.Context, keyHash string) (*AggregatorCredentials, error) {
 			return nil, ErrAggregatorNotFound
 		},
 	}
@@ -395,7 +415,7 @@ func TestAPIKeyService_ValidateKey_Revoked(t *testing.T) {
 	// The current implementation expects the repository to return ErrAPIKeyRevoked
 	// when the API key has been revoked. This is done at the repository layer.
 	repo := &mockRepository{
-		getByAPIKeyHashFunc: func(ctx context.Context, keyHash string) (*Aggregator, error) {
+		getCredentialsByAPIKeyHashFunc: func(ctx context.Context, keyHash string) (*AggregatorCredentials, error) {
 			// Repository returns error for revoked keys
 			return nil, ErrAPIKeyRevoked
 		},
@@ -414,12 +434,11 @@ func TestAPIKeyService_ValidateKey_Success(t *testing.T) {
 	lastUsedChan := make(chan struct{})
 
 	repo := &mockRepository{
-		getByAPIKeyHashFunc: func(ctx context.Context, keyHash string) (*Aggregator, error) {
-			return &Aggregator{
+		getCredentialsByAPIKeyHashFunc: func(ctx context.Context, keyHash string) (*AggregatorCredentials, error) {
+			return &AggregatorCredentials{
 				DID:          expectedDID,
 				APIKeyHash:   keyHash,
 				APIKeyPrefix: "ckapi_0123",
-				DisplayName:  "Test Aggregator",
 			}, nil
 		},
 		updateAPIKeyLastUsedFunc: func(ctx context.Context, did string) error {
@@ -430,13 +449,13 @@ func TestAPIKeyService_ValidateKey_Success(t *testing.T) {
 	service := newTestAPIKeyService(repo)
 
 	validKey := "ckapi_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	aggregator, err := service.ValidateKey(context.Background(), validKey)
+	creds, err := service.ValidateKey(context.Background(), validKey)
 	if err != nil {
 		t.Fatalf("ValidateKey() unexpected error: %v", err)
 	}
 
-	if aggregator.DID != expectedDID {
-		t.Errorf("ValidateKey() DID = %s, want %s", aggregator.DID, expectedDID)
+	if creds.DID != expectedDID {
+		t.Errorf("ValidateKey() DID = %s, want %s", creds.DID, expectedDID)
 	}
 
 	// Wait for async update with timeout using channel-based synchronization
@@ -648,18 +667,18 @@ func TestAPIKeyService_GenerateKey_Success(t *testing.T) {
 }
 
 func TestAPIKeyService_GenerateKey_OAuthStoreSaveError(t *testing.T) {
+	// Test that OAuth session save failure aborts key creation early
+	// With the new ordering (OAuth session first, then API key), if OAuth save fails,
+	// we abort immediately without creating an API key.
 	aggregatorDID := "did:plc:aggregator123"
-	revokeCalled := false
+	setAPIKeyCalled := false
 
 	repo := &mockRepository{
 		getAggregatorFunc: func(ctx context.Context, did string) (*Aggregator, error) {
 			return &Aggregator{DID: did, DisplayName: "Test"}, nil
 		},
 		setAPIKeyFunc: func(ctx context.Context, did, keyPrefix, keyHash string, oauthCreds *OAuthCredentials) error {
-			return nil
-		},
-		revokeAPIKeyFunc: func(ctx context.Context, did string) error {
-			revokeCalled = true
+			setAPIKeyCalled = true
 			return nil
 		},
 	}
@@ -685,9 +704,10 @@ func TestAPIKeyService_GenerateKey_OAuthStoreSaveError(t *testing.T) {
 		t.Error("GenerateKey() expected error when OAuth store save fails, got nil")
 	}
 
-	// Verify the key was revoked after session save failure
-	if !revokeCalled {
-		t.Error("GenerateKey() expected RevokeAPIKey to be called after OAuth store save failure")
+	// Verify SetAPIKey was NOT called - we should abort before storing the key
+	// This prevents the race condition where an API key exists but can't refresh tokens
+	if setAPIKeyCalled {
+		t.Error("GenerateKey() should NOT call SetAPIKey when OAuth session save fails")
 	}
 }
 
@@ -794,8 +814,8 @@ func TestAPIKeyService_RevokeKey_Error(t *testing.T) {
 
 func TestAPIKeyService_GetAPIKeyInfo_NoKey(t *testing.T) {
 	repo := &mockRepository{
-		getAggregatorFunc: func(ctx context.Context, did string) (*Aggregator, error) {
-			return &Aggregator{
+		getAggregatorCredentialsFunc: func(ctx context.Context, did string) (*AggregatorCredentials, error) {
+			return &AggregatorCredentials{
 				DID:        did,
 				APIKeyHash: "", // No key
 			}, nil
@@ -818,8 +838,8 @@ func TestAPIKeyService_GetAPIKeyInfo_HasActiveKey(t *testing.T) {
 	lastUsed := time.Now().Add(-1 * time.Hour)
 
 	repo := &mockRepository{
-		getAggregatorFunc: func(ctx context.Context, did string) (*Aggregator, error) {
-			return &Aggregator{
+		getAggregatorCredentialsFunc: func(ctx context.Context, did string) (*AggregatorCredentials, error) {
+			return &AggregatorCredentials{
 				DID:             did,
 				APIKeyHash:      "somehash",
 				APIKeyPrefix:    "ckapi_test12",
@@ -856,8 +876,8 @@ func TestAPIKeyService_GetAPIKeyInfo_RevokedKey(t *testing.T) {
 	revokedAt := time.Now().Add(-1 * time.Hour)
 
 	repo := &mockRepository{
-		getAggregatorFunc: func(ctx context.Context, did string) (*Aggregator, error) {
-			return &Aggregator{
+		getAggregatorCredentialsFunc: func(ctx context.Context, did string) (*AggregatorCredentials, error) {
+			return &AggregatorCredentials{
 				DID:             did,
 				APIKeyHash:      "somehash",
 				APIKeyPrefix:    "ckapi_test12",
@@ -885,7 +905,7 @@ func TestAPIKeyService_GetAPIKeyInfo_RevokedKey(t *testing.T) {
 
 func TestAPIKeyService_GetAPIKeyInfo_NotFound(t *testing.T) {
 	repo := &mockRepository{
-		getAggregatorFunc: func(ctx context.Context, did string) (*Aggregator, error) {
+		getAggregatorCredentialsFunc: func(ctx context.Context, did string) (*AggregatorCredentials, error) {
 			return nil, ErrAggregatorNotFound
 		},
 	}
@@ -905,7 +925,7 @@ func TestAPIKeyService_RefreshTokensIfNeeded_TokensStillValid(t *testing.T) {
 	// Tokens expire in 1 hour - well beyond the 5 minute buffer
 	expiresAt := time.Now().Add(1 * time.Hour)
 
-	aggregator := &Aggregator{
+	creds := &AggregatorCredentials{
 		DID:                 "did:plc:aggregator123",
 		OAuthTokenExpiresAt: &expiresAt,
 	}
@@ -913,7 +933,7 @@ func TestAPIKeyService_RefreshTokensIfNeeded_TokensStillValid(t *testing.T) {
 	repo := &mockRepository{}
 	service := newTestAPIKeyService(repo)
 
-	err := service.RefreshTokensIfNeeded(context.Background(), aggregator)
+	err := service.RefreshTokensIfNeeded(context.Background(), creds)
 	if err != nil {
 		t.Fatalf("RefreshTokensIfNeeded() unexpected error: %v", err)
 	}
@@ -948,7 +968,7 @@ func TestAPIKeyService_GetAccessToken_ValidAggregatorTokensNotExpired(t *testing
 	expiresAt := time.Now().Add(1 * time.Hour)
 	expectedToken := "valid_access_token_123"
 
-	aggregator := &Aggregator{
+	creds := &AggregatorCredentials{
 		DID:                 "did:plc:aggregator123",
 		OAuthAccessToken:    expectedToken,
 		OAuthTokenExpiresAt: &expiresAt,
@@ -957,7 +977,7 @@ func TestAPIKeyService_GetAccessToken_ValidAggregatorTokensNotExpired(t *testing
 	repo := &mockRepository{}
 	service := newTestAPIKeyService(repo)
 
-	token, err := service.GetAccessToken(context.Background(), aggregator)
+	token, err := service.GetAccessToken(context.Background(), creds)
 	if err != nil {
 		t.Fatalf("GetAccessToken() unexpected error: %v", err)
 	}
@@ -972,7 +992,7 @@ func TestAPIKeyService_GetAccessToken_ExpiredTokens(t *testing.T) {
 	// Since refresh requires a real OAuth app, this test verifies the error path
 	expiresAt := time.Now().Add(-1 * time.Hour)
 
-	aggregator := &Aggregator{
+	creds := &AggregatorCredentials{
 		DID:                 "did:plc:aggregator123",
 		OAuthAccessToken:    "expired_token",
 		OAuthRefreshToken:   "refresh_token",
@@ -983,7 +1003,7 @@ func TestAPIKeyService_GetAccessToken_ExpiredTokens(t *testing.T) {
 	// Service has nil OAuth app, so refresh will fail
 	service := newTestAPIKeyService(repo)
 
-	_, err := service.GetAccessToken(context.Background(), aggregator)
+	_, err := service.GetAccessToken(context.Background(), creds)
 	if err == nil {
 		t.Error("GetAccessToken() expected error when tokens are expired and no OAuth app configured, got nil")
 	}
@@ -991,7 +1011,7 @@ func TestAPIKeyService_GetAccessToken_ExpiredTokens(t *testing.T) {
 
 func TestAPIKeyService_GetAccessToken_NilExpiry(t *testing.T) {
 	// Nil expiry means tokens need refresh
-	aggregator := &Aggregator{
+	creds := &AggregatorCredentials{
 		DID:                 "did:plc:aggregator123",
 		OAuthAccessToken:    "some_token",
 		OAuthTokenExpiresAt: nil, // nil means needs refresh
@@ -1000,7 +1020,7 @@ func TestAPIKeyService_GetAccessToken_NilExpiry(t *testing.T) {
 	repo := &mockRepository{}
 	service := newTestAPIKeyService(repo)
 
-	_, err := service.GetAccessToken(context.Background(), aggregator)
+	_, err := service.GetAccessToken(context.Background(), creds)
 	if err == nil {
 		t.Error("GetAccessToken() expected error when expiry is nil and no OAuth app configured, got nil")
 	}
@@ -1010,7 +1030,7 @@ func TestAPIKeyService_GetAccessToken_WithinExpiryBuffer(t *testing.T) {
 	// Tokens expire in 4 minutes - within the 5 minute buffer, so needs refresh
 	expiresAt := time.Now().Add(4 * time.Minute)
 
-	aggregator := &Aggregator{
+	creds := &AggregatorCredentials{
 		DID:                 "did:plc:aggregator123",
 		OAuthAccessToken:    "soon_to_expire_token",
 		OAuthRefreshToken:   "refresh_token",
@@ -1021,7 +1041,7 @@ func TestAPIKeyService_GetAccessToken_WithinExpiryBuffer(t *testing.T) {
 	service := newTestAPIKeyService(repo)
 
 	// Should attempt refresh and fail since no OAuth app is configured
-	_, err := service.GetAccessToken(context.Background(), aggregator)
+	_, err := service.GetAccessToken(context.Background(), creds)
 	if err == nil {
 		t.Error("GetAccessToken() expected error when tokens are within buffer and no OAuth app configured, got nil")
 	}
@@ -1035,7 +1055,7 @@ func TestAPIKeyService_GetAccessToken_RevokedKey(t *testing.T) {
 	revokedAt := time.Now().Add(-30 * time.Minute)
 	expectedToken := "valid_access_token"
 
-	aggregator := &Aggregator{
+	creds := &AggregatorCredentials{
 		DID:                 "did:plc:aggregator123",
 		APIKeyRevokedAt:     &revokedAt, // Key is revoked
 		OAuthAccessToken:    expectedToken,
@@ -1047,12 +1067,77 @@ func TestAPIKeyService_GetAccessToken_RevokedKey(t *testing.T) {
 
 	// GetAccessToken doesn't check revocation - that's done at ValidateKey level
 	// It just returns the token if valid
-	token, err := service.GetAccessToken(context.Background(), aggregator)
+	token, err := service.GetAccessToken(context.Background(), creds)
 	if err != nil {
 		t.Fatalf("GetAccessToken() unexpected error: %v", err)
 	}
 
 	if token != expectedToken {
 		t.Errorf("GetAccessToken() = %s, want %s", token, expectedToken)
+	}
+}
+
+func TestAPIKeyService_FailureCounters_InitiallyZero(t *testing.T) {
+	repo := &mockRepository{}
+	service := newTestAPIKeyService(repo)
+
+	if got := service.GetFailedLastUsedUpdates(); got != 0 {
+		t.Errorf("GetFailedLastUsedUpdates() = %d, want 0", got)
+	}
+
+	if got := service.GetFailedNonceUpdates(); got != 0 {
+		t.Errorf("GetFailedNonceUpdates() = %d, want 0", got)
+	}
+}
+
+func TestAPIKeyService_FailedLastUsedUpdates_IncrementsOnError(t *testing.T) {
+	// Create a valid API key
+	plainKey := APIKeyPrefix + "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	keyHash := hashAPIKey(plainKey)
+
+	updateCalled := make(chan struct{}, 1)
+	repo := &mockRepository{
+		getCredentialsByAPIKeyHashFunc: func(ctx context.Context, hash string) (*AggregatorCredentials, error) {
+			if hash == keyHash {
+				return &AggregatorCredentials{
+					DID:        "did:plc:aggregator123",
+					APIKeyHash: keyHash,
+				}, nil
+			}
+			return nil, ErrAPIKeyInvalid
+		},
+		updateAPIKeyLastUsedFunc: func(ctx context.Context, did string) error {
+			defer func() { updateCalled <- struct{}{} }()
+			return errors.New("database connection failed")
+		},
+	}
+
+	service := newTestAPIKeyService(repo)
+
+	// Initial count should be 0
+	if got := service.GetFailedLastUsedUpdates(); got != 0 {
+		t.Errorf("GetFailedLastUsedUpdates() initial = %d, want 0", got)
+	}
+
+	// Validate the key (triggers async last_used update)
+	_, err := service.ValidateKey(context.Background(), plainKey)
+	if err != nil {
+		t.Fatalf("ValidateKey() unexpected error: %v", err)
+	}
+
+	// Wait for async update to complete
+	select {
+	case <-updateCalled:
+		// Update was called
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for async UpdateAPIKeyLastUsed call")
+	}
+
+	// Give a moment for the counter to be incremented
+	time.Sleep(10 * time.Millisecond)
+
+	// Counter should now be 1
+	if got := service.GetFailedLastUsedUpdates(); got != 1 {
+		t.Errorf("GetFailedLastUsedUpdates() after failure = %d, want 1", got)
 	}
 }

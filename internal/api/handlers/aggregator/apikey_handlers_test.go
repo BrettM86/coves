@@ -101,12 +101,54 @@ func createUserDIDContext(didStr string) context.Context {
 // =============================================================================
 
 func TestCreateAPIKeyHandler_Success(t *testing.T) {
-	// This test requires full mock infrastructure for the APIKeyService
-	// which depends on OAuth session management. The core logic is tested
-	// through service-level tests and integration tests.
-	//
-	// Handler-level testing focuses on auth requirements and error responses.
-	t.Skip("CreateAPIKey success path requires OAuth session - covered by integration tests")
+	// Create mock services
+	mockAggSvc := &mockAggregatorService{
+		isAggregatorFunc: func(ctx context.Context, did string) (bool, error) {
+			return true, nil // Is an aggregator
+		},
+	}
+
+	mockAPIKeySvc := &mockAPIKeyService{
+		generateKeyFunc: func(ctx context.Context, aggregatorDID string, oauthSession *oauthlib.ClientSessionData) (string, string, error) {
+			return "ckapi_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "ckapi_012345", nil
+		},
+	}
+
+	handler := NewCreateAPIKeyHandler(mockAPIKeySvc, mockAggSvc)
+
+	// Create request with full auth context (including OAuth session)
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.aggregator.createApiKey", nil)
+	req.Header.Set("Content-Type", "application/json")
+	ctx := createAuthenticatedContext(t, "did:plc:aggregator123")
+	req = req.WithContext(ctx)
+
+	// Execute handler
+	w := httptest.NewRecorder()
+	handler.HandleCreateAPIKey(w, req)
+
+	// Check status code
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	// Check response format
+	var response CreateAPIKeyResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if response.Key != "ckapi_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" {
+		t.Errorf("Expected key to match generated key, got %s", response.Key)
+	}
+	if response.KeyPrefix != "ckapi_012345" {
+		t.Errorf("Expected keyPrefix to match, got %s", response.KeyPrefix)
+	}
+	if response.DID != "did:plc:aggregator123" {
+		t.Errorf("Expected DID to match authenticated user, got %s", response.DID)
+	}
+	if response.CreatedAt == "" {
+		t.Error("Expected createdAt to be set")
+	}
 }
 
 func TestCreateAPIKeyHandler_RequiresAuth(t *testing.T) {
@@ -257,6 +299,115 @@ func TestCreateAPIKeyHandler_MissingOAuthSession(t *testing.T) {
 // GetAPIKey Handler Tests
 // =============================================================================
 
+func TestGetAPIKeyHandler_Success(t *testing.T) {
+	createdAt := time.Now().Add(-24 * time.Hour)
+	lastUsed := time.Now().Add(-1 * time.Hour)
+
+	mockAggSvc := &mockAggregatorService{
+		isAggregatorFunc: func(ctx context.Context, did string) (bool, error) {
+			return true, nil // Is an aggregator
+		},
+	}
+
+	mockAPIKeySvc := &mockAPIKeyService{
+		getAPIKeyInfoFunc: func(ctx context.Context, aggregatorDID string) (*aggregators.APIKeyInfo, error) {
+			return &aggregators.APIKeyInfo{
+				HasKey:     true,
+				KeyPrefix:  "ckapi_test12",
+				CreatedAt:  &createdAt,
+				LastUsedAt: &lastUsed,
+				IsRevoked:  false,
+			}, nil
+		},
+	}
+
+	handler := NewGetAPIKeyHandler(mockAPIKeySvc, mockAggSvc)
+
+	// Create request with auth
+	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.aggregator.getApiKey", nil)
+	ctx := createUserDIDContext("did:plc:aggregator123")
+	req = req.WithContext(ctx)
+
+	// Execute handler
+	w := httptest.NewRecorder()
+	handler.HandleGetAPIKey(w, req)
+
+	// Check status code
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	// Check response format
+	var response GetAPIKeyResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if !response.HasKey {
+		t.Error("Expected hasKey to be true")
+	}
+	if response.KeyInfo == nil {
+		t.Fatal("Expected keyInfo to be present")
+	}
+	if response.KeyInfo.Prefix != "ckapi_test12" {
+		t.Errorf("Expected prefix 'ckapi_test12', got %s", response.KeyInfo.Prefix)
+	}
+	if response.KeyInfo.IsRevoked {
+		t.Error("Expected isRevoked to be false")
+	}
+	if response.KeyInfo.CreatedAt == "" {
+		t.Error("Expected createdAt to be set")
+	}
+	if response.KeyInfo.LastUsedAt == nil {
+		t.Error("Expected lastUsedAt to be set")
+	}
+}
+
+func TestGetAPIKeyHandler_Success_NoKey(t *testing.T) {
+	mockAggSvc := &mockAggregatorService{
+		isAggregatorFunc: func(ctx context.Context, did string) (bool, error) {
+			return true, nil // Is an aggregator
+		},
+	}
+
+	mockAPIKeySvc := &mockAPIKeyService{
+		getAPIKeyInfoFunc: func(ctx context.Context, aggregatorDID string) (*aggregators.APIKeyInfo, error) {
+			return &aggregators.APIKeyInfo{
+				HasKey: false,
+			}, nil
+		},
+	}
+
+	handler := NewGetAPIKeyHandler(mockAPIKeySvc, mockAggSvc)
+
+	// Create request with auth
+	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.aggregator.getApiKey", nil)
+	ctx := createUserDIDContext("did:plc:aggregator123")
+	req = req.WithContext(ctx)
+
+	// Execute handler
+	w := httptest.NewRecorder()
+	handler.HandleGetAPIKey(w, req)
+
+	// Check status code
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	// Check response format
+	var response GetAPIKeyResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if response.HasKey {
+		t.Error("Expected hasKey to be false")
+	}
+	if response.KeyInfo != nil {
+		t.Error("Expected keyInfo to be nil when hasKey is false")
+	}
+}
+
 func TestGetAPIKeyHandler_RequiresAuth(t *testing.T) {
 	mockAggSvc := &mockAggregatorService{}
 	handler := NewGetAPIKeyHandler(nil, mockAggSvc)
@@ -368,6 +519,153 @@ func TestGetAPIKeyHandler_AggregatorCheckError(t *testing.T) {
 // =============================================================================
 // RevokeAPIKey Handler Tests
 // =============================================================================
+
+func TestRevokeAPIKeyHandler_Success(t *testing.T) {
+	mockAggSvc := &mockAggregatorService{
+		isAggregatorFunc: func(ctx context.Context, did string) (bool, error) {
+			return true, nil // Is an aggregator
+		},
+	}
+
+	revokeKeyCalled := false
+	mockAPIKeySvc := &mockAPIKeyService{
+		getAPIKeyInfoFunc: func(ctx context.Context, aggregatorDID string) (*aggregators.APIKeyInfo, error) {
+			return &aggregators.APIKeyInfo{
+				HasKey:    true,
+				KeyPrefix: "ckapi_test12",
+				IsRevoked: false,
+			}, nil
+		},
+		revokeKeyFunc: func(ctx context.Context, aggregatorDID string) error {
+			revokeKeyCalled = true
+			return nil
+		},
+	}
+
+	handler := NewRevokeAPIKeyHandler(mockAPIKeySvc, mockAggSvc)
+
+	// Create request with auth
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.aggregator.revokeApiKey", nil)
+	req.Header.Set("Content-Type", "application/json")
+	ctx := createUserDIDContext("did:plc:aggregator123")
+	req = req.WithContext(ctx)
+
+	// Execute handler
+	w := httptest.NewRecorder()
+	handler.HandleRevokeAPIKey(w, req)
+
+	// Check status code
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	// Check that RevokeKey was called
+	if !revokeKeyCalled {
+		t.Error("Expected RevokeKey to be called")
+	}
+
+	// Check response format
+	var response RevokeAPIKeyResponse
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if response.RevokedAt == "" {
+		t.Error("Expected revokedAt to be set")
+	}
+
+	// Verify timestamp format
+	_, err := time.Parse("2006-01-02T15:04:05.000Z", response.RevokedAt)
+	if err != nil {
+		t.Errorf("Expected revokedAt to be valid ISO8601 timestamp: %v", err)
+	}
+}
+
+func TestRevokeAPIKeyHandler_NoKeyToRevoke(t *testing.T) {
+	mockAggSvc := &mockAggregatorService{
+		isAggregatorFunc: func(ctx context.Context, did string) (bool, error) {
+			return true, nil // Is an aggregator
+		},
+	}
+
+	mockAPIKeySvc := &mockAPIKeyService{
+		getAPIKeyInfoFunc: func(ctx context.Context, aggregatorDID string) (*aggregators.APIKeyInfo, error) {
+			return &aggregators.APIKeyInfo{
+				HasKey: false, // No key exists
+			}, nil
+		},
+	}
+
+	handler := NewRevokeAPIKeyHandler(mockAPIKeySvc, mockAggSvc)
+
+	// Create request with auth
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.aggregator.revokeApiKey", nil)
+	req.Header.Set("Content-Type", "application/json")
+	ctx := createUserDIDContext("did:plc:aggregator123")
+	req = req.WithContext(ctx)
+
+	// Execute handler
+	w := httptest.NewRecorder()
+	handler.HandleRevokeAPIKey(w, req)
+
+	// Check status code
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Expected status 400, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	// Check error response
+	var errResp XRPCError
+	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+		t.Fatalf("Failed to decode error response: %v", err)
+	}
+	if errResp.Error != "ApiKeyNotFound" {
+		t.Errorf("Expected error ApiKeyNotFound, got %s", errResp.Error)
+	}
+}
+
+func TestRevokeAPIKeyHandler_AlreadyRevoked(t *testing.T) {
+	mockAggSvc := &mockAggregatorService{
+		isAggregatorFunc: func(ctx context.Context, did string) (bool, error) {
+			return true, nil // Is an aggregator
+		},
+	}
+
+	mockAPIKeySvc := &mockAPIKeyService{
+		getAPIKeyInfoFunc: func(ctx context.Context, aggregatorDID string) (*aggregators.APIKeyInfo, error) {
+			return &aggregators.APIKeyInfo{
+				HasKey:    true,
+				KeyPrefix: "ckapi_test12",
+				IsRevoked: true, // Already revoked
+			}, nil
+		},
+	}
+
+	handler := NewRevokeAPIKeyHandler(mockAPIKeySvc, mockAggSvc)
+
+	// Create request with auth
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.aggregator.revokeApiKey", nil)
+	req.Header.Set("Content-Type", "application/json")
+	ctx := createUserDIDContext("did:plc:aggregator123")
+	req = req.WithContext(ctx)
+
+	// Execute handler
+	w := httptest.NewRecorder()
+	handler.HandleRevokeAPIKey(w, req)
+
+	// Check status code
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Expected status 400, got %d. Body: %s", w.Code, w.Body.String())
+	}
+
+	// Check error response
+	var errResp XRPCError
+	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+		t.Fatalf("Failed to decode error response: %v", err)
+	}
+	if errResp.Error != "ApiKeyAlreadyRevoked" {
+		t.Errorf("Expected error ApiKeyAlreadyRevoked, got %s", errResp.Error)
+	}
+}
 
 func TestRevokeAPIKeyHandler_RequiresAuth(t *testing.T) {
 	mockAggSvc := &mockAggregatorService{}
@@ -592,11 +890,13 @@ func TestGetAPIKeyResponse_OmitsEmptyOptionalFields(t *testing.T) {
 // Handler Success Path Tests with Mocks
 // =============================================================================
 
-// mockAPIKeyService implements a minimal interface matching what handlers need
+// mockAPIKeyService implements aggregators.APIKeyServiceInterface for testing
 type mockAPIKeyService struct {
-	generateKeyFunc   func(ctx context.Context, aggregatorDID string, oauthSession *oauthlib.ClientSessionData) (plainKey string, keyPrefix string, err error)
-	getAPIKeyInfoFunc func(ctx context.Context, aggregatorDID string) (*aggregators.APIKeyInfo, error)
-	revokeKeyFunc     func(ctx context.Context, aggregatorDID string) error
+	generateKeyFunc            func(ctx context.Context, aggregatorDID string, oauthSession *oauthlib.ClientSessionData) (plainKey string, keyPrefix string, err error)
+	getAPIKeyInfoFunc          func(ctx context.Context, aggregatorDID string) (*aggregators.APIKeyInfo, error)
+	revokeKeyFunc              func(ctx context.Context, aggregatorDID string) error
+	failedLastUsedUpdates      int64
+	failedNonceUpdates         int64
 }
 
 func (m *mockAPIKeyService) GenerateKey(ctx context.Context, aggregatorDID string, oauthSession *oauthlib.ClientSessionData) (string, string, error) {
@@ -620,9 +920,16 @@ func (m *mockAPIKeyService) RevokeKey(ctx context.Context, aggregatorDID string)
 	return errors.New("not implemented")
 }
 
-// mockAPIKeyServiceWrapper wraps our mock to be used where *aggregators.APIKeyService is expected.
-// Since the handlers take a concrete *aggregators.APIKeyService, we need integration-style tests
-// for the success paths. The following tests document why and provide partial coverage.
+func (m *mockAPIKeyService) GetFailedLastUsedUpdates() int64 {
+	return m.failedLastUsedUpdates
+}
+
+func (m *mockAPIKeyService) GetFailedNonceUpdates() int64 {
+	return m.failedNonceUpdates
+}
+
+// Verify mockAPIKeyService implements the interface at compile time
+var _ aggregators.APIKeyServiceInterface = (*mockAPIKeyService)(nil)
 
 func TestCreateAPIKeyHandler_Success_RequiresIntegration(t *testing.T) {
 	// The CreateAPIKeyHandler.HandleCreateAPIKey method calls:
@@ -748,126 +1055,6 @@ func TestGetAPIKeyHandler_Success_RequiresIntegration(t *testing.T) {
 			t.Error("Expected keyInfo to be omitted when hasKey is false")
 		}
 	})
-}
-
-// =============================================================================
-// RevokeAPIKey Handler Edge Case Tests
-// =============================================================================
-
-// mockAPIKeyServiceForRevoke helps test revoke edge cases
-type mockAPIKeyServiceForRevoke struct {
-	getAPIKeyInfoFunc func(ctx context.Context, aggregatorDID string) (*aggregators.APIKeyInfo, error)
-	revokeKeyFunc     func(ctx context.Context, aggregatorDID string) error
-}
-
-func TestRevokeAPIKeyHandler_NoAPIKeyExists(t *testing.T) {
-	// Test revoking when no API key exists for the aggregator
-	//
-	// Since the handler uses a concrete *aggregators.APIKeyService (not an interface),
-	// we cannot mock it directly. This edge case is tested:
-	// 1. At the service level in apikey_service_test.go (GetAPIKeyInfo_NoKey test)
-	// 2. Through integration tests with real infrastructure
-	//
-	// The expected handler code path is:
-	// 1. Check auth - pass
-	// 2. Check is aggregator - pass
-	// 3. GetAPIKeyInfo - returns HasKey: false
-	// 4. Handler returns 400 BadRequest with "ApiKeyNotFound" error
-	//
-	// This test documents the behavior and verifies the error response format.
-	t.Run("documents_expected_behavior", func(t *testing.T) {
-		// Verify the expected error response format
-		errorResp := struct {
-			Error   string `json:"error"`
-			Message string `json:"message"`
-		}{
-			Error:   "ApiKeyNotFound",
-			Message: "No API key exists to revoke",
-		}
-
-		data, err := json.Marshal(errorResp)
-		if err != nil {
-			t.Fatalf("Failed to marshal error response: %v", err)
-		}
-
-		var decoded map[string]interface{}
-		if err := json.Unmarshal(data, &decoded); err != nil {
-			t.Fatalf("Failed to unmarshal response: %v", err)
-		}
-
-		if decoded["error"] != "ApiKeyNotFound" {
-			t.Errorf("Expected error 'ApiKeyNotFound', got %v", decoded["error"])
-		}
-	})
-}
-
-func TestRevokeAPIKeyHandler_AlreadyRevoked(t *testing.T) {
-	// Test revoking an already-revoked key
-	//
-	// Since the handler uses a concrete *aggregators.APIKeyService (not an interface),
-	// we cannot mock it directly. This edge case is tested:
-	// 1. At the service level in apikey_service_test.go (GetAPIKeyInfo_RevokedKey test)
-	// 2. Through integration tests with real infrastructure
-	//
-	// The expected handler code path is:
-	// 1. Check auth - pass
-	// 2. Check is aggregator - pass
-	// 3. GetAPIKeyInfo - returns HasKey: true, IsRevoked: true
-	// 4. Handler returns 400 BadRequest with "ApiKeyAlreadyRevoked" error
-	//
-	// This test documents the behavior and verifies the error response format.
-	t.Run("documents_expected_behavior", func(t *testing.T) {
-		// Verify the expected error response format
-		errorResp := struct {
-			Error   string `json:"error"`
-			Message string `json:"message"`
-		}{
-			Error:   "ApiKeyAlreadyRevoked",
-			Message: "API key has already been revoked",
-		}
-
-		data, err := json.Marshal(errorResp)
-		if err != nil {
-			t.Fatalf("Failed to marshal error response: %v", err)
-		}
-
-		var decoded map[string]interface{}
-		if err := json.Unmarshal(data, &decoded); err != nil {
-			t.Fatalf("Failed to unmarshal response: %v", err)
-		}
-
-		if decoded["error"] != "ApiKeyAlreadyRevoked" {
-			t.Errorf("Expected error 'ApiKeyAlreadyRevoked', got %v", decoded["error"])
-		}
-	})
-}
-
-func TestRevokeAPIKeyHandler_Success(t *testing.T) {
-	// Verify the success response format (success field removed per AT Protocol best practices)
-	response := RevokeAPIKeyResponse{
-		RevokedAt: time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
-	}
-
-	data, err := json.Marshal(response)
-	if err != nil {
-		t.Fatalf("Failed to marshal response: %v", err)
-	}
-
-	var decoded map[string]interface{}
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("Failed to unmarshal response: %v", err)
-	}
-
-	revokedAt, ok := decoded["revokedAt"].(string)
-	if !ok || revokedAt == "" {
-		t.Error("Expected revokedAt to be a non-empty string")
-	}
-
-	// Verify timestamp format
-	_, err = time.Parse("2006-01-02T15:04:05.000Z", revokedAt)
-	if err != nil {
-		t.Errorf("Expected revokedAt to be valid ISO8601 timestamp: %v", err)
-	}
 }
 
 // =============================================================================
