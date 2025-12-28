@@ -105,6 +105,10 @@ services:
 
       # Restrict community creation to instance DID only
       COMMUNITY_CREATORS: did:web:coves.social
+
+      # Trusted aggregators (bypass per-community authorization check)
+      # Comma-separated list of DIDs
+      TRUSTED_AGGREGATOR_DIDS: ${TRUSTED_AGGREGATOR_DIDS:-}
     networks:
       - coves-internal
     depends_on:
