@@ -11,13 +11,13 @@ if [ -f /app/.env ]; then
 fi
 
 # Validate required environment variables
-if [ -z "$AGGREGATOR_HANDLE" ] || [ -z "$AGGREGATOR_PASSWORD" ]; then
-    echo "ERROR: Missing required environment variables!"
-    echo "Please set AGGREGATOR_HANDLE and AGGREGATOR_PASSWORD"
+if [ -z "$COVES_API_KEY" ]; then
+    echo "ERROR: Missing required environment variable!"
+    echo "Please set COVES_API_KEY (format: ckapi_...)"
     exit 1
 fi
 
-echo "Aggregator Handle: $AGGREGATOR_HANDLE"
+echo "API Key prefix: ${COVES_API_KEY:0:12}..."
 echo "Cron schedule loaded from /etc/cron.d/kagi-aggregator"
 
 # Start cron in the background
