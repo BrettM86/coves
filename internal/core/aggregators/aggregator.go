@@ -6,19 +6,108 @@ import "time"
 // Aggregators are autonomous services that can post content to communities after authorization
 // Following Bluesky's pattern: app.bsky.feed.generator and app.bsky.labeler.service
 type Aggregator struct {
-	CreatedAt        time.Time `json:"createdAt" db:"created_at"`
-	IndexedAt        time.Time `json:"indexedAt" db:"indexed_at"`
-	AvatarURL        string    `json:"avatarUrl,omitempty" db:"avatar_url"`
-	DID              string    `json:"did" db:"did"`
-	MaintainerDID    string    `json:"maintainerDid,omitempty" db:"maintainer_did"`
-	SourceURL        string    `json:"sourceUrl,omitempty" db:"source_url"`
-	Description      string    `json:"description,omitempty" db:"description"`
-	DisplayName      string    `json:"displayName" db:"display_name"`
-	RecordURI        string    `json:"recordUri,omitempty" db:"record_uri"`
-	RecordCID        string    `json:"recordCid,omitempty" db:"record_cid"`
-	ConfigSchema     []byte    `json:"configSchema,omitempty" db:"config_schema"`
-	CommunitiesUsing int       `json:"communitiesUsing" db:"communities_using"`
-	PostsCreated     int       `json:"postsCreated" db:"posts_created"`
+	// Core timestamps
+	CreatedAt time.Time `json:"createdAt" db:"created_at"`
+	IndexedAt time.Time `json:"indexedAt" db:"indexed_at"`
+
+	// Identity and display
+	DID         string `json:"did" db:"did"`
+	DisplayName string `json:"displayName" db:"display_name"`
+	Description string `json:"description,omitempty" db:"description"`
+	AvatarURL   string `json:"avatarUrl,omitempty" db:"avatar_url"`
+
+	// Metadata
+	MaintainerDID string `json:"maintainerDid,omitempty" db:"maintainer_did"`
+	SourceURL     string `json:"sourceUrl,omitempty" db:"source_url"`
+	RecordURI     string `json:"recordUri,omitempty" db:"record_uri"`
+	RecordCID     string `json:"recordCid,omitempty" db:"record_cid"`
+	ConfigSchema  []byte `json:"configSchema,omitempty" db:"config_schema"`
+
+	// Stats
+	CommunitiesUsing int `json:"communitiesUsing" db:"communities_using"`
+	PostsCreated     int `json:"postsCreated" db:"posts_created"`
+}
+
+// OAuthCredentials holds OAuth session data for aggregator authentication
+// Used when setting up or refreshing API key authentication
+type OAuthCredentials struct {
+	AccessToken             string
+	RefreshToken            string
+	TokenExpiresAt          time.Time
+	PDSURL                  string
+	AuthServerIss           string
+	AuthServerTokenEndpoint string
+	DPoPPrivateKeyMultibase string
+	DPoPAuthServerNonce     string
+	DPoPPDSNonce            string
+}
+
+// Validate checks that all required OAuthCredentials fields are present and valid.
+// Returns an error describing the first validation failure, or nil if valid.
+func (c *OAuthCredentials) Validate() error {
+	if c.AccessToken == "" {
+		return NewValidationError("accessToken", "access token is required")
+	}
+	if c.RefreshToken == "" {
+		return NewValidationError("refreshToken", "refresh token is required")
+	}
+	if c.TokenExpiresAt.IsZero() {
+		return NewValidationError("tokenExpiresAt", "token expiry time is required")
+	}
+	if c.PDSURL == "" {
+		return NewValidationError("pdsUrl", "PDS URL is required")
+	}
+	if c.AuthServerIss == "" {
+		return NewValidationError("authServerIss", "auth server issuer is required")
+	}
+	if c.AuthServerTokenEndpoint == "" {
+		return NewValidationError("authServerTokenEndpoint", "auth server token endpoint is required")
+	}
+	if c.DPoPPrivateKeyMultibase == "" {
+		return NewValidationError("dpopPrivateKey", "DPoP private key is required")
+	}
+	return nil
+}
+
+// AggregatorCredentials holds sensitive authentication data for aggregators.
+// This is the preferred type for authentication operations - separates concerns
+// from the public Aggregator type and prevents credential leakage.
+type AggregatorCredentials struct {
+	DID string `db:"did"`
+
+	// API Key Authentication
+	APIKeyPrefix    string     `db:"api_key_prefix"`
+	APIKeyHash      string     `db:"api_key_hash"`
+	APIKeyCreatedAt *time.Time `db:"api_key_created_at"`
+	APIKeyRevokedAt *time.Time `db:"api_key_revoked_at"`
+	APIKeyLastUsed  *time.Time `db:"api_key_last_used_at"`
+
+	// OAuth Session Credentials
+	OAuthAccessToken             string     `db:"oauth_access_token"`
+	OAuthRefreshToken            string     `db:"oauth_refresh_token"`
+	OAuthTokenExpiresAt          *time.Time `db:"oauth_token_expires_at"`
+	OAuthPDSURL                  string     `db:"oauth_pds_url"`
+	OAuthAuthServerIss           string     `db:"oauth_auth_server_iss"`
+	OAuthAuthServerTokenEndpoint string     `db:"oauth_auth_server_token_endpoint"`
+	OAuthDPoPPrivateKeyMultibase string     `db:"oauth_dpop_private_key_multibase"`
+	OAuthDPoPAuthServerNonce     string     `db:"oauth_dpop_authserver_nonce"`
+	OAuthDPoPPDSNonce            string     `db:"oauth_dpop_pds_nonce"`
+}
+
+// HasActiveAPIKey returns true if the credentials have an active (non-revoked) API key.
+// An active key has a non-empty hash and has not been revoked.
+func (c *AggregatorCredentials) HasActiveAPIKey() bool {
+	return c.APIKeyHash != "" && c.APIKeyRevokedAt == nil
+}
+
+// IsOAuthTokenExpired returns true if the OAuth access token has expired or will expire soon.
+// Uses a 5-minute buffer before actual expiry to allow proactive token refresh,
+// accounting for clock skew and network latency during refresh operations.
+func (c *AggregatorCredentials) IsOAuthTokenExpired() bool {
+	if c.OAuthTokenExpiresAt == nil {
+		return true
+	}
+	return time.Now().Add(5 * time.Minute).After(*c.OAuthTokenExpiresAt)
 }
 
 // Authorization represents a community's authorization for an aggregator

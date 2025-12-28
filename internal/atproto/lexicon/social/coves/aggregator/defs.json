@@ -204,6 +204,36 @@
           "format": "at-uri"
         }
       }
+    },
+    "apiKeyView": {
+      "type": "object",
+      "description": "View of an API key's metadata. The actual key value is never returned after initial creation.",
+      "required": ["prefix", "createdAt", "isRevoked"],
+      "properties": {
+        "prefix": {
+          "type": "string",
+          "description": "First 12 characters of the key (e.g., 'ckapi_ab12cd') for identification in logs and UI"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "datetime",
+          "description": "When the key was created"
+        },
+        "lastUsedAt": {
+          "type": "string",
+          "format": "datetime",
+          "description": "When the key was last used for authentication"
+        },
+        "isRevoked": {
+          "type": "boolean",
+          "description": "Whether the key has been revoked"
+        },
+        "revokedAt": {
+          "type": "string",
+          "format": "datetime",
+          "description": "When the key was revoked"
+        }
+      }
     }
   }
 }

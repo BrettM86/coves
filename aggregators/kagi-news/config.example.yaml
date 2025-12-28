@@ -2,6 +2,8 @@
 
 # Coves API endpoint
 coves_api_url: "https://coves.social"
+# API key is loaded from COVES_API_KEY environment variable
+# Get your API key from https://coves.social after OAuth login
 
 # Feed-to-community mappings
 # Handle format: c-{name}.{instance} (e.g., c-worldnews.coves.social)

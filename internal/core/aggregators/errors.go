@@ -16,6 +16,14 @@ var (
 	ErrConfigSchemaValidation = errors.New("configuration does not match aggregator's schema")
 	ErrNotModerator           = errors.New("user is not a moderator of this community")
 	ErrNotImplemented         = errors.New("feature not yet implemented") // For Phase 2 write-forward operations
+
+	// API Key authentication errors
+	ErrAPIKeyRevoked         = errors.New("API key has been revoked")
+	ErrAPIKeyInvalid         = errors.New("invalid API key")
+	ErrAPIKeyNotFound        = errors.New("API key not found for this aggregator")
+	ErrOAuthTokenExpired     = errors.New("OAuth token has expired and needs refresh")
+	ErrOAuthRefreshFailed    = errors.New("failed to refresh OAuth token")
+	ErrOAuthSessionMismatch  = errors.New("OAuth session DID does not match aggregator DID")
 )
 
 // ValidationError represents a validation error with field details
@@ -38,7 +46,9 @@ func NewValidationError(field, message string) error {
 
 // Error classification helpers for handlers to map to HTTP status codes
 func IsNotFound(err error) bool {
-	return errors.Is(err, ErrAggregatorNotFound) || errors.Is(err, ErrAuthorizationNotFound)
+	return errors.Is(err, ErrAggregatorNotFound) ||
+		errors.Is(err, ErrAuthorizationNotFound) ||
+		errors.Is(err, ErrAPIKeyNotFound)
 }
 
 func IsValidationError(err error) bool {
@@ -60,4 +70,15 @@ func IsRateLimited(err error) bool {
 
 func IsNotImplemented(err error) bool {
 	return errors.Is(err, ErrNotImplemented)
+}
+
+func IsAPIKeyError(err error) bool {
+	return errors.Is(err, ErrAPIKeyRevoked) ||
+		errors.Is(err, ErrAPIKeyInvalid) ||
+		errors.Is(err, ErrAPIKeyNotFound)
+}
+
+func IsOAuthError(err error) bool {
+	return errors.Is(err, ErrOAuthTokenExpired) ||
+		errors.Is(err, ErrOAuthRefreshFailed)
 }

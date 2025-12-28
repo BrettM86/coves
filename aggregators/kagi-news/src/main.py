@@ -71,21 +71,17 @@ class Aggregator:
         if coves_client:
             self.coves_client = coves_client
         else:
-            # Get credentials from environment
-            aggregator_handle = os.getenv('AGGREGATOR_HANDLE')
-            aggregator_password = os.getenv('AGGREGATOR_PASSWORD')
-            pds_url = os.getenv('PDS_URL')  # Optional: separate PDS for auth
+            # Get API key from environment
+            api_key = os.getenv('COVES_API_KEY')
 
-            if not aggregator_handle or not aggregator_password:
+            if not api_key:
                 raise ValueError(
-                    "Missing AGGREGATOR_HANDLE or AGGREGATOR_PASSWORD environment variables"
+                    "COVES_API_KEY environment variable required"
                 )
 
             self.coves_client = CovesClient(
                 api_url=self.config.coves_api_url,
-                handle=aggregator_handle,
-                password=aggregator_password,
-                pds_url=pds_url  # Auth through PDS if specified
+                api_key=api_key
             )
 
     def run(self):

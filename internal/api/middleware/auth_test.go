@@ -1691,3 +1691,209 @@ func TestDualAuthMiddleware_InvalidAuthHeaderFormat(t *testing.T) {
 		})
 	}
 }
+
+// Mock APIKeyValidator for testing
+type mockAPIKeyValidator struct {
+	aggregators   map[string]string // key -> DID
+	shouldFail    bool
+	refreshCalled bool
+}
+
+func (m *mockAPIKeyValidator) ValidateKey(ctx context.Context, plainKey string) (string, error) {
+	if m.shouldFail {
+		return "", fmt.Errorf("invalid API key")
+	}
+	// Extract DID from key for testing (real implementation would hash and look up)
+	// Test format: ckapi_<did_suffix>_rest
+	if len(plainKey) < 12 {
+		return "", fmt.Errorf("invalid key format")
+	}
+	// For testing, assume valid keys return a known aggregator DID
+	if aggregatorDID, ok := m.aggregators[plainKey]; ok {
+		return aggregatorDID, nil
+	}
+	return "", fmt.Errorf("unknown API key")
+}
+
+func (m *mockAPIKeyValidator) RefreshTokensIfNeeded(ctx context.Context, aggregatorDID string) error {
+	m.refreshCalled = true
+	return nil
+}
+
+// TestDualAuthMiddleware_APIKey_Valid tests API key authentication
+func TestDualAuthMiddleware_APIKey_Valid(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+	validator := &mockServiceAuthValidator{}
+	aggregatorChecker := &mockAggregatorChecker{
+		aggregators: make(map[string]bool),
+	}
+
+	apiKeyValidator := &mockAPIKeyValidator{
+		aggregators: map[string]string{
+			"ckapi_test1234567890123456789012345678": "did:plc:aggregator123",
+		},
+	}
+
+	middleware := NewDualAuthMiddleware(client, store, validator, aggregatorChecker).
+		WithAPIKeyValidator(apiKeyValidator)
+
+	handlerCalled := false
+	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+
+		// Verify DID was extracted
+		extractedDID := GetUserDID(r)
+		if extractedDID != "did:plc:aggregator123" {
+			t.Errorf("expected DID 'did:plc:aggregator123', got %s", extractedDID)
+		}
+
+		// Verify it's marked as aggregator auth
+		if !IsAggregatorAuth(r) {
+			t.Error("expected IsAggregatorAuth to be true")
+		}
+
+		// Verify auth method
+		authMethod := GetAuthMethod(r)
+		if authMethod != AuthMethodAPIKey {
+			t.Errorf("expected auth method %s, got %s", AuthMethodAPIKey, authMethod)
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer ckapi_test1234567890123456789012345678")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if !handlerCalled {
+		t.Error("handler was not called")
+	}
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify token refresh was attempted
+	if !apiKeyValidator.refreshCalled {
+		t.Error("expected token refresh to be called")
+	}
+}
+
+// TestDualAuthMiddleware_APIKey_Invalid tests API key authentication with invalid key
+func TestDualAuthMiddleware_APIKey_Invalid(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+	validator := &mockServiceAuthValidator{}
+	aggregatorChecker := &mockAggregatorChecker{
+		aggregators: make(map[string]bool),
+	}
+
+	apiKeyValidator := &mockAPIKeyValidator{
+		shouldFail: true,
+	}
+
+	middleware := NewDualAuthMiddleware(client, store, validator, aggregatorChecker).
+		WithAPIKeyValidator(apiKeyValidator)
+
+	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called for invalid API key")
+	}))
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer ckapi_invalid_key_12345678901234567")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", w.Code)
+	}
+
+	var response map[string]string
+	_ = json.Unmarshal(w.Body.Bytes(), &response)
+	if response["message"] != "Invalid or revoked API key" {
+		t.Errorf("unexpected error message: %s", response["message"])
+	}
+}
+
+// TestDualAuthMiddleware_APIKey_Disabled tests API key auth when validator is not configured
+func TestDualAuthMiddleware_APIKey_Disabled(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+	validator := &mockServiceAuthValidator{}
+	aggregatorChecker := &mockAggregatorChecker{
+		aggregators: make(map[string]bool),
+	}
+
+	// No API key validator configured
+	middleware := NewDualAuthMiddleware(client, store, validator, aggregatorChecker)
+
+	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("handler should not be called when API key auth is disabled")
+	}))
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer ckapi_test1234567890123456789012345678")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", w.Code)
+	}
+
+	var response map[string]string
+	_ = json.Unmarshal(w.Body.Bytes(), &response)
+	if response["message"] != "API key authentication is not enabled" {
+		t.Errorf("unexpected error message: %s", response["message"])
+	}
+}
+
+// TestDualAuthMiddleware_APIKey_PrecedenceOverOAuth tests that API keys are detected before OAuth
+func TestDualAuthMiddleware_APIKey_PrecedenceOverOAuth(t *testing.T) {
+	client := newMockOAuthClient()
+	store := newMockOAuthStore()
+	validator := &mockServiceAuthValidator{}
+	aggregatorChecker := &mockAggregatorChecker{
+		aggregators: make(map[string]bool),
+	}
+
+	apiKeyValidator := &mockAPIKeyValidator{
+		aggregators: map[string]string{
+			"ckapi_test1234567890123456789012345678": "did:plc:apikey_aggregator",
+		},
+	}
+
+	middleware := NewDualAuthMiddleware(client, store, validator, aggregatorChecker).
+		WithAPIKeyValidator(apiKeyValidator)
+
+	handler := middleware.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify API key auth was used
+		authMethod := GetAuthMethod(r)
+		if authMethod != AuthMethodAPIKey {
+			t.Errorf("expected API key auth method, got %s", authMethod)
+		}
+
+		// Verify DID from API key (not OAuth)
+		did := GetUserDID(r)
+		if did != "did:plc:apikey_aggregator" {
+			t.Errorf("expected API key aggregator DID, got %s", did)
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Use API key format token (starts with ckapi_)
+	req := httptest.NewRequest("GET", "/test", nil)
+	req.Header.Set("Authorization", "Bearer ckapi_test1234567890123456789012345678")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
