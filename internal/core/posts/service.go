@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"Coves/internal/api/middleware"
@@ -83,14 +84,27 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 		return nil, fmt.Errorf("authenticated DID does not match author DID")
 	}
 
-	// 3. Determine actor type: Kagi aggregator, other aggregator, or regular user
-	kagiAggregatorDID := os.Getenv("KAGI_AGGREGATOR_DID")
-	isTrustedKagi := kagiAggregatorDID != "" && req.AuthorDID == kagiAggregatorDID
+	// 3. Determine actor type: trusted aggregator, other aggregator, or regular user
+	// Check against comma-separated list of trusted aggregator DIDs
+	trustedDIDs := os.Getenv("TRUSTED_AGGREGATOR_DIDS")
+	if trustedDIDs == "" {
+		// Fallback to legacy single DID env var
+		trustedDIDs = os.Getenv("KAGI_AGGREGATOR_DID")
+	}
+	isTrustedAggregator := false
+	if trustedDIDs != "" {
+		for _, did := range strings.Split(trustedDIDs, ",") {
+			if strings.TrimSpace(did) == req.AuthorDID {
+				isTrustedAggregator = true
+				break
+			}
+		}
+	}
 
-	// Check if this is a non-Kagi aggregator (requires database lookup)
+	// Check if this is a non-trusted aggregator (requires database lookup)
 	var isOtherAggregator bool
 	var err error
-	if !isTrustedKagi && s.aggregatorService != nil {
+	if !isTrustedAggregator && s.aggregatorService != nil {
 		isOtherAggregator, err = s.aggregatorService.IsAggregator(ctx, req.AuthorDID)
 		if err != nil {
 			log.Printf("[POST-CREATE] Warning: failed to check if DID is aggregator: %v", err)
@@ -138,11 +152,11 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 	}
 
 	// 7. Apply validation based on actor type (aggregator vs user)
-	if isTrustedKagi {
+	if isTrustedAggregator {
 		// TRUSTED AGGREGATOR VALIDATION FLOW
-		// Kagi aggregator is authorized via KAGI_AGGREGATOR_DID env var (temporary)
+		// Trusted aggregators are authorized via TRUSTED_AGGREGATOR_DIDS env var (temporary)
 		// TODO: Replace with proper XRPC aggregator authorization endpoint
-		log.Printf("[POST-CREATE] Trusted Kagi aggregator detected: %s posting to community: %s", req.AuthorDID, communityDID)
+		log.Printf("[POST-CREATE] Trusted aggregator detected: %s posting to community: %s", req.AuthorDID, communityDID)
 		// Aggregators skip membership checks and visibility restrictions
 		// They are authorized services, not community members
 	} else if isOtherAggregator {
@@ -219,7 +233,7 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 
 					// TRUSTED AGGREGATOR: Allow Kagi aggregator to provide thumbnail URLs directly
 					// This bypasses unfurl for more accurate RSS-sourced thumbnails
-					if req.ThumbnailURL != nil && *req.ThumbnailURL != "" && isTrustedKagi {
+					if req.ThumbnailURL != nil && *req.ThumbnailURL != "" && isTrustedAggregator {
 						log.Printf("[AGGREGATOR-THUMB] Trusted aggregator provided thumbnail: %s", *req.ThumbnailURL)
 
 						if s.blobService != nil {
@@ -239,7 +253,7 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 
 					// Unfurl enhancement (optional, only if URL is supported)
 					// Skip unfurl for trusted aggregators - they provide their own metadata
-					if !isTrustedKagi {
+					if !isTrustedAggregator {
 						if uri, ok := external["uri"].(string); ok && uri != "" {
 							// Check if we support unfurling this URL
 							if s.unfurlService != nil && s.unfurlService.IsSupported(uri) {
@@ -313,7 +327,7 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 
 	// 13. Return response (AppView will index via Jetstream consumer)
 	log.Printf("[POST-CREATE] Author: %s (trustedKagi=%v, otherAggregator=%v), Community: %s, URI: %s",
-		req.AuthorDID, isTrustedKagi, isOtherAggregator, communityDID, uri)
+		req.AuthorDID, isTrustedAggregator, isOtherAggregator, communityDID, uri)
 
 	return &CreatePostResponse{
 		URI: uri,
