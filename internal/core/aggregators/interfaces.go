@@ -34,6 +34,20 @@ type Repository interface {
 	RecordAggregatorPost(ctx context.Context, aggregatorDID, communityDID, postURI, postCID string) error
 	CountRecentPosts(ctx context.Context, aggregatorDID, communityDID string, since time.Time) (int, error)
 	GetRecentPosts(ctx context.Context, aggregatorDID, communityDID string, since time.Time) ([]*AggregatorPost, error)
+
+	// API Key Authentication
+	// GetByAPIKeyHash looks up an aggregator by their API key hash for authentication
+	GetByAPIKeyHash(ctx context.Context, keyHash string) (*Aggregator, error)
+	// SetAPIKey stores API key credentials and OAuth session for an aggregator
+	SetAPIKey(ctx context.Context, did, keyPrefix, keyHash string, oauthCreds *OAuthCredentials) error
+	// UpdateOAuthTokens updates OAuth tokens after a refresh operation
+	UpdateOAuthTokens(ctx context.Context, did, accessToken, refreshToken string, expiresAt time.Time) error
+	// UpdateOAuthNonces updates DPoP nonces after token operations
+	UpdateOAuthNonces(ctx context.Context, did, authServerNonce, pdsNonce string) error
+	// UpdateAPIKeyLastUsed updates the last_used_at timestamp for audit purposes
+	UpdateAPIKeyLastUsed(ctx context.Context, did string) error
+	// RevokeAPIKey marks an API key as revoked (sets api_key_revoked_at)
+	RevokeAPIKey(ctx context.Context, did string) error
 }
 
 // Service defines the interface for aggregator business logic

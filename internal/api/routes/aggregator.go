@@ -57,3 +57,34 @@ func RegisterAggregatorRoutes(
 	// POST /xrpc/social.coves.aggregator.disable (requires auth + moderator)
 	// POST /xrpc/social.coves.aggregator.updateConfig (requires auth + moderator)
 }
+
+// RegisterAggregatorAPIKeyRoutes registers API key management endpoints for aggregators.
+// These endpoints require OAuth authentication and are only available to registered aggregators.
+// Call this function AFTER setting up the auth middleware.
+func RegisterAggregatorAPIKeyRoutes(
+	r chi.Router,
+	authMiddleware middleware.AuthMiddleware,
+	apiKeyService *aggregators.APIKeyService,
+	aggregatorService aggregators.Service,
+) {
+	// Create API key handlers
+	createAPIKeyHandler := aggregator.NewCreateAPIKeyHandler(apiKeyService, aggregatorService)
+	getAPIKeyHandler := aggregator.NewGetAPIKeyHandler(apiKeyService, aggregatorService)
+	revokeAPIKeyHandler := aggregator.NewRevokeAPIKeyHandler(apiKeyService, aggregatorService)
+
+	// API key management endpoints (require OAuth authentication)
+	// POST /xrpc/social.coves.aggregator.createApiKey
+	// Creates a new API key for the authenticated aggregator
+	r.With(authMiddleware.RequireAuth).Post("/xrpc/social.coves.aggregator.createApiKey",
+		createAPIKeyHandler.HandleCreateAPIKey)
+
+	// GET /xrpc/social.coves.aggregator.getApiKey
+	// Gets info about the authenticated aggregator's API key (not the key itself)
+	r.With(authMiddleware.RequireAuth).Get("/xrpc/social.coves.aggregator.getApiKey",
+		getAPIKeyHandler.HandleGetAPIKey)
+
+	// POST /xrpc/social.coves.aggregator.revokeApiKey
+	// Revokes the authenticated aggregator's API key
+	r.With(authMiddleware.RequireAuth).Post("/xrpc/social.coves.aggregator.revokeApiKey",
+		revokeAPIKeyHandler.HandleRevokeAPIKey)
+}

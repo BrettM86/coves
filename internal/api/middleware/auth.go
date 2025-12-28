@@ -33,7 +33,11 @@ type AuthMiddleware interface {
 const (
 	AuthMethodOAuth      = "oauth"
 	AuthMethodServiceJWT = "service_jwt"
+	AuthMethodAPIKey     = "api_key"
 )
+
+// API key prefix constant
+const APIKeyPrefix = "ckapi_"
 
 // SessionUnsealer is an interface for unsealing session tokens
 // This allows for mocking in tests
@@ -49,6 +53,14 @@ type AggregatorChecker interface {
 // ServiceAuthValidator is an interface for validating service JWTs
 type ServiceAuthValidator interface {
 	Validate(ctx context.Context, tokenString string, lexMethod *syntax.NSID) (syntax.DID, error)
+}
+
+// APIKeyValidator is an interface for validating API keys (used by aggregators)
+type APIKeyValidator interface {
+	// ValidateKey validates an API key and returns the aggregator DID if valid
+	ValidateKey(ctx context.Context, plainKey string) (aggregatorDID string, err error)
+	// RefreshTokensIfNeeded refreshes OAuth tokens for the aggregator if they are expired
+	RefreshTokensIfNeeded(ctx context.Context, aggregatorDID string) error
 }
 
 // OAuthAuthMiddleware enforces OAuth authentication using sealed session tokens.
@@ -329,13 +341,14 @@ func writeAuthError(w http.ResponseWriter, message string) {
 	}
 }
 
-// DualAuthMiddleware enforces authentication using either OAuth sealed tokens (for users)
-// or PDS service JWTs (for aggregators only).
+// DualAuthMiddleware enforces authentication using either OAuth sealed tokens (for users),
+// PDS service JWTs (for aggregators), or API keys (for aggregators).
 type DualAuthMiddleware struct {
 	unsealer          SessionUnsealer
 	store             oauthlib.ClientAuthStore
 	serviceValidator  ServiceAuthValidator
 	aggregatorChecker AggregatorChecker
+	apiKeyValidator   APIKeyValidator // Optional: if nil, API key auth is disabled
 }
 
 // NewDualAuthMiddleware creates a new dual auth middleware that supports both OAuth and service JWT authentication.
@@ -353,14 +366,23 @@ func NewDualAuthMiddleware(
 	}
 }
 
-// RequireAuth middleware ensures the user is authenticated via either OAuth or service JWT.
+// WithAPIKeyValidator adds API key validation support to the middleware.
+// Returns the middleware for method chaining.
+func (m *DualAuthMiddleware) WithAPIKeyValidator(validator APIKeyValidator) *DualAuthMiddleware {
+	m.apiKeyValidator = validator
+	return m
+}
+
+// RequireAuth middleware ensures the user is authenticated via either OAuth, service JWT, or API key.
 // Supports:
+//   - API keys via Authorization: Bearer ckapi_... (aggregators only, checked first)
 //   - OAuth sealed session tokens via Authorization: Bearer <sealed_token> or Cookie: coves_session=<sealed_token>
 //   - Service JWTs via Authorization: Bearer <jwt>
 //
-// SECURITY: Service JWT authentication is RESTRICTED to registered aggregators only.
-// Non-aggregator DIDs will be rejected even with valid JWT signatures.
-// This enforcement happens in handleServiceAuth() via aggregatorChecker.IsAggregator().
+// SECURITY: Service JWT and API key authentication are RESTRICTED to registered aggregators only.
+// Non-aggregator DIDs will be rejected even with valid JWT signatures or API keys.
+// This enforcement happens in handleServiceAuth() via aggregatorChecker.IsAggregator() and
+// in handleAPIKeyAuth() via apiKeyValidator.ValidateKey().
 //
 // If not authenticated, returns 401.
 // If authenticated, injects user DID and auth method into context.
@@ -398,6 +420,13 @@ func (m *DualAuthMiddleware) RequireAuth(next http.Handler) http.Handler {
 		log.Printf("[AUTH_TRACE] ip=%s method=%s path=%s token_source=%s",
 			r.RemoteAddr, r.Method, r.URL.Path, tokenSource)
 
+		// Check for API key first (before JWT/OAuth routing)
+		// API keys start with "ckapi_" prefix
+		if strings.HasPrefix(token, APIKeyPrefix) {
+			m.handleAPIKeyAuth(w, r, next, token)
+			return
+		}
+
 		// Detect token type and route to appropriate handler
 		if isJWTFormat(token) {
 			m.handleServiceAuth(w, r, next, token)
@@ -411,7 +440,7 @@ func (m *DualAuthMiddleware) RequireAuth(next http.Handler) http.Handler {
 func (m *DualAuthMiddleware) handleServiceAuth(w http.ResponseWriter, r *http.Request, next http.Handler, token string) {
 	// Validate the service JWT
 	// Note: lexMethod is nil, which allows any lexicon method (endpoint-agnostic validation).
-	// The ServiceAuthValidator skips the lexicon method check when nil (see indigo/atproto/auth/jwt.go:86-88).
+	// The ServiceAuthValidator skips the lexicon method check when lexMethod is nil.
 	// This is intentional - we want aggregators to authenticate globally, not per-endpoint.
 	did, err := m.serviceValidator.Validate(r.Context(), token, nil)
 	if err != nil {
@@ -447,6 +476,47 @@ func (m *DualAuthMiddleware) handleServiceAuth(w http.ResponseWriter, r *http.Re
 	ctx := context.WithValue(r.Context(), UserDIDKey, didStr)
 	ctx = context.WithValue(ctx, IsAggregatorAuthKey, true)
 	ctx = context.WithValue(ctx, AuthMethodKey, AuthMethodServiceJWT)
+
+	// Call next handler
+	next.ServeHTTP(w, r.WithContext(ctx))
+}
+
+// handleAPIKeyAuth handles authentication using Coves API keys (aggregators only)
+func (m *DualAuthMiddleware) handleAPIKeyAuth(w http.ResponseWriter, r *http.Request, next http.Handler, token string) {
+	// Check if API key validation is enabled
+	if m.apiKeyValidator == nil {
+		log.Printf("[AUTH_FAILURE] type=api_key_disabled ip=%s method=%s path=%s",
+			r.RemoteAddr, r.Method, r.URL.Path)
+		writeAuthError(w, "API key authentication is not enabled")
+		return
+	}
+
+	// Validate the API key
+	aggregatorDID, err := m.apiKeyValidator.ValidateKey(r.Context(), token)
+	if err != nil {
+		log.Printf("[AUTH_FAILURE] type=api_key_invalid ip=%s method=%s path=%s error=%v",
+			r.RemoteAddr, r.Method, r.URL.Path, err)
+		writeAuthError(w, "Invalid or revoked API key")
+		return
+	}
+
+	// Refresh OAuth tokens if needed (for PDS operations)
+	if err := m.apiKeyValidator.RefreshTokensIfNeeded(r.Context(), aggregatorDID); err != nil {
+		log.Printf("[AUTH_FAILURE] type=token_refresh_failed ip=%s method=%s path=%s did=%s error=%v",
+			r.RemoteAddr, r.Method, r.URL.Path, aggregatorDID, err)
+		// Token refresh failure means the aggregator cannot perform authenticated PDS operations
+		// This is a critical failure - reject the request so the aggregator knows to re-authenticate
+		writeAuthError(w, "API key authentication failed: unable to refresh OAuth tokens. Please re-authenticate.")
+		return
+	}
+
+	log.Printf("[AUTH_SUCCESS] type=api_key ip=%s method=%s path=%s did=%s",
+		r.RemoteAddr, r.Method, r.URL.Path, aggregatorDID)
+
+	// Inject DID and auth method into context
+	ctx := context.WithValue(r.Context(), UserDIDKey, aggregatorDID)
+	ctx = context.WithValue(ctx, IsAggregatorAuthKey, true)
+	ctx = context.WithValue(ctx, AuthMethodKey, AuthMethodAPIKey)
 
 	// Call next handler
 	next.ServeHTTP(w, r.WithContext(ctx))
