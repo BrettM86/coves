@@ -167,7 +167,7 @@ services:
 
       # Production mode
       PDS_DEV_MODE: "false"
-      PDS_INVITE_REQUIRED: "false"  # Set to true if you want invite-only
+      PDS_INVITE_REQUIRED: "true"
 
       # Logging
       NODE_ENV: production
