@@ -90,10 +90,10 @@ func (s *blobService) UploadBlobFromURL(ctx context.Context, community *communit
 		return nil, fmt.Errorf("failed to read image data: %w", err)
 	}
 
-	// Validate size (1MB = 1048576 bytes)
-	const maxSize = 1048576
+	// Validate size (6MB = 6291456 bytes)
+	const maxSize = 6291456
 	if len(data) > maxSize {
-		return nil, fmt.Errorf("image size %d bytes exceeds maximum of %d bytes (1MB)", len(data), maxSize)
+		return nil, fmt.Errorf("image size %d bytes exceeds maximum of %d bytes (6MB)", len(data), maxSize)
 	}
 
 	// Upload to PDS
@@ -124,10 +124,10 @@ func (s *blobService) UploadBlob(ctx context.Context, community *communities.Com
 		return nil, fmt.Errorf("unsupported MIME type: %s (allowed: image/jpeg, image/png, image/webp)", mimeType)
 	}
 
-	// Validate size (1MB = 1048576 bytes)
-	const maxSize = 1048576
+	// Validate size (6MB = 6291456 bytes)
+	const maxSize = 6291456
 	if len(data) > maxSize {
-		return nil, fmt.Errorf("data size %d bytes exceeds maximum of %d bytes (1MB)", len(data), maxSize)
+		return nil, fmt.Errorf("data size %d bytes exceeds maximum of %d bytes (6MB)", len(data), maxSize)
 	}
 
 	// Use community's PDS URL (for federated communities)
