@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 )
 
 type postgresFeedRepo struct {
@@ -37,6 +38,9 @@ func NewCommunityFeedRepository(db *sql.DB, cursorSecret string) communityFeeds.
 // GetCommunityFeed retrieves posts from a community with sorting and pagination
 // Single query with JOINs for optimal performance
 func (r *postgresFeedRepo) GetCommunityFeed(ctx context.Context, req communityFeeds.GetCommunityFeedRequest) ([]*communityFeeds.FeedViewPost, *string, error) {
+	// Capture query time for stable cursor generation (used for hot sort pagination)
+	queryTime := time.Now()
+
 	// Build ORDER BY clause based on sort type
 	orderBy, timeFilter := r.feedRepoBase.buildSortClause(req.Sort, req.Timeframe)
 
@@ -125,7 +129,7 @@ func (r *postgresFeedRepo) GetCommunityFeed(ctx context.Context, req communityFe
 		hotRanks = hotRanks[:req.Limit]
 		lastPost := feedPosts[len(feedPosts)-1].Post
 		lastHotRank := hotRanks[len(hotRanks)-1]
-		cursorStr := r.feedRepoBase.buildCursor(lastPost, req.Sort, lastHotRank)
+		cursorStr := r.feedRepoBase.buildCursor(lastPost, req.Sort, lastHotRank, queryTime)
 		cursor = &cursorStr
 	}
 

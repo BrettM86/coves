@@ -192,15 +192,17 @@ func (r *feedRepoBase) parseCursor(cursor *string, sort string, paramOffset int)
 		return filter, []interface{}{score, createdAt, uri}, nil
 
 	case "hot":
-		// Cursor format: hot_rank::timestamp::uri
-		// CRITICAL: Must use computed hot_rank, not raw score, to prevent pagination bugs
-		if len(payloadParts) != 3 {
+		// Cursor format: hot_rank::post_created_at::uri::cursor_timestamp
+		// CRITICAL: cursor_timestamp is when the cursor was created, used for stable hot_rank comparison
+		// This prevents pagination bugs caused by hot_rank drift when NOW() changes between requests
+		if len(payloadParts) != 4 {
 			return "", nil, fmt.Errorf("invalid cursor format for hot sort")
 		}
 
 		hotRankStr := payloadParts[0]
-		createdAt := payloadParts[1]
+		postCreatedAt := payloadParts[1]
 		uri := payloadParts[2]
+		cursorTimestamp := payloadParts[3]
 
 		// Validate hot_rank is numeric (float)
 		hotRank := 0.0
@@ -208,9 +210,9 @@ func (r *feedRepoBase) parseCursor(cursor *string, sort string, paramOffset int)
 			return "", nil, fmt.Errorf("invalid cursor hot rank")
 		}
 
-		// Validate timestamp format
-		if _, err := time.Parse(time.RFC3339Nano, createdAt); err != nil {
-			return "", nil, fmt.Errorf("invalid cursor timestamp")
+		// Validate post timestamp format
+		if _, err := time.Parse(time.RFC3339Nano, postCreatedAt); err != nil {
+			return "", nil, fmt.Errorf("invalid cursor post timestamp")
 		}
 
 		// Validate URI format (must be AT-URI)
@@ -218,13 +220,21 @@ func (r *feedRepoBase) parseCursor(cursor *string, sort string, paramOffset int)
 			return "", nil, fmt.Errorf("invalid cursor URI")
 		}
 
-		// CRITICAL: Compare against the computed hot_rank expression, not p.score
-		filter := fmt.Sprintf(`AND ((%s < $%d OR (%s = $%d AND p.created_at < $%d) OR (%s = $%d AND p.created_at = $%d AND p.uri < $%d)) AND p.uri != $%d)`,
-			r.hotRankExpression, paramOffset,
-			r.hotRankExpression, paramOffset, paramOffset+1,
-			r.hotRankExpression, paramOffset, paramOffset+1, paramOffset+2,
+		// Validate cursor timestamp format
+		if _, err := time.Parse(time.RFC3339Nano, cursorTimestamp); err != nil {
+			return "", nil, fmt.Errorf("invalid cursor timestamp")
+		}
+
+		// CRITICAL: Use cursor_timestamp instead of NOW() for stable hot_rank comparison
+		// This ensures posts don't drift across page boundaries due to time passing
+		stableHotRankExpr := fmt.Sprintf(
+			`((p.score + 1) / POWER(EXTRACT(EPOCH FROM ($%d::timestamptz - p.created_at))/3600 + 2, 1.5))`,
 			paramOffset+3)
-		return filter, []interface{}{hotRank, createdAt, uri, uri}, nil
+
+		// Use tuple comparison for clean keyset pagination: (hot_rank, created_at, uri) < (cursor_values)
+		filter := fmt.Sprintf(`AND ((%s, p.created_at, p.uri) < ($%d, $%d, $%d))`,
+			stableHotRankExpr, paramOffset, paramOffset+1, paramOffset+2)
+		return filter, []interface{}{hotRank, postCreatedAt, uri, cursorTimestamp}, nil
 
 	default:
 		return "", nil, nil
@@ -233,7 +243,8 @@ func (r *feedRepoBase) parseCursor(cursor *string, sort string, paramOffset int)
 
 // buildCursor creates HMAC-signed pagination cursor from last post
 // SECURITY: Cursor is signed with HMAC-SHA256 to prevent manipulation
-func (r *feedRepoBase) buildCursor(post *posts.PostView, sort string, hotRank float64) string {
+// queryTime is the timestamp when the query was executed, used for stable hot_rank comparison
+func (r *feedRepoBase) buildCursor(post *posts.PostView, sort string, hotRank float64, queryTime time.Time) string {
 	var payload string
 	// Use :: as delimiter following Bluesky convention
 	const delimiter = "::"
@@ -252,10 +263,10 @@ func (r *feedRepoBase) buildCursor(post *posts.PostView, sort string, hotRank fl
 		payload = fmt.Sprintf("%d%s%s%s%s", score, delimiter, post.CreatedAt.Format(time.RFC3339Nano), delimiter, post.URI)
 
 	case "hot":
-		// Format: hot_rank::timestamp::uri
-		// CRITICAL: Use computed hot_rank with full precision
+		// Format: hot_rank::post_created_at::uri::cursor_timestamp
+		// CRITICAL: Include cursor_timestamp for stable hot_rank comparison across requests
 		hotRankStr := strconv.FormatFloat(hotRank, 'g', -1, 64)
-		payload = fmt.Sprintf("%s%s%s%s%s", hotRankStr, delimiter, post.CreatedAt.Format(time.RFC3339Nano), delimiter, post.URI)
+		payload = fmt.Sprintf("%s%s%s%s%s%s%s", hotRankStr, delimiter, post.CreatedAt.Format(time.RFC3339Nano), delimiter, post.URI, delimiter, queryTime.Format(time.RFC3339Nano))
 
 	default:
 		payload = post.URI

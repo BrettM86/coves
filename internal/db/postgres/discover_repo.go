@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 )
 
 type postgresDiscoverRepo struct {
@@ -33,6 +34,9 @@ func NewDiscoverRepository(db *sql.DB, cursorSecret string) discover.Repository 
 
 // GetDiscover retrieves posts from ALL communities (public feed)
 func (r *postgresDiscoverRepo) GetDiscover(ctx context.Context, req discover.GetDiscoverRequest) ([]*discover.FeedViewPost, *string, error) {
+	// Capture query time for stable cursor generation (used for hot sort pagination)
+	queryTime := time.Now()
+
 	// Build ORDER BY clause based on sort type
 	orderBy, timeFilter := r.buildSortClause(req.Sort, req.Timeframe)
 
@@ -119,7 +123,7 @@ func (r *postgresDiscoverRepo) GetDiscover(ctx context.Context, req discover.Get
 		hotRanks = hotRanks[:req.Limit]
 		lastPost := feedPosts[len(feedPosts)-1].Post
 		lastHotRank := hotRanks[len(hotRanks)-1]
-		cursorStr := r.feedRepoBase.buildCursor(lastPost, req.Sort, lastHotRank)
+		cursorStr := r.feedRepoBase.buildCursor(lastPost, req.Sort, lastHotRank, queryTime)
 		cursor = &cursorStr
 	}
 

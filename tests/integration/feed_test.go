@@ -700,6 +700,116 @@ func TestGetCommunityFeed_HotCursorPrecision(t *testing.T) {
 	t.Logf("SUCCESS: All posts with similar hot ranks preserved (precision bug fixed)")
 }
 
+// TestGetCommunityFeed_HotCursorTimeDrift tests that hot sort pagination is stable across time drift.
+// Regression test for a bug where posts would appear multiple times or be skipped when:
+// 1. Time passes between page 1 and page 2 requests
+// 2. Many posts have similar hot ranks
+//
+// Root cause: The cursor stored a hot_rank computed with NOW(), but the next query
+// also used NOW() (which had advanced). This caused posts to drift across the cursor boundary.
+//
+// Fix: Store the cursor creation timestamp in the cursor and use it for subsequent comparisons,
+// ensuring stable hot_rank computation across pagination requests.
+func TestGetCommunityFeed_HotCursorTimeDrift(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	db := setupTestDB(t)
+	t.Cleanup(func() { _ = db.Close() })
+
+	// Setup services
+	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
+	communityRepo := postgres.NewCommunityRepository(db)
+	communityService := communities.NewCommunityService(
+		communityRepo,
+		"http://localhost:3001",
+		"did:web:test.coves.social",
+		"test.coves.social",
+		nil,
+	)
+	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
+	handler := communityFeed.NewGetCommunityHandler(feedService, nil, nil)
+
+	// Setup test data
+	ctx := context.Background()
+	testID := time.Now().UnixNano()
+	communityDID, err := createFeedTestCommunity(db, ctx, fmt.Sprintf("timedrift-%d", testID), fmt.Sprintf("timedrift-%d.test", testID))
+	require.NoError(t, err)
+
+	// Create 15 posts all with the SAME score and created at the SAME time
+	// This maximizes the chance of time drift causing duplicates:
+	// - All posts have nearly identical hot ranks
+	// - Any small change in NOW() could cause posts to swap order
+	baseTime := time.Now().Add(-1 * time.Hour)
+	var allPostURIs []string
+	for i := 0; i < 15; i++ {
+		// Add tiny offsets (1ms) to created_at for deterministic ordering
+		postURI := createTestPost(t, db, communityDID, fmt.Sprintf("did:plc:user%d", i),
+			fmt.Sprintf("Post %d", i), 10, baseTime.Add(time.Duration(i)*time.Millisecond))
+		allPostURIs = append(allPostURIs, postURI)
+	}
+
+	// Paginate through all posts with limit=5
+	seenURIs := make(map[string]int)
+	var cursor *string
+	pageNum := 0
+
+	for {
+		pageNum++
+		url := fmt.Sprintf("/xrpc/social.coves.communityFeed.getCommunity?community=%s&sort=hot&limit=5", communityDID)
+		if cursor != nil {
+			url += "&cursor=" + *cursor
+		}
+
+		req := httptest.NewRequest(http.MethodGet, url, nil)
+		rec := httptest.NewRecorder()
+		handler.HandleGetCommunity(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code, "Page %d failed: %s", pageNum, rec.Body.String())
+
+		var page communityFeeds.FeedResponse
+		err = json.Unmarshal(rec.Body.Bytes(), &page)
+		require.NoError(t, err)
+
+		if len(page.Feed) == 0 {
+			break
+		}
+
+		for _, p := range page.Feed {
+			seenURIs[p.Post.URI]++
+			if seenURIs[p.Post.URI] > 1 {
+				t.Errorf("DUPLICATE on page %d: %s (seen %d times)", pageNum, p.Post.URI, seenURIs[p.Post.URI])
+			}
+		}
+
+		cursor = page.Cursor
+		if cursor == nil {
+			break
+		}
+
+		// Prevent infinite loops
+		if pageNum > 10 {
+			t.Fatal("Too many pages - possible infinite loop")
+		}
+	}
+
+	// Verify we saw all posts exactly once
+	assert.Equal(t, 15, len(seenURIs), "Should see all 15 posts")
+	for uri, count := range seenURIs {
+		if count != 1 {
+			t.Errorf("Post %s seen %d times (expected 1)", uri, count)
+		}
+	}
+
+	// Verify we saw all the posts we created
+	for _, uri := range allPostURIs {
+		assert.Contains(t, seenURIs, uri, "Missing post: %s", uri)
+	}
+
+	t.Logf("SUCCESS: All 15 posts seen exactly once across %d pages (time drift bug fixed)", pageNum)
+}
+
 // TestGetCommunityFeed_BlobURLTransformation tests that blob refs are transformed to URLs
 func TestGetCommunityFeed_BlobURLTransformation(t *testing.T) {
 	if testing.Short() {
