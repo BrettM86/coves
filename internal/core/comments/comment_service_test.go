@@ -212,6 +212,11 @@ func (m *mockPostRepo) GetByURI(ctx context.Context, uri string) (*posts.Post, e
 	return nil, posts.NewNotFoundError("post", uri)
 }
 
+func (m *mockPostRepo) GetByAuthor(ctx context.Context, req posts.GetAuthorPostsRequest) ([]*posts.PostView, *string, error) {
+	// Mock implementation - returns empty for tests
+	return nil, nil, nil
+}
+
 // mockCommunityRepo is a mock implementation of the communities.Repository interface
 type mockCommunityRepo struct {
 	communities map[string]*communities.Community

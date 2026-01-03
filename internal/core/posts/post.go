@@ -143,3 +143,74 @@ type ViewerState struct {
 	Tags     []string `json:"tags,omitempty"`
 	Saved    bool     `json:"saved"`
 }
+
+// Filter constants for GetAuthorPosts
+const (
+	FilterPostsWithReplies = "posts_with_replies"
+	FilterPostsNoReplies   = "posts_no_replies"
+	FilterPostsWithMedia   = "posts_with_media"
+)
+
+// GetAuthorPostsRequest represents input for fetching author's posts
+// Matches social.coves.actor.getPosts lexicon input
+type GetAuthorPostsRequest struct {
+	ActorDID  string  // Resolved DID from actor param (handle or DID)
+	Filter    string  // FilterPostsWithReplies, FilterPostsNoReplies, FilterPostsWithMedia
+	Community string  // Optional community DID filter
+	Limit     int     // Number of posts to return (1-100, default 50)
+	Cursor    *string // Pagination cursor
+	ViewerDID string  // Viewer's DID for enriching viewer state
+}
+
+// GetAuthorPostsResponse represents author posts response
+// Matches social.coves.actor.getPosts lexicon output
+type GetAuthorPostsResponse struct {
+	Feed   []*FeedViewPost `json:"feed"`
+	Cursor *string         `json:"cursor,omitempty"`
+}
+
+// FeedViewPost matches social.coves.feed.defs#feedViewPost
+// Wraps a post with optional context about why it appears in a feed
+type FeedViewPost struct {
+	Post   *PostView   `json:"post"`
+	Reason *FeedReason `json:"reason,omitempty"` // Context for why post appears in feed
+	Reply  *ReplyRef   `json:"reply,omitempty"`  // Reply context if post is a reply
+}
+
+// GetPost returns the underlying PostView for viewer state enrichment
+func (f *FeedViewPost) GetPost() *PostView {
+	return f.Post
+}
+
+// FeedReason represents the reason a post appears in a feed
+// Matches social.coves.feed.defs union type for feed context
+type FeedReason struct {
+	Type   string        `json:"$type"`
+	Repost *ReasonRepost `json:"repost,omitempty"`
+	Pin    *ReasonPin    `json:"pin,omitempty"`
+}
+
+// ReasonRepost indicates the post was reposted by another user
+type ReasonRepost struct {
+	By        *AuthorView `json:"by"`
+	IndexedAt string      `json:"indexedAt"`
+}
+
+// ReasonPin indicates the post is pinned by the community
+type ReasonPin struct {
+	Community *CommunityRef `json:"community"`
+}
+
+// ReplyRef contains context about post replies
+// Matches social.coves.feed.defs#replyRef
+type ReplyRef struct {
+	Root   *PostRef `json:"root"`
+	Parent *PostRef `json:"parent"`
+}
+
+// PostRef is a minimal reference to a post (URI + CID)
+// Matches social.coves.feed.defs#postRef
+type PostRef struct {
+	URI string `json:"uri"`
+	CID string `json:"cid"`
+}

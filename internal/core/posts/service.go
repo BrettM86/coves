@@ -558,3 +558,125 @@ func (s *postService) tryConvertBlueskyURLToPostEmbed(ctx context.Context, exter
 	log.Printf("[POST-CREATE] Converted Bluesky URL to post embed: %s (cid: %s)", result.URI, result.CID)
 	return true
 }
+
+// GetAuthorPosts retrieves posts by a specific author with optional filtering
+// Supports filtering by: posts_with_replies, posts_no_replies, posts_with_media
+// Optionally filter to a specific community
+func (s *postService) GetAuthorPosts(ctx context.Context, req GetAuthorPostsRequest) (*GetAuthorPostsResponse, error) {
+	// 1. Validate request
+	if err := s.validateGetAuthorPostsRequest(&req); err != nil {
+		return nil, err
+	}
+
+	// 2. If community is provided, resolve it to DID
+	if req.Community != "" {
+		communityDID, err := s.communityService.ResolveCommunityIdentifier(ctx, req.Community)
+		if err != nil {
+			if communities.IsNotFound(err) {
+				return nil, ErrCommunityNotFound
+			}
+			if communities.IsValidationError(err) {
+				return nil, NewValidationError("community", err.Error())
+			}
+			return nil, fmt.Errorf("failed to resolve community identifier: %w", err)
+		}
+		req.Community = communityDID
+	}
+
+	// 3. Fetch posts from repository
+	postViews, cursor, err := s.repo.GetByAuthor(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get author posts: %w", err)
+	}
+
+	// 4. Wrap PostViews in FeedViewPost
+	feed := make([]*FeedViewPost, len(postViews))
+	for i, postView := range postViews {
+		feed[i] = &FeedViewPost{
+			Post: postView,
+		}
+	}
+
+	// 5. Return response
+	return &GetAuthorPostsResponse{
+		Feed:   feed,
+		Cursor: cursor,
+	}, nil
+}
+
+// validateGetAuthorPostsRequest validates the GetAuthorPosts request
+func (s *postService) validateGetAuthorPostsRequest(req *GetAuthorPostsRequest) error {
+	// Validate actor DID is set
+	if req.ActorDID == "" {
+		return NewValidationError("actor", "actor is required")
+	}
+
+	// Validate DID format - AT Protocol supports did:plc and did:web
+	if err := validateDIDFormat(req.ActorDID); err != nil {
+		return NewValidationError("actor", err.Error())
+	}
+
+	// Validate and set defaults for filter
+	validFilters := map[string]bool{
+		FilterPostsWithReplies: true,
+		FilterPostsNoReplies:   true,
+		FilterPostsWithMedia:   true,
+	}
+	if req.Filter == "" {
+		req.Filter = FilterPostsWithReplies // Default
+	}
+	if !validFilters[req.Filter] {
+		return NewValidationError("filter", "filter must be one of: posts_with_replies, posts_no_replies, posts_with_media")
+	}
+
+	// Validate and set defaults for limit
+	if req.Limit <= 0 {
+		req.Limit = 50 // Default
+	}
+	if req.Limit > 100 {
+		req.Limit = 100 // Max
+	}
+
+	return nil
+}
+
+// validateDIDFormat validates that a string is a properly formatted DID
+// Supports did:plc: (24 char base32 identifier) and did:web: (domain-based)
+func validateDIDFormat(did string) error {
+	const maxDIDLength = 2048
+
+	if len(did) > maxDIDLength {
+		return fmt.Errorf("DID exceeds maximum length")
+	}
+
+	switch {
+	case strings.HasPrefix(did, "did:plc:"):
+		// did:plc: format - identifier is 24 lowercase alphanumeric chars
+		identifier := strings.TrimPrefix(did, "did:plc:")
+		if len(identifier) == 0 {
+			return fmt.Errorf("invalid did:plc format: missing identifier")
+		}
+		// Base32 uses lowercase a-z and 2-7
+		for _, c := range identifier {
+			if !((c >= 'a' && c <= 'z') || (c >= '2' && c <= '7')) {
+				return fmt.Errorf("invalid did:plc format: identifier contains invalid characters")
+			}
+		}
+		return nil
+
+	case strings.HasPrefix(did, "did:web:"):
+		// did:web: format - domain-based identifier
+		domain := strings.TrimPrefix(did, "did:web:")
+		if len(domain) == 0 {
+			return fmt.Errorf("invalid did:web format: missing domain")
+		}
+		// Basic domain validation - must contain at least one dot or be localhost
+		if !strings.Contains(domain, ".") && domain != "localhost" {
+			return fmt.Errorf("invalid did:web format: invalid domain")
+		}
+		return nil
+
+	default:
+		return fmt.Errorf("unsupported DID method: must be did:plc or did:web")
+	}
+}

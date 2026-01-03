@@ -133,14 +133,23 @@ func (s *userService) UpdateHandle(ctx context.Context, did, newHandle string) (
 
 // ResolveHandleToDID resolves a handle to a DID
 // This is critical for login: users enter their handle, we resolve to DID
-// Uses DNS TXT record lookup and HTTPS .well-known/atproto-did resolution
+// First checks local database for indexed users (fast path), then falls back
+// to external DNS TXT record lookup and HTTPS .well-known/atproto-did resolution
 func (s *userService) ResolveHandleToDID(ctx context.Context, handle string) (string, error) {
 	handle = strings.TrimSpace(strings.ToLower(handle))
 	if handle == "" {
 		return "", fmt.Errorf("handle is required")
 	}
 
-	// Use identity resolver to resolve handle to DID
+	// Fast path: check local database first for users we've already indexed
+	// This avoids external network calls for known users
+	user, err := s.userRepo.GetByHandle(ctx, handle)
+	if err == nil && user != nil {
+		return user.DID, nil
+	}
+	// If not found locally, fall through to external resolution
+
+	// Slow path: use identity resolver for external DNS/HTTPS resolution
 	did, _, err := s.identityResolver.ResolveHandle(ctx, handle)
 	if err != nil {
 		return "", fmt.Errorf("failed to resolve handle %s: %w", handle, err)

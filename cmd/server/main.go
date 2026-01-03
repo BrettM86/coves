@@ -630,6 +630,10 @@ func main() {
 	routes.RegisterDiscoverRoutes(r, discoverService, voteService, blueskyService, authMiddleware)
 	log.Println("Discover XRPC endpoints registered (public with optional auth for viewer vote state)")
 
+	routes.RegisterActorRoutes(r, postService, userService, voteService, blueskyService, authMiddleware)
+	log.Println("Actor XRPC endpoints registered (public with optional auth for viewer vote state)")
+	log.Println("  - GET /xrpc/social.coves.actor.getPosts")
+
 	routes.RegisterAggregatorRoutes(r, aggregatorService, communityService, userService, identityResolver)
 	log.Println("Aggregator XRPC endpoints registered (query endpoints public, registration endpoint public)")
 

@@ -25,6 +25,12 @@ var (
 
 	// ErrRateLimitExceeded is returned when an aggregator exceeds rate limits
 	ErrRateLimitExceeded = errors.New("rate limit exceeded")
+
+	// ErrInvalidCursor is returned when a pagination cursor is malformed
+	ErrInvalidCursor = errors.New("invalid pagination cursor")
+
+	// ErrActorNotFound is returned when the requested actor does not exist
+	ErrActorNotFound = errors.New("actor not found")
 )
 
 // ValidationError represents a validation error with field context

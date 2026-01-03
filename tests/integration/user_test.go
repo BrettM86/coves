@@ -49,6 +49,10 @@ func setupTestDB(t *testing.T) *sql.DB {
 		t.Fatalf("Failed to connect to test database: %v", err)
 	}
 
+	// Limit connection pool to prevent "too many clients" error in parallel tests
+	db.SetMaxOpenConns(5)
+	db.SetMaxIdleConns(2)
+
 	if pingErr := db.Ping(); pingErr != nil {
 		t.Fatalf("Failed to ping test database: %v", pingErr)
 	}
