@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -210,7 +211,43 @@ func (s *userService) RegisterAccount(ctx context.Context, req RegisterAccountRe
 	// Set the PDS URL in the response (PDS doesn't return this)
 	pdsResp.PDSURL = s.defaultPDS
 
+	// Index the new user in local database so they're immediately available for profile lookups
+	// This is idempotent - safe to call even if user somehow already exists
+	if indexErr := s.IndexUser(ctx, pdsResp.DID, pdsResp.Handle, s.defaultPDS); indexErr != nil {
+		// Log but don't fail - the account was created successfully on PDS
+		// They'll be indexed on first OAuth login if this fails
+		log.Printf("Warning: failed to index new user after signup (DID: %s): %v", pdsResp.DID, indexErr)
+	}
+
 	return &pdsResp, nil
+}
+
+// IndexUser creates or updates a user in the local database.
+// This is idempotent and safe to call multiple times for the same user.
+// If the user exists, their handle is updated if it changed.
+func (s *userService) IndexUser(ctx context.Context, did, handle, pdsURL string) error {
+	// Try to create the user (idempotent - CreateUser returns existing user if DID exists)
+	_, err := s.CreateUser(ctx, CreateUserRequest{
+		DID:    did,
+		Handle: handle,
+		PDSURL: pdsURL,
+	})
+
+	if err != nil {
+		// Check if it's a handle conflict (user exists with different handle)
+		// In this case, update the handle instead
+		if errors.Is(err, ErrHandleAlreadyTaken) {
+			// User exists but handle changed - update it
+			_, updateErr := s.UpdateHandle(ctx, did, handle)
+			if updateErr != nil {
+				return fmt.Errorf("failed to update handle for existing user: %w", updateErr)
+			}
+			return nil
+		}
+		return err
+	}
+
+	return nil
 }
 
 func (s *userService) validateCreateRequest(req CreateUserRequest) error {

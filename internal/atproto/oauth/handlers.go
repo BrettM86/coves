@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
+	"github.com/bluesky-social/indigo/atproto/identity"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 
@@ -145,20 +146,45 @@ type MobileOAuthStore interface {
 	GetMobileOAuthData(ctx context.Context, state string) (*MobileOAuthData, error)
 }
 
+// UserIndexer is the minimal interface for indexing users after OAuth login.
+// This decouples the OAuth handler from the full UserService.
+type UserIndexer interface {
+	// IndexUser creates or updates a user in the local database.
+	// This is idempotent - calling it multiple times with the same DID is safe.
+	IndexUser(ctx context.Context, did, handle, pdsURL string) error
+}
+
 // OAuthHandler handles OAuth-related HTTP endpoints
 type OAuthHandler struct {
 	client          *OAuthClient
 	store           oauth.ClientAuthStore
 	mobileStore     MobileOAuthStore    // For server-side CSRF validation
+	userIndexer     UserIndexer         // For indexing users after OAuth login
 	devResolver     *DevHandleResolver  // For dev mode: resolve handles via local PDS
 	devAuthResolver *DevAuthResolver    // For dev mode: bypass HTTPS validation for localhost OAuth
 }
 
+// OAuthHandlerOption is a functional option for configuring OAuthHandler
+type OAuthHandlerOption func(*OAuthHandler)
+
+// WithUserIndexer sets the user indexer for indexing users after OAuth login.
+// When set, users are automatically indexed into the local database after successful authentication.
+func WithUserIndexer(indexer UserIndexer) OAuthHandlerOption {
+	return func(h *OAuthHandler) {
+		h.userIndexer = indexer
+	}
+}
+
 // NewOAuthHandler creates a new OAuth handler
-func NewOAuthHandler(client *OAuthClient, store oauth.ClientAuthStore) *OAuthHandler {
+func NewOAuthHandler(client *OAuthClient, store oauth.ClientAuthStore, opts ...OAuthHandlerOption) *OAuthHandler {
 	handler := &OAuthHandler{
 		client: client,
 		store:  store,
+	}
+
+	// Apply functional options
+	for _, opt := range opts {
+		opt(handler)
 	}
 
 	// Check if the store implements MobileOAuthStore for server-side CSRF
@@ -434,7 +460,9 @@ func (h *OAuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	// This prevents impersonation via compromised PDS that issues tokens with invalid handle mappings
 	// Per AT Protocol spec: "Bidirectional verification required; confirm DID document claims handle"
 	// verifiedHandle stores the successfully verified handle for use in mobile callback
+	// verifiedIdent stores the identity for reuse (PDS URL extraction, etc.)
 	verifiedHandle := ""
+	var verifiedIdent *identity.Identity
 	if h.client.ClientApp.Dir != nil {
 		ident, err := h.client.ClientApp.Dir.LookupDID(ctx, sessData.AccountDID)
 		if err != nil {
@@ -470,6 +498,7 @@ func (h *OAuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 						slog.Info("OAuth callback successful (dev mode: handle verified via PDS)",
 							"did", sessData.AccountDID, "handle", declaredHandle)
 						verifiedHandle = declaredHandle
+						verifiedIdent = ident // Reuse the identity for PDS URL extraction
 						goto handleVerificationPassed
 					}
 					slog.Warn("dev mode: PDS handle verification failed",
@@ -489,6 +518,7 @@ func (h *OAuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		// Success: handle is valid and bidirectionally verified
 		slog.Info("OAuth callback successful", "did", sessData.AccountDID, "handle", ident.Handle)
 		verifiedHandle = ident.Handle.String()
+		verifiedIdent = ident
 	} else {
 		// No directory client available - log warning but proceed
 		// This should only happen in testing scenarios
@@ -497,6 +527,25 @@ func (h *OAuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		slog.Info("OAuth callback successful (no handle verification)", "did", sessData.AccountDID)
 	}
 handleVerificationPassed:
+
+	// Index user in local database after successful OAuth login
+	// This ensures users are available for profile lookups immediately after authentication
+	if h.userIndexer != nil && verifiedHandle != "" && verifiedIdent != nil {
+		pdsURL := verifiedIdent.PDSEndpoint()
+		if pdsURL == "" {
+			// No PDS URL available - skip indexing, user will be indexed on next login
+			// We don't fallback to bsky.social since not all users are on Bluesky
+			slog.Warn("skipping user indexing: no PDS URL in identity",
+				"did", sessData.AccountDID, "handle", verifiedHandle)
+		} else if indexErr := h.userIndexer.IndexUser(ctx, sessData.AccountDID.String(), verifiedHandle, pdsURL); indexErr != nil {
+			// Log but don't fail - user can still proceed with their session
+			// They'll be indexed on next login or via Jetstream identity event
+			slog.Warn("failed to index user after OAuth login",
+				"did", sessData.AccountDID, "handle", verifiedHandle, "error", indexErr)
+		} else {
+			slog.Info("indexed user after OAuth login", "did", sessData.AccountDID, "handle", verifiedHandle)
+		}
+	}
 
 	// Check if this is a mobile callback (check for mobile_redirect_uri cookie)
 	mobileRedirect, err := r.Cookie("mobile_redirect_uri")

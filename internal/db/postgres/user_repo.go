@@ -36,7 +36,7 @@ func (r *postgresUserRepo) Create(ctx context.Context, user *users.User) (*users
 				return nil, fmt.Errorf("user with DID already exists")
 			}
 			if strings.Contains(err.Error(), "users_handle_key") {
-				return nil, fmt.Errorf("handle already taken")
+				return nil, users.ErrHandleAlreadyTaken
 			}
 		}
 		return nil, fmt.Errorf("failed to create user: %w", err)
@@ -54,7 +54,7 @@ func (r *postgresUserRepo) GetByDID(ctx context.Context, did string) (*users.Use
 		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt)
 
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("user not found")
+		return nil, users.ErrUserNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user by DID: %w", err)
@@ -72,7 +72,7 @@ func (r *postgresUserRepo) GetByHandle(ctx context.Context, handle string) (*use
 		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt)
 
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("user not found")
+		return nil, users.ErrUserNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user by handle: %w", err)
@@ -94,12 +94,12 @@ func (r *postgresUserRepo) UpdateHandle(ctx context.Context, did, newHandle stri
 		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt)
 
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("user not found")
+		return nil, users.ErrUserNotFound
 	}
 	if err != nil {
 		// Check for unique constraint violation on handle
 		if strings.Contains(err.Error(), "duplicate key") && strings.Contains(err.Error(), "users_handle_key") {
-			return nil, fmt.Errorf("handle already taken")
+			return nil, users.ErrHandleAlreadyTaken
 		}
 		return nil, fmt.Errorf("failed to update handle: %w", err)
 	}

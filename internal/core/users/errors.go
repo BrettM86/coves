@@ -1,6 +1,18 @@
 package users
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+// Sentinel errors for common user operations
+var (
+	// ErrUserNotFound is returned when a user lookup finds no matching record
+	ErrUserNotFound = errors.New("user not found")
+
+	// ErrHandleAlreadyTaken is returned when attempting to use a handle that belongs to another user
+	ErrHandleAlreadyTaken = errors.New("handle already taken")
+)
 
 // Domain errors for user service operations
 // These map to lexicon error types defined in social.coves.actor.signup

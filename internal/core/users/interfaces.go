@@ -39,4 +39,9 @@ type UserService interface {
 	UpdateHandle(ctx context.Context, did, newHandle string) (*User, error)
 	ResolveHandleToDID(ctx context.Context, handle string) (string, error)
 	RegisterAccount(ctx context.Context, req RegisterAccountRequest) (*RegisterAccountResponse, error)
+
+	// IndexUser creates or updates a user in the local database.
+	// This is idempotent - calling it multiple times with the same DID is safe.
+	// Used after OAuth login to ensure users are immediately available for profile lookups.
+	IndexUser(ctx context.Context, did, handle, pdsURL string) error
 }

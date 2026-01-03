@@ -5,6 +5,7 @@ import (
 	"Coves/internal/core/users"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -213,6 +214,9 @@ func (c *UserEventConsumer) HandleIdentityEventPublic(ctx context.Context, event
 }
 
 // handleIdentityEvent processes identity events (handle changes)
+// NOTE: This only UPDATES existing users - it does NOT create new users.
+// Users are created during OAuth login or signup, not from Jetstream events.
+// This prevents indexing millions of Bluesky users who never interact with Coves.
 func (c *UserEventConsumer) handleIdentityEvent(ctx context.Context, event *JetstreamEvent) error {
 	if event.Identity == nil {
 		return fmt.Errorf("identity event missing identity data")
@@ -225,28 +229,20 @@ func (c *UserEventConsumer) handleIdentityEvent(ctx context.Context, event *Jets
 		return fmt.Errorf("identity event missing did or handle")
 	}
 
-	log.Printf("Identity event: %s → %s", did, handle)
-
-	// Get existing user to check if handle changed
+	// Only process users who exist in our database (i.e., have used Coves before)
 	existingUser, err := c.userService.GetUserByDID(ctx, did)
 	if err != nil {
-		// User doesn't exist - create new user
-		pdsURL := "https://bsky.social" // Default Bluesky PDS
-		// TODO: Resolve PDS URL from DID document via PLC directory
-
-		_, createErr := c.userService.CreateUser(ctx, users.CreateUserRequest{
-			DID:    did,
-			Handle: handle,
-			PDSURL: pdsURL,
-		})
-
-		if createErr != nil && !isDuplicateError(createErr) {
-			return fmt.Errorf("failed to create user: %w", createErr)
+		if errors.Is(err, users.ErrUserNotFound) {
+			// User doesn't exist in our database - skip this event
+			// They'll be indexed when they actually interact with Coves (OAuth login, signup, etc.)
+			// This prevents us from indexing millions of Bluesky users we don't care about
+			return nil
 		}
-
-		log.Printf("Indexed new user: %s (%s)", handle, did)
-		return nil
+		// Database error - propagate so it can be retried
+		return fmt.Errorf("failed to check if user exists: %w", err)
 	}
+
+	log.Printf("Identity event for known user: %s (%s)", handle, did)
 
 	// User exists - check if handle changed
 	if existingUser.Handle != handle {
@@ -298,30 +294,7 @@ func (c *UserEventConsumer) handleAccountEvent(ctx context.Context, event *Jetst
 		return fmt.Errorf("account event missing did")
 	}
 
-	// Account events don't include handle, so we can't index yet
-	// We'll wait for the corresponding identity event
-	log.Printf("Account event for %s (waiting for identity event)", did)
+	// Account events don't include handle, so we skip them.
+	// Users are indexed via OAuth login or signup, not from account events.
 	return nil
-}
-
-// isDuplicateError checks if error is due to duplicate DID/handle
-func isDuplicateError(err error) bool {
-	if err == nil {
-		return false
-	}
-	errStr := err.Error()
-	return contains(errStr, "already exists") || contains(errStr, "already taken") || contains(errStr, "duplicate")
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && anySubstring(s, substr))
-}
-
-func anySubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

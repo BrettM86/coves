@@ -48,6 +48,9 @@ import (
 	postgresRepo "Coves/internal/db/postgres"
 )
 
+// Compile-time interface satisfaction checks
+var _ oauth.UserIndexer = (users.UserService)(nil)
+
 func main() {
 	// Database configuration (AppView database)
 	dbURL := os.Getenv("DATABASE_URL")
@@ -196,8 +199,13 @@ func main() {
 		log.Fatalf("Failed to initialize OAuth client: %v", err)
 	}
 
+	// Initialize user repository and service early (needed for OAuth user indexing)
+	userRepo := postgresRepo.NewUserRepository(db)
+	userService := users.NewUserService(userRepo, identityResolver, defaultPDS)
+
 	// Create OAuth handler for HTTP endpoints
-	oauthHandler := oauth.NewOAuthHandler(oauthClient, oauthStore)
+	// WithUserIndexer ensures users are indexed into local database after OAuth login
+	oauthHandler := oauth.NewOAuthHandler(oauthClient, oauthStore, oauth.WithUserIndexer(userService))
 
 	// Create OAuth auth middleware
 	// Validates sealed session tokens and loads OAuth sessions from database
@@ -213,10 +221,6 @@ func main() {
 		PLCURL:     plcURL,
 		HTTPClient: http.Client{Timeout: 10 * time.Second},
 	}
-
-	// Initialize repositories and services
-	userRepo := postgresRepo.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, identityResolver, defaultPDS)
 
 	communityRepo := postgresRepo.NewCommunityRepository(db)
 
