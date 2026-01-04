@@ -78,10 +78,26 @@ func setupTestDB(t *testing.T) *sql.DB {
 		t.Fatalf("Failed to run migrations: %v", migrateErr)
 	}
 
-	// Clean up any existing test data
+	// Clean up any existing test data (order matters due to FK constraints)
+	// Delete subscriptions first (references communities and users)
+	_, err = db.Exec("DELETE FROM subscriptions")
+	if err != nil {
+		t.Logf("Warning: Failed to clean up subscriptions: %v", err)
+	}
+	// Delete posts (references communities)
+	_, err = db.Exec("DELETE FROM posts")
+	if err != nil {
+		t.Logf("Warning: Failed to clean up posts: %v", err)
+	}
+	// Delete communities
+	_, err = db.Exec("DELETE FROM communities")
+	if err != nil {
+		t.Logf("Warning: Failed to clean up communities: %v", err)
+	}
+	// Delete users
 	_, err = db.Exec("DELETE FROM users WHERE handle LIKE '%.test'")
 	if err != nil {
-		t.Logf("Warning: Failed to clean up test data: %v", err)
+		t.Logf("Warning: Failed to clean up test users: %v", err)
 	}
 
 	return db

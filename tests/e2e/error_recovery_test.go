@@ -86,9 +86,21 @@ func testJetstreamReconnection(t *testing.T) {
 	t.Run("Events processed successfully after connection", func(t *testing.T) {
 		// Even though we can't easily test WebSocket reconnection in unit tests,
 		// we can verify that events are processed correctly after establishing connection
-		consumer := jetstream.NewUserEventConsumer(userService, resolver, "", "")
 		ctx := context.Background()
 
+		// Pre-create user - identity events only update existing users
+		_, err := userService.CreateUser(ctx, users.CreateUserRequest{
+			DID:    "did:plc:reconnect123",
+			Handle: "reconnect.old.test",
+			PDSURL: "http://localhost:3001",
+		})
+		if err != nil {
+			t.Fatalf("Failed to create test user: %v", err)
+		}
+
+		consumer := jetstream.NewUserEventConsumer(userService, resolver, "", "")
+
+		// Send identity event with new handle
 		event := jetstream.JetstreamEvent{
 			Did:  "did:plc:reconnect123",
 			Kind: "identity",
@@ -100,7 +112,7 @@ func testJetstreamReconnection(t *testing.T) {
 			},
 		}
 
-		err := consumer.HandleIdentityEventPublic(ctx, &event)
+		err = consumer.HandleIdentityEventPublic(ctx, &event)
 		if err != nil {
 			t.Fatalf("Failed to process event: %v", err)
 		}
@@ -217,9 +229,21 @@ func testMalformedJetstreamEvents(t *testing.T) {
 
 	// Verify consumer can still process valid events after malformed ones
 	t.Run("Valid event after malformed events", func(t *testing.T) {
-		consumer := jetstream.NewUserEventConsumer(userService, resolver, "", "")
 		ctx := context.Background()
 
+		// Pre-create user - identity events only update existing users
+		_, err := userService.CreateUser(ctx, users.CreateUserRequest{
+			DID:    "did:plc:recovery123",
+			Handle: "recovery.old.test",
+			PDSURL: "http://localhost:3001",
+		})
+		if err != nil {
+			t.Fatalf("Failed to create test user: %v", err)
+		}
+
+		consumer := jetstream.NewUserEventConsumer(userService, resolver, "", "")
+
+		// Send valid identity event with new handle
 		validEvent := jetstream.JetstreamEvent{
 			Did:  "did:plc:recovery123",
 			Kind: "identity",
@@ -231,15 +255,15 @@ func testMalformedJetstreamEvents(t *testing.T) {
 			},
 		}
 
-		err := consumer.HandleIdentityEventPublic(ctx, &validEvent)
+		err = consumer.HandleIdentityEventPublic(ctx, &validEvent)
 		if err != nil {
 			t.Fatalf("Failed to process valid event after malformed events: %v", err)
 		}
 
-		// Verify user was indexed
+		// Verify user handle was updated
 		user, err := userService.GetUserByDID(ctx, "did:plc:recovery123")
 		if err != nil {
-			t.Fatalf("User not indexed after malformed events: %v", err)
+			t.Fatalf("User not found after valid event: %v", err)
 		}
 
 		if user.Handle != "recovery.test" {
@@ -362,8 +386,19 @@ func testPDSUnavailability(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("Indexing continues during PDS unavailability", func(t *testing.T) {
-		// Even though PDS is "unavailable", we can still index events from Jetstream
+		// Even though PDS is "unavailable", we can still update events from Jetstream
 		// because we don't need to contact PDS for identity events
+
+		// Pre-create user - identity events only update existing users
+		_, err := userService.CreateUser(ctx, users.CreateUserRequest{
+			DID:    "did:plc:pdsfail123",
+			Handle: "pdsfail.old.test",
+			PDSURL: mockPDS.URL,
+		})
+		if err != nil {
+			t.Fatalf("Failed to create test user: %v", err)
+		}
+
 		consumer := jetstream.NewUserEventConsumer(userService, resolver, "", "")
 
 		event := jetstream.JetstreamEvent{
@@ -377,12 +412,12 @@ func testPDSUnavailability(t *testing.T) {
 			},
 		}
 
-		err := consumer.HandleIdentityEventPublic(ctx, &event)
+		err = consumer.HandleIdentityEventPublic(ctx, &event)
 		if err != nil {
-			t.Fatalf("Failed to index event during PDS unavailability: %v", err)
+			t.Fatalf("Failed to process event during PDS unavailability: %v", err)
 		}
 
-		// Verify user was indexed
+		// Verify user handle was updated
 		user, err := userService.GetUserByDID(ctx, "did:plc:pdsfail123")
 		if err != nil {
 			t.Fatalf("Failed to get user during PDS unavailability: %v", err)
@@ -392,12 +427,22 @@ func testPDSUnavailability(t *testing.T) {
 			t.Errorf("Expected handle pdsfail.test, got %s", user.Handle)
 		}
 
-		t.Log("✓ Indexing continues successfully even when PDS is unavailable")
+		t.Log("✓ Handle updates continue successfully even when PDS is unavailable")
 	})
 
 	t.Run("System recovers when PDS comes back online", func(t *testing.T) {
 		// Mark PDS as available again
 		shouldFail.Store(false)
+
+		// Pre-create user - identity events only update existing users
+		_, err := userService.CreateUser(ctx, users.CreateUserRequest{
+			DID:    "did:plc:pdsrecovery123",
+			Handle: "pdsrecovery.old.test",
+			PDSURL: mockPDS.URL,
+		})
+		if err != nil {
+			t.Fatalf("Failed to create test user: %v", err)
+		}
 
 		// Now operations that require PDS should work
 		consumer := jetstream.NewUserEventConsumer(userService, resolver, "", "")
@@ -413,9 +458,9 @@ func testPDSUnavailability(t *testing.T) {
 			},
 		}
 
-		err := consumer.HandleIdentityEventPublic(ctx, &event)
+		err = consumer.HandleIdentityEventPublic(ctx, &event)
 		if err != nil {
-			t.Fatalf("Failed to index event after PDS recovery: %v", err)
+			t.Fatalf("Failed to process event after PDS recovery: %v", err)
 		}
 
 		user, err := userService.GetUserByDID(ctx, "did:plc:pdsrecovery123")
@@ -448,6 +493,16 @@ func testOutOfOrderEvents(t *testing.T) {
 
 	t.Run("Handle updates arriving out of order", func(t *testing.T) {
 		did := "did:plc:outoforder123"
+
+		// Pre-create user - identity events only update existing users
+		_, err := userService.CreateUser(ctx, users.CreateUserRequest{
+			DID:    did,
+			Handle: "initial.handle",
+			PDSURL: "http://localhost:3001",
+		})
+		if err != nil {
+			t.Fatalf("Failed to create test user: %v", err)
+		}
 
 		// Event 3: Latest handle
 		event3 := jetstream.JetstreamEvent{
@@ -511,9 +566,19 @@ func testOutOfOrderEvents(t *testing.T) {
 	})
 
 	t.Run("Duplicate events at different times", func(t *testing.T) {
-		did := "did:plc:duplicate123"
+		did := "did:plc:dupevents123"
 
-		// Create user
+		// Pre-create user - identity events only update existing users
+		_, err := userService.CreateUser(ctx, users.CreateUserRequest{
+			DID:    did,
+			Handle: "duplicate.handle",
+			PDSURL: "http://localhost:3001",
+		})
+		if err != nil {
+			t.Fatalf("Failed to create test user: %v", err)
+		}
+
+		// Send identity event
 		event1 := jetstream.JetstreamEvent{
 			Did:  did,
 			Kind: "identity",
@@ -525,7 +590,7 @@ func testOutOfOrderEvents(t *testing.T) {
 			},
 		}
 
-		err := consumer.HandleIdentityEventPublic(ctx, &event1)
+		err = consumer.HandleIdentityEventPublic(ctx, &event1)
 		if err != nil {
 			t.Fatalf("Failed to process first event: %v", err)
 		}
@@ -536,7 +601,7 @@ func testOutOfOrderEvents(t *testing.T) {
 			t.Fatalf("Failed to process duplicate event: %v", err)
 		}
 
-		// Verify still only one user
+		// Verify still only one user with same handle
 		user, err := userService.GetUserByDID(ctx, did)
 		if err != nil {
 			t.Fatalf("Failed to get user: %v", err)

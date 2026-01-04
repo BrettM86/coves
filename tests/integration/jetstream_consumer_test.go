@@ -25,14 +25,15 @@ func TestUserIndexingFromJetstream(t *testing.T) {
 
 	ctx := context.Background()
 
-	t.Run("Index new user from identity event", func(t *testing.T) {
-		// Simulate an identity event from Jetstream
+	t.Run("Skip identity event for non-existent user", func(t *testing.T) {
+		// Identity events for users not in our database should be silently skipped
+		// Users are only indexed during OAuth login/signup, not from Jetstream events
 		event := jetstream.JetstreamEvent{
-			Did:  "did:plc:jetstream123",
+			Did:  "did:plc:nonexistent123",
 			Kind: "identity",
 			Identity: &jetstream.IdentityEvent{
-				Did:    "did:plc:jetstream123",
-				Handle: "alice.jetstream.test",
+				Did:    "did:plc:nonexistent123",
+				Handle: "nonexistent.jetstream.test",
 				Seq:    12345,
 				Time:   time.Now().Format(time.RFC3339),
 			},
@@ -40,24 +41,16 @@ func TestUserIndexingFromJetstream(t *testing.T) {
 
 		consumer := jetstream.NewUserEventConsumer(userService, resolver, "", "")
 
-		// Handle the event
+		// Handle the event - should return nil (skip silently, not error)
 		err := consumer.HandleIdentityEventPublic(ctx, &event)
 		if err != nil {
-			t.Fatalf("failed to handle identity event: %v", err)
+			t.Fatalf("expected nil error for non-existent user, got: %v", err)
 		}
 
-		// Verify user was indexed
-		user, err := userService.GetUserByDID(ctx, "did:plc:jetstream123")
-		if err != nil {
-			t.Fatalf("failed to get indexed user: %v", err)
-		}
-
-		if user.DID != "did:plc:jetstream123" {
-			t.Errorf("expected DID did:plc:jetstream123, got %s", user.DID)
-		}
-
-		if user.Handle != "alice.jetstream.test" {
-			t.Errorf("expected handle alice.jetstream.test, got %s", user.Handle)
+		// Verify user was NOT created
+		_, err = userService.GetUserByDID(ctx, "did:plc:nonexistent123")
+		if err == nil {
+			t.Fatal("expected user to NOT be created, but found in database")
 		}
 	})
 
@@ -103,25 +96,40 @@ func TestUserIndexingFromJetstream(t *testing.T) {
 		}
 	})
 
-	t.Run("Index multiple users", func(t *testing.T) {
-		consumer := jetstream.NewUserEventConsumer(userService, resolver, "", "")
-
-		users := []struct {
-			did    string
-			handle string
+	t.Run("Update multiple existing users via identity events", func(t *testing.T) {
+		// Pre-create users - identity events only update existing users
+		testUsers := []struct {
+			did       string
+			oldHandle string
+			newHandle string
 		}{
-			{"did:plc:multi1", "user1.test"},
-			{"did:plc:multi2", "user2.test"},
-			{"did:plc:multi3", "user3.test"},
+			{"did:plc:multi1", "user1.old.test", "user1.new.test"},
+			{"did:plc:multi2", "user2.old.test", "user2.new.test"},
+			{"did:plc:multi3", "user3.old.test", "user3.new.test"},
 		}
 
-		for _, u := range users {
+		// Create users first
+		for _, u := range testUsers {
+			_, err := userService.CreateUser(ctx, users.CreateUserRequest{
+				DID:    u.did,
+				Handle: u.oldHandle,
+				PDSURL: "https://bsky.social",
+			})
+			if err != nil {
+				t.Fatalf("failed to create user %s: %v", u.oldHandle, err)
+			}
+		}
+
+		consumer := jetstream.NewUserEventConsumer(userService, resolver, "", "")
+
+		// Send identity events with new handles
+		for _, u := range testUsers {
 			event := jetstream.JetstreamEvent{
 				Did:  u.did,
 				Kind: "identity",
 				Identity: &jetstream.IdentityEvent{
 					Did:    u.did,
-					Handle: u.handle,
+					Handle: u.newHandle,
 					Seq:    12345,
 					Time:   time.Now().Format(time.RFC3339),
 				},
@@ -129,19 +137,19 @@ func TestUserIndexingFromJetstream(t *testing.T) {
 
 			err := consumer.HandleIdentityEventPublic(ctx, &event)
 			if err != nil {
-				t.Fatalf("failed to index user %s: %v", u.handle, err)
+				t.Fatalf("failed to handle identity event for %s: %v", u.newHandle, err)
 			}
 		}
 
-		// Verify all users indexed
-		for _, u := range users {
+		// Verify all users have updated handles
+		for _, u := range testUsers {
 			user, err := userService.GetUserByDID(ctx, u.did)
 			if err != nil {
 				t.Fatalf("user %s not found: %v", u.did, err)
 			}
 
-			if user.Handle != u.handle {
-				t.Errorf("expected handle %s, got %s", u.handle, user.Handle)
+			if user.Handle != u.newHandle {
+				t.Errorf("expected handle %s, got %s", u.newHandle, user.Handle)
 			}
 		}
 	})

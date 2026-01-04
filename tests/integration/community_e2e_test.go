@@ -68,6 +68,20 @@ func TestCommunity_E2E(t *testing.T) {
 		t.Fatalf("Failed to run migrations: %v", migrateErr)
 	}
 
+	// Clean up test data from previous runs (order matters due to FK constraints)
+	// Delete subscriptions first (references communities and users)
+	if _, cleanErr := db.Exec("DELETE FROM subscriptions"); cleanErr != nil {
+		t.Logf("Warning: Failed to clean up subscriptions: %v", cleanErr)
+	}
+	// Delete posts (references communities)
+	if _, cleanErr := db.Exec("DELETE FROM posts"); cleanErr != nil {
+		t.Logf("Warning: Failed to clean up posts: %v", cleanErr)
+	}
+	// Delete communities
+	if _, cleanErr := db.Exec("DELETE FROM communities"); cleanErr != nil {
+		t.Logf("Warning: Failed to clean up communities: %v", cleanErr)
+	}
+
 	// Check if PDS is running
 	pdsURL := os.Getenv("PDS_URL")
 	if pdsURL == "" {
