@@ -47,38 +47,17 @@ func (h *BlockHandler) HandleBlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract authenticated user DID and access token from request context (injected by auth middleware)
-	userDID := middleware.GetUserDID(r)
-	if userDID == "" {
+	// Get OAuth session from context (injected by auth middleware)
+	// The session contains the user's DID and credentials needed for DPoP authentication
+	session := middleware.GetOAuthSession(r)
+	if session == nil {
 		writeError(w, http.StatusUnauthorized, "AuthRequired", "Authentication required")
 		return
 	}
 
-	userAccessToken := middleware.GetUserAccessToken(r)
-	if userAccessToken == "" {
-		writeError(w, http.StatusUnauthorized, "AuthRequired", "Missing access token")
-		return
-	}
-
-	// Resolve community identifier (handle or DID) to DID
-	// This allows users to block by handle: @gaming.community.coves.social or !gaming@coves.social
-	communityDID, err := h.service.ResolveCommunityIdentifier(r.Context(), req.Community)
-	if err != nil {
-		if communities.IsNotFound(err) {
-			writeError(w, http.StatusNotFound, "CommunityNotFound", "Community not found")
-			return
-		}
-		if communities.IsValidationError(err) {
-			writeError(w, http.StatusBadRequest, "InvalidRequest", err.Error())
-			return
-		}
-		log.Printf("Failed to resolve community identifier %s: %v", req.Community, err)
-		writeError(w, http.StatusInternalServerError, "InternalError", "Failed to resolve community")
-		return
-	}
-
-	// Block via service (write-forward to PDS) using resolved DID
-	block, err := h.service.BlockCommunity(r.Context(), userDID, userAccessToken, communityDID)
+	// Block via service (write-forward to PDS with DPoP authentication)
+	// Service handles identifier resolution (DIDs, handles, scoped identifiers)
+	block, err := h.service.BlockCommunity(r.Context(), session, req.Community)
 	if err != nil {
 		handleServiceError(w, err)
 		return
@@ -125,38 +104,17 @@ func (h *BlockHandler) HandleUnblock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract authenticated user DID and access token from request context (injected by auth middleware)
-	userDID := middleware.GetUserDID(r)
-	if userDID == "" {
+	// Get OAuth session from context (injected by auth middleware)
+	// The session contains the user's DID and credentials needed for DPoP authentication
+	session := middleware.GetOAuthSession(r)
+	if session == nil {
 		writeError(w, http.StatusUnauthorized, "AuthRequired", "Authentication required")
 		return
 	}
 
-	userAccessToken := middleware.GetUserAccessToken(r)
-	if userAccessToken == "" {
-		writeError(w, http.StatusUnauthorized, "AuthRequired", "Missing access token")
-		return
-	}
-
-	// Resolve community identifier (handle or DID) to DID
-	// This allows users to unblock by handle: @gaming.community.coves.social or !gaming@coves.social
-	communityDID, err := h.service.ResolveCommunityIdentifier(r.Context(), req.Community)
-	if err != nil {
-		if communities.IsNotFound(err) {
-			writeError(w, http.StatusNotFound, "CommunityNotFound", "Community not found")
-			return
-		}
-		if communities.IsValidationError(err) {
-			writeError(w, http.StatusBadRequest, "InvalidRequest", err.Error())
-			return
-		}
-		log.Printf("Failed to resolve community identifier %s: %v", req.Community, err)
-		writeError(w, http.StatusInternalServerError, "InternalError", "Failed to resolve community")
-		return
-	}
-
-	// Unblock via service (delete record on PDS) using resolved DID
-	err = h.service.UnblockCommunity(r.Context(), userDID, userAccessToken, communityDID)
+	// Unblock via service (delete record on PDS with DPoP authentication)
+	// Service handles identifier resolution (DIDs, handles, scoped identifiers)
+	err := h.service.UnblockCommunity(r.Context(), session, req.Community)
 	if err != nil {
 		handleServiceError(w, err)
 		return

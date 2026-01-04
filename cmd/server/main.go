@@ -276,8 +276,9 @@ func main() {
 	log.Printf("   - Communities will be created at: %s", defaultPDS)
 	log.Printf("   - PDS will generate and manage all DIDs and keys")
 
-	// Initialize community service (no longer needs didGenerator directly)
-	communityService := communities.NewCommunityService(communityRepo, defaultPDS, instanceDID, instanceDomain, provisioner)
+	// Initialize community service with OAuth client for user DPoP authentication
+	// OAuth client is required for subscribe/unsubscribe/block/unblock operations
+	communityService := communities.NewCommunityService(communityRepo, defaultPDS, instanceDID, instanceDomain, provisioner, oauthClient, oauthStore)
 
 	// Authenticate Coves instance with PDS to enable community record writes
 	// The instance needs a PDS account to write community records it owns

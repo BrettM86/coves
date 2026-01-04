@@ -1,6 +1,10 @@
 package communities
 
-import "context"
+import (
+	"context"
+
+	"github.com/bluesky-social/indigo/atproto/auth/oauth"
+)
 
 // Repository defines the interface for community data persistence
 // This is the AppView's indexed view of communities from the firehose
@@ -66,14 +70,16 @@ type Service interface {
 	SearchCommunities(ctx context.Context, req SearchCommunitiesRequest) ([]*Community, int, error)
 
 	// Subscription operations (write-forward: creates record in user's PDS)
-	SubscribeToCommunity(ctx context.Context, userDID, userAccessToken, communityIdentifier string, contentVisibility int) (*Subscription, error)
-	UnsubscribeFromCommunity(ctx context.Context, userDID, userAccessToken, communityIdentifier string) error
+	// OAuth session is passed for DPoP authentication to the user's PDS
+	SubscribeToCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int) (*Subscription, error)
+	UnsubscribeFromCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string) error
 	GetUserSubscriptions(ctx context.Context, userDID string, limit, offset int) ([]*Subscription, error)
 	GetCommunitySubscribers(ctx context.Context, communityIdentifier string, limit, offset int) ([]*Subscription, error)
 
 	// Block operations (write-forward: creates record in user's PDS)
-	BlockCommunity(ctx context.Context, userDID, userAccessToken, communityIdentifier string) (*CommunityBlock, error)
-	UnblockCommunity(ctx context.Context, userDID, userAccessToken, communityIdentifier string) error
+	// OAuth session is passed for DPoP authentication to the user's PDS
+	BlockCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string) (*CommunityBlock, error)
+	UnblockCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string) error
 	GetBlockedCommunities(ctx context.Context, userDID string, limit, offset int) ([]*CommunityBlock, error)
 	IsBlocked(ctx context.Context, userDID, communityIdentifier string) (bool, error)
 

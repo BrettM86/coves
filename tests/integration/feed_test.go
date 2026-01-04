@@ -29,11 +29,12 @@ func TestGetCommunityFeed_Hot(t *testing.T) {
 	// Setup services
 	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
 	communityRepo := postgres.NewCommunityRepository(db)
-	communityService := communities.NewCommunityService(
+	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
@@ -106,11 +107,12 @@ func TestGetCommunityFeed_Top_WithTimeframe(t *testing.T) {
 	// Setup services
 	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
 	communityRepo := postgres.NewCommunityRepository(db)
-	communityService := communities.NewCommunityService(
+	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
@@ -182,11 +184,12 @@ func TestGetCommunityFeed_New(t *testing.T) {
 	// Setup services
 	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
 	communityRepo := postgres.NewCommunityRepository(db)
-	communityService := communities.NewCommunityService(
+	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
@@ -238,11 +241,12 @@ func TestGetCommunityFeed_Pagination(t *testing.T) {
 	// Setup services
 	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
 	communityRepo := postgres.NewCommunityRepository(db)
-	communityService := communities.NewCommunityService(
+	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
@@ -329,11 +333,12 @@ func TestGetCommunityFeed_InvalidCommunity(t *testing.T) {
 	// Setup services
 	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
 	communityRepo := postgres.NewCommunityRepository(db)
-	communityService := communities.NewCommunityService(
+	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
@@ -365,11 +370,12 @@ func TestGetCommunityFeed_InvalidCursor(t *testing.T) {
 	// Setup services
 	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
 	communityRepo := postgres.NewCommunityRepository(db)
-	communityService := communities.NewCommunityService(
+	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
@@ -421,11 +427,12 @@ func TestGetCommunityFeed_EmptyFeed(t *testing.T) {
 	// Setup services
 	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
 	communityRepo := postgres.NewCommunityRepository(db)
-	communityService := communities.NewCommunityService(
+	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
@@ -465,11 +472,12 @@ func TestGetCommunityFeed_LimitValidation(t *testing.T) {
 	// Setup services
 	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
 	communityRepo := postgres.NewCommunityRepository(db)
-	communityService := communities.NewCommunityService(
+	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
@@ -518,11 +526,12 @@ func TestGetCommunityFeed_HotPaginationBug(t *testing.T) {
 	// Setup services
 	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
 	communityRepo := postgres.NewCommunityRepository(db)
-	communityService := communities.NewCommunityService(
+	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
@@ -619,11 +628,12 @@ func TestGetCommunityFeed_HotCursorPrecision(t *testing.T) {
 	// Setup services
 	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
 	communityRepo := postgres.NewCommunityRepository(db)
-	communityService := communities.NewCommunityService(
+	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
@@ -721,11 +731,12 @@ func TestGetCommunityFeed_HotCursorTimeDrift(t *testing.T) {
 	// Setup services
 	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
 	communityRepo := postgres.NewCommunityRepository(db)
-	communityService := communities.NewCommunityService(
+	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
@@ -822,11 +833,12 @@ func TestGetCommunityFeed_BlobURLTransformation(t *testing.T) {
 	// Setup services
 	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
 	communityRepo := postgres.NewCommunityRepository(db)
-	communityService := communities.NewCommunityService(
+	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)

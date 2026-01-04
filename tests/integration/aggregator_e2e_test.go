@@ -68,7 +68,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 	identityConfig := identity.DefaultConfig()
 	identityResolver := identity.NewResolver(db, identityConfig)
 	userService := users.NewUserService(userRepo, identityResolver, "http://localhost:3001")
-	communityService := communities.NewCommunityService(communityRepo, "http://localhost:3001", "did:web:test.coves.social", "coves.social", nil)
+	communityService := communities.NewCommunityServiceWithPDSFactory(communityRepo, "http://localhost:3001", "did:web:test.coves.social", "coves.social", nil, nil)
 	aggregatorService := aggregators.NewAggregatorService(aggregatorRepo, communityService)
 	postService := posts.NewPostService(postRepo, communityService, aggregatorService, nil, nil, nil, "http://localhost:3001")
 

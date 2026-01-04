@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 )
 
 // mockCommunityService implements communities.Service for testing
@@ -49,11 +51,11 @@ func (m *mockCommunityService) SearchCommunities(ctx context.Context, req commun
 	return nil, 0, nil
 }
 
-func (m *mockCommunityService) SubscribeToCommunity(ctx context.Context, userDID, accessToken, communityIdentifier string, contentVisibility int) (*communities.Subscription, error) {
+func (m *mockCommunityService) SubscribeToCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int) (*communities.Subscription, error) {
 	return nil, nil
 }
 
-func (m *mockCommunityService) UnsubscribeFromCommunity(ctx context.Context, userDID, accessToken, communityIdentifier string) error {
+func (m *mockCommunityService) UnsubscribeFromCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string) error {
 	return nil
 }
 
@@ -65,11 +67,11 @@ func (m *mockCommunityService) GetCommunitySubscribers(ctx context.Context, comm
 	return nil, nil
 }
 
-func (m *mockCommunityService) BlockCommunity(ctx context.Context, userDID, accessToken, communityIdentifier string) (*communities.CommunityBlock, error) {
+func (m *mockCommunityService) BlockCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string) (*communities.CommunityBlock, error) {
 	return nil, nil
 }
 
-func (m *mockCommunityService) UnblockCommunity(ctx context.Context, userDID, accessToken, communityIdentifier string) error {
+func (m *mockCommunityService) UnblockCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string) error {
 	return nil
 }
 

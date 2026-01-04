@@ -27,3 +27,8 @@ var (
 func IsAuthError(err error) bool {
 	return errors.Is(err, ErrUnauthorized) || errors.Is(err, ErrForbidden)
 }
+
+// IsConflictError returns true if the error indicates a conflict (e.g., duplicate record).
+func IsConflictError(err error) bool {
+	return errors.Is(err, ErrConflict)
+}

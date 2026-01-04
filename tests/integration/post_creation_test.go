@@ -35,12 +35,13 @@ func TestPostCreation_Basic(t *testing.T) {
 
 	communityRepo := postgres.NewCommunityRepository(db)
 	// Note: Provisioner not needed for this test (we're not actually creating communities)
-	communityService := communities.NewCommunityService(
+	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
 		nil, // provisioner
+		nil, // pdsClientFactory
 	)
 
 	postRepo := postgres.NewPostRepository(db)

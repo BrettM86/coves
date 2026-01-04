@@ -51,11 +51,12 @@ func TestPostUnfurl_Streamable(t *testing.T) {
 		unfurl.WithCacheTTL(24*time.Hour),
 	)
 
-	communityService := communities.NewCommunityService(
+	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 	)
 
@@ -348,11 +349,12 @@ func TestPostUnfurl_UnsupportedURL(t *testing.T) {
 	identityResolver := identity.NewResolver(db, identityConfig)
 	userService := users.NewUserService(userRepo, identityResolver, "http://localhost:3001")
 
-	communityService := communities.NewCommunityService(
+	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 	)
 
@@ -456,11 +458,12 @@ func TestPostUnfurl_UserProvidedMetadata(t *testing.T) {
 		unfurl.WithCacheTTL(24*time.Hour),
 	)
 
-	communityService := communities.NewCommunityService(
+	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 	)
 
@@ -568,11 +571,12 @@ func TestPostUnfurl_MissingEmbedType(t *testing.T) {
 		unfurl.WithTimeout(30*time.Second),
 	)
 
-	communityService := communities.NewCommunityService(
+	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 	)
 

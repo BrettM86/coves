@@ -394,12 +394,13 @@ func TestPostCreation_E2E_LivePDS(t *testing.T) {
 	provisioner := communities.NewPDSAccountProvisioner(instanceDomain, pdsURL)
 
 	// Setup community service with real PDS provisioner
-	communityService := communities.NewCommunityService(
+	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		pdsURL,
 		instanceDID,
 		instanceDomain,
 		provisioner, // ✅ Real provisioner for creating communities on PDS
+		nil,         // No PDS factory needed - no subscribe/block in this test
 	)
 
 	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, pdsURL) // nil aggregatorService, blobService, unfurlService, blueskyService for user-only tests

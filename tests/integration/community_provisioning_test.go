@@ -146,12 +146,13 @@ func TestCommunityService_NameValidation(t *testing.T) {
 
 	repo := postgres.NewCommunityRepository(db)
 	provisioner := communities.NewPDSAccountProvisioner("test.local", "http://localhost:3001")
-	service := communities.NewCommunityService(
+	service := communities.NewCommunityServiceWithPDSFactory(
 		repo,
 		"http://localhost:3001", // pdsURL
 		"did:web:test.local",    // instanceDID
 		"test.local",            // instanceDomain
 		provisioner,
+		nil,
 	)
 	ctx := context.Background()
 

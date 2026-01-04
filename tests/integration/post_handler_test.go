@@ -32,11 +32,12 @@ func TestPostHandler_SecurityValidation(t *testing.T) {
 
 	// Setup services
 	communityRepo := postgres.NewCommunityRepository(db)
-	communityService := communities.NewCommunityService(
+	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 	)
 
@@ -400,11 +401,12 @@ func TestPostHandler_SpecialCharacters(t *testing.T) {
 
 	// Setup services
 	communityRepo := postgres.NewCommunityRepository(db)
-	communityService := communities.NewCommunityService(
+	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 	)
 
@@ -484,11 +486,12 @@ func TestPostService_DIDValidationSecurity(t *testing.T) {
 
 	// Setup services
 	communityRepo := postgres.NewCommunityRepository(db)
-	communityService := communities.NewCommunityService(
+	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 	)
 

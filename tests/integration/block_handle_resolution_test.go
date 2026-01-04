@@ -13,7 +13,21 @@ import (
 	"testing"
 
 	postgresRepo "Coves/internal/db/postgres"
+
+	"github.com/bluesky-social/indigo/atproto/auth/oauth"
+	"github.com/bluesky-social/indigo/atproto/syntax"
 )
+
+// createTestOAuthSessionForBlock creates a mock OAuth session for block handler tests
+func createTestOAuthSessionForBlock(did string) *oauth.ClientSessionData {
+	parsedDID, _ := syntax.ParseDID(did)
+	return &oauth.ClientSessionData{
+		AccountDID:  parsedDID,
+		SessionID:   "test-session",
+		HostURL:     "http://localhost:3001",
+		AccessToken: "test-access-token",
+	}
+}
 
 // TestBlockHandler_HandleResolution tests that the block handler accepts handles
 // in addition to DIDs and resolves them correctly
@@ -29,12 +43,13 @@ func TestBlockHandler_HandleResolution(t *testing.T) {
 
 	// Set up repositories and services
 	communityRepo := postgresRepo.NewCommunityRepository(db)
-	communityService := communities.NewCommunityService(
+	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		getTestPDSURL(),
 		getTestInstanceDID(),
 		"coves.social",
 		nil, // No PDS HTTP client for this test
+		nil, // No PDS factory needed for this test
 	)
 
 	blockHandler := community.NewBlockHandler(communityService)
@@ -193,9 +208,9 @@ func TestBlockHandler_HandleResolution(t *testing.T) {
 				req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.blockCommunity", bytes.NewBuffer(reqJSON))
 				req.Header.Set("Content-Type", "application/json")
 
-				// Add auth context so we get past auth checks and test resolution validation
-				ctx := context.WithValue(req.Context(), middleware.UserDIDKey, "did:plc:test123")
-				ctx = context.WithValue(ctx, middleware.UserAccessToken, "test-token")
+				// Add OAuth session context so we get past auth checks and test resolution validation
+				session := createTestOAuthSessionForBlock("did:plc:test123")
+				ctx := context.WithValue(req.Context(), middleware.OAuthSessionKey, session)
 				req = req.WithContext(ctx)
 
 				w := httptest.NewRecorder()
@@ -265,12 +280,13 @@ func TestUnblockHandler_HandleResolution(t *testing.T) {
 
 	// Set up repositories and services
 	communityRepo := postgresRepo.NewCommunityRepository(db)
-	communityService := communities.NewCommunityService(
+	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		getTestPDSURL(),
 		getTestInstanceDID(),
 		"coves.social",
 		nil,
+		nil, // No PDS factory needed for this test
 	)
 
 	blockHandler := community.NewBlockHandler(communityService)

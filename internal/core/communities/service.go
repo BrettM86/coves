@@ -1,6 +1,8 @@
 package communities
 
 import (
+	oauthclient "Coves/internal/atproto/oauth"
+	"Coves/internal/atproto/pds"
 	"Coves/internal/atproto/utils"
 	"bytes"
 	"context"
@@ -14,6 +16,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/bluesky-social/indigo/atproto/auth/oauth"
+	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 
 // Community handle validation regex (DNS-valid handle: name.community.instance.com)
@@ -26,10 +31,19 @@ var dnsLabelRegex = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-
 // Domain validation (simplified - checks for valid DNS hostname structure)
 var domainRegex = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
 
+// PDSClientFactory creates PDS clients from session data.
+// Used to allow injection of different auth mechanisms (OAuth for production, password for tests).
+type PDSClientFactory func(ctx context.Context, session *oauth.ClientSessionData) (pds.Client, error)
+
 type communityService struct {
 	// Interfaces and pointers first (better alignment)
 	repo        Repository
 	provisioner *PDSAccountProvisioner
+
+	// OAuth client/store for user PDS authentication (DPoP-based)
+	oauthClient      *oauthclient.OAuthClient
+	oauthStore       oauth.ClientAuthStore
+	pdsClientFactory PDSClientFactory // Optional, for testing. If nil, uses OAuth.
 
 	// Token refresh concurrency control
 	// Each community gets its own mutex to prevent concurrent refresh attempts
@@ -52,8 +66,14 @@ const (
 	maxMutexCacheSize = 10000
 )
 
-// NewCommunityService creates a new community service
-func NewCommunityService(repo Repository, pdsURL, instanceDID, instanceDomain string, provisioner *PDSAccountProvisioner) Service {
+// NewCommunityService creates a new community service with OAuth client for user authentication
+func NewCommunityService(
+	repo Repository,
+	pdsURL, instanceDID, instanceDomain string,
+	provisioner *PDSAccountProvisioner,
+	oauthClient *oauthclient.OAuthClient,
+	oauthStore oauth.ClientAuthStore,
+) Service {
 	// SECURITY: Basic validation that did:web domain matches configured instanceDomain
 	// This catches honest configuration mistakes but NOT malicious code modifications
 	// Full verification (Phase 2) requires fetching DID document from domain
@@ -74,7 +94,28 @@ func NewCommunityService(repo Repository, pdsURL, instanceDID, instanceDomain st
 		instanceDID:    instanceDID,
 		instanceDomain: instanceDomain,
 		provisioner:    provisioner,
+		oauthClient:    oauthClient,
+		oauthStore:     oauthStore,
 		refreshMutexes: make(map[string]*sync.Mutex),
+	}
+}
+
+// NewCommunityServiceWithPDSFactory creates a community service with a custom PDS client factory.
+// This is primarily for testing with password-based authentication.
+func NewCommunityServiceWithPDSFactory(
+	repo Repository,
+	pdsURL, instanceDID, instanceDomain string,
+	provisioner *PDSAccountProvisioner,
+	factory PDSClientFactory,
+) Service {
+	return &communityService{
+		repo:             repo,
+		pdsURL:           pdsURL,
+		instanceDID:      instanceDID,
+		instanceDomain:   instanceDomain,
+		provisioner:      provisioner,
+		pdsClientFactory: factory,
+		refreshMutexes:   make(map[string]*sync.Mutex),
 	}
 }
 
@@ -82,6 +123,28 @@ func NewCommunityService(repo Repository, pdsURL, instanceDID, instanceDomain st
 // This should be called after creating a session for the Coves instance DID on the PDS
 func (s *communityService) SetPDSAccessToken(token string) {
 	s.pdsAccessToken = token
+}
+
+// getPDSClient creates a PDS client from an OAuth session.
+// If a custom factory was provided (for testing), uses that.
+// Otherwise, uses DPoP authentication via indigo's APIClient for proper OAuth token handling.
+func (s *communityService) getPDSClient(ctx context.Context, session *oauth.ClientSessionData) (pds.Client, error) {
+	// Use custom factory if provided (e.g., for testing with password auth)
+	if s.pdsClientFactory != nil {
+		return s.pdsClientFactory(ctx, session)
+	}
+
+	// Production path: use OAuth with DPoP
+	if s.oauthClient == nil || s.oauthClient.ClientApp == nil {
+		return nil, fmt.Errorf("OAuth client not configured")
+	}
+
+	client, err := pds.NewFromOAuthSession(ctx, s.oauthClient.ClientApp, session)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create PDS client: %w", err)
+	}
+
+	return client, nil
 }
 
 // CreateCommunity creates a new community via write-forward to PDS
@@ -585,13 +648,13 @@ func (s *communityService) SearchCommunities(ctx context.Context, req SearchComm
 }
 
 // SubscribeToCommunity creates a subscription via write-forward to PDS
-func (s *communityService) SubscribeToCommunity(ctx context.Context, userDID, userAccessToken, communityIdentifier string, contentVisibility int) (*Subscription, error) {
-	if userDID == "" {
-		return nil, NewValidationError("userDid", "required")
+// Uses OAuth session with DPoP authentication for secure PDS communication
+func (s *communityService) SubscribeToCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int) (*Subscription, error) {
+	if session == nil {
+		return nil, NewValidationError("session", "required")
 	}
-	if userAccessToken == "" {
-		return nil, NewValidationError("userAccessToken", "required")
-	}
+
+	userDID := session.AccountDID.String()
 
 	// Clamp contentVisibility to valid range (1-5), default to 3 if 0 or invalid
 	if contentVisibility <= 0 || contentVisibility > 5 {
@@ -615,6 +678,15 @@ func (s *communityService) SubscribeToCommunity(ctx context.Context, userDID, us
 		return nil, ErrUnauthorized
 	}
 
+	// Create PDS client for this session (DPoP authentication)
+	pdsClient, err := s.getPDSClient(ctx, session)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create PDS client: %w", err)
+	}
+
+	// Generate TID for record key
+	tid := syntax.NewTIDNow(0)
+
 	// Build subscription record
 	// CRITICAL: Collection is social.coves.community.subscription (RECORD TYPE), not social.coves.community.subscribe (XRPC procedure)
 	// This record will be created in the USER's repository: at://user_did/social.coves.community.subscription/{tid}
@@ -626,10 +698,12 @@ func (s *communityService) SubscribeToCommunity(ctx context.Context, userDID, us
 		"contentVisibility": contentVisibility,
 	}
 
-	// Write-forward: create subscription record in user's repo using their access token
-	// The collection parameter refers to the record type in the repository
-	recordURI, recordCID, err := s.createRecordOnPDSAs(ctx, userDID, "social.coves.community.subscription", "", subRecord, userAccessToken)
+	// Write-forward: create subscription record in user's repo using DPoP-authenticated client
+	recordURI, recordCID, err := pdsClient.CreateRecord(ctx, "social.coves.community.subscription", tid.String(), subRecord)
 	if err != nil {
+		if pds.IsAuthError(err) {
+			return nil, ErrUnauthorized
+		}
 		return nil, fmt.Errorf("failed to create subscription on PDS: %w", err)
 	}
 
@@ -647,13 +721,13 @@ func (s *communityService) SubscribeToCommunity(ctx context.Context, userDID, us
 }
 
 // UnsubscribeFromCommunity removes a subscription via PDS delete
-func (s *communityService) UnsubscribeFromCommunity(ctx context.Context, userDID, userAccessToken, communityIdentifier string) error {
-	if userDID == "" {
-		return NewValidationError("userDid", "required")
+// Uses OAuth session with DPoP authentication for secure PDS communication
+func (s *communityService) UnsubscribeFromCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string) error {
+	if session == nil {
+		return NewValidationError("session", "required")
 	}
-	if userAccessToken == "" {
-		return NewValidationError("userAccessToken", "required")
-	}
+
+	userDID := session.AccountDID.String()
 
 	// Resolve community identifier
 	communityDID, err := s.ResolveCommunityIdentifier(ctx, communityIdentifier)
@@ -673,9 +747,18 @@ func (s *communityService) UnsubscribeFromCommunity(ctx context.Context, userDID
 		return fmt.Errorf("invalid subscription record URI")
 	}
 
-	// Write-forward: delete record from PDS using user's access token
+	// Create PDS client for this session (DPoP authentication)
+	pdsClient, err := s.getPDSClient(ctx, session)
+	if err != nil {
+		return fmt.Errorf("failed to create PDS client: %w", err)
+	}
+
+	// Write-forward: delete record from PDS using DPoP-authenticated client
 	// CRITICAL: Delete from social.coves.community.subscription (RECORD TYPE), not social.coves.community.unsubscribe
-	if err := s.deleteRecordOnPDSAs(ctx, userDID, "social.coves.community.subscription", rkey, userAccessToken); err != nil {
+	if err := pdsClient.DeleteRecord(ctx, "social.coves.community.subscription", rkey); err != nil {
+		if pds.IsAuthError(err) {
+			return ErrUnauthorized
+		}
 		return fmt.Errorf("failed to delete subscription on PDS: %w", err)
 	}
 
@@ -730,19 +813,28 @@ func (s *communityService) ListCommunityMembers(ctx context.Context, communityId
 }
 
 // BlockCommunity blocks a community via write-forward to PDS
-func (s *communityService) BlockCommunity(ctx context.Context, userDID, userAccessToken, communityIdentifier string) (*CommunityBlock, error) {
-	if userDID == "" {
-		return nil, NewValidationError("userDid", "required")
+// Uses OAuth session with DPoP authentication for secure PDS communication
+func (s *communityService) BlockCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string) (*CommunityBlock, error) {
+	if session == nil {
+		return nil, NewValidationError("session", "required")
 	}
-	if userAccessToken == "" {
-		return nil, NewValidationError("userAccessToken", "required")
-	}
+
+	userDID := session.AccountDID.String()
 
 	// Resolve community identifier (also verifies community exists)
 	communityDID, err := s.ResolveCommunityIdentifier(ctx, communityIdentifier)
 	if err != nil {
 		return nil, err
 	}
+
+	// Create PDS client for this session (DPoP authentication)
+	pdsClient, err := s.getPDSClient(ctx, session)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create PDS client: %w", err)
+	}
+
+	// Generate TID for record key
+	tid := syntax.NewTIDNow(0)
 
 	// Build block record
 	// CRITICAL: Collection is social.coves.community.block (RECORD TYPE)
@@ -754,23 +846,20 @@ func (s *communityService) BlockCommunity(ctx context.Context, userDID, userAcce
 		"createdAt": time.Now().Format(time.RFC3339),
 	}
 
-	// Write-forward: create block record in user's repo using their access token
+	// Write-forward: create block record in user's repo using DPoP-authenticated client
 	// Note: We don't check for existing blocks first because:
 	// 1. The PDS may reject duplicates (depending on implementation)
 	// 2. The repository layer handles idempotency with ON CONFLICT DO NOTHING
 	// 3. This avoids a race condition where two concurrent requests both pass the check
-	recordURI, recordCID, err := s.createRecordOnPDSAs(ctx, userDID, "social.coves.community.block", "", blockRecord, userAccessToken)
+	recordURI, recordCID, err := pdsClient.CreateRecord(ctx, "social.coves.community.block", tid.String(), blockRecord)
 	if err != nil {
-		// Check if this is a duplicate/conflict error from PDS
-		// PDS should return 409 Conflict for duplicate records, but we also check common error messages
-		// for compatibility with different PDS implementations
-		errMsg := err.Error()
-		isDuplicate := strings.Contains(errMsg, "status 409") || // HTTP 409 Conflict
-			strings.Contains(errMsg, "duplicate") ||
-			strings.Contains(errMsg, "already exists") ||
-			strings.Contains(errMsg, "AlreadyExists")
+		// Check for auth errors first
+		if pds.IsAuthError(err) {
+			return nil, ErrUnauthorized
+		}
 
-		if isDuplicate {
+		// Check if this is a duplicate/conflict error from PDS
+		if pds.IsConflictError(err) {
 			// Fetch and return existing block from our indexed view
 			existingBlock, getErr := s.repo.GetBlock(ctx, userDID, communityDID)
 			if getErr == nil {
@@ -804,13 +893,13 @@ func (s *communityService) BlockCommunity(ctx context.Context, userDID, userAcce
 }
 
 // UnblockCommunity removes a block via PDS delete
-func (s *communityService) UnblockCommunity(ctx context.Context, userDID, userAccessToken, communityIdentifier string) error {
-	if userDID == "" {
-		return NewValidationError("userDid", "required")
+// Uses OAuth session with DPoP authentication for secure PDS communication
+func (s *communityService) UnblockCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string) error {
+	if session == nil {
+		return NewValidationError("session", "required")
 	}
-	if userAccessToken == "" {
-		return NewValidationError("userAccessToken", "required")
-	}
+
+	userDID := session.AccountDID.String()
 
 	// Resolve community identifier
 	communityDID, err := s.ResolveCommunityIdentifier(ctx, communityIdentifier)
@@ -830,8 +919,17 @@ func (s *communityService) UnblockCommunity(ctx context.Context, userDID, userAc
 		return fmt.Errorf("invalid block record URI")
 	}
 
-	// Write-forward: delete record from PDS using user's access token
-	if err := s.deleteRecordOnPDSAs(ctx, userDID, "social.coves.community.block", rkey, userAccessToken); err != nil {
+	// Create PDS client for this session (DPoP authentication)
+	pdsClient, err := s.getPDSClient(ctx, session)
+	if err != nil {
+		return fmt.Errorf("failed to create PDS client: %w", err)
+	}
+
+	// Write-forward: delete record from PDS using DPoP-authenticated client
+	if err := pdsClient.DeleteRecord(ctx, "social.coves.community.block", rkey); err != nil {
+		if pds.IsAuthError(err) {
+			return ErrUnauthorized
+		}
 		return fmt.Errorf("failed to delete block on PDS: %w", err)
 	}
 

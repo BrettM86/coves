@@ -88,12 +88,13 @@ func TestCommunityUpdateE2E_WithJetstream(t *testing.T) {
 	// Setup services
 	communityRepo := postgres.NewCommunityRepository(db)
 	provisioner := communities.NewPDSAccountProvisioner("coves.social", pdsURL)
-	communityService := communities.NewCommunityService(
+	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		pdsURL,
 		instanceDID,
 		"coves.social",
 		provisioner,
+		nil,
 	)
 
 	consumer := jetstream.NewCommunityEventConsumer(communityRepo, instanceDID, true, identityResolver)

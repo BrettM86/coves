@@ -57,12 +57,13 @@ func TestCommunityService_CreateWithRealPDS(t *testing.T) {
 		// Create provisioner and service (production code path)
 		// Use coves.social domain (configured in PDS_SERVICE_HANDLE_DOMAINS as c-{name}.coves.social)
 		provisioner := communities.NewPDSAccountProvisioner("coves.social", pdsURL)
-		service := communities.NewCommunityService(
+		service := communities.NewCommunityServiceWithPDSFactory(
 			repo,
 			pdsURL,
 			"did:web:coves.social",
 			"coves.social",
 			provisioner,
+		nil,
 		)
 
 		// Generate unique community name (keep short for DNS label limit)
@@ -201,12 +202,13 @@ func TestCommunityService_CreateWithRealPDS(t *testing.T) {
 
 	t.Run("handles PDS errors gracefully", func(t *testing.T) {
 		provisioner := communities.NewPDSAccountProvisioner("coves.social", pdsURL)
-		service := communities.NewCommunityService(
+		service := communities.NewCommunityServiceWithPDSFactory(
 			repo,
 			pdsURL,
 			"did:web:coves.social",
 			"coves.social",
 			provisioner,
+		nil,
 		)
 
 		// Try to create community with invalid name (should fail validation before PDS)
@@ -232,12 +234,13 @@ func TestCommunityService_CreateWithRealPDS(t *testing.T) {
 
 	t.Run("validates DNS label limits", func(t *testing.T) {
 		provisioner := communities.NewPDSAccountProvisioner("coves.social", pdsURL)
-		service := communities.NewCommunityService(
+		service := communities.NewCommunityServiceWithPDSFactory(
 			repo,
 			pdsURL,
 			"did:web:coves.social",
 			"coves.social",
 			provisioner,
+		nil,
 		)
 
 		// Try 64-char name (exceeds DNS limit of 63)
@@ -301,12 +304,13 @@ func TestCommunityService_UpdateWithRealPDS(t *testing.T) {
 	repo := postgres.NewCommunityRepository(db)
 
 	provisioner := communities.NewPDSAccountProvisioner("coves.social", pdsURL)
-	service := communities.NewCommunityService(
+	service := communities.NewCommunityServiceWithPDSFactory(
 		repo,
 		pdsURL,
 		"did:web:coves.social",
 		"coves.social",
 		provisioner,
+		nil,
 	)
 
 	t.Run("updates community with real PDS", func(t *testing.T) {
@@ -492,12 +496,13 @@ func TestPasswordAuthentication(t *testing.T) {
 	repo := postgres.NewCommunityRepository(db)
 
 	provisioner := communities.NewPDSAccountProvisioner("coves.social", pdsURL)
-	service := communities.NewCommunityService(
+	service := communities.NewCommunityServiceWithPDSFactory(
 		repo,
 		pdsURL,
 		"did:web:coves.social",
 		"coves.social",
 		provisioner,
+		nil,
 	)
 
 	t.Run("generated password works for session creation", func(t *testing.T) {

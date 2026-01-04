@@ -50,12 +50,13 @@ func TestCommunityIdentifierResolution(t *testing.T) {
 		instanceDID = "did:web:" + instanceDomain
 	}
 
-	service := communities.NewCommunityService(
+	service := communities.NewCommunityServiceWithPDSFactory(
 		repo,
 		pdsURL,
 		instanceDID,
 		instanceDomain,
 		provisioner,
+		nil,
 	)
 
 	// Create a test community to resolve
@@ -244,12 +245,13 @@ func TestResolveScopedIdentifier_InputValidation(t *testing.T) {
 	}
 
 	provisioner := communities.NewPDSAccountProvisioner(instanceDomain, pdsURL)
-	service := communities.NewCommunityService(
+	service := communities.NewCommunityServiceWithPDSFactory(
 		repo,
 		pdsURL,
 		instanceDID,
 		instanceDomain,
 		provisioner,
+		nil,
 	)
 
 	tests := []struct {
@@ -421,12 +423,13 @@ func TestIdentifierResolution_ErrorContext(t *testing.T) {
 	}
 
 	provisioner := communities.NewPDSAccountProvisioner(instanceDomain, pdsURL)
-	service := communities.NewCommunityService(
+	service := communities.NewCommunityServiceWithPDSFactory(
 		repo,
 		pdsURL,
 		instanceDID,
 		instanceDomain,
 		provisioner,
+		nil,
 	)
 
 	t.Run("DID error includes identifier", func(t *testing.T) {
@@ -486,12 +489,13 @@ func TestGetCommunity_IdentifierResolution(t *testing.T) {
 	}
 
 	provisioner := communities.NewPDSAccountProvisioner(instanceDomain, pdsURL)
-	service := communities.NewCommunityService(
+	service := communities.NewCommunityServiceWithPDSFactory(
 		repo,
 		pdsURL,
 		instanceDID,
 		instanceDomain,
 		provisioner,
+		nil,
 	)
 
 	// Create a test community

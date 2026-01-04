@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
+	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 	_ "github.com/lib/pq"
@@ -151,8 +153,8 @@ func TestCommunity_E2E(t *testing.T) {
 	// PDS handles all DID generation and registration automatically
 	provisioner := communities.NewPDSAccountProvisioner(instanceDomain, pdsURL)
 
-	// Create service (no longer needs didGen directly - provisioner owns it)
-	communityService := communities.NewCommunityService(communityRepo, pdsURL, instanceDID, instanceDomain, provisioner)
+	// Create service with PDS factory for password-based auth in tests
+	communityService := communities.NewCommunityServiceWithPDSFactory(communityRepo, pdsURL, instanceDID, instanceDomain, provisioner, CommunityPasswordAuthPDSClientFactory())
 	if svc, ok := communityService.(interface{ SetPDSAccessToken(string) }); ok {
 		svc.SetPDSAccessToken(accessToken)
 	}
@@ -950,7 +952,15 @@ func TestCommunity_E2E(t *testing.T) {
 			t.Logf("Initial subscriber count: %d", initialSubscriberCount)
 
 			// Subscribe first (using instance access token for instance user, with contentVisibility=3)
-			subscription, err := communityService.SubscribeToCommunity(ctx, instanceDID, accessToken, community.DID, 3)
+			// Create a session for the instance user
+			parsedDID, _ := syntax.ParseDID(instanceDID)
+			instanceSession := &oauthlib.ClientSessionData{
+				AccountDID:  parsedDID,
+				SessionID:   "test-session-e2e",
+				HostURL:     pdsURL,
+				AccessToken: accessToken,
+			}
+			subscription, err := communityService.SubscribeToCommunity(ctx, instanceSession, community.DID, 3)
 			if err != nil {
 				t.Fatalf("Failed to subscribe: %v", err)
 			}

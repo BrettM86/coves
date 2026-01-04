@@ -4,6 +4,7 @@ import (
 	"Coves/internal/api/middleware"
 	"Coves/internal/atproto/oauth"
 	"Coves/internal/atproto/pds"
+	"Coves/internal/core/communities"
 	"Coves/internal/core/users"
 	"Coves/internal/core/votes"
 	"bytes"
@@ -432,6 +433,22 @@ func (e *E2EOAuthMiddleware) AddUserWithPDSToken(did, pdsAccessToken, pdsURL str
 // This is for E2E tests that use createSession instead of OAuth.
 // The factory extracts the access token and host URL from the session data.
 func PasswordAuthPDSClientFactory() votes.PDSClientFactory {
+	return func(ctx context.Context, session *oauthlib.ClientSessionData) (pds.Client, error) {
+		if session.AccessToken == "" {
+			return nil, fmt.Errorf("session has no access token")
+		}
+		if session.HostURL == "" {
+			return nil, fmt.Errorf("session has no host URL")
+		}
+
+		return pds.NewFromAccessToken(session.HostURL, session.AccountDID.String(), session.AccessToken)
+	}
+}
+
+// CommunityPasswordAuthPDSClientFactory creates a PDSClientFactory for communities that uses password-based Bearer auth.
+// This is for E2E tests that use createSession instead of OAuth.
+// The factory extracts the access token and host URL from the session data.
+func CommunityPasswordAuthPDSClientFactory() communities.PDSClientFactory {
 	return func(ctx context.Context, session *oauthlib.ClientSessionData) (pds.Client, error) {
 		if session.AccessToken == "" {
 			return nil, fmt.Errorf("session has no access token")

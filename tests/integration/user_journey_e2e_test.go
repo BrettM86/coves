@@ -128,7 +128,7 @@ func TestFullUserJourney_E2E(t *testing.T) {
 	}
 
 	provisioner := communities.NewPDSAccountProvisioner(instanceDomain, pdsURL)
-	communityService := communities.NewCommunityService(communityRepo, pdsURL, instanceDID, instanceDomain, provisioner)
+	communityService := communities.NewCommunityServiceWithPDSFactory(communityRepo, pdsURL, instanceDID, instanceDomain, provisioner, CommunityPasswordAuthPDSClientFactory())
 	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, pdsURL)
 	timelineService := timelineCore.NewTimelineService(timelineRepo)
 

@@ -55,11 +55,12 @@ func TestPostHandler_ThumbValidation(t *testing.T) {
 
 	// Setup services
 	communityRepo := postgres.NewCommunityRepository(db)
-	communityService := communities.NewCommunityService(
+	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 	)
 

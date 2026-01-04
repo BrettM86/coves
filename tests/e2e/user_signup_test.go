@@ -391,15 +391,13 @@ func getProfileViaAPI(did string) (string, string, error) {
 	}
 
 	var result struct {
-		DID     string `json:"did"`
-		Profile struct {
-			Handle string `json:"handle"`
-		} `json:"profile"`
+		DID    string `json:"did"`
+		Handle string `json:"handle"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", "", fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	return result.DID, result.Profile.Handle, nil
+	return result.DID, result.Handle, nil
 }

@@ -51,23 +51,17 @@ func (h *SubscribeHandler) HandleSubscribe(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Extract authenticated user DID and access token from request context (injected by auth middleware)
-	// Note: contentVisibility defaults and clamping handled by service layer
-	userDID := middleware.GetUserDID(r)
-	if userDID == "" {
+	// Get OAuth session from context (injected by auth middleware)
+	// The session contains the user's DID and credentials needed for DPoP authentication
+	session := middleware.GetOAuthSession(r)
+	if session == nil {
 		writeError(w, http.StatusUnauthorized, "AuthRequired", "Authentication required")
 		return
 	}
 
-	userAccessToken := middleware.GetUserAccessToken(r)
-	if userAccessToken == "" {
-		writeError(w, http.StatusUnauthorized, "AuthRequired", "Missing access token")
-		return
-	}
-
-	// Subscribe via service (write-forward to PDS)
+	// Subscribe via service (write-forward to PDS with DPoP authentication)
 	// Service handles identifier resolution (DIDs, handles, scoped identifiers)
-	subscription, err := h.service.SubscribeToCommunity(r.Context(), userDID, userAccessToken, req.Community, req.ContentVisibility)
+	subscription, err := h.service.SubscribeToCommunity(r.Context(), session, req.Community, req.ContentVisibility)
 	if err != nil {
 		handleServiceError(w, err)
 		return
@@ -117,22 +111,17 @@ func (h *SubscribeHandler) HandleUnsubscribe(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Extract authenticated user DID and access token from request context (injected by auth middleware)
-	userDID := middleware.GetUserDID(r)
-	if userDID == "" {
+	// Get OAuth session from context (injected by auth middleware)
+	// The session contains the user's DID and credentials needed for DPoP authentication
+	session := middleware.GetOAuthSession(r)
+	if session == nil {
 		writeError(w, http.StatusUnauthorized, "AuthRequired", "Authentication required")
 		return
 	}
 
-	userAccessToken := middleware.GetUserAccessToken(r)
-	if userAccessToken == "" {
-		writeError(w, http.StatusUnauthorized, "AuthRequired", "Missing access token")
-		return
-	}
-
-	// Unsubscribe via service (delete record on PDS)
+	// Unsubscribe via service (delete record on PDS with DPoP authentication)
 	// Service handles identifier resolution (DIDs, handles, scoped identifiers)
-	err := h.service.UnsubscribeFromCommunity(r.Context(), userDID, userAccessToken, req.Community)
+	err := h.service.UnsubscribeFromCommunity(r.Context(), session, req.Community)
 	if err != nil {
 		handleServiceError(w, err)
 		return

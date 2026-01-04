@@ -11,12 +11,26 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/bluesky-social/indigo/atproto/auth/oauth"
+	"github.com/bluesky-social/indigo/atproto/syntax"
 )
+
+// createTestOAuthSession creates a mock OAuth session for testing
+func createTestOAuthSession(did string) *oauth.ClientSessionData {
+	parsedDID, _ := syntax.ParseDID(did)
+	return &oauth.ClientSessionData{
+		AccountDID:  parsedDID,
+		SessionID:   "test-session",
+		HostURL:     "http://localhost:3001",
+		AccessToken: "test-access-token",
+	}
+}
 
 // subscribeTestService implements communities.Service for subscribe handler tests
 type subscribeTestService struct {
-	subscribeFunc   func(ctx context.Context, userDID, accessToken, communityIdentifier string, contentVisibility int) (*communities.Subscription, error)
-	unsubscribeFunc func(ctx context.Context, userDID, accessToken, communityIdentifier string) error
+	subscribeFunc   func(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int) (*communities.Subscription, error)
+	unsubscribeFunc func(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string) error
 }
 
 func (m *subscribeTestService) CreateCommunity(ctx context.Context, req communities.CreateCommunityRequest) (*communities.Community, error) {
@@ -39,9 +53,13 @@ func (m *subscribeTestService) SearchCommunities(ctx context.Context, req commun
 	return nil, 0, nil
 }
 
-func (m *subscribeTestService) SubscribeToCommunity(ctx context.Context, userDID, accessToken, communityIdentifier string, contentVisibility int) (*communities.Subscription, error) {
+func (m *subscribeTestService) SubscribeToCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int) (*communities.Subscription, error) {
 	if m.subscribeFunc != nil {
-		return m.subscribeFunc(ctx, userDID, accessToken, communityIdentifier, contentVisibility)
+		return m.subscribeFunc(ctx, session, communityIdentifier, contentVisibility)
+	}
+	userDID := ""
+	if session != nil {
+		userDID = session.AccountDID.String()
 	}
 	return &communities.Subscription{
 		UserDID:      userDID,
@@ -52,9 +70,9 @@ func (m *subscribeTestService) SubscribeToCommunity(ctx context.Context, userDID
 	}, nil
 }
 
-func (m *subscribeTestService) UnsubscribeFromCommunity(ctx context.Context, userDID, accessToken, communityIdentifier string) error {
+func (m *subscribeTestService) UnsubscribeFromCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string) error {
 	if m.unsubscribeFunc != nil {
-		return m.unsubscribeFunc(ctx, userDID, accessToken, communityIdentifier)
+		return m.unsubscribeFunc(ctx, session, communityIdentifier)
 	}
 	return nil
 }
@@ -67,11 +85,11 @@ func (m *subscribeTestService) GetCommunitySubscribers(ctx context.Context, comm
 	return nil, nil
 }
 
-func (m *subscribeTestService) BlockCommunity(ctx context.Context, userDID, accessToken, communityIdentifier string) (*communities.CommunityBlock, error) {
+func (m *subscribeTestService) BlockCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string) (*communities.CommunityBlock, error) {
 	return nil, nil
 }
 
-func (m *subscribeTestService) UnblockCommunity(ctx context.Context, userDID, accessToken, communityIdentifier string) error {
+func (m *subscribeTestService) UnblockCommunity(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string) error {
 	return nil
 }
 
@@ -144,8 +162,12 @@ func TestSubscribeHandler_Subscribe_Success(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var receivedIdentifier string
 			mockService := &subscribeTestService{
-				subscribeFunc: func(ctx context.Context, userDID, accessToken, communityIdentifier string, contentVisibility int) (*communities.Subscription, error) {
+				subscribeFunc: func(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int) (*communities.Subscription, error) {
 					receivedIdentifier = communityIdentifier
+					userDID := ""
+					if session != nil {
+						userDID = session.AccountDID.String()
+					}
 					return &communities.Subscription{
 						UserDID:      userDID,
 						CommunityDID: "did:plc:resolved",
@@ -167,9 +189,9 @@ func TestSubscribeHandler_Subscribe_Success(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.subscribe", bytes.NewBuffer(bodyBytes))
 			req.Header.Set("Content-Type", "application/json")
 
-			// Inject auth context
-			ctx := context.WithValue(req.Context(), middleware.UserDIDKey, "did:plc:testuser")
-			ctx = context.WithValue(ctx, middleware.UserAccessToken, "test-token")
+			// Inject OAuth session into context
+			session := createTestOAuthSession("did:plc:testuser")
+			ctx := context.WithValue(req.Context(), middleware.OAuthSessionKey, session)
 			req = req.WithContext(ctx)
 
 			w := httptest.NewRecorder()
@@ -244,8 +266,8 @@ func TestSubscribeHandler_Subscribe_RequiresCommunity(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.subscribe", bytes.NewBuffer(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 
-	ctx := context.WithValue(req.Context(), middleware.UserDIDKey, "did:plc:testuser")
-	ctx = context.WithValue(ctx, middleware.UserAccessToken, "test-token")
+	session := createTestOAuthSession("did:plc:testuser")
+	ctx := context.WithValue(req.Context(), middleware.OAuthSessionKey, session)
 	req = req.WithContext(ctx)
 
 	w := httptest.NewRecorder()
@@ -286,7 +308,7 @@ func TestSubscribeHandler_Subscribe_ServiceErrors(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			mockService := &subscribeTestService{
-				subscribeFunc: func(ctx context.Context, userDID, accessToken, communityIdentifier string, contentVisibility int) (*communities.Subscription, error) {
+				subscribeFunc: func(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string, contentVisibility int) (*communities.Subscription, error) {
 					return nil, tc.serviceErr
 				},
 			}
@@ -302,8 +324,8 @@ func TestSubscribeHandler_Subscribe_ServiceErrors(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.subscribe", bytes.NewBuffer(bodyBytes))
 			req.Header.Set("Content-Type", "application/json")
 
-			ctx := context.WithValue(req.Context(), middleware.UserDIDKey, "did:plc:testuser")
-			ctx = context.WithValue(ctx, middleware.UserAccessToken, "test-token")
+			session := createTestOAuthSession("did:plc:testuser")
+			ctx := context.WithValue(req.Context(), middleware.OAuthSessionKey, session)
 			req = req.WithContext(ctx)
 
 			w := httptest.NewRecorder()
@@ -353,7 +375,7 @@ func TestSubscribeHandler_Unsubscribe_Success(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var receivedIdentifier string
 			mockService := &subscribeTestService{
-				unsubscribeFunc: func(ctx context.Context, userDID, accessToken, communityIdentifier string) error {
+				unsubscribeFunc: func(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string) error {
 					receivedIdentifier = communityIdentifier
 					return nil
 				},
@@ -369,8 +391,8 @@ func TestSubscribeHandler_Unsubscribe_Success(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.unsubscribe", bytes.NewBuffer(bodyBytes))
 			req.Header.Set("Content-Type", "application/json")
 
-			ctx := context.WithValue(req.Context(), middleware.UserDIDKey, "did:plc:testuser")
-			ctx = context.WithValue(ctx, middleware.UserAccessToken, "test-token")
+			session := createTestOAuthSession("did:plc:testuser")
+			ctx := context.WithValue(req.Context(), middleware.OAuthSessionKey, session)
 			req = req.WithContext(ctx)
 
 			w := httptest.NewRecorder()
@@ -399,7 +421,7 @@ func TestSubscribeHandler_Unsubscribe_Success(t *testing.T) {
 
 func TestSubscribeHandler_Unsubscribe_SubscriptionNotFound(t *testing.T) {
 	mockService := &subscribeTestService{
-		unsubscribeFunc: func(ctx context.Context, userDID, accessToken, communityIdentifier string) error {
+		unsubscribeFunc: func(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string) error {
 			return communities.ErrSubscriptionNotFound
 		},
 	}
@@ -414,8 +436,8 @@ func TestSubscribeHandler_Unsubscribe_SubscriptionNotFound(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.unsubscribe", bytes.NewBuffer(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 
-	ctx := context.WithValue(req.Context(), middleware.UserDIDKey, "did:plc:testuser")
-	ctx = context.WithValue(ctx, middleware.UserAccessToken, "test-token")
+	session := createTestOAuthSession("did:plc:testuser")
+	ctx := context.WithValue(req.Context(), middleware.OAuthSessionKey, session)
 	req = req.WithContext(ctx)
 
 	w := httptest.NewRecorder()
@@ -456,8 +478,8 @@ func TestSubscribeHandler_InvalidJSON(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.subscribe", bytes.NewBufferString("invalid json"))
 	req.Header.Set("Content-Type", "application/json")
 
-	ctx := context.WithValue(req.Context(), middleware.UserDIDKey, "did:plc:testuser")
-	ctx = context.WithValue(ctx, middleware.UserAccessToken, "test-token")
+	session := createTestOAuthSession("did:plc:testuser")
+	ctx := context.WithValue(req.Context(), middleware.OAuthSessionKey, session)
 	req = req.WithContext(ctx)
 
 	w := httptest.NewRecorder()
@@ -468,7 +490,7 @@ func TestSubscribeHandler_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestSubscribeHandler_RequiresAccessToken(t *testing.T) {
+func TestSubscribeHandler_RequiresOAuthSession(t *testing.T) {
 	mockService := &subscribeTestService{}
 	handler := NewSubscribeHandler(mockService)
 
@@ -480,9 +502,7 @@ func TestSubscribeHandler_RequiresAccessToken(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.subscribe", bytes.NewBuffer(bodyBytes))
 	req.Header.Set("Content-Type", "application/json")
 
-	// User DID but no access token
-	ctx := context.WithValue(req.Context(), middleware.UserDIDKey, "did:plc:testuser")
-	req = req.WithContext(ctx)
+	// No OAuth session in context
 
 	w := httptest.NewRecorder()
 	handler.HandleSubscribe(w, req)
