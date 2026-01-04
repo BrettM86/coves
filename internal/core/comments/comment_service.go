@@ -46,6 +46,10 @@ type Service interface {
 	// Supports hot, top, and new sorting with configurable depth and pagination
 	GetComments(ctx context.Context, req *GetCommentsRequest) (*GetCommentsResponse, error)
 
+	// GetActorComments retrieves comments by a user for their profile page
+	// Supports optional community filtering and cursor-based pagination
+	GetActorComments(ctx context.Context, req *GetActorCommentsRequest) (*GetActorCommentsResponse, error)
+
 	// CreateComment creates a new comment or reply
 	CreateComment(ctx context.Context, session *oauth.ClientSessionData, req CreateCommentRequest) (*CreateCommentResponse, error)
 
@@ -1014,6 +1018,134 @@ func (s *commentService) buildPostRecord(post *posts.Post) *posts.PostRecord {
 	// These fields are stored as JSONB in the database and need proper deserialization
 
 	return record
+}
+
+// GetActorComments retrieves comments by a user for their profile page
+// Supports optional community filtering and cursor-based pagination
+// Algorithm:
+// 1. Validate and normalize request parameters (limit bounds)
+// 2. Resolve community identifier to DID if provided
+// 3. Fetch comments from repository with cursor-based pagination
+// 4. Build CommentView for each comment with author info and stats
+// 5. Return response with pagination cursor
+func (s *commentService) GetActorComments(ctx context.Context, req *GetActorCommentsRequest) (*GetActorCommentsResponse, error) {
+	// 1. Validate and normalize request
+	if err := validateGetActorCommentsRequest(req); err != nil {
+		return nil, fmt.Errorf("invalid request: %w", err)
+	}
+
+	// Add timeout to prevent runaway queries
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	// 2. Resolve community identifier to DID if provided
+	var communityDID *string
+	if req.Community != "" {
+		// Check if it's already a DID
+		if strings.HasPrefix(req.Community, "did:") {
+			communityDID = &req.Community
+		} else {
+			// It's a handle - resolve to DID via community repository
+			community, err := s.communityRepo.GetByHandle(ctx, req.Community)
+			if err != nil {
+				// If community not found, return empty results rather than error
+				// This matches behavior of other endpoints
+				if errors.Is(err, communities.ErrCommunityNotFound) {
+					return &GetActorCommentsResponse{
+						Comments: []*CommentView{},
+						Cursor:   nil,
+					}, nil
+				}
+				return nil, fmt.Errorf("failed to resolve community: %w", err)
+			}
+			communityDID = &community.DID
+		}
+	}
+
+	// 3. Fetch comments from repository
+	repoReq := ListByCommenterRequest{
+		CommenterDID: req.ActorDID,
+		CommunityDID: communityDID,
+		Limit:        req.Limit,
+		Cursor:       req.Cursor,
+	}
+
+	dbComments, nextCursor, err := s.commentRepo.ListByCommenterWithCursor(ctx, repoReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch comments: %w", err)
+	}
+
+	// 4. Build CommentViews for each comment
+	// Batch fetch vote states if viewer is authenticated
+	var voteStates map[string]interface{}
+	if req.ViewerDID != nil && len(dbComments) > 0 {
+		commentURIs := make([]string, 0, len(dbComments))
+		for _, comment := range dbComments {
+			commentURIs = append(commentURIs, comment.URI)
+		}
+
+		var err error
+		voteStates, err = s.commentRepo.GetVoteStateForComments(ctx, *req.ViewerDID, commentURIs)
+		if err != nil {
+			// Log error but don't fail the request - vote state is optional
+			log.Printf("Warning: Failed to fetch vote states for actor comments: %v", err)
+		}
+	}
+
+	// Batch fetch user data for comment authors (should all be the same user, but handle consistently)
+	usersByDID := make(map[string]*users.User)
+	if len(dbComments) > 0 {
+		// For actor comments, all comments are by the same user
+		// But we still use the batch pattern for consistency with other methods
+		user, err := s.userRepo.GetByDID(ctx, req.ActorDID)
+		if err != nil {
+			// Log error but don't fail request - user data is optional
+			log.Printf("Warning: Failed to fetch user for actor %s: %v", req.ActorDID, err)
+		} else if user != nil {
+			usersByDID[user.DID] = user
+		}
+	}
+
+	// Build comment views
+	commentViews := make([]*CommentView, 0, len(dbComments))
+	for _, comment := range dbComments {
+		commentView := s.buildCommentView(comment, req.ViewerDID, voteStates, usersByDID)
+		commentViews = append(commentViews, commentView)
+	}
+
+	// 5. Return response with comments and cursor
+	return &GetActorCommentsResponse{
+		Comments: commentViews,
+		Cursor:   nextCursor,
+	}, nil
+}
+
+// validateGetActorCommentsRequest validates and normalizes request parameters
+// Applies default values and enforces bounds per API specification
+func validateGetActorCommentsRequest(req *GetActorCommentsRequest) error {
+	if req == nil {
+		return errors.New("request cannot be nil")
+	}
+
+	// ActorDID is required
+	if req.ActorDID == "" {
+		return errors.New("actor DID is required")
+	}
+
+	// Validate DID format
+	if !strings.HasPrefix(req.ActorDID, "did:") {
+		return errors.New("invalid actor DID format")
+	}
+
+	// Apply limit defaults and bounds (1-100, default 50)
+	if req.Limit <= 0 {
+		req.Limit = 50
+	}
+	if req.Limit > 100 {
+		req.Limit = 100
+	}
+
+	return nil
 }
 
 // validateGetCommentsRequest validates and normalizes request parameters

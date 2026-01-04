@@ -17,10 +17,11 @@ import (
 
 // mockCommentRepo is a mock implementation of the comment Repository interface
 type mockCommentRepo struct {
-	comments                    map[string]*Comment
-	listByParentWithHotRankFunc func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string) ([]*Comment, *string, error)
-	listByParentsBatchFunc      func(ctx context.Context, parentURIs []string, sort string, limitPerParent int) (map[string][]*Comment, error)
-	getVoteStateForCommentsFunc func(ctx context.Context, viewerDID string, commentURIs []string) (map[string]interface{}, error)
+	comments                      map[string]*Comment
+	listByParentWithHotRankFunc   func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string) ([]*Comment, *string, error)
+	listByParentsBatchFunc        func(ctx context.Context, parentURIs []string, sort string, limitPerParent int) (map[string][]*Comment, error)
+	getVoteStateForCommentsFunc   func(ctx context.Context, viewerDID string, commentURIs []string) (map[string]interface{}, error)
+	listByCommenterWithCursorFunc func(ctx context.Context, req ListByCommenterRequest) ([]*Comment, *string, error)
 }
 
 func newMockCommentRepo() *mockCommentRepo {
@@ -94,6 +95,13 @@ func (m *mockCommentRepo) CountByParent(ctx context.Context, parentURI string) (
 
 func (m *mockCommentRepo) ListByCommenter(ctx context.Context, commenterDID string, limit, offset int) ([]*Comment, error) {
 	return nil, nil
+}
+
+func (m *mockCommentRepo) ListByCommenterWithCursor(ctx context.Context, req ListByCommenterRequest) ([]*Comment, *string, error) {
+	if m.listByCommenterWithCursorFunc != nil {
+		return m.listByCommenterWithCursorFunc(ctx, req)
+	}
+	return []*Comment{}, nil, nil
 }
 
 func (m *mockCommentRepo) ListByParentWithHotRank(
@@ -1453,4 +1461,365 @@ func TestBuildCommentView_EmptyStringVsNilHandling(t *testing.T) {
 // Helper function to create string pointers
 func strPtr(s string) *string {
 	return &s
+}
+
+// Test suite for GetActorComments
+
+func TestCommentService_GetActorComments_ValidRequest(t *testing.T) {
+	// Setup
+	actorDID := "did:plc:actor123"
+	viewerDID := "did:plc:viewer123"
+	postURI := "at://did:plc:post123/app.bsky.feed.post/test"
+
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	// Add actor to user repo
+	actor := createTestUser(actorDID, "actor.test")
+	_, _ = userRepo.Create(context.Background(), actor)
+
+	// Create test comments
+	comment1 := createTestComment("at://did:plc:actor123/comment/1", actorDID, "actor.test", postURI, postURI, 0)
+	comment2 := createTestComment("at://did:plc:actor123/comment/2", actorDID, "actor.test", postURI, postURI, 0)
+
+	// Setup mock to return comments
+	commentRepo.listByCommenterWithCursorFunc = func(ctx context.Context, req ListByCommenterRequest) ([]*Comment, *string, error) {
+		if req.CommenterDID == actorDID {
+			return []*Comment{comment1, comment2}, nil, nil
+		}
+		return []*Comment{}, nil, nil
+	}
+
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+
+	// Execute
+	req := &GetActorCommentsRequest{
+		ActorDID:  actorDID,
+		ViewerDID: &viewerDID,
+		Limit:     50,
+	}
+
+	resp, err := service.GetActorComments(context.Background(), req)
+
+	// Verify
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.Len(t, resp.Comments, 2)
+	assert.Equal(t, comment1.URI, resp.Comments[0].URI)
+	assert.Equal(t, comment2.URI, resp.Comments[1].URI)
+}
+
+func TestCommentService_GetActorComments_EmptyActorDID(t *testing.T) {
+	// Setup
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+
+	// Execute with empty ActorDID
+	req := &GetActorCommentsRequest{
+		ActorDID: "",
+		Limit:    50,
+	}
+
+	resp, err := service.GetActorComments(context.Background(), req)
+
+	// Verify
+	assert.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "actor DID is required")
+}
+
+func TestCommentService_GetActorComments_InvalidActorDIDFormat(t *testing.T) {
+	// Setup
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+
+	// Execute with invalid DID format (missing did: prefix)
+	req := &GetActorCommentsRequest{
+		ActorDID: "plc:actor123",
+		Limit:    50,
+	}
+
+	resp, err := service.GetActorComments(context.Background(), req)
+
+	// Verify
+	assert.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "invalid actor DID format")
+}
+
+func TestCommentService_GetActorComments_CommunityHandleResolution(t *testing.T) {
+	// Setup
+	actorDID := "did:plc:actor123"
+	communityDID := "did:plc:community123"
+	communityHandle := "c-test.coves.social"
+
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	// Add community to repo
+	community := createTestCommunity(communityDID, communityHandle)
+	_, _ = communityRepo.Create(context.Background(), community)
+
+	// Track what community filter was passed to repo
+	var receivedCommunityDID *string
+	commentRepo.listByCommenterWithCursorFunc = func(ctx context.Context, req ListByCommenterRequest) ([]*Comment, *string, error) {
+		receivedCommunityDID = req.CommunityDID
+		return []*Comment{}, nil, nil
+	}
+
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+
+	// Execute with community handle (not DID)
+	req := &GetActorCommentsRequest{
+		ActorDID:  actorDID,
+		Community: communityHandle,
+		Limit:     50,
+	}
+
+	resp, err := service.GetActorComments(context.Background(), req)
+
+	// Verify
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.NotNil(t, receivedCommunityDID)
+	assert.Equal(t, communityDID, *receivedCommunityDID)
+}
+
+func TestCommentService_GetActorComments_CommunityDIDPassThrough(t *testing.T) {
+	// Setup
+	actorDID := "did:plc:actor123"
+	communityDID := "did:plc:community123"
+
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	// Track what community filter was passed to repo
+	var receivedCommunityDID *string
+	commentRepo.listByCommenterWithCursorFunc = func(ctx context.Context, req ListByCommenterRequest) ([]*Comment, *string, error) {
+		receivedCommunityDID = req.CommunityDID
+		return []*Comment{}, nil, nil
+	}
+
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+
+	// Execute with community DID (not handle) - should pass through without resolution
+	req := &GetActorCommentsRequest{
+		ActorDID:  actorDID,
+		Community: communityDID,
+		Limit:     50,
+	}
+
+	resp, err := service.GetActorComments(context.Background(), req)
+
+	// Verify
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.NotNil(t, receivedCommunityDID)
+	assert.Equal(t, communityDID, *receivedCommunityDID)
+}
+
+func TestCommentService_GetActorComments_CommunityNotFound(t *testing.T) {
+	// Setup
+	actorDID := "did:plc:actor123"
+	nonexistentCommunity := "nonexistent.coves.social"
+
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+
+	// Execute with nonexistent community handle
+	req := &GetActorCommentsRequest{
+		ActorDID:  actorDID,
+		Community: nonexistentCommunity,
+		Limit:     50,
+	}
+
+	resp, err := service.GetActorComments(context.Background(), req)
+
+	// Verify - should return empty results, not error
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.Len(t, resp.Comments, 0)
+}
+
+func TestCommentService_GetActorComments_RepositoryError(t *testing.T) {
+	// Setup
+	actorDID := "did:plc:actor123"
+
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	// Mock repository error
+	commentRepo.listByCommenterWithCursorFunc = func(ctx context.Context, req ListByCommenterRequest) ([]*Comment, *string, error) {
+		return nil, nil, errors.New("database connection failed")
+	}
+
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+
+	// Execute
+	req := &GetActorCommentsRequest{
+		ActorDID: actorDID,
+		Limit:    50,
+	}
+
+	resp, err := service.GetActorComments(context.Background(), req)
+
+	// Verify
+	assert.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "failed to fetch comments")
+}
+
+func TestCommentService_GetActorComments_LimitBoundsNormalization(t *testing.T) {
+	// Setup
+	actorDID := "did:plc:actor123"
+
+	tests := []struct {
+		name          string
+		inputLimit    int
+		expectedLimit int
+	}{
+		{"zero limit defaults to 50", 0, 50},
+		{"negative limit defaults to 50", -10, 50},
+		{"limit > 100 capped to 100", 200, 100},
+		{"valid limit unchanged", 25, 25},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			commentRepo := newMockCommentRepo()
+			userRepo := newMockUserRepo()
+			postRepo := newMockPostRepo()
+			communityRepo := newMockCommunityRepo()
+
+			var receivedLimit int
+			commentRepo.listByCommenterWithCursorFunc = func(ctx context.Context, req ListByCommenterRequest) ([]*Comment, *string, error) {
+				receivedLimit = req.Limit
+				return []*Comment{}, nil, nil
+			}
+
+			service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+
+			req := &GetActorCommentsRequest{
+				ActorDID: actorDID,
+				Limit:    tt.inputLimit,
+			}
+
+			_, err := service.GetActorComments(context.Background(), req)
+
+			assert.NoError(t, err)
+			assert.Equal(t, tt.expectedLimit, receivedLimit)
+		})
+	}
+}
+
+func TestCommentService_GetActorComments_WithPagination(t *testing.T) {
+	// Setup
+	actorDID := "did:plc:actor123"
+	postURI := "at://did:plc:post123/app.bsky.feed.post/test"
+
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	comment1 := createTestComment("at://did:plc:actor123/comment/1", actorDID, "actor.test", postURI, postURI, 0)
+	nextCursor := "cursor123"
+
+	commentRepo.listByCommenterWithCursorFunc = func(ctx context.Context, req ListByCommenterRequest) ([]*Comment, *string, error) {
+		return []*Comment{comment1}, &nextCursor, nil
+	}
+
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+
+	// Execute
+	req := &GetActorCommentsRequest{
+		ActorDID: actorDID,
+		Limit:    50,
+	}
+
+	resp, err := service.GetActorComments(context.Background(), req)
+
+	// Verify
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.Len(t, resp.Comments, 1)
+	assert.NotNil(t, resp.Cursor)
+	assert.Equal(t, nextCursor, *resp.Cursor)
+}
+
+func TestCommentService_GetActorComments_NilRequest(t *testing.T) {
+	// Setup
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+
+	// Execute with nil request
+	resp, err := service.GetActorComments(context.Background(), nil)
+
+	// Verify
+	assert.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "request cannot be nil")
+}
+
+func TestValidateGetActorCommentsRequest_Defaults(t *testing.T) {
+	req := &GetActorCommentsRequest{
+		ActorDID: "did:plc:actor123",
+		// Limit is 0 (zero value)
+	}
+
+	err := validateGetActorCommentsRequest(req)
+	assert.NoError(t, err)
+
+	// Check defaults applied
+	assert.Equal(t, 50, req.Limit)
+}
+
+func TestValidateGetActorCommentsRequest_BoundsEnforcement(t *testing.T) {
+	tests := []struct {
+		name          string
+		limit         int
+		expectedLimit int
+	}{
+		{"zero limit defaults to 50", 0, 50},
+		{"negative limit defaults to 50", -10, 50},
+		{"limit too high capped to 100", 200, 100},
+		{"valid limit unchanged", 25, 25},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &GetActorCommentsRequest{
+				ActorDID: "did:plc:actor123",
+				Limit:    tt.limit,
+			}
+
+			err := validateGetActorCommentsRequest(req)
+			assert.NoError(t, err)
+			assert.Equal(t, tt.expectedLimit, req.Limit)
+		})
+	}
 }

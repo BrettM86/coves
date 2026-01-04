@@ -79,3 +79,12 @@ type SelfLabel struct {
 	Neg *bool  `json:"neg,omitempty"`
 	Val string `json:"val"`
 }
+
+// ListByCommenterRequest defines the parameters for fetching a user's comments
+// Used by social.coves.actor.getComments endpoint
+type ListByCommenterRequest struct {
+	CommenterDID string  // Required: DID of the commenter
+	CommunityDID *string // Optional: filter to comments in a specific community
+	Limit        int     // Max comments to return (1-100)
+	Cursor       *string // Pagination cursor from previous response
+}

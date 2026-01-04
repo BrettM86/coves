@@ -50,8 +50,13 @@ type Repository interface {
 	CountByParent(ctx context.Context, parentURI string) (int, error)
 
 	// ListByCommenter retrieves all comments by a specific user
-	// Future: Used for user comment history
+	// Deprecated: Use ListByCommenterWithCursor for cursor-based pagination
 	ListByCommenter(ctx context.Context, commenterDID string, limit, offset int) ([]*Comment, error)
+
+	// ListByCommenterWithCursor retrieves comments by a user with cursor-based pagination
+	// Used for user profile comment history (social.coves.actor.getComments)
+	// Supports optional community filtering and returns next page cursor
+	ListByCommenterWithCursor(ctx context.Context, req ListByCommenterRequest) ([]*Comment, *string, error)
 
 	// ListByParentWithHotRank retrieves direct replies to a post or comment with sorting and pagination
 	// Supports hot, top, and new sorting with cursor-based pagination

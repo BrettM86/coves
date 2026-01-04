@@ -67,3 +67,20 @@ type GetCommentsResponse struct {
 	Cursor   *string              `json:"cursor,omitempty"`
 	Comments []*ThreadViewComment `json:"comments"`
 }
+
+// GetActorCommentsRequest defines the parameters for fetching a user's comments
+// Used by social.coves.actor.getComments endpoint
+type GetActorCommentsRequest struct {
+	ActorDID  string  // Required: DID of the commenter
+	Community string  // Optional: filter to comments in a specific community (handle or DID)
+	Limit     int     // Max comments to return (1-100, default 50)
+	Cursor    *string // Pagination cursor from previous response
+	ViewerDID *string // Optional: DID of the viewer for populating viewer state
+}
+
+// GetActorCommentsResponse represents the response for fetching a user's comments
+// Matches social.coves.actor.getComments lexicon output
+type GetActorCommentsResponse struct {
+	Comments []*CommentView `json:"comments"`
+	Cursor   *string        `json:"cursor,omitempty"`
+}

@@ -410,6 +410,156 @@ func (r *postgresCommentRepo) ListByCommenter(ctx context.Context, commenterDID 
 	return result, nil
 }
 
+// ListByCommenterWithCursor retrieves comments by a user with cursor-based pagination
+// Used for user profile comment history (social.coves.actor.getComments)
+// Supports optional community filtering and returns next page cursor
+// Uses chronological ordering (newest first) with composite key cursor for stable pagination
+func (r *postgresCommentRepo) ListByCommenterWithCursor(ctx context.Context, req comments.ListByCommenterRequest) ([]*comments.Comment, *string, error) {
+	// Parse cursor for pagination
+	cursorFilter, cursorValues, err := r.parseCommenterCursor(req.Cursor)
+	if err != nil {
+		return nil, nil, fmt.Errorf("invalid cursor: %w", err)
+	}
+
+	// Build community filter if provided
+	// Parameter numbering: $1=commenterDID, $2=limit+1 (for pagination detection)
+	// Cursor values (if present) use $3 and $4, community DID comes after
+	var communityFilter string
+	var communityValue []interface{}
+	paramOffset := 2 + len(cursorValues) // Start after $1, $2, and any cursor params
+	if req.CommunityDID != nil && *req.CommunityDID != "" {
+		paramOffset++
+		communityFilter = fmt.Sprintf("AND c.root_uri IN (SELECT uri FROM posts WHERE community_did = $%d)", paramOffset)
+		communityValue = append(communityValue, *req.CommunityDID)
+	}
+
+	// Build complete query with JOINs and filters
+	// LEFT JOIN prevents data loss when user record hasn't been indexed yet
+	query := fmt.Sprintf(`
+		SELECT
+			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
+			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
+			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
+			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
+			c.upvote_count, c.downvote_count, c.score, c.reply_count,
+			COALESCE(u.handle, c.commenter_did) as author_handle
+		FROM comments c
+		LEFT JOIN users u ON c.commenter_did = u.did
+		WHERE c.commenter_did = $1
+			AND c.deleted_at IS NULL
+			%s
+			%s
+		ORDER BY c.created_at DESC, c.uri DESC
+		LIMIT $2
+	`, communityFilter, cursorFilter)
+
+	// Prepare query arguments
+	args := []interface{}{req.CommenterDID, req.Limit + 1} // +1 to detect next page
+	args = append(args, cursorValues...)
+	args = append(args, communityValue...)
+
+	// Execute query
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to query comments by commenter: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("Failed to close rows: %v", err)
+		}
+	}()
+
+	// Scan results
+	var result []*comments.Comment
+	for rows.Next() {
+		var comment comments.Comment
+		var langs pq.StringArray
+		var authorHandle string
+
+		err := rows.Scan(
+			&comment.ID, &comment.URI, &comment.CID, &comment.RKey, &comment.CommenterDID,
+			&comment.RootURI, &comment.RootCID, &comment.ParentURI, &comment.ParentCID,
+			&comment.Content, &comment.ContentFacets, &comment.Embed, &comment.ContentLabels, &langs,
+			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy,
+			&comment.UpvoteCount, &comment.DownvoteCount, &comment.Score, &comment.ReplyCount,
+			&authorHandle,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to scan comment: %w", err)
+		}
+
+		comment.Langs = langs
+		comment.CommenterHandle = authorHandle
+		result = append(result, &comment)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("error iterating comments: %w", err)
+	}
+
+	// Handle pagination cursor
+	var nextCursor *string
+	if len(result) > req.Limit && req.Limit > 0 {
+		result = result[:req.Limit]
+		lastComment := result[len(result)-1]
+		cursorStr := r.buildCommenterCursor(lastComment)
+		nextCursor = &cursorStr
+	}
+
+	return result, nextCursor, nil
+}
+
+// parseCommenterCursor decodes pagination cursor for commenter comments
+// Cursor format: createdAt|uri (same as "new" sort for other comment queries)
+//
+// IMPORTANT: This function returns a filter string with hardcoded parameter numbers ($3, $4).
+// The caller (ListByCommenterWithCursor) must ensure parameters are ordered as:
+// $1=commenterDID, $2=limit+1, $3=createdAt, $4=uri, then community DID if present.
+// If you modify the parameter order in the caller, you must update the filter here.
+func (r *postgresCommentRepo) parseCommenterCursor(cursor *string) (string, []interface{}, error) {
+	if cursor == nil || *cursor == "" {
+		return "", nil, nil
+	}
+
+	// Validate cursor size to prevent DoS via massive base64 strings
+	const maxCursorSize = 1024
+	if len(*cursor) > maxCursorSize {
+		return "", nil, fmt.Errorf("cursor too large: maximum %d bytes", maxCursorSize)
+	}
+
+	// Decode base64 cursor
+	decoded, err := base64.URLEncoding.DecodeString(*cursor)
+	if err != nil {
+		return "", nil, fmt.Errorf("invalid cursor encoding")
+	}
+
+	// Parse cursor: createdAt|uri
+	parts := strings.Split(string(decoded), "|")
+	if len(parts) != 2 {
+		return "", nil, fmt.Errorf("invalid cursor format")
+	}
+
+	createdAt := parts[0]
+	uri := parts[1]
+
+	// Validate AT-URI format
+	if !strings.HasPrefix(uri, "at://") {
+		return "", nil, fmt.Errorf("invalid cursor URI")
+	}
+
+	filter := `AND (c.created_at < $3 OR (c.created_at = $3 AND c.uri < $4))`
+	return filter, []interface{}{createdAt, uri}, nil
+}
+
+// buildCommenterCursor creates pagination cursor from last comment
+// Uses createdAt|uri format for stable pagination
+func (r *postgresCommentRepo) buildCommenterCursor(comment *comments.Comment) string {
+	cursorStr := fmt.Sprintf("%s|%s",
+		comment.CreatedAt.Format("2006-01-02T15:04:05.999999999Z07:00"),
+		comment.URI)
+	return base64.URLEncoding.EncodeToString([]byte(cursorStr))
+}
+
 // ListByParentWithHotRank retrieves direct replies to a post or comment with sorting and pagination
 // Supports three sort modes: hot (Lemmy algorithm), top (by score + timeframe), and new (by created_at)
 // Uses cursor-based pagination with composite keys for consistent ordering
@@ -964,6 +1114,7 @@ func (r *postgresCommentRepo) GetVoteStateForComments(ctx context.Context, viewe
 		// If votes table doesn't exist yet, return empty map instead of error
 		// This allows the API to work before votes indexing is fully implemented
 		if strings.Contains(err.Error(), "does not exist") {
+			log.Printf("WARN: Votes table does not exist, returning empty vote state for %d comments", len(commentURIs))
 			return make(map[string]interface{}), nil
 		}
 		return nil, fmt.Errorf("failed to get vote state for comments: %w", err)

@@ -110,7 +110,7 @@ func TestGetAuthorPosts_E2E_Success(t *testing.T) {
 
 	// Setup HTTP server with XRPC routes
 	r := chi.NewRouter()
-	routes.RegisterActorRoutes(r, postService, userService, voteService, nil, e2eAuth.OAuthAuthMiddleware)
+	routes.RegisterActorRoutes(r, postService, userService, voteService, nil, nil, e2eAuth.OAuthAuthMiddleware)
 	httpServer := httptest.NewServer(r)
 	defer httpServer.Close()
 
@@ -322,7 +322,7 @@ func TestGetAuthorPosts_FilterLogic(t *testing.T) {
 	// Setup HTTP server
 	e2eAuth := NewE2EOAuthMiddleware()
 	r := chi.NewRouter()
-	routes.RegisterActorRoutes(r, postService, userService, voteService, nil, e2eAuth.OAuthAuthMiddleware)
+	routes.RegisterActorRoutes(r, postService, userService, voteService, nil, nil, e2eAuth.OAuthAuthMiddleware)
 	httpServer := httptest.NewServer(r)
 	defer httpServer.Close()
 
@@ -443,7 +443,7 @@ func TestGetAuthorPosts_ServiceErrors(t *testing.T) {
 	// Setup HTTP server
 	e2eAuth := NewE2EOAuthMiddleware()
 	r := chi.NewRouter()
-	routes.RegisterActorRoutes(r, postService, userService, voteService, nil, e2eAuth.OAuthAuthMiddleware)
+	routes.RegisterActorRoutes(r, postService, userService, voteService, nil, nil, e2eAuth.OAuthAuthMiddleware)
 	httpServer := httptest.NewServer(r)
 	defer httpServer.Close()
 
@@ -606,7 +606,7 @@ func TestGetAuthorPosts_WithJetstreamIndexing(t *testing.T) {
 		// Verify post is now queryable via GetAuthorPosts
 		e2eAuth := NewE2EOAuthMiddleware()
 		r := chi.NewRouter()
-		routes.RegisterActorRoutes(r, postService, userService, voteService, nil, e2eAuth.OAuthAuthMiddleware)
+		routes.RegisterActorRoutes(r, postService, userService, voteService, nil, nil, e2eAuth.OAuthAuthMiddleware)
 		httpServer := httptest.NewServer(r)
 		defer httpServer.Close()
 
@@ -679,7 +679,7 @@ func TestGetAuthorPosts_CommunityFilter(t *testing.T) {
 	// Setup HTTP server
 	e2eAuth := NewE2EOAuthMiddleware()
 	r := chi.NewRouter()
-	routes.RegisterActorRoutes(r, postService, userService, voteService, nil, e2eAuth.OAuthAuthMiddleware)
+	routes.RegisterActorRoutes(r, postService, userService, voteService, nil, nil, e2eAuth.OAuthAuthMiddleware)
 	httpServer := httptest.NewServer(r)
 	defer httpServer.Close()
 
