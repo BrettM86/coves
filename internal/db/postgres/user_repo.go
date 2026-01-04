@@ -161,3 +161,39 @@ func (r *postgresUserRepo) GetByDIDs(ctx context.Context, dids []string) (map[st
 
 	return result, nil
 }
+
+// GetProfileStats retrieves aggregated statistics for a user profile
+// This performs a single query with scalar subqueries for efficiency
+func (r *postgresUserRepo) GetProfileStats(ctx context.Context, did string) (*users.ProfileStats, error) {
+	// Validate DID format
+	if !strings.HasPrefix(did, "did:") {
+		return nil, fmt.Errorf("invalid DID format: %s", did)
+	}
+
+	// Note: reputation sums ALL memberships (including banned) intentionally.
+	// Reputation represents historical contributions, while membership_count
+	// reflects current active community access. A banned user keeps their
+	// earned reputation but loses the membership count.
+	query := `
+		SELECT
+			(SELECT COUNT(*) FROM posts WHERE author_did = $1 AND deleted_at IS NULL) as post_count,
+			(SELECT COUNT(*) FROM comments WHERE commenter_did = $1 AND deleted_at IS NULL) as comment_count,
+			(SELECT COUNT(*) FROM community_subscriptions WHERE user_did = $1) as community_count,
+			(SELECT COUNT(*) FROM community_memberships WHERE user_did = $1 AND is_banned = false) as membership_count,
+			(SELECT COALESCE(SUM(reputation_score), 0) FROM community_memberships WHERE user_did = $1) as reputation
+	`
+
+	stats := &users.ProfileStats{}
+	err := r.db.QueryRowContext(ctx, query, did).Scan(
+		&stats.PostCount,
+		&stats.CommentCount,
+		&stats.CommunityCount,
+		&stats.MembershipCount,
+		&stats.Reputation,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get profile stats: %w", err)
+	}
+
+	return stats, nil
+}

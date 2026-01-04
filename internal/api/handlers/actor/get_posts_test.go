@@ -70,6 +70,10 @@ func (m *mockUserService) IndexUser(ctx context.Context, did, handle, pdsURL str
 	return nil
 }
 
+func (m *mockUserService) GetProfile(ctx context.Context, did string) (*users.ProfileViewDetailed, error) {
+	return nil, nil
+}
+
 // mockVoteService implements votes.Service for testing
 type mockVoteService struct{}
 

@@ -29,6 +29,10 @@ type UserRepository interface {
 	//       // Use user
 	//   }
 	GetByDIDs(ctx context.Context, dids []string) (map[string]*User, error)
+
+	// GetProfileStats retrieves aggregated statistics for a user profile.
+	// Returns counts of posts, comments, subscriptions, memberships, and total reputation.
+	GetProfileStats(ctx context.Context, did string) (*ProfileStats, error)
 }
 
 // UserService defines the interface for user business logic
@@ -44,4 +48,8 @@ type UserService interface {
 	// This is idempotent - calling it multiple times with the same DID is safe.
 	// Used after OAuth login to ensure users are immediately available for profile lookups.
 	IndexUser(ctx context.Context, did, handle, pdsURL string) error
+
+	// GetProfile retrieves a user's full profile with aggregated statistics.
+	// Returns a ProfileViewDetailed matching the social.coves.actor.defs#profileViewDetailed lexicon.
+	GetProfile(ctx context.Context, did string) (*ProfileViewDetailed, error)
 }

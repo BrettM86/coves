@@ -6,7 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"time"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -37,45 +37,66 @@ func RegisterUserRoutes(r chi.Router, service users.UserService) {
 
 // GetProfile handles social.coves.actor.getprofile
 // Query endpoint that retrieves a user profile by DID or handle
+// Returns profileViewDetailed with stats per lexicon specification
 func (h *UserHandler) GetProfile(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// Get actor parameter (DID or handle)
 	actor := r.URL.Query().Get("actor")
 	if actor == "" {
-		http.Error(w, "actor parameter is required", http.StatusBadRequest)
+		writeXRPCError(w, "InvalidRequest", "actor parameter is required", http.StatusBadRequest)
 		return
 	}
 
-	var user *users.User
-	var err error
-
-	// Determine if actor is a DID or handle
-	// DIDs start with "did:", handles don't
-	if len(actor) > 4 && actor[:4] == "did:" {
-		user, err = h.userService.GetUserByDID(ctx, actor)
+	// Resolve actor to DID
+	var did string
+	if strings.HasPrefix(actor, "did:") {
+		did = actor
 	} else {
-		user, err = h.userService.GetUserByHandle(ctx, actor)
+		// Resolve handle to DID
+		resolvedDID, err := h.userService.ResolveHandleToDID(ctx, actor)
+		if err != nil {
+			writeXRPCError(w, "ProfileNotFound", "user not found", http.StatusNotFound)
+			return
+		}
+		did = resolvedDID
 	}
 
+	// Get full profile with stats
+	profile, err := h.userService.GetProfile(ctx, did)
 	if err != nil {
-		http.Error(w, "user not found", http.StatusNotFound)
+		if errors.Is(err, users.ErrUserNotFound) {
+			writeXRPCError(w, "ProfileNotFound", "user not found", http.StatusNotFound)
+			return
+		}
+		log.Printf("Failed to get profile for %s: %v", did, err)
+		writeXRPCError(w, "InternalError", "failed to get profile", http.StatusInternalServerError)
 		return
 	}
 
-	// Minimal profile response (matching lexicon structure)
-	response := map[string]interface{}{
-		"did": user.DID,
-		"profile": map[string]interface{}{
-			"handle":    user.Handle,
-			"createdAt": user.CreatedAt.Format(time.RFC3339),
-		},
+	// Marshal to bytes first to avoid partial writes on encoding errors
+	responseBytes, err := json.Marshal(profile)
+	if err != nil {
+		log.Printf("Failed to marshal profile response: %v", err)
+		writeXRPCError(w, "InternalError", "failed to encode response", http.StatusInternalServerError)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("Failed to encode response: %v", err)
+	if _, err := w.Write(responseBytes); err != nil {
+		log.Printf("Failed to write response: %v", err)
+	}
+}
+
+// writeXRPCError writes a standardized XRPC error response
+func writeXRPCError(w http.ResponseWriter, errorName, message string, statusCode int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	if err := json.NewEncoder(w).Encode(map[string]interface{}{
+		"error":   errorName,
+		"message": message,
+	}); err != nil {
+		log.Printf("Failed to encode error response: %v", err)
 	}
 }
 

@@ -38,3 +38,25 @@ type RegisterAccountResponse struct {
 	RefreshJwt string `json:"refreshJwt"`
 	PDSURL     string `json:"pdsUrl"`
 }
+
+// ProfileStats contains aggregated user statistics
+// Matches the social.coves.actor.defs#profileStats lexicon
+type ProfileStats struct {
+	PostCount       int `json:"postCount"`
+	CommentCount    int `json:"commentCount"`
+	CommunityCount  int `json:"communityCount"`  // Number of communities subscribed to
+	Reputation      int `json:"reputation"`      // Global reputation score (sum across communities)
+	MembershipCount int `json:"membershipCount"` // Number of communities with active membership
+}
+
+// ProfileViewDetailed is the full profile response
+// Matches the social.coves.actor.defs#profileViewDetailed lexicon
+type ProfileViewDetailed struct {
+	DID       string        `json:"did"`
+	Handle    string        `json:"handle,omitempty"`
+	CreatedAt time.Time     `json:"createdAt"`
+	Stats     *ProfileStats `json:"stats,omitempty"`
+	// Future fields (require additional infrastructure):
+	// DisplayName, Bio, Avatar, Banner (from PDS profile record)
+	// Viewer (requires user-to-user blocking infrastructure)
+}

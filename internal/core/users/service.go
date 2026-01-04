@@ -147,7 +147,11 @@ func (s *userService) ResolveHandleToDID(ctx context.Context, handle string) (st
 	if err == nil && user != nil {
 		return user.DID, nil
 	}
-	// If not found locally, fall through to external resolution
+	// Log database errors (but not "not found" which is expected for unindexed users)
+	if err != nil && !errors.Is(err, ErrUserNotFound) {
+		log.Printf("Warning: database error during handle lookup for %s (falling back to external resolution): %v", handle, err)
+	}
+	// If not found locally or error, fall through to external resolution
 
 	// Slow path: use identity resolver for external DNS/HTTPS resolution
 	did, _, err := s.identityResolver.ResolveHandle(ctx, handle)
@@ -257,6 +261,34 @@ func (s *userService) IndexUser(ctx context.Context, did, handle, pdsURL string)
 	}
 
 	return nil
+}
+
+// GetProfile retrieves a user's full profile with aggregated statistics.
+// Returns a ProfileViewDetailed matching the social.coves.actor.defs#profileViewDetailed lexicon.
+func (s *userService) GetProfile(ctx context.Context, did string) (*ProfileViewDetailed, error) {
+	did = strings.TrimSpace(did)
+	if did == "" {
+		return nil, fmt.Errorf("DID is required")
+	}
+
+	// Get the user first
+	user, err := s.userRepo.GetByDID(ctx, did)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user: %w", err)
+	}
+
+	// Get aggregated stats
+	stats, err := s.userRepo.GetProfileStats(ctx, did)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get profile stats: %w", err)
+	}
+
+	return &ProfileViewDetailed{
+		DID:       user.DID,
+		Handle:    user.Handle,
+		CreatedAt: user.CreatedAt,
+		Stats:     stats,
+	}, nil
 }
 
 func (s *userService) validateCreateRequest(req CreateUserRequest) error {

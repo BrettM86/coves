@@ -189,6 +189,10 @@ func (m *mockUserRepo) GetByDIDs(ctx context.Context, dids []string) (map[string
 	return result, nil
 }
 
+func (m *mockUserRepo) GetProfileStats(ctx context.Context, did string) (*users.ProfileStats, error) {
+	return &users.ProfileStats{}, nil
+}
+
 // mockPostRepo is a mock implementation of the posts.Repository interface
 type mockPostRepo struct {
 	posts map[string]*posts.Post

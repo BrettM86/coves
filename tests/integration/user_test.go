@@ -16,6 +16,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	_ "github.com/lib/pq"
@@ -257,9 +258,9 @@ func TestGetProfileEndpoint(t *testing.T) {
 			t.Fatalf("Failed to decode response: %v", err)
 		}
 
-		profile := response["profile"].(map[string]interface{})
-		if profile["handle"] != "bob.test" {
-			t.Errorf("Expected handle bob.test, got %v", profile["handle"])
+		// New structure: flat profileViewDetailed (not nested profile object)
+		if response["handle"] != "bob.test" {
+			t.Errorf("Expected handle bob.test, got %v", response["handle"])
 		}
 	})
 
@@ -506,6 +507,459 @@ func TestUserRepository_GetByDIDs(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "invalid DID format") {
 			t.Errorf("Expected invalid DID format error, got: %v", err)
+		}
+	})
+}
+
+// TestProfileStats tests that profile stats are returned correctly
+func TestProfileStats(t *testing.T) {
+	db := setupTestDB(t)
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
+
+	// Use unique test DID to avoid conflicts with other test runs
+	uniqueSuffix := time.Now().UnixNano()
+	testDID := fmt.Sprintf("did:plc:profilestats%d", uniqueSuffix)
+
+	// Wire up dependencies
+	userRepo := postgres.NewUserRepository(db)
+	resolver := identity.NewResolver(db, identity.DefaultConfig())
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
+
+	ctx := context.Background()
+
+	// Create test user
+	_, err := userService.CreateUser(ctx, users.CreateUserRequest{
+		DID:    testDID,
+		Handle: fmt.Sprintf("statsuser%d.test", uniqueSuffix),
+		PDSURL: "http://localhost:3001",
+	})
+	if err != nil {
+		t.Fatalf("Failed to create test user: %v", err)
+	}
+
+	t.Run("Profile includes stats with zero counts for new user", func(t *testing.T) {
+		profile, err := userService.GetProfile(ctx, testDID)
+		if err != nil {
+			t.Fatalf("Failed to get profile: %v", err)
+		}
+
+		if profile.Stats == nil {
+			t.Fatal("Expected stats to be non-nil")
+		}
+
+		// New user should have zero counts
+		if profile.Stats.PostCount != 0 {
+			t.Errorf("Expected postCount 0, got %d", profile.Stats.PostCount)
+		}
+		if profile.Stats.CommentCount != 0 {
+			t.Errorf("Expected commentCount 0, got %d", profile.Stats.CommentCount)
+		}
+		if profile.Stats.CommunityCount != 0 {
+			t.Errorf("Expected communityCount 0, got %d", profile.Stats.CommunityCount)
+		}
+		if profile.Stats.MembershipCount != 0 {
+			t.Errorf("Expected membershipCount 0, got %d", profile.Stats.MembershipCount)
+		}
+		if profile.Stats.Reputation != 0 {
+			t.Errorf("Expected reputation 0, got %d", profile.Stats.Reputation)
+		}
+	})
+
+	t.Run("Profile stats count posts correctly", func(t *testing.T) {
+		// Create a test community (required for posts FK)
+		testCommunityDID := fmt.Sprintf("did:plc:statscommunity%d", uniqueSuffix)
+		_, err := db.Exec(`
+			INSERT INTO communities (did, handle, name, owner_did, created_by_did, hosted_by_did, created_at)
+			VALUES ($1, $2, 'Test Community', 'did:plc:owner1', 'did:plc:owner1', 'did:plc:owner1', NOW())
+		`, testCommunityDID, fmt.Sprintf("statscommunity%d.test", uniqueSuffix))
+		if err != nil {
+			t.Fatalf("Failed to insert test community: %v", err)
+		}
+
+		// Insert test posts
+		for i := 1; i <= 3; i++ {
+			_, err = db.Exec(`
+				INSERT INTO posts (uri, cid, rkey, author_did, community_did, title, content, created_at, indexed_at)
+				VALUES ($1, $2, $3, $4, $5, 'Post', 'Content', NOW(), NOW())
+			`, fmt.Sprintf("at://%s/social.coves.post/%d", testDID, i), fmt.Sprintf("cid%d", i), fmt.Sprintf("%d", i), testDID, testCommunityDID)
+			if err != nil {
+				t.Fatalf("Failed to insert post %d: %v", i, err)
+			}
+		}
+
+		profile, err := userService.GetProfile(ctx, testDID)
+		if err != nil {
+			t.Fatalf("Failed to get profile: %v", err)
+		}
+
+		if profile.Stats.PostCount != 3 {
+			t.Errorf("Expected postCount 3, got %d", profile.Stats.PostCount)
+		}
+
+		// Test that soft-deleted posts are not counted (delete the first one by URI)
+		_, err = db.Exec(`UPDATE posts SET deleted_at = NOW() WHERE uri = $1`, fmt.Sprintf("at://%s/social.coves.post/1", testDID))
+		if err != nil {
+			t.Fatalf("Failed to soft-delete post: %v", err)
+		}
+
+		profile, err = userService.GetProfile(ctx, testDID)
+		if err != nil {
+			t.Fatalf("Failed to get profile: %v", err)
+		}
+
+		if profile.Stats.PostCount != 2 {
+			t.Errorf("Expected postCount 2 after deletion, got %d", profile.Stats.PostCount)
+		}
+	})
+
+	t.Run("Profile stats count memberships and sum reputation", func(t *testing.T) {
+		// Need a community that exists for the FK
+		testCommunityDID := fmt.Sprintf("did:plc:statscommunity%d", uniqueSuffix)
+
+		// Insert membership with reputation
+		_, err := db.Exec(`
+			INSERT INTO community_memberships (user_did, community_did, reputation_score, contribution_count, is_banned, is_moderator, joined_at, last_active_at)
+			VALUES ($1, $2, 150, 10, false, false, NOW(), NOW())
+		`, testDID, testCommunityDID)
+		if err != nil {
+			t.Fatalf("Failed to insert test membership: %v", err)
+		}
+
+		profile, err := userService.GetProfile(ctx, testDID)
+		if err != nil {
+			t.Fatalf("Failed to get profile: %v", err)
+		}
+
+		if profile.Stats.MembershipCount != 1 {
+			t.Errorf("Expected membershipCount 1, got %d", profile.Stats.MembershipCount)
+		}
+		if profile.Stats.Reputation != 150 {
+			t.Errorf("Expected reputation 150, got %d", profile.Stats.Reputation)
+		}
+
+		// Test that banned memberships are not counted
+		_, err = db.Exec(`UPDATE community_memberships SET is_banned = true WHERE user_did = $1`, testDID)
+		if err != nil {
+			t.Fatalf("Failed to ban user: %v", err)
+		}
+
+		profile, err = userService.GetProfile(ctx, testDID)
+		if err != nil {
+			t.Fatalf("Failed to get profile: %v", err)
+		}
+
+		if profile.Stats.MembershipCount != 0 {
+			t.Errorf("Expected membershipCount 0 after ban, got %d", profile.Stats.MembershipCount)
+		}
+		// Note: Reputation still counts from banned memberships (this is intentional per lexicon spec)
+	})
+}
+
+// TestProfileStats_CommentCount tests that comment counting works correctly
+func TestProfileStats_CommentCount(t *testing.T) {
+	db := setupTestDB(t)
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
+
+	uniqueSuffix := time.Now().UnixNano()
+	testDID := fmt.Sprintf("did:plc:commentcount%d", uniqueSuffix)
+
+	userRepo := postgres.NewUserRepository(db)
+	resolver := identity.NewResolver(db, identity.DefaultConfig())
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
+
+	ctx := context.Background()
+
+	// Create test user
+	_, err := userService.CreateUser(ctx, users.CreateUserRequest{
+		DID:    testDID,
+		Handle: fmt.Sprintf("commentuser%d.test", uniqueSuffix),
+		PDSURL: "http://localhost:3001",
+	})
+	if err != nil {
+		t.Fatalf("Failed to create test user: %v", err)
+	}
+
+	// Create test community (required for posts FK, which is required for comments)
+	testCommunityDID := fmt.Sprintf("did:plc:commentcommunity%d", uniqueSuffix)
+	_, err = db.Exec(`
+		INSERT INTO communities (did, handle, name, owner_did, created_by_did, hosted_by_did, created_at)
+		VALUES ($1, $2, 'Comment Test Community', 'did:plc:owner1', 'did:plc:owner1', 'did:plc:owner1', NOW())
+	`, testCommunityDID, fmt.Sprintf("commentcommunity%d.test", uniqueSuffix))
+	if err != nil {
+		t.Fatalf("Failed to insert test community: %v", err)
+	}
+
+	// Create a test post (required for comments FK)
+	testPostURI := fmt.Sprintf("at://%s/social.coves.post/commenttest", testDID)
+	_, err = db.Exec(`
+		INSERT INTO posts (uri, cid, rkey, author_did, community_did, title, content, created_at, indexed_at)
+		VALUES ($1, 'testcid', 'commenttest', $2, $3, 'Test Post', 'Content', NOW(), NOW())
+	`, testPostURI, testDID, testCommunityDID)
+	if err != nil {
+		t.Fatalf("Failed to insert test post: %v", err)
+	}
+
+	t.Run("Counts comments correctly", func(t *testing.T) {
+		// Insert test comments
+		testPostCID := "testpostcid123"
+		for i := 1; i <= 5; i++ {
+			_, err = db.Exec(`
+				INSERT INTO comments (uri, cid, rkey, commenter_did, root_uri, root_cid, parent_uri, parent_cid, content, created_at, indexed_at)
+				VALUES ($1, $2, $3, $4, $5, $6, $5, $6, 'Comment content', NOW(), NOW())
+			`, fmt.Sprintf("at://%s/social.coves.comment/%d", testDID, i),
+				fmt.Sprintf("commentcid%d", i),
+				fmt.Sprintf("comment%d", i),
+				testDID,
+				testPostURI,
+				testPostCID)
+			if err != nil {
+				t.Fatalf("Failed to insert comment %d: %v", i, err)
+			}
+		}
+
+		profile, err := userService.GetProfile(ctx, testDID)
+		if err != nil {
+			t.Fatalf("Failed to get profile: %v", err)
+		}
+
+		if profile.Stats.CommentCount != 5 {
+			t.Errorf("Expected commentCount 5, got %d", profile.Stats.CommentCount)
+		}
+	})
+
+	t.Run("Excludes soft-deleted comments", func(t *testing.T) {
+		// Soft-delete 2 comments
+		_, err = db.Exec(`UPDATE comments SET deleted_at = NOW() WHERE uri LIKE $1 AND rkey IN ('comment1', 'comment2')`,
+			fmt.Sprintf("at://%s/%%", testDID))
+		if err != nil {
+			t.Fatalf("Failed to soft-delete comments: %v", err)
+		}
+
+		profile, err := userService.GetProfile(ctx, testDID)
+		if err != nil {
+			t.Fatalf("Failed to get profile: %v", err)
+		}
+
+		if profile.Stats.CommentCount != 3 {
+			t.Errorf("Expected commentCount 3 after soft-delete, got %d", profile.Stats.CommentCount)
+		}
+	})
+}
+
+// TestProfileStats_CommunityCount tests that subscription counting works correctly
+func TestProfileStats_CommunityCount(t *testing.T) {
+	db := setupTestDB(t)
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
+
+	uniqueSuffix := time.Now().UnixNano()
+	testDID := fmt.Sprintf("did:plc:subcount%d", uniqueSuffix)
+
+	userRepo := postgres.NewUserRepository(db)
+	resolver := identity.NewResolver(db, identity.DefaultConfig())
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
+
+	ctx := context.Background()
+
+	// Create test user
+	_, err := userService.CreateUser(ctx, users.CreateUserRequest{
+		DID:    testDID,
+		Handle: fmt.Sprintf("subuser%d.test", uniqueSuffix),
+		PDSURL: "http://localhost:3001",
+	})
+	if err != nil {
+		t.Fatalf("Failed to create test user: %v", err)
+	}
+
+	// Create test communities to subscribe to
+	for i := 1; i <= 3; i++ {
+		communityDID := fmt.Sprintf("did:plc:subcommunity%d_%d", uniqueSuffix, i)
+		_, err = db.Exec(`
+			INSERT INTO communities (did, handle, name, owner_did, created_by_did, hosted_by_did, created_at)
+			VALUES ($1, $2, $3, 'did:plc:owner1', 'did:plc:owner1', 'did:plc:owner1', NOW())
+		`, communityDID, fmt.Sprintf("subcommunity%d_%d.test", uniqueSuffix, i), fmt.Sprintf("Community %d", i))
+		if err != nil {
+			t.Fatalf("Failed to insert test community %d: %v", i, err)
+		}
+	}
+
+	t.Run("Counts subscriptions correctly", func(t *testing.T) {
+		// Subscribe to communities
+		for i := 1; i <= 3; i++ {
+			communityDID := fmt.Sprintf("did:plc:subcommunity%d_%d", uniqueSuffix, i)
+			_, err = db.Exec(`
+				INSERT INTO community_subscriptions (user_did, community_did, subscribed_at)
+				VALUES ($1, $2, NOW())
+			`, testDID, communityDID)
+			if err != nil {
+				t.Fatalf("Failed to insert subscription %d: %v", i, err)
+			}
+		}
+
+		profile, err := userService.GetProfile(ctx, testDID)
+		if err != nil {
+			t.Fatalf("Failed to get profile: %v", err)
+		}
+
+		if profile.Stats.CommunityCount != 3 {
+			t.Errorf("Expected communityCount 3, got %d", profile.Stats.CommunityCount)
+		}
+	})
+}
+
+// TestGetProfile_NonExistentDID tests that GetProfile returns appropriate error for non-existent DID
+func TestGetProfile_NonExistentDID(t *testing.T) {
+	db := setupTestDB(t)
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
+
+	userRepo := postgres.NewUserRepository(db)
+	resolver := identity.NewResolver(db, identity.DefaultConfig())
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
+
+	ctx := context.Background()
+
+	t.Run("Returns error for non-existent DID", func(t *testing.T) {
+		_, err := userService.GetProfile(ctx, "did:plc:nonexistentuser12345")
+		if err == nil {
+			t.Fatal("Expected error for non-existent DID, got nil")
+		}
+
+		// Should contain the wrapped ErrUserNotFound
+		if !strings.Contains(err.Error(), "user not found") && !strings.Contains(err.Error(), "failed to get user") {
+			t.Errorf("Expected 'user not found' or 'failed to get user' error, got: %v", err)
+		}
+	})
+
+	t.Run("HTTP endpoint returns 404 for non-existent DID", func(t *testing.T) {
+		r := chi.NewRouter()
+		routes.RegisterUserRoutes(r, userService)
+
+		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getprofile?actor=did:plc:nonexistentuser12345", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusNotFound {
+			t.Errorf("Expected status 404, got %d. Response: %s", w.Code, w.Body.String())
+		}
+
+		var response map[string]interface{}
+		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+			t.Fatalf("Failed to decode response: %v", err)
+		}
+
+		if response["error"] != "ProfileNotFound" {
+			t.Errorf("Expected error 'ProfileNotFound', got %v", response["error"])
+		}
+	})
+}
+
+// TestProfileStatsEndpoint tests the HTTP endpoint returns stats correctly
+func TestProfileStatsEndpoint(t *testing.T) {
+	db := setupTestDB(t)
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
+
+	// Wire up dependencies
+	userRepo := postgres.NewUserRepository(db)
+	resolver := identity.NewResolver(db, identity.DefaultConfig())
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
+
+	// Create test user
+	testDID := "did:plc:endpointstats123"
+	ctx := context.Background()
+	_, err := userService.CreateUser(ctx, users.CreateUserRequest{
+		DID:    testDID,
+		Handle: "endpointstats.test",
+		PDSURL: "http://localhost:3001",
+	})
+	if err != nil {
+		t.Fatalf("Failed to create test user: %v", err)
+	}
+
+	// Set up HTTP router
+	r := chi.NewRouter()
+	routes.RegisterUserRoutes(r, userService)
+
+	t.Run("Response includes stats object", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getprofile?actor="+testDID, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("Expected status %d, got %d. Response: %s", http.StatusOK, w.Code, w.Body.String())
+		}
+
+		var response map[string]interface{}
+		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+			t.Fatalf("Failed to decode response: %v", err)
+		}
+
+		// Check that stats is present
+		stats, ok := response["stats"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("Expected stats object in response, got: %v", response)
+		}
+
+		// Verify stats fields exist
+		expectedFields := []string{"postCount", "commentCount", "communityCount", "reputation", "membershipCount"}
+		for _, field := range expectedFields {
+			if _, exists := stats[field]; !exists {
+				t.Errorf("Expected %s in stats, but it's missing", field)
+			}
+		}
+
+		// All stats should be 0 for new user
+		for _, field := range expectedFields {
+			if val, ok := stats[field].(float64); !ok || val != 0 {
+				t.Errorf("Expected %s to be 0, got %v", field, stats[field])
+			}
+		}
+	})
+
+	t.Run("Response matches lexicon structure", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getprofile?actor=endpointstats.test", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("Expected status %d, got %d", http.StatusOK, w.Code)
+		}
+
+		var response map[string]interface{}
+		if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+			t.Fatalf("Failed to decode response: %v", err)
+		}
+
+		// Verify profileViewDetailed structure (flat, not nested)
+		if response["did"] != testDID {
+			t.Errorf("Expected did %s, got %v", testDID, response["did"])
+		}
+		if response["handle"] != "endpointstats.test" {
+			t.Errorf("Expected handle endpointstats.test, got %v", response["handle"])
+		}
+		if _, ok := response["createdAt"]; !ok {
+			t.Error("Expected createdAt in response")
+		}
+		if _, ok := response["stats"]; !ok {
+			t.Error("Expected stats in response")
 		}
 	})
 }
