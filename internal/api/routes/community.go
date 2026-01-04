@@ -21,12 +21,13 @@ func RegisterCommunityRoutes(r chi.Router, service communities.Service, repo com
 	subscribeHandler := community.NewSubscribeHandler(service)
 	blockHandler := community.NewBlockHandler(service)
 
-	// Query endpoints (GET) - public access
+	// Query endpoints (GET) - public access, optional auth for viewer state
 	// social.coves.community.get - get a single community by identifier
 	r.Get("/xrpc/social.coves.community.get", getHandler.HandleGet)
 
 	// social.coves.community.list - list communities with filters
-	r.Get("/xrpc/social.coves.community.list", listHandler.HandleList)
+	// Uses OptionalAuth to populate viewer.subscribed when authenticated
+	r.With(authMiddleware.OptionalAuth).Get("/xrpc/social.coves.community.list", listHandler.HandleList)
 
 	// social.coves.community.search - search communities
 	r.Get("/xrpc/social.coves.community.search", searchHandler.HandleSearch)
