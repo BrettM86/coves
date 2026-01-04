@@ -278,7 +278,7 @@ func main() {
 
 	// Initialize community service with OAuth client for user DPoP authentication
 	// OAuth client is required for subscribe/unsubscribe/block/unblock operations
-	communityService := communities.NewCommunityService(communityRepo, defaultPDS, instanceDID, instanceDomain, provisioner, oauthClient, oauthStore)
+	communityService := communities.NewCommunityService(communityRepo, defaultPDS, instanceDID, instanceDomain, provisioner, oauthClient)
 
 	// Authenticate Coves instance with PDS to enable community record writes
 	// The instance needs a PDS account to write community records it owns

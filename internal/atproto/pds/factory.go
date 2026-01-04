@@ -24,10 +24,17 @@ func NewFromOAuthSession(ctx context.Context, oauthClient *oauth.ClientApp, sess
 	}
 
 	// ResumeSession reconstructs the OAuth session with DPoP key
-	// and returns a ClientSession that can generate authenticated requests
+	// and returns a ClientSession that can generate authenticated requests.
+	// Common failure modes:
+	// - Expired access/refresh tokens → User needs to re-authenticate
+	// - Session revoked on PDS → User needs to re-authenticate
+	// - DPoP nonce mismatch → Retry may help (transient)
+	// - DPoP key mismatch → Session data corrupted, re-authenticate
 	sess, err := oauthClient.ResumeSession(ctx, sessionData.AccountDID, sessionData.SessionID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resume OAuth session: %w", err)
+		// Include DID and session context for debugging
+		return nil, fmt.Errorf("failed to resume OAuth session for DID=%s, sessionID=%s: %w",
+			sessionData.AccountDID.String(), sessionData.SessionID, err)
 	}
 
 	// APIClient() returns an *atclient.APIClient configured with DPoP auth

@@ -512,5 +512,37 @@ func TestSubscribeHandler_RequiresOAuthSession(t *testing.T) {
 	}
 }
 
+func TestUnsubscribeHandler_RequiresOAuthSession(t *testing.T) {
+	mockService := &subscribeTestService{}
+	handler := NewSubscribeHandler(mockService)
+
+	reqBody := map[string]interface{}{
+		"community": "did:plc:test",
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.unsubscribe", bytes.NewBuffer(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+
+	// No OAuth session in context
+
+	w := httptest.NewRecorder()
+	handler.HandleUnsubscribe(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("Expected status 401, got %d", w.Code)
+	}
+
+	var errResp struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+		t.Fatalf("Failed to decode error response: %v", err)
+	}
+	if errResp.Error != "AuthRequired" {
+		t.Errorf("Expected error AuthRequired, got %s", errResp.Error)
+	}
+}
+
 // Ensure unused import is used
 var _ = errors.New

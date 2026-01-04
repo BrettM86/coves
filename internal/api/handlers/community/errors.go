@@ -1,8 +1,10 @@
 package community
 
 import (
+	"Coves/internal/atproto/pds"
 	"Coves/internal/core/communities"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 )
@@ -42,9 +44,18 @@ func handleServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "Forbidden", "You do not have permission to perform this action")
 	case err == communities.ErrMemberBanned:
 		writeError(w, http.StatusForbidden, "Blocked", "You are blocked from this community")
+	// PDS-specific errors (from DPoP authentication or PDS API calls)
+	case errors.Is(err, pds.ErrBadRequest):
+		writeError(w, http.StatusBadRequest, "InvalidRequest", "Invalid request to PDS")
+	case errors.Is(err, pds.ErrNotFound):
+		writeError(w, http.StatusNotFound, "NotFound", "Record not found on PDS")
+	case errors.Is(err, pds.ErrConflict):
+		writeError(w, http.StatusConflict, "Conflict", "Record was modified by another operation")
+	case errors.Is(err, pds.ErrUnauthorized), errors.Is(err, pds.ErrForbidden):
+		// PDS auth errors should prompt re-authentication
+		writeError(w, http.StatusUnauthorized, "AuthRequired", "Authentication required or session expired")
 	default:
 		// Internal server error - log the actual error for debugging
-		// TODO: Use proper logger instead of log package
 		log.Printf("XRPC handler error: %v", err)
 		writeError(w, http.StatusInternalServerError, "InternalServerError", "An internal error occurred")
 	}

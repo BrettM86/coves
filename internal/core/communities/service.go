@@ -40,9 +40,8 @@ type communityService struct {
 	repo        Repository
 	provisioner *PDSAccountProvisioner
 
-	// OAuth client/store for user PDS authentication (DPoP-based)
+	// OAuth client for user PDS authentication (DPoP-based)
 	oauthClient      *oauthclient.OAuthClient
-	oauthStore       oauth.ClientAuthStore
 	pdsClientFactory PDSClientFactory // Optional, for testing. If nil, uses OAuth.
 
 	// Token refresh concurrency control
@@ -72,7 +71,6 @@ func NewCommunityService(
 	pdsURL, instanceDID, instanceDomain string,
 	provisioner *PDSAccountProvisioner,
 	oauthClient *oauthclient.OAuthClient,
-	oauthStore oauth.ClientAuthStore,
 ) Service {
 	// SECURITY: Basic validation that did:web domain matches configured instanceDomain
 	// This catches honest configuration mistakes but NOT malicious code modifications
@@ -95,7 +93,6 @@ func NewCommunityService(
 		instanceDomain: instanceDomain,
 		provisioner:    provisioner,
 		oauthClient:    oauthClient,
-		oauthStore:     oauthStore,
 		refreshMutexes: make(map[string]*sync.Mutex),
 	}
 }
@@ -136,6 +133,7 @@ func (s *communityService) getPDSClient(ctx context.Context, session *oauth.Clie
 
 	// Production path: use OAuth with DPoP
 	if s.oauthClient == nil || s.oauthClient.ClientApp == nil {
+		log.Printf("[OAUTH_ERROR] getPDSClient called but OAuth client is not configured - check server initialization")
 		return nil, fmt.Errorf("OAuth client not configured")
 	}
 
@@ -664,7 +662,7 @@ func (s *communityService) SubscribeToCommunity(ctx context.Context, session *oa
 	// Resolve community identifier to DID
 	communityDID, err := s.ResolveCommunityIdentifier(ctx, communityIdentifier)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("subscribe: %w", err)
 	}
 
 	// Verify community exists
@@ -732,7 +730,7 @@ func (s *communityService) UnsubscribeFromCommunity(ctx context.Context, session
 	// Resolve community identifier
 	communityDID, err := s.ResolveCommunityIdentifier(ctx, communityIdentifier)
 	if err != nil {
-		return err
+		return fmt.Errorf("unsubscribe: %w", err)
 	}
 
 	// Get the subscription from AppView to find the record key
@@ -824,13 +822,13 @@ func (s *communityService) BlockCommunity(ctx context.Context, session *oauth.Cl
 	// Resolve community identifier (also verifies community exists)
 	communityDID, err := s.ResolveCommunityIdentifier(ctx, communityIdentifier)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("block: %w", err)
 	}
 
 	// Create PDS client for this session (DPoP authentication)
 	pdsClient, err := s.getPDSClient(ctx, session)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create PDS client: %w", err)
+		return nil, fmt.Errorf("block: failed to create PDS client: %w", err)
 	}
 
 	// Generate TID for record key
@@ -904,7 +902,7 @@ func (s *communityService) UnblockCommunity(ctx context.Context, session *oauth.
 	// Resolve community identifier
 	communityDID, err := s.ResolveCommunityIdentifier(ctx, communityIdentifier)
 	if err != nil {
-		return err
+		return fmt.Errorf("unblock: %w", err)
 	}
 
 	// Get the block from AppView to find the record key
@@ -1178,20 +1176,6 @@ func (s *communityService) putRecordOnPDSAs(ctx context.Context, repoDID, collec
 	}
 
 	return s.callPDSWithAuth(ctx, "POST", endpoint, payload, accessToken)
-}
-
-// deleteRecordOnPDSAs deletes a record with a specific access token (for user-scoped deletions)
-func (s *communityService) deleteRecordOnPDSAs(ctx context.Context, repoDID, collection, rkey, accessToken string) error {
-	endpoint := fmt.Sprintf("%s/xrpc/com.atproto.repo.deleteRecord", strings.TrimSuffix(s.pdsURL, "/"))
-
-	payload := map[string]interface{}{
-		"repo":       repoDID,
-		"collection": collection,
-		"rkey":       rkey,
-	}
-
-	_, _, err := s.callPDSWithAuth(ctx, "POST", endpoint, payload, accessToken)
-	return err
 }
 
 // callPDSWithAuth makes a PDS call with a specific access token (V2: for community authentication)
