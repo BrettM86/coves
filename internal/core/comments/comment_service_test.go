@@ -315,6 +315,10 @@ func (m *mockCommunityRepo) ListSubscribers(ctx context.Context, communityDID st
 	return nil, nil
 }
 
+func (m *mockCommunityRepo) GetSubscribedCommunityDIDs(ctx context.Context, userDID string, communityDIDs []string) (map[string]bool, error) {
+	return map[string]bool{}, nil
+}
+
 func (m *mockCommunityRepo) BlockCommunity(ctx context.Context, block *communities.CommunityBlock) (*communities.CommunityBlock, error) {
 	return nil, nil
 }

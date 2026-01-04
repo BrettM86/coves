@@ -409,6 +409,123 @@ func TestCommunityRepository_List(t *testing.T) {
 	})
 }
 
+func TestCommunityRepository_GetSubscribedCommunityDIDs(t *testing.T) {
+	db := setupTestDB(t)
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
+
+	repo := postgres.NewCommunityRepository(db)
+	ctx := context.Background()
+
+	// Create test communities
+	baseSuffix := time.Now().UnixNano()
+	communityDIDs := make([]string, 3)
+	for i := 0; i < 3; i++ {
+		uniqueSuffix := fmt.Sprintf("%d%d", baseSuffix, i)
+		communityDID := generateTestDID(uniqueSuffix)
+		communityDIDs[i] = communityDID
+		community := &communities.Community{
+			DID:          communityDID,
+			Handle:       fmt.Sprintf("!batch-sub-test-%d-%d@coves.local", baseSuffix, i),
+			Name:         fmt.Sprintf("batch-sub-test-%d", i),
+			OwnerDID:     "did:web:coves.local",
+			CreatedByDID: "did:plc:user123",
+			HostedByDID:  "did:web:coves.local",
+			Visibility:   "public",
+			CreatedAt:    time.Now(),
+			UpdatedAt:    time.Now(),
+		}
+		if _, err := repo.Create(ctx, community); err != nil {
+			t.Fatalf("Failed to create community %d: %v", i, err)
+		}
+	}
+
+	userDID := fmt.Sprintf("did:plc:batchsubuser%d", baseSuffix)
+
+	t.Run("returns empty map when user has no subscriptions", func(t *testing.T) {
+		result, err := repo.GetSubscribedCommunityDIDs(ctx, userDID, communityDIDs)
+		if err != nil {
+			t.Fatalf("Failed to get subscribed community DIDs: %v", err)
+		}
+
+		if len(result) != 0 {
+			t.Errorf("Expected empty map, got %d entries", len(result))
+		}
+	})
+
+	t.Run("returns subscribed communities only", func(t *testing.T) {
+		// Subscribe to first and third community
+		sub1 := &communities.Subscription{
+			UserDID:           userDID,
+			CommunityDID:      communityDIDs[0],
+			ContentVisibility: 3,
+			SubscribedAt:      time.Now(),
+		}
+		if _, err := repo.Subscribe(ctx, sub1); err != nil {
+			t.Fatalf("Failed to subscribe to community 0: %v", err)
+		}
+
+		sub3 := &communities.Subscription{
+			UserDID:           userDID,
+			CommunityDID:      communityDIDs[2],
+			ContentVisibility: 3,
+			SubscribedAt:      time.Now(),
+		}
+		if _, err := repo.Subscribe(ctx, sub3); err != nil {
+			t.Fatalf("Failed to subscribe to community 2: %v", err)
+		}
+
+		result, err := repo.GetSubscribedCommunityDIDs(ctx, userDID, communityDIDs)
+		if err != nil {
+			t.Fatalf("Failed to get subscribed community DIDs: %v", err)
+		}
+
+		if len(result) != 2 {
+			t.Errorf("Expected 2 subscribed communities, got %d", len(result))
+		}
+
+		if !result[communityDIDs[0]] {
+			t.Errorf("Expected community 0 to be subscribed")
+		}
+		if result[communityDIDs[1]] {
+			t.Errorf("Expected community 1 to NOT be subscribed")
+		}
+		if !result[communityDIDs[2]] {
+			t.Errorf("Expected community 2 to be subscribed")
+		}
+	})
+
+	t.Run("returns empty map for empty community DIDs slice", func(t *testing.T) {
+		result, err := repo.GetSubscribedCommunityDIDs(ctx, userDID, []string{})
+		if err != nil {
+			t.Fatalf("Failed to get subscribed community DIDs: %v", err)
+		}
+
+		if len(result) != 0 {
+			t.Errorf("Expected empty map for empty input, got %d entries", len(result))
+		}
+	})
+
+	t.Run("handles non-existent community DIDs gracefully", func(t *testing.T) {
+		nonExistentDIDs := []string{
+			"did:plc:nonexistent1",
+			"did:plc:nonexistent2",
+		}
+
+		result, err := repo.GetSubscribedCommunityDIDs(ctx, userDID, nonExistentDIDs)
+		if err != nil {
+			t.Fatalf("Failed to get subscribed community DIDs: %v", err)
+		}
+
+		if len(result) != 0 {
+			t.Errorf("Expected empty map for non-existent DIDs, got %d entries", len(result))
+		}
+	})
+}
+
 // TODO: Implement search functionality before re-enabling this test
 // func TestCommunityRepository_Search(t *testing.T) {
 // 	db := setupTestDB(t)

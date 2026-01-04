@@ -2,6 +2,7 @@ package common
 
 import (
 	"Coves/internal/api/middleware"
+	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/votes"
 	"context"
@@ -68,6 +69,46 @@ func PopulateViewerVoteState[T FeedPostProvider](
 					VoteURI: &vote.URI,
 				}
 			}
+		}
+	}
+}
+
+// PopulateCommunityViewerState enriches communities with the authenticated user's subscription state.
+// This is a no-op if the request is unauthenticated.
+func PopulateCommunityViewerState(
+	ctx context.Context,
+	r *http.Request,
+	repo communities.Repository,
+	communityList []*communities.Community,
+) {
+	if repo == nil || len(communityList) == 0 {
+		return
+	}
+
+	userDID := middleware.GetUserDID(r)
+	if userDID == "" {
+		return // Not authenticated, leave viewer state nil
+	}
+
+	// Collect community DIDs
+	communityDIDs := make([]string, len(communityList))
+	for i, c := range communityList {
+		communityDIDs[i] = c.DID
+	}
+
+	// Batch query subscriptions
+	subscribed, err := repo.GetSubscribedCommunityDIDs(ctx, userDID, communityDIDs)
+	if err != nil {
+		log.Printf("Warning: failed to get subscription state for user %s (%d communities): %v",
+			userDID, len(communityDIDs), err)
+		return
+	}
+
+	// Populate viewer state on each community
+	for _, c := range communityList {
+		isSubscribed := subscribed[c.DID]
+		c.Viewer = &communities.CommunityViewerState{
+			Subscribed: &isSubscribed,
 		}
 	}
 }

@@ -32,6 +32,7 @@ type Repository interface {
 	GetSubscriptionByURI(ctx context.Context, recordURI string) (*Subscription, error) // For Jetstream delete operations
 	ListSubscriptions(ctx context.Context, userDID string, limit, offset int) ([]*Subscription, error)
 	ListSubscribers(ctx context.Context, communityDID string, limit, offset int) ([]*Subscription, error)
+	GetSubscribedCommunityDIDs(ctx context.Context, userDID string, communityDIDs []string) (map[string]bool, error)
 
 	// Community Blocks
 	BlockCommunity(ctx context.Context, block *CommunityBlock) (*CommunityBlock, error)

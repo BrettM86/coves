@@ -41,8 +41,21 @@ type Community struct {
 	PostCount              int       `json:"postCount" db:"post_count"`
 	SubscriberCount        int       `json:"subscriberCount" db:"subscriber_count"`
 	MemberCount            int       `json:"memberCount" db:"member_count"`
-	ID                     int       `json:"id" db:"id"`
-	AllowExternalDiscovery bool      `json:"allowExternalDiscovery" db:"allow_external_discovery"`
+	ID                     int                    `json:"id" db:"id"`
+	AllowExternalDiscovery bool                   `json:"allowExternalDiscovery" db:"allow_external_discovery"`
+	Viewer                 *CommunityViewerState  `json:"viewer,omitempty" db:"-"`
+}
+
+// CommunityViewerState contains viewer-specific state for community list views.
+// This is a simplified version - detailed views use the full viewerState from lexicon.
+//
+// Fields use *bool to represent three states:
+//   - nil: State not queried (unauthenticated request)
+//   - true: User has this relationship
+//   - false: User does not have this relationship
+type CommunityViewerState struct {
+	Subscribed *bool `json:"subscribed,omitempty"`
+	Member     *bool `json:"member,omitempty"`
 }
 
 // Subscription represents a lightweight feed follow (user subscribes to see posts)

@@ -344,3 +344,51 @@ func (r *postgresCommunityRepo) ListSubscribers(ctx context.Context, communityDI
 
 	return result, nil
 }
+
+// GetSubscribedCommunityDIDs returns a map of community DIDs that the user is subscribed to
+// This is optimized for batch lookups when populating viewer state
+func (r *postgresCommunityRepo) GetSubscribedCommunityDIDs(ctx context.Context, userDID string, communityDIDs []string) (map[string]bool, error) {
+	if len(communityDIDs) == 0 {
+		return map[string]bool{}, nil
+	}
+
+	// Build query with placeholders for IN clause
+	placeholders := make([]string, len(communityDIDs))
+	args := make([]interface{}, len(communityDIDs)+1)
+	args[0] = userDID
+	for i, did := range communityDIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+2)
+		args[i+1] = did
+	}
+
+	query := fmt.Sprintf(`
+		SELECT community_did
+		FROM community_subscriptions
+		WHERE user_did = $1 AND community_did IN (%s)`,
+		strings.Join(placeholders, ", "))
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get subscribed communities: %w", err)
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			log.Printf("Failed to close rows: %v", closeErr)
+		}
+	}()
+
+	result := make(map[string]bool)
+	for rows.Next() {
+		var communityDID string
+		if err := rows.Scan(&communityDID); err != nil {
+			return nil, fmt.Errorf("failed to scan community DID: %w", err)
+		}
+		result[communityDID] = true
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating subscribed communities: %w", err)
+	}
+
+	return result, nil
+}

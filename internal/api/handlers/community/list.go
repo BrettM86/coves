@@ -1,6 +1,7 @@
 package community
 
 import (
+	"Coves/internal/api/handlers/common"
 	"Coves/internal/core/communities"
 	"encoding/json"
 	"net/http"
@@ -10,12 +11,14 @@ import (
 // ListHandler handles listing communities
 type ListHandler struct {
 	service communities.Service
+	repo    communities.Repository
 }
 
 // NewListHandler creates a new list handler
-func NewListHandler(service communities.Service) *ListHandler {
+func NewListHandler(service communities.Service, repo communities.Repository) *ListHandler {
 	return &ListHandler{
 		service: service,
+		repo:    repo,
 	}
 }
 
@@ -99,6 +102,9 @@ func (h *ListHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 		handleServiceError(w, err)
 		return
 	}
+
+	// Populate viewer state if authenticated
+	common.PopulateCommunityViewerState(r.Context(), r, h.repo, results)
 
 	// Build response
 	var cursor string

@@ -164,7 +164,7 @@ func TestCommunity_E2E(t *testing.T) {
 
 	// Setup HTTP server with XRPC routes
 	r := chi.NewRouter()
-	routes.RegisterCommunityRoutes(r, communityService, e2eAuth.OAuthAuthMiddleware, nil) // nil = allow all community creators
+	routes.RegisterCommunityRoutes(r, communityService, communityRepo, e2eAuth.OAuthAuthMiddleware, nil) // nil = allow all community creators
 	httpServer := httptest.NewServer(r)
 	defer httpServer.Close()
 

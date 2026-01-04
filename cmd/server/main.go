@@ -606,7 +606,7 @@ func main() {
 
 	// Register XRPC routes
 	routes.RegisterUserRoutes(r, userService)
-	routes.RegisterCommunityRoutes(r, communityService, authMiddleware, allowedCommunityCreators)
+	routes.RegisterCommunityRoutes(r, communityService, communityRepo, authMiddleware, allowedCommunityCreators)
 	log.Println("Community XRPC endpoints registered with OAuth authentication")
 
 	routes.RegisterPostRoutes(r, postService, dualAuth)

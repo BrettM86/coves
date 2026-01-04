@@ -11,12 +11,12 @@ import (
 // RegisterCommunityRoutes registers community-related XRPC endpoints on the router
 // Implements social.coves.community.* lexicon endpoints
 // allowedCommunityCreators restricts who can create communities. If empty, anyone can create.
-func RegisterCommunityRoutes(r chi.Router, service communities.Service, authMiddleware *middleware.OAuthAuthMiddleware, allowedCommunityCreators []string) {
+func RegisterCommunityRoutes(r chi.Router, service communities.Service, repo communities.Repository, authMiddleware *middleware.OAuthAuthMiddleware, allowedCommunityCreators []string) {
 	// Initialize handlers
 	createHandler := community.NewCreateHandler(service, allowedCommunityCreators)
 	getHandler := community.NewGetHandler(service)
 	updateHandler := community.NewUpdateHandler(service)
-	listHandler := community.NewListHandler(service)
+	listHandler := community.NewListHandler(service, repo)
 	searchHandler := community.NewSearchHandler(service)
 	subscribeHandler := community.NewSubscribeHandler(service)
 	blockHandler := community.NewBlockHandler(service)
