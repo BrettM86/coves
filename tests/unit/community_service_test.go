@@ -4,13 +4,27 @@ import (
 	"Coves/internal/core/communities"
 	"context"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// TestMain controls test setup for the unit package.
+// Set LOG_ENABLED=false to suppress application log output during tests.
+func TestMain(m *testing.M) {
+	// Silence logs when LOG_ENABLED=false (used by make test-all)
+	if os.Getenv("LOG_ENABLED") == "false" {
+		log.SetOutput(io.Discard)
+	}
+
+	os.Exit(m.Run())
+}
 
 // mockCommunityRepo is a minimal mock for testing service layer
 type mockCommunityRepo struct {

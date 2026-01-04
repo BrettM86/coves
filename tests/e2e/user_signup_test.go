@@ -10,6 +10,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"os"
 	"testing"
@@ -18,6 +20,17 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/pressly/goose/v3"
 )
+
+// TestMain controls test setup for the e2e package.
+// Set LOG_ENABLED=false to suppress application log output during tests.
+func TestMain(m *testing.M) {
+	// Silence logs when LOG_ENABLED=false (used by make test-all)
+	if os.Getenv("LOG_ENABLED") == "false" {
+		log.SetOutput(io.Discard)
+	}
+
+	os.Exit(m.Run())
+}
 
 // TestE2E_UserSignup tests the full user signup flow:
 // Third-party client → social.coves.actor.signup XRPC → PDS account creation → Jetstream → AppView indexing

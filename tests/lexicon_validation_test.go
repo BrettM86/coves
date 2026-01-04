@@ -1,6 +1,8 @@
 package tests
 
 import (
+	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +10,17 @@ import (
 
 	lexicon "github.com/bluesky-social/indigo/atproto/lexicon"
 )
+
+// TestMain controls test setup for the tests package.
+// Set LOG_ENABLED=false to suppress application log output during tests.
+func TestMain(m *testing.M) {
+	// Silence logs when LOG_ENABLED=false (used by make test-all)
+	if os.Getenv("LOG_ENABLED") == "false" {
+		log.SetOutput(io.Discard)
+	}
+
+	os.Exit(m.Run())
+}
 
 func TestLexiconSchemaValidation(t *testing.T) {
 	// Create a new catalog

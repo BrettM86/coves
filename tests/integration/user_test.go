@@ -9,6 +9,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,6 +21,17 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/pressly/goose/v3"
 )
+
+// TestMain controls test setup for the integration package.
+// Set LOG_ENABLED=false to suppress application log output during tests.
+func TestMain(m *testing.M) {
+	// Silence logs when LOG_ENABLED=false (used by make test-all)
+	if os.Getenv("LOG_ENABLED") == "false" {
+		log.SetOutput(io.Discard)
+	}
+
+	os.Exit(m.Run())
+}
 
 func setupTestDB(t *testing.T) *sql.DB {
 	// Build connection string from environment variables (set by .env.dev)

@@ -56,6 +56,8 @@ Quick commands:
 - [ ]  **Does the Lexicon make sense?** (Would it work for other forums?)
 - [ ]  **AppView only indexes**: We don't write to CAR files, only read from firehose
 
+Always prefer error codes over dataintegrity boolean markers
+
 ## Security-First Building
 
 ### Every Feature MUST:

@@ -1,4 +1,4 @@
-.PHONY: help dev-up dev-down dev-logs dev-status dev-reset test e2e-test clean verify-stack create-test-account mobile-full-setup
+.PHONY: help dev-up dev-down dev-logs dev-status dev-reset test test-all e2e-test clean verify-stack create-test-account mobile-full-setup
 
 # Default target - show help
 .DEFAULT_GOAL := help
@@ -8,6 +8,7 @@ CYAN := \033[36m
 RESET := \033[0m
 GREEN := \033[32m
 YELLOW := \033[33m
+RED := \033[31m
 
 # Load test database configuration from .env.dev
 include .env.dev
@@ -155,6 +156,51 @@ test-db-reset: ## Reset test database
 test-db-stop: ## Stop test database
 	@docker-compose -f docker-compose.dev.yml --env-file .env.dev --profile test stop postgres-test
 	@echo "$(GREEN)✓ Test database stopped$(RESET)"
+
+test-all: ## Run ALL tests with live infrastructure (required before merge)
+	@echo ""
+	@echo "$(CYAN)═══════════════════════════════════════════════════════════════$(RESET)"
+	@echo "$(CYAN)  FULL TEST SUITE - All tests with live infrastructure         $(RESET)"
+	@echo "$(CYAN)═══════════════════════════════════════════════════════════════$(RESET)"
+	@echo ""
+	@echo "$(YELLOW)▶ Checking infrastructure...$(RESET)"
+	@echo ""
+	@# Check dev stack is running
+	@echo "  Checking dev stack (PDS, Jetstream, PLC)..."
+	@docker-compose -f docker-compose.dev.yml --env-file .env.dev ps 2>/dev/null | grep -q "Up" || \
+		(echo "$(RED)  ✗ Dev stack not running. Run 'make dev-up' first.$(RESET)" && exit 1)
+	@echo "  $(GREEN)✓ Dev stack is running$(RESET)"
+	@# Check AppView is running
+	@echo "  Checking AppView (port 8081)..."
+	@curl -sf http://127.0.0.1:8081/xrpc/_health >/dev/null 2>&1 || \
+		curl -sf http://127.0.0.1:8081/ >/dev/null 2>&1 || \
+		(echo "$(RED)  ✗ AppView not running. Run 'make run' in another terminal.$(RESET)" && exit 1)
+	@echo "  $(GREEN)✓ AppView is running$(RESET)"
+	@# Check test database
+	@echo "  Checking test database (port 5434)..."
+	@docker-compose -f docker-compose.dev.yml --env-file .env.dev ps postgres-test 2>/dev/null | grep -q "Up" || \
+		(echo "$(YELLOW)  ⚠ Test database not running, starting it...$(RESET)" && \
+		docker-compose -f docker-compose.dev.yml --env-file .env.dev --profile test up -d postgres-test && \
+		sleep 3 && \
+		goose -dir internal/db/migrations postgres "postgresql://$(POSTGRES_TEST_USER):$(POSTGRES_TEST_PASSWORD)@localhost:$(POSTGRES_TEST_PORT)/$(POSTGRES_TEST_DB)?sslmode=disable" up)
+	@echo "  $(GREEN)✓ Test database is running$(RESET)"
+	@echo ""
+	@echo "$(GREEN)▶ [1/3] Unit & Package Tests (./cmd/... ./internal/...)$(RESET)"
+	@echo "$(CYAN)───────────────────────────────────────────────────────────────$(RESET)"
+	@LOG_ENABLED=false go test ./cmd/... ./internal/... -timeout 120s
+	@echo ""
+	@echo "$(GREEN)▶ [2/3] Integration Tests (./tests/integration/...)$(RESET)"
+	@echo "$(CYAN)───────────────────────────────────────────────────────────────$(RESET)"
+	@LOG_ENABLED=false go test ./tests/integration/... -timeout 180s
+	@echo ""
+	@echo "$(GREEN)▶ [3/3] E2E Tests (./tests/e2e/...)$(RESET)"
+	@echo "$(CYAN)───────────────────────────────────────────────────────────────$(RESET)"
+	@LOG_ENABLED=false go test ./tests/e2e/... -timeout 180s
+	@echo ""
+	@echo "$(GREEN)═══════════════════════════════════════════════════════════════$(RESET)"
+	@echo "$(GREEN)  ✓ ALL TESTS PASSED - Safe to merge                           $(RESET)"
+	@echo "$(GREEN)═══════════════════════════════════════════════════════════════$(RESET)"
+	@echo ""
 
 ##@ Code Quality
 
