@@ -210,7 +210,7 @@ func NewOAuthHandler(client *OAuthClient, store oauth.ClientAuthStore, opts ...O
 }
 
 // HandleClientMetadata serves the OAuth client metadata document
-// GET /oauth/client-metadata.json
+// GET /oauth-client-metadata.json
 func (h *OAuthHandler) HandleClientMetadata(w http.ResponseWriter, r *http.Request) {
 	metadata := h.client.ClientMetadata()
 

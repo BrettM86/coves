@@ -27,7 +27,8 @@ func RegisterOAuthRoutes(r chi.Router, handler *oauth.OAuthHandler, allowedOrigi
 	logoutLimiter := middleware.NewRateLimiter(10, 1*time.Minute)
 
 	// OAuth metadata endpoints - public, no extra rate limiting (use global limit)
-	r.Get("/oauth/client-metadata.json", handler.HandleClientMetadata)
+	// Serve at root /oauth-client-metadata.json so OAuth screens show clean brand domain
+	r.Get("/oauth-client-metadata.json", handler.HandleClientMetadata)
 	r.Get("/.well-known/oauth-protected-resource", handler.HandleProtectedResourceMetadata)
 
 	// OAuth flow endpoints - stricter rate limiting for authentication attempts
