@@ -12,7 +12,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -775,12 +777,24 @@ func subscribeToJetstreamForCommunity(
 			var event jetstream.JetstreamEvent
 			err := conn.ReadJSON(&event)
 			if err != nil {
-				if websocket.IsCloseError(err, websocket.CloseNormalClosure) {
+				// Handle close errors - connection is done
+				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					return nil
 				}
-				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+
+				// Handle EOF - connection was closed by server
+				if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+					return nil
+				}
+
+				// Handle timeout errors using errors.As for wrapped errors
+				var netErr net.Error
+				if errors.As(err, &netErr) && netErr.Timeout() {
 					continue
 				}
+
+				// For any other error, return immediately to avoid re-reading from failed connection
+				// The gorilla/websocket library panics on repeated reads after a connection failure
 				return fmt.Errorf("failed to read Jetstream message: %w", err)
 			}
 
