@@ -1,0 +1,39 @@
+# Reddit Highlights Aggregator Configuration
+#
+# Copy this file to config.yaml and customize for your setup.
+#
+# This file configures which subreddits to fetch video highlights from
+# and which Coves communities to post them to.
+
+# Coves API endpoint (can be overridden with COVES_API_URL env var)
+coves_api_url: "https://coves.social"
+
+# Subreddit-to-community mappings
+# Add entries here for each subreddit you want to aggregate
+subreddits:
+  # NBA highlights
+  - name: "nba"
+    community_handle: "nba.coves.social"
+    enabled: true
+
+  # Example: Soccer/football highlights (disabled by default)
+  # - name: "soccer"
+  #   community_handle: "soccer.coves.social"
+  #   enabled: false
+
+  # Example: NHL highlights (disabled by default)
+  # - name: "hockey"
+  #   community_handle: "hockey.coves.social"
+  #   enabled: false
+
+# Allowed video hosting domains
+# Only posts with links to these domains will be imported
+# Add more domains here as needed
+allowed_domains:
+  - streamable.com
+  # Future options:
+  # - streamff.com
+  # - streamja.com
+
+# Logging level (debug, info, warning, error)
+log_level: "info"
