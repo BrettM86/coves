@@ -252,12 +252,16 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 					}
 
 					// Unfurl enhancement (optional, only if URL is supported)
-					// Skip unfurl for trusted aggregators - they provide their own metadata
-					if !isTrustedAggregator {
+					// For trusted aggregators: only unfurl for thumbnail if they didn't provide one
+					// For regular users: full unfurl for all metadata
+					needsThumbnailUnfurl := isTrustedAggregator && external["thumb"] == nil && (req.ThumbnailURL == nil || *req.ThumbnailURL == "")
+					needsFullUnfurl := !isTrustedAggregator
+
+					if needsThumbnailUnfurl || needsFullUnfurl {
 						if uri, ok := external["uri"].(string); ok && uri != "" {
 							// Check if we support unfurling this URL
 							if s.unfurlService != nil && s.unfurlService.IsSupported(uri) {
-								log.Printf("[POST-CREATE] Unfurling URL: %s", uri)
+								log.Printf("[POST-CREATE] Unfurling URL: %s (thumbnailOnly=%v)", uri, needsThumbnailUnfurl)
 
 								// Unfurl with timeout (non-fatal if it fails)
 								unfurlCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -268,19 +272,23 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 									// Log but don't fail - user can still post with manual metadata
 									log.Printf("[POST-CREATE] Warning: Failed to unfurl URL %s: %v", uri, err)
 								} else {
-									// Enhance embed with fetched metadata (only if client didn't provide)
-									// Note: We respect client-provided values, even empty strings
-									// If client sends title="", we assume they want no title
-									if external["title"] == nil {
-										external["title"] = result.Title
+									// For regular users: enhance embed with fetched metadata
+									// For trusted aggregators: skip metadata, they provide their own
+									if needsFullUnfurl {
+										// Enhance embed with fetched metadata (only if client didn't provide)
+										// Note: We respect client-provided values, even empty strings
+										// If client sends title="", we assume they want no title
+										if external["title"] == nil {
+											external["title"] = result.Title
+										}
+										if external["description"] == nil {
+											external["description"] = result.Description
+										}
+										// Always set metadata fields (provider, domain, type)
+										external["embedType"] = result.Type
+										external["provider"] = result.Provider
+										external["domain"] = result.Domain
 									}
-									if external["description"] == nil {
-										external["description"] = result.Description
-									}
-									// Always set metadata fields (provider, domain, type)
-									external["embedType"] = result.Type
-									external["provider"] = result.Provider
-									external["domain"] = result.Domain
 
 									// Upload thumbnail from unfurl if client didn't provide one
 									// (Thumb validation already happened above)
@@ -299,8 +307,12 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 										}
 									}
 
-									log.Printf("[POST-CREATE] Successfully enhanced embed with unfurl data (provider: %s, type: %s)",
-										result.Provider, result.Type)
+									if needsFullUnfurl {
+										log.Printf("[POST-CREATE] Successfully enhanced embed with unfurl data (provider: %s, type: %s)",
+											result.Provider, result.Type)
+									} else {
+										log.Printf("[POST-CREATE] Fetched thumbnail via unfurl for trusted aggregator")
+									}
 								}
 							}
 						}
