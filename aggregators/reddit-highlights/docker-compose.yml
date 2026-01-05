@@ -1,0 +1,45 @@
+services:
+  reddit-aggregator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: reddit-highlights-aggregator
+    restart: unless-stopped
+
+    # Environment variables
+    environment:
+      # Required: Coves API Key
+      - COVES_API_KEY=${COVES_API_KEY}
+
+      # Optional: Override Coves API URL
+      - COVES_API_URL=${COVES_API_URL:-https://coves.social}
+
+      # Optional: Run immediately on startup (useful for testing)
+      - RUN_ON_STARTUP=${RUN_ON_STARTUP:-false}
+
+      # Optional: Skip jitter (for testing only)
+      - SKIP_JITTER=${SKIP_JITTER:-false}
+
+    # Mount config file and state directory
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data  # State persistence for deduplication
+
+    # Load credentials from .env
+    env_file:
+      - .env
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "pgrep", "cron"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
