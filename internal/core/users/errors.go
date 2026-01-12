@@ -67,3 +67,16 @@ type PDSError struct {
 func (e *PDSError) Error() string {
 	return fmt.Sprintf("PDS error (%d): %s", e.StatusCode, e.Message)
 }
+
+// InvalidDIDError is returned when a DID does not meet format requirements
+type InvalidDIDError struct {
+	DID    string
+	Reason string
+}
+
+func (e *InvalidDIDError) Error() string {
+	if e.Reason != "" {
+		return fmt.Sprintf("invalid DID %q: %s", e.DID, e.Reason)
+	}
+	return fmt.Sprintf("invalid DID %q: must start with 'did:'", e.DID)
+}

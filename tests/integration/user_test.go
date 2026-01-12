@@ -217,9 +217,10 @@ func TestGetProfileEndpoint(t *testing.T) {
 		t.Fatalf("Failed to create test user: %v", err)
 	}
 
-	// Set up HTTP router
+	// Set up HTTP router with auth middleware
 	r := chi.NewRouter()
-	routes.RegisterUserRoutes(r, userService)
+	authMiddleware, _ := CreateTestOAuthMiddleware("did:plc:testuser")
+	routes.RegisterUserRoutes(r, userService, authMiddleware)
 
 	// Test 1: Get profile by DID
 	t.Run("Get Profile By DID", func(t *testing.T) {
@@ -847,7 +848,8 @@ func TestGetProfile_NonExistentDID(t *testing.T) {
 
 	t.Run("HTTP endpoint returns 404 for non-existent DID", func(t *testing.T) {
 		r := chi.NewRouter()
-		routes.RegisterUserRoutes(r, userService)
+		authMiddleware, _ := CreateTestOAuthMiddleware("did:plc:testuser")
+		routes.RegisterUserRoutes(r, userService, authMiddleware)
 
 		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getprofile?actor=did:plc:nonexistentuser12345", nil)
 		w := httptest.NewRecorder()
@@ -894,9 +896,10 @@ func TestProfileStatsEndpoint(t *testing.T) {
 		t.Fatalf("Failed to create test user: %v", err)
 	}
 
-	// Set up HTTP router
+	// Set up HTTP router with auth middleware
 	r := chi.NewRouter()
-	routes.RegisterUserRoutes(r, userService)
+	authMiddleware, _ := CreateTestOAuthMiddleware("did:plc:testuser")
+	routes.RegisterUserRoutes(r, userService, authMiddleware)
 
 	t.Run("Response includes stats object", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getprofile?actor="+testDID, nil)
@@ -1086,4 +1089,240 @@ func TestHandleValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAccountDeletion_Integration tests the complete account deletion flow
+// from handler → service → repository with a real database
+func TestAccountDeletion_Integration(t *testing.T) {
+	db := setupTestDB(t)
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
+
+	uniqueSuffix := time.Now().UnixNano()
+	testDID := fmt.Sprintf("did:plc:deletetest%d", uniqueSuffix)
+	testHandle := fmt.Sprintf("deletetest%d.test", uniqueSuffix)
+
+	// Wire up dependencies
+	userRepo := postgres.NewUserRepository(db)
+	resolver := identity.NewResolver(db, identity.DefaultConfig())
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
+
+	ctx := context.Background()
+
+	// Create test user
+	_, err := userService.CreateUser(ctx, users.CreateUserRequest{
+		DID:    testDID,
+		Handle: testHandle,
+		PDSURL: "http://localhost:3001",
+	})
+	if err != nil {
+		t.Fatalf("Failed to create test user: %v", err)
+	}
+
+	// Create test community for FK relationships
+	testCommunityDID := fmt.Sprintf("did:plc:deletetestcommunity%d", uniqueSuffix)
+	_, err = db.Exec(`
+		INSERT INTO communities (did, handle, name, owner_did, created_by_did, hosted_by_did, created_at)
+		VALUES ($1, $2, 'Delete Test Community', 'did:plc:owner1', 'did:plc:owner1', 'did:plc:owner1', NOW())
+	`, testCommunityDID, fmt.Sprintf("deletetestcommunity%d.test", uniqueSuffix))
+	if err != nil {
+		t.Fatalf("Failed to insert test community: %v", err)
+	}
+
+	// Create related data across all tables
+	t.Run("Setup test data", func(t *testing.T) {
+		// Posts
+		for i := 1; i <= 3; i++ {
+			_, err = db.Exec(`
+				INSERT INTO posts (uri, cid, rkey, author_did, community_did, title, content, created_at, indexed_at)
+				VALUES ($1, $2, $3, $4, $5, 'Test Post', 'Content', NOW(), NOW())
+			`, fmt.Sprintf("at://%s/social.coves.post/delete%d", testDID, i),
+				fmt.Sprintf("deletecid%d", i),
+				fmt.Sprintf("delete%d", i),
+				testDID,
+				testCommunityDID)
+			if err != nil {
+				t.Fatalf("Failed to insert post %d: %v", i, err)
+			}
+		}
+
+		// Community subscription
+		_, err = db.Exec(`
+			INSERT INTO community_subscriptions (user_did, community_did, subscribed_at)
+			VALUES ($1, $2, NOW())
+		`, testDID, testCommunityDID)
+		if err != nil {
+			t.Fatalf("Failed to insert subscription: %v", err)
+		}
+
+		// Community membership
+		_, err = db.Exec(`
+			INSERT INTO community_memberships (user_did, community_did, reputation_score, contribution_count, is_banned, is_moderator, joined_at, last_active_at)
+			VALUES ($1, $2, 100, 5, false, false, NOW(), NOW())
+		`, testDID, testCommunityDID)
+		if err != nil {
+			t.Fatalf("Failed to insert membership: %v", err)
+		}
+
+		// Vote (using one of the posts)
+		postURI := fmt.Sprintf("at://%s/social.coves.post/delete1", testDID)
+		_, err = db.Exec(`
+			INSERT INTO votes (uri, cid, rkey, voter_did, subject_uri, subject_cid, direction, created_at)
+			VALUES ($1, 'votecid', 'vote1', $2, $3, 'postcid', 'up', NOW())
+		`, fmt.Sprintf("at://%s/social.coves.vote/delete1", testDID), testDID, postURI)
+		if err != nil {
+			t.Fatalf("Failed to insert vote: %v", err)
+		}
+
+		// Comments
+		postCID := "deletecid1"
+		for i := 1; i <= 2; i++ {
+			_, err = db.Exec(`
+				INSERT INTO comments (uri, cid, rkey, commenter_did, root_uri, root_cid, parent_uri, parent_cid, content, created_at, indexed_at)
+				VALUES ($1, $2, $3, $4, $5, $6, $5, $6, 'Test comment', NOW(), NOW())
+			`, fmt.Sprintf("at://%s/social.coves.comment/delete%d", testDID, i),
+				fmt.Sprintf("deletecommentcid%d", i),
+				fmt.Sprintf("deletecomment%d", i),
+				testDID,
+				postURI,
+				postCID)
+			if err != nil {
+				t.Fatalf("Failed to insert comment %d: %v", i, err)
+			}
+		}
+	})
+
+	// Verify data exists before deletion
+	t.Run("Verify data exists before deletion", func(t *testing.T) {
+		var count int
+
+		// Check user exists
+		err := db.QueryRow(`SELECT COUNT(*) FROM users WHERE did = $1`, testDID).Scan(&count)
+		if err != nil || count != 1 {
+			t.Fatalf("Expected 1 user, got %d (err: %v)", count, err)
+		}
+
+		// Check posts exist
+		err = db.QueryRow(`SELECT COUNT(*) FROM posts WHERE author_did = $1`, testDID).Scan(&count)
+		if err != nil || count != 3 {
+			t.Fatalf("Expected 3 posts, got %d (err: %v)", count, err)
+		}
+
+		// Check subscription exists
+		err = db.QueryRow(`SELECT COUNT(*) FROM community_subscriptions WHERE user_did = $1`, testDID).Scan(&count)
+		if err != nil || count != 1 {
+			t.Fatalf("Expected 1 subscription, got %d (err: %v)", count, err)
+		}
+
+		// Check membership exists
+		err = db.QueryRow(`SELECT COUNT(*) FROM community_memberships WHERE user_did = $1`, testDID).Scan(&count)
+		if err != nil || count != 1 {
+			t.Fatalf("Expected 1 membership, got %d (err: %v)", count, err)
+		}
+
+		// Check vote exists
+		err = db.QueryRow(`SELECT COUNT(*) FROM votes WHERE voter_did = $1`, testDID).Scan(&count)
+		if err != nil || count != 1 {
+			t.Fatalf("Expected 1 vote, got %d (err: %v)", count, err)
+		}
+
+		// Check comments exist
+		err = db.QueryRow(`SELECT COUNT(*) FROM comments WHERE commenter_did = $1`, testDID).Scan(&count)
+		if err != nil || count != 2 {
+			t.Fatalf("Expected 2 comments, got %d (err: %v)", count, err)
+		}
+	})
+
+	// Delete account
+	t.Run("Delete account via service", func(t *testing.T) {
+		err := userService.DeleteAccount(ctx, testDID)
+		if err != nil {
+			t.Fatalf("Failed to delete account: %v", err)
+		}
+	})
+
+	// Verify all data is deleted
+	t.Run("Verify all data deleted after deletion", func(t *testing.T) {
+		var count int
+
+		// Check user deleted
+		err := db.QueryRow(`SELECT COUNT(*) FROM users WHERE did = $1`, testDID).Scan(&count)
+		if err != nil {
+			t.Fatalf("Error checking users: %v", err)
+		}
+		if count != 0 {
+			t.Errorf("Expected 0 users after deletion, got %d", count)
+		}
+
+		// Check posts deleted (via FK CASCADE)
+		err = db.QueryRow(`SELECT COUNT(*) FROM posts WHERE author_did = $1`, testDID).Scan(&count)
+		if err != nil {
+			t.Fatalf("Error checking posts: %v", err)
+		}
+		if count != 0 {
+			t.Errorf("Expected 0 posts after deletion, got %d", count)
+		}
+
+		// Check subscription deleted
+		err = db.QueryRow(`SELECT COUNT(*) FROM community_subscriptions WHERE user_did = $1`, testDID).Scan(&count)
+		if err != nil {
+			t.Fatalf("Error checking subscriptions: %v", err)
+		}
+		if count != 0 {
+			t.Errorf("Expected 0 subscriptions after deletion, got %d", count)
+		}
+
+		// Check membership deleted
+		err = db.QueryRow(`SELECT COUNT(*) FROM community_memberships WHERE user_did = $1`, testDID).Scan(&count)
+		if err != nil {
+			t.Fatalf("Error checking memberships: %v", err)
+		}
+		if count != 0 {
+			t.Errorf("Expected 0 memberships after deletion, got %d", count)
+		}
+
+		// Check vote deleted
+		err = db.QueryRow(`SELECT COUNT(*) FROM votes WHERE voter_did = $1`, testDID).Scan(&count)
+		if err != nil {
+			t.Fatalf("Error checking votes: %v", err)
+		}
+		if count != 0 {
+			t.Errorf("Expected 0 votes after deletion, got %d", count)
+		}
+
+		// Check comments deleted
+		err = db.QueryRow(`SELECT COUNT(*) FROM comments WHERE commenter_did = $1`, testDID).Scan(&count)
+		if err != nil {
+			t.Fatalf("Error checking comments: %v", err)
+		}
+		if count != 0 {
+			t.Errorf("Expected 0 comments after deletion, got %d", count)
+		}
+	})
+
+	// Verify second delete returns ErrUserNotFound
+	t.Run("Delete non-existent account returns error", func(t *testing.T) {
+		err := userService.DeleteAccount(ctx, testDID)
+		if err == nil {
+			t.Error("Expected error when deleting already-deleted account")
+		}
+		if err != users.ErrUserNotFound {
+			t.Errorf("Expected ErrUserNotFound, got: %v", err)
+		}
+	})
+
+	// Verify community still exists (only user data deleted)
+	t.Run("Community still exists after user deletion", func(t *testing.T) {
+		var count int
+		err := db.QueryRow(`SELECT COUNT(*) FROM communities WHERE did = $1`, testCommunityDID).Scan(&count)
+		if err != nil {
+			t.Fatalf("Error checking community: %v", err)
+		}
+		if count != 1 {
+			t.Errorf("Expected community to still exist, got count %d", count)
+		}
+	})
 }

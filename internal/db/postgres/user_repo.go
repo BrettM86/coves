@@ -5,7 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 
 	"github.com/lib/pq"
@@ -140,7 +140,7 @@ func (r *postgresUserRepo) GetByDIDs(ctx context.Context, dids []string) (map[st
 	}
 	defer func() {
 		if closeErr := rows.Close(); closeErr != nil {
-			log.Printf("Warning: Failed to close rows: %v", closeErr)
+			slog.Warn("failed to close rows", slog.String("error", closeErr.Error()))
 		}
 	}()
 
@@ -196,4 +196,90 @@ func (r *postgresUserRepo) GetProfileStats(ctx context.Context, did string) (*us
 	}
 
 	return stats, nil
+}
+
+// Delete removes a user and all associated data from the AppView database.
+// This performs a cascading delete across all tables that reference the user's DID.
+// The operation is atomic - either all data is deleted or none.
+//
+// This ONLY deletes AppView indexed data, NOT the user's atProto identity on their PDS.
+func (r *postgresUserRepo) Delete(ctx context.Context, did string) error {
+	// Validate DID format
+	if !strings.HasPrefix(did, "did:") {
+		return &users.InvalidDIDError{DID: did, Reason: "must start with 'did:'"}
+	}
+
+	// Start transaction for atomic deletion
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to start transaction for did=%s: %w", did, err)
+	}
+	defer func() {
+		if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
+			slog.Error("failed to rollback transaction",
+				slog.String("did", did),
+				slog.String("error", err.Error()),
+			)
+		}
+	}()
+
+	// Delete in correct order to avoid foreign key violations
+	// Tables without FK constraints on user_did are deleted first
+
+	// 1. Delete OAuth sessions (explicit DELETE)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM oauth_sessions WHERE did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete oauth_sessions for did=%s: %w", did, err)
+	}
+
+	// 2. Delete OAuth requests (explicit DELETE)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM oauth_requests WHERE did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete oauth_requests for did=%s: %w", did, err)
+	}
+
+	// 3. Delete community subscriptions (explicit DELETE)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM community_subscriptions WHERE user_did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete community_subscriptions for did=%s: %w", did, err)
+	}
+
+	// 4. Delete community memberships (explicit DELETE)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM community_memberships WHERE user_did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete community_memberships for did=%s: %w", did, err)
+	}
+
+	// 5. Delete community blocks (explicit DELETE)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM community_blocks WHERE user_did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete community_blocks for did=%s: %w", did, err)
+	}
+
+	// 6. Delete comments (explicit DELETE)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM comments WHERE commenter_did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete comments for did=%s: %w", did, err)
+	}
+
+	// 7. Delete votes (explicit DELETE - FK constraint removed in migration 014)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM votes WHERE voter_did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete votes for did=%s: %w", did, err)
+	}
+
+	// 8. Delete user (FK CASCADE deletes posts)
+	result, err := tx.ExecContext(ctx, `DELETE FROM users WHERE did = $1`, did)
+	if err != nil {
+		return fmt.Errorf("failed to delete user did=%s: %w", did, err)
+	}
+
+	// Check if user was actually deleted
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to check rows affected for did=%s: %w", did, err)
+	}
+	if rowsAffected == 0 {
+		return users.ErrUserNotFound
+	}
+
+	// Commit transaction
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction for did=%s: %w", did, err)
+	}
+
+	return nil
 }

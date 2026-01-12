@@ -33,6 +33,27 @@ type UserRepository interface {
 	// GetProfileStats retrieves aggregated statistics for a user profile.
 	// Returns counts of posts, comments, subscriptions, memberships, and total reputation.
 	GetProfileStats(ctx context.Context, did string) (*ProfileStats, error)
+
+	// Delete removes a user and all associated data from the AppView database.
+	// This performs a cascading delete across all tables that reference the user's DID.
+	// The operation is atomic - either all data is deleted or none.
+	//
+	// This ONLY deletes AppView indexed data, NOT the user's atProto identity on their PDS.
+	// The user's identity remains intact for use with other atProto apps.
+	//
+	// Tables cleaned up (in order):
+	//   1. oauth_sessions (explicit DELETE)
+	//   2. oauth_requests (explicit DELETE)
+	//   3. community_subscriptions (explicit DELETE)
+	//   4. community_memberships (explicit DELETE)
+	//   5. community_blocks (explicit DELETE)
+	//   6. comments (explicit DELETE)
+	//   7. votes (explicit DELETE - FK removed in migration 014)
+	//   8. users (FK CASCADE deletes posts)
+	//
+	// Returns ErrUserNotFound if the user does not exist.
+	// Returns InvalidDIDError if the DID format is invalid.
+	Delete(ctx context.Context, did string) error
 }
 
 // UserService defines the interface for user business logic
@@ -52,4 +73,21 @@ type UserService interface {
 	// GetProfile retrieves a user's full profile with aggregated statistics.
 	// Returns a ProfileViewDetailed matching the social.coves.actor.defs#profileViewDetailed lexicon.
 	GetProfile(ctx context.Context, did string) (*ProfileViewDetailed, error)
+
+	// DeleteAccount removes a user and all associated data from the Coves AppView.
+	// This ONLY deletes AppView indexed data, NOT the user's atProto identity on their PDS.
+	// The user's identity remains intact for use with other atProto apps.
+	//
+	// Authorization: The caller must be the account owner. The XRPC handler extracts
+	// the authenticated user's DID from the OAuth session context and passes it here.
+	// This ensures users can ONLY delete their own accounts.
+	//
+	// This operation is required for Google Play compliance (account deletion requirement).
+	//
+	// The operation is atomic - either all data is deleted or none.
+	// Logs the deletion event for audit trail (DID, handle, timestamp).
+	//
+	// Returns ErrUserNotFound if the user does not exist.
+	// Returns InvalidDIDError if the DID format is invalid.
+	DeleteAccount(ctx context.Context, did string) error
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strings"
@@ -373,6 +374,53 @@ func validateHandle(handle string) error {
 			return &InvalidHandleError{Handle: handle, Reason: fmt.Sprintf("TLD %s is not allowed", tld)}
 		}
 	}
+
+	return nil
+}
+
+// DeleteAccount removes a user and all associated data from the Coves AppView.
+// This ONLY deletes AppView indexed data, NOT the user's atProto identity on their PDS.
+// The user's identity remains intact for use with other atProto apps.
+func (s *userService) DeleteAccount(ctx context.Context, did string) error {
+	did = strings.TrimSpace(did)
+	if did == "" {
+		return &InvalidDIDError{DID: did, Reason: "DID is required"}
+	}
+
+	// Validate DID format
+	if !strings.HasPrefix(did, "did:") {
+		return &InvalidDIDError{DID: did, Reason: "must start with 'did:'"}
+	}
+
+	// Get user handle for audit log (before deletion)
+	// We fetch the user first to include handle in the audit log
+	user, err := s.userRepo.GetByDID(ctx, did)
+	if err != nil {
+		// If user not found, return that error
+		if errors.Is(err, ErrUserNotFound) {
+			return ErrUserNotFound
+		}
+		return fmt.Errorf("failed to get user for deletion: %w", err)
+	}
+
+	// Perform the deletion
+	if err := s.userRepo.Delete(ctx, did); err != nil {
+		// Log failed deletion attempt
+		slog.Error("account deletion failed",
+			slog.String("did", did),
+			slog.String("handle", user.Handle),
+			slog.String("error", err.Error()),
+		)
+		return fmt.Errorf("failed to delete account: %w", err)
+	}
+
+	// Log successful deletion for audit trail
+	// SECURITY: Only log DID and handle (non-sensitive identifiers), never tokens
+	slog.Info("account deleted successfully",
+		slog.String("did", did),
+		slog.String("handle", user.Handle),
+		slog.Time("deleted_at", time.Now().UTC()),
+	)
 
 	return nil
 }

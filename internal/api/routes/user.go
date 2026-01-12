@@ -1,6 +1,8 @@
 package routes
 
 import (
+	"Coves/internal/api/handlers/user"
+	"Coves/internal/api/middleware"
 	"Coves/internal/core/users"
 	"encoding/json"
 	"errors"
@@ -25,14 +27,20 @@ func NewUserHandler(userService users.UserService) *UserHandler {
 
 // RegisterUserRoutes registers user-related XRPC endpoints on the router
 // Implements social.coves.actor.* lexicon endpoints
-func RegisterUserRoutes(r chi.Router, service users.UserService) {
+func RegisterUserRoutes(r chi.Router, service users.UserService, authMiddleware *middleware.OAuthAuthMiddleware) {
 	h := NewUserHandler(service)
 
-	// social.coves.actor.getprofile - query endpoint
+	// social.coves.actor.getprofile - query endpoint (public)
 	r.Get("/xrpc/social.coves.actor.getprofile", h.GetProfile)
 
-	// social.coves.actor.signup - procedure endpoint
+	// social.coves.actor.signup - procedure endpoint (public)
 	r.Post("/xrpc/social.coves.actor.signup", h.Signup)
+
+	// social.coves.actor.deleteAccount - procedure endpoint (authenticated)
+	// Deletes the authenticated user's account from the Coves AppView.
+	// This ONLY deletes AppView indexed data, NOT the user's atProto identity on their PDS.
+	deleteHandler := user.NewDeleteHandler(service)
+	r.With(authMiddleware.RequireAuth).Post("/xrpc/social.coves.actor.deleteAccount", deleteHandler.HandleDeleteAccount)
 }
 
 // GetProfile handles social.coves.actor.getprofile
