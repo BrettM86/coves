@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Delete Your Account - Coves</title>
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="/static/images/lil_dude.png">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0B0F14;
+      color: #e4e6e7;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 24px;
+    }
+    .card {
+      background: #1A1F26;
+      border-radius: 16px;
+      padding: 32px;
+      max-width: 480px;
+      width: 100%;
+    }
+    h1 {
+      font-size: 24px;
+      font-weight: 600;
+      margin-bottom: 16px;
+      color: #e4e6e7;
+    }
+    .subtitle {
+      font-size: 16px;
+      color: #B6C2D2;
+      margin-bottom: 24px;
+      line-height: 1.5;
+    }
+    .handle-display {
+      font-size: 16px;
+      color: #7CB9E8;
+      background: #0B0F14;
+      padding: 12px 16px;
+      border-radius: 8px;
+      margin-bottom: 24px;
+      display: inline-block;
+    }
+    .warning-list {
+      background: rgba(255, 107, 53, 0.1);
+      border: 1px solid rgba(255, 107, 53, 0.3);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 24px;
+    }
+    .warning-list h3 {
+      color: #FF6B35;
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 12px;
+    }
+    .warning-list ul {
+      list-style: disc;
+      padding-left: 20px;
+    }
+    .warning-list li {
+      color: #B6C2D2;
+      font-size: 14px;
+      margin-bottom: 8px;
+      line-height: 1.4;
+    }
+    .info-box {
+      background: rgba(124, 185, 232, 0.1);
+      border: 1px solid rgba(124, 185, 232, 0.3);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 24px;
+    }
+    .info-box p {
+      color: #B6C2D2;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .checkbox-container {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .checkbox-container input[type="checkbox"] {
+      width: 20px;
+      height: 20px;
+      margin-top: 2px;
+      accent-color: #FF6B35;
+      cursor: pointer;
+    }
+    .checkbox-container label {
+      color: #e4e6e7;
+      font-size: 14px;
+      cursor: pointer;
+      line-height: 1.4;
+    }
+    .btn {
+      display: inline-block;
+      padding: 14px 28px;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      text-decoration: none;
+      cursor: pointer;
+      border: none;
+      transition: all 0.2s ease;
+    }
+    .btn-primary {
+      background: #FF6B35;
+      color: white;
+    }
+    .btn-primary:hover:not(:disabled) {
+      background: #e55a2b;
+    }
+    .btn-primary:disabled {
+      background: #4A4F56;
+      color: #6B7280;
+      cursor: not-allowed;
+    }
+    .btn-secondary {
+      background: transparent;
+      color: #B6C2D2;
+      border: 1px solid #2A2F36;
+    }
+    .btn-secondary:hover {
+      background: #2A2F36;
+    }
+    .btn-danger {
+      background: #DC2626;
+      color: white;
+    }
+    .btn-danger:hover:not(:disabled) {
+      background: #B91C1C;
+    }
+    .btn-danger:disabled {
+      background: #4A4F56;
+      color: #6B7280;
+      cursor: not-allowed;
+    }
+    .button-row {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .divider {
+      height: 1px;
+      background: #2A2F36;
+      margin: 24px 0;
+    }
+    .bluesky-icon {
+      width: 20px;
+      height: 20px;
+      margin-right: 8px;
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Delete Your Account</h1>
+
+    {{if .LoggedIn}}
+    <!-- Logged in state -->
+    <p class="subtitle">You are signed in as:</p>
+    <div class="handle-display">@{{.Handle}}</div>
+
+    <div class="warning-list">
+      <h3>This will permanently delete:</h3>
+      <ul>
+        <li>All your posts on Coves</li>
+        <li>All your comments</li>
+        <li>All your votes</li>
+        <li>Your community subscriptions and memberships</li>
+        <li>Your profile data on Coves</li>
+      </ul>
+    </div>
+
+    <div class="info-box">
+      <p>Your atProto identity (DID and handle) will be preserved. You can still use your Bluesky account and other atProto apps. Only your Coves-specific data will be removed.</p>
+    </div>
+
+    <form method="POST" action="/delete-account" id="delete-form">
+      <div class="checkbox-container">
+        <input type="checkbox" id="confirm-checkbox" name="confirm" value="true" onchange="toggleDeleteButton()">
+        <label for="confirm-checkbox">I understand this action cannot be undone and I want to permanently delete my Coves account</label>
+      </div>
+
+      <div class="button-row">
+        <button type="submit" class="btn btn-danger" id="delete-btn" disabled>Delete My Account</button>
+        <a href="/" class="btn btn-secondary">Cancel</a>
+      </div>
+    </form>
+
+    <script>
+      function toggleDeleteButton() {
+        var checkbox = document.getElementById('confirm-checkbox');
+        var button = document.getElementById('delete-btn');
+        button.disabled = !checkbox.checked;
+      }
+    </script>
+
+    {{else}}
+    <!-- Not logged in state -->
+    <p class="subtitle">To delete your Coves account, you'll need to sign in first to verify your identity.</p>
+
+    <div class="info-box">
+      <p style="margin-bottom: 12px;">When you delete your account:</p>
+      <ul style="list-style: disc; padding-left: 20px; margin: 0;">
+        <li style="margin-bottom: 8px; line-height: 1.4;">All your Coves data will be permanently removed (posts, comments, votes, subscriptions)</li>
+        <li style="margin-bottom: 8px; line-height: 1.4;">Your atProto identity (DID and handle) will be preserved</li>
+        <li style="line-height: 1.4;">You can still use your Bluesky account and other atProto apps</li>
+      </ul>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="handle-input-container" style="margin-bottom: 24px;">
+      <label for="handle-input" style="display: block; font-size: 16px; font-weight: 600; color: #e4e6e7; margin-bottom: 12px;">Enter your atproto handle</label>
+      <div style="position: relative;">
+        <span style="position: absolute; left: 16px; top: 50%; transform: translateY(-50%); color: #5A6B7F; font-size: 16px;">@</span>
+        <input
+          type="text"
+          id="handle-input"
+          placeholder="alice.bsky.social"
+          style="width: 100%; padding: 14px 16px 14px 36px; background: #1A2028; border: 2px solid #2A3441; border-radius: 12px; color: #e4e6e7; font-size: 16px; outline: none; transition: border-color 0.2s;"
+          onfocus="this.style.borderColor='#FF6B35'"
+          onblur="this.style.borderColor='#2A3441'"
+          onkeyup="validateHandle()"
+        >
+      </div>
+      <p id="handle-error" style="color: #FF6B35; font-size: 12px; margin-top: 8px; display: none;">Please enter your handle to continue</p>
+    </div>
+
+    <button type="button" id="sign-in-btn" class="btn btn-primary" onclick="signIn()" disabled style="width: 100%; display: flex; align-items: center; justify-content: center; border-radius: 9999px;">
+      Sign In
+    </button>
+
+    <p style="color: #5A6B7F; font-size: 13px; text-align: center; margin-top: 16px; line-height: 1.5;">
+      You'll be redirected to your atproto provider to authorize this action.
+    </p>
+
+    <p style="text-align: center; margin-top: 24px;">
+      <a href="#" onclick="showHandleHelp(); return false;" style="color: #FF6B35; font-size: 14px; text-decoration: underline;">What is a handle?</a>
+    </p>
+
+    <!-- Handle Help Modal -->
+    <div id="help-modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.7); z-index: 1000; justify-content: center; align-items: center; padding: 24px;">
+      <div style="background: #1A1F26; border-radius: 16px; padding: 32px; max-width: 400px; width: 100%; text-align: center;">
+        <div style="width: 48px; height: 48px; background: rgba(124, 185, 232, 0.15); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px;">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#7CB9E8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+            <line x1="12" y1="17" x2="12.01" y2="17"></line>
+          </svg>
+        </div>
+        <h3 style="color: #e4e6e7; font-size: 18px; font-weight: 600; margin-bottom: 12px;">What is a handle?</h3>
+        <p style="color: #B6C2D2; font-size: 14px; line-height: 1.6; margin-bottom: 16px;">
+          Your handle is your unique identifier on the atproto network, like <span style="color: #7CB9E8;">alice.bsky.social</span>.
+        </p>
+        <p style="color: #B6C2D2; font-size: 14px; line-height: 1.6; margin-bottom: 24px;">
+          If you don't have one yet, you can create an account at <a href="https://bsky.app" target="_blank" style="color: #FF6B35; text-decoration: underline;">bsky.app</a>.
+        </p>
+        <button type="button" onclick="closeHelpModal()" style="width: 100%; padding: 12px 20px; background: #FF6B35; border: none; border-radius: 8px; color: white; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background='#e55a2b'" onmouseout="this.style.background='#FF6B35'">
+          Got it
+        </button>
+      </div>
+    </div>
+
+    <script>
+      function validateHandle() {
+        var input = document.getElementById('handle-input');
+        var button = document.getElementById('sign-in-btn');
+        var error = document.getElementById('handle-error');
+        var handle = input.value.trim();
+
+        if (handle.length > 0) {
+          button.disabled = false;
+          error.style.display = 'none';
+        } else {
+          button.disabled = true;
+        }
+      }
+
+      function signIn() {
+        var input = document.getElementById('handle-input');
+        var error = document.getElementById('handle-error');
+        var handle = input.value.trim();
+
+        if (!handle) {
+          error.style.display = 'block';
+          return;
+        }
+
+        window.location.href = '/oauth/login?handle=' + encodeURIComponent(handle) + '&redirect=/delete-account';
+      }
+
+      function showHandleHelp() {
+        document.getElementById('help-modal').style.display = 'flex';
+      }
+
+      function closeHelpModal() {
+        document.getElementById('help-modal').style.display = 'none';
+      }
+
+      // Close modal on backdrop click
+      document.getElementById('help-modal').addEventListener('click', function(e) {
+        if (e.target === this) {
+          closeHelpModal();
+        }
+      });
+
+      // Close modal on Escape key
+      document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+          closeHelpModal();
+        }
+      });
+
+      // Allow Enter key to submit
+      document.getElementById('handle-input').addEventListener('keypress', function(e) {
+        if (e.key === 'Enter' && !document.getElementById('sign-in-btn').disabled) {
+          signIn();
+        }
+      });
+    </script>
+    {{end}}
+  </div>
+</body>
+</html>
