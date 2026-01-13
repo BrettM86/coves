@@ -182,16 +182,33 @@
 
         .mascot {
             width: 100px;
-            height: 100px;
+            height: 87px; /* Maintain aspect ratio of 419x366 */
             position: relative;
             z-index: 1;
-            animation: float 4s ease-in-out infinite;
             filter: drop-shadow(0 12px 24px rgba(0, 0, 0, 0.4));
         }
 
-        @keyframes float {
-            0%, 100% { transform: translateY(0) rotate(-3deg); }
-            50% { transform: translateY(-8px) rotate(3deg); }
+        .mascot-body {
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+
+        .mascot-claw {
+            width: 100%;
+            height: 100%;
+            position: absolute;
+            top: -4%;
+            left: 27%;
+            transform-origin: 35% 75%; /* Pivot at base of claw/shoulder */
+            animation: wave 1.5s ease-in-out infinite;
+        }
+
+        @keyframes wave {
+            0%, 100% { transform: rotate(0deg); }
+            50% { transform: rotate(-25deg); }
         }
 
         .logo {
@@ -424,12 +441,12 @@
 
             .mascot-container {
                 margin-right: 0;
-                margin-bottom: -16px; /* Overlap vertically on mobile */
+                margin-bottom: 8px; /* Less overlap with text */
             }
 
             .mascot {
-                width: 80px;
-                height: 80px;
+                width: 100px;
+                height: 87px; /* Slightly larger on mobile */
             }
 
             .mascot-glow {
@@ -496,7 +513,10 @@
             <div class="brand-lockup">
                 <div class="mascot-container">
                     <div class="mascot-glow" aria-hidden="true"></div>
-                    <img src="/static/images/lil_dude.png" alt="Lil Dude - Coves Mascot" class="mascot">
+                    <div class="mascot" role="img" aria-label="Lil Dude - Coves Mascot waving hello">
+                        <img src="/static/images/lil_dude_body.png" alt="" class="mascot-body" aria-hidden="true">
+                        <img src="/static/images/lil_dude_claw.png" alt="" class="mascot-claw" aria-hidden="true">
+                    </div>
                 </div>
                 <img src="/static/images/coves_bubble.svg" alt="Coves" class="logo">
             </div>
