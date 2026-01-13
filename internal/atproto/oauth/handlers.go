@@ -274,6 +274,23 @@ func (h *OAuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	// Log OAuth flow initiation (sanitized - no full URL to avoid leaking state)
 	slog.Info("redirecting to PDS for OAuth", "identifier", identifier)
 
+	// Store post-login redirect URL in cookie if provided
+	// This allows redirecting to a specific page after OAuth completes (e.g., /delete-account)
+	if postLoginRedirect := r.URL.Query().Get("redirect"); postLoginRedirect != "" {
+		// Only allow relative paths to prevent open redirect vulnerabilities
+		if len(postLoginRedirect) > 0 && postLoginRedirect[0] == '/' {
+			http.SetCookie(w, &http.Cookie{
+				Name:     "oauth_redirect",
+				Value:    postLoginRedirect,
+				Path:     "/",
+				HttpOnly: true,
+				Secure:   !h.client.Config.DevMode,
+				SameSite: http.SameSiteLaxMode,
+				MaxAge:   300, // 5 minutes - enough for OAuth flow
+			})
+		}
+	}
+
 	// Redirect to PDS
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
@@ -693,9 +710,24 @@ func (h *OAuthHandler) handleWebCallback(w http.ResponseWriter, r *http.Request,
 	// Clear all mobile cookies if they exist (defense in depth)
 	clearMobileCookies(w)
 
-	// Redirect to home or app
+	// Check for post-login redirect cookie
 	redirectURL := "/"
-	if !h.client.Config.DevMode {
+	if redirectCookie, err := r.Cookie("oauth_redirect"); err == nil && redirectCookie.Value != "" {
+		// Validate it's a relative path (security check)
+		if len(redirectCookie.Value) > 0 && redirectCookie.Value[0] == '/' {
+			redirectURL = redirectCookie.Value
+		}
+		// Clear the redirect cookie
+		http.SetCookie(w, &http.Cookie{
+			Name:   "oauth_redirect",
+			Value:  "",
+			Path:   "/",
+			MaxAge: -1,
+		})
+	}
+
+	// Add base URL for production
+	if !h.client.Config.DevMode && redirectURL == "/" {
 		redirectURL = h.client.Config.PublicURL + "/"
 	}
 	http.Redirect(w, r, redirectURL, http.StatusFound)

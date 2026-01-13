@@ -605,7 +605,12 @@ func main() {
 	log.Println("  - Updating: Post comment counts and comment reply counts atomically")
 
 	// Register XRPC routes
-	routes.RegisterUserRoutes(r, userService)
+	routes.RegisterUserRoutes(r, userService, authMiddleware)
+	log.Println("User XRPC endpoints registered")
+	log.Println("  - GET /xrpc/social.coves.actor.getprofile (public)")
+	log.Println("  - POST /xrpc/social.coves.actor.signup (public)")
+	log.Println("  - POST /xrpc/social.coves.actor.deleteAccount (requires OAuth)")
+
 	routes.RegisterCommunityRoutes(r, communityService, communityRepo, authMiddleware, allowedCommunityCreators)
 	log.Println("Community XRPC endpoints registered with OAuth authentication")
 
@@ -700,6 +705,15 @@ func main() {
 	log.Println("✅ Well-known endpoints registered (mobile Universal Links & App Links)")
 	log.Println("  - GET /.well-known/apple-app-site-association (iOS Universal Links)")
 	log.Println("  - GET /.well-known/assetlinks.json (Android App Links)")
+
+	// Register web frontend routes (landing page, account deletion)
+	routes.RegisterWebRoutes(r, oauthClient, userService)
+	log.Println("✅ Web frontend routes registered")
+	log.Println("  - GET / (landing page)")
+	log.Println("  - GET /delete-account (account deletion page)")
+	log.Println("  - POST /delete-account (delete account)")
+	log.Println("  - GET /delete-account/success (deletion success)")
+	log.Println("  - GET /static/* (static assets)")
 
 	// Health check endpoints
 	healthHandler := func(w http.ResponseWriter, r *http.Request) {

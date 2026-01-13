@@ -201,6 +201,14 @@ func (m *mockUserRepo) GetProfileStats(ctx context.Context, did string) (*users.
 	return &users.ProfileStats{}, nil
 }
 
+func (m *mockUserRepo) Delete(ctx context.Context, did string) error {
+	if _, ok := m.users[did]; !ok {
+		return users.ErrUserNotFound
+	}
+	delete(m.users, did)
+	return nil
+}
+
 // mockPostRepo is a mock implementation of the posts.Repository interface
 type mockPostRepo struct {
 	posts map[string]*posts.Post
