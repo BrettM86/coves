@@ -50,4 +50,4 @@ For detailed implementation guidelines, see [CLAUDE.md](./CLAUDE.md) and [ATPROT
 1. **Start with Lexicons**: Define data schemas first
 2. **Implement Core Domain**: Create models and interfaces
 3. **Build Services**: Implement business logic
-5. **Wire XRPC**: Connect handlers last
+4. **Wire XRPC**: Connect handlers last
