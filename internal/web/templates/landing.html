@@ -20,25 +20,29 @@
     <!-- Favicon -->
     <link rel="icon" type="image/png" href="/static/images/lil_dude.png">
 
-    <!-- Fonts: Fraunces for display (warm, quirky serifs), Plus Jakarta Sans for body -->
+    <!-- Fonts: Shrikhand for playful display, Nunito for friendly body text -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700;1,9..144,400&family=Plus+Jakarta+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Shrikhand&family=Nunito:wght@400;500;600;700&display=swap" rel="stylesheet">
 
     <style>
         :root {
-            --color-deep: #080B10;
-            --color-surface: #0E1218;
-            --color-elevated: #161B24;
-            --color-border: #252D3A;
-            --color-text: #E8ECF2;
-            --color-text-muted: #8A96A8;
-            --color-accent: #FF6B35;
-            --color-accent-glow: rgba(255, 107, 53, 0.15);
-            --color-warm: #FF8F66;
-            --color-coral: #E85A4F;
-            --font-display: 'Fraunces', Georgia, serif;
-            --font-body: 'Plus Jakarta Sans', system-ui, sans-serif;
+            /* Brand colors from the SVGs */
+            --color-coral: #F08C59;
+            --color-coral-light: #FFB468;
+            --color-coral-dark: #DF7E40;
+            --color-teal: #63B5B1;
+            --color-teal-dark: #4A9994;
+            --color-deep: #1B2A2E;
+            --color-sand: #FFF8F0;
+            --color-sand-warm: #FFEFE0;
+            --color-cream: #FFFCF7;
+            --color-text: #1B2A2E;
+            --color-text-muted: #5A6B70;
+            --color-red-accent: #EC7558;
+
+            --font-display: 'Shrikhand', cursive;
+            --font-body: 'Nunito', system-ui, sans-serif;
         }
 
         * {
@@ -53,7 +57,7 @@
 
         body {
             font-family: var(--font-body);
-            background: var(--color-deep);
+            background: var(--color-sand);
             color: var(--color-text);
             min-height: 100vh;
             display: flex;
@@ -62,23 +66,26 @@
             position: relative;
         }
 
-        /* Animated gradient background */
+        /* Wavy ocean background at bottom */
         body::before {
             content: '';
             position: fixed;
-            top: 0;
+            bottom: 0;
             left: 0;
             right: 0;
-            bottom: 0;
-            background:
-                radial-gradient(ellipse 80% 60% at 10% 20%, rgba(255, 107, 53, 0.08) 0%, transparent 50%),
-                radial-gradient(ellipse 60% 80% at 90% 80%, rgba(232, 90, 79, 0.06) 0%, transparent 50%),
-                radial-gradient(ellipse 100% 100% at 50% 100%, rgba(255, 143, 102, 0.04) 0%, transparent 40%);
+            height: 40vh;
+            background: linear-gradient(
+                to bottom,
+                transparent 0%,
+                rgba(99, 181, 177, 0.08) 30%,
+                rgba(99, 181, 177, 0.15) 60%,
+                rgba(99, 181, 177, 0.25) 100%
+            );
             pointer-events: none;
             z-index: 0;
         }
 
-        /* Subtle noise texture overlay */
+        /* Subtle texture overlay */
         body::after {
             content: '';
             position: fixed;
@@ -86,8 +93,8 @@
             left: 0;
             right: 0;
             bottom: 0;
-            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
-            opacity: 0.025;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+            opacity: 0.03;
             pointer-events: none;
             z-index: 1;
         }
@@ -99,120 +106,116 @@
             flex-direction: column;
             justify-content: center;
             align-items: center;
-            padding: 60px 24px 40px;
+            padding: 60px 24px 80px;
             position: relative;
             z-index: 2;
         }
 
-        /* Floating decorative elements */
-        .decor {
+        /* Floating bubble decorations */
+        .bubble {
             position: absolute;
             border-radius: 50%;
-            filter: blur(60px);
-            opacity: 0.4;
-            animation: drift 20s ease-in-out infinite;
+            background: linear-gradient(135deg, var(--color-teal) 0%, rgba(99, 181, 177, 0.3) 100%);
+            opacity: 0.15;
+            animation: float 8s ease-in-out infinite;
             pointer-events: none;
         }
 
-        .decor-1 {
-            width: 300px;
-            height: 300px;
-            background: var(--color-accent);
-            top: 10%;
-            left: -100px;
+        .bubble-1 {
+            width: 120px;
+            height: 120px;
+            top: 15%;
+            left: 8%;
             animation-delay: 0s;
         }
 
-        .decor-2 {
-            width: 200px;
-            height: 200px;
-            background: var(--color-coral);
-            bottom: 20%;
-            right: -50px;
-            animation-delay: -7s;
+        .bubble-2 {
+            width: 80px;
+            height: 80px;
+            top: 60%;
+            right: 10%;
+            animation-delay: -2s;
+            background: linear-gradient(135deg, var(--color-coral) 0%, rgba(240, 140, 89, 0.3) 100%);
         }
 
-        @keyframes drift {
-            0%, 100% { transform: translate(0, 0) scale(1); }
-            33% { transform: translate(30px, -20px) scale(1.05); }
-            66% { transform: translate(-20px, 30px) scale(0.95); }
+        .bubble-3 {
+            width: 60px;
+            height: 60px;
+            bottom: 25%;
+            left: 15%;
+            animation-delay: -4s;
+        }
+
+        .bubble-4 {
+            width: 40px;
+            height: 40px;
+            top: 30%;
+            right: 20%;
+            animation-delay: -1s;
+            background: linear-gradient(135deg, var(--color-coral-light) 0%, rgba(255, 180, 104, 0.3) 100%);
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0) scale(1); }
+            50% { transform: translateY(-20px) scale(1.05); }
         }
 
         /* Hero section */
         .hero {
             text-align: center;
-            max-width: 680px;
+            max-width: 720px;
             position: relative;
         }
 
-        /* Brand lockup: mascot + logo side by side */
+        /* Brand lockup: mascot + logo */
         .brand-lockup {
             display: flex;
             align-items: center;
             justify-content: center;
-            margin-bottom: 36px;
+            margin-bottom: 40px;
             position: relative;
         }
 
-        /* Mascot with glow effect */
+        /* Mascot with playful hover */
         .mascot-container {
             position: relative;
             display: flex;
             align-items: center;
             justify-content: center;
-            margin-right: -20px; /* Overlap into logo space */
+            margin-right: -12px;
             z-index: 2;
         }
 
-        .mascot-glow {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            width: 140px;
-            height: 140px;
-            background: radial-gradient(circle, var(--color-accent-glow) 0%, transparent 70%);
-            transform: translate(-50%, -50%);
-            animation: pulse-glow 4s ease-in-out infinite;
-        }
-
-        @keyframes pulse-glow {
-            0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 0.6; }
-            50% { transform: translate(-50%, -50%) scale(1.2); opacity: 0.3; }
-        }
-
         .mascot {
-            width: 100px;
-            height: 87px; /* Maintain aspect ratio of 419x366 */
+            width: 90px;
+            height: 83px;
             position: relative;
             z-index: 1;
-            filter: drop-shadow(0 12px 24px rgba(0, 0, 0, 0.4));
-        }
-
-        .mascot-body {
-            width: 100%;
-            height: 100%;
-            position: absolute;
-            top: 0;
-            left: 0;
-        }
-
-        .mascot-claw {
-            width: 100%;
-            height: 100%;
-            position: absolute;
-            top: -4%;
-            left: 27%;
-            transform-origin: 35% 75%; /* Pivot at base of claw/shoulder */
-            animation: wave 1.5s ease-in-out infinite;
+            filter: drop-shadow(0 8px 16px rgba(27, 42, 46, 0.15));
+            transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+            cursor: default;
+            transform-origin: bottom center;
+            animation: wave 2.5s ease-in-out infinite;
         }
 
         @keyframes wave {
-            0%, 100% { transform: rotate(0deg); }
-            50% { transform: rotate(-25deg); }
+            0%, 100% { transform: rotate(-3deg); }
+            50% { transform: rotate(3deg); }
+        }
+
+        .mascot:hover {
+            animation: excited 0.5s ease-in-out;
+        }
+
+        @keyframes excited {
+            0%, 100% { transform: scale(1) rotate(0deg); }
+            25% { transform: scale(1.1) rotate(-5deg); }
+            50% { transform: scale(1.15) rotate(5deg); }
+            75% { transform: scale(1.1) rotate(-3deg); }
         }
 
         .logo {
-            height: 72px;
+            height: 80px;
             position: relative;
             z-index: 1;
             opacity: 0;
@@ -243,40 +246,54 @@
 
         .tagline {
             font-family: var(--font-display);
-            font-size: clamp(1.75rem, 5vw, 2.5rem);
-            font-weight: 600;
-            color: var(--color-text);
+            font-size: clamp(1.75rem, 5vw, 2.75rem);
+            font-weight: 400;
+            color: var(--color-deep);
             margin-bottom: 20px;
-            line-height: 1.2;
-            letter-spacing: -0.02em;
+            line-height: 1.3;
+            letter-spacing: 0.01em;
             opacity: 0;
             animation: fade-up 0.8s ease-out 0.35s forwards;
         }
 
         .tagline .highlight {
-            color: var(--color-accent);
-            font-style: italic;
+            color: var(--color-coral);
+            position: relative;
+        }
+
+        .tagline .highlight::after {
+            content: '';
+            position: absolute;
+            bottom: 2px;
+            left: 0;
+            right: 0;
+            height: 6px;
+            background: var(--color-teal);
+            opacity: 0.3;
+            border-radius: 3px;
+            z-index: -1;
         }
 
         .description {
-            font-size: 1.125rem;
+            font-size: 1.15rem;
+            font-weight: 500;
             color: var(--color-text-muted);
             line-height: 1.7;
-            margin-bottom: 48px;
-            max-width: 520px;
+            margin-bottom: 44px;
+            max-width: 540px;
             margin-left: auto;
             margin-right: auto;
             opacity: 0;
             animation: fade-up 0.8s ease-out 0.5s forwards;
         }
 
-        /* App store buttons */
+        /* App store buttons - warm and inviting */
         .app-buttons {
             display: flex;
             flex-wrap: wrap;
             gap: 16px;
             justify-content: center;
-            margin-bottom: 48px;
+            margin-bottom: 44px;
             opacity: 0;
             animation: fade-up 0.8s ease-out 0.65s forwards;
         }
@@ -284,12 +301,12 @@
         .app-button {
             display: inline-flex;
             align-items: center;
-            background: var(--color-elevated);
-            border: 1px solid var(--color-border);
-            border-radius: 14px;
+            background: var(--color-deep);
+            border: 2px solid var(--color-deep);
+            border-radius: 16px;
             padding: 14px 28px;
             text-decoration: none;
-            color: var(--color-text);
+            color: var(--color-sand);
             transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
             position: relative;
             overflow: hidden;
@@ -299,24 +316,22 @@
             content: '';
             position: absolute;
             top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: linear-gradient(135deg, var(--color-accent-glow) 0%, transparent 50%);
-            opacity: 0;
-            transition: opacity 0.3s ease;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+            transition: left 0.5s ease;
         }
 
         .app-button:hover {
-            border-color: var(--color-accent);
-            transform: translateY(-3px);
-            box-shadow:
-                0 10px 40px -10px rgba(255, 107, 53, 0.3),
-                0 0 0 1px var(--color-accent);
+            background: var(--color-coral-dark);
+            border-color: var(--color-coral-dark);
+            transform: translateY(-4px);
+            box-shadow: 0 12px 32px -8px rgba(240, 140, 89, 0.4);
         }
 
         .app-button:hover::before {
-            opacity: 1;
+            left: 100%;
         }
 
         .app-button svg {
@@ -341,54 +356,62 @@
         .app-button-label {
             font-size: 0.7rem;
             text-transform: uppercase;
-            letter-spacing: 0.08em;
-            color: var(--color-text-muted);
+            letter-spacing: 0.1em;
+            color: rgba(255, 248, 240, 0.7);
             display: block;
             margin-bottom: 2px;
+            font-weight: 600;
         }
 
         .app-button-store {
             font-size: 1.1rem;
-            font-weight: 600;
+            font-weight: 700;
             letter-spacing: -0.01em;
         }
 
-        /* Built on AT Protocol badge */
+        /* Built on AT Protocol badge - teal accent */
         .built-on {
             display: inline-flex;
             align-items: center;
-            gap: 8px;
-            padding: 10px 20px;
-            background: var(--color-surface);
-            border: 1px solid var(--color-border);
+            gap: 10px;
+            padding: 12px 24px;
+            background: var(--color-cream);
+            border: 2px solid var(--color-teal);
             border-radius: 100px;
             color: var(--color-text-muted);
-            font-size: 0.875rem;
+            font-size: 0.9rem;
+            font-weight: 600;
             opacity: 0;
             animation: fade-up 0.8s ease-out 0.8s forwards;
+            transition: all 0.3s ease;
+        }
+
+        .built-on:hover {
+            background: var(--color-sand-warm);
+            transform: translateY(-2px);
         }
 
         .built-on svg {
-            width: 16px;
-            height: 16px;
-            color: var(--color-accent);
+            width: 18px;
+            height: 18px;
+            color: var(--color-teal);
         }
 
         .built-on a {
-            color: var(--color-text);
+            color: var(--color-teal-dark);
             text-decoration: none;
-            font-weight: 500;
+            font-weight: 700;
             transition: color 0.2s ease;
         }
 
         .built-on a:hover {
-            color: var(--color-accent);
+            color: var(--color-coral);
         }
 
-        /* Footer */
+        /* Footer - warm sandy tone */
         footer {
-            background: linear-gradient(to top, var(--color-surface) 0%, transparent 100%);
-            padding: 40px 24px 32px;
+            background: linear-gradient(to top, var(--color-sand-warm) 0%, transparent 100%);
+            padding: 48px 24px 36px;
             text-align: center;
             position: relative;
             z-index: 2;
@@ -398,14 +421,15 @@
             display: flex;
             flex-wrap: wrap;
             justify-content: center;
-            gap: 32px;
+            gap: 36px;
         }
 
         .footer-links a {
             color: var(--color-text-muted);
             text-decoration: none;
-            font-size: 0.875rem;
-            transition: color 0.2s ease;
+            font-size: 0.9rem;
+            font-weight: 600;
+            transition: all 0.2s ease;
             position: relative;
         }
 
@@ -415,13 +439,14 @@
             bottom: -4px;
             left: 0;
             width: 0;
-            height: 1px;
-            background: var(--color-accent);
+            height: 2px;
+            background: var(--color-coral);
+            border-radius: 1px;
             transition: width 0.3s ease;
         }
 
         .footer-links a:hover {
-            color: var(--color-text);
+            color: var(--color-coral-dark);
         }
 
         .footer-links a:hover::after {
@@ -431,35 +456,30 @@
         /* Responsive */
         @media (max-width: 640px) {
             main {
-                padding: 40px 20px 32px;
+                padding: 40px 20px 60px;
             }
 
             .brand-lockup {
                 flex-direction: column;
-                margin-bottom: 28px;
+                margin-bottom: 32px;
             }
 
             .mascot-container {
                 margin-right: 0;
-                margin-bottom: 8px; /* Less overlap with text */
+                margin-bottom: 8px;
             }
 
             .mascot {
-                width: 100px;
-                height: 87px; /* Slightly larger on mobile */
-            }
-
-            .mascot-glow {
-                width: 110px;
-                height: 110px;
+                width: 80px;
+                height: 74px;
             }
 
             .logo {
-                height: 56px;
+                height: 64px;
             }
 
             .description {
-                font-size: 1rem;
+                font-size: 1.05rem;
                 margin-bottom: 36px;
             }
 
@@ -480,15 +500,19 @@
                 gap: 24px;
             }
 
-            .decor-1 {
-                width: 200px;
-                height: 200px;
-                left: -80px;
+            .bubble-1, .bubble-4 {
+                display: none;
             }
 
-            .decor-2 {
-                width: 150px;
-                height: 150px;
+            .bubble-2 {
+                width: 60px;
+                height: 60px;
+                top: 70%;
+            }
+
+            .bubble-3 {
+                width: 40px;
+                height: 40px;
             }
         }
 
@@ -503,22 +527,20 @@
     </style>
 </head>
 <body>
-    <!-- Floating ambient decorations -->
-    <div class="decor decor-1" aria-hidden="true"></div>
-    <div class="decor decor-2" aria-hidden="true"></div>
+    <!-- Floating bubble decorations -->
+    <div class="bubble bubble-1" aria-hidden="true"></div>
+    <div class="bubble bubble-2" aria-hidden="true"></div>
+    <div class="bubble bubble-3" aria-hidden="true"></div>
+    <div class="bubble bubble-4" aria-hidden="true"></div>
 
     <main>
         <section class="hero">
             <!-- Brand lockup: mascot + logo integrated -->
             <div class="brand-lockup">
                 <div class="mascot-container">
-                    <div class="mascot-glow" aria-hidden="true"></div>
-                    <div class="mascot" role="img" aria-label="Lil Dude - Coves Mascot waving hello">
-                        <img src="/static/images/lil_dude_body.png" alt="" class="mascot-body" aria-hidden="true">
-                        <img src="/static/images/lil_dude_claw.png" alt="" class="mascot-claw" aria-hidden="true">
-                    </div>
+                    <img src="/static/images/lil_dude.svg" alt="Lil Dude - Coves Mascot" class="mascot">
                 </div>
-                <img src="/static/images/coves_bubble.svg" alt="Coves" class="logo">
+                <img src="/static/images/coves_logo_text.svg" alt="Coves" class="logo">
             </div>
 
             <h1 class="tagline">
@@ -528,7 +550,7 @@
 
             <p class="description">
                 Join topic-based communities, share what you love, and own your data.
-                Built on the AT Protocol—the same foundation as Bluesky—Coves brings forums to the decentralized web.
+                Built on the AT Protocol, the same foundation as Bluesky, Coves brings forums to the decentralized web.
             </p>
 
             <div class="app-buttons">
@@ -554,7 +576,7 @@
             </div>
 
             <div class="built-on">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
                     <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
                 </svg>
