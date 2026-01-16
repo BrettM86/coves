@@ -45,6 +45,9 @@ COPY --from=builder /build/coves-server /app/coves-server
 # Must maintain path structure as app looks for internal/db/migrations
 COPY --from=builder /build/internal/db/migrations /app/internal/db/migrations
 
+# Copy static assets (images, etc. for the web interface)
+COPY --from=builder /build/static /app/static
+
 # Set ownership
 RUN chown -R coves:coves /app
 
