@@ -1,6 +1,6 @@
-# Run Kagi News aggregator daily at 1 PM UTC (after Kagi updates around noon)
+# Run Kagi News aggregator every 2 hours to catch feed updates throughout the day
 # Source environment variables exported by docker-entrypoint.sh
-0 13 * * * . /etc/environment; cd /app && /usr/local/bin/python -m src.main >> /var/log/cron.log 2>&1
+0 */2 * * * . /etc/environment; cd /app && /usr/local/bin/python -m src.main >> /var/log/cron.log 2>&1
 
 # Blank line required at end of crontab
 
