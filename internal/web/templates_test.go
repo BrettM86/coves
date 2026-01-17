@@ -132,3 +132,33 @@ func TestTemplatesRender_NotFound(t *testing.T) {
 		t.Fatal("Render() should return error for nonexistent template")
 	}
 }
+
+func TestTemplatesRender_Privacy(t *testing.T) {
+	templates, err := NewTemplates()
+	if err != nil {
+		t.Fatalf("NewTemplates() error = %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	err = templates.Render(w, "privacy.html", nil)
+	if err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+
+	body := w.Body.String()
+	if !bytes.Contains([]byte(body), []byte("Privacy Policy")) {
+		t.Error("Privacy page does not contain title")
+	}
+	if !bytes.Contains([]byte(body), []byte("Coves Team")) {
+		t.Error("Privacy page does not contain company name")
+	}
+	if !bytes.Contains([]byte(body), []byte("support@coves.social")) {
+		t.Error("Privacy page does not contain contact email")
+	}
+	if !bytes.Contains([]byte(body), []byte("atProto")) {
+		t.Error("Privacy page does not mention atProto")
+	}
+	if !bytes.Contains([]byte(body), []byte("18 years of age or older")) {
+		t.Error("Privacy page does not contain age requirement")
+	}
+}

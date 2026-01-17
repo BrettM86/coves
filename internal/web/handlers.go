@@ -173,3 +173,11 @@ func (h *Handlers) clearSessionCookie(w http.ResponseWriter) {
 		MaxAge: -1,
 	})
 }
+
+// PrivacyHandler handles GET /privacy requests and renders the privacy policy page.
+func (h *Handlers) PrivacyHandler(w http.ResponseWriter, r *http.Request) {
+	if err := h.templates.Render(w, "privacy.html", nil); err != nil {
+		slog.Error("failed to render privacy policy template", "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+	}
+}

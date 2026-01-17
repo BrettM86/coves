@@ -30,6 +30,9 @@ func RegisterWebRoutes(r chi.Router, oauthClient *oauth.OAuthClient, userService
 	r.Post("/delete-account", handlers.DeleteAccountSubmitHandler)
 	r.Get("/delete-account/success", handlers.DeleteAccountSuccessHandler)
 
+	// Legal pages
+	r.Get("/privacy", handlers.PrivacyHandler)
+
 	// Static files (images, etc.)
 	r.Get("/static/*", func(w http.ResponseWriter, r *http.Request) {
 		// Serve from project's static directory
