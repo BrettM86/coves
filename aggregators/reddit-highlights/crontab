@@ -1,8 +1,8 @@
-# Run Reddit Highlights aggregator every 30 minutes
+# Run Reddit Highlights aggregator every hour
 # The Python script adds 0-10 min random jitter for anti-detection
-# Effective polling interval: 30-40 minutes (varies each run)
+# Effective polling interval: 60-70 minutes (varies each run)
 # Source environment variables exported by docker-entrypoint.sh
-*/30 * * * * . /etc/environment; cd /app && /usr/local/bin/python -m src.main >> /var/log/cron.log 2>&1
+0 * * * * . /etc/environment; cd /app && /usr/local/bin/python -m src.main >> /var/log/cron.log 2>&1
 
 # Blank line required at end of crontab
 

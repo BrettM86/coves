@@ -81,6 +81,7 @@ class AggregatorConfig:
     subreddits: Tuple[SubredditConfig, ...]  # Use tuple for immutability
     allowed_domains: Tuple[str, ...] = ("streamable.com",)  # Default tuple
     log_level: LogLevel = LogLevel.INFO
+    max_posts_per_run: int = 3  # Only consider top N entries from feed
 
     def __post_init__(self):
         """Validate configuration."""
@@ -88,3 +89,7 @@ class AggregatorConfig:
             raise ValueError("AggregatorConfig.coves_api_url cannot be empty")
         if not self.subreddits:
             raise ValueError("AggregatorConfig.subreddits cannot be empty")
+        if type(self.max_posts_per_run) is not int or self.max_posts_per_run < 1:
+            raise ValueError(
+                f"AggregatorConfig.max_posts_per_run must be a positive integer, got: {self.max_posts_per_run}"
+            )

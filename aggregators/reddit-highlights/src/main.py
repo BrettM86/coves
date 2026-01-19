@@ -177,12 +177,17 @@ class Aggregator:
                 f"Feed for r/{subreddit_name} has parsing issues (bozo flag set): {bozo_exception}"
             )
 
-        # Process entries
+        # Process entries (only top N from hot feed)
+        max_entries = self.config.max_posts_per_run
+        entries_to_process = feed.entries[:max_entries]
+
         new_posts = 0
         skipped_posts = 0
         no_video_count = 0
 
-        for entry in feed.entries:
+        logger.info(f"Processing top {len(entries_to_process)} entries (max_posts_per_run={max_entries})")
+
+        for entry in entries_to_process:
             try:
                 # Extract video URL
                 video_url = self.link_extractor.extract_video_url(entry)

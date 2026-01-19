@@ -35,5 +35,10 @@ allowed_domains:
   # - streamff.com
   # - streamja.com
 
+# Maximum posts to consider per run
+# Only the top N entries from the "hot" feed are processed.
+# This limits volume while ensuring only the most popular highlights are posted.
+max_posts_per_run: 3
+
 # Logging level (debug, info, warning, error)
 log_level: "info"

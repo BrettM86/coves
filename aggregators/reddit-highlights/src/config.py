@@ -108,9 +108,14 @@ class ConfigLoader:
 
         allowed_domains = tuple(data.get("allowed_domains", ["streamable.com"]))
 
+        max_posts_per_run = data.get("max_posts_per_run", 3)
+        if type(max_posts_per_run) is not int or max_posts_per_run < 1:
+            raise ConfigError(f"max_posts_per_run must be a positive integer, got: {max_posts_per_run}")
+
         enabled_count = sum(1 for s in subreddits if s.enabled)
         logger.info(
-            f"Loaded configuration with {len(subreddits)} subreddits ({enabled_count} enabled)"
+            f"Loaded configuration with {len(subreddits)} subreddits ({enabled_count} enabled), "
+            f"max {max_posts_per_run} posts per run"
         )
 
         return AggregatorConfig(
@@ -118,6 +123,7 @@ class ConfigLoader:
             subreddits=tuple(subreddits),  # Convert to tuple for immutability
             allowed_domains=allowed_domains,
             log_level=log_level,
+            max_posts_per_run=max_posts_per_run,
         )
 
     def _parse_subreddit(self, data: Dict[str, Any]) -> SubredditConfig:
