@@ -177,19 +177,24 @@ class Aggregator:
                 f"Feed for r/{subreddit_name} has parsing issues (bozo flag set): {bozo_exception}"
             )
 
-        # Process entries (only top N from hot feed)
-        max_entries = self.config.max_posts_per_run
-        entries_to_process = feed.entries[:max_entries]
-
+        # Find top N entries with streamable links (filter first, then limit)
+        max_posts = self.config.max_posts_per_run
         new_posts = 0
         skipped_posts = 0
         no_video_count = 0
+        entries_checked = 0
 
-        logger.info(f"Processing top {len(entries_to_process)} entries (max_posts_per_run={max_entries})")
+        logger.info(f"Scanning feed for top {max_posts} streamable entries")
 
-        for entry in entries_to_process:
+        for entry in feed.entries:
+            # Stop once we've found enough posts to process
+            if new_posts + skipped_posts >= max_posts:
+                break
+
+            entries_checked += 1
+
             try:
-                # Extract video URL
+                # Extract video URL - skip if not a streamable link
                 video_url = self.link_extractor.extract_video_url(entry)
                 if not video_url:
                     no_video_count += 1
@@ -252,8 +257,8 @@ class Aggregator:
         self.state_manager.update_last_run(subreddit_name, datetime.now())
 
         logger.info(
-            f"r/{subreddit_name}: {new_posts} new posts, {skipped_posts} duplicates, "
-            f"{no_video_count} without video"
+            f"r/{subreddit_name}: {new_posts} new posts, {skipped_posts} duplicates "
+            f"(checked {entries_checked} entries, skipped {no_video_count} without streamable link)"
         )
 
     def _get_entry_id(self, entry) -> str:

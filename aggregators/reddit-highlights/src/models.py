@@ -81,7 +81,7 @@ class AggregatorConfig:
     subreddits: Tuple[SubredditConfig, ...]  # Use tuple for immutability
     allowed_domains: Tuple[str, ...] = ("streamable.com",)  # Default tuple
     log_level: LogLevel = LogLevel.INFO
-    max_posts_per_run: int = 3  # Only consider top N entries from feed
+    max_posts_per_run: int = 3  # Max streamable posts to process per run
 
     def __post_init__(self):
         """Validate configuration."""
