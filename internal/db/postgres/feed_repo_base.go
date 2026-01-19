@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -192,27 +191,30 @@ func (r *feedRepoBase) parseCursor(cursor *string, sort string, paramOffset int)
 		return filter, []interface{}{score, createdAt, uri}, nil
 
 	case "hot":
-		// Cursor format: hot_rank::post_created_at::uri::cursor_timestamp
+		// Cursor format: created_at::uri::cursor_timestamp
 		// CRITICAL: cursor_timestamp is when the cursor was created, used for stable hot_rank comparison
 		// This prevents pagination bugs caused by hot_rank drift when NOW() changes between requests
-		if len(payloadParts) != 4 {
+		//
+		// PRECISION FIX: We DON'T use hot_rank in the cursor comparison at all!
+		// Instead, we use (created_at, uri) as the cursor key, which are deterministic values stored in DB.
+		// The hot sort ORDER BY is: hot_rank DESC, created_at DESC, uri DESC
+		// For posts with the same hot_rank, created_at and uri provide stable ordering.
+		//
+		// This works because:
+		// 1. Posts with very different hot_ranks will be separated by created_at anyway
+		// 2. Posts with similar hot_ranks (same score, close creation times) will be ordered by created_at, uri
+		// 3. The cursor_timestamp ensures hot_rank is computed consistently across pages
+		if len(payloadParts) != 3 {
 			return "", nil, fmt.Errorf("invalid cursor format for hot sort")
 		}
 
-		hotRankStr := payloadParts[0]
-		postCreatedAt := payloadParts[1]
-		uri := payloadParts[2]
-		cursorTimestamp := payloadParts[3]
+		createdAt := payloadParts[0]
+		uri := payloadParts[1]
+		cursorTimestamp := payloadParts[2]
 
-		// Validate hot_rank is numeric (float)
-		hotRank := 0.0
-		if _, err := fmt.Sscanf(hotRankStr, "%f", &hotRank); err != nil {
-			return "", nil, fmt.Errorf("invalid cursor hot rank")
-		}
-
-		// Validate post timestamp format
-		if _, err := time.Parse(time.RFC3339Nano, postCreatedAt); err != nil {
-			return "", nil, fmt.Errorf("invalid cursor post timestamp")
+		// Validate created_at timestamp format
+		if _, err := time.Parse(time.RFC3339Nano, createdAt); err != nil {
+			return "", nil, fmt.Errorf("invalid cursor created_at timestamp")
 		}
 
 		// Validate URI format (must be AT-URI)
@@ -229,12 +231,34 @@ func (r *feedRepoBase) parseCursor(cursor *string, sort string, paramOffset int)
 		// This ensures posts don't drift across page boundaries due to time passing
 		stableHotRankExpr := fmt.Sprintf(
 			`((p.score + 1) / POWER(EXTRACT(EPOCH FROM ($%d::timestamptz - p.created_at))/3600 + 2, 1.5))`,
-			paramOffset+3)
+			paramOffset+2)
 
-		// Use tuple comparison for clean keyset pagination: (hot_rank, created_at, uri) < (cursor_values)
-		filter := fmt.Sprintf(`AND ((%s, p.created_at, p.uri) < ($%d, $%d, $%d))`,
-			stableHotRankExpr, paramOffset, paramOffset+1, paramOffset+2)
-		return filter, []interface{}{hotRank, postCreatedAt, uri, cursorTimestamp}, nil
+		// Filter by cursor position in the hot-sorted result set
+		// The ORDER BY is: hot_rank DESC, created_at DESC, uri DESC
+		// We need posts that come AFTER the cursor position in this ordering.
+		//
+		// A post comes after the cursor if ANY of:
+		// 1. It has a lower hot_rank (hot_rank DESC means lower values come later)
+		// 2. Same hot_rank AND lower created_at
+		// 3. Same hot_rank AND same created_at AND lower uri
+		//
+		// To avoid floating-point comparison issues with hot_rank, we use a subquery
+		// to get the cursor post's hot_rank and compare using the SAME expression
+		cursorHotRankExpr := fmt.Sprintf(
+			`((cursor_post.score + 1) / POWER(EXTRACT(EPOCH FROM ($%d::timestamptz - cursor_post.created_at))/3600 + 2, 1.5))`,
+			paramOffset+2)
+
+		// Use a subquery to find the cursor post and compare hot_ranks using identical expressions
+		// This ensures floating-point values are computed the same way on both sides
+		filter := fmt.Sprintf(`AND (
+			%s < (SELECT %s FROM posts cursor_post WHERE cursor_post.uri = $%d)
+			OR (%s = (SELECT %s FROM posts cursor_post WHERE cursor_post.uri = $%d) AND p.created_at < $%d)
+			OR (%s = (SELECT %s FROM posts cursor_post WHERE cursor_post.uri = $%d) AND p.created_at = $%d AND p.uri < $%d)
+		)`,
+			stableHotRankExpr, cursorHotRankExpr, paramOffset+1,
+			stableHotRankExpr, cursorHotRankExpr, paramOffset+1, paramOffset,
+			stableHotRankExpr, cursorHotRankExpr, paramOffset+1, paramOffset, paramOffset+1)
+		return filter, []interface{}{createdAt, uri, cursorTimestamp}, nil
 
 	default:
 		return "", nil, nil
@@ -263,10 +287,11 @@ func (r *feedRepoBase) buildCursor(post *posts.PostView, sort string, hotRank fl
 		payload = fmt.Sprintf("%d%s%s%s%s", score, delimiter, post.CreatedAt.Format(time.RFC3339Nano), delimiter, post.URI)
 
 	case "hot":
-		// Format: hot_rank::post_created_at::uri::cursor_timestamp
+		// Format: created_at::uri::cursor_timestamp
 		// CRITICAL: Include cursor_timestamp for stable hot_rank comparison across requests
-		hotRankStr := strconv.FormatFloat(hotRank, 'g', -1, 64)
-		payload = fmt.Sprintf("%s%s%s%s%s%s%s", hotRankStr, delimiter, post.CreatedAt.Format(time.RFC3339Nano), delimiter, post.URI, delimiter, queryTime.Format(time.RFC3339Nano))
+		// NOTE: We don't store hot_rank in the cursor - we use the post's URI to look it up
+		// This avoids floating-point precision issues between cursor storage and comparison
+		payload = fmt.Sprintf("%s%s%s%s%s", post.CreatedAt.Format(time.RFC3339Nano), delimiter, post.URI, delimiter, queryTime.Format(time.RFC3339Nano))
 
 	default:
 		payload = post.URI

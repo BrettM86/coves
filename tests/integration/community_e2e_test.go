@@ -103,25 +103,23 @@ func TestCommunity_E2E(t *testing.T) {
 	// Setup dependencies
 	communityRepo := postgres.NewCommunityRepository(db)
 
-	// Get instance credentials
-	instanceHandle := os.Getenv("PDS_INSTANCE_HANDLE")
-	instancePassword := os.Getenv("PDS_INSTANCE_PASSWORD")
-	if instanceHandle == "" {
-		instanceHandle = "testuser123.local.coves.dev"
-	}
-	if instancePassword == "" {
-		instancePassword = "test-password-123"
-	}
+	// Create a fresh test account on PDS (similar to user_journey_e2e_test pattern)
+	// Use unique handle to avoid conflicts between test runs
+	timestamp := time.Now().UnixNano()
+	shortTS := timestamp % 1000000 // Use last 6 digits for more uniqueness
+	instanceHandle := fmt.Sprintf("ce%d.local.coves.dev", shortTS)
+	instanceEmail := fmt.Sprintf("comm%d@test.com", shortTS)
+	instancePassword := "test-password-community-123"
 
-	t.Logf("🔐 Authenticating with PDS as: %s", instanceHandle)
+	t.Logf("🔐 Creating test account on PDS: %s", instanceHandle)
 
-	// Authenticate to get instance DID
-	accessToken, instanceDID, err := authenticateWithPDS(pdsURL, instanceHandle, instancePassword)
+	// Create account on PDS - this returns the access token and DID
+	accessToken, instanceDID, err := createPDSAccount(pdsURL, instanceHandle, instanceEmail, instancePassword)
 	if err != nil {
-		t.Fatalf("Failed to authenticate with PDS: %v", err)
+		t.Fatalf("Failed to create account on PDS: %v", err)
 	}
 
-	t.Logf("✅ Authenticated - Instance DID: %s", instanceDID)
+	t.Logf("✅ Account created - Instance DID: %s", instanceDID)
 
 	// Initialize OAuth auth middleware for E2E testing
 	e2eAuth := NewE2EOAuthMiddleware()
@@ -1761,6 +1759,11 @@ func subscribeToJetstream(
 	}
 	defer func() { _ = conn.Close() }()
 
+	// Track consecutive timeouts to detect stale connections
+	// gorilla/websocket panics after 1000 repeated reads on a failed connection
+	consecutiveTimeouts := 0
+	const maxConsecutiveTimeouts = 10
+
 	// Read messages until we find our event or receive done signal
 	for {
 		select {
@@ -1782,11 +1785,18 @@ func subscribeToJetstream(
 					return nil
 				}
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					consecutiveTimeouts++
+					if consecutiveTimeouts >= maxConsecutiveTimeouts {
+						return fmt.Errorf("connection appears stale after %d consecutive timeouts", consecutiveTimeouts)
+					}
 					continue // Timeout is expected, keep listening
 				}
 				// For other errors, don't retry reading from a broken connection
 				return fmt.Errorf("failed to read Jetstream message: %w", err)
 			}
+
+			// Reset timeout counter on successful read
+			consecutiveTimeouts = 0
 
 			// Check if this is the event we're looking for
 			if event.Did == targetDID && event.Kind == "commit" {

@@ -7,7 +7,9 @@ import (
 	"Coves/internal/db/postgres"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -310,20 +312,17 @@ func subscribeToJetstreamForCommunityEvent(
 	consumer *jetstream.CommunityEventConsumer,
 	eventChan chan<- *jetstream.JetstreamEvent,
 	done <-chan bool,
-) (returnErr error) {
-	// Recover from websocket panics during shutdown
-	defer func() {
-		if r := recover(); r != nil {
-			// Panic during shutdown is expected, return nil
-			returnErr = nil
-		}
-	}()
-
+) error {
 	conn, _, err := websocket.DefaultDialer.Dial(jetstreamURL, nil)
 	if err != nil {
 		return fmt.Errorf("failed to connect to Jetstream: %w", err)
 	}
 	defer func() { _ = conn.Close() }()
+
+	// Track consecutive timeouts to detect stale connections
+	// The gorilla/websocket library panics after 1000 repeated reads on a failed connection
+	consecutiveTimeouts := 0
+	const maxConsecutiveTimeouts = 10
 
 	for {
 		select {
@@ -345,20 +344,32 @@ func subscribeToJetstreamForCommunityEvent(
 					return nil
 				default:
 				}
-				if websocket.IsCloseError(err, websocket.CloseNormalClosure) {
+				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					return nil
 				}
-				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				// Handle EOF - connection was closed by server
+				if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+					return nil
+				}
+				var netErr net.Error
+				if errors.As(err, &netErr) && netErr.Timeout() {
+					consecutiveTimeouts++
+					// If we get too many consecutive timeouts, the connection may be in a bad state
+					// Exit to avoid the gorilla/websocket panic on repeated reads to failed connections
+					if consecutiveTimeouts >= maxConsecutiveTimeouts {
+						return fmt.Errorf("connection appears stale after %d consecutive timeouts", consecutiveTimeouts)
+					}
 					continue
 				}
 				// Check for connection closed errors (happens during shutdown)
-				if strings.Contains(err.Error(), "use of closed network connection") ||
-					strings.Contains(err.Error(), "failed websocket connection") ||
-					strings.Contains(err.Error(), "repeated read on failed websocket") {
+				if strings.Contains(err.Error(), "use of closed network connection") {
 					return nil
 				}
 				return fmt.Errorf("failed to read Jetstream message: %w", err)
 			}
+
+			// Reset timeout counter on successful read
+			consecutiveTimeouts = 0
 
 			// Check if this is the event we're looking for
 			if event.Did == targetDID && event.Kind == "commit" &&

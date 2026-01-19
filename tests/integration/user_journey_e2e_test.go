@@ -763,6 +763,11 @@ func subscribeToJetstreamForCommunity(
 	}
 	defer func() { _ = conn.Close() }()
 
+	// Track consecutive timeouts to detect stale connections
+	// The gorilla/websocket library panics after 1000 repeated reads on a failed connection
+	consecutiveTimeouts := 0
+	const maxConsecutiveTimeouts = 10
+
 	for {
 		select {
 		case <-done:
@@ -790,6 +795,12 @@ func subscribeToJetstreamForCommunity(
 				// Handle timeout errors using errors.As for wrapped errors
 				var netErr net.Error
 				if errors.As(err, &netErr) && netErr.Timeout() {
+					consecutiveTimeouts++
+					// If we get too many consecutive timeouts, the connection may be in a bad state
+					// Exit to avoid the gorilla/websocket panic on repeated reads to failed connections
+					if consecutiveTimeouts >= maxConsecutiveTimeouts {
+						return fmt.Errorf("connection appears stale after %d consecutive timeouts", consecutiveTimeouts)
+					}
 					continue
 				}
 
@@ -797,6 +808,9 @@ func subscribeToJetstreamForCommunity(
 				// The gorilla/websocket library panics on repeated reads after a connection failure
 				return fmt.Errorf("failed to read Jetstream message: %w", err)
 			}
+
+			// Reset timeout counter on successful read
+			consecutiveTimeouts = 0
 
 			if event.Did == targetDID && event.Kind == "commit" &&
 				event.Commit != nil && event.Commit.Collection == "social.coves.community.profile" {
