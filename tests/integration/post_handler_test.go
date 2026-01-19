@@ -39,6 +39,7 @@ func TestPostHandler_SecurityValidation(t *testing.T) {
 		"test.coves.social",
 		nil,
 		nil,
+		nil,
 	)
 
 	postRepo := postgres.NewPostRepository(db)
@@ -408,6 +409,7 @@ func TestPostHandler_SpecialCharacters(t *testing.T) {
 		"test.coves.social",
 		nil,
 		nil,
+		nil,
 	)
 
 	postRepo := postgres.NewPostRepository(db)
@@ -491,6 +493,7 @@ func TestPostService_DIDValidationSecurity(t *testing.T) {
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 		nil,
 	)

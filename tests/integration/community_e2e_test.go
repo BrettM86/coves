@@ -152,7 +152,7 @@ func TestCommunity_E2E(t *testing.T) {
 	provisioner := communities.NewPDSAccountProvisioner(instanceDomain, pdsURL)
 
 	// Create service with PDS factory for password-based auth in tests
-	communityService := communities.NewCommunityServiceWithPDSFactory(communityRepo, pdsURL, instanceDID, instanceDomain, provisioner, CommunityPasswordAuthPDSClientFactory())
+	communityService := communities.NewCommunityServiceWithPDSFactory(communityRepo, pdsURL, instanceDID, instanceDomain, provisioner, CommunityPasswordAuthPDSClientFactory(), nil)
 	if svc, ok := communityService.(interface{ SetPDSAccessToken(string) }); ok {
 		svc.SetPDSAccessToken(accessToken)
 	}

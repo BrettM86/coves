@@ -42,6 +42,7 @@ func TestPostCreation_Basic(t *testing.T) {
 		"test.coves.social",
 		nil, // provisioner
 		nil, // pdsClientFactory
+		nil, // blobService
 	)
 
 	postRepo := postgres.NewPostRepository(db)

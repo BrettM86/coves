@@ -276,9 +276,21 @@ func main() {
 	log.Printf("   - Communities will be created at: %s", defaultPDS)
 	log.Printf("   - PDS will generate and manage all DIDs and keys")
 
+	// Initialize blob upload service (moved earlier for community service)
+	blobService := blobs.NewBlobService(defaultPDS)
+	log.Println("✅ Blob service initialized")
+
 	// Initialize community service with OAuth client for user DPoP authentication
 	// OAuth client is required for subscribe/unsubscribe/block/unblock operations
-	communityService := communities.NewCommunityService(communityRepo, defaultPDS, instanceDID, instanceDomain, provisioner, oauthClient)
+	communityService := communities.NewCommunityService(
+		communityRepo,
+		defaultPDS,
+		instanceDID,
+		instanceDomain,
+		provisioner,
+		oauthClient,
+		blobService,
+	)
 
 	// Authenticate Coves instance with PDS to enable community record writes
 	// The instance needs a PDS account to write community records it owns
@@ -426,9 +438,6 @@ func main() {
 
 	// Initialize unfurl cache repository
 	unfurlRepo := unfurl.NewRepository(db)
-
-	// Initialize blob upload service
-	blobService := blobs.NewBlobService(defaultPDS)
 
 	// Initialize unfurl service with configuration
 	unfurlService := unfurl.NewService(

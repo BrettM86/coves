@@ -4,6 +4,7 @@ import (
 	oauthclient "Coves/internal/atproto/oauth"
 	"Coves/internal/atproto/pds"
 	"Coves/internal/atproto/utils"
+	"Coves/internal/core/blobs"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -39,6 +40,7 @@ type communityService struct {
 	// Interfaces and pointers first (better alignment)
 	repo        Repository
 	provisioner *PDSAccountProvisioner
+	blobService blobs.Service
 
 	// OAuth client for user PDS authentication (DPoP-based)
 	oauthClient      *oauthclient.OAuthClient
@@ -71,6 +73,7 @@ func NewCommunityService(
 	pdsURL, instanceDID, instanceDomain string,
 	provisioner *PDSAccountProvisioner,
 	oauthClient *oauthclient.OAuthClient,
+	blobService blobs.Service,
 ) Service {
 	// SECURITY: Basic validation that did:web domain matches configured instanceDomain
 	// This catches honest configuration mistakes but NOT malicious code modifications
@@ -93,6 +96,7 @@ func NewCommunityService(
 		instanceDomain: instanceDomain,
 		provisioner:    provisioner,
 		oauthClient:    oauthClient,
+		blobService:    blobService,
 		refreshMutexes: make(map[string]*sync.Mutex),
 	}
 }
@@ -104,6 +108,7 @@ func NewCommunityServiceWithPDSFactory(
 	pdsURL, instanceDID, instanceDomain string,
 	provisioner *PDSAccountProvisioner,
 	factory PDSClientFactory,
+	blobService blobs.Service,
 ) Service {
 	return &communityService{
 		repo:             repo,
@@ -112,6 +117,7 @@ func NewCommunityServiceWithPDSFactory(
 		instanceDomain:   instanceDomain,
 		provisioner:      provisioner,
 		pdsClientFactory: factory,
+		blobService:      blobService,
 		refreshMutexes:   make(map[string]*sync.Mutex),
 	}
 }
@@ -219,11 +225,52 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 		profile["language"] = req.Language
 	}
 
-	// TODO: Handle avatar and banner blobs
-	// For now, we'll skip blob uploads. This would require:
-	// 1. Upload blob to PDS via com.atproto.repo.uploadBlob
-	// 2. Get blob ref (CID)
-	// 3. Add to profile record
+	// Track blob CIDs for storage in the community record
+	var avatarCID, bannerCID string
+
+	// Upload avatar if provided
+	if len(req.AvatarBlob) > 0 {
+		if req.AvatarMimeType == "" {
+			return nil, fmt.Errorf("avatarMimeType is required when avatarBlob is provided")
+		}
+		if s.blobService == nil {
+			return nil, fmt.Errorf("blob service not configured, cannot upload avatar")
+		}
+		avatarRef, err := s.blobService.UploadBlob(ctx, pdsAccount, req.AvatarBlob, req.AvatarMimeType)
+		if err != nil {
+			return nil, fmt.Errorf("failed to upload avatar: %w", err)
+		}
+		profile["avatar"] = map[string]interface{}{
+			"$type":    avatarRef.Type,
+			"ref":      avatarRef.Ref,
+			"mimeType": avatarRef.MimeType,
+			"size":     avatarRef.Size,
+		}
+		// Extract CID for database storage
+		avatarCID = avatarRef.Ref["$link"]
+	}
+
+	// Upload banner if provided
+	if len(req.BannerBlob) > 0 {
+		if req.BannerMimeType == "" {
+			return nil, fmt.Errorf("bannerMimeType is required when bannerBlob is provided")
+		}
+		if s.blobService == nil {
+			return nil, fmt.Errorf("blob service not configured, cannot upload banner")
+		}
+		bannerRef, err := s.blobService.UploadBlob(ctx, pdsAccount, req.BannerBlob, req.BannerMimeType)
+		if err != nil {
+			return nil, fmt.Errorf("failed to upload banner: %w", err)
+		}
+		profile["banner"] = map[string]interface{}{
+			"$type":    bannerRef.Type,
+			"ref":      bannerRef.Ref,
+			"mimeType": bannerRef.MimeType,
+			"size":     bannerRef.Size,
+		}
+		// Extract CID for database storage
+		bannerCID = bannerRef.Ref["$link"]
+	}
 
 	// V2: Write to COMMUNITY's own repository (not instance repo!)
 	// Repository: at://COMMUNITY_DID/social.coves.community.profile/self
@@ -257,6 +304,8 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 		PDSURL:                 pdsAccount.PDSURL,
 		Visibility:             req.Visibility,
 		AllowExternalDiscovery: req.AllowExternalDiscovery,
+		AvatarCID:              avatarCID,
+		BannerCID:              bannerCID,
 		MemberCount:            0,
 		SubscriberCount:        0,
 		CreatedAt:              time.Now(),
@@ -363,6 +412,13 @@ func (s *communityService) UpdateCommunity(ctx context.Context, req UpdateCommun
 		return nil, err
 	}
 
+	// Authorization: verify user is the creator BEFORE any expensive operations
+	// This prevents unauthorized users from uploading orphaned blobs (DoS vector)
+	// TODO(Communities-Auth): Add moderator check when moderation system is implemented
+	if existing.CreatedByDID != req.UpdatedByDID {
+		return nil, ErrUnauthorized
+	}
+
 	// CRITICAL: Ensure fresh PDS access token before write operation
 	// Community PDS tokens expire every ~2 hours and must be refreshed
 	existing, err = s.EnsureFreshToken(ctx, existing)
@@ -370,10 +426,36 @@ func (s *communityService) UpdateCommunity(ctx context.Context, req UpdateCommun
 		return nil, fmt.Errorf("failed to ensure fresh credentials: %w", err)
 	}
 
-	// Authorization: verify user is the creator
-	// TODO(Communities-Auth): Add moderator check when moderation system is implemented
-	if existing.CreatedByDID != req.UpdatedByDID {
-		return nil, ErrUnauthorized
+	// Upload avatar if provided
+	var avatarRef *blobs.BlobRef
+	if len(req.AvatarBlob) > 0 {
+		if req.AvatarMimeType == "" {
+			return nil, fmt.Errorf("avatarMimeType is required when avatarBlob is provided")
+		}
+		if s.blobService == nil {
+			return nil, fmt.Errorf("blob service not configured, cannot upload avatar")
+		}
+		ref, err := s.blobService.UploadBlob(ctx, existing, req.AvatarBlob, req.AvatarMimeType)
+		if err != nil {
+			return nil, fmt.Errorf("failed to upload avatar: %w", err)
+		}
+		avatarRef = ref
+	}
+
+	// Upload banner if provided
+	var bannerRef *blobs.BlobRef
+	if len(req.BannerBlob) > 0 {
+		if req.BannerMimeType == "" {
+			return nil, fmt.Errorf("bannerMimeType is required when bannerBlob is provided")
+		}
+		if s.blobService == nil {
+			return nil, fmt.Errorf("blob service not configured, cannot upload banner")
+		}
+		ref, err := s.blobService.UploadBlob(ctx, existing, req.BannerBlob, req.BannerMimeType)
+		if err != nil {
+			return nil, fmt.Errorf("failed to upload banner: %w", err)
+		}
+		bannerRef = ref
 	}
 
 	// Build updated profile record (start with existing)
@@ -427,6 +509,25 @@ func (s *communityService) UpdateCommunity(ctx context.Context, req UpdateCommun
 		profile["contentWarnings"] = req.ContentWarnings
 	} else if len(existing.ContentWarnings) > 0 {
 		profile["contentWarnings"] = existing.ContentWarnings
+	}
+
+	// Add blob references if uploaded
+	if avatarRef != nil {
+		profile["avatar"] = map[string]interface{}{
+			"$type":    avatarRef.Type,
+			"ref":      avatarRef.Ref,
+			"mimeType": avatarRef.MimeType,
+			"size":     avatarRef.Size,
+		}
+	}
+
+	if bannerRef != nil {
+		profile["banner"] = map[string]interface{}{
+			"$type":    bannerRef.Type,
+			"ref":      bannerRef.Ref,
+			"mimeType": bannerRef.MimeType,
+			"size":     bannerRef.Size,
+		}
 	}
 
 	// V2: Community profiles always use "self" as rkey

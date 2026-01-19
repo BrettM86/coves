@@ -399,8 +399,9 @@ func TestPostCreation_E2E_LivePDS(t *testing.T) {
 		pdsURL,
 		instanceDID,
 		instanceDomain,
-		provisioner, // ✅ Real provisioner for creating communities on PDS
+		provisioner, // Real provisioner for creating communities on PDS
 		nil,         // No PDS factory needed - no subscribe/block in this test
+		nil,         // No blob service for this test
 	)
 
 	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, pdsURL) // nil aggregatorService, blobService, unfurlService, blueskyService for user-only tests

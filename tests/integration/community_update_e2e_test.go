@@ -3,6 +3,7 @@ package integration
 import (
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
+	"Coves/internal/core/blobs"
 	"Coves/internal/core/communities"
 	"Coves/internal/db/postgres"
 	"context"
@@ -90,6 +91,7 @@ func TestCommunityUpdateE2E_WithJetstream(t *testing.T) {
 	// Setup services
 	communityRepo := postgres.NewCommunityRepository(db)
 	provisioner := communities.NewPDSAccountProvisioner("coves.social", pdsURL)
+	blobService := blobs.NewBlobService(pdsURL)
 	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		pdsURL,
@@ -97,6 +99,7 @@ func TestCommunityUpdateE2E_WithJetstream(t *testing.T) {
 		"coves.social",
 		provisioner,
 		nil,
+		blobService,
 	)
 
 	consumer := jetstream.NewCommunityEventConsumer(communityRepo, instanceDID, true, identityResolver)

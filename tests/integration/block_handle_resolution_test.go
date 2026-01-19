@@ -50,6 +50,7 @@ func TestBlockHandler_HandleResolution(t *testing.T) {
 		"coves.social",
 		nil, // No PDS HTTP client for this test
 		nil, // No PDS factory needed for this test
+		nil, // No blob service for this test
 	)
 
 	blockHandler := community.NewBlockHandler(communityService)
@@ -287,6 +288,7 @@ func TestUnblockHandler_HandleResolution(t *testing.T) {
 		"coves.social",
 		nil,
 		nil, // No PDS factory needed for this test
+		nil, // No blob service for this test
 	)
 
 	blockHandler := community.NewBlockHandler(communityService)

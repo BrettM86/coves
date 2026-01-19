@@ -1,7 +1,6 @@
 package blobs
 
 import (
-	"Coves/internal/core/communities"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -12,13 +11,23 @@ import (
 	"time"
 )
 
+// BlobOwner represents any entity that can own blobs on a PDS.
+// This interface breaks the import cycle between blobs and communities packages.
+// communities.Community implements this interface.
+type BlobOwner interface {
+	// GetPDSURL returns the PDS URL for this entity
+	GetPDSURL() string
+	// GetPDSAccessToken returns the access token for authenticating with the PDS
+	GetPDSAccessToken() string
+}
+
 // Service defines the interface for blob operations
 type Service interface {
-	// UploadBlobFromURL fetches an image from a URL and uploads it to the community's PDS
-	UploadBlobFromURL(ctx context.Context, community *communities.Community, imageURL string) (*BlobRef, error)
+	// UploadBlobFromURL fetches an image from a URL and uploads it to the owner's PDS
+	UploadBlobFromURL(ctx context.Context, owner BlobOwner, imageURL string) (*BlobRef, error)
 
-	// UploadBlob uploads binary data to the community's PDS
-	UploadBlob(ctx context.Context, community *communities.Community, data []byte, mimeType string) (*BlobRef, error)
+	// UploadBlob uploads binary data to the owner's PDS
+	UploadBlob(ctx context.Context, owner BlobOwner, data []byte, mimeType string) (*BlobRef, error)
 }
 
 type blobService struct {
@@ -35,10 +44,10 @@ func NewBlobService(pdsURL string) Service {
 // UploadBlobFromURL fetches an image from a URL and uploads it to PDS
 // Flow:
 // 1. Fetch image from URL with timeout
-// 2. Validate size (<1MB)
+// 2. Validate size (max 6MB)
 // 3. Validate MIME type (image/jpeg, image/png, image/webp)
 // 4. Call UploadBlob to upload to PDS
-func (s *blobService) UploadBlobFromURL(ctx context.Context, community *communities.Community, imageURL string) (*BlobRef, error) {
+func (s *blobService) UploadBlobFromURL(ctx context.Context, owner BlobOwner, imageURL string) (*BlobRef, error) {
 	// Input validation
 	if imageURL == "" {
 		return nil, fmt.Errorf("image URL cannot be empty")
@@ -97,20 +106,20 @@ func (s *blobService) UploadBlobFromURL(ctx context.Context, community *communit
 	}
 
 	// Upload to PDS
-	return s.UploadBlob(ctx, community, data, mimeType)
+	return s.UploadBlob(ctx, owner, data, mimeType)
 }
 
-// UploadBlob uploads binary data to the community's PDS
+// UploadBlob uploads binary data to the owner's PDS
 // Flow:
 // 1. Validate inputs
 // 2. POST to {PDSURL}/xrpc/com.atproto.repo.uploadBlob
-// 3. Use community's PDSAccessToken for auth
+// 3. Use owner's PDSAccessToken for auth
 // 4. Set Content-Type header to mimeType
 // 5. Parse response and extract blob reference
-func (s *blobService) UploadBlob(ctx context.Context, community *communities.Community, data []byte, mimeType string) (*BlobRef, error) {
+func (s *blobService) UploadBlob(ctx context.Context, owner BlobOwner, data []byte, mimeType string) (*BlobRef, error) {
 	// Input validation
-	if community == nil {
-		return nil, fmt.Errorf("community cannot be nil")
+	if owner == nil {
+		return nil, fmt.Errorf("owner cannot be nil")
 	}
 	if len(data) == 0 {
 		return nil, fmt.Errorf("data cannot be empty")
@@ -130,11 +139,16 @@ func (s *blobService) UploadBlob(ctx context.Context, community *communities.Com
 		return nil, fmt.Errorf("data size %d bytes exceeds maximum of %d bytes (6MB)", len(data), maxSize)
 	}
 
-	// Use community's PDS URL (for federated communities)
-	pdsURL := community.PDSURL
+	// Use owner's PDS URL (for federated communities)
+	pdsURL := owner.GetPDSURL()
 	if pdsURL == "" {
-		// Fallback to service default if community doesn't have a PDS URL
-		pdsURL = s.pdsURL
+		return nil, fmt.Errorf("owner has no PDS URL configured")
+	}
+
+	// Validate access token before making request
+	accessToken := owner.GetPDSAccessToken()
+	if accessToken == "" {
+		return nil, fmt.Errorf("owner has no PDS access token")
 	}
 
 	// Build PDS endpoint URL
@@ -148,7 +162,7 @@ func (s *blobService) UploadBlob(ctx context.Context, community *communities.Com
 
 	// Set headers (auth + content type)
 	req.Header.Set("Content-Type", mimeType)
-	req.Header.Set("Authorization", "Bearer "+community.PDSAccessToken)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
 
 	// Create HTTP client with timeout
 	client := &http.Client{
@@ -192,6 +206,20 @@ func (s *blobService) UploadBlob(ctx context.Context, community *communities.Com
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("failed to parse PDS response: %w", err)
+	}
+
+	// Validate required fields in PDS response
+	if result.Blob.Type == "" {
+		return nil, fmt.Errorf("PDS response missing required field: $type")
+	}
+	if result.Blob.Ref == nil || result.Blob.Ref["$link"] == "" {
+		return nil, fmt.Errorf("PDS response missing required field: ref.$link (CID)")
+	}
+	if result.Blob.MimeType == "" {
+		return nil, fmt.Errorf("PDS response missing required field: mimeType")
+	}
+	if result.Blob.Size == 0 {
+		return nil, fmt.Errorf("PDS response missing required field: size")
 	}
 
 	return &result.Blob, nil

@@ -153,6 +153,7 @@ func TestCommunityService_NameValidation(t *testing.T) {
 		"test.local",            // instanceDomain
 		provisioner,
 		nil,
+		nil,
 	)
 	ctx := context.Background()
 

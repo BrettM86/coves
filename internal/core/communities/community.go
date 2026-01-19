@@ -116,6 +116,8 @@ type CreateCommunityRequest struct {
 	HostedByDID            string   `json:"hostedByDid"`
 	AvatarBlob             []byte   `json:"avatarBlob,omitempty"`
 	BannerBlob             []byte   `json:"bannerBlob,omitempty"`
+	AvatarMimeType         string   `json:"avatarMimeType,omitempty"`
+	BannerMimeType         string   `json:"bannerMimeType,omitempty"`
 	Rules                  []string `json:"rules,omitempty"`
 	Categories             []string `json:"categories,omitempty"`
 	AllowExternalDiscovery bool     `json:"allowExternalDiscovery"`
@@ -129,6 +131,8 @@ type UpdateCommunityRequest struct {
 	Description            *string  `json:"description,omitempty"`
 	AvatarBlob             []byte   `json:"avatarBlob,omitempty"`
 	BannerBlob             []byte   `json:"bannerBlob,omitempty"`
+	AvatarMimeType         string   `json:"avatarMimeType,omitempty"`
+	BannerMimeType         string   `json:"bannerMimeType,omitempty"`
 	Visibility             *string  `json:"visibility,omitempty"`
 	AllowExternalDiscovery *bool    `json:"allowExternalDiscovery,omitempty"`
 	ModerationType         *string  `json:"moderationType,omitempty"`
@@ -186,4 +190,16 @@ func (c *Community) GetDisplayHandle() string {
 	instanceDomain := afterPrefix[dotIndex+1:]
 
 	return fmt.Sprintf("!%s@%s", name, instanceDomain)
+}
+
+// GetPDSURL implements blobs.BlobOwner interface.
+// Returns the community's PDS URL for blob uploads.
+func (c *Community) GetPDSURL() string {
+	return c.PDSURL
+}
+
+// GetPDSAccessToken implements blobs.BlobOwner interface.
+// Returns the community's PDS access token for blob upload authentication.
+func (c *Community) GetPDSAccessToken() string {
+	return c.PDSAccessToken
 }

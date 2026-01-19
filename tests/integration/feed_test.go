@@ -36,6 +36,7 @@ func TestGetCommunityFeed_Hot(t *testing.T) {
 		"test.coves.social",
 		nil,
 		nil,
+		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
 	handler := communityFeed.NewGetCommunityHandler(feedService, nil, nil)
@@ -112,6 +113,7 @@ func TestGetCommunityFeed_Top_WithTimeframe(t *testing.T) {
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 		nil,
 	)
@@ -191,6 +193,7 @@ func TestGetCommunityFeed_New(t *testing.T) {
 		"test.coves.social",
 		nil,
 		nil,
+		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
 	handler := communityFeed.NewGetCommunityHandler(feedService, nil, nil)
@@ -246,6 +249,7 @@ func TestGetCommunityFeed_Pagination(t *testing.T) {
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 		nil,
 	)
@@ -340,6 +344,7 @@ func TestGetCommunityFeed_InvalidCommunity(t *testing.T) {
 		"test.coves.social",
 		nil,
 		nil,
+		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
 	handler := communityFeed.NewGetCommunityHandler(feedService, nil, nil)
@@ -375,6 +380,7 @@ func TestGetCommunityFeed_InvalidCursor(t *testing.T) {
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 		nil,
 	)
@@ -434,6 +440,7 @@ func TestGetCommunityFeed_EmptyFeed(t *testing.T) {
 		"test.coves.social",
 		nil,
 		nil,
+		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
 	handler := communityFeed.NewGetCommunityHandler(feedService, nil, nil)
@@ -477,6 +484,7 @@ func TestGetCommunityFeed_LimitValidation(t *testing.T) {
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 		nil,
 	)
@@ -531,6 +539,7 @@ func TestGetCommunityFeed_HotPaginationBug(t *testing.T) {
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 		nil,
 	)
@@ -633,6 +642,7 @@ func TestGetCommunityFeed_HotCursorPrecision(t *testing.T) {
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 		nil,
 	)
@@ -738,6 +748,7 @@ func TestGetCommunityFeed_HotCursorTimeDrift(t *testing.T) {
 		"test.coves.social",
 		nil,
 		nil,
+		nil,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
 	handler := communityFeed.NewGetCommunityHandler(feedService, nil, nil)
@@ -838,6 +849,7 @@ func TestGetCommunityFeed_BlobURLTransformation(t *testing.T) {
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 		nil,
 	)

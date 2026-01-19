@@ -25,6 +25,18 @@ type CommunityPDSAccount struct {
 	SigningKeyPEM  string // PEM-encoded signing key (for atproto operations)
 }
 
+// GetPDSURL implements blobs.BlobOwner interface.
+// Returns the community's PDS URL for blob uploads.
+func (c *CommunityPDSAccount) GetPDSURL() string {
+	return c.PDSURL
+}
+
+// GetPDSAccessToken implements blobs.BlobOwner interface.
+// Returns the community's PDS access token for blob upload authentication.
+func (c *CommunityPDSAccount) GetPDSAccessToken() string {
+	return c.AccessToken
+}
+
 // PDSAccountProvisioner creates PDS accounts for communities with PDS-managed DIDs
 type PDSAccountProvisioner struct {
 	instanceDomain string

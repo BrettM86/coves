@@ -63,7 +63,8 @@ func TestCommunityService_CreateWithRealPDS(t *testing.T) {
 			"did:web:coves.social",
 			"coves.social",
 			provisioner,
-		nil,
+			nil,
+			nil,
 		)
 
 		// Generate unique community name (keep short for DNS label limit)
@@ -208,7 +209,8 @@ func TestCommunityService_CreateWithRealPDS(t *testing.T) {
 			"did:web:coves.social",
 			"coves.social",
 			provisioner,
-		nil,
+			nil,
+			nil,
 		)
 
 		// Try to create community with invalid name (should fail validation before PDS)
@@ -240,7 +242,8 @@ func TestCommunityService_CreateWithRealPDS(t *testing.T) {
 			"did:web:coves.social",
 			"coves.social",
 			provisioner,
-		nil,
+			nil,
+			nil,
 		)
 
 		// Try 64-char name (exceeds DNS limit of 63)
@@ -310,6 +313,7 @@ func TestCommunityService_UpdateWithRealPDS(t *testing.T) {
 		"did:web:coves.social",
 		"coves.social",
 		provisioner,
+		nil,
 		nil,
 	)
 
@@ -502,6 +506,7 @@ func TestPasswordAuthentication(t *testing.T) {
 		"did:web:coves.social",
 		"coves.social",
 		provisioner,
+		nil,
 		nil,
 	)
 

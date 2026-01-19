@@ -58,6 +58,7 @@ func TestPostUnfurl_Streamable(t *testing.T) {
 		"test.coves.social",
 		nil,
 		nil,
+		nil,
 	)
 
 	postService := posts.NewPostService(
@@ -356,6 +357,7 @@ func TestPostUnfurl_UnsupportedURL(t *testing.T) {
 		"test.coves.social",
 		nil,
 		nil,
+		nil,
 	)
 
 	// Create post service WITHOUT unfurl service
@@ -463,6 +465,7 @@ func TestPostUnfurl_UserProvidedMetadata(t *testing.T) {
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 		nil,
 	)
@@ -576,6 +579,7 @@ func TestPostUnfurl_MissingEmbedType(t *testing.T) {
 		"http://localhost:3001",
 		"did:web:test.coves.social",
 		"test.coves.social",
+		nil,
 		nil,
 		nil,
 	)

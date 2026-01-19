@@ -77,12 +77,12 @@ db-shell: ## Open PostgreSQL shell for development database
 
 db-migrate: ## Run database migrations
 	@echo "$(GREEN)Running database migrations...$(RESET)"
-	@goose -dir internal/db/migrations postgres "postgresql://dev_user:dev_password@localhost:5433/coves_dev?sslmode=disable" up
+	@goose -dir internal/db/migrations postgres "postgresql://dev_user:dev_password@localhost:5435/coves_dev?sslmode=disable" up
 	@echo "$(GREEN)✓ Migrations complete$(RESET)"
 
 db-migrate-down: ## Rollback last migration
 	@echo "$(YELLOW)Rolling back last migration...$(RESET)"
-	@goose -dir internal/db/migrations postgres "postgresql://dev_user:dev_password@localhost:5433/coves_dev?sslmode=disable" down
+	@goose -dir internal/db/migrations postgres "postgresql://dev_user:dev_password@localhost:5435/coves_dev?sslmode=disable" down
 	@echo "$(GREEN)✓ Rollback complete$(RESET)"
 
 db-reset: ## Reset database (delete all data and re-run migrations)

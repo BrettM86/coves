@@ -33,6 +33,16 @@
               "accept": ["image/png", "image/jpeg", "image/webp"],
               "maxSize": 2000000
             },
+            "avatarMimeType": {
+              "type": "string",
+              "maxLength": 128,
+              "description": "MIME type of avatar blob (image/png, image/jpeg, image/webp)"
+            },
+            "bannerMimeType": {
+              "type": "string",
+              "maxLength": 128,
+              "description": "MIME type of banner blob (image/png, image/jpeg, image/webp)"
+            },
             "rules": {
               "type": "array",
               "maxLength": 10,
@@ -102,6 +112,7 @@
             },
             "handle": {
               "type": "string",
+              "maxLength": 512,
               "description": "Scoped handle of the created community (~name@instance)"
             }
           }

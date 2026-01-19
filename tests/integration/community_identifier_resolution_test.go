@@ -57,6 +57,7 @@ func TestCommunityIdentifierResolution(t *testing.T) {
 		instanceDomain,
 		provisioner,
 		nil,
+		nil,
 	)
 
 	// Create a test community to resolve
@@ -252,6 +253,7 @@ func TestResolveScopedIdentifier_InputValidation(t *testing.T) {
 		instanceDomain,
 		provisioner,
 		nil,
+		nil,
 	)
 
 	tests := []struct {
@@ -430,6 +432,7 @@ func TestIdentifierResolution_ErrorContext(t *testing.T) {
 		instanceDomain,
 		provisioner,
 		nil,
+		nil,
 	)
 
 	t.Run("DID error includes identifier", func(t *testing.T) {
@@ -495,6 +498,7 @@ func TestGetCommunity_IdentifierResolution(t *testing.T) {
 		instanceDID,
 		instanceDomain,
 		provisioner,
+		nil,
 		nil,
 	)
 

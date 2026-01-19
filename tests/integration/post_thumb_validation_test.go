@@ -62,6 +62,7 @@ func TestPostHandler_ThumbValidation(t *testing.T) {
 		"test.coves.social",
 		nil,
 		nil,
+		nil,
 	)
 
 	postRepo := postgres.NewPostRepository(db)
