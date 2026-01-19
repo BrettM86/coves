@@ -44,11 +44,15 @@ func TestTemplatesRender_LandingPage(t *testing.T) {
 	if !bytes.Contains([]byte(body), []byte("Test Description")) {
 		t.Error("Rendered output does not contain description")
 	}
-	if !bytes.Contains([]byte(body), []byte("https://example.com/appstore")) {
-		t.Error("Rendered output does not contain App Store URL")
+	// App store buttons show "Coming soon" placeholder text (not links yet)
+	if !bytes.Contains([]byte(body), []byte("Coming soon to")) {
+		t.Error("Rendered output does not contain App Store coming soon text")
 	}
-	if !bytes.Contains([]byte(body), []byte("https://example.com/playstore")) {
-		t.Error("Rendered output does not contain Play Store URL")
+	if !bytes.Contains([]byte(body), []byte("App Store")) {
+		t.Error("Rendered output does not contain App Store text")
+	}
+	if !bytes.Contains([]byte(body), []byte("Google Play")) {
+		t.Error("Rendered output does not contain Google Play text")
 	}
 	if !bytes.Contains([]byte(body), []byte("/static/images/lil_dude.png")) {
 		t.Error("Rendered output does not contain mascot image path")
@@ -73,7 +77,7 @@ func TestTemplatesRender_DeleteAccount(t *testing.T) {
 	}
 
 	body := w.Body.String()
-	if !bytes.Contains([]byte(body), []byte("Sign in with Bluesky")) {
+	if !bytes.Contains([]byte(body), []byte("Sign In")) {
 		t.Error("Logged out state does not show sign in button")
 	}
 

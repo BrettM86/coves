@@ -200,7 +200,7 @@ func TestUserRepo_Delete_InvalidDID(t *testing.T) {
 	// Try to delete with invalid DID format
 	err := repo.Delete(ctx, "invalid-did-format")
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid DID format")
+	assert.Contains(t, err.Error(), "must start with 'did:'")
 }
 
 func TestUserRepo_Delete_Idempotent(t *testing.T) {
