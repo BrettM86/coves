@@ -53,9 +53,9 @@ func (s *blobService) UploadBlobFromURL(ctx context.Context, owner BlobOwner, im
 		return nil, fmt.Errorf("image URL cannot be empty")
 	}
 
-	// Create HTTP client with timeout
+	// Create HTTP client with timeout (30s to handle slow CDNs and large images)
 	client := &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout: 30 * time.Second,
 	}
 
 	// Fetch image from URL
@@ -63,6 +63,9 @@ func (s *blobService) UploadBlobFromURL(ctx context.Context, owner BlobOwner, im
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request for image URL: %w", err)
 	}
+
+	// Set User-Agent to avoid being blocked by CDNs that filter bot traffic
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CovesBot/1.0; +https://coves.social)")
 
 	resp, err := client.Do(req)
 	if err != nil {
