@@ -371,3 +371,64 @@ func (s *APIKeyService) GetFailedLastUsedUpdates() int64 {
 func (s *APIKeyService) GetFailedNonceUpdates() int64 {
 	return s.failedNonceUpdates.Load()
 }
+
+// perAggregatorRefreshTimeout is the maximum time allowed for refreshing
+// a single aggregator's tokens. This prevents a slow OAuth server from
+// blocking the entire refresh job.
+const perAggregatorRefreshTimeout = 30 * time.Second
+
+// RefreshExpiringTokens proactively refreshes tokens for all aggregators
+// whose tokens will expire within the given buffer period.
+// Returns count of successful refreshes and any errors encountered.
+// Each aggregator refresh has a 30-second timeout to prevent slow OAuth servers
+// from blocking the entire job.
+func (s *APIKeyService) RefreshExpiringTokens(ctx context.Context, expiryBuffer time.Duration) (refreshed int, errors []error) {
+	// Get all aggregators with tokens expiring within the buffer period
+	aggregators, err := s.repo.ListAggregatorsNeedingTokenRefresh(ctx, expiryBuffer)
+	if err != nil {
+		slog.Error("[TOKEN-REFRESH] Failed to list aggregators needing token refresh",
+			"error", err,
+			"expiry_buffer", expiryBuffer,
+		)
+		return 0, []error{fmt.Errorf("failed to list aggregators needing refresh: %w", err)}
+	}
+
+	if len(aggregators) == 0 {
+		return 0, nil
+	}
+
+	slog.Info("[TOKEN-REFRESH] Starting proactive token refresh",
+		"aggregator_count", len(aggregators),
+		"expiry_buffer", expiryBuffer,
+	)
+
+	// Refresh tokens for each aggregator with per-aggregator timeout
+	for _, creds := range aggregators {
+		slog.Info("[TOKEN-REFRESH] Attempting token refresh for aggregator",
+			"did", creds.DID,
+			"token_expires_at", creds.OAuthTokenExpiresAt,
+		)
+
+		// Create per-aggregator timeout context to prevent slow OAuth servers
+		// from blocking the entire refresh cycle
+		refreshCtx, cancel := context.WithTimeout(ctx, perAggregatorRefreshTimeout)
+		err := s.RefreshTokensIfNeeded(refreshCtx, creds)
+		cancel()
+
+		if err != nil {
+			slog.Error("[TOKEN-REFRESH] Failed to refresh tokens for aggregator",
+				"did", creds.DID,
+				"error", err,
+			)
+			errors = append(errors, fmt.Errorf("aggregator %s: %w", creds.DID, err))
+		} else {
+			slog.Info("[TOKEN-REFRESH] Successfully refreshed tokens for aggregator",
+				"did", creds.DID,
+				"new_expires_at", creds.OAuthTokenExpiresAt,
+			)
+			refreshed++
+		}
+	}
+
+	return refreshed, errors
+}

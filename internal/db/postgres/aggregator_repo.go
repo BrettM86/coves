@@ -1164,6 +1164,114 @@ func (r *postgresAggregatorRepo) GetCredentialsByAPIKeyHash(ctx context.Context,
 	return creds, nil
 }
 
+// ListAggregatorsNeedingTokenRefresh returns aggregators with active API keys
+// whose OAuth tokens expire within the given buffer period.
+// Used by background job to proactively refresh tokens before they expire.
+func (r *postgresAggregatorRepo) ListAggregatorsNeedingTokenRefresh(ctx context.Context, expiryBuffer time.Duration) ([]*aggregators.AggregatorCredentials, error) {
+	query := `
+		SELECT
+			did,
+			api_key_prefix, api_key_hash, api_key_created_at, api_key_revoked_at, api_key_last_used_at,
+			CASE
+				WHEN oauth_access_token_encrypted IS NOT NULL
+				THEN pgp_sym_decrypt(oauth_access_token_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
+				ELSE NULL
+			END as oauth_access_token,
+			CASE
+				WHEN oauth_refresh_token_encrypted IS NOT NULL
+				THEN pgp_sym_decrypt(oauth_refresh_token_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
+				ELSE NULL
+			END as oauth_refresh_token,
+			oauth_token_expires_at,
+			oauth_pds_url, oauth_auth_server_iss, oauth_auth_server_token_endpoint,
+			CASE
+				WHEN oauth_dpop_private_key_encrypted IS NOT NULL
+				THEN pgp_sym_decrypt(oauth_dpop_private_key_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
+				ELSE NULL
+			END as oauth_dpop_private_key_multibase,
+			oauth_dpop_authserver_nonce, oauth_dpop_pds_nonce
+		FROM aggregators
+		WHERE api_key_hash IS NOT NULL
+			AND api_key_revoked_at IS NULL
+			AND oauth_token_expires_at IS NOT NULL
+			AND oauth_token_expires_at <= NOW() + $1`
+
+	rows, err := r.db.QueryContext(ctx, query, expiryBuffer)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list aggregators needing token refresh: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var results []*aggregators.AggregatorCredentials
+	for rows.Next() {
+		creds := &aggregators.AggregatorCredentials{}
+		var apiKeyPrefix, apiKeyHash sql.NullString
+		var oauthAccessToken, oauthRefreshToken sql.NullString
+		var oauthPDSURL, oauthAuthServerIss, oauthAuthServerTokenEndpoint sql.NullString
+		var oauthDPoPPrivateKey, oauthDPoPAuthServerNonce, oauthDPoPPDSNonce sql.NullString
+		var apiKeyCreatedAt, apiKeyRevokedAt, apiKeyLastUsed, oauthTokenExpiresAt sql.NullTime
+
+		err := rows.Scan(
+			&creds.DID,
+			&apiKeyPrefix,
+			&apiKeyHash,
+			&apiKeyCreatedAt,
+			&apiKeyRevokedAt,
+			&apiKeyLastUsed,
+			&oauthAccessToken,
+			&oauthRefreshToken,
+			&oauthTokenExpiresAt,
+			&oauthPDSURL,
+			&oauthAuthServerIss,
+			&oauthAuthServerTokenEndpoint,
+			&oauthDPoPPrivateKey,
+			&oauthDPoPAuthServerNonce,
+			&oauthDPoPPDSNonce,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan aggregator credentials: %w", err)
+		}
+
+		// Map nullable string fields
+		creds.APIKeyPrefix = apiKeyPrefix.String
+		creds.APIKeyHash = apiKeyHash.String
+		creds.OAuthAccessToken = oauthAccessToken.String
+		creds.OAuthRefreshToken = oauthRefreshToken.String
+		creds.OAuthPDSURL = oauthPDSURL.String
+		creds.OAuthAuthServerIss = oauthAuthServerIss.String
+		creds.OAuthAuthServerTokenEndpoint = oauthAuthServerTokenEndpoint.String
+		creds.OAuthDPoPPrivateKeyMultibase = oauthDPoPPrivateKey.String
+		creds.OAuthDPoPAuthServerNonce = oauthDPoPAuthServerNonce.String
+		creds.OAuthDPoPPDSNonce = oauthDPoPPDSNonce.String
+
+		// Map nullable time fields
+		if apiKeyCreatedAt.Valid {
+			t := apiKeyCreatedAt.Time
+			creds.APIKeyCreatedAt = &t
+		}
+		if apiKeyRevokedAt.Valid {
+			t := apiKeyRevokedAt.Time
+			creds.APIKeyRevokedAt = &t
+		}
+		if apiKeyLastUsed.Valid {
+			t := apiKeyLastUsed.Time
+			creds.APIKeyLastUsed = &t
+		}
+		if oauthTokenExpiresAt.Valid {
+			t := oauthTokenExpiresAt.Time
+			creds.OAuthTokenExpiresAt = &t
+		}
+
+		results = append(results, creds)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating aggregators needing token refresh: %w", err)
+	}
+
+	return results, nil
+}
+
 // ===== Helper Functions =====
 
 // scanAuthorizations is a helper to scan multiple authorization rows

@@ -34,15 +34,16 @@ func newTestAPIKeyService(repo Repository) *APIKeyService {
 
 // mockRepository implements Repository interface for testing
 type mockRepository struct {
-	getAggregatorFunc             func(ctx context.Context, did string) (*Aggregator, error)
-	getByAPIKeyHashFunc           func(ctx context.Context, keyHash string) (*Aggregator, error)
-	getCredentialsByAPIKeyHashFunc func(ctx context.Context, keyHash string) (*AggregatorCredentials, error)
-	getAggregatorCredentialsFunc  func(ctx context.Context, did string) (*AggregatorCredentials, error)
-	setAPIKeyFunc                 func(ctx context.Context, did, keyPrefix, keyHash string, oauthCreds *OAuthCredentials) error
-	updateOAuthTokensFunc         func(ctx context.Context, did, accessToken, refreshToken string, expiresAt time.Time) error
-	updateOAuthNoncesFunc         func(ctx context.Context, did, authServerNonce, pdsNonce string) error
-	updateAPIKeyLastUsedFunc      func(ctx context.Context, did string) error
-	revokeAPIKeyFunc              func(ctx context.Context, did string) error
+	getAggregatorFunc                      func(ctx context.Context, did string) (*Aggregator, error)
+	getByAPIKeyHashFunc                    func(ctx context.Context, keyHash string) (*Aggregator, error)
+	getCredentialsByAPIKeyHashFunc         func(ctx context.Context, keyHash string) (*AggregatorCredentials, error)
+	getAggregatorCredentialsFunc           func(ctx context.Context, did string) (*AggregatorCredentials, error)
+	setAPIKeyFunc                          func(ctx context.Context, did, keyPrefix, keyHash string, oauthCreds *OAuthCredentials) error
+	updateOAuthTokensFunc                  func(ctx context.Context, did, accessToken, refreshToken string, expiresAt time.Time) error
+	updateOAuthNoncesFunc                  func(ctx context.Context, did, authServerNonce, pdsNonce string) error
+	updateAPIKeyLastUsedFunc               func(ctx context.Context, did string) error
+	revokeAPIKeyFunc                       func(ctx context.Context, did string) error
+	listAggregatorsNeedingTokenRefreshFunc func(ctx context.Context, expiryBuffer time.Duration) ([]*AggregatorCredentials, error)
 }
 
 func (m *mockRepository) GetAggregator(ctx context.Context, did string) (*Aggregator, error) {
@@ -179,6 +180,13 @@ func (m *mockRepository) GetCredentialsByAPIKeyHash(ctx context.Context, keyHash
 		return m.getCredentialsByAPIKeyHashFunc(ctx, keyHash)
 	}
 	return nil, ErrAggregatorNotFound
+}
+
+func (m *mockRepository) ListAggregatorsNeedingTokenRefresh(ctx context.Context, expiryBuffer time.Duration) ([]*AggregatorCredentials, error) {
+	if m.listAggregatorsNeedingTokenRefreshFunc != nil {
+		return m.listAggregatorsNeedingTokenRefreshFunc(ctx, expiryBuffer)
+	}
+	return nil, nil
 }
 
 func TestHashAPIKey(t *testing.T) {
@@ -1139,5 +1147,216 @@ func TestAPIKeyService_FailedLastUsedUpdates_IncrementsOnError(t *testing.T) {
 	// Counter should now be 1
 	if got := service.GetFailedLastUsedUpdates(); got != 1 {
 		t.Errorf("GetFailedLastUsedUpdates() after failure = %d, want 1", got)
+	}
+}
+
+// =============================================================================
+// RefreshExpiringTokens Tests
+// =============================================================================
+
+func TestAPIKeyService_RefreshExpiringTokens_DatabaseError(t *testing.T) {
+	expectedError := errors.New("database connection failed")
+	repo := &mockRepository{
+		listAggregatorsNeedingTokenRefreshFunc: func(ctx context.Context, expiryBuffer time.Duration) ([]*AggregatorCredentials, error) {
+			return nil, expectedError
+		},
+	}
+	service := newTestAPIKeyService(repo)
+
+	refreshed, errs := service.RefreshExpiringTokens(context.Background(), 1*time.Hour)
+
+	if refreshed != 0 {
+		t.Errorf("RefreshExpiringTokens() refreshed = %d, want 0", refreshed)
+	}
+	if len(errs) != 1 {
+		t.Fatalf("RefreshExpiringTokens() errors count = %d, want 1", len(errs))
+	}
+	if !errors.Is(errs[0], expectedError) {
+		t.Errorf("RefreshExpiringTokens() error = %v, want %v", errs[0], expectedError)
+	}
+}
+
+func TestAPIKeyService_RefreshExpiringTokens_EmptyList(t *testing.T) {
+	repo := &mockRepository{
+		listAggregatorsNeedingTokenRefreshFunc: func(ctx context.Context, expiryBuffer time.Duration) ([]*AggregatorCredentials, error) {
+			return []*AggregatorCredentials{}, nil
+		},
+	}
+	service := newTestAPIKeyService(repo)
+
+	refreshed, errs := service.RefreshExpiringTokens(context.Background(), 1*time.Hour)
+
+	if refreshed != 0 {
+		t.Errorf("RefreshExpiringTokens() refreshed = %d, want 0", refreshed)
+	}
+	if len(errs) != 0 {
+		t.Errorf("RefreshExpiringTokens() errors count = %d, want 0", len(errs))
+	}
+}
+
+func TestAPIKeyService_RefreshExpiringTokens_NilList(t *testing.T) {
+	repo := &mockRepository{
+		listAggregatorsNeedingTokenRefreshFunc: func(ctx context.Context, expiryBuffer time.Duration) ([]*AggregatorCredentials, error) {
+			return nil, nil
+		},
+	}
+	service := newTestAPIKeyService(repo)
+
+	refreshed, errs := service.RefreshExpiringTokens(context.Background(), 1*time.Hour)
+
+	if refreshed != 0 {
+		t.Errorf("RefreshExpiringTokens() refreshed = %d, want 0", refreshed)
+	}
+	if len(errs) != 0 {
+		t.Errorf("RefreshExpiringTokens() errors count = %d, want 0", len(errs))
+	}
+}
+
+func TestAPIKeyService_RefreshExpiringTokens_PassesCorrectExpiryBuffer(t *testing.T) {
+	expectedBuffer := 2 * time.Hour
+	var capturedBuffer time.Duration
+
+	repo := &mockRepository{
+		listAggregatorsNeedingTokenRefreshFunc: func(ctx context.Context, expiryBuffer time.Duration) ([]*AggregatorCredentials, error) {
+			capturedBuffer = expiryBuffer
+			return nil, nil
+		},
+	}
+	service := newTestAPIKeyService(repo)
+
+	service.RefreshExpiringTokens(context.Background(), expectedBuffer)
+
+	if capturedBuffer != expectedBuffer {
+		t.Errorf("RefreshExpiringTokens() passed expiryBuffer = %v, want %v", capturedBuffer, expectedBuffer)
+	}
+}
+
+func TestAPIKeyService_RefreshExpiringTokens_TokensStillValid(t *testing.T) {
+	// When tokens are still valid (not within refresh buffer), no refresh should happen
+	// This tests the case where RefreshTokensIfNeeded returns early because tokens are valid
+	expiresAt := time.Now().Add(1 * time.Hour) // Well beyond the 5 minute buffer
+
+	repo := &mockRepository{
+		listAggregatorsNeedingTokenRefreshFunc: func(ctx context.Context, expiryBuffer time.Duration) ([]*AggregatorCredentials, error) {
+			return []*AggregatorCredentials{
+				{
+					DID:                 "did:plc:aggregator1",
+					OAuthTokenExpiresAt: &expiresAt,
+					OAuthAccessToken:    "valid_token",
+					OAuthRefreshToken:   "refresh_token",
+				},
+			}, nil
+		},
+	}
+	service := newTestAPIKeyService(repo)
+
+	refreshed, errs := service.RefreshExpiringTokens(context.Background(), 1*time.Hour)
+
+	// Tokens are valid, so RefreshTokensIfNeeded returns early without error
+	// and counts as "refreshed" (even though no actual refresh was needed)
+	if refreshed != 1 {
+		t.Errorf("RefreshExpiringTokens() refreshed = %d, want 1", refreshed)
+	}
+	if len(errs) != 0 {
+		t.Errorf("RefreshExpiringTokens() errors count = %d, want 0", len(errs))
+	}
+}
+
+func TestAPIKeyService_RefreshExpiringTokens_TokensExpired_RefreshFails(t *testing.T) {
+	// When tokens are expired and refresh fails (no OAuth app configured)
+	expiresAt := time.Now().Add(-1 * time.Hour) // Already expired
+
+	repo := &mockRepository{
+		listAggregatorsNeedingTokenRefreshFunc: func(ctx context.Context, expiryBuffer time.Duration) ([]*AggregatorCredentials, error) {
+			return []*AggregatorCredentials{
+				{
+					DID:                 "did:plc:aggregator1",
+					OAuthTokenExpiresAt: &expiresAt,
+					OAuthAccessToken:    "expired_token",
+					OAuthRefreshToken:   "refresh_token",
+				},
+			}, nil
+		},
+	}
+	service := newTestAPIKeyService(repo)
+
+	refreshed, errs := service.RefreshExpiringTokens(context.Background(), 1*time.Hour)
+
+	if refreshed != 0 {
+		t.Errorf("RefreshExpiringTokens() refreshed = %d, want 0", refreshed)
+	}
+	if len(errs) != 1 {
+		t.Errorf("RefreshExpiringTokens() errors count = %d, want 1", len(errs))
+	}
+}
+
+func TestAPIKeyService_RefreshExpiringTokens_MixedResults(t *testing.T) {
+	// Multiple aggregators: some with valid tokens, some with expired tokens
+	validExpiry := time.Now().Add(1 * time.Hour)
+	expiredExpiry := time.Now().Add(-1 * time.Hour)
+
+	repo := &mockRepository{
+		listAggregatorsNeedingTokenRefreshFunc: func(ctx context.Context, expiryBuffer time.Duration) ([]*AggregatorCredentials, error) {
+			return []*AggregatorCredentials{
+				{
+					DID:                 "did:plc:valid1",
+					OAuthTokenExpiresAt: &validExpiry,
+					OAuthAccessToken:    "valid_token",
+				},
+				{
+					DID:                 "did:plc:expired1",
+					OAuthTokenExpiresAt: &expiredExpiry,
+					OAuthAccessToken:    "expired_token",
+					OAuthRefreshToken:   "refresh_token",
+				},
+				{
+					DID:                 "did:plc:valid2",
+					OAuthTokenExpiresAt: &validExpiry,
+					OAuthAccessToken:    "valid_token2",
+				},
+			}, nil
+		},
+	}
+	service := newTestAPIKeyService(repo)
+
+	refreshed, errs := service.RefreshExpiringTokens(context.Background(), 1*time.Hour)
+
+	// 2 valid tokens should count as refreshed, 1 expired token should fail
+	if refreshed != 2 {
+		t.Errorf("RefreshExpiringTokens() refreshed = %d, want 2", refreshed)
+	}
+	if len(errs) != 1 {
+		t.Errorf("RefreshExpiringTokens() errors count = %d, want 1", len(errs))
+	}
+}
+
+func TestAPIKeyService_RefreshExpiringTokens_ContextCancellation(t *testing.T) {
+	// Test that context cancellation is respected
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	repo := &mockRepository{
+		listAggregatorsNeedingTokenRefreshFunc: func(ctx context.Context, expiryBuffer time.Duration) ([]*AggregatorCredentials, error) {
+			// Check if context is already cancelled
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			default:
+				return []*AggregatorCredentials{
+					{DID: "did:plc:test"},
+				}, nil
+			}
+		},
+	}
+	service := newTestAPIKeyService(repo)
+
+	refreshed, errs := service.RefreshExpiringTokens(ctx, 1*time.Hour)
+
+	// Should fail due to context cancellation
+	if refreshed != 0 {
+		t.Errorf("RefreshExpiringTokens() refreshed = %d, want 0", refreshed)
+	}
+	if len(errs) != 1 {
+		t.Errorf("RefreshExpiringTokens() errors count = %d, want 1", len(errs))
 	}
 }

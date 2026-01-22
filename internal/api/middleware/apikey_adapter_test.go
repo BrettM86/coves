@@ -197,6 +197,10 @@ func (m *mockAPIKeyServiceRepository) GetCredentialsByAPIKeyHash(ctx context.Con
 	return nil, aggregators.ErrAggregatorNotFound
 }
 
+func (m *mockAPIKeyServiceRepository) ListAggregatorsNeedingTokenRefresh(ctx context.Context, expiryBuffer time.Duration) ([]*aggregators.AggregatorCredentials, error) {
+	return nil, nil
+}
+
 // =============================================================================
 // ValidateKey Delegation Tests
 // =============================================================================

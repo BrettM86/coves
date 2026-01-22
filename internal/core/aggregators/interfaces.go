@@ -57,6 +57,10 @@ type Repository interface {
 	UpdateAPIKeyLastUsed(ctx context.Context, did string) error
 	// RevokeAPIKey marks an API key as revoked (sets api_key_revoked_at)
 	RevokeAPIKey(ctx context.Context, did string) error
+
+	// ListAggregatorsNeedingTokenRefresh returns aggregators with active API keys
+	// whose OAuth tokens expire within the given buffer period
+	ListAggregatorsNeedingTokenRefresh(ctx context.Context, expiryBuffer time.Duration) ([]*AggregatorCredentials, error)
 }
 
 // Service defines the interface for aggregator business logic

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -411,6 +412,60 @@ func main() {
 	apiKeyService := aggregators.NewAPIKeyService(aggregatorRepo, oauthClient.ClientApp)
 	log.Println("✅ API key service initialized")
 
+	// Start aggregator token refresh background job
+	// Timing rationale:
+	// - Runs every 30 minutes to catch tokens before they expire
+	// - 1-hour expiry buffer ensures we refresh well before expiration
+	// - This gives us 2 attempts (at 60min and 30min before expiry) to refresh
+	// - Note: APIKeyService.TokenRefreshBuffer (5min) is for on-demand refresh during API calls,
+	//   while this background job provides proactive refresh for idle aggregators
+	tokenRefreshCtx, tokenRefreshCancel := context.WithCancel(context.Background())
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("[TOKEN-REFRESH] CRITICAL: Background job panicked",
+					"panic", r,
+				)
+			}
+		}()
+
+		ticker := time.NewTicker(30 * time.Minute)
+		defer ticker.Stop()
+
+		// Heartbeat counter for periodic health logging
+		cycleCount := 0
+
+		for {
+			select {
+			case <-tokenRefreshCtx.Done():
+				slog.Info("[TOKEN-REFRESH] Aggregator token refresh job stopped")
+				return
+			case <-ticker.C:
+				cycleCount++
+				refreshed, errs := apiKeyService.RefreshExpiringTokens(tokenRefreshCtx, 1*time.Hour)
+				if len(errs) > 0 {
+					slog.Warn("[TOKEN-REFRESH] Aggregator refresh completed with errors",
+						"refreshed", refreshed,
+						"failed", len(errs),
+					)
+					for _, err := range errs {
+						slog.Error("[TOKEN-REFRESH] Refresh error", "error", err)
+					}
+				} else if refreshed > 0 {
+					slog.Info("[TOKEN-REFRESH] Aggregator refresh completed",
+						"refreshed", refreshed,
+					)
+				} else if cycleCount%6 == 0 {
+					// Log heartbeat every 6 cycles (3 hours) when no work is done
+					slog.Info("[TOKEN-REFRESH] Heartbeat: background job running, no tokens needed refresh",
+						"cycles_completed", cycleCount,
+					)
+				}
+			}
+		}
+	}()
+	log.Println("Started aggregator token refresh background job (runs every 30 minutes)")
+
 	// Get instance DID for service auth validator audience
 	serviceDID := instanceDID // Use instance DID as the service audience
 
@@ -770,8 +825,9 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Stop OAuth cleanup background job
+	// Stop background jobs
 	cleanupCancel()
+	tokenRefreshCancel()
 
 	if err := server.Shutdown(ctx); err != nil {
 		log.Fatalf("Server shutdown error: %v", err)
