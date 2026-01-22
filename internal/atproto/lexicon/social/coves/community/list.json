@@ -38,6 +38,10 @@
             "type": "string",
             "format": "language",
             "description": "Filter by language"
+          },
+          "subscribed": {
+            "type": "boolean",
+            "description": "If true, only return communities the viewer is subscribed to. Requires authentication."
           }
         }
       },

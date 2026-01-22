@@ -2,8 +2,10 @@ package community
 
 import (
 	"Coves/internal/api/handlers/common"
+	"Coves/internal/api/middleware"
 	"Coves/internal/core/communities"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 )
@@ -36,23 +38,33 @@ func (h *ListHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 	// Parse limit (1-100, default 50)
 	limit := 50
 	if limitStr := query.Get("limit"); limitStr != "" {
-		if l, err := strconv.Atoi(limitStr); err == nil {
-			if l < 1 {
-				limit = 1
-			} else if l > 100 {
-				limit = 100
-			} else {
-				limit = l
-			}
+		l, err := strconv.Atoi(limitStr)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "InvalidRequest", "Invalid limit parameter: must be an integer")
+			return
+		}
+		if l < 1 {
+			limit = 1
+		} else if l > 100 {
+			limit = 100
+		} else {
+			limit = l
 		}
 	}
 
 	// Parse cursor (offset-based for now)
 	offset := 0
 	if cursorStr := query.Get("cursor"); cursorStr != "" {
-		if o, err := strconv.Atoi(cursorStr); err == nil && o >= 0 {
-			offset = o
+		o, err := strconv.Atoi(cursorStr)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "InvalidRequest", "Invalid cursor parameter: must be an integer")
+			return
 		}
+		if o < 0 {
+			writeError(w, http.StatusBadRequest, "InvalidRequest", "Invalid cursor parameter: must be non-negative")
+			return
+		}
+		offset = o
 	}
 
 	// Parse sort enum (default: popular)
@@ -87,13 +99,25 @@ func (h *ListHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Parse subscribed filter (requires authentication)
+	subscribedOnly := query.Get("subscribed") == "true"
+	var subscriberDID string
+	if subscribedOnly {
+		subscriberDID = middleware.GetUserDID(r)
+		if subscriberDID == "" {
+			writeError(w, http.StatusUnauthorized, "AuthRequired", "Authentication required for subscribed filter")
+			return
+		}
+	}
+
 	req := communities.ListCommunitiesRequest{
-		Limit:      limit,
-		Offset:     offset,
-		Sort:       sort,
-		Visibility: visibility,
-		Category:   query.Get("category"),
-		Language:   query.Get("language"),
+		Limit:         limit,
+		Offset:        offset,
+		Sort:          sort,
+		Visibility:    visibility,
+		Category:      query.Get("category"),
+		Language:      query.Get("language"),
+		SubscriberDID: subscriberDID,
 	}
 
 	// Get communities from AppView DB
@@ -123,7 +147,6 @@ func (h *ListHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		// Log encoding errors but don't return error response (headers already sent)
-		// This follows Go's standard practice for HTTP handlers
-		_ = err
+		log.Printf("Failed to encode community list response: %v", err)
 	}
 }

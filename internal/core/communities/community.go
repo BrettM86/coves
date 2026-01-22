@@ -141,12 +141,13 @@ type UpdateCommunityRequest struct {
 
 // ListCommunitiesRequest represents query parameters for listing communities
 type ListCommunitiesRequest struct {
-	Sort       string `json:"sort,omitempty"`       // Enum: popular, active, new, alphabetical
-	Visibility string `json:"visibility,omitempty"` // Filter: public, unlisted, private
-	Category   string `json:"category,omitempty"`   // Optional: filter by category (future)
-	Language   string `json:"language,omitempty"`   // Optional: filter by language (future)
-	Limit      int    `json:"limit"`                // 1-100, default 50
-	Offset     int    `json:"offset"`               // Pagination offset
+	Sort          string `json:"sort,omitempty"`          // Enum: popular, active, new, alphabetical
+	Visibility    string `json:"visibility,omitempty"`    // Filter: public, unlisted, private
+	Category      string `json:"category,omitempty"`      // Optional: filter by category (future)
+	Language      string `json:"language,omitempty"`      // Optional: filter by language (future)
+	SubscriberDID string `json:"subscriberDid,omitempty"` // If set, filter to only subscribed communities
+	Limit         int    `json:"limit"`                   // 1-100, default 50
+	Offset        int    `json:"offset"`                  // Pagination offset
 }
 
 // SearchCommunitiesRequest represents query parameters for searching communities

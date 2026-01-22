@@ -350,8 +350,16 @@ func (r *postgresCommunityRepo) List(ctx context.Context, req communities.ListCo
 	args := []interface{}{}
 	argCount := 1
 
+	// Build JOIN clause for subscribed filter
+	joinClause := ""
+	if req.SubscriberDID != "" {
+		joinClause = fmt.Sprintf("INNER JOIN community_subscriptions cs ON c.did = cs.community_did AND cs.user_did = $%d", argCount)
+		args = append(args, req.SubscriberDID)
+		argCount++
+	}
+
 	if req.Visibility != "" {
-		whereClauses = append(whereClauses, fmt.Sprintf("visibility = $%d", argCount))
+		whereClauses = append(whereClauses, fmt.Sprintf("c.visibility = $%d", argCount))
 		args = append(args, req.Visibility)
 		argCount++
 	}
@@ -373,39 +381,40 @@ func (r *postgresCommunityRepo) List(ctx context.Context, req communities.ListCo
 	switch req.Sort {
 	case "popular":
 		// Most subscribers (default)
-		sortColumn = "subscriber_count"
+		sortColumn = "c.subscriber_count"
 		sortOrder = "DESC"
 	case "active":
 		// Most posts/activity
-		sortColumn = "post_count"
+		sortColumn = "c.post_count"
 		sortOrder = "DESC"
 	case "new":
 		// Recently created
-		sortColumn = "created_at"
+		sortColumn = "c.created_at"
 		sortOrder = "DESC"
 	case "alphabetical":
 		// Sorted by name A-Z
-		sortColumn = "name"
+		sortColumn = "c.name"
 		sortOrder = "ASC"
 	default:
 		// Fallback to popular if empty or invalid (should be validated in handler)
-		sortColumn = "subscriber_count"
+		sortColumn = "c.subscriber_count"
 		sortOrder = "DESC"
 	}
 
 	// Get communities with pagination
 	query := fmt.Sprintf(`
-		SELECT id, did, handle, name, display_name, description, description_facets,
-			avatar_cid, banner_cid, owner_did, created_by_did, hosted_by_did,
-			visibility, allow_external_discovery, moderation_type, content_warnings,
-			member_count, subscriber_count, post_count,
-			federated_from, federated_id, created_at, updated_at,
-			record_uri, record_cid
-		FROM communities
+		SELECT c.id, c.did, c.handle, c.name, c.display_name, c.description, c.description_facets,
+			c.avatar_cid, c.banner_cid, c.owner_did, c.created_by_did, c.hosted_by_did,
+			c.visibility, c.allow_external_discovery, c.moderation_type, c.content_warnings,
+			c.member_count, c.subscriber_count, c.post_count,
+			c.federated_from, c.federated_id, c.created_at, c.updated_at,
+			c.record_uri, c.record_cid
+		FROM communities c
+		%s
 		%s
 		ORDER BY %s %s
 		LIMIT $%d OFFSET $%d`,
-		whereClause, sortColumn, sortOrder, argCount, argCount+1)
+		joinClause, whereClause, sortColumn, sortOrder, argCount, argCount+1)
 
 	args = append(args, req.Limit, req.Offset)
 
