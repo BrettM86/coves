@@ -2,6 +2,7 @@ package votes
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -121,9 +122,9 @@ func (s *voteService) CreateVote(ctx context.Context, session *oauth.ClientSessi
 	// handles orphaned votes correctly by only updating counts for non-deleted subjects.
 	// This avoids race conditions and eventual consistency issues.
 
-	// Check for existing vote by querying PDS directly (source of truth)
-	// This avoids eventual consistency issues with the AppView database
-	existing, err := s.findExistingVote(ctx, pdsClient, req.Subject.URI)
+	// Check for existing vote using cache with PDS fallback
+	// First check populates cache from PDS, subsequent checks are O(1) lookups
+	existing, err := s.findExistingVoteWithCache(ctx, pdsClient, session.AccountDID.String(), req.Subject.URI)
 	if err != nil {
 		s.logger.Error("failed to check existing vote on PDS",
 			"error", err,
@@ -239,9 +240,9 @@ func (s *voteService) DeleteVote(ctx context.Context, session *oauth.ClientSessi
 		return fmt.Errorf("failed to create PDS client: %w", err)
 	}
 
-	// Find existing vote by querying PDS directly (source of truth)
-	// This avoids eventual consistency issues with the AppView database
-	existing, err := s.findExistingVote(ctx, pdsClient, req.Subject.URI)
+	// Find existing vote using cache with PDS fallback
+	// First check populates cache from PDS, subsequent checks are O(1) lookups
+	existing, err := s.findExistingVoteWithCache(ctx, pdsClient, session.AccountDID.String(), req.Subject.URI)
 	if err != nil {
 		s.logger.Error("failed to find vote on PDS",
 			"error", err,
@@ -310,11 +311,58 @@ type existingVote struct {
 	Direction string
 }
 
-// findExistingVote queries the user's PDS directly to find an existing vote for a subject.
-// This avoids eventual consistency issues with the AppView database populated by Jetstream.
-// Paginates through all vote records to handle users with >100 votes.
+// findExistingVoteWithCache uses the vote cache for O(1) lookups when available.
+// Falls back to direct PDS pagination if cache is unavailable or cannot be populated.
+func (s *voteService) findExistingVoteWithCache(ctx context.Context, pdsClient pds.Client, userDID string, subjectURI string) (*existingVote, error) {
+	if s.cache != nil {
+		if !s.cache.IsCached(userDID) {
+			// Populate cache first (fetches all votes via pagination, then cached for subsequent O(1) lookups)
+			if err := s.cache.FetchAndCacheFromPDS(ctx, pdsClient); err != nil {
+				// Auth errors won't succeed on fallback either - propagate immediately
+				if errors.Is(err, ErrNotAuthorized) {
+					return nil, err
+				}
+				// Log warning for other errors and fall back to direct PDS query
+				s.logger.Warn("failed to populate vote cache, falling back to PDS pagination",
+					"error", err,
+					"user", userDID,
+					"subject", subjectURI)
+			}
+		}
+
+		if s.cache.IsCached(userDID) {
+			cached := s.cache.GetVote(userDID, subjectURI)
+			if cached == nil {
+				s.logger.Debug("vote existence check via cache: not found",
+					"user", userDID,
+					"subject", subjectURI)
+				return nil, nil // No vote exists
+			}
+			s.logger.Debug("vote existence check via cache: found",
+				"user", userDID,
+				"subject", subjectURI,
+				"direction", cached.Direction)
+			return &existingVote{
+				URI:       cached.URI,
+				RKey:      cached.RKey,
+				Direction: cached.Direction,
+				// CID not cached - not needed for toggle/delete operations
+			}, nil
+		}
+	}
+
+	// Fallback: query PDS directly via pagination
+	s.logger.Debug("vote existence check via PDS pagination (cache unavailable)",
+		"user", userDID,
+		"subject", subjectURI)
+	return s.findExistingVoteFromPDS(ctx, pdsClient, subjectURI)
+}
+
+// findExistingVoteFromPDS queries the user's PDS directly to find an existing vote for a subject.
+// This is the slow fallback path that paginates through all vote records.
+// Prefer findExistingVoteWithCache for production use.
 // Returns the vote record with rkey, or nil if no vote exists for the subject.
-func (s *voteService) findExistingVote(ctx context.Context, pdsClient pds.Client, subjectURI string) (*existingVote, error) {
+func (s *voteService) findExistingVoteFromPDS(ctx context.Context, pdsClient pds.Client, subjectURI string) (*existingVote, error) {
 	cursor := ""
 	const pageSize = 100
 
