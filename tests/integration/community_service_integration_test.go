@@ -69,7 +69,9 @@ func TestCommunityService_CreateWithRealPDS(t *testing.T) {
 
 		// Generate unique community name (keep short for DNS label limit)
 		// Must start with letter, can contain alphanumeric and hyphens
-		uniqueName := fmt.Sprintf("svc%d", time.Now().UnixNano()%1000000)
+		// Use full Unix seconds + nanoseconds remainder for better uniqueness across runs
+		now := time.Now()
+		uniqueName := fmt.Sprintf("svc%d%d", now.Unix()%100000, now.UnixNano()%10000)
 
 		// Create community via service (FULL PRODUCTION CODE PATH)
 		t.Logf("Creating community via service.CreateCommunity()...")
@@ -319,7 +321,9 @@ func TestCommunityService_UpdateWithRealPDS(t *testing.T) {
 
 	t.Run("updates community with real PDS", func(t *testing.T) {
 		// First, create a community
-		uniqueName := fmt.Sprintf("upd%d", time.Now().UnixNano()%1000000)
+		// Use full Unix seconds + nanoseconds remainder for better uniqueness across runs
+		now := time.Now()
+		uniqueName := fmt.Sprintf("upd%d%d", now.Unix()%100000, now.UnixNano()%10000)
 		creatorDID := "did:plc:updatetestuser"
 
 		t.Logf("Creating community to update...")
@@ -389,7 +393,9 @@ func TestCommunityService_UpdateWithRealPDS(t *testing.T) {
 
 	t.Run("rejects unauthorized updates", func(t *testing.T) {
 		// Create a community
-		uniqueName := fmt.Sprintf("auth%d", time.Now().UnixNano()%1000000)
+		// Use full Unix seconds + nanoseconds remainder for better uniqueness across runs
+		now := time.Now()
+		uniqueName := fmt.Sprintf("auth%d%d", now.Unix()%100000, now.UnixNano()%10000)
 		creatorDID := "did:plc:creator123"
 
 		community, err := service.CreateCommunity(ctx, communities.CreateCommunityRequest{
@@ -512,7 +518,9 @@ func TestPasswordAuthentication(t *testing.T) {
 
 	t.Run("generated password works for session creation", func(t *testing.T) {
 		// Create a community with PDS-generated password
-		uniqueName := fmt.Sprintf("pwd%d", time.Now().UnixNano()%1000000)
+		// Use full Unix seconds + nanoseconds remainder for better uniqueness across runs
+		now := time.Now()
+		uniqueName := fmt.Sprintf("pwd%d%d", now.Unix()%100000, now.UnixNano()%10000)
 
 		t.Logf("Creating community with generated password...")
 		community, err := service.CreateCommunity(ctx, communities.CreateCommunityRequest{

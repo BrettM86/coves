@@ -80,8 +80,9 @@ func TestCommentE2E_CreateWithJetstream(t *testing.T) {
 
 	// Create test user on PDS
 	// Use shorter handle to avoid PDS length limits (max 20 chars for label)
-	testUserHandle := fmt.Sprintf("cmt%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	testUserEmail := fmt.Sprintf("cmt%d@test.local", time.Now().UnixNano()%1000000)
+	testID := uniqueTestID()
+	testUserHandle := fmt.Sprintf("cmt%s.local.coves.dev", testID)
+	testUserEmail := fmt.Sprintf("cmt%s@test.local", testID)
 	testUserPassword := "test-password-123"
 
 	t.Logf("Creating test user on PDS: %s", testUserHandle)
@@ -294,8 +295,9 @@ func TestCommentE2E_UpdateWithJetstream(t *testing.T) {
 	postRepo := postgres.NewPostRepository(db)
 
 	// Create test user on PDS
-	testUserHandle := fmt.Sprintf("cmtup%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	testUserEmail := fmt.Sprintf("cmtup%d@test.local", time.Now().UnixNano()%1000000)
+	testID := uniqueTestID()
+	testUserHandle := fmt.Sprintf("cmtup%s.local.coves.dev", testID)
+	testUserEmail := fmt.Sprintf("cmtup%s@test.local", testID)
 	testUserPassword := "test-password-123"
 
 	pdsAccessToken, userDID, err := createPDSAccount(pdsURL, testUserHandle, testUserEmail, testUserPassword)
@@ -522,8 +524,9 @@ func TestCommentE2E_DeleteWithJetstream(t *testing.T) {
 	commentRepo := postgres.NewCommentRepository(db)
 	postRepo := postgres.NewPostRepository(db)
 
-	testUserHandle := fmt.Sprintf("cmtdl%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	testUserEmail := fmt.Sprintf("cmtdl%d@test.local", time.Now().UnixNano()%1000000)
+	testID := uniqueTestID()
+	testUserHandle := fmt.Sprintf("cmtdl%s.local.coves.dev", testID)
+	testUserEmail := fmt.Sprintf("cmtdl%s@test.local", testID)
 	testUserPassword := "test-password-123"
 
 	pdsAccessToken, userDID, err := createPDSAccount(pdsURL, testUserHandle, testUserEmail, testUserPassword)
@@ -888,12 +891,14 @@ func TestCommentE2E_Authorization(t *testing.T) {
 	postRepo := postgres.NewPostRepository(db)
 
 	// Create two test users on PDS
-	userAHandle := fmt.Sprintf("usera%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	userAEmail := fmt.Sprintf("usera%d@test.local", time.Now().UnixNano()%1000000)
+	userAID := uniqueTestID()
+	userAHandle := fmt.Sprintf("usera%s.local.coves.dev", userAID)
+	userAEmail := fmt.Sprintf("usera%s@test.local", userAID)
 	userAPassword := "test-password-123"
 
-	userBHandle := fmt.Sprintf("userb%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	userBEmail := fmt.Sprintf("userb%d@test.local", time.Now().UnixNano()%1000000)
+	userBID := uniqueTestID()
+	userBHandle := fmt.Sprintf("userb%s.local.coves.dev", userBID)
+	userBEmail := fmt.Sprintf("userb%s@test.local", userBID)
 	userBPassword := "test-password-123"
 
 	pdsAccessTokenA, userADID, err := createPDSAccount(pdsURL, userAHandle, userAEmail, userAPassword)
@@ -1078,8 +1083,9 @@ func TestCommentE2E_ValidationErrors(t *testing.T) {
 	postRepo := postgres.NewPostRepository(db)
 
 	// Create test user on PDS
-	testUserHandle := fmt.Sprintf("valtest%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	testUserEmail := fmt.Sprintf("valtest%d@test.local", time.Now().UnixNano()%1000000)
+	testID := uniqueTestID()
+	testUserHandle := fmt.Sprintf("valtest%s.local.coves.dev", testID)
+	testUserEmail := fmt.Sprintf("valtest%s@test.local", testID)
 	testUserPassword := "test-password-123"
 
 	pdsAccessToken, userDID, err := createPDSAccount(pdsURL, testUserHandle, testUserEmail, testUserPassword)

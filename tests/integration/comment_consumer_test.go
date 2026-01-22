@@ -1068,6 +1068,12 @@ func TestCommentConsumer_OutOfOrderReconciliation(t *testing.T) {
 	postURI := createTestPost(t, db, testCommunity, testUser.DID, "OOO Test Post", 0, time.Now())
 
 	t.Run("Child arrives before parent - count reconciled", func(t *testing.T) {
+		// Clean up comments to ensure isolation from other tests
+		_, cleanErr := db.ExecContext(ctx, "DELETE FROM comments")
+		if cleanErr != nil {
+			t.Fatalf("Failed to clean up comments: %v", cleanErr)
+		}
+
 		// Scenario: User A creates comment C1 on post
 		//           User B creates reply C2 to C1
 		//           Jetstream delivers C2 before C1 (different repos)
@@ -1162,6 +1168,26 @@ func TestCommentConsumer_OutOfOrderReconciliation(t *testing.T) {
 
 		// THIS IS THE KEY TEST: Parent should have reply_count = 1 due to reconciliation
 		if parentComment.ReplyCount != 1 {
+			// Debug: Log the actual database state
+			var count int
+			if countErr := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM comments WHERE parent_uri = $1 AND deleted_at IS NULL", parentURI).Scan(&count); countErr != nil {
+				t.Logf("Debug: Failed to count children: %v", countErr)
+			} else {
+				t.Logf("Debug: Actual COUNT of children with parent_uri=%s: %d", parentURI, count)
+			}
+
+			// Log all comments in the database
+			rows, _ := db.QueryContext(ctx, "SELECT uri, parent_uri FROM comments ORDER BY created_at")
+			if rows != nil {
+				defer rows.Close()
+				t.Logf("Debug: All comments in database:")
+				for rows.Next() {
+					var uri, puri string
+					rows.Scan(&uri, &puri)
+					t.Logf("  uri=%s parent_uri=%s", uri, puri)
+				}
+			}
+
 			t.Errorf("Expected parent reply_count to be 1 (reconciled), got %d", parentComment.ReplyCount)
 			t.Logf("This indicates out-of-order reconciliation failed!")
 		}
@@ -1177,8 +1203,17 @@ func TestCommentConsumer_OutOfOrderReconciliation(t *testing.T) {
 	})
 
 	t.Run("Multiple children arrive before parent", func(t *testing.T) {
+		// Clean up comments from previous subtest to ensure isolation
+		_, cleanErr := db.ExecContext(ctx, "DELETE FROM comments")
+		if cleanErr != nil {
+			t.Fatalf("Failed to clean up comments: %v", cleanErr)
+		}
+
 		parentRkey := generateTID()
 		parentURI := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, parentRkey)
+
+		t.Logf("Debug: postURI = %s", postURI)
+		t.Logf("Debug: parentURI = %s", parentURI)
 
 		// Index 3 children before parent
 		for i := 1; i <= 3; i++ {
@@ -1256,6 +1291,26 @@ func TestCommentConsumer_OutOfOrderReconciliation(t *testing.T) {
 		}
 
 		if parentComment.ReplyCount != 3 {
+			// Debug: Log the actual database state
+			var count int
+			if countErr := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM comments WHERE parent_uri = $1 AND deleted_at IS NULL", parentURI).Scan(&count); countErr != nil {
+				t.Logf("Debug: Failed to count children: %v", countErr)
+			} else {
+				t.Logf("Debug: Actual COUNT of children with parent_uri=%s: %d", parentURI, count)
+			}
+
+			// Log all comments in the database
+			rows, _ := db.QueryContext(ctx, "SELECT uri, parent_uri FROM comments ORDER BY created_at")
+			if rows != nil {
+				defer rows.Close()
+				t.Logf("Debug: All comments in database:")
+				for rows.Next() {
+					var uri, puri string
+					rows.Scan(&uri, &puri)
+					t.Logf("  uri=%s parent_uri=%s", uri, puri)
+				}
+			}
+
 			t.Errorf("Expected parent reply_count to be 3 (reconciled), got %d", parentComment.ReplyCount)
 		}
 	})

@@ -81,9 +81,14 @@ func setupTestDB(t *testing.T) *sql.DB {
 
 	// Clean up any existing test data (order matters due to FK constraints)
 	// Delete subscriptions first (references communities and users)
-	_, err = db.Exec("DELETE FROM subscriptions")
+	_, err = db.Exec("DELETE FROM community_subscriptions")
 	if err != nil {
 		t.Logf("Warning: Failed to clean up subscriptions: %v", err)
+	}
+	// Delete comments (references posts)
+	_, err = db.Exec("DELETE FROM comments")
+	if err != nil {
+		t.Logf("Warning: Failed to clean up comments: %v", err)
 	}
 	// Delete posts (references communities)
 	_, err = db.Exec("DELETE FROM posts")

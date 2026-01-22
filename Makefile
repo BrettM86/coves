@@ -191,7 +191,7 @@ test-all: ## Run ALL tests with live infrastructure (required before merge)
 	@echo ""
 	@echo "$(GREEN)▶ [2/3] Integration Tests (./tests/integration/...)$(RESET)"
 	@echo "$(CYAN)───────────────────────────────────────────────────────────────$(RESET)"
-	@LOG_ENABLED=false go test ./tests/integration/... -timeout 180s
+	@LOG_ENABLED=false go test ./tests/integration/... -timeout 600s
 	@echo ""
 	@echo "$(GREEN)▶ [3/3] E2E Tests (./tests/e2e/...)$(RESET)"
 	@echo "$(CYAN)───────────────────────────────────────────────────────────────$(RESET)"

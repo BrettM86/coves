@@ -72,7 +72,7 @@ func TestCommunity_E2E(t *testing.T) {
 
 	// Clean up test data from previous runs (order matters due to FK constraints)
 	// Delete subscriptions first (references communities and users)
-	if _, cleanErr := db.Exec("DELETE FROM subscriptions"); cleanErr != nil {
+	if _, cleanErr := db.Exec("DELETE FROM community_subscriptions"); cleanErr != nil {
 		t.Logf("Warning: Failed to clean up subscriptions: %v", cleanErr)
 	}
 	// Delete posts (references communities)
@@ -105,10 +105,11 @@ func TestCommunity_E2E(t *testing.T) {
 
 	// Create a fresh test account on PDS (similar to user_journey_e2e_test pattern)
 	// Use unique handle to avoid conflicts between test runs
-	timestamp := time.Now().UnixNano()
-	shortTS := timestamp % 1000000 // Use last 6 digits for more uniqueness
-	instanceHandle := fmt.Sprintf("ce%d.local.coves.dev", shortTS)
-	instanceEmail := fmt.Sprintf("comm%d@test.com", shortTS)
+	// Use full Unix seconds + nanoseconds remainder for better uniqueness across runs
+	now := time.Now()
+	uniqueID := fmt.Sprintf("%d%d", now.Unix()%100000, now.UnixNano()%10000)
+	instanceHandle := fmt.Sprintf("ce%s.local.coves.dev", uniqueID)
+	instanceEmail := fmt.Sprintf("comm%s@test.com", uniqueID)
 	instancePassword := "test-password-community-123"
 
 	t.Logf("🔐 Creating test account on PDS: %s", instanceHandle)

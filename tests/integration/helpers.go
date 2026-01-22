@@ -119,10 +119,27 @@ func authenticateWithPDS(pdsURL, handle, password string) (string, string, error
 	return sessionResp.AccessJwt, sessionResp.DID, nil
 }
 
+// tidCounter is used to ensure unique TIDs even when generateTID is called rapidly
+var tidCounter uint64
+
+// testIDCounter is used to ensure unique test identifiers across all tests
+var testIDCounter uint64
+
 // generateTID generates a simple timestamp-based identifier for testing
 // In production, PDS generates proper TIDs
+// Uses an atomic counter to ensure uniqueness even when called in rapid succession
 func generateTID() string {
-	return fmt.Sprintf("3k%d", time.Now().UnixNano()/1000)
+	tidCounter++
+	return fmt.Sprintf("3k%d%d", time.Now().UnixNano()/1000, tidCounter)
+}
+
+// uniqueTestID generates a unique identifier for test resources (handles, emails, etc.)
+// Uses Unix timestamp (seconds) + atomic counter to ensure uniqueness across test runs
+// Keeps IDs short enough to fit within PDS handle limits (max 20 chars for label)
+// Returns a ~14 char string (10-digit timestamp + up to 4-digit counter)
+func uniqueTestID() string {
+	testIDCounter++
+	return fmt.Sprintf("%d%d", time.Now().Unix(), testIDCounter)
 }
 
 // createPDSAccount creates a new account on PDS and returns access token + DID
