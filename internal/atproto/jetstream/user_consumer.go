@@ -196,14 +196,17 @@ func (c *UserEventConsumer) handleEvent(ctx context.Context, data []byte) error 
 		return fmt.Errorf("failed to parse event: %w", err)
 	}
 
-	// We're interested in identity events (handle updates) and account events (new users)
+	// We're interested in identity events (handle updates), account events (new users),
+	// and commit events (profile updates from app.bsky.actor.profile)
 	switch event.Kind {
 	case "identity":
 		return c.handleIdentityEvent(ctx, &event)
 	case "account":
 		return c.handleAccountEvent(ctx, &event)
+	case "commit":
+		return c.handleCommitEvent(ctx, &event)
 	default:
-		// Ignore other event types (commits, etc.)
+		// Ignore other event types
 		return nil
 	}
 }
@@ -296,5 +299,94 @@ func (c *UserEventConsumer) handleAccountEvent(ctx context.Context, event *Jetst
 
 	// Account events don't include handle, so we skip them.
 	// Users are indexed via OAuth login or signup, not from account events.
+	return nil
+}
+
+// handleCommitEvent processes commit events for user profile updates
+// Only handles app.bsky.actor.profile collection for users already in our database.
+// This syncs profile data (displayName, bio, avatar, banner) from Bluesky profiles.
+func (c *UserEventConsumer) handleCommitEvent(ctx context.Context, event *JetstreamEvent) error {
+	if event.Commit == nil {
+		return nil
+	}
+
+	// Only handle app.bsky.actor.profile collection
+	if event.Commit.Collection != "app.bsky.actor.profile" {
+		return nil
+	}
+
+	// Only process users who exist in our database
+	_, err := c.userService.GetUserByDID(ctx, event.Did)
+	if err != nil {
+		if errors.Is(err, users.ErrUserNotFound) {
+			// User doesn't exist in our database - skip this event
+			// They'll be indexed when they actually interact with Coves
+			return nil
+		}
+		// Database error - propagate so it can be retried
+		return fmt.Errorf("failed to check if user exists: %w", err)
+	}
+
+	switch event.Commit.Operation {
+	case "create", "update":
+		return c.handleProfileUpdate(ctx, event.Did, event.Commit)
+	case "delete":
+		return c.handleProfileDelete(ctx, event.Did)
+	default:
+		return nil
+	}
+}
+
+// handleProfileUpdate processes profile create/update operations
+// Extracts displayName, description (bio), avatar, and banner from the record
+func (c *UserEventConsumer) handleProfileUpdate(ctx context.Context, did string, commit *CommitEvent) error {
+	if commit.Record == nil {
+		return nil
+	}
+
+	var displayName, bio, avatarCID, bannerCID *string
+
+	// Extract displayName
+	if dn, ok := commit.Record["displayName"].(string); ok {
+		displayName = &dn
+	}
+
+	// Extract description (bio)
+	if desc, ok := commit.Record["description"].(string); ok {
+		bio = &desc
+	}
+
+	// Extract avatar CID from blob ref structure
+	if avatarMap, ok := commit.Record["avatar"].(map[string]interface{}); ok {
+		if cid, ok := extractBlobCID(avatarMap); ok {
+			avatarCID = &cid
+		}
+	}
+
+	// Extract banner CID from blob ref structure
+	if bannerMap, ok := commit.Record["banner"].(map[string]interface{}); ok {
+		if cid, ok := extractBlobCID(bannerMap); ok {
+			bannerCID = &cid
+		}
+	}
+
+	_, err := c.userService.UpdateProfile(ctx, did, displayName, bio, avatarCID, bannerCID)
+	if err != nil {
+		return fmt.Errorf("failed to update user profile: %w", err)
+	}
+
+	log.Printf("Updated profile for user %s", did)
+	return nil
+}
+
+// handleProfileDelete processes profile delete operations
+// Clears all profile fields by passing empty strings
+func (c *UserEventConsumer) handleProfileDelete(ctx context.Context, did string) error {
+	empty := ""
+	_, err := c.userService.UpdateProfile(ctx, did, &empty, &empty, &empty, &empty)
+	if err != nil {
+		return fmt.Errorf("failed to clear user profile: %w", err)
+	}
+	log.Printf("Cleared profile for user %s", did)
 	return nil
 }

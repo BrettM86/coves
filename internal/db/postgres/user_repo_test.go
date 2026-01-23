@@ -701,3 +701,326 @@ func TestUserRepo_Delete_TimingPerformance(t *testing.T) {
 
 	t.Logf("Deletion of user with %d comments and %d votes took %v", 10, 10, elapsed)
 }
+
+// ============================================================================
+// Profile Update Tests (Phase 2: User Profile Avatar & Banner)
+// ============================================================================
+
+// stringPtr returns a pointer to the provided string (helper for optional params)
+func stringPtr(s string) *string {
+	return &s
+}
+
+func TestUserRepo_UpdateProfile(t *testing.T) {
+	db := setupUserTestDB(t)
+	defer func() { _ = db.Close() }()
+
+	testDID := "did:plc:testupdateprofile"
+	testHandle := "testupdateprofile.test"
+
+	defer cleanupUserData(t, db, testDID)
+
+	repo := NewUserRepository(db)
+	ctx := context.Background()
+
+	// Create user first
+	user := &users.User{
+		DID:    testDID,
+		Handle: testHandle,
+		PDSURL: "https://test.pds",
+	}
+	_, err := repo.Create(ctx, user)
+	require.NoError(t, err)
+
+	// Update profile with all fields
+	displayName := "Test User"
+	bio := "A test user biography"
+	avatarCID := "bafyavatarcid123"
+	bannerCID := "bafybannercid456"
+
+	updated, err := repo.UpdateProfile(ctx, testDID, &displayName, &bio, &avatarCID, &bannerCID)
+	assert.NoError(t, err)
+	require.NotNil(t, updated)
+
+	// Verify all fields were updated
+	assert.Equal(t, testDID, updated.DID)
+	assert.Equal(t, testHandle, updated.Handle)
+	assert.Equal(t, displayName, updated.DisplayName)
+	assert.Equal(t, bio, updated.Bio)
+	assert.Equal(t, avatarCID, updated.AvatarCID)
+	assert.Equal(t, bannerCID, updated.BannerCID)
+}
+
+func TestUserRepo_UpdateProfile_PartialUpdate(t *testing.T) {
+	db := setupUserTestDB(t)
+	defer func() { _ = db.Close() }()
+
+	testDID := "did:plc:testpartialupdate"
+	testHandle := "testpartialupdate.test"
+
+	defer cleanupUserData(t, db, testDID)
+
+	repo := NewUserRepository(db)
+	ctx := context.Background()
+
+	// Create user first
+	user := &users.User{
+		DID:    testDID,
+		Handle: testHandle,
+		PDSURL: "https://test.pds",
+	}
+	_, err := repo.Create(ctx, user)
+	require.NoError(t, err)
+
+	// First update: set display name and avatar
+	displayName := "Initial Name"
+	avatarCID := "bafyinitialavatar"
+	_, err = repo.UpdateProfile(ctx, testDID, &displayName, nil, &avatarCID, nil)
+	require.NoError(t, err)
+
+	// Second update: only update bio (leave other fields alone)
+	bio := "New bio text"
+	updated, err := repo.UpdateProfile(ctx, testDID, nil, &bio, nil, nil)
+	assert.NoError(t, err)
+	require.NotNil(t, updated)
+
+	// Verify bio was updated
+	assert.Equal(t, bio, updated.Bio)
+
+	// Verify previous values are preserved (nil means "don't change")
+	assert.Equal(t, displayName, updated.DisplayName)
+	assert.Equal(t, avatarCID, updated.AvatarCID)
+	assert.Empty(t, updated.BannerCID) // Was never set
+}
+
+func TestUserRepo_UpdateProfile_ReturnsUpdatedUser(t *testing.T) {
+	db := setupUserTestDB(t)
+	defer func() { _ = db.Close() }()
+
+	testDID := "did:plc:testreturnsupdated"
+	testHandle := "testreturnsupdated.test"
+
+	defer cleanupUserData(t, db, testDID)
+
+	repo := NewUserRepository(db)
+	ctx := context.Background()
+
+	// Create user first
+	user := &users.User{
+		DID:    testDID,
+		Handle: testHandle,
+		PDSURL: "https://test.pds",
+	}
+	created, err := repo.Create(ctx, user)
+	require.NoError(t, err)
+
+	// Update profile
+	displayName := "Updated Name"
+	updated, err := repo.UpdateProfile(ctx, testDID, &displayName, nil, nil, nil)
+	assert.NoError(t, err)
+	require.NotNil(t, updated)
+
+	// Verify the returned user has all core fields populated
+	assert.Equal(t, testDID, updated.DID)
+	assert.Equal(t, testHandle, updated.Handle)
+	assert.Equal(t, "https://test.pds", updated.PDSURL)
+	assert.Equal(t, displayName, updated.DisplayName)
+	assert.NotZero(t, updated.CreatedAt)
+	assert.NotZero(t, updated.UpdatedAt)
+
+	// UpdatedAt should be after CreatedAt (or equal if very fast)
+	assert.True(t, updated.UpdatedAt.After(created.CreatedAt) || updated.UpdatedAt.Equal(created.CreatedAt))
+}
+
+func TestUserRepo_UpdateProfile_UserNotFound(t *testing.T) {
+	db := setupUserTestDB(t)
+	defer func() { _ = db.Close() }()
+
+	repo := NewUserRepository(db)
+	ctx := context.Background()
+
+	// Try to update a non-existent user
+	displayName := "Ghost User"
+	_, err := repo.UpdateProfile(ctx, "did:plc:nonexistentuserprofile", &displayName, nil, nil, nil)
+	assert.ErrorIs(t, err, users.ErrUserNotFound)
+}
+
+func TestUserRepo_UpdateProfile_ClearFields(t *testing.T) {
+	db := setupUserTestDB(t)
+	defer func() { _ = db.Close() }()
+
+	testDID := "did:plc:testclearfields"
+	testHandle := "testclearfields.test"
+
+	defer cleanupUserData(t, db, testDID)
+
+	repo := NewUserRepository(db)
+	ctx := context.Background()
+
+	// Create user first
+	user := &users.User{
+		DID:    testDID,
+		Handle: testHandle,
+		PDSURL: "https://test.pds",
+	}
+	_, err := repo.Create(ctx, user)
+	require.NoError(t, err)
+
+	// Set profile fields
+	displayName := "Has Name"
+	bio := "Has Bio"
+	avatarCID := "bafyhasavatar"
+	_, err = repo.UpdateProfile(ctx, testDID, &displayName, &bio, &avatarCID, nil)
+	require.NoError(t, err)
+
+	// Clear display name by passing empty string
+	emptyName := ""
+	updated, err := repo.UpdateProfile(ctx, testDID, &emptyName, nil, nil, nil)
+	assert.NoError(t, err)
+	require.NotNil(t, updated)
+
+	// Verify display name was cleared
+	assert.Empty(t, updated.DisplayName)
+	// Other fields should remain
+	assert.Equal(t, bio, updated.Bio)
+	assert.Equal(t, avatarCID, updated.AvatarCID)
+}
+
+func TestUserRepo_GetByDID_ReturnsNewFields(t *testing.T) {
+	db := setupUserTestDB(t)
+	defer func() { _ = db.Close() }()
+
+	testDID := "did:plc:testgetbydidnewfields"
+	testHandle := "testgetbydidnewfields.test"
+
+	defer cleanupUserData(t, db, testDID)
+
+	repo := NewUserRepository(db)
+	ctx := context.Background()
+
+	// Create user first
+	user := &users.User{
+		DID:    testDID,
+		Handle: testHandle,
+		PDSURL: "https://test.pds",
+	}
+	_, err := repo.Create(ctx, user)
+	require.NoError(t, err)
+
+	// Update profile with all fields
+	displayName := "Profile Name"
+	bio := "Profile bio for testing"
+	avatarCID := "bafyprofileavatar"
+	bannerCID := "bafyprofilebanner"
+	_, err = repo.UpdateProfile(ctx, testDID, &displayName, &bio, &avatarCID, &bannerCID)
+	require.NoError(t, err)
+
+	// Retrieve user with GetByDID
+	retrieved, err := repo.GetByDID(ctx, testDID)
+	assert.NoError(t, err)
+	require.NotNil(t, retrieved)
+
+	// Verify all profile fields are returned
+	assert.Equal(t, testDID, retrieved.DID)
+	assert.Equal(t, testHandle, retrieved.Handle)
+	assert.Equal(t, displayName, retrieved.DisplayName)
+	assert.Equal(t, bio, retrieved.Bio)
+	assert.Equal(t, avatarCID, retrieved.AvatarCID)
+	assert.Equal(t, bannerCID, retrieved.BannerCID)
+}
+
+func TestUserRepo_GetByHandle_ReturnsNewFields(t *testing.T) {
+	db := setupUserTestDB(t)
+	defer func() { _ = db.Close() }()
+
+	testDID := "did:plc:testgetbyhandlenewfields"
+	testHandle := "testgetbyhandlenewfields.test"
+
+	defer cleanupUserData(t, db, testDID)
+
+	repo := NewUserRepository(db)
+	ctx := context.Background()
+
+	// Create user first
+	user := &users.User{
+		DID:    testDID,
+		Handle: testHandle,
+		PDSURL: "https://test.pds",
+	}
+	_, err := repo.Create(ctx, user)
+	require.NoError(t, err)
+
+	// Update profile with all fields
+	displayName := "Handle Test Name"
+	bio := "Handle test bio"
+	avatarCID := "bafyhandleavatar"
+	bannerCID := "bafyhandlebanner"
+	_, err = repo.UpdateProfile(ctx, testDID, &displayName, &bio, &avatarCID, &bannerCID)
+	require.NoError(t, err)
+
+	// Retrieve user with GetByHandle
+	retrieved, err := repo.GetByHandle(ctx, testHandle)
+	assert.NoError(t, err)
+	require.NotNil(t, retrieved)
+
+	// Verify all profile fields are returned
+	assert.Equal(t, testDID, retrieved.DID)
+	assert.Equal(t, testHandle, retrieved.Handle)
+	assert.Equal(t, displayName, retrieved.DisplayName)
+	assert.Equal(t, bio, retrieved.Bio)
+	assert.Equal(t, avatarCID, retrieved.AvatarCID)
+	assert.Equal(t, bannerCID, retrieved.BannerCID)
+}
+
+func TestUserRepo_GetByDIDs_ReturnsNewFields(t *testing.T) {
+	db := setupUserTestDB(t)
+	defer func() { _ = db.Close() }()
+
+	testDID1 := "did:plc:testgetbydidsbatch1"
+	testHandle1 := "testgetbydidsbatch1.test"
+	testDID2 := "did:plc:testgetbydidsbatch2"
+	testHandle2 := "testgetbydidsbatch2.test"
+
+	defer cleanupUserData(t, db, testDID1)
+	defer cleanupUserData(t, db, testDID2)
+
+	repo := NewUserRepository(db)
+	ctx := context.Background()
+
+	// Create users
+	user1 := &users.User{DID: testDID1, Handle: testHandle1, PDSURL: "https://test.pds"}
+	user2 := &users.User{DID: testDID2, Handle: testHandle2, PDSURL: "https://test.pds"}
+	_, err := repo.Create(ctx, user1)
+	require.NoError(t, err)
+	_, err = repo.Create(ctx, user2)
+	require.NoError(t, err)
+
+	// Update profiles
+	displayName1 := "Batch User 1"
+	avatarCID1 := "bafybatchavatar1"
+	displayName2 := "Batch User 2"
+	bio2 := "Batch user 2 bio"
+	_, err = repo.UpdateProfile(ctx, testDID1, &displayName1, nil, &avatarCID1, nil)
+	require.NoError(t, err)
+	_, err = repo.UpdateProfile(ctx, testDID2, &displayName2, &bio2, nil, nil)
+	require.NoError(t, err)
+
+	// Retrieve with GetByDIDs
+	userMap, err := repo.GetByDIDs(ctx, []string{testDID1, testDID2})
+	assert.NoError(t, err)
+	assert.Len(t, userMap, 2)
+
+	// Verify user 1
+	u1 := userMap[testDID1]
+	require.NotNil(t, u1)
+	assert.Equal(t, displayName1, u1.DisplayName)
+	assert.Equal(t, avatarCID1, u1.AvatarCID)
+	assert.Empty(t, u1.Bio)
+
+	// Verify user 2
+	u2 := userMap[testDID2]
+	require.NotNil(t, u2)
+	assert.Equal(t, displayName2, u2.DisplayName)
+	assert.Equal(t, bio2, u2.Bio)
+	assert.Empty(t, u2.AvatarCID)
+}

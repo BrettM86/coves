@@ -266,6 +266,7 @@ func (s *userService) IndexUser(ctx context.Context, did, handle, pdsURL string)
 
 // GetProfile retrieves a user's full profile with aggregated statistics.
 // Returns a ProfileViewDetailed matching the social.coves.actor.defs#profileViewDetailed lexicon.
+// Avatar and Banner CIDs are transformed to URLs using the user's PDS URL.
 func (s *userService) GetProfile(ctx context.Context, did string) (*ProfileViewDetailed, error) {
 	did = strings.TrimSpace(did)
 	if did == "" {
@@ -284,12 +285,42 @@ func (s *userService) GetProfile(ctx context.Context, did string) (*ProfileViewD
 		return nil, fmt.Errorf("failed to get profile stats: %w", err)
 	}
 
-	return &ProfileViewDetailed{
-		DID:       user.DID,
-		Handle:    user.Handle,
-		CreatedAt: user.CreatedAt,
-		Stats:     stats,
-	}, nil
+	profile := &ProfileViewDetailed{
+		DID:         user.DID,
+		Handle:      user.Handle,
+		CreatedAt:   user.CreatedAt,
+		Stats:       stats,
+		DisplayName: user.DisplayName,
+		Bio:         user.Bio,
+	}
+
+	// Transform avatar CID to URL if both CID and PDS URL are present
+	if user.AvatarCID != "" && user.PDSURL != "" {
+		profile.Avatar = fmt.Sprintf("%s/xrpc/com.atproto.sync.getBlob?did=%s&cid=%s",
+			strings.TrimSuffix(user.PDSURL, "/"), user.DID, user.AvatarCID)
+	}
+
+	// Transform banner CID to URL if both CID and PDS URL are present
+	if user.BannerCID != "" && user.PDSURL != "" {
+		profile.Banner = fmt.Sprintf("%s/xrpc/com.atproto.sync.getBlob?did=%s&cid=%s",
+			strings.TrimSuffix(user.PDSURL, "/"), user.DID, user.BannerCID)
+	}
+
+	return profile, nil
+}
+
+// UpdateProfile updates a user's profile fields (display name, bio, avatar, banner).
+// Nil values mean "don't change this field" - only non-nil values are updated.
+// Empty string values will clear the field in the database.
+// Returns the updated user with all fields populated.
+// Returns ErrUserNotFound if the user does not exist.
+func (s *userService) UpdateProfile(ctx context.Context, did string, displayName, bio, avatarCID, bannerCID *string) (*User, error) {
+	did = strings.TrimSpace(did)
+	if did == "" {
+		return nil, fmt.Errorf("DID is required")
+	}
+
+	return s.userRepo.UpdateProfile(ctx, did, displayName, bio, avatarCID, bannerCID)
 }
 
 func (s *userService) validateCreateRequest(req CreateUserRequest) error {

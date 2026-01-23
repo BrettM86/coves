@@ -1,0 +1,11 @@
+-- +goose Up
+ALTER TABLE users ADD COLUMN display_name TEXT;
+ALTER TABLE users ADD COLUMN bio TEXT;
+ALTER TABLE users ADD COLUMN avatar_cid TEXT;
+ALTER TABLE users ADD COLUMN banner_cid TEXT;
+
+-- +goose Down
+ALTER TABLE users DROP COLUMN IF EXISTS banner_cid;
+ALTER TABLE users DROP COLUMN IF EXISTS avatar_cid;
+ALTER TABLE users DROP COLUMN IF EXISTS bio;
+ALTER TABLE users DROP COLUMN IF EXISTS display_name;

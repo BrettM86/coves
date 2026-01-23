@@ -3,6 +3,7 @@ package routes
 import (
 	"Coves/internal/api/handlers/user"
 	"Coves/internal/api/middleware"
+	"Coves/internal/core/blobs"
 	"Coves/internal/core/users"
 	"encoding/json"
 	"errors"
@@ -27,7 +28,7 @@ func NewUserHandler(userService users.UserService) *UserHandler {
 
 // RegisterUserRoutes registers user-related XRPC endpoints on the router
 // Implements social.coves.actor.* lexicon endpoints
-func RegisterUserRoutes(r chi.Router, service users.UserService, authMiddleware *middleware.OAuthAuthMiddleware) {
+func RegisterUserRoutes(r chi.Router, service users.UserService, authMiddleware *middleware.OAuthAuthMiddleware, blobService blobs.Service) {
 	h := NewUserHandler(service)
 
 	// social.coves.actor.getprofile - query endpoint (public)
@@ -41,6 +42,12 @@ func RegisterUserRoutes(r chi.Router, service users.UserService, authMiddleware 
 	// This ONLY deletes AppView indexed data, NOT the user's atProto identity on their PDS.
 	deleteHandler := user.NewDeleteHandler(service)
 	r.With(authMiddleware.RequireAuth).Post("/xrpc/social.coves.actor.deleteAccount", deleteHandler.HandleDeleteAccount)
+
+	// social.coves.actor.updateProfile - procedure endpoint (authenticated)
+	// Updates the authenticated user's profile on their PDS (avatar, banner, displayName, bio).
+	// This writes directly to the user's PDS and the Jetstream consumer will index the change.
+	updateProfileHandler := user.NewUpdateProfileHandler(blobService, nil)
+	r.With(authMiddleware.RequireAuth).Post("/xrpc/social.coves.actor.updateProfile", updateProfileHandler.ServeHTTP)
 }
 
 // GetProfile handles social.coves.actor.getprofile

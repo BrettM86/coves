@@ -209,6 +209,26 @@ func (m *mockUserRepo) Delete(ctx context.Context, did string) error {
 	return nil
 }
 
+func (m *mockUserRepo) UpdateProfile(ctx context.Context, did string, displayName, bio, avatarCID, bannerCID *string) (*users.User, error) {
+	user, exists := m.users[did]
+	if !exists {
+		return nil, users.ErrUserNotFound
+	}
+	if displayName != nil {
+		user.DisplayName = *displayName
+	}
+	if bio != nil {
+		user.Bio = *bio
+	}
+	if avatarCID != nil {
+		user.AvatarCID = *avatarCID
+	}
+	if bannerCID != nil {
+		user.BannerCID = *bannerCID
+	}
+	return user, nil
+}
+
 // mockPostRepo is a mock implementation of the posts.Repository interface
 type mockPostRepo struct {
 	posts map[string]*posts.Post

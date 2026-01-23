@@ -34,6 +34,13 @@ type UserRepository interface {
 	// Returns counts of posts, comments, subscriptions, memberships, and total reputation.
 	GetProfileStats(ctx context.Context, did string) (*ProfileStats, error)
 
+	// UpdateProfile updates a user's profile fields (display name, bio, avatar, banner).
+	// Nil values mean "don't change this field" - only non-nil values are updated.
+	// Empty string values will clear the field in the database.
+	// Returns the updated user with all fields populated.
+	// Returns ErrUserNotFound if the user does not exist.
+	UpdateProfile(ctx context.Context, did string, displayName, bio, avatarCID, bannerCID *string) (*User, error)
+
 	// Delete removes a user and all associated data from the AppView database.
 	// This performs a cascading delete across all tables that reference the user's DID.
 	// The operation is atomic - either all data is deleted or none.
@@ -72,7 +79,15 @@ type UserService interface {
 
 	// GetProfile retrieves a user's full profile with aggregated statistics.
 	// Returns a ProfileViewDetailed matching the social.coves.actor.defs#profileViewDetailed lexicon.
+	// Avatar and Banner CIDs are transformed to URLs using the user's PDS URL.
 	GetProfile(ctx context.Context, did string) (*ProfileViewDetailed, error)
+
+	// UpdateProfile updates a user's profile fields (display name, bio, avatar, banner).
+	// Nil values mean "don't change this field" - only non-nil values are updated.
+	// Empty string values will clear the field in the database.
+	// Returns the updated user with all fields populated.
+	// Returns ErrUserNotFound if the user does not exist.
+	UpdateProfile(ctx context.Context, did string, displayName, bio, avatarCID, bannerCID *string) (*User, error)
 
 	// DeleteAccount removes a user and all associated data from the Coves AppView.
 	// This ONLY deletes AppView indexed data, NOT the user's atProto identity on their PDS.
