@@ -1,7 +1,6 @@
 package postgres
 
 import (
-	"Coves/internal/core/posts"
 	"context"
 	"database/sql"
 	"encoding/base64"
@@ -10,6 +9,9 @@ import (
 	"log"
 	"strings"
 	"time"
+
+	"Coves/internal/core/blobs"
+	"Coves/internal/core/posts"
 )
 
 type postgresPostRepo struct {
@@ -333,8 +335,9 @@ func (r *postgresPostRepo) scanAuthorPost(rows *sql.Rows) (*posts.PostView, erro
 	if communityHandle.Valid {
 		communityRef.Handle = communityHandle.String
 	}
-	if communityAvatar.Valid {
-		communityRef.Avatar = &communityAvatar.String
+	// Hydrate avatar CID to URL (instead of returning raw CID)
+	if avatarURL := blobs.HydrateBlobURL(communityPDSURL.String, communityRef.DID, communityAvatar.String); avatarURL != "" {
+		communityRef.Avatar = &avatarURL
 	}
 	if communityPDSURL.Valid {
 		communityRef.PDSURL = communityPDSURL.String

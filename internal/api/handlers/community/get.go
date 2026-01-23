@@ -1,9 +1,11 @@
 package community
 
 import (
-	"Coves/internal/core/communities"
 	"encoding/json"
+	"log"
 	"net/http"
+
+	"Coves/internal/core/communities"
 )
 
 // GetHandler handles community retrieval
@@ -40,12 +42,14 @@ func (h *GetHandler) HandleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Convert to detailed view for API response
+	view := community.ToCommunityViewDetailed()
+
 	// Return community data
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(community); err != nil {
+	if err := json.NewEncoder(w).Encode(view); err != nil {
 		// Log encoding errors but don't return error response (headers already sent)
-		// This follows Go's standard practice for HTTP handlers
-		_ = err
+		log.Printf("Failed to encode community get response: %v", err)
 	}
 }

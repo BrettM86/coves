@@ -408,7 +408,7 @@ func (r *postgresCommunityRepo) List(ctx context.Context, req communities.ListCo
 			c.visibility, c.allow_external_discovery, c.moderation_type, c.content_warnings,
 			c.member_count, c.subscriber_count, c.post_count,
 			c.federated_from, c.federated_id, c.created_at, c.updated_at,
-			c.record_uri, c.record_cid
+			c.record_uri, c.record_cid, c.pds_url
 		FROM communities c
 		%s
 		%s
@@ -432,7 +432,7 @@ func (r *postgresCommunityRepo) List(ctx context.Context, req communities.ListCo
 	for rows.Next() {
 		community := &communities.Community{}
 		var displayName, description, avatarCID, bannerCID, moderationType sql.NullString
-		var federatedFrom, federatedID, recordURI, recordCID sql.NullString
+		var federatedFrom, federatedID, recordURI, recordCID, pdsURL sql.NullString
 		var descFacets []byte
 		var contentWarnings []string
 
@@ -446,7 +446,7 @@ func (r *postgresCommunityRepo) List(ctx context.Context, req communities.ListCo
 			&community.MemberCount, &community.SubscriberCount, &community.PostCount,
 			&federatedFrom, &federatedID,
 			&community.CreatedAt, &community.UpdatedAt,
-			&recordURI, &recordCID,
+			&recordURI, &recordCID, &pdsURL,
 		)
 		if scanErr != nil {
 			return nil, fmt.Errorf("failed to scan community: %w", scanErr)
@@ -463,6 +463,7 @@ func (r *postgresCommunityRepo) List(ctx context.Context, req communities.ListCo
 		community.FederatedID = federatedID.String
 		community.RecordURI = recordURI.String
 		community.RecordCID = recordCID.String
+		community.PDSURL = pdsURL.String
 		if descFacets != nil {
 			community.DescriptionFacets = descFacets
 		}
@@ -510,7 +511,7 @@ func (r *postgresCommunityRepo) Search(ctx context.Context, req communities.Sear
 			visibility, allow_external_discovery, moderation_type, content_warnings,
 			member_count, subscriber_count, post_count,
 			federated_from, federated_id, created_at, updated_at,
-			record_uri, record_cid,
+			record_uri, record_cid, pds_url,
 			similarity(name, $1) + similarity(COALESCE(description, ''), $1) as relevance
 		FROM communities
 		%s AND (similarity(name, $1) + similarity(COALESCE(description, ''), $1)) > 0.2
@@ -534,7 +535,7 @@ func (r *postgresCommunityRepo) Search(ctx context.Context, req communities.Sear
 	for rows.Next() {
 		community := &communities.Community{}
 		var displayName, description, avatarCID, bannerCID, moderationType sql.NullString
-		var federatedFrom, federatedID, recordURI, recordCID sql.NullString
+		var federatedFrom, federatedID, recordURI, recordCID, pdsURL sql.NullString
 		var descFacets []byte
 		var contentWarnings []string
 		var relevance float64
@@ -549,7 +550,7 @@ func (r *postgresCommunityRepo) Search(ctx context.Context, req communities.Sear
 			&community.MemberCount, &community.SubscriberCount, &community.PostCount,
 			&federatedFrom, &federatedID,
 			&community.CreatedAt, &community.UpdatedAt,
-			&recordURI, &recordCID,
+			&recordURI, &recordCID, &pdsURL,
 			&relevance,
 		)
 		if scanErr != nil {
@@ -567,6 +568,7 @@ func (r *postgresCommunityRepo) Search(ctx context.Context, req communities.Sear
 		community.FederatedID = federatedID.String
 		community.RecordURI = recordURI.String
 		community.RecordCID = recordCID.String
+		community.PDSURL = pdsURL.String
 		if descFacets != nil {
 			community.DescriptionFacets = descFacets
 		}

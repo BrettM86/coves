@@ -5,6 +5,8 @@ import (
 	"log"
 	"strings"
 	"time"
+
+	"Coves/internal/core/blobs"
 )
 
 // Community represents a Coves community indexed from the firehose
@@ -56,6 +58,46 @@ type Community struct {
 type CommunityViewerState struct {
 	Subscribed *bool `json:"subscribed,omitempty"`
 	Member     *bool `json:"member,omitempty"`
+}
+
+// CommunityView is the API view for community lists
+// Based on social.coves.community.defs#communityView lexicon
+type CommunityView struct {
+	DID             string                `json:"did"`
+	Handle          string                `json:"handle,omitempty"`
+	Name            string                `json:"name"`
+	DisplayName     string                `json:"displayName,omitempty"`
+	DisplayHandle   string                `json:"displayHandle,omitempty"`
+	Avatar          string                `json:"avatar,omitempty"` // URL, not CID
+	Visibility      string                `json:"visibility,omitempty"`
+	SubscriberCount int                   `json:"subscriberCount"`
+	MemberCount     int                   `json:"memberCount"`
+	PostCount       int                   `json:"postCount"`
+	Viewer          *CommunityViewerState `json:"viewer,omitempty"`
+}
+
+// CommunityViewDetailed is the full API view for single community lookups
+// Based on social.coves.community.defs#communityViewDetailed lexicon
+type CommunityViewDetailed struct {
+	DID                    string                `json:"did"`
+	Handle                 string                `json:"handle,omitempty"`
+	Name                   string                `json:"name"`
+	DisplayName            string                `json:"displayName,omitempty"`
+	DisplayHandle          string                `json:"displayHandle,omitempty"`
+	Description            string                `json:"description,omitempty"`
+	Avatar                 string                `json:"avatar,omitempty"` // URL
+	Banner                 string                `json:"banner,omitempty"` // URL
+	CreatedByDID           string                `json:"createdBy,omitempty"`
+	HostedByDID            string                `json:"hostedBy,omitempty"`
+	Visibility             string                `json:"visibility,omitempty"`
+	ModerationType         string                `json:"moderationType,omitempty"`
+	ContentWarnings        []string              `json:"contentWarnings,omitempty"`
+	CreatedAt              time.Time             `json:"createdAt"`
+	AllowExternalDiscovery bool                  `json:"allowExternalDiscovery"`
+	SubscriberCount        int                   `json:"subscriberCount"`
+	MemberCount            int                   `json:"memberCount"`
+	PostCount              int                   `json:"postCount"`
+	Viewer                 *CommunityViewerState `json:"viewer,omitempty"`
 }
 
 // Subscription represents a lightweight feed follow (user subscribes to see posts)
@@ -203,4 +245,50 @@ func (c *Community) GetPDSURL() string {
 // Returns the community's PDS access token for blob upload authentication.
 func (c *Community) GetPDSAccessToken() string {
 	return c.PDSAccessToken
+}
+
+// ToCommunityView converts a Community to a CommunityView for API responses
+func (c *Community) ToCommunityView() *CommunityView {
+	view := &CommunityView{
+		DID:             c.DID,
+		Handle:          c.Handle,
+		Name:            c.Name,
+		DisplayName:     c.DisplayName,
+		DisplayHandle:   c.GetDisplayHandle(),
+		Avatar:          blobs.HydrateBlobURL(c.PDSURL, c.DID, c.AvatarCID),
+		Visibility:      c.Visibility,
+		SubscriberCount: c.SubscriberCount,
+		MemberCount:     c.MemberCount,
+		PostCount:       c.PostCount,
+		Viewer:          c.Viewer,
+	}
+
+	return view
+}
+
+// ToCommunityViewDetailed converts a Community to a CommunityViewDetailed for API responses
+func (c *Community) ToCommunityViewDetailed() *CommunityViewDetailed {
+	view := &CommunityViewDetailed{
+		DID:                    c.DID,
+		Handle:                 c.Handle,
+		Name:                   c.Name,
+		DisplayName:            c.DisplayName,
+		DisplayHandle:          c.GetDisplayHandle(),
+		Description:            c.Description,
+		Avatar:                 blobs.HydrateBlobURL(c.PDSURL, c.DID, c.AvatarCID),
+		Banner:                 blobs.HydrateBlobURL(c.PDSURL, c.DID, c.BannerCID),
+		CreatedByDID:           c.CreatedByDID,
+		HostedByDID:            c.HostedByDID,
+		Visibility:             c.Visibility,
+		ModerationType:         c.ModerationType,
+		ContentWarnings:        c.ContentWarnings,
+		CreatedAt:              c.CreatedAt,
+		AllowExternalDiscovery: c.AllowExternalDiscovery,
+		SubscriberCount:        c.SubscriberCount,
+		MemberCount:            c.MemberCount,
+		PostCount:              c.PostCount,
+		Viewer:                 c.Viewer,
+	}
+
+	return view
 }

@@ -1,7 +1,6 @@
 package postgres
 
 import (
-	"Coves/internal/core/posts"
 	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
@@ -11,6 +10,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"Coves/internal/core/blobs"
+	"Coves/internal/core/posts"
 )
 
 // feedRepoBase contains shared logic for timeline and discover feed repositories
@@ -345,7 +347,10 @@ func (r *feedRepoBase) scanFeedPost(rows *sql.Rows) (*posts.PostView, float64, e
 	if communityHandle.Valid {
 		communityRef.Handle = communityHandle.String
 	}
-	communityRef.Avatar = nullStringPtr(communityAvatar)
+	// Hydrate avatar CID to URL (instead of returning raw CID)
+	if avatarURL := blobs.HydrateBlobURL(communityPDSURL.String, communityRef.DID, communityAvatar.String); avatarURL != "" {
+		communityRef.Avatar = &avatarURL
+	}
 	if communityPDSURL.Valid {
 		communityRef.PDSURL = communityPDSURL.String
 	}

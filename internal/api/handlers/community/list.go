@@ -130,6 +130,12 @@ func (h *ListHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 	// Populate viewer state if authenticated
 	common.PopulateCommunityViewerState(r.Context(), r, h.repo, results)
 
+	// Convert to view structs for API response
+	views := make([]*communities.CommunityView, len(results))
+	for i, c := range results {
+		views[i] = c.ToCommunityView()
+	}
+
 	// Build response
 	var cursor string
 	if len(results) == limit {
@@ -139,7 +145,7 @@ func (h *ListHandler) HandleList(w http.ResponseWriter, r *http.Request) {
 	// If len(results) < limit, we've reached the end - cursor remains empty string
 
 	response := map[string]interface{}{
-		"communities": results,
+		"communities": views,
 		"cursor":      cursor,
 	}
 
