@@ -93,6 +93,10 @@ func (m *mockUserServiceForComments) DeleteAccount(ctx context.Context, did stri
 	return nil
 }
 
+func (m *mockUserServiceForComments) UpdateProfile(ctx context.Context, did string, input users.UpdateProfileInput) (*users.User, error) {
+	return nil, nil
+}
+
 // mockVoteServiceForComments implements votes.Service for testing getComments
 type mockVoteServiceForComments struct{}
 

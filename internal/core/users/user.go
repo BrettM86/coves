@@ -8,11 +8,15 @@ import (
 // This is NOT the user's repository - that lives in the PDS
 // This table only tracks metadata for efficient AppView queries
 type User struct {
-	CreatedAt time.Time `json:"createdAt" db:"created_at"`
-	UpdatedAt time.Time `json:"updatedAt" db:"updated_at"`
-	DID       string    `json:"did" db:"did"`
-	Handle    string    `json:"handle" db:"handle"`
-	PDSURL    string    `json:"pdsUrl" db:"pds_url"`
+	CreatedAt   time.Time `json:"createdAt" db:"created_at"`
+	UpdatedAt   time.Time `json:"updatedAt" db:"updated_at"`
+	DID         string    `json:"did" db:"did"`
+	Handle      string    `json:"handle" db:"handle"`
+	PDSURL      string    `json:"pdsUrl" db:"pds_url"`
+	DisplayName string    `json:"displayName,omitempty" db:"display_name"`
+	Bio         string    `json:"bio,omitempty" db:"bio"`
+	AvatarCID   string    `json:"avatarCid,omitempty" db:"avatar_cid"`
+	BannerCID   string    `json:"bannerCid,omitempty" db:"banner_cid"`
 }
 
 // CreateUserRequest represents the input for creating a new user
@@ -52,11 +56,14 @@ type ProfileStats struct {
 // ProfileViewDetailed is the full profile response
 // Matches the social.coves.actor.defs#profileViewDetailed lexicon
 type ProfileViewDetailed struct {
-	DID       string        `json:"did"`
-	Handle    string        `json:"handle,omitempty"`
-	CreatedAt time.Time     `json:"createdAt"`
-	Stats     *ProfileStats `json:"stats,omitempty"`
-	// Future fields (require additional infrastructure):
-	// DisplayName, Bio, Avatar, Banner (from PDS profile record)
+	DID         string        `json:"did"`
+	Handle      string        `json:"handle,omitempty"`
+	CreatedAt   time.Time     `json:"createdAt"`
+	Stats       *ProfileStats `json:"stats,omitempty"`
+	DisplayName string        `json:"displayName,omitempty"`
+	// Bio is the user's biography/description. Maps to JSON "description" for atProto lexicon compatibility.
+	Bio    string `json:"description,omitempty"`
+	Avatar string `json:"avatar,omitempty"` // URL, not CID
+	Banner string `json:"banner,omitempty"` // URL, not CID
 	// Viewer (requires user-to-user blocking infrastructure)
 }

@@ -83,6 +83,14 @@ func (m *MockUserService) DeleteAccount(ctx context.Context, did string) error {
 	return args.Error(0)
 }
 
+func (m *MockUserService) UpdateProfile(ctx context.Context, did string, input users.UpdateProfileInput) (*users.User, error) {
+	args := m.Called(ctx, did, input)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*users.User), args.Error(1)
+}
+
 // TestDeleteAccountHandler_Success tests successful account deletion via XRPC
 // Uses the actual production handler with middleware context injection
 func TestDeleteAccountHandler_Success(t *testing.T) {

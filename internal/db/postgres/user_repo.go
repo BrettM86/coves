@@ -48,10 +48,12 @@ func (r *postgresUserRepo) Create(ctx context.Context, user *users.User) (*users
 // GetByDID retrieves a user by their DID
 func (r *postgresUserRepo) GetByDID(ctx context.Context, did string) (*users.User, error) {
 	user := &users.User{}
-	query := `SELECT did, handle, pds_url, created_at, updated_at FROM users WHERE did = $1`
+	query := `SELECT did, handle, pds_url, created_at, updated_at, display_name, bio, avatar_cid, banner_cid FROM users WHERE did = $1`
 
+	var displayName, bio, avatarCID, bannerCID sql.NullString
 	err := r.db.QueryRowContext(ctx, query, did).
-		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt)
+		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt,
+			&displayName, &bio, &avatarCID, &bannerCID)
 
 	if err == sql.ErrNoRows {
 		return nil, users.ErrUserNotFound
@@ -60,16 +62,23 @@ func (r *postgresUserRepo) GetByDID(ctx context.Context, did string) (*users.Use
 		return nil, fmt.Errorf("failed to get user by DID: %w", err)
 	}
 
+	user.DisplayName = displayName.String
+	user.Bio = bio.String
+	user.AvatarCID = avatarCID.String
+	user.BannerCID = bannerCID.String
+
 	return user, nil
 }
 
 // GetByHandle retrieves a user by their handle
 func (r *postgresUserRepo) GetByHandle(ctx context.Context, handle string) (*users.User, error) {
 	user := &users.User{}
-	query := `SELECT did, handle, pds_url, created_at, updated_at FROM users WHERE handle = $1`
+	query := `SELECT did, handle, pds_url, created_at, updated_at, display_name, bio, avatar_cid, banner_cid FROM users WHERE handle = $1`
 
+	var displayName, bio, avatarCID, bannerCID sql.NullString
 	err := r.db.QueryRowContext(ctx, query, handle).
-		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt)
+		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt,
+			&displayName, &bio, &avatarCID, &bannerCID)
 
 	if err == sql.ErrNoRows {
 		return nil, users.ErrUserNotFound
@@ -77,6 +86,11 @@ func (r *postgresUserRepo) GetByHandle(ctx context.Context, handle string) (*use
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user by handle: %w", err)
 	}
+
+	user.DisplayName = displayName.String
+	user.Bio = bio.String
+	user.AvatarCID = avatarCID.String
+	user.BannerCID = bannerCID.String
 
 	return user, nil
 }
@@ -88,10 +102,12 @@ func (r *postgresUserRepo) UpdateHandle(ctx context.Context, did, newHandle stri
 		UPDATE users
 		SET handle = $2, updated_at = NOW()
 		WHERE did = $1
-		RETURNING did, handle, pds_url, created_at, updated_at`
+		RETURNING did, handle, pds_url, created_at, updated_at, display_name, bio, avatar_cid, banner_cid`
 
+	var displayName, bio, avatarCID, bannerCID sql.NullString
 	err := r.db.QueryRowContext(ctx, query, did, newHandle).
-		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt)
+		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt,
+			&displayName, &bio, &avatarCID, &bannerCID)
 
 	if err == sql.ErrNoRows {
 		return nil, users.ErrUserNotFound
@@ -103,6 +119,11 @@ func (r *postgresUserRepo) UpdateHandle(ctx context.Context, did, newHandle stri
 		}
 		return nil, fmt.Errorf("failed to update handle: %w", err)
 	}
+
+	user.DisplayName = displayName.String
+	user.Bio = bio.String
+	user.AvatarCID = avatarCID.String
+	user.BannerCID = bannerCID.String
 
 	return user, nil
 }
@@ -132,7 +153,7 @@ func (r *postgresUserRepo) GetByDIDs(ctx context.Context, dids []string) (map[st
 
 	// Build parameterized query with IN clause
 	// Use ANY($1) for PostgreSQL array support with pq.Array() for type conversion
-	query := `SELECT did, handle, pds_url, created_at, updated_at FROM users WHERE did = ANY($1)`
+	query := `SELECT did, handle, pds_url, created_at, updated_at, display_name, bio, avatar_cid, banner_cid FROM users WHERE did = ANY($1)`
 
 	rows, err := r.db.QueryContext(ctx, query, pq.Array(dids))
 	if err != nil {
@@ -148,10 +169,16 @@ func (r *postgresUserRepo) GetByDIDs(ctx context.Context, dids []string) (map[st
 	result := make(map[string]*users.User, len(dids))
 	for rows.Next() {
 		user := &users.User{}
-		err := rows.Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt)
+		var displayName, bio, avatarCID, bannerCID sql.NullString
+		err := rows.Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt,
+			&displayName, &bio, &avatarCID, &bannerCID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan user row: %w", err)
 		}
+		user.DisplayName = displayName.String
+		user.Bio = bio.String
+		user.AvatarCID = avatarCID.String
+		user.BannerCID = bannerCID.String
 		result[user.DID] = user
 	}
 
@@ -282,4 +309,73 @@ func (r *postgresUserRepo) Delete(ctx context.Context, did string) error {
 	}
 
 	return nil
+}
+
+// UpdateProfile updates a user's profile fields (display name, bio, avatar, banner).
+// Nil values in the input mean "don't change this field" - only non-nil values are updated.
+// Empty string values will clear the field in the database.
+// Returns the updated user with all fields populated.
+// Returns ErrUserNotFound if the user does not exist.
+func (r *postgresUserRepo) UpdateProfile(ctx context.Context, did string, input users.UpdateProfileInput) (*users.User, error) {
+	// Validate DID format
+	if !strings.HasPrefix(did, "did:") {
+		return nil, &users.InvalidDIDError{DID: did, Reason: "must start with 'did:'"}
+	}
+
+	// Build dynamic UPDATE query based on which fields are provided
+	setClauses := []string{"updated_at = NOW()"}
+	args := []interface{}{}
+	argNum := 1
+
+	if input.DisplayName != nil {
+		setClauses = append(setClauses, fmt.Sprintf("display_name = $%d", argNum))
+		args = append(args, *input.DisplayName)
+		argNum++
+	}
+	if input.Bio != nil {
+		setClauses = append(setClauses, fmt.Sprintf("bio = $%d", argNum))
+		args = append(args, *input.Bio)
+		argNum++
+	}
+	if input.AvatarCID != nil {
+		setClauses = append(setClauses, fmt.Sprintf("avatar_cid = $%d", argNum))
+		args = append(args, *input.AvatarCID)
+		argNum++
+	}
+	if input.BannerCID != nil {
+		setClauses = append(setClauses, fmt.Sprintf("banner_cid = $%d", argNum))
+		args = append(args, *input.BannerCID)
+		argNum++
+	}
+
+	// Add the DID as the final parameter for the WHERE clause
+	args = append(args, did)
+
+	query := fmt.Sprintf(`
+		UPDATE users
+		SET %s
+		WHERE did = $%d
+		RETURNING did, handle, pds_url, created_at, updated_at, display_name, bio, avatar_cid, banner_cid`,
+		strings.Join(setClauses, ", "), argNum)
+
+	user := &users.User{}
+	var displayNameVal, bioVal, avatarCIDVal, bannerCIDVal sql.NullString
+
+	err := r.db.QueryRowContext(ctx, query, args...).
+		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt,
+			&displayNameVal, &bioVal, &avatarCIDVal, &bannerCIDVal)
+
+	if err == sql.ErrNoRows {
+		return nil, users.ErrUserNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to update profile: %w", err)
+	}
+
+	user.DisplayName = displayNameVal.String
+	user.Bio = bioVal.String
+	user.AvatarCID = avatarCIDVal.String
+	user.BannerCID = bannerCIDVal.String
+
+	return user, nil
 }

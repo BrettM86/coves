@@ -71,6 +71,14 @@ func (m *MockUserRepository) Delete(ctx context.Context, did string) error {
 	return args.Error(0)
 }
 
+func (m *MockUserRepository) UpdateProfile(ctx context.Context, did string, input UpdateProfileInput) (*User, error) {
+	args := m.Called(ctx, did, input)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*User), args.Error(1)
+}
+
 // MockIdentityResolver is a mock implementation of identity.Resolver
 type MockIdentityResolver struct {
 	mock.Mock
@@ -464,4 +472,372 @@ func TestIndexUser(t *testing.T) {
 	assert.NoError(t, err)
 
 	mockRepo.AssertExpectations(t)
+}
+
+// TestGetProfile_WithAvatarAndBanner tests that GetProfile transforms CIDs to URLs
+func TestGetProfile_WithAvatarAndBanner(t *testing.T) {
+	mockRepo := new(MockUserRepository)
+	mockResolver := new(MockIdentityResolver)
+
+	testDID := "did:plc:avataruser"
+	testUser := &User{
+		DID:         testDID,
+		Handle:      "avataruser.test",
+		PDSURL:      "https://test.pds",
+		DisplayName: "Avatar User",
+		Bio:         "Test bio for avatar user",
+		AvatarCID:   "bafkreiabc123avatar",
+		BannerCID:   "bafkreixyz789banner",
+		CreatedAt:   time.Now(),
+	}
+	testStats := &ProfileStats{
+		PostCount:       5,
+		CommentCount:    10,
+		CommunityCount:  2,
+		MembershipCount: 1,
+		Reputation:      50,
+	}
+
+	mockRepo.On("GetByDID", mock.Anything, testDID).Return(testUser, nil)
+	mockRepo.On("GetProfileStats", mock.Anything, testDID).Return(testStats, nil)
+
+	service := NewUserService(mockRepo, mockResolver, "https://default.pds")
+	ctx := context.Background()
+
+	profile, err := service.GetProfile(ctx, testDID)
+	require.NoError(t, err)
+
+	// Verify basic fields
+	assert.Equal(t, testDID, profile.DID)
+	assert.Equal(t, "avataruser.test", profile.Handle)
+	assert.Equal(t, "Avatar User", profile.DisplayName)
+	assert.Equal(t, "Test bio for avatar user", profile.Bio)
+
+	// Verify CID-to-URL transformation
+	expectedAvatarURL := "https://test.pds/xrpc/com.atproto.sync.getBlob?did=did:plc:avataruser&cid=bafkreiabc123avatar"
+	expectedBannerURL := "https://test.pds/xrpc/com.atproto.sync.getBlob?did=did:plc:avataruser&cid=bafkreixyz789banner"
+	assert.Equal(t, expectedAvatarURL, profile.Avatar)
+	assert.Equal(t, expectedBannerURL, profile.Banner)
+
+	mockRepo.AssertExpectations(t)
+}
+
+// TestGetProfile_WithAvatarOnly tests GetProfile with only avatar CID set
+func TestGetProfile_WithAvatarOnly(t *testing.T) {
+	mockRepo := new(MockUserRepository)
+	mockResolver := new(MockIdentityResolver)
+
+	testDID := "did:plc:avataronly"
+	testUser := &User{
+		DID:         testDID,
+		Handle:      "avataronly.test",
+		PDSURL:      "https://test.pds",
+		DisplayName: "Avatar Only User",
+		Bio:         "",
+		AvatarCID:   "bafkreiavataronly",
+		BannerCID:   "", // No banner
+		CreatedAt:   time.Now(),
+	}
+	testStats := &ProfileStats{}
+
+	mockRepo.On("GetByDID", mock.Anything, testDID).Return(testUser, nil)
+	mockRepo.On("GetProfileStats", mock.Anything, testDID).Return(testStats, nil)
+
+	service := NewUserService(mockRepo, mockResolver, "https://default.pds")
+	ctx := context.Background()
+
+	profile, err := service.GetProfile(ctx, testDID)
+	require.NoError(t, err)
+
+	// Avatar should be transformed to URL
+	expectedAvatarURL := "https://test.pds/xrpc/com.atproto.sync.getBlob?did=did:plc:avataronly&cid=bafkreiavataronly"
+	assert.Equal(t, expectedAvatarURL, profile.Avatar)
+
+	// Banner should be empty
+	assert.Empty(t, profile.Banner)
+
+	mockRepo.AssertExpectations(t)
+}
+
+// TestGetProfile_WithNoCIDsOrProfile tests GetProfile with no avatar/banner/display name/bio
+func TestGetProfile_WithNoCIDsOrProfile(t *testing.T) {
+	mockRepo := new(MockUserRepository)
+	mockResolver := new(MockIdentityResolver)
+
+	testDID := "did:plc:basicuser"
+	testUser := &User{
+		DID:         testDID,
+		Handle:      "basicuser.test",
+		PDSURL:      "https://test.pds",
+		DisplayName: "",
+		Bio:         "",
+		AvatarCID:   "",
+		BannerCID:   "",
+		CreatedAt:   time.Now(),
+	}
+	testStats := &ProfileStats{}
+
+	mockRepo.On("GetByDID", mock.Anything, testDID).Return(testUser, nil)
+	mockRepo.On("GetProfileStats", mock.Anything, testDID).Return(testStats, nil)
+
+	service := NewUserService(mockRepo, mockResolver, "https://default.pds")
+	ctx := context.Background()
+
+	profile, err := service.GetProfile(ctx, testDID)
+	require.NoError(t, err)
+
+	// All profile fields should be empty
+	assert.Empty(t, profile.DisplayName)
+	assert.Empty(t, profile.Bio)
+	assert.Empty(t, profile.Avatar)
+	assert.Empty(t, profile.Banner)
+
+	mockRepo.AssertExpectations(t)
+}
+
+// TestGetProfile_WithEmptyPDSURL tests GetProfile does not create URLs when PDSURL is empty
+func TestGetProfile_WithEmptyPDSURL(t *testing.T) {
+	mockRepo := new(MockUserRepository)
+	mockResolver := new(MockIdentityResolver)
+
+	testDID := "did:plc:nopdsurl"
+	testUser := &User{
+		DID:         testDID,
+		Handle:      "nopdsurl.test",
+		PDSURL:      "", // No PDS URL
+		DisplayName: "No PDS URL User",
+		Bio:         "Test bio",
+		AvatarCID:   "bafkreiavatarcid", // Has CID but no PDS URL
+		BannerCID:   "bafkreibannercid",
+		CreatedAt:   time.Now(),
+	}
+	testStats := &ProfileStats{}
+
+	mockRepo.On("GetByDID", mock.Anything, testDID).Return(testUser, nil)
+	mockRepo.On("GetProfileStats", mock.Anything, testDID).Return(testStats, nil)
+
+	service := NewUserService(mockRepo, mockResolver, "https://default.pds")
+	ctx := context.Background()
+
+	profile, err := service.GetProfile(ctx, testDID)
+	require.NoError(t, err)
+
+	// Avatar and Banner should be empty since we can't construct URLs without PDS URL
+	assert.Empty(t, profile.Avatar)
+	assert.Empty(t, profile.Banner)
+
+	// But display name and bio should still be set
+	assert.Equal(t, "No PDS URL User", profile.DisplayName)
+	assert.Equal(t, "Test bio", profile.Bio)
+
+	mockRepo.AssertExpectations(t)
+}
+
+// TestUpdateProfile_Success tests successful profile update
+func TestUpdateProfile_Success(t *testing.T) {
+	mockRepo := new(MockUserRepository)
+	mockResolver := new(MockIdentityResolver)
+
+	testDID := "did:plc:updateuser"
+	displayName := "Updated Name"
+	bio := "Updated bio"
+	avatarCID := "bafkreinewavatar"
+	bannerCID := "bafkreinewbanner"
+
+	updatedUser := &User{
+		DID:         testDID,
+		Handle:      "updateuser.test",
+		PDSURL:      "https://test.pds",
+		DisplayName: displayName,
+		Bio:         bio,
+		AvatarCID:   avatarCID,
+		BannerCID:   bannerCID,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	input := UpdateProfileInput{
+		DisplayName: &displayName,
+		Bio:         &bio,
+		AvatarCID:   &avatarCID,
+		BannerCID:   &bannerCID,
+	}
+	mockRepo.On("UpdateProfile", mock.Anything, testDID, input).Return(updatedUser, nil)
+
+	service := NewUserService(mockRepo, mockResolver, "https://default.pds")
+	ctx := context.Background()
+
+	user, err := service.UpdateProfile(ctx, testDID, input)
+	require.NoError(t, err)
+
+	assert.Equal(t, displayName, user.DisplayName)
+	assert.Equal(t, bio, user.Bio)
+	assert.Equal(t, avatarCID, user.AvatarCID)
+	assert.Equal(t, bannerCID, user.BannerCID)
+
+	mockRepo.AssertExpectations(t)
+}
+
+// TestUpdateProfile_PartialUpdate tests updating only some fields
+func TestUpdateProfile_PartialUpdate(t *testing.T) {
+	mockRepo := new(MockUserRepository)
+	mockResolver := new(MockIdentityResolver)
+
+	testDID := "did:plc:partialupdate"
+	displayName := "Partial Update Name"
+	// Other fields are nil (don't change)
+
+	updatedUser := &User{
+		DID:         testDID,
+		Handle:      "partialupdate.test",
+		PDSURL:      "https://test.pds",
+		DisplayName: displayName,
+		Bio:         "existing bio",
+		AvatarCID:   "existingavatar",
+		BannerCID:   "existingbanner",
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	// Only displayName is provided, others are nil
+	input := UpdateProfileInput{
+		DisplayName: &displayName,
+	}
+	mockRepo.On("UpdateProfile", mock.Anything, testDID, input).Return(updatedUser, nil)
+
+	service := NewUserService(mockRepo, mockResolver, "https://default.pds")
+	ctx := context.Background()
+
+	user, err := service.UpdateProfile(ctx, testDID, input)
+	require.NoError(t, err)
+
+	assert.Equal(t, displayName, user.DisplayName)
+	// Existing values should be preserved
+	assert.Equal(t, "existing bio", user.Bio)
+	assert.Equal(t, "existingavatar", user.AvatarCID)
+
+	mockRepo.AssertExpectations(t)
+}
+
+// TestUpdateProfile_ClearFields tests clearing fields with empty strings
+func TestUpdateProfile_ClearFields(t *testing.T) {
+	mockRepo := new(MockUserRepository)
+	mockResolver := new(MockIdentityResolver)
+
+	testDID := "did:plc:clearfields"
+	emptyDisplayName := ""
+	emptyBio := ""
+
+	updatedUser := &User{
+		DID:         testDID,
+		Handle:      "clearfields.test",
+		PDSURL:      "https://test.pds",
+		DisplayName: "",
+		Bio:         "",
+		AvatarCID:   "existingavatar",
+		BannerCID:   "existingbanner",
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	input := UpdateProfileInput{
+		DisplayName: &emptyDisplayName,
+		Bio:         &emptyBio,
+	}
+	mockRepo.On("UpdateProfile", mock.Anything, testDID, input).Return(updatedUser, nil)
+
+	service := NewUserService(mockRepo, mockResolver, "https://default.pds")
+	ctx := context.Background()
+
+	user, err := service.UpdateProfile(ctx, testDID, input)
+	require.NoError(t, err)
+
+	assert.Empty(t, user.DisplayName)
+	assert.Empty(t, user.Bio)
+
+	mockRepo.AssertExpectations(t)
+}
+
+// TestUpdateProfile_RepoError tests UpdateProfile returns error on repo failure
+func TestUpdateProfile_RepoError(t *testing.T) {
+	mockRepo := new(MockUserRepository)
+	mockResolver := new(MockIdentityResolver)
+
+	testDID := "did:plc:erroruser"
+	displayName := "Error User"
+
+	input := UpdateProfileInput{
+		DisplayName: &displayName,
+	}
+	mockRepo.On("UpdateProfile", mock.Anything, testDID, input).Return(nil, errors.New("database error"))
+
+	service := NewUserService(mockRepo, mockResolver, "https://default.pds")
+	ctx := context.Background()
+
+	_, err := service.UpdateProfile(ctx, testDID, input)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "database error")
+
+	mockRepo.AssertExpectations(t)
+}
+
+// TestUpdateProfile_UserNotFound tests UpdateProfile with non-existent user
+func TestUpdateProfile_UserNotFound(t *testing.T) {
+	mockRepo := new(MockUserRepository)
+	mockResolver := new(MockIdentityResolver)
+
+	testDID := "did:plc:notfound"
+	displayName := "Not Found User"
+
+	input := UpdateProfileInput{
+		DisplayName: &displayName,
+	}
+	mockRepo.On("UpdateProfile", mock.Anything, testDID, input).Return(nil, ErrUserNotFound)
+
+	service := NewUserService(mockRepo, mockResolver, "https://default.pds")
+	ctx := context.Background()
+
+	_, err := service.UpdateProfile(ctx, testDID, input)
+	assert.ErrorIs(t, err, ErrUserNotFound)
+
+	mockRepo.AssertExpectations(t)
+}
+
+// TestUpdateProfile_EmptyDID tests UpdateProfile with empty DID
+func TestUpdateProfile_EmptyDID(t *testing.T) {
+	mockRepo := new(MockUserRepository)
+	mockResolver := new(MockIdentityResolver)
+
+	service := NewUserService(mockRepo, mockResolver, "https://default.pds")
+	ctx := context.Background()
+
+	displayName := "Test Name"
+	input := UpdateProfileInput{
+		DisplayName: &displayName,
+	}
+	_, err := service.UpdateProfile(ctx, "", input)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "DID is required")
+
+	// Repo should not be called with empty DID
+	mockRepo.AssertNotCalled(t, "UpdateProfile", mock.Anything, mock.Anything, mock.Anything)
+}
+
+// TestUpdateProfile_WhitespaceDID tests UpdateProfile with whitespace-only DID
+func TestUpdateProfile_WhitespaceDID(t *testing.T) {
+	mockRepo := new(MockUserRepository)
+	mockResolver := new(MockIdentityResolver)
+
+	service := NewUserService(mockRepo, mockResolver, "https://default.pds")
+	ctx := context.Background()
+
+	displayName := "Test Name"
+	input := UpdateProfileInput{
+		DisplayName: &displayName,
+	}
+	_, err := service.UpdateProfile(ctx, "   ", input)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "DID is required")
+
+	mockRepo.AssertNotCalled(t, "UpdateProfile", mock.Anything, mock.Anything, mock.Anything)
 }

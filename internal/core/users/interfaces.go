@@ -2,6 +2,16 @@ package users
 
 import "context"
 
+// UpdateProfileInput contains the fields that can be updated on a user's profile.
+// Nil values mean "don't change this field" - only non-nil values are updated.
+// Empty string values (*string pointing to "") will clear the field in the database.
+type UpdateProfileInput struct {
+	DisplayName *string
+	Bio         *string
+	AvatarCID   *string
+	BannerCID   *string
+}
+
 // UserRepository defines the interface for user data persistence
 type UserRepository interface {
 	Create(ctx context.Context, user *User) (*User, error)
@@ -33,6 +43,13 @@ type UserRepository interface {
 	// GetProfileStats retrieves aggregated statistics for a user profile.
 	// Returns counts of posts, comments, subscriptions, memberships, and total reputation.
 	GetProfileStats(ctx context.Context, did string) (*ProfileStats, error)
+
+	// UpdateProfile updates a user's profile fields (display name, bio, avatar, banner).
+	// Nil values in the input mean "don't change this field" - only non-nil values are updated.
+	// Empty string values will clear the field in the database.
+	// Returns the updated user with all fields populated.
+	// Returns ErrUserNotFound if the user does not exist.
+	UpdateProfile(ctx context.Context, did string, input UpdateProfileInput) (*User, error)
 
 	// Delete removes a user and all associated data from the AppView database.
 	// This performs a cascading delete across all tables that reference the user's DID.
@@ -72,7 +89,15 @@ type UserService interface {
 
 	// GetProfile retrieves a user's full profile with aggregated statistics.
 	// Returns a ProfileViewDetailed matching the social.coves.actor.defs#profileViewDetailed lexicon.
+	// Avatar and Banner CIDs are transformed to URLs using the user's PDS URL.
 	GetProfile(ctx context.Context, did string) (*ProfileViewDetailed, error)
+
+	// UpdateProfile updates a user's profile fields (display name, bio, avatar, banner).
+	// Nil values in the input mean "don't change this field" - only non-nil values are updated.
+	// Empty string values will clear the field in the database.
+	// Returns the updated user with all fields populated.
+	// Returns ErrUserNotFound if the user does not exist.
+	UpdateProfile(ctx context.Context, did string, input UpdateProfileInput) (*User, error)
 
 	// DeleteAccount removes a user and all associated data from the Coves AppView.
 	// This ONLY deletes AppView indexed data, NOT the user's atProto identity on their PDS.

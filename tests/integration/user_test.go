@@ -3,6 +3,7 @@ package integration
 import (
 	"Coves/internal/api/routes"
 	"Coves/internal/atproto/identity"
+	"Coves/internal/core/blobs"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
 	"context"
@@ -22,6 +23,17 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/pressly/goose/v3"
 )
+
+// stubBlobService is a minimal blob service implementation for tests that don't need it
+type stubBlobService struct{}
+
+func (s *stubBlobService) UploadBlobFromURL(ctx context.Context, owner blobs.BlobOwner, imageURL string) (*blobs.BlobRef, error) {
+	return nil, fmt.Errorf("stub blob service: UploadBlobFromURL not implemented")
+}
+
+func (s *stubBlobService) UploadBlob(ctx context.Context, owner blobs.BlobOwner, data []byte, mimeType string) (*blobs.BlobRef, error) {
+	return nil, fmt.Errorf("stub blob service: UploadBlob not implemented")
+}
 
 // TestMain controls test setup for the integration package.
 // Set LOG_ENABLED=false to suppress application log output during tests.
@@ -225,7 +237,7 @@ func TestGetProfileEndpoint(t *testing.T) {
 	// Set up HTTP router with auth middleware
 	r := chi.NewRouter()
 	authMiddleware, _ := CreateTestOAuthMiddleware("did:plc:testuser")
-	routes.RegisterUserRoutes(r, userService, authMiddleware)
+	routes.RegisterUserRoutes(r, userService, authMiddleware, &stubBlobService{})
 
 	// Test 1: Get profile by DID
 	t.Run("Get Profile By DID", func(t *testing.T) {
@@ -854,7 +866,7 @@ func TestGetProfile_NonExistentDID(t *testing.T) {
 	t.Run("HTTP endpoint returns 404 for non-existent DID", func(t *testing.T) {
 		r := chi.NewRouter()
 		authMiddleware, _ := CreateTestOAuthMiddleware("did:plc:testuser")
-		routes.RegisterUserRoutes(r, userService, authMiddleware)
+		routes.RegisterUserRoutes(r, userService, authMiddleware, &stubBlobService{})
 
 		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getprofile?actor=did:plc:nonexistentuser12345", nil)
 		w := httptest.NewRecorder()
@@ -904,7 +916,7 @@ func TestProfileStatsEndpoint(t *testing.T) {
 	// Set up HTTP router with auth middleware
 	r := chi.NewRouter()
 	authMiddleware, _ := CreateTestOAuthMiddleware("did:plc:testuser")
-	routes.RegisterUserRoutes(r, userService, authMiddleware)
+	routes.RegisterUserRoutes(r, userService, authMiddleware, &stubBlobService{})
 
 	t.Run("Response includes stats object", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getprofile?actor="+testDID, nil)

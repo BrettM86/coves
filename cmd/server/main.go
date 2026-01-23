@@ -669,11 +669,12 @@ func main() {
 	log.Println("  - Updating: Post comment counts and comment reply counts atomically")
 
 	// Register XRPC routes
-	routes.RegisterUserRoutes(r, userService, authMiddleware)
+	routes.RegisterUserRoutes(r, userService, authMiddleware, blobService)
 	log.Println("User XRPC endpoints registered")
 	log.Println("  - GET /xrpc/social.coves.actor.getprofile (public)")
 	log.Println("  - POST /xrpc/social.coves.actor.signup (public)")
 	log.Println("  - POST /xrpc/social.coves.actor.deleteAccount (requires OAuth)")
+	log.Println("  - POST /xrpc/social.coves.actor.updateProfile (requires OAuth)")
 
 	routes.RegisterCommunityRoutes(r, communityService, communityRepo, authMiddleware, allowedCommunityCreators)
 	log.Println("Community XRPC endpoints registered with OAuth authentication")
