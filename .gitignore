@@ -38,6 +38,9 @@ Thumbs.db
 /local_dev_data/
 /test_db_data/
 
+# Image proxy cache
+/cache/
+
 # Logs
 *.log
 

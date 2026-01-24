@@ -4,10 +4,52 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"Coves/internal/core/blobs"
 )
+
+// imageProxyConfigOnce ensures thread-safe initialization of the image proxy config.
+var imageProxyConfigOnce sync.Once
+
+// imageProxyConfig holds the immutable configuration after initialization.
+// Access only through GetImageProxyConfig().
+var imageProxyConfig = blobs.ImageURLConfig{
+	ProxyEnabled: false, // Default to disabled until configured
+}
+
+// imageProxyConfigInitialized tracks whether SetImageProxyConfig has been called.
+var imageProxyConfigInitialized bool
+
+// SetImageProxyConfig initializes the image proxy configuration.
+// This should be called once during server startup. Subsequent calls are no-ops
+// and will log a warning. This design ensures thread-safety and prevents
+// accidental config changes during runtime.
+func SetImageProxyConfig(config blobs.ImageURLConfig) {
+	imageProxyConfigOnce.Do(func() {
+		imageProxyConfig = config
+		imageProxyConfigInitialized = true
+	})
+	// Log warning if called multiple times (indicates a programming error)
+	if imageProxyConfigInitialized && config != imageProxyConfig {
+		log.Printf("WARN: SetImageProxyConfig called multiple times with different config (ignored)")
+	}
+}
+
+// GetImageProxyConfig returns the current image proxy configuration.
+// Thread-safe for concurrent access.
+func GetImageProxyConfig() blobs.ImageURLConfig {
+	return imageProxyConfig
+}
+
+// ResetImageProxyConfigForTesting resets the config state for testing purposes.
+// This should ONLY be used in tests, never in production code.
+func ResetImageProxyConfigForTesting() {
+	imageProxyConfigOnce = sync.Once{}
+	imageProxyConfig = blobs.ImageURLConfig{ProxyEnabled: false}
+	imageProxyConfigInitialized = false
+}
 
 // Community represents a Coves community indexed from the firehose
 // Communities are federated, instance-scoped forums built on atProto
@@ -248,6 +290,7 @@ func (c *Community) GetPDSAccessToken() string {
 }
 
 // ToCommunityView converts a Community to a CommunityView for API responses
+// Uses avatar_small preset (24px) for list views
 func (c *Community) ToCommunityView() *CommunityView {
 	view := &CommunityView{
 		DID:             c.DID,
@@ -255,7 +298,7 @@ func (c *Community) ToCommunityView() *CommunityView {
 		Name:            c.Name,
 		DisplayName:     c.DisplayName,
 		DisplayHandle:   c.GetDisplayHandle(),
-		Avatar:          blobs.HydrateBlobURL(c.PDSURL, c.DID, c.AvatarCID),
+		Avatar:          blobs.HydrateImageURL(GetImageProxyConfig(), c.PDSURL, c.DID, c.AvatarCID, "avatar_small"),
 		Visibility:      c.Visibility,
 		SubscriberCount: c.SubscriberCount,
 		MemberCount:     c.MemberCount,
@@ -267,6 +310,7 @@ func (c *Community) ToCommunityView() *CommunityView {
 }
 
 // ToCommunityViewDetailed converts a Community to a CommunityViewDetailed for API responses
+// Uses avatar preset (80px) for detail views and banner preset for banners
 func (c *Community) ToCommunityViewDetailed() *CommunityViewDetailed {
 	view := &CommunityViewDetailed{
 		DID:                    c.DID,
@@ -275,8 +319,8 @@ func (c *Community) ToCommunityViewDetailed() *CommunityViewDetailed {
 		DisplayName:            c.DisplayName,
 		DisplayHandle:          c.GetDisplayHandle(),
 		Description:            c.Description,
-		Avatar:                 blobs.HydrateBlobURL(c.PDSURL, c.DID, c.AvatarCID),
-		Banner:                 blobs.HydrateBlobURL(c.PDSURL, c.DID, c.BannerCID),
+		Avatar:                 blobs.HydrateImageURL(GetImageProxyConfig(), c.PDSURL, c.DID, c.AvatarCID, "avatar"),
+		Banner:                 blobs.HydrateImageURL(GetImageProxyConfig(), c.PDSURL, c.DID, c.BannerCID, "banner"),
 		CreatedByDID:           c.CreatedByDID,
 		HostedByDID:            c.HostedByDID,
 		Visibility:             c.Visibility,

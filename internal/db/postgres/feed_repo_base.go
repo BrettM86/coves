@@ -8,10 +8,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"Coves/internal/core/blobs"
+	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
 )
 
@@ -347,8 +349,8 @@ func (r *feedRepoBase) scanFeedPost(rows *sql.Rows) (*posts.PostView, float64, e
 	if communityHandle.Valid {
 		communityRef.Handle = communityHandle.String
 	}
-	// Hydrate avatar CID to URL (instead of returning raw CID)
-	if avatarURL := blobs.HydrateBlobURL(communityPDSURL.String, communityRef.DID, communityAvatar.String); avatarURL != "" {
+	// Hydrate avatar CID to URL using image proxy config (avatar_small preset for feed lists)
+	if avatarURL := blobs.HydrateImageURL(communities.GetImageProxyConfig(), communityPDSURL.String, communityRef.DID, communityAvatar.String, "avatar_small"); avatarURL != "" {
 		communityRef.Avatar = &avatarURL
 	}
 	if communityPDSURL.Valid {
@@ -361,17 +363,29 @@ func (r *feedRepoBase) scanFeedPost(rows *sql.Rows) (*posts.PostView, float64, e
 	postView.Text = nullStringPtr(content)
 
 	// Parse facets JSON
+	// Log errors but continue - a single malformed post shouldn't break the entire feed
 	if facets.Valid {
 		var facetArray []interface{}
-		if err := json.Unmarshal([]byte(facets.String), &facetArray); err == nil {
+		if err := json.Unmarshal([]byte(facets.String), &facetArray); err != nil {
+			slog.Warn("[FEED] failed to parse facets JSON",
+				"post_uri", postView.URI,
+				"error", err,
+			)
+		} else {
 			postView.TextFacets = facetArray
 		}
 	}
 
 	// Parse embed JSON
+	// Log errors but continue - a single malformed post shouldn't break the entire feed
 	if embed.Valid {
 		var embedData interface{}
-		if err := json.Unmarshal([]byte(embed.String), &embedData); err == nil {
+		if err := json.Unmarshal([]byte(embed.String), &embedData); err != nil {
+			slog.Warn("[FEED] failed to parse embed JSON",
+				"post_uri", postView.URI,
+				"error", err,
+			)
+		} else {
 			postView.Embed = embedData
 		}
 	}
@@ -399,23 +413,24 @@ func (r *feedRepoBase) scanFeedPost(rows *sql.Rows) (*posts.PostView, float64, e
 	if content.Valid {
 		record["content"] = content.String
 	}
-	if facets.Valid {
-		var facetArray []interface{}
-		if err := json.Unmarshal([]byte(facets.String), &facetArray); err == nil {
-			record["facets"] = facetArray
-		}
+	// Reuse already-parsed facets and embed from PostView (parsed above with logging)
+	// This avoids double parsing and ensures consistent error handling
+	if postView.TextFacets != nil {
+		record["facets"] = postView.TextFacets
 	}
-	if embed.Valid {
-		var embedData interface{}
-		if err := json.Unmarshal([]byte(embed.String), &embedData); err == nil {
-			record["embed"] = embedData
-		}
+	if postView.Embed != nil {
+		record["embed"] = postView.Embed
 	}
 	if labelsJSON.Valid {
 		// Labels are stored as JSONB containing full com.atproto.label.defs#selfLabels structure
 		// Deserialize and include in record
 		var selfLabels posts.SelfLabels
-		if err := json.Unmarshal([]byte(labelsJSON.String), &selfLabels); err == nil {
+		if err := json.Unmarshal([]byte(labelsJSON.String), &selfLabels); err != nil {
+			slog.Warn("[FEED] failed to parse labels JSON",
+				"post_uri", postView.URI,
+				"error", err,
+			)
+		} else {
 			record["labels"] = selfLabels
 		}
 	}

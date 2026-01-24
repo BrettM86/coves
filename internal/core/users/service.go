@@ -2,6 +2,8 @@ package users
 
 import (
 	"Coves/internal/atproto/identity"
+	"Coves/internal/core/blobs"
+	"Coves/internal/core/communities"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -294,17 +296,11 @@ func (s *userService) GetProfile(ctx context.Context, did string) (*ProfileViewD
 		Bio:         user.Bio,
 	}
 
-	// Transform avatar CID to URL if both CID and PDS URL are present
-	if user.AvatarCID != "" && user.PDSURL != "" {
-		profile.Avatar = fmt.Sprintf("%s/xrpc/com.atproto.sync.getBlob?did=%s&cid=%s",
-			strings.TrimSuffix(user.PDSURL, "/"), user.DID, user.AvatarCID)
-	}
-
-	// Transform banner CID to URL if both CID and PDS URL are present
-	if user.BannerCID != "" && user.PDSURL != "" {
-		profile.Banner = fmt.Sprintf("%s/xrpc/com.atproto.sync.getBlob?did=%s&cid=%s",
-			strings.TrimSuffix(user.PDSURL, "/"), user.DID, user.BannerCID)
-	}
+	// Transform avatar/banner CIDs to URLs using image proxy config
+	// Uses 'avatar' preset (160x160) for profile detail view
+	config := communities.GetImageProxyConfig()
+	profile.Avatar = blobs.HydrateImageURL(config, user.PDSURL, user.DID, user.AvatarCID, "avatar")
+	profile.Banner = blobs.HydrateImageURL(config, user.PDSURL, user.DID, user.BannerCID, "banner")
 
 	return profile, nil
 }

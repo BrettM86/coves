@@ -24,6 +24,9 @@ import (
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/atproto/oauth"
 
+	imageproxyhandlers "Coves/internal/api/handlers/imageproxy"
+	"Coves/internal/core/imageproxy"
+
 	indigoauth "github.com/bluesky-social/indigo/atproto/auth"
 	indigoidentity "github.com/bluesky-social/indigo/atproto/identity"
 	"Coves/internal/core/aggregators"
@@ -578,6 +581,62 @@ func main() {
 	discoverService := discover.NewDiscoverService(discoverRepo)
 	log.Println("✅ Discover service initialized")
 
+	// Initialize image proxy (optional service for resizing/caching images)
+	imageProxyConfig := imageproxy.ConfigFromEnv()
+	var imageProxyCacheCleanupCancel context.CancelFunc = func() {} // No-op default
+	if imageProxyConfig.Enabled {
+		// Validate configuration at startup - fail fast if misconfigured
+		if err := imageProxyConfig.Validate(); err != nil {
+			log.Fatalf("Image proxy configuration error: %v", err)
+		}
+
+		imageProxyCache, err := imageproxy.NewDiskCache(
+			imageProxyConfig.CachePath,
+			imageProxyConfig.CacheMaxGB,
+			imageProxyConfig.CacheTTLDays,
+		)
+		if err != nil {
+			log.Fatalf("Failed to create image proxy cache: %v", err)
+		}
+
+		// Start background cache cleanup job
+		imageProxyCacheCleanupCancel = imageProxyCache.StartCleanupJob(imageProxyConfig.CleanupInterval)
+
+		imageProxyProcessor := imageproxy.NewProcessor()
+		imageProxyFetcher := imageproxy.NewPDSFetcher(imageProxyConfig.FetchTimeout, imageProxyConfig.MaxSourceSizeMB)
+		imageProxyService, err := imageproxy.NewService(
+			imageProxyCache,
+			imageProxyProcessor,
+			imageProxyFetcher,
+			imageProxyConfig,
+		)
+		if err != nil {
+			log.Fatalf("Failed to create image proxy service: %v", err)
+		}
+		imageProxyHandler := imageproxyhandlers.NewHandler(imageProxyService, identityResolver)
+		routes.RegisterImageProxyRoutes(r, imageProxyHandler)
+		log.Println("✅ Image proxy enabled at /img/{preset}/plain/{did}/{cid}")
+		slog.Info("[IMAGE-PROXY] service started",
+			"base_url", imageProxyConfig.BaseURL,
+			"cdn_url", imageProxyConfig.CDNURL,
+			"cache_path", imageProxyConfig.CachePath,
+			"cache_max_gb", imageProxyConfig.CacheMaxGB,
+			"cache_ttl_days", imageProxyConfig.CacheTTLDays,
+			"cleanup_interval", imageProxyConfig.CleanupInterval,
+			"fetch_timeout_seconds", int(imageProxyConfig.FetchTimeout.Seconds()),
+			"max_source_size_mb", imageProxyConfig.MaxSourceSizeMB,
+		)
+	}
+
+	// Initialize image proxy config for URL generation in communities package
+	// This is called once at startup and is thread-safe for concurrent access
+	communities.SetImageProxyConfig(blobs.ImageURLConfig{
+		ProxyEnabled: imageProxyConfig.Enabled,
+		ProxyBaseURL: imageProxyConfig.BaseURL,
+		CDNURL:       imageProxyConfig.CDNURL,
+	})
+	log.Printf("Image proxy URL generation config set (enabled: %v)", imageProxyConfig.Enabled)
+
 	// Start Jetstream consumer for posts
 	// This consumer indexes posts created in community repositories via the firehose
 	// Currently handles only CREATE operations - UPDATE/DELETE deferred until those features exist
@@ -829,6 +888,7 @@ func main() {
 	// Stop background jobs
 	cleanupCancel()
 	tokenRefreshCancel()
+	imageProxyCacheCleanupCancel()
 
 	if err := server.Shutdown(ctx); err != nil {
 		log.Fatalf("Server shutdown error: %v", err)

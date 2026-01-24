@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"Coves/internal/core/blobs"
+	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
 )
 
@@ -335,8 +336,8 @@ func (r *postgresPostRepo) scanAuthorPost(rows *sql.Rows) (*posts.PostView, erro
 	if communityHandle.Valid {
 		communityRef.Handle = communityHandle.String
 	}
-	// Hydrate avatar CID to URL (instead of returning raw CID)
-	if avatarURL := blobs.HydrateBlobURL(communityPDSURL.String, communityRef.DID, communityAvatar.String); avatarURL != "" {
+	// Hydrate avatar CID to URL using image proxy config (avatar_small preset for post views)
+	if avatarURL := blobs.HydrateImageURL(communities.GetImageProxyConfig(), communityPDSURL.String, communityRef.DID, communityAvatar.String, "avatar_small"); avatarURL != "" {
 		communityRef.Avatar = &avatarURL
 	}
 	if communityPDSURL.Valid {

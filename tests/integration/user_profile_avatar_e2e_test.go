@@ -19,6 +19,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -327,7 +328,9 @@ func TestUserProfileAvatarE2E_UpdateWithAvatar(t *testing.T) {
 		if finalProfile.Avatar != "" {
 			assert.Contains(t, finalProfile.Avatar, "/xrpc/com.atproto.sync.getBlob",
 				"Avatar URL should be a PDS blob URL")
-			assert.Contains(t, finalProfile.Avatar, userDID,
+			// URL-decode the avatar URL before checking for DID (DIDs are URL-encoded in query params)
+			decodedAvatarURL, _ := url.QueryUnescape(finalProfile.Avatar)
+			assert.Contains(t, decodedAvatarURL, userDID,
 				"Avatar URL should contain user DID")
 		}
 
@@ -576,7 +579,9 @@ func TestUserProfileAvatarE2E_UpdateWithBanner(t *testing.T) {
 
 		if finalProfile.Banner != "" {
 			assert.Contains(t, finalProfile.Banner, "/xrpc/com.atproto.sync.getBlob")
-			assert.Contains(t, finalProfile.Banner, userDID)
+			// URL-decode the banner URL before checking for DID (DIDs are URL-encoded in query params)
+			decodedBannerURL, _ := url.QueryUnescape(finalProfile.Banner)
+			assert.Contains(t, decodedBannerURL, userDID)
 		}
 
 		t.Logf("\n TRUE E2E USER PROFILE BANNER UPDATE COMPLETE")

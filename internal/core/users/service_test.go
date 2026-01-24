@@ -513,9 +513,9 @@ func TestGetProfile_WithAvatarAndBanner(t *testing.T) {
 	assert.Equal(t, "Avatar User", profile.DisplayName)
 	assert.Equal(t, "Test bio for avatar user", profile.Bio)
 
-	// Verify CID-to-URL transformation
-	expectedAvatarURL := "https://test.pds/xrpc/com.atproto.sync.getBlob?did=did:plc:avataruser&cid=bafkreiabc123avatar"
-	expectedBannerURL := "https://test.pds/xrpc/com.atproto.sync.getBlob?did=did:plc:avataruser&cid=bafkreixyz789banner"
+	// Verify CID-to-URL transformation (DID is URL-encoded in query params)
+	expectedAvatarURL := "https://test.pds/xrpc/com.atproto.sync.getBlob?did=did%3Aplc%3Aavataruser&cid=bafkreiabc123avatar"
+	expectedBannerURL := "https://test.pds/xrpc/com.atproto.sync.getBlob?did=did%3Aplc%3Aavataruser&cid=bafkreixyz789banner"
 	assert.Equal(t, expectedAvatarURL, profile.Avatar)
 	assert.Equal(t, expectedBannerURL, profile.Banner)
 
@@ -549,8 +549,8 @@ func TestGetProfile_WithAvatarOnly(t *testing.T) {
 	profile, err := service.GetProfile(ctx, testDID)
 	require.NoError(t, err)
 
-	// Avatar should be transformed to URL
-	expectedAvatarURL := "https://test.pds/xrpc/com.atproto.sync.getBlob?did=did:plc:avataronly&cid=bafkreiavataronly"
+	// Avatar should be transformed to URL (DID is URL-encoded in query params)
+	expectedAvatarURL := "https://test.pds/xrpc/com.atproto.sync.getBlob?did=did%3Aplc%3Aavataronly&cid=bafkreiavataronly"
 	assert.Equal(t, expectedAvatarURL, profile.Avatar)
 
 	// Banner should be empty
