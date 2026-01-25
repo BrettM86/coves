@@ -1,21 +1,27 @@
 package user
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
-	"time"
 
 	"Coves/internal/api/middleware"
-	"Coves/internal/core/blobs"
+	"Coves/internal/atproto/pds"
 
-	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
+	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 )
+
+// CovesProfileCollection is the atProto collection for Coves user profiles.
+// NOTE: This constant is intentionally duplicated in internal/atproto/jetstream/user_consumer.go
+// to avoid circular dependencies between packages. Keep both definitions in sync.
+const CovesProfileCollection = "social.coves.actor.profile"
+
+// PDSClientFactory creates PDS clients from session data.
+// Used to allow injection of different auth mechanisms (OAuth for production, password for E2E tests).
+type PDSClientFactory func(ctx context.Context, session *oauth.ClientSessionData) (pds.Client, error)
 
 const (
 	// MaxDisplayNameLength is the maximum allowed length for display names (per atProto lexicon)
@@ -29,15 +35,6 @@ const (
 	// MaxRequestBodySize is the maximum request body size (10MB to accommodate base64 overhead)
 	MaxRequestBodySize = 10_000_000
 )
-
-// pdsError represents an error returned from the PDS with a specific status code
-type pdsError struct {
-	StatusCode int
-}
-
-func (e *pdsError) Error() string {
-	return fmt.Sprintf("PDS returned error %d", e.StatusCode)
-}
 
 // UpdateProfileRequest represents the request body for updating a user profile
 type UpdateProfileRequest struct {
@@ -55,47 +52,52 @@ type UpdateProfileResponse struct {
 	CID string `json:"cid"`
 }
 
-// userBlobOwner implements blobs.BlobOwner for users
-// This allows us to use the blob service to upload blobs on behalf of users
-type userBlobOwner struct {
-	pdsURL      string
-	accessToken string
-}
-
-// GetPDSURL returns the PDS URL for this user
-func (u *userBlobOwner) GetPDSURL() string {
-	return u.pdsURL
-}
-
-// GetPDSAccessToken returns the access token for authenticating with the PDS
-func (u *userBlobOwner) GetPDSAccessToken() string {
-	return u.accessToken
-}
-
 // UpdateProfileHandler handles POST /xrpc/social.coves.actor.updateProfile
-// This endpoint allows authenticated users to update their profile on their PDS.
-// The handler:
-// 1. Validates the user is authenticated via OAuth
-// 2. Validates avatar/banner size and mime type constraints
-// 3. Uploads any provided blobs to the user's PDS
-// 4. Puts the profile record to the user's PDS via com.atproto.repo.putRecord
+// This endpoint allows authenticated users to update their Coves profile on their PDS.
+// It validates inputs, uploads any provided blobs, and writes the profile record.
 type UpdateProfileHandler struct {
-	blobService blobs.Service
-	httpClient  *http.Client // For making PDS calls
+	oauthClient      *oauth.ClientApp // For creating authenticated PDS clients (production)
+	pdsClientFactory PDSClientFactory // Optional: custom factory for testing
 }
 
-// NewUpdateProfileHandler creates a new update profile handler
-func NewUpdateProfileHandler(blobService blobs.Service, httpClient *http.Client) *UpdateProfileHandler {
-	// Use default client if none provided
-	if httpClient == nil {
-		httpClient = &http.Client{
-			Timeout: 30 * time.Second,
-		}
+// NewUpdateProfileHandler creates a new update profile handler.
+// Panics if oauthClient is nil - use NewUpdateProfileHandlerWithFactory for testing.
+func NewUpdateProfileHandler(oauthClient *oauth.ClientApp) *UpdateProfileHandler {
+	if oauthClient == nil {
+		panic("NewUpdateProfileHandler: oauthClient is required")
 	}
 	return &UpdateProfileHandler{
-		blobService: blobService,
-		httpClient:  httpClient,
+		oauthClient: oauthClient,
 	}
+}
+
+// NewUpdateProfileHandlerWithFactory creates a new update profile handler with a custom PDS client factory.
+// This is primarily for E2E testing with password-based authentication instead of OAuth.
+// Panics if factory is nil.
+func NewUpdateProfileHandlerWithFactory(factory PDSClientFactory) *UpdateProfileHandler {
+	if factory == nil {
+		panic("NewUpdateProfileHandlerWithFactory: factory is required")
+	}
+	return &UpdateProfileHandler{
+		pdsClientFactory: factory,
+	}
+}
+
+// getPDSClient creates a PDS client from an OAuth session.
+// If a custom factory was provided (for testing), uses that.
+// Otherwise, uses DPoP authentication via indigo's ClientApp for proper OAuth token handling.
+func (h *UpdateProfileHandler) getPDSClient(ctx context.Context, session *oauth.ClientSessionData) (pds.Client, error) {
+	// Use custom factory if provided (e.g., for E2E testing with password auth)
+	if h.pdsClientFactory != nil {
+		return h.pdsClientFactory(ctx, session)
+	}
+
+	// Production path: use OAuth with DPoP
+	if h.oauthClient == nil {
+		return nil, fmt.Errorf("OAuth client not configured")
+	}
+
+	return pds.NewFromOAuthSession(ctx, h.oauthClient, session)
 }
 
 // ServeHTTP handles the update profile request
@@ -122,9 +124,7 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	pdsURL := session.HostURL
-	accessToken := session.AccessToken
-	if pdsURL == "" || accessToken == "" {
+	if session.HostURL == "" {
 		writeUpdateProfileError(w, http.StatusUnauthorized, "MissingCredentials", "Missing PDS credentials")
 		return
 	}
@@ -186,12 +186,21 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// 4. Create blob owner for user (implements blobs.BlobOwner interface)
-	owner := &userBlobOwner{pdsURL: pdsURL, accessToken: accessToken}
+	// 4. Create PDS client (uses factory if provided, otherwise OAuth with DPoP)
+	pdsClient, err := h.getPDSClient(ctx, session)
+	if err != nil {
+		slog.Error("failed to create PDS client",
+			slog.String("did", userDID),
+			slog.String("error", err.Error()),
+		)
+		writeUpdateProfileError(w, http.StatusUnauthorized, "SessionError",
+			"Failed to restore session. Please sign in again.")
+		return
+	}
 
 	// 5. Build profile record
 	profile := map[string]interface{}{
-		"$type": "app.bsky.actor.profile",
+		"$type": CovesProfileCollection,
 	}
 
 	// Add displayName if provided
@@ -206,13 +215,23 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 
 	// 6. Upload avatar blob if provided
 	if len(req.AvatarBlob) > 0 {
-		avatarRef, err := h.blobService.UploadBlob(ctx, owner, req.AvatarBlob, req.AvatarMimeType)
+		avatarRef, err := pdsClient.UploadBlob(ctx, req.AvatarBlob, req.AvatarMimeType)
 		if err != nil {
 			slog.Error("failed to upload avatar blob",
 				slog.String("did", userDID),
 				slog.String("error", err.Error()),
 			)
-			writeUpdateProfileError(w, http.StatusInternalServerError, "BlobUploadFailed", "Failed to upload avatar")
+			// Map specific PDS errors to user-friendly messages
+			switch {
+			case errors.Is(err, pds.ErrUnauthorized), errors.Is(err, pds.ErrForbidden):
+				writeUpdateProfileError(w, http.StatusUnauthorized, "AuthExpired", "Your session may have expired. Please re-authenticate.")
+			case errors.Is(err, pds.ErrRateLimited):
+				writeUpdateProfileError(w, http.StatusTooManyRequests, "RateLimited", "Too many requests. Please try again later.")
+			case errors.Is(err, pds.ErrPayloadTooLarge):
+				writeUpdateProfileError(w, http.StatusRequestEntityTooLarge, "AvatarTooLarge", "Avatar exceeds PDS size limit.")
+			default:
+				writeUpdateProfileError(w, http.StatusInternalServerError, "BlobUploadFailed", "Failed to upload avatar")
+			}
 			return
 		}
 		if avatarRef == nil || avatarRef.Ref == nil || avatarRef.Type == "" {
@@ -230,13 +249,23 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 
 	// 7. Upload banner blob if provided
 	if len(req.BannerBlob) > 0 {
-		bannerRef, err := h.blobService.UploadBlob(ctx, owner, req.BannerBlob, req.BannerMimeType)
+		bannerRef, err := pdsClient.UploadBlob(ctx, req.BannerBlob, req.BannerMimeType)
 		if err != nil {
 			slog.Error("failed to upload banner blob",
 				slog.String("did", userDID),
 				slog.String("error", err.Error()),
 			)
-			writeUpdateProfileError(w, http.StatusInternalServerError, "BlobUploadFailed", "Failed to upload banner")
+			// Map specific PDS errors to user-friendly messages
+			switch {
+			case errors.Is(err, pds.ErrUnauthorized), errors.Is(err, pds.ErrForbidden):
+				writeUpdateProfileError(w, http.StatusUnauthorized, "AuthExpired", "Your session may have expired. Please re-authenticate.")
+			case errors.Is(err, pds.ErrRateLimited):
+				writeUpdateProfileError(w, http.StatusTooManyRequests, "RateLimited", "Too many requests. Please try again later.")
+			case errors.Is(err, pds.ErrPayloadTooLarge):
+				writeUpdateProfileError(w, http.StatusRequestEntityTooLarge, "BannerTooLarge", "Banner exceeds PDS size limit.")
+			default:
+				writeUpdateProfileError(w, http.StatusInternalServerError, "BlobUploadFailed", "Failed to upload banner")
+			}
 			return
 		}
 		if bannerRef == nil || bannerRef.Ref == nil || bannerRef.Type == "" {
@@ -253,29 +282,24 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	}
 
 	// 8. Put profile record to PDS using com.atproto.repo.putRecord
-	uri, cid, err := h.putProfileRecord(ctx, session, userDID, profile)
+	uri, cid, err := pdsClient.PutRecord(ctx, CovesProfileCollection, "self", profile, "")
 	if err != nil {
 		slog.Error("failed to put profile record to PDS",
 			slog.String("did", userDID),
-			slog.String("pds_url", pdsURL),
+			slog.String("pds_url", session.HostURL),
 			slog.String("error", err.Error()),
 		)
-		// Map PDS status codes to user-friendly messages
-		var pdsErr *pdsError
-		if errors.As(err, &pdsErr) {
-			switch pdsErr.StatusCode {
-			case http.StatusUnauthorized, http.StatusForbidden:
-				writeUpdateProfileError(w, http.StatusUnauthorized, "AuthExpired", "Your session may have expired. Please re-authenticate.")
-				return
-			case http.StatusTooManyRequests:
-				writeUpdateProfileError(w, http.StatusTooManyRequests, "RateLimited", "Too many requests. Please try again later.")
-				return
-			case http.StatusRequestEntityTooLarge:
-				writeUpdateProfileError(w, http.StatusBadRequest, "PayloadTooLarge", "Profile data exceeds PDS limits.")
-				return
-			}
+		// Map PDS errors to user-friendly messages
+		switch {
+		case errors.Is(err, pds.ErrUnauthorized), errors.Is(err, pds.ErrForbidden):
+			writeUpdateProfileError(w, http.StatusUnauthorized, "AuthExpired", "Your session may have expired. Please re-authenticate.")
+		case errors.Is(err, pds.ErrRateLimited):
+			writeUpdateProfileError(w, http.StatusTooManyRequests, "RateLimited", "Too many requests. Please try again later.")
+		case errors.Is(err, pds.ErrPayloadTooLarge):
+			writeUpdateProfileError(w, http.StatusRequestEntityTooLarge, "PayloadTooLarge", "Profile data exceeds PDS size limit.")
+		default:
+			writeUpdateProfileError(w, http.StatusInternalServerError, "PDSError", "Failed to update profile")
 		}
-		writeUpdateProfileError(w, http.StatusInternalServerError, "PDSError", "Failed to update profile")
 		return
 	}
 
@@ -301,86 +325,6 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			slog.String("error", writeErr.Error()),
 		)
 	}
-}
-
-// putProfileRecord calls com.atproto.repo.putRecord on the user's PDS
-// This creates or updates the user's profile record at:
-// at://{did}/app.bsky.actor.profile/self
-func (h *UpdateProfileHandler) putProfileRecord(ctx context.Context, session *oauthlib.ClientSessionData, did string, profile map[string]interface{}) (string, string, error) {
-	pdsURL := session.HostURL
-	accessToken := session.AccessToken
-
-	// Build the putRecord request body
-	putRecordReq := map[string]interface{}{
-		"repo":       did,
-		"collection": "app.bsky.actor.profile",
-		"rkey":       "self",
-		"record":     profile,
-	}
-
-	reqBody, err := json.Marshal(putRecordReq)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to marshal putRecord request: %w", err)
-	}
-
-	// Build the endpoint URL
-	endpoint := fmt.Sprintf("%s/xrpc/com.atproto.repo.putRecord", pdsURL)
-
-	// Create the HTTP request
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(reqBody))
-	if err != nil {
-		return "", "", fmt.Errorf("failed to create PDS request: %w", err)
-	}
-
-	// Set headers
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-
-	// Execute the request
-	resp, err := h.httpClient.Do(req)
-	if err != nil {
-		return "", "", fmt.Errorf("PDS request failed: %w", err)
-	}
-	defer func() {
-		if closeErr := resp.Body.Close(); closeErr != nil {
-			slog.Warn("failed to close PDS response body", slog.String("error", closeErr.Error()))
-		}
-	}()
-
-	// Read response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to read PDS response: %w", err)
-	}
-
-	// Check for errors
-	if resp.StatusCode != http.StatusOK {
-		// Truncate error body for logging to prevent leaking sensitive data
-		bodyPreview := string(body)
-		if len(bodyPreview) > 200 {
-			bodyPreview = bodyPreview[:200] + "... (truncated)"
-		}
-		slog.Error("PDS putRecord failed",
-			slog.Int("status", resp.StatusCode),
-			slog.String("body", bodyPreview),
-		)
-		return "", "", &pdsError{StatusCode: resp.StatusCode}
-	}
-
-	// Parse the successful response
-	var result struct {
-		URI string `json:"uri"`
-		CID string `json:"cid"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return "", "", fmt.Errorf("failed to parse PDS response: %w", err)
-	}
-
-	if result.URI == "" || result.CID == "" {
-		return "", "", fmt.Errorf("PDS response missing required fields (uri or cid)")
-	}
-
-	return result.URI, result.CID, nil
 }
 
 // isValidImageMimeType checks if the MIME type is allowed for profile images

@@ -2,6 +2,7 @@ package comments
 
 import (
 	"Coves/internal/atproto/pds"
+	"Coves/internal/core/blobs"
 	"context"
 	"errors"
 	"fmt"
@@ -128,6 +129,16 @@ func (m *mockPDSClient) PutRecord(ctx context.Context, collection, rkey string, 
 	uri := fmt.Sprintf("at://%s/%s/%s", m.did, collection, rkey)
 	cid := fmt.Sprintf("bafytest%d", time.Now().UnixNano())
 	return uri, cid, nil
+}
+
+func (m *mockPDSClient) UploadBlob(ctx context.Context, data []byte, mimeType string) (*blobs.BlobRef, error) {
+	// Return a mock blob reference - comments don't use blob uploads
+	return &blobs.BlobRef{
+		Type:     "blob",
+		Ref:      map[string]string{"$link": fmt.Sprintf("bafymock%d", time.Now().UnixNano())},
+		MimeType: mimeType,
+		Size:     len(data),
+	}, nil
 }
 
 // mockPDSClientFactory creates mock PDS clients for testing

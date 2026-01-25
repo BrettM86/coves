@@ -131,7 +131,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			Commit: &CommitEvent{
 				Rev:        "rev123",
 				Operation:  "create",
-				Collection: "social.coves.post", // Not app.bsky.actor.profile
+				Collection: "social.coves.post", // Not CovesProfileCollection
 				RKey:       "post123",
 				CID:        "bafy123",
 				Record: map[string]interface{}{
@@ -165,7 +165,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			Commit: &CommitEvent{
 				Rev:        "rev123",
 				Operation:  "create",
-				Collection: "app.bsky.actor.profile",
+				Collection: CovesProfileCollection,
 				RKey:       "self",
 				CID:        "bafy123",
 				Record: map[string]interface{}{
@@ -204,7 +204,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			Commit: &CommitEvent{
 				Rev:        "rev123",
 				Operation:  "create",
-				Collection: "app.bsky.actor.profile",
+				Collection: CovesProfileCollection,
 				RKey:       "self",
 				CID:        "bafy123",
 				Record: map[string]interface{}{
@@ -246,7 +246,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			Commit: &CommitEvent{
 				Rev:        "rev123",
 				Operation:  "create",
-				Collection: "app.bsky.actor.profile",
+				Collection: CovesProfileCollection,
 				RKey:       "self",
 				CID:        "bafy123",
 				Record: map[string]interface{}{
@@ -288,7 +288,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			Commit: &CommitEvent{
 				Rev:        "rev123",
 				Operation:  "create",
-				Collection: "app.bsky.actor.profile",
+				Collection: CovesProfileCollection,
 				RKey:       "self",
 				CID:        "bafy123",
 				Record: map[string]interface{}{
@@ -335,7 +335,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			Commit: &CommitEvent{
 				Rev:        "rev123",
 				Operation:  "create",
-				Collection: "app.bsky.actor.profile",
+				Collection: CovesProfileCollection,
 				RKey:       "self",
 				CID:        "bafy123",
 				Record: map[string]interface{}{
@@ -382,7 +382,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			Commit: &CommitEvent{
 				Rev:        "rev123",
 				Operation:  "create",
-				Collection: "app.bsky.actor.profile",
+				Collection: CovesProfileCollection,
 				RKey:       "self",
 				CID:        "bafy123",
 				Record: map[string]interface{}{
@@ -450,7 +450,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			Commit: &CommitEvent{
 				Rev:        "rev123",
 				Operation:  "delete",
-				Collection: "app.bsky.actor.profile",
+				Collection: CovesProfileCollection,
 				RKey:       "self",
 			},
 		}
@@ -499,7 +499,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			Commit: &CommitEvent{
 				Rev:        "rev124",
 				Operation:  "update", // Update operation instead of create
-				Collection: "app.bsky.actor.profile",
+				Collection: CovesProfileCollection,
 				RKey:       "self",
 				CID:        "bafy456",
 				Record: map[string]interface{}{
@@ -542,7 +542,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			Commit: &CommitEvent{
 				Rev:        "rev123",
 				Operation:  "create",
-				Collection: "app.bsky.actor.profile",
+				Collection: CovesProfileCollection,
 				RKey:       "self",
 				CID:        "bafy123",
 				Record: map[string]interface{}{
@@ -597,7 +597,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			Commit: &CommitEvent{
 				Rev:        "rev123",
 				Operation:  "create",
-				Collection: "app.bsky.actor.profile",
+				Collection: CovesProfileCollection,
 				RKey:       "self",
 				CID:        "bafy123",
 				Record:     nil, // No record data
@@ -628,7 +628,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			Commit: &CommitEvent{
 				Rev:        "rev123",
 				Operation:  "create",
-				Collection: "app.bsky.actor.profile",
+				Collection: CovesProfileCollection,
 				RKey:       "self",
 				CID:        "bafy123",
 				Record: map[string]interface{}{
@@ -685,7 +685,7 @@ func TestUserConsumer_PropagatesUpdateProfileError(t *testing.T) {
 			Commit: &CommitEvent{
 				Rev:        "rev123",
 				Operation:  "create",
-				Collection: "app.bsky.actor.profile",
+				Collection: CovesProfileCollection,
 				RKey:       "self",
 				CID:        "bafy123",
 				Record: map[string]interface{}{

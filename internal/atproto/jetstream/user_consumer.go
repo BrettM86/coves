@@ -15,6 +15,11 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// CovesProfileCollection is the atProto collection for Coves user profiles.
+// NOTE: This constant is intentionally duplicated in internal/api/handlers/user/update_profile.go
+// to avoid circular dependencies between packages. Keep both definitions in sync.
+const CovesProfileCollection = "social.coves.actor.profile"
+
 // SessionHandleUpdater is an interface for updating OAuth session handles
 // when identity changes occur. This keeps active sessions in sync with
 // the user's current handle.
@@ -198,7 +203,7 @@ func (c *UserEventConsumer) handleEvent(ctx context.Context, data []byte) error 
 	}
 
 	// We're interested in identity events (handle updates), account events (new users),
-	// and commit events (profile updates from app.bsky.actor.profile)
+	// and commit events (profile updates from social.coves.actor.profile)
 	switch event.Kind {
 	case "identity":
 		return c.handleIdentityEvent(ctx, &event)
@@ -262,18 +267,26 @@ func (c *UserEventConsumer) handleIdentityEvent(ctx context.Context, event *Jets
 		// CRITICAL: Purge BOTH old handle and DID from cache
 		// Old handle: alice.bsky.social → did:plc:abc123 (must be removed)
 		if purgeErr := c.identityResolver.Purge(ctx, existingUser.Handle); purgeErr != nil {
-			log.Printf("Warning: failed to purge old handle cache for %s: %v", existingUser.Handle, purgeErr)
+			slog.Error("CRITICAL: failed to purge old handle cache",
+				slog.String("handle", existingUser.Handle),
+				slog.String("error", purgeErr.Error()))
 		}
 
 		// DID: did:plc:abc123 → alice.bsky.social (must be removed)
 		if purgeErr := c.identityResolver.Purge(ctx, did); purgeErr != nil {
-			log.Printf("Warning: failed to purge DID cache for %s: %v", did, purgeErr)
+			slog.Error("CRITICAL: failed to purge DID cache",
+				slog.String("did", did),
+				slog.String("error", purgeErr.Error()))
 		}
 
 		// Update OAuth session handles to keep mobile/web sessions in sync
+		// Failure here causes users to see stale handles in their active sessions
 		if c.sessionHandleUpdater != nil {
 			if sessionsUpdated, updateErr := c.sessionHandleUpdater.UpdateHandleByDID(ctx, did, handle); updateErr != nil {
-				log.Printf("Warning: failed to update OAuth session handles for %s: %v", did, updateErr)
+				slog.Error("failed to update OAuth session handles (users may see stale handle)",
+					slog.String("did", did),
+					slog.String("new_handle", handle),
+					slog.String("error", updateErr.Error()))
 			} else if sessionsUpdated > 0 {
 				log.Printf("Updated %d OAuth session(s) with new handle: %s", sessionsUpdated, handle)
 			}
@@ -304,16 +317,16 @@ func (c *UserEventConsumer) handleAccountEvent(ctx context.Context, event *Jetst
 }
 
 // handleCommitEvent processes commit events for user profile updates
-// Only handles app.bsky.actor.profile collection for users already in our database.
-// This syncs profile data (displayName, bio, avatar, banner) from Bluesky profiles.
+// Only handles social.coves.actor.profile collection for users already in our database.
+// This syncs profile data (displayName, bio, avatar, banner) from Coves profiles.
 func (c *UserEventConsumer) handleCommitEvent(ctx context.Context, event *JetstreamEvent) error {
 	if event.Commit == nil {
-		slog.Debug("received nil commit in handleCommitEvent", slog.String("did", event.Did))
+		slog.Warn("received nil commit in handleCommitEvent (malformed event)", slog.String("did", event.Did))
 		return nil
 	}
 
-	// Only handle app.bsky.actor.profile collection
-	if event.Commit.Collection != "app.bsky.actor.profile" {
+	// Only handle social.coves.actor.profile collection
+	if event.Commit.Collection != CovesProfileCollection {
 		return nil
 	}
 
@@ -343,9 +356,9 @@ func (c *UserEventConsumer) handleCommitEvent(ctx context.Context, event *Jetstr
 // Extracts displayName, description (bio), avatar, and banner from the record
 func (c *UserEventConsumer) handleProfileUpdate(ctx context.Context, did string, commit *CommitEvent) error {
 	if commit.Record == nil {
-		slog.Debug("received nil record in profile commit",
+		slog.Warn("received nil record in profile commit (profile update silently dropped)",
 			slog.String("did", did),
-			slog.String("operation", string(commit.Operation)))
+			slog.String("operation", commit.Operation))
 		return nil
 	}
 

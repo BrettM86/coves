@@ -18,8 +18,14 @@ var (
 	// ErrBadRequest indicates the request was malformed or invalid (HTTP 400).
 	ErrBadRequest = errors.New("bad request")
 
-	// ErrConflict indicates the record was modified by another operation (HTTP 409).
-	ErrConflict = errors.New("record was modified by another operation")
+	// ErrConflict indicates a conflict occurred, such as a record being modified by another operation (HTTP 409).
+	ErrConflict = errors.New("conflict")
+
+	// ErrRateLimited indicates the request was rejected due to rate limiting (HTTP 429).
+	ErrRateLimited = errors.New("rate limited")
+
+	// ErrPayloadTooLarge indicates the request payload exceeds PDS limits (HTTP 413).
+	ErrPayloadTooLarge = errors.New("payload too large")
 )
 
 // IsAuthError returns true if the error is an authentication/authorization error.

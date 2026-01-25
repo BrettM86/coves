@@ -4,10 +4,14 @@
 package pds
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 
+	"Coves/internal/core/blobs"
+
+	comatproto "github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/atproto/atclient"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 )
@@ -34,6 +38,13 @@ type Client interface {
 	// PutRecord creates or updates a record with optional optimistic locking.
 	// If swapRecord CID is provided, the operation fails if the current CID doesn't match.
 	PutRecord(ctx context.Context, collection string, rkey string, record any, swapRecord string) (uri string, cid string, err error)
+
+	// UploadBlob uploads binary data to the user's PDS repository.
+	// Returns a BlobRef that can be used in records.
+	// Note: The mimeType parameter is accepted for interface compatibility, but the PDS
+	// performs its own MIME type detection from the blob content. The returned BlobRef
+	// will contain the PDS-detected MIME type.
+	UploadBlob(ctx context.Context, data []byte, mimeType string) (*blobs.BlobRef, error)
 
 	// DID returns the authenticated user's DID.
 	DID() string
@@ -95,6 +106,10 @@ func wrapAPIError(err error, operation string) error {
 			return fmt.Errorf("%s: %w: %s", operation, ErrNotFound, apiErr.Message)
 		case 409:
 			return fmt.Errorf("%s: %w: %s", operation, ErrConflict, apiErr.Message)
+		case 413:
+			return fmt.Errorf("%s: %w: %s", operation, ErrPayloadTooLarge, apiErr.Message)
+		case 429:
+			return fmt.Errorf("%s: %w: %s", operation, ErrRateLimited, apiErr.Message)
 		}
 	}
 
@@ -250,4 +265,19 @@ func (c *client) PutRecord(ctx context.Context, collection string, rkey string, 
 	}
 
 	return result.URI, result.CID, nil
+}
+
+// UploadBlob uploads binary data to the user's PDS repository.
+func (c *client) UploadBlob(ctx context.Context, data []byte, mimeType string) (*blobs.BlobRef, error) {
+	result, err := comatproto.RepoUploadBlob(ctx, c.apiClient, bytes.NewReader(data))
+	if err != nil {
+		return nil, wrapAPIError(err, "uploadBlob")
+	}
+
+	return &blobs.BlobRef{
+		Type:     "blob",
+		Ref:      map[string]string{"$link": result.Blob.Ref.String()},
+		MimeType: result.Blob.MimeType,
+		Size:     int(result.Blob.Size),
+	}, nil
 }

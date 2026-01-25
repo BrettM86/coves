@@ -5,7 +5,6 @@ import (
 	"Coves/internal/api/routes"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
-	"Coves/internal/core/blobs"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
 	"bytes"
@@ -54,7 +53,7 @@ func createTestAvatarPNG(width, height int, c color.Color) []byte {
 
 // TestUserProfileAvatarE2E_UpdateWithAvatar tests the full flow of updating a user profile with an avatar:
 // 1. User updates profile via Coves API (POST /xrpc/social.coves.actor.updateProfile)
-// 2. Profile record is written to PDS (app.bsky.actor.profile)
+// 2. Profile record is written to PDS (social.coves.actor.profile)
 // 3. Jetstream consumer receives and processes the event
 // 4. GetProfile returns the correct avatar URL
 func TestUserProfileAvatarE2E_UpdateWithAvatar(t *testing.T) {
@@ -92,7 +91,7 @@ func TestUserProfileAvatarE2E_UpdateWithAvatar(t *testing.T) {
 	pdsHostname := strings.TrimPrefix(pdsURL, "http://")
 	pdsHostname = strings.TrimPrefix(pdsHostname, "https://")
 	pdsHostname = strings.Split(pdsHostname, ":")[0]
-	jetstreamURL := fmt.Sprintf("ws://%s:6008/subscribe?wantedCollections=app.bsky.actor.profile", pdsHostname)
+	jetstreamURL := fmt.Sprintf("ws://%s:6008/subscribe?wantedCollections=social.coves.actor.profile", pdsHostname)
 
 	testConn, _, connErr := websocket.DefaultDialer.Dial(jetstreamURL, nil)
 	if connErr != nil {
@@ -115,15 +114,16 @@ func TestUserProfileAvatarE2E_UpdateWithAvatar(t *testing.T) {
 	// Setup services
 	userRepo := postgres.NewUserRepository(db)
 	userService := users.NewUserService(userRepo, identityResolver, pdsURL)
-	blobService := blobs.NewBlobService(pdsURL)
 
 	// Setup user consumer for processing Jetstream events
 	userConsumer := jetstream.NewUserEventConsumer(userService, identityResolver, jetstreamURL, "")
 
-	// Setup HTTP server with all user routes
+	// Setup HTTP server with all user routes using password-based PDS client for E2E tests
 	e2eAuth := NewE2EOAuthMiddleware()
 	r := chi.NewRouter()
-	routes.RegisterUserRoutes(r, userService, e2eAuth.OAuthAuthMiddleware, blobService)
+	routes.RegisterUserRoutesWithOptions(r, userService, e2eAuth.OAuthAuthMiddleware, nil, &routes.UserRouteOptions{
+		PDSClientFactory: UserProfilePasswordAuthPDSClientFactory(),
+	})
 	httpServer := httptest.NewServer(r)
 	defer httpServer.Close()
 
@@ -203,7 +203,7 @@ func TestUserProfileAvatarE2E_UpdateWithAvatar(t *testing.T) {
 
 					// Only process profile update events for our user
 					if event.Kind == "commit" && event.Commit != nil &&
-						event.Commit.Collection == "app.bsky.actor.profile" &&
+						event.Commit.Collection == "social.coves.actor.profile" &&
 						event.Did == userDID {
 						eventChan <- &event
 					}
@@ -279,7 +279,7 @@ func TestUserProfileAvatarE2E_UpdateWithAvatar(t *testing.T) {
 		}
 
 		// For profile updates, we need to manually process the commit event
-		// The consumer checks for app.bsky.actor.profile commit events
+		// The consumer checks for social.coves.actor.profile commit events
 		if realEvent.Kind == "commit" && realEvent.Commit != nil {
 			// Extract profile data from the event and update the user
 			var displayNamePtr, bioPtr, avatarCIDPtr, bannerCIDPtr *string
@@ -389,7 +389,7 @@ func TestUserProfileAvatarE2E_UpdateWithBanner(t *testing.T) {
 	pdsHostname := strings.TrimPrefix(pdsURL, "http://")
 	pdsHostname = strings.TrimPrefix(pdsHostname, "https://")
 	pdsHostname = strings.Split(pdsHostname, ":")[0]
-	jetstreamURL := fmt.Sprintf("ws://%s:6008/subscribe?wantedCollections=app.bsky.actor.profile", pdsHostname)
+	jetstreamURL := fmt.Sprintf("ws://%s:6008/subscribe?wantedCollections=social.coves.actor.profile", pdsHostname)
 
 	testConn, _, connErr := websocket.DefaultDialer.Dial(jetstreamURL, nil)
 	if connErr != nil {
@@ -411,12 +411,13 @@ func TestUserProfileAvatarE2E_UpdateWithBanner(t *testing.T) {
 	// Setup services
 	userRepo := postgres.NewUserRepository(db)
 	userService := users.NewUserService(userRepo, identityResolver, pdsURL)
-	blobService := blobs.NewBlobService(pdsURL)
 
-	// Setup HTTP server
+	// Setup HTTP server using password-based PDS client for E2E tests
 	e2eAuth := NewE2EOAuthMiddleware()
 	r := chi.NewRouter()
-	routes.RegisterUserRoutes(r, userService, e2eAuth.OAuthAuthMiddleware, blobService)
+	routes.RegisterUserRoutesWithOptions(r, userService, e2eAuth.OAuthAuthMiddleware, nil, &routes.UserRouteOptions{
+		PDSClientFactory: UserProfilePasswordAuthPDSClientFactory(),
+	})
 	httpServer := httptest.NewServer(r)
 	defer httpServer.Close()
 
@@ -482,7 +483,7 @@ func TestUserProfileAvatarE2E_UpdateWithBanner(t *testing.T) {
 					}
 
 					if event.Kind == "commit" && event.Commit != nil &&
-						event.Commit.Collection == "app.bsky.actor.profile" &&
+						event.Commit.Collection == "social.coves.actor.profile" &&
 						event.Did == userDID {
 						eventChan <- &event
 					}
@@ -624,7 +625,7 @@ func TestUserProfileAvatarE2E_UpdateDisplayNameAndBio(t *testing.T) {
 	pdsHostname := strings.TrimPrefix(pdsURL, "http://")
 	pdsHostname = strings.TrimPrefix(pdsHostname, "https://")
 	pdsHostname = strings.Split(pdsHostname, ":")[0]
-	jetstreamURL := fmt.Sprintf("ws://%s:6008/subscribe?wantedCollections=app.bsky.actor.profile", pdsHostname)
+	jetstreamURL := fmt.Sprintf("ws://%s:6008/subscribe?wantedCollections=social.coves.actor.profile", pdsHostname)
 
 	testConn, _, connErr := websocket.DefaultDialer.Dial(jetstreamURL, nil)
 	if connErr != nil {
@@ -646,12 +647,13 @@ func TestUserProfileAvatarE2E_UpdateDisplayNameAndBio(t *testing.T) {
 	// Setup services
 	userRepo := postgres.NewUserRepository(db)
 	userService := users.NewUserService(userRepo, identityResolver, pdsURL)
-	blobService := blobs.NewBlobService(pdsURL)
 
-	// Setup HTTP server
+	// Setup HTTP server using password-based PDS client for E2E tests
 	e2eAuth := NewE2EOAuthMiddleware()
 	r := chi.NewRouter()
-	routes.RegisterUserRoutes(r, userService, e2eAuth.OAuthAuthMiddleware, blobService)
+	routes.RegisterUserRoutesWithOptions(r, userService, e2eAuth.OAuthAuthMiddleware, nil, &routes.UserRouteOptions{
+		PDSClientFactory: UserProfilePasswordAuthPDSClientFactory(),
+	})
 	httpServer := httptest.NewServer(r)
 	defer httpServer.Close()
 
@@ -703,7 +705,7 @@ func TestUserProfileAvatarE2E_UpdateDisplayNameAndBio(t *testing.T) {
 					}
 
 					if event.Kind == "commit" && event.Commit != nil &&
-						event.Commit.Collection == "app.bsky.actor.profile" &&
+						event.Commit.Collection == "social.coves.actor.profile" &&
 						event.Did == userDID {
 						eventChan <- &event
 					}
@@ -819,7 +821,7 @@ func TestUserProfileAvatarE2E_ReplaceAvatar(t *testing.T) {
 	pdsHostname := strings.TrimPrefix(pdsURL, "http://")
 	pdsHostname = strings.TrimPrefix(pdsHostname, "https://")
 	pdsHostname = strings.Split(pdsHostname, ":")[0]
-	jetstreamURL := fmt.Sprintf("ws://%s:6008/subscribe?wantedCollections=app.bsky.actor.profile", pdsHostname)
+	jetstreamURL := fmt.Sprintf("ws://%s:6008/subscribe?wantedCollections=social.coves.actor.profile", pdsHostname)
 
 	testConn, _, connErr := websocket.DefaultDialer.Dial(jetstreamURL, nil)
 	if connErr != nil {
@@ -841,12 +843,13 @@ func TestUserProfileAvatarE2E_ReplaceAvatar(t *testing.T) {
 	// Setup services
 	userRepo := postgres.NewUserRepository(db)
 	userService := users.NewUserService(userRepo, identityResolver, pdsURL)
-	blobService := blobs.NewBlobService(pdsURL)
 
-	// Setup HTTP server
+	// Setup HTTP server using password-based PDS client for E2E tests
 	e2eAuth := NewE2EOAuthMiddleware()
 	r := chi.NewRouter()
-	routes.RegisterUserRoutes(r, userService, e2eAuth.OAuthAuthMiddleware, blobService)
+	routes.RegisterUserRoutesWithOptions(r, userService, e2eAuth.OAuthAuthMiddleware, nil, &routes.UserRouteOptions{
+		PDSClientFactory: UserProfilePasswordAuthPDSClientFactory(),
+	})
 	httpServer := httptest.NewServer(r)
 	defer httpServer.Close()
 
@@ -884,7 +887,7 @@ func TestUserProfileAvatarE2E_ReplaceAvatar(t *testing.T) {
 					}
 
 					if event.Kind == "commit" && event.Commit != nil &&
-						event.Commit.Collection == "app.bsky.actor.profile" &&
+						event.Commit.Collection == "social.coves.actor.profile" &&
 						event.Did == userDID {
 						eventChan <- &event
 					}

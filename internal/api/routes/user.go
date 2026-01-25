@@ -3,7 +3,6 @@ package routes
 import (
 	"Coves/internal/api/handlers/user"
 	"Coves/internal/api/middleware"
-	"Coves/internal/core/blobs"
 	"Coves/internal/core/users"
 	"encoding/json"
 	"errors"
@@ -11,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -26,9 +26,24 @@ func NewUserHandler(userService users.UserService) *UserHandler {
 	}
 }
 
+// UserRouteOptions contains optional configuration for user routes.
+// Use this to inject test dependencies like custom PDS client factories.
+type UserRouteOptions struct {
+	// PDSClientFactory overrides the default OAuth-based PDS client creation.
+	// If nil, uses OAuth with DPoP (production behavior).
+	// Set this in E2E tests to use password-based authentication.
+	PDSClientFactory user.PDSClientFactory
+}
+
 // RegisterUserRoutes registers user-related XRPC endpoints on the router
 // Implements social.coves.actor.* lexicon endpoints
-func RegisterUserRoutes(r chi.Router, service users.UserService, authMiddleware *middleware.OAuthAuthMiddleware, blobService blobs.Service) {
+func RegisterUserRoutes(r chi.Router, service users.UserService, authMiddleware *middleware.OAuthAuthMiddleware, oauthClient *oauth.ClientApp) {
+	RegisterUserRoutesWithOptions(r, service, authMiddleware, oauthClient, nil)
+}
+
+// RegisterUserRoutesWithOptions registers user-related XRPC endpoints with optional configuration.
+// Use opts to inject test dependencies like custom PDS client factories.
+func RegisterUserRoutesWithOptions(r chi.Router, service users.UserService, authMiddleware *middleware.OAuthAuthMiddleware, oauthClient *oauth.ClientApp, opts *UserRouteOptions) {
 	h := NewUserHandler(service)
 
 	// social.coves.actor.getprofile - query endpoint (public)
@@ -46,7 +61,14 @@ func RegisterUserRoutes(r chi.Router, service users.UserService, authMiddleware 
 	// social.coves.actor.updateProfile - procedure endpoint (authenticated)
 	// Updates the authenticated user's profile on their PDS (avatar, banner, displayName, bio).
 	// This writes directly to the user's PDS and the Jetstream consumer will index the change.
-	updateProfileHandler := user.NewUpdateProfileHandler(blobService, nil)
+	var updateProfileHandler *user.UpdateProfileHandler
+	if opts != nil && opts.PDSClientFactory != nil {
+		// Use custom factory (for E2E tests with password auth)
+		updateProfileHandler = user.NewUpdateProfileHandlerWithFactory(opts.PDSClientFactory)
+	} else {
+		// Use OAuth client for DPoP-authenticated PDS requests (production)
+		updateProfileHandler = user.NewUpdateProfileHandler(oauthClient)
+	}
 	r.With(authMiddleware.RequireAuth).Post("/xrpc/social.coves.actor.updateProfile", updateProfileHandler.ServeHTTP)
 }
 

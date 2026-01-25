@@ -320,7 +320,7 @@ func main() {
 	// Start Jetstream consumer for read-forward user indexing
 	jetstreamURL := os.Getenv("JETSTREAM_URL")
 	if jetstreamURL == "" {
-		jetstreamURL = "wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=app.bsky.actor.profile"
+		jetstreamURL = "wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=social.coves.actor.profile"
 	}
 
 	pdsFilter := os.Getenv("JETSTREAM_PDS_FILTER") // Optional: filter to specific PDS
@@ -728,7 +728,7 @@ func main() {
 	log.Println("  - Updating: Post comment counts and comment reply counts atomically")
 
 	// Register XRPC routes
-	routes.RegisterUserRoutes(r, userService, authMiddleware, blobService)
+	routes.RegisterUserRoutes(r, userService, authMiddleware, oauthClient.ClientApp)
 	log.Println("User XRPC endpoints registered")
 	log.Println("  - GET /xrpc/social.coves.actor.getprofile (public)")
 	log.Println("  - POST /xrpc/social.coves.actor.signup (public)")

@@ -11,51 +11,78 @@ import (
 	"testing"
 
 	"Coves/internal/api/middleware"
+	"Coves/internal/atproto/pds"
 	"Coves/internal/core/blobs"
 
 	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
 )
 
-// MockBlobService is a mock implementation of blobs.Service for testing
-type MockBlobService struct {
-	mock.Mock
+// mockPDSClient implements pds.Client for testing error paths
+type mockPDSClient struct {
+	uploadBlobError error
+	uploadBlobRef   *blobs.BlobRef
+	putRecordError  error
+	putRecordURI    string
+	putRecordCID    string
 }
 
-func (m *MockBlobService) UploadBlobFromURL(ctx context.Context, owner blobs.BlobOwner, imageURL string) (*blobs.BlobRef, error) {
-	args := m.Called(ctx, owner, imageURL)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
+func (m *mockPDSClient) CreateRecord(_ context.Context, _ string, _ string, _ any) (string, string, error) {
+	return "", "", nil
+}
+
+func (m *mockPDSClient) DeleteRecord(_ context.Context, _ string, _ string) error {
+	return nil
+}
+
+func (m *mockPDSClient) ListRecords(_ context.Context, _ string, _ int, _ string) (*pds.ListRecordsResponse, error) {
+	return nil, nil
+}
+
+func (m *mockPDSClient) GetRecord(_ context.Context, _ string, _ string) (*pds.RecordResponse, error) {
+	return nil, nil
+}
+
+func (m *mockPDSClient) PutRecord(_ context.Context, _ string, _ string, _ any, _ string) (string, string, error) {
+	if m.putRecordError != nil {
+		return "", "", m.putRecordError
 	}
-	return args.Get(0).(*blobs.BlobRef), args.Error(1)
+	return m.putRecordURI, m.putRecordCID, nil
 }
 
-func (m *MockBlobService) UploadBlob(ctx context.Context, owner blobs.BlobOwner, data []byte, mimeType string) (*blobs.BlobRef, error) {
-	args := m.Called(ctx, owner, data, mimeType)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
+func (m *mockPDSClient) UploadBlob(_ context.Context, _ []byte, _ string) (*blobs.BlobRef, error) {
+	if m.uploadBlobError != nil {
+		return nil, m.uploadBlobError
 	}
-	return args.Get(0).(*blobs.BlobRef), args.Error(1)
+	return m.uploadBlobRef, nil
 }
 
-// MockPDSClient is a mock HTTP client for PDS interactions
-type MockPDSClient struct {
-	mock.Mock
+func (m *mockPDSClient) DID() string {
+	return "did:plc:test123"
 }
 
-// mockRoundTripper implements http.RoundTripper for testing
-type mockRoundTripper struct {
-	mock.Mock
+func (m *mockPDSClient) HostURL() string {
+	return "https://test.pds.example"
 }
 
-func (m *mockRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	args := m.Called(req)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
+// createMockFactory creates a PDSClientFactory that returns the given mock client
+func createMockFactory(client pds.Client, err error) PDSClientFactory {
+	return func(_ context.Context, _ *oauthlib.ClientSessionData) (pds.Client, error) {
+		if err != nil {
+			return nil, err
+		}
+		return client, nil
 	}
-	return args.Get(0).(*http.Response), args.Error(1)
+}
+
+// createTestHandler creates a handler with a mock factory for testing validation paths
+// that don't require actual PDS client operations
+func createTestHandler() *UpdateProfileHandler {
+	// Use a factory that will never be called (tests exit before PDS client creation)
+	return NewUpdateProfileHandlerWithFactory(func(_ context.Context, _ *oauthlib.ClientSessionData) (pds.Client, error) {
+		return nil, errors.New("mock factory should not be called in validation tests")
+	})
 }
 
 // createTestOAuthSession creates a test OAuth session for testing
@@ -70,17 +97,15 @@ func createTestOAuthSession(did string) *oauthlib.ClientSessionData {
 }
 
 // setTestOAuthSession sets both user DID and OAuth session in context
-func setTestOAuthSession(ctx context.Context, userDID string, session *oauthlib.ClientSessionData) context.Context {
-	ctx = middleware.SetTestUserDID(ctx, userDID)
-	ctx = context.WithValue(ctx, middleware.OAuthSessionKey, session)
-	ctx = context.WithValue(ctx, middleware.UserAccessToken, session.AccessToken)
-	return ctx
+func setTestOAuthSession(req *http.Request, userDID string, session *oauthlib.ClientSessionData) *http.Request {
+	ctx := middleware.SetTestUserDID(req.Context(), userDID)
+	ctx = middleware.SetTestOAuthSession(ctx, session)
+	return req.WithContext(ctx)
 }
 
 // TestUpdateProfileHandler_Unauthenticated tests that unauthenticated requests return 401
 func TestUpdateProfileHandler_Unauthenticated(t *testing.T) {
-	mockBlobService := new(MockBlobService)
-	handler := NewUpdateProfileHandler(mockBlobService, nil)
+	handler := createTestHandler()
 
 	reqBody := UpdateProfileRequest{
 		DisplayName: strPtr("Test User"),
@@ -96,14 +121,11 @@ func TestUpdateProfileHandler_Unauthenticated(t *testing.T) {
 
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 	assert.Contains(t, w.Body.String(), "AuthRequired")
-
-	mockBlobService.AssertNotCalled(t, "UploadBlob", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
 
 // TestUpdateProfileHandler_MissingOAuthSession tests that missing OAuth session returns 401
 func TestUpdateProfileHandler_MissingOAuthSession(t *testing.T) {
-	mockBlobService := new(MockBlobService)
-	handler := NewUpdateProfileHandler(mockBlobService, nil)
+	handler := createTestHandler()
 
 	reqBody := UpdateProfileRequest{
 		DisplayName: strPtr("Test User"),
@@ -126,16 +148,14 @@ func TestUpdateProfileHandler_MissingOAuthSession(t *testing.T) {
 
 // TestUpdateProfileHandler_InvalidRequestBody tests that invalid JSON returns 400
 func TestUpdateProfileHandler_InvalidRequestBody(t *testing.T) {
-	mockBlobService := new(MockBlobService)
-	handler := NewUpdateProfileHandler(mockBlobService, nil)
+	handler := createTestHandler()
 
 	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", strings.NewReader("not valid json"))
 	req.Header.Set("Content-Type", "application/json")
 
 	testDID := "did:plc:testuser123"
 	session := createTestOAuthSession(testDID)
-	ctx := setTestOAuthSession(req.Context(), testDID, session)
-	req = req.WithContext(ctx)
+	req = setTestOAuthSession(req, testDID, session)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -146,8 +166,7 @@ func TestUpdateProfileHandler_InvalidRequestBody(t *testing.T) {
 
 // TestUpdateProfileHandler_AvatarSizeExceedsLimit tests that avatar over 1MB is rejected
 func TestUpdateProfileHandler_AvatarSizeExceedsLimit(t *testing.T) {
-	mockBlobService := new(MockBlobService)
-	handler := NewUpdateProfileHandler(mockBlobService, nil)
+	handler := createTestHandler()
 
 	// Create avatar blob larger than 1MB (1,000,001 bytes)
 	largeBlob := make([]byte, 1_000_001)
@@ -164,22 +183,18 @@ func TestUpdateProfileHandler_AvatarSizeExceedsLimit(t *testing.T) {
 
 	testDID := "did:plc:testuser123"
 	session := createTestOAuthSession(testDID)
-	ctx := setTestOAuthSession(req.Context(), testDID, session)
-	req = req.WithContext(ctx)
+	req = setTestOAuthSession(req, testDID, session)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Contains(t, w.Body.String(), "Avatar exceeds 1MB limit")
-
-	mockBlobService.AssertNotCalled(t, "UploadBlob", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
 
 // TestUpdateProfileHandler_BannerSizeExceedsLimit tests that banner over 2MB is rejected
 func TestUpdateProfileHandler_BannerSizeExceedsLimit(t *testing.T) {
-	mockBlobService := new(MockBlobService)
-	handler := NewUpdateProfileHandler(mockBlobService, nil)
+	handler := createTestHandler()
 
 	// Create banner blob larger than 2MB (2,000,001 bytes)
 	largeBlob := make([]byte, 2_000_001)
@@ -196,22 +211,18 @@ func TestUpdateProfileHandler_BannerSizeExceedsLimit(t *testing.T) {
 
 	testDID := "did:plc:testuser123"
 	session := createTestOAuthSession(testDID)
-	ctx := setTestOAuthSession(req.Context(), testDID, session)
-	req = req.WithContext(ctx)
+	req = setTestOAuthSession(req, testDID, session)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Contains(t, w.Body.String(), "Banner exceeds 2MB limit")
-
-	mockBlobService.AssertNotCalled(t, "UploadBlob", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
 
 // TestUpdateProfileHandler_InvalidAvatarMimeType tests that invalid avatar mime type is rejected
 func TestUpdateProfileHandler_InvalidAvatarMimeType(t *testing.T) {
-	mockBlobService := new(MockBlobService)
-	handler := NewUpdateProfileHandler(mockBlobService, nil)
+	handler := createTestHandler()
 
 	reqBody := UpdateProfileRequest{
 		DisplayName:    strPtr("Test User"),
@@ -225,8 +236,7 @@ func TestUpdateProfileHandler_InvalidAvatarMimeType(t *testing.T) {
 
 	testDID := "did:plc:testuser123"
 	session := createTestOAuthSession(testDID)
-	ctx := setTestOAuthSession(req.Context(), testDID, session)
-	req = req.WithContext(ctx)
+	req = setTestOAuthSession(req, testDID, session)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -237,8 +247,7 @@ func TestUpdateProfileHandler_InvalidAvatarMimeType(t *testing.T) {
 
 // TestUpdateProfileHandler_InvalidBannerMimeType tests that invalid banner mime type is rejected
 func TestUpdateProfileHandler_InvalidBannerMimeType(t *testing.T) {
-	mockBlobService := new(MockBlobService)
-	handler := NewUpdateProfileHandler(mockBlobService, nil)
+	handler := createTestHandler()
 
 	reqBody := UpdateProfileRequest{
 		DisplayName:    strPtr("Test User"),
@@ -252,8 +261,7 @@ func TestUpdateProfileHandler_InvalidBannerMimeType(t *testing.T) {
 
 	testDID := "did:plc:testuser123"
 	session := createTestOAuthSession(testDID)
-	ctx := setTestOAuthSession(req.Context(), testDID, session)
-	req = req.WithContext(ctx)
+	req = setTestOAuthSession(req, testDID, session)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -262,353 +270,9 @@ func TestUpdateProfileHandler_InvalidBannerMimeType(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "Invalid banner mime type")
 }
 
-// TestUpdateProfileHandler_ValidMimeTypes tests that all valid mime types are accepted
-func TestUpdateProfileHandler_ValidMimeTypes(t *testing.T) {
-	validMimeTypes := []string{"image/png", "image/jpeg", "image/webp"}
-
-	for _, mimeType := range validMimeTypes {
-		t.Run(mimeType, func(t *testing.T) {
-			mockBlobService := new(MockBlobService)
-
-			// Set up mock PDS server for putRecord
-			mockPDS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(map[string]interface{}{
-					"uri": "at://did:plc:testuser123/app.bsky.actor.profile/self",
-					"cid": "bafyreicid123",
-				})
-			}))
-			defer mockPDS.Close()
-
-			handler := NewUpdateProfileHandler(mockBlobService, http.DefaultClient)
-
-			avatarData := []byte("fake avatar image data")
-			expectedBlobRef := &blobs.BlobRef{
-				Type:     "blob",
-				Ref:      map[string]string{"$link": "bafyreiabc123"},
-				MimeType: mimeType,
-				Size:     len(avatarData),
-			}
-
-			mockBlobService.On("UploadBlob", mock.Anything, mock.Anything, avatarData, mimeType).
-				Return(expectedBlobRef, nil)
-
-			reqBody := UpdateProfileRequest{
-				DisplayName:    strPtr("Test User"),
-				AvatarBlob:     avatarData,
-				AvatarMimeType: mimeType,
-			}
-			body, _ := json.Marshal(reqBody)
-
-			req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-
-			testDID := "did:plc:testuser123"
-			session := createTestOAuthSession(testDID)
-			session.HostURL = mockPDS.URL // Point to mock PDS
-			ctx := setTestOAuthSession(req.Context(), testDID, session)
-			req = req.WithContext(ctx)
-
-			w := httptest.NewRecorder()
-			handler.ServeHTTP(w, req)
-
-			// Should succeed or fail at PDS call, not at validation
-			// We just verify the mime type validation passed
-			assert.NotEqual(t, http.StatusBadRequest, w.Code)
-			mockBlobService.AssertExpectations(t)
-		})
-	}
-}
-
-// TestUpdateProfileHandler_AvatarBlobUploadFailure tests handling of blob upload failure
-func TestUpdateProfileHandler_AvatarBlobUploadFailure(t *testing.T) {
-	mockBlobService := new(MockBlobService)
-	handler := NewUpdateProfileHandler(mockBlobService, nil)
-
-	avatarData := []byte("fake avatar image data")
-	mockBlobService.On("UploadBlob", mock.Anything, mock.Anything, avatarData, "image/jpeg").
-		Return(nil, errors.New("PDS upload failed"))
-
-	reqBody := UpdateProfileRequest{
-		DisplayName:    strPtr("Test User"),
-		AvatarBlob:     avatarData,
-		AvatarMimeType: "image/jpeg",
-	}
-	body, _ := json.Marshal(reqBody)
-
-	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-
-	testDID := "did:plc:testuser123"
-	session := createTestOAuthSession(testDID)
-	ctx := setTestOAuthSession(req.Context(), testDID, session)
-	req = req.WithContext(ctx)
-
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.Contains(t, w.Body.String(), "Failed to upload avatar")
-
-	mockBlobService.AssertExpectations(t)
-}
-
-// TestUpdateProfileHandler_BannerBlobUploadFailure tests handling of banner blob upload failure
-func TestUpdateProfileHandler_BannerBlobUploadFailure(t *testing.T) {
-	mockBlobService := new(MockBlobService)
-	handler := NewUpdateProfileHandler(mockBlobService, nil)
-
-	bannerData := []byte("fake banner image data")
-	mockBlobService.On("UploadBlob", mock.Anything, mock.Anything, bannerData, "image/png").
-		Return(nil, errors.New("PDS upload failed"))
-
-	reqBody := UpdateProfileRequest{
-		DisplayName:    strPtr("Test User"),
-		BannerBlob:     bannerData,
-		BannerMimeType: "image/png",
-	}
-	body, _ := json.Marshal(reqBody)
-
-	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-
-	testDID := "did:plc:testuser123"
-	session := createTestOAuthSession(testDID)
-	ctx := setTestOAuthSession(req.Context(), testDID, session)
-	req = req.WithContext(ctx)
-
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.Contains(t, w.Body.String(), "Failed to upload banner")
-
-	mockBlobService.AssertExpectations(t)
-}
-
-// TestUpdateProfileHandler_PartialUpdateDisplayNameOnly tests updating only displayName (no blobs)
-func TestUpdateProfileHandler_PartialUpdateDisplayNameOnly(t *testing.T) {
-	mockBlobService := new(MockBlobService)
-
-	// Mock PDS server for putRecord
-	mockPDS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify it's the right endpoint
-		assert.Equal(t, "/xrpc/com.atproto.repo.putRecord", r.URL.Path)
-
-		// Parse request body
-		var putReq map[string]interface{}
-		json.NewDecoder(r.Body).Decode(&putReq)
-
-		// Verify record structure
-		record, ok := putReq["record"].(map[string]interface{})
-		assert.True(t, ok, "record should exist")
-		assert.Equal(t, "app.bsky.actor.profile", record["$type"])
-		assert.Equal(t, "Updated Display Name", record["displayName"])
-		assert.Nil(t, record["avatar"], "avatar should not be set")
-		assert.Nil(t, record["banner"], "banner should not be set")
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"uri": "at://did:plc:testuser123/app.bsky.actor.profile/self",
-			"cid": "bafyreicid123",
-		})
-	}))
-	defer mockPDS.Close()
-
-	handler := NewUpdateProfileHandler(mockBlobService, http.DefaultClient)
-
-	reqBody := UpdateProfileRequest{
-		DisplayName: strPtr("Updated Display Name"),
-	}
-	body, _ := json.Marshal(reqBody)
-
-	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-
-	testDID := "did:plc:testuser123"
-	session := createTestOAuthSession(testDID)
-	session.HostURL = mockPDS.URL
-	ctx := setTestOAuthSession(req.Context(), testDID, session)
-	req = req.WithContext(ctx)
-
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-
-	var response UpdateProfileResponse
-	json.Unmarshal(w.Body.Bytes(), &response)
-	assert.Contains(t, response.URI, "did:plc:testuser123")
-	assert.NotEmpty(t, response.CID)
-
-	// No blob uploads should have been called
-	mockBlobService.AssertNotCalled(t, "UploadBlob", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
-}
-
-// TestUpdateProfileHandler_PartialUpdateBioOnly tests updating only bio (description)
-func TestUpdateProfileHandler_PartialUpdateBioOnly(t *testing.T) {
-	mockBlobService := new(MockBlobService)
-
-	// Mock PDS server for putRecord
-	mockPDS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var putReq map[string]interface{}
-		json.NewDecoder(r.Body).Decode(&putReq)
-
-		record := putReq["record"].(map[string]interface{})
-		assert.Equal(t, "This is my updated bio", record["description"])
-		assert.Nil(t, record["displayName"], "displayName should not be set if not provided")
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"uri": "at://did:plc:testuser123/app.bsky.actor.profile/self",
-			"cid": "bafyreicid123",
-		})
-	}))
-	defer mockPDS.Close()
-
-	handler := NewUpdateProfileHandler(mockBlobService, http.DefaultClient)
-
-	reqBody := UpdateProfileRequest{
-		Bio: strPtr("This is my updated bio"),
-	}
-	body, _ := json.Marshal(reqBody)
-
-	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-
-	testDID := "did:plc:testuser123"
-	session := createTestOAuthSession(testDID)
-	session.HostURL = mockPDS.URL
-	ctx := setTestOAuthSession(req.Context(), testDID, session)
-	req = req.WithContext(ctx)
-
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	mockBlobService.AssertNotCalled(t, "UploadBlob", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
-}
-
-// TestUpdateProfileHandler_FullUpdate tests updating displayName, bio, avatar, and banner
-func TestUpdateProfileHandler_FullUpdate(t *testing.T) {
-	mockBlobService := new(MockBlobService)
-
-	avatarData := []byte("avatar image data")
-	bannerData := []byte("banner image data")
-
-	avatarBlobRef := &blobs.BlobRef{
-		Type:     "blob",
-		Ref:      map[string]string{"$link": "bafyreiavatarcid"},
-		MimeType: "image/jpeg",
-		Size:     len(avatarData),
-	}
-	bannerBlobRef := &blobs.BlobRef{
-		Type:     "blob",
-		Ref:      map[string]string{"$link": "bafyreibannercid"},
-		MimeType: "image/png",
-		Size:     len(bannerData),
-	}
-
-	mockBlobService.On("UploadBlob", mock.Anything, mock.Anything, avatarData, "image/jpeg").
-		Return(avatarBlobRef, nil)
-	mockBlobService.On("UploadBlob", mock.Anything, mock.Anything, bannerData, "image/png").
-		Return(bannerBlobRef, nil)
-
-	// Mock PDS server for putRecord
-	mockPDS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var putReq map[string]interface{}
-		json.NewDecoder(r.Body).Decode(&putReq)
-
-		record := putReq["record"].(map[string]interface{})
-		assert.Equal(t, "Full Update User", record["displayName"])
-		assert.Equal(t, "Updated bio with full profile", record["description"])
-		assert.NotNil(t, record["avatar"], "avatar should be set")
-		assert.NotNil(t, record["banner"], "banner should be set")
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"uri": "at://did:plc:testuser123/app.bsky.actor.profile/self",
-			"cid": "bafyreifullcid",
-		})
-	}))
-	defer mockPDS.Close()
-
-	handler := NewUpdateProfileHandler(mockBlobService, http.DefaultClient)
-
-	reqBody := UpdateProfileRequest{
-		DisplayName:    strPtr("Full Update User"),
-		Bio:            strPtr("Updated bio with full profile"),
-		AvatarBlob:     avatarData,
-		AvatarMimeType: "image/jpeg",
-		BannerBlob:     bannerData,
-		BannerMimeType: "image/png",
-	}
-	body, _ := json.Marshal(reqBody)
-
-	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-
-	testDID := "did:plc:testuser123"
-	session := createTestOAuthSession(testDID)
-	session.HostURL = mockPDS.URL
-	ctx := setTestOAuthSession(req.Context(), testDID, session)
-	req = req.WithContext(ctx)
-
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-
-	var response UpdateProfileResponse
-	json.Unmarshal(w.Body.Bytes(), &response)
-	assert.Contains(t, response.URI, "did:plc:testuser123")
-	assert.Equal(t, "bafyreifullcid", response.CID)
-
-	mockBlobService.AssertExpectations(t)
-}
-
-// TestUpdateProfileHandler_PDSPutRecordFailure tests handling of PDS putRecord failure
-func TestUpdateProfileHandler_PDSPutRecordFailure(t *testing.T) {
-	mockBlobService := new(MockBlobService)
-
-	// Mock PDS server that returns an error
-	mockPDS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"error":   "InternalError",
-			"message": "Failed to update record",
-		})
-	}))
-	defer mockPDS.Close()
-
-	handler := NewUpdateProfileHandler(mockBlobService, http.DefaultClient)
-
-	reqBody := UpdateProfileRequest{
-		DisplayName: strPtr("Test User"),
-	}
-	body, _ := json.Marshal(reqBody)
-
-	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-
-	testDID := "did:plc:testuser123"
-	session := createTestOAuthSession(testDID)
-	session.HostURL = mockPDS.URL
-	ctx := setTestOAuthSession(req.Context(), testDID, session)
-	req = req.WithContext(ctx)
-
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.Contains(t, w.Body.String(), "Failed to update profile")
-}
-
 // TestUpdateProfileHandler_MethodNotAllowed tests that non-POST methods are rejected
 func TestUpdateProfileHandler_MethodNotAllowed(t *testing.T) {
-	mockBlobService := new(MockBlobService)
-	handler := NewUpdateProfileHandler(mockBlobService, nil)
+	handler := createTestHandler()
 
 	methods := []string{http.MethodGet, http.MethodPut, http.MethodDelete, http.MethodPatch}
 
@@ -618,8 +282,7 @@ func TestUpdateProfileHandler_MethodNotAllowed(t *testing.T) {
 
 			testDID := "did:plc:testuser123"
 			session := createTestOAuthSession(testDID)
-			ctx := setTestOAuthSession(req.Context(), testDID, session)
-			req = req.WithContext(ctx)
+			req = setTestOAuthSession(req, testDID, session)
 
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, req)
@@ -631,8 +294,7 @@ func TestUpdateProfileHandler_MethodNotAllowed(t *testing.T) {
 
 // TestUpdateProfileHandler_AvatarBlobWithoutMimeType tests that providing blob without mime type fails
 func TestUpdateProfileHandler_AvatarBlobWithoutMimeType(t *testing.T) {
-	mockBlobService := new(MockBlobService)
-	handler := NewUpdateProfileHandler(mockBlobService, nil)
+	handler := createTestHandler()
 
 	reqBody := UpdateProfileRequest{
 		DisplayName: strPtr("Test User"),
@@ -646,8 +308,7 @@ func TestUpdateProfileHandler_AvatarBlobWithoutMimeType(t *testing.T) {
 
 	testDID := "did:plc:testuser123"
 	session := createTestOAuthSession(testDID)
-	ctx := setTestOAuthSession(req.Context(), testDID, session)
-	req = req.WithContext(ctx)
+	req = setTestOAuthSession(req, testDID, session)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -658,8 +319,7 @@ func TestUpdateProfileHandler_AvatarBlobWithoutMimeType(t *testing.T) {
 
 // TestUpdateProfileHandler_BannerBlobWithoutMimeType tests that providing banner without mime type fails
 func TestUpdateProfileHandler_BannerBlobWithoutMimeType(t *testing.T) {
-	mockBlobService := new(MockBlobService)
-	handler := NewUpdateProfileHandler(mockBlobService, nil)
+	handler := createTestHandler()
 
 	reqBody := UpdateProfileRequest{
 		DisplayName: strPtr("Test User"),
@@ -673,8 +333,7 @@ func TestUpdateProfileHandler_BannerBlobWithoutMimeType(t *testing.T) {
 
 	testDID := "did:plc:testuser123"
 	session := createTestOAuthSession(testDID)
-	ctx := setTestOAuthSession(req.Context(), testDID, session)
-	req = req.WithContext(ctx)
+	req = setTestOAuthSession(req, testDID, session)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -683,38 +342,14 @@ func TestUpdateProfileHandler_BannerBlobWithoutMimeType(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "mime type")
 }
 
-// TestUpdateProfileHandler_UserBlobOwnerInterface tests that userBlobOwner correctly implements BlobOwner
-func TestUpdateProfileHandler_UserBlobOwnerInterface(t *testing.T) {
-	owner := &userBlobOwner{
-		pdsURL:      "https://test.pds.example",
-		accessToken: "test-token-123",
+// TestUpdateProfileHandler_DisplayNameTooLong tests that displayName exceeding limit is rejected
+func TestUpdateProfileHandler_DisplayNameTooLong(t *testing.T) {
+	handler := createTestHandler()
+
+	longName := strings.Repeat("a", MaxDisplayNameLength+1)
+	reqBody := UpdateProfileRequest{
+		DisplayName: &longName,
 	}
-
-	// Verify interface compliance
-	var _ blobs.BlobOwner = owner
-
-	assert.Equal(t, "https://test.pds.example", owner.GetPDSURL())
-	assert.Equal(t, "test-token-123", owner.GetPDSAccessToken())
-}
-
-// TestUpdateProfileHandler_EmptyRequest tests that empty request body is handled
-func TestUpdateProfileHandler_EmptyRequest(t *testing.T) {
-	mockBlobService := new(MockBlobService)
-
-	// Mock PDS server - even empty update should work
-	mockPDS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"uri": "at://did:plc:testuser123/app.bsky.actor.profile/self",
-			"cid": "bafyreicid123",
-		})
-	}))
-	defer mockPDS.Close()
-
-	handler := NewUpdateProfileHandler(mockBlobService, http.DefaultClient)
-
-	// Empty JSON object
-	reqBody := UpdateProfileRequest{}
 	body, _ := json.Marshal(reqBody)
 
 	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
@@ -722,33 +357,42 @@ func TestUpdateProfileHandler_EmptyRequest(t *testing.T) {
 
 	testDID := "did:plc:testuser123"
 	session := createTestOAuthSession(testDID)
-	session.HostURL = mockPDS.URL
-	ctx := setTestOAuthSession(req.Context(), testDID, session)
-	req = req.WithContext(ctx)
+	req = setTestOAuthSession(req, testDID, session)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	// Empty update is valid - just puts an empty profile record
-	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "DisplayNameTooLong")
 }
 
-// TestUpdateProfileHandler_PDSURLFromSession tests that PDS URL is correctly extracted from OAuth session
-func TestUpdateProfileHandler_PDSURLFromSession(t *testing.T) {
-	mockBlobService := new(MockBlobService)
+// TestUpdateProfileHandler_BioTooLong tests that bio exceeding limit is rejected
+func TestUpdateProfileHandler_BioTooLong(t *testing.T) {
+	handler := createTestHandler()
 
-	mockPDS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify request was received at the mock PDS
-		assert.NotEmpty(t, r.URL.Path)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"uri": "at://did:plc:testuser123/app.bsky.actor.profile/self",
-			"cid": "bafyreicid123",
-		})
-	}))
-	defer mockPDS.Close()
+	longBio := strings.Repeat("a", MaxBioLength+1)
+	reqBody := UpdateProfileRequest{
+		Bio: &longBio,
+	}
+	body, _ := json.Marshal(reqBody)
 
-	handler := NewUpdateProfileHandler(mockBlobService, http.DefaultClient)
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	testDID := "did:plc:testuser123"
+	session := createTestOAuthSession(testDID)
+	req = setTestOAuthSession(req, testDID, session)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "BioTooLong")
+}
+
+// TestUpdateProfileHandler_MissingHostURL tests that missing PDS host URL returns error
+func TestUpdateProfileHandler_MissingHostURL(t *testing.T) {
+	handler := createTestHandler()
 
 	reqBody := UpdateProfileRequest{
 		DisplayName: strPtr("Test User"),
@@ -760,46 +404,72 @@ func TestUpdateProfileHandler_PDSURLFromSession(t *testing.T) {
 
 	testDID := "did:plc:testuser123"
 	session := createTestOAuthSession(testDID)
-	// Use the mock server URL
-	session.HostURL = mockPDS.URL
-	ctx := setTestOAuthSession(req.Context(), testDID, session)
-	req = req.WithContext(ctx)
+	session.HostURL = "" // Missing host URL
+	req = setTestOAuthSession(req, testDID, session)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	assert.Contains(t, w.Body.String(), "Missing PDS credentials")
 }
 
-// TestUpdateProfileHandler_AvatarExactly1MB tests boundary condition - avatar exactly 1MB should be accepted
-func TestUpdateProfileHandler_AvatarExactly1MB(t *testing.T) {
-	mockBlobService := new(MockBlobService)
-
-	// Create avatar blob exactly 1MB (1,000,000 bytes)
-	avatarData := make([]byte, 1_000_000)
-
-	expectedBlobRef := &blobs.BlobRef{
-		Type:     "blob",
-		Ref:      map[string]string{"$link": "bafyreiabc123"},
-		MimeType: "image/jpeg",
-		Size:     len(avatarData),
-	}
-	mockBlobService.On("UploadBlob", mock.Anything, mock.Anything, avatarData, "image/jpeg").
-		Return(expectedBlobRef, nil)
-
-	mockPDS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"uri": "at://did:plc:testuser123/app.bsky.actor.profile/self",
-			"cid": "bafyreicid123",
+// TestIsValidImageMimeType tests the mime type validation function
+func TestIsValidImageMimeType(t *testing.T) {
+	validTypes := []string{"image/png", "image/jpeg", "image/webp"}
+	for _, mt := range validTypes {
+		t.Run("valid_"+mt, func(t *testing.T) {
+			assert.True(t, isValidImageMimeType(mt))
 		})
-	}))
-	defer mockPDS.Close()
+	}
 
-	handler := NewUpdateProfileHandler(mockBlobService, http.DefaultClient)
+	invalidTypes := []string{"image/gif", "image/bmp", "application/pdf", "text/plain", "", "image/svg+xml"}
+	for _, mt := range invalidTypes {
+		t.Run("invalid_"+mt, func(t *testing.T) {
+			assert.False(t, isValidImageMimeType(mt))
+		})
+	}
+}
+
+// ============================================================================
+// PDS Client Error Path Tests
+// These tests use mock factories to test error handling for PDS operations
+// ============================================================================
+
+// TestUpdateProfileHandler_PDSClientCreationFails tests session restoration failure
+func TestUpdateProfileHandler_PDSClientCreationFails(t *testing.T) {
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(nil, errors.New("session restoration failed")))
 
 	reqBody := UpdateProfileRequest{
-		AvatarBlob:     avatarData,
+		DisplayName: strPtr("Test User"),
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	testDID := "did:plc:testuser123"
+	session := createTestOAuthSession(testDID)
+	req = setTestOAuthSession(req, testDID, session)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	assert.Contains(t, w.Body.String(), "SessionError")
+	assert.Contains(t, w.Body.String(), "Failed to restore session")
+}
+
+// TestUpdateProfileHandler_AvatarUploadUnauthorized tests avatar upload auth error
+func TestUpdateProfileHandler_AvatarUploadUnauthorized(t *testing.T) {
+	mockClient := &mockPDSClient{
+		uploadBlobError: pds.ErrUnauthorized,
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	reqBody := UpdateProfileRequest{
+		DisplayName:    strPtr("Test User"),
+		AvatarBlob:     []byte("fake image data"),
 		AvatarMimeType: "image/jpeg",
 	}
 	body, _ := json.Marshal(reqBody)
@@ -809,47 +479,26 @@ func TestUpdateProfileHandler_AvatarExactly1MB(t *testing.T) {
 
 	testDID := "did:plc:testuser123"
 	session := createTestOAuthSession(testDID)
-	session.HostURL = mockPDS.URL
-	ctx := setTestOAuthSession(req.Context(), testDID, session)
-	req = req.WithContext(ctx)
+	req = setTestOAuthSession(req, testDID, session)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusOK, w.Code)
-	mockBlobService.AssertExpectations(t)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	assert.Contains(t, w.Body.String(), "AuthExpired")
 }
 
-// TestUpdateProfileHandler_BannerExactly2MB tests boundary condition - banner exactly 2MB should be accepted
-func TestUpdateProfileHandler_BannerExactly2MB(t *testing.T) {
-	mockBlobService := new(MockBlobService)
-
-	// Create banner blob exactly 2MB (2,000,000 bytes)
-	bannerData := make([]byte, 2_000_000)
-
-	expectedBlobRef := &blobs.BlobRef{
-		Type:     "blob",
-		Ref:      map[string]string{"$link": "bafyreiabc123"},
-		MimeType: "image/png",
-		Size:     len(bannerData),
+// TestUpdateProfileHandler_AvatarUploadRateLimited tests avatar upload rate limiting
+func TestUpdateProfileHandler_AvatarUploadRateLimited(t *testing.T) {
+	mockClient := &mockPDSClient{
+		uploadBlobError: pds.ErrRateLimited,
 	}
-	mockBlobService.On("UploadBlob", mock.Anything, mock.Anything, bannerData, "image/png").
-		Return(expectedBlobRef, nil)
-
-	mockPDS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"uri": "at://did:plc:testuser123/app.bsky.actor.profile/self",
-			"cid": "bafyreicid123",
-		})
-	}))
-	defer mockPDS.Close()
-
-	handler := NewUpdateProfileHandler(mockBlobService, http.DefaultClient)
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
 
 	reqBody := UpdateProfileRequest{
-		BannerBlob:     bannerData,
-		BannerMimeType: "image/png",
+		DisplayName:    strPtr("Test User"),
+		AvatarBlob:     []byte("fake image data"),
+		AvatarMimeType: "image/jpeg",
 	}
 	body, _ := json.Marshal(reqBody)
 
@@ -858,23 +507,94 @@ func TestUpdateProfileHandler_BannerExactly2MB(t *testing.T) {
 
 	testDID := "did:plc:testuser123"
 	session := createTestOAuthSession(testDID)
-	session.HostURL = mockPDS.URL
-	ctx := setTestOAuthSession(req.Context(), testDID, session)
-	req = req.WithContext(ctx)
+	req = setTestOAuthSession(req, testDID, session)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusOK, w.Code)
-	mockBlobService.AssertExpectations(t)
+	assert.Equal(t, http.StatusTooManyRequests, w.Code)
+	assert.Contains(t, w.Body.String(), "RateLimited")
 }
 
-// TestUpdateProfileHandler_PDSNetworkError tests handling of network errors when calling PDS
-func TestUpdateProfileHandler_PDSNetworkError(t *testing.T) {
-	mockBlobService := new(MockBlobService)
+// TestUpdateProfileHandler_AvatarUploadPayloadTooLarge tests avatar upload payload size error
+func TestUpdateProfileHandler_AvatarUploadPayloadTooLarge(t *testing.T) {
+	mockClient := &mockPDSClient{
+		uploadBlobError: pds.ErrPayloadTooLarge,
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
 
-	// Create a handler with a client that will fail
-	handler := NewUpdateProfileHandler(mockBlobService, http.DefaultClient)
+	reqBody := UpdateProfileRequest{
+		DisplayName:    strPtr("Test User"),
+		AvatarBlob:     []byte("fake image data"),
+		AvatarMimeType: "image/jpeg",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	testDID := "did:plc:testuser123"
+	session := createTestOAuthSession(testDID)
+	req = setTestOAuthSession(req, testDID, session)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
+	assert.Contains(t, w.Body.String(), "AvatarTooLarge")
+}
+
+// TestUpdateProfileHandler_BannerUploadUnauthorized tests banner upload auth error
+func TestUpdateProfileHandler_BannerUploadUnauthorized(t *testing.T) {
+	// First upload succeeds (avatar), second fails (banner)
+	callCount := 0
+	mockClient := &mockPDSClient{
+		uploadBlobRef: &blobs.BlobRef{
+			Type:     "blob",
+			Ref:      map[string]string{"$link": "bafytest"},
+			MimeType: "image/jpeg",
+			Size:     100,
+		},
+	}
+	handler := NewUpdateProfileHandlerWithFactory(func(_ context.Context, _ *oauthlib.ClientSessionData) (pds.Client, error) {
+		// Return a mock that fails on second UploadBlob call
+		return &mockPDSClientWithCallCounter{
+			mockPDSClient: mockClient,
+			callCount:     &callCount,
+			failOnCall:    2, // Fail on banner upload
+			failError:     pds.ErrUnauthorized,
+		}, nil
+	})
+
+	reqBody := UpdateProfileRequest{
+		DisplayName:    strPtr("Test User"),
+		AvatarBlob:     []byte("avatar data"),
+		AvatarMimeType: "image/jpeg",
+		BannerBlob:     []byte("banner data"),
+		BannerMimeType: "image/jpeg",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	testDID := "did:plc:testuser123"
+	session := createTestOAuthSession(testDID)
+	req = setTestOAuthSession(req, testDID, session)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	assert.Contains(t, w.Body.String(), "AuthExpired")
+}
+
+// TestUpdateProfileHandler_PutRecordUnauthorized tests PutRecord auth error
+func TestUpdateProfileHandler_PutRecordUnauthorized(t *testing.T) {
+	mockClient := &mockPDSClient{
+		putRecordError: pds.ErrUnauthorized,
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
 
 	reqBody := UpdateProfileRequest{
 		DisplayName: strPtr("Test User"),
@@ -886,35 +606,21 @@ func TestUpdateProfileHandler_PDSNetworkError(t *testing.T) {
 
 	testDID := "did:plc:testuser123"
 	session := createTestOAuthSession(testDID)
-	// Use an invalid URL that will fail connection
-	session.HostURL = "http://localhost:1" // Port 1 is typically refused
-	ctx := setTestOAuthSession(req.Context(), testDID, session)
-	req = req.WithContext(ctx)
+	req = setTestOAuthSession(req, testDID, session)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assert.Contains(t, w.Body.String(), "Failed to update profile")
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	assert.Contains(t, w.Body.String(), "AuthExpired")
 }
 
-// TestUpdateProfileHandler_ResponseFormat tests that response matches expected format
-func TestUpdateProfileHandler_ResponseFormat(t *testing.T) {
-	mockBlobService := new(MockBlobService)
-
-	expectedURI := "at://did:plc:testuser123/app.bsky.actor.profile/self"
-	expectedCID := "bafyreicid456"
-
-	mockPDS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"uri": expectedURI,
-			"cid": expectedCID,
-		})
-	}))
-	defer mockPDS.Close()
-
-	handler := NewUpdateProfileHandler(mockBlobService, http.DefaultClient)
+// TestUpdateProfileHandler_PutRecordRateLimited tests PutRecord rate limiting
+func TestUpdateProfileHandler_PutRecordRateLimited(t *testing.T) {
+	mockClient := &mockPDSClient{
+		putRecordError: pds.ErrRateLimited,
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
 
 	reqBody := UpdateProfileRequest{
 		DisplayName: strPtr("Test User"),
@@ -926,20 +632,132 @@ func TestUpdateProfileHandler_ResponseFormat(t *testing.T) {
 
 	testDID := "did:plc:testuser123"
 	session := createTestOAuthSession(testDID)
-	session.HostURL = mockPDS.URL
-	ctx := setTestOAuthSession(req.Context(), testDID, session)
-	req = req.WithContext(ctx)
+	req = setTestOAuthSession(req, testDID, session)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusTooManyRequests, w.Code)
+	assert.Contains(t, w.Body.String(), "RateLimited")
+}
+
+// TestUpdateProfileHandler_PutRecordPayloadTooLarge tests PutRecord payload size error
+func TestUpdateProfileHandler_PutRecordPayloadTooLarge(t *testing.T) {
+	mockClient := &mockPDSClient{
+		putRecordError: pds.ErrPayloadTooLarge,
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	reqBody := UpdateProfileRequest{
+		DisplayName: strPtr("Test User"),
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	testDID := "did:plc:testuser123"
+	session := createTestOAuthSession(testDID)
+	req = setTestOAuthSession(req, testDID, session)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
+	assert.Contains(t, w.Body.String(), "PayloadTooLarge")
+}
+
+// TestUpdateProfileHandler_PutRecordForbidden tests PutRecord forbidden error
+func TestUpdateProfileHandler_PutRecordForbidden(t *testing.T) {
+	mockClient := &mockPDSClient{
+		putRecordError: pds.ErrForbidden,
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	reqBody := UpdateProfileRequest{
+		DisplayName: strPtr("Test User"),
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	testDID := "did:plc:testuser123"
+	session := createTestOAuthSession(testDID)
+	req = setTestOAuthSession(req, testDID, session)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	assert.Contains(t, w.Body.String(), "AuthExpired")
+}
+
+// TestUpdateProfileHandler_Success tests successful profile update
+func TestUpdateProfileHandler_Success(t *testing.T) {
+	mockClient := &mockPDSClient{
+		putRecordURI: "at://did:plc:test123/social.coves.actor.profile/self",
+		putRecordCID: "bafyreifake",
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	reqBody := UpdateProfileRequest{
+		DisplayName: strPtr("Test User"),
+		Bio:         strPtr("Hello world"),
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	testDID := "did:plc:testuser123"
+	session := createTestOAuthSession(testDID)
+	req = setTestOAuthSession(req, testDID, session)
 
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
 
-	var response UpdateProfileResponse
-	err := json.Unmarshal(w.Body.Bytes(), &response)
+	var resp UpdateProfileResponse
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
 	assert.NoError(t, err)
-	assert.Equal(t, expectedURI, response.URI)
-	assert.Equal(t, expectedCID, response.CID)
+	assert.Equal(t, "at://did:plc:test123/social.coves.actor.profile/self", resp.URI)
+	assert.Equal(t, "bafyreifake", resp.CID)
+}
+
+// TestUpdateProfileHandler_SuccessWithAvatar tests successful profile update with avatar
+func TestUpdateProfileHandler_SuccessWithAvatar(t *testing.T) {
+	mockClient := &mockPDSClient{
+		uploadBlobRef: &blobs.BlobRef{
+			Type:     "blob",
+			Ref:      map[string]string{"$link": "bafyavatartest"},
+			MimeType: "image/jpeg",
+			Size:     1000,
+		},
+		putRecordURI: "at://did:plc:test123/social.coves.actor.profile/self",
+		putRecordCID: "bafyreifake",
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	reqBody := UpdateProfileRequest{
+		DisplayName:    strPtr("Test User"),
+		AvatarBlob:     []byte("fake image data"),
+		AvatarMimeType: "image/jpeg",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	testDID := "did:plc:testuser123"
+	session := createTestOAuthSession(testDID)
+	req = setTestOAuthSession(req, testDID, session)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
 }
 
 // Helper function to create string pointers
@@ -947,89 +765,543 @@ func strPtr(s string) *string {
 	return &s
 }
 
-// TestUserBlobOwner_ImplementsBlobOwnerInterface verifies interface compliance at compile time
-func TestUserBlobOwner_ImplementsBlobOwnerInterface(t *testing.T) {
-	// This test ensures at compile time that userBlobOwner implements blobs.BlobOwner
-	var owner blobs.BlobOwner = &userBlobOwner{
-		pdsURL:      "https://test.example",
-		accessToken: "token",
-	}
-	assert.NotNil(t, owner)
+// mockPDSClientWithCallCounter wraps mockPDSClient to track call count
+type mockPDSClientWithCallCounter struct {
+	*mockPDSClient
+	callCount  *int
+	failOnCall int
+	failError  error
 }
 
-// TestUpdateProfileHandler_PDSReturnsEmptyURIOrCID tests handling when PDS returns 200 but with empty URI or CID
-func TestUpdateProfileHandler_PDSReturnsEmptyURIOrCID(t *testing.T) {
-	testCases := []struct {
-		name     string
-		response map[string]interface{}
-	}{
-		{
-			name: "empty URI",
-			response: map[string]interface{}{
-				"uri": "",
-				"cid": "bafyreicid123",
-			},
-		},
-		{
-			name: "empty CID",
-			response: map[string]interface{}{
-				"uri": "at://did:plc:testuser123/app.bsky.actor.profile/self",
-				"cid": "",
-			},
-		},
-		{
-			name: "missing URI",
-			response: map[string]interface{}{
-				"cid": "bafyreicid123",
-			},
-		},
-		{
-			name: "missing CID",
-			response: map[string]interface{}{
-				"uri": "at://did:plc:testuser123/app.bsky.actor.profile/self",
-			},
-		},
-		{
-			name:     "both empty",
-			response: map[string]interface{}{},
-		},
+func (m *mockPDSClientWithCallCounter) UploadBlob(_ context.Context, _ []byte, _ string) (*blobs.BlobRef, error) {
+	*m.callCount++
+	if *m.callCount == m.failOnCall {
+		return nil, m.failError
 	}
+	return m.mockPDSClient.uploadBlobRef, nil
+}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			mockBlobService := new(MockBlobService)
+// ============================================================================
+// Constructor Panic Tests
+// ============================================================================
 
-			// Mock PDS server that returns 200 but with empty/missing fields
-			mockPDS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusOK)
-				json.NewEncoder(w).Encode(tc.response)
-			}))
-			defer mockPDS.Close()
-
-			handler := NewUpdateProfileHandler(mockBlobService, http.DefaultClient)
-
-			reqBody := UpdateProfileRequest{
-				DisplayName: strPtr("Test User"),
+// TestNewUpdateProfileHandler_NilOAuthClientPanics verifies that passing nil oauthClient panics
+func TestNewUpdateProfileHandler_NilOAuthClientPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("Expected NewUpdateProfileHandler to panic with nil oauthClient, but it did not panic")
+		} else {
+			// Verify the panic message is as expected
+			panicMsg, ok := r.(string)
+			if !ok {
+				t.Errorf("Expected panic message to be a string, got %T", r)
+				return
 			}
-			body, _ := json.Marshal(reqBody)
+			assert.Contains(t, panicMsg, "oauthClient is required")
+		}
+	}()
 
-			req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-
-			testDID := "did:plc:testuser123"
-			session := createTestOAuthSession(testDID)
-			session.HostURL = mockPDS.URL
-			ctx := setTestOAuthSession(req.Context(), testDID, session)
-			req = req.WithContext(ctx)
-
-			w := httptest.NewRecorder()
-			handler.ServeHTTP(w, req)
-
-			// Should return an internal server error because URI/CID are required
-			assert.Equal(t, http.StatusInternalServerError, w.Code)
-			assert.Contains(t, w.Body.String(), "PDSError")
-		})
-	}
+	NewUpdateProfileHandler(nil)
 }
 
+// TestNewUpdateProfileHandlerWithFactory_NilFactoryPanics verifies that passing nil factory panics
+func TestNewUpdateProfileHandlerWithFactory_NilFactoryPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("Expected NewUpdateProfileHandlerWithFactory to panic with nil factory, but it did not panic")
+		} else {
+			// Verify the panic message is as expected
+			panicMsg, ok := r.(string)
+			if !ok {
+				t.Errorf("Expected panic message to be a string, got %T", r)
+				return
+			}
+			assert.Contains(t, panicMsg, "factory is required")
+		}
+	}()
+
+	NewUpdateProfileHandlerWithFactory(nil)
+}
+
+// ============================================================================
+// Invalid BlobRef Handling Tests
+// ============================================================================
+
+// TestUpdateProfileHandler_AvatarUploadReturnsNilRef tests handling of nil BlobRef from avatar upload
+func TestUpdateProfileHandler_AvatarUploadReturnsNilRef(t *testing.T) {
+	mockClient := &mockPDSClient{
+		uploadBlobRef: nil, // Nil BlobRef
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	reqBody := UpdateProfileRequest{
+		DisplayName:    strPtr("Test User"),
+		AvatarBlob:     []byte("fake image data"),
+		AvatarMimeType: "image/jpeg",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	testDID := "did:plc:testuser123"
+	session := createTestOAuthSession(testDID)
+	req = setTestOAuthSession(req, testDID, session)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Contains(t, w.Body.String(), "BlobUploadFailed")
+	assert.Contains(t, w.Body.String(), "Invalid avatar blob reference")
+}
+
+// TestUpdateProfileHandler_AvatarUploadReturnsNilRefField tests handling of BlobRef with nil Ref field
+func TestUpdateProfileHandler_AvatarUploadReturnsNilRefField(t *testing.T) {
+	mockClient := &mockPDSClient{
+		uploadBlobRef: &blobs.BlobRef{
+			Type:     "blob",
+			Ref:      nil, // Nil Ref field
+			MimeType: "image/jpeg",
+			Size:     100,
+		},
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	reqBody := UpdateProfileRequest{
+		DisplayName:    strPtr("Test User"),
+		AvatarBlob:     []byte("fake image data"),
+		AvatarMimeType: "image/jpeg",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	testDID := "did:plc:testuser123"
+	session := createTestOAuthSession(testDID)
+	req = setTestOAuthSession(req, testDID, session)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Contains(t, w.Body.String(), "BlobUploadFailed")
+	assert.Contains(t, w.Body.String(), "Invalid avatar blob reference")
+}
+
+// TestUpdateProfileHandler_AvatarUploadReturnsEmptyType tests handling of BlobRef with empty Type
+func TestUpdateProfileHandler_AvatarUploadReturnsEmptyType(t *testing.T) {
+	mockClient := &mockPDSClient{
+		uploadBlobRef: &blobs.BlobRef{
+			Type:     "", // Empty Type
+			Ref:      map[string]string{"$link": "bafytest"},
+			MimeType: "image/jpeg",
+			Size:     100,
+		},
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	reqBody := UpdateProfileRequest{
+		DisplayName:    strPtr("Test User"),
+		AvatarBlob:     []byte("fake image data"),
+		AvatarMimeType: "image/jpeg",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	testDID := "did:plc:testuser123"
+	session := createTestOAuthSession(testDID)
+	req = setTestOAuthSession(req, testDID, session)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Contains(t, w.Body.String(), "BlobUploadFailed")
+	assert.Contains(t, w.Body.String(), "Invalid avatar blob reference")
+}
+
+// TestUpdateProfileHandler_BannerUploadReturnsNilRef tests handling of nil BlobRef from banner upload
+func TestUpdateProfileHandler_BannerUploadReturnsNilRef(t *testing.T) {
+	// We need the avatar upload to succeed and banner upload to return nil
+	callCount := 0
+	handler := NewUpdateProfileHandlerWithFactory(func(_ context.Context, _ *oauthlib.ClientSessionData) (pds.Client, error) {
+		return &mockPDSClientWithNilBannerRef{
+			callCount: &callCount,
+		}, nil
+	})
+
+	reqBody := UpdateProfileRequest{
+		DisplayName:    strPtr("Test User"),
+		BannerBlob:     []byte("banner data"),
+		BannerMimeType: "image/jpeg",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	testDID := "did:plc:testuser123"
+	session := createTestOAuthSession(testDID)
+	req = setTestOAuthSession(req, testDID, session)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Contains(t, w.Body.String(), "BlobUploadFailed")
+	assert.Contains(t, w.Body.String(), "Invalid banner blob reference")
+}
+
+// TestUpdateProfileHandler_BannerUploadReturnsNilRefField tests handling of BlobRef with nil Ref field for banner
+func TestUpdateProfileHandler_BannerUploadReturnsNilRefField(t *testing.T) {
+	mockClient := &mockPDSClient{
+		uploadBlobRef: &blobs.BlobRef{
+			Type:     "blob",
+			Ref:      nil, // Nil Ref field - will affect banner since no avatar in request
+			MimeType: "image/jpeg",
+			Size:     100,
+		},
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	reqBody := UpdateProfileRequest{
+		DisplayName:    strPtr("Test User"),
+		BannerBlob:     []byte("banner data"),
+		BannerMimeType: "image/jpeg",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	testDID := "did:plc:testuser123"
+	session := createTestOAuthSession(testDID)
+	req = setTestOAuthSession(req, testDID, session)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Contains(t, w.Body.String(), "BlobUploadFailed")
+	assert.Contains(t, w.Body.String(), "Invalid banner blob reference")
+}
+
+// TestUpdateProfileHandler_BannerUploadReturnsEmptyType tests handling of BlobRef with empty Type for banner
+func TestUpdateProfileHandler_BannerUploadReturnsEmptyType(t *testing.T) {
+	mockClient := &mockPDSClient{
+		uploadBlobRef: &blobs.BlobRef{
+			Type:     "", // Empty Type - will affect banner since no avatar in request
+			Ref:      map[string]string{"$link": "bafytest"},
+			MimeType: "image/jpeg",
+			Size:     100,
+		},
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	reqBody := UpdateProfileRequest{
+		DisplayName:    strPtr("Test User"),
+		BannerBlob:     []byte("banner data"),
+		BannerMimeType: "image/jpeg",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	testDID := "did:plc:testuser123"
+	session := createTestOAuthSession(testDID)
+	req = setTestOAuthSession(req, testDID, session)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Contains(t, w.Body.String(), "BlobUploadFailed")
+	assert.Contains(t, w.Body.String(), "Invalid banner blob reference")
+}
+
+// mockPDSClientWithNilBannerRef returns nil for banner uploads (called when no avatar blob is present)
+type mockPDSClientWithNilBannerRef struct {
+	callCount *int
+}
+
+func (m *mockPDSClientWithNilBannerRef) CreateRecord(_ context.Context, _ string, _ string, _ any) (string, string, error) {
+	return "", "", nil
+}
+
+func (m *mockPDSClientWithNilBannerRef) DeleteRecord(_ context.Context, _ string, _ string) error {
+	return nil
+}
+
+func (m *mockPDSClientWithNilBannerRef) ListRecords(_ context.Context, _ string, _ int, _ string) (*pds.ListRecordsResponse, error) {
+	return nil, nil
+}
+
+func (m *mockPDSClientWithNilBannerRef) GetRecord(_ context.Context, _ string, _ string) (*pds.RecordResponse, error) {
+	return nil, nil
+}
+
+func (m *mockPDSClientWithNilBannerRef) PutRecord(_ context.Context, _ string, _ string, _ any, _ string) (string, string, error) {
+	return "", "", nil
+}
+
+func (m *mockPDSClientWithNilBannerRef) UploadBlob(_ context.Context, _ []byte, _ string) (*blobs.BlobRef, error) {
+	// Return nil to simulate invalid response
+	return nil, nil
+}
+
+func (m *mockPDSClientWithNilBannerRef) DID() string {
+	return "did:plc:test123"
+}
+
+func (m *mockPDSClientWithNilBannerRef) HostURL() string {
+	return "https://test.pds.example"
+}
+
+// ============================================================================
+// Boundary Size Tests
+// ============================================================================
+
+// TestUpdateProfileHandler_AvatarExactlyAtMaxSize tests that avatar at exactly 1MB is accepted
+func TestUpdateProfileHandler_AvatarExactlyAtMaxSize(t *testing.T) {
+	mockClient := &mockPDSClient{
+		uploadBlobRef: &blobs.BlobRef{
+			Type:     "blob",
+			Ref:      map[string]string{"$link": "bafyavatartest"},
+			MimeType: "image/jpeg",
+			Size:     MaxAvatarBlobSize,
+		},
+		putRecordURI: "at://did:plc:test123/social.coves.actor.profile/self",
+		putRecordCID: "bafyreifake",
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	// Create avatar blob at exactly 1MB (1,000,000 bytes)
+	avatarBlob := make([]byte, MaxAvatarBlobSize)
+
+	reqBody := UpdateProfileRequest{
+		DisplayName:    strPtr("Test User"),
+		AvatarBlob:     avatarBlob,
+		AvatarMimeType: "image/jpeg",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	testDID := "did:plc:testuser123"
+	session := createTestOAuthSession(testDID)
+	req = setTestOAuthSession(req, testDID, session)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp UpdateProfileResponse
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	assert.NoError(t, err)
+	assert.NotEmpty(t, resp.URI)
+	assert.NotEmpty(t, resp.CID)
+}
+
+// TestUpdateProfileHandler_BannerExactlyAtMaxSize tests that banner at exactly 2MB is accepted
+func TestUpdateProfileHandler_BannerExactlyAtMaxSize(t *testing.T) {
+	mockClient := &mockPDSClient{
+		uploadBlobRef: &blobs.BlobRef{
+			Type:     "blob",
+			Ref:      map[string]string{"$link": "bafybannertest"},
+			MimeType: "image/jpeg",
+			Size:     MaxBannerBlobSize,
+		},
+		putRecordURI: "at://did:plc:test123/social.coves.actor.profile/self",
+		putRecordCID: "bafyreifake",
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	// Create banner blob at exactly 2MB (2,000,000 bytes)
+	bannerBlob := make([]byte, MaxBannerBlobSize)
+
+	reqBody := UpdateProfileRequest{
+		DisplayName:    strPtr("Test User"),
+		BannerBlob:     bannerBlob,
+		BannerMimeType: "image/jpeg",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	testDID := "did:plc:testuser123"
+	session := createTestOAuthSession(testDID)
+	req = setTestOAuthSession(req, testDID, session)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp UpdateProfileResponse
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	assert.NoError(t, err)
+	assert.NotEmpty(t, resp.URI)
+	assert.NotEmpty(t, resp.CID)
+}
+
+// ============================================================================
+// Banner-Specific Error Path Tests
+// ============================================================================
+
+// TestUpdateProfileHandler_BannerUploadRateLimited tests banner upload rate limiting
+func TestUpdateProfileHandler_BannerUploadRateLimited(t *testing.T) {
+	mockClient := &mockPDSClient{
+		uploadBlobError: pds.ErrRateLimited,
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	reqBody := UpdateProfileRequest{
+		DisplayName:    strPtr("Test User"),
+		BannerBlob:     []byte("banner data"),
+		BannerMimeType: "image/jpeg",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	testDID := "did:plc:testuser123"
+	session := createTestOAuthSession(testDID)
+	req = setTestOAuthSession(req, testDID, session)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusTooManyRequests, w.Code)
+	assert.Contains(t, w.Body.String(), "RateLimited")
+}
+
+// TestUpdateProfileHandler_BannerUploadPayloadTooLarge tests banner upload payload size error
+func TestUpdateProfileHandler_BannerUploadPayloadTooLarge(t *testing.T) {
+	mockClient := &mockPDSClient{
+		uploadBlobError: pds.ErrPayloadTooLarge,
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	reqBody := UpdateProfileRequest{
+		DisplayName:    strPtr("Test User"),
+		BannerBlob:     []byte("banner data"),
+		BannerMimeType: "image/jpeg",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	testDID := "did:plc:testuser123"
+	session := createTestOAuthSession(testDID)
+	req = setTestOAuthSession(req, testDID, session)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
+	assert.Contains(t, w.Body.String(), "BannerTooLarge")
+}
+
+// TestUpdateProfileHandler_BannerUploadForbidden tests banner upload forbidden error
+func TestUpdateProfileHandler_BannerUploadForbidden(t *testing.T) {
+	mockClient := &mockPDSClient{
+		uploadBlobError: pds.ErrForbidden,
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	reqBody := UpdateProfileRequest{
+		DisplayName:    strPtr("Test User"),
+		BannerBlob:     []byte("banner data"),
+		BannerMimeType: "image/jpeg",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	testDID := "did:plc:testuser123"
+	session := createTestOAuthSession(testDID)
+	req = setTestOAuthSession(req, testDID, session)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+	assert.Contains(t, w.Body.String(), "AuthExpired")
+}
+
+// TestUpdateProfileHandler_BannerUploadGenericError tests banner upload with generic error
+func TestUpdateProfileHandler_BannerUploadGenericError(t *testing.T) {
+	mockClient := &mockPDSClient{
+		uploadBlobError: errors.New("network error"),
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	reqBody := UpdateProfileRequest{
+		DisplayName:    strPtr("Test User"),
+		BannerBlob:     []byte("banner data"),
+		BannerMimeType: "image/jpeg",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	testDID := "did:plc:testuser123"
+	session := createTestOAuthSession(testDID)
+	req = setTestOAuthSession(req, testDID, session)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Contains(t, w.Body.String(), "BlobUploadFailed")
+	assert.Contains(t, w.Body.String(), "Failed to upload banner")
+}
+
+// ============================================================================
+// Empty Request Success Test
+// ============================================================================
+
+// TestUpdateProfileHandler_EmptyRequestSuccess tests that an empty request succeeds
+// This verifies that when no fields are provided, the profile is still created/updated
+// with just the $type field
+func TestUpdateProfileHandler_EmptyRequestSuccess(t *testing.T) {
+	mockClient := &mockPDSClient{
+		putRecordURI: "at://did:plc:test123/social.coves.actor.profile/self",
+		putRecordCID: "bafyreifake",
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	// Empty request - no fields set
+	reqBody := UpdateProfileRequest{}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	testDID := "did:plc:testuser123"
+	session := createTestOAuthSession(testDID)
+	req = setTestOAuthSession(req, testDID, session)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var resp UpdateProfileResponse
+	err := json.Unmarshal(w.Body.Bytes(), &resp)
+	assert.NoError(t, err)
+	assert.Equal(t, "at://did:plc:test123/social.coves.actor.profile/self", resp.URI)
+	assert.Equal(t, "bafyreifake", resp.CID)
+}

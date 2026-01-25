@@ -3,12 +3,13 @@ package integration
 import (
 	"Coves/internal/api/routes"
 	"Coves/internal/atproto/identity"
-	"Coves/internal/core/blobs"
+	"Coves/internal/atproto/pds"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -19,20 +20,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/go-chi/chi/v5"
 	_ "github.com/lib/pq"
 	"github.com/pressly/goose/v3"
 )
 
-// stubBlobService is a minimal blob service implementation for tests that don't need it
-type stubBlobService struct{}
-
-func (s *stubBlobService) UploadBlobFromURL(ctx context.Context, owner blobs.BlobOwner, imageURL string) (*blobs.BlobRef, error) {
-	return nil, fmt.Errorf("stub blob service: UploadBlobFromURL not implemented")
-}
-
-func (s *stubBlobService) UploadBlob(ctx context.Context, owner blobs.BlobOwner, data []byte, mimeType string) (*blobs.BlobRef, error) {
-	return nil, fmt.Errorf("stub blob service: UploadBlob not implemented")
+// testUserRouteOptions returns route options with a dummy PDS client factory.
+// Use this for tests that register user routes but don't actually call updateProfile.
+func testUserRouteOptions() *routes.UserRouteOptions {
+	return &routes.UserRouteOptions{
+		PDSClientFactory: func(ctx context.Context, session *oauth.ClientSessionData) (pds.Client, error) {
+			return nil, errors.New("not implemented - test does not use updateProfile")
+		},
+	}
 }
 
 // TestMain controls test setup for the integration package.
@@ -237,7 +238,7 @@ func TestGetProfileEndpoint(t *testing.T) {
 	// Set up HTTP router with auth middleware
 	r := chi.NewRouter()
 	authMiddleware, _ := CreateTestOAuthMiddleware("did:plc:testuser")
-	routes.RegisterUserRoutes(r, userService, authMiddleware, &stubBlobService{})
+	routes.RegisterUserRoutesWithOptions(r, userService, authMiddleware, nil, testUserRouteOptions())
 
 	// Test 1: Get profile by DID
 	t.Run("Get Profile By DID", func(t *testing.T) {
@@ -866,7 +867,7 @@ func TestGetProfile_NonExistentDID(t *testing.T) {
 	t.Run("HTTP endpoint returns 404 for non-existent DID", func(t *testing.T) {
 		r := chi.NewRouter()
 		authMiddleware, _ := CreateTestOAuthMiddleware("did:plc:testuser")
-		routes.RegisterUserRoutes(r, userService, authMiddleware, &stubBlobService{})
+		routes.RegisterUserRoutesWithOptions(r, userService, authMiddleware, nil, testUserRouteOptions())
 
 		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getprofile?actor=did:plc:nonexistentuser12345", nil)
 		w := httptest.NewRecorder()
@@ -916,7 +917,7 @@ func TestProfileStatsEndpoint(t *testing.T) {
 	// Set up HTTP router with auth middleware
 	r := chi.NewRouter()
 	authMiddleware, _ := CreateTestOAuthMiddleware("did:plc:testuser")
-	routes.RegisterUserRoutes(r, userService, authMiddleware, &stubBlobService{})
+	routes.RegisterUserRoutesWithOptions(r, userService, authMiddleware, nil, testUserRouteOptions())
 
 	t.Run("Response includes stats object", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getprofile?actor="+testDID, nil)

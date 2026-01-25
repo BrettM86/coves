@@ -477,3 +477,19 @@ func CommunityPasswordAuthPDSClientFactory() communities.PDSClientFactory {
 		return pds.NewFromAccessToken(session.HostURL, session.AccountDID.String(), session.AccessToken)
 	}
 }
+
+// UserProfilePasswordAuthPDSClientFactory creates a PDSClientFactory for user profile updates
+// that uses password-based Bearer auth. This is for E2E tests that use createSession instead of OAuth.
+// The factory extracts the access token and host URL from the session data.
+func UserProfilePasswordAuthPDSClientFactory() func(ctx context.Context, session *oauthlib.ClientSessionData) (pds.Client, error) {
+	return func(ctx context.Context, session *oauthlib.ClientSessionData) (pds.Client, error) {
+		if session.AccessToken == "" {
+			return nil, fmt.Errorf("session has no access token")
+		}
+		if session.HostURL == "" {
+			return nil, fmt.Errorf("session has no host URL")
+		}
+
+		return pds.NewFromAccessToken(session.HostURL, session.AccountDID.String(), session.AccessToken)
+	}
+}

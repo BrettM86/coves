@@ -301,6 +301,16 @@ func SetTestUserDID(ctx context.Context, userDID string) context.Context {
 	return context.WithValue(ctx, UserDIDKey, userDID)
 }
 
+// SetTestOAuthSession sets the OAuth session in the context for testing purposes
+// This function should ONLY be used in tests to mock authenticated sessions
+func SetTestOAuthSession(ctx context.Context, session *oauthlib.ClientSessionData) context.Context {
+	ctx = context.WithValue(ctx, OAuthSessionKey, session)
+	if session != nil {
+		ctx = context.WithValue(ctx, UserAccessToken, session.AccessToken)
+	}
+	return ctx
+}
+
 // extractBearerToken extracts the token from a Bearer Authorization header.
 // HTTP auth schemes are case-insensitive per RFC 7235, so "Bearer", "bearer", "BEARER" are all valid.
 // Returns the token and true if valid Bearer scheme, empty string and false otherwise.
