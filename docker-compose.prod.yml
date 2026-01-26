@@ -109,6 +109,17 @@ services:
       # Trusted aggregators (bypass per-community authorization check)
       # Comma-separated list of DIDs
       TRUSTED_AGGREGATOR_DIDS: ${TRUSTED_AGGREGATOR_DIDS:-}
+
+      # Image proxy configuration (on-the-fly resizing with disk cache)
+      IMAGE_PROXY_ENABLED: ${IMAGE_PROXY_ENABLED:-true}
+      IMAGE_PROXY_BASE_URL: ${IMAGE_PROXY_BASE_URL:-https://coves.social}
+      IMAGE_PROXY_CACHE_PATH: /var/cache/coves/images
+      IMAGE_PROXY_CACHE_MAX_GB: ${IMAGE_PROXY_CACHE_MAX_GB:-10}
+      IMAGE_PROXY_FETCH_TIMEOUT_SECONDS: ${IMAGE_PROXY_FETCH_TIMEOUT_SECONDS:-30}
+      IMAGE_PROXY_MAX_SOURCE_SIZE_MB: ${IMAGE_PROXY_MAX_SOURCE_SIZE_MB:-10}
+    volumes:
+      # Image proxy cache (persistent across container restarts)
+      - imageproxy-cache:/var/cache/coves/images
     networks:
       - coves-internal
     depends_on:
@@ -249,3 +260,5 @@ volumes:
     name: coves-prod-caddy-data
   caddy-config:
     name: coves-prod-caddy-config
+  imageproxy-cache:
+    name: coves-prod-imageproxy-cache
