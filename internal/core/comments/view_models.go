@@ -21,7 +21,6 @@ type CommentView struct {
 	IndexedAt      string              `json:"indexedAt"`
 	URI            string              `json:"uri"`
 	CID            string              `json:"cid"`
-	ContentFacets  []interface{}       `json:"contentFacets,omitempty"`
 	IsDeleted      bool                `json:"isDeleted,omitempty"`
 	DeletionReason *string             `json:"deletionReason,omitempty"`
 	DeletedAt      *string             `json:"deletedAt,omitempty"`

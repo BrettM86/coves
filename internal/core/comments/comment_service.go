@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"log/slog"
 	"net/url"
 	"strings"
@@ -220,7 +219,7 @@ func (s *commentService) buildThreadViews(
 			voteStates, err = s.commentRepo.GetVoteStateForComments(ctx, *viewerDID, commentURIs)
 			if err != nil {
 				// Log error but don't fail the request - vote state is optional
-				log.Printf("Warning: Failed to fetch vote states for comments: %v", err)
+				slog.Warn("failed to fetch vote states for comments", "error", err)
 			}
 		}
 	}
@@ -243,7 +242,7 @@ func (s *commentService) buildThreadViews(
 		usersByDID, err = s.userRepo.GetByDIDs(ctx, authorDIDs)
 		if err != nil {
 			// Log error but don't fail the request - user data is optional
-			log.Printf("Warning: Failed to batch fetch users for comment authors: %v", err)
+			slog.Warn("failed to batch fetch users for comment authors", "error", err)
 			usersByDID = make(map[string]*users.User)
 		}
 	} else {
@@ -407,43 +406,32 @@ func (s *commentService) buildCommentView(
 	// The record field is required by social.coves.community.comment.defs#commentView
 	commentRecord := s.buildCommentRecord(comment)
 
-	// Deserialize contentFacets from JSONB (Phase 2C)
-	// Parse facets from database JSON string to populate contentFacets field
-	var contentFacets []interface{}
-	if comment.ContentFacets != nil && *comment.ContentFacets != "" {
-		if err := json.Unmarshal([]byte(*comment.ContentFacets), &contentFacets); err != nil {
-			// Log error but don't fail request - facets are optional
-			log.Printf("Warning: Failed to unmarshal content facets for comment %s: %v", comment.URI, err)
-		}
-	}
-
-	// Deserialize embed from JSONB (Phase 2C)
+	// Deserialize embed from JSONB
 	// Parse embed from database JSON string to populate embed field
 	var embed interface{}
 	if comment.Embed != nil && *comment.Embed != "" {
 		var embedMap map[string]interface{}
 		if err := json.Unmarshal([]byte(*comment.Embed), &embedMap); err != nil {
 			// Log error but don't fail request - embed is optional
-			log.Printf("Warning: Failed to unmarshal embed for comment %s: %v", comment.URI, err)
+			slog.Warn("failed to unmarshal embed for comment", "comment_uri", comment.URI, "error", err)
 		} else {
 			embed = embedMap
 		}
 	}
 
 	return &CommentView{
-		URI:           comment.URI,
-		CID:           comment.CID,
-		Author:        authorView,
-		Record:        commentRecord,
-		Post:          postRef,
-		Parent:        parentRef,
-		Content:       comment.Content,
-		ContentFacets: contentFacets,
-		Embed:         embed,
-		CreatedAt:     comment.CreatedAt.Format(time.RFC3339),
-		IndexedAt:     comment.IndexedAt.Format(time.RFC3339),
-		Stats:         stats,
-		Viewer:        viewer,
+		URI:       comment.URI,
+		CID:       comment.CID,
+		Author:    authorView,
+		Record:    commentRecord,
+		Post:      postRef,
+		Parent:    parentRef,
+		Content:   comment.Content,
+		Embed:     embed,
+		CreatedAt: comment.CreatedAt.Format(time.RFC3339),
+		IndexedAt: comment.IndexedAt.Format(time.RFC3339),
+		Stats:     stats,
+		Viewer:    viewer,
 	}
 }
 
@@ -499,7 +487,6 @@ func (s *commentService) buildDeletedCommentView(comment *Comment) *CommentView 
 		Post:           postRef,
 		Parent:         parentRef,
 		Content:        "", // Blanked content
-		ContentFacets:  nil,
 		Embed:          nil,
 		CreatedAt:      comment.CreatedAt.Format(time.RFC3339),
 		IndexedAt:      comment.IndexedAt.Format(time.RFC3339),
@@ -537,7 +524,7 @@ func (s *commentService) buildCommentRecord(comment *Comment) *CommentRecord {
 		var facets []interface{}
 		if err := json.Unmarshal([]byte(*comment.ContentFacets), &facets); err != nil {
 			// Log error but don't fail request - facets are optional
-			log.Printf("Warning: Failed to unmarshal facets for record %s: %v", comment.URI, err)
+			slog.Warn("failed to unmarshal facets for comment record", "comment_uri", comment.URI, "error", err)
 		} else {
 			record.Facets = facets
 		}
@@ -548,7 +535,7 @@ func (s *commentService) buildCommentRecord(comment *Comment) *CommentRecord {
 		var embed map[string]interface{}
 		if err := json.Unmarshal([]byte(*comment.Embed), &embed); err != nil {
 			// Log error but don't fail request - embed is optional
-			log.Printf("Warning: Failed to unmarshal embed for record %s: %v", comment.URI, err)
+			slog.Warn("failed to unmarshal embed for comment record", "comment_uri", comment.URI, "error", err)
 		} else {
 			record.Embed = embed
 		}
@@ -559,7 +546,7 @@ func (s *commentService) buildCommentRecord(comment *Comment) *CommentRecord {
 		var labels SelfLabels
 		if err := json.Unmarshal([]byte(*comment.ContentLabels), &labels); err != nil {
 			// Log error but don't fail request - labels are optional
-			log.Printf("Warning: Failed to unmarshal labels for record %s: %v", comment.URI, err)
+			slog.Warn("failed to unmarshal labels for comment record", "comment_uri", comment.URI, "error", err)
 		} else {
 			record.Labels = &labels
 		}
@@ -886,7 +873,7 @@ func (s *commentService) buildPostView(ctx context.Context, post *posts.Post, vi
 		authorHandle = user.Handle
 	} else {
 		// Log warning but don't fail the entire request
-		log.Printf("Warning: Failed to fetch user for post author %s: %v", post.AuthorDID, err)
+		slog.Warn("failed to fetch user for post author", "author_did", post.AuthorDID, "error", err)
 	}
 
 	authorView := &posts.AuthorView{
@@ -906,8 +893,8 @@ func (s *commentService) buildPostView(ctx context.Context, post *posts.Post, vi
 	if err != nil {
 		// This indicates a data integrity issue: post references non-existent community
 		// Log as ERROR (not warning) since this should never happen in normal operation
-		log.Printf("ERROR: Data integrity issue - post %s references non-existent community %s: %v",
-			post.URI, post.CommunityDID, err)
+		slog.Error("data integrity issue - post references non-existent community",
+			"post_uri", post.URI, "community_did", post.CommunityDID, "error", err)
 		// Use DID as fallback for both handle and name to prevent breaking the API
 		// This allows the response to be returned while surfacing the integrity issue in logs
 		community = &communities.Community{
@@ -937,10 +924,10 @@ func (s *commentService) buildPostView(ctx context.Context, post *posts.Post, vi
 	if community.AvatarCID != "" && community.PDSURL != "" {
 		// Validate HTTPS for security (prevent mixed content warnings, MitM attacks)
 		if !strings.HasPrefix(community.PDSURL, "https://") {
-			log.Printf("Warning: Skipping non-HTTPS PDS URL for community %s", community.DID)
+			slog.Warn("skipping non-HTTPS PDS URL for community", "community_did", community.DID)
 		} else if !strings.HasPrefix(community.AvatarCID, "baf") {
 			// Validate CID format (IPFS CIDs start with "baf" for CIDv1 base32)
-			log.Printf("Warning: Invalid CID format for community %s", community.DID)
+			slog.Warn("invalid CID format for community avatar", "community_did", community.DID, "avatar_cid", community.AvatarCID)
 		} else {
 			// Use proper URL escaping to prevent injection attacks
 			avatarURLString := fmt.Sprintf("%s/xrpc/com.atproto.sync.getBlob?did=%s&cid=%s",
@@ -1088,7 +1075,7 @@ func (s *commentService) GetActorComments(ctx context.Context, req *GetActorComm
 		voteStates, err = s.commentRepo.GetVoteStateForComments(ctx, *req.ViewerDID, commentURIs)
 		if err != nil {
 			// Log error but don't fail the request - vote state is optional
-			log.Printf("Warning: Failed to fetch vote states for actor comments: %v", err)
+			slog.Warn("failed to fetch vote states for actor comments", "error", err)
 		}
 	}
 
@@ -1100,7 +1087,7 @@ func (s *commentService) GetActorComments(ctx context.Context, req *GetActorComm
 		user, err := s.userRepo.GetByDID(ctx, req.ActorDID)
 		if err != nil {
 			// Log error but don't fail request - user data is optional
-			log.Printf("Warning: Failed to fetch user for actor %s: %v", req.ActorDID, err)
+			slog.Warn("failed to fetch user for actor", "actor_did", req.ActorDID, "error", err)
 		} else if user != nil {
 			usersByDID[user.DID] = user
 		}

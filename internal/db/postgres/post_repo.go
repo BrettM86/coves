@@ -6,7 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -217,7 +217,7 @@ func (r *postgresPostRepo) GetByAuthor(ctx context.Context, req posts.GetAuthorP
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			log.Printf("WARN: failed to close rows: %v", err)
+			slog.Warn("failed to close rows", "error", err)
 		}
 	}()
 
@@ -356,22 +356,30 @@ func (r *postgresPostRepo) scanAuthorPost(rows *sql.Rows) (*posts.PostView, erro
 		postView.EditedAt = &editedAt.Time
 	}
 
-	// Parse facets JSON
+	// Parse facets JSON into local variable (will be added to record below)
+	// Log errors but continue - malformed optional fields shouldn't break the response
+	var facetArray []interface{}
 	if facets.Valid {
-		var facetArray []interface{}
 		if err := json.Unmarshal([]byte(facets.String), &facetArray); err != nil {
-			return nil, fmt.Errorf("failed to parse facets JSON for post %s: %w", postView.URI, err)
+			slog.Warn("failed to parse facets JSON",
+				"post_uri", postView.URI,
+				"error", err,
+			)
 		}
-		postView.TextFacets = facetArray
 	}
 
 	// Parse embed JSON
+	// Log errors but continue - malformed optional fields shouldn't break the response
 	if embed.Valid {
 		var embedData interface{}
 		if err := json.Unmarshal([]byte(embed.String), &embedData); err != nil {
-			return nil, fmt.Errorf("failed to parse embed JSON for post %s: %w", postView.URI, err)
+			slog.Warn("failed to parse embed JSON",
+				"post_uri", postView.URI,
+				"error", err,
+			)
+		} else {
+			postView.Embed = embedData
 		}
-		postView.Embed = embedData
 	}
 
 	// Build stats
@@ -397,9 +405,9 @@ func (r *postgresPostRepo) scanAuthorPost(rows *sql.Rows) (*posts.PostView, erro
 	if content.Valid {
 		record["content"] = content.String
 	}
-	// Reuse already-parsed facets and embed from PostView to avoid double parsing
-	if facets.Valid {
-		record["facets"] = postView.TextFacets
+	// Add facets to record if present
+	if facetArray != nil {
+		record["facets"] = facetArray
 	}
 	if embed.Valid {
 		record["embed"] = postView.Embed
@@ -408,9 +416,13 @@ func (r *postgresPostRepo) scanAuthorPost(rows *sql.Rows) (*posts.PostView, erro
 		// Labels are stored as JSONB containing full com.atproto.label.defs#selfLabels structure
 		var selfLabels posts.SelfLabels
 		if err := json.Unmarshal([]byte(labelsJSON.String), &selfLabels); err != nil {
-			return nil, fmt.Errorf("failed to parse labels JSON for post %s: %w", postView.URI, err)
+			slog.Warn("failed to parse labels JSON",
+				"post_uri", postView.URI,
+				"error", err,
+			)
+		} else {
+			record["labels"] = selfLabels
 		}
-		record["labels"] = selfLabels
 	}
 
 	postView.Record = record

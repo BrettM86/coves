@@ -362,17 +362,15 @@ func (r *feedRepoBase) scanFeedPost(rows *sql.Rows) (*posts.PostView, float64, e
 	postView.Title = nullStringPtr(title)
 	postView.Text = nullStringPtr(content)
 
-	// Parse facets JSON
+	// Parse facets JSON into local variable (will be added to record below)
 	// Log errors but continue - a single malformed post shouldn't break the entire feed
+	var facetArray []interface{}
 	if facets.Valid {
-		var facetArray []interface{}
 		if err := json.Unmarshal([]byte(facets.String), &facetArray); err != nil {
 			slog.Warn("[FEED] failed to parse facets JSON",
 				"post_uri", postView.URI,
 				"error", err,
 			)
-		} else {
-			postView.TextFacets = facetArray
 		}
 	}
 
@@ -413,10 +411,9 @@ func (r *feedRepoBase) scanFeedPost(rows *sql.Rows) (*posts.PostView, float64, e
 	if content.Valid {
 		record["content"] = content.String
 	}
-	// Reuse already-parsed facets and embed from PostView (parsed above with logging)
-	// This avoids double parsing and ensures consistent error handling
-	if postView.TextFacets != nil {
-		record["facets"] = postView.TextFacets
+	// Add facets to record if present
+	if facetArray != nil {
+		record["facets"] = facetArray
 	}
 	if postView.Embed != nil {
 		record["embed"] = postView.Embed

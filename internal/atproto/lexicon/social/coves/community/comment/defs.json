@@ -40,14 +40,6 @@
           "type": "string",
           "description": "Comment text content"
         },
-        "contentFacets": {
-          "type": "array",
-          "description": "Rich text annotations for mentions, links, formatting",
-          "items": {
-            "type": "ref",
-            "ref": "social.coves.richtext.facet"
-          }
-        },
         "embed": {
           "type": "union",
           "description": "Embedded content in the comment (images or quoted post)",

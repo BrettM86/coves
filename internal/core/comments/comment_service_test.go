@@ -1345,8 +1345,11 @@ func TestBuildCommentView_ValidFacetsDeserialization(t *testing.T) {
 
 	result := service.buildCommentView(comment, nil, nil, make(map[string]*users.User))
 
-	assert.NotNil(t, result.ContentFacets)
-	assert.Len(t, result.ContentFacets, 1)
+	// Facets are accessed via record.Facets (following Bluesky pattern)
+	assert.NotNil(t, result.Record)
+	record := result.Record.(*CommentRecord)
+	assert.NotNil(t, record.Facets)
+	assert.Len(t, record.Facets, 1)
 }
 
 func TestBuildCommentView_ValidEmbedDeserialization(t *testing.T) {
@@ -1404,11 +1407,13 @@ func TestBuildCommentView_MalformedJSONLogsWarning(t *testing.T) {
 
 	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
-	// Should not panic, should log warning and return view with nil facets
+	// Should not panic, should log warning and return view with nil facets in record
 	result := service.buildCommentView(comment, nil, nil, make(map[string]*users.User))
 
 	assert.NotNil(t, result)
-	assert.Nil(t, result.ContentFacets)
+	// Facets are accessed via record.Facets - malformed JSON results in nil
+	record := result.Record.(*CommentRecord)
+	assert.Nil(t, record.Facets)
 }
 
 func TestBuildCommentView_EmptyStringVsNilHandling(t *testing.T) {
@@ -1468,10 +1473,12 @@ func TestBuildCommentView_EmptyStringVsNilHandling(t *testing.T) {
 
 			result := service.buildCommentView(comment, nil, nil, make(map[string]*users.User))
 
+			// Facets are accessed via record.Facets (following Bluesky pattern)
+			record := result.Record.(*CommentRecord)
 			if tt.expectFacetsNil {
-				assert.Nil(t, result.ContentFacets)
+				assert.Nil(t, record.Facets)
 			} else {
-				assert.NotNil(t, result.ContentFacets)
+				assert.NotNil(t, record.Facets)
 			}
 
 			if tt.expectEmbedNil {
@@ -1480,7 +1487,6 @@ func TestBuildCommentView_EmptyStringVsNilHandling(t *testing.T) {
 				assert.NotNil(t, result.Embed)
 			}
 
-			record := service.buildCommentRecord(comment)
 			if tt.expectRecordLabels {
 				assert.NotNil(t, record.Labels)
 			} else {

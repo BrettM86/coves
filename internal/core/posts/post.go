@@ -100,7 +100,6 @@ type PostView struct {
 	RKey          string        `json:"rkey"`
 	CID           string        `json:"cid"`
 	URI           string        `json:"uri"`
-	TextFacets    []interface{} `json:"textFacets,omitempty"`
 	UpvoteCount   int           `json:"-"`
 	DownvoteCount int           `json:"-"`
 	Score         int           `json:"-"`

@@ -72,13 +72,6 @@
         "text": {
           "type": "string"
         },
-        "textFacets": {
-          "type": "array",
-          "items": {
-            "type": "ref",
-            "ref": "social.coves.richtext.facet"
-          }
-        },
         "embed": {
           "type": "union",
           "description": "Embedded content (images, video, link preview, or quoted post)",
