@@ -16,7 +16,6 @@ type CommentView struct {
 	Post           *CommentRef         `json:"post"`
 	Parent         *CommentRef         `json:"parent,omitempty"`
 	Stats          *CommentStats       `json:"stats"`
-	Content        string              `json:"content"`
 	CreatedAt      string              `json:"createdAt"`
 	IndexedAt      string              `json:"indexedAt"`
 	URI            string              `json:"uri"`

@@ -5,7 +5,7 @@
     "commentView": {
       "type": "object",
       "description": "Base view for a single comment with voting, stats, and viewer state",
-      "required": ["uri", "cid", "author", "record", "post", "content", "createdAt", "indexedAt", "stats"],
+      "required": ["uri", "cid", "author", "record", "post", "createdAt", "indexedAt", "stats"],
       "properties": {
         "uri": {
           "type": "string",
@@ -35,10 +35,6 @@
           "type": "ref",
           "ref": "#commentRef",
           "description": "Reference to parent comment if this is a nested reply"
-        },
-        "content": {
-          "type": "string",
-          "description": "Comment text content"
         },
         "embed": {
           "type": "union",

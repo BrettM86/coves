@@ -346,12 +346,6 @@ func (r *postgresPostRepo) scanAuthorPost(rows *sql.Rows) (*posts.PostView, erro
 	postView.Community = &communityRef
 
 	// Set optional fields
-	if title.Valid {
-		postView.Title = &title.String
-	}
-	if content.Valid {
-		postView.Text = &content.String
-	}
 	if editedAt.Valid {
 		postView.EditedAt = &editedAt.Time
 	}

@@ -91,8 +91,6 @@ type PostView struct {
 	Embed         interface{}   `json:"embed,omitempty"`
 	Language      *string       `json:"language,omitempty"`
 	EditedAt      *time.Time    `json:"editedAt,omitempty"`
-	Title         *string       `json:"title,omitempty"`
-	Text          *string       `json:"text,omitempty"`
 	Viewer        *ViewerState  `json:"viewer,omitempty"`
 	Author        *AuthorView   `json:"author"`
 	Stats         *PostStats    `json:"stats,omitempty"`

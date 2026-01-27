@@ -4,6 +4,7 @@ import (
 	"Coves/internal/api/handlers/communityFeed"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/communityFeeds"
+	"Coves/internal/core/posts"
 	"Coves/internal/db/postgres"
 	"context"
 	"encoding/json"
@@ -16,6 +17,24 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// getPostTitle extracts title from PostView.Record.
+// Fails the test if Record structure is invalid (should not happen in valid responses).
+func getPostTitle(t *testing.T, pv *posts.PostView) string {
+	t.Helper()
+	if pv.Record == nil {
+		t.Fatalf("getPostTitle: Record is nil for post URI %s", pv.URI)
+	}
+	record, ok := pv.Record.(map[string]interface{})
+	if !ok {
+		t.Fatalf("getPostTitle: Record is %T, not map[string]interface{}", pv.Record)
+	}
+	title, ok := record["title"].(string)
+	if !ok {
+		t.Fatalf("getPostTitle: title field missing or not string, Record: %+v", record)
+	}
+	return title
+}
 
 // TestGetCommunityFeed_Hot tests hot feed sorting algorithm
 func TestGetCommunityFeed_Hot(t *testing.T) {
@@ -150,7 +169,7 @@ func TestGetCommunityFeed_Top_WithTimeframe(t *testing.T) {
 		assert.Len(t, response.Feed, 2)
 
 		// Verify top-ranked post (highest score)
-		assert.Equal(t, "2 hours old", *response.Feed[0].Post.Title)
+		assert.Equal(t, "2 hours old", getPostTitle(t, response.Feed[0].Post))
 		assert.Equal(t, 100, response.Feed[0].Post.Stats.Score)
 	})
 
@@ -169,7 +188,7 @@ func TestGetCommunityFeed_Top_WithTimeframe(t *testing.T) {
 		assert.Len(t, response.Feed, 3)
 
 		// Highest score should be first
-		assert.Equal(t, "2 days old", *response.Feed[0].Post.Title)
+		assert.Equal(t, "2 days old", getPostTitle(t, response.Feed[0].Post))
 		assert.Equal(t, 200, response.Feed[0].Post.Stats.Score)
 	})
 }
@@ -227,9 +246,9 @@ func TestGetCommunityFeed_New(t *testing.T) {
 	assert.Len(t, response.Feed, 3)
 
 	// Verify chronological order (newest first)
-	assert.Equal(t, "Newest post", *response.Feed[0].Post.Title)
-	assert.Equal(t, "Middle post", *response.Feed[1].Post.Title)
-	assert.Equal(t, "Oldest post", *response.Feed[2].Post.Title)
+	assert.Equal(t, "Newest post", getPostTitle(t, response.Feed[0].Post))
+	assert.Equal(t, "Middle post", getPostTitle(t, response.Feed[1].Post))
+	assert.Equal(t, "Oldest post", getPostTitle(t, response.Feed[2].Post))
 }
 
 // TestGetCommunityFeed_Pagination tests cursor-based pagination
@@ -580,7 +599,7 @@ func TestGetCommunityFeed_HotPaginationBug(t *testing.T) {
 
 	// The highest hot_rank post should be first (recent with low-medium score)
 	firstPostURI := page1.Feed[0].Post.URI
-	t.Logf("Page 1 - First post: %s (URI: %s)", *page1.Feed[0].Post.Title, firstPostURI)
+	t.Logf("Page 1 - First post: %s (URI: %s)", getPostTitle(t, page1.Feed[0].Post), firstPostURI)
 	t.Logf("Page 1 - Cursor: %s", *page1.Cursor)
 
 	// Page 2: Use cursor - this is where the bug would occur
@@ -606,7 +625,7 @@ func TestGetCommunityFeed_HotPaginationBug(t *testing.T) {
 	seenURIs := map[string]bool{firstPostURI: true}
 	for _, p := range page2.Feed {
 		allURIs = append(allURIs, p.Post.URI)
-		t.Logf("Page 2 - Post: %s (URI: %s)", *p.Post.Title, p.Post.URI)
+		t.Logf("Page 2 - Post: %s (URI: %s)", getPostTitle(t, p.Post), p.Post.URI)
 		// Check for duplicates
 		if seenURIs[p.Post.URI] {
 			t.Errorf("Duplicate post found: %s", p.Post.URI)

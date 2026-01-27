@@ -358,10 +358,6 @@ func (r *feedRepoBase) scanFeedPost(rows *sql.Rows) (*posts.PostView, float64, e
 	}
 	postView.Community = &communityRef
 
-	// Set optional fields
-	postView.Title = nullStringPtr(title)
-	postView.Text = nullStringPtr(content)
-
 	// Parse facets JSON into local variable (will be added to record below)
 	// Log errors but continue - a single malformed post shouldn't break the entire feed
 	var facetArray []interface{}

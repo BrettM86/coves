@@ -939,7 +939,7 @@ func TestCommentService_buildThreadViews_IncludesDeletedCommentsAsPlaceholders(t
 	assert.Equal(t, deletedComment.URI, result[0].Comment.URI)
 	assert.True(t, result[0].Comment.IsDeleted)
 	assert.Equal(t, DeletionReasonAuthor, *result[0].Comment.DeletionReason)
-	assert.Empty(t, result[0].Comment.Content)
+	assert.Nil(t, result[0].Comment.Record) // Deleted comments have nil record
 
 	// Second comment should be the normal one
 	assert.Equal(t, normalComment.URI, result[1].Comment.URI)
@@ -1031,7 +1031,8 @@ func TestCommentService_buildCommentView_BasicFields(t *testing.T) {
 	// Verify basic fields
 	assert.Equal(t, commentURI, result.URI)
 	assert.Equal(t, comment.CID, result.CID)
-	assert.Equal(t, comment.Content, result.Content)
+	record := result.Record.(*CommentRecord)
+	assert.Equal(t, comment.Content, record.Content)
 	assert.NotNil(t, result.Author)
 	assert.Equal(t, "did:plc:commenter123", result.Author.DID)
 	assert.Equal(t, "commenter.test", result.Author.Handle)

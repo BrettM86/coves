@@ -25,6 +25,24 @@ import (
 	"github.com/pressly/goose/v3"
 )
 
+// getPostTitleFromView extracts title from PostView.Record.
+// Fails the test if Record structure is invalid (should not happen in valid responses).
+func getPostTitleFromView(t *testing.T, pv *posts.PostView) string {
+	t.Helper()
+	if pv.Record == nil {
+		t.Fatalf("getPostTitleFromView: Record is nil for post URI %s", pv.URI)
+	}
+	record, ok := pv.Record.(map[string]interface{})
+	if !ok {
+		t.Fatalf("getPostTitleFromView: Record is %T, not map[string]interface{}", pv.Record)
+	}
+	title, ok := record["title"].(string)
+	if !ok {
+		t.Fatalf("getPostTitleFromView: title field missing or not string, Record: %+v", record)
+	}
+	return title
+}
+
 // TestGetAuthorPosts_E2E_Success tests the full author posts flow with real PDS
 // Flow: Create user on PDS → Create posts → Query via XRPC → Verify response
 func TestGetAuthorPosts_E2E_Success(t *testing.T) {
@@ -629,8 +647,8 @@ func TestGetAuthorPosts_WithJetstreamIndexing(t *testing.T) {
 		}
 
 		if len(response.Feed) > 0 && response.Feed[0].Post != nil {
-			title := response.Feed[0].Post.Title
-			if title == nil || *title != "Jetstream Indexed Post" {
+			title := getPostTitleFromView(t, response.Feed[0].Post)
+			if title != "Jetstream Indexed Post" {
 				t.Errorf("Expected title 'Jetstream Indexed Post', got %v", title)
 			}
 		}

@@ -131,7 +131,11 @@ func TestGetCommentsHandler_Success(t *testing.T) {
 					{
 						URI:       "at://did:plc:testuser/social.coves.community.comment/abc123",
 						CID:       "bafytest123",
-						Content:   "Test comment content",
+						Record: &comments.CommentRecord{
+							Type:      "social.coves.community.comment",
+							Content:   "Test comment content",
+							CreatedAt: createdAt,
+						},
 						CreatedAt: createdAt,
 						IndexedAt: indexedAt,
 						Author: &posts.AuthorView{
@@ -176,8 +180,18 @@ func TestGetCommentsHandler_Success(t *testing.T) {
 		t.Errorf("Expected correct comment URI, got '%s'", response.Comments[0].URI)
 	}
 
-	if response.Comments[0].Content != "Test comment content" {
-		t.Errorf("Expected correct comment content, got '%s'", response.Comments[0].Content)
+	// After JSON marshal/unmarshal, Record becomes map[string]interface{} instead
+	// of the original *CommentRecord type because json.Unmarshal doesn't preserve
+	// Go struct types for interface{} fields.
+	if response.Comments[0].Record == nil {
+		t.Fatal("Expected Record to be non-nil after JSON round-trip")
+	}
+	record, ok := response.Comments[0].Record.(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected Record to be map[string]interface{}, got %T", response.Comments[0].Record)
+	}
+	if record["content"] != "Test comment content" {
+		t.Errorf("Expected correct comment content, got '%s'", record["content"])
 	}
 }
 
@@ -621,5 +635,94 @@ func TestGetCommentsHandler_ResolutionFailedError_Returns500(t *testing.T) {
 
 	if response.Error != "InternalServerError" {
 		t.Errorf("Expected error 'InternalServerError', got '%s'", response.Error)
+	}
+}
+
+func TestGetCommentsHandler_DeletedComment_NilRecord(t *testing.T) {
+	// Test that deleted comments are properly serialized with nil Record at the API layer.
+	// This verifies the JSON response correctly handles deleted comments where content
+	// has been removed but the comment shell remains for thread continuity.
+	createdAt := time.Now().Format(time.RFC3339)
+	indexedAt := time.Now().Format(time.RFC3339)
+	deletedAt := time.Now().Format(time.RFC3339)
+	deletionReason := "User deleted"
+
+	mockComments := &mockCommentService{
+		getActorCommentsFunc: func(ctx context.Context, req *comments.GetActorCommentsRequest) (*comments.GetActorCommentsResponse, error) {
+			return &comments.GetActorCommentsResponse{
+				Comments: []*comments.CommentView{
+					{
+						URI:            "at://did:plc:testuser/social.coves.community.comment/deleted123",
+						CID:            "bafydeleted",
+						Record:         nil, // Deleted comments have nil Record
+						IsDeleted:      true,
+						DeletedAt:      &deletedAt,
+						DeletionReason: &deletionReason,
+						CreatedAt:      createdAt,
+						IndexedAt:      indexedAt,
+						Author: &posts.AuthorView{
+							DID:    "did:plc:testuser",
+							Handle: "test.user",
+						},
+						Post: &comments.CommentRef{
+							URI: "at://did:plc:community/social.coves.community.post/parent123",
+							CID: "bafyparent",
+						},
+						Stats: &comments.CommentStats{
+							Upvotes:    0,
+							Downvotes:  0,
+							Score:      0,
+							ReplyCount: 0,
+						},
+					},
+				},
+			}, nil
+		},
+	}
+	mockUsers := &mockUserServiceForComments{}
+	mockVotes := &mockVoteServiceForComments{}
+
+	handler := NewGetCommentsHandler(mockComments, mockUsers, mockVotes)
+
+	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.actor.getComments?actor=did:plc:testuser", nil)
+	rec := httptest.NewRecorder()
+
+	handler.HandleGetComments(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", rec.Code)
+	}
+
+	var response comments.GetActorCommentsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("Failed to decode response: %v", err)
+	}
+
+	if len(response.Comments) != 1 {
+		t.Fatalf("Expected 1 comment, got %d", len(response.Comments))
+	}
+
+	deletedComment := response.Comments[0]
+
+	// Verify deleted comment fields
+	if !deletedComment.IsDeleted {
+		t.Error("Expected IsDeleted to be true for deleted comment")
+	}
+
+	if deletedComment.Record != nil {
+		t.Errorf("Expected Record to be nil for deleted comment, got %T", deletedComment.Record)
+	}
+
+	if deletedComment.DeletedAt == nil || *deletedComment.DeletedAt != deletedAt {
+		t.Errorf("Expected DeletedAt to be %s, got %v", deletedAt, deletedComment.DeletedAt)
+	}
+
+	if deletedComment.DeletionReason == nil || *deletedComment.DeletionReason != deletionReason {
+		t.Errorf("Expected DeletionReason to be %s, got %v", deletionReason, deletedComment.DeletionReason)
+	}
+
+	// Verify author info is still present (for attribution even on deleted comments)
+	if deletedComment.Author == nil || deletedComment.Author.DID != "did:plc:testuser" {
+		t.Error("Expected deleted comment to retain author information")
 	}
 }

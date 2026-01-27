@@ -426,7 +426,6 @@ func (s *commentService) buildCommentView(
 		Record:    commentRecord,
 		Post:      postRef,
 		Parent:    parentRef,
-		Content:   comment.Content,
 		Embed:     embed,
 		CreatedAt: comment.CreatedAt.Format(time.RFC3339),
 		IndexedAt: comment.IndexedAt.Format(time.RFC3339),
@@ -486,7 +485,6 @@ func (s *commentService) buildDeletedCommentView(comment *Comment) *CommentView 
 		Record:         nil, // No record for deleted comments
 		Post:           postRef,
 		Parent:         parentRef,
-		Content:        "", // Blanked content
 		Embed:          nil,
 		CreatedAt:      comment.CreatedAt.Format(time.RFC3339),
 		IndexedAt:      comment.IndexedAt.Format(time.RFC3339),
@@ -975,8 +973,6 @@ func (s *commentService) buildPostView(ctx context.Context, post *posts.Post, vi
 		Author:    authorView,
 		Record:    postRecord,
 		Community: communityRef,
-		Title:     post.Title,
-		Text:      post.Content,
 		CreatedAt: post.CreatedAt,
 		IndexedAt: post.IndexedAt,
 		EditedAt:  post.EditedAt,

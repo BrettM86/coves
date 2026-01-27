@@ -164,12 +164,23 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 
 		// STEP 6: Verify blob URL transformation in feed responses
 		// This is what the feed handler would do before returning to client
+		// Build the record as the feed repos do
+		record := map[string]interface{}{
+			"$type":     "social.coves.community.post",
+			"createdAt": indexedPost.CreatedAt.Format(time.RFC3339),
+		}
+		if indexedPost.Title != nil {
+			record["title"] = *indexedPost.Title
+		}
+		if indexedPost.Content != nil {
+			record["content"] = *indexedPost.Content
+		}
+
 		postView := &posts.PostView{
 			URI:       indexedPost.URI,
 			CID:       indexedPost.CID,
-			Title:     indexedPost.Title,
-			Text:      indexedPost.Content, // Content maps to Text in PostView
-			Embed:     embedMap,            // Use parsed embed map
+			Record:    record,
+			Embed:     embedMap, // Use parsed embed map
 			CreatedAt: indexedPost.CreatedAt,
 			Community: &posts.CommunityRef{
 				DID:    community.DID,
