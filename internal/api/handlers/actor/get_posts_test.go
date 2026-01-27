@@ -34,6 +34,10 @@ func (m *mockPostService) CreatePost(ctx context.Context, req posts.CreatePostRe
 	return nil, nil
 }
 
+func (m *mockPostService) DeletePost(ctx context.Context, session *oauthlib.ClientSessionData, req posts.DeletePostRequest) error {
+	return nil
+}
+
 // mockUserService implements users.UserService for testing
 type mockUserService struct {
 	resolveHandleToDIDFunc func(ctx context.Context, handle string) (string, error)

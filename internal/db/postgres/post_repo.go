@@ -302,6 +302,22 @@ func (r *postgresPostRepo) buildAuthorPostsCursor(post *posts.PostView) string {
 	return base64.URLEncoding.EncodeToString([]byte(cursorStr))
 }
 
+// SoftDelete marks a post as deleted by setting deleted_at
+// Called by Jetstream consumer after post is deleted from PDS
+// Idempotent: Returns success if post already deleted or doesn't exist
+func (r *postgresPostRepo) SoftDelete(ctx context.Context, uri string) error {
+	query := `
+		UPDATE posts
+		SET deleted_at = NOW()
+		WHERE uri = $1 AND deleted_at IS NULL
+	`
+	_, err := r.db.ExecContext(ctx, query, uri)
+	if err != nil {
+		return fmt.Errorf("failed to soft delete post: %w", err)
+	}
+	return nil
+}
+
 // scanAuthorPost scans a database row into a PostView for author posts query
 func (r *postgresPostRepo) scanAuthorPost(rows *sql.Rows) (*posts.PostView, error) {
 	var (

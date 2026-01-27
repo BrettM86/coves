@@ -14,11 +14,15 @@ import (
 	"time"
 
 	"Coves/internal/api/middleware"
+	"Coves/internal/atproto/pds"
+	"Coves/internal/atproto/utils"
 	"Coves/internal/core/aggregators"
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/blueskypost"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/unfurl"
+
+	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 )
 
 type postService struct {
@@ -691,4 +695,149 @@ func validateDIDFormat(did string) error {
 	default:
 		return fmt.Errorf("unsupported DID method: must be did:plc or did:web")
 	}
+}
+
+// DeletePost deletes a post from the community's PDS repository
+// SECURITY: Only the post author can delete their own posts
+// Flow:
+// 1. Validate session and URI format
+// 2. Extract community DID and rkey from URI
+// 3. Fetch community from AppView
+// 4. Ensure fresh PDS credentials
+// 5. Fetch post record from community's PDS to get author field
+// 6. SECURITY: Verify author matches session.AccountDID
+// 7. Delete record from community's PDS using community credentials
+func (s *postService) DeletePost(ctx context.Context, session *oauth.ClientSessionData, req DeletePostRequest) error {
+	// 1. Validate session
+	if session == nil {
+		return NewValidationError("session", "OAuth session required")
+	}
+	userDID := session.AccountDID.String()
+
+	// 2. Validate URI format: at://community_did/social.coves.community.post/rkey
+	if err := s.validateDeleteRequest(&req); err != nil {
+		return err
+	}
+
+	// 3. Extract community DID and rkey from URI
+	communityDID, rkey, err := s.parsePostURI(req.URI)
+	if err != nil {
+		return err
+	}
+
+	// 4. Fetch community from AppView
+	community, err := s.communityService.GetByDID(ctx, communityDID)
+	if err != nil {
+		if communities.IsNotFound(err) {
+			return ErrCommunityNotFound
+		}
+		return fmt.Errorf("failed to fetch community: %w", err)
+	}
+
+	// 5. Ensure community has fresh PDS credentials
+	community, err = s.communityService.EnsureFreshToken(ctx, community)
+	if err != nil {
+		return fmt.Errorf("failed to refresh community credentials: %w", err)
+	}
+
+	// 6. Create PDS client for community repository
+	pdsClient, err := pds.NewFromAccessToken(community.PDSURL, community.DID, community.PDSAccessToken)
+	if err != nil {
+		return fmt.Errorf("failed to create PDS client: %w", err)
+	}
+
+	// 7. Fetch post record from PDS to verify author
+	record, err := pdsClient.GetRecord(ctx, "social.coves.community.post", rkey)
+	if err != nil {
+		if errors.Is(err, pds.ErrNotFound) {
+			// Post already deleted or never existed - idempotent success
+			log.Printf("[POST-DELETE] Post not found on PDS (already deleted?): %s", req.URI)
+			return nil
+		}
+		return fmt.Errorf("failed to fetch post from PDS: %w", err)
+	}
+
+	// 8. SECURITY: Verify the requesting user is the post author
+	// The author field in the record must match the authenticated user's DID
+	postAuthor, ok := record.Value["author"].(string)
+	if !ok || postAuthor == "" {
+		return fmt.Errorf("post record missing author field: %s", req.URI)
+	}
+
+	if postAuthor != userDID {
+		log.Printf("[SECURITY] Post delete authorization failed: user=%s, author=%s, uri=%s",
+			userDID, postAuthor, req.URI)
+		return ErrNotAuthorized
+	}
+
+	// 9. Delete record from community's PDS
+	if err := pdsClient.DeleteRecord(ctx, "social.coves.community.post", rkey); err != nil {
+		if errors.Is(err, pds.ErrNotFound) {
+			// Already deleted - idempotent success
+			log.Printf("[POST-DELETE] Post already deleted from PDS: %s", req.URI)
+			return nil
+		}
+		return fmt.Errorf("failed to delete post from PDS: %w", err)
+	}
+
+	// 10. Log success (AppView will update via Jetstream consumer)
+	log.Printf("[POST-DELETE] Successfully deleted post: uri=%s, author=%s, community=%s",
+		req.URI, userDID, communityDID)
+
+	return nil
+}
+
+// validateDeleteRequest validates the delete post request
+func (s *postService) validateDeleteRequest(req *DeletePostRequest) error {
+	if req.URI == "" {
+		return NewValidationError("uri", "post URI is required")
+	}
+
+	// Basic URI format check
+	if !strings.HasPrefix(req.URI, "at://") {
+		return NewValidationError("uri", "invalid AT-URI format: must start with at://")
+	}
+
+	return nil
+}
+
+// parsePostURI extracts community DID and rkey from a post URI
+// Format: at://community_did/social.coves.community.post/rkey
+// Returns community DID, rkey, and error
+func (s *postService) parsePostURI(uri string) (communityDID string, rkey string, err error) {
+	// Remove at:// prefix
+	withoutScheme := strings.TrimPrefix(uri, "at://")
+	parts := strings.Split(withoutScheme, "/")
+
+	// Expected format: [community_did, collection, rkey]
+	if len(parts) != 3 {
+		return "", "", NewValidationError("uri", "invalid post URI format: expected at://did/collection/rkey")
+	}
+
+	communityDID = parts[0]
+	collection := parts[1]
+	rkey = parts[2]
+
+	// Validate collection type
+	if collection != "social.coves.community.post" {
+		return "", "", NewValidationError("uri", fmt.Sprintf("invalid collection in URI: expected social.coves.community.post, got %s", collection))
+	}
+
+	// Validate DID format
+	if err := validateDIDFormat(communityDID); err != nil {
+		return "", "", NewValidationError("uri", fmt.Sprintf("invalid community DID in URI: %s", err.Error()))
+	}
+
+	// Validate rkey is not empty
+	if rkey == "" {
+		return "", "", NewValidationError("uri", "missing rkey in post URI")
+	}
+
+	// Also verify with utils helper for consistency
+	extractedRkey := utils.ExtractRKeyFromURI(uri)
+	if extractedRkey != rkey {
+		return "", "", NewValidationError("uri", "URI parsing inconsistency")
+	}
+
+	return communityDID, rkey, nil
 }

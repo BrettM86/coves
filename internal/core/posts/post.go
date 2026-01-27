@@ -64,6 +64,12 @@ type CreatePostResponse struct {
 	CID string `json:"cid"` // CID of created post
 }
 
+// DeletePostRequest represents input for deleting a post
+// Matches social.coves.community.post.delete lexicon input schema
+type DeletePostRequest struct {
+	URI string `json:"uri"` // AT-URI of the post to delete
+}
+
 // PostRecord represents the actual atProto record structure written to PDS
 // This is the data structure that gets stored in the community's repository
 type PostRecord struct {

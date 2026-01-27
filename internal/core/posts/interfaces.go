@@ -2,6 +2,8 @@ package posts
 
 import (
 	"context"
+
+	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 )
 
 // Service constructor accepts optional blobs.Service and unfurl.Service for embed enhancement.
@@ -21,10 +23,14 @@ type Service interface {
 	// Returns paginated feed with cursor
 	GetAuthorPosts(ctx context.Context, req GetAuthorPostsRequest) (*GetAuthorPostsResponse, error)
 
+	// DeletePost deletes a post from the community's PDS repository
+	// SECURITY: Only the post author can delete their own posts
+	// Flow: Validate URI -> Fetch community -> Verify author -> Delete from PDS
+	DeletePost(ctx context.Context, session *oauth.ClientSessionData, req DeletePostRequest) error
+
 	// Future methods (Beta):
 	// GetPost(ctx context.Context, uri string, viewerDID *string) (*Post, error)
 	// UpdatePost(ctx context.Context, req UpdatePostRequest) (*Post, error)
-	// DeletePost(ctx context.Context, uri string, userDID string) error
 	// ListCommunityPosts(ctx context.Context, communityDID string, limit, offset int) ([]*Post, error)
 }
 
@@ -44,8 +50,12 @@ type Repository interface {
 	// Returns posts, cursor for pagination, and error
 	GetByAuthor(ctx context.Context, req GetAuthorPostsRequest) ([]*PostView, *string, error)
 
+	// SoftDelete marks a post as deleted in the AppView database
+	// Called by Jetstream consumer after post is deleted from PDS
+	// Idempotent: Returns success if post already deleted
+	SoftDelete(ctx context.Context, uri string) error
+
 	// Future methods (Beta):
 	// Update(ctx context.Context, post *Post) error
-	// Delete(ctx context.Context, uri string) error
 	// List(ctx context.Context, communityDID string, limit, offset int) ([]*Post, int, error)
 }

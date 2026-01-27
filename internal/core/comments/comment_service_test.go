@@ -257,6 +257,12 @@ func (m *mockPostRepo) GetByAuthor(ctx context.Context, req posts.GetAuthorPosts
 	return nil, nil, nil
 }
 
+func (m *mockPostRepo) SoftDelete(ctx context.Context, uri string) error {
+	// Mock implementation - just delete from map
+	delete(m.posts, uri)
+	return nil
+}
+
 // mockCommunityRepo is a mock implementation of the communities.Repository interface
 type mockCommunityRepo struct {
 	communities map[string]*communities.Community

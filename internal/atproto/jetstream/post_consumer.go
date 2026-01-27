@@ -14,8 +14,8 @@ import (
 )
 
 // PostEventConsumer consumes post-related events from Jetstream
-// Currently handles only CREATE operations for social.coves.community.post
-// UPDATE and DELETE handlers will be added when those features are implemented
+// Handles CREATE and DELETE operations for social.coves.community.post
+// UPDATE handler will be added when that feature is implemented
 type PostEventConsumer struct {
 	postRepo      posts.Repository
 	communityRepo communities.Repository
@@ -39,7 +39,7 @@ func NewPostEventConsumer(
 }
 
 // HandleEvent processes a Jetstream event for post records
-// Currently only handles CREATE operations - UPDATE/DELETE deferred until those features exist
+// Handles CREATE and DELETE operations - UPDATE deferred until that feature exists
 func (c *PostEventConsumer) HandleEvent(ctx context.Context, event *JetstreamEvent) error {
 	// We only care about commit events for post records
 	if event.Kind != "commit" || event.Commit == nil {
@@ -48,13 +48,17 @@ func (c *PostEventConsumer) HandleEvent(ctx context.Context, event *JetstreamEve
 
 	commit := event.Commit
 
-	// Only handle post record creation for now
-	// UPDATE and DELETE will be added when we implement those features
-	if commit.Collection == "social.coves.community.post" && commit.Operation == "create" {
-		return c.createPost(ctx, event.Did, commit)
+	// Handle post record operations
+	if commit.Collection == "social.coves.community.post" {
+		switch commit.Operation {
+		case "create":
+			return c.createPost(ctx, event.Did, commit)
+		case "delete":
+			return c.deletePost(ctx, event.Did, commit)
+		}
 	}
 
-	// Silently ignore other operations (update, delete) and other collections
+	// Silently ignore other operations (update) and other collections
 	return nil
 }
 
@@ -138,6 +142,22 @@ func (c *PostEventConsumer) createPost(ctx context.Context, repoDID string, comm
 
 	log.Printf("✓ Indexed post: %s (author: %s, community: %s, rkey: %s)",
 		uri, post.AuthorDID, post.CommunityDID, commit.RKey)
+	return nil
+}
+
+// deletePost handles post deletion events from Jetstream
+// Soft-deletes the post in AppView database by setting deleted_at timestamp
+func (c *PostEventConsumer) deletePost(ctx context.Context, repoDID string, commit *CommitEvent) error {
+	// Build AT-URI for this post
+	// Format: at://community_did/social.coves.community.post/rkey
+	uri := fmt.Sprintf("at://%s/social.coves.community.post/%s", repoDID, commit.RKey)
+
+	// Soft delete the post in AppView
+	if err := c.postRepo.SoftDelete(ctx, uri); err != nil {
+		return fmt.Errorf("failed to soft delete post: %w", err)
+	}
+
+	log.Printf("✓ Deleted post: %s (community: %s, rkey: %s)", uri, repoDID, commit.RKey)
 	return nil
 }
 
