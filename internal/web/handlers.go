@@ -181,3 +181,11 @@ func (h *Handlers) PrivacyHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}
 }
+
+// ChildSafetyHandler handles GET /safety/child-safety requests and renders the child safety standards page.
+func (h *Handlers) ChildSafetyHandler(w http.ResponseWriter, r *http.Request) {
+	if err := h.templates.Render(w, "child-safety.html", nil); err != nil {
+		slog.Error("failed to render child safety standards template", "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+	}
+}

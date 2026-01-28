@@ -33,6 +33,9 @@ func RegisterWebRoutes(r chi.Router, oauthClient *oauth.OAuthClient, userService
 	// Legal pages
 	r.Get("/privacy", handlers.PrivacyHandler)
 
+	// Safety pages
+	r.Get("/safety/child-safety", handlers.ChildSafetyHandler)
+
 	// Static files (images, etc.)
 	r.Get("/static/*", func(w http.ResponseWriter, r *http.Request) {
 		// Serve from project's static directory
