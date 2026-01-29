@@ -100,7 +100,10 @@ func (c *CommentEventConsumer) createComment(ctx context.Context, repoDID string
 	}
 
 	// Serialize optional JSON fields
-	facetsJSON, embedJSON, labelsJSON := serializeOptionalFields(commentRecord)
+	facetsJSON, embedJSON, labelsJSON, err := serializeOptionalFields(commentRecord)
+	if err != nil {
+		return fmt.Errorf("failed to serialize optional fields: %w", err)
+	}
 
 	// Build comment entity
 	comment := &comments.Comment{
@@ -177,7 +180,10 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 	}
 
 	// Serialize optional JSON fields
-	facetsJSON, embedJSON, labelsJSON := serializeOptionalFields(commentRecord)
+	facetsJSON, embedJSON, labelsJSON, err := serializeOptionalFields(commentRecord)
+	if err != nil {
+		return fmt.Errorf("failed to serialize optional fields: %w", err)
+	}
 
 	// Build comment update entity (preserves vote counts and created_at)
 	comment := &comments.Comment{
@@ -241,10 +247,12 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 	// We must distinguish: idempotent replay (skip) vs resurrection (update + restore counts)
 	var existingID int64
 	var existingDeletedAt *time.Time
-	checkQuery := `SELECT id, deleted_at FROM comments WHERE uri = $1`
-	checkErr := tx.QueryRowContext(ctx, checkQuery, comment.URI).Scan(&existingID, &existingDeletedAt)
+	var existingParentURI, existingRootURI string
+	checkQuery := `SELECT id, deleted_at, parent_uri, root_uri FROM comments WHERE uri = $1`
+	checkErr := tx.QueryRowContext(ctx, checkQuery, comment.URI).Scan(&existingID, &existingDeletedAt, &existingParentURI, &existingRootURI)
 
 	var commentID int64
+	var isResurrectionWithSameParent bool // Track if we should skip parent count increment
 
 	if checkErr == nil {
 		// Comment exists
@@ -263,6 +271,11 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 		// Clear deletion metadata to restore the comment
 		log.Printf("Resurrecting previously deleted comment: %s", comment.URI)
 		commentID = existingID
+
+		// Check if parent is the same - if so, we should NOT increment parent counts
+		// because deleteComment() no longer decrements counts (deleted = placeholder)
+		// If parent is different, we need to increment the NEW parent's count
+		isResurrectionWithSameParent = (existingParentURI == comment.ParentURI && existingRootURI == comment.RootURI)
 
 		resurrectQuery := `
 			UPDATE comments
@@ -355,51 +368,118 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 
 	// 1.5. Reconcile reply_count for this newly inserted comment
 	// In case any replies arrived out-of-order before this parent was indexed
+	// NOTE: Counts include deleted comments since they're shown as "[deleted]" placeholders
+	//
+	// IMPORTANT: This reconciliation logic and the increment logic below (in parent count updates)
+	// must stay in sync. Both use the same counting semantics:
+	// - Count ALL comments (including deleted) since deleted comments appear as "[deleted]" placeholders
+	// - This ensures reply_count matches the actual visible thread structure
+	// If you modify one, you must review and potentially modify the other.
 	reconcileQuery := `
 		UPDATE comments
 		SET reply_count = (
 			SELECT COUNT(*)
 			FROM comments c
-			WHERE c.parent_uri = $1 AND c.deleted_at IS NULL
+			WHERE c.parent_uri = $1
 		)
 		WHERE id = $2
 	`
 	_, reconcileErr := tx.ExecContext(ctx, reconcileQuery, comment.URI, commentID)
 	if reconcileErr != nil {
-		log.Printf("Warning: Failed to reconcile reply_count for %s: %v", comment.URI, reconcileErr)
-		// Continue anyway - this is a best-effort reconciliation
+		// Reconciliation failure is a critical error - it means reply_count will be incorrect
+		// This could cause data inconsistency where the displayed count doesn't match reality
+		// Roll back the transaction to maintain consistency
+		return fmt.Errorf("failed to reconcile reply_count for %s: %w", comment.URI, reconcileErr)
 	}
 
 	// 2. Update parent counts atomically
 	// Parent could be a post (increment comment_count) or a comment (increment reply_count)
 	// Parse collection from parent URI to determine target table
 	//
-	// NOTE: Post comment_count reconciliation IS implemented in post_consumer.go:210-226
+	// SKIP if this is a resurrection with the same parent:
+	// Since deleteComment() no longer decrements counts (deleted comments shown as "[deleted]" placeholders),
+	// resurrecting a comment with the same parent should NOT increment the count again.
+	// However, if the parent CHANGED (user recreated comment on different post/thread), we DO increment.
+	//
+	// NOTE: Post comment_count reconciliation IS implemented in PostEventConsumer.createPostAndUpdateCounts()
 	// When a comment arrives before its parent post, the post update below returns 0 rows
 	// and we log a warning. Later, when the post is indexed, the post consumer reconciles
 	// comment_count by counting all pre-existing comments. This ensures accurate counts
 	// despite out-of-order Jetstream event delivery.
 	//
 	// Test coverage: TestPostConsumer_CommentCountReconciliation in post_consumer_test.go
+	if isResurrectionWithSameParent {
+		log.Printf("Resurrection with same parent - skipping parent count increment for: %s", comment.URI)
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("failed to commit transaction: %w", err)
+		}
+		return nil
+	}
+
 	collection := utils.ExtractCollectionFromURI(comment.ParentURI)
 
-	var updateQuery string
 	switch collection {
 	case "social.coves.community.post":
-		// Comment on post - update posts.comment_count
-		updateQuery = `
+		// Top-level comment on post - increment posts.comment_count
+		// NOTE: No deleted_at filter - we increment even for deleted parents to match reconciliation behavior
+		updateQuery := `
 			UPDATE posts
 			SET comment_count = comment_count + 1
-			WHERE uri = $1 AND deleted_at IS NULL
+			WHERE uri = $1
 		`
+		result, err := tx.ExecContext(ctx, updateQuery, comment.ParentURI)
+		if err != nil {
+			return fmt.Errorf("failed to update post comment_count: %w", err)
+		}
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("failed to check update result: %w", err)
+		}
+		if rowsAffected == 0 {
+			log.Printf("Warning: Post not found: %s (comment indexed anyway)", comment.ParentURI)
+		}
 
 	case "social.coves.community.comment":
-		// Reply to comment - update comments.reply_count
-		updateQuery = `
+		// Nested reply to comment - update BOTH:
+		// 1. Parent comment's reply_count (for thread structure)
+		// 2. Root post's comment_count (for total thread count display)
+		// NOTE: No deleted_at filter - we increment even for deleted parents to match reconciliation behavior
+
+		// Update parent comment's reply_count
+		replyQuery := `
 			UPDATE comments
 			SET reply_count = reply_count + 1
-			WHERE uri = $1 AND deleted_at IS NULL
+			WHERE uri = $1
 		`
+		result, err := tx.ExecContext(ctx, replyQuery, comment.ParentURI)
+		if err != nil {
+			return fmt.Errorf("failed to update parent reply_count: %w", err)
+		}
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("failed to check reply update result: %w", err)
+		}
+		if rowsAffected == 0 {
+			log.Printf("Warning: Parent comment not found: %s (comment indexed anyway)", comment.ParentURI)
+		}
+
+		// Also increment root post's comment_count for total thread count
+		postQuery := `
+			UPDATE posts
+			SET comment_count = comment_count + 1
+			WHERE uri = $1
+		`
+		result, err = tx.ExecContext(ctx, postQuery, comment.RootURI)
+		if err != nil {
+			return fmt.Errorf("failed to update root post comment_count: %w", err)
+		}
+		rowsAffected, err = result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("failed to check post update result: %w", err)
+		}
+		if rowsAffected == 0 {
+			log.Printf("Warning: Root post not found: %s (comment indexed anyway)", comment.RootURI)
+		}
 
 	default:
 		// Unknown or unsupported parent collection
@@ -409,21 +489,6 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 			return fmt.Errorf("failed to commit transaction: %w", commitErr)
 		}
 		return nil
-	}
-
-	result, err := tx.ExecContext(ctx, updateQuery, comment.ParentURI)
-	if err != nil {
-		return fmt.Errorf("failed to update parent count: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to check update result: %w", err)
-	}
-
-	// If parent not found, that's OK (parent might not be indexed yet)
-	if rowsAffected == 0 {
-		log.Printf("Warning: Parent not found or deleted: %s (comment indexed anyway)", comment.ParentURI)
 	}
 
 	// Commit transaction
@@ -462,62 +527,18 @@ func (c *CommentEventConsumer) deleteCommentAndUpdateCounts(ctx context.Context,
 		return fmt.Errorf("failed to delete comment: %w", err)
 	}
 
-	// Idempotent: If no rows affected, comment already deleted
+	// Idempotent: If no rows affected, comment already deleted - return early
 	if rowsAffected == 0 {
 		log.Printf("Comment already deleted: %s (idempotent)", comment.URI)
-		if commitErr := tx.Commit(); commitErr != nil {
-			return fmt.Errorf("failed to commit transaction: %w", commitErr)
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("failed to commit transaction: %w", err)
 		}
 		return nil
 	}
 
-	// 2. Decrement parent counts atomically
-	// Parent could be a post or comment - parse collection to determine target table
-	collection := utils.ExtractCollectionFromURI(comment.ParentURI)
-
-	var updateQuery string
-	var result sql.Result
-	switch collection {
-	case "social.coves.community.post":
-		// Comment on post - decrement posts.comment_count
-		updateQuery = `
-			UPDATE posts
-			SET comment_count = GREATEST(0, comment_count - 1)
-			WHERE uri = $1 AND deleted_at IS NULL
-		`
-
-	case "social.coves.community.comment":
-		// Reply to comment - decrement comments.reply_count
-		updateQuery = `
-			UPDATE comments
-			SET reply_count = GREATEST(0, reply_count - 1)
-			WHERE uri = $1 AND deleted_at IS NULL
-		`
-
-	default:
-		// Unknown or unsupported parent collection
-		// Comment is still deleted, we just don't update parent counts
-		log.Printf("Comment parent has unsupported collection: %s (comment deleted, parent count not updated)", collection)
-		if commitErr := tx.Commit(); commitErr != nil {
-			return fmt.Errorf("failed to commit transaction: %w", commitErr)
-		}
-		return nil
-	}
-
-	result, err = tx.ExecContext(ctx, updateQuery, comment.ParentURI)
-	if err != nil {
-		return fmt.Errorf("failed to update parent count: %w", err)
-	}
-
-	rowsAffected, err = result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to check update result: %w", err)
-	}
-
-	// If parent not found, that's OK (parent might be deleted)
-	if rowsAffected == 0 {
-		log.Printf("Warning: Parent not found or deleted: %s (comment deleted anyway)", comment.ParentURI)
-	}
+	// NOTE: We intentionally do NOT decrement parent counts (comment_count/reply_count)
+	// Deleted comments are shown as "[deleted]" placeholders to preserve thread structure,
+	// so they should still count toward the displayed total.
 
 	// Commit transaction
 	if err := tx.Commit(); err != nil {
@@ -656,30 +677,37 @@ func parseCommentRecord(record map[string]interface{}) (*CommentRecordFromJetstr
 
 // serializeOptionalFields serializes facets, embed, and labels from a comment record to JSON strings
 // Returns nil pointers for empty/nil fields (DRY helper to avoid duplication)
-func serializeOptionalFields(commentRecord *CommentRecordFromJetstream) (facetsJSON, embedJSON, labelsJSON *string) {
+// Returns an error if any non-empty field fails to serialize (prevents silent data loss)
+func serializeOptionalFields(commentRecord *CommentRecordFromJetstream) (facetsJSON, embedJSON, labelsJSON *string, err error) {
 	// Serialize facets if present
 	if len(commentRecord.Facets) > 0 {
-		if facetsBytes, err := json.Marshal(commentRecord.Facets); err == nil {
-			facetsStr := string(facetsBytes)
-			facetsJSON = &facetsStr
+		facetsBytes, marshalErr := json.Marshal(commentRecord.Facets)
+		if marshalErr != nil {
+			return nil, nil, nil, fmt.Errorf("failed to serialize facets: %w", marshalErr)
 		}
+		facetsStr := string(facetsBytes)
+		facetsJSON = &facetsStr
 	}
 
 	// Serialize embed if present
 	if len(commentRecord.Embed) > 0 {
-		if embedBytes, err := json.Marshal(commentRecord.Embed); err == nil {
-			embedStr := string(embedBytes)
-			embedJSON = &embedStr
+		embedBytes, marshalErr := json.Marshal(commentRecord.Embed)
+		if marshalErr != nil {
+			return nil, nil, nil, fmt.Errorf("failed to serialize embed: %w", marshalErr)
 		}
+		embedStr := string(embedBytes)
+		embedJSON = &embedStr
 	}
 
 	// Serialize labels if present
 	if commentRecord.Labels != nil {
-		if labelsBytes, err := json.Marshal(commentRecord.Labels); err == nil {
-			labelsStr := string(labelsBytes)
-			labelsJSON = &labelsStr
+		labelsBytes, marshalErr := json.Marshal(commentRecord.Labels)
+		if marshalErr != nil {
+			return nil, nil, nil, fmt.Errorf("failed to serialize labels: %w", marshalErr)
 		}
+		labelsStr := string(labelsBytes)
+		labelsJSON = &labelsStr
 	}
 
-	return facetsJSON, embedJSON, labelsJSON
+	return facetsJSON, embedJSON, labelsJSON, nil
 }

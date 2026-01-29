@@ -7,9 +7,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 )
 
@@ -111,28 +111,32 @@ func (c *PostEventConsumer) createPost(ctx context.Context, repoDID string, comm
 	}
 
 	// Serialize JSON fields (facets, embed, labels)
+	// Return error if any non-empty field fails to serialize (prevents silent data loss)
 	if postRecord.Facets != nil {
 		facetsJSON, marshalErr := json.Marshal(postRecord.Facets)
-		if marshalErr == nil {
-			facetsStr := string(facetsJSON)
-			post.ContentFacets = &facetsStr
+		if marshalErr != nil {
+			return fmt.Errorf("failed to serialize facets: %w", marshalErr)
 		}
+		facetsStr := string(facetsJSON)
+		post.ContentFacets = &facetsStr
 	}
 
 	if postRecord.Embed != nil {
 		embedJSON, marshalErr := json.Marshal(postRecord.Embed)
-		if marshalErr == nil {
-			embedStr := string(embedJSON)
-			post.Embed = &embedStr
+		if marshalErr != nil {
+			return fmt.Errorf("failed to serialize embed: %w", marshalErr)
 		}
+		embedStr := string(embedJSON)
+		post.Embed = &embedStr
 	}
 
 	if postRecord.Labels != nil {
 		labelsJSON, marshalErr := json.Marshal(postRecord.Labels)
-		if marshalErr == nil {
-			labelsStr := string(labelsJSON)
-			post.ContentLabels = &labelsStr
+		if marshalErr != nil {
+			return fmt.Errorf("failed to serialize labels: %w", marshalErr)
 		}
+		labelsStr := string(labelsJSON)
+		post.ContentLabels = &labelsStr
 	}
 
 	// Atomically: Index post + Reconcile comment count for out-of-order arrivals
@@ -230,19 +234,30 @@ func (c *PostEventConsumer) indexPostAndReconcileCounts(ctx context.Context, pos
 	// 2. Reconcile comment_count for this newly inserted post
 	// In case any comments arrived out-of-order before this post was indexed
 	// This is the CRITICAL FIX for the race condition identified in the PR review
+	// NOTE: Uses root_uri to count ALL comments in thread (including nested replies)
+	// NOTE: Counts include deleted comments since they're shown as "[deleted]" placeholders
+	//
+	// IMPORTANT: This reconciliation logic and the increment logic in CommentEventConsumer
+	// must stay in sync. Both use the same counting semantics:
+	// - Count ALL comments (including deleted) since deleted comments appear as "[deleted]" placeholders
+	// - This ensures comment_count matches the actual visible thread structure
+	// If you modify one, you must review and potentially modify the other.
+	// See: comment_consumer.go indexCommentAndUpdateCounts()
 	reconcileQuery := `
 		UPDATE posts
 		SET comment_count = (
 			SELECT COUNT(*)
 			FROM comments c
-			WHERE c.parent_uri = $1 AND c.deleted_at IS NULL
+			WHERE c.root_uri = $1
 		)
 		WHERE id = $2
 	`
 	_, reconcileErr := tx.ExecContext(ctx, reconcileQuery, post.URI, postID)
 	if reconcileErr != nil {
-		log.Printf("Warning: Failed to reconcile comment_count for %s: %v", post.URI, reconcileErr)
-		// Continue anyway - this is a best-effort reconciliation
+		// Reconciliation failure is a critical error - it means comment_count will be incorrect
+		// This could cause data inconsistency where the displayed count doesn't match reality
+		// Roll back the transaction to maintain consistency
+		return fmt.Errorf("failed to reconcile comment_count for %s: %w", post.URI, reconcileErr)
 	}
 
 	// Commit transaction
@@ -294,9 +309,8 @@ func (c *PostEventConsumer) validatePostEvent(ctx context.Context, repoDID strin
 	// If author isn't indexed yet, we must reject the post
 	_, err = c.userService.GetUserByDID(ctx, post.Author)
 	if err != nil {
-		// Check if it's a "not found" error using string matching
-		// (users package doesn't export IsNotFound)
-		if err.Error() == "user not found" || strings.Contains(err.Error(), "not found") {
+		// Use proper error type checking with errors.Is()
+		if errors.Is(err, users.ErrUserNotFound) {
 			// Reject - author must be indexed before posts
 			// This maintains referential integrity and prevents orphaned posts
 			return fmt.Errorf("author not found: %s - cannot index post before author", post.Author)

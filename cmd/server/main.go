@@ -39,6 +39,7 @@ import (
 	"Coves/internal/core/posts"
 	"Coves/internal/core/timeline"
 	"Coves/internal/core/unfurl"
+	"Coves/internal/core/adminreports"
 	"Coves/internal/core/users"
 	"Coves/internal/core/votes"
 
@@ -566,6 +567,11 @@ func main() {
 	commentService := comments.NewCommentService(commentRepo, userRepo, postRepo, communityRepo, oauthClient, oauthStore, nil)
 	log.Println("✅ Comment service initialized (with author/community hydration and write support)")
 
+	// Initialize admin report service (off-protocol reporting for serious content issues)
+	adminReportRepo := postgresRepo.NewAdminReportRepository(db)
+	adminReportService := adminreports.NewService(adminReportRepo)
+	log.Println("✅ Admin report service initialized (for flagging serious content)")
+
 	// Initialize feed service
 	feedRepo := postgresRepo.NewCommunityFeedRepository(db, cursorSecret)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
@@ -750,6 +756,11 @@ func main() {
 	log.Println("  - POST /xrpc/social.coves.community.comment.create")
 	log.Println("  - POST /xrpc/social.coves.community.comment.update")
 	log.Println("  - POST /xrpc/social.coves.community.comment.delete")
+
+	// Register admin report routes (off-protocol content flagging)
+	routes.RegisterAdminReportRoutes(r, adminReportService, authMiddleware)
+	log.Println("✅ Admin report endpoint registered (requires OAuth)")
+	log.Println("  - POST /xrpc/social.coves.admin.submitReport")
 
 	routes.RegisterCommunityFeedRoutes(r, feedService, voteService, blueskyService, authMiddleware)
 	log.Println("Feed XRPC endpoints registered (public with optional auth for viewer vote state)")

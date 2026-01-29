@@ -341,11 +341,12 @@ func (r *postgresCommentRepo) ListByParent(ctx context.Context, parentURI string
 
 // CountByParent counts direct replies to a post or comment
 // Used for showing reply counts in threading UI
+// NOTE: Includes deleted comments since they're shown as "[deleted]" placeholders
 func (r *postgresCommentRepo) CountByParent(ctx context.Context, parentURI string) (int, error) {
 	query := `
 		SELECT COUNT(*)
 		FROM comments
-		WHERE parent_uri = $1 AND deleted_at IS NULL
+		WHERE parent_uri = $1
 	`
 
 	var count int
@@ -617,12 +618,11 @@ func (r *postgresCommentRepo) ListByParentWithHotRank(
 
 	// Build complete query with JOINs and filters
 	// LEFT JOIN prevents data loss when user record hasn't been indexed yet (out-of-order Jetstream events)
-	// Excludes deleted top-level comments - deleted nested comments are preserved via ListByParentsBatch
+	// Includes deleted comments to preserve thread structure (shown as "[deleted]" placeholders)
 	query := fmt.Sprintf(`
 		%s
 		LEFT JOIN users u ON c.commenter_did = u.did
 		WHERE c.parent_uri = $1
-			AND c.deleted_at IS NULL
 			%s
 			%s
 		ORDER BY %s

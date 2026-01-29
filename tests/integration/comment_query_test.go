@@ -605,20 +605,39 @@ func TestCommentQuery_DeletedComments(t *testing.T) {
 	resp, err := service.GetComments(ctx, req)
 	require.NoError(t, err)
 
-	// Verify only 3 comments returned (2 were deleted)
-	assert.Len(t, resp.Comments, 3, "Should only return non-deleted comments")
+	// All 5 comments should be returned (deleted comments shown as placeholders)
+	assert.Len(t, resp.Comments, 5, "Should return all comments including deleted ones as placeholders")
 
-	// Verify deleted comments are not in results
-	returnedURIs := make(map[string]bool)
+	// Build a map of URI -> CommentView for verification
+	commentViews := make(map[string]*comments.CommentView)
 	for _, tv := range resp.Comments {
-		returnedURIs[tv.Comment.URI] = true
+		commentViews[tv.Comment.URI] = tv.Comment
 	}
 
-	assert.False(t, returnedURIs[commentURIs[1]], "Deleted comment 1 should not be in results")
-	assert.False(t, returnedURIs[commentURIs[3]], "Deleted comment 3 should not be in results")
-	assert.True(t, returnedURIs[commentURIs[0]], "Non-deleted comment 0 should be in results")
-	assert.True(t, returnedURIs[commentURIs[2]], "Non-deleted comment 2 should be in results")
-	assert.True(t, returnedURIs[commentURIs[4]], "Non-deleted comment 4 should be in results")
+	// Verify all comments are present
+	assert.Contains(t, commentViews, commentURIs[0], "Comment 0 should be in results")
+	assert.Contains(t, commentViews, commentURIs[1], "Comment 1 (deleted) should be in results as placeholder")
+	assert.Contains(t, commentViews, commentURIs[2], "Comment 2 should be in results")
+	assert.Contains(t, commentViews, commentURIs[3], "Comment 3 (deleted) should be in results as placeholder")
+	assert.Contains(t, commentViews, commentURIs[4], "Comment 4 should be in results")
+
+	// Verify deleted comments are marked as deleted
+	assert.True(t, commentViews[commentURIs[1]].IsDeleted, "Deleted comment 1 should have IsDeleted=true")
+	assert.True(t, commentViews[commentURIs[3]].IsDeleted, "Deleted comment 3 should have IsDeleted=true")
+
+	// Verify non-deleted comments are NOT marked as deleted
+	assert.False(t, commentViews[commentURIs[0]].IsDeleted, "Non-deleted comment 0 should have IsDeleted=false")
+	assert.False(t, commentViews[commentURIs[2]].IsDeleted, "Non-deleted comment 2 should have IsDeleted=false")
+	assert.False(t, commentViews[commentURIs[4]].IsDeleted, "Non-deleted comment 4 should have IsDeleted=false")
+
+	// Verify deleted comments have nil Record (content cleared)
+	assert.Nil(t, commentViews[commentURIs[1]].Record, "Deleted comment 1 should have nil Record")
+	assert.Nil(t, commentViews[commentURIs[3]].Record, "Deleted comment 3 should have nil Record")
+
+	// Verify non-deleted comments have content
+	assert.NotNil(t, commentViews[commentURIs[0]].Record, "Non-deleted comment 0 should have Record")
+	assert.NotNil(t, commentViews[commentURIs[2]].Record, "Non-deleted comment 2 should have Record")
+	assert.NotNil(t, commentViews[commentURIs[4]].Record, "Non-deleted comment 4 should have Record")
 }
 
 // TestCommentQuery_InvalidInputs tests error handling for invalid inputs

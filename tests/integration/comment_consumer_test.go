@@ -470,7 +470,7 @@ func TestCommentConsumer_DeleteComment(t *testing.T) {
 	}
 	testPostURI := createTestPost(t, db, testCommunity, testUser.DID, "Delete Test", 0, time.Now())
 
-	t.Run("Delete comment decrements parent count", func(t *testing.T) {
+	t.Run("Delete comment preserves parent count (deleted shown as placeholder)", func(t *testing.T) {
 		rkey := generateTID()
 		uri := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, rkey)
 
@@ -538,15 +538,17 @@ func TestCommentConsumer_DeleteComment(t *testing.T) {
 			t.Error("Expected deleted_at to be set, got nil")
 		}
 
-		// Verify post comment count decremented
+		// Verify post comment count is PRESERVED (not decremented)
+		// Deleted comments are shown as "[deleted]" placeholders to preserve thread structure,
+		// so they should still count toward the displayed total.
 		var finalCount int
 		err = db.QueryRowContext(ctx, "SELECT comment_count FROM posts WHERE uri = $1", testPostURI).Scan(&finalCount)
 		if err != nil {
 			t.Fatalf("Failed to get final comment count: %v", err)
 		}
 
-		if finalCount != initialCount-1 {
-			t.Errorf("Expected comment count to decrease by 1. Initial: %d, Final: %d", initialCount, finalCount)
+		if finalCount != initialCount {
+			t.Errorf("Expected comment count to be PRESERVED (deleted = placeholder). Initial: %d, Final: %d", initialCount, finalCount)
 		}
 	})
 
@@ -1541,13 +1543,13 @@ func TestCommentConsumer_Resurrection(t *testing.T) {
 			t.Fatalf("Failed to delete comment: %v", err)
 		}
 
-		// Verify Post 1 count decremented to 0
+		// Verify Post 1 count is PRESERVED at 1 (deleted comments shown as "[deleted]" placeholders)
 		err = db.QueryRowContext(ctx, "SELECT comment_count FROM posts WHERE uri = $1", post1URI).Scan(&post1Count)
 		if err != nil {
 			t.Fatalf("Failed to check post 1 count after delete: %v", err)
 		}
-		if post1Count != 0 {
-			t.Errorf("Expected Post 1 comment_count = 0 after delete, got %d", post1Count)
+		if post1Count != 1 {
+			t.Errorf("Expected Post 1 comment_count = 1 after delete (preserved for placeholder), got %d", post1Count)
 		}
 
 		// Step 3: Recreate comment with same rkey but on Post 2 (different parent!)
@@ -1610,13 +1612,14 @@ func TestCommentConsumer_Resurrection(t *testing.T) {
 			t.Errorf("Expected Post 2 comment_count = 1, got %d", post2Count)
 		}
 
-		// Verify Post 1 count still 0 (not incremented by resurrection on Post 2)
+		// Verify Post 1 count still 1 (preserved from before resurrection on Post 2)
+		// The resurrection on Post 2 does not affect Post 1's count
 		err = db.QueryRowContext(ctx, "SELECT comment_count FROM posts WHERE uri = $1", post1URI).Scan(&post1Count)
 		if err != nil {
 			t.Fatalf("Failed to check post 1 count after resurrection: %v", err)
 		}
-		if post1Count != 0 {
-			t.Errorf("Expected Post 1 comment_count = 0 (unchanged), got %d", post1Count)
+		if post1Count != 1 {
+			t.Errorf("Expected Post 1 comment_count = 1 (preserved, unchanged by Post 2 resurrection), got %d", post1Count)
 		}
 	})
 }
