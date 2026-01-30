@@ -233,8 +233,13 @@ func (r *feedRepoBase) parseCursor(cursor *string, sort string, paramOffset int)
 
 		// CRITICAL: Use cursor_timestamp instead of NOW() for stable hot_rank comparison
 		// This ensures posts don't drift across page boundaries due to time passing
+		//
+		// BUGFIX: Use GREATEST(..., 0.1) to prevent negative base in POWER function
+		// When posts are created AFTER the cursor_timestamp (new posts between page requests),
+		// the (cursor_timestamp - created_at) becomes negative, which causes PostgreSQL to fail
+		// with "a negative number raised to a non-integer power yields a complex result"
 		stableHotRankExpr := fmt.Sprintf(
-			`((p.score + 1) / POWER(EXTRACT(EPOCH FROM ($%d::timestamptz - p.created_at))/3600 + 2, 1.5))`,
+			`((p.score + 1) / POWER(GREATEST(EXTRACT(EPOCH FROM ($%d::timestamptz - p.created_at))/3600 + 2, 0.1), 1.5))`,
 			paramOffset+2)
 
 		// Filter by cursor position in the hot-sorted result set
@@ -249,7 +254,7 @@ func (r *feedRepoBase) parseCursor(cursor *string, sort string, paramOffset int)
 		// To avoid floating-point comparison issues with hot_rank, we use a subquery
 		// to get the cursor post's hot_rank and compare using the SAME expression
 		cursorHotRankExpr := fmt.Sprintf(
-			`((cursor_post.score + 1) / POWER(EXTRACT(EPOCH FROM ($%d::timestamptz - cursor_post.created_at))/3600 + 2, 1.5))`,
+			`((cursor_post.score + 1) / POWER(GREATEST(EXTRACT(EPOCH FROM ($%d::timestamptz - cursor_post.created_at))/3600 + 2, 0.1), 1.5))`,
 			paramOffset+2)
 
 		// Use a subquery to find the cursor post and compare hot_ranks using identical expressions
