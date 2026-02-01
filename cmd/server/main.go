@@ -23,6 +23,7 @@ import (
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/atproto/oauth"
+	"Coves/internal/observability"
 
 	imageproxyhandlers "Coves/internal/api/handlers/imageproxy"
 	"Coves/internal/core/imageproxy"
@@ -106,6 +107,24 @@ func main() {
 
 	log.Println("Migrations completed successfully")
 
+	// Initialize optional OpenTelemetry observability
+	otelConfig := observability.ConfigFromEnv()
+	if err := otelConfig.Validate(); err != nil {
+		log.Fatalf("Invalid OpenTelemetry configuration: %v", err)
+	}
+	otelProvider, err := observability.NewProvider(context.Background(), otelConfig)
+	if err != nil {
+		log.Fatalf("Failed to initialize OpenTelemetry: %v", err)
+	}
+	defer func() {
+		if shutdownErr := otelProvider.Shutdown(context.Background()); shutdownErr != nil {
+			log.Printf("Error shutting down OpenTelemetry: %v", shutdownErr)
+		}
+	}()
+	if otelConfig.Enabled {
+		log.Printf("OpenTelemetry tracing enabled (endpoint: %s)", otelConfig.Endpoint)
+	}
+
 	r := chi.NewRouter()
 
 	r.Use(chiMiddleware.Logger)
@@ -115,6 +134,11 @@ func main() {
 	// Rate limiting: 100 requests per minute per IP
 	rateLimiter := middleware.NewRateLimiter(100, 1*time.Minute)
 	r.Use(rateLimiter.Middleware)
+
+	// Optional: OpenTelemetry HTTP tracing middleware
+	if otelMiddleware := observability.HTTPMiddleware(otelProvider); otelMiddleware != nil {
+		r.Use(otelMiddleware)
+	}
 
 	// Initialize identity resolver
 	// IMPORTANT: In dev mode, identity resolution MUST use the same local PLC

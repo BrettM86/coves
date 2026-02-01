@@ -295,6 +295,22 @@ services:
     profiles:
       - relay
 
+  # Jaeger - Distributed tracing UI for OpenTelemetry
+  # Usage: docker compose --profile observability up
+  # Access UI at: http://localhost:16686
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: coves-dev-jaeger
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4317:4317"    # OTLP gRPC
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    networks:
+      - coves-dev
+    profiles:
+      - observability
+
   # Coves AppView (Your Go Application)
   # Subscribes to PDS firehose and indexes Coves-specific data
   # Note: Uncomment when you have a Dockerfile for the AppView

@@ -1,4 +1,4 @@
-.PHONY: help dev-up dev-down dev-logs dev-status dev-reset test test-all e2e-test clean verify-stack create-test-account mobile-full-setup
+.PHONY: help dev-up dev-up-otel dev-down dev-logs dev-status dev-reset test test-all e2e-test clean verify-stack create-test-account mobile-full-setup
 
 # Default target - show help
 .DEFAULT_GOAL := help
@@ -45,12 +45,33 @@ dev-up: ## Start PDS + PostgreSQL + Jetstream + PLC Directory for local developm
 	@echo "  1. Run: make run  (starts AppView)"
 	@echo "  2. AppView will auto-index users from Jetstream"
 	@echo ""
+	@echo "$(CYAN)Optional:$(RESET) Run 'make dev-up-otel' to add Jaeger for tracing"
 	@echo "$(CYAN)Note:$(RESET) Using local PLC directory - DIDs registered locally (won't pollute plc.directory)"
 	@echo "Run 'make dev-logs' to view logs"
 
-dev-down: ## Stop all development services
+dev-up-otel: ## Start dev stack + Jaeger for OpenTelemetry tracing
+	@echo "$(GREEN)Starting Coves development stack with OpenTelemetry...$(RESET)"
+	@docker-compose -f docker-compose.dev.yml --env-file .env.dev --profile jetstream --profile plc --profile observability up -d postgres postgres-plc plc-directory pds jetstream jaeger
+	@echo ""
+	@echo "$(GREEN)✓ Development stack with tracing started!$(RESET)"
+	@echo ""
+	@echo "Services available at:"
+	@echo "  - PostgreSQL:        localhost:5435"
+	@echo "  - PDS (XRPC):        http://localhost:3001"
+	@echo "  - Jetstream:         ws://localhost:6008/subscribe"
+	@echo "  - PLC Directory:     http://localhost:3002"
+	@echo "  - $(CYAN)Jaeger UI:         http://localhost:16686$(RESET)  $(CYAN)(Trace viewer)$(RESET)"
+	@echo "  - $(CYAN)OTLP Collector:    localhost:4317$(RESET)  $(CYAN)(gRPC endpoint)$(RESET)"
+	@echo ""
+	@echo "$(CYAN)To enable tracing in AppView:$(RESET)"
+	@echo "  export OTEL_ENABLED=true"
+	@echo "  export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317"
+	@echo "  export OTEL_EXPORTER_OTLP_INSECURE=true"
+	@echo "  make run"
+
+dev-down: ## Stop all development services (including Jaeger if running)
 	@echo "$(YELLOW)Stopping Coves development stack...$(RESET)"
-	@docker-compose -f docker-compose.dev.yml --env-file .env.dev down --remove-orphans
+	@docker-compose -f docker-compose.dev.yml --env-file .env.dev --profile jetstream --profile plc --profile observability --profile test down --remove-orphans
 	@docker network rm coves-dev-network 2>/dev/null || true
 	@echo "$(GREEN)✓ Development stack stopped$(RESET)"
 
