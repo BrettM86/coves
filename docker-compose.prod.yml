@@ -117,6 +117,14 @@ services:
       IMAGE_PROXY_CACHE_MAX_GB: ${IMAGE_PROXY_CACHE_MAX_GB:-10}
       IMAGE_PROXY_FETCH_TIMEOUT_SECONDS: ${IMAGE_PROXY_FETCH_TIMEOUT_SECONDS:-30}
       IMAGE_PROXY_MAX_SOURCE_SIZE_MB: ${IMAGE_PROXY_MAX_SOURCE_SIZE_MB:-10}
+
+      # OpenTelemetry Observability (optional - disabled by default)
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_HEADERS: ${OTEL_EXPORTER_OTLP_HEADERS:-}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-coves-appview}
+      OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-1.0}
+      OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-false}
     volumes:
       # Image proxy cache (persistent across container restarts)
       - imageproxy-cache:/var/cache/coves/images
