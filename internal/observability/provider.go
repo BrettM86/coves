@@ -6,11 +6,10 @@ import (
 	"strings"
 
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 // Provider manages the OpenTelemetry TracerProvider lifecycle.
@@ -21,7 +20,7 @@ type Provider struct {
 
 // NewProvider creates a new OpenTelemetry provider based on the given configuration.
 // If tracing is not enabled, it returns a Provider with enabled=false and no active tracer.
-// When enabled, it creates an OTLP gRPC exporter and configures the global tracer provider.
+// When enabled, it creates an OTLP HTTP exporter and configures the global tracer provider.
 func NewProvider(ctx context.Context, cfg Config) (*Provider, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid observability config: %w", err)
@@ -31,25 +30,25 @@ func NewProvider(ctx context.Context, cfg Config) (*Provider, error) {
 		return &Provider{enabled: false}, nil
 	}
 
-	// Build exporter options
-	opts := []otlptracegrpc.Option{
-		otlptracegrpc.WithEndpoint(stripScheme(cfg.Endpoint)),
+	// Build exporter options for HTTP
+	opts := []otlptracehttp.Option{
+		otlptracehttp.WithEndpoint(stripScheme(cfg.Endpoint)),
 	}
 
 	if cfg.Insecure {
-		opts = append(opts, otlptracegrpc.WithTLSCredentials(insecure.NewCredentials()))
+		opts = append(opts, otlptracehttp.WithInsecure())
 	}
 
 	// Parse and add headers if provided
 	if cfg.Headers != "" {
 		headers := parseHeaders(cfg.Headers)
 		if len(headers) > 0 {
-			opts = append(opts, otlptracegrpc.WithHeaders(headers))
+			opts = append(opts, otlptracehttp.WithHeaders(headers))
 		}
 	}
 
-	// Create the OTLP gRPC exporter
-	exporter, err := otlptracegrpc.New(ctx, opts...)
+	// Create the OTLP HTTP exporter
+	exporter, err := otlptracehttp.New(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create OTLP trace exporter: %w", err)
 	}
@@ -116,7 +115,7 @@ func (p *Provider) Enabled() bool {
 }
 
 // stripScheme removes the http:// or https:// prefix from an endpoint URL.
-// The gRPC exporter expects just host:port, not a full URL.
+// The HTTP exporter expects just host:port, not a full URL with scheme.
 func stripScheme(endpoint string) string {
 	endpoint = strings.TrimPrefix(endpoint, "http://")
 	endpoint = strings.TrimPrefix(endpoint, "https://")
