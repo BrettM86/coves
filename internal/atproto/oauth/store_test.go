@@ -120,7 +120,7 @@ func TestPostgresOAuthStore_SaveSession_Upsert(t *testing.T) {
 		HostURL:                 "https://pds2.example.com",
 		AuthServerURL:           "https://auth2.example.com",
 		AuthServerTokenEndpoint: "https://auth2.example.com/oauth/token",
-		Scopes:                  []string{"atproto", "transition:generic"},
+		Scopes:                  []string{"atproto"},
 		AccessToken:             "new_access_token",
 		RefreshToken:            "new_refresh_token",
 		DPoPPrivateKeyMultibase: "z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktX",
@@ -136,7 +136,7 @@ func TestPostgresOAuthStore_SaveSession_Upsert(t *testing.T) {
 	assert.Equal(t, "new_access_token", retrieved.AccessToken)
 	assert.Equal(t, "new_refresh_token", retrieved.RefreshToken)
 	assert.Equal(t, "https://pds2.example.com", retrieved.HostURL)
-	assert.Equal(t, []string{"atproto", "transition:generic"}, retrieved.Scopes)
+	assert.Equal(t, []string{"atproto"}, retrieved.Scopes)
 }
 
 func TestPostgresOAuthStore_GetSession_NotFound(t *testing.T) {
@@ -335,8 +335,6 @@ func TestPostgresOAuthStore_DeleteAuthRequestInfo_NotFound(t *testing.T) {
 func TestPostgresOAuthStore_CleanupExpiredSessions(t *testing.T) {
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
-	// Clean up before AND after to ensure test isolation
-	cleanupOAuth(t, db)
 	defer cleanupOAuth(t, db)
 
 	storeInterface := NewPostgresOAuthStore(db, 0) // Use default TTL
@@ -344,9 +342,16 @@ func TestPostgresOAuthStore_CleanupExpiredSessions(t *testing.T) {
 	require.True(t, ok, "store should be *PostgresOAuthStore")
 	ctx := context.Background()
 
+	// Pre-cleanup any expired sessions (from any source) to ensure the count
+	// assertion below returns exactly 1. cleanupOAuth only handles did:plc:test%
+	// records, but CleanupExpiredSessions operates on all expired sessions.
+	_, err := store.CleanupExpiredSessions(ctx)
+	require.NoError(t, err, "Failed to cleanup pre-existing expired sessions")
+
 	did1, err := syntax.ParseDID("did:plc:testexpired1")
 	require.NoError(t, err)
-	did2, err := syntax.ParseDID("did:plc:testexpired2")
+	var did2 syntax.DID
+	did2, err = syntax.ParseDID("did:plc:testexpired2")
 	require.NoError(t, err)
 
 	// Create an expired session (manually insert with past expiration)

@@ -1,11 +1,11 @@
 module Coves
 
-go 1.24.0
+go 1.25
 
 toolchain go1.25.1
 
 require (
-	github.com/bluesky-social/indigo v0.0.0-20251010013709-8f2296eee90f
+	github.com/bluesky-social/indigo v0.0.0-20260202181658-ea3d39eec464
 	github.com/disintegration/imaging v1.6.2
 	github.com/go-chi/chi/v5 v5.2.1
 	github.com/go-chi/cors v1.2.2

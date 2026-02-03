@@ -70,7 +70,7 @@ func SetupOAuthTestClient(t *testing.T, store oauthlib.ClientAuthStore) *oauth.O
 		config = &oauth.OAuthConfig{
 			PublicURL:       "http://localhost:3000", // Test server callback URL
 			SealSecret:      sealSecretB64,           // For sealing mobile tokens
-			Scopes:          []string{"atproto", "transition:generic"},
+			Scopes:          []string{"atproto"},
 			DevMode:         false, // Production mode for HTTPS PDS
 			AllowPrivateIPs: false, // No private IPs in production mode
 			PLCURL:          "",    // Use default PLC directory (plc.directory)
@@ -81,7 +81,7 @@ func SetupOAuthTestClient(t *testing.T, store oauthlib.ClientAuthStore) *oauth.O
 		config = &oauth.OAuthConfig{
 			PublicURL:       "http://localhost:3000", // Match the callback URL expected by PDS
 			SealSecret:      sealSecretB64,           // For sealing mobile tokens
-			Scopes:          []string{"atproto", "transition:generic"},
+			Scopes:          []string{"atproto"},
 			DevMode:         true,            // Enable dev mode for localhost testing
 			AllowPrivateIPs: true,            // Allow private IPs for local testing
 			PLCURL:          getTestPLCURL(), // Use local PLC directory for DID resolution

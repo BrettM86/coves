@@ -94,7 +94,7 @@ func testOAuthComponentsWithMockedSession(t *testing.T, ctx context.Context, _ i
 		SessionID:   fmt.Sprintf("localhost-test-%d", time.Now().UnixNano()),
 		HostURL:     "http://localhost:3001",
 		AccessToken: "mocked-access-token",
-		Scopes:      []string{"atproto", "transition:generic"},
+		Scopes:      []string{"atproto"},
 	}
 
 	err = store.SaveSession(ctx, testSession)
@@ -435,7 +435,7 @@ func TestOAuthE2E_AuthRequestStorage(t *testing.T) {
 		RequestURI:                   "http://localhost:3001/authorize",
 		AuthServerTokenEndpoint:      "http://localhost:3001/oauth/token",
 		AuthServerRevocationEndpoint: "http://localhost:3001/oauth/revoke",
-		Scopes:                       []string{"atproto", "transition:generic"},
+		Scopes:                       []string{"atproto"},
 	}
 
 	// Save auth request
@@ -549,7 +549,7 @@ func TestOAuthE2E_TokenRefresh(t *testing.T) {
 		RefreshToken:                 "initial-refresh-token",
 		DPoPPrivateKeyMultibase:      "test-dpop-key",
 		DPoPAuthServerNonce:          "test-nonce",
-		Scopes:                       []string{"atproto", "transition:generic"},
+		Scopes:                       []string{"atproto"},
 	}
 
 	// Save the session

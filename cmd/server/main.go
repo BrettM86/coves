@@ -204,7 +204,7 @@ func main() {
 	oauthConfig := &oauth.OAuthConfig{
 		PublicURL:       os.Getenv("APPVIEW_PUBLIC_URL"),
 		SealSecret:      oauthSealSecret,
-		Scopes:          []string{"atproto", "transition:generic"},
+		Scopes:          []string{"atproto"},
 		DevMode:         isDevMode,
 		AllowPrivateIPs: isDevMode, // Allow private IPs only in dev mode
 		PLCURL:          plcURL,

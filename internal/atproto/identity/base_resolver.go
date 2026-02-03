@@ -51,7 +51,7 @@ func (r *baseResolver) Resolve(ctx context.Context, identifier string) (*Identit
 	}
 
 	// Resolve using Indigo's directory
-	ident, err := r.directory.Lookup(ctx, *atID)
+	ident, err := r.directory.Lookup(ctx, atID)
 	if err != nil {
 		// Check if it's a "not found" error
 		errStr := err.Error()

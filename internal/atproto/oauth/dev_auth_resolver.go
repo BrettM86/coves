@@ -190,7 +190,7 @@ func (r *DevAuthResolver) StartDevAuthFlow(ctx context.Context, client *OAuthCli
 		if err != nil {
 			return "", fmt.Errorf("not a valid DID (%s): %w", identifier, err)
 		}
-		ident, err := dir.Lookup(ctx, *atid)
+		ident, err := dir.Lookup(ctx, atid)
 		if err != nil {
 			return "", fmt.Errorf("failed to resolve DID (%s): %w", identifier, err)
 		}
@@ -225,7 +225,7 @@ func (r *DevAuthResolver) StartDevAuthFlow(ctx context.Context, client *OAuthCli
 		if err != nil {
 			return "", fmt.Errorf("not a valid DID (%s): %w", did, err)
 		}
-		ident, err := dir.Lookup(ctx, *atid)
+		ident, err := dir.Lookup(ctx, atid)
 		if err != nil {
 			return "", fmt.Errorf("failed to resolve DID document (%s): %w", did, err)
 		}
