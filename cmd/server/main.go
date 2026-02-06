@@ -202,14 +202,34 @@ func main() {
 	isDevMode := os.Getenv("IS_DEV_ENV") == "true"
 	pdsURL := os.Getenv("PDS_URL") // For dev mode: resolve handles via local PDS
 	oauthConfig := &oauth.OAuthConfig{
-		PublicURL:       os.Getenv("APPVIEW_PUBLIC_URL"),
-		SealSecret:      oauthSealSecret,
-		Scopes:          []string{"atproto"},
+		PublicURL:  os.Getenv("APPVIEW_PUBLIC_URL"),
+		SealSecret: oauthSealSecret,
+		Scopes: []string{
+			"atproto",
+			"blob:*/*", // For avatar/image uploads
+			// Posts
+			"repo:social.coves.community.post?action=create&action=update&action=delete",
+			// Comments
+			"repo:social.coves.community.comment?action=create&action=update&action=delete",
+			// Communities
+			"repo:social.coves.community.profile?action=create&action=update&action=delete",
+			// Subscriptions
+			"repo:social.coves.community.subscription?action=create&action=update&action=delete",
+			// User profile
+			"repo:social.coves.actor.profile?action=create&action=update&action=delete",
+			// Votes
+			"repo:social.coves.feed.vote?action=create&action=delete",
+		},
 		DevMode:         isDevMode,
 		AllowPrivateIPs: isDevMode, // Allow private IPs only in dev mode
 		PLCURL:          plcURL,
 		PDSURL:          pdsURL, // For dev mode handle resolution
-		// SessionTTL and SealedTokenTTL will use defaults if not set (7 days and 14 days)
+		// Confidential client keys (optional - if set, upgrades to confidential client)
+		// Confidential clients: 90-day session TTL, 180-day sealed token TTL
+		// Public clients: Limited to 14 days by auth server regardless of config
+		ClientPrivateKeyMultibase: os.Getenv("OAUTH_CLIENT_PRIVATE_KEY"),
+		ClientKeyID:               os.Getenv("OAUTH_CLIENT_KEY_ID"),
+		// SessionTTL and SealedTokenTTL use defaults if not set (90 days and 180 days)
 	}
 
 	// Create PostgreSQL-backed OAuth session store (using default 7-day TTL)

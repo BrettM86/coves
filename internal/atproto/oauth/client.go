@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/bluesky-social/indigo/atproto/atcrypto"
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/identity"
 )
@@ -29,6 +30,10 @@ type OAuthConfig struct {
 	SealedTokenTTL  time.Duration
 	DevMode         bool
 	AllowPrivateIPs bool
+
+	// Confidential client (optional - if set, upgrades to confidential)
+	ClientPrivateKeyMultibase string
+	ClientKeyID               string
 }
 
 // NewOAuthClient creates a new OAuth client for Coves
@@ -67,13 +72,15 @@ func NewOAuthClient(config *OAuthConfig, store oauth.ClientAuthStore) (*OAuthCli
 
 	// Set default TTL values if not specified
 	// Per atproto OAuth spec:
-	// - Public clients: 2-week (14 day) maximum session lifetime
-	// - Confidential clients: 180-day maximum session lifetime
+	// - Public clients: 2-week (14 day) maximum session lifetime (enforced by auth server)
+	// - Confidential clients: up to 2 years maximum session lifetime
+	// Note: The auth server ultimately enforces these limits. Public clients with longer TTLs
+	// configured here will still be limited to 14 days by the auth server.
 	if config.SessionTTL == 0 {
-		config.SessionTTL = 7 * 24 * time.Hour // 7 days default
+		config.SessionTTL = 365 * 24 * time.Hour // 1 year (confidential clients only)
 	}
 	if config.SealedTokenTTL == 0 {
-		config.SealedTokenTTL = 14 * 24 * time.Hour // 14 days (public client limit)
+		config.SealedTokenTTL = 548 * 24 * time.Hour // 18 months (confidential clients only)
 	}
 
 	// Create indigo client config
@@ -93,6 +100,25 @@ func NewOAuthClient(config *OAuthConfig, store oauth.ClientAuthStore) (*OAuthCli
 		clientID := config.PublicURL + "/oauth-client-metadata.json"
 		callbackURL := config.PublicURL + "/oauth/callback"
 		clientConfig = oauth.NewPublicConfig(clientID, callbackURL, config.Scopes)
+	}
+
+	// Upgrade to confidential client if private key is configured
+	// Confidential clients get longer session lifetimes (up to 90/180 days vs 14 days for public)
+	if config.ClientPrivateKeyMultibase != "" && config.ClientKeyID != "" {
+		priv, err := atcrypto.ParsePrivateMultibase(config.ClientPrivateKeyMultibase)
+		if err != nil {
+			return nil, fmt.Errorf("parsing OAuth client private key: %w", err)
+		}
+		if err := clientConfig.SetClientSecret(priv, config.ClientKeyID); err != nil {
+			return nil, fmt.Errorf("setting OAuth client secret: %w", err)
+		}
+		slog.Info("OAuth client configured as confidential", "key_id", config.ClientKeyID)
+	} else if config.ClientPrivateKeyMultibase != "" || config.ClientKeyID != "" {
+		// Partial configuration - warn operator that both fields are required
+		// Without both, we fall back to public client with 14-day session limit
+		slog.Warn("OAuth confidential client partially configured - both OAUTH_CLIENT_PRIVATE_KEY and OAUTH_CLIENT_KEY_ID are required",
+			"has_private_key", config.ClientPrivateKeyMultibase != "",
+			"has_key_id", config.ClientKeyID != "")
 	}
 
 	// Set user agent
@@ -138,8 +164,16 @@ func (c *OAuthClient) ClientMetadata() oauth.ClientMetadata {
 
 	// Add additional metadata for Coves
 	metadata.ClientName = strPtr("Coves")
+	metadata.LogoURI = strPtr(c.Config.PublicURL + "/static/images/lil_dude.png")
+	metadata.PolicyURI = strPtr(c.Config.PublicURL + "/privacy")
+
 	if !c.Config.DevMode {
 		metadata.ClientURI = strPtr(c.Config.PublicURL)
+		// For confidential clients, include the JWKS URI for the public key
+		if c.ClientApp.Config.IsConfidential() {
+			jwksURI := c.Config.PublicURL + "/oauth-client-keys.json"
+			metadata.JWKSURI = &jwksURI
+		}
 	}
 
 	return metadata

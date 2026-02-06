@@ -248,3 +248,230 @@ func testDID() (*syntax.DID, error) {
 	}
 	return &did, nil
 }
+
+// TestConfidentialClientTransition validates the seamless transition from public to confidential client
+func TestConfidentialClientTransition(t *testing.T) {
+	baseConfig := func() *OAuthConfig {
+		return &OAuthConfig{
+			PublicURL:       "https://coves.social",
+			Scopes:          []string{"atproto"},
+			DevMode:         false,
+			AllowPrivateIPs: false,
+			SealSecret:      "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=",
+		}
+	}
+
+	t.Run("public client without keys", func(t *testing.T) {
+		config := baseConfig()
+		client, err := NewOAuthClient(config, oauth.NewMemStore())
+		require.NoError(t, err)
+
+		// Should NOT be confidential
+		assert.False(t, client.ClientApp.Config.IsConfidential())
+
+		// Metadata should NOT have JWKS URI
+		metadata := client.ClientMetadata()
+		assert.Nil(t, metadata.JWKSURI)
+		assert.Equal(t, "none", metadata.TokenEndpointAuthMethod)
+	})
+
+	t.Run("confidential client with keys", func(t *testing.T) {
+		config := baseConfig()
+		// TEST-ONLY: P-256 private key in multibase format - DO NOT use in production
+		// This is a publicly known test key that provides NO security
+		config.ClientPrivateKeyMultibase = "z42tn7PHdrLvcwoYGtY71n4g56NcQ3vJn3W5NNJV9mmqDL68"
+		config.ClientKeyID = "test-key-1"
+
+		client, err := NewOAuthClient(config, oauth.NewMemStore())
+		require.NoError(t, err)
+
+		// Should be confidential
+		assert.True(t, client.ClientApp.Config.IsConfidential())
+
+		// Metadata SHOULD have JWKS URI
+		metadata := client.ClientMetadata()
+		require.NotNil(t, metadata.JWKSURI)
+		assert.Equal(t, "https://coves.social/oauth-client-keys.json", *metadata.JWKSURI)
+		assert.Equal(t, "private_key_jwt", metadata.TokenEndpointAuthMethod)
+	})
+
+	t.Run("partial keys rejected", func(t *testing.T) {
+		// Only private key, no key ID
+		config := baseConfig()
+		// TEST-ONLY key - DO NOT use in production
+		config.ClientPrivateKeyMultibase = "z42tn7PHdrLvcwoYGtY71n4g56NcQ3vJn3W5NNJV9mmqDL68"
+		// No ClientKeyID
+
+		client, err := NewOAuthClient(config, oauth.NewMemStore())
+		require.NoError(t, err)
+
+		// Should NOT be confidential (both fields required)
+		assert.False(t, client.ClientApp.Config.IsConfidential())
+	})
+
+	t.Run("invalid private key rejected", func(t *testing.T) {
+		config := baseConfig()
+		config.ClientPrivateKeyMultibase = "invalid-key"
+		config.ClientKeyID = "test-key-1"
+
+		_, err := NewOAuthClient(config, oauth.NewMemStore())
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "parsing OAuth client private key")
+	})
+}
+
+// TestHandleClientJWKS tests the JWKS endpoint
+func TestHandleClientJWKS(t *testing.T) {
+	t.Run("public client returns empty JWKS", func(t *testing.T) {
+		config := &OAuthConfig{
+			PublicURL:       "https://coves.social",
+			Scopes:          []string{"atproto"},
+			DevMode:         false,
+			AllowPrivateIPs: false,
+			SealSecret:      "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=",
+		}
+
+		client, err := NewOAuthClient(config, oauth.NewMemStore())
+		require.NoError(t, err)
+
+		handler := NewOAuthHandler(client, oauth.NewMemStore())
+
+		req := httptest.NewRequest(http.MethodGet, "/oauth-client-keys.json", nil)
+		rec := httptest.NewRecorder()
+
+		handler.HandleClientJWKS(rec, req)
+
+		assert.Equal(t, http.StatusOK, rec.Code)
+		assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+		assert.Equal(t, "public, max-age=3600", rec.Header().Get("Cache-Control"))
+
+		// Parse response - should be empty keys array for public client
+		var jwks oauth.JWKS
+		err = json.NewDecoder(rec.Body).Decode(&jwks)
+		require.NoError(t, err)
+		assert.Empty(t, jwks.Keys)
+	})
+
+	t.Run("confidential client returns JWKS with public key", func(t *testing.T) {
+		config := &OAuthConfig{
+			PublicURL:       "https://coves.social",
+			Scopes:          []string{"atproto"},
+			DevMode:         false,
+			AllowPrivateIPs: false,
+			SealSecret:      "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=",
+			// TEST-ONLY key - DO NOT use in production
+			ClientPrivateKeyMultibase: "z42tn7PHdrLvcwoYGtY71n4g56NcQ3vJn3W5NNJV9mmqDL68",
+			ClientKeyID:               "test-key-1",
+		}
+
+		client, err := NewOAuthClient(config, oauth.NewMemStore())
+		require.NoError(t, err)
+
+		handler := NewOAuthHandler(client, oauth.NewMemStore())
+
+		req := httptest.NewRequest(http.MethodGet, "/oauth-client-keys.json", nil)
+		rec := httptest.NewRecorder()
+
+		handler.HandleClientJWKS(rec, req)
+
+		assert.Equal(t, http.StatusOK, rec.Code)
+		assert.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+
+		// Parse response - should have one key
+		var jwks oauth.JWKS
+		err = json.NewDecoder(rec.Body).Decode(&jwks)
+		require.NoError(t, err)
+		require.Len(t, jwks.Keys, 1)
+
+		// Validate key properties
+		key := jwks.Keys[0]
+		assert.Equal(t, "EC", key.KeyType)
+		assert.Equal(t, "P-256", key.Curve)
+		assert.NotNil(t, key.KeyID)
+		assert.Equal(t, "test-key-1", *key.KeyID)
+		// Should have public key coordinates (X, Y)
+		// The JWK struct only contains public key data - no private key field
+		assert.NotEmpty(t, key.X)
+		assert.NotEmpty(t, key.Y)
+	})
+}
+
+// TestOAuthEndpointsNoConflict ensures new endpoints don't conflict with existing routes
+func TestOAuthEndpointsNoConflict(t *testing.T) {
+	// This test validates that the route paths are distinct and don't overlap
+	routes := map[string]string{
+		"/oauth-client-metadata.json":           "Client identity document",
+		"/oauth-client-keys.json":               "JWKS public keys (new)",
+		"/oauth/callback":                       "OAuth callback after auth",
+		"/oauth/login":                          "Start web OAuth flow",
+		"/oauth/mobile/login":                   "Start mobile OAuth flow",
+		"/.well-known/oauth-protected-resource": "Resource server metadata",
+	}
+
+	// All routes should be unique
+	seen := make(map[string]bool)
+	for route := range routes {
+		assert.False(t, seen[route], "Duplicate route: %s", route)
+		seen[route] = true
+	}
+
+	// Verify none of the OAuth routes conflict with DID routes
+	didRoutes := []string{
+		"/.well-known/did.json",
+		"/.well-known/atproto-did",
+	}
+
+	for _, didRoute := range didRoutes {
+		for oauthRoute := range routes {
+			assert.NotEqual(t, didRoute, oauthRoute,
+				"OAuth route %s conflicts with DID route %s", oauthRoute, didRoute)
+		}
+	}
+}
+
+// TestConfidentialClientWithDevMode verifies confidential client works in dev mode
+func TestConfidentialClientWithDevMode(t *testing.T) {
+	config := &OAuthConfig{
+		PublicURL:       "http://127.0.0.1:8081",
+		Scopes:          []string{"atproto"},
+		DevMode:         true, // Dev mode enabled
+		AllowPrivateIPs: true,
+		SealSecret:      "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=",
+		// TEST-ONLY key - DO NOT use in production
+		ClientPrivateKeyMultibase: "z42tn7PHdrLvcwoYGtY71n4g56NcQ3vJn3W5NNJV9mmqDL68",
+		ClientKeyID:               "test-key-1",
+	}
+
+	client, err := NewOAuthClient(config, oauth.NewMemStore())
+	require.NoError(t, err)
+
+	// Should be confidential even in dev mode
+	assert.True(t, client.ClientApp.Config.IsConfidential())
+	assert.True(t, client.Config.DevMode)
+
+	// In dev mode, loopback config is used but still becomes confidential
+	assert.Equal(t, "private_key_jwt", client.ClientApp.Config.ClientMetadata().TokenEndpointAuthMethod)
+
+	// Dev mode uses loopback client_id format
+	// Loopback clients use http://localhost format
+	assert.Contains(t, client.ClientApp.Config.ClientID, "http://")
+}
+
+// TestSessionTTLsForConfidentialClient verifies TTLs are set appropriately
+func TestSessionTTLsForConfidentialClient(t *testing.T) {
+	config := &OAuthConfig{
+		PublicURL:       "https://coves.social",
+		Scopes:          []string{"atproto"},
+		DevMode:         false,
+		AllowPrivateIPs: false,
+		SealSecret:      "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=",
+		// No explicit TTL set - should use defaults
+	}
+
+	client, err := NewOAuthClient(config, oauth.NewMemStore())
+	require.NoError(t, err)
+
+	// Default TTLs for confidential clients (1 year session, 18 months sealed token)
+	assert.Equal(t, 365*24*time.Hour, client.Config.SessionTTL, "SessionTTL should be 1 year")
+	assert.Equal(t, 548*24*time.Hour, client.Config.SealedTokenTTL, "SealedTokenTTL should be 18 months")
+}

@@ -11,6 +11,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -177,6 +178,7 @@ func TestUserProfileAvatarE2E_UpdateWithAvatar(t *testing.T) {
 			}
 			defer func() { _ = conn.Close() }()
 
+			consecutiveTimeouts := 0
 			for {
 				select {
 				case <-done:
@@ -191,15 +193,15 @@ func TestUserProfileAvatarE2E_UpdateWithAvatar(t *testing.T) {
 					var event jetstream.JetstreamEvent
 					if readErr := conn.ReadJSON(&event); readErr != nil {
 						var netErr net.Error
-						if nErr, ok := readErr.(net.Error); ok && nErr.Timeout() {
-							continue
-						}
-						// Check using errors.As as well
-						if netErr != nil && netErr.Timeout() {
-							continue
+						if errors.As(readErr, &netErr) && netErr.Timeout() {
+							consecutiveTimeouts++
+							if consecutiveTimeouts >= 10 {
+								return // Connection stale, exit to prevent panic
+							}
 						}
 						continue
 					}
+					consecutiveTimeouts = 0
 
 					// Only process profile update events for our user
 					if event.Kind == "commit" && event.Commit != nil &&
@@ -466,6 +468,7 @@ func TestUserProfileAvatarE2E_UpdateWithBanner(t *testing.T) {
 			}
 			defer func() { _ = conn.Close() }()
 
+			consecutiveTimeouts := 0
 			for {
 				select {
 				case <-done:
@@ -479,8 +482,16 @@ func TestUserProfileAvatarE2E_UpdateWithBanner(t *testing.T) {
 
 					var event jetstream.JetstreamEvent
 					if err := conn.ReadJSON(&event); err != nil {
+						var netErr net.Error
+						if errors.As(err, &netErr) && netErr.Timeout() {
+							consecutiveTimeouts++
+							if consecutiveTimeouts >= 10 {
+								return // Connection stale, exit to prevent panic
+							}
+						}
 						continue
 					}
+					consecutiveTimeouts = 0
 
 					if event.Kind == "commit" && event.Commit != nil &&
 						event.Commit.Collection == "social.coves.actor.profile" &&
@@ -688,6 +699,7 @@ func TestUserProfileAvatarE2E_UpdateDisplayNameAndBio(t *testing.T) {
 			}
 			defer func() { _ = conn.Close() }()
 
+			consecutiveTimeouts := 0
 			for {
 				select {
 				case <-done:
@@ -701,8 +713,16 @@ func TestUserProfileAvatarE2E_UpdateDisplayNameAndBio(t *testing.T) {
 
 					var event jetstream.JetstreamEvent
 					if err := conn.ReadJSON(&event); err != nil {
+						var netErr net.Error
+						if errors.As(err, &netErr) && netErr.Timeout() {
+							consecutiveTimeouts++
+							if consecutiveTimeouts >= 10 {
+								return // Connection stale, exit to prevent panic
+							}
+						}
 						continue
 					}
+					consecutiveTimeouts = 0
 
 					if event.Kind == "commit" && event.Commit != nil &&
 						event.Commit.Collection == "social.coves.actor.profile" &&
@@ -870,6 +890,7 @@ func TestUserProfileAvatarE2E_ReplaceAvatar(t *testing.T) {
 			}
 			defer func() { _ = conn.Close() }()
 
+			consecutiveTimeouts := 0
 			for {
 				select {
 				case <-done:
@@ -883,8 +904,16 @@ func TestUserProfileAvatarE2E_ReplaceAvatar(t *testing.T) {
 
 					var event jetstream.JetstreamEvent
 					if err := conn.ReadJSON(&event); err != nil {
+						var netErr net.Error
+						if errors.As(err, &netErr) && netErr.Timeout() {
+							consecutiveTimeouts++
+							if consecutiveTimeouts >= 10 {
+								return // Connection stale, exit to prevent panic
+							}
+						}
 						continue
 					}
+					consecutiveTimeouts = 0
 
 					if event.Kind == "commit" && event.Commit != nil &&
 						event.Commit.Collection == "social.coves.actor.profile" &&

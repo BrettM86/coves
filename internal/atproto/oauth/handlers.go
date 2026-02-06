@@ -231,6 +231,30 @@ func (h *OAuthHandler) HandleClientMetadata(w http.ResponseWriter, r *http.Reque
 	}
 }
 
+// HandleClientJWKS serves the OAuth client public keys (JWKS)
+// GET /oauth-client-keys.json
+// This endpoint is only relevant for confidential clients; public clients don't have keys.
+func (h *OAuthHandler) HandleClientJWKS(w http.ResponseWriter, r *http.Request) {
+	jwks := h.client.ClientApp.Config.PublicJWKS()
+
+	// Encode to buffer first to avoid setting headers on a response that may fail mid-write.
+	// If encoding fails after headers are set, clients receive Content-Type: application/json
+	// but an HTML error body, causing parsing failures.
+	data, err := json.Marshal(jwks)
+	if err != nil {
+		slog.Error("failed to encode client JWKS", "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	if _, err := w.Write(data); err != nil {
+		slog.Error("failed to write client JWKS response", "error", err)
+		// Headers already sent, can't change response at this point
+	}
+}
+
 // HandleLogin starts the OAuth flow (web version)
 // GET /oauth/login?handle=user.bsky.social
 func (h *OAuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
@@ -471,6 +495,18 @@ func (h *OAuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		slog.Error("OAuth callback returned nil session data")
 		http.Error(w, "OAuth callback failed: no session data", http.StatusInternalServerError)
 		return
+	}
+
+	// Validate that critical scopes were granted by the authorization server.
+	// Log warnings for missing scopes but don't fail auth - users can still use limited functionality.
+	criticalScopes := []string{"atproto", "blob:*/*"}
+	for _, required := range criticalScopes {
+		if !scopesContain(sessData.Scopes, required) {
+			slog.Warn("OAuth callback: critical scope not granted",
+				"did", sessData.AccountDID,
+				"missing_scope", required,
+				"granted_scopes", sessData.Scopes)
+		}
 	}
 
 	// Bidirectional handle verification: ensure the DID actually controls a valid handle
@@ -1026,4 +1062,15 @@ func (h *OAuthHandler) HandleMobileDeepLinkFallback(w http.ResponseWriter, r *ht
 
 	http.Error(w, "Universal Link not intercepted: The mobile app should have opened this URL. "+
 		"Check that Universal Links (iOS) or App Links (Android) are properly configured.", http.StatusBadRequest)
+}
+
+// scopesContain checks if a required scope is present in the granted scopes list.
+// It performs an exact match comparison.
+func scopesContain(granted []string, required string) bool {
+	for _, scope := range granted {
+		if scope == required {
+			return true
+		}
+	}
+	return false
 }

@@ -9,10 +9,12 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"image/png"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -123,7 +125,7 @@ func TestCommunityAvatarE2E_CreateWithAvatar(t *testing.T) {
 	consumer := jetstream.NewCommunityEventConsumer(communityRepo, instanceDID, true, identityResolver)
 
 	t.Run("create community with avatar via real Jetstream", func(t *testing.T) {
-		uniqueName := fmt.Sprintf("avt%d", time.Now().UnixNano()%1000000)
+		uniqueName := fmt.Sprintf("avt%d", time.Now().UnixNano()%100000000)
 		creatorDID := "did:plc:avatar-create-test"
 
 		// Create a test PNG image (100x100 red square)
@@ -146,6 +148,7 @@ func TestCommunityAvatarE2E_CreateWithAvatar(t *testing.T) {
 			}
 			defer func() { _ = conn.Close() }()
 
+			consecutiveTimeouts := 0
 			for {
 				select {
 				case <-done:
@@ -159,8 +162,16 @@ func TestCommunityAvatarE2E_CreateWithAvatar(t *testing.T) {
 
 					var event jetstream.JetstreamEvent
 					if readErr := conn.ReadJSON(&event); readErr != nil {
-						continue // Timeout or error, keep trying
+						var netErr net.Error
+						if errors.As(readErr, &netErr) && netErr.Timeout() {
+							consecutiveTimeouts++
+							if consecutiveTimeouts >= 10 {
+								return // Connection stale, exit to prevent panic
+							}
+						}
+						continue
 					}
+					consecutiveTimeouts = 0
 
 					// Only process community profile create events
 					if event.Kind == "commit" && event.Commit != nil &&
@@ -378,6 +389,7 @@ func TestCommunityAvatarE2E_UpdateWithAvatar(t *testing.T) {
 			}
 			defer func() { _ = conn.Close() }()
 
+			consecutiveTimeouts := 0
 			for {
 				select {
 				case <-done:
@@ -391,8 +403,16 @@ func TestCommunityAvatarE2E_UpdateWithAvatar(t *testing.T) {
 
 					var event jetstream.JetstreamEvent
 					if readErr := conn.ReadJSON(&event); readErr != nil {
+						var netErr net.Error
+						if errors.As(readErr, &netErr) && netErr.Timeout() {
+							consecutiveTimeouts++
+							if consecutiveTimeouts >= 10 {
+								return // Connection stale, exit to prevent panic
+							}
+						}
 						continue
 					}
+					consecutiveTimeouts = 0
 
 					if event.Kind == "commit" && event.Commit != nil &&
 						event.Commit.Collection == "social.coves.community.profile" &&
@@ -415,7 +435,7 @@ func TestCommunityAvatarE2E_UpdateWithAvatar(t *testing.T) {
 	}
 
 	t.Run("add avatar to community without one", func(t *testing.T) {
-		uniqueName := fmt.Sprintf("upav%d", time.Now().UnixNano()%1000000)
+		uniqueName := fmt.Sprintf("upav%d", time.Now().UnixNano()%100000000)
 		creatorDID := "did:plc:avatar-update-test"
 
 		// Create a community WITHOUT an avatar
@@ -528,7 +548,7 @@ func TestCommunityAvatarE2E_UpdateWithAvatar(t *testing.T) {
 	})
 
 	t.Run("replace existing avatar with new one", func(t *testing.T) {
-		uniqueName := fmt.Sprintf("rpav%d", time.Now().UnixNano()%1000000)
+		uniqueName := fmt.Sprintf("rpav%d", time.Now().UnixNano()%100000000)
 		creatorDID := "did:plc:avatar-replace-test"
 
 		// Create a community WITH an initial avatar (red square)
@@ -747,6 +767,7 @@ func TestCommunityAvatarE2E_UpdateWithBanner(t *testing.T) {
 			}
 			defer func() { _ = conn.Close() }()
 
+			consecutiveTimeouts := 0
 			for {
 				select {
 				case <-done:
@@ -760,8 +781,16 @@ func TestCommunityAvatarE2E_UpdateWithBanner(t *testing.T) {
 
 					var event jetstream.JetstreamEvent
 					if readErr := conn.ReadJSON(&event); readErr != nil {
+						var netErr net.Error
+						if errors.As(readErr, &netErr) && netErr.Timeout() {
+							consecutiveTimeouts++
+							if consecutiveTimeouts >= 10 {
+								return // Connection stale, exit to prevent panic
+							}
+						}
 						continue
 					}
+					consecutiveTimeouts = 0
 
 					if event.Kind == "commit" && event.Commit != nil &&
 						event.Commit.Collection == "social.coves.community.profile" &&
@@ -784,7 +813,7 @@ func TestCommunityAvatarE2E_UpdateWithBanner(t *testing.T) {
 	}
 
 	t.Run("add banner to community without one", func(t *testing.T) {
-		uniqueName := fmt.Sprintf("ban%d", time.Now().UnixNano()%1000000)
+		uniqueName := fmt.Sprintf("ban%d", time.Now().UnixNano()%100000000)
 		creatorDID := "did:plc:banner-add-test"
 
 		// Create a community WITHOUT a banner
@@ -897,7 +926,7 @@ func TestCommunityAvatarE2E_UpdateWithBanner(t *testing.T) {
 	})
 
 	t.Run("replace existing banner with new one", func(t *testing.T) {
-		uniqueName := fmt.Sprintf("rpban%d", time.Now().UnixNano()%1000000)
+		uniqueName := fmt.Sprintf("rpban%d", time.Now().UnixNano()%100000000)
 		creatorDID := "did:plc:banner-replace-test"
 
 		// Create a community WITH an initial banner (red rectangle)
