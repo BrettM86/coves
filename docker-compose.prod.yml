@@ -86,6 +86,11 @@ services:
       OAUTH_REDIRECT_URI: ${OAUTH_REDIRECT_URI}
       OAUTH_SEAL_SECRET: ${OAUTH_SEAL_SECRET}
 
+      # OAuth Confidential Client (optional - enables 1-year sessions instead of 14-day)
+      # Generate keys with: go run ./cmd/tools/generate-oauth-key
+      OAUTH_CLIENT_PRIVATE_KEY: ${OAUTH_CLIENT_PRIVATE_KEY:-}
+      OAUTH_CLIENT_KEY_ID: ${OAUTH_CLIENT_KEY_ID:-}
+
       # Application settings
       PORT: 8080
       ENV: production
