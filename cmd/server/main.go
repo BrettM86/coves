@@ -41,6 +41,7 @@ import (
 	"Coves/internal/core/timeline"
 	"Coves/internal/core/unfurl"
 	"Coves/internal/core/adminreports"
+	"Coves/internal/core/userblocks"
 	"Coves/internal/core/users"
 	"Coves/internal/core/votes"
 
@@ -219,6 +220,8 @@ func main() {
 			"repo:social.coves.actor.profile?action=create&action=update&action=delete",
 			// Votes
 			"repo:social.coves.feed.vote?action=create&action=delete",
+			// User blocks
+			"repo:social.coves.actor.block?action=create&action=delete",
 		},
 		DevMode:         isDevMode,
 		AllowPrivateIPs: isDevMode, // Allow private IPs only in dev mode
@@ -365,7 +368,7 @@ func main() {
 	// Start Jetstream consumer for read-forward user indexing
 	jetstreamURL := os.Getenv("JETSTREAM_URL")
 	if jetstreamURL == "" {
-		jetstreamURL = "wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=social.coves.actor.profile"
+		jetstreamURL = "wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=social.coves.actor.profile&wantedCollections=social.coves.actor.block"
 	}
 
 	pdsFilter := os.Getenv("JETSTREAM_PDS_FILTER") // Optional: filter to specific PDS
@@ -376,6 +379,11 @@ func main() {
 		consumerOpts = append(consumerOpts, jetstream.WithSessionHandleUpdater(sessionUpdater))
 		log.Println("✅ OAuth session handle sync enabled for identity changes")
 	}
+
+	// Wire user block repo into user consumer for indexing social.coves.actor.block events
+	userBlockRepo := postgresRepo.NewUserBlockRepository(db)
+	consumerOpts = append(consumerOpts, jetstream.WithUserBlockRepo(userBlockRepo))
+
 	userConsumer := jetstream.NewUserEventConsumer(userService, identityResolver, jetstreamURL, pdsFilter, consumerOpts...)
 	ctx := context.Background()
 	go func() {
@@ -611,6 +619,11 @@ func main() {
 	commentService := comments.NewCommentService(commentRepo, userRepo, postRepo, communityRepo, oauthClient, oauthStore, nil)
 	log.Println("✅ Comment service initialized (with author/community hydration and write support)")
 
+	// Initialize user block service (user-to-user blocking)
+	// userBlockRepo already created above for the Jetstream consumer
+	userBlockService := userblocks.NewService(userBlockRepo, nil, oauthClient, oauthStore, nil)
+	log.Println("✅ User block service initialized (with OAuth authentication)")
+
 	// Initialize admin report service (off-protocol reporting for serious content issues)
 	adminReportRepo := postgresRepo.NewAdminReportRepository(db)
 	adminReportService := adminreports.NewService(adminReportRepo)
@@ -778,9 +791,11 @@ func main() {
 	log.Println("  - Updating: Post comment counts and comment reply counts atomically")
 
 	// Register XRPC routes
-	routes.RegisterUserRoutes(r, userService, authMiddleware, oauthClient.ClientApp)
+	routes.RegisterUserRoutesWithOptions(r, userService, authMiddleware, oauthClient.ClientApp, &routes.UserRouteOptions{
+		UserBlockRepo: userBlockRepo,
+	})
 	log.Println("User XRPC endpoints registered")
-	log.Println("  - GET /xrpc/social.coves.actor.getprofile (public)")
+	log.Println("  - GET /xrpc/social.coves.actor.getprofile (public, OptionalAuth for viewer.blocking)")
 	log.Println("  - POST /xrpc/social.coves.actor.signup (public)")
 	log.Println("  - POST /xrpc/social.coves.actor.deleteAccount (requires OAuth)")
 	log.Println("  - POST /xrpc/social.coves.actor.updateProfile (requires OAuth)")
@@ -793,6 +808,12 @@ func main() {
 
 	routes.RegisterVoteRoutes(r, voteService, authMiddleware)
 	log.Println("Vote XRPC endpoints registered with OAuth authentication")
+
+	routes.RegisterUserBlockRoutes(r, userBlockService, authMiddleware)
+	log.Println("User block XRPC endpoints registered with OAuth authentication")
+	log.Println("  - POST /xrpc/social.coves.actor.blockUser")
+	log.Println("  - POST /xrpc/social.coves.actor.unblockUser")
+	log.Println("  - GET /xrpc/social.coves.actor.getBlockedUsers")
 
 	// Register comment write routes (create, update, delete)
 	routes.RegisterCommentRoutes(r, commentService, authMiddleware)

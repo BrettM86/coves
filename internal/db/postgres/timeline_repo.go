@@ -84,6 +84,8 @@ func (r *postgresTimelineRepo) GetTimeline(ctx context.Context, req timeline.Get
 		INNER JOIN community_subscriptions cs ON p.community_did = cs.community_did
 		WHERE cs.user_did = $1
 			AND p.deleted_at IS NULL
+			-- Intentional $1 reuse: the viewer's DID (cs.user_did) is also the blocker for block filtering
+			AND NOT EXISTS (SELECT 1 FROM user_blocks WHERE blocker_did = $1 AND blocked_did = p.author_did)
 			%s
 			%s
 		ORDER BY %s

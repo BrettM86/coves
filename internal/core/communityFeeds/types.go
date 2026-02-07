@@ -11,6 +11,7 @@ import (
 type GetCommunityFeedRequest struct {
 	Cursor    *string `json:"cursor,omitempty"`
 	Community string  `json:"community"`
+	ViewerDID string  `json:"-"` // Optional: authenticated viewer's DID for block filtering
 	Sort      string  `json:"sort"`
 	Timeframe string  `json:"timeframe"`
 	Limit     int     `json:"limit"`

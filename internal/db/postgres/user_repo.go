@@ -278,17 +278,22 @@ func (r *postgresUserRepo) Delete(ctx context.Context, did string) error {
 		return fmt.Errorf("failed to delete community_blocks for did=%s: %w", did, err)
 	}
 
-	// 6. Delete comments (explicit DELETE)
+	// 6. Delete user blocks (both directions - blocks they created AND blocks against them)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM user_blocks WHERE blocker_did = $1 OR blocked_did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete user_blocks for did=%s: %w", did, err)
+	}
+
+	// 7. Delete comments (explicit DELETE)
 	if _, err := tx.ExecContext(ctx, `DELETE FROM comments WHERE commenter_did = $1`, did); err != nil {
 		return fmt.Errorf("failed to delete comments for did=%s: %w", did, err)
 	}
 
-	// 7. Delete votes (explicit DELETE - FK constraint removed in migration 014)
+	// 8. Delete votes (explicit DELETE - FK constraint removed in migration 014)
 	if _, err := tx.ExecContext(ctx, `DELETE FROM votes WHERE voter_did = $1`, did); err != nil {
 		return fmt.Errorf("failed to delete votes for did=%s: %w", did, err)
 	}
 
-	// 8. Delete user (FK CASCADE deletes posts)
+	// 9. Delete user (FK CASCADE deletes posts)
 	result, err := tx.ExecContext(ctx, `DELETE FROM users WHERE did = $1`, did)
 	if err != nil {
 		return fmt.Errorf("failed to delete user did=%s: %w", did, err)

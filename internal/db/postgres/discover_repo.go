@@ -73,6 +73,15 @@ func (r *postgresDiscoverRepo) GetDiscover(ctx context.Context, req discover.Get
 		FROM posts p`
 	}
 
+	// Build optional viewer block filter (only when authenticated viewer is present)
+	var viewerFilter string
+	var viewerArgs []interface{}
+	if req.ViewerDID != "" {
+		viewerParamIdx := 2 + len(cursorValues)
+		viewerFilter = fmt.Sprintf("AND NOT EXISTS (SELECT 1 FROM user_blocks WHERE blocker_did = $%d AND blocked_did = p.author_did)", viewerParamIdx)
+		viewerArgs = append(viewerArgs, req.ViewerDID)
+	}
+
 	// No subscription filter - show ALL posts from ALL communities
 	query := fmt.Sprintf(`
 		%s
@@ -81,13 +90,15 @@ func (r *postgresDiscoverRepo) GetDiscover(ctx context.Context, req discover.Get
 		WHERE p.deleted_at IS NULL
 			%s
 			%s
+			%s
 		ORDER BY %s
 		LIMIT $1
-	`, selectClause, timeFilter, cursorFilter, orderBy)
+	`, selectClause, timeFilter, cursorFilter, viewerFilter, orderBy)
 
 	// Prepare query arguments
 	args := []interface{}{req.Limit + 1} // +1 to check for next page
 	args = append(args, cursorValues...)
+	args = append(args, viewerArgs...)
 
 	// Execute query
 	rows, err := r.db.QueryContext(ctx, query, args...)

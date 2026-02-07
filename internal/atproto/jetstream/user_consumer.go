@@ -2,6 +2,8 @@ package jetstream
 
 import (
 	"Coves/internal/atproto/identity"
+	"Coves/internal/atproto/utils"
+	"Coves/internal/core/userblocks"
 	"Coves/internal/core/users"
 	"context"
 	"encoding/json"
@@ -9,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +22,10 @@ import (
 // NOTE: This constant is intentionally duplicated in internal/api/handlers/user/update_profile.go
 // to avoid circular dependencies between packages. Keep both definitions in sync.
 const CovesProfileCollection = "social.coves.actor.profile"
+
+// CovesActorBlockCollection is the atProto collection for user-to-user blocks.
+// Records live in the blocker's repository at at://blocker_did/social.coves.actor.block/{tid}
+const CovesActorBlockCollection = "social.coves.actor.block"
 
 // SessionHandleUpdater is an interface for updating OAuth session handles
 // when identity changes occur. This keeps active sessions in sync with
@@ -66,7 +73,8 @@ type CommitEvent struct {
 type UserEventConsumer struct {
 	userService          users.UserService
 	identityResolver     identity.Resolver
-	sessionHandleUpdater SessionHandleUpdater // Optional: updates OAuth sessions on handle change
+	sessionHandleUpdater SessionHandleUpdater    // Optional: updates OAuth sessions on handle change
+	userBlockRepo        userblocks.Repository   // Optional: indexes user-to-user blocks
 	wsURL                string
 	pdsFilter            string // Optional: only index users from specific PDS
 }
@@ -79,6 +87,14 @@ type ConsumerOption func(*UserEventConsumer)
 func WithSessionHandleUpdater(updater SessionHandleUpdater) ConsumerOption {
 	return func(c *UserEventConsumer) {
 		c.sessionHandleUpdater = updater
+	}
+}
+
+// WithUserBlockRepo sets the user block repository for indexing user-to-user blocks
+// from the Jetstream firehose. If not set, block events will be ignored.
+func WithUserBlockRepo(repo userblocks.Repository) ConsumerOption {
+	return func(c *UserEventConsumer) {
+		c.userBlockRepo = repo
 	}
 }
 
@@ -217,7 +233,23 @@ func (c *UserEventConsumer) handleEvent(ctx context.Context, data []byte) error 
 	}
 }
 
-// HandleIdentityEventPublic is a public wrapper for testing
+// HandleEvent processes a Jetstream event for user-related records.
+// This is the public entry point used by tests and external callers.
+func (c *UserEventConsumer) HandleEvent(ctx context.Context, event *JetstreamEvent) error {
+	switch event.Kind {
+	case "identity":
+		return c.handleIdentityEvent(ctx, event)
+	case "account":
+		return c.handleAccountEvent(ctx, event)
+	case "commit":
+		return c.handleCommitEvent(ctx, event)
+	default:
+		return nil
+	}
+}
+
+// Deprecated: HandleIdentityEventPublic is superseded by HandleEvent which routes
+// all event kinds. Use HandleEvent for new code; this remains for existing tests.
 func (c *UserEventConsumer) HandleIdentityEventPublic(ctx context.Context, event *JetstreamEvent) error {
 	return c.handleIdentityEvent(ctx, event)
 }
@@ -316,17 +348,31 @@ func (c *UserEventConsumer) handleAccountEvent(ctx context.Context, event *Jetst
 	return nil
 }
 
-// handleCommitEvent processes commit events for user profile updates
-// Only handles social.coves.actor.profile collection for users already in our database.
-// This syncs profile data (displayName, bio, avatar, banner) from Coves profiles.
+// handleCommitEvent processes commit events for user-related collections.
+// Routes to appropriate handler based on collection:
+// - social.coves.actor.profile: Profile updates for users in our database
+// - social.coves.actor.block: User-to-user block create/delete events
 func (c *UserEventConsumer) handleCommitEvent(ctx context.Context, event *JetstreamEvent) error {
 	if event.Commit == nil {
 		slog.Warn("received nil commit in handleCommitEvent (malformed event)", slog.String("did", event.Did))
 		return nil
 	}
 
-	// Only handle social.coves.actor.profile collection
-	if event.Commit.Collection != CovesProfileCollection {
+	switch event.Commit.Collection {
+	case CovesProfileCollection:
+		return c.handleProfileCommit(ctx, event)
+	case CovesActorBlockCollection:
+		return c.handleUserBlock(ctx, event.Did, event.Commit)
+	default:
+		return nil
+	}
+}
+
+// handleProfileCommit processes profile commit events for users already in our database.
+// This syncs profile data (displayName, bio, avatar, banner) from Coves profiles.
+func (c *UserEventConsumer) handleProfileCommit(ctx context.Context, event *JetstreamEvent) error {
+	// Profile handling requires userService
+	if c.userService == nil {
 		return nil
 	}
 
@@ -412,5 +458,118 @@ func (c *UserEventConsumer) handleProfileDelete(ctx context.Context, did string)
 		return fmt.Errorf("failed to clear user profile: %w", err)
 	}
 	log.Printf("Cleared profile for user %s", did)
+	return nil
+}
+
+// handleUserBlock processes user-to-user block create/delete events.
+// CREATE operation = user blocked another user
+// DELETE operation = user unblocked another user
+func (c *UserEventConsumer) handleUserBlock(ctx context.Context, userDID string, commit *CommitEvent) error {
+	if c.userBlockRepo == nil {
+		slog.Warn("user block event ignored: userBlockRepo not configured (WithUserBlockRepo not called)",
+			slog.String("user_did", userDID),
+			slog.String("operation", commit.Operation))
+		return nil
+	}
+
+	switch commit.Operation {
+	case "create":
+		return c.createUserBlock(ctx, userDID, commit)
+	case "delete":
+		return c.deleteUserBlock(ctx, userDID, commit)
+	default:
+		// Update operations shouldn't happen on blocks, but ignore gracefully
+		log.Printf("Ignoring unexpected operation on user block: %s (userDID=%s, rkey=%s)",
+			commit.Operation, userDID, commit.RKey)
+		return nil
+	}
+}
+
+// createUserBlock indexes a new user-to-user block from the firehose.
+func (c *UserEventConsumer) createUserBlock(ctx context.Context, userDID string, commit *CommitEvent) error {
+	if commit.Record == nil {
+		return fmt.Errorf("user block create event missing record data")
+	}
+
+	// Validate userDID format (untrusted firehose data)
+	if !strings.HasPrefix(userDID, "did:") {
+		return fmt.Errorf("invalid blocker DID format from firehose: %s", userDID)
+	}
+
+	// Extract blocked user DID from record's subject field
+	blockedDID, ok := commit.Record["subject"].(string)
+	if !ok {
+		return fmt.Errorf("user block record missing subject field")
+	}
+
+	// Validate blockedDID format (untrusted firehose data)
+	if !strings.HasPrefix(blockedDID, "did:") {
+		return fmt.Errorf("invalid blocked DID format from firehose: %s", blockedDID)
+	}
+
+	// Validate rkey is non-empty before building AT-URI
+	if commit.RKey == "" {
+		return fmt.Errorf("user block create event missing rkey")
+	}
+
+	// Build AT-URI for the block record (lives in the blocker's repository)
+	uri := fmt.Sprintf("at://%s/social.coves.actor.block/%s", userDID, commit.RKey)
+
+	// Parse createdAt from record to preserve chronological ordering during replays
+	block := &userblocks.UserBlock{
+		BlockerDID: userDID,
+		BlockedDID: blockedDID,
+		BlockedAt:  utils.ParseCreatedAt(commit.Record),
+		RecordURI:  uri,
+		RecordCID:  commit.CID,
+	}
+
+	// Index the block (idempotent via ON CONFLICT DO UPDATE)
+	_, err := c.userBlockRepo.BlockUser(ctx, block)
+	if err != nil {
+		if userblocks.IsConflict(err) {
+			log.Printf("User block already indexed: %s -> %s", userDID, blockedDID)
+			return nil
+		}
+		return fmt.Errorf("failed to index user block: %w", err)
+	}
+
+	log.Printf("Indexed user block: %s -> %s", userDID, blockedDID)
+	return nil
+}
+
+// deleteUserBlock removes a user-to-user block from the index.
+// DELETE operations don't include record data, so we look up the block by its URI.
+func (c *UserEventConsumer) deleteUserBlock(ctx context.Context, userDID string, commit *CommitEvent) error {
+	// Validate rkey is non-empty before building AT-URI
+	if commit.RKey == "" {
+		return fmt.Errorf("user block delete event missing rkey")
+	}
+
+	// Build AT-URI from the rkey
+	uri := fmt.Sprintf("at://%s/social.coves.actor.block/%s", userDID, commit.RKey)
+
+	// Look up the block to get the blocked DID
+	block, err := c.userBlockRepo.GetBlockByURI(ctx, uri)
+	if err != nil {
+		if userblocks.IsNotFound(err) {
+			// Already deleted - this is fine (idempotency)
+			log.Printf("User block already deleted: %s", uri)
+			return nil
+		}
+		return fmt.Errorf("failed to find user block for deletion: %w", err)
+	}
+
+	// Remove the block from the index
+	err = c.userBlockRepo.UnblockUser(ctx, userDID, block.BlockedDID)
+	if err != nil {
+		if userblocks.IsNotFound(err) {
+			log.Printf("User block already removed: %s -> %s", userDID, block.BlockedDID)
+			return nil
+		}
+		return fmt.Errorf("failed to remove user block: %w", err)
+	}
+
+	log.Printf("Removed user block: %s -> %s", userDID, block.BlockedDID)
 	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"Coves/internal/api/handlers/common"
+	"Coves/internal/api/middleware"
 	"Coves/internal/core/blueskypost"
 	"Coves/internal/core/discover"
 	"Coves/internal/core/posts"
@@ -73,6 +74,9 @@ func (h *GetDiscoverHandler) HandleGetDiscover(w http.ResponseWriter, r *http.Re
 // parseRequest parses query parameters into GetDiscoverRequest
 func (h *GetDiscoverHandler) parseRequest(r *http.Request) discover.GetDiscoverRequest {
 	req := discover.GetDiscoverRequest{}
+
+	// Extract viewer DID from OptionalAuth context for block filtering
+	req.ViewerDID = middleware.GetUserDID(r)
 
 	// Optional: sort (default: hot)
 	req.Sort = r.URL.Query().Get("sort")

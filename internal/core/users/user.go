@@ -63,7 +63,15 @@ type ProfileViewDetailed struct {
 	DisplayName string        `json:"displayName,omitempty"`
 	// Bio is the user's biography/description. Maps to JSON "description" for atProto lexicon compatibility.
 	Bio    string `json:"description,omitempty"`
-	Avatar string `json:"avatar,omitempty"` // URL, not CID
-	Banner string `json:"banner,omitempty"` // URL, not CID
-	// Viewer (requires user-to-user blocking infrastructure)
+	Avatar string              `json:"avatar,omitempty"` // URL, not CID
+	Banner string              `json:"banner,omitempty"` // URL, not CID
+	Viewer *ProfileViewerState `json:"viewer,omitempty"`
+}
+
+// ProfileViewerState contains the authenticated viewer's relationship to this profile.
+// Populated when the request is authenticated; nil for unauthenticated requests.
+type ProfileViewerState struct {
+	// Blocking is the AT-URI of the block record if the viewer has blocked this user.
+	// nil if the viewer has not blocked this user.
+	Blocking *string `json:"blocking,omitempty"`
 }

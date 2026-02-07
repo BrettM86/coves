@@ -61,6 +61,7 @@ type Repository interface {
 	// ListByParentWithHotRank retrieves direct replies to a post or comment with sorting and pagination
 	// Supports hot, top, and new sorting with cursor-based pagination
 	// Returns comments with author info hydrated and next page cursor
+	// viewerDID is optional — when non-empty, comments from blocked users are filtered out
 	ListByParentWithHotRank(
 		ctx context.Context,
 		parentURI string,
@@ -68,6 +69,7 @@ type Repository interface {
 		timeframe string, // "hour", "day", "week", "month", "year", "all" (for "top" only)
 		limit int,
 		cursor *string,
+		viewerDID string,
 	) ([]*Comment, *string, error)
 
 	// GetByURIsBatch retrieves multiple comments by their AT-URIs in a single query
@@ -84,11 +86,13 @@ type Repository interface {
 	// Returns map[parentURI][]*Comment grouped by parent
 	// Used to prevent N+1 queries when loading nested replies
 	// Limits results per parent to avoid memory exhaustion
+	// viewerDID is optional — when non-empty, comments from blocked users are filtered out
 	ListByParentsBatch(
 		ctx context.Context,
 		parentURIs []string,
 		sort string,
 		limitPerParent int,
+		viewerDID string,
 	) (map[string][]*Comment, error)
 }
 

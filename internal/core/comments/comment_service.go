@@ -163,6 +163,10 @@ func (s *commentService) GetComments(ctx context.Context, req *GetCommentsReques
 
 	// 3. Fetch top-level comments with pagination
 	// Uses repository's hot rank sorting and cursor-based pagination
+	var viewerDIDStr string
+	if req.ViewerDID != nil {
+		viewerDIDStr = *req.ViewerDID
+	}
 	topComments, nextCursor, err := s.commentRepo.ListByParentWithHotRank(
 		ctx,
 		req.PostURI,
@@ -170,6 +174,7 @@ func (s *commentService) GetComments(ctx context.Context, req *GetCommentsReques
 		req.Timeframe,
 		req.Limit,
 		req.Cursor,
+		viewerDIDStr,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch top-level comments: %w", err)
@@ -284,12 +289,24 @@ func (s *commentService) buildThreadViews(
 
 	// Batch load all replies for this level in a single query
 	if len(parentsWithReplies) > 0 {
+		var batchViewerDID string
+		if viewerDID != nil {
+			batchViewerDID = *viewerDID
+		}
 		repliesByParent, err := s.commentRepo.ListByParentsBatch(
 			ctx,
 			parentsWithReplies,
 			sort,
 			DefaultRepliesPerParent,
+			batchViewerDID,
 		)
+
+		if err != nil {
+			slog.Error("failed to batch load replies (nested replies will be missing)",
+				"error", err,
+				"parent_count", len(parentsWithReplies),
+				"sort", sort)
+		}
 
 		// Process replies if batch query succeeded
 		if err == nil {

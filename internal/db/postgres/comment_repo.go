@@ -572,6 +572,7 @@ func (r *postgresCommentRepo) ListByParentWithHotRank(
 	timeframe string,
 	limit int,
 	cursor *string,
+	viewerDID string,
 ) ([]*comments.Comment, *string, error) {
 	// Build ORDER BY clause and time filter based on sort type
 	orderBy, timeFilter := r.buildCommentSortClause(sort, timeframe)
@@ -616,6 +617,15 @@ func (r *postgresCommentRepo) ListByParentWithHotRank(
 		FROM comments c`
 	}
 
+	// Build optional viewer block filter (only when authenticated viewer is present)
+	var viewerFilter string
+	var viewerArgs []interface{}
+	if viewerDID != "" {
+		viewerParamIdx := 3 + len(cursorValues)
+		viewerFilter = fmt.Sprintf("AND NOT EXISTS (SELECT 1 FROM user_blocks WHERE blocker_did = $%d AND blocked_did = c.commenter_did)", viewerParamIdx)
+		viewerArgs = append(viewerArgs, viewerDID)
+	}
+
 	// Build complete query with JOINs and filters
 	// LEFT JOIN prevents data loss when user record hasn't been indexed yet (out-of-order Jetstream events)
 	// Includes deleted comments to preserve thread structure (shown as "[deleted]" placeholders)
@@ -625,13 +635,15 @@ func (r *postgresCommentRepo) ListByParentWithHotRank(
 		WHERE c.parent_uri = $1
 			%s
 			%s
+			%s
 		ORDER BY %s
 		LIMIT $2
-	`, selectClause, timeFilter, cursorFilter, orderBy)
+	`, selectClause, timeFilter, cursorFilter, viewerFilter, orderBy)
 
 	// Prepare query arguments
 	args := []interface{}{parentURI, limit + 1} // +1 to detect next page
 	args = append(args, cursorValues...)
+	args = append(args, viewerArgs...)
 
 	// Execute query
 	rows, err := r.db.QueryContext(ctx, query, args...)
@@ -964,6 +976,7 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 	parentURIs []string,
 	sort string,
 	limitPerParent int,
+	viewerDID string,
 ) (map[string][]*comments.Comment, error) {
 	if len(parentURIs) == 0 {
 		return make(map[string][]*comments.Comment), nil
@@ -1019,6 +1032,16 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 		windowOrderBy = `log(greatest(2, c.score + 2)) / power(((EXTRACT(EPOCH FROM (NOW() - c.created_at)) / 3600) + 2), 1.8) DESC, c.score DESC, c.created_at DESC`
 	}
 
+	// Build optional viewer block filter (only when authenticated viewer is present)
+	// Parameter index computed dynamically: $1=parentURIs, $2=limitPerParent, $3+=viewer
+	var viewerFilter string
+	var viewerArgs []interface{}
+	if viewerDID != "" {
+		viewerParamIdx := 3 // after $1=parentURIs and $2=limitPerParent
+		viewerFilter = fmt.Sprintf("AND NOT EXISTS (SELECT 1 FROM user_blocks WHERE blocker_did = $%d AND blocked_did = c.commenter_did)", viewerParamIdx)
+		viewerArgs = append(viewerArgs, viewerDID)
+	}
+
 	// Use window function to limit results per parent
 	// This is more efficient than LIMIT in a subquery per parent
 	// LEFT JOIN prevents data loss when user record hasn't been indexed yet (out-of-order Jetstream events)
@@ -1034,6 +1057,7 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 			FROM comments c
 			LEFT JOIN users u ON c.commenter_did = u.did
 			WHERE c.parent_uri = ANY($1)
+				%s
 		)
 		SELECT
 			id, uri, cid, rkey, commenter_did,
@@ -1045,9 +1069,11 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 		FROM ranked_comments
 		WHERE rn <= $2
 		ORDER BY parent_uri, rn
-	`, selectClause, windowOrderBy)
+	`, selectClause, windowOrderBy, viewerFilter)
 
-	rows, err := r.db.QueryContext(ctx, query, pq.Array(parentURIs), limitPerParent)
+	queryArgs := []interface{}{pq.Array(parentURIs), limitPerParent}
+	queryArgs = append(queryArgs, viewerArgs...)
+	rows, err := r.db.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to batch query comments by parents: %w", err)
 	}

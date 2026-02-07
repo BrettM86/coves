@@ -20,6 +20,7 @@ type Service interface {
 // Matches social.coves.feed.getDiscover lexicon input
 type GetDiscoverRequest struct {
 	Cursor    *string `json:"cursor,omitempty"`
+	ViewerDID string  `json:"-"` // Optional: authenticated viewer's DID for block filtering
 	Sort      string  `json:"sort"`
 	Timeframe string  `json:"timeframe"`
 	Limit     int     `json:"limit"`

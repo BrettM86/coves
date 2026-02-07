@@ -5,6 +5,7 @@ import (
 	"Coves/internal/atproto/oauth"
 	"Coves/internal/atproto/pds"
 	"Coves/internal/core/communities"
+	"Coves/internal/core/userblocks"
 	"Coves/internal/core/users"
 	"Coves/internal/core/votes"
 	"bytes"
@@ -16,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -70,8 +72,8 @@ func createTestUser(t *testing.T, db *sql.DB, handle, did string) *users.User {
 	return user
 }
 
-// contains checks if string s contains substring substr
-// Helper for error message assertions
+// contains checks if string s contains substring substr.
+// Convenience wrapper used across multiple integration test files.
 func contains(s, substr string) bool {
 	return strings.Contains(s, substr)
 }
@@ -119,27 +121,25 @@ func authenticateWithPDS(pdsURL, handle, password string) (string, string, error
 	return sessionResp.AccessJwt, sessionResp.DID, nil
 }
 
-// tidCounter is used to ensure unique TIDs even when generateTID is called rapidly
-var tidCounter uint64
+// tidCounter is used to ensure unique TIDs even when generateTID is called rapidly.
+var tidCounter atomic.Uint64
 
-// testIDCounter is used to ensure unique test identifiers across all tests
-var testIDCounter uint64
+// testIDCounter is used to ensure unique test identifiers across all tests.
+var testIDCounter atomic.Uint64
 
-// generateTID generates a simple timestamp-based identifier for testing
-// In production, PDS generates proper TIDs
-// Uses an atomic counter to ensure uniqueness even when called in rapid succession
+// generateTID generates a simple timestamp-based identifier for testing.
+// In production, PDS generates proper TIDs.
 func generateTID() string {
-	tidCounter++
-	return fmt.Sprintf("3k%d%d", time.Now().UnixNano()/1000, tidCounter)
+	n := tidCounter.Add(1)
+	return fmt.Sprintf("3k%d%d", time.Now().UnixNano()/1000, n)
 }
 
-// uniqueTestID generates a unique identifier for test resources (handles, emails, etc.)
-// Uses Unix timestamp (seconds) + atomic counter to ensure uniqueness across test runs
-// Keeps IDs short enough to fit within PDS handle limits (max 20 chars for label)
-// Returns a ~14 char string (10-digit timestamp + up to 4-digit counter)
+// uniqueTestID generates a unique identifier for test resources (handles, emails, etc.).
+// Uses Unix timestamp (seconds) + atomic counter to ensure uniqueness across test runs.
+// Keeps IDs short enough to fit within PDS handle limits (max 20 chars for label).
 func uniqueTestID() string {
-	testIDCounter++
-	return fmt.Sprintf("%d%d", time.Now().Unix(), testIDCounter)
+	n := testIDCounter.Add(1)
+	return fmt.Sprintf("%d%d", time.Now().Unix(), n)
 }
 
 // createPDSAccount creates a new account on PDS and returns access token + DID
@@ -446,50 +446,34 @@ func (e *E2EOAuthMiddleware) AddUserWithPDSToken(did, pdsAccessToken, pdsURL str
 	return token
 }
 
-// PasswordAuthPDSClientFactory creates a PDSClientFactory that uses password-based Bearer auth.
-// This is for E2E tests that use createSession instead of OAuth.
-// The factory extracts the access token and host URL from the session data.
+// passwordAuthPDSClient is the shared implementation for all test PDS client factories.
+// Creates PDS clients using password-based Bearer auth from the session's access token.
+func passwordAuthPDSClient(_ context.Context, session *oauthlib.ClientSessionData) (pds.Client, error) {
+	if session.AccessToken == "" {
+		return nil, fmt.Errorf("session has no access token")
+	}
+	if session.HostURL == "" {
+		return nil, fmt.Errorf("session has no host URL")
+	}
+	return pds.NewFromAccessToken(session.HostURL, session.AccountDID.String(), session.AccessToken)
+}
+
+// PasswordAuthPDSClientFactory creates a PDSClientFactory for votes E2E tests.
 func PasswordAuthPDSClientFactory() votes.PDSClientFactory {
-	return func(ctx context.Context, session *oauthlib.ClientSessionData) (pds.Client, error) {
-		if session.AccessToken == "" {
-			return nil, fmt.Errorf("session has no access token")
-		}
-		if session.HostURL == "" {
-			return nil, fmt.Errorf("session has no host URL")
-		}
-
-		return pds.NewFromAccessToken(session.HostURL, session.AccountDID.String(), session.AccessToken)
-	}
+	return passwordAuthPDSClient
 }
 
-// CommunityPasswordAuthPDSClientFactory creates a PDSClientFactory for communities that uses password-based Bearer auth.
-// This is for E2E tests that use createSession instead of OAuth.
-// The factory extracts the access token and host URL from the session data.
+// CommunityPasswordAuthPDSClientFactory creates a PDSClientFactory for community E2E tests.
 func CommunityPasswordAuthPDSClientFactory() communities.PDSClientFactory {
-	return func(ctx context.Context, session *oauthlib.ClientSessionData) (pds.Client, error) {
-		if session.AccessToken == "" {
-			return nil, fmt.Errorf("session has no access token")
-		}
-		if session.HostURL == "" {
-			return nil, fmt.Errorf("session has no host URL")
-		}
-
-		return pds.NewFromAccessToken(session.HostURL, session.AccountDID.String(), session.AccessToken)
-	}
+	return passwordAuthPDSClient
 }
 
-// UserProfilePasswordAuthPDSClientFactory creates a PDSClientFactory for user profile updates
-// that uses password-based Bearer auth. This is for E2E tests that use createSession instead of OAuth.
-// The factory extracts the access token and host URL from the session data.
-func UserProfilePasswordAuthPDSClientFactory() func(ctx context.Context, session *oauthlib.ClientSessionData) (pds.Client, error) {
-	return func(ctx context.Context, session *oauthlib.ClientSessionData) (pds.Client, error) {
-		if session.AccessToken == "" {
-			return nil, fmt.Errorf("session has no access token")
-		}
-		if session.HostURL == "" {
-			return nil, fmt.Errorf("session has no host URL")
-		}
+// UserBlockPasswordAuthPDSClientFactory creates a PDSClientFactory for user block E2E tests.
+func UserBlockPasswordAuthPDSClientFactory() userblocks.PDSClientFactory {
+	return passwordAuthPDSClient
+}
 
-		return pds.NewFromAccessToken(session.HostURL, session.AccountDID.String(), session.AccessToken)
-	}
+// UserProfilePasswordAuthPDSClientFactory creates a PDSClientFactory for user profile E2E tests.
+func UserProfilePasswordAuthPDSClientFactory() func(ctx context.Context, session *oauthlib.ClientSessionData) (pds.Client, error) {
+	return passwordAuthPDSClient
 }

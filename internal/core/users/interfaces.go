@@ -64,9 +64,10 @@ type UserRepository interface {
 	//   3. community_subscriptions (explicit DELETE)
 	//   4. community_memberships (explicit DELETE)
 	//   5. community_blocks (explicit DELETE)
-	//   6. comments (explicit DELETE)
-	//   7. votes (explicit DELETE - FK removed in migration 014)
-	//   8. users (FK CASCADE deletes posts)
+	//   6. user_blocks (explicit DELETE - both directions)
+	//   7. comments (explicit DELETE)
+	//   8. votes (explicit DELETE - FK removed in migration 014)
+	//   9. users (FK CASCADE deletes posts)
 	//
 	// Returns ErrUserNotFound if the user does not exist.
 	// Returns InvalidDIDError if the DID format is invalid.

@@ -111,6 +111,7 @@ func (m *mockCommentRepo) ListByParentWithHotRank(
 	timeframe string,
 	limit int,
 	cursor *string,
+	viewerDID string,
 ) ([]*Comment, *string, error) {
 	if m.listByParentWithHotRankFunc != nil {
 		return m.listByParentWithHotRankFunc(ctx, parentURI, sort, timeframe, limit, cursor)
@@ -140,6 +141,7 @@ func (m *mockCommentRepo) ListByParentsBatch(
 	parentURIs []string,
 	sort string,
 	limitPerParent int,
+	viewerDID string,
 ) (map[string][]*Comment, error) {
 	if m.listByParentsBatchFunc != nil {
 		return m.listByParentsBatchFunc(ctx, parentURIs, sort, limitPerParent)

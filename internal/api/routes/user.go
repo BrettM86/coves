@@ -3,6 +3,7 @@ package routes
 import (
 	"Coves/internal/api/handlers/user"
 	"Coves/internal/api/middleware"
+	"Coves/internal/core/userblocks"
 	"Coves/internal/core/users"
 	"encoding/json"
 	"errors"
@@ -16,7 +17,8 @@ import (
 
 // UserHandler handles user-related XRPC endpoints
 type UserHandler struct {
-	userService users.UserService
+	userService    users.UserService
+	userBlockRepo  userblocks.Repository // Optional: for hydrating viewer.blocking on profiles
 }
 
 // NewUserHandler creates a new user handler
@@ -26,6 +28,12 @@ func NewUserHandler(userService users.UserService) *UserHandler {
 	}
 }
 
+// SetUserBlockRepo sets the user block repository for profile viewer state hydration.
+// When set, GetProfile will include viewer.blocking in the response for authenticated viewers.
+func (h *UserHandler) SetUserBlockRepo(repo userblocks.Repository) {
+	h.userBlockRepo = repo
+}
+
 // UserRouteOptions contains optional configuration for user routes.
 // Use this to inject test dependencies like custom PDS client factories.
 type UserRouteOptions struct {
@@ -33,6 +41,10 @@ type UserRouteOptions struct {
 	// If nil, uses OAuth with DPoP (production behavior).
 	// Set this in E2E tests to use password-based authentication.
 	PDSClientFactory user.PDSClientFactory
+
+	// UserBlockRepo provides access to user block data for profile viewer state hydration.
+	// When set, GetProfile includes viewer.blocking in the response for authenticated viewers.
+	UserBlockRepo userblocks.Repository
 }
 
 // RegisterUserRoutes registers user-related XRPC endpoints on the router
@@ -46,12 +58,17 @@ func RegisterUserRoutes(r chi.Router, service users.UserService, authMiddleware 
 func RegisterUserRoutesWithOptions(r chi.Router, service users.UserService, authMiddleware *middleware.OAuthAuthMiddleware, oauthClient *oauth.ClientApp, opts *UserRouteOptions) {
 	h := NewUserHandler(service)
 
+	// Wire optional dependencies from options
+	if opts != nil && opts.UserBlockRepo != nil {
+		h.SetUserBlockRepo(opts.UserBlockRepo)
+	}
+
 	// /api/me - returns the authenticated user's own profile (cookie or Bearer)
 	meHandler := user.NewMeHandler(service)
 	r.With(authMiddleware.RequireAuth).Get("/api/me", meHandler.HandleMe)
 
-	// social.coves.actor.getprofile - query endpoint (public)
-	r.Get("/xrpc/social.coves.actor.getprofile", h.GetProfile)
+	// social.coves.actor.getprofile - query endpoint (public, OptionalAuth for viewer state)
+	r.With(authMiddleware.OptionalAuth).Get("/xrpc/social.coves.actor.getprofile", h.GetProfile)
 
 	// social.coves.actor.signup - procedure endpoint (public)
 	r.Post("/xrpc/social.coves.actor.signup", h.Signup)
@@ -113,6 +130,21 @@ func (h *UserHandler) GetProfile(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Failed to get profile for %s: %v", did, err)
 		writeXRPCError(w, "InternalError", "failed to get profile", http.StatusInternalServerError)
 		return
+	}
+
+	// Hydrate viewer state (blocking) when authenticated
+	viewerDID := middleware.GetUserDID(r)
+	if viewerDID != "" && viewerDID != did && h.userBlockRepo != nil {
+		block, blockErr := h.userBlockRepo.GetBlock(ctx, viewerDID, did)
+		if blockErr == nil && block != nil {
+			profile.Viewer = &users.ProfileViewerState{
+				Blocking: &block.RecordURI,
+			}
+		} else if blockErr != nil && !userblocks.IsNotFound(blockErr) {
+			// Log unexpected DB errors (connection timeout, pool exhaustion, etc.)
+			// but don't fail the profile request — viewer.blocking is best-effort
+			log.Printf("WARNING: failed to check block state for viewer %s on profile %s: %v", viewerDID, did, blockErr)
+		}
 	}
 
 	// Marshal to bytes first to avoid partial writes on encoding errors

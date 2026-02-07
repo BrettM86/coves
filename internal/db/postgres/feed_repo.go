@@ -78,6 +78,15 @@ func (r *postgresFeedRepo) GetCommunityFeed(ctx context.Context, req communityFe
 		FROM posts p`
 	}
 
+	// Build optional viewer block filter (only when authenticated viewer is present)
+	var viewerFilter string
+	var viewerArgs []interface{}
+	if req.ViewerDID != "" {
+		viewerParamIdx := 3 + len(cursorValues)
+		viewerFilter = fmt.Sprintf("AND NOT EXISTS (SELECT 1 FROM user_blocks WHERE blocker_did = $%d AND blocked_did = p.author_did)", viewerParamIdx)
+		viewerArgs = append(viewerArgs, req.ViewerDID)
+	}
+
 	query := fmt.Sprintf(`
 		%s
 		INNER JOIN users u ON p.author_did = u.did
@@ -86,13 +95,15 @@ func (r *postgresFeedRepo) GetCommunityFeed(ctx context.Context, req communityFe
 			AND p.deleted_at IS NULL
 			%s
 			%s
+			%s
 		ORDER BY %s
 		LIMIT $2
-	`, selectClause, timeFilter, cursorFilter, orderBy)
+	`, selectClause, timeFilter, cursorFilter, viewerFilter, orderBy)
 
 	// Prepare query arguments
 	args := []interface{}{req.Community, req.Limit + 1} // +1 to check for next page
 	args = append(args, cursorValues...)
+	args = append(args, viewerArgs...)
 
 	// Execute query
 	rows, err := r.db.QueryContext(ctx, query, args...)

@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"Coves/internal/api/handlers/common"
+	"Coves/internal/api/middleware"
 	"Coves/internal/core/blueskypost"
 	"Coves/internal/core/communityFeeds"
 	"Coves/internal/core/posts"
@@ -77,6 +78,9 @@ func (h *GetCommunityHandler) HandleGetCommunity(w http.ResponseWriter, r *http.
 // parseRequest parses query parameters into GetCommunityFeedRequest
 func (h *GetCommunityHandler) parseRequest(r *http.Request) (communityFeeds.GetCommunityFeedRequest, error) {
 	req := communityFeeds.GetCommunityFeedRequest{}
+
+	// Extract viewer DID from OptionalAuth context for block filtering
+	req.ViewerDID = middleware.GetUserDID(r)
 
 	// Required: community
 	req.Community = r.URL.Query().Get("community")
