@@ -57,7 +57,7 @@ func (h *DeleteHandler) HandleDeleteAccount(w http.ResponseWriter, r *http.Reque
 	// The service handles validation, logging, and atomic deletion
 	err := h.userService.DeleteAccount(r.Context(), userDID)
 	if err != nil {
-		handleServiceError(w, err, userDID)
+		handleServiceError(w, err, userDID, "account deletion")
 		return
 	}
 
@@ -111,22 +111,23 @@ func writeJSONError(w http.ResponseWriter, statusCode int, errorType, message st
 	}
 }
 
-// handleServiceError maps service errors to HTTP responses
-func handleServiceError(w http.ResponseWriter, err error, userDID string) {
+// handleServiceError maps service errors to HTTP responses.
+// operation is a human-readable label for log messages (e.g. "account deletion", "get profile").
+func handleServiceError(w http.ResponseWriter, err error, userDID, operation string) {
 	// Check for specific error types
 	switch {
 	case errors.Is(err, users.ErrUserNotFound):
 		writeJSONError(w, http.StatusNotFound, "AccountNotFound", "Account not found")
 
 	case errors.Is(err, context.DeadlineExceeded):
-		slog.Error("account deletion timed out",
+		slog.Error(operation+" timed out",
 			slog.String("did", userDID),
 			slog.String("error", err.Error()),
 		)
 		writeJSONError(w, http.StatusGatewayTimeout, "Timeout", "Request timed out")
 
 	case errors.Is(err, context.Canceled):
-		slog.Info("account deletion canceled",
+		slog.Info(operation+" canceled",
 			slog.String("did", userDID),
 			slog.String("error", err.Error()),
 		)
@@ -141,7 +142,7 @@ func handleServiceError(w http.ResponseWriter, err error, userDID string) {
 		}
 
 		// Internal server error - don't leak details
-		slog.Error("account deletion failed",
+		slog.Error(operation+" failed",
 			slog.String("did", userDID),
 			slog.String("error", err.Error()),
 		)

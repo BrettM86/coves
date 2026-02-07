@@ -46,6 +46,10 @@ func RegisterUserRoutes(r chi.Router, service users.UserService, authMiddleware 
 func RegisterUserRoutesWithOptions(r chi.Router, service users.UserService, authMiddleware *middleware.OAuthAuthMiddleware, oauthClient *oauth.ClientApp, opts *UserRouteOptions) {
 	h := NewUserHandler(service)
 
+	// /api/me - returns the authenticated user's own profile (cookie or Bearer)
+	meHandler := user.NewMeHandler(service)
+	r.With(authMiddleware.RequireAuth).Get("/api/me", meHandler.HandleMe)
+
 	// social.coves.actor.getprofile - query endpoint (public)
 	r.Get("/xrpc/social.coves.actor.getprofile", h.GetProfile)
 
