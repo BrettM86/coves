@@ -257,11 +257,20 @@ func (r *DevAuthResolver) StartDevAuthFlow(ctx context.Context, client *OAuthCli
 	slog.Debug("dev mode: got auth server metadata",
 		"issuer", authMeta.Issuer,
 		"authorization_endpoint", authMeta.AuthorizationEndpoint,
-		"token_endpoint", authMeta.TokenEndpoint)
+		"token_endpoint", authMeta.TokenEndpoint,
+		"par_endpoint", authMeta.PushedAuthorizationRequestEndpoint)
+
+	slog.Debug("dev mode: PAR request details",
+		"client_id", client.ClientApp.Config.ClientID,
+		"callback_url", client.ClientApp.Config.CallbackURL,
+		"scopes", client.Config.Scopes)
 
 	// Send auth request (PAR) using indigo's method
 	info, err := client.ClientApp.SendAuthRequest(ctx, authMeta, client.Config.Scopes, identifier)
 	if err != nil {
+		slog.Error("dev mode: PAR request failed",
+			"error", err,
+			"client_id", client.ClientApp.Config.ClientID)
 		return "", fmt.Errorf("auth request failed: %w", err)
 	}
 

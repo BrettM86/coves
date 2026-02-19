@@ -9,7 +9,8 @@ import (
 	"net/url"
 )
 
-// allowedMobileRedirectURIs contains the EXACT allowed redirect URIs for mobile apps.
+// baseMobileRedirectURIs contains the EXACT allowed redirect URIs for mobile apps.
+// These are always allowed regardless of configuration.
 //
 // Per atproto OAuth spec (https://atproto.com/specs/oauth#mobile-clients):
 // - Custom URL schemes are allowed for native mobile apps
@@ -23,7 +24,7 @@ import (
 // Universal Links provide stronger security guarantees but require:
 // - iOS: Verified via /.well-known/apple-app-site-association
 // - Android: Verified via /.well-known/assetlinks.json
-var allowedMobileRedirectURIs = map[string]bool{
+var baseMobileRedirectURIs = map[string]bool{
 	// Custom scheme per atproto spec (reverse-domain of coves.social)
 	"social.coves:/callback":        true,
 	"social.coves://callback":       true, // Some platforms add double slash
@@ -33,18 +34,18 @@ var allowedMobileRedirectURIs = map[string]bool{
 	"https://coves.social/app/oauth/callback": true,
 }
 
-// isAllowedMobileRedirectURI validates that the redirect URI is in the exact allowlist.
-// SECURITY: Exact URI matching prevents token theft by rogue apps.
+// BuildAllowedRedirectURIs returns a copy of the allowed mobile redirect URIs.
+// The allowlist uses exact URI matching to prevent token theft.
 //
-// Per atproto OAuth spec, custom schemes must match the client_id hostname
-// in reverse-domain order (social.coves for coves.social), which provides
-// some protection as malicious apps would need to know the specific scheme.
-//
-// Universal Links (https://) provide stronger security as they're cryptographically
-// bound to the app via .well-known verification files.
-func isAllowedMobileRedirectURI(redirectURI string) bool {
-	// Normalize and check exact match
-	return allowedMobileRedirectURIs[redirectURI]
+// For web frontends like Kelp, use a reverse proxy (Vite proxy in dev, nginx in prod)
+// to serve from the same origin as Coves, allowing HTTP-only cookies to work.
+func BuildAllowedRedirectURIs() map[string]bool {
+	// Return a copy of base mobile URIs
+	allowed := make(map[string]bool, len(baseMobileRedirectURIs))
+	for uri := range baseMobileRedirectURIs {
+		allowed[uri] = true
+	}
+	return allowed
 }
 
 // extractScheme extracts the scheme from a URI for logging purposes

@@ -86,9 +86,10 @@ func NewOAuthClient(config *OAuthConfig, store oauth.ClientAuthStore) (*OAuthCli
 	// Create indigo client config
 	var clientConfig oauth.ClientConfig
 	if config.DevMode {
-		// Dev mode: loopback with HTTP
-		// IMPORTANT: Use 127.0.0.1 instead of localhost per RFC 8252 - PDS rejects localhost
-		// The callback URL must match the APPVIEW_PUBLIC_URL from .env.dev
+		// Dev mode: loopback OAuth client
+		// Per ATProto OAuth spec: client_id base MUST be "http://localhost" (not 127.0.0.1)
+		// The redirect_uri in the query params CAN use 127.0.0.1 with port
+		// Format: http://localhost?redirect_uri=http%3A%2F%2F127.0.0.1%3A8081%2Foauth%2Fcallback&scope=atproto
 		callbackURL := config.PublicURL + "/oauth/callback"
 		clientConfig = oauth.NewLocalhostConfig(callbackURL, config.Scopes)
 		slog.Info("dev mode: OAuth client configured",

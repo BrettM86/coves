@@ -265,6 +265,7 @@ build-dev: ## Build the Coves server with dev mode (includes localhost OAuth res
 	@echo "$(GREEN)✓ Build complete: ./server (with dev tags)$(RESET)"
 
 run: ## Run the Coves server with dev environment (requires database running)
+	@make db-migrate
 	@./scripts/dev-run.sh
 
 ##@ Cleanup
@@ -332,6 +333,42 @@ ngrok-up: ## Start ngrok tunnels (for iOS or WiFi testing - requires paid plan f
 
 ngrok-down: ## Stop all ngrok tunnels
 	@./scripts/stop-ngrok.sh
+
+##@ Web Frontend Development
+
+run-web: ## Run Coves backend configured for web frontend dev (OAuth via :8080 proxy)
+	@make db-migrate
+	@./scripts/web-dev-run.sh
+
+web-proxy: ## Start Caddy reverse proxy for web frontend dev (combines Vite + Coves on :8080)
+	@echo "$(CYAN)Starting web development proxy...$(RESET)"
+	@echo ""
+	@echo "$(YELLOW)Prerequisites:$(RESET)"
+	@echo "  1. Coves backend running on :8081  (make run)"
+	@echo "  2. Vite frontend running on :5173  (cd frontend && npm run dev)"
+	@echo ""
+	@command -v caddy >/dev/null 2>&1 || { echo "$(RED)Error: Caddy not installed. Install with:$(RESET)"; \
+		echo "  Ubuntu/Debian: sudo apt install caddy"; \
+		echo "  macOS: brew install caddy"; \
+		echo "  Or see: https://caddyserver.com/docs/install"; \
+		exit 1; }
+	@echo "$(GREEN)Starting Caddy on http://localhost:8080$(RESET)"
+	@echo "  Backend routes (/oauth/*, /xrpc/*, /api/*) -> 127.0.0.1:8081"
+	@echo "  Frontend routes (everything else) -> localhost:5173"
+	@echo ""
+	@echo "$(CYAN)Access your app at: http://localhost:8080$(RESET)"
+	@echo "$(CYAN)Press Ctrl+C to stop$(RESET)"
+	@echo ""
+	@caddy run --config Caddyfile.dev
+
+web-proxy-bg: ## Start Caddy proxy in background
+	@command -v caddy >/dev/null 2>&1 || { echo "$(RED)Error: Caddy not installed$(RESET)"; exit 1; }
+	@caddy start --config Caddyfile.dev
+	@echo "$(GREEN)✓ Caddy proxy started in background on http://localhost:8080$(RESET)"
+
+web-proxy-stop: ## Stop background Caddy proxy
+	@caddy stop 2>/dev/null || echo "$(YELLOW)Caddy not running$(RESET)"
+	@echo "$(GREEN)✓ Caddy proxy stopped$(RESET)"
 
 ##@ Utilities
 

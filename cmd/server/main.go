@@ -202,6 +202,7 @@ func main() {
 
 	isDevMode := os.Getenv("IS_DEV_ENV") == "true"
 	pdsURL := os.Getenv("PDS_URL") // For dev mode: resolve handles via local PDS
+
 	oauthConfig := &oauth.OAuthConfig{
 		PublicURL:  os.Getenv("APPVIEW_PUBLIC_URL"),
 		SealSecret: oauthSealSecret,

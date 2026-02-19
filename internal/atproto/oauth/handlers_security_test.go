@@ -5,73 +5,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// TestIsAllowedMobileRedirectURI tests the mobile redirect URI allowlist with EXACT URI matching
-// Only Universal Links (HTTPS) are allowed - custom schemes are blocked for security
-func TestIsAllowedMobileRedirectURI(t *testing.T) {
-	tests := []struct {
-		name     string
-		uri      string
-		expected bool
-	}{
-		{
-			name:     "allowed - Universal Link",
-			uri:      "https://coves.social/app/oauth/callback",
-			expected: true,
-		},
-		{
-			name:     "rejected - custom scheme coves-app (vulnerable to interception)",
-			uri:      "coves-app://oauth/callback",
-			expected: false,
-		},
-		{
-			name:     "rejected - custom scheme coves (vulnerable to interception)",
-			uri:      "coves://oauth/callback",
-			expected: false,
-		},
-		{
-			name:     "rejected - evil scheme",
-			uri:      "evil://callback",
-			expected: false,
-		},
-		{
-			name:     "rejected - http (not secure)",
-			uri:      "http://example.com/callback",
-			expected: false,
-		},
-		{
-			name:     "rejected - https different domain",
-			uri:      "https://example.com/callback",
-			expected: false,
-		},
-		{
-			name:     "rejected - https coves.social wrong path",
-			uri:      "https://coves.social/wrong/path",
-			expected: false,
-		},
-		{
-			name:     "rejected - invalid URI",
-			uri:      "not a uri",
-			expected: false,
-		},
-		{
-			name:     "rejected - empty string",
-			uri:      "",
-			expected: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := isAllowedMobileRedirectURI(tt.uri)
-			assert.Equal(t, tt.expected, result,
-				"isAllowedMobileRedirectURI(%q) = %v, want %v", tt.uri, result, tt.expected)
-		})
-	}
-}
 
 // TestExtractScheme tests the scheme extraction function
 func TestExtractScheme(t *testing.T) {
@@ -122,53 +59,6 @@ func TestGenerateCSRFToken(t *testing.T) {
 	assert.Greater(t, len(token1), 40, "CSRF token should be reasonably long (32 bytes base64 encoded)")
 }
 
-// TestHandleMobileLogin_RedirectURIValidation tests that HandleMobileLogin validates redirect URIs
-func TestHandleMobileLogin_RedirectURIValidation(t *testing.T) {
-	// Note: This is a unit test for the validation logic only.
-	// Full integration tests with OAuth flow are in tests/integration/oauth_e2e_test.go
-
-	tests := []struct {
-		name           string
-		redirectURI    string
-		expectedLog    string
-		expectedStatus int
-	}{
-		{
-			name:           "allowed - Universal Link",
-			redirectURI:    "https://coves.social/app/oauth/callback",
-			expectedStatus: http.StatusBadRequest, // Will fail at StartAuthFlow (no OAuth client setup)
-		},
-		{
-			name:           "rejected - custom scheme coves-app (insecure)",
-			redirectURI:    "coves-app://oauth/callback",
-			expectedStatus: http.StatusBadRequest,
-			expectedLog:    "rejected unauthorized mobile redirect URI",
-		},
-		{
-			name:           "rejected evil scheme",
-			redirectURI:    "evil://callback",
-			expectedStatus: http.StatusBadRequest,
-			expectedLog:    "rejected unauthorized mobile redirect URI",
-		},
-		{
-			name:           "rejected http",
-			redirectURI:    "http://evil.com/callback",
-			expectedStatus: http.StatusBadRequest,
-			expectedLog:    "scheme not allowed",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Test the validation function directly
-			result := isAllowedMobileRedirectURI(tt.redirectURI)
-			if tt.expectedLog != "" {
-				assert.False(t, result, "Should reject %s", tt.redirectURI)
-			}
-		})
-	}
-}
-
 // TestHandleCallback_CSRFValidation tests that HandleCallback validates CSRF tokens for mobile flow
 func TestHandleCallback_CSRFValidation(t *testing.T) {
 	// This is a conceptual test structure. Full implementation would require:
@@ -208,41 +98,6 @@ func TestHandleCallback_CSRFValidation(t *testing.T) {
 
 		assert.NotNil(t, req) // Placeholder assertion
 	})
-}
-
-// TestHandleMobileCallback_RevalidatesRedirectURI tests that handleMobileCallback re-validates the redirect URI
-func TestHandleMobileCallback_RevalidatesRedirectURI(t *testing.T) {
-	// This is a critical security test: even if an attacker somehow bypasses the initial check,
-	// the callback handler should re-validate the redirect URI before redirecting.
-
-	tests := []struct {
-		name        string
-		redirectURI string
-		shouldPass  bool
-	}{
-		{
-			name:        "allowed - Universal Link",
-			redirectURI: "https://coves.social/app/oauth/callback",
-			shouldPass:  true,
-		},
-		{
-			name:        "blocked - custom scheme (insecure)",
-			redirectURI: "coves-app://oauth/callback",
-			shouldPass:  false,
-		},
-		{
-			name:        "blocked - evil scheme",
-			redirectURI: "evil://callback",
-			shouldPass:  false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := isAllowedMobileRedirectURI(tt.redirectURI)
-			assert.Equal(t, tt.shouldPass, result)
-		})
-	}
 }
 
 // TestGenerateMobileRedirectBinding tests the binding token generation
@@ -474,4 +329,176 @@ func TestConstantTimeCompare(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+// TestBuildAllowedRedirectURIs tests the mobile redirect URI allowlist builder
+func TestBuildAllowedRedirectURIs(t *testing.T) {
+	t.Run("includes all base mobile URIs", func(t *testing.T) {
+		allowed := BuildAllowedRedirectURIs()
+
+		// All base mobile URIs should be included
+		assert.True(t, allowed["social.coves:/callback"], "should include social.coves:/callback")
+		assert.True(t, allowed["social.coves://callback"], "should include social.coves://callback")
+		assert.True(t, allowed["social.coves:/oauth/callback"], "should include social.coves:/oauth/callback")
+		assert.True(t, allowed["social.coves://oauth/callback"], "should include social.coves://oauth/callback")
+		assert.True(t, allowed["https://coves.social/app/oauth/callback"], "should include Universal Link")
+
+		// Should have exactly 5 base mobile URIs
+		assert.Len(t, allowed, 5, "should have exactly 5 base mobile URIs")
+	})
+
+	t.Run("rejects URIs not in allowlist", func(t *testing.T) {
+		allowed := BuildAllowedRedirectURIs()
+
+		// Should reject URIs not in the list
+		assert.False(t, allowed["http://evil.com/callback"], "should reject evil.com")
+		assert.False(t, allowed["http://localhost:5173/callback"], "should reject localhost")
+		assert.False(t, allowed["evil://steal"], "should reject evil scheme")
+	})
+
+	t.Run("returns copy not reference to base URIs", func(t *testing.T) {
+		allowed1 := BuildAllowedRedirectURIs()
+		allowed2 := BuildAllowedRedirectURIs()
+
+		// Modifying one should not affect the other
+		allowed1["test://modified"] = true
+		assert.False(t, allowed2["test://modified"], "modifications should not affect other copies")
+	})
+}
+
+// =============================================================================
+// Mobile OAuth Redirect URI Integration Tests
+// =============================================================================
+
+// createTestOAuthHandler creates a minimal OAuthHandler for testing.
+// This uses a memory store and minimal configuration suitable for unit tests.
+func createTestOAuthHandler(t *testing.T) *OAuthHandler {
+	t.Helper()
+
+	config := &OAuthConfig{
+		PublicURL:       "https://coves.social",
+		Scopes:          []string{"atproto"},
+		DevMode:         true, // Dev mode to avoid real PDS calls
+		AllowPrivateIPs: true,
+		SealSecret:      "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=", // base64 encoded 32 bytes
+	}
+
+	client, err := NewOAuthClient(config, oauth.NewMemStore())
+	require.NoError(t, err)
+
+	handler := NewOAuthHandler(client, oauth.NewMemStore())
+	return handler
+}
+
+// TestOAuthHandler_isAllowedRedirectURI tests the OAuthHandler.isAllowedRedirectURI() method.
+// This is a critical security test (severity 9/10).
+func TestOAuthHandler_isAllowedRedirectURI(t *testing.T) {
+	t.Run("accepts base mobile URIs", func(t *testing.T) {
+		handler := createTestOAuthHandler(t)
+
+		// Base mobile URIs should be accepted
+		baseMobileURIs := []string{
+			"social.coves:/callback",
+			"social.coves://callback",
+			"social.coves:/oauth/callback",
+			"social.coves://oauth/callback",
+			"https://coves.social/app/oauth/callback",
+		}
+
+		for _, uri := range baseMobileURIs {
+			assert.True(t, handler.isAllowedRedirectURI(uri),
+				"should accept base mobile URI: %s", uri)
+		}
+	})
+
+	t.Run("rejects URIs not in allowlist", func(t *testing.T) {
+		handler := createTestOAuthHandler(t)
+
+		// These URIs should be rejected
+		rejectedURIs := []string{
+			"http://localhost:5173/callback",           // Localhost (use Vite proxy instead)
+			"http://localhost:3000/callback",           // Localhost
+			"http://evil.com/callback",                // Evil domain
+			"https://example.com/oauth",               // Random HTTPS
+			"https://coves.social/wrong/path",         // Right domain, wrong path
+			"evil://steal",                            // Evil custom scheme
+			"coves-app://callback",                    // Old/wrong custom scheme
+			"coves://oauth/callback",                  // Wrong custom scheme (not reverse-domain)
+			"",                                        // Empty
+			"not-a-uri",                               // Invalid URI
+		}
+
+		for _, uri := range rejectedURIs {
+			assert.False(t, handler.isAllowedRedirectURI(uri),
+				"should reject URI not in allowlist: %s", uri)
+		}
+	})
+}
+
+// TestHandleMobileLogin_MobileURIs tests that HandleMobileLogin properly
+// accepts/rejects mobile redirect URIs. (severity 9/10)
+func TestHandleMobileLogin_MobileURIs(t *testing.T) {
+	t.Run("accepts mobile Universal Link", func(t *testing.T) {
+		handler := createTestOAuthHandler(t)
+
+		req := httptest.NewRequest(http.MethodGet,
+			"/oauth/mobile/login?handle=test.user&redirect_uri=https://coves.social/app/oauth/callback", nil)
+		rec := httptest.NewRecorder()
+
+		handler.HandleMobileLogin(rec, req)
+
+		// Should NOT get "invalid redirect_uri" error
+		body := rec.Body.String()
+		assert.NotContains(t, body, "invalid redirect_uri",
+			"mobile Universal Link should be accepted")
+	})
+
+	t.Run("rejects localhost URI", func(t *testing.T) {
+		handler := createTestOAuthHandler(t)
+
+		req := httptest.NewRequest(http.MethodGet,
+			"/oauth/mobile/login?handle=test.user&redirect_uri=http://localhost:5173/callback", nil)
+		rec := httptest.NewRecorder()
+
+		handler.HandleMobileLogin(rec, req)
+
+		// Should get "invalid redirect_uri" error
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+		assert.Contains(t, rec.Body.String(), "invalid redirect_uri",
+			"localhost URI should be rejected (use Vite proxy for dev)")
+	})
+
+	t.Run("rejects evil URI", func(t *testing.T) {
+		handler := createTestOAuthHandler(t)
+
+		req := httptest.NewRequest(http.MethodGet,
+			"/oauth/mobile/login?handle=test.user&redirect_uri=http://evil.com/callback", nil)
+		rec := httptest.NewRecorder()
+
+		handler.HandleMobileLogin(rec, req)
+
+		// Should get "invalid redirect_uri" error
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+		assert.Contains(t, rec.Body.String(), "invalid redirect_uri",
+			"evil URI should be rejected")
+	})
+}
+
+// TestMobileURIs_OnlyMobileAllowed tests that only mobile URIs are allowed.
+func TestMobileURIs_OnlyMobileAllowed(t *testing.T) {
+	t.Run("only mobile URIs work", func(t *testing.T) {
+		handler := createTestOAuthHandler(t)
+
+		// Mobile URIs should work
+		assert.True(t, handler.isAllowedRedirectURI("social.coves:/callback"),
+			"mobile custom scheme should work")
+		assert.True(t, handler.isAllowedRedirectURI("https://coves.social/app/oauth/callback"),
+			"mobile Universal Link should work")
+
+		// Localhost URIs should NOT work (use Vite proxy for dev)
+		assert.False(t, handler.isAllowedRedirectURI("http://localhost:5173/callback"),
+			"localhost should be rejected")
+		assert.False(t, handler.isAllowedRedirectURI("http://127.0.0.1:3000/callback"),
+			"127.0.0.1 should be rejected")
+	})
 }

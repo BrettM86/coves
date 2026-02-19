@@ -1,0 +1,41 @@
+# Coves Web Development Reverse Proxy
+# Combines Vite frontend (5173) and Coves backend (8081) on single origin (8080)
+# This enables OAuth cookies to work correctly across frontend/backend
+#
+# Usage:
+#   make web-dev    # Starts proxy (also starts dev stack if needed)
+#   Or manually:    caddy run --config Caddyfile.dev
+#
+# Access at: http://localhost:8080
+
+:8080 {
+    # OAuth routes -> Coves backend
+    handle /oauth/* {
+        reverse_proxy 127.0.0.1:8081
+    }
+
+    # XRPC API routes -> Coves backend
+    handle /xrpc/* {
+        reverse_proxy 127.0.0.1:8081
+    }
+
+    # OAuth client metadata -> Coves backend
+    handle /oauth-client-metadata.json {
+        reverse_proxy 127.0.0.1:8081
+    }
+
+    # Image proxy routes -> Coves backend
+    handle /img/* {
+        reverse_proxy 127.0.0.1:8081
+    }
+
+    # API routes (if any) -> Coves backend
+    handle /api/* {
+        reverse_proxy 127.0.0.1:8081
+    }
+
+    # Everything else -> Vite dev server (frontend)
+    handle {
+        reverse_proxy localhost:5173
+    }
+}

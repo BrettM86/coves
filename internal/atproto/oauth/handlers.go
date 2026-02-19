@@ -156,12 +156,13 @@ type UserIndexer interface {
 
 // OAuthHandler handles OAuth-related HTTP endpoints
 type OAuthHandler struct {
-	client          *OAuthClient
-	store           oauth.ClientAuthStore
-	mobileStore     MobileOAuthStore    // For server-side CSRF validation
-	userIndexer     UserIndexer         // For indexing users after OAuth login
-	devResolver     *DevHandleResolver  // For dev mode: resolve handles via local PDS
-	devAuthResolver *DevAuthResolver    // For dev mode: bypass HTTPS validation for localhost OAuth
+	client              *OAuthClient
+	store               oauth.ClientAuthStore
+	mobileStore         MobileOAuthStore    // For server-side CSRF validation
+	userIndexer         UserIndexer         // For indexing users after OAuth login
+	devResolver         *DevHandleResolver  // For dev mode: resolve handles via local PDS
+	devAuthResolver     *DevAuthResolver    // For dev mode: bypass HTTPS validation for localhost OAuth
+	allowedRedirectURIs map[string]bool     // Combined allowlist for mobile + external OAuth clients
 }
 
 // OAuthHandlerOption is a functional option for configuring OAuthHandler
@@ -178,8 +179,9 @@ func WithUserIndexer(indexer UserIndexer) OAuthHandlerOption {
 // NewOAuthHandler creates a new OAuth handler
 func NewOAuthHandler(client *OAuthClient, store oauth.ClientAuthStore, opts ...OAuthHandlerOption) *OAuthHandler {
 	handler := &OAuthHandler{
-		client: client,
-		store:  store,
+		client:              client,
+		store:               store,
+		allowedRedirectURIs: BuildAllowedRedirectURIs(),
 	}
 
 	// Apply functional options
@@ -207,6 +209,15 @@ func NewOAuthHandler(client *OAuthClient, store oauth.ClientAuthStore, opts ...O
 	}
 
 	return handler
+}
+
+// isAllowedRedirectURI checks if a redirect URI is in the configured allowlist.
+// This includes both the base mobile redirect URIs and any configured external client URIs.
+//
+// SECURITY: Uses exact string matching - no wildcards or pattern matching.
+// The URI must match exactly as configured in the allowlist.
+func (h *OAuthHandler) isAllowedRedirectURI(redirectURI string) bool {
+	return h.allowedRedirectURIs[redirectURI]
 }
 
 // HandleClientMetadata serves the OAuth client metadata document
@@ -354,9 +365,10 @@ func (h *OAuthHandler) HandleMobileLogin(w http.ResponseWriter, r *http.Request)
 	}
 
 	// SECURITY FIX 1: Validate redirect_uri against allowlist
-	if !isAllowedMobileRedirectURI(mobileRedirectURI) {
-		slog.Warn("rejected unauthorized mobile redirect URI", "scheme", extractScheme(mobileRedirectURI))
-		http.Error(w, "invalid redirect_uri: scheme not allowed", http.StatusBadRequest)
+	// Uses configurable allowlist that includes both mobile deep links and external client URIs
+	if !h.isAllowedRedirectURI(mobileRedirectURI) {
+		slog.Warn("rejected unauthorized redirect URI", "scheme", extractScheme(mobileRedirectURI))
+		http.Error(w, "invalid redirect_uri: not in allowlist", http.StatusBadRequest)
 		return
 	}
 
@@ -769,24 +781,27 @@ func (h *OAuthHandler) handleWebCallback(w http.ResponseWriter, r *http.Request,
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 
-// handleMobileCallback handles the mobile OAuth callback flow
+// handleMobileCallback handles the mobile OAuth callback flow.
+// This handles both mobile deep links (custom schemes like social.coves://) and
+// Universal Links (https:// URLs verified via .well-known).
 func (h *OAuthHandler) handleMobileCallback(w http.ResponseWriter, r *http.Request, sessData *oauth.ClientSessionData, mobileRedirectURIEncoded, csrfToken, verifiedHandle string) {
-	// Decode the mobile redirect URI
-	mobileRedirectURI, err := url.QueryUnescape(mobileRedirectURIEncoded)
+	// Decode the redirect URI
+	redirectURI, err := url.QueryUnescape(mobileRedirectURIEncoded)
 	if err != nil {
-		slog.Error("failed to decode mobile redirect URI", "error", err)
-		http.Error(w, "invalid mobile redirect URI", http.StatusBadRequest)
-		return
-	}
-
-	// SECURITY FIX 1: Re-validate redirect URI against allowlist
-	if !isAllowedMobileRedirectURI(mobileRedirectURI) {
-		slog.Error("mobile callback attempted with unauthorized redirect URI", "scheme", extractScheme(mobileRedirectURI))
+		slog.Error("failed to decode redirect URI", "error", err)
 		http.Error(w, "invalid redirect URI", http.StatusBadRequest)
 		return
 	}
 
-	// Seal the session data for mobile
+	// SECURITY FIX 1: Re-validate redirect URI against allowlist
+	// Uses configurable allowlist that includes both mobile deep links and external client URIs
+	if !h.isAllowedRedirectURI(redirectURI) {
+		slog.Error("callback attempted with unauthorized redirect URI", "scheme", extractScheme(redirectURI))
+		http.Error(w, "invalid redirect URI", http.StatusBadRequest)
+		return
+	}
+
+	// Seal the session data
 	sealedToken, err := h.client.SealSession(
 		sessData.AccountDID.String(),
 		sessData.SessionID,
@@ -807,25 +822,37 @@ func (h *OAuthHandler) handleMobileCallback(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	// Clear all mobile cookies to prevent reuse (defense in depth)
+	// Clear all mobile/external cookies to prevent reuse (defense in depth)
 	clearMobileCookies(w)
 
-	// Build deep link with sealed token
-	deepLink := fmt.Sprintf("%s?token=%s&did=%s&session_id=%s",
-		mobileRedirectURI,
+	// Build redirect URL with sealed token
+	callbackURL := fmt.Sprintf("%s?token=%s&did=%s&session_id=%s",
+		redirectURI,
 		url.QueryEscape(sealedToken),
 		url.QueryEscape(sessData.AccountDID.String()),
 		url.QueryEscape(sessData.SessionID),
 	)
 	if handle != "" {
-		deepLink += "&handle=" + url.QueryEscape(handle)
+		callbackURL += "&handle=" + url.QueryEscape(handle)
 	}
 
-	// Log mobile redirect (sanitized - no token or session ID to avoid leaking credentials)
-	slog.Info("redirecting to mobile app", "did", sessData.AccountDID, "handle", handle)
+	// Determine redirect type based on scheme
+	parsedURI, parseErr := url.Parse(redirectURI)
+	isWebClient := parseErr == nil && (parsedURI.Scheme == "http" || parsedURI.Scheme == "https")
 
+	if isWebClient {
+		// HTTPS Universal Links or web clients get a direct HTTP redirect.
+		// The OS intercepts Universal Links and opens the app; no intermediate page needed.
+		slog.Info("redirecting via HTTP", "did", sessData.AccountDID, "handle", handle, "host", parsedURI.Host)
+		http.Redirect(w, r, callbackURL, http.StatusFound)
+		return
+	}
+
+	// Mobile app with custom scheme (e.g., social.coves://)
 	// Serve intermediate page that redirects to the app
 	// This prevents the browser from showing a stale PDS page after the custom scheme redirect
+	slog.Info("redirecting to mobile app", "did", sessData.AccountDID, "handle", handle)
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
 
@@ -833,14 +860,14 @@ func (h *OAuthHandler) handleMobileCallback(w http.ResponseWriter, r *http.Reque
 		DeepLink string
 		Handle   string
 	}{
-		DeepLink: deepLink,
+		DeepLink: callbackURL,
 		Handle:   handle,
 	}
 
 	if err := mobileCallbackTemplate.Execute(w, data); err != nil {
 		slog.Error("failed to render mobile callback template", "error", err)
 		// Fallback to direct redirect if template fails
-		http.Redirect(w, r, deepLink, http.StatusFound)
+		http.Redirect(w, r, callbackURL, http.StatusFound)
 	}
 }
 

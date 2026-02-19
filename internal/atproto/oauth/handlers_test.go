@@ -174,6 +174,8 @@ func TestParseSessionToken(t *testing.T) {
 // TestIsMobileRedirectURI tests mobile redirect URI validation with EXACT URI matching
 // Per atproto spec, custom schemes must match client_id hostname in reverse-domain order
 func TestIsMobileRedirectURI(t *testing.T) {
+	handler := createTestOAuthHandler(t)
+
 	tests := []struct {
 		uri      string
 		expected bool
@@ -199,7 +201,7 @@ func TestIsMobileRedirectURI(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.uri, func(t *testing.T) {
-			result := isAllowedMobileRedirectURI(tt.uri)
+			result := handler.isAllowedRedirectURI(tt.uri)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
