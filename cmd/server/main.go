@@ -796,7 +796,7 @@ func main() {
 		UserBlockRepo: userBlockRepo,
 	})
 	log.Println("User XRPC endpoints registered")
-	log.Println("  - GET /xrpc/social.coves.actor.getprofile (public, OptionalAuth for viewer.blocking)")
+	log.Println("  - GET /xrpc/social.coves.actor.getProfile (public, OptionalAuth for viewer.blocking)")
 	log.Println("  - POST /xrpc/social.coves.actor.signup (public)")
 	log.Println("  - POST /xrpc/social.coves.actor.deleteAccount (requires OAuth)")
 	log.Println("  - POST /xrpc/social.coves.actor.updateProfile (requires OAuth)")

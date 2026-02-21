@@ -242,7 +242,7 @@ func TestGetProfileEndpoint(t *testing.T) {
 
 	// Test 1: Get profile by DID
 	t.Run("Get Profile By DID", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getprofile?actor=did:plc:endpoint123", nil)
+		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getProfile?actor=did:plc:endpoint123", nil)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 
@@ -263,7 +263,7 @@ func TestGetProfileEndpoint(t *testing.T) {
 
 	// Test 2: Get profile by handle
 	t.Run("Get Profile By Handle", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getprofile?actor=bob.test", nil)
+		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getProfile?actor=bob.test", nil)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 
@@ -285,7 +285,7 @@ func TestGetProfileEndpoint(t *testing.T) {
 
 	// Test 3: Missing actor parameter
 	t.Run("Missing Actor Parameter", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getprofile", nil)
+		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getProfile", nil)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 
@@ -296,7 +296,7 @@ func TestGetProfileEndpoint(t *testing.T) {
 
 	// Test 4: User not found
 	t.Run("User Not Found", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getprofile?actor=nonexistent.test", nil)
+		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getProfile?actor=nonexistent.test", nil)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 
@@ -869,7 +869,7 @@ func TestGetProfile_NonExistentDID(t *testing.T) {
 		authMiddleware, _ := CreateTestOAuthMiddleware("did:plc:testuser")
 		routes.RegisterUserRoutesWithOptions(r, userService, authMiddleware, nil, testUserRouteOptions())
 
-		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getprofile?actor=did:plc:nonexistentuser12345", nil)
+		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getProfile?actor=did:plc:nonexistentuser12345", nil)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 
@@ -920,7 +920,7 @@ func TestProfileStatsEndpoint(t *testing.T) {
 	routes.RegisterUserRoutesWithOptions(r, userService, authMiddleware, nil, testUserRouteOptions())
 
 	t.Run("Response includes stats object", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getprofile?actor="+testDID, nil)
+		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getProfile?actor="+testDID, nil)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 
@@ -956,7 +956,7 @@ func TestProfileStatsEndpoint(t *testing.T) {
 	})
 
 	t.Run("Response matches lexicon structure", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getprofile?actor=endpointstats.test", nil)
+		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getProfile?actor=endpointstats.test", nil)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 

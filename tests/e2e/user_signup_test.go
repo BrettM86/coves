@@ -380,14 +380,14 @@ func setupTestDB(t *testing.T) *sql.DB {
 
 // getProfileViaAPI queries the AppView API to get a user profile by DID
 func getProfileViaAPI(did string) (string, string, error) {
-	resp, err := http.Get(fmt.Sprintf("http://localhost:8081/xrpc/social.coves.actor.getprofile?actor=%s", did))
+	resp, err := http.Get(fmt.Sprintf("http://localhost:8081/xrpc/social.coves.actor.getProfile?actor=%s", did))
 	if err != nil {
-		return "", "", fmt.Errorf("failed to call getprofile: %w", err)
+		return "", "", fmt.Errorf("failed to call getProfile: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("getprofile returned status %d", resp.StatusCode)
+		return "", "", fmt.Errorf("getProfile returned status %d", resp.StatusCode)
 	}
 
 	var result struct {

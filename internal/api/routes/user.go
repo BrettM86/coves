@@ -67,8 +67,8 @@ func RegisterUserRoutesWithOptions(r chi.Router, service users.UserService, auth
 	meHandler := user.NewMeHandler(service)
 	r.With(authMiddleware.RequireAuth).Get("/api/me", meHandler.HandleMe)
 
-	// social.coves.actor.getprofile - query endpoint (public, OptionalAuth for viewer state)
-	r.With(authMiddleware.OptionalAuth).Get("/xrpc/social.coves.actor.getprofile", h.GetProfile)
+	// social.coves.actor.getProfile - query endpoint (public, OptionalAuth for viewer state)
+	r.With(authMiddleware.OptionalAuth).Get("/xrpc/social.coves.actor.getProfile", h.GetProfile)
 
 	// social.coves.actor.signup - procedure endpoint (public)
 	r.Post("/xrpc/social.coves.actor.signup", h.Signup)
@@ -93,7 +93,7 @@ func RegisterUserRoutesWithOptions(r chi.Router, service users.UserService, auth
 	r.With(authMiddleware.RequireAuth).Post("/xrpc/social.coves.actor.updateProfile", updateProfileHandler.ServeHTTP)
 }
 
-// GetProfile handles social.coves.actor.getprofile
+// GetProfile handles social.coves.actor.getProfile
 // Query endpoint that retrieves a user profile by DID or handle
 // Returns profileViewDetailed with stats per lexicon specification
 func (h *UserHandler) GetProfile(w http.ResponseWriter, r *http.Request) {
