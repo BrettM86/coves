@@ -18,7 +18,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 COVES_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Frontend location (override with KELP_DIR env var)
-KELP_DIR="${KELP_DIR:-$COVES_DIR/../kelp}"
+# Try coves-frontend first, fall back to kelp for backwards compatibility
+if [ -z "$KELP_DIR" ]; then
+    if [ -d "$COVES_DIR/../coves-frontend" ]; then
+        KELP_DIR="$COVES_DIR/../coves-frontend"
+    else
+        KELP_DIR="$COVES_DIR/../kelp"
+    fi
+fi
 
 # Cleanup function
 cleanup() {
@@ -52,7 +59,7 @@ fi
 
 # Start Vite in background
 echo "🚀 Starting Vite frontend (kelp) on :5173..."
-cd "$KELP_DIR" && npm run dev &
+cd "$KELP_DIR" && pnpm dev &
 VITE_PID=$!
 
 # Give Vite a moment to start

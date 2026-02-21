@@ -9,33 +9,34 @@
 # Access at: http://localhost:8080
 
 :8080 {
-    # OAuth routes -> Coves backend
-    handle /oauth/* {
-        reverse_proxy 127.0.0.1:8081
-    }
+	# OAuth routes -> Coves backend
+	handle /oauth/* {
+		reverse_proxy 127.0.0.1:8081
+	}
 
-    # XRPC API routes -> Coves backend
-    handle /xrpc/* {
-        reverse_proxy 127.0.0.1:8081
-    }
+	# XRPC API routes -> Coves backend
+	handle /xrpc/* {
+		reverse_proxy 127.0.0.1:8081
+	}
 
-    # OAuth client metadata -> Coves backend
-    handle /oauth-client-metadata.json {
-        reverse_proxy 127.0.0.1:8081
-    }
+	# OAuth client metadata -> Coves backend
+	handle /oauth-client-metadata.json {
+		reverse_proxy 127.0.0.1:8081
+	}
 
-    # Image proxy routes -> Coves backend
-    handle /img/* {
-        reverse_proxy 127.0.0.1:8081
-    }
+	# Image proxy routes -> Coves backend
+	handle /img/* {
+		reverse_proxy 127.0.0.1:8081
+	}
 
-    # API routes (if any) -> Coves backend
-    handle /api/* {
-        reverse_proxy 127.0.0.1:8081
-    }
+	# Go backend API routes -> Coves backend
+	# Only route Go-specific endpoints here; SvelteKit owns /api/auth/* and /api/proxy/*
+	handle /api/me {
+		reverse_proxy 127.0.0.1:8081
+	}
 
-    # Everything else -> Vite dev server (frontend)
-    handle {
-        reverse_proxy localhost:5173
-    }
+	# Everything else -> Vite dev server (frontend)
+	handle {
+		reverse_proxy localhost:5173
+	}
 }
