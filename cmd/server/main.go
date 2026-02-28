@@ -41,6 +41,7 @@ import (
 	"Coves/internal/core/timeline"
 	"Coves/internal/core/unfurl"
 	"Coves/internal/core/adminreports"
+	"Coves/internal/core/communitysuggestions"
 	"Coves/internal/core/userblocks"
 	"Coves/internal/core/users"
 	"Coves/internal/core/votes"
@@ -630,6 +631,11 @@ func main() {
 	adminReportService := adminreports.NewService(adminReportRepo)
 	log.Println("✅ Admin report service initialized (for flagging serious content)")
 
+	// Initialize community suggestion service (off-protocol suggestion & voting)
+	communitySuggestionRepo := postgresRepo.NewCommunitySuggestionRepository(db)
+	communitySuggestionService := communitysuggestions.NewService(communitySuggestionRepo)
+	log.Println("✅ Community suggestion service initialized")
+
 	// Initialize feed service
 	feedRepo := postgresRepo.NewCommunityFeedRepository(db, cursorSecret)
 	feedService := communityFeeds.NewCommunityFeedService(feedRepo, communityService)
@@ -827,6 +833,16 @@ func main() {
 	routes.RegisterAdminReportRoutes(r, adminReportService, authMiddleware)
 	log.Println("✅ Admin report endpoint registered (requires OAuth)")
 	log.Println("  - POST /xrpc/social.coves.admin.submitReport")
+
+	// Register community suggestion routes (off-protocol suggestion & voting)
+	routes.RegisterCommunitySuggestionRoutes(r, communitySuggestionService, authMiddleware, allowedCommunityCreators)
+	log.Println("Community suggestion endpoints registered (off-protocol)")
+	log.Println("  - POST /xrpc/social.coves.community.suggestion.create (requires OAuth, rate limited)")
+	log.Println("  - GET  /xrpc/social.coves.community.suggestion.list (optional auth)")
+	log.Println("  - GET  /xrpc/social.coves.community.suggestion.get (optional auth)")
+	log.Println("  - POST /xrpc/social.coves.community.suggestion.vote (requires OAuth)")
+	log.Println("  - POST /xrpc/social.coves.community.suggestion.removeVote (requires OAuth)")
+	log.Println("  - POST /xrpc/social.coves.community.suggestion.updateStatus (admin only)")
 
 	routes.RegisterCommunityFeedRoutes(r, feedService, voteService, blueskyService, authMiddleware)
 	log.Println("Feed XRPC endpoints registered (public with optional auth for viewer vote state)")

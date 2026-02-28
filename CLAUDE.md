@@ -119,3 +119,7 @@ Your code is ready when:
 Remember: We're building a working product. Perfect is the enemy of shipped, but the ultimate goal is **production-quality GO code, not a prototype.**
 
 Every line of code should be something you'd be proud to ship in a production system. Quality over speed. Completeness over convenience.
+
+## Subagent Execution
+
+When launching subagents via the Task tool, always run them in the **foreground** (`run_in_background: false`). Do not use background execution for subagents.

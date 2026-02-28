@@ -2,6 +2,7 @@ package adminreport
 
 import (
 	"Coves/internal/api/middleware"
+	"Coves/internal/api/xrpc"
 	"Coves/internal/core/adminreports"
 	"bytes"
 	"context"
@@ -416,7 +417,7 @@ func TestWriteError(t *testing.T) {
 		t.Errorf("expected status %d, got %d", http.StatusBadRequest, w.Code)
 	}
 
-	var resp errorResponse
+	var resp xrpc.Error
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to unmarshal error response: %v", err)
 	}
@@ -495,7 +496,7 @@ func TestHandleServiceError_AllValidationErrors(t *testing.T) {
 				t.Errorf("expected status %d, got %d", tt.expectedStatus, w.Code)
 			}
 
-			var resp errorResponse
+			var resp xrpc.Error
 			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 				t.Fatalf("failed to unmarshal error response: %v", err)
 			}

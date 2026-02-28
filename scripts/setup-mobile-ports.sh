@@ -35,6 +35,7 @@ echo -e "${YELLOW}Setting up port forwarding...${NC}"
 adb reverse tcp:3000 tcp:3001  # PDS (internal port in DID document)
 adb reverse tcp:3001 tcp:3001  # PDS (external port)
 adb reverse tcp:3002 tcp:3002  # PLC Directory
+adb reverse tcp:8080 tcp:8080  # Caddy proxy (OAuth callbacks route through here)
 adb reverse tcp:8081 tcp:8081  # AppView
 
 echo ""
@@ -47,6 +48,7 @@ echo ""
 echo -e "${GREEN}PDS (3000):${NC}      localhost:3001 → device:3000 ${YELLOW}(DID document port)${NC}"
 echo -e "${GREEN}PDS (3001):${NC}      localhost:3001 → device:3001"
 echo -e "${GREEN}PLC (3002):${NC}      localhost:3002 → device:3002"
+echo -e "${GREEN}Caddy (8080):${NC}   localhost:8080 → device:8080 ${YELLOW}(OAuth callbacks)${NC}"
 echo -e "${GREEN}AppView (8081):${NC}  localhost:8081 → device:8081"
 echo ""
 echo -e "${CYAN}═══════════════════════════════════════════════════════════${NC}"
