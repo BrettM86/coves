@@ -3,6 +3,7 @@ feedparser==6.0.11
 beautifulsoup4==4.12.3
 requests==2.31.0
 pyyaml==6.0.1
+anthropic>=0.40.0
 
 # Testing
 pytest==8.1.1

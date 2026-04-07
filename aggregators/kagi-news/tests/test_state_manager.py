@@ -225,3 +225,104 @@ class TestStateManager:
         # Old entry should be gone
         assert not manager.is_posted(feed_url, "old-guid")
         assert manager.is_posted(feed_url, "new-guid")
+
+    def test_mark_posted_stores_title_and_summary(self, temp_state_file):
+        """Test that mark_posted stores title and summary_snippet."""
+        manager = StateManager(temp_state_file)
+        feed_url = "https://news.kagi.com/world.xml"
+
+        manager.mark_posted(
+            feed_url, "guid-1", "at://test/1",
+            title="US announces tariffs",
+            summary_snippet="The United States has announced new tariffs on goods."
+        )
+
+        state_data = json.loads(temp_state_file.read_text())
+        entry = state_data['feeds'][feed_url]['posted_guids'][0]
+        assert entry['title'] == "US announces tariffs"
+        assert entry['summary_snippet'] == "The United States has announced new tariffs on goods."
+
+    def test_mark_posted_truncates_summary_to_200(self, temp_state_file):
+        """Test that summary_snippet is truncated to 200 characters."""
+        manager = StateManager(temp_state_file)
+        feed_url = "https://news.kagi.com/world.xml"
+
+        long_summary = "x" * 300
+        manager.mark_posted(
+            feed_url, "guid-1", "at://test/1",
+            title="Title", summary_snippet=long_summary
+        )
+
+        state_data = json.loads(temp_state_file.read_text())
+        entry = state_data['feeds'][feed_url]['posted_guids'][0]
+        assert len(entry['summary_snippet']) == 200
+
+    def test_get_recent_stories_within_window(self, temp_state_file):
+        """Test get_recent_stories returns entries within lookback window."""
+        manager = StateManager(temp_state_file)
+        feed_url = "https://news.kagi.com/world.xml"
+
+        # Add a recent story with title
+        manager.mark_posted(
+            feed_url, "guid-1", "at://test/1",
+            title="Recent Story", summary_snippet="Recent summary"
+        )
+
+        recent = manager.get_recent_stories(feed_url, days=4)
+        assert len(recent) == 1
+        assert recent[0]['id'] == "guid-1"
+        assert recent[0]['title'] == "Recent Story"
+        assert recent[0]['summary'] == "Recent summary"
+
+    def test_get_recent_stories_excludes_old_entries(self, temp_state_file):
+        """Test that get_recent_stories excludes entries outside lookback."""
+        manager = StateManager(temp_state_file)
+        feed_url = "https://news.kagi.com/world.xml"
+
+        # Manually add an old entry with title
+        old_timestamp = (datetime.now() - timedelta(days=5)).isoformat()
+        state_data = {
+            'feeds': {
+                feed_url: {
+                    'posted_guids': [{
+                        'guid': 'old-guid',
+                        'post_uri': 'at://test/old',
+                        'posted_at': old_timestamp,
+                        'title': 'Old Story',
+                        'summary_snippet': 'Old summary'
+                    }],
+                    'last_successful_run': None
+                }
+            }
+        }
+        temp_state_file.write_text(json.dumps(state_data, indent=2))
+
+        manager = StateManager(temp_state_file)
+        recent = manager.get_recent_stories(feed_url, days=4)
+        assert len(recent) == 0
+
+    def test_get_recent_stories_skips_entries_without_title(self, temp_state_file):
+        """Test backward compat: entries without title are skipped."""
+        manager = StateManager(temp_state_file)
+        feed_url = "https://news.kagi.com/world.xml"
+
+        # Old-format entry (no title)
+        manager.mark_posted(feed_url, "old-format-guid", "at://test/1")
+
+        # New-format entry (with title)
+        manager.mark_posted(
+            feed_url, "new-format-guid", "at://test/2",
+            title="Story Title", summary_snippet="Summary"
+        )
+
+        recent = manager.get_recent_stories(feed_url, days=4)
+        assert len(recent) == 1
+        assert recent[0]['id'] == "new-format-guid"
+
+    def test_get_recent_stories_empty_feed(self, temp_state_file):
+        """Test get_recent_stories with no entries."""
+        manager = StateManager(temp_state_file)
+        feed_url = "https://news.kagi.com/world.xml"
+
+        recent = manager.get_recent_stories(feed_url, days=4)
+        assert recent == []

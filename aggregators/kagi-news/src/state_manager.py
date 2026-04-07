@@ -6,6 +6,8 @@ Uses JSON file for persistence.
 """
 import json
 import logging
+import os
+import tempfile
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List
@@ -64,8 +66,21 @@ class StateManager:
         # Ensure parent directory exists
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
 
-        with open(self.state_file, 'w') as f:
-            json.dump(state, f, indent=2)
+        # Atomic write: write to temp file then rename to avoid corruption
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(self.state_file.parent), suffix='.tmp'
+        )
+        try:
+            with os.fdopen(fd, 'w') as f:
+                json.dump(state, f, indent=2)
+            os.replace(tmp_path, str(self.state_file))
+        except BaseException:
+            # Clean up temp file on any failure
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def _ensure_feed_exists(self, feed_url: str):
         """Ensure feed entry exists in state."""
@@ -91,7 +106,8 @@ class StateManager:
         posted_guids = self.state['feeds'][feed_url]['posted_guids']
         return any(entry['guid'] == guid for entry in posted_guids)
 
-    def mark_posted(self, feed_url: str, guid: str, post_uri: str):
+    def mark_posted(self, feed_url: str, guid: str, post_uri: str,
+                    title: str = "", summary_snippet: str = ""):
         """
         Mark a story as posted.
 
@@ -99,6 +115,8 @@ class StateManager:
             feed_url: RSS feed URL
             guid: Story GUID
             post_uri: AT Proto URI of created post
+            title: Story title (for semantic dedup)
+            summary_snippet: First 200 chars of summary (for semantic dedup)
         """
         self._ensure_feed_exists(feed_url)
 
@@ -106,7 +124,9 @@ class StateManager:
         entry = {
             'guid': guid,
             'post_uri': post_uri,
-            'posted_at': datetime.now().isoformat()
+            'posted_at': datetime.now().isoformat(),
+            'title': title,
+            'summary_snippet': summary_snippet[:200] if summary_snippet else ""
         }
         self.state['feeds'][feed_url]['posted_guids'].append(entry)
 
@@ -185,6 +205,45 @@ class StateManager:
 
         if old_count != new_count:
             logger.info(f"Cleaned up {old_count - new_count} old entries for {feed_url}")
+
+    def get_recent_stories(self, feed_url: str, days: int = 4) -> List[Dict]:
+        """
+        Get recently posted stories with title and summary for semantic comparison.
+
+        Args:
+            feed_url: RSS feed URL
+            days: Number of days to look back (default: 4)
+
+        Returns:
+            List of dicts with keys: id, title, summary
+            Only includes entries that have title data (backward compatible).
+        """
+        self._ensure_feed_exists(feed_url)
+
+        cutoff = datetime.now() - timedelta(days=days)
+        recent = []
+
+        for entry in self.state['feeds'][feed_url]['posted_guids']:
+            try:
+                # Skip entries without title (old format)
+                title = entry.get('title', '')
+                if not title:
+                    continue
+
+                posted_at = datetime.fromisoformat(entry['posted_at'])
+                if posted_at > cutoff:
+                    recent.append({
+                        'id': entry['guid'],
+                        'title': title,
+                        'summary': entry.get('summary_snippet', '')
+                    })
+            except (ValueError, KeyError) as e:
+                logger.warning(
+                    f"Skipping malformed state entry for feed '{feed_url}': {e}"
+                )
+                continue
+
+        return recent
 
     def get_posted_count(self, feed_url: str) -> int:
         """

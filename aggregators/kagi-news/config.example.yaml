@@ -28,5 +28,12 @@ feeds:
     community_handle: "c-science.coves.social"
     enabled: true
 
+# Semantic deduplication (uses Claude Haiku to detect similar stories)
+# Requires ANTHROPIC_API_KEY environment variable when enabled
+dedup:
+  semantic_enabled: true
+  similarity_threshold: 0.8   # 0.0-1.0, higher = stricter matching
+  lookback_days: 4             # Compare against stories posted within this window
+
 # Logging configuration
 log_level: "info"  # debug, info, warning, error

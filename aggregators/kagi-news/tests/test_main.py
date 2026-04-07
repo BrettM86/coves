@@ -10,7 +10,7 @@ from unittest.mock import Mock, MagicMock, patch, call
 import feedparser
 
 from src.main import Aggregator
-from src.models import KagiStory, AggregatorConfig, FeedConfig, Perspective, Quote, Source
+from src.models import KagiStory, AggregatorConfig, FeedConfig, DedupConfig, Perspective, Quote, Source
 
 
 @pytest.fixture
@@ -38,7 +38,8 @@ def mock_config():
                 enabled=False
             )
         ],
-        log_level="info"
+        log_level="info",
+        dedup=DedupConfig(semantic_enabled=False)
     )
 
 
@@ -596,3 +597,164 @@ class TestAggregator:
 
             # Verify sources is None (empty list becomes None)
             assert call_kwargs.get("sources") is None
+
+    def test_semantic_dedup_filters_duplicates(self, mock_rss_feed, tmp_path):
+        """Test that semantic dedup filters out similar stories when recent stories exist."""
+        import json
+
+        # Config with semantic dedup enabled
+        config = AggregatorConfig(
+            coves_api_url="https://api.coves.social",
+            feeds=[
+                FeedConfig(
+                    name="World News",
+                    url="https://news.kagi.com/world.xml",
+                    community_handle="world-news.coves.social",
+                    enabled=True
+                )
+            ],
+            log_level="info",
+            dedup=DedupConfig(semantic_enabled=True, lookback_days=4)
+        )
+
+        # Pre-populate state with recent stories so get_recent_stories returns data
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps({
+            "feeds": {
+                "https://news.kagi.com/world.xml": {
+                    "posted_guids": [
+                        {
+                            "guid": "existing-1",
+                            "post_uri": "at://test/1",
+                            "posted_at": datetime.now().isoformat(),
+                            "title": "US announces new tariffs on China",
+                            "summary_snippet": "The United States has announced new tariffs."
+                        }
+                    ],
+                    "last_successful_run": None
+                }
+            }
+        }))
+
+        mock_client = Mock()
+        mock_client.create_post.return_value = "at://did:plc:test/social.coves.post/abc123"
+
+        # Create two distinct stories so we can verify one is filtered and one is not
+        story_1 = KagiStory(
+            title="Trade tensions escalate as US tariffs take effect",
+            link="https://kite.kagi.com/test/world/1",
+            guid="https://kite.kagi.com/test/world/1",
+            pub_date=datetime(2024, 1, 15, 12, 0, 0),
+            categories=["World"],
+            summary="US tariffs on Chinese goods go into effect.",
+            highlights=[], perspectives=[], quote=None, sources=[],
+            image_url=None, image_alt=None
+        )
+        story_2 = KagiStory(
+            title="Earthquake hits Turkey killing dozens",
+            link="https://kite.kagi.com/test/world/2",
+            guid="https://kite.kagi.com/test/world/2",
+            pub_date=datetime(2024, 1, 15, 13, 0, 0),
+            categories=["World"],
+            summary="A 6.5 magnitude earthquake struck southeastern Turkey.",
+            highlights=[], perspectives=[], quote=None, sources=[],
+            image_url=None, image_alt=None
+        )
+
+        # Mock semantic dedup to mark first story as duplicate of existing-1
+        mock_dedup = Mock()
+        mock_dedup.find_duplicates.return_value = {"https://kite.kagi.com/test/world/1"}
+
+        with patch('src.main.ConfigLoader') as MockConfigLoader, \
+             patch('src.main.RSSFetcher') as MockRSSFetcher, \
+             patch('src.main.KagiHTMLParser') as MockHTMLParser, \
+             patch('src.main.RichTextFormatter') as MockFormatter:
+
+            mock_loader = Mock()
+            mock_loader.load.return_value = config
+            MockConfigLoader.return_value = mock_loader
+
+            mock_fetcher = Mock()
+            mock_fetcher.fetch_feed.return_value = mock_rss_feed
+            MockRSSFetcher.return_value = mock_fetcher
+
+            mock_parser = Mock()
+            # Return different stories for the two entries
+            mock_parser.parse_to_story.side_effect = [story_1, story_2]
+            MockHTMLParser.return_value = mock_parser
+
+            mock_formatter = Mock()
+            mock_formatter.format_full.return_value = {
+                "content": "Test content",
+                "facets": []
+            }
+            MockFormatter.return_value = mock_formatter
+
+            aggregator = Aggregator(
+                config_path=Path("config.yaml"),
+                state_file=state_file,
+                coves_client=mock_client,
+                semantic_dedup=mock_dedup
+            )
+            aggregator.run()
+
+            # find_duplicates should have been called with the new stories
+            mock_dedup.find_duplicates.assert_called_once()
+            call_args = mock_dedup.find_duplicates.call_args
+            new_for_comparison = call_args[0][0]
+            recent_for_comparison = call_args[0][1]
+
+            # Should have passed both new candidates
+            assert len(new_for_comparison) == 2
+            # Should have passed the pre-populated recent story
+            assert len(recent_for_comparison) == 1
+            assert recent_for_comparison[0]["id"] == "existing-1"
+
+            # Only story_2 should be posted (story_1 was marked as duplicate)
+            assert mock_client.create_post.call_count == 1
+            posted_title = mock_client.create_post.call_args.kwargs.get("title")
+            assert posted_title == "Earthquake hits Turkey killing dozens"
+
+    def test_semantic_dedup_disabled_skips_check(self, mock_config, mock_rss_feed, sample_story, tmp_path):
+        """Test that semantic dedup is skipped when disabled."""
+        state_file = tmp_path / "state.json"
+        mock_client = Mock()
+        mock_client.create_post.return_value = "at://did:plc:test/social.coves.post/abc123"
+
+        mock_dedup = Mock()
+
+        with patch('src.main.ConfigLoader') as MockConfigLoader, \
+             patch('src.main.RSSFetcher') as MockRSSFetcher, \
+             patch('src.main.KagiHTMLParser') as MockHTMLParser, \
+             patch('src.main.RichTextFormatter') as MockFormatter:
+
+            mock_loader = Mock()
+            mock_loader.load.return_value = mock_config  # dedup disabled
+            MockConfigLoader.return_value = mock_loader
+
+            mock_fetcher = Mock()
+            mock_fetcher.fetch_feed.return_value = mock_rss_feed
+            MockRSSFetcher.return_value = mock_fetcher
+
+            mock_parser = Mock()
+            mock_parser.parse_to_story.return_value = sample_story
+            MockHTMLParser.return_value = mock_parser
+
+            mock_formatter = Mock()
+            mock_formatter.format_full.return_value = {
+                "content": "Test content",
+                "facets": []
+            }
+            MockFormatter.return_value = mock_formatter
+
+            aggregator = Aggregator(
+                config_path=Path("config.yaml"),
+                state_file=state_file,
+                coves_client=mock_client
+            )
+            # semantic_dedup should be None when disabled
+            assert aggregator.semantic_dedup is None
+
+            aggregator.run()
+            # All stories should be posted (no semantic filtering)
+            assert mock_client.create_post.call_count == 4

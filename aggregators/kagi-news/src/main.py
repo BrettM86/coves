@@ -24,6 +24,7 @@ from src.html_parser import KagiHTMLParser
 from src.richtext_formatter import RichTextFormatter
 from src.state_manager import StateManager
 from src.coves_client import CovesClient
+from src.semantic_dedup import SemanticDeduplicator
 
 # Setup logging
 logging.basicConfig(
@@ -44,7 +45,8 @@ class Aggregator:
         self,
         config_path: Path,
         state_file: Path,
-        coves_client: Optional[CovesClient] = None
+        coves_client: Optional[CovesClient] = None,
+        semantic_dedup: Optional[SemanticDeduplicator] = None
     ):
         """
         Initialize aggregator.
@@ -53,6 +55,7 @@ class Aggregator:
             config_path: Path to config.yaml
             state_file: Path to state.json
             coves_client: Optional CovesClient (for testing)
+            semantic_dedup: Optional SemanticDeduplicator (for testing)
         """
         # Load configuration
         logger.info("Loading configuration...")
@@ -83,6 +86,25 @@ class Aggregator:
                 api_url=self.config.coves_api_url,
                 api_key=api_key
             )
+
+        # Initialize semantic deduplicator (or use provided one for testing)
+        if semantic_dedup:
+            self.semantic_dedup = semantic_dedup
+        elif self.config.dedup.semantic_enabled:
+            anthropic_key = os.getenv('ANTHROPIC_API_KEY')
+            if not anthropic_key:
+                raise ValueError(
+                    "ANTHROPIC_API_KEY environment variable required when "
+                    "dedup.semantic_enabled is true. Set the env var or "
+                    "set dedup.semantic_enabled: false in config."
+                )
+            self.semantic_dedup = SemanticDeduplicator(
+                api_key=anthropic_key,
+                threshold=self.config.dedup.similarity_threshold
+            )
+            logger.info("Semantic deduplication enabled")
+        else:
+            self.semantic_dedup = None
 
     def run(self):
         """
@@ -123,6 +145,11 @@ class Aggregator:
         """
         Process a single RSS feed.
 
+        Three phases:
+        1. Parse all entries, filter by exact GUID match
+        2. Filter by semantic similarity (if enabled)
+        3. Post remaining candidates
+
         Args:
             feed_config: FeedConfig object
         """
@@ -139,20 +166,19 @@ class Aggregator:
         if feed.bozo:
             logger.warning(f"Feed '{feed_config.name}' has parsing issues (bozo flag set)")
 
-        # Process entries
-        new_posts = 0
-        skipped_posts = 0
+        # Phase 1: Parse all entries, filter by exact GUID
+        # Store as (entry_guid, story) tuples to preserve the authoritative GUID
+        candidates = []
+        skipped_guid = 0
 
         for entry in feed.entries:
             try:
-                # Check if already posted
                 guid = entry.guid if hasattr(entry, 'guid') else entry.link
                 if self.state_manager.is_posted(feed_config.url, guid):
-                    skipped_posts += 1
+                    skipped_guid += 1
                     logger.debug(f"Skipping already-posted story: {guid}")
                     continue
 
-                # Parse story
                 story = self.html_parser.parse_to_story(
                     title=entry.title,
                     link=entry.link,
@@ -161,11 +187,37 @@ class Aggregator:
                     categories=[tag.term for tag in entry.tags] if hasattr(entry, 'tags') else [],
                     html_description=entry.description
                 )
+                candidates.append((guid, story))
 
-                # Format as rich text
+            except Exception as e:
+                logger.error(f"Error processing entry: {e}", exc_info=True)
+                continue
+
+        # Phase 2: Semantic dedup (within same feed only)
+        skipped_semantic = 0
+        if self.semantic_dedup and candidates:
+            recent_stories = self.state_manager.get_recent_stories(
+                feed_config.url, self.config.dedup.lookback_days
+            )
+            if recent_stories:
+                new_for_comparison = [
+                    {"id": guid, "title": story.title, "summary": (story.summary or "")[:200]}
+                    for guid, story in candidates
+                ]
+                duplicate_ids = self.semantic_dedup.find_duplicates(
+                    new_for_comparison, recent_stories
+                )
+                before_count = len(candidates)
+                candidates = [(g, s) for g, s in candidates if g not in duplicate_ids]
+                skipped_semantic = before_count - len(candidates)
+
+        # Phase 3: Post remaining candidates
+        new_posts = 0
+        failed_posts = 0
+        for guid, story in candidates:
+            try:
                 rich_text = self.richtext_formatter.format_full(story)
 
-                # Create external embed with sources
                 sources = [
                     {"uri": s.url, "title": s.title, "domain": s.domain}
                     for s in story.sources
@@ -178,38 +230,35 @@ class Aggregator:
                     sources=sources
                 )
 
-                # Post to community
-                # Pass thumbnail URL from RSS feed at top level for trusted aggregator upload
-                try:
-                    post_uri = self.coves_client.create_post(
-                        community_handle=feed_config.community_handle,
-                        title=story.title,
-                        content=rich_text["content"],
-                        facets=rich_text["facets"],
-                        embed=embed,
-                        thumbnail_url=story.image_url  # From RSS feed - server will validate and upload
-                    )
+                post_uri = self.coves_client.create_post(
+                    community_handle=feed_config.community_handle,
+                    title=story.title,
+                    content=rich_text["content"],
+                    facets=rich_text["facets"],
+                    embed=embed,
+                    thumbnail_url=story.image_url
+                )
 
-                    # Mark as posted (only if successful)
-                    self.state_manager.mark_posted(feed_config.url, guid, post_uri)
-                    new_posts += 1
-                    logger.info(f"Posted: {story.title[:50]}... -> {post_uri}")
-
-                except Exception as e:
-                    # Don't update state if posting failed
-                    logger.error(f"Failed to post story '{story.title}': {e}")
-                    continue
+                self.state_manager.mark_posted(
+                    feed_config.url, guid, post_uri,
+                    title=story.title,
+                    summary_snippet=story.summary[:200]
+                )
+                new_posts += 1
+                logger.info(f"Posted: {story.title[:50]}... -> {post_uri}")
 
             except Exception as e:
-                # Log error but continue with other entries
-                logger.error(f"Error processing entry: {e}", exc_info=True)
+                failed_posts += 1
+                logger.error(f"Failed to post story '{story.title}' in feed '{feed_config.name}': {e}")
                 continue
 
         # Update last run timestamp
         self.state_manager.update_last_run(feed_config.url, datetime.now())
 
         logger.info(
-            f"Feed '{feed_config.name}': {new_posts} new posts, {skipped_posts} duplicates"
+            f"Feed '{feed_config.name}': {new_posts} new, "
+            f"{failed_posts} failed, "
+            f"{skipped_guid} exact dupes, {skipped_semantic} semantic dupes"
         )
 
 

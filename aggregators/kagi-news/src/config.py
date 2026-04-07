@@ -10,7 +10,7 @@ from typing import Dict, Any
 import yaml
 from urllib.parse import urlparse
 
-from src.models import AggregatorConfig, FeedConfig
+from src.models import AggregatorConfig, FeedConfig, DedupConfig
 
 logger = logging.getLogger(__name__)
 
@@ -105,12 +105,20 @@ class ConfigLoader:
             feed = self._parse_feed(feed_data)
             feeds.append(feed)
 
+        # Parse dedup config (optional, defaults if missing)
+        dedup_data = data.get('dedup', {})
+        # Filter to only known DedupConfig fields to avoid TypeError on unknown keys
+        known_dedup_fields = {f.name for f in DedupConfig.__dataclass_fields__.values()}
+        filtered_dedup_data = {k: v for k, v in dedup_data.items() if k in known_dedup_fields}
+        dedup = DedupConfig(**filtered_dedup_data)
+
         logger.info(f"Loaded configuration with {len(feeds)} feeds ({sum(1 for f in feeds if f.enabled)} enabled)")
 
         return AggregatorConfig(
             coves_api_url=coves_api_url,
             feeds=feeds,
-            log_level=log_level
+            log_level=log_level,
+            dedup=dedup
         )
 
     def _parse_feed(self, data: Dict[str, Any]) -> FeedConfig:

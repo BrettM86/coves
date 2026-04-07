@@ -72,9 +72,28 @@ class FeedConfig:
     enabled: bool = True
 
 
+@dataclass(frozen=True)
+class DedupConfig:
+    """Configuration for semantic deduplication."""
+    semantic_enabled: bool = True
+    similarity_threshold: float = 0.8
+    lookback_days: int = 4
+
+    def __post_init__(self):
+        if not (0.0 <= self.similarity_threshold <= 1.0):
+            raise ValueError(
+                f"similarity_threshold must be between 0.0 and 1.0, got {self.similarity_threshold}"
+            )
+        if self.lookback_days < 1:
+            raise ValueError(
+                f"lookback_days must be >= 1, got {self.lookback_days}"
+            )
+
+
 @dataclass
 class AggregatorConfig:
     """Full aggregator configuration."""
     coves_api_url: str
     feeds: List[FeedConfig]
     log_level: str = "info"
+    dedup: DedupConfig = field(default_factory=DedupConfig)
