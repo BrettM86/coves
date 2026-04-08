@@ -22,7 +22,8 @@ RUN pip install --no-cache-dir \
     beautifulsoup4==4.12.3 \
     requests==2.31.0 \
     atproto==0.0.55 \
-    pyyaml==6.0.1
+    pyyaml==6.0.1 \
+    anthropic>=0.40.0
 
 # Copy application code
 COPY src/ ./src/
