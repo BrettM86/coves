@@ -49,9 +49,8 @@ func (h *Handlers) LandingHandler(w http.ResponseWriter, r *http.Request) {
 	data := LandingPageData{
 		Title:       "Coves - Community-Driven Forums on atProto",
 		Description: "Coves is a forum-like social app built on the AT Protocol. Join communities, share content, and own your data.",
-		// App store URLs - update these when apps are published
-		AppStoreURL:  "https://apps.apple.com/app/coves",
-		PlayStoreURL: "https://play.google.com/store/apps/details?id=social.coves.app",
+		AppStoreURL:  "https://apps.apple.com/us/app/coves-social/id6758530907",
+		PlayStoreURL: "https://play.google.com/store/apps/details?id=social.coves",
 	}
 
 	if err := h.templates.Render(w, "landing.html", data); err != nil {

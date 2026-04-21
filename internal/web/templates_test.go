@@ -44,15 +44,17 @@ func TestTemplatesRender_LandingPage(t *testing.T) {
 	if !bytes.Contains([]byte(body), []byte("Test Description")) {
 		t.Error("Rendered output does not contain description")
 	}
-	// App store buttons show "Coming soon" placeholder text (not links yet)
-	if !bytes.Contains([]byte(body), []byte("Coming soon to")) {
-		t.Error("Rendered output does not contain App Store coming soon text")
-	}
 	if !bytes.Contains([]byte(body), []byte("App Store")) {
 		t.Error("Rendered output does not contain App Store text")
 	}
 	if !bytes.Contains([]byte(body), []byte("Google Play")) {
 		t.Error("Rendered output does not contain Google Play text")
+	}
+	if !bytes.Contains([]byte(body), []byte(data.AppStoreURL)) {
+		t.Error("Rendered output does not link to App Store URL")
+	}
+	if !bytes.Contains([]byte(body), []byte(data.PlayStoreURL)) {
+		t.Error("Rendered output does not link to Play Store URL")
 	}
 	if !bytes.Contains([]byte(body), []byte("/static/images/lil_dude.png")) {
 		t.Error("Rendered output does not contain mascot image path")
