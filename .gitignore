@@ -54,3 +54,6 @@ Thumbs.db
 
 # Go build cache
 .cache/
+
+# Local-only Claude Code commands (contains prod host references)
+.claude/commands/deploy.md
