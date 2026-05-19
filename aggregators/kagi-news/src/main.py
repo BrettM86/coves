@@ -2,8 +2,8 @@
 Main Orchestration Script for Kagi News Aggregator.
 
 Coordinates all components to:
-1. Fetch RSS feeds
-2. Parse HTML content
+1. Fetch RSS (XML) and JSON sibling feeds; join clusters on cluster_number
+2. Build KagiStory objects from JSON's pre-structured content
 3. Format as rich text
 4. Deduplicate stories
 5. Post to Coves communities
@@ -15,12 +15,14 @@ import os
 import sys
 import logging
 from pathlib import Path
-from datetime import datetime
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Dict, Optional
+from urllib.parse import urlparse
 
+from src.citations import build_index, strip as strip_citations
 from src.config import ConfigLoader
-from src.rss_fetcher import RSSFetcher
-from src.html_parser import KagiHTMLParser
+from src.rss_fetcher import RSSFetcher, JSONFetcher
+from src.json_parser import KagiJSONParser
 from src.richtext_formatter import RichTextFormatter
 from src.state_manager import StateManager
 from src.coves_client import CovesClient
@@ -65,7 +67,8 @@ class Aggregator:
         # Initialize components
         logger.info("Initializing components...")
         self.rss_fetcher = RSSFetcher()
-        self.html_parser = KagiHTMLParser()
+        self.json_fetcher = JSONFetcher()
+        self.json_parser = KagiJSONParser()
         self.richtext_formatter = RichTextFormatter()
         self.state_manager = StateManager(state_file)
         self.state_file = state_file
@@ -155,7 +158,7 @@ class Aggregator:
         """
         logger.info(f"Processing feed: {feed_config.name} -> {feed_config.community_handle}")
 
-        # Fetch RSS feed
+        # Fetch RSS feed (XML) — provides link, guid, pubDate, categories, title
         try:
             feed = self.rss_fetcher.fetch_feed(feed_config.url)
         except Exception as e:
@@ -166,10 +169,25 @@ class Aggregator:
         if feed.bozo:
             logger.warning(f"Feed '{feed_config.name}' has parsing issues (bozo flag set)")
 
+        # Fetch the matching JSON feed for rich, pre-structured content.
+        # The .json sibling URL is derived from the configured .xml URL.
+        if not feed_config.url.endswith('.xml'):
+            raise ValueError(
+                f"Feed '{feed_config.name}' URL must end with '.xml' to derive the "
+                f"JSON sibling URL; got: {feed_config.url!r}"
+            )
+        json_url = feed_config.url[:-len('.xml')] + '.json'
+        try:
+            clusters = self.json_fetcher.fetch_clusters(json_url)
+        except Exception as e:
+            logger.error(f"Failed to fetch JSON feed '{json_url}': {e}")
+            raise
+
         # Phase 1: Parse all entries, filter by exact GUID
         # Store as (entry_guid, story) tuples to preserve the authoritative GUID
         candidates = []
         skipped_guid = 0
+        resolved_count = 0
 
         for entry in feed.entries:
             try:
@@ -179,19 +197,62 @@ class Aggregator:
                     logger.debug(f"Skipping already-posted story: {guid}")
                     continue
 
-                story = self.html_parser.parse_to_story(
+                cluster = self._resolve_json_cluster(entry, clusters)
+                if cluster is None:
+                    continue
+
+                resolved_count += 1
+
+                # Normalize feedparser's struct_time to a real timezone-aware
+                # datetime so json_parser.parse_to_story's `datetime` annotation
+                # is honored. Skip the entry if published_parsed is missing.
+                published_parsed = getattr(entry, 'published_parsed', None)
+                if published_parsed is None:
+                    logger.warning(
+                        f"Entry missing published_parsed; skipping: "
+                        f"guid={guid!r} title={getattr(entry, 'title', '<no-title>')!r}"
+                    )
+                    continue
+                pub_date = datetime(*published_parsed[:6], tzinfo=timezone.utc)
+
+                story = self.json_parser.parse_to_story(
                     title=entry.title,
                     link=entry.link,
                     guid=guid,
-                    pub_date=entry.published_parsed,
+                    pub_date=pub_date,
                     categories=[tag.term for tag in entry.tags] if hasattr(entry, 'tags') else [],
-                    html_description=entry.description
+                    json_cluster=cluster,
                 )
                 candidates.append((guid, story))
 
             except Exception as e:
-                logger.error(f"Error processing entry: {e}", exc_info=True)
+                logger.error(
+                    f"Error processing entry "
+                    f"guid={getattr(entry, 'guid', '<no-guid>')!r} "
+                    f"title={getattr(entry, 'title', '<no-title>')!r}: {e}",
+                    exc_info=True,
+                )
                 continue
+
+        # Tripwire: 0-resolved with non-empty entries means TITLE-format drift
+        # (or wholesale removal of overlap with JSON titles). Renumberings alone
+        # are absorbed by the title-scan fallback in `_resolve_json_cluster`,
+        # which only warns. Continue the run across other feeds.
+        if len(feed.entries) > 0 and resolved_count == 0:
+            logger.error(
+                f"Feed '{feed_config.name}' resolved 0 of {len(feed.entries)} entries "
+                f"to JSON clusters; Kagi JSON title-format may have changed "
+                f"(or no XML/JSON overlap)"
+            )
+
+        # Precompute citation-stripped summaries once per candidate so the dedup
+        # input, embed.description, and state snippet all use the cleaned text.
+        stripped_summaries: Dict[str, str] = {
+            guid: strip_citations(
+                story.summary, build_index(story.sources), context=story.link
+            )
+            for guid, story in candidates
+        }
 
         # Phase 2: Semantic dedup (within same feed only)
         skipped_semantic = 0
@@ -201,7 +262,7 @@ class Aggregator:
             )
             if recent_stories:
                 new_for_comparison = [
-                    {"id": guid, "title": story.title, "summary": (story.summary or "")[:200]}
+                    {"id": guid, "title": story.title, "summary": stripped_summaries[guid][:200]}
                     for guid, story in candidates
                 ]
                 duplicate_ids = self.semantic_dedup.find_duplicates(
@@ -223,10 +284,12 @@ class Aggregator:
                     for s in story.sources
                 ] if story.sources else None
 
+                stripped_summary = stripped_summaries[guid]
+                description = stripped_summary[:200]
                 embed = self.coves_client.create_external_embed(
                     uri=story.link,
                     title=story.title,
-                    description=story.summary[:200] if len(story.summary) > 200 else story.summary,
+                    description=description,
                     sources=sources
                 )
 
@@ -242,24 +305,100 @@ class Aggregator:
                 self.state_manager.mark_posted(
                     feed_config.url, guid, post_uri,
                     title=story.title,
-                    summary_snippet=story.summary[:200]
+                    summary_snippet=stripped_summary[:200]
                 )
                 new_posts += 1
                 logger.info(f"Posted: {story.title[:50]}... -> {post_uri}")
 
             except Exception as e:
                 failed_posts += 1
-                logger.error(f"Failed to post story '{story.title}' in feed '{feed_config.name}': {e}")
+                logger.error(
+                    f"Failed to post story guid={guid!r} title={story.title!r} "
+                    f"in feed '{feed_config.name}': {e}",
+                    exc_info=True,
+                )
                 continue
 
         # Update last run timestamp
-        self.state_manager.update_last_run(feed_config.url, datetime.now())
+        self.state_manager.update_last_run(feed_config.url, datetime.now(timezone.utc))
 
         logger.info(
             f"Feed '{feed_config.name}': {new_posts} new, "
             f"{failed_posts} failed, "
             f"{skipped_guid} exact dupes, {skipped_semantic} semantic dupes"
         )
+
+    @staticmethod
+    def _normalize_title(s: str) -> str:
+        """Normalize a title for tolerant equality: strip + casefold."""
+        return (s or "").strip().casefold()
+
+    def _resolve_json_cluster(self, entry, clusters: Dict[int, dict]) -> Optional[dict]:
+        """
+        Find the JSON cluster that corresponds to an XML feed entry.
+
+        Empirically, JSON.cluster_number = XML.cluster_number + 1. We take that
+        offset as the fast path and verify by title equality; if either fails,
+        we fall back to a title scan so an indexing change at Kagi doesn't
+        silently break joins.
+
+        Behavior:
+        - Fast-path hit (offset cluster exists AND title matches): returns silently.
+        - Title-scan fallback (exactly one cluster with the same title): WARN
+          "JSON join offset mismatch ... found by title scan instead"; returns it.
+        - Ambiguous title (multiple clusters share the title): WARN
+          "Ambiguous title match ..."; returns None.
+        - No match (offset miss AND zero title hits): WARN
+          "No matching JSON cluster for XML entry ..."; returns None.
+        - Bad entry.link (missing or non-string): WARN
+          "entry.link missing or not a string ..."; returns None.
+        - Unparseable trailing segment in entry.link: WARN
+          "Could not parse cluster_number from ..."; returns None.
+        """
+        # Kagi URL pattern: https://kite.kagi.com/<uuid>/<category>/<cluster_number>
+        link = getattr(entry, 'link', None)
+        if not isinstance(link, str) or not link:
+            logger.warning(
+                f"Could not parse cluster_number: entry.link missing or not a string "
+                f"(got {link!r}); skipping"
+            )
+            return None
+        try:
+            xml_cn = int(urlparse(link).path.rstrip('/').rsplit('/', 1)[-1])
+        except ValueError:
+            logger.warning(f"Could not parse cluster_number from {link!r}; skipping")
+            return None
+
+        entry_title_norm = Aggregator._normalize_title(getattr(entry, 'title', ''))
+
+        cluster = clusters.get(xml_cn + 1)
+        if cluster is not None and Aggregator._normalize_title(cluster.get("title", "")) == entry_title_norm:
+            return cluster
+
+        matches = [
+            c for c in clusters.values()
+            if Aggregator._normalize_title(c.get("title", "")) == entry_title_norm
+        ]
+        if len(matches) == 1:
+            logger.warning(
+                f"JSON join offset mismatch for cluster_number={xml_cn} "
+                f"(found by title scan instead); Kagi indexing may have changed"
+            )
+            return matches[0]
+
+        if len(matches) > 1:
+            logger.warning(
+                f"Ambiguous title match for XML entry cn={xml_cn} "
+                f"title={getattr(entry, 'title', '')!r}: {len(matches)} JSON clusters "
+                f"share this title; skipping"
+            )
+            return None
+
+        logger.warning(
+            f"No matching JSON cluster for XML entry cn={xml_cn} "
+            f"title={getattr(entry, 'title', '')!r}; skipping"
+        )
+        return None
 
 
 def main():

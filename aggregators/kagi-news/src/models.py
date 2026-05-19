@@ -1,5 +1,5 @@
 """
-Data models for Kagi News RSS aggregator.
+Data models for Kagi News aggregator.
 """
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -35,7 +35,8 @@ class KagiStory:
     """
     Structured representation of a Kagi News story.
 
-    Parsed from RSS feed item with HTML description.
+    Built from the RSS feed item (metadata + permalink) joined to the matching
+    cluster in the Kagi JSON feed (rich pre-structured content).
     """
     # RSS metadata
     title: str
@@ -44,7 +45,7 @@ class KagiStory:
     pub_date: datetime
     categories: List[str] = field(default_factory=list)
 
-    # Parsed from HTML description
+    # Parsed from Kagi JSON cluster
     summary: str = ""
     highlights: List[str] = field(default_factory=list)
     perspectives: List[Perspective] = field(default_factory=list)

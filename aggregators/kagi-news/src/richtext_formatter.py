@@ -5,8 +5,9 @@ Converts KagiStory objects to Coves rich text format with facets.
 Handles UTF-8 byte position calculation for multi-byte characters.
 """
 import logging
-from typing import Dict, List, Tuple
-from src.models import KagiStory, Perspective, Source
+from typing import Dict
+from src.citations import build_index, tokenize
+from src.models import KagiStory
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +33,11 @@ class RichTextFormatter:
             Dictionary with 'content' (str) and 'facets' (list)
         """
         builder = RichTextBuilder()
+        citation_index = build_index(story.sources)
+        context = story.link or story.title
 
         # Summary
-        builder.add_text(story.summary)
+        self._emit_with_citations(builder, story.summary, citation_index, context)
         builder.add_text("\n\n")
 
         # Highlights (if present)
@@ -42,7 +45,9 @@ class RichTextFormatter:
             builder.add_bold("Highlights:")
             builder.add_text("\n")
             for highlight in story.highlights:
-                builder.add_text(f"• {highlight}\n\n")
+                builder.add_text("• ")
+                self._emit_with_citations(builder, highlight, citation_index, context)
+                builder.add_text("\n\n")
             builder.add_text("\n")
 
         # Perspectives (if present)
@@ -50,10 +55,16 @@ class RichTextFormatter:
             builder.add_bold("Perspectives:")
             builder.add_text("\n")
             for perspective in story.perspectives:
-                # Bold the actor name
-                actor_with_colon = f"{perspective.actor}:"
-                builder.add_bold(actor_with_colon)
-                builder.add_text(f" {perspective.description}")
+                if perspective.actor:
+                    builder.add_bold(f"{perspective.actor}:")
+                    builder.add_text(" ")
+                    self._emit_with_citations(
+                        builder, perspective.description, citation_index, context
+                    )
+                else:
+                    self._emit_with_citations(
+                        builder, perspective.description, citation_index, context
+                    )
 
                 # Add link to source if available
                 if perspective.source_url:
@@ -67,9 +78,26 @@ class RichTextFormatter:
 
         # Quote (if present)
         if story.quote:
-            quote_text = f'"{story.quote.text}"'
-            builder.add_italic(quote_text)
-            builder.add_text(f" — {story.quote.attribution}\n\n")
+            # Defensive: quote text isn't currently observed to carry markers,
+            # but the formatter is the only place that decides how the value
+            # reaches the wire, so handle them here too. We emit the visible
+            # opening quote, then text/link spans, then the closing quote,
+            # and finally wrap the whole span in a single italic facet so the
+            # quote-as-a-whole still has italic styling even when a citation
+            # link facet sits inside it.
+            italic_start_byte = builder.current_byte_position()
+            builder.add_text('"')
+            self._emit_with_citations(builder, story.quote.text, citation_index, context)
+            builder.add_text('"')
+            italic_end_byte = builder.current_byte_position()
+            if italic_end_byte > italic_start_byte:
+                builder.add_italic_span(italic_start_byte, italic_end_byte)
+            # Only emit the em-dash + attribution suffix when an attribution
+            # is actually present; otherwise we'd render a bare " — " orphan.
+            if story.quote.attribution:
+                builder.add_text(f" — {story.quote.attribution}\n\n")
+            else:
+                builder.add_text("\n\n")
 
         # Sources (if present)
         if story.sources:
@@ -86,6 +114,21 @@ class RichTextFormatter:
         builder.add_link("Kagi News", story.link)
 
         return builder.build()
+
+    def _emit_with_citations(
+        self,
+        builder: "RichTextBuilder",
+        text: str,
+        citation_index,
+        context: str,
+    ) -> None:
+        """Emit `text` to `builder` with `[domain#N]` markers turned into link facets."""
+        for kind, payload in tokenize(text, citation_index, context):
+            if kind == "text":
+                builder.add_text(payload)
+            else:
+                visible_text, uri = payload
+                builder.add_link(visible_text, uri)
 
 
 class RichTextBuilder:
@@ -134,6 +177,27 @@ class RichTextBuilder:
                 {"$type": "social.coves.richtext.facet#italic"}
             ]
         })
+
+    def add_italic_span(self, start_byte: int, end_byte: int):
+        """
+        Attach an italic facet to an already-emitted span of bytes. Used when
+        the italic-styled region contains other facets (e.g. an inline citation
+        link inside a quote) so the whole quote still appears italic without
+        the inner facet fracturing it into multiple smaller italic facets.
+        """
+        self.facets.append({
+            "index": {
+                "byteStart": start_byte,
+                "byteEnd": end_byte
+            },
+            "features": [
+                {"$type": "social.coves.richtext.facet#italic"}
+            ]
+        })
+
+    def current_byte_position(self) -> int:
+        """Public byte-position accessor for callers building multi-facet spans."""
+        return self._get_current_byte_position()
 
     def add_link(self, text: str, uri: str):
         """Add text with link facet."""

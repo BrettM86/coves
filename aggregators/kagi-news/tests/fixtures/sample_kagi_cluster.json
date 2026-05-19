@@ -1,0 +1,666 @@
+{
+  "cluster_number": 1,
+  "category": "Messaging",
+  "title": "Apple adds encrypted iPhone-Android RCS in iOS 26.5",
+  "short_summary": "Apple released iOS 26.5 on May 11 with beta support for end-to-end encrypted RCS messages between iPhone and Android users. Apple said the feature is rolling out to iPhones on supported carriers and Android devices running the latest version of Google Messages [apple.com#1][macrumors.com#1][thehackernews.com#1][arstechnica.com#1]. The feature is enabled by default where available, and users will see a lock icon in eligible RCS chats; if the lock icon does not appear, the RCS conversation is not encrypted [apple.com#1][macrumors.com#1][arstechnica.com#1].\n\nApple said it worked with Google and the GSM Association on the cross-platform encryption effort, which is part of RCS Universal Profile 3.0 [apple.com#1][macrumors.com#1][slashdot.org#1]. The update also adds a Pride Luminance wallpaper and Suggested Places in Apple Maps. Apple’s security notes and related coverage said iOS 26.5 fixes more than 50 security vulnerabilities [macrumors.com#5][macrumors.com#4][9to5mac.com#2]. Apple also released iPadOS 26.5, macOS Tahoe 26.5, watchOS 26.5, tvOS 26.5, visionOS 26.5 and HomePod Software 26.5 on May 11 [arstechnica.com#1][appleworld.today#2].",
+  "primary_image": {
+    "url": "https://kagiproxy.com/img/jB_fNtu6cNJj1UYhIrJCRqoRTk2VC06ToHBQwJWq07oo0iA9h1V0GK1UmxZyjWBAecx2-JOBLqtmKWE0gzNitJQcBLHI6HfuKia9TjY-fVHorVz0Qo0nm6tDsHwb",
+    "caption": "Apple’s iOS 26.5 adds beta support for encrypted RCS chats between iPhone and Android users.",
+    "credit": "macrumors.com",
+    "link": "https://www.macrumors.com/2026/05/11/ios-26-5-rcs-e2ee-launch/"
+  },
+  "talking_points": [
+    "Carrier limits: Encrypted RCS requires both sender and recipient to use carriers that support the latest RCS implementation, and Apple said carrier availability will roll out over time [macrumors.com#1][9to5google.com#1][howtogeek.com#1].",
+    "Maps changes: iOS 26.5 adds Suggested Places in Apple Maps based on nearby trends and recent searches, and MacRumors reported that the update includes groundwork for Maps ads that are not yet live [macrumors.com#5][macworld.com#1].",
+    "EU wearable mechanics: MacRumors said third-party earbuds can use an AirPods-like one-tap pairing flow, third-party watches can view and react to iPhone notifications, and notification forwarding can be active on only one connected device at a time [macrumors.com#3].",
+    "Security fixes: Apple’s iOS 26.5 and iPadOS 26.5 updates address more than 50 vulnerabilities, including image, kernel, Shortcuts, Spotlight, screenshot and WebKit issues. MacRumors said none was known to have been actively exploited [macrumors.com#4][9to5mac.com#2]."
+  ],
+  "quote": "",
+  "quote_author": "",
+  "quote_attribution": "",
+  "quote_source_url": "",
+  "quote_source_domain": "",
+  "perspectives": [
+    {
+      "text": "Apple: Apple said the rollout makes RCS — the cross-platform format meant to replace SMS — more secure because encrypted RCS messages cannot be read while they are sent between devices.",
+      "sources": [
+        {
+          "name": "Apple Newsroom",
+          "url": "https://www.apple.com/newsroom/2026/05/end-to-end-encrypted-rcs-messaging-begins-rolling-out-today-in-beta/"
+        }
+      ]
+    },
+    {
+      "text": "MacRumors: MacRumors noted that encrypted RCS is included in the public iOS 26.5 release even though Apple still labels it beta, and said users can find a separate control for it in the Messages section of Settings.",
+      "sources": [
+        {
+          "name": "MacRumors",
+          "url": "https://www.macrumors.com/2026/05/11/ios-26-5-rcs-e2ee-launch/"
+        }
+      ]
+    },
+    {
+      "text": "AppleInsider: AppleInsider reported that iOS 26.5 did not show signs of upgraded Apple Intelligence features and instead appeared to lay groundwork for backend changes, including Apple Maps ads and Apple Intelligence in China.",
+      "sources": [
+        {
+          "name": "AppleInsider",
+          "url": "https://appleinsider.com/articles/26/05/11/no-signs-of-upgraded-apple-intelligence-as-ios-265-arrives-for-all-users"
+        }
+      ]
+    }
+  ],
+  "articles": [
+    {
+      "title": "Android and iPhone finally get end-to-end encrypted messaging",
+      "link": "https://www.intomobile.com/2026/05/11/android-and-iphone-finally-get-end-to-end-encrypted-messaging/",
+      "domain": "intomobile.com",
+      "date": "2026-05-12T03:53:50+00:00",
+      "author": "Dusan Belic",
+      "image": "https://kagiproxy.com/img/cYPWFUm2S-HiMynKj1eOX2BJG_XB91Q2P7-aJ0elyx93zooUJy_xHygNv7HE5qmVv_Xomq1d_fgPhS1waBdAJBY6oa6fEjSDIi3ld-PPXKoCpLMX6MKA6Cf-Jr5TnLqjtF4tsiVnySphBi85ZRZ0eOHfZd73rtIzoOZ6",
+      "image_caption": ""
+    },
+    {
+      "title": "iPhone-Android RCS Conversations Are End-To-End Encrypted In iOS 26.5",
+      "link": "https://it.slashdot.org/story/26/05/11/1834209/iphone-android-rcs-conversations-are-end-to-end-encrypted-in-ios-265",
+      "domain": "slashdot.org",
+      "date": "2026-05-11T19:00:00+00:00",
+      "author": "BeauHD",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS 26.5: These carriers offer RCS end-to-end encrypted messaging",
+      "link": "https://9to5mac.com/2026/05/11/ios-26-5-these-carriers-offer-rcs-end-to-end-encrypted-messaging/",
+      "domain": "9to5mac.com",
+      "date": "2026-05-11T19:06:49+00:00",
+      "author": "Ryan Christoffel",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "iPhone-Android RCS Conversations Are End-to-End Encrypted in iOS 26.5",
+      "link": "https://www.macrumors.com/2026/05/11/ios-26-5-rcs-e2ee-launch/",
+      "domain": "macrumors.com",
+      "date": "2026-05-11T17:25:13+00:00",
+      "author": "Juli Clover",
+      "image": "https://kagiproxy.com/img/PI4A1BlrC1vggqA31HgnIwHGRhNui35Nwgq2RIcSJVxIDaD_vofWRfw9i5RxOh6PyBii3vjbRGS_te72Q8fBcG0ZcX6CyBbT57cxbiTqNHlEz6KN26NC3USko4cC",
+      "image_caption": ""
+    },
+    {
+      "title": "Apple’s New iOS Update Finally Throws a Bone to the Android Green Bubbles",
+      "link": "https://gizmodo.com/apples-new-ios-update-finally-throws-a-bone-to-the-android-green-bubbles-2000757153",
+      "domain": "gizmodo.com",
+      "date": "2026-05-11T19:09:49+00:00",
+      "author": "Raymond Wong",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS 26.5 Brings Default End-to-End Encrypted RCS Messaging Between iPhone and Android",
+      "link": "https://thehackernews.com/2026/05/ios-265-brings-default-end-to-end.html",
+      "domain": "thehackernews.com",
+      "date": "2026-05-12T05:18:00+00:00",
+      "author": "The Hacker News",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "Update Your iPhone Now for Better Encrypted Messaging With Android",
+      "link": "https://www.wired.com/story/update-your-iphone-now-for-better-encrypted-messaging-with-android/",
+      "domain": "wired.com",
+      "date": "2026-05-11T17:06:53+00:00",
+      "author": "Reece Rogers",
+      "image": "https://kagiproxy.com/img/5SlFSpUpj3Gn4SDIlWA9gpduZ48KfdAFvh_bQ-BbvkboXOWgrFgrgbx6kqCPo_mRI6xKB8SmXENxOk8Jlk7e7EzzdrgbOUn3k8KB4omGP0UDLoYpR7Ps2wLusCikK047cYK0a8lp2QwjIqnyEx_lC_PPf5NO7ynvJJI",
+      "image_caption": ""
+    },
+    {
+      "title": "Android/iPhone end-to-end encrypted RCS starts rolling today",
+      "link": "https://pocketables.com/2026/05/android-iphone-end-to-end-encrypted-rcs-starts-rolling-today.html",
+      "domain": "pocketables.com",
+      "date": "2026-05-11T18:54:32+00:00",
+      "author": "Paul E King",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "These Canadian carriers now support end-to-end encrypted RCS with iOS 26.5",
+      "link": "https://mobilesyrup.com/2026/05/11/canadian-carriers-now-support-encrypted-rcs-ios-26/",
+      "domain": "mobilesyrup.com",
+      "date": "2026-05-11T18:09:07+00:00",
+      "author": "Dean Daley",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS end-to-end encrypted RCS messaging begins rolling today in beta",
+      "link": "https://www.engadget.com/2170011/ios-end-to-end-encrypted-rcs-messaging-begins-rolling-out-today-in-beta/",
+      "domain": "engadget.com",
+      "date": "2026-05-11T18:20:49+00:00",
+      "author": "Igor Bonifacic",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS-to-Android messaging just got a whole lot more private",
+      "link": "https://www.androidpolice.com/apple-begins-rolling-out-e2ee-rcs-messaging-in-beta/",
+      "domain": "androidpolice.com",
+      "date": "2026-05-11T19:08:39+00:00",
+      "author": "Karandeep Singh Oberoi",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "Finally, texts between Android and iPhone users can be end-to-end encrypted",
+      "link": "https://www.reddit.com/r/technology/comments/1taie1q/finally_texts_between_android_and_iphone_users/",
+      "domain": "reddit.com",
+      "date": "2026-05-11T22:16:51+00:00",
+      "author": "/u/rkhunter_",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "Encrypted RCS Between Android & iPhone Begins its Global Rollout: Privacy for Everyone",
+      "link": "https://www.androidheadlines.com/2026/05/ios-26-5-encrypted-rcs-android-iphone-rollout.html",
+      "domain": "androidheadlines.com",
+      "date": "2026-05-11T17:44:34+00:00",
+      "author": "Jean Leon",
+      "image": "https://kagiproxy.com/img/K9D4CvyMc1SkASWPRitnW_ChXej0fc2DpaxjMfeexj4Rwvunam6XpOXpMFT2yT1wYBMRVoZsp1q7QQrDIIOeVqP9hc-ptrjT1p69plG01RcFm1Y-N2-G6v8XjlkpWTCXBphlC7_xyHXln3i1mKAafnd0k05biI4tpegYnNSNSx2pfPUPZqlRLEgCMg",
+      "image_caption": ""
+    },
+    {
+      "title": "Finally, texts between Android and iPhone users can be end-to-end encrypted - TechCrunch",
+      "link": "https://news.google.com/rss/articles/CBMirgFBVV95cUxOUy1EN0VQNjFiTGJuaVJXUUVCMmNLQmVhQ1lMcnBQS01FdVBvcEJvMGZJX1BtS1BZVG5TT0syeTFTZGM3NHNxcmpid1I4YXFZVmJVY2Z3elAzLXhYczNneVpROVZtT21jMDdqUUxQM1dlWDd0YWQ1STNCLVFHeFlxanB3VHU2aUcxd183YU4xMndEZFcyWjF5RWotTzBwczNTVUFiVnJkcGtNYjZnM1E",
+      "domain": "google.com",
+      "date": "2026-05-11T21:59:34+00:00",
+      "author": null,
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "Apple Finally Adds RCS End-to-End Encryption With Android",
+      "link": "https://www.droid-life.com/2026/05/11/apple-finally-adds-rcs-end-to-end-encryption-with-android/",
+      "domain": "droid-life.com",
+      "date": "2026-05-11T18:53:33+00:00",
+      "author": "Kellen",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "Large-scale testing of encrypted RCS texting starts in iOS 26.5",
+      "link": "https://appleinsider.com/articles/26/05/11/large-scale-testing-of-encrypted-rcs-texting-starts-in-ios-265",
+      "domain": "appleinsider.com",
+      "date": "2026-05-11T18:33:39+00:00",
+      "author": "Amber Neely",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "These US carriers now support encrypted RCS messaging",
+      "link": "https://www.cultofmac.com/news/encrypted-rcs-messaging-us-carriers-iphone-android",
+      "domain": "cultofmac.com",
+      "date": "2026-05-12T00:09:40+00:00",
+      "author": "Ed Hardy",
+      "image": "https://kagiproxy.com/img/tPtkfHORM3FO0SmOJ00ye9b3kImjXZxBEjXQQe_rU4yVqx8YfFOazop4TQ0ym7MjQI3sR3_AYZe1fGYue29JvBhfYCQQQgpEdBSYKodLbILRiK7Elg_-FFxGsOmex_HLT6zI7mEb8q4jE8gRb8Mw3V5Tgs4phnNc46Kxn0IxQ3uWp-TbRvJnY8c",
+      "image_caption": ""
+    },
+    {
+      "title": "Encrypted RCS starts rolling out to Android and iPhone with iOS 26.5",
+      "link": "https://9to5google.com/2026/05/11/iphone-android-encrypted-rcs-ios-26-5/",
+      "domain": "9to5google.com",
+      "date": "2026-05-11T17:11:43+00:00",
+      "author": "Abner Li",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "Your Android-To-iPhone RCS Messages Are Now End-To-End Encrypted",
+      "link": "https://www.ndtvprofit.com/technology/your-android-to-iphone-rcs-messages-and-vice-versa-are-now-end-to-end-encrypted-11482285",
+      "domain": "ndtvprofit.com",
+      "date": "2026-05-12T05:52:40+00:00",
+      "author": null,
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS 26.5 is out, bringing encrypted RCS messaging to iPhone and Android users",
+      "link": "https://www.helpnetsecurity.com/2026/05/11/apple-ios-26-5-rcs-end-to-end-encryption-iphone-android/",
+      "domain": "helpnetsecurity.com",
+      "date": "2026-05-11T19:09:43+00:00",
+      "author": "Sinisa Markovic",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "Encrypted RCS messages now work on both Android and iPhone—here's what you need",
+      "link": "https://www.howtogeek.com/encrypted-rcs-messages-android-iphone-beta/",
+      "domain": "howtogeek.com",
+      "date": "2026-05-11T19:52:06+00:00",
+      "author": "Jon Fingas",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "End-to-end encrypted RCS messaging begins rolling out today for Android and iPhone users",
+      "link": "https://www.reddit.com/r/Android/comments/1ta9vmr/endtoend_encrypted_rcs_messaging_begins_rolling/",
+      "domain": "reddit.com",
+      "date": "2026-05-11T17:18:39+00:00",
+      "author": "/u/MishaalRahman",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "RCS chiffré entre iPhone et Android : Apple lance le déploiement avec iOS 26.5",
+      "link": "https://www.frandroid.com/marques/3095107_rcs-chiffre-entre-iphone-et-android-apple-lance-le-deploiement-avec-ios-26-5",
+      "domain": "frandroid.com",
+      "date": "2026-05-11T17:39:12+00:00",
+      "author": "Ulrich Rozier",
+      "image": "https://kagiproxy.com/img/mR-JhkeT7-HDgnPOK3wZcQgbiupSwHNOjojvv0_-DfLSYrB5W5KCp5s_ZIKzdXkFoY9MmEhKtA9Goh1qoz07P3TjavgcFg5qy1CDLv6wtdDA0-VPgneRDrLemCqiTz4LnTR-aIkkSBB9QD4TT55HsNuO2Iy51s_6fBiNL8S2eZLxBqMgNJOqc_kns89kNd0ZHXq_TvZ4j9J4JKR9yTIzECGMVmNMSKRDYqM",
+      "image_caption": ""
+    },
+    {
+      "title": "Apple and Google roll out end-to-end encrypted RCS messaging starting today",
+      "link": "https://macdailynews.com/2026/05/11/apple-and-google-roll-out-end-to-end-encrypted-rcs-messaging-starting-today/",
+      "domain": "macdailynews.com",
+      "date": "2026-05-11T19:12:02+00:00",
+      "author": "MacDailyNews",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "RCS-Verschlüsselung zwischen iOS und Android: So stellt Ihr Eure Chats richtig ein",
+      "link": "https://www.apfeltalk.de/magazin/news/rcs-verschluesselung-zwischen-ios-und-android-so-stellt-ihr-eure-chats-richtig-ein/",
+      "domain": "apfeltalk.de",
+      "date": "2026-05-12T05:00:19+00:00",
+      "author": "Michael Reimann",
+      "image": "https://kagiproxy.com/img/5yDVQFDjfl3UCnbAbxYxcS2jJJ1vZddBGG1tjPg6miQkrntt9MglKlJLJzWbDCMNdv_0RtDOaVQXmOINq7LVPombXyCGYzCQBcHx6XvCMi4jooMhWDD-2oH40cSEYhTjO8EU2UmfFq1t",
+      "image_caption": ""
+    },
+    {
+      "title": "End-to-end encrypted RCS messaging in iOS begins rolling out today in beta",
+      "link": "https://appleworld.today/2026/05/end-to-end-encrypted-rcs-messaging-in-ios-begins-rolling-out-today-in-beta/",
+      "domain": "appleworld.today",
+      "date": "2026-05-11T19:39:12+00:00",
+      "author": "Dennis Sellers",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS 26.5 Includes Beta Support for End-to-End Encrypted RCS Messaging",
+      "link": "https://www.apple.com/newsroom/2026/05/end-to-end-encrypted-rcs-messaging-begins-rolling-out-today-in-beta/",
+      "domain": "apple.com",
+      "date": "2026-05-11T22:57:00+00:00",
+      "author": "John Gruber",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "Mesajele dintre utilizatorii de Android și iPhone primesc în sfârșit criptare end-to-end prin RCS",
+      "link": "https://www.ziarulnational.md/mesajele-dintre-utilizatorii-de-android-si-iphone-primesc-in-sfarsit-criptare-endtoend-prin-rcs/",
+      "domain": "ziarulnational.md",
+      "date": "2026-05-11T22:57:02+00:00",
+      "author": null,
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "Android a iOS pridali end-to-end ďż˝ifrovanie RCS sprďż˝v medzi sebou",
+      "link": "https://www.dsl.sk/article.php?article=32931",
+      "domain": "dsl.sk",
+      "date": "2026-05-11T19:19:00+00:00",
+      "author": null,
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "End-to-end encrypted RCS messaging begins rolling out today in beta",
+      "link": "https://www.reddit.com/r/apple/comments/1taan1l/endtoend_encrypted_rcs_messaging_begins_rolling/",
+      "domain": "reddit.com",
+      "date": "2026-05-11T17:44:25+00:00",
+      "author": "/u/HelloitsWojan",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS 26.5 is out and it finally lets iPhone and Android users message each other securely",
+      "link": "https://thethaiger.com/hot-news/technology/ios-26-5-lets-iphone-and-android-users-message-securely",
+      "domain": "thethaiger.com",
+      "date": "2026-05-12T04:14:23+00:00",
+      "author": "Alessio Francesco Fedeli",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "Apple rolls out encrypted RCS messaging in beta ↦",
+      "link": "https://sixcolors.com/link/2026/05/apple-rolls-out-encrypted-rcs-messaging-in-beta/",
+      "domain": "sixcolors.com",
+      "date": "2026-05-11T17:46:13+00:00",
+      "author": "Dan Moren",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "Apple: Ende-zu-Ende verschlüsselte RCS-Nachrichtenübermittlung ab sofort zwischen iPhone und Android",
+      "link": "https://www.macerkopf.de/2026/05/11/apple-ende-rcs-nachrichtenuebermittlung-beta/",
+      "domain": "macerkopf.de",
+      "date": "2026-05-11T17:45:03+00:00",
+      "author": "Admin",
+      "image": "https://kagiproxy.com/img/cicqGX5KPZqgicQSzfLuICRcUXEup66hCza3bZ_UxYO7qM-Rw9MDbQiHNRowVIhJq3ka7dtpxtc2nV3C4U8uo00ZK8JH3fd4l4gIRsfDPfzwCeow8DWan1P-OS7sUHkwUFJ-UfcgIcRshwLqBNMcahf3qg",
+      "image_caption": ""
+    },
+    {
+      "title": "Ende-zu-Ende verschlüsselte RCS-Nachrichtenübermittlung wird ab heute in der Beta-Phase eingeführt",
+      "link": "https://www.apple.com/de/newsroom/2026/05/end-to-end-encrypted-rcs-messaging-begins-rolling-out-today-in-beta/",
+      "domain": "apple.com",
+      "date": "2026-05-11T17:12:51.078000+00:00",
+      "author": "Apple Newsroom",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS 26.5 is out now with Maps updates, RCS encryption beta, and Pride wallpapers",
+      "link": "https://www.macworld.com/article/3102432/ios-26-5-beta-release-date-how-to-install.html",
+      "domain": "macworld.com",
+      "date": "2026-05-11T17:29:29+00:00",
+      "author": null,
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS 26.5 may be small, but it hides some incredible new features",
+      "link": "https://www.macworld.com/article/3136734/ios-26-5-may-be-small-but-it-hides-some-incredible-new-features.html",
+      "domain": "macworld.com",
+      "date": "2026-05-11T17:17:34+00:00",
+      "author": null,
+      "image": "https://kagiproxy.com/img/Sv7tug9QExPRD8LmcQlmFzBufU4b0DuBoxzwoLFoW1hInnrc4QvjYNQB4vvaxynZUw74RP5aZqZ3XlArIhlN2TiIIHLH4pkF9vOydbvzgTS3frVWViI7HdyMejtFrgpOOJL805TQnYuoSV4jF1VXhZR5anazBmm4yowNwJ36",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS 26.5 has fixes for 50+ security issues on iPhone, details here",
+      "link": "https://9to5mac.com/2026/05/11/ios-26-5-has-fixes-for-50-security-issues-on-iphone-details-here/",
+      "domain": "9to5mac.com",
+      "date": "2026-05-11T18:11:39+00:00",
+      "author": "Ryan Christoffel",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS 26.5 adds end-to-end encryption for RCS messaging, rolling out now",
+      "link": "https://9to5mac.com/2026/05/11/ios-26-5-adds-end-to-end-encryption-for-rcs-messaging-rolling-out-now/",
+      "domain": "9to5mac.com",
+      "date": "2026-05-11T17:11:14+00:00",
+      "author": "Chance Miller",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "Apple releases iOS 26.5 with 3 key features including new wallpapers for your iPhone",
+      "link": "https://9to5mac.com/2026/05/11/apple-releases-ios-26-5-with-3-key-features-including-new-wallpapers-for-your-iphone/",
+      "domain": "9to5mac.com",
+      "date": "2026-05-11T17:05:34+00:00",
+      "author": "Zac Hall",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS 26.5 Features: Everything New in iOS 26.5",
+      "link": "https://www.macrumors.com/2026/05/11/ios-26-5-features/",
+      "domain": "macrumors.com",
+      "date": "2026-05-12T00:09:07+00:00",
+      "author": "Juli Clover",
+      "image": "https://kagiproxy.com/img/RXcA2Tux2PkuX1dbW9--Luu1khBPT7iauqU3xw5RbTo00kDL67XoG0sGCfIiGYToS467aOioDPto-IsmsVTujs79__d13gLYLLjX4FyQ22coI9ZP8cRmYVkesy6Fai-fGiXY8ykm1pUBH1Zzylg",
+      "image_caption": ""
+    },
+    {
+      "title": "EU iPhone Users Get AirPods-Like Pairing and Notification Forwarding for Third-Party Wearables in iOS 26.5",
+      "link": "https://www.macrumors.com/2026/05/11/ios-26-5-eu-third-party-wearable-changes/",
+      "domain": "macrumors.com",
+      "date": "2026-05-11T20:50:22+00:00",
+      "author": "Juli Clover",
+      "image": "https://kagiproxy.com/img/7vUg2ceX-E1BZi20D4pE17m0NznQo9pLg8Ict2_MpifNHSc3bW_IMBCCd8NkHx1xly1JCAymAhe2DHgyE_sUBR3EYrx44YXjsZaMTAd8vtH9AhfWa22x52R4BwkfvvRROeU",
+      "image_caption": ""
+    },
+    {
+      "title": "Apple's iOS 26.5 Update Patches More Than 50 Security Flaws",
+      "link": "https://www.macrumors.com/2026/05/11/ios-26-5-security-fixes/",
+      "domain": "macrumors.com",
+      "date": "2026-05-11T19:29:29+00:00",
+      "author": "Juli Clover",
+      "image": "https://kagiproxy.com/img/BzFyfcYaCSEZYrIUeCTQwoc7kvPnp0qe4jor9640cz6bOlOkECNvhOxOkUjvWwdved-Jaf3VJU6AFDf_uKHZ1t_uQn0kwEVR9Gy7qGi4quX4J04pgS7l9EteB1bF2qh-enZGwmdrBH6KS16byfybwcZl11GYvIxh3O0x",
+      "image_caption": ""
+    },
+    {
+      "title": "Apple Releases iOS 26.5 and iPadOS 26.5 With End-to-End Encrypted RCS, New Wallpaper, and Maps Updates",
+      "link": "https://www.macrumors.com/2026/05/11/apple-releases-ios-26-5/",
+      "domain": "macrumors.com",
+      "date": "2026-05-11T17:06:08+00:00",
+      "author": "Juli Clover",
+      "image": "https://kagiproxy.com/img/6mSFvkqeC7SgcxIg5qW5OSTpmwZHAzFSt2fI4xjgIb6xTG35BXAJpb8LMmEzv8qoH8afnFY8hUbQ7aK0GcE36xedUdLn5wcqJkx8-eIyKuX66sSfDeljP3xQ02e-tkyh0b1BYR-yrSFSPu8jkw",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS 26.5 Is Here With End-to-End Encrypted RCS. Here's What Else You Get",
+      "link": "https://www.pcmag.com/news/ios-265-is-here-with-end-to-end-encrypted-rcs-heres-what-else-you-get",
+      "domain": "pcmag.com",
+      "date": "2026-05-11T18:00:10+00:00",
+      "author": null,
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS 26.5 is here: How to get it, top new features",
+      "link": "https://mashable.com/article/apple-ios-26-5-rolls-out-how-to-update-new-features",
+      "domain": "mashable.com",
+      "date": "2026-05-11T21:31:41+00:00",
+      "author": null,
+      "image": "https://kagiproxy.com/img/FT2xaaeB9GBdmmsER0kTeB-GgsKvPaZ2ys7ER_2pDimX20EdHJ61idsEBeXyl-hfKqELtgx7OUVhWoenwag6CMT8MS6kXFExZD6mpYvRhYNVAxkJ7_2KLuK1X9dBuPnK07C0mVdVTyFPZ5bDdqgdt_dfhwx0etcab7Y0jRKVyJUCYNMBRVzthJkeJPRb9ZA",
+      "image_caption": ""
+    },
+    {
+      "title": "26.5 is out",
+      "link": "https://www.reddit.com/r/iphone/comments/1ta9qr3/265_is_out/",
+      "domain": "reddit.com",
+      "date": "2026-05-11T17:14:07+00:00",
+      "author": "/u/Infinite-Draft1618",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "No signs of upgraded Apple Intelligence as iOS 26.5 arrives for all users",
+      "link": "https://appleinsider.com/articles/26/05/11/no-signs-of-upgraded-apple-intelligence-as-ios-265-arrives-for-all-users",
+      "domain": "appleinsider.com",
+      "date": "2026-05-11T17:30:28+00:00",
+      "author": "Wesley Hilliard",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS 26.5 Is Out Now and Brings End-to-End Encrypted RCS Messaging to Your iPhone",
+      "link": "https://www.cnet.com/tech/services-and-software/ios-26-5-is-out-now-and-brings-end-to-end-encrypted-rcs-messaging-to-your-iphone/",
+      "domain": "cnet.com",
+      "date": "2026-05-11T18:40:08+00:00",
+      "author": "Zachary McAuliffe",
+      "image": "https://kagiproxy.com/img/AYmeqJ3QSookWWN3PQ5vxG3o9o97LqvRtnuq7_IDbgH0n-vUOL0oY0sEOP1Kb9WlyifHe9bU7xnGKxpVEO3Y1D_VZQfKJfoRObZNwTPg73PtSrIqex8h87kIJ4XtdmVVxILOMNep8DzF944M4Mx-B5COann8AvGy-UULb0RRvjkgqIblGAWLmUkej12QL4TKxA6xiOnrn8IfeyJPKiTm1GMsHVlsGzkTXGbZyNk-DVs1gTuxMQ8Fpgfr73uo14BtJyudbx_E5rSfjkonp9IlJ8RHqdJ7FqVGD4oddkwoUDCf",
+      "image_caption": ""
+    },
+    {
+      "title": "Everything new in iOS 26.5: New Pride wallpapers, Apple Maps suggestions and more",
+      "link": "https://www.cultofmac.com/news/ios-26-5-new-features",
+      "domain": "cultofmac.com",
+      "date": "2026-05-11T17:10:19+00:00",
+      "author": "Rajesh Pandey",
+      "image": "https://kagiproxy.com/img/EeQpysfo08aY8McR5RqCJHk1_SNQzaFF3dUGvzw_O713dNSeJvfEdn0pWzoZFUgPLPzUJ3ODtUMYYgD758KcH_KcMDNEa-xNtWvppI--gYmcsVBprbnqrL6l_2Yug6YvUrE4Y_Swq7zV9Q",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS, macOS, and iPadOS 26.5 updates arrive with encrypted RCS messaging and more",
+      "link": "https://arstechnica.com/gadgets/2026/05/ios-macos-and-ipados-26-5-updates-arrive-with-encrypted-rcs-messaging-and-more/",
+      "domain": "arstechnica.com",
+      "date": "2026-05-11T17:20:39+00:00",
+      "author": "Andrew Cunningham",
+      "image": "https://kagiproxy.com/img/pdwyWbK6KiQFB_dNZ9pPZn4x_vpaDd0sQNtcjz71gEz-el9cxeoZ982d7do0BFrqfPSNiR5RUye92JaeuTxUNhWDjE3OLUS81IuB7jLnAPxzz1ByxnrBdNTG8Of662kHZ3NMZE2pJ9ufmh8njXGlL_a5ADvMHTUWIa1vNXIoMImW",
+      "image_caption": "Devices running Apple's latest operating systems."
+    },
+    {
+      "title": "Jailbreak iOS 26.5: What You Need To Know",
+      "link": "https://www.redmondpie.com/jailbreak-ios-26.5-what-you-need-to-know/",
+      "domain": "redmondpie.com",
+      "date": "2026-05-11T17:29:32+00:00",
+      "author": "Oliver Haslam",
+      "image": "https://kagiproxy.com/img/pkan3OWjPLW1kG8aOeaqhiiEG37W5v5a5Kx-2mIVIGOQ7pb9IVRKlBqPahHAZFcZ-9J-46H3khWSDWLF5EHrF0x5dndg-JsSMQ230EL-ihL803EPuOqI1d2RWfnTZgx-sNN2EyflDjI9qMhZVH1_",
+      "image_caption": ""
+    },
+    {
+      "title": "Download: iOS 26.5 Final IPSW Links, OTA Update Released",
+      "link": "https://www.redmondpie.com/download-ios-26.5-final-ipsw-links-ota-update-released/",
+      "domain": "redmondpie.com",
+      "date": "2026-05-11T17:09:51+00:00",
+      "author": "Oliver Haslam",
+      "image": "https://kagiproxy.com/img/QDJQvjomfCJWhIvX7saOtXs0P1cruVUNo9X7aGXGFD3NTLgBhC7AoSdPpMy_LsQGZa94v-6otFET8_Po2bkyl9wRTxvzoD3nEaXXgqYmLzhtcp_5X4S3Le3nOSsDeO8EPr6ID40vVTD5vcjo",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS 26.5 ist da: Neue Funktionen, alte Release Notes",
+      "link": "https://www.iphone-ticker.de/ios-26-5-ist-da-neue-funktionen-alte-release-notes-277800/",
+      "domain": "iphone-ticker.de",
+      "date": "2026-05-11T17:37:43+00:00",
+      "author": "Ben",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "Apple releases macOS Tahoe 26.5, iOS 26.5, iPadOS 26.5, watchOS 26.5, tvOS 26.5, and visionOS 26.5",
+      "link": "https://appleworld.today/2026/05/apple-releases-macos-tahoe-26-5-ios-26-5-ipados-26-5-watchos-26-5-tvos-26-5-and-visionos-26-5/",
+      "domain": "appleworld.today",
+      "date": "2026-05-11T17:59:16+00:00",
+      "author": "Dennis Sellers",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS 26.5: Diese Neuerungen bringt das Update aufs iPhone",
+      "link": "https://www.apfeltalk.de/magazin/news/ios-26-5-diese-neuerungen-bringt-das-update-aufs-iphone/",
+      "domain": "apfeltalk.de",
+      "date": "2026-05-12T07:00:16+00:00",
+      "author": "Michael Reimann",
+      "image": "https://kagiproxy.com/img/ueDb5WKsk2tf7AO6gLhLbWwoVjVLyNqc5hCfKzM2KJAoVS6kFQm2DEco_sazOlUpxMK6qYur2XnKnqXDaOOzPLtpioPFHlQkGEKx8PHngOtyb0kYC8HhjlSH2c2hDRrlYVN2Bbc-4hUtgjOH",
+      "image_caption": ""
+    },
+    {
+      "title": "Apple iOS 26.5 Goes Live: A 12GB Download File, Minor Feature Upgrades, And Lots Of Bug Fixes",
+      "link": "https://wccftech.com/apple-ios-26-5-goes-live-a-12gb-download-file-minor-feature-upgrades-and-lots-of-bug-fixes/",
+      "domain": "wccftech.com",
+      "date": "2026-05-11T20:45:03+00:00",
+      "author": "Rohail Saleem",
+      "image": "https://kagiproxy.com/img/Q1tFeD-AYiDDVaPimYQVIhK7A2IRlVgo1RLE9lBWWFSuJdiCW-Liyo0IfoCRl5n7La7TtWQQhijq4eB_jGCpvIXdGbcF9ThLhEjz8lgrMqdDEXGBkS5aQ4Isf2Lngxf6HZx0DoM",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS 26.5 Update Released for iPhone & iPad with RCS Messaging, New Pride Wallpaper, Security Fixes",
+      "link": "https://osxdaily.com/2026/05/11/ios-26-5-update-released-for-iphone-ipad/",
+      "domain": "osxdaily.com",
+      "date": "2026-05-11T20:15:36+00:00",
+      "author": "Paul Horowitz",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "Apple: Finalversion von iOS/iPadOS 26.5 steht zum Download bereit (2. Update)",
+      "link": "https://www.macgadget.de/News/2026/05/11/Apple-Finalversion-von-iOSiPadOS-265-steht-zum-Download-bereit",
+      "domain": "macgadget.de",
+      "date": "2026-05-11T17:15:00+00:00",
+      "author": "Redaktion",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "Apple veröffentlicht iOS 26.5, macOS Tahoe 26.5 und weitere Updates",
+      "link": "https://www.maclife.de/news/apple-veroeffentlicht-ios-265-macos-tahoe-265-weitere-updates-mac-life-100126984.html",
+      "domain": "maclife.de",
+      "date": "2026-05-11T17:23:12+00:00",
+      "author": "Stefan Keller",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "Apple releases iOS 26.5, iPadOS 26.5, and watchOS 26.5",
+      "link": "https://macdailynews.com/2026/05/11/apple-releases-ios-26-5-ipados-26-5-and-watchos-26-5/",
+      "domain": "macdailynews.com",
+      "date": "2026-05-11T18:29:38+00:00",
+      "author": "MacDailyNews",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS 26.5, macOS 26.5 & Co. sind da: Das ist neu auf iPhones, iPads und Macs",
+      "link": "https://www.heise.de/news/iOS-26-5-macOS-26-5-Co-sind-da-Das-ist-neu-auf-iPhones-iPads-und-Macs-11290421.html",
+      "domain": "heise.de",
+      "date": "2026-05-11T17:12:00+00:00",
+      "author": null,
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS 26.5 ― Bug Fixes, Changes, and Improvements",
+      "link": "https://forums.macrumors.com/threads/ios-26-5-bug-fixes-changes-and-improvements.2482104/",
+      "domain": "macrumors.com",
+      "date": "2026-05-12T06:56:20+00:00",
+      "author": "Banglazed",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS 26.5: Das Update ist klein, aber oho",
+      "link": "https://www.macwelt.de/article/3137006/ios-26-5-update-klein.html",
+      "domain": "macwelt.de",
+      "date": "2026-05-12T06:20:00+00:00",
+      "author": null,
+      "image": "https://kagiproxy.com/img/VVLZFzANMPROqyWo6IRKBwr6qpXdYuhG492NRbyAdX7mDl0PFMTeZZOW8EqNjHy1AlH1v0Eek_EYy_qp6EY2IoiG5gLjnMkghgLOJa9Wzlr_hb3vzsumgHcWUaXhJtKVZ_atvVHsKoWcGwM5Utk91qImYYQiuePZwGuRctol",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS 26.5 : voici les 3 grandes nouveautés et quelques détails passés sous silence",
+      "link": "https://www.frandroid.com/marques/3095127_ios-26-5-voici-les-3-grandes-nouveautes-et-quelques-details-passes-sous-silence",
+      "domain": "frandroid.com",
+      "date": "2026-05-11T20:16:39+00:00",
+      "author": "Ulrich Rozier",
+      "image": "https://kagiproxy.com/img/54Bh438qlF2eG3vlCzO2tf4EuULi9bUX2d9kGKBtSEnMTBXzAzUG700Q9A8EFqHYIydS8CJoBwKdRL9FVABFJdAgD4hj8Y8skKzcFIWgp_6IpScX4D61CdIohyQGStHsnDlUekXfcLGuNItQgcNfyGZocNq7j3avthmui65t0NCH4naigwcKI1O4L5z0irV0CS5JLNEH6N7k4py1TKDVyl8",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS 26.5 ist da – verschlüsselte Android-Chats und neue Karten-Funktionen",
+      "link": "https://techkrams.de/ios-26-5-ist-da-verschluesselte-android-chats-und-neue-karten-funktionen/",
+      "domain": "techkrams.de",
+      "date": "2026-05-12T07:13:21+00:00",
+      "author": "Torsten Schmitt (Pixelaffe)",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS and iPadOS 26.5 released",
+      "link": "https://www.reddit.com/r/apple/comments/1ta9l9p/ios_and_ipados_265_released/",
+      "domain": "reddit.com",
+      "date": "2026-05-11T17:09:01+00:00",
+      "author": "/u/HelloitsWojan",
+      "image": "",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS 26.5 ist da: Verschlüsselte RCS-Nachrichten, viele Sicherheitsfixes und neue Abo-Optionen",
+      "link": "https://www.apfeltalk.de/magazin/feature/ios-26-5-ist-da-verschluesselte-rcs-nachrichten-viele-sicherheitsfixes-und-neue-abo-optionen/",
+      "domain": "apfeltalk.de",
+      "date": "2026-05-11T20:00:45+00:00",
+      "author": "Michael Reimann",
+      "image": "https://kagiproxy.com/img/Sor31CjCGCoMcqnSFcmne4bngZ188q16AbhNcuksDVvokRx3QJWQc6dGaVYCPvh2eO-qcVLBzVBvSGmSPwq6F_UkuGUP5JkGkWIGCXvupKzn47ESfqKcUxkeP1qVH4VCT6_T9lBB",
+      "image_caption": ""
+    },
+    {
+      "title": "iOS 26.5: Όλα όσα αλλάζουν στο iPhone – αναβάθμισε τώρα",
+      "link": "https://www.topics.gr/rdrxml.php?n=47714927&ai=",
+      "domain": "topics.gr",
+      "date": "2026-05-12T06:22:16+00:00",
+      "author": null,
+      "image": "",
+      "image_caption": ""
+    }
+  ]
+}
