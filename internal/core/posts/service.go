@@ -255,17 +255,16 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 						}
 					}
 
-					// Unfurl enhancement (optional, only if URL is supported)
-					// For trusted aggregators: only unfurl for thumbnail if they didn't provide one
-					// For regular users: full unfurl for all metadata
-					needsThumbnailUnfurl := isTrustedAggregator && external["thumb"] == nil && (req.ThumbnailURL == nil || *req.ThumbnailURL == "")
-					needsFullUnfurl := !isTrustedAggregator
-
-					if needsThumbnailUnfurl || needsFullUnfurl {
+					// Unfurl enhancement (optional, only if URL is supported).
+					// Trusted aggregators are authoritative on embed metadata, including
+					// thumbnails — if they omit a thumbnail, the post stays without one.
+					// (kite.kagi.com is a SPA whose og:image is identical for every URL,
+					// so unfurling would attach the same default image to every story
+					// the aggregator posts without a primary_image.)
+					if !isTrustedAggregator {
 						if uri, ok := external["uri"].(string); ok && uri != "" {
-							// Check if we support unfurling this URL
 							if s.unfurlService != nil && s.unfurlService.IsSupported(uri) {
-								log.Printf("[POST-CREATE] Unfurling URL: %s (thumbnailOnly=%v)", uri, needsThumbnailUnfurl)
+								log.Printf("[POST-CREATE] Unfurling URL: %s", uri)
 
 								// Unfurl with timeout (non-fatal if it fails)
 								unfurlCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -276,47 +275,37 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 									// Log but don't fail - user can still post with manual metadata
 									log.Printf("[POST-CREATE] Warning: Failed to unfurl URL %s: %v", uri, err)
 								} else {
-									// For regular users: enhance embed with fetched metadata
-									// For trusted aggregators: skip metadata, they provide their own
-									if needsFullUnfurl {
-										// Enhance embed with fetched metadata (only if client didn't provide)
-										// Note: We respect client-provided values, even empty strings
-										// If client sends title="", we assume they want no title
-										if external["title"] == nil {
-											external["title"] = result.Title
-										}
-										if external["description"] == nil {
-											external["description"] = result.Description
-										}
-										// Always set metadata fields (provider, domain, type)
-										external["embedType"] = result.Type
-										external["provider"] = result.Provider
-										external["domain"] = result.Domain
+									// Enhance embed with fetched metadata (only if client didn't provide)
+									// Note: We respect client-provided values, even empty strings
+									// If client sends title="", we assume they want no title
+									if external["title"] == nil {
+										external["title"] = result.Title
 									}
+									if external["description"] == nil {
+										external["description"] = result.Description
+									}
+									// Always set metadata fields (provider, domain, type)
+									external["embedType"] = result.Type
+									external["provider"] = result.Provider
+									external["domain"] = result.Domain
 
 									// Upload thumbnail from unfurl if client didn't provide one
 									// (Thumb validation already happened above)
-									if external["thumb"] == nil {
-										if result.ThumbnailURL != "" && s.blobService != nil {
-											blobCtx, blobCancel := context.WithTimeout(ctx, 15*time.Second)
-											defer blobCancel()
+									if external["thumb"] == nil && result.ThumbnailURL != "" && s.blobService != nil {
+										blobCtx, blobCancel := context.WithTimeout(ctx, 15*time.Second)
+										defer blobCancel()
 
-											blob, blobErr := s.blobService.UploadBlobFromURL(blobCtx, community, result.ThumbnailURL)
-											if blobErr != nil {
-												log.Printf("[POST-CREATE] Warning: Failed to upload thumbnail for %s: %v", uri, blobErr)
-											} else {
-												external["thumb"] = blob
-												log.Printf("[POST-CREATE] Uploaded thumbnail blob for %s", uri)
-											}
+										blob, blobErr := s.blobService.UploadBlobFromURL(blobCtx, community, result.ThumbnailURL)
+										if blobErr != nil {
+											log.Printf("[POST-CREATE] Warning: Failed to upload thumbnail for %s: %v", uri, blobErr)
+										} else {
+											external["thumb"] = blob
+											log.Printf("[POST-CREATE] Uploaded thumbnail blob for %s", uri)
 										}
 									}
 
-									if needsFullUnfurl {
-										log.Printf("[POST-CREATE] Successfully enhanced embed with unfurl data (provider: %s, type: %s)",
-											result.Provider, result.Type)
-									} else {
-										log.Printf("[POST-CREATE] Fetched thumbnail via unfurl for trusted aggregator")
-									}
+									log.Printf("[POST-CREATE] Successfully enhanced embed with unfurl data (provider: %s, type: %s)",
+										result.Provider, result.Type)
 								}
 							}
 						}
