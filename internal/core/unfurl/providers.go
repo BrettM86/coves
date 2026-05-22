@@ -49,14 +49,28 @@ func extractDomain(urlStr string) string {
 	return domain
 }
 
-// isSupported checks if this is a valid HTTP/HTTPS URL
+// isSupported checks if this is a valid HTTP/HTTPS URL we can meaningfully unfurl.
+//
+// kite.kagi.com is explicitly excluded: it's a client-rendered SPA whose
+// server-rendered <title>, og:title, og:description, and og:image are all
+// the same default fallback for every URL (the top story, randomly localized
+// by path). Unfurling those would attach the same wrong title/description/image
+// to every kite story. The kagi-news trusted aggregator already supplies
+// authoritative metadata from the Kagi JSON feed, so the unfurl path for
+// kite URLs has no value to recover.
 func isSupported(urlStr string) bool {
 	parsed, err := url.Parse(urlStr)
 	if err != nil {
 		return false
 	}
 	scheme := strings.ToLower(parsed.Scheme)
-	return scheme == "http" || scheme == "https"
+	if scheme != "http" && scheme != "https" {
+		return false
+	}
+	if extractDomain(urlStr) == "kite.kagi.com" {
+		return false
+	}
+	return true
 }
 
 // isOEmbedProvider checks if we have an oEmbed endpoint for this URL

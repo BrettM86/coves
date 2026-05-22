@@ -248,6 +248,9 @@ func TestIsSupported(t *testing.T) {
 		{"ftp://example.com", false},
 		{"not-a-url", false},
 		{"", false},
+		// kite.kagi.com excluded: SSR meta tags are a misleading per-path default.
+		{"https://kite.kagi.com/abc/science/9", false},
+		{"https://kite.kagi.com/search?q=test", false},
 	}
 
 	for _, tt := range tests {
