@@ -84,16 +84,23 @@ coves.social {
         format json
     }
 
-    # Security headers
+    # Security headers (applied to every response)
     header {
         Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
         X-Content-Type-Options "nosniff"
         X-Frame-Options "DENY"
         Referrer-Policy "strict-origin-when-cross-origin"
-        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://*.bsky.network wss://*.bsky.network"
         # Remove Server header
         -Server
     }
+
+    # Global CSP — but NOT on the Turnstile widget host page. That page must load
+    # Cloudflare's challenge script + iframe, so the AppView sets its own tighter,
+    # Cloudflare-allowing CSP there (see internal/web/handlers.go TurnstileHandler).
+    # Caddy's `header` directive REPLACES the upstream value, so without this
+    # carve-out the site-wide CSP below strangles the widget (api.js is blocked).
+    @csp_default not path /m/turnstile.html
+    header @csp_default Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://*.bsky.network wss://*.bsky.network"
 
     # Enable compression
     encode gzip zstd
