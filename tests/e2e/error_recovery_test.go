@@ -52,7 +52,7 @@ func testJetstreamReconnection(t *testing.T) {
 
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
 
 	t.Run("Consumer retries on connection failure", func(t *testing.T) {
 		// The Jetstream consumer's Start() method has built-in retry logic
@@ -145,7 +145,7 @@ func testMalformedJetstreamEvents(t *testing.T) {
 
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
 
 	testCases := []struct {
 		name      string
@@ -285,7 +285,7 @@ func testDatabaseConnectionRecovery(t *testing.T) {
 
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
 	ctx := context.Background()
 
 	t.Run("Database query with connection pool exhaustion", func(t *testing.T) {
@@ -382,7 +382,7 @@ func testPDSUnavailability(t *testing.T) {
 	}))
 	defer mockPDS.Close()
 
-	userService := users.NewUserService(userRepo, resolver, mockPDS.URL)
+	userService := users.NewUserService(userRepo, resolver, mockPDS.URL, nil, "")
 	ctx := context.Background()
 
 	t.Run("Indexing continues during PDS unavailability", func(t *testing.T) {
@@ -487,7 +487,7 @@ func testOutOfOrderEvents(t *testing.T) {
 
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
 	consumer := jetstream.NewUserEventConsumer(userService, resolver, "", "")
 	ctx := context.Background()
 

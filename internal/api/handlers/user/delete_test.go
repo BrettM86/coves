@@ -65,6 +65,14 @@ func (m *MockUserService) RegisterAccount(ctx context.Context, req users.Registe
 	return args.Get(0).(*users.RegisterAccountResponse), args.Error(1)
 }
 
+func (m *MockUserService) RequestSignupToken(ctx context.Context, req users.RequestSignupTokenRequest) (*users.RequestSignupTokenResponse, error) {
+	args := m.Called(ctx, req)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*users.RequestSignupTokenResponse), args.Error(1)
+}
+
 func (m *MockUserService) IndexUser(ctx context.Context, did, handle, pdsURL string) error {
 	args := m.Called(ctx, did, handle, pdsURL)
 	return args.Error(0)

@@ -43,6 +43,23 @@ type RegisterAccountResponse struct {
 	PDSURL     string `json:"pdsUrl"`
 }
 
+// RequestSignupTokenRequest is the input to the bot-gated signup-token handshake.
+// The endpoint is pure captcha-gated invite minting — handle/email validation
+// belongs to the actual signup endpoint (social.coves.actor.signup), which
+// enforces uniqueness and lexicon constraints there. RemoteIP is populated by
+// the handler from the request and is intentionally not JSON-serialized —
+// clients must not supply it.
+type RequestSignupTokenRequest struct {
+	TurnstileToken string `json:"turnstileToken"`
+
+	RemoteIP string `json:"-"`
+}
+
+// RequestSignupTokenResponse returns a freshly minted single-use PDS invite code.
+type RequestSignupTokenResponse struct {
+	InviteCode string `json:"inviteCode"`
+}
+
 // ProfileStats contains aggregated user statistics
 // Matches the social.coves.actor.defs#profileStats lexicon
 type ProfileStats struct {

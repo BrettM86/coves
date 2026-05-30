@@ -71,7 +71,7 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 	blobService := blobs.NewBlobService(pdsURL)
 	identityConfig := identity.DefaultConfig()
 	identityResolver := identity.NewResolver(db, identityConfig)
-	userService := users.NewUserService(userRepo, identityResolver, pdsURL)
+	userService := users.NewUserService(userRepo, identityResolver, pdsURL, nil, "")
 
 	// Create test author
 	author := createTestUser(t, db, "blobtest.test", "did:plc:blobtest123")

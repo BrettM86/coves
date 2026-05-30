@@ -52,7 +52,7 @@ func TestPostDeletion_JetstreamConsumer(t *testing.T) {
 	// Setup user service for post consumer
 	identityConfig := identity.DefaultConfig()
 	identityResolver := identity.NewResolver(db, identityConfig)
-	userService := users.NewUserService(userRepo, identityResolver, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, identityResolver, "http://localhost:3001", nil, "")
 
 	// Create test user (author)
 	author := createTestUser(t, db, "delauthor.test", "did:plc:delauthor123")
@@ -547,7 +547,7 @@ func TestPostE2E_DeleteWithJetstream(t *testing.T) {
 	}
 	identityConfig.PLCURL = plcURL
 	identityResolver := identity.NewResolver(db, identityConfig)
-	userService := users.NewUserService(userRepo, identityResolver, pdsURL)
+	userService := users.NewUserService(userRepo, identityResolver, pdsURL, nil, "")
 
 	// Setup community service with provisioner for real PDS
 	var instanceDomain string

@@ -2,7 +2,9 @@ package web
 
 import (
 	"bytes"
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -136,6 +138,114 @@ func TestTemplatesRender_NotFound(t *testing.T) {
 	err = templates.Render(w, "nonexistent.html", nil)
 	if err == nil {
 		t.Fatal("Render() should return error for nonexistent template")
+	}
+}
+
+func TestTemplatesRender_Turnstile(t *testing.T) {
+	templates, err := NewTemplates()
+	if err != nil {
+		t.Fatalf("NewTemplates() error = %v", err)
+	}
+
+	data := TurnstilePageData{SiteKey: "0x4AAAAAAA_TEST_SITE_KEY"}
+
+	w := httptest.NewRecorder()
+	if err := templates.Render(w, "turnstile.html", data); err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, `data-sitekey="0x4AAAAAAA_TEST_SITE_KEY"`) {
+		t.Error("rendered output does not embed site key into data-sitekey attribute")
+	}
+	if !strings.Contains(body, "https://challenges.cloudflare.com/turnstile/v0/api.js") {
+		t.Error("rendered output does not include Cloudflare Turnstile JS")
+	}
+	if !strings.Contains(body, "window.Turnstile.postMessage") {
+		t.Error("rendered output does not call window.Turnstile.postMessage")
+	}
+	if !strings.Contains(body, `data-callback="onTurnstileSuccess"`) {
+		t.Error("rendered output does not bind the success callback")
+	}
+}
+
+func TestTemplatesRender_TurnstileEscapesSiteKey(t *testing.T) {
+	// Site keys are operator-controlled, but treat them as untrusted defense-in-depth.
+	templates, err := NewTemplates()
+	if err != nil {
+		t.Fatalf("NewTemplates() error = %v", err)
+	}
+
+	data := TurnstilePageData{SiteKey: `"><script>alert(1)</script>`}
+
+	w := httptest.NewRecorder()
+	if err := templates.Render(w, "turnstile.html", data); err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+
+	body := w.Body.String()
+	if strings.Contains(body, "<script>alert(1)</script>") {
+		t.Error("template did not escape site key — XSS via TURNSTILE_SITE_KEY would be possible")
+	}
+}
+
+func TestTurnstileHandler_MissingSiteKeyReturns503(t *testing.T) {
+	templates, err := NewTemplates()
+	if err != nil {
+		t.Fatalf("NewTemplates() error = %v", err)
+	}
+	h := NewHandlers(templates, nil, nil, "")
+
+	req := httptest.NewRequest(http.MethodGet, "/m/turnstile.html", nil)
+	w := httptest.NewRecorder()
+	h.TurnstileHandler(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 when TURNSTILE_SITE_KEY is empty, got %d", w.Code)
+	}
+	if cc := w.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("expected Cache-Control: no-store on 503, got %q", cc)
+	}
+}
+
+func TestTurnstileHandler_RendersWithCSP(t *testing.T) {
+	templates, err := NewTemplates()
+	if err != nil {
+		t.Fatalf("NewTemplates() error = %v", err)
+	}
+	h := NewHandlers(templates, nil, nil, "0x4AAAAAAA_REAL_LOOKING_KEY")
+
+	req := httptest.NewRequest(http.MethodGet, "/m/turnstile.html", nil)
+	w := httptest.NewRecorder()
+	h.TurnstileHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", w.Code, w.Body.String())
+	}
+
+	csp := w.Header().Get("Content-Security-Policy")
+	if csp == "" {
+		t.Fatal("expected Content-Security-Policy header")
+	}
+	if !strings.Contains(csp, "https://challenges.cloudflare.com") {
+		t.Errorf("CSP does not allow Cloudflare challenges origin: %s", csp)
+	}
+	if !strings.Contains(csp, "default-src 'none'") {
+		t.Errorf("CSP does not deny by default: %s", csp)
+	}
+
+	if got := w.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("expected X-Content-Type-Options: nosniff, got %q", got)
+	}
+	if got := w.Header().Get("Referrer-Policy"); got != "no-referrer" {
+		t.Errorf("expected Referrer-Policy: no-referrer, got %q", got)
+	}
+	if cc := w.Header().Get("Cache-Control"); !strings.Contains(cc, "max-age=300") {
+		t.Errorf("expected short cache lifetime, got %q", cc)
+	}
+
+	if !strings.Contains(w.Body.String(), "0x4AAAAAAA_REAL_LOOKING_KEY") {
+		t.Error("rendered body does not embed the configured site key")
 	}
 }
 

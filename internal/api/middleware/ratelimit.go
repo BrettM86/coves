@@ -1,18 +1,24 @@
 package middleware
 
 import (
+	"log/slog"
+	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
 
-// RateLimiter implements a simple in-memory rate limiter
-// For production, consider using Redis or a distributed rate limiter
+// RateLimiter is a simple in-memory token-bucket-style limiter keyed by client IP.
+// For multi-replica deploys, swap in a Redis-backed implementation.
 type RateLimiter struct {
 	clients  map[string]*clientLimit
+	stop     chan struct{}
 	requests int
 	window   time.Duration
+	name     string // used in security-event logs to distinguish global vs per-route
 	mu       sync.Mutex
+	stopOnce sync.Once
 }
 
 type clientLimit struct {
@@ -20,30 +26,50 @@ type clientLimit struct {
 	count     int
 }
 
-// NewRateLimiter creates a new rate limiter
-// requests: maximum number of requests allowed per window
-// window: time window duration (e.g., 1 minute)
+// NewRateLimiter creates a new rate limiter with an unnamed identity. Prefer
+// NewNamedRateLimiter so 429 logs are attributable to a specific route.
 func NewRateLimiter(requests int, window time.Duration) *RateLimiter {
+	return NewNamedRateLimiter("default", requests, window)
+}
+
+// NewNamedRateLimiter creates a rate limiter that tags its 429 logs with name.
+// Pass something route-distinct like "signupToken" or "global".
+func NewNamedRateLimiter(name string, requests int, window time.Duration) *RateLimiter {
 	rl := &RateLimiter{
 		clients:  make(map[string]*clientLimit),
+		stop:     make(chan struct{}),
 		requests: requests,
 		window:   window,
+		name:     name,
 	}
-
-	// Cleanup old entries every window duration
 	go rl.cleanup()
-
 	return rl
 }
 
-// Middleware returns a rate limiting middleware
+// Stop terminates the background cleanup goroutine. Safe to call multiple times.
+// Production limiters live for process lifetime and never need Stop; tests must
+// call it (typically via t.Cleanup) to avoid leaking goroutines.
+func (rl *RateLimiter) Stop() {
+	rl.stopOnce.Do(func() {
+		close(rl.stop)
+	})
+}
+
+// Middleware returns a rate limiting middleware.
 func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Use IP address as client identifier
-		// In production, consider using authenticated user ID if available
-		clientID := getClientIP(r)
+		clientID := GetClientIP(r)
 
 		if !rl.allow(clientID) {
+			// Security event: log every 429 so abuse is observable.
+			// Includes path so an operator can distinguish bot probes from a hot user.
+			slog.Warn("rate limit exceeded",
+				slog.String("limiter", rl.name),
+				slog.String("client_ip", clientID),
+				slog.String("path", r.URL.Path),
+				slog.Int("limit", rl.requests),
+				slog.Duration("window", rl.window),
+			)
 			http.Error(w, "Rate limit exceeded. Please try again later.", http.StatusTooManyRequests)
 			return
 		}
@@ -52,14 +78,14 @@ func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 	})
 }
 
-// allow checks if a client is allowed to make a request
+// allow returns true if the client is under the request budget for the current
+// window, and false otherwise. Exported on the limiter for unit testing.
 func (rl *RateLimiter) allow(clientID string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
 	now := time.Now().UTC()
 
-	// Get or create client limit
 	client, exists := rl.clients[clientID]
 	if !exists {
 		rl.clients[clientID] = &clientLimit{
@@ -69,54 +95,85 @@ func (rl *RateLimiter) allow(clientID string) bool {
 		return true
 	}
 
-	// Check if window has expired
 	if now.After(client.resetTime) {
 		client.count = 1
 		client.resetTime = now.Add(rl.window)
 		return true
 	}
 
-	// Check if under limit
 	if client.count < rl.requests {
 		client.count++
 		return true
 	}
 
-	// Rate limit exceeded
 	return false
 }
 
-// cleanup removes expired client entries periodically
+// clientCount returns the number of tracked client entries. Test-only helper:
+// lets us assert that the cleanup goroutine actually evicts expired buckets.
+func (rl *RateLimiter) clientCount() int {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	return len(rl.clients)
+}
+
+// cleanup removes expired client entries periodically. Exits when Stop is called.
 func (rl *RateLimiter) cleanup() {
 	ticker := time.NewTicker(rl.window)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		rl.mu.Lock()
-		now := time.Now().UTC()
-		for clientID, client := range rl.clients {
-			if now.After(client.resetTime) {
-				delete(rl.clients, clientID)
+	for {
+		select {
+		case <-rl.stop:
+			return
+		case <-ticker.C:
+			rl.mu.Lock()
+			now := time.Now().UTC()
+			for clientID, client := range rl.clients {
+				if now.After(client.resetTime) {
+					delete(rl.clients, clientID)
+				}
 			}
+			rl.mu.Unlock()
 		}
-		rl.mu.Unlock()
 	}
 }
 
-// getClientIP extracts the client IP from the request
-func getClientIP(r *http.Request) string {
-	// Check X-Forwarded-For header (if behind proxy)
-	forwarded := r.Header.Get("X-Forwarded-For")
-	if forwarded != "" {
-		return forwarded
-	}
-
-	// Check X-Real-IP header
-	realIP := r.Header.Get("X-Real-IP")
-	if realIP != "" {
+// GetClientIP extracts the client IP to use as a rate-limit key.
+//
+// SECURITY NOTE: header selection matters here — a naive implementation lets an
+// attacker spawn a fresh rate-limit bucket per request by rotating spoofed
+// X-Forwarded-For values. Caddy *appends* to XFF rather than replacing, so any
+// client-supplied entries survive the proxy hop on the left side of the list.
+//
+// Strategy:
+//  1. Prefer X-Real-IP — Caddy sets this to the direct upstream client (the most
+//     trustworthy hop we see) and a client can't override it.
+//  2. Fall back to the *rightmost* X-Forwarded-For entry. The rightmost hop is
+//     the one our proxy itself appended, so it's the least spoofable.
+//  3. Final fallback: r.RemoteAddr with the ephemeral port stripped — otherwise
+//     each new TCP connection opens a new bucket.
+//
+// Behind our Caddy reverse proxy these headers are always set, so direct
+// inspection of RemoteAddr only fires for misconfigurations or local tests.
+func GetClientIP(r *http.Request) string {
+	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
 		return realIP
 	}
 
-	// Fall back to RemoteAddr
-	return r.RemoteAddr
+	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+		parts := strings.Split(forwarded, ",")
+		rightmost := strings.TrimSpace(parts[len(parts)-1])
+		if rightmost != "" {
+			return rightmost
+		}
+	}
+
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		// RemoteAddr without a port is unusual but possible (e.g. unix sockets,
+		// some test setups). Use it verbatim rather than dropping the request.
+		return r.RemoteAddr
+	}
+	return host
 }

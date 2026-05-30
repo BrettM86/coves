@@ -33,7 +33,7 @@ func (r *postgresUserRepo) Create(ctx context.Context, user *users.User) (*users
 		// Check for unique constraint violations
 		if strings.Contains(err.Error(), "duplicate key") {
 			if strings.Contains(err.Error(), "users_pkey") {
-				return nil, fmt.Errorf("user with DID already exists")
+				return nil, users.ErrUserAlreadyExists
 			}
 			if strings.Contains(err.Error(), "users_handle_key") {
 				return nil, users.ErrHandleAlreadyTaken

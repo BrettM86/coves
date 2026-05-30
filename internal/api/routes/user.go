@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/go-chi/chi/v5"
@@ -72,6 +73,18 @@ func RegisterUserRoutesWithOptions(r chi.Router, service users.UserService, auth
 
 	// social.coves.actor.signup - procedure endpoint (public)
 	r.Post("/xrpc/social.coves.actor.signup", h.Signup)
+
+	// social.coves.actor.requestSignupToken - bot-gated signup handshake.
+	// NOT a published atProto lexicon; internal handshake between AppView and a
+	// first-party Coves client. Verifies a Cloudflare Turnstile token and mints
+	// a single-use PDS invite code. Rate-limited 5/min/IP on top of the global
+	// 100/min limit to slow bulk probing.
+	signupTokenLimiter := middleware.NewNamedRateLimiter("signupToken", 5, 1*time.Minute)
+	signupTokenHandler := user.NewRequestSignupTokenHandler(service)
+	r.With(signupTokenLimiter.Middleware).Post(
+		"/xrpc/social.coves.actor.requestSignupToken",
+		signupTokenHandler.HandleRequestSignupToken,
+	)
 
 	// social.coves.actor.deleteAccount - procedure endpoint (authenticated)
 	// Deletes the authenticated user's account from the Coves AppView.

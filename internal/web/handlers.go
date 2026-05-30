@@ -12,17 +12,21 @@ import (
 // Handlers provides HTTP handlers for the Coves web interface.
 // This includes the landing page, static files, and account management.
 type Handlers struct {
-	templates   *Templates
-	oauthClient *oauth.OAuthClient
-	userService users.UserService
+	templates        *Templates
+	oauthClient      *oauth.OAuthClient
+	userService      users.UserService
+	turnstileSiteKey string
 }
 
 // NewHandlers creates a new Handlers instance with the provided dependencies.
-func NewHandlers(templates *Templates, oauthClient *oauth.OAuthClient, userService users.UserService) *Handlers {
+// turnstileSiteKey is the public Cloudflare Turnstile site key injected into the
+// /m/turnstile.html page. May be empty — in which case TurnstileHandler returns 503.
+func NewHandlers(templates *Templates, oauthClient *oauth.OAuthClient, userService users.UserService, turnstileSiteKey string) *Handlers {
 	return &Handlers{
-		templates:   templates,
-		oauthClient: oauthClient,
-		userService: userService,
+		templates:        templates,
+		oauthClient:      oauthClient,
+		userService:      userService,
+		turnstileSiteKey: turnstileSiteKey,
 	}
 }
 
@@ -185,6 +189,51 @@ func (h *Handlers) PrivacyHandler(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) ChildSafetyHandler(w http.ResponseWriter, r *http.Request) {
 	if err := h.templates.Render(w, "child-safety.html", nil); err != nil {
 		slog.Error("failed to render child safety standards template", "error", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+	}
+}
+
+// TurnstilePageData holds data injected into the Turnstile widget page.
+type TurnstilePageData struct {
+	// SiteKey is the public Cloudflare Turnstile site key. Embedded into the
+	// rendered HTML server-side so the mobile binary doesn't need to ship it.
+	SiteKey string
+}
+
+// TurnstileHandler renders the Cloudflare Turnstile widget host page for the
+// mobile WebView. The mobile signup flow loads this URL, the user solves the
+// widget, and the success callback posts the token back to Flutter via the
+// "Turnstile" JS channel.
+//
+// Symmetric with the requestSignupToken endpoint: if TURNSTILE_SITE_KEY is
+// missing the handler returns 503 rather than rendering a broken widget.
+// The signup flow then fails closed at the captcha step.
+func (h *Handlers) TurnstileHandler(w http.ResponseWriter, r *http.Request) {
+	if h.turnstileSiteKey == "" {
+		w.Header().Set("Cache-Control", "no-store")
+		http.Error(w, "Turnstile not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Lock the page to Cloudflare's challenge origin. The inline script and
+	// style are tiny and stable; using nonces would add complexity without
+	// meaningful gain on a self-contained page with no user input.
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'none'; "+
+			"script-src 'unsafe-inline' https://challenges.cloudflare.com; "+
+			"style-src 'unsafe-inline'; "+
+			"frame-src https://challenges.cloudflare.com; "+
+			"connect-src https://challenges.cloudflare.com",
+	)
+	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	// The site key is public; cache briefly so the WebView doesn't re-fetch
+	// on every signup retry, but stay short so a key rotation propagates fast.
+	w.Header().Set("Cache-Control", "public, max-age=300, must-revalidate")
+
+	if err := h.templates.Render(w, "turnstile.html", TurnstilePageData{SiteKey: h.turnstileSiteKey}); err != nil {
+		slog.Error("failed to render turnstile template", "error", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}
 }

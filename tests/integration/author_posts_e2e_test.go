@@ -88,7 +88,7 @@ func TestGetAuthorPosts_E2E_Success(t *testing.T) {
 
 	// Setup services
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, pdsURL)
+	userService := users.NewUserService(userRepo, resolver, pdsURL, nil, "")
 	communityService := communities.NewCommunityServiceWithPDSFactory(communityRepo, pdsURL, getTestInstanceDID(), "", nil, nil, nil)
 	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, pdsURL)
 	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, nil, PasswordAuthPDSClientFactory())
@@ -306,7 +306,7 @@ func TestGetAuthorPosts_FilterLogic(t *testing.T) {
 	voteRepo := postgres.NewVoteRepository(db)
 
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, getTestPDSURL())
+	userService := users.NewUserService(userRepo, resolver, getTestPDSURL(), nil, "")
 	communityService := communities.NewCommunityServiceWithPDSFactory(communityRepo, getTestPDSURL(), getTestInstanceDID(), "", nil, nil, nil)
 	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, getTestPDSURL())
 	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, nil, PasswordAuthPDSClientFactory())
@@ -445,7 +445,7 @@ func TestGetAuthorPosts_ServiceErrors(t *testing.T) {
 	voteRepo := postgres.NewVoteRepository(db)
 
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, getTestPDSURL())
+	userService := users.NewUserService(userRepo, resolver, getTestPDSURL(), nil, "")
 	communityService := communities.NewCommunityServiceWithPDSFactory(communityRepo, getTestPDSURL(), getTestInstanceDID(), "", nil, nil, nil)
 	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, getTestPDSURL())
 	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, nil, PasswordAuthPDSClientFactory())
@@ -565,7 +565,7 @@ func TestGetAuthorPosts_WithJetstreamIndexing(t *testing.T) {
 
 	// Setup services
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, pdsURL)
+	userService := users.NewUserService(userRepo, resolver, pdsURL, nil, "")
 	communityService := communities.NewCommunityServiceWithPDSFactory(communityRepo, pdsURL, getTestInstanceDID(), "", nil, nil, nil)
 	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, pdsURL)
 	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, nil, PasswordAuthPDSClientFactory())
@@ -675,7 +675,7 @@ func TestGetAuthorPosts_CommunityFilter(t *testing.T) {
 	voteRepo := postgres.NewVoteRepository(db)
 
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, getTestPDSURL())
+	userService := users.NewUserService(userRepo, resolver, getTestPDSURL(), nil, "")
 	communityService := communities.NewCommunityServiceWithPDSFactory(communityRepo, getTestPDSURL(), getTestInstanceDID(), "", nil, nil, nil)
 	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, getTestPDSURL())
 	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, nil, PasswordAuthPDSClientFactory())

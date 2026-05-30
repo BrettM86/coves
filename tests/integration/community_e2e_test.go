@@ -145,7 +145,7 @@ func TestCommunity_E2E(t *testing.T) {
 	identityConfig := identity.DefaultConfig()
 	identityConfig.PLCURL = plcURL // Use local PLC for identity resolution
 	identityResolver := identity.NewResolver(db, identityConfig)
-	_ = users.NewUserService(userRepo, identityResolver, pdsURL) // Keep for potential future use
+	_ = users.NewUserService(userRepo, identityResolver, pdsURL, nil, "") // Keep for potential future use
 	t.Logf("✅ Identity resolver configured with local PLC: %s", plcURL)
 
 	// V2.0: Initialize PDS account provisioner (simplified - no DID generator needed!)

@@ -130,6 +130,16 @@ services:
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-coves-appview}
       OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-1.0}
       OTEL_EXPORTER_OTLP_INSECURE: ${OTEL_EXPORTER_OTLP_INSECURE:-false}
+
+      # Bot-protected signup (Cloudflare Turnstile + on-the-fly PDS invite codes)
+      # TURNSTILE_SITE_KEY is the PUBLIC Cloudflare key embedded into the
+      # /m/turnstile.html page the mobile WebView loads.
+      # TURNSTILE_SECRET_KEY is the server-side Cloudflare secret.
+      # PDS_ADMIN_PASSWORD is already defined for the PDS block below — same value,
+      # also consumed by AppView to mint single-use invite codes.
+      TURNSTILE_SITE_KEY: ${TURNSTILE_SITE_KEY}
+      TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY}
+      PDS_ADMIN_PASSWORD: ${PDS_ADMIN_PASSWORD}
     volumes:
       # Image proxy cache (persistent across container restarts)
       - imageproxy-cache:/var/cache/coves/images

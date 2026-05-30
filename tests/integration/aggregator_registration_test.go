@@ -106,7 +106,7 @@ func TestAggregatorRegistration_Success(t *testing.T) {
 
 	// Create services and handler
 	userRepo := postgres.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, mockResolver, "https://bsky.social")
+	userService := users.NewUserService(userRepo, mockResolver, "https://bsky.social", nil, "")
 	handler := aggregator.NewRegisterHandler(userService, mockResolver)
 
 	// Create HTTP client that accepts self-signed certs for test server
@@ -181,7 +181,7 @@ func TestAggregatorRegistration_DomainVerificationFailed(t *testing.T) {
 
 	// Create services and handler
 	userRepo := postgres.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, mockResolver, "https://bsky.social")
+	userService := users.NewUserService(userRepo, mockResolver, "https://bsky.social", nil, "")
 	handler := aggregator.NewRegisterHandler(userService, mockResolver)
 
 	// Create HTTP client that accepts self-signed certs
@@ -251,7 +251,7 @@ func TestAggregatorRegistration_InvalidDID(t *testing.T) {
 
 			// Create services and handler
 			userRepo := postgres.NewUserRepository(db)
-			userService := users.NewUserService(userRepo, mockResolver, "https://bsky.social")
+			userService := users.NewUserService(userRepo, mockResolver, "https://bsky.social", nil, "")
 			handler := aggregator.NewRegisterHandler(userService, mockResolver)
 
 			reqBody := map[string]string{
@@ -327,7 +327,7 @@ func TestAggregatorRegistration_AlreadyRegistered(t *testing.T) {
 
 	// Create services and handler
 	userRepo := postgres.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, mockResolver, "https://bsky.social")
+	userService := users.NewUserService(userRepo, mockResolver, "https://bsky.social", nil, "")
 	handler := aggregator.NewRegisterHandler(userService, mockResolver)
 
 	// Create HTTP client that accepts self-signed certs
@@ -389,7 +389,7 @@ func TestAggregatorRegistration_WellKnownNotAccessible(t *testing.T) {
 
 	// Create services and handler
 	userRepo := postgres.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, mockResolver, "https://bsky.social")
+	userService := users.NewUserService(userRepo, mockResolver, "https://bsky.social", nil, "")
 	handler := aggregator.NewRegisterHandler(userService, mockResolver)
 
 	// Create HTTP client that accepts self-signed certs
@@ -458,7 +458,7 @@ func TestAggregatorRegistration_WellKnownTooLarge(t *testing.T) {
 	mockResolver := &mockAggregatorIdentityResolver{}
 
 	userRepo := postgres.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, mockResolver, "https://bsky.social")
+	userService := users.NewUserService(userRepo, mockResolver, "https://bsky.social", nil, "")
 	handler := aggregator.NewRegisterHandler(userService, mockResolver)
 
 	testClient := &http.Client{
@@ -527,7 +527,7 @@ func TestAggregatorRegistration_DIDResolutionFailed(t *testing.T) {
 
 	// Create services and handler
 	userRepo := postgres.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, mockResolver, "https://bsky.social")
+	userService := users.NewUserService(userRepo, mockResolver, "https://bsky.social", nil, "")
 	handler := aggregator.NewRegisterHandler(userService, mockResolver)
 
 	// Create HTTP client that accepts self-signed certs
@@ -606,7 +606,7 @@ func TestAggregatorRegistration_LargeWellKnownResponse(t *testing.T) {
 
 	// Create services and handler
 	userRepo := postgres.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, mockResolver, "https://bsky.social")
+	userService := users.NewUserService(userRepo, mockResolver, "https://bsky.social", nil, "")
 	handler := aggregator.NewRegisterHandler(userService, mockResolver)
 
 	// Create HTTP client that accepts self-signed certs
@@ -710,7 +710,7 @@ func TestAggregatorRegistration_E2E_WithRealInfrastructure(t *testing.T) {
 
 	// Create services and handler
 	userRepo := postgres.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, mockResolver, "https://bsky.social")
+	userService := users.NewUserService(userRepo, mockResolver, "https://bsky.social", nil, "")
 	handler := aggregator.NewRegisterHandler(userService, mockResolver)
 
 	// Create HTTP client for self-signed test server certs

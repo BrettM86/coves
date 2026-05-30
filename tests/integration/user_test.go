@@ -141,7 +141,7 @@ func TestUserCreationAndRetrieval(t *testing.T) {
 	// Wire up dependencies
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
 
 	ctx := context.Background()
 
@@ -222,7 +222,7 @@ func TestGetProfileEndpoint(t *testing.T) {
 	// Wire up dependencies
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
 
 	// Create test user directly in service
 	ctx := context.Background()
@@ -317,7 +317,7 @@ func TestDuplicateCreation(t *testing.T) {
 
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
 	ctx := context.Background()
 
 	// Create first user
@@ -546,7 +546,7 @@ func TestProfileStats(t *testing.T) {
 	// Wire up dependencies
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
 
 	ctx := context.Background()
 
@@ -692,7 +692,7 @@ func TestProfileStats_CommentCount(t *testing.T) {
 
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
 
 	ctx := context.Background()
 
@@ -787,7 +787,7 @@ func TestProfileStats_CommunityCount(t *testing.T) {
 
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
 
 	ctx := context.Background()
 
@@ -848,7 +848,7 @@ func TestGetProfile_NonExistentDID(t *testing.T) {
 
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
 
 	ctx := context.Background()
 
@@ -900,7 +900,7 @@ func TestProfileStatsEndpoint(t *testing.T) {
 	// Wire up dependencies
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
 
 	// Create test user
 	testDID := "did:plc:endpointstats123"
@@ -996,7 +996,7 @@ func TestHandleValidation(t *testing.T) {
 
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
 	ctx := context.Background()
 
 	testCases := []struct {
@@ -1126,7 +1126,7 @@ func TestAccountDeletion_Integration(t *testing.T) {
 	// Wire up dependencies
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
 
 	ctx := context.Background()
 

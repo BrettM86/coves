@@ -45,7 +45,7 @@ func TestOAuthSessionHandleSync(t *testing.T) {
 	// Set up real infrastructure components
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
 
 	// Create real OAuth store (with session handle updater capability)
 	baseOAuthStore := oauth.NewPostgresOAuthStore(db, 24*time.Hour)
@@ -320,7 +320,7 @@ func TestOAuthSessionHandleSync_LiveJetstream(t *testing.T) {
 	// Set up real infrastructure
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
 	baseOAuthStore := oauth.NewPostgresOAuthStore(db, 24*time.Hour)
 	sessionUpdater := baseOAuthStore.(jetstream.SessionHandleUpdater)
 

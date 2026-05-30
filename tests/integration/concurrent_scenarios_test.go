@@ -31,7 +31,7 @@ func TestConcurrentVoting_MultipleUsersOnSamePost(t *testing.T) {
 	voteRepo := postgres.NewVoteRepository(db)
 	postRepo := postgres.NewPostRepository(db)
 	userRepo := postgres.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, nil, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, nil, "http://localhost:3001", nil, "")
 	voteConsumer := jetstream.NewVoteEventConsumer(voteRepo, userService, db)
 
 	// Use fixed timestamp

@@ -384,7 +384,7 @@ func TestUserRepo_Create_DuplicateDID(t *testing.T) {
 
 	_, err = repo.Create(ctx, user2)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "user with DID already exists")
+	assert.ErrorIs(t, err, users.ErrUserAlreadyExists)
 }
 
 func TestUserRepo_GetByDID(t *testing.T) {

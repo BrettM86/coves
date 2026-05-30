@@ -114,7 +114,7 @@ func TestFullUserJourney_E2E(t *testing.T) {
 	identityResolver := identity.NewResolver(db, identityConfig)
 
 	// Setup services
-	userService := users.NewUserService(userRepo, identityResolver, pdsURL)
+	userService := users.NewUserService(userRepo, identityResolver, pdsURL, nil, "")
 
 	// Extract instance domain and DID
 	// IMPORTANT: Instance domain must match PDS_SERVICE_HANDLE_DOMAINS config (c-{name}.coves.social)

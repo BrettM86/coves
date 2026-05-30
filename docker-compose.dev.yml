@@ -335,6 +335,12 @@ services:
   #     PORT: 8080
   #     ENV: development
   #     LOG_LEVEL: ${LOG_LEVEL:-debug}
+  #
+  #     # Bot-protected signup (Turnstile + on-the-fly PDS invite codes).
+  #     # Defaults: Cloudflare always-pass test keys + PDS admin password "admin".
+  #     TURNSTILE_SITE_KEY: ${TURNSTILE_SITE_KEY:-1x00000000000000000000AA}
+  #     TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY:-1x0000000000000000000000000000000AA}
+  #     PDS_ADMIN_PASSWORD: ${PDS_ADMIN_PASSWORD:-admin}
   #   networks:
   #     - coves-dev
   #   depends_on:

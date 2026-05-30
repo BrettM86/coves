@@ -44,18 +44,49 @@ const (
 	maxHandleLength   = 253
 )
 
+// pdsAdminCallTimeout bounds outbound calls to the PDS admin API. Generous
+// enough for cold disk reads on the PDS, tight enough that a hung admin call
+// can't pin a captcha-verified caller for the request's full lifetime.
+const pdsAdminCallTimeout = 10 * time.Second
+
 type userService struct {
 	userRepo         UserRepository
 	identityResolver identity.Resolver
 	defaultPDS       string // Default PDS URL for this Coves instance (used when creating new local users via registration API)
+
+	// turnstile verifies Cloudflare Turnstile tokens during the signup-token
+	// handshake. nil → RequestSignupToken returns ErrSignupTokenDisabled (503).
+	turnstile TurnstileVerifier
+
+	// pdsAdminPassword authenticates against the PDS admin API for minting
+	// single-use invite codes. Paired with the literal admin username "admin"
+	// (PDS convention). Empty → RequestSignupToken returns ErrSignupTokenDisabled.
+	pdsAdminPassword string
+
+	// pdsAdminClient is reused across calls so HTTP/1.1 keep-alive and TLS
+	// session resumption actually kick in.
+	pdsAdminClient *http.Client
 }
 
-// NewUserService creates a new user service
-func NewUserService(userRepo UserRepository, identityResolver identity.Resolver, defaultPDS string) UserService {
+// NewUserService creates a new user service.
+// turnstile and pdsAdminPassword may be nil/empty when the signup-token endpoint
+// is not enabled (e.g., integration tests that don't exercise bot protection); in
+// that case RequestSignupToken returns ErrSignupTokenDisabled — surfaced as 503,
+// distinct from a captcha rejection so misconfiguration is observable.
+func NewUserService(
+	userRepo UserRepository,
+	identityResolver identity.Resolver,
+	defaultPDS string,
+	turnstile TurnstileVerifier,
+	pdsAdminPassword string,
+) UserService {
 	return &userService{
 		userRepo:         userRepo,
 		identityResolver: identityResolver,
 		defaultPDS:       defaultPDS,
+		turnstile:        turnstile,
+		pdsAdminPassword: pdsAdminPassword,
+		pdsAdminClient:   &http.Client{Timeout: pdsAdminCallTimeout},
 	}
 }
 
@@ -81,7 +112,7 @@ func (s *userService) CreateUser(ctx context.Context, req CreateUserRequest) (*U
 	createdUser, err := s.userRepo.Create(ctx, user)
 	if err != nil {
 		// If user with this DID already exists, fetch and return it (idempotent behavior)
-		if strings.Contains(err.Error(), "user with DID already exists") {
+		if errors.Is(err, ErrUserAlreadyExists) {
 			existingUser, getErr := s.userRepo.GetByDID(ctx, req.DID)
 			if getErr != nil {
 				return nil, fmt.Errorf("user exists but failed to fetch: %w", getErr)
@@ -236,6 +267,90 @@ func (s *userService) RegisterAccount(ctx context.Context, req RegisterAccountRe
 	}
 
 	return &pdsResp, nil
+}
+
+// RequestSignupToken verifies a Cloudflare Turnstile token and, on success, mints
+// a single-use PDS invite code. This endpoint does NOT validate handle/email —
+// the actual signup endpoint (social.coves.actor.signup) is the authoritative
+// place for those checks (uniqueness, lexicon constraints, PDS rules). This
+// keeps the captcha gate honest: one job, one round-trip.
+//
+// Returns ErrSignupTokenDisabled when the endpoint is unconfigured (missing
+// Turnstile secret or PDS admin password) — distinct from a captcha rejection so
+// operators see misconfiguration as a 503, not a sea of spurious 403s.
+func (s *userService) RequestSignupToken(ctx context.Context, req RequestSignupTokenRequest) (*RequestSignupTokenResponse, error) {
+	if s.turnstile == nil || s.pdsAdminPassword == "" {
+		return nil, ErrSignupTokenDisabled
+	}
+
+	if err := s.turnstile.Verify(ctx, req.TurnstileToken, req.RemoteIP); err != nil {
+		return nil, err
+	}
+
+	code, err := s.mintInviteCode(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return &RequestSignupTokenResponse{InviteCode: code}, nil
+}
+
+// mintInviteCode calls the PDS admin createInviteCode XRPC. The literal
+// admin username "admin" matches the PDS convention; the password comes from
+// PDS_ADMIN_PASSWORD. useCount: 1 enforces single-use at the PDS — the invite
+// is consumed by the first signup that presents it, and any replay is rejected
+// by the PDS as already-used.
+func (s *userService) mintInviteCode(ctx context.Context) (string, error) {
+	pdsURL := strings.TrimSuffix(s.defaultPDS, "/")
+	endpoint := fmt.Sprintf("%s/xrpc/com.atproto.server.createInviteCode", pdsURL)
+
+	body, err := json.Marshal(map[string]int{"useCount": 1})
+	if err != nil {
+		// In practice unreachable — fixed-shape struct — but wrap with the same
+		// sentinel so any "couldn't talk to PDS" path is uniformly observable.
+		// Double-%w preserves both the sentinel and the underlying cause for
+		// errors.Is/As — collapsing the cause with %v would hide transport
+		// errors from callers that switch on them.
+		return "", fmt.Errorf("%w: failed to marshal invite request: %w", ErrPDSAdminUnavailable, err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewBuffer(body))
+	if err != nil {
+		return "", fmt.Errorf("%w: failed to create invite request: %w", ErrPDSAdminUnavailable, err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	// Stdlib idiom: matches the PDS basic-auth convention (username literal "admin").
+	httpReq.SetBasicAuth("admin", s.pdsAdminPassword)
+
+	resp, err := s.pdsAdminClient.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("%w: failed to call PDS admin API: %w", ErrPDSAdminUnavailable, err)
+	}
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			slog.Warn("mintInviteCode: failed to close response body", slog.String("error", closeErr.Error()))
+		}
+	}()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("%w: failed to read PDS admin response: %w", ErrPDSAdminUnavailable, err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", NewInviteMintError(resp.StatusCode, string(respBody))
+	}
+
+	var parsed struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return "", fmt.Errorf("%w: failed to parse invite response: %w", ErrPDSAdminUnavailable, err)
+	}
+	if parsed.Code == "" {
+		return "", NewInviteMintError(resp.StatusCode, "empty code in response")
+	}
+	return parsed.Code, nil
 }
 
 // IndexUser creates or updates a user in the local database.

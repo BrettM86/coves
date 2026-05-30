@@ -114,7 +114,7 @@ func TestUserProfileAvatarE2E_UpdateWithAvatar(t *testing.T) {
 
 	// Setup services
 	userRepo := postgres.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, identityResolver, pdsURL)
+	userService := users.NewUserService(userRepo, identityResolver, pdsURL, nil, "")
 
 	// Setup user consumer for processing Jetstream events
 	userConsumer := jetstream.NewUserEventConsumer(userService, identityResolver, jetstreamURL, "")
@@ -412,7 +412,7 @@ func TestUserProfileAvatarE2E_UpdateWithBanner(t *testing.T) {
 
 	// Setup services
 	userRepo := postgres.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, identityResolver, pdsURL)
+	userService := users.NewUserService(userRepo, identityResolver, pdsURL, nil, "")
 
 	// Setup HTTP server using password-based PDS client for E2E tests
 	e2eAuth := NewE2EOAuthMiddleware()
@@ -657,7 +657,7 @@ func TestUserProfileAvatarE2E_UpdateDisplayNameAndBio(t *testing.T) {
 
 	// Setup services
 	userRepo := postgres.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, identityResolver, pdsURL)
+	userService := users.NewUserService(userRepo, identityResolver, pdsURL, nil, "")
 
 	// Setup HTTP server using password-based PDS client for E2E tests
 	e2eAuth := NewE2EOAuthMiddleware()
@@ -862,7 +862,7 @@ func TestUserProfileAvatarE2E_ReplaceAvatar(t *testing.T) {
 
 	// Setup services
 	userRepo := postgres.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, identityResolver, pdsURL)
+	userService := users.NewUserService(userRepo, identityResolver, pdsURL, nil, "")
 
 	// Setup HTTP server using password-based PDS client for E2E tests
 	e2eAuth := NewE2EOAuthMiddleware()

@@ -83,6 +83,18 @@ type UserService interface {
 	ResolveHandleToDID(ctx context.Context, handle string) (string, error)
 	RegisterAccount(ctx context.Context, req RegisterAccountRequest) (*RegisterAccountResponse, error)
 
+	// RequestSignupToken verifies a Cloudflare Turnstile token and, on success,
+	// mints a single-use invite code via the PDS admin API. This endpoint does
+	// NOT validate handle/email — those checks live on the actual signup
+	// endpoint (social.coves.actor.signup) where uniqueness and lexicon rules
+	// are enforced authoritatively. Returns:
+	//   - ErrSignupTokenDisabled  → endpoint not configured (503)
+	//   - InvalidCaptchaError     → captcha rejected by Cloudflare (403)
+	//   - CaptchaUnavailableError → Cloudflare unreachable (503)
+	//   - ErrPDSAdminUnavailable  → PDS admin transport/decode failure (503)
+	//   - InviteMintError         → PDS admin responded with non-2xx (500)
+	RequestSignupToken(ctx context.Context, req RequestSignupTokenRequest) (*RequestSignupTokenResponse, error)
+
 	// IndexUser creates or updates a user in the local database.
 	// This is idempotent - calling it multiple times with the same DID is safe.
 	// Used after OAuth login to ensure users are immediately available for profile lookups.

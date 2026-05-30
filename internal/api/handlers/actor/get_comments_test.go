@@ -81,6 +81,10 @@ func (m *mockUserServiceForComments) RegisterAccount(ctx context.Context, req us
 	return nil, nil
 }
 
+func (m *mockUserServiceForComments) RequestSignupToken(ctx context.Context, req users.RequestSignupTokenRequest) (*users.RequestSignupTokenResponse, error) {
+	return nil, nil
+}
+
 func (m *mockUserServiceForComments) IndexUser(ctx context.Context, did, handle, pdsURL string) error {
 	return nil
 }

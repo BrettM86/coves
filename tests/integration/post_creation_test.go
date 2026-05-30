@@ -31,7 +31,7 @@ func TestPostCreation_Basic(t *testing.T) {
 	// Setup: Initialize services
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
 
 	communityRepo := postgres.NewCommunityRepository(db)
 	// Note: Provisioner not needed for this test (we're not actually creating communities)

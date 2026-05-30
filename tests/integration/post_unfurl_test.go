@@ -43,7 +43,7 @@ func TestPostUnfurl_Streamable(t *testing.T) {
 	// Setup identity resolver and services
 	identityConfig := identity.DefaultConfig()
 	identityResolver := identity.NewResolver(db, identityConfig)
-	userService := users.NewUserService(userRepo, identityResolver, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, identityResolver, "http://localhost:3001", nil, "")
 
 	// Setup unfurl service with real oEmbed endpoints
 	unfurlService := unfurl.NewService(unfurlRepo,
@@ -348,7 +348,7 @@ func TestPostUnfurl_UnsupportedURL(t *testing.T) {
 
 	identityConfig := identity.DefaultConfig()
 	identityResolver := identity.NewResolver(db, identityConfig)
-	userService := users.NewUserService(userRepo, identityResolver, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, identityResolver, "http://localhost:3001", nil, "")
 
 	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
@@ -453,7 +453,7 @@ func TestPostUnfurl_UserProvidedMetadata(t *testing.T) {
 
 	identityConfig := identity.DefaultConfig()
 	identityResolver := identity.NewResolver(db, identityConfig)
-	userService := users.NewUserService(userRepo, identityResolver, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, identityResolver, "http://localhost:3001", nil, "")
 
 	unfurlService := unfurl.NewService(unfurlRepo,
 		unfurl.WithTimeout(30*time.Second),
@@ -568,7 +568,7 @@ func TestPostUnfurl_MissingEmbedType(t *testing.T) {
 
 	identityConfig := identity.DefaultConfig()
 	identityResolver := identity.NewResolver(db, identityConfig)
-	userService := users.NewUserService(userRepo, identityResolver, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, identityResolver, "http://localhost:3001", nil, "")
 
 	unfurlService := unfurl.NewService(unfurlRepo,
 		unfurl.WithTimeout(30*time.Second),
@@ -865,7 +865,7 @@ func TestPostUnfurl_E2E_WithJetstream(t *testing.T) {
 	// Setup services
 	identityConfig := identity.DefaultConfig()
 	identityResolver := identity.NewResolver(db, identityConfig)
-	userService := users.NewUserService(userRepo, identityResolver, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, identityResolver, "http://localhost:3001", nil, "")
 
 	unfurlService := unfurl.NewService(unfurlRepo,
 		unfurl.WithTimeout(30*time.Second),

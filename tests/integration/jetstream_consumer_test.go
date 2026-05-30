@@ -21,7 +21,7 @@ func TestUserIndexingFromJetstream(t *testing.T) {
 	// Wire up dependencies
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
 
 	ctx := context.Background()
 
@@ -316,7 +316,7 @@ func TestUserServiceIdempotency(t *testing.T) {
 
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
 	ctx := context.Background()
 
 	t.Run("CreateUser is idempotent for duplicate DID", func(t *testing.T) {

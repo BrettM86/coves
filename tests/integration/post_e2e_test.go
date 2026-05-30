@@ -62,7 +62,7 @@ func TestPostCreation_E2E_WithJetstream(t *testing.T) {
 	// Setup user service for post consumer
 	identityConfig := identity.DefaultConfig()
 	identityResolver := identity.NewResolver(db, identityConfig)
-	userService := users.NewUserService(userRepo, identityResolver, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, identityResolver, "http://localhost:3001", nil, "")
 
 	// Create test user (author)
 	author := createTestUser(t, db, "alice.test", "did:plc:alice123")
@@ -528,7 +528,7 @@ func TestPostCreation_E2E_LivePDS(t *testing.T) {
 			}
 			identityConfig.PLCURL = plcURL
 			identityResolver := identity.NewResolver(db, identityConfig)
-			userService := users.NewUserService(userRepo, identityResolver, pdsURL)
+			userService := users.NewUserService(userRepo, identityResolver, pdsURL, nil, "")
 
 			// Create post consumer (same as main.go)
 			postConsumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService, db)

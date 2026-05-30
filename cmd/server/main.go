@@ -73,6 +73,37 @@ func main() {
 		defaultPDS = "http://localhost:3001" // Local dev PDS
 	}
 
+	// Bot-protected signup configuration.
+	// TURNSTILE_SITE_KEY: PUBLIC Cloudflare key embedded in the /m/turnstile.html page
+	//   the mobile WebView loads. Empty → that page returns 503.
+	// TURNSTILE_SECRET_KEY: Cloudflare Turnstile server secret for verifying tokens.
+	// PDS_ADMIN_PASSWORD: used to mint single-use PDS invite codes on captcha success.
+	// All three are optional — if any is missing, the corresponding endpoint returns 503.
+	// Signup remains gated by PDS_INVITE_REQUIRED, so missing config means signup is
+	// *closed*, not bypassed.
+	turnstileSiteKey := os.Getenv("TURNSTILE_SITE_KEY")
+	turnstileSecret := os.Getenv("TURNSTILE_SECRET_KEY")
+	pdsAdminPassword := os.Getenv("PDS_ADMIN_PASSWORD")
+	signupTokenEnabled := turnstileSecret != "" && pdsAdminPassword != ""
+	if !signupTokenEnabled {
+		// Structured Warn (not log.Println) so log aggregators can alert on
+		// level + attrs — log.Println at startup gets stuck at INFO and is hard
+		// to filter on.
+		slog.Warn("signup-token endpoint DISABLED: new signups blocked",
+			slog.Bool("turnstile_secret_set", turnstileSecret != ""),
+			slog.Bool("pds_admin_password_set", pdsAdminPassword != ""),
+		)
+	}
+	if turnstileSiteKey == "" {
+		slog.Warn("/m/turnstile.html DISABLED: TURNSTILE_SITE_KEY not set; mobile signup will fail at captcha",
+			slog.Bool("turnstile_site_key_set", false),
+		)
+	}
+	var turnstileVerifier users.TurnstileVerifier
+	if turnstileSecret != "" {
+		turnstileVerifier = users.NewCloudflareTurnstile(turnstileSecret)
+	}
+
 	// Cursor secret for HMAC signing (prevents cursor manipulation)
 	cursorSecret := os.Getenv("CURSOR_SECRET")
 	if cursorSecret == "" {
@@ -255,7 +286,7 @@ func main() {
 
 	// Initialize user repository and service early (needed for OAuth user indexing)
 	userRepo := postgresRepo.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, identityResolver, defaultPDS)
+	userService := users.NewUserService(userRepo, identityResolver, defaultPDS, turnstileVerifier, pdsAdminPassword)
 
 	// Create OAuth handler for HTTP endpoints
 	// WithUserIndexer ensures users are indexed into local database after OAuth login
@@ -804,6 +835,7 @@ func main() {
 	log.Println("User XRPC endpoints registered")
 	log.Println("  - GET /xrpc/social.coves.actor.getProfile (public, OptionalAuth for viewer.blocking)")
 	log.Println("  - POST /xrpc/social.coves.actor.signup (public)")
+	log.Println("  - POST /xrpc/social.coves.actor.requestSignupToken (public, Turnstile-gated, 5 req/min per IP)")
 	log.Println("  - POST /xrpc/social.coves.actor.deleteAccount (requires OAuth)")
 	log.Println("  - POST /xrpc/social.coves.actor.updateProfile (requires OAuth)")
 
@@ -924,12 +956,13 @@ func main() {
 	log.Println("  - GET /.well-known/assetlinks.json (Android App Links)")
 
 	// Register web frontend routes (landing page, account deletion)
-	routes.RegisterWebRoutes(r, oauthClient, userService)
+	routes.RegisterWebRoutes(r, oauthClient, userService, turnstileSiteKey)
 	log.Println("✅ Web frontend routes registered")
 	log.Println("  - GET / (landing page)")
 	log.Println("  - GET /delete-account (account deletion page)")
 	log.Println("  - POST /delete-account (delete account)")
 	log.Println("  - GET /delete-account/success (deletion success)")
+	log.Println("  - GET /m/turnstile.html (mobile WebView Turnstile widget)")
 	log.Println("  - GET /static/* (static assets)")
 
 	// Health check endpoints

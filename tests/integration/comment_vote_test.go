@@ -24,7 +24,7 @@ func TestCommentVote_CreateAndUpdate(t *testing.T) {
 	commentRepo := postgres.NewCommentRepository(db)
 	voteRepo := postgres.NewVoteRepository(db)
 	userRepo := postgres.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, nil, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, nil, "http://localhost:3001", nil, "")
 
 	voteConsumer := jetstream.NewVoteEventConsumer(voteRepo, userService, db)
 	commentConsumer := jetstream.NewCommentEventConsumer(commentRepo, db)
@@ -334,7 +334,7 @@ func TestCommentVote_ViewerState(t *testing.T) {
 	postRepo := postgres.NewPostRepository(db)
 	userRepo := postgres.NewUserRepository(db)
 	communityRepo := postgres.NewCommunityRepository(db)
-	userService := users.NewUserService(userRepo, nil, "http://localhost:3001")
+	userService := users.NewUserService(userRepo, nil, "http://localhost:3001", nil, "")
 
 	voteConsumer := jetstream.NewVoteEventConsumer(voteRepo, userService, db)
 	commentConsumer := jetstream.NewCommentEventConsumer(commentRepo, db)

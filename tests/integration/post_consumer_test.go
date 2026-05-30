@@ -31,7 +31,7 @@ func TestPostConsumer_CommentCountReconciliation(t *testing.T) {
 	commentRepo := postgres.NewCommentRepository(db)
 	communityRepo := postgres.NewCommunityRepository(db)
 	userRepo := postgres.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, nil, getTestPDSURL())
+	userService := users.NewUserService(userRepo, nil, getTestPDSURL(), nil, "")
 
 	commentConsumer := jetstream.NewCommentEventConsumer(commentRepo, db)
 	postConsumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService, db)
