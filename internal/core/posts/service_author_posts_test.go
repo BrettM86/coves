@@ -7,7 +7,8 @@ import (
 
 // mockRepository implements Repository for testing
 type mockRepository struct {
-	getByAuthorFunc func(ctx context.Context, req GetAuthorPostsRequest) ([]*PostView, *string, error)
+	getByAuthorFunc    func(ctx context.Context, req GetAuthorPostsRequest) ([]*PostView, *string, error)
+	getViewsByURIsFunc func(ctx context.Context, uris []string) (map[string]*PostView, error)
 }
 
 func (m *mockRepository) Create(ctx context.Context, post *Post) error {
@@ -16,6 +17,13 @@ func (m *mockRepository) Create(ctx context.Context, post *Post) error {
 
 func (m *mockRepository) GetByURI(ctx context.Context, uri string) (*Post, error) {
 	return nil, nil
+}
+
+func (m *mockRepository) GetViewsByURIs(ctx context.Context, uris []string) (map[string]*PostView, error) {
+	if m.getViewsByURIsFunc != nil {
+		return m.getViewsByURIsFunc(ctx, uris)
+	}
+	return map[string]*PostView{}, nil
 }
 
 func (m *mockRepository) GetByAuthor(ctx context.Context, req GetAuthorPostsRequest) ([]*PostView, *string, error) {

@@ -136,6 +136,64 @@ func (r *postgresPostRepo) GetByURI(ctx context.Context, uri string) (*posts.Pos
 	return &post, nil
 }
 
+// GetViewsByURIs retrieves full post views for a set of canonical (DID-based) AT-URIs.
+// Returns a map keyed by URI; URIs that are missing or soft-deleted are simply absent
+// from the map (the caller emits notFoundPost markers for those).
+// Reuses scanPostView for row scanning, so the SELECT column order must match GetByAuthor.
+// Backs the social.coves.community.post.get endpoint (feed hydration + permalinks).
+func (r *postgresPostRepo) GetViewsByURIs(ctx context.Context, uris []string) (map[string]*posts.PostView, error) {
+	result := make(map[string]*posts.PostView, len(uris))
+	if len(uris) == 0 {
+		return result, nil
+	}
+
+	// Build parameterized IN clause ($1, $2, ...) - bounded to 25 URIs by the handler
+	placeholders := make([]string, len(uris))
+	args := make([]interface{}, len(uris))
+	for i, uri := range uris {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = uri
+	}
+
+	query := fmt.Sprintf(`
+		SELECT
+			p.uri, p.cid, p.rkey,
+			p.author_did, u.handle as author_handle,
+			p.community_did, c.handle as community_handle, c.name as community_name, c.avatar_cid as community_avatar, c.pds_url as community_pds_url,
+			p.title, p.content, p.content_facets, p.embed, p.content_labels,
+			p.created_at, p.edited_at, p.indexed_at,
+			p.upvote_count, p.downvote_count, p.score, p.comment_count
+		FROM posts p
+		INNER JOIN users u ON p.author_did = u.did
+		INNER JOIN communities c ON p.community_did = c.did
+		WHERE p.uri IN (%s) AND p.deleted_at IS NULL
+	`, strings.Join(placeholders, ", "))
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query posts by URIs: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			slog.Warn("failed to close rows", "error", err)
+		}
+	}()
+
+	for rows.Next() {
+		postView, err := r.scanPostView(rows)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan post: %w", err)
+		}
+		result[postView.URI] = postView
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating posts results: %w", err)
+	}
+
+	return result, nil
+}
+
 // GetByAuthor retrieves posts by author with filtering and pagination
 // Supports filter options: posts_with_replies (default), posts_no_replies, posts_with_media
 // Uses cursor-based pagination with created_at + uri for stable ordering
@@ -224,7 +282,7 @@ func (r *postgresPostRepo) GetByAuthor(ctx context.Context, req posts.GetAuthorP
 	// Scan results
 	var postViews []*posts.PostView
 	for rows.Next() {
-		postView, err := r.scanAuthorPost(rows)
+		postView, err := r.scanPostView(rows)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to scan author post: %w", err)
 		}
@@ -318,8 +376,9 @@ func (r *postgresPostRepo) SoftDelete(ctx context.Context, uri string) error {
 	return nil
 }
 
-// scanAuthorPost scans a database row into a PostView for author posts query
-func (r *postgresPostRepo) scanAuthorPost(rows *sql.Rows) (*posts.PostView, error) {
+// scanPostView scans a database row into a PostView. Shared by GetByAuthor and
+// GetViewsByURIs; the SELECT column order in those queries must match the Scan below.
+func (r *postgresPostRepo) scanPostView(rows *sql.Rows) (*posts.PostView, error) {
 	var (
 		postView        posts.PostView
 		authorView      posts.AuthorView

@@ -23,13 +23,20 @@ type Service interface {
 	// Returns paginated feed with cursor
 	GetAuthorPosts(ctx context.Context, req GetAuthorPostsRequest) (*GetAuthorPostsResponse, error)
 
+	// GetPosts batch-fetches post views by AT-URI for feed hydration and permalink
+	// (cold-load) rendering. Implements social.coves.community.post.get.
+	// URIs must be canonical DID-based AT-URIs; malformed or handle-based URIs are
+	// rejected with a validation error (handles are mutable and would break on rename).
+	// Results are returned in the same order as req.URIs; valid URIs whose post is
+	// missing or deleted come back as NotFoundPost markers.
+	GetPosts(ctx context.Context, req GetPostsRequest) ([]*PostResult, error)
+
 	// DeletePost deletes a post from the community's PDS repository
 	// SECURITY: Only the post author can delete their own posts
 	// Flow: Validate URI -> Fetch community -> Verify author -> Delete from PDS
 	DeletePost(ctx context.Context, session *oauth.ClientSessionData, req DeletePostRequest) error
 
 	// Future methods (Beta):
-	// GetPost(ctx context.Context, uri string, viewerDID *string) (*Post, error)
 	// UpdatePost(ctx context.Context, req UpdatePostRequest) (*Post, error)
 	// ListCommunityPosts(ctx context.Context, communityDID string, limit, offset int) ([]*Post, error)
 }
@@ -42,8 +49,14 @@ type Repository interface {
 	Create(ctx context.Context, post *Post) error
 
 	// GetByURI retrieves a post by its AT-URI
-	// Used for E2E test verification and future GET endpoint
+	// Used for E2E test verification and single-record lookups (returns the raw
+	// record without author/community joins)
 	GetByURI(ctx context.Context, uri string) (*Post, error)
+
+	// GetViewsByURIs retrieves full post views (with author + community joins) for a
+	// set of canonical DID-based AT-URIs. Returns a map keyed by URI; missing or
+	// soft-deleted posts are simply absent from the map. Backs social.coves.community.post.get.
+	GetViewsByURIs(ctx context.Context, uris []string) (map[string]*PostView, error)
 
 	// GetByAuthor retrieves posts authored by a specific user
 	// Supports filtering by post type and community

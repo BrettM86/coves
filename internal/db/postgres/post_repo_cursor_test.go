@@ -231,6 +231,10 @@ func (m *mockPostRepository) GetByAuthor(ctx context.Context, req posts.GetAutho
 	return nil, nil, nil
 }
 
+func (m *mockPostRepository) GetViewsByURIs(ctx context.Context, uris []string) (map[string]*posts.PostView, error) {
+	return map[string]*posts.PostView{}, nil
+}
+
 func (m *mockPostRepository) SoftDelete(ctx context.Context, uri string) error {
 	return nil
 }

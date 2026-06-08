@@ -70,6 +70,37 @@ type DeletePostRequest struct {
 	URI string `json:"uri"` // AT-URI of the post to delete
 }
 
+// GetPostsRequest represents input for batch-fetching post views by AT-URI.
+// Matches social.coves.community.post.get parameters (plus viewer context).
+// URIs must be canonical DID-based AT-URIs (at://<community-did>/.../<rkey>);
+// handle-based authorities are rejected (handles are mutable and would break on rename).
+type GetPostsRequest struct {
+	URIs      []string // 1..25 canonical DID-based post AT-URIs to hydrate
+	ViewerDID string   // Optional viewer DID (from OptionalAuth) for viewer state
+}
+
+// NotFoundPost is a union member of the social.coves.community.post.get output,
+// emitted when a requested URI cannot be resolved (deleted, never indexed, or an
+// unresolvable/invalid authority). Matches social.coves.community.post.get#notFoundPost.
+type NotFoundPost struct {
+	URI      string `json:"uri"`
+	NotFound bool   `json:"notFound"` // Always true (const per lexicon); discriminates the union on the wire
+}
+
+// PostResult is one ordered element of a GetPosts response: exactly one of Post or
+// NotFound is set. Post is set when the post was found and is visible; NotFound
+// otherwise. (A blockedPost variant is defined in the lexicon but not yet produced.)
+type PostResult struct {
+	Post     *PostView
+	NotFound *NotFoundPost
+}
+
+// GetPost returns the underlying PostView (nil for not-found results), satisfying
+// the viewer-state enrichment helper's FeedPostProvider interface.
+func (r *PostResult) GetPost() *PostView {
+	return r.Post
+}
+
 // PostRecord represents the actual atProto record structure written to PDS
 // This is the data structure that gets stored in the community's repository
 type PostRecord struct {

@@ -259,6 +259,11 @@ func (m *mockPostRepo) GetByAuthor(ctx context.Context, req posts.GetAuthorPosts
 	return nil, nil, nil
 }
 
+func (m *mockPostRepo) GetViewsByURIs(ctx context.Context, uris []string) (map[string]*posts.PostView, error) {
+	// Mock implementation - returns empty for tests
+	return map[string]*posts.PostView{}, nil
+}
+
 func (m *mockPostRepo) SoftDelete(ctx context.Context, uri string) error {
 	// Mock implementation - just delete from map
 	delete(m.posts, uri)

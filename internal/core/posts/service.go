@@ -620,6 +620,127 @@ func (s *postService) GetAuthorPosts(ctx context.Context, req GetAuthorPostsRequ
 	}, nil
 }
 
+// Bounds for the social.coves.community.post.get endpoint.
+const (
+	postCollection = "social.coves.community.post"
+	// MaxGetPostsURIs is the maximum number of URIs accepted by a single
+	// social.coves.community.post.get request (matches the lexicon maxLength).
+	// Exported so the handler layer reuses the same bound (single source of truth).
+	MaxGetPostsURIs = 25
+)
+
+// GetPosts batch-fetches post views by AT-URI for feed hydration and permalink
+// (cold-load) rendering. Implements social.coves.community.post.get.
+//
+// URIs must be canonical DID-based AT-URIs (at://<community-did>/social.coves.community.post/<rkey>).
+// Handle-based authorities are rejected: handles are mutable, so a handle-based URI
+// would break (or, if the handle is later reassigned, mis-resolve to the wrong community)
+// after a rename. Resolving a human-readable handle to a DID is the caller's job, done
+// once at the edge. DIDs are permanent, so DID-based URIs stay valid forever.
+//
+// Flow:
+//  1. Validate the URI count (1..25) and that every URI is a well-formed DID-based URI.
+//     A malformed or handle-based URI is a client error -> InvalidRequest, not a silent miss.
+//  2. Batch fetch views for the (deduped) URIs.
+//  3. Assemble results in request order; valid-but-absent URIs become notFoundPost.
+//
+// Viewer state (vote) and embed/blob transforms are applied by the handler layer.
+func (s *postService) GetPosts(ctx context.Context, req GetPostsRequest) ([]*PostResult, error) {
+	// 1. Validate batch size
+	if len(req.URIs) == 0 {
+		return nil, NewValidationError("uris", "at least one URI is required")
+	}
+	if len(req.URIs) > MaxGetPostsURIs {
+		return nil, NewValidationError("uris", fmt.Sprintf("too many URIs (max %d)", MaxGetPostsURIs))
+	}
+
+	// Validate every URI up front and dedup for the batch fetch. A malformed or
+	// handle-based URI fails the whole request with a clear error rather than silently
+	// degrading to notFound, which would hide client bugs.
+	uniqueSet := make(map[string]struct{}, len(req.URIs))
+	for _, uri := range req.URIs {
+		if err := validatePostURI(uri); err != nil {
+			return nil, err
+		}
+		uniqueSet[uri] = struct{}{}
+	}
+
+	// 2. Batch fetch the (deduped) URIs
+	unique := make([]string, 0, len(uniqueSet))
+	for uri := range uniqueSet {
+		unique = append(unique, uri)
+	}
+	views, err := s.repo.GetViewsByURIs(ctx, unique)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch post views: %w", err)
+	}
+
+	// 3. Assemble results in request order; valid-but-absent URIs become notFoundPost
+	results := make([]*PostResult, len(req.URIs))
+	for i, uri := range req.URIs {
+		if view := views[uri]; view != nil {
+			results[i] = &PostResult{Post: view}
+		} else {
+			results[i] = &PostResult{NotFound: &NotFoundPost{URI: uri, NotFound: true}}
+		}
+	}
+
+	return results, nil
+}
+
+// parsePostURIParts splits a post AT-URI into its authority and rkey, validating the
+// scheme, structure, collection, and that both authority and rkey are present. The
+// authority may be a DID or a handle; callers enforce the DID requirement (if any) via
+// requireDIDAuthority. field names the request parameter for error attribution (e.g.
+// "uri" or "uris"). This is the single source of truth for post-URI structure rules,
+// shared by validatePostURI (get) and parsePostURI (delete). Pure (no I/O), so unit-testable.
+func parsePostURIParts(uri, field string) (authority string, rkey string, err error) {
+	if !strings.HasPrefix(uri, "at://") {
+		return "", "", NewValidationError(field, "invalid AT-URI: must start with at://")
+	}
+	parts := strings.Split(strings.TrimPrefix(uri, "at://"), "/")
+	if len(parts) != 3 {
+		return "", "", NewValidationError(field, "invalid post URI format: expected at://authority/"+postCollection+"/rkey")
+	}
+	authority, collection, rkey := parts[0], parts[1], parts[2]
+	if authority == "" {
+		return "", "", NewValidationError(field, "invalid post URI: missing authority")
+	}
+	if collection != postCollection {
+		return "", "", NewValidationError(field, fmt.Sprintf("invalid collection in URI: expected %s, got %s", postCollection, collection))
+	}
+	if rkey == "" {
+		return "", "", NewValidationError(field, "invalid post URI: missing rkey")
+	}
+	return authority, rkey, nil
+}
+
+// requireDIDAuthority enforces that a parsed post-URI authority is a DID (not a handle).
+// Handles are mutable, so a handle-based URI would break after a community rename, or
+// mis-resolve if the handle is later reassigned. field names the request parameter for errors.
+func requireDIDAuthority(authority, field string) error {
+	if !strings.HasPrefix(authority, "did:") {
+		return NewValidationError(field, fmt.Sprintf("post URI authority must be a DID, got handle %q (resolve the community handle to its DID before calling)", authority))
+	}
+	if err := validateDIDFormat(authority); err != nil {
+		return NewValidationError(field, fmt.Sprintf("invalid community DID in URI: %s", err.Error()))
+	}
+	return nil
+}
+
+// validatePostURI verifies that uri is a well-formed, canonical (DID-based) post AT-URI:
+//
+//	at://<community-did>/social.coves.community.post/<rkey>
+//
+// Used by GetPosts; callers must resolve handles to DIDs before calling.
+func validatePostURI(uri string) error {
+	authority, _, err := parsePostURIParts(uri, "uris")
+	if err != nil {
+		return err
+	}
+	return requireDIDAuthority(authority, "uris")
+}
+
 // validateGetAuthorPostsRequest validates the GetAuthorPosts request
 func (s *postService) validateGetAuthorPostsRequest(req *GetAuthorPostsRequest) error {
 	// Validate actor DID is set
@@ -805,37 +926,17 @@ func (s *postService) validateDeleteRequest(req *DeletePostRequest) error {
 // Format: at://community_did/social.coves.community.post/rkey
 // Returns community DID, rkey, and error
 func (s *postService) parsePostURI(uri string) (communityDID string, rkey string, err error) {
-	// Remove at:// prefix
-	withoutScheme := strings.TrimPrefix(uri, "at://")
-	parts := strings.Split(withoutScheme, "/")
-
-	// Expected format: [community_did, collection, rkey]
-	if len(parts) != 3 {
-		return "", "", NewValidationError("uri", "invalid post URI format: expected at://did/collection/rkey")
+	// Structure + DID-authority validation is shared with the get path (single source of truth).
+	communityDID, rkey, err = parsePostURIParts(uri, "uri")
+	if err != nil {
+		return "", "", err
+	}
+	if err := requireDIDAuthority(communityDID, "uri"); err != nil {
+		return "", "", err
 	}
 
-	communityDID = parts[0]
-	collection := parts[1]
-	rkey = parts[2]
-
-	// Validate collection type
-	if collection != "social.coves.community.post" {
-		return "", "", NewValidationError("uri", fmt.Sprintf("invalid collection in URI: expected social.coves.community.post, got %s", collection))
-	}
-
-	// Validate DID format
-	if err := validateDIDFormat(communityDID); err != nil {
-		return "", "", NewValidationError("uri", fmt.Sprintf("invalid community DID in URI: %s", err.Error()))
-	}
-
-	// Validate rkey is not empty
-	if rkey == "" {
-		return "", "", NewValidationError("uri", "missing rkey in post URI")
-	}
-
-	// Also verify with utils helper for consistency
-	extractedRkey := utils.ExtractRKeyFromURI(uri)
-	if extractedRkey != rkey {
+	// Defense-in-depth: verify rkey extraction is consistent with the utils helper.
+	if extractedRkey := utils.ExtractRKeyFromURI(uri); extractedRkey != rkey {
 		return "", "", NewValidationError("uri", "URI parsing inconsistency")
 	}
 

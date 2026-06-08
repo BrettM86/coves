@@ -842,7 +842,7 @@ func main() {
 	routes.RegisterCommunityRoutes(r, communityService, communityRepo, authMiddleware, allowedCommunityCreators)
 	log.Println("Community XRPC endpoints registered with OAuth authentication")
 
-	routes.RegisterPostRoutes(r, postService, dualAuth)
+	routes.RegisterPostRoutes(r, postService, voteService, blueskyService, dualAuth, authMiddleware)
 	log.Println("Post XRPC endpoints registered with dual auth (OAuth + service JWT for aggregators)")
 
 	routes.RegisterVoteRoutes(r, voteService, authMiddleware)

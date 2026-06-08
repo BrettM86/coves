@@ -144,7 +144,7 @@ func TestFullUserJourney_E2E(t *testing.T) {
 	e2eAuth := NewE2EOAuthMiddleware()
 	r := chi.NewRouter()
 	routes.RegisterCommunityRoutes(r, communityService, communityRepo, e2eAuth.OAuthAuthMiddleware, nil) // nil = allow all community creators
-	routes.RegisterPostRoutes(r, postService, e2eAuth.OAuthAuthMiddleware)
+	routes.RegisterPostRoutes(r, postService, nil, nil, e2eAuth.OAuthAuthMiddleware, e2eAuth.OAuthAuthMiddleware)
 	routes.RegisterTimelineRoutes(r, timelineService, nil, nil, e2eAuth.OAuthAuthMiddleware)
 	httpServer := httptest.NewServer(r)
 	defer httpServer.Close()
