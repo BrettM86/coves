@@ -28,7 +28,9 @@ type Service interface {
 	// URIs must be canonical DID-based AT-URIs; malformed or handle-based URIs are
 	// rejected with a validation error (handles are mutable and would break on rename).
 	// Results are returned in the same order as req.URIs; valid URIs whose post is
-	// missing or deleted come back as NotFoundPost markers.
+	// missing or deleted come back as NotFoundPost markers. When req.ViewerDID is set
+	// and a BlockChecker is wired, posts authored by users the viewer has blocked are
+	// returned as BlockedPost markers instead of full views (matching feed/timeline).
 	GetPosts(ctx context.Context, req GetPostsRequest) ([]*PostResult, error)
 
 	// DeletePost deletes a post from the community's PDS repository
@@ -71,4 +73,14 @@ type Repository interface {
 	// Future methods (Beta):
 	// Update(ctx context.Context, post *Post) error
 	// List(ctx context.Context, communityDID string, limit, offset int) ([]*Post, int, error)
+}
+
+// BlockChecker reports which of the given author DIDs the viewer (blockerDID) has
+// blocked. It is the narrow slice of the user-block store that GetPosts needs to enforce
+// viewer block visibility, and is satisfied by the userblocks repository's AreBlocked.
+// Optional: when nil, block enforcement is skipped (e.g. minimal setups and unit tests).
+type BlockChecker interface {
+	// AreBlocked returns a map of blockedDID -> true for each DID in blockedDIDs that
+	// blockerDID has blocked. DIDs that are not blocked are absent from the map.
+	AreBlocked(ctx context.Context, blockerDID string, blockedDIDs []string) (map[string]bool, error)
 }

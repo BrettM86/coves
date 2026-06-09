@@ -2,8 +2,40 @@ package posts
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
+
+// fakeBlockChecker is an in-memory BlockChecker for unit tests. It records the most
+// recent call so tests can assert the viewer DID and deduped author DIDs passed in.
+type fakeBlockChecker struct {
+	blocked    map[string]bool // authorDID -> blocked
+	err        error
+	called     bool
+	gotBlocker string
+	gotDIDs    []string
+}
+
+func (f *fakeBlockChecker) AreBlocked(ctx context.Context, blockerDID string, blockedDIDs []string) (map[string]bool, error) {
+	f.called = true
+	f.gotBlocker = blockerDID
+	f.gotDIDs = blockedDIDs
+	if f.err != nil {
+		return nil, f.err
+	}
+	out := make(map[string]bool)
+	for _, did := range blockedDIDs {
+		if f.blocked[did] {
+			out[did] = true
+		}
+	}
+	return out, nil
+}
+
+// viewWithAuthor builds a minimal found PostView authored by authorDID.
+func viewWithAuthor(uri, authorDID string) *PostView {
+	return &PostView{URI: uri, CID: "cid-" + authorDID, Author: &AuthorView{DID: authorDID}}
+}
 
 const testCommunityDID = "did:plc:ewvi7nxzyoun6zhxrhs64oiz"
 
@@ -193,5 +225,195 @@ func TestGetPosts_OrderingAndNotFound(t *testing.T) {
 	}
 	if results[1].NotFound.URI != missing || !results[1].NotFound.NotFound {
 		t.Errorf("results[1].NotFound = %+v, want {URI:%q, NotFound:true}", results[1].NotFound, missing)
+	}
+}
+
+// TestGetPosts_ViewerBlocksAuthor verifies that when an authenticated viewer has blocked
+// a post's author, that post comes back as a blockedPost marker (blockedBy "author")
+// while posts by unblocked authors and not-found URIs are unaffected, and request order
+// is preserved. This keeps permalink/cold-load reads consistent with feed/timeline.
+func TestGetPosts_ViewerBlocksAuthor(t *testing.T) {
+	const blockedAuthor = "did:plc:blockedauthor"
+	const okAuthor = "did:plc:okauthor"
+
+	blockedURI := didPostURI("blocked1")
+	okURI := didPostURI("ok1")
+	missingURI := didPostURI("missing1")
+
+	repo := &mockRepository{
+		getViewsByURIsFunc: func(ctx context.Context, uris []string) (map[string]*PostView, error) {
+			return map[string]*PostView{
+				blockedURI: viewWithAuthor(blockedURI, blockedAuthor),
+				okURI:      viewWithAuthor(okURI, okAuthor),
+			}, nil
+		},
+	}
+	checker := &fakeBlockChecker{blocked: map[string]bool{blockedAuthor: true}}
+	s := &postService{repo: repo, blockChecker: checker}
+
+	results, err := s.GetPosts(context.Background(), GetPostsRequest{
+		URIs:      []string{blockedURI, okURI, missingURI},
+		ViewerDID: "did:plc:viewer",
+	})
+	if err != nil {
+		t.Fatalf("GetPosts returned error: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+
+	// [0] blocked author -> blockedPost marker, no PostView leaked
+	if results[0].Post != nil || results[0].NotFound != nil || results[0].Blocked == nil {
+		t.Fatalf("results[0] expected Blocked, got %+v", results[0])
+	}
+	b := results[0].Blocked
+	if b.URI != blockedURI || !b.Blocked || b.BlockedBy != "author" {
+		t.Errorf("results[0].Blocked = %+v, want {URI:%q, Blocked:true, BlockedBy:author}", b, blockedURI)
+	}
+	if b.Author == nil || b.Author.DID != blockedAuthor {
+		t.Errorf("results[0].Blocked.Author = %+v, want DID %q", b.Author, blockedAuthor)
+	}
+
+	// [1] unblocked author -> full postView
+	if results[1].Post == nil || results[1].Blocked != nil {
+		t.Fatalf("results[1] expected Post, got %+v", results[1])
+	}
+	if results[1].Post.URI != okURI {
+		t.Errorf("results[1].Post.URI = %q, want %q", results[1].Post.URI, okURI)
+	}
+
+	// [2] absent URI -> notFoundPost (block filtering does not touch not-found slots)
+	if results[2].NotFound == nil || results[2].Post != nil || results[2].Blocked != nil {
+		t.Fatalf("results[2] expected NotFound, got %+v", results[2])
+	}
+
+	// The block lookup must have run with the viewer as blocker.
+	if !checker.called || checker.gotBlocker != "did:plc:viewer" {
+		t.Errorf("AreBlocked called=%v blocker=%q, want called with did:plc:viewer", checker.called, checker.gotBlocker)
+	}
+}
+
+// TestGetPosts_DedupesAuthorDIDsForBlockCheck verifies the block lookup batches over
+// unique author DIDs (duplicate authors are not queried twice).
+func TestGetPosts_DedupesAuthorDIDsForBlockCheck(t *testing.T) {
+	const author = "did:plc:sameauthor"
+	uri1, uri2 := didPostURI("a"), didPostURI("b")
+
+	repo := &mockRepository{
+		getViewsByURIsFunc: func(ctx context.Context, uris []string) (map[string]*PostView, error) {
+			return map[string]*PostView{
+				uri1: viewWithAuthor(uri1, author),
+				uri2: viewWithAuthor(uri2, author),
+			}, nil
+		},
+	}
+	checker := &fakeBlockChecker{}
+	s := &postService{repo: repo, blockChecker: checker}
+
+	if _, err := s.GetPosts(context.Background(), GetPostsRequest{
+		URIs:      []string{uri1, uri2},
+		ViewerDID: "did:plc:viewer",
+	}); err != nil {
+		t.Fatalf("GetPosts returned error: %v", err)
+	}
+	if len(checker.gotDIDs) != 1 || checker.gotDIDs[0] != author {
+		t.Errorf("AreBlocked got DIDs %v, want exactly [%q]", checker.gotDIDs, author)
+	}
+}
+
+// TestGetPosts_SkipsBlockFilter verifies block enforcement is skipped (the checker is
+// never called, posts are returned as-is) when there is no authenticated viewer or no
+// block checker wired.
+func TestGetPosts_SkipsBlockFilter(t *testing.T) {
+	const author = "did:plc:author"
+	uri := didPostURI("p1")
+	newRepo := func() *mockRepository {
+		return &mockRepository{
+			getViewsByURIsFunc: func(ctx context.Context, uris []string) (map[string]*PostView, error) {
+				return map[string]*PostView{uri: viewWithAuthor(uri, author)}, nil
+			},
+		}
+	}
+
+	t.Run("no viewer DID -> checker not called", func(t *testing.T) {
+		checker := &fakeBlockChecker{blocked: map[string]bool{author: true}}
+		s := &postService{repo: newRepo(), blockChecker: checker}
+		results, err := s.GetPosts(context.Background(), GetPostsRequest{URIs: []string{uri}})
+		if err != nil {
+			t.Fatalf("GetPosts returned error: %v", err)
+		}
+		if results[0].Post == nil || results[0].Blocked != nil {
+			t.Fatalf("expected Post (no filtering without viewer), got %+v", results[0])
+		}
+		if checker.called {
+			t.Error("AreBlocked should not be called without a viewer DID")
+		}
+	})
+
+	t.Run("nil block checker -> no filtering", func(t *testing.T) {
+		s := &postService{repo: newRepo()} // blockChecker nil
+		results, err := s.GetPosts(context.Background(), GetPostsRequest{URIs: []string{uri}, ViewerDID: "did:plc:viewer"})
+		if err != nil {
+			t.Fatalf("GetPosts returned error: %v", err)
+		}
+		if results[0].Post == nil || results[0].Blocked != nil {
+			t.Fatalf("expected Post (no checker wired), got %+v", results[0])
+		}
+	})
+}
+
+// TestGetPosts_BlockCheckErrorFailsClosed verifies that a block-lookup failure fails the
+// whole request rather than surfacing posts that may be blocked (fail closed).
+func TestGetPosts_BlockCheckErrorFailsClosed(t *testing.T) {
+	uri := didPostURI("p1")
+	repo := &mockRepository{
+		getViewsByURIsFunc: func(ctx context.Context, uris []string) (map[string]*PostView, error) {
+			return map[string]*PostView{uri: viewWithAuthor(uri, "did:plc:author")}, nil
+		},
+	}
+	checker := &fakeBlockChecker{err: errors.New("db down")}
+	s := &postService{repo: repo, blockChecker: checker}
+
+	results, err := s.GetPosts(context.Background(), GetPostsRequest{URIs: []string{uri}, ViewerDID: "did:plc:viewer"})
+	if err == nil {
+		t.Fatalf("expected error when block check fails, got results %+v", results)
+	}
+}
+
+// TestPostResult_Member verifies the union accessor returns exactly the populated member
+// and reports the empty (invalid) result so callers can avoid emitting a null union entry.
+func TestPostResult_Member(t *testing.T) {
+	view := &PostView{URI: "at://x"}
+	tests := []struct {
+		name   string
+		result *PostResult
+		want   interface{}
+		wantOK bool
+	}{
+		{"post", foundResult(view), view, true},
+		{"not found", notFoundResult("at://missing"), nil, true},
+		{"blocked", blockedByAuthorResult("at://b", "did:plc:a"), nil, true},
+		{"empty is invalid", &PostResult{}, nil, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			member, ok := tt.result.Member()
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if !ok {
+				if member != nil {
+					t.Errorf("member = %v, want nil for invalid result", member)
+				}
+				return
+			}
+			if member == nil {
+				t.Fatal("member = nil for a valid result")
+			}
+			// For the post case the accessor must return the exact PostView pointer.
+			if tt.want != nil && member != tt.want {
+				t.Errorf("member = %v, want %v", member, tt.want)
+			}
+		})
 	}
 }

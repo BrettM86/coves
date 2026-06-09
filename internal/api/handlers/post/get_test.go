@@ -118,3 +118,74 @@ func TestHandleGet_Success_UnionOrder(t *testing.T) {
 		t.Errorf("posts[1].uri = %v, want %q", got, missingURI)
 	}
 }
+
+// TestHandleGet_BlockedUnionMember verifies a blockedPost result from the service is
+// emitted as a blockedPost union member (blocked:true, blockedBy:author) rather than a
+// postView or notFoundPost.
+func TestHandleGet_BlockedUnionMember(t *testing.T) {
+	blockedURI := "at://did:plc:ewvi7nxzyoun6zhxrhs64oiz/social.coves.community.post/blocked"
+
+	svc := &mockGetPostService{
+		getPostsFunc: func(ctx context.Context, req posts.GetPostsRequest) ([]*posts.PostResult, error) {
+			return []*posts.PostResult{
+				{Blocked: &posts.BlockedPost{
+					URI:       blockedURI,
+					Blocked:   true,
+					BlockedBy: "author",
+					Author:    &posts.BlockedAuthor{DID: "did:plc:blockedauthor"},
+				}},
+			}, nil
+		},
+	}
+	h := NewGetHandler(svc, nil, nil)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet,
+		"/xrpc/social.coves.community.post.get?uris="+blockedURI, nil)
+	h.HandleGet(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Posts []map[string]interface{} `json:"posts"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode response: %v (body: %s)", err, rec.Body.String())
+	}
+	if len(resp.Posts) != 1 {
+		t.Fatalf("expected 1 post, got %d", len(resp.Posts))
+	}
+	if got := resp.Posts[0]["blocked"]; got != true {
+		t.Errorf("posts[0].blocked = %v, want true", got)
+	}
+	if got := resp.Posts[0]["blockedBy"]; got != "author" {
+		t.Errorf("posts[0].blockedBy = %v, want author", got)
+	}
+	if _, hasNotFound := resp.Posts[0]["notFound"]; hasNotFound {
+		t.Errorf("posts[0] should be a blockedPost, but has a notFound marker")
+	}
+}
+
+// TestHandleGet_InvalidResultIs500 verifies that an internally-invalid result (no union
+// member set) is reported as a 500 rather than serialized as a null array entry, which
+// would violate the lexicon's union.
+func TestHandleGet_InvalidResultIs500(t *testing.T) {
+	uri := "at://did:plc:ewvi7nxzyoun6zhxrhs64oiz/social.coves.community.post/x"
+	svc := &mockGetPostService{
+		getPostsFunc: func(ctx context.Context, req posts.GetPostsRequest) ([]*posts.PostResult, error) {
+			return []*posts.PostResult{{}}, nil // no member set
+		},
+	}
+	h := NewGetHandler(svc, nil, nil)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet,
+		"/xrpc/social.coves.community.post.get?uris="+uri, nil)
+	h.HandleGet(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500 (body: %s)", rec.Code, rec.Body.String())
+	}
+}

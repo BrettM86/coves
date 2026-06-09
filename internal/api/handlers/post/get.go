@@ -86,14 +86,19 @@ func (h *GetHandler) HandleGet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Build the union output array in request order: postView or notFoundPost per slot
+	// Build the union output array in request order. Every slot must be exactly one
+	// union member (postView, blockedPost, or notFoundPost); a result with no member
+	// set is an internal bug and must not be emitted as a null array entry, which would
+	// violate the lexicon's union.
 	out := make([]interface{}, len(results))
 	for i, res := range results {
-		if res.Post != nil {
-			out[i] = res.Post
-		} else {
-			out[i] = res.NotFound
+		member, ok := res.Member()
+		if !ok {
+			log.Printf("ERROR: getPosts result %d has no union member set", i)
+			writeError(w, http.StatusInternalServerError, "InternalServerError", "Failed to assemble response")
+			return
 		}
+		out[i] = member
 	}
 
 	// Pre-encode to a buffer so an encoding failure still yields a proper error response

@@ -624,7 +624,9 @@ func main() {
 
 	// Initialize post service (with aggregator support)
 	postRepo := postgresRepo.NewPostRepository(db)
-	postService := posts.NewPostService(postRepo, communityService, aggregatorService, blobService, unfurlService, blueskyService, defaultPDS)
+	// userBlockRepo (created above) backs viewer block enforcement on GetPosts, keeping
+	// permalink/cold-load reads consistent with feed/timeline block filtering.
+	postService := posts.NewPostService(postRepo, communityService, aggregatorService, blobService, unfurlService, blueskyService, defaultPDS, posts.WithBlockChecker(userBlockRepo))
 
 	// Initialize vote repository (used by Jetstream consumer for indexing)
 	voteRepo := postgresRepo.NewVoteRepository(db)

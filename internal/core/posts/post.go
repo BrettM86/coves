@@ -87,18 +87,82 @@ type NotFoundPost struct {
 	NotFound bool   `json:"notFound"` // Always true (const per lexicon); discriminates the union on the wire
 }
 
-// PostResult is one ordered element of a GetPosts response: exactly one of Post or
-// NotFound is set. Post is set when the post was found and is visible; NotFound
-// otherwise. (A blockedPost variant is defined in the lexicon but not yet produced.)
+// BlockedAuthor is the minimal author info carried on a BlockedPost.
+// Matches social.coves.community.post.get#blockedAuthor.
+type BlockedAuthor struct {
+	DID string `json:"did"`
+}
+
+// BlockedPost is a union member of the social.coves.community.post.get output, emitted
+// when a found post is hidden from the viewer because the viewer has blocked its author.
+// This keeps get-by-URI (permalink/cold-load) consistent with feed/timeline block
+// filtering. Matches social.coves.community.post.get#blockedPost.
+//
+// blockedBy is always "author" today: community blocks are not enforced on any read path
+// yet, and moderator removals already surface as notFoundPost (soft-deleted rows are
+// absent from the repo fetch).
+type BlockedPost struct {
+	URI       string         `json:"uri"`
+	Blocked   bool           `json:"blocked"` // Always true (const per lexicon); discriminates the union on the wire
+	BlockedBy string         `json:"blockedBy,omitempty"`
+	Author    *BlockedAuthor `json:"author,omitempty"`
+}
+
+// PostResult is one ordered element of a GetPosts response. Exactly one of Post,
+// Blocked, or NotFound is set: Post when the post was found and visible to the viewer,
+// Blocked when the viewer has blocked the author, NotFound when the URI could not be
+// resolved. Construct results via the result helpers so the const discriminators
+// (notFound/blocked == true) cannot be left unset.
 type PostResult struct {
 	Post     *PostView
+	Blocked  *BlockedPost
 	NotFound *NotFoundPost
 }
 
-// GetPost returns the underlying PostView (nil for not-found results), satisfying
-// the viewer-state enrichment helper's FeedPostProvider interface.
+// foundResult builds a found (postView) union member.
+func foundResult(view *PostView) *PostResult {
+	return &PostResult{Post: view}
+}
+
+// notFoundResult builds a notFoundPost union member with its const discriminator set.
+func notFoundResult(uri string) *PostResult {
+	return &PostResult{NotFound: &NotFoundPost{URI: uri, NotFound: true}}
+}
+
+// blockedByAuthorResult builds a blockedPost union member (blockedBy "author") with its
+// const discriminator set.
+func blockedByAuthorResult(uri, authorDID string) *PostResult {
+	return &PostResult{Blocked: &BlockedPost{
+		URI:       uri,
+		Blocked:   true,
+		BlockedBy: "author",
+		Author:    &BlockedAuthor{DID: authorDID},
+	}}
+}
+
+// GetPost returns the underlying PostView (nil for blocked/not-found results),
+// satisfying the viewer-state enrichment helper's FeedPostProvider interface. Blocked
+// and not-found results carry no PostView, so they are skipped by viewer enrichment
+// and embed transforms.
 func (r *PostResult) GetPost() *PostView {
 	return r.Post
+}
+
+// Member returns the single populated union member for wire encoding and true, or
+// (nil, false) when the result is in an invalid empty state. Callers must treat the
+// false case as an internal error rather than emitting a null array entry, which would
+// violate the lexicon's union (postView | blockedPost | notFoundPost).
+func (r *PostResult) Member() (interface{}, bool) {
+	switch {
+	case r.Post != nil:
+		return r.Post, true
+	case r.Blocked != nil:
+		return r.Blocked, true
+	case r.NotFound != nil:
+		return r.NotFound, true
+	default:
+		return nil, false
+	}
 }
 
 // PostRecord represents the actual atProto record structure written to PDS

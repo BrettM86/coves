@@ -32,7 +32,20 @@ type postService struct {
 	blobService       blobs.Service
 	unfurlService     unfurl.Service
 	blueskyService    blueskypost.Service
+	blockChecker      BlockChecker
 	pdsURL            string
+}
+
+// PostServiceOption configures optional postService dependencies. Options keep the
+// constructor stable as new optional collaborators are added.
+type PostServiceOption func(*postService)
+
+// WithBlockChecker enables viewer block enforcement on GetPosts. When set and a viewer
+// DID is present on the request, posts authored by users the viewer has blocked are
+// returned as BlockedPost union members instead of full views, keeping permalink/
+// cold-load reads consistent with feed/timeline block filtering.
+func WithBlockChecker(checker BlockChecker) PostServiceOption {
+	return func(s *postService) { s.blockChecker = checker }
 }
 
 // NewPostService creates a new post service
@@ -45,8 +58,9 @@ func NewPostService(
 	unfurlService unfurl.Service, // Optional: can be nil
 	blueskyService blueskypost.Service, // Optional: can be nil
 	pdsURL string,
+	opts ...PostServiceOption,
 ) Service {
-	return &postService{
+	s := &postService{
 		repo:              repo,
 		communityService:  communityService,
 		aggregatorService: aggregatorService,
@@ -55,6 +69,10 @@ func NewPostService(
 		blueskyService:    blueskyService,
 		pdsURL:            pdsURL,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // CreatePost creates a new post in a community
@@ -679,13 +697,65 @@ func (s *postService) GetPosts(ctx context.Context, req GetPostsRequest) ([]*Pos
 	results := make([]*PostResult, len(req.URIs))
 	for i, uri := range req.URIs {
 		if view := views[uri]; view != nil {
-			results[i] = &PostResult{Post: view}
+			results[i] = foundResult(view)
 		} else {
-			results[i] = &PostResult{NotFound: &NotFoundPost{URI: uri, NotFound: true}}
+			results[i] = notFoundResult(uri)
+		}
+	}
+
+	// 4. Enforce viewer block visibility: posts authored by someone the viewer has
+	// blocked become blockedPost markers, consistent with feed/timeline filtering.
+	// Only runs for an authenticated viewer when a block checker is wired.
+	if req.ViewerDID != "" && s.blockChecker != nil {
+		if err := s.applyViewerBlocks(ctx, req.ViewerDID, results); err != nil {
+			return nil, err
 		}
 	}
 
 	return results, nil
+}
+
+// applyViewerBlocks rewrites found posts whose author the viewer has blocked into
+// blockedPost results (blockedBy "author"). It batches the block lookup over the unique
+// author DIDs in the result set. On lookup failure it returns an error rather than
+// emitting the posts: the endpoint fails closed so it can never surface content the
+// viewer's block list would have hidden.
+func (s *postService) applyViewerBlocks(ctx context.Context, viewerDID string, results []*PostResult) error {
+	// Collect the unique author DIDs of the found posts.
+	seen := make(map[string]struct{}, len(results))
+	authorDIDs := make([]string, 0, len(results))
+	for _, r := range results {
+		if r.Post == nil || r.Post.Author == nil {
+			continue
+		}
+		did := r.Post.Author.DID
+		if did == "" {
+			continue
+		}
+		if _, ok := seen[did]; ok {
+			continue
+		}
+		seen[did] = struct{}{}
+		authorDIDs = append(authorDIDs, did)
+	}
+	if len(authorDIDs) == 0 {
+		return nil
+	}
+
+	blocked, err := s.blockChecker.AreBlocked(ctx, viewerDID, authorDIDs)
+	if err != nil {
+		return fmt.Errorf("failed to check viewer blocks: %w", err)
+	}
+
+	for i, r := range results {
+		if r.Post == nil || r.Post.Author == nil {
+			continue
+		}
+		if blocked[r.Post.Author.DID] {
+			results[i] = blockedByAuthorResult(r.Post.URI, r.Post.Author.DID)
+		}
+	}
+	return nil
 }
 
 // parsePostURIParts splits a post AT-URI into its authority and rkey, validating the
