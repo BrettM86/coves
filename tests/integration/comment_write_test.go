@@ -96,8 +96,9 @@ func TestCommentWrite_CreateTopLevelComment(t *testing.T) {
 	)
 
 	// Create test user on PDS
-	testUserHandle := fmt.Sprintf("cmw%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	testUserEmail := fmt.Sprintf("commenter-%d@test.local", time.Now().Unix())
+	testID := uniqueTestID()
+	testUserHandle := fmt.Sprintf("cmw%s.local.coves.dev", testID)
+	testUserEmail := fmt.Sprintf("commenter-%s@test.local", testID)
 	testUserPassword := "test-password-123"
 
 	t.Logf("Creating test user on PDS: %s", testUserHandle)
@@ -316,8 +317,9 @@ func TestCommentWrite_CreateNestedReply(t *testing.T) {
 	)
 
 	// Create test user
-	testUserHandle := fmt.Sprintf("rpl%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	testUserEmail := fmt.Sprintf("replier-%d@test.local", time.Now().Unix())
+	testID := uniqueTestID()
+	testUserHandle := fmt.Sprintf("rpl%s.local.coves.dev", testID)
+	testUserEmail := fmt.Sprintf("replier-%s@test.local", testID)
 	testUserPassword := "test-password-123"
 
 	pdsAccessToken, userDID, err := createPDSAccount(pdsURL, testUserHandle, testUserEmail, testUserPassword)
@@ -465,8 +467,9 @@ func TestCommentWrite_UpdateComment(t *testing.T) {
 	)
 
 	// Create test user
-	testUserHandle := fmt.Sprintf("upd%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	testUserEmail := fmt.Sprintf("updater-%d@test.local", time.Now().Unix())
+	testID := uniqueTestID()
+	testUserHandle := fmt.Sprintf("upd%s.local.coves.dev", testID)
+	testUserEmail := fmt.Sprintf("updater-%s@test.local", testID)
 	testUserPassword := "test-password-123"
 
 	pdsAccessToken, userDID, err := createPDSAccount(pdsURL, testUserHandle, testUserEmail, testUserPassword)
@@ -585,8 +588,9 @@ func TestCommentWrite_DeleteComment(t *testing.T) {
 	)
 
 	// Create test user
-	testUserHandle := fmt.Sprintf("del%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	testUserEmail := fmt.Sprintf("deleter-%d@test.local", time.Now().Unix())
+	testID := uniqueTestID()
+	testUserHandle := fmt.Sprintf("del%s.local.coves.dev", testID)
+	testUserEmail := fmt.Sprintf("deleter-%s@test.local", testID)
 	testUserPassword := "test-password-123"
 
 	pdsAccessToken, userDID, err := createPDSAccount(pdsURL, testUserHandle, testUserEmail, testUserPassword)
@@ -691,16 +695,18 @@ func TestCommentWrite_CannotUpdateOthersComment(t *testing.T) {
 	)
 
 	// Create first user (comment owner)
-	ownerHandle := fmt.Sprintf("own%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	ownerEmail := fmt.Sprintf("owner-%d@test.local", time.Now().Unix())
+	ownerID := uniqueTestID()
+	ownerHandle := fmt.Sprintf("own%s.local.coves.dev", ownerID)
+	ownerEmail := fmt.Sprintf("owner-%s@test.local", ownerID)
 	_, ownerDID, err := createPDSAccount(pdsURL, ownerHandle, ownerEmail, "password123")
 	if err != nil {
 		t.Skipf("PDS not available: %v", err)
 	}
 
 	// Create second user (attacker)
-	attackerHandle := fmt.Sprintf("atk%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	attackerEmail := fmt.Sprintf("attacker-%d@test.local", time.Now().Unix())
+	attackerID := uniqueTestID()
+	attackerHandle := fmt.Sprintf("atk%s.local.coves.dev", attackerID)
+	attackerEmail := fmt.Sprintf("attacker-%s@test.local", attackerID)
 	attackerToken, attackerDID, err := createPDSAccount(pdsURL, attackerHandle, attackerEmail, "password123")
 	if err != nil {
 		t.Skipf("PDS not available: %v", err)
@@ -769,16 +775,18 @@ func TestCommentWrite_CannotDeleteOthersComment(t *testing.T) {
 	)
 
 	// Create first user (comment owner)
-	ownerHandle := fmt.Sprintf("own%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	ownerEmail := fmt.Sprintf("owner-%d@test.local", time.Now().Unix())
+	ownerID := uniqueTestID()
+	ownerHandle := fmt.Sprintf("own%s.local.coves.dev", ownerID)
+	ownerEmail := fmt.Sprintf("owner-%s@test.local", ownerID)
 	_, ownerDID, err := createPDSAccount(pdsURL, ownerHandle, ownerEmail, "password123")
 	if err != nil {
 		t.Skipf("PDS not available: %v", err)
 	}
 
 	// Create second user (attacker)
-	attackerHandle := fmt.Sprintf("atk%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	attackerEmail := fmt.Sprintf("attacker-%d@test.local", time.Now().Unix())
+	attackerID := uniqueTestID()
+	attackerHandle := fmt.Sprintf("atk%s.local.coves.dev", attackerID)
+	attackerEmail := fmt.Sprintf("attacker-%s@test.local", attackerID)
 	attackerToken, attackerDID, err := createPDSAccount(pdsURL, attackerHandle, attackerEmail, "password123")
 	if err != nil {
 		t.Skipf("PDS not available: %v", err)
@@ -853,8 +861,9 @@ func TestCommentWrite_ConcurrentModificationDetection(t *testing.T) {
 	)
 
 	// Create test user
-	testUserHandle := fmt.Sprintf("cnc%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	testUserEmail := fmt.Sprintf("concurrency-%d@test.local", time.Now().Unix())
+	testID := uniqueTestID()
+	testUserHandle := fmt.Sprintf("cnc%s.local.coves.dev", testID)
+	testUserEmail := fmt.Sprintf("concurrency-%s@test.local", testID)
 	testUserPassword := "test-password-123"
 
 	pdsAccessToken, userDID, err := createPDSAccount(pdsURL, testUserHandle, testUserEmail, testUserPassword)

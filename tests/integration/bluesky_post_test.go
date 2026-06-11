@@ -453,9 +453,13 @@ func TestBlueskyPostCrossPosting_E2E_LivePDS(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Create test user on PDS
-	testUserHandle := fmt.Sprintf("bsky%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	testUserEmail := fmt.Sprintf("bskytest-%d@test.local", time.Now().Unix())
+	// Create test user on PDS. Use uniqueTestID() (Unix seconds + atomic counter)
+	// rather than UnixNano()%1000000: PDS accounts persist across runs, and the
+	// modulo collapses the timestamp to 6 digits, so it eventually collides with a
+	// handle registered by an earlier run ("Handle already taken").
+	testID := uniqueTestID()
+	testUserHandle := fmt.Sprintf("bsky%s.local.coves.dev", testID)
+	testUserEmail := fmt.Sprintf("bskytest-%s@test.local", testID)
 	testUserPassword := "test-password-123"
 
 	t.Logf("Creating test user on PDS: %s", testUserHandle)
@@ -469,7 +473,7 @@ func TestBlueskyPostCrossPosting_E2E_LivePDS(t *testing.T) {
 	_ = createTestUser(t, db, testUserHandle, userDID)
 
 	// Create test community (needed for post creation)
-	testCommunityDID, err := createFeedTestCommunity(db, ctx, fmt.Sprintf("bskytest%d", time.Now().UnixNano()%1000000), "owner.test")
+	testCommunityDID, err := createFeedTestCommunity(db, ctx, fmt.Sprintf("bskytest%s", testID), "owner.test")
 	if err != nil {
 		t.Fatalf("Failed to create test community: %v", err)
 	}

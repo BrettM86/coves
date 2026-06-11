@@ -558,9 +558,13 @@ func TestCommunitySuggestionE2E(t *testing.T) {
 		listRouter, listAuth := setupSuggestionTestRouter(t, []string{adminDID})
 		listUserToken := listAuth.AddUser(userDID)
 
-		// Create 5 suggestions
+		// Create 5 suggestions. Spread them across distinct submitters so we stay
+		// under the per-user daily rate limit (MaxSuggestionsPerDay). Pagination
+		// lists all open suggestions regardless of submitter, so this also mirrors
+		// the realistic case of many users each proposing a community.
 		for i := 0; i < 5; i++ {
-			mustCreateTestSuggestion(t, listRouter, listUserToken,
+			submitterToken := listAuth.AddUser(fmt.Sprintf("did:plc:paginator%d", i))
+			mustCreateTestSuggestion(t, listRouter, submitterToken,
 				fmt.Sprintf("Pagination Test %d", i),
 				fmt.Sprintf("Description for pagination test %d", i))
 		}
@@ -1015,7 +1019,11 @@ func TestCommunitySuggestionE2E(t *testing.T) {
 		validStatuses := []string{"under_review", "approved", "declined", "open"}
 
 		for _, status := range validStatuses {
-			created := mustCreateTestSuggestion(t, allStatusRouter, allStatusUserToken,
+			// Use a distinct submitter per suggestion to stay under the per-user
+			// daily rate limit (MaxSuggestionsPerDay); status transitions are
+			// independent of who submitted the suggestion.
+			submitterToken := allStatusAuth.AddUser(fmt.Sprintf("did:plc:statususer-%s", status))
+			created := mustCreateTestSuggestion(t, allStatusRouter, submitterToken,
 				fmt.Sprintf("Status %s Test", status),
 				fmt.Sprintf("Testing transition to %s", status))
 

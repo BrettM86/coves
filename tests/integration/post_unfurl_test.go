@@ -734,8 +734,13 @@ func TestPostUnfurl_OpenGraph(t *testing.T) {
 	}
 }
 
-// TestPostUnfurl_KagiURL tests that Kagi links work with OpenGraph
-func TestPostUnfurl_KagiURL(t *testing.T) {
+// TestPostUnfurl_KagiKiteExcluded verifies that kite.kagi.com is deliberately
+// NOT unfurled. Its server-rendered <title>/og:* tags are an identical per-path
+// default for every URL (see commit f8efe46 and internal/core/unfurl/providers.go),
+// so unfurling would attach the same misleading metadata to every Kite story.
+// The kagi-news trusted aggregator already supplies authoritative metadata from
+// the Kagi JSON feed, so the unfurl path for Kite URLs is intentionally disabled.
+func TestPostUnfurl_KagiKiteExcluded(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
@@ -756,28 +761,26 @@ func TestPostUnfurl_KagiURL(t *testing.T) {
 		unfurl.WithCacheTTL(24*time.Hour),
 	)
 
-	// Kagi URL example - note: this will fail if not accessible or no OG tags
-	kagiURL := "https://kite.kagi.com/"
-
-	// Verify it's supported (not an oEmbed provider)
-	assert.True(t, unfurlService.IsSupported(kagiURL), "Kagi URL should be supported")
-
-	// Attempt unfurl
-	result, err := unfurlService.UnfurlURL(ctx, kagiURL)
-	if err != nil {
-		t.Logf("Kagi unfurl failed (expected if site is down or blocked): %v", err)
-		t.Skip("Skipping test - Kagi site may not be accessible")
-		return
+	// Various kite.kagi.com URL shapes must all be reported as unsupported.
+	kiteURLs := []string{
+		"https://kite.kagi.com/",
+		"https://kite.kagi.com/abc/science/9",
+		"https://kite.kagi.com/search?q=test",
 	}
 
-	require.NotNil(t, result, "Expected unfurl result")
-	assert.Equal(t, "kagi", result.Provider, "Expected provider to be kagi (custom parser for Kagi Kite)")
-	assert.Contains(t, result.Domain, "kagi.com", "Expected domain to contain kagi.com")
+	for _, kiteURL := range kiteURLs {
+		assert.False(t, unfurlService.IsSupported(kiteURL),
+			"kite.kagi.com is deliberately excluded and must not be supported: %s", kiteURL)
 
-	t.Logf("✓ Kagi custom parser unfurl successful:")
-	t.Logf("  Title: %s", result.Title)
-	t.Logf("  Provider: %s", result.Provider)
-	t.Logf("  Domain: %s", result.Domain)
+		// UnfurlURL must refuse the URL rather than fetch misleading metadata.
+		result, err := unfurlService.UnfurlURL(ctx, kiteURL)
+		require.Error(t, err, "Expected an error unfurling excluded URL %s", kiteURL)
+		assert.Nil(t, result, "Expected no unfurl result for excluded URL %s", kiteURL)
+		assert.Contains(t, err.Error(), "unsupported URL",
+			"Expected an 'unsupported URL' error for %s", kiteURL)
+	}
+
+	t.Logf("✓ kite.kagi.com correctly excluded from unfurling")
 }
 
 // TestPostUnfurl_SmartRouting tests that oEmbed still works while OpenGraph handles others

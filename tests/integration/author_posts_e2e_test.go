@@ -94,8 +94,9 @@ func TestGetAuthorPosts_E2E_Success(t *testing.T) {
 	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, nil, PasswordAuthPDSClientFactory())
 
 	// Create test user on PDS
-	testUserHandle := fmt.Sprintf("apt%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	testUserEmail := fmt.Sprintf("author-posts-%d@test.local", time.Now().Unix())
+	testID := uniqueTestID()
+	testUserHandle := fmt.Sprintf("apt%s.local.coves.dev", testID)
+	testUserEmail := fmt.Sprintf("author-posts-%s@test.local", testID)
 	testUserPassword := "test-password-123"
 
 	t.Logf("Creating test user on PDS: %s", testUserHandle)
@@ -571,8 +572,9 @@ func TestGetAuthorPosts_WithJetstreamIndexing(t *testing.T) {
 	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, nil, PasswordAuthPDSClientFactory())
 
 	// Create test user on PDS
-	testUserHandle := fmt.Sprintf("jet%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	testUserEmail := fmt.Sprintf("jetstream-author-%d@test.local", time.Now().Unix())
+	testID := uniqueTestID()
+	testUserHandle := fmt.Sprintf("jet%s.local.coves.dev", testID)
+	testUserEmail := fmt.Sprintf("jetstream-author-%s@test.local", testID)
 	testUserPassword := "test-password-123"
 
 	_, userDID, err := createPDSAccount(pdsURL, testUserHandle, testUserEmail, testUserPassword)

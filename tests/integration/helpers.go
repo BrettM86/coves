@@ -16,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -136,10 +137,16 @@ func generateTID() string {
 
 // uniqueTestID generates a unique identifier for test resources (handles, emails, etc.).
 // Uses Unix timestamp (seconds) + atomic counter to ensure uniqueness across test runs.
-// Keeps IDs short enough to fit within PDS handle limits (max 20 chars for label).
+//
+// The value is base36-encoded to stay short (~8 chars vs. ~12 for decimal): a
+// PDS handle's local label is capped at 18 chars, and a 10-digit decimal Unix
+// timestamp leaves almost no room for a prefix once the shared counter reaches
+// multiple digits (this caused "Handle too long" rejections). Unix seconds are
+// monotonic across runs (so no cross-run handle collision on the persistent PDS),
+// and the atomic counter disambiguates IDs created within a single run.
 func uniqueTestID() string {
 	n := testIDCounter.Add(1)
-	return fmt.Sprintf("%d%d", time.Now().Unix(), n)
+	return strconv.FormatInt(time.Now().Unix(), 36) + strconv.FormatUint(n, 36)
 }
 
 // createPDSAccount creates a new account on PDS and returns access token + DID

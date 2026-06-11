@@ -54,8 +54,9 @@ func TestUserBlockE2E_BlockAndUnblock(t *testing.T) {
 	blockRepo := postgres.NewUserBlockRepository(db)
 
 	// Create User A (blocker) on real PDS
-	userAHandle := fmt.Sprintf("blka%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	userAEmail := fmt.Sprintf("blockerA-%d@test.local", time.Now().Unix())
+	userAID := uniqueTestID()
+	userAHandle := fmt.Sprintf("blka%s.local.coves.dev", userAID)
+	userAEmail := fmt.Sprintf("blockerA-%s@test.local", userAID)
 	userAPassword := "test-password-123"
 
 	t.Logf("Creating User A (blocker) on PDS: %s", userAHandle)
@@ -66,8 +67,9 @@ func TestUserBlockE2E_BlockAndUnblock(t *testing.T) {
 	t.Logf("User A created: DID=%s", userADID)
 
 	// Create User B (target) on real PDS
-	userBHandle := fmt.Sprintf("blkb%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	userBEmail := fmt.Sprintf("blockerB-%d@test.local", time.Now().Unix())
+	userBID := uniqueTestID()
+	userBHandle := fmt.Sprintf("blkb%s.local.coves.dev", userBID)
+	userBEmail := fmt.Sprintf("blockerB-%s@test.local", userBID)
 	userBPassword := "test-password-123"
 
 	t.Logf("Creating User B (target) on PDS: %s", userBHandle)
@@ -398,8 +400,9 @@ func TestUserBlockE2E_SelfBlockPrevented(t *testing.T) {
 	blockRepo := postgres.NewUserBlockRepository(db)
 
 	// Create User A on real PDS
-	userAHandle := fmt.Sprintf("self%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	userAEmail := fmt.Sprintf("selfblock-%d@test.local", time.Now().Unix())
+	userAID := uniqueTestID()
+	userAHandle := fmt.Sprintf("self%s.local.coves.dev", userAID)
+	userAEmail := fmt.Sprintf("selfblock-%s@test.local", userAID)
 	userAPassword := "test-password-123"
 
 	t.Logf("Creating User A on PDS: %s", userAHandle)

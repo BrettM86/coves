@@ -106,7 +106,7 @@ func TestCommunityUpdateE2E_WithJetstream(t *testing.T) {
 
 	t.Run("update community with real Jetstream indexing", func(t *testing.T) {
 		// First, create a community
-		uniqueName := fmt.Sprintf("upd%d", time.Now().UnixNano()%100000000)
+		uniqueName := fmt.Sprintf("upd%s", uniqueTestID())
 		creatorDID := "did:plc:jetstream-update-test"
 
 		t.Logf("\n📝 Creating community on PDS...")
@@ -227,7 +227,7 @@ func TestCommunityUpdateE2E_WithJetstream(t *testing.T) {
 
 	t.Run("multiple updates with real Jetstream", func(t *testing.T) {
 		// This tests that consecutive updates all flow through Jetstream correctly
-		uniqueName := fmt.Sprintf("multi%d", time.Now().UnixNano()%100000000)
+		uniqueName := fmt.Sprintf("mlt%s", uniqueTestID())
 		creatorDID := "did:plc:multi-update-test"
 
 		t.Logf("\n📝 Creating community for multi-update test...")

@@ -84,8 +84,9 @@ func TestVoteE2E_CreateUpvote(t *testing.T) {
 	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, nil, PasswordAuthPDSClientFactory())
 
 	// Create test user on PDS
-	testUserHandle := fmt.Sprintf("vot%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	testUserEmail := fmt.Sprintf("voter-%d@test.local", time.Now().Unix())
+	testID := uniqueTestID()
+	testUserHandle := fmt.Sprintf("vot%s.local.coves.dev", testID)
+	testUserEmail := fmt.Sprintf("voter-%s@test.local", testID)
 	testUserPassword := "test-password-123"
 
 	t.Logf("Creating test user on PDS: %s", testUserHandle)
@@ -307,8 +308,9 @@ func TestVoteE2E_ToggleSameDirection(t *testing.T) {
 	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, nil, PasswordAuthPDSClientFactory())
 
 	// Create test user
-	testUserHandle := fmt.Sprintf("tog%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	testUserEmail := fmt.Sprintf("toggle-%d@test.local", time.Now().Unix())
+	testID := uniqueTestID()
+	testUserHandle := fmt.Sprintf("tog%s.local.coves.dev", testID)
+	testUserEmail := fmt.Sprintf("toggle-%s@test.local", testID)
 	testUserPassword := "test-password-123"
 
 	pdsAccessToken, userDID, err := createPDSAccount(pdsURL, testUserHandle, testUserEmail, testUserPassword)
@@ -476,8 +478,9 @@ func TestVoteE2E_ToggleDifferentDirection(t *testing.T) {
 	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, nil, PasswordAuthPDSClientFactory())
 
 	// Create test user
-	testUserHandle := fmt.Sprintf("flp%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	testUserEmail := fmt.Sprintf("flip-%d@test.local", time.Now().Unix())
+	testID := uniqueTestID()
+	testUserHandle := fmt.Sprintf("flp%s.local.coves.dev", testID)
+	testUserEmail := fmt.Sprintf("flip-%s@test.local", testID)
 	testUserPassword := "test-password-123"
 
 	pdsAccessToken, userDID, err := createPDSAccount(pdsURL, testUserHandle, testUserEmail, testUserPassword)
@@ -701,8 +704,9 @@ func TestVoteE2E_DeleteVote(t *testing.T) {
 	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, nil, PasswordAuthPDSClientFactory())
 
 	// Create test user
-	testUserHandle := fmt.Sprintf("dlt%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	testUserEmail := fmt.Sprintf("delete-%d@test.local", time.Now().Unix())
+	testID := uniqueTestID()
+	testUserHandle := fmt.Sprintf("dlt%s.local.coves.dev", testID)
+	testUserEmail := fmt.Sprintf("delete-%s@test.local", testID)
 	testUserPassword := "test-password-123"
 
 	pdsAccessToken, userDID, err := createPDSAccount(pdsURL, testUserHandle, testUserEmail, testUserPassword)
@@ -888,8 +892,9 @@ func TestVoteE2E_JetstreamIndexing(t *testing.T) {
 	voteRepo := postgres.NewVoteRepository(db)
 
 	// Create test user on PDS
-	testUserHandle := fmt.Sprintf("jet%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	testUserEmail := fmt.Sprintf("jetstream-%d@test.local", time.Now().Unix())
+	testID := uniqueTestID()
+	testUserHandle := fmt.Sprintf("jet%s.local.coves.dev", testID)
+	testUserEmail := fmt.Sprintf("jetstream-%s@test.local", testID)
 	testUserPassword := "test-password-123"
 
 	accessToken, userDID, err := createPDSAccount(pdsURL, testUserHandle, testUserEmail, testUserPassword)
@@ -1010,6 +1015,11 @@ func subscribeToJetstreamForVote(
 	}
 	defer func() { _ = conn.Close() }()
 
+	// Track consecutive timeouts to detect stale connections
+	// gorilla/websocket panics after 1000 repeated reads on a failed connection
+	consecutiveTimeouts := 0
+	const maxConsecutiveTimeouts = 10
+
 	// Read messages until we find our event or receive done signal
 	for {
 		select {
@@ -1031,10 +1041,17 @@ func subscribeToJetstreamForVote(
 					return nil
 				}
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					consecutiveTimeouts++
+					if consecutiveTimeouts >= maxConsecutiveTimeouts {
+						return fmt.Errorf("connection appears stale after %d consecutive timeouts", consecutiveTimeouts)
+					}
 					continue // Timeout is expected, keep listening
 				}
 				return fmt.Errorf("failed to read Jetstream message: %w", err)
 			}
+
+			// Reset timeout counter on successful read
+			consecutiveTimeouts = 0
 
 			// Check if this is the event we're looking for
 			if event.Did == targetDID && event.Kind == "commit" && event.Commit.Collection == "social.coves.feed.vote" {

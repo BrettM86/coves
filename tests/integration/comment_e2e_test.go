@@ -696,6 +696,11 @@ func subscribeToJetstreamForComment(
 	}
 	defer func() { _ = conn.Close() }()
 
+	// Track consecutive timeouts to detect stale connections
+	// gorilla/websocket panics after 1000 repeated reads on a failed connection
+	consecutiveTimeouts := 0
+	const maxConsecutiveTimeouts = 10
+
 	for {
 		select {
 		case <-done:
@@ -714,10 +719,17 @@ func subscribeToJetstreamForComment(
 					return nil
 				}
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					consecutiveTimeouts++
+					if consecutiveTimeouts >= maxConsecutiveTimeouts {
+						return fmt.Errorf("connection appears stale after %d consecutive timeouts", consecutiveTimeouts)
+					}
 					continue
 				}
 				return fmt.Errorf("failed to read Jetstream message: %w", err)
 			}
+
+			// Reset timeout counter on successful read
+			consecutiveTimeouts = 0
 
 			// Check if this is a comment create event for the target DID
 			if event.Did == targetDID && event.Kind == "commit" &&
@@ -754,6 +766,11 @@ func subscribeToJetstreamForCommentUpdate(
 	}
 	defer func() { _ = conn.Close() }()
 
+	// Track consecutive timeouts to detect stale connections
+	// gorilla/websocket panics after 1000 repeated reads on a failed connection
+	consecutiveTimeouts := 0
+	const maxConsecutiveTimeouts = 10
+
 	for {
 		select {
 		case <-done:
@@ -772,10 +789,17 @@ func subscribeToJetstreamForCommentUpdate(
 					return nil
 				}
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					consecutiveTimeouts++
+					if consecutiveTimeouts >= maxConsecutiveTimeouts {
+						return fmt.Errorf("connection appears stale after %d consecutive timeouts", consecutiveTimeouts)
+					}
 					continue
 				}
 				return fmt.Errorf("failed to read Jetstream message: %w", err)
 			}
+
+			// Reset timeout counter on successful read
+			consecutiveTimeouts = 0
 
 			if event.Did == targetDID && event.Kind == "commit" &&
 				event.Commit != nil && event.Commit.Collection == "social.coves.community.comment" &&
@@ -811,6 +835,11 @@ func subscribeToJetstreamForCommentDelete(
 	}
 	defer func() { _ = conn.Close() }()
 
+	// Track consecutive timeouts to detect stale connections
+	// gorilla/websocket panics after 1000 repeated reads on a failed connection
+	consecutiveTimeouts := 0
+	const maxConsecutiveTimeouts = 10
+
 	for {
 		select {
 		case <-done:
@@ -829,10 +858,17 @@ func subscribeToJetstreamForCommentDelete(
 					return nil
 				}
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					consecutiveTimeouts++
+					if consecutiveTimeouts >= maxConsecutiveTimeouts {
+						return fmt.Errorf("connection appears stale after %d consecutive timeouts", consecutiveTimeouts)
+					}
 					continue
 				}
 				return fmt.Errorf("failed to read Jetstream message: %w", err)
 			}
+
+			// Reset timeout counter on successful read
+			consecutiveTimeouts = 0
 
 			if event.Did == targetDID && event.Kind == "commit" &&
 				event.Commit != nil && event.Commit.Collection == "social.coves.community.comment" &&

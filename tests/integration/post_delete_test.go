@@ -253,8 +253,9 @@ func TestPostDeletion_Authorization(t *testing.T) {
 	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, pdsURL)
 
 	// Create test user (attacker trying to delete another user's post)
-	attackerHandle := fmt.Sprintf("attacker%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	attackerEmail := fmt.Sprintf("attacker-%d@test.local", time.Now().Unix())
+	attackerID := uniqueTestID()
+	attackerHandle := fmt.Sprintf("atk%s.local.coves.dev", attackerID)
+	attackerEmail := fmt.Sprintf("attacker-%s@test.local", attackerID)
 	attackerToken, attackerDID, err := createPDSAccount(pdsURL, attackerHandle, attackerEmail, "password123")
 	if err != nil {
 		t.Skipf("PDS not available: %v", err)
@@ -405,16 +406,18 @@ func TestPostDeletion_ServiceAuthorization_LivePDS(t *testing.T) {
 	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, pdsURL)
 
 	// Create two test users
-	ownerHandle := fmt.Sprintf("postowner%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	ownerEmail := fmt.Sprintf("postowner-%d@test.local", time.Now().Unix())
+	ownerID := uniqueTestID()
+	ownerHandle := fmt.Sprintf("pown%s.local.coves.dev", ownerID)
+	ownerEmail := fmt.Sprintf("postowner-%s@test.local", ownerID)
 	_, ownerDID, err := createPDSAccount(pdsURL, ownerHandle, ownerEmail, "password123")
 	if err != nil {
 		t.Skipf("Failed to create owner account: %v", err)
 	}
 	owner := createTestUser(t, db, ownerHandle, ownerDID)
 
-	attackerHandle := fmt.Sprintf("postattacker%d.local.coves.dev", time.Now().UnixNano()%1000000)
-	attackerEmail := fmt.Sprintf("postattacker-%d@test.local", time.Now().Unix())
+	attackerID := uniqueTestID()
+	attackerHandle := fmt.Sprintf("patk%s.local.coves.dev", attackerID)
+	attackerEmail := fmt.Sprintf("postattacker-%s@test.local", attackerID)
 	attackerToken, attackerDID, err := createPDSAccount(pdsURL, attackerHandle, attackerEmail, "password123")
 	if err != nil {
 		t.Skipf("Failed to create attacker account: %v", err)
@@ -430,7 +433,7 @@ func TestPostDeletion_ServiceAuthorization_LivePDS(t *testing.T) {
 	}
 
 	// Create a test community
-	communityName := fmt.Sprintf("delauth%d", time.Now().UnixNano()%1000000)
+	communityName := fmt.Sprintf("del%s", uniqueTestID())
 	community, err := communityService.CreateCommunity(ctx, communities.CreateCommunityRequest{
 		Name:         communityName,
 		DisplayName:  "Delete Auth Test Community",
@@ -585,8 +588,8 @@ func TestPostE2E_DeleteWithJetstream(t *testing.T) {
 	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, pdsURL)
 
 	// Create test user
-	testID := fmt.Sprintf("%d", time.Now().UnixNano()%1000000)
-	testUserHandle := fmt.Sprintf("postdel%s.local.coves.dev", testID)
+	testID := uniqueTestID()
+	testUserHandle := fmt.Sprintf("pd%s.local.coves.dev", testID)
 	testUserEmail := fmt.Sprintf("postdel%s@test.local", testID)
 	testUserPassword := "test-password-123"
 
@@ -597,7 +600,7 @@ func TestPostE2E_DeleteWithJetstream(t *testing.T) {
 	testUser := createTestUser(t, db, testUserHandle, userDID)
 
 	// Create test community on real PDS
-	communityName := fmt.Sprintf("postdel%s", testID)
+	communityName := fmt.Sprintf("pd%s", testID)
 	t.Logf("\n📝 Creating community on PDS: %s", communityName)
 
 	community, err := communityService.CreateCommunity(ctx, communities.CreateCommunityRequest{
@@ -752,6 +755,11 @@ func subscribeToJetstreamForPostCreate(
 	}
 	defer func() { _ = conn.Close() }()
 
+	// Track consecutive timeouts to detect stale connections
+	// gorilla/websocket panics after 1000 repeated reads on a failed connection
+	consecutiveTimeouts := 0
+	const maxConsecutiveTimeouts = 10
+
 	for {
 		select {
 		case <-done:
@@ -770,10 +778,17 @@ func subscribeToJetstreamForPostCreate(
 					return nil
 				}
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					consecutiveTimeouts++
+					if consecutiveTimeouts >= maxConsecutiveTimeouts {
+						return fmt.Errorf("connection appears stale after %d consecutive timeouts", consecutiveTimeouts)
+					}
 					continue
 				}
 				return fmt.Errorf("failed to read Jetstream message: %w", err)
 			}
+
+			// Reset timeout counter on successful read
+			consecutiveTimeouts = 0
 
 			if event.Did == targetDID && event.Kind == "commit" &&
 				event.Commit != nil && event.Commit.Collection == "social.coves.community.post" &&
@@ -809,6 +824,11 @@ func subscribeToJetstreamForPostDelete(
 	}
 	defer func() { _ = conn.Close() }()
 
+	// Track consecutive timeouts to detect stale connections
+	// gorilla/websocket panics after 1000 repeated reads on a failed connection
+	consecutiveTimeouts := 0
+	const maxConsecutiveTimeouts = 10
+
 	for {
 		select {
 		case <-done:
@@ -827,10 +847,17 @@ func subscribeToJetstreamForPostDelete(
 					return nil
 				}
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					consecutiveTimeouts++
+					if consecutiveTimeouts >= maxConsecutiveTimeouts {
+						return fmt.Errorf("connection appears stale after %d consecutive timeouts", consecutiveTimeouts)
+					}
 					continue
 				}
 				return fmt.Errorf("failed to read Jetstream message: %w", err)
 			}
+
+			// Reset timeout counter on successful read
+			consecutiveTimeouts = 0
 
 			if event.Did == targetDID && event.Kind == "commit" &&
 				event.Commit != nil && event.Commit.Collection == "social.coves.community.post" &&

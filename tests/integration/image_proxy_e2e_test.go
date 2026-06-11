@@ -86,9 +86,9 @@ func TestImageProxy_E2E(t *testing.T) {
 	// Create avatar image data
 	avatarData := createTestImageForProxy(t, 200, 200, color.RGBA{R: 100, G: 150, B: 200, A: 255})
 
-	uniqueID := time.Now().UnixNano() % 100000000 // Keep shorter for handle limit
-	communityName := fmt.Sprintf("ip%d", uniqueID)
-	creatorDID := fmt.Sprintf("did:plc:c%d", uniqueID)
+	testID := uniqueTestID() // Unix seconds + atomic counter; avoids "handle already taken" on reruns
+	communityName := fmt.Sprintf("ip%s", testID)
+	creatorDID := fmt.Sprintf("did:plc:c%s", testID)
 
 	t.Logf("Creating community with avatar: %s", communityName)
 	community, err := communityService.CreateCommunity(ctx, communities.CreateCommunityRequest{
@@ -417,9 +417,9 @@ func TestImageProxy_CacheHit(t *testing.T) {
 	)
 
 	avatarData := createTestImageForProxy(t, 150, 150, color.RGBA{R: 50, G: 100, B: 150, A: 255})
-	uniqueID := time.Now().UnixNano() % 100000000 // Keep shorter for handle limit
-	communityName := fmt.Sprintf("ic%d", uniqueID)
-	creatorDID := fmt.Sprintf("did:plc:cc%d", uniqueID)
+	testID := uniqueTestID() // Unix seconds + atomic counter; avoids "handle already taken" on reruns
+	communityName := fmt.Sprintf("ic%s", testID)
+	creatorDID := fmt.Sprintf("did:plc:cc%s", testID)
 
 	community, err := communityService.CreateCommunity(ctx, communities.CreateCommunityRequest{
 		Name:                   communityName,

@@ -434,8 +434,10 @@ func TestPostCreation_E2E_LivePDS(t *testing.T) {
 		// 4. Store credentials in AppView DB
 		// 5. Use those credentials to create a post
 
-		// Use timestamp to ensure unique community name for each test run
-		communityName := fmt.Sprintf("e2e%d", time.Now().UnixNano()%1000000)
+		// uniqueTestID() (Unix seconds + atomic counter) ensures a unique community name
+		// across reruns; the % modulo form collides ("handle already taken") on the
+		// provisioned PDS account, and the local label must stay ≤18 chars.
+		communityName := fmt.Sprintf("e2e%s", uniqueTestID())
 
 		t.Logf("\n📝 Provisioning test community on live PDS (name: %s)...", communityName)
 		community, err := communityService.CreateCommunity(ctx, communities.CreateCommunityRequest{
@@ -625,6 +627,11 @@ func subscribeToJetstreamForPost(
 	}
 	defer func() { _ = conn.Close() }()
 
+	// Track consecutive timeouts to detect stale connections
+	// gorilla/websocket panics after 1000 repeated reads on a failed connection
+	consecutiveTimeouts := 0
+	const maxConsecutiveTimeouts = 10
+
 	// Read messages until we find our event or receive done signal
 	for {
 		select {
@@ -646,11 +653,18 @@ func subscribeToJetstreamForPost(
 					return nil
 				}
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					consecutiveTimeouts++
+					if consecutiveTimeouts >= maxConsecutiveTimeouts {
+						return fmt.Errorf("connection appears stale after %d consecutive timeouts", consecutiveTimeouts)
+					}
 					continue // Timeout is expected, keep listening
 				}
 				// For other errors, don't retry reading from a broken connection
 				return fmt.Errorf("failed to read Jetstream message: %w", err)
 			}
+
+			// Reset timeout counter on successful read
+			consecutiveTimeouts = 0
 
 			// Check if this is a post event for the target DID
 			if event.Did == targetDID && event.Kind == "commit" &&

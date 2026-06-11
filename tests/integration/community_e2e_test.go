@@ -103,11 +103,10 @@ func TestCommunity_E2E(t *testing.T) {
 	// Setup dependencies
 	communityRepo := postgres.NewCommunityRepository(db)
 
-	// Create a fresh test account on PDS (similar to user_journey_e2e_test pattern)
-	// Use unique handle to avoid conflicts between test runs
-	// Use full Unix seconds + nanoseconds remainder for better uniqueness across runs
-	now := time.Now()
-	uniqueID := fmt.Sprintf("%d%d", now.Unix()%100000, now.UnixNano()%10000)
+	// Create a fresh test account on PDS (similar to user_journey_e2e_test pattern).
+	// uniqueTestID() (Unix seconds + atomic counter) guarantees uniqueness across runs;
+	// the prior Unix%100000 + UnixNano%10000 scheme could collide ("handle already taken").
+	uniqueID := uniqueTestID()
 	instanceHandle := fmt.Sprintf("ce%s.local.coves.dev", uniqueID)
 	instanceEmail := fmt.Sprintf("comm%s@test.com", uniqueID)
 	instancePassword := "test-password-community-123"
@@ -1645,11 +1644,10 @@ func TestCommunity_E2E(t *testing.T) {
 // NOTE: This simulates the firehose event for speed. For TRUE E2E testing with real
 // Jetstream WebSocket subscription, see "Part 2: Real Jetstream Firehose Consumption" above.
 func createAndIndexCommunity(t *testing.T, service communities.Service, consumer *jetstream.CommunityEventConsumer, instanceDID, pdsURL string) *communities.Community {
-	// Use nanoseconds % 1 billion to get unique but short names
-	// This avoids handle collisions when creating multiple communities quickly
-	uniqueID := time.Now().UnixNano() % 1000000000
+	// uniqueTestID() (Unix seconds + atomic counter) avoids handle collisions across
+	// reruns ("handle already taken") while keeping the provisioned local label ≤18 chars.
 	req := communities.CreateCommunityRequest{
-		Name:                   fmt.Sprintf("test-%d", uniqueID),
+		Name:                   fmt.Sprintf("tc%s", uniqueTestID()),
 		DisplayName:            "Test Community",
 		Description:            "Test",
 		Visibility:             "public",

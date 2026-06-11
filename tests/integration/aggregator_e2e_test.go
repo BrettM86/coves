@@ -104,9 +104,11 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 
 		// STEP 1: Create aggregator account on real PDS
 		// Use PDS configured domain (.local.coves.dev for users/services)
-		timestamp := time.Now().Unix() // Use Unix seconds instead of nanoseconds for shorter handle
-		aggregatorHandle = fmt.Sprintf("rss-agg-%d.local.coves.dev", timestamp)
-		email := fmt.Sprintf("agg-%d@test.com", timestamp)
+		// uniqueTestID() (Unix seconds + atomic counter) avoids same-second collisions
+		// across reruns; keep the local label ≤18 chars (PDS "handle too long" cap).
+		aggregatorID := uniqueTestID()
+		aggregatorHandle = fmt.Sprintf("agg%s.local.coves.dev", aggregatorID)
+		email := fmt.Sprintf("agg-%s@test.com", aggregatorID)
 		password := "test-password-123"
 
 		var err error
@@ -213,9 +215,11 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 		// STEP 1: Create community account on real PDS
 		// Use PDS configured domain (c-{name}.coves.social for communities)
 		// Keep handle short to avoid PDS "handle too long" error
-		timestamp := time.Now().Unix() % 100000 // Last 5 digits
-		communityHandle = fmt.Sprintf("c-e2e-%d.coves.social", timestamp)
-		communityEmail := fmt.Sprintf("comm-%d@test.com", timestamp)
+		// uniqueTestID() (Unix seconds + atomic counter) avoids "handle already taken"
+		// on reruns; keep the local label ≤18 chars (PDS "handle too long" cap).
+		communityID := uniqueTestID()
+		communityHandle = fmt.Sprintf("ce2e%s.coves.social", communityID)
+		communityEmail := fmt.Sprintf("comm-%s@test.com", communityID)
 		communityPassword := "community-test-password-123"
 
 		var err error
@@ -232,7 +236,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 		testCommunity := &communities.Community{
 			DID:             communityDID,
 			Handle:          communityHandle,
-			Name:            fmt.Sprintf("e2e-%d", timestamp),
+			Name:            fmt.Sprintf("e2e-%s", communityID),
 			DisplayName:     "E2E Test Community",
 			OwnerDID:        communityDID,
 			CreatedByDID:    communityDID,

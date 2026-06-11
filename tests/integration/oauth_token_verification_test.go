@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
-	"time"
 )
 
 // TestOAuthTokenVerification tests end-to-end OAuth token verification
@@ -44,10 +43,10 @@ func TestOAuthTokenVerification(t *testing.T) {
 	t.Run("OAuth token validation and middleware integration", func(t *testing.T) {
 		// Step 1: Create a test account on PDS
 		// Keep handle short to avoid PDS validation errors
-		timestamp := time.Now().Unix() % 100000 // Last 5 digits
-		handle := fmt.Sprintf("oauth%d.local.coves.dev", timestamp)
+		testID := uniqueTestID()
+		handle := fmt.Sprintf("oauth%s.local.coves.dev", testID)
 		password := "testpass123"
-		email := fmt.Sprintf("oauth%d@test.com", timestamp)
+		email := fmt.Sprintf("oauth%s@test.com", testID)
 
 		_, did, err := createPDSAccount(pdsURL, handle, email, password)
 		if err != nil {
@@ -101,10 +100,10 @@ func TestOAuthTokenVerification(t *testing.T) {
 
 	t.Run("Rejects tampered/invalid sealed tokens", func(t *testing.T) {
 		// Create valid user
-		timestamp := time.Now().Unix() % 100000
-		handle := fmt.Sprintf("tamp%d.local.coves.dev", timestamp)
+		testID := uniqueTestID()
+		handle := fmt.Sprintf("tamp%s.local.coves.dev", testID)
 		password := "testpass456"
-		email := fmt.Sprintf("tamp%d@test.com", timestamp)
+		email := fmt.Sprintf("tamp%s@test.com", testID)
 
 		_, did, err := createPDSAccount(pdsURL, handle, email, password)
 		if err != nil {

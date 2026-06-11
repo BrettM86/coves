@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -61,7 +60,7 @@ func TestCommunityIdentifierResolution(t *testing.T) {
 	)
 
 	// Create a test community to resolve
-	uniqueName := fmt.Sprintf("test%d", time.Now().UnixNano()%1000000)
+	uniqueName := fmt.Sprintf("cir%s", uniqueTestID())
 	req := communities.CreateCommunityRequest{
 		Name:                   uniqueName,
 		DisplayName:            "Test Community",
@@ -503,7 +502,7 @@ func TestGetCommunity_IdentifierResolution(t *testing.T) {
 	)
 
 	// Create a test community
-	uniqueName := fmt.Sprintf("gettest%d", time.Now().UnixNano()%1000000)
+	uniqueName := fmt.Sprintf("gct%s", uniqueTestID())
 	req := communities.CreateCommunityRequest{
 		Name:                   uniqueName,
 		DisplayName:            "GetCommunity Test",
