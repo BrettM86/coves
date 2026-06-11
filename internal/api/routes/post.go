@@ -23,6 +23,13 @@ func RegisterPostRoutes(
 	authMiddleware middleware.AuthMiddleware,
 	oauthMiddleware *middleware.OAuthAuthMiddleware,
 ) {
+	// oauthMiddleware.OptionalAuth gates the public get endpoint below. A nil value is a
+	// wiring bug (minimal/test setups) that would otherwise panic on the first request to
+	// post.get; fail fast at registration with a clear message instead.
+	if oauthMiddleware == nil {
+		panic("RegisterPostRoutes: oauthMiddleware is required (provides OptionalAuth for the public post.get endpoint)")
+	}
+
 	// Initialize handlers
 	createHandler := post.NewCreateHandler(service)
 	deleteHandler := post.NewDeleteHandler(service)

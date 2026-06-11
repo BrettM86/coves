@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -103,6 +104,7 @@ func TestFullUserJourney_E2E(t *testing.T) {
 	commentRepo := postgres.NewCommentRepository(db)
 	voteRepo := postgres.NewVoteRepository(db)
 	timelineRepo := postgres.NewTimelineRepository(db, "test-cursor-secret")
+	userBlockRepo := postgres.NewUserBlockRepository(db)
 
 	// Setup identity resolution
 	plcURL := os.Getenv("PLC_DIRECTORY_URL")
@@ -131,7 +133,10 @@ func TestFullUserJourney_E2E(t *testing.T) {
 
 	provisioner := communities.NewPDSAccountProvisioner(instanceDomain, pdsURL)
 	communityService := communities.NewCommunityServiceWithPDSFactory(communityRepo, pdsURL, instanceDID, instanceDomain, provisioner, CommunityPasswordAuthPDSClientFactory(), nil)
-	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, pdsURL)
+	// Wire the real userblocks BlockChecker (as cmd/server/main.go does) so post.get
+	// enforces viewer author-blocks against live Postgres — without it, block enforcement
+	// is silently skipped and Part 3c below could not observe a blockedPost.
+	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, pdsURL, posts.WithBlockChecker(userBlockRepo))
 	timelineService := timelineCore.NewTimelineService(timelineRepo)
 
 	// Setup consumers
@@ -394,6 +399,125 @@ func TestFullUserJourney_E2E(t *testing.T) {
 		assert.Equal(t, 0, indexed.UpvoteCount, "Initial upvote count should be 0")
 
 		t.Logf("✅ Post indexed in AppView")
+	})
+
+	// ====================================================================================
+	// Part 3b: Get Post by URI (social.coves.community.post.get)
+	// ====================================================================================
+	// Exercises the batch get endpoint against REAL infrastructure: the post just indexed
+	// from Jetstream. This is the only coverage of the live GetViewsByURIs SQL (with its
+	// users/communities INNER JOINs), the shared scanPostView column contract, and the
+	// deleted_at IS NULL filter. It asserts request order is preserved: a real, indexed
+	// URI comes back as a full postView; a valid-but-never-indexed URI comes back as a
+	// notFoundPost.
+	t.Run("3b. Get Post by URI", func(t *testing.T) {
+		t.Log("\n🔎 Part 3b: Batch-fetch the indexed post via social.coves.community.post.get...")
+
+		// A syntactically valid, canonical (DID-based) URI that was never indexed -> notFound.
+		neverIndexedURI := fmt.Sprintf("at://%s/social.coves.community.post/neverindexed", communityDID)
+
+		q := url.Values{}
+		q.Add("uris", postURI)         // [0] real, Jetstream-indexed post -> postView
+		q.Add("uris", neverIndexedURI) // [1] valid URI, absent from AppView -> notFoundPost
+
+		req, _ := http.NewRequest(http.MethodGet,
+			httpServer.URL+"/xrpc/social.coves.community.post.get?"+q.Encode(), nil)
+
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+
+		require.Equal(t, http.StatusOK, resp.StatusCode, "post.get should succeed")
+
+		var getResp struct {
+			Posts []map[string]interface{} `json:"posts"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&getResp))
+		require.Len(t, getResp.Posts, 2, "response preserves request order: [found, notFound]")
+
+		// [0] the indexed post -> full postView with the lexicon-required nested objects.
+		found := getResp.Posts[0]
+		assert.Equal(t, postURI, found["uri"], "posts[0] is the requested post")
+		_, hasNotFound := found["notFound"]
+		assert.False(t, hasNotFound, "posts[0] is a postView, not a notFoundPost")
+		assert.NotNil(t, found["community"], "postView carries community (lexicon-required)")
+		assert.NotNil(t, found["record"], "postView carries record (lexicon-required)")
+		assert.NotNil(t, found["author"], "postView carries author (lexicon-required)")
+
+		// [1] never-indexed URI -> notFoundPost echoing the requested URI.
+		missing := getResp.Posts[1]
+		assert.Equal(t, true, missing["notFound"], "posts[1] is a notFoundPost")
+		assert.Equal(t, neverIndexedURI, missing["uri"], "notFoundPost echoes the requested URI")
+
+		t.Logf("✅ post.get returned 1 postView + 1 notFoundPost in request order")
+	})
+
+	// ====================================================================================
+	// Part 3c: Get Post authored by a Blocked user (viewer author-block enforcement)
+	// ====================================================================================
+	// Exercises the blockedPost union member of post.get against REAL infrastructure: a
+	// viewer who has blocked the post's author (User A) must receive a blockedPost marker
+	// instead of the full postView, keeping permalink/cold-load reads consistent with
+	// feed/timeline block filtering. This is the only live coverage of the OptionalAuth ->
+	// ViewerDID -> userblocks AreBlocked -> blockedPost path; the same post served WITHOUT
+	// the block (Part 3b, unauthenticated) came back as a postView, so this isolates the
+	// block as the sole cause of the difference.
+	//
+	// A dedicated throwaway viewer (not User B) records the block so it cannot perturb
+	// User B's later interactions with User A's post (votes/comments in Parts 5+).
+	t.Run("3c. Get blocked-author post returns blockedPost", func(t *testing.T) {
+		t.Log("\n🚫 Part 3c: Viewer who blocked the author fetches the post via post.get...")
+
+		// A throwaway viewer identity; DID satisfies the user_blocks DID-format CHECK.
+		blockerDID := fmt.Sprintf("did:plc:journeyblocker%s", testID)
+
+		// Record the block: viewer has blocked User A (the post's author). No FK to users,
+		// so the block row alone is enough to drive AreBlocked.
+		_, err := db.ExecContext(ctx, `
+			INSERT INTO user_blocks (blocker_did, blocked_did, record_uri, record_cid)
+			VALUES ($1, $2, $3, $4)
+		`, blockerDID, userADID,
+			fmt.Sprintf("at://%s/social.coves.actor.block/journeyblock", blockerDID),
+			"bafyjourneyblockcid")
+		require.NoError(t, err, "failed to record viewer block")
+		defer func() { _, _ = db.Exec("DELETE FROM user_blocks WHERE blocker_did = $1", blockerDID) }()
+
+		// Mint a Coves API token for the viewer so OptionalAuth populates ViewerDID.
+		// post.get is a read, so no PDS access token is required.
+		blockerToken := e2eAuth.AddUser(blockerDID)
+
+		q := url.Values{}
+		q.Add("uris", postURI) // the indexed post, authored by the now-blocked User A
+
+		req, _ := http.NewRequest(http.MethodGet,
+			httpServer.URL+"/xrpc/social.coves.community.post.get?"+q.Encode(), nil)
+		req.Header.Set("Authorization", "Bearer "+blockerToken)
+
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+
+		require.Equal(t, http.StatusOK, resp.StatusCode, "post.get should succeed")
+
+		var getResp struct {
+			Posts []map[string]interface{} `json:"posts"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&getResp))
+		require.Len(t, getResp.Posts, 1, "one URI requested -> one union member")
+
+		blocked := getResp.Posts[0]
+		assert.Equal(t, true, blocked["blocked"], "viewer blocked the author -> blockedPost")
+		assert.Equal(t, "author", blocked["blockedBy"], "blockedBy is \"author\"")
+		assert.Equal(t, postURI, blocked["uri"], "blockedPost echoes the requested URI")
+		if author, ok := blocked["author"].(map[string]interface{}); assert.True(t, ok, "blockedPost carries author") {
+			assert.Equal(t, userADID, author["did"], "blockedPost names the blocked author DID")
+		}
+		// The marker must NOT leak the hidden post's content (postView-only fields).
+		assert.Nil(t, blocked["record"], "blockedPost must not carry the post record")
+		assert.Nil(t, blocked["community"], "blockedPost must not carry community")
+		assert.Nil(t, blocked["title"], "blockedPost must not leak post content")
+
+		t.Logf("✅ post.get returned a blockedPost for the blocked author's post")
 	})
 
 	// ====================================================================================

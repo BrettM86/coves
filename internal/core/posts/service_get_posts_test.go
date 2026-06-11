@@ -394,6 +394,15 @@ func TestPostResult_Member(t *testing.T) {
 		{"not found", notFoundResult("at://missing"), nil, true},
 		{"blocked", blockedByAuthorResult("at://b", "did:plc:a"), nil, true},
 		{"empty is invalid", &PostResult{}, nil, false},
+		// More than one member set is an assembly bug: Member must report it as invalid
+		// (not silently pick one), so the handler returns a 500 instead of emitting an
+		// ambiguous union entry.
+		{"multiple members is invalid", &PostResult{Post: view, NotFound: &NotFoundPost{URI: "at://x", NotFound: true}}, nil, false},
+		{"all three members is invalid", &PostResult{
+			Post:     view,
+			Blocked:  &BlockedPost{URI: "at://b", Blocked: true},
+			NotFound: &NotFoundPost{URI: "at://n", NotFound: true},
+		}, nil, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

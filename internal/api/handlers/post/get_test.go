@@ -3,10 +3,13 @@ package post
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"Coves/internal/api/middleware"
 	"Coves/internal/core/posts"
 
 	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
@@ -187,5 +190,147 @@ func TestHandleGet_InvalidResultIs500(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500 (body: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandleGet_URITooLong verifies the handler rejects an over-length URI (per-URI
+// length cap) with a 400 before reaching the service, bounding query-param abuse.
+func TestHandleGet_URITooLong(t *testing.T) {
+	called := false
+	svc := &mockGetPostService{
+		getPostsFunc: func(ctx context.Context, req posts.GetPostsRequest) ([]*posts.PostResult, error) {
+			called = true
+			return nil, nil
+		},
+	}
+	h := NewGetHandler(svc, nil, nil)
+
+	// One valid prefix padded past maxURILength.
+	longURI := "at://did:plc:ewvi7nxzyoun6zhxrhs64oiz/social.coves.community.post/" +
+		strings.Repeat("a", maxURILength)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet,
+		"/xrpc/social.coves.community.post.get?uris="+longURI, nil)
+	h.HandleGet(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if called {
+		t.Error("service should not be called for an over-length URI")
+	}
+}
+
+// TestHandleGet_ServiceErrorMapping verifies the handler maps service errors to the
+// correct HTTP status: a validation error -> 400, any other (internal) error -> 500.
+// A regression collapsing these would leak 500s for client mistakes or vice versa.
+func TestHandleGet_ServiceErrorMapping(t *testing.T) {
+	validURI := "at://did:plc:ewvi7nxzyoun6zhxrhs64oiz/social.coves.community.post/x"
+
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+	}{
+		{"validation error -> 400", posts.NewValidationError("uris", "bad"), http.StatusBadRequest},
+		{"internal error -> 500", errors.New("db exploded"), http.StatusInternalServerError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &mockGetPostService{
+				getPostsFunc: func(ctx context.Context, req posts.GetPostsRequest) ([]*posts.PostResult, error) {
+					return nil, tt.err
+				},
+			}
+			h := NewGetHandler(svc, nil, nil)
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet,
+				"/xrpc/social.coves.community.post.get?uris="+validURI, nil)
+			h.HandleGet(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d (body: %s)", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestHandleGet_ViewerDIDPassthrough verifies the authenticated viewer's DID (set on the
+// context by OptionalAuth) is forwarded to the service as ViewerDID. Dropping it would
+// silently disable viewer block filtering on permalink/cold-load reads.
+func TestHandleGet_ViewerDIDPassthrough(t *testing.T) {
+	const viewerDID = "did:plc:viewer123"
+	validURI := "at://did:plc:ewvi7nxzyoun6zhxrhs64oiz/social.coves.community.post/x"
+
+	var gotViewerDID string
+	svc := &mockGetPostService{
+		getPostsFunc: func(ctx context.Context, req posts.GetPostsRequest) ([]*posts.PostResult, error) {
+			gotViewerDID = req.ViewerDID
+			return []*posts.PostResult{{NotFound: &posts.NotFoundPost{URI: validURI, NotFound: true}}}, nil
+		},
+	}
+	h := NewGetHandler(svc, nil, nil)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet,
+		"/xrpc/social.coves.community.post.get?uris="+validURI, nil)
+	// Simulate what OptionalAuth does for an authenticated viewer.
+	req = req.WithContext(context.WithValue(req.Context(), middleware.UserDIDKey, viewerDID))
+	h.HandleGet(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if gotViewerDID != viewerDID {
+		t.Errorf("service got ViewerDID = %q, want %q", gotViewerDID, viewerDID)
+	}
+}
+
+// TestHandleGet_DuplicateURIs verifies duplicate URIs in the request are forwarded as-is
+// (the service owns dedup/ordering) and the handler emits one union member per service
+// result, in order.
+func TestHandleGet_DuplicateURIs(t *testing.T) {
+	dupURI := "at://did:plc:ewvi7nxzyoun6zhxrhs64oiz/social.coves.community.post/dup"
+
+	var gotURIs []string
+	svc := &mockGetPostService{
+		getPostsFunc: func(ctx context.Context, req posts.GetPostsRequest) ([]*posts.PostResult, error) {
+			gotURIs = req.URIs
+			// Service preserves request order, including duplicates.
+			return []*posts.PostResult{
+				{Post: &posts.PostView{URI: dupURI, CID: "cid1"}},
+				{Post: &posts.PostView{URI: dupURI, CID: "cid1"}},
+			}, nil
+		},
+	}
+	h := NewGetHandler(svc, nil, nil)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet,
+		"/xrpc/social.coves.community.post.get?uris="+dupURI+"&uris="+dupURI, nil)
+	h.HandleGet(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if len(gotURIs) != 2 || gotURIs[0] != dupURI || gotURIs[1] != dupURI {
+		t.Errorf("service got URIs = %v, want both entries = %q", gotURIs, dupURI)
+	}
+
+	var resp struct {
+		Posts []map[string]interface{} `json:"posts"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode response: %v (body: %s)", err, rec.Body.String())
+	}
+	if len(resp.Posts) != 2 {
+		t.Fatalf("expected 2 posts (one per result, order preserved), got %d", len(resp.Posts))
+	}
+	for i, p := range resp.Posts {
+		if p["uri"] != dupURI {
+			t.Errorf("posts[%d].uri = %v, want %q", i, p["uri"], dupURI)
+		}
 	}
 }

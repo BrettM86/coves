@@ -13,11 +13,25 @@ import (
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
+
+	"github.com/lib/pq"
 )
 
 type postgresPostRepo struct {
 	db *sql.DB
 }
+
+// postViewSelectColumns is the ordered SELECT list for hydrating a posts.PostView row.
+// It MUST stay byte-aligned with the positional Scan in scanPostView. It is the single
+// source of truth shared by GetViewsByURIs and GetByAuthor, so the column order can only
+// be defined in one place and the two queries cannot drift apart and silently mis-scan.
+const postViewSelectColumns = `
+		p.uri, p.cid, p.rkey,
+		p.author_did, u.handle as author_handle,
+		p.community_did, c.handle as community_handle, c.name as community_name, c.avatar_cid as community_avatar, c.pds_url as community_pds_url,
+		p.title, p.content, p.content_facets, p.embed, p.content_labels,
+		p.created_at, p.edited_at, p.indexed_at,
+		p.upvote_count, p.downvote_count, p.score, p.comment_count`
 
 // NewPostRepository creates a new PostgreSQL post repository
 func NewPostRepository(db *sql.DB) posts.Repository {
@@ -147,29 +161,18 @@ func (r *postgresPostRepo) GetViewsByURIs(ctx context.Context, uris []string) (m
 		return result, nil
 	}
 
-	// Build parameterized IN clause ($1, $2, ...) - bounded to 25 URIs by the handler
-	placeholders := make([]string, len(uris))
-	args := make([]interface{}, len(uris))
-	for i, uri := range uris {
-		placeholders[i] = fmt.Sprintf("$%d", i+1)
-		args[i] = uri
-	}
-
-	query := fmt.Sprintf(`
-		SELECT
-			p.uri, p.cid, p.rkey,
-			p.author_did, u.handle as author_handle,
-			p.community_did, c.handle as community_handle, c.name as community_name, c.avatar_cid as community_avatar, c.pds_url as community_pds_url,
-			p.title, p.content, p.content_facets, p.embed, p.content_labels,
-			p.created_at, p.edited_at, p.indexed_at,
-			p.upvote_count, p.downvote_count, p.score, p.comment_count
+	// Static query: the URI set is bound through a single array parameter (= ANY($1))
+	// rather than an interpolated IN list, so the SQL is constant (no fmt.Sprintf, one
+	// cached query plan regardless of batch size) and the values stay fully parameterized.
+	query := `
+		SELECT` + postViewSelectColumns + `
 		FROM posts p
 		INNER JOIN users u ON p.author_did = u.did
 		INNER JOIN communities c ON p.community_did = c.did
-		WHERE p.uri IN (%s) AND p.deleted_at IS NULL
-	`, strings.Join(placeholders, ", "))
+		WHERE p.uri = ANY($1) AND p.deleted_at IS NULL
+	`
 
-	rows, err := r.db.QueryContext(ctx, query, args...)
+	rows, err := r.db.QueryContext(ctx, query, pq.Array(uris))
 	if err != nil {
 		return nil, fmt.Errorf("failed to query posts by URIs: %w", err)
 	}
@@ -253,20 +256,14 @@ func (r *postgresPostRepo) GetByAuthor(ctx context.Context, req posts.GetAuthorP
 	whereClause := strings.Join(whereConditions, " AND ")
 
 	query := fmt.Sprintf(`
-		SELECT
-			p.uri, p.cid, p.rkey,
-			p.author_did, u.handle as author_handle,
-			p.community_did, c.handle as community_handle, c.name as community_name, c.avatar_cid as community_avatar, c.pds_url as community_pds_url,
-			p.title, p.content, p.content_facets, p.embed, p.content_labels,
-			p.created_at, p.edited_at, p.indexed_at,
-			p.upvote_count, p.downvote_count, p.score, p.comment_count
+		SELECT %s
 		FROM posts p
 		INNER JOIN users u ON p.author_did = u.did
 		INNER JOIN communities c ON p.community_did = c.did
 		WHERE %s
 		ORDER BY p.created_at DESC, p.uri DESC
 		LIMIT $%d
-	`, whereClause, paramIndex)
+	`, postViewSelectColumns, whereClause, paramIndex)
 
 	// Execute query
 	rows, err := r.db.QueryContext(ctx, query, args...)
@@ -377,7 +374,8 @@ func (r *postgresPostRepo) SoftDelete(ctx context.Context, uri string) error {
 }
 
 // scanPostView scans a database row into a PostView. Shared by GetByAuthor and
-// GetViewsByURIs; the SELECT column order in those queries must match the Scan below.
+// GetViewsByURIs, which both SELECT postViewSelectColumns; the Scan order below MUST
+// stay byte-aligned with that column list.
 func (r *postgresPostRepo) scanPostView(rows *sql.Rows) (*posts.PostView, error) {
 	var (
 		postView        posts.PostView

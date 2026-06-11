@@ -149,20 +149,31 @@ func (r *PostResult) GetPost() *PostView {
 }
 
 // Member returns the single populated union member for wire encoding and true, or
-// (nil, false) when the result is in an invalid empty state. Callers must treat the
-// false case as an internal error rather than emitting a null array entry, which would
-// violate the lexicon's union (postView | blockedPost | notFoundPost).
+// (nil, false) when the result is NOT in the valid exactly-one-member state — either
+// empty (no member set) or, defensively, more than one member set. The latter would be
+// an assembly bug; reporting it (rather than silently picking one by priority) is the
+// whole point of this guard, so a mis-assembled result surfaces as an internal error
+// instead of emitting a null or ambiguous array entry that violates the lexicon's union
+// (postView | blockedPost | notFoundPost).
 func (r *PostResult) Member() (interface{}, bool) {
-	switch {
-	case r.Post != nil:
-		return r.Post, true
-	case r.Blocked != nil:
-		return r.Blocked, true
-	case r.NotFound != nil:
-		return r.NotFound, true
-	default:
+	var member interface{}
+	count := 0
+	if r.Post != nil {
+		member = r.Post
+		count++
+	}
+	if r.Blocked != nil {
+		member = r.Blocked
+		count++
+	}
+	if r.NotFound != nil {
+		member = r.NotFound
+		count++
+	}
+	if count != 1 {
 		return nil, false
 	}
+	return member, true
 }
 
 // PostRecord represents the actual atProto record structure written to PDS
