@@ -71,8 +71,19 @@ func TestPostHandler_ThumbValidation(t *testing.T) {
 
 	handler := post.NewCreateHandler(postService)
 
+	// The test helpers INSERT without upsert and test DIDs are stable across
+	// runs, so clean up any rows left by a previous run before recreating them.
+	// (Without this, running this test in isolation against the persistent test
+	// DB collides on users_pkey — the full suite only avoids it by collateral
+	// deletes in earlier-sorted tests.)
+	userDID := "did:plc:thumbtest" + t.Name()
+	communityDID := "did:plc:testcommunity" + t.Name()
+	_, _ = db.Exec("DELETE FROM posts WHERE community_did = $1", communityDID)
+	_, _ = db.Exec("DELETE FROM communities WHERE did = $1", communityDID)
+	_, _ = db.Exec("DELETE FROM users WHERE did = $1", userDID)
+
 	// Create test user and community with PDS credentials (use unique IDs)
-	testUser := createTestUser(t, db, "thumbtest.bsky.social", "did:plc:thumbtest"+t.Name())
+	testUser := createTestUser(t, db, "thumbtest.bsky.social", userDID)
 	testCommunity := createTestCommunityWithCredentials(t, communityRepo, t.Name())
 
 	t.Run("Reject thumb as URL string", func(t *testing.T) {
@@ -286,5 +297,84 @@ func TestPostHandler_ThumbValidation(t *testing.T) {
 			// Should not be a thumb validation error
 			assert.NotContains(t, errResp["message"], "thumb must be")
 		}
+	})
+}
+
+// TestPostHandler_EmbedValidation proves the embed-union validation is actually
+// wired into the real create path (handler -> service -> validateEmbed), not
+// just unit-tested in isolation. If the validateEmbed call site is ever removed
+// or reordered after an early return, these cases fail even though the unit
+// tests still pass — guarding against regression of the silent-corruption bug
+// the validation exists to prevent.
+func TestPostHandler_EmbedValidation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	db := setupTestDB(t)
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
+
+	communityRepo := postgres.NewCommunityRepository(db)
+	communityService := communities.NewCommunityServiceWithPDSFactory(
+		communityRepo,
+		"http://localhost:3001",
+		"did:web:test.coves.social",
+		"test.coves.social",
+		nil,
+		nil,
+		nil,
+	)
+	postRepo := postgres.NewPostRepository(db)
+	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, "http://localhost:3001")
+	handler := post.NewCreateHandler(postService)
+
+	// The test helpers INSERT without upsert and test DIDs are stable across
+	// runs, so clean up any rows left by a previous run before recreating them.
+	userDID := "did:plc:embedtest" + t.Name()
+	communityDID := "did:plc:testcommunity" + t.Name()
+	_, _ = db.Exec("DELETE FROM posts WHERE community_did = $1", communityDID)
+	_, _ = db.Exec("DELETE FROM communities WHERE did = $1", communityDID)
+	_, _ = db.Exec("DELETE FROM users WHERE did = $1", userDID)
+
+	testUser := createTestUser(t, db, "embedtest.bsky.social", userDID)
+	testCommunity := createTestCommunityWithCredentials(t, communityRepo, t.Name())
+
+	postEmbed := func(t *testing.T, embed interface{}) map[string]interface{} {
+		t.Helper()
+		payload := map[string]interface{}{
+			"community": testCommunity.DID,
+			"title":     "Test Post",
+			"embed":     embed,
+		}
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.post.create", bytes.NewReader(body))
+		req = req.WithContext(middleware.SetTestUserDID(req.Context(), testUser.DID))
+
+		rec := httptest.NewRecorder()
+		handler.HandleCreate(rec, req)
+
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+		var errResp map[string]interface{}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
+		return errResp
+	}
+
+	t.Run("Reject embed missing $type (the bare-{uri} link-post bug)", func(t *testing.T) {
+		// The exact malformed shape the frontend was sending: a bare {uri} with
+		// no $type discriminator and no external wrapper.
+		errResp := postEmbed(t, map[string]interface{}{"uri": "https://example.com"})
+		assert.Contains(t, errResp["message"], "$type")
+	})
+
+	t.Run("Reject embed with unknown $type", func(t *testing.T) {
+		errResp := postEmbed(t, map[string]interface{}{
+			"$type":    "social.coves.embed.externl", // typo
+			"external": map[string]interface{}{"uri": "https://example.com"},
+		})
+		assert.Contains(t, errResp["message"], "unknown embed")
 	})
 }

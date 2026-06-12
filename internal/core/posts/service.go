@@ -419,6 +419,13 @@ func (s *postService) validateCreateRequest(req *CreatePostRequest) error {
 		}
 	}
 
+	// Validate the embed (if provided) matches a known lexicon union member.
+	// Catches malformed embeds at the API boundary instead of silently
+	// persisting an unrenderable record to the PDS.
+	if err := validateEmbed(req.Embed); err != nil {
+		return err
+	}
+
 	return nil
 }
 
