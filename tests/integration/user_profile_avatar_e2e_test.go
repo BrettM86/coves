@@ -129,14 +129,13 @@ func TestUserProfileAvatarE2E_UpdateWithAvatar(t *testing.T) {
 	defer httpServer.Close()
 
 	// Cleanup old test data
-	timestamp := time.Now().Unix()
-	shortTS := timestamp % 10000
+	testID := uniqueTestID()
 	_, _ = db.Exec("DELETE FROM users WHERE handle LIKE 'avatartest%.local.coves.dev'")
 
 	t.Run("update profile with avatar via real PDS and Jetstream", func(t *testing.T) {
 		// Create test user account on PDS
-		userHandle := fmt.Sprintf("avatartest%d.local.coves.dev", shortTS)
-		email := fmt.Sprintf("avatartest%d@test.com", shortTS)
+		userHandle := fmt.Sprintf("avatartest%s.local.coves.dev", testID)
+		email := fmt.Sprintf("avatartest%s@test.com", testID)
 		password := "test-password-avatar-123"
 
 		t.Logf("\n Creating test user account on PDS: %s", userHandle)
@@ -423,14 +422,13 @@ func TestUserProfileAvatarE2E_UpdateWithBanner(t *testing.T) {
 	httpServer := httptest.NewServer(r)
 	defer httpServer.Close()
 
-	timestamp := time.Now().Unix()
-	shortTS := timestamp % 10000
+	testID := uniqueTestID()
 	_, _ = db.Exec("DELETE FROM users WHERE handle LIKE 'bannertest%.local.coves.dev'")
 
 	t.Run("update profile with banner via real PDS and Jetstream", func(t *testing.T) {
 		// Create test user account on PDS
-		userHandle := fmt.Sprintf("bannertest%d.local.coves.dev", shortTS)
-		email := fmt.Sprintf("bannertest%d@test.com", shortTS)
+		userHandle := fmt.Sprintf("bannertest%s.local.coves.dev", testID)
+		email := fmt.Sprintf("bannertest%s@test.com", testID)
 		password := "test-password-banner-123"
 
 		t.Logf("\n Creating test user account on PDS: %s", userHandle)
@@ -668,13 +666,12 @@ func TestUserProfileAvatarE2E_UpdateDisplayNameAndBio(t *testing.T) {
 	httpServer := httptest.NewServer(r)
 	defer httpServer.Close()
 
-	timestamp := time.Now().Unix()
-	shortTS := timestamp % 10000
+	testID := uniqueTestID()
 
 	t.Run("update display name and bio without blobs", func(t *testing.T) {
 		// Create test user account on PDS
-		userHandle := fmt.Sprintf("texttest%d.local.coves.dev", shortTS)
-		email := fmt.Sprintf("texttest%d@test.com", shortTS)
+		userHandle := fmt.Sprintf("texttest%s.local.coves.dev", testID)
+		email := fmt.Sprintf("texttest%s@test.com", testID)
 		password := "test-password-text-123"
 
 		userToken, userDID, err := createPDSAccount(pdsURL, userHandle, email, password)
@@ -873,22 +870,31 @@ func TestUserProfileAvatarE2E_ReplaceAvatar(t *testing.T) {
 	httpServer := httptest.NewServer(r)
 	defer httpServer.Close()
 
-	timestamp := time.Now().Unix()
-	shortTS := timestamp % 10000
+	testID := uniqueTestID()
 
-	// Helper to wait for Jetstream event and extract avatar CID
-	waitForProfileEvent := func(t *testing.T, userDID string, timeout time.Duration) (string, *jetstream.JetstreamEvent) {
+	// subscribeForProfileEvent opens the Jetstream subscription and returns a wait
+	// function that blocks until a profile commit for userDID arrives (or times out),
+	// returning the avatar CID extracted from the commit record.
+	//
+	// It MUST be called BEFORE the PDS write. The firehose subscription is cursorless
+	// (see jetstreamURL), so it only streams commits emitted after the socket is
+	// established — there is no replay. Dialing after the write (the previous helper's
+	// behavior) races the PDS→firehose relay and silently drops the event under load.
+	subscribeForProfileEvent := func(t *testing.T, userDID string, timeout time.Duration) func() (string, *jetstream.JetstreamEvent) {
 		eventChan := make(chan *jetstream.JetstreamEvent, 10)
 		done := make(chan bool)
+		ready := make(chan struct{})
 		subscribeCtx, cancelSubscribe := context.WithTimeout(ctx, timeout)
-		defer cancelSubscribe()
 
 		go func() {
 			conn, _, dialErr := websocket.DefaultDialer.Dial(jetstreamURL, nil)
 			if dialErr != nil {
+				t.Logf("Failed to connect to Jetstream: %v", dialErr)
+				close(ready)
 				return
 			}
 			defer func() { _ = conn.Close() }()
+			close(ready) // socket dialed; safe for the caller to write
 
 			consecutiveTimeouts := 0
 			for {
@@ -924,30 +930,39 @@ func TestUserProfileAvatarE2E_ReplaceAvatar(t *testing.T) {
 			}
 		}()
 
-		select {
-		case event := <-eventChan:
-			close(done)
-			var avatarCID string
-			if event.Commit.Record != nil {
-				if avatarMap, ok := event.Commit.Record["avatar"].(map[string]interface{}); ok {
-					if ref, ok := avatarMap["ref"].(map[string]interface{}); ok {
-						if link, ok := ref["$link"].(string); ok {
-							avatarCID = link
+		// Block until the socket is dialed, then give Jetstream a moment to register
+		// the subscription, so the caller's subsequent write is guaranteed to land
+		// after we are listening.
+		<-ready
+		time.Sleep(500 * time.Millisecond)
+
+		return func() (string, *jetstream.JetstreamEvent) {
+			defer cancelSubscribe()
+			select {
+			case event := <-eventChan:
+				close(done)
+				var avatarCID string
+				if event.Commit.Record != nil {
+					if avatarMap, ok := event.Commit.Record["avatar"].(map[string]interface{}); ok {
+						if ref, ok := avatarMap["ref"].(map[string]interface{}); ok {
+							if link, ok := ref["$link"].(string); ok {
+								avatarCID = link
+							}
 						}
 					}
 				}
+				return avatarCID, event
+			case <-time.After(timeout):
+				close(done)
+				return "", nil
 			}
-			return avatarCID, event
-		case <-time.After(timeout):
-			close(done)
-			return "", nil
 		}
 	}
 
 	t.Run("replace existing avatar with new one", func(t *testing.T) {
 		// Create test user account on PDS
-		userHandle := fmt.Sprintf("replaceav%d.local.coves.dev", shortTS)
-		email := fmt.Sprintf("replaceav%d@test.com", shortTS)
+		userHandle := fmt.Sprintf("replaceav%s.local.coves.dev", testID)
+		email := fmt.Sprintf("replaceav%s@test.com", testID)
 		password := "test-password-replace-123"
 
 		userToken, userDID, err := createPDSAccount(pdsURL, userHandle, email, password)
@@ -970,10 +985,8 @@ func TestUserProfileAvatarE2E_ReplaceAvatar(t *testing.T) {
 			AvatarMimeType: "image/png",
 		}
 
-		// Start listening before update
-		go func() {
-			time.Sleep(500 * time.Millisecond)
-		}()
+		// Subscribe to the firehose BEFORE the write (cursorless: no replay).
+		waitInitial := subscribeForProfileEvent(t, userDID, 30*time.Second)
 
 		reqBody, _ := json.Marshal(updateReq)
 		req, _ := http.NewRequest(http.MethodPost,
@@ -988,7 +1001,7 @@ func TestUserProfileAvatarE2E_ReplaceAvatar(t *testing.T) {
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 
 		// Wait for initial avatar event
-		initialAvatarCID, initialEvent := waitForProfileEvent(t, userDID, 15*time.Second)
+		initialAvatarCID, initialEvent := waitInitial()
 		require.NotNil(t, initialEvent, "Should receive initial avatar event")
 		require.NotEmpty(t, initialAvatarCID, "Initial avatar CID should not be empty")
 
@@ -1017,6 +1030,9 @@ func TestUserProfileAvatarE2E_ReplaceAvatar(t *testing.T) {
 			AvatarMimeType: "image/png",
 		}
 
+		// Subscribe BEFORE the replacement write (cursorless: no replay).
+		waitReplacement := subscribeForProfileEvent(t, userDID, 30*time.Second)
+
 		reqBody2, _ := json.Marshal(updateReq2)
 		req2, _ := http.NewRequest(http.MethodPost,
 			httpServer.URL+"/xrpc/social.coves.actor.updateProfile",
@@ -1030,7 +1046,7 @@ func TestUserProfileAvatarE2E_ReplaceAvatar(t *testing.T) {
 		require.Equal(t, http.StatusOK, resp2.StatusCode)
 
 		// Wait for replacement avatar event
-		newAvatarCID, newEvent := waitForProfileEvent(t, userDID, 15*time.Second)
+		newAvatarCID, newEvent := waitReplacement()
 		require.NotNil(t, newEvent, "Should receive replacement avatar event")
 		require.NotEmpty(t, newAvatarCID, "New avatar CID should not be empty")
 

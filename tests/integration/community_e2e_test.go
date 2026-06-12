@@ -187,6 +187,9 @@ func TestCommunity_E2E(t *testing.T) {
 		}
 
 		t.Logf("\n📝 Creating community via service: %s", communityName)
+		// Capture a Jetstream replay cursor BEFORE the write so the Part 2 subscription
+		// (opened after the write) cannot miss the resulting firehose commit.
+		communityCreateCursor := jetstreamCursorNow()
 		community, err := communityService.CreateCommunity(ctx, createReq)
 		if err != nil {
 			t.Fatalf("Failed to create community: %v", err)
@@ -305,7 +308,7 @@ func TestCommunity_E2E(t *testing.T) {
 
 			// Start Jetstream consumer in background
 			go func() {
-				err := subscribeToJetstream(ctx, jetstreamURL, community.DID, consumer, eventChan, errorChan, done)
+				err := subscribeToJetstream(ctx, withJetstreamCursor(jetstreamURL, communityCreateCursor), community.DID, consumer, eventChan, errorChan, done)
 				if err != nil {
 					errorChan <- err
 				}

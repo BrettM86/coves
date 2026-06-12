@@ -149,6 +149,33 @@ func uniqueTestID() string {
 	return strconv.FormatInt(time.Now().Unix(), 36) + strconv.FormatUint(n, 36)
 }
 
+// jetstreamCursorNow returns the current time as a Jetstream replay cursor (unix
+// microseconds). Capture it IMMEDIATELY BEFORE a PDS write, then pass it through
+// withJetstreamCursor when opening the subscription afterwards.
+//
+// Why: the firehose subscriptions used in these tests are otherwise cursorless, so
+// they only stream commits emitted after the socket is dialed — there is no replay.
+// A subscription opened after the write therefore races the PDS→Jetstream relay and
+// silently drops the event under load (the "subscribe-after-write" flake). Jetstream
+// stamps each event's time_us when it ingests the commit, which is always after our
+// write, so a cursor captured just before the write is guaranteed to be < the event's
+// time_us (we receive it) and > any earlier event's time_us (no stale duplicates).
+// Test and Jetstream share the same host clock, so there is no skew to compensate for.
+func jetstreamCursorNow() int64 {
+	return time.Now().UnixMicro()
+}
+
+// withJetstreamCursor appends a replay cursor (unix microseconds, from
+// jetstreamCursorNow) to a Jetstream subscribe URL, handling whether the URL already
+// carries query parameters (e.g. wantedCollections).
+func withJetstreamCursor(baseURL string, cursorMicros int64) string {
+	sep := "?"
+	if strings.Contains(baseURL, "?") {
+		sep = "&"
+	}
+	return fmt.Sprintf("%s%scursor=%d", baseURL, sep, cursorMicros)
+}
+
 // createPDSAccount creates a new account on PDS and returns access token + DID
 // This is used for E2E tests that need real PDS accounts
 func createPDSAccount(pdsURL, handle, email, password string) (accessToken, did string, err error) {

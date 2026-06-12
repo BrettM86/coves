@@ -483,7 +483,10 @@ func TestPostCreation_E2E_LivePDS(t *testing.T) {
 		token := e2eAuth.AddUser(author.DID)
 		req.Header.Set("Authorization", "Bearer "+token)
 
-		// Execute request through auth middleware + handler
+		// Execute request through auth middleware + handler.
+		// Capture a Jetstream replay cursor BEFORE the write so the Part 2 subscription
+		// (opened after the write) cannot miss the resulting firehose commit.
+		postCreateCursor := jetstreamCursorNow()
 		rr := httptest.NewRecorder()
 		handler := e2eAuth.RequireAuth(http.HandlerFunc(createHandler.HandleCreate))
 		handler.ServeHTTP(rr, req)
@@ -543,7 +546,7 @@ func TestPostCreation_E2E_LivePDS(t *testing.T) {
 			// Start Jetstream WebSocket subscriber in background
 			// This creates its own WebSocket connection to Jetstream
 			go func() {
-				err := subscribeToJetstreamForPost(ctx, jetstreamURL, community.DID, postConsumer, eventChan, errorChan, done)
+				err := subscribeToJetstreamForPost(ctx, withJetstreamCursor(jetstreamURL, postCreateCursor), community.DID, postConsumer, eventChan, errorChan, done)
 				if err != nil {
 					errorChan <- err
 				}

@@ -149,8 +149,10 @@ func TestFullUserJourney_E2E(t *testing.T) {
 	httpServer := httptest.NewServer(r)
 	defer httpServer.Close()
 
-	// Cleanup test data from previous runs (clean up ALL journey test data)
-	timestamp := time.Now().Unix()
+	// Cleanup test data from previous runs (clean up ALL journey test data).
+	// A single collision-free testID is shared by every handle/community name and the
+	// deferred cleanup patterns below (uniqueTestID stays short for PDS handle limits).
+	testID := uniqueTestID()
 	// Clean up previous test runs - use pattern that matches journey test data
 	// Handles are now shorter: alice{4-digit}.local.coves.dev, bob{4-digit}.local.coves.dev
 	_, _ = db.Exec("DELETE FROM votes WHERE voter_did LIKE '%alice%.local.coves.dev%' OR voter_did LIKE '%bob%.local.coves.dev%'")
@@ -162,10 +164,9 @@ func TestFullUserJourney_E2E(t *testing.T) {
 
 	// Defer cleanup for current test run using specific timestamp pattern
 	defer func() {
-		shortTS := timestamp % 10000
-		alicePattern := fmt.Sprintf("%%alice%d%%", shortTS)
-		bobPattern := fmt.Sprintf("%%bob%d%%", shortTS)
-		gjPattern := fmt.Sprintf("%%gj%d%%", shortTS)
+		alicePattern := fmt.Sprintf("%%alice%s%%", testID)
+		bobPattern := fmt.Sprintf("%%bob%s%%", testID)
+		gjPattern := fmt.Sprintf("%%gj%s%%", testID)
 		_, _ = db.Exec("DELETE FROM votes WHERE voter_did LIKE $1 OR voter_did LIKE $2", alicePattern, bobPattern)
 		_, _ = db.Exec("DELETE FROM comments WHERE commenter_did LIKE $1 OR commenter_did LIKE $2", alicePattern, bobPattern)
 		_, _ = db.Exec("DELETE FROM posts WHERE community_did LIKE $1", gjPattern)
@@ -199,9 +200,8 @@ func TestFullUserJourney_E2E(t *testing.T) {
 		t.Log("\n👤 Part 1: User A creates account and authenticates...")
 
 		// Use short handle format to stay under PDS 34-char limit
-		shortTS := timestamp % 10000 // Use last 4 digits
-		userAHandle = fmt.Sprintf("alice%d.local.coves.dev", shortTS)
-		email := fmt.Sprintf("alice%d@test.com", shortTS)
+		userAHandle = fmt.Sprintf("alice%s.local.coves.dev", testID)
+		email := fmt.Sprintf("alice%s@test.com", testID)
 		password := "test-password-alice-123"
 
 		// Create account on PDS
@@ -231,8 +231,7 @@ func TestFullUserJourney_E2E(t *testing.T) {
 
 		// Community handle will be {name}c-{name}.coves.social
 		// Max 34 chars total, so name must be short (34 - 23 = 11 chars max)
-		shortTS := timestamp % 10000
-		communityName := fmt.Sprintf("gj%d", shortTS) // "gj9261" = 6 chars -> handle = 29 chars
+		communityName := fmt.Sprintf("gj%s", testID) // short prefix + base36 testID keeps the community handle well under limits
 
 		createReq := map[string]interface{}{
 			"name":                   communityName,
@@ -249,6 +248,9 @@ func TestFullUserJourney_E2E(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+userAAPIToken)
 
+		// Capture a Jetstream replay cursor BEFORE the write so the subscription opened
+		// afterwards cannot miss the resulting firehose commit (subscribe-after-write race).
+		communityCreateCursor := jetstreamCursorNow()
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
@@ -279,7 +281,7 @@ func TestFullUserJourney_E2E(t *testing.T) {
 		jetstreamFilterURL := fmt.Sprintf("%s?wantedCollections=social.coves.community.profile", jetstreamURL)
 
 		go func() {
-			err := subscribeToJetstreamForCommunity(ctx, jetstreamFilterURL, communityDID, communityConsumer, eventChan, errorChan, done)
+			err := subscribeToJetstreamForCommunity(ctx, withJetstreamCursor(jetstreamFilterURL, communityCreateCursor), communityDID, communityConsumer, eventChan, errorChan, done)
 			if err != nil {
 				errorChan <- err
 			}
@@ -333,6 +335,8 @@ func TestFullUserJourney_E2E(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+userAAPIToken)
 
+		// Capture a Jetstream replay cursor BEFORE the write (subscribe-after-write race).
+		postCreateCursor := jetstreamCursorNow()
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
@@ -357,7 +361,7 @@ func TestFullUserJourney_E2E(t *testing.T) {
 		jetstreamFilterURL := fmt.Sprintf("%s?wantedCollections=social.coves.community.post", jetstreamURL)
 
 		go func() {
-			err := subscribeToJetstreamForPost(ctx, jetstreamFilterURL, communityDID, postConsumer, eventChan, errorChan, done)
+			err := subscribeToJetstreamForPost(ctx, withJetstreamCursor(jetstreamFilterURL, postCreateCursor), communityDID, postConsumer, eventChan, errorChan, done)
 			if err != nil {
 				errorChan <- err
 			}
@@ -399,9 +403,8 @@ func TestFullUserJourney_E2E(t *testing.T) {
 		t.Log("\n👤 Part 4: User B creates account and authenticates...")
 
 		// Use short handle format to stay under PDS 34-char limit
-		shortTS := timestamp % 10000 // Use last 4 digits
-		userBHandle = fmt.Sprintf("bob%d.local.coves.dev", shortTS)
-		email := fmt.Sprintf("bob%d@test.com", shortTS)
+		userBHandle = fmt.Sprintf("bob%s.local.coves.dev", testID)
+		email := fmt.Sprintf("bob%s@test.com", testID)
 		password := "test-password-bob-123"
 
 		// Create account on PDS
