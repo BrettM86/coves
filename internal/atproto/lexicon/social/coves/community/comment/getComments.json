@@ -14,6 +14,11 @@
             "format": "at-uri",
             "description": "AT-URI of the post to get comments for"
           },
+          "parentRkey": {
+            "type": "string",
+            "format": "record-key",
+            "description": "Record key of a comment within the post. When provided, the response contains only the subtree rooted at that comment: the comment itself as the sole top-level entry, with its descendants nested beneath it. depth is relative to this comment (0 returns only the comment itself), and limit/cursor paginate its direct replies."
+          },
           "sort": {
             "type": "string",
             "default": "hot",
@@ -75,6 +80,10 @@
         {
           "name": "NotFound",
           "description": "Post not found"
+        },
+        {
+          "name": "ParentNotFound",
+          "description": "No comment with the given parentRkey exists within the post"
         },
         {
           "name": "InvalidRequest",

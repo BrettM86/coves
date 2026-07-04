@@ -32,6 +32,9 @@ var (
 
 	// ErrConcurrentModification indicates the comment was modified since it was loaded
 	ErrConcurrentModification = errors.New("comment was modified by another operation")
+
+	// ErrInvalidCursor indicates a malformed or sort-mismatched pagination cursor
+	ErrInvalidCursor = errors.New("invalid pagination cursor")
 )
 
 // IsNotFound checks if an error is a "not found" error
@@ -51,5 +54,6 @@ func IsConflict(err error) bool {
 func IsValidationError(err error) bool {
 	return errors.Is(err, ErrInvalidReply) ||
 		errors.Is(err, ErrContentTooLong) ||
-		errors.Is(err, ErrContentEmpty)
+		errors.Is(err, ErrContentEmpty) ||
+		errors.Is(err, ErrInvalidCursor)
 }

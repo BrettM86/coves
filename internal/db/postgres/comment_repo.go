@@ -761,6 +761,8 @@ func (r *postgresCommentRepo) buildCommentTimeFilter(timeframe string) string {
 }
 
 // parseCommentCursor decodes pagination cursor for comments
+// All parse failures are wrapped with comments.ErrInvalidCursor so callers can
+// surface them as client input errors (HTTP 400) instead of server faults.
 func (r *postgresCommentRepo) parseCommentCursor(cursor *string, sort string) (string, []interface{}, error) {
 	if cursor == nil || *cursor == "" {
 		return "", nil, nil
@@ -769,13 +771,13 @@ func (r *postgresCommentRepo) parseCommentCursor(cursor *string, sort string) (s
 	// Validate cursor size to prevent DoS via massive base64 strings
 	const maxCursorSize = 1024
 	if len(*cursor) > maxCursorSize {
-		return "", nil, fmt.Errorf("cursor too large: maximum %d bytes", maxCursorSize)
+		return "", nil, fmt.Errorf("%w: cursor too large: maximum %d bytes", comments.ErrInvalidCursor, maxCursorSize)
 	}
 
 	// Decode base64 cursor
 	decoded, err := base64.URLEncoding.DecodeString(*cursor)
 	if err != nil {
-		return "", nil, fmt.Errorf("invalid cursor encoding")
+		return "", nil, fmt.Errorf("%w: invalid base64 encoding", comments.ErrInvalidCursor)
 	}
 
 	// Parse cursor based on sort type using | delimiter
@@ -788,7 +790,7 @@ func (r *postgresCommentRepo) parseCommentCursor(cursor *string, sort string) (s
 	case "new":
 		// Cursor format: createdAt|uri
 		if len(parts) != 2 {
-			return "", nil, fmt.Errorf("invalid cursor format for new sort")
+			return "", nil, fmt.Errorf("%w: invalid cursor format for new sort", comments.ErrInvalidCursor)
 		}
 
 		createdAt := parts[0]
@@ -796,7 +798,7 @@ func (r *postgresCommentRepo) parseCommentCursor(cursor *string, sort string) (s
 
 		// Validate AT-URI format
 		if !strings.HasPrefix(uri, "at://") {
-			return "", nil, fmt.Errorf("invalid cursor URI")
+			return "", nil, fmt.Errorf("%w: invalid cursor URI", comments.ErrInvalidCursor)
 		}
 
 		filter := `AND (c.created_at < $3 OR (c.created_at = $3 AND c.uri < $4))`
@@ -805,7 +807,7 @@ func (r *postgresCommentRepo) parseCommentCursor(cursor *string, sort string) (s
 	case "top":
 		// Cursor format: score|createdAt|uri
 		if len(parts) != 3 {
-			return "", nil, fmt.Errorf("invalid cursor format for top sort")
+			return "", nil, fmt.Errorf("%w: invalid cursor format for top sort", comments.ErrInvalidCursor)
 		}
 
 		scoreStr := parts[0]
@@ -815,12 +817,12 @@ func (r *postgresCommentRepo) parseCommentCursor(cursor *string, sort string) (s
 		// Parse score as integer
 		score := 0
 		if _, err := fmt.Sscanf(scoreStr, "%d", &score); err != nil {
-			return "", nil, fmt.Errorf("invalid cursor score")
+			return "", nil, fmt.Errorf("%w: invalid cursor score", comments.ErrInvalidCursor)
 		}
 
 		// Validate AT-URI format
 		if !strings.HasPrefix(uri, "at://") {
-			return "", nil, fmt.Errorf("invalid cursor URI")
+			return "", nil, fmt.Errorf("%w: invalid cursor URI", comments.ErrInvalidCursor)
 		}
 
 		filter := `AND (c.score < $3 OR (c.score = $3 AND c.created_at < $4) OR (c.score = $3 AND c.created_at = $4 AND c.uri < $5))`
@@ -829,7 +831,7 @@ func (r *postgresCommentRepo) parseCommentCursor(cursor *string, sort string) (s
 	case "hot":
 		// Cursor format: hotRank|score|createdAt|uri
 		if len(parts) != 4 {
-			return "", nil, fmt.Errorf("invalid cursor format for hot sort")
+			return "", nil, fmt.Errorf("%w: invalid cursor format for hot sort", comments.ErrInvalidCursor)
 		}
 
 		hotRankStr := parts[0]
@@ -840,18 +842,18 @@ func (r *postgresCommentRepo) parseCommentCursor(cursor *string, sort string) (s
 		// Parse hot_rank as float
 		hotRank := 0.0
 		if _, err := fmt.Sscanf(hotRankStr, "%f", &hotRank); err != nil {
-			return "", nil, fmt.Errorf("invalid cursor hot rank")
+			return "", nil, fmt.Errorf("%w: invalid cursor hot rank", comments.ErrInvalidCursor)
 		}
 
 		// Parse score as integer
 		score := 0
 		if _, err := fmt.Sscanf(scoreStr, "%d", &score); err != nil {
-			return "", nil, fmt.Errorf("invalid cursor score")
+			return "", nil, fmt.Errorf("%w: invalid cursor score", comments.ErrInvalidCursor)
 		}
 
 		// Validate AT-URI format
 		if !strings.HasPrefix(uri, "at://") {
-			return "", nil, fmt.Errorf("invalid cursor URI")
+			return "", nil, fmt.Errorf("%w: invalid cursor URI", comments.ErrInvalidCursor)
 		}
 
 		// Use computed hot_rank expression in comparison
@@ -903,6 +905,95 @@ func (r *postgresCommentRepo) buildCommentCursor(comment *comments.Comment, sort
 	}
 
 	return base64.URLEncoding.EncodeToString([]byte(cursorStr))
+}
+
+// GetByRootAndRkey retrieves a comment within a thread (root post) by its record key
+// Used to resolve the parentRkey parameter of getComments (comment permalinks)
+// Includes deleted comments so a deleted parent still renders as a "[deleted]" placeholder
+// with its children preserved.
+//
+// viewerDID is optional — when non-empty, a comment whose author the viewer has blocked
+// is filtered out and reported as ErrCommentNotFound, matching the block filtering
+// applied by ListByParentWithHotRank and ListByParentsBatch.
+//
+// rkeys are TIDs, so a collision between two commenters within one post is astronomically
+// unlikely. To stay deterministic if it happens, the earliest indexed comment wins
+// (indexed_at ASC, id ASC) and a warning is logged.
+func (r *postgresCommentRepo) GetByRootAndRkey(ctx context.Context, rootURI, rkey, viewerDID string) (*comments.Comment, error) {
+	// Build optional viewer block filter (only when authenticated viewer is present)
+	var viewerFilter string
+	args := []interface{}{rootURI, rkey}
+	if viewerDID != "" {
+		viewerFilter = "AND NOT EXISTS (SELECT 1 FROM user_blocks WHERE blocker_did = $3 AND blocked_did = c.commenter_did)"
+		args = append(args, viewerDID)
+	}
+
+	// LEFT JOIN prevents data loss when user record hasn't been indexed yet
+	// COALESCE falls back to DID when handle is NULL (user not yet in users table)
+	// LIMIT 2 lets us detect (and log) rkey collisions without fetching everything
+	query := fmt.Sprintf(`
+		SELECT
+			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
+			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
+			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
+			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
+			c.upvote_count, c.downvote_count, c.score, c.reply_count,
+			COALESCE(u.handle, c.commenter_did) as author_handle
+		FROM comments c
+		LEFT JOIN users u ON c.commenter_did = u.did
+		WHERE c.root_uri = $1 AND c.rkey = $2
+			%s
+		ORDER BY c.indexed_at ASC, c.id ASC
+		LIMIT 2
+	`, viewerFilter)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get comment by root and rkey: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("Failed to close rows: %v", err)
+		}
+	}()
+
+	var result []*comments.Comment
+	for rows.Next() {
+		var comment comments.Comment
+		var langs pq.StringArray
+		var authorHandle string
+
+		err := rows.Scan(
+			&comment.ID, &comment.URI, &comment.CID, &comment.RKey, &comment.CommenterDID,
+			&comment.RootURI, &comment.RootCID, &comment.ParentURI, &comment.ParentCID,
+			&comment.Content, &comment.ContentFacets, &comment.Embed, &comment.ContentLabels, &langs,
+			&comment.CreatedAt, &comment.IndexedAt, &comment.DeletedAt, &comment.DeletionReason, &comment.DeletedBy,
+			&comment.UpvoteCount, &comment.DownvoteCount, &comment.Score, &comment.ReplyCount,
+			&authorHandle,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan comment: %w", err)
+		}
+
+		comment.Langs = langs
+		comment.CommenterHandle = authorHandle
+		result = append(result, &comment)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating comments: %w", err)
+	}
+
+	if len(result) == 0 {
+		return nil, comments.ErrCommentNotFound
+	}
+
+	if len(result) > 1 {
+		log.Printf("WARN: rkey collision within thread %s: rkey %s matches %s and %s; using earliest indexed",
+			rootURI, rkey, result[0].URI, result[1].URI)
+	}
+
+	return result[0], nil
 }
 
 // GetByURIsBatch retrieves multiple comments by their AT-URIs in a single query

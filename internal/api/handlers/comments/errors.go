@@ -52,6 +52,9 @@ func handleServiceError(w http.ResponseWriter, err error) {
 			writeError(w, http.StatusBadRequest, "ContentTooLong", "Comment content exceeds 10000 graphemes")
 		case errors.Is(err, comments.ErrContentEmpty):
 			writeError(w, http.StatusBadRequest, "ContentEmpty", "Comment content is required")
+		case errors.Is(err, comments.ErrInvalidCursor):
+			// Fixed message avoids leaking internal wrapping detail from the repository layer
+			writeError(w, http.StatusBadRequest, "InvalidRequest", "Invalid or mismatched pagination cursor")
 		default:
 			writeError(w, http.StatusBadRequest, "InvalidRequest", err.Error())
 		}

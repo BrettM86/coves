@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -18,10 +19,11 @@ import (
 // mockCommentRepo is a mock implementation of the comment Repository interface
 type mockCommentRepo struct {
 	comments                      map[string]*Comment
-	listByParentWithHotRankFunc   func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string) ([]*Comment, *string, error)
+	listByParentWithHotRankFunc   func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string, viewerDID string) ([]*Comment, *string, error)
 	listByParentsBatchFunc        func(ctx context.Context, parentURIs []string, sort string, limitPerParent int) (map[string][]*Comment, error)
 	getVoteStateForCommentsFunc   func(ctx context.Context, viewerDID string, commentURIs []string) (map[string]interface{}, error)
 	listByCommenterWithCursorFunc func(ctx context.Context, req ListByCommenterRequest) ([]*Comment, *string, error)
+	getByRootAndRkeyFunc          func(ctx context.Context, rootURI, rkey, viewerDID string) (*Comment, error)
 }
 
 func newMockCommentRepo() *mockCommentRepo {
@@ -114,9 +116,35 @@ func (m *mockCommentRepo) ListByParentWithHotRank(
 	viewerDID string,
 ) ([]*Comment, *string, error) {
 	if m.listByParentWithHotRankFunc != nil {
-		return m.listByParentWithHotRankFunc(ctx, parentURI, sort, timeframe, limit, cursor)
+		return m.listByParentWithHotRankFunc(ctx, parentURI, sort, timeframe, limit, cursor, viewerDID)
 	}
 	return []*Comment{}, nil, nil
+}
+
+func (m *mockCommentRepo) GetByRootAndRkey(ctx context.Context, rootURI, rkey, viewerDID string) (*Comment, error) {
+	if m.getByRootAndRkeyFunc != nil {
+		return m.getByRootAndRkeyFunc(ctx, rootURI, rkey, viewerDID)
+	}
+	return m.lookupByRootAndRkey(rootURI, rkey)
+}
+
+// lookupByRootAndRkey is the default GetByRootAndRkey behavior, exposed so tests
+// that install a getByRootAndRkeyFunc hook can delegate to it after capturing args
+func (m *mockCommentRepo) lookupByRootAndRkey(rootURI, rkey string) (*Comment, error) {
+	// Deterministic collision handling mirrors the real repository: earliest indexed wins
+	var match *Comment
+	for _, c := range m.comments {
+		if c.RootURI != rootURI || c.RKey != rkey {
+			continue
+		}
+		if match == nil || c.IndexedAt.Before(match.IndexedAt) {
+			match = c
+		}
+	}
+	if match == nil {
+		return nil, ErrCommentNotFound
+	}
+	return match, nil
 }
 
 func (m *mockCommentRepo) GetByURIsBatch(ctx context.Context, uris []string) (map[string]*Comment, error) {
@@ -526,7 +554,7 @@ func TestCommentService_GetComments_ValidRequest(t *testing.T) {
 	comment1 := createTestComment("at://did:plc:commenter123/comment/1", commenterDID, "commenter.test", postURI, postURI, 0)
 	comment2 := createTestComment("at://did:plc:commenter123/comment/2", commenterDID, "commenter.test", postURI, postURI, 0)
 
-	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string) ([]*Comment, *string, error) {
+	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string, viewerDID string) ([]*Comment, *string, error) {
 		if parentURI == postURI {
 			return []*Comment{comment1, comment2}, nil, nil
 		}
@@ -644,7 +672,7 @@ func TestCommentService_GetComments_EmptyComments(t *testing.T) {
 	community := createTestCommunity(communityDID, "c-test.coves.social")
 	_, _ = communityRepo.Create(context.Background(), community)
 
-	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string) ([]*Comment, *string, error) {
+	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string, viewerDID string) ([]*Comment, *string, error) {
 		return []*Comment{}, nil, nil
 	}
 
@@ -693,7 +721,7 @@ func TestCommentService_GetComments_WithViewerVotes(t *testing.T) {
 	comment1URI := "at://did:plc:commenter123/comment/1"
 	comment1 := createTestComment(comment1URI, commenterDID, "commenter.test", postURI, postURI, 0)
 
-	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string) ([]*Comment, *string, error) {
+	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string, viewerDID string) ([]*Comment, *string, error) {
 		if parentURI == postURI {
 			return []*Comment{comment1}, nil, nil
 		}
@@ -761,7 +789,7 @@ func TestCommentService_GetComments_WithoutViewer(t *testing.T) {
 
 	comment1 := createTestComment("at://did:plc:commenter123/comment/1", commenterDID, "commenter.test", postURI, postURI, 0)
 
-	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string) ([]*Comment, *string, error) {
+	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string, viewerDID string) ([]*Comment, *string, error) {
 		if parentURI == postURI {
 			return []*Comment{comment1}, nil, nil
 		}
@@ -829,7 +857,7 @@ func TestCommentService_GetComments_SortingOptions(t *testing.T) {
 
 				comment1 := createTestComment("at://did:plc:commenter123/comment/1", commenterDID, "commenter.test", postURI, postURI, 0)
 
-				commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string) ([]*Comment, *string, error) {
+				commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string, viewerDID string) ([]*Comment, *string, error) {
 					return []*Comment{comment1}, nil, nil
 				}
 			}
@@ -879,7 +907,7 @@ func TestCommentService_GetComments_RepositoryError(t *testing.T) {
 	_, _ = communityRepo.Create(context.Background(), community)
 
 	// Mock repository error
-	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string) ([]*Comment, *string, error) {
+	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string, viewerDID string) ([]*Comment, *string, error) {
 		return nil, nil, errors.New("database error")
 	}
 
@@ -901,6 +929,400 @@ func TestCommentService_GetComments_RepositoryError(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to fetch top-level comments")
 }
 
+// Test suite for GetComments with ParentRkey (comment subtree / permalink)
+
+// setupSubtreeFixture builds a post with the following comment structure:
+//
+//	Post
+//	 |- parent (rkey "subtreeparent", 2 replies)
+//	     |- child1 (1 reply)
+//	         |- grandchild
+//	     |- child2
+//	 |- sibling (top-level, must NOT appear in subtree responses)
+func setupSubtreeFixture(t *testing.T) (Service, *GetCommentsRequest, *mockCommentRepo) {
+	t.Helper()
+
+	postURI := "at://did:plc:post123/social.coves.community.post/test"
+	authorDID := "did:plc:author123"
+	communityDID := "did:plc:community123"
+	commenterDID := "did:plc:commenter123"
+
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	post := createTestPost(postURI, authorDID, communityDID)
+	_ = postRepo.Create(context.Background(), post)
+
+	author := createTestUser(authorDID, "author.test")
+	_, _ = userRepo.Create(context.Background(), author)
+
+	commenter := createTestUser(commenterDID, "commenter.test")
+	_, _ = userRepo.Create(context.Background(), commenter)
+
+	community := createTestCommunity(communityDID, "c-test.coves.social")
+	_, _ = communityRepo.Create(context.Background(), community)
+
+	parent := createTestComment("at://did:plc:commenter123/comment/parent", commenterDID, "commenter.test", postURI, postURI, 2)
+	parent.RKey = "subtreeparent"
+	child1 := createTestComment("at://did:plc:commenter123/comment/child1", commenterDID, "commenter.test", postURI, parent.URI, 1)
+	child1.RKey = "subtreechild1"
+	child2 := createTestComment("at://did:plc:commenter123/comment/child2", commenterDID, "commenter.test", postURI, parent.URI, 0)
+	child2.RKey = "subtreechild2"
+	grandchild := createTestComment("at://did:plc:commenter123/comment/grandchild", commenterDID, "commenter.test", postURI, child1.URI, 0)
+	grandchild.RKey = "subtreegrandchild"
+	sibling := createTestComment("at://did:plc:commenter123/comment/sibling", commenterDID, "commenter.test", postURI, postURI, 0)
+	sibling.RKey = "subtreesibling"
+
+	for _, c := range []*Comment{parent, child1, child2, grandchild, sibling} {
+		_ = commentRepo.Create(context.Background(), c)
+	}
+
+	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string, viewerDID string) ([]*Comment, *string, error) {
+		switch parentURI {
+		case postURI:
+			return []*Comment{parent, sibling}, nil, nil
+		case parent.URI:
+			return []*Comment{child1, child2}, nil, nil
+		default:
+			return []*Comment{}, nil, nil
+		}
+	}
+
+	commentRepo.listByParentsBatchFunc = func(ctx context.Context, parentURIs []string, sort string, limitPerParent int) (map[string][]*Comment, error) {
+		result := make(map[string][]*Comment)
+		for _, uri := range parentURIs {
+			if uri == child1.URI {
+				result[uri] = []*Comment{grandchild}
+			}
+		}
+		return result, nil
+	}
+
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+
+	req := &GetCommentsRequest{
+		PostURI:    postURI,
+		ParentRkey: "subtreeparent",
+		Sort:       "hot",
+		Depth:      10,
+		Limit:      50,
+	}
+
+	return service, req, commentRepo
+}
+
+func TestCommentService_GetComments_ParentRkey_SubtreeReturned(t *testing.T) {
+	service, req, _ := setupSubtreeFixture(t)
+
+	resp, err := service.GetComments(context.Background(), req)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.NotNil(t, resp.Post, "Post view should still be included")
+
+	// Parent must be the sole top-level entry
+	assert.Len(t, resp.Comments, 1, "Subtree response should contain exactly one top-level comment")
+	parentView := resp.Comments[0]
+	assert.Equal(t, "at://did:plc:commenter123/comment/parent", parentView.Comment.URI)
+
+	// Direct children nested beneath the parent
+	assert.Len(t, parentView.Replies, 2, "Parent should have its 2 direct replies nested")
+	child1View := parentView.Replies[0]
+	assert.Equal(t, "at://did:plc:commenter123/comment/child1", child1View.Comment.URI)
+
+	// Grandchild nested beneath child1
+	assert.Len(t, child1View.Replies, 1, "Child1 should have its reply nested")
+	assert.Equal(t, "at://did:plc:commenter123/comment/grandchild", child1View.Replies[0].Comment.URI)
+
+	// No pagination cursor for a fully-loaded subtree
+	assert.Nil(t, resp.Cursor)
+	assert.False(t, parentView.HasMore, "HasMore should be false when all direct replies are loaded")
+}
+
+func TestCommentService_GetComments_ParentRkey_DepthRelativeToParent(t *testing.T) {
+	t.Run("depth 0 returns only the parent comment", func(t *testing.T) {
+		service, req, _ := setupSubtreeFixture(t)
+		req.Depth = 0
+
+		resp, err := service.GetComments(context.Background(), req)
+
+		assert.NoError(t, err)
+		assert.Len(t, resp.Comments, 1)
+		parentView := resp.Comments[0]
+		assert.Equal(t, "at://did:plc:commenter123/comment/parent", parentView.Comment.URI)
+		assert.Nil(t, parentView.Replies, "Depth 0 should not load any replies")
+		assert.True(t, parentView.HasMore, "HasMore should signal unloaded replies at depth 0")
+		assert.Nil(t, resp.Cursor)
+	})
+
+	t.Run("depth 1 returns parent and direct children only", func(t *testing.T) {
+		service, req, _ := setupSubtreeFixture(t)
+		req.Depth = 1
+
+		resp, err := service.GetComments(context.Background(), req)
+
+		assert.NoError(t, err)
+		assert.Len(t, resp.Comments, 1)
+		parentView := resp.Comments[0]
+		assert.Len(t, parentView.Replies, 2, "Depth 1 should include direct children")
+
+		child1View := parentView.Replies[0]
+		assert.Nil(t, child1View.Replies, "Depth 1 should not include grandchildren")
+		assert.True(t, child1View.HasMore, "Child with replies should have HasMore at depth boundary")
+	})
+}
+
+func TestCommentService_GetComments_ParentRkey_NotFound(t *testing.T) {
+	service, req, _ := setupSubtreeFixture(t)
+	req.ParentRkey = "nonexistentrkey"
+
+	resp, err := service.GetComments(context.Background(), req)
+
+	assert.Error(t, err)
+	assert.Nil(t, resp)
+	assert.ErrorIs(t, err, ErrParentNotFound)
+}
+
+func TestCommentService_GetComments_ParentRkey_ChildrenPagination(t *testing.T) {
+	// Fixture with a cursor-returning children query to verify pagination plumbing
+	postURI := "at://did:plc:post123/social.coves.community.post/test"
+	authorDID := "did:plc:author123"
+	communityDID := "did:plc:community123"
+	commenterDID := "did:plc:commenter123"
+
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	post := createTestPost(postURI, authorDID, communityDID)
+	_ = postRepo.Create(context.Background(), post)
+	author := createTestUser(authorDID, "author.test")
+	_, _ = userRepo.Create(context.Background(), author)
+	community := createTestCommunity(communityDID, "c-test.coves.social")
+	_, _ = communityRepo.Create(context.Background(), community)
+
+	parent := createTestComment("at://did:plc:commenter123/comment/parent", commenterDID, "commenter.test", postURI, postURI, 3)
+	parent.RKey = "paginatedparent"
+	child1 := createTestComment("at://did:plc:commenter123/comment/child1", commenterDID, "commenter.test", postURI, parent.URI, 0)
+	_ = commentRepo.Create(context.Background(), parent)
+	_ = commentRepo.Create(context.Background(), child1)
+
+	pageCursor := "next-page-cursor"
+	var receivedCursor *string
+	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string, viewerDID string) ([]*Comment, *string, error) {
+		receivedCursor = cursor
+		if parentURI == parent.URI {
+			return []*Comment{child1}, &pageCursor, nil
+		}
+		return []*Comment{}, nil, nil
+	}
+
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+
+	requestCursor := "request-cursor"
+	req := &GetCommentsRequest{
+		PostURI:    postURI,
+		ParentRkey: "paginatedparent",
+		Sort:       "new",
+		Depth:      5,
+		Limit:      1,
+		Cursor:     &requestCursor,
+	}
+
+	resp, err := service.GetComments(context.Background(), req)
+
+	assert.NoError(t, err)
+	assert.Len(t, resp.Comments, 1)
+	parentView := resp.Comments[0]
+	assert.Len(t, parentView.Replies, 1)
+
+	// The request cursor paginates the parent's direct children
+	assert.NotNil(t, receivedCursor)
+	assert.Equal(t, requestCursor, *receivedCursor)
+
+	// The response cursor continues pagination of the parent's direct children
+	assert.NotNil(t, resp.Cursor)
+	assert.Equal(t, pageCursor, *resp.Cursor)
+	assert.True(t, parentView.HasMore, "HasMore should be true when more direct replies exist")
+}
+
+func TestCommentService_GetComments_ParentRkey_BlockedParentAuthor(t *testing.T) {
+	// A viewer who has blocked the parent's author must get ParentNotFound —
+	// the permalink must behave exactly as if the comment doesn't exist
+	service, req, commentRepo := setupSubtreeFixture(t)
+
+	viewerDID := "did:plc:viewer123"
+	req.ViewerDID = &viewerDID
+
+	// Simulate the repository's author-block filtering: when the blocking viewer
+	// is present, the parent row is excluded and the repo reports not-found
+	commentRepo.getByRootAndRkeyFunc = func(ctx context.Context, rootURI, rkey, vd string) (*Comment, error) {
+		if vd == viewerDID {
+			return nil, ErrCommentNotFound
+		}
+		return commentRepo.lookupByRootAndRkey(rootURI, rkey)
+	}
+
+	resp, err := service.GetComments(context.Background(), req)
+
+	assert.Error(t, err)
+	assert.Nil(t, resp)
+	assert.ErrorIs(t, err, ErrParentNotFound)
+}
+
+func TestCommentService_GetComments_ParentRkey_RepoErrorNotConvertedToNotFound(t *testing.T) {
+	// A generic repository failure must surface as an internal error,
+	// never be masked as a 404 ParentNotFound
+	service, req, commentRepo := setupSubtreeFixture(t)
+
+	commentRepo.getByRootAndRkeyFunc = func(ctx context.Context, rootURI, rkey, vd string) (*Comment, error) {
+		return nil, errors.New("connection reset by peer")
+	}
+
+	resp, err := service.GetComments(context.Background(), req)
+
+	assert.Error(t, err)
+	assert.Nil(t, resp)
+	assert.NotErrorIs(t, err, ErrParentNotFound)
+	assert.Contains(t, err.Error(), "failed to fetch parent comment")
+}
+
+func TestCommentService_GetComments_ParentRkey_ViewerDIDPlumbing(t *testing.T) {
+	// The viewer DID must reach both the parent resolution (for block filtering)
+	// and the children query (for block filtering and vote state)
+	service, req, commentRepo := setupSubtreeFixture(t)
+
+	viewerDID := "did:plc:viewer123"
+	req.ViewerDID = &viewerDID
+
+	var parentLookupViewerDID string
+	commentRepo.getByRootAndRkeyFunc = func(ctx context.Context, rootURI, rkey, vd string) (*Comment, error) {
+		parentLookupViewerDID = vd
+		return commentRepo.lookupByRootAndRkey(rootURI, rkey)
+	}
+
+	var childrenViewerDID string
+	previousListFunc := commentRepo.listByParentWithHotRankFunc
+	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string, vd string) ([]*Comment, *string, error) {
+		childrenViewerDID = vd
+		return previousListFunc(ctx, parentURI, sort, timeframe, limit, cursor, vd)
+	}
+
+	resp, err := service.GetComments(context.Background(), req)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.Equal(t, viewerDID, parentLookupViewerDID, "viewer DID should reach GetByRootAndRkey")
+	assert.Equal(t, viewerDID, childrenViewerDID, "viewer DID should reach ListByParentWithHotRank")
+}
+
+func TestCommentService_GetComments_ParentRkey_Depth0WithCursorRejected(t *testing.T) {
+	// Depth 0 loads no replies, so a supplied cursor can never be honored —
+	// the combination must be rejected instead of silently returning a nil cursor
+	service, req, _ := setupSubtreeFixture(t)
+	req.Depth = 0
+	cursor := "some-cursor"
+	req.Cursor = &cursor
+
+	resp, err := service.GetComments(context.Background(), req)
+
+	assert.Error(t, err)
+	assert.Nil(t, resp)
+	assert.ErrorIs(t, err, ErrInvalidCursor)
+}
+
+func TestCommentService_GetComments_InvalidCursorErrorPropagates(t *testing.T) {
+	// A repo-level cursor parse failure wrapped with ErrInvalidCursor must stay
+	// errors.Is-matchable through the service layer so handlers can map it to 400
+	postURI := "at://did:plc:post123/app.bsky.feed.post/test"
+	authorDID := "did:plc:author123"
+	communityDID := "did:plc:community123"
+
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	post := createTestPost(postURI, authorDID, communityDID)
+	_ = postRepo.Create(context.Background(), post)
+	author := createTestUser(authorDID, "author.test")
+	_, _ = userRepo.Create(context.Background(), author)
+	community := createTestCommunity(communityDID, "c-test.coves.social")
+	_, _ = communityRepo.Create(context.Background(), community)
+
+	// Mirror the repository's cursor error wrapping
+	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string, viewerDID string) ([]*Comment, *string, error) {
+		return nil, nil, fmt.Errorf("invalid cursor: %w", ErrInvalidCursor)
+	}
+
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+
+	badCursor := "not-a-valid-cursor"
+	req := &GetCommentsRequest{
+		PostURI: postURI,
+		Sort:    "hot",
+		Depth:   10,
+		Limit:   50,
+		Cursor:  &badCursor,
+	}
+
+	resp, err := service.GetComments(context.Background(), req)
+
+	assert.Error(t, err)
+	assert.Nil(t, resp)
+	assert.ErrorIs(t, err, ErrInvalidCursor)
+}
+
+func TestCommentService_GetComments_RepliesBatchErrorPropagates(t *testing.T) {
+	// A failed reply batch load must fail the request instead of returning a
+	// 200 with a silently truncated subtree and misleading HasMore=false
+	postURI := "at://did:plc:post123/app.bsky.feed.post/test"
+	authorDID := "did:plc:author123"
+	communityDID := "did:plc:community123"
+	commenterDID := "did:plc:commenter123"
+
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	post := createTestPost(postURI, authorDID, communityDID)
+	_ = postRepo.Create(context.Background(), post)
+	author := createTestUser(authorDID, "author.test")
+	_, _ = userRepo.Create(context.Background(), author)
+	community := createTestCommunity(communityDID, "c-test.coves.social")
+	_, _ = communityRepo.Create(context.Background(), community)
+
+	// Top-level comment with replies, so buildThreadViews issues a batch query
+	topComment := createTestComment("at://did:plc:commenter123/comment/1", commenterDID, "commenter.test", postURI, postURI, 3)
+
+	commentRepo.listByParentWithHotRankFunc = func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string, viewerDID string) ([]*Comment, *string, error) {
+		return []*Comment{topComment}, nil, nil
+	}
+
+	commentRepo.listByParentsBatchFunc = func(ctx context.Context, parentURIs []string, sort string, limitPerParent int) (map[string][]*Comment, error) {
+		return nil, errors.New("database timeout")
+	}
+
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil)
+
+	req := &GetCommentsRequest{
+		PostURI: postURI,
+		Sort:    "hot",
+		Depth:   10,
+		Limit:   50,
+	}
+
+	resp, err := service.GetComments(context.Background(), req)
+
+	assert.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "failed to batch load replies")
+}
+
 // Test suite for buildThreadViews
 
 func TestCommentService_buildThreadViews_EmptyInput(t *testing.T) {
@@ -913,9 +1335,10 @@ func TestCommentService_buildThreadViews_EmptyInput(t *testing.T) {
 	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
 	// Execute
-	result := service.buildThreadViews(context.Background(), []*Comment{}, 10, "hot", nil)
+	result, err := service.buildThreadViews(context.Background(), []*Comment{}, 10, "hot", nil)
 
 	// Verify - should return empty slice, not nil
+	assert.NoError(t, err)
 	assert.NotNil(t, result)
 	assert.Len(t, result, 0)
 }
@@ -943,9 +1366,10 @@ func TestCommentService_buildThreadViews_IncludesDeletedCommentsAsPlaceholders(t
 	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
 	// Execute
-	result := service.buildThreadViews(context.Background(), []*Comment{deletedComment, normalComment}, 10, "hot", nil)
+	result, err := service.buildThreadViews(context.Background(), []*Comment{deletedComment, normalComment}, 10, "hot", nil)
 
 	// Verify - both comments should be included to preserve thread structure
+	assert.NoError(t, err)
 	assert.Len(t, result, 2)
 
 	// First comment should be the deleted one with placeholder info
@@ -987,9 +1411,10 @@ func TestCommentService_buildThreadViews_WithNestedReplies(t *testing.T) {
 	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
 	// Execute with depth > 0 to load replies
-	result := service.buildThreadViews(context.Background(), []*Comment{parentComment}, 1, "hot", nil)
+	result, err := service.buildThreadViews(context.Background(), []*Comment{parentComment}, 1, "hot", nil)
 
 	// Verify
+	assert.NoError(t, err)
 	assert.Len(t, result, 1)
 	assert.Equal(t, parentURI, result[0].Comment.URI)
 
@@ -1014,9 +1439,10 @@ func TestCommentService_buildThreadViews_DepthLimit(t *testing.T) {
 	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
 
 	// Execute with depth = 0 (should not load replies)
-	result := service.buildThreadViews(context.Background(), []*Comment{parentComment}, 0, "hot", nil)
+	result, err := service.buildThreadViews(context.Background(), []*Comment{parentComment}, 0, "hot", nil)
 
 	// Verify
+	assert.NoError(t, err)
 	assert.Len(t, result, 1)
 	assert.Nil(t, result[0].Replies)
 	assert.True(t, result[0].HasMore) // Should indicate more replies exist
@@ -1248,6 +1674,41 @@ func TestValidateGetCommentsRequest_InvalidTimeframe(t *testing.T) {
 	err := validateGetCommentsRequest(req)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid timeframe")
+}
+
+func TestValidateGetCommentsRequest_ParentRkeySyntax(t *testing.T) {
+	tests := []struct {
+		name       string
+		parentRkey string
+		wantErr    bool
+	}{
+		{"valid TID-style rkey", "3jzfcijpj2z2a", false},
+		{"empty rkey is allowed (no subtree scoping)", "", false},
+		{"rkey with spaces rejected", "not a valid rkey", true},
+		{"rkey with invalid characters rejected", "bad/rkey!", true},
+		{"single dot rejected", ".", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &GetCommentsRequest{
+				PostURI:    "at://did:plc:post123/app.bsky.feed.post/test",
+				ParentRkey: tt.parentRkey,
+				Sort:       "hot",
+				Depth:      10,
+				Limit:      50,
+			}
+
+			err := validateGetCommentsRequest(req)
+
+			if tt.wantErr {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), "invalid parentRkey")
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
 }
 
 // Test suite for mockUserRepo.GetByDIDs

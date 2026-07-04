@@ -1,6 +1,7 @@
 package integration
 
 import (
+	commentsAPI "Coves/internal/api/handlers/comments"
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/comments"
 	"Coves/internal/db/postgres"
@@ -795,6 +796,493 @@ func TestCommentQuery_HTTPHandler(t *testing.T) {
 		handler.ServeHTTP(w, req)
 
 		assert.Equal(t, http.StatusBadRequest, w.Code)
+	})
+}
+
+// TestCommentQuery_ParentRkeySubtree tests fetching a comment subtree via parentRkey
+// Backs the comment-permalink page and "continue this thread" for deep threads
+func TestCommentQuery_ParentRkeySubtree(t *testing.T) {
+	db := setupTestDB(t)
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
+
+	ctx := context.Background()
+	testUser := createTestUser(t, db, "subtree.test", "did:plc:subtree123")
+	testCommunity, err := createFeedTestCommunity(db, ctx, "subtreecomm", "ownersubtree.test")
+	require.NoError(t, err)
+
+	postURI := createTestPost(t, db, testCommunity, testUser.DID, "Subtree Test Post", 0, time.Now())
+
+	// Create nested structure:
+	// Post
+	//  |- Comment A (top-level)
+	//      |- Reply A1
+	//          |- Reply A1a
+	//      |- Reply A2
+	//  |- Comment B (top-level, must NOT appear in subtree responses)
+	commentA := createTestCommentWithScore(t, db, testUser.DID, postURI, postURI, "Comment A", 5, 0, time.Now().Add(-1*time.Hour))
+	replyA1 := createTestCommentWithScore(t, db, testUser.DID, postURI, commentA, "Reply A1", 3, 0, time.Now().Add(-50*time.Minute))
+	replyA1a := createTestCommentWithScore(t, db, testUser.DID, postURI, replyA1, "Reply A1a", 2, 0, time.Now().Add(-40*time.Minute))
+	replyA2 := createTestCommentWithScore(t, db, testUser.DID, postURI, commentA, "Reply A2", 2, 0, time.Now().Add(-20*time.Minute))
+	commentB := createTestCommentWithScore(t, db, testUser.DID, postURI, postURI, "Comment B", 4, 0, time.Now().Add(-10*time.Minute))
+
+	// rkey is the last segment of the AT-URI (at://did/collection/rkey)
+	commentARkey := strings.Split(commentA, "/")[4]
+	replyA1Rkey := strings.Split(replyA1, "/")[4]
+
+	service := setupCommentService(db)
+
+	t.Run("Subtree returned with parent as sole root", func(t *testing.T) {
+		req := &comments.GetCommentsRequest{
+			PostURI:    postURI,
+			ParentRkey: commentARkey,
+			Sort:       "new",
+			Depth:      10,
+			Limit:      50,
+		}
+
+		resp, err := service.GetComments(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, resp)
+		require.NotNil(t, resp.Post, "Post view should still be present")
+
+		// Exactly one top-level entry: Comment A itself
+		require.Len(t, resp.Comments, 1, "Subtree should have exactly one top-level comment")
+		parentView := resp.Comments[0]
+		assert.Equal(t, commentA, parentView.Comment.URI, "Parent comment should be the root of the subtree")
+		assert.False(t, parentView.HasMore, "All direct replies are loaded")
+		assert.Nil(t, resp.Cursor, "No cursor when all direct replies fit in one page")
+
+		// Direct replies nested beneath
+		require.Len(t, parentView.Replies, 2, "Comment A should have 2 direct replies")
+		replyURIs := make(map[string]*comments.ThreadViewComment)
+		for _, r := range parentView.Replies {
+			replyURIs[r.Comment.URI] = r
+		}
+		require.Contains(t, replyURIs, replyA1)
+		require.Contains(t, replyURIs, replyA2)
+		assert.NotContains(t, replyURIs, commentB, "Sibling top-level comment must not appear in subtree")
+
+		// Deeper descendant nested beneath Reply A1
+		replyA1View := replyURIs[replyA1]
+		require.Len(t, replyA1View.Replies, 1, "Reply A1 should have its nested reply")
+		assert.Equal(t, replyA1a, replyA1View.Replies[0].Comment.URI)
+	})
+
+	t.Run("Depth relative to parent", func(t *testing.T) {
+		t.Run("depth 0 returns only the parent", func(t *testing.T) {
+			req := &comments.GetCommentsRequest{
+				PostURI:    postURI,
+				ParentRkey: commentARkey,
+				Sort:       "new",
+				Depth:      0,
+				Limit:      50,
+			}
+
+			resp, err := service.GetComments(ctx, req)
+			require.NoError(t, err)
+			require.Len(t, resp.Comments, 1)
+			parentView := resp.Comments[0]
+			assert.Equal(t, commentA, parentView.Comment.URI)
+			assert.Nil(t, parentView.Replies, "Depth 0 should not load replies")
+			assert.True(t, parentView.HasMore, "HasMore should signal unloaded replies")
+		})
+
+		t.Run("depth 1 returns parent and direct children only", func(t *testing.T) {
+			req := &comments.GetCommentsRequest{
+				PostURI:    postURI,
+				ParentRkey: commentARkey,
+				Sort:       "new",
+				Depth:      1,
+				Limit:      50,
+			}
+
+			resp, err := service.GetComments(ctx, req)
+			require.NoError(t, err)
+			require.Len(t, resp.Comments, 1)
+			parentView := resp.Comments[0]
+			require.Len(t, parentView.Replies, 2, "Depth 1 should include direct children")
+
+			for _, r := range parentView.Replies {
+				assert.Nil(t, r.Replies, "Depth 1 should not include grandchildren")
+				if r.Comment.URI == replyA1 {
+					assert.True(t, r.HasMore, "Reply A1 has a hidden nested reply at the depth boundary")
+				}
+			}
+		})
+
+		t.Run("subtree of a nested comment", func(t *testing.T) {
+			req := &comments.GetCommentsRequest{
+				PostURI:    postURI,
+				ParentRkey: replyA1Rkey,
+				Sort:       "new",
+				Depth:      10,
+				Limit:      50,
+			}
+
+			resp, err := service.GetComments(ctx, req)
+			require.NoError(t, err)
+			require.Len(t, resp.Comments, 1)
+			parentView := resp.Comments[0]
+			assert.Equal(t, replyA1, parentView.Comment.URI)
+			require.Len(t, parentView.Replies, 1)
+			assert.Equal(t, replyA1a, parentView.Replies[0].Comment.URI)
+		})
+	})
+
+	t.Run("ParentNotFound for unknown rkey", func(t *testing.T) {
+		req := &comments.GetCommentsRequest{
+			PostURI:    postURI,
+			ParentRkey: "3zzzzzzzzzzzz",
+			Sort:       "new",
+			Depth:      10,
+			Limit:      50,
+		}
+
+		resp, err := service.GetComments(ctx, req)
+		assert.Nil(t, resp)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, comments.ErrParentNotFound)
+	})
+
+	t.Run("ParentNotFound for rkey of comment in another post", func(t *testing.T) {
+		otherPostURI := createTestPost(t, db, testCommunity, testUser.DID, "Other Post", 0, time.Now())
+		otherComment := createTestCommentWithScore(t, db, testUser.DID, otherPostURI, otherPostURI, "Other post comment", 1, 0, time.Now())
+		otherRkey := strings.Split(otherComment, "/")[4]
+
+		req := &comments.GetCommentsRequest{
+			PostURI:    postURI, // querying the original post with a foreign rkey
+			ParentRkey: otherRkey,
+			Sort:       "new",
+			Depth:      10,
+			Limit:      50,
+		}
+
+		resp, err := service.GetComments(ctx, req)
+		assert.Nil(t, resp)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, comments.ErrParentNotFound)
+	})
+
+	t.Run("Pagination of parent's direct children", func(t *testing.T) {
+		pagPostURI := createTestPost(t, db, testCommunity, testUser.DID, "Subtree Pagination Post", 0, time.Now())
+		parentURI := createTestCommentWithScore(t, db, testUser.DID, pagPostURI, pagPostURI, "Paginated parent", 1, 0, time.Now().Add(-2*time.Hour))
+		parentRkey := strings.Split(parentURI, "/")[4]
+
+		childURIs := make(map[string]bool)
+		for i := 0; i < 5; i++ {
+			uri := createTestCommentWithScore(t, db, testUser.DID, pagPostURI, parentURI,
+				fmt.Sprintf("Child %d", i), i, 0, time.Now().Add(-time.Duration(60-i)*time.Minute))
+			childURIs[uri] = true
+		}
+
+		// First page of 3 direct children
+		req1 := &comments.GetCommentsRequest{
+			PostURI:    pagPostURI,
+			ParentRkey: parentRkey,
+			Sort:       "new",
+			Depth:      1,
+			Limit:      3,
+		}
+		resp1, err := service.GetComments(ctx, req1)
+		require.NoError(t, err)
+		require.Len(t, resp1.Comments, 1)
+		assert.Len(t, resp1.Comments[0].Replies, 3, "First page should have 3 children")
+		require.NotNil(t, resp1.Cursor, "Cursor should be present for the next page of children")
+		assert.True(t, resp1.Comments[0].HasMore, "HasMore should reflect remaining children")
+
+		// Second page via cursor: parent repeats as root, remaining children nested
+		req2 := &comments.GetCommentsRequest{
+			PostURI:    pagPostURI,
+			ParentRkey: parentRkey,
+			Sort:       "new",
+			Depth:      1,
+			Limit:      3,
+			Cursor:     resp1.Cursor,
+		}
+		resp2, err := service.GetComments(ctx, req2)
+		require.NoError(t, err)
+		require.Len(t, resp2.Comments, 1)
+		assert.Equal(t, parentURI, resp2.Comments[0].Comment.URI, "Parent should remain the root on subsequent pages")
+		assert.Len(t, resp2.Comments[0].Replies, 2, "Second page should have remaining 2 children")
+		assert.Nil(t, resp2.Cursor, "Cursor should be nil on last page")
+		assert.False(t, resp2.Comments[0].HasMore)
+
+		// No duplicates and full coverage across pages
+		seen := make(map[string]bool)
+		for _, page := range []*comments.GetCommentsResponse{resp1, resp2} {
+			for _, r := range page.Comments[0].Replies {
+				assert.False(t, seen[r.Comment.URI], "Child %s should not appear in both pages", r.Comment.URI)
+				assert.True(t, childURIs[r.Comment.URI], "Child %s should be a known child", r.Comment.URI)
+				seen[r.Comment.URI] = true
+			}
+		}
+		assert.Len(t, seen, 5, "All 5 children should be retrieved across pages")
+	})
+
+	t.Run("Rkey collision resolves to earliest indexed", func(t *testing.T) {
+		collisionPostURI := createTestPost(t, db, testCommunity, testUser.DID, "Collision Post", 0, time.Now())
+		otherUser := createTestUser(t, db, "subtree2.test", "did:plc:subtree456")
+
+		// Two commenters use the same rkey within the same post (astronomically unlikely with TIDs)
+		sharedRkey := generateTID()
+		firstURI := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, sharedRkey)
+		secondURI := fmt.Sprintf("at://%s/social.coves.community.comment/%s", otherUser.DID, sharedRkey)
+
+		insertCollisionComment := func(uri, did, content string, indexedAgo time.Duration) {
+			_, err := db.ExecContext(ctx, `
+				INSERT INTO comments (
+					uri, cid, rkey, commenter_did,
+					root_uri, root_cid, parent_uri, parent_cid,
+					content, created_at, indexed_at
+				) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW() - $10::interval)
+			`, uri, "bafyc"+did, sharedRkey, did,
+				collisionPostURI, "bafyroot", collisionPostURI, "bafyparent",
+				content, fmt.Sprintf("%d seconds", int(indexedAgo.Seconds())))
+			require.NoError(t, err, "Failed to insert collision comment")
+		}
+
+		insertCollisionComment(firstURI, testUser.DID, "Indexed first", 60*time.Second)
+		insertCollisionComment(secondURI, otherUser.DID, "Indexed second", 10*time.Second)
+
+		req := &comments.GetCommentsRequest{
+			PostURI:    collisionPostURI,
+			ParentRkey: sharedRkey,
+			Sort:       "new",
+			Depth:      0,
+			Limit:      50,
+		}
+
+		resp, err := service.GetComments(ctx, req)
+		require.NoError(t, err)
+		require.Len(t, resp.Comments, 1)
+		assert.Equal(t, firstURI, resp.Comments[0].Comment.URI, "Earliest indexed comment should win on rkey collision")
+	})
+
+	t.Run("Deleted parent renders as placeholder with children intact", func(t *testing.T) {
+		// GetByRootAndRkey deliberately includes soft-deleted rows so a permalink to a
+		// deleted comment still shows its surviving replies. Someone adding
+		// "deleted_at IS NULL" to that query would break this subtest.
+		delPostURI := createTestPost(t, db, testCommunity, testUser.DID, "Deleted Parent Post", 0, time.Now())
+		delParentURI := createTestCommentWithScore(t, db, testUser.DID, delPostURI, delPostURI, "Soon deleted parent", 3, 0, time.Now().Add(-30*time.Minute))
+		delChildURI := createTestCommentWithScore(t, db, testUser.DID, delPostURI, delParentURI, "Surviving child", 2, 0, time.Now().Add(-20*time.Minute))
+		delGrandchildURI := createTestCommentWithScore(t, db, testUser.DID, delPostURI, delChildURI, "Surviving grandchild", 1, 0, time.Now().Add(-10*time.Minute))
+		delParentRkey := strings.Split(delParentURI, "/")[4]
+
+		// Soft-delete the parent the same way the consumer does (see user_test.go)
+		_, err := db.ExecContext(ctx, `UPDATE comments SET deleted_at = NOW() WHERE uri = $1`, delParentURI)
+		require.NoError(t, err, "Failed to soft-delete parent comment")
+
+		req := &comments.GetCommentsRequest{
+			PostURI:    delPostURI,
+			ParentRkey: delParentRkey,
+			Sort:       "new",
+			Depth:      10,
+			Limit:      50,
+		}
+
+		resp, err := service.GetComments(ctx, req)
+		require.NoError(t, err, "Deleted parent should still resolve, not 404")
+		require.Len(t, resp.Comments, 1, "Deleted parent should be the sole top-level comment")
+
+		parentView := resp.Comments[0]
+		assert.Equal(t, delParentURI, parentView.Comment.URI)
+		assert.True(t, parentView.Comment.IsDeleted, "Deleted parent should render as a [deleted] placeholder")
+		assert.Nil(t, parentView.Comment.Record, "Deleted placeholder must not expose the original record content")
+		assert.NotNil(t, parentView.Comment.DeletedAt, "Placeholder should carry the deletion timestamp")
+
+		// Children remain intact and nested beneath the placeholder
+		require.Len(t, parentView.Replies, 1, "Deleted parent should preserve its child")
+		childView := parentView.Replies[0]
+		assert.Equal(t, delChildURI, childView.Comment.URI)
+		assert.False(t, childView.Comment.IsDeleted, "Child should not inherit deletion")
+		require.Len(t, childView.Replies, 1, "Grandchild should remain nested beneath the child")
+		assert.Equal(t, delGrandchildURI, childView.Replies[0].Comment.URI)
+	})
+
+	t.Run("ParentNotFound when viewer has blocked the parent's author", func(t *testing.T) {
+		// A viewer who blocked the parent comment's author must get ParentNotFound,
+		// as if the comment doesn't exist — consistent with feed/thread block filtering.
+		// No FK to users, so the block row alone drives the filter (see user_journey_e2e_test.go).
+		blockerDID := "did:plc:subtreeblocker1"
+		_, err := db.ExecContext(ctx, `
+			INSERT INTO user_blocks (blocker_did, blocked_did, record_uri, record_cid)
+			VALUES ($1, $2, $3, $4)
+		`, blockerDID, testUser.DID,
+			fmt.Sprintf("at://%s/social.coves.actor.block/subtreeblock", blockerDID),
+			"bafysubtreeblockcid")
+		require.NoError(t, err, "Failed to record viewer block")
+		defer func() { _, _ = db.Exec("DELETE FROM user_blocks WHERE blocker_did = $1", blockerDID) }()
+
+		blockedReq := &comments.GetCommentsRequest{
+			PostURI:    postURI,
+			ParentRkey: commentARkey, // Comment A is authored by testUser, whom the viewer blocked
+			ViewerDID:  &blockerDID,
+			Sort:       "new",
+			Depth:      10,
+			Limit:      50,
+		}
+
+		resp, err := service.GetComments(ctx, blockedReq)
+		assert.Nil(t, resp)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, comments.ErrParentNotFound, "Blocked author's comment should behave as nonexistent for the blocker")
+
+		// The filter is viewer-scoped: the same request without a viewer succeeds
+		anonReq := &comments.GetCommentsRequest{
+			PostURI:    postURI,
+			ParentRkey: commentARkey,
+			Sort:       "new",
+			Depth:      10,
+			Limit:      50,
+		}
+		anonResp, err := service.GetComments(ctx, anonReq)
+		require.NoError(t, err, "Anonymous viewer should still see the subtree")
+		require.Len(t, anonResp.Comments, 1)
+		assert.Equal(t, commentA, anonResp.Comments[0].Comment.URI)
+
+		// ...and so does a viewer who hasn't blocked anyone
+		nonBlockerDID := "did:plc:subtreeviewer1"
+		nonBlockerReq := &comments.GetCommentsRequest{
+			PostURI:    postURI,
+			ParentRkey: commentARkey,
+			ViewerDID:  &nonBlockerDID,
+			Sort:       "new",
+			Depth:      10,
+			Limit:      50,
+		}
+		nonBlockerResp, err := service.GetComments(ctx, nonBlockerReq)
+		require.NoError(t, err, "Non-blocking viewer should still see the subtree")
+		require.Len(t, nonBlockerResp.Comments, 1)
+		assert.Equal(t, commentA, nonBlockerResp.Comments[0].Comment.URI)
+	})
+
+	t.Run("RootNotFound takes precedence for nonexistent post", func(t *testing.T) {
+		// A bogus post URI with a real comment's rkey must fail on the post lookup
+		// (RootNotFound), not fall through to the parent lookup (ParentNotFound)
+		req := &comments.GetCommentsRequest{
+			PostURI:    fmt.Sprintf("at://%s/social.coves.community.post/3nonexistent", testUser.DID),
+			ParentRkey: commentARkey, // real rkey, wrong post
+			Sort:       "new",
+			Depth:      10,
+			Limit:      50,
+		}
+
+		resp, err := service.GetComments(ctx, req)
+		assert.Nil(t, resp)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, comments.ErrRootNotFound, "Missing post should surface as RootNotFound")
+		assert.NotErrorIs(t, err, comments.ErrParentNotFound, "Post lookup failure must not masquerade as ParentNotFound")
+	})
+
+	t.Run("Behavior unchanged without parentRkey", func(t *testing.T) {
+		req := &comments.GetCommentsRequest{
+			PostURI: postURI,
+			Sort:    "new",
+			Depth:   10,
+			Limit:   50,
+		}
+
+		resp, err := service.GetComments(ctx, req)
+		require.NoError(t, err)
+		// GreaterOrEqual (not exact Len) so this subtest doesn't break if the shared
+		// fixture ever gains another top-level comment; the known URIs are asserted below
+		assert.GreaterOrEqual(t, len(resp.Comments), 2, "Full thread should still return the known top-level comments")
+
+		topLevelURIs := make(map[string]bool)
+		for _, tv := range resp.Comments {
+			topLevelURIs[tv.Comment.URI] = true
+		}
+		assert.True(t, topLevelURIs[commentA], "Comment A should be top-level")
+		assert.True(t, topLevelURIs[commentB], "Comment B should be top-level")
+	})
+}
+
+// TestCommentQuery_ParentRkeyHTTPHandler tests the real XRPC handler with parentRkey
+func TestCommentQuery_ParentRkeyHTTPHandler(t *testing.T) {
+	db := setupTestDB(t)
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Logf("Failed to close database: %v", err)
+		}
+	}()
+
+	ctx := context.Background()
+	testUser := createTestUser(t, db, "subtreehttp.test", "did:plc:subtreehttp123")
+	testCommunity, err := createFeedTestCommunity(db, ctx, "subtreehttpcomm", "ownersubtreehttp.test")
+	require.NoError(t, err)
+
+	postURI := createTestPost(t, db, testCommunity, testUser.DID, "Subtree HTTP Test", 0, time.Now())
+	commentURI := createTestCommentWithScore(t, db, testUser.DID, postURI, postURI, "Parent comment", 5, 0, time.Now().Add(-30*time.Minute))
+	replyURI := createTestCommentWithScore(t, db, testUser.DID, postURI, commentURI, "Child comment", 2, 0, time.Now().Add(-10*time.Minute))
+	commentRkey := strings.Split(commentURI, "/")[4]
+
+	// Use the real XRPC handler + service adapter (same wiring as cmd/server/main.go)
+	handler := commentsAPI.NewGetCommentsHandler(commentsAPI.NewServiceAdapter(setupCommentService(db)))
+
+	t.Run("Subtree via parentRkey", func(t *testing.T) {
+		req := httptest.NewRequest("GET",
+			fmt.Sprintf("/xrpc/social.coves.community.comment.getComments?post=%s&parentRkey=%s&sort=new&depth=10&limit=50", postURI, commentRkey), nil)
+		w := httptest.NewRecorder()
+
+		handler.HandleGetComments(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		var resp comments.GetCommentsResponse
+		require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+		require.Len(t, resp.Comments, 1, "Parent should be the sole top-level comment")
+		assert.Equal(t, commentURI, resp.Comments[0].Comment.URI)
+		require.Len(t, resp.Comments[0].Replies, 1)
+		assert.Equal(t, replyURI, resp.Comments[0].Replies[0].Comment.URI)
+	})
+
+	t.Run("ParentNotFound error shape", func(t *testing.T) {
+		req := httptest.NewRequest("GET",
+			fmt.Sprintf("/xrpc/social.coves.community.comment.getComments?post=%s&parentRkey=3zzzzzzzzzzzz", postURI), nil)
+		w := httptest.NewRecorder()
+
+		handler.HandleGetComments(w, req)
+
+		assert.Equal(t, http.StatusNotFound, w.Code)
+		var errResp struct {
+			Error   string `json:"error"`
+			Message string `json:"message"`
+		}
+		require.NoError(t, json.NewDecoder(w.Body).Decode(&errResp))
+		assert.Equal(t, "ParentNotFound", errResp.Error)
+	})
+
+	t.Run("Invalid parentRkey syntax rejected", func(t *testing.T) {
+		req := httptest.NewRequest("GET",
+			fmt.Sprintf("/xrpc/social.coves.community.comment.getComments?post=%s&parentRkey=%s", postURI, "not%20a%20valid%20rkey!"), nil)
+		w := httptest.NewRecorder()
+
+		handler.HandleGetComments(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+		var errResp struct {
+			Error   string `json:"error"`
+			Message string `json:"message"`
+		}
+		require.NoError(t, json.NewDecoder(w.Body).Decode(&errResp))
+		assert.Equal(t, "InvalidRequest", errResp.Error)
+	})
+
+	t.Run("Without parentRkey returns full thread", func(t *testing.T) {
+		req := httptest.NewRequest("GET",
+			fmt.Sprintf("/xrpc/social.coves.community.comment.getComments?post=%s&sort=new&depth=10&limit=50", postURI), nil)
+		w := httptest.NewRecorder()
+
+		handler.HandleGetComments(w, req)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		var resp comments.GetCommentsResponse
+		require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+		require.Len(t, resp.Comments, 1, "Post has one top-level comment")
+		assert.Equal(t, commentURI, resp.Comments[0].Comment.URI)
 	})
 }
 

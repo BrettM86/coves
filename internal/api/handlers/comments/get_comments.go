@@ -9,6 +9,8 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+
+	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 
 // GetCommentsHandler handles comment retrieval for posts
@@ -23,15 +25,16 @@ type Service interface {
 }
 
 // GetCommentsRequest represents the query parameters for fetching comments
-// Matches social.coves.feed.getComments lexicon input
+// Matches social.coves.community.comment.getComments lexicon input
 type GetCommentsRequest struct {
-	Cursor    *string `json:"cursor,omitempty"`
-	ViewerDID *string `json:"-"`
-	PostURI   string  `json:"post"`
-	Sort      string  `json:"sort,omitempty"`
-	Timeframe string  `json:"timeframe,omitempty"`
-	Depth     int     `json:"depth,omitempty"`
-	Limit     int     `json:"limit,omitempty"`
+	Cursor     *string `json:"cursor,omitempty"`
+	ViewerDID  *string `json:"-"`
+	PostURI    string  `json:"post"`
+	ParentRkey string  `json:"parentRkey,omitempty"`
+	Sort       string  `json:"sort,omitempty"`
+	Timeframe  string  `json:"timeframe,omitempty"`
+	Depth      int     `json:"depth,omitempty"`
+	Limit      int     `json:"limit,omitempty"`
 }
 
 // NewGetCommentsHandler creates a new handler for fetching comments
@@ -53,6 +56,7 @@ func (h *GetCommentsHandler) HandleGetComments(w http.ResponseWriter, r *http.Re
 	// 2. Parse query parameters
 	query := r.URL.Query()
 	post := query.Get("post")
+	parentRkey := query.Get("parentRkey")
 	sort := query.Get("sort")
 	timeframe := query.Get("timeframe")
 	depthStr := query.Get("depth")
@@ -63,6 +67,14 @@ func (h *GetCommentsHandler) HandleGetComments(w http.ResponseWriter, r *http.Re
 	if post == "" {
 		writeError(w, http.StatusBadRequest, "InvalidRequest", "post parameter is required")
 		return
+	}
+
+	// 3b. Validate parentRkey syntax if provided (optional; scopes response to a comment subtree)
+	if parentRkey != "" {
+		if _, err := syntax.ParseRecordKey(parentRkey); err != nil {
+			writeError(w, http.StatusBadRequest, "InvalidRequest", "parentRkey must be a valid record key")
+			return
+		}
 	}
 
 	// 4. Parse and validate depth with default
@@ -133,13 +145,14 @@ func (h *GetCommentsHandler) HandleGetComments(w http.ResponseWriter, r *http.Re
 
 	// 9. Build service request
 	req := &GetCommentsRequest{
-		PostURI:   post,
-		Sort:      sort,
-		Timeframe: timeframe,
-		Depth:     depth,
-		Limit:     limit,
-		Cursor:    ptrOrNil(cursor),
-		ViewerDID: viewerPtr,
+		PostURI:    post,
+		ParentRkey: parentRkey,
+		Sort:       sort,
+		Timeframe:  timeframe,
+		Depth:      depth,
+		Limit:      limit,
+		Cursor:     ptrOrNil(cursor),
+		ViewerDID:  viewerPtr,
 	}
 
 	// 10. Call service layer

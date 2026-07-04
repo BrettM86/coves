@@ -61,26 +61,27 @@ type Service interface {
 
 // GetCommentsRequest defines the parameters for fetching comments
 type GetCommentsRequest struct {
-	Cursor    *string
-	ViewerDID *string
-	PostURI   string
-	Sort      string
-	Timeframe string
-	Depth     int
-	Limit     int
+	Cursor     *string
+	ViewerDID  *string
+	PostURI    string
+	ParentRkey string // Optional: record key of a comment within the post; scopes the response to its subtree
+	Sort       string
+	Timeframe  string
+	Depth      int
+	Limit      int
 }
 
 // commentService implements the Service interface
 // Coordinates between repository layer and view model construction
 type commentService struct {
-	commentRepo      Repository                // Comment data access
-	userRepo         users.UserRepository      // User lookup for author hydration
-	postRepo         posts.Repository          // Post lookup for building post views
-	communityRepo    communities.Repository    // Community lookup for community hydration
-	oauthClient      *oauthclient.OAuthClient  // OAuth client for PDS authentication
-	oauthStore       oauth.ClientAuthStore     // OAuth session store
-	logger           *slog.Logger              // Structured logger
-	pdsClientFactory PDSClientFactory          // Optional, for testing. If nil, uses OAuth.
+	commentRepo      Repository               // Comment data access
+	userRepo         users.UserRepository     // User lookup for author hydration
+	postRepo         posts.Repository         // Post lookup for building post views
+	communityRepo    communities.Repository   // Community lookup for community hydration
+	oauthClient      *oauthclient.OAuthClient // OAuth client for PDS authentication
+	oauthStore       oauth.ClientAuthStore    // OAuth session store
+	logger           *slog.Logger             // Structured logger
+	pdsClientFactory PDSClientFactory         // Optional, for testing. If nil, uses OAuth.
 }
 
 // NewCommentService creates a new comment service instance
@@ -161,6 +162,11 @@ func (s *commentService) GetComments(ctx context.Context, req *GetCommentsReques
 	// Build post view for response (hydrates author handle and community name)
 	postView := s.buildPostView(ctx, post, req.ViewerDID)
 
+	// 2b. If a parent comment rkey is provided, return only that comment's subtree
+	if req.ParentRkey != "" {
+		return s.getCommentSubtree(ctx, req, postView)
+	}
+
 	// 3. Fetch top-level comments with pagination
 	// Uses repository's hot rank sorting and cursor-based pagination
 	var viewerDIDStr string
@@ -182,7 +188,10 @@ func (s *commentService) GetComments(ctx context.Context, req *GetCommentsReques
 
 	// 4. Build threaded view with nested replies up to depth limit
 	// This iteratively loads child comments and builds the tree structure
-	threadViews := s.buildThreadViews(ctx, topComments, req.Depth, req.Sort, req.ViewerDID)
+	threadViews, err := s.buildThreadViews(ctx, topComments, req.Depth, req.Sort, req.ViewerDID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build comment threads: %w", err)
+	}
 
 	// 5. Return response with comments, post reference, and cursor
 	return &GetCommentsResponse{
@@ -192,21 +201,94 @@ func (s *commentService) GetComments(ctx context.Context, req *GetCommentsReques
 	}, nil
 }
 
+// getCommentSubtree returns the subtree rooted at the comment identified by req.ParentRkey
+// The parent comment is the sole top-level entry in the response, with descendants nested
+// beneath it. Depth is relative to the parent (depth 0 = just the parent comment), sort
+// applies to the subtree's children, and limit/cursor paginate the parent's direct replies.
+// Backs comment permalinks and "continue this thread" for deep threads.
+// A viewer who has blocked the parent's author gets ErrParentNotFound, matching the
+// block filtering applied to comments in the regular thread view.
+// Note: the parent is re-resolved and re-hydrated on every pagination page; this repeats
+// a small amount of work per cursor request but is acceptable at current scale.
+func (s *commentService) getCommentSubtree(
+	ctx context.Context,
+	req *GetCommentsRequest,
+	postView *posts.PostView,
+) (*GetCommentsResponse, error) {
+	var viewerDIDStr string
+	if req.ViewerDID != nil {
+		viewerDIDStr = *req.ViewerDID
+	}
+
+	// Resolve the parent comment by (post URI, rkey) via the AppView's comment index
+	// Passing the viewer DID applies author-block filtering at the repository level
+	parent, err := s.commentRepo.GetByRootAndRkey(ctx, req.PostURI, req.ParentRkey, viewerDIDStr)
+	if err != nil {
+		if errors.Is(err, ErrCommentNotFound) {
+			// Distinct error name so clients can distinguish "post exists but comment doesn't"
+			return nil, ErrParentNotFound
+		}
+		return nil, fmt.Errorf("failed to fetch parent comment: %w", err)
+	}
+
+	// Build the parent's own view (author, stats, vote state) without loading replies.
+	// A deleted parent is rendered as a "[deleted]" placeholder, preserving its children.
+	parentViews, err := s.buildThreadViews(ctx, []*Comment{parent}, 0, req.Sort, req.ViewerDID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build parent comment view: %w", err)
+	}
+	parentView := parentViews[0]
+
+	// Load the parent's direct replies with the same sorting/pagination used for
+	// top-level comments, then nest deeper descendants up to the requested depth.
+	var nextCursor *string
+	if req.Depth > 0 {
+		children, cursor, err := s.commentRepo.ListByParentWithHotRank(
+			ctx,
+			parent.URI,
+			req.Sort,
+			req.Timeframe,
+			req.Limit,
+			req.Cursor,
+			viewerDIDStr,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch subtree comments: %w", err)
+		}
+
+		nextCursor = cursor
+		parentView.Replies, err = s.buildThreadViews(ctx, children, req.Depth-1, req.Sort, req.ViewerDID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build subtree comment threads: %w", err)
+		}
+		// The response cursor paginates the parent's direct replies, so HasMore mirrors it
+		parentView.HasMore = nextCursor != nil
+	}
+
+	return &GetCommentsResponse{
+		Comments: []*ThreadViewComment{parentView},
+		Post:     postView,
+		Cursor:   nextCursor,
+	}, nil
+}
+
 // buildThreadViews constructs threaded comment views with nested replies using batch loading
 // Uses batch queries to prevent N+1 query problem when loading nested replies
 // Loads replies level-by-level up to the specified depth limit
+// Returns an error if loading a reply batch fails, so callers surface a real failure
+// instead of silently returning a truncated tree.
 func (s *commentService) buildThreadViews(
 	ctx context.Context,
 	comments []*Comment,
 	remainingDepth int,
 	sort string,
 	viewerDID *string,
-) []*ThreadViewComment {
+) ([]*ThreadViewComment, error) {
 	// Always return an empty slice, never nil (important for JSON serialization)
 	result := make([]*ThreadViewComment, 0, len(comments))
 
 	if len(comments) == 0 {
-		return result
+		return result, nil
 	}
 
 	// Batch fetch vote states for all comments at this level (Phase 2B)
@@ -300,43 +382,41 @@ func (s *commentService) buildThreadViews(
 			DefaultRepliesPerParent,
 			batchViewerDID,
 		)
-
 		if err != nil {
-			slog.Error("failed to batch load replies (nested replies will be missing)",
-				"error", err,
-				"parent_count", len(parentsWithReplies),
-				"sort", sort)
+			// Propagate instead of returning a silently truncated tree: a transient DB
+			// error must surface as a failure, not as "no replies" with HasMore=false
+			return nil, fmt.Errorf("failed to batch load replies: %w", err)
 		}
 
-		// Process replies if batch query succeeded
-		if err == nil {
-			// Group child comments by parent for recursive processing
-			for parentURI, replies := range repliesByParent {
-				threadView := commentsByURI[parentURI]
-				if threadView != nil && len(replies) > 0 {
-					// Recursively build views for child comments
-					threadView.Replies = s.buildThreadViews(
-						ctx,
-						replies,
-						remainingDepth-1,
-						sort,
-						viewerDID,
-					)
+		// Group child comments by parent for recursive processing
+		for parentURI, replies := range repliesByParent {
+			threadView := commentsByURI[parentURI]
+			if threadView != nil && len(replies) > 0 {
+				// Recursively build views for child comments
+				threadView.Replies, err = s.buildThreadViews(
+					ctx,
+					replies,
+					remainingDepth-1,
+					sort,
+					viewerDID,
+				)
+				if err != nil {
+					return nil, err
+				}
 
-					// Update HasMore based on actual reply count vs loaded count
-					// Get the original comment to check reply count
-					for _, comment := range comments {
-						if comment.URI == parentURI {
-							threadView.HasMore = comment.ReplyCount > len(replies)
-							break
-						}
+				// Update HasMore based on actual reply count vs loaded count
+				// Get the original comment to check reply count
+				for _, comment := range comments {
+					if comment.URI == parentURI {
+						threadView.HasMore = comment.ReplyCount > len(replies)
+						break
 					}
 				}
 			}
 		}
 	}
 
-	return threadViews
+	return threadViews, nil
 }
 
 // buildCommentView converts a Comment entity to a CommentView with full metadata
@@ -1162,6 +1242,20 @@ func validateGetCommentsRequest(req *GetCommentsRequest) error {
 
 	if !strings.HasPrefix(req.PostURI, "at://") {
 		return errors.New("invalid AT-URI format: must start with 'at://'")
+	}
+
+	// Validate ParentRkey syntax if provided (defense-in-depth; the handler also validates)
+	if req.ParentRkey != "" {
+		if _, err := syntax.ParseRecordKey(req.ParentRkey); err != nil {
+			return errors.New("invalid parentRkey: must be a valid record key")
+		}
+
+		// Depth 0 loads no replies, so a cursor (which paginates the parent's direct
+		// replies) can never be honored — reject the combination instead of silently
+		// ending the client's pagination loop
+		if req.Depth == 0 && req.Cursor != nil && *req.Cursor != "" {
+			return fmt.Errorf("%w: cursor cannot be combined with depth=0 for a subtree request", ErrInvalidCursor)
+		}
 	}
 
 	// Apply depth defaults and bounds (0-100, default 10)

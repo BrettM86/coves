@@ -23,13 +23,14 @@ func NewServiceAdapter(coreService comments.Service) Service {
 func (a *ServiceAdapter) GetComments(r *http.Request, req *GetCommentsRequest) (*comments.GetCommentsResponse, error) {
 	// Convert handler request to core service request
 	coreReq := &comments.GetCommentsRequest{
-		PostURI:   req.PostURI,
-		Sort:      req.Sort,
-		Timeframe: req.Timeframe,
-		Depth:     req.Depth,
-		Limit:     req.Limit,
-		Cursor:    req.Cursor,
-		ViewerDID: req.ViewerDID,
+		PostURI:    req.PostURI,
+		ParentRkey: req.ParentRkey,
+		Sort:       req.Sort,
+		Timeframe:  req.Timeframe,
+		Depth:      req.Depth,
+		Limit:      req.Limit,
+		Cursor:     req.Cursor,
+		ViewerDID:  req.ViewerDID,
 	}
 
 	// Call core service with request context

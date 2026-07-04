@@ -72,6 +72,16 @@ type Repository interface {
 		viewerDID string,
 	) ([]*Comment, *string, error)
 
+	// GetByRootAndRkey retrieves a comment within a thread by its record key
+	// Used to resolve the parentRkey parameter of getComments (comment permalinks)
+	// viewerDID is optional — when non-empty, a comment whose author the viewer has
+	// blocked is treated as nonexistent (ErrCommentNotFound), matching the block
+	// filtering applied by the other comment read paths.
+	// rkeys are TIDs, so a collision between two commenters within one post is
+	// astronomically unlikely; if it happens, the earliest indexed comment wins.
+	// Returns ErrCommentNotFound if no match exists.
+	GetByRootAndRkey(ctx context.Context, rootURI, rkey, viewerDID string) (*Comment, error)
+
 	// GetByURIsBatch retrieves multiple comments by their AT-URIs in a single query
 	// Returns map[uri]*Comment for efficient lookups
 	// Used for hydrating comment threads without N+1 queries
