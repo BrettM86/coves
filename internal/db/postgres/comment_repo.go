@@ -68,7 +68,16 @@ func (r *postgresCommentRepo) Create(ctx context.Context, comment *comments.Comm
 
 // Update modifies an existing comment's content fields
 // Called by Jetstream consumer after comment is updated on PDS
-// Preserves vote counts and created_at timestamp
+// Preserves native vote counts and created_at timestamp.
+//
+// The consumer passes the INCOMING bridgedStats candidate in comment.Bridged* and
+// comment.BridgedStatsAsOf (nil asOf => the record carried no applicable bridgedStats).
+// The bridged columns are overwritten ATOMICALLY only when an incoming asOf is present
+// and is newer-or-equal to the stored bridged_stats_as_of (NULL stored => first
+// application). Doing the regression comparison inside this UPDATE (rather than
+// read-check-write in the consumer) makes it race-free. score is always recomputed
+// inclusive of native + whichever bridged counts win, so concurrent native votes are
+// never clobbered. $10 is the incoming asOf; the stored asOf is read from the row.
 func (r *postgresCommentRepo) Update(ctx context.Context, comment *comments.Comment) error {
 	query := `
 		UPDATE comments
@@ -78,7 +87,23 @@ func (r *postgresCommentRepo) Update(ctx context.Context, comment *comments.Comm
 			content_facets = $3,
 			embed = $4,
 			content_labels = $5,
-			langs = $6
+			langs = $6,
+			bridged_upvote_count = CASE
+				WHEN $10::timestamptz IS NOT NULL AND (bridged_stats_as_of IS NULL OR $10 >= bridged_stats_as_of)
+				THEN $8 ELSE bridged_upvote_count END,
+			bridged_downvote_count = CASE
+				WHEN $10::timestamptz IS NOT NULL AND (bridged_stats_as_of IS NULL OR $10 >= bridged_stats_as_of)
+				THEN $9 ELSE bridged_downvote_count END,
+			bridged_stats_as_of = CASE
+				WHEN $10::timestamptz IS NOT NULL AND (bridged_stats_as_of IS NULL OR $10 >= bridged_stats_as_of)
+				THEN $10 ELSE bridged_stats_as_of END,
+			score = upvote_count - downvote_count
+				+ CASE
+					WHEN $10::timestamptz IS NOT NULL AND (bridged_stats_as_of IS NULL OR $10 >= bridged_stats_as_of)
+					THEN $8 ELSE bridged_upvote_count END
+				- CASE
+					WHEN $10::timestamptz IS NOT NULL AND (bridged_stats_as_of IS NULL OR $10 >= bridged_stats_as_of)
+					THEN $9 ELSE bridged_downvote_count END
 		WHERE uri = $7 AND deleted_at IS NULL
 		RETURNING id, indexed_at, created_at, upvote_count, downvote_count, score, reply_count
 	`
@@ -92,6 +117,9 @@ func (r *postgresCommentRepo) Update(ctx context.Context, comment *comments.Comm
 		comment.ContentLabels,
 		pq.Array(comment.Langs),
 		comment.URI,
+		comment.BridgedUpvoteCount,
+		comment.BridgedDownvoteCount,
+		comment.BridgedStatsAsOf,
 	).Scan(
 		&comment.ID,
 		&comment.IndexedAt,
@@ -113,7 +141,14 @@ func (r *postgresCommentRepo) Update(ctx context.Context, comment *comments.Comm
 }
 
 // GetByURI retrieves a comment by its AT-URI
-// Used by Jetstream consumer for UPDATE/DELETE operations
+//
+// This is a DISPLAY read: like every other read path (ListByParent, ListByRoot,
+// GetByURIsBatch, ...) it folds the bridge-asserted aggregates into the displayed
+// upvote/downvote counts (upvote_count + bridged_upvote_count, etc.) so federated
+// content shows the origin platform's votes. The Jetstream update path does NOT use
+// this to run its regression guard — it issues a dedicated raw-columns query so it can
+// reason about the separate native and bridged aggregates (see comment_consumer's
+// updateComment); folding here would conflate them.
 func (r *postgresCommentRepo) GetByURI(ctx context.Context, uri string) (*comments.Comment, error) {
 	query := `
 		SELECT
@@ -121,7 +156,7 @@ func (r *postgresCommentRepo) GetByURI(ctx context.Context, uri string) (*commen
 			root_uri, root_cid, parent_uri, parent_cid,
 			content, content_facets, embed, content_labels, langs,
 			created_at, indexed_at, deleted_at, deletion_reason, deleted_by,
-			upvote_count, downvote_count, score, reply_count
+			upvote_count + bridged_upvote_count AS upvote_count, downvote_count + bridged_downvote_count AS downvote_count, score, reply_count
 		FROM comments
 		WHERE uri = $1
 	`
@@ -241,7 +276,7 @@ func (r *postgresCommentRepo) ListByRoot(ctx context.Context, rootURI string, li
 			root_uri, root_cid, parent_uri, parent_cid,
 			content, content_facets, embed, content_labels, langs,
 			created_at, indexed_at, deleted_at, deletion_reason, deleted_by,
-			upvote_count, downvote_count, score, reply_count
+			upvote_count + bridged_upvote_count AS upvote_count, downvote_count + bridged_downvote_count AS downvote_count, score, reply_count
 		FROM comments
 		WHERE root_uri = $1
 		ORDER BY created_at ASC
@@ -295,7 +330,7 @@ func (r *postgresCommentRepo) ListByParent(ctx context.Context, parentURI string
 			root_uri, root_cid, parent_uri, parent_cid,
 			content, content_facets, embed, content_labels, langs,
 			created_at, indexed_at, deleted_at, deletion_reason, deleted_by,
-			upvote_count, downvote_count, score, reply_count
+			upvote_count + bridged_upvote_count AS upvote_count, downvote_count + bridged_downvote_count AS downvote_count, score, reply_count
 		FROM comments
 		WHERE parent_uri = $1
 		ORDER BY created_at ASC
@@ -367,7 +402,7 @@ func (r *postgresCommentRepo) ListByCommenter(ctx context.Context, commenterDID 
 			root_uri, root_cid, parent_uri, parent_cid,
 			content, content_facets, embed, content_labels, langs,
 			created_at, indexed_at, deleted_at, deletion_reason, deleted_by,
-			upvote_count, downvote_count, score, reply_count
+			upvote_count + bridged_upvote_count AS upvote_count, downvote_count + bridged_downvote_count AS downvote_count, score, reply_count
 		FROM comments
 		WHERE commenter_did = $1 AND deleted_at IS NULL
 		ORDER BY created_at DESC
@@ -442,7 +477,7 @@ func (r *postgresCommentRepo) ListByCommenterWithCursor(ctx context.Context, req
 			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
 			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
-			c.upvote_count, c.downvote_count, c.score, c.reply_count,
+			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
 			COALESCE(u.handle, c.commenter_did) as author_handle
 		FROM comments c
 		LEFT JOIN users u ON c.commenter_did = u.did
@@ -600,7 +635,7 @@ func (r *postgresCommentRepo) ListByParentWithHotRank(
 			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
 			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
-			c.upvote_count, c.downvote_count, c.score, c.reply_count,
+			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
 			log(greatest(2, c.score + 2)) / power(((EXTRACT(EPOCH FROM (NOW() - c.created_at)) / 3600) + 2), 1.8) as hot_rank,
 			COALESCE(u.handle, c.commenter_did) as author_handle
 		FROM comments c`
@@ -611,7 +646,7 @@ func (r *postgresCommentRepo) ListByParentWithHotRank(
 			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
 			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
-			c.upvote_count, c.downvote_count, c.score, c.reply_count,
+			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
 			NULL::numeric as hot_rank,
 			COALESCE(u.handle, c.commenter_did) as author_handle
 		FROM comments c`
@@ -937,7 +972,7 @@ func (r *postgresCommentRepo) GetByRootAndRkey(ctx context.Context, rootURI, rke
 			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
 			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
-			c.upvote_count, c.downvote_count, c.score, c.reply_count,
+			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
 			COALESCE(u.handle, c.commenter_did) as author_handle
 		FROM comments c
 		LEFT JOIN users u ON c.commenter_did = u.did
@@ -1013,7 +1048,7 @@ func (r *postgresCommentRepo) GetByURIsBatch(ctx context.Context, uris []string)
 			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
 			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
-			c.upvote_count, c.downvote_count, c.score, c.reply_count,
+			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
 			COALESCE(u.handle, c.commenter_did) as author_handle
 		FROM comments c
 		LEFT JOIN users u ON c.commenter_did = u.did
@@ -1084,7 +1119,7 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
 			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
-			c.upvote_count, c.downvote_count, c.score, c.reply_count,
+			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
 			log(greatest(2, c.score + 2)) / power(((EXTRACT(EPOCH FROM (NOW() - c.created_at)) / 3600) + 2), 1.8) as hot_rank,
 			COALESCE(u.handle, c.commenter_did) as author_handle`
 		// CRITICAL: Must inline hot_rank formula - PostgreSQL doesn't allow SELECT aliases in window ORDER BY
@@ -1095,7 +1130,7 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
 			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
-			c.upvote_count, c.downvote_count, c.score, c.reply_count,
+			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
 			NULL::numeric as hot_rank,
 			COALESCE(u.handle, c.commenter_did) as author_handle`
 		windowOrderBy = `c.score DESC, c.created_at DESC`
@@ -1105,7 +1140,7 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
 			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
-			c.upvote_count, c.downvote_count, c.score, c.reply_count,
+			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
 			NULL::numeric as hot_rank,
 			COALESCE(u.handle, c.commenter_did) as author_handle`
 		windowOrderBy = `c.created_at DESC`
@@ -1116,7 +1151,7 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
 			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
-			c.upvote_count, c.downvote_count, c.score, c.reply_count,
+			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
 			log(greatest(2, c.score + 2)) / power(((EXTRACT(EPOCH FROM (NOW() - c.created_at)) / 3600) + 2), 1.8) as hot_rank,
 			COALESCE(u.handle, c.commenter_did) as author_handle`
 		// CRITICAL: Must inline hot_rank formula - PostgreSQL doesn't allow SELECT aliases in window ORDER BY

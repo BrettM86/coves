@@ -185,15 +185,15 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 		var decrementQuery string
 		if existingDirection.String == "up" {
 			if collection == "social.coves.community.post" {
-				decrementQuery = `UPDATE posts SET upvote_count = GREATEST(0, upvote_count - 1), score = upvote_count - 1 - downvote_count WHERE uri = $1 AND deleted_at IS NULL`
+				decrementQuery = `UPDATE posts SET upvote_count = GREATEST(0, upvote_count - 1), score = GREATEST(0, upvote_count - 1) - downvote_count + bridged_upvote_count - bridged_downvote_count WHERE uri = $1 AND deleted_at IS NULL`
 			} else if collection == "social.coves.community.comment" {
-				decrementQuery = `UPDATE comments SET upvote_count = GREATEST(0, upvote_count - 1), score = upvote_count - 1 - downvote_count WHERE uri = $1 AND deleted_at IS NULL`
+				decrementQuery = `UPDATE comments SET upvote_count = GREATEST(0, upvote_count - 1), score = GREATEST(0, upvote_count - 1) - downvote_count + bridged_upvote_count - bridged_downvote_count WHERE uri = $1 AND deleted_at IS NULL`
 			}
 		} else {
 			if collection == "social.coves.community.post" {
-				decrementQuery = `UPDATE posts SET downvote_count = GREATEST(0, downvote_count - 1), score = upvote_count - (downvote_count - 1) WHERE uri = $1 AND deleted_at IS NULL`
+				decrementQuery = `UPDATE posts SET downvote_count = GREATEST(0, downvote_count - 1), score = upvote_count - GREATEST(0, downvote_count - 1) + bridged_upvote_count - bridged_downvote_count WHERE uri = $1 AND deleted_at IS NULL`
 			} else if collection == "social.coves.community.comment" {
-				decrementQuery = `UPDATE comments SET downvote_count = GREATEST(0, downvote_count - 1), score = upvote_count - (downvote_count - 1) WHERE uri = $1 AND deleted_at IS NULL`
+				decrementQuery = `UPDATE comments SET downvote_count = GREATEST(0, downvote_count - 1), score = upvote_count - GREATEST(0, downvote_count - 1) + bridged_upvote_count - bridged_downvote_count WHERE uri = $1 AND deleted_at IS NULL`
 			}
 		}
 		if decrementQuery != "" {
@@ -252,14 +252,14 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 			updateQuery = `
 				UPDATE posts
 				SET upvote_count = upvote_count + 1,
-				    score = upvote_count + 1 - downvote_count
+				    score = upvote_count + 1 - downvote_count + bridged_upvote_count - bridged_downvote_count
 				WHERE uri = $1 AND deleted_at IS NULL
 			`
 		} else { // "down"
 			updateQuery = `
 				UPDATE posts
 				SET downvote_count = downvote_count + 1,
-				    score = upvote_count - (downvote_count + 1)
+				    score = upvote_count - (downvote_count + 1) + bridged_upvote_count - bridged_downvote_count
 				WHERE uri = $1 AND deleted_at IS NULL
 			`
 		}
@@ -270,14 +270,14 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 			updateQuery = `
 				UPDATE comments
 				SET upvote_count = upvote_count + 1,
-				    score = upvote_count + 1 - downvote_count
+				    score = upvote_count + 1 - downvote_count + bridged_upvote_count - bridged_downvote_count
 				WHERE uri = $1 AND deleted_at IS NULL
 			`
 		} else { // "down"
 			updateQuery = `
 				UPDATE comments
 				SET downvote_count = downvote_count + 1,
-				    score = upvote_count - (downvote_count + 1)
+				    score = upvote_count - (downvote_count + 1) + bridged_upvote_count - bridged_downvote_count
 				WHERE uri = $1 AND deleted_at IS NULL
 			`
 		}
@@ -365,14 +365,14 @@ func (c *VoteEventConsumer) deleteVoteAndUpdateCounts(ctx context.Context, vote 
 			updateQuery = `
 				UPDATE posts
 				SET upvote_count = GREATEST(0, upvote_count - 1),
-				    score = GREATEST(0, upvote_count - 1) - downvote_count
+				    score = GREATEST(0, upvote_count - 1) - downvote_count + bridged_upvote_count - bridged_downvote_count
 				WHERE uri = $1 AND deleted_at IS NULL
 			`
 		} else { // "down"
 			updateQuery = `
 				UPDATE posts
 				SET downvote_count = GREATEST(0, downvote_count - 1),
-				    score = upvote_count - GREATEST(0, downvote_count - 1)
+				    score = upvote_count - GREATEST(0, downvote_count - 1) + bridged_upvote_count - bridged_downvote_count
 				WHERE uri = $1 AND deleted_at IS NULL
 			`
 		}
@@ -383,14 +383,14 @@ func (c *VoteEventConsumer) deleteVoteAndUpdateCounts(ctx context.Context, vote 
 			updateQuery = `
 				UPDATE comments
 				SET upvote_count = GREATEST(0, upvote_count - 1),
-				    score = GREATEST(0, upvote_count - 1) - downvote_count
+				    score = GREATEST(0, upvote_count - 1) - downvote_count + bridged_upvote_count - bridged_downvote_count
 				WHERE uri = $1 AND deleted_at IS NULL
 			`
 		} else { // "down"
 			updateQuery = `
 				UPDATE comments
 				SET downvote_count = GREATEST(0, downvote_count - 1),
-				    score = upvote_count - GREATEST(0, downvote_count - 1)
+				    score = upvote_count - GREATEST(0, downvote_count - 1) + bridged_upvote_count - bridged_downvote_count
 				WHERE uri = $1 AND deleted_at IS NULL
 			`
 		}

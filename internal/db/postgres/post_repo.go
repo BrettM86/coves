@@ -25,13 +25,18 @@ type postgresPostRepo struct {
 // It MUST stay byte-aligned with the positional Scan in scanPostView. It is the single
 // source of truth shared by GetViewsByURIs and GetByAuthor, so the column order can only
 // be defined in one place and the two queries cannot drift apart and silently mis-scan.
+//
+// Displayed upvote/downvote counts fold in the bridge-asserted aggregates
+// (upvote_count + bridged_upvote_count, etc.) so federated/bridged content shows the
+// origin platform's votes. score is already stored inclusive of bridged aggregates, so
+// it is selected as-is.
 const postViewSelectColumns = `
 		p.uri, p.cid, p.rkey,
 		p.author_did, u.handle as author_handle,
 		p.community_did, c.handle as community_handle, c.name as community_name, c.avatar_cid as community_avatar, c.pds_url as community_pds_url,
 		p.title, p.content, p.content_facets, p.embed, p.content_labels,
 		p.created_at, p.edited_at, p.indexed_at,
-		p.upvote_count, p.downvote_count, p.score, p.comment_count`
+		p.upvote_count + p.bridged_upvote_count AS upvote_count, p.downvote_count + p.bridged_downvote_count AS downvote_count, p.score, p.comment_count`
 
 // NewPostRepository creates a new PostgreSQL post repository
 func NewPostRepository(db *sql.DB) posts.Repository {
@@ -112,7 +117,7 @@ func (r *postgresPostRepo) GetByURI(ctx context.Context, uri string) (*posts.Pos
 			id, uri, cid, rkey, author_did, community_did,
 			title, content, content_facets, embed, content_labels,
 			created_at, edited_at, indexed_at, deleted_at,
-			upvote_count, downvote_count, score, comment_count
+			upvote_count + bridged_upvote_count AS upvote_count, downvote_count + bridged_downvote_count AS downvote_count, score, comment_count
 		FROM posts
 		WHERE uri = $1
 	`

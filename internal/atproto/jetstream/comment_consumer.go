@@ -32,17 +32,59 @@ const (
 type CommentEventConsumer struct {
 	commentRepo comments.Repository
 	db          *sql.DB // Direct DB access for atomic count updates
+	// bridgeTrust gates whether a comment's user repo may assert bridgedStats.
+	// nil means default-deny (bridgedStats are ignored for every comment).
+	bridgeTrust *BridgeTrust
+}
+
+// CommentEventConsumerOption configures optional CommentEventConsumer behaviour.
+type CommentEventConsumerOption func(*CommentEventConsumer)
+
+// WithCommentBridgeTrust installs the provenance gate that decides which user repos may
+// assert bridgedStats on their comments. Without it, bridgedStats are default-denied.
+func WithCommentBridgeTrust(bt *BridgeTrust) CommentEventConsumerOption {
+	return func(c *CommentEventConsumer) { c.bridgeTrust = bt }
 }
 
 // NewCommentEventConsumer creates a new Jetstream consumer for comment events
 func NewCommentEventConsumer(
 	commentRepo comments.Repository,
 	db *sql.DB,
+	opts ...CommentEventConsumerOption,
 ) *CommentEventConsumer {
-	return &CommentEventConsumer{
+	c := &CommentEventConsumer{
 		commentRepo: commentRepo,
 		db:          db,
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
+}
+
+// bridgeStatsAllowedForRepo reports whether the given comment repo (a user DID) is a
+// trusted bridge, i.e. whether its records may assert bridgedStats. It resolves the
+// repo's PDS host from the already-indexed users row (users.pds_url, populated from
+// identity resolution at user creation) and checks it against the trust allowlist.
+// Default-deny: any lookup failure — including the user not being indexed yet — means
+// "not trusted", so bridgedStats are ignored. The accepted consequence: a bridged
+// comment that arrives before its (bridge) author is indexed has its bridgedStats
+// dropped at create; they are folded in on the next record edit once the author exists.
+func (c *CommentEventConsumer) bridgeStatsAllowedForRepo(ctx context.Context, repoDID string) bool {
+	if c.bridgeTrust == nil {
+		return false
+	}
+	var pdsURL string
+	err := c.db.QueryRowContext(ctx, `SELECT pds_url FROM users WHERE did = $1`, repoDID).Scan(&pdsURL)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			log.Printf("debug: ignoring bridgedStats from repo %s (user not indexed; provenance unverifiable)", repoDID)
+		} else {
+			log.Printf("Warning: bridgedStats provenance check failed for repo %s: %v", repoDID, err)
+		}
+		return false
+	}
+	return c.bridgeTrust.TrustsPDS(pdsURL)
 }
 
 // HandleEvent processes a Jetstream event for comment records
@@ -124,6 +166,26 @@ func (c *CommentEventConsumer) createComment(ctx context.Context, repoDID string
 		IndexedAt:     time.Now(),
 	}
 
+	// Apply bridge-asserted origin-platform vote aggregates if the record carries them,
+	// the user repo is a trusted bridge (provenance gate, default-deny), and the
+	// aggregate passes input hygiene. At create there are no native votes, so the
+	// inclusive score is the bridged delta. bridgedStats is optional (absent for
+	// natively-authored comments). Counts + asOf are applied atomically: an unparseable
+	// or out-of-hygiene aggregate is ignored WHOLE, never leaving counts with a NULL
+	// asOf (which would defeat the update-path regression guard).
+	if commentRecord.BridgedStats != nil {
+		if c.bridgeStatsAllowedForRepo(ctx, repoDID) {
+			if up, down, asOf, ok := validatedBridgedStats(commentRecord.BridgedStats, uri); ok {
+				comment.BridgedUpvoteCount = up
+				comment.BridgedDownvoteCount = down
+				comment.BridgedStatsAsOf = &asOf
+				comment.Score = up - down
+			}
+		} else {
+			log.Printf("debug: ignoring bridgedStats on comment %s from untrusted repo %s (not a trusted bridge PDS)", uri, repoDID)
+		}
+	}
+
 	// Atomically: Index comment + Update parent counts
 	if err := c.indexCommentAndUpdateCounts(ctx, comment); err != nil {
 		return fmt.Errorf("failed to index comment and update counts: %w", err)
@@ -133,7 +195,13 @@ func (c *CommentEventConsumer) createComment(ctx context.Context, repoDID string
 	return nil
 }
 
-// updateComment updates an existing comment's content fields
+// updateComment updates an existing comment's content fields.
+//
+// Like updatePost, this is idempotent and error-return means log-and-drop (the
+// connector tracks no cursor and live-tails Jetstream, so a returned error is NOT
+// replayed): the folded bridged counts only self-heal on the bridge's next record
+// edit. We therefore skip benign no-ops (missing row, soft-deleted row) cleanly and
+// reserve errors for transient infra faults.
 func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string, commit *CommitEvent) error {
 	if commit.Record == nil {
 		return fmt.Errorf("comment update event missing record data")
@@ -154,27 +222,49 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 	// Build AT-URI for the comment being updated
 	uri := fmt.Sprintf("at://%s/social.coves.community.comment/%s", repoDID, commit.RKey)
 
-	// Fetch existing comment to validate threading references are immutable
-	existingComment, err := c.commentRepo.GetByURI(ctx, uri)
+	// Load the raw stored columns needed to enforce threading immutability, skip
+	// soft-deleted rows, and run the bridgedStats regression guard. This is a dedicated
+	// consumer-only query (mirroring post_consumer's inline SELECT): it reads the RAW
+	// native and bridged columns, deliberately NOT the folded display counts that
+	// GetByURI now returns, so the guard reasons about the true separate aggregates.
+	var (
+		storedRootURI, storedRootCID     string
+		storedParentURI, storedParentCID string
+		storedDeletedAt                  *time.Time
+		storedAsOf                       *time.Time
+	)
+	err = c.db.QueryRowContext(ctx,
+		`SELECT root_uri, root_cid, parent_uri, parent_cid, deleted_at, bridged_stats_as_of
+		 FROM comments WHERE uri = $1`, uri,
+	).Scan(&storedRootURI, &storedRootCID, &storedParentURI, &storedParentCID, &storedDeletedAt, &storedAsOf)
+	if err == sql.ErrNoRows {
+		// Comment not indexed yet: its CREATE event will index it when it arrives.
+		log.Printf("Update event for non-indexed comment: %s (will be indexed on CREATE)", uri)
+		return nil
+	}
 	if err != nil {
-		if err == comments.ErrCommentNotFound {
-			// Comment doesn't exist yet - might arrive out of order
-			log.Printf("Warning: Update event for non-existent comment: %s (will be indexed on CREATE)", uri)
-			return nil
-		}
-		return fmt.Errorf("failed to get existing comment for validation: %w", err)
+		return fmt.Errorf("failed to load stored comment for update: %w", err)
+	}
+
+	// Skip soft-deleted rows. A moderator-removed (or author-deleted) comment must not be
+	// resurrected by a debounced stats edit; the repo Update's deleted_at IS NULL guard
+	// would otherwise match no rows and surface as a spurious ErrCommentNotFound failure
+	// recurring on every stats refresh (mirrors post_consumer's soft-deleted skip).
+	if storedDeletedAt != nil {
+		log.Printf("Update event for soft-deleted comment: %s (skipping)", uri)
+		return nil
 	}
 
 	// SECURITY: Threading references are IMMUTABLE after creation
 	// Reject updates that attempt to change root/parent (prevents thread hijacking)
-	if existingComment.RootURI != commentRecord.Reply.Root.URI ||
-		existingComment.RootCID != commentRecord.Reply.Root.CID ||
-		existingComment.ParentURI != commentRecord.Reply.Parent.URI ||
-		existingComment.ParentCID != commentRecord.Reply.Parent.CID {
+	if storedRootURI != commentRecord.Reply.Root.URI ||
+		storedRootCID != commentRecord.Reply.Root.CID ||
+		storedParentURI != commentRecord.Reply.Parent.URI ||
+		storedParentCID != commentRecord.Reply.Parent.CID {
 		log.Printf("🚨 SECURITY: Rejecting comment update - threading references are immutable: %s", uri)
-		log.Printf("  Existing root: %s (CID: %s)", existingComment.RootURI, existingComment.RootCID)
+		log.Printf("  Existing root: %s (CID: %s)", storedRootURI, storedRootCID)
 		log.Printf("  Incoming root: %s (CID: %s)", commentRecord.Reply.Root.URI, commentRecord.Reply.Root.CID)
-		log.Printf("  Existing parent: %s (CID: %s)", existingComment.ParentURI, existingComment.ParentCID)
+		log.Printf("  Existing parent: %s (CID: %s)", storedParentURI, storedParentCID)
 		log.Printf("  Incoming parent: %s (CID: %s)", commentRecord.Reply.Parent.URI, commentRecord.Reply.Parent.CID)
 		return fmt.Errorf("comment threading references cannot be changed after creation")
 	}
@@ -185,15 +275,46 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 		return fmt.Errorf("failed to serialize optional fields: %w", err)
 	}
 
-	// Build comment update entity (preserves vote counts and created_at)
+	// Decide the candidate bridged aggregate handed to repo.Update. It is applied only
+	// when the record carried bridgedStats AND the user repo is a trusted bridge
+	// (provenance gate, default-deny) AND the aggregate passes input hygiene AND its asOf
+	// parses. Otherwise we pass a nil incoming asOf, and the atomic SQL guard in
+	// repo.Update leaves the stored bridged columns untouched. The newer-or-equal
+	// regression comparison happens ATOMICALLY inside the UPDATE; storedAsOf is read here
+	// only to log the strictly-older case.
+	var (
+		incomingUp, incomingDn int
+		incomingAsOf           *time.Time
+	)
+	if commentRecord.BridgedStats != nil {
+		if c.bridgeStatsAllowedForRepo(ctx, repoDID) {
+			if up, down, asOf, ok := validatedBridgedStats(commentRecord.BridgedStats, uri); ok {
+				incomingUp, incomingDn, incomingAsOf = up, down, &asOf
+				if storedAsOf != nil && asOf.Before(*storedAsOf) {
+					log.Printf("debug: ignoring strictly-older bridgedStats for %s (incoming asOf %s < stored %s)",
+						uri, asOf.Format(time.RFC3339), storedAsOf.Format(time.RFC3339))
+				}
+			}
+		} else {
+			log.Printf("debug: ignoring bridgedStats on comment %s from untrusted repo %s (not a trusted bridge PDS)", uri, repoDID)
+		}
+	}
+
+	// Build comment update entity (preserves native vote counts and created_at). The
+	// Bridged* fields carry the INCOMING candidate; repo.Update applies them atomically
+	// only when incomingAsOf is non-nil and newer-or-equal to the stored asOf, and always
+	// recomputes the inclusive score from live native counts so concurrent votes survive.
 	comment := &comments.Comment{
-		URI:           uri,
-		CID:           commit.CID,
-		Content:       commentRecord.Content,
-		ContentFacets: facetsJSON,
-		Embed:         embedJSON,
-		ContentLabels: labelsJSON,
-		Langs:         commentRecord.Langs,
+		URI:                  uri,
+		CID:                  commit.CID,
+		Content:              commentRecord.Content,
+		ContentFacets:        facetsJSON,
+		Embed:                embedJSON,
+		ContentLabels:        labelsJSON,
+		Langs:                commentRecord.Langs,
+		BridgedUpvoteCount:   incomingUp,
+		BridgedDownvoteCount: incomingDn,
+		BridgedStatsAsOf:     incomingAsOf,
 	}
 
 	// Update the comment in repository
@@ -201,7 +322,11 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 		return fmt.Errorf("failed to update comment: %w", err)
 	}
 
-	log.Printf("✓ Updated comment: %s", uri)
+	if incomingAsOf != nil {
+		log.Printf("✓ Updated comment: %s (bridgedStats candidate applied if newer-or-equal: up=%d down=%d)", uri, incomingUp, incomingDn)
+	} else {
+		log.Printf("✓ Updated comment: %s", uri)
+	}
 	return nil
 }
 
@@ -296,8 +421,17 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 				deleted_at = NULL,
 				deletion_reason = NULL,
 				deleted_by = NULL,
-				reply_count = 0
-			WHERE id = $14
+				reply_count = 0,
+				bridged_upvote_count = $14,
+				bridged_downvote_count = $15,
+				bridged_stats_as_of = $16,
+				-- Recompute the inclusive score in SQL from the SURVIVING native counts
+				-- (upvote_count/downvote_count are intentionally not reset on resurrect)
+				-- plus the incoming bridged values, upholding migration 031's invariant
+				-- score = (up+bUp) - (down+bDown). Using comment.Score here would have
+				-- written only the bridged delta and dropped the retained native votes.
+				score = upvote_count + $14 - downvote_count - $15
+			WHERE id = $17
 		`
 
 		_, err = tx.ExecContext(
@@ -315,6 +449,9 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 			pq.Array(comment.Langs),
 			comment.CreatedAt,
 			time.Now(),
+			comment.BridgedUpvoteCount,
+			comment.BridgedDownvoteCount,
+			comment.BridgedStatsAsOf,
 			commentID,
 		)
 		if err != nil {
@@ -330,12 +467,14 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 				uri, cid, rkey, commenter_did,
 				root_uri, root_cid, parent_uri, parent_cid,
 				content, content_facets, embed, content_labels, langs,
-				created_at, indexed_at
+				created_at, indexed_at,
+				bridged_upvote_count, bridged_downvote_count, bridged_stats_as_of, score
 			) VALUES (
 				$1, $2, $3, $4,
 				$5, $6, $7, $8,
 				$9, $10, $11, $12, $13,
-				$14, $15
+				$14, $15,
+				$16, $17, $18, $19
 			)
 			ON CONFLICT (uri) DO NOTHING
 			RETURNING id
@@ -347,6 +486,7 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 			comment.RootURI, comment.RootCID, comment.ParentURI, comment.ParentCID,
 			comment.Content, comment.ContentFacets, comment.Embed, comment.ContentLabels, pq.Array(comment.Langs),
 			comment.CreatedAt, time.Now(),
+			comment.BridgedUpvoteCount, comment.BridgedDownvoteCount, comment.BridgedStatsAsOf, comment.Score,
 		).Scan(&commentID)
 		if err == sql.ErrNoRows {
 			// ON CONFLICT triggered - comment was inserted by concurrent process
@@ -634,14 +774,15 @@ func validateATURI(uri string) error {
 // CommentRecordFromJetstream represents a comment record as received from Jetstream
 // Matches social.coves.community.comment lexicon
 type CommentRecordFromJetstream struct {
-	Labels    interface{}            `json:"labels,omitempty"`
-	Embed     map[string]interface{} `json:"embed,omitempty"`
-	Reply     ReplyRefFromJetstream  `json:"reply"`
-	Type      string                 `json:"$type"`
-	Content   string                 `json:"content"`
-	CreatedAt string                 `json:"createdAt"`
-	Facets    []interface{}          `json:"facets,omitempty"`
-	Langs     []string               `json:"langs,omitempty"`
+	Labels       interface{}                `json:"labels,omitempty"`
+	Embed        map[string]interface{}     `json:"embed,omitempty"`
+	BridgedStats *BridgedStatsFromJetstream `json:"bridgedStats,omitempty"`
+	Reply        ReplyRefFromJetstream      `json:"reply"`
+	Type         string                     `json:"$type"`
+	Content      string                     `json:"content"`
+	CreatedAt    string                     `json:"createdAt"`
+	Facets       []interface{}              `json:"facets,omitempty"`
+	Langs        []string                   `json:"langs,omitempty"`
 }
 
 // ReplyRefFromJetstream represents the threading structure

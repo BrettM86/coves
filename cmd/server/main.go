@@ -749,7 +749,29 @@ func main() {
 		postJetstreamURL = "ws://localhost:6008/subscribe?wantedCollections=social.coves.community.post"
 	}
 
-	postEventConsumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService, db)
+	// Provenance gate for bridge-asserted vote aggregates (bridgedStats). Only records
+	// whose repo is hosted on a trusted bridge PDS may inflate their displayed vote
+	// counts/score; every other (native) repo is default-denied so it cannot self-assert
+	// bridgedStats. Configured via TRUSTED_BRIDGE_PDS_HOSTS (comma-separated PDS host
+	// URLs), mirroring the COMMUNITY_CREATORS allowlist convention. Empty => bridgedStats
+	// are universally ignored (safe default for deployments with no bridge).
+	var trustedBridgePDSHosts []string
+	if hosts := os.Getenv("TRUSTED_BRIDGE_PDS_HOSTS"); hosts != "" {
+		for _, h := range strings.Split(hosts, ",") {
+			if h = strings.TrimSpace(h); h != "" {
+				trustedBridgePDSHosts = append(trustedBridgePDSHosts, h)
+			}
+		}
+	}
+	bridgeTrust := jetstream.NewBridgeTrust(trustedBridgePDSHosts)
+	if len(trustedBridgePDSHosts) > 0 {
+		log.Printf("bridgedStats provenance: trusting %d bridge PDS host(s)", len(trustedBridgePDSHosts))
+	} else {
+		log.Println("bridgedStats provenance: no trusted bridge PDS hosts configured; bridgedStats will be ignored")
+	}
+
+	postEventConsumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService, db,
+		jetstream.WithPostBridgeTrust(bridgeTrust))
 	postJetstreamConnector := jetstream.NewPostJetstreamConnector(postEventConsumer, postJetstreamURL)
 
 	go func() {
@@ -817,7 +839,8 @@ func main() {
 		commentJetstreamURL = "ws://localhost:6008/subscribe?wantedCollections=social.coves.community.comment"
 	}
 
-	commentEventConsumer := jetstream.NewCommentEventConsumer(commentRepo, db)
+	commentEventConsumer := jetstream.NewCommentEventConsumer(commentRepo, db,
+		jetstream.WithCommentBridgeTrust(bridgeTrust))
 	commentJetstreamConnector := jetstream.NewCommentJetstreamConnector(commentEventConsumer, commentJetstreamURL)
 
 	go func() {

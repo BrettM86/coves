@@ -14,13 +14,24 @@ import (
 )
 
 // PostEventConsumer consumes post-related events from Jetstream
-// Handles CREATE and DELETE operations for social.coves.community.post
-// UPDATE handler will be added when that feature is implemented
+// Handles CREATE, UPDATE, and DELETE operations for social.coves.community.post
 type PostEventConsumer struct {
 	postRepo      posts.Repository
 	communityRepo communities.Repository
 	userService   users.UserService
 	db            *sql.DB // Direct DB access for atomic count reconciliation
+	// bridgeTrust gates whether a post's community repo may assert bridgedStats.
+	// nil means default-deny (bridgedStats are ignored for every post).
+	bridgeTrust *BridgeTrust
+}
+
+// PostEventConsumerOption configures optional PostEventConsumer behaviour.
+type PostEventConsumerOption func(*PostEventConsumer)
+
+// WithPostBridgeTrust installs the provenance gate that decides which community repos
+// may assert bridgedStats on their posts. Without it, bridgedStats are default-denied.
+func WithPostBridgeTrust(bt *BridgeTrust) PostEventConsumerOption {
+	return func(c *PostEventConsumer) { c.bridgeTrust = bt }
 }
 
 // NewPostEventConsumer creates a new Jetstream consumer for post events
@@ -29,17 +40,22 @@ func NewPostEventConsumer(
 	communityRepo communities.Repository,
 	userService users.UserService,
 	db *sql.DB,
+	opts ...PostEventConsumerOption,
 ) *PostEventConsumer {
-	return &PostEventConsumer{
+	c := &PostEventConsumer{
 		postRepo:      postRepo,
 		communityRepo: communityRepo,
 		userService:   userService,
 		db:            db,
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 // HandleEvent processes a Jetstream event for post records
-// Handles CREATE and DELETE operations - UPDATE deferred until that feature exists
+// Handles CREATE, UPDATE, and DELETE operations
 func (c *PostEventConsumer) HandleEvent(ctx context.Context, event *JetstreamEvent) error {
 	// We only care about commit events for post records
 	if event.Kind != "commit" || event.Commit == nil {
@@ -53,12 +69,14 @@ func (c *PostEventConsumer) HandleEvent(ctx context.Context, event *JetstreamEve
 		switch commit.Operation {
 		case "create":
 			return c.createPost(ctx, event.Did, commit)
+		case "update":
+			return c.updatePost(ctx, event.Did, commit)
 		case "delete":
 			return c.deletePost(ctx, event.Did, commit)
 		}
 	}
 
-	// Silently ignore other operations (update) and other collections
+	// Silently ignore other operations and other collections
 	return nil
 }
 
@@ -74,9 +92,11 @@ func (c *PostEventConsumer) createPost(ctx context.Context, repoDID string, comm
 		return fmt.Errorf("failed to parse post record: %w", err)
 	}
 
-	// SECURITY: Validate this is a legitimate post event
-	if err := c.validatePostEvent(ctx, repoDID, postRecord); err != nil {
-		log.Printf("🚨 SECURITY: Rejecting post event: %v", err)
+	// SECURITY: Validate this is a legitimate post event. Returns the community row so
+	// we can check bridgedStats provenance against its resolved PDS host.
+	community, err := c.validatePostEvent(ctx, repoDID, postRecord)
+	if err != nil {
+		logPostValidationRejection("post create", err)
 		return err
 	}
 
@@ -103,11 +123,31 @@ func (c *PostEventConsumer) createPost(ctx context.Context, repoDID string, comm
 		Content:      postRecord.Content,
 		CreatedAt:    createdAt,
 		IndexedAt:    time.Now(),
-		// Stats remain at 0 (no votes yet)
+		// Native stats remain at 0 (no native votes yet); bridged stats applied below.
 		UpvoteCount:   0,
 		DownvoteCount: 0,
 		Score:         0,
 		CommentCount:  0,
+	}
+
+	// Apply bridge-asserted origin-platform vote aggregates if the record carries them,
+	// the community repo is a trusted bridge (provenance gate, default-deny), and the
+	// aggregate passes input hygiene. At create there are no native votes, so the
+	// inclusive score is simply the bridged delta. bridgedStats is optional (absent for
+	// natively-authored posts). The counts + asOf are applied atomically: an unparseable
+	// or out-of-hygiene aggregate is ignored WHOLE, never leaving counts with a NULL
+	// asOf (which would defeat the update-path regression guard).
+	if postRecord.BridgedStats != nil {
+		if c.bridgeTrust.TrustsPDS(community.PDSURL) {
+			if up, down, asOf, ok := validatedBridgedStats(postRecord.BridgedStats, uri); ok {
+				post.BridgedUpvoteCount = up
+				post.BridgedDownvoteCount = down
+				post.BridgedStatsAsOf = &asOf
+				post.Score = up - down
+			}
+		} else {
+			log.Printf("debug: ignoring bridgedStats on post %s from untrusted repo %s (not a trusted bridge PDS)", uri, repoDID)
+		}
 	}
 
 	// Serialize JSON fields (facets, embed, labels)
@@ -165,6 +205,210 @@ func (c *PostEventConsumer) deletePost(ctx context.Context, repoDID string, comm
 	return nil
 }
 
+// updatePost handles post record update events from Jetstream.
+//
+// Posts previously ignored updates; the bridge now edits post records (content and
+// especially the refreshed bridgedStats aggregate) via debounced record updates, so
+// we must fold those into the index. Every branch below is idempotent, which matters
+// because the connector logs-and-drops on error WITHOUT tracking a cursor (it live-
+// tails Jetstream): a returned error is NOT retried or replayed, so we only return an
+// error for genuinely transient infra faults and otherwise skip benign no-ops cleanly.
+// The accepted consequence for stats: if a bridgedStats update errors out, the folded
+// counts stay stale until the bridge next edits the record (which it does on every
+// stats refresh), so the desync is self-healing rather than permanent.
+//
+// Security mirrors createPost (repoDID must equal record.community; community and
+// author must exist). We additionally reject reassignment: an update may not move a
+// post to a different community or author. Reassignment, a missing stored row, and a
+// soft-deleted stored row are all skipped (logged, no error).
+func (c *PostEventConsumer) updatePost(ctx context.Context, repoDID string, commit *CommitEvent) error {
+	if commit.Record == nil {
+		return fmt.Errorf("post update event missing record data")
+	}
+
+	postRecord, err := parsePostRecord(commit.Record)
+	if err != nil {
+		return fmt.Errorf("failed to parse post record: %w", err)
+	}
+
+	// SECURITY: identical validation to create (repo == community, community/author exist).
+	community, err := c.validatePostEvent(ctx, repoDID, postRecord)
+	if err != nil {
+		logPostValidationRejection("post update", err)
+		return err
+	}
+
+	uri := fmt.Sprintf("at://%s/social.coves.community.post/%s", repoDID, commit.RKey)
+
+	// Fetch the stored row so we can enforce immutability and run the asOf regression guard.
+	var (
+		storedID           int64
+		storedCommunityDID string
+		storedAuthorDID    string
+		storedDeletedAt    *time.Time
+		storedAsOf         *time.Time
+	)
+	err = c.db.QueryRowContext(ctx,
+		`SELECT id, community_did, author_did, deleted_at, bridged_stats_as_of FROM posts WHERE uri = $1`,
+		uri,
+	).Scan(&storedID, &storedCommunityDID, &storedAuthorDID, &storedDeletedAt, &storedAsOf)
+	if err == sql.ErrNoRows {
+		// Not indexed yet (out-of-order delivery). Jetstream will replay CREATE; skip.
+		log.Printf("Update event for non-indexed post: %s (will be indexed on CREATE)", uri)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to load stored post for update: %w", err)
+	}
+
+	// Skip soft-deleted rows: a deleted post should not be resurrected by an edit.
+	if storedDeletedAt != nil {
+		log.Printf("Update event for soft-deleted post: %s (skipping)", uri)
+		return nil
+	}
+
+	// SECURITY: community and author are immutable. Reassignment is rejected (skipped).
+	if storedCommunityDID != postRecord.Community || storedAuthorDID != postRecord.Author {
+		log.Printf("🚨 SECURITY: Rejecting post update - community/author reassignment is not allowed: %s (stored community=%s author=%s; incoming community=%s author=%s)",
+			uri, storedCommunityDID, storedAuthorDID, postRecord.Community, postRecord.Author)
+		return nil
+	}
+
+	// Serialize optional JSON content fields (return on failure to avoid silent data loss).
+	var facetsJSON, embedJSON, labelsJSON sql.NullString
+	if postRecord.Facets != nil {
+		b, marshalErr := json.Marshal(postRecord.Facets)
+		if marshalErr != nil {
+			return fmt.Errorf("failed to serialize facets: %w", marshalErr)
+		}
+		facetsJSON.String, facetsJSON.Valid = string(b), true
+	}
+	if postRecord.Embed != nil {
+		b, marshalErr := json.Marshal(postRecord.Embed)
+		if marshalErr != nil {
+			return fmt.Errorf("failed to serialize embed: %w", marshalErr)
+		}
+		embedJSON.String, embedJSON.Valid = string(b), true
+	}
+	if postRecord.Labels != nil {
+		b, marshalErr := json.Marshal(postRecord.Labels)
+		if marshalErr != nil {
+			return fmt.Errorf("failed to serialize labels: %w", marshalErr)
+		}
+		labelsJSON.String, labelsJSON.Valid = string(b), true
+	}
+
+	// Decide the candidate bridged aggregate to hand to the atomic UPDATE. It is applied
+	// only when the record carried bridgedStats AND the community repo is a trusted
+	// bridge (provenance gate, default-deny) AND the aggregate passes input hygiene
+	// (non-negative, within the magnitude cap) AND its asOf parses. Otherwise we pass a
+	// NULL incoming asOf, which makes the SQL guard below leave the stored bridged
+	// columns untouched. The actual newer-or-equal regression comparison is done
+	// ATOMICALLY inside the UPDATE (see the CASE expressions) rather than read-here /
+	// write-later, so it cannot race a concurrent write; storedAsOf is read only to log
+	// the strictly-older case.
+	var (
+		incomingUp, incomingDown int
+		incomingAsOf             *time.Time
+	)
+	if postRecord.BridgedStats != nil {
+		if c.bridgeTrust.TrustsPDS(community.PDSURL) {
+			if up, down, asOf, ok := validatedBridgedStats(postRecord.BridgedStats, uri); ok {
+				incomingUp, incomingDown, incomingAsOf = up, down, &asOf
+				// Best-effort log only (the write is authoritative and atomic): a
+				// strictly-older asOf is dropped by the SQL guard. Kept at debug because
+				// the bridge re-sends the same asOf on every content edit, so this is
+				// noise, not an anomaly.
+				if storedAsOf != nil && asOf.Before(*storedAsOf) {
+					log.Printf("debug: ignoring strictly-older bridgedStats for %s (incoming asOf %s < stored %s)",
+						uri, asOf.Format(time.RFC3339), storedAsOf.Format(time.RFC3339))
+				}
+			}
+		} else {
+			log.Printf("debug: ignoring bridgedStats on post %s from untrusted repo %s (not a trusted bridge PDS)", uri, repoDID)
+		}
+	}
+
+	// Single atomic UPDATE. edited_at is bumped only when content actually changed (so a
+	// debounced stats-only refresh does not mark the post edited). The bridged columns
+	// and the inclusive score move together via a shared applies-guard: apply the
+	// incoming counts only when an incoming asOf is present and is newer-or-equal to the
+	// stored one (NULL stored => first application). score is always recomputed from the
+	// LIVE native counts plus whichever bridged counts win, so concurrent native votes
+	// are never clobbered. $10 is the incoming asOf (NULL => no bridged change); the
+	// stored asOf is read directly from the row, keeping the compare atomic.
+	updateQuery := `
+		UPDATE posts
+		SET
+			cid = $2,
+			title = $3,
+			content = $4,
+			content_facets = $5,
+			embed = $6,
+			content_labels = $7,
+			edited_at = CASE
+				WHEN title IS DISTINCT FROM $3 OR content IS DISTINCT FROM $4
+				  OR content_facets IS DISTINCT FROM $5 OR embed IS DISTINCT FROM $6
+				  OR content_labels IS DISTINCT FROM $7
+				THEN NOW() ELSE edited_at END,
+			bridged_upvote_count = CASE
+				WHEN $10::timestamptz IS NOT NULL AND (bridged_stats_as_of IS NULL OR $10 >= bridged_stats_as_of)
+				THEN $8 ELSE bridged_upvote_count END,
+			bridged_downvote_count = CASE
+				WHEN $10::timestamptz IS NOT NULL AND (bridged_stats_as_of IS NULL OR $10 >= bridged_stats_as_of)
+				THEN $9 ELSE bridged_downvote_count END,
+			bridged_stats_as_of = CASE
+				WHEN $10::timestamptz IS NOT NULL AND (bridged_stats_as_of IS NULL OR $10 >= bridged_stats_as_of)
+				THEN $10 ELSE bridged_stats_as_of END,
+			score = upvote_count - downvote_count
+				+ CASE
+					WHEN $10::timestamptz IS NOT NULL AND (bridged_stats_as_of IS NULL OR $10 >= bridged_stats_as_of)
+					THEN $8 ELSE bridged_upvote_count END
+				- CASE
+					WHEN $10::timestamptz IS NOT NULL AND (bridged_stats_as_of IS NULL OR $10 >= bridged_stats_as_of)
+					THEN $9 ELSE bridged_downvote_count END
+		WHERE id = $1 AND deleted_at IS NULL
+	`
+	result, err := c.db.ExecContext(ctx, updateQuery,
+		storedID, commit.CID, postRecord.Title, postRecord.Content,
+		facetsJSON, embedJSON, labelsJSON,
+		incomingUp, incomingDown, incomingAsOf,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update post: %w", err)
+	}
+
+	// A post can be soft-deleted between the load above and this UPDATE; the
+	// deleted_at IS NULL guard then matches no rows. Report that as a skip instead of
+	// falsely logging a successful update (mirrors vote_consumer's RowsAffected check).
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to check post update result: %w", err)
+	}
+	if rowsAffected == 0 {
+		log.Printf("Update event for post that vanished/was deleted between load and update: %s (skipping)", uri)
+		return nil
+	}
+
+	if incomingAsOf != nil {
+		log.Printf("✓ Updated post: %s (bridgedStats candidate applied if newer-or-equal: up=%d down=%d)", uri, incomingUp, incomingDown)
+	} else {
+		log.Printf("✓ Updated post: %s", uri)
+	}
+	return nil
+}
+
+// parseBridgedAsOf parses a bridgedStats.asOf timestamp, logging (and returning the
+// error) on failure so callers can decide to skip applying the aggregate.
+func parseBridgedAsOf(asOf, uri string) (time.Time, error) {
+	t, err := time.Parse(time.RFC3339, asOf)
+	if err != nil {
+		log.Printf("Warning: failed to parse bridgedStats.asOf %q for %s: %v", asOf, uri, err)
+		return time.Time{}, err
+	}
+	return t, nil
+}
+
 // indexPostAndReconcileCounts atomically indexes a post and reconciles comment counts
 // This fixes the race condition where comments arrive before their parent post
 func (c *PostEventConsumer) indexPostAndReconcileCounts(ctx context.Context, post *posts.Post) error {
@@ -200,11 +444,13 @@ func (c *PostEventConsumer) indexPostAndReconcileCounts(ctx context.Context, pos
 		INSERT INTO posts (
 			uri, cid, rkey, author_did, community_did,
 			title, content, content_facets, embed, content_labels,
-			created_at, indexed_at
+			created_at, indexed_at,
+			bridged_upvote_count, bridged_downvote_count, bridged_stats_as_of, score
 		) VALUES (
 			$1, $2, $3, $4, $5,
 			$6, $7, $8, $9, $10,
-			$11, NOW()
+			$11, NOW(),
+			$12, $13, $14, $15
 		)
 		ON CONFLICT (uri) DO NOTHING
 		RETURNING id
@@ -216,6 +462,7 @@ func (c *PostEventConsumer) indexPostAndReconcileCounts(ctx context.Context, pos
 		post.URI, post.CID, post.RKey, post.AuthorDID, post.CommunityDID,
 		post.Title, post.Content, facetsJSON, embedJSON, labelsJSON,
 		post.CreatedAt,
+		post.BridgedUpvoteCount, post.BridgedDownvoteCount, post.BridgedStatsAsOf, post.Score,
 	).Scan(&postID)
 
 	// If no rows returned, post already exists (idempotent - OK for Jetstream replays)
@@ -268,9 +515,28 @@ func (c *PostEventConsumer) indexPostAndReconcileCounts(ctx context.Context, pos
 	return nil
 }
 
-// validatePostEvent performs security validation on post events
-// This prevents malicious actors from indexing fake posts
-func (c *PostEventConsumer) validatePostEvent(ctx context.Context, repoDID string, post *PostRecordFromJetstream) error {
+// errValidationInfra marks a post-validation failure caused by an infrastructure fault
+// (e.g. a DB error while checking that the community or author exists) rather than a
+// policy rejection. The two are logged differently: policy rejections are security
+// events (🚨), infra faults are plain operational errors that must NOT masquerade as
+// an attack in the logs.
+var errValidationInfra = errors.New("validation infrastructure error")
+
+// logPostValidationRejection logs a validatePostEvent failure, distinguishing genuine
+// policy rejections (security-relevant) from infrastructure faults (operational). See
+// errValidationInfra.
+func logPostValidationRejection(op string, err error) {
+	if errors.Is(err, errValidationInfra) {
+		log.Printf("Error: %s could not be validated (infrastructure fault, not a rejection): %v", op, err)
+		return
+	}
+	log.Printf("🚨 SECURITY: Rejecting %s: %v", op, err)
+}
+
+// validatePostEvent performs security validation on post events and, on success,
+// returns the community row (whose resolved PDS host drives the bridgedStats
+// provenance gate). This prevents malicious actors from indexing fake posts.
+func (c *PostEventConsumer) validatePostEvent(ctx context.Context, repoDID string, post *PostRecordFromJetstream) (*communities.Community, error) {
 	// CRITICAL SECURITY CHECK:
 	// Posts MUST come from community repositories, not user repositories
 	// This prevents users from creating posts that appear to be from communities they don't control
@@ -284,59 +550,70 @@ func (c *PostEventConsumer) validatePostEvent(ctx context.Context, repoDID strin
 	//   - We verify event.Did (repo owner) == post.community (claimed community)
 	//   - Reject if mismatch
 	if repoDID != post.Community {
-		return fmt.Errorf("repository DID (%s) doesn't match community DID (%s) - posts must come from community repos",
+		return nil, fmt.Errorf("repository DID (%s) doesn't match community DID (%s) - posts must come from community repos",
 			repoDID, post.Community)
 	}
 
-	// CRITICAL: Verify community exists in AppView
-	// Posts MUST reference valid communities (enforced by FK constraint)
-	// If community isn't indexed yet, we must reject the post
-	// Jetstream will replay events, so the post will be indexed once community is ready
-	_, err := c.communityRepo.GetByDID(ctx, post.Community)
+	// CRITICAL: Verify community exists in AppView.
+	// Posts MUST reference valid communities (enforced by FK constraint). If the
+	// community isn't indexed yet we reject; because the connector does not track a
+	// cursor, the post is only re-indexed if the record is re-emitted (which the bridge
+	// does on edits) rather than automatically replayed.
+	community, err := c.communityRepo.GetByDID(ctx, post.Community)
 	if err != nil {
 		if communities.IsNotFound(err) {
-			// Reject - community must be indexed before posts
-			// This maintains referential integrity and prevents orphaned posts
-			return fmt.Errorf("community not found: %s - cannot index post before community", post.Community)
+			// Policy rejection - community must be indexed before posts.
+			return nil, fmt.Errorf("community not found: %s - cannot index post before community", post.Community)
 		}
-		// Database error or other issue
-		return fmt.Errorf("failed to verify community exists: %w", err)
+		// Infrastructure fault (DB error): not an attack. Tag it so the caller logs it
+		// as an operational error, not a 🚨 rejection.
+		return nil, fmt.Errorf("%w: failed to verify community exists: %v", errValidationInfra, err)
 	}
 
-	// CRITICAL: Verify author exists in AppView
-	// Every post MUST have a valid author (enforced by FK constraint)
-	// Even though posts live in community repos, they belong to specific authors
-	// If author isn't indexed yet, we must reject the post
+	// CRITICAL: Verify author exists in AppView.
+	// Every post MUST have a valid author (enforced by FK constraint). Even though posts
+	// live in community repos, they belong to specific authors.
 	_, err = c.userService.GetUserByDID(ctx, post.Author)
 	if err != nil {
 		// Use proper error type checking with errors.Is()
 		if errors.Is(err, users.ErrUserNotFound) {
-			// Reject - author must be indexed before posts
-			// This maintains referential integrity and prevents orphaned posts
-			return fmt.Errorf("author not found: %s - cannot index post before author", post.Author)
+			// Policy rejection - author must be indexed before posts.
+			return nil, fmt.Errorf("author not found: %s - cannot index post before author", post.Author)
 		}
-		// Database error or other issue
-		return fmt.Errorf("failed to verify author exists: %w", err)
+		// Infrastructure fault (DB error): not an attack.
+		return nil, fmt.Errorf("%w: failed to verify author exists: %v", errValidationInfra, err)
 	}
 
-	return nil
+	return community, nil
 }
 
 // PostRecordFromJetstream represents a post record as received from Jetstream
 // Matches the structure written to PDS via social.coves.community.post
 type PostRecordFromJetstream struct {
-	OriginalAuthor interface{}            `json:"originalAuthor,omitempty"`
-	FederatedFrom  interface{}            `json:"federatedFrom,omitempty"`
-	Location       interface{}            `json:"location,omitempty"`
-	Title          *string                `json:"title,omitempty"`
-	Content        *string                `json:"content,omitempty"`
-	Embed          map[string]interface{} `json:"embed,omitempty"`
-	Labels         *posts.SelfLabels      `json:"labels,omitempty"`
-	Type           string                 `json:"$type"`
-	Community      string                 `json:"community"`
-	Author         string                 `json:"author"`
-	CreatedAt      string                 `json:"createdAt"`
-	Facets         []interface{}          `json:"facets,omitempty"`
+	OriginalAuthor interface{}                `json:"originalAuthor,omitempty"`
+	FederatedFrom  interface{}                `json:"federatedFrom,omitempty"`
+	Location       interface{}                `json:"location,omitempty"`
+	Title          *string                    `json:"title,omitempty"`
+	Content        *string                    `json:"content,omitempty"`
+	Embed          map[string]interface{}     `json:"embed,omitempty"`
+	Labels         *posts.SelfLabels          `json:"labels,omitempty"`
+	BridgedStats   *BridgedStatsFromJetstream `json:"bridgedStats,omitempty"`
+	Type           string                     `json:"$type"`
+	Community      string                     `json:"community"`
+	Author         string                     `json:"author"`
+	CreatedAt      string                     `json:"createdAt"`
+	Facets         []interface{}              `json:"facets,omitempty"`
+}
+
+// BridgedStatsFromJetstream is the bridge-asserted aggregate of origin-platform
+// votes carried on federated/bridged post and comment records (social.coves
+// community.post / community.comment #bridgedStats). A nil pointer means the
+// record carried no bridgedStats, which callers treat as "leave stored counts
+// alone" rather than "reset to zero".
+type BridgedStatsFromJetstream struct {
+	Upvotes   int    `json:"upvotes"`
+	Downvotes int    `json:"downvotes"`
+	AsOf      string `json:"asOf"`
 }
 
 // parsePostRecord converts a raw Jetstream record map to a PostRecordFromJetstream

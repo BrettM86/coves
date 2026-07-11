@@ -62,7 +62,7 @@ func (r *postgresFeedRepo) GetCommunityFeed(ctx context.Context, req communityFe
 			p.community_did, c.handle as community_handle, c.name as community_name, c.avatar_cid as community_avatar, c.pds_url as community_pds_url,
 			p.title, p.content, p.content_facets, p.embed, p.content_labels,
 			p.created_at, p.edited_at, p.indexed_at,
-			p.upvote_count, p.downvote_count, p.score, p.comment_count,
+			p.upvote_count + p.bridged_upvote_count AS upvote_count, p.downvote_count + p.bridged_downvote_count AS downvote_count, p.score, p.comment_count,
 			%s as hot_rank
 		FROM posts p`, communityFeedHotRankExpression)
 	} else {
@@ -73,7 +73,7 @@ func (r *postgresFeedRepo) GetCommunityFeed(ctx context.Context, req communityFe
 			p.community_did, c.handle as community_handle, c.name as community_name, c.avatar_cid as community_avatar, c.pds_url as community_pds_url,
 			p.title, p.content, p.content_facets, p.embed, p.content_labels,
 			p.created_at, p.edited_at, p.indexed_at,
-			p.upvote_count, p.downvote_count, p.score, p.comment_count,
+			p.upvote_count + p.bridged_upvote_count AS upvote_count, p.downvote_count + p.bridged_downvote_count AS downvote_count, p.score, p.comment_count,
 			NULL::numeric as hot_rank
 		FROM posts p`
 	}

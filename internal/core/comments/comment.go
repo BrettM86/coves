@@ -37,20 +37,27 @@ type Comment struct {
 	DownvoteCount   int        `json:"downvoteCount" db:"downvote_count"`
 	Score           int        `json:"score" db:"score"`
 	ReplyCount      int        `json:"replyCount" db:"reply_count"`
+
+	// Bridge-asserted origin-platform vote aggregates for federated/bridged content.
+	// Populated from the record's bridgedStats field; kept separate from native votes.
+	// BridgedStatsAsOf is nil when no bridgedStats have ever been applied.
+	BridgedUpvoteCount   int        `json:"bridgedUpvoteCount" db:"bridged_upvote_count"`
+	BridgedDownvoteCount int        `json:"bridgedDownvoteCount" db:"bridged_downvote_count"`
+	BridgedStatsAsOf     *time.Time `json:"bridgedStatsAsOf,omitempty" db:"bridged_stats_as_of"`
 }
 
 // CommentRecord represents the atProto record structure indexed from Jetstream
 // This is the data structure that gets stored in the user's repository
 // Matches social.coves.community.comment lexicon
 type CommentRecord struct {
-	Embed     interface{}  `json:"embed,omitempty"`
-	Labels    *SelfLabels  `json:"labels,omitempty"`
-	Reply     ReplyRef     `json:"reply"`
-	Type      string       `json:"$type"`
-	Content   string       `json:"content"`
-	CreatedAt string       `json:"createdAt"`
+	Embed     interface{}   `json:"embed,omitempty"`
+	Labels    *SelfLabels   `json:"labels,omitempty"`
+	Reply     ReplyRef      `json:"reply"`
+	Type      string        `json:"$type"`
+	Content   string        `json:"content"`
+	CreatedAt string        `json:"createdAt"`
 	Facets    []interface{} `json:"facets,omitempty"`
-	Langs     []string     `json:"langs,omitempty"`
+	Langs     []string      `json:"langs,omitempty"`
 }
 
 // ReplyRef represents the threading structure from the comment lexicon

@@ -39,6 +39,13 @@ type Post struct {
 	DownvoteCount int        `json:"downvoteCount" db:"downvote_count"`
 	Score         int        `json:"score" db:"score"`
 	CommentCount  int        `json:"commentCount" db:"comment_count"`
+
+	// Bridge-asserted origin-platform vote aggregates for federated/bridged content.
+	// Populated from the record's bridgedStats field; kept separate from native votes.
+	// BridgedStatsAsOf is nil when no bridgedStats have ever been applied.
+	BridgedUpvoteCount   int        `json:"bridgedUpvoteCount" db:"bridged_upvote_count"`
+	BridgedDownvoteCount int        `json:"bridgedDownvoteCount" db:"bridged_downvote_count"`
+	BridgedStatsAsOf     *time.Time `json:"bridgedStatsAsOf,omitempty" db:"bridged_stats_as_of"`
 }
 
 // CreatePostRequest represents input for creating a new post
