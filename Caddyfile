@@ -7,6 +7,17 @@
 #   - pds.coves.me: PDS canonical hostname (for relay registration)
 #   - coves.me: PDS legacy hostname (kept for compatibility)
 
+# Global options: gate on-demand certificate issuance (used by the Tidepool
+# handle-subdomain block below). Caddy calls this endpoint with ?domain=<host>
+# before requesting a cert; Tidepool answers 200 only for handles it actually
+# serves. Without the gate, the *.tdpl.io wildcard DNS would let any probe of
+# a random subdomain burn a Let's Encrypt issuance attempt.
+{
+    on_demand_tls {
+        ask http://tidepool:80/.well-known/tidepool-tls-ask
+    }
+}
+
 # Community handle subdomains (e.g., gaming.coves.social)
 # These need to route /.well-known/atproto-did to PDS for handle resolution
 #
@@ -104,6 +115,63 @@ coves.social {
 
     # Enable compression
     encode gzip zstd
+}
+
+# Tidepool bridge (ActivityPub → atproto). The bridge container lives in the
+# /opt/tidepool stack and joins coves-prod-network so this Caddy can reach it.
+# Apex: AP inbox/actor/webfinger/nodeinfo + the com.atproto.sync.* surface
+# (subscribeRepos WebSocket upgrades are automatic in Caddy v2).
+tdpl.io {
+    reverse_proxy tidepool:80 {
+        health_uri /xrpc/_health
+        health_interval 30s
+        health_timeout 5s
+
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    log {
+        output stdout
+        format json
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+
+    encode gzip zstd
+}
+
+# Bridged-handle subdomains: alice.lemmy-world.tdpl.io etc. — always two
+# labels below the apex. Certificates are issued on demand at handshake time
+# (per exact hostname, HTTP-01), gated by the global on_demand_tls ask above,
+# because a single wildcard cert only covers one label level. Requires the
+# *.tdpl.io DNS record to point DIRECTLY at this server (no CDN proxying).
+# Only /.well-known/atproto-did and resolveHandle matter on these hosts;
+# Tidepool answers from the Host header.
+*.tdpl.io, *.*.tdpl.io {
+    tls {
+        on_demand
+    }
+
+    reverse_proxy tidepool:80 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options "nosniff"
+        -Server
+    }
 }
 
 # PDS Domain (both hostnames point to same PDS)
