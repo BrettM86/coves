@@ -812,6 +812,15 @@ func parseCommunityProfile(record map[string]interface{}) (*CommunityProfile, er
 		return nil, fmt.Errorf("failed to unmarshal profile: %w", err)
 	}
 
+	// The lexicon marks visibility optional with default "public"
+	// (lexicons/social/coves/community/profile.json). A record that omits
+	// it is valid — writers relying on the declared default (the Tidepool
+	// bridge does) must not fail the communities_visibility_check
+	// constraint with an empty string.
+	if profile.Visibility == "" {
+		profile.Visibility = "public"
+	}
+
 	return &profile, nil
 }
 
