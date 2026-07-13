@@ -13,6 +13,13 @@
 # serves. Without the gate, the *.tdpl.io wildcard DNS would let any probe of
 # a random subdomain burn a Let's Encrypt issuance attempt.
 {
+    # ACME account email. Also required (since Caddy 2.8) for ZeroSSL to be
+    # provisioned as a fallback CA — without it Let's Encrypt is the ONLY
+    # issuer, and hitting LE's 50-new-certs-per-domain-per-week limit with
+    # on-demand handle certs would hard-fail new handshakes instead of
+    # falling back.
+    email brettmay0212@gmail.com
+
     on_demand_tls {
         ask http://tidepool:80/.well-known/tidepool-tls-ask
     }
@@ -122,15 +129,18 @@ coves.social {
 # Apex: AP inbox/actor/webfinger/nodeinfo + the com.atproto.sync.* surface
 # (subscribeRepos WebSocket upgrades are automatic in Caddy v2).
 tdpl.io {
-    reverse_proxy tidepool:80 {
-        health_uri /xrpc/_health
-        health_interval 30s
-        health_timeout 5s
+    # AP activities are small JSON; nothing legitimately POSTs large bodies
+    # here (media is fetched outbound by the bridge, never uploaded).
+    request_body {
+        max_size 1MB
+    }
 
-        header_up Host {host}
+    # No active health check: with a single upstream one failed/slow probe
+    # blackholes the whole site with 503s until the next probe (nothing to
+    # fail over to). Passive dial failure -> 502 carries the same signal,
+    # and Lemmy treats 5xx as retryable either way.
+    reverse_proxy tidepool:80 {
         header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-For {remote_host}
-        header_up X-Forwarded-Proto {scheme}
     }
 
     log {
@@ -161,10 +171,7 @@ tdpl.io {
     }
 
     reverse_proxy tidepool:80 {
-        header_up Host {host}
         header_up X-Real-IP {remote_host}
-        header_up X-Forwarded-For {remote_host}
-        header_up X-Forwarded-Proto {scheme}
     }
 
     header {
