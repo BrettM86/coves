@@ -161,6 +161,7 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 
 	// atProto Best Practice: Handles are NOT stored in records (they're mutable, resolved from DIDs)
 	// If handle is missing from record (new atProto-compliant records), resolve it from PLC/DID
+	var resolvedPDSURL string
 	if profile.Handle == "" {
 		if c.identityResolver != nil {
 			// Production: Resolve handle from PLC (source of truth)
@@ -171,6 +172,12 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 				return fmt.Errorf("failed to resolve handle from PLC for %s: %w (no fallback - will retry during backfill)", did, err)
 			}
 			profile.Handle = identity.Handle
+			// Persist the resolved PDS host: BridgeTrust gates bridgedStats
+			// on the post's community row carrying its repo's PDS URL, and a
+			// firehose-indexed community (a Tidepool bridge community above
+			// all) is created HERE — leaving pds_url empty makes the trust
+			// gate default-deny every bridged vote count forever.
+			resolvedPDSURL = identity.PDSURL
 			log.Printf("✓ Resolved handle from PLC: %s (did=%s, method=%s)",
 				profile.Handle, did, identity.Method)
 		} else {
@@ -215,6 +222,7 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 		OwnerDID:               ownerDID, // V2: same as DID (self-owned)
 		CreatedByDID:           profile.CreatedBy,
 		HostedByDID:            profile.HostedBy,
+		PDSURL:                 resolvedPDSURL,
 		Visibility:             profile.Visibility,
 		AllowExternalDiscovery: profile.Federation.AllowExternalDiscovery,
 		ModerationType:         profile.ModerationType,
@@ -281,6 +289,7 @@ func (c *CommunityEventConsumer) updateCommunity(ctx context.Context, did string
 
 	// atProto Best Practice: Handles are NOT stored in records (they're mutable, resolved from DIDs)
 	// If handle is missing from record (new atProto-compliant records), resolve it from PLC/DID
+	var resolvedPDSURL string
 	if profile.Handle == "" {
 		if c.identityResolver != nil {
 			// Production: Resolve handle from PLC (source of truth)
@@ -291,6 +300,11 @@ func (c *CommunityEventConsumer) updateCommunity(ctx context.Context, did string
 				return fmt.Errorf("failed to resolve handle from PLC for %s: %w (no fallback - will retry during backfill)", did, err)
 			}
 			profile.Handle = identity.Handle
+			// Backfill the stored PDS host too (see createCommunity): rows
+			// indexed before this fix carry an empty pds_url, which makes
+			// BridgeTrust default-deny their posts' bridgedStats. Update()
+			// only overwrites when non-empty.
+			resolvedPDSURL = identity.PDSURL
 			log.Printf("✓ Resolved handle from PLC: %s (did=%s, method=%s)",
 				profile.Handle, did, identity.Method)
 		} else {
@@ -314,6 +328,9 @@ func (c *CommunityEventConsumer) updateCommunity(ctx context.Context, did string
 	}
 
 	// Update fields
+	if resolvedPDSURL != "" {
+		existing.PDSURL = resolvedPDSURL
+	}
 	existing.Handle = profile.Handle
 	existing.Name = profile.Name
 	existing.DisplayName = profile.DisplayName

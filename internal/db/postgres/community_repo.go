@@ -259,7 +259,8 @@ func (r *postgresCommunityRepo) Update(ctx context.Context, community *communiti
 			visibility = $7, allow_external_discovery = $8,
 			moderation_type = $9, content_warnings = $10,
 			updated_at = NOW(),
-			record_uri = $11, record_cid = $12
+			record_uri = $11, record_cid = $12,
+			pds_url = COALESCE(NULLIF($13, ''), pds_url)
 		WHERE did = $1
 		RETURNING updated_at`
 
@@ -284,6 +285,10 @@ func (r *postgresCommunityRepo) Update(ctx context.Context, community *communiti
 		pq.Array(community.ContentWarnings),
 		nullString(community.RecordURI),
 		nullString(community.RecordCID),
+		// Empty keeps the stored value (COALESCE above): most Update callers
+		// don't carry a PDS host; the firehose consumer sets it when it
+		// resolved one (BridgeTrust needs it for bridgedStats provenance).
+		community.PDSURL,
 	).Scan(&community.UpdatedAt)
 
 	if err == sql.ErrNoRows {
