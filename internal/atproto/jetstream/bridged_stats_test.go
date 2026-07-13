@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/atproto/identity"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
 
@@ -202,6 +203,45 @@ func TestPostConsumer_Create_WithBridgedStats(t *testing.T) {
 	assert.Equal(t, 10, view.Stats.Upvotes, "displayed upvotes folded")
 	assert.Equal(t, 3, view.Stats.Downvotes, "displayed downvotes folded")
 	assert.Equal(t, 7, view.Stats.Score)
+}
+
+func TestPostConsumer_CreateBeforeAuthorProfile_IndexesTrustedBridgeAuthor(t *testing.T) {
+	db := setupBridgedTestDB(t)
+	defer func() { _ = db.Close() }()
+	defer cleanupBridgedTestData(t, db)
+	cleanupBridgedTestData(t, db)
+
+	// The community is already indexed, but the post author's profile event
+	// has not arrived yet. This is the cross-repo ordering BigSky permits.
+	insertBridgedUser(t, db, bridgedTestOther, "community-owner.test")
+	insertBridgedCommunity(t, db, bridgedTestCommunity, "brcommunity.test", bridgedTestOther)
+
+	resolver := &mockIdentityResolverForUser{identities: map[string]*identity.Identity{
+		bridgedTestAuthor: {
+			DID: bridgedTestAuthor, Handle: "author.lemmy.bridge.test", PDSURL: bridgedTestPDS,
+		},
+	}}
+	userService := users.NewUserService(postgres.NewUserRepository(db), resolver, bridgedTestPDS, nil, "")
+	consumer := NewPostEventConsumer(
+		postgres.NewPostRepository(db), postgres.NewCommunityRepository(db), userService, db,
+		WithPostBridgeTrust(bridgeTrustForTests()),
+		WithPostIdentityResolver(resolver),
+	)
+
+	err := consumer.HandleEvent(context.Background(), postCommitEvent(
+		"create", "beforeprofile", "bafbeforeprofile",
+		postRecord("Post beat profile", "relay ordering", nil),
+	))
+	require.NoError(t, err)
+
+	var authorPDS string
+	require.NoError(t, db.QueryRow(`SELECT pds_url FROM users WHERE did = $1`, bridgedTestAuthor).Scan(&authorPDS))
+	assert.Equal(t, bridgedTestPDS, authorPDS)
+
+	uri := "at://" + bridgedTestCommunity + "/social.coves.community.post/beforeprofile"
+	var storedAuthor string
+	require.NoError(t, db.QueryRow(`SELECT author_did FROM posts WHERE uri = $1`, uri).Scan(&storedAuthor))
+	assert.Equal(t, bridgedTestAuthor, storedAuthor)
 }
 
 func TestPostConsumer_Update_BridgedStats_NewerAsOfApplied(t *testing.T) {

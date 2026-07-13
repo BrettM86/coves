@@ -64,6 +64,7 @@ func (m *mockUserService) RequestSignupToken(ctx context.Context, req users.Requ
 }
 
 func (m *mockUserService) IndexUser(ctx context.Context, did, handle, pdsURL string) error {
+	m.users[did] = &users.User{DID: did, Handle: handle, PDSURL: pdsURL}
 	return nil
 }
 
@@ -102,10 +103,16 @@ func (m *mockUserService) DeleteAccount(ctx context.Context, did string) error {
 }
 
 // mockIdentityResolverForUser is a test double for identity.Resolver
-type mockIdentityResolverForUser struct{}
+type mockIdentityResolverForUser struct {
+	identities map[string]*identity.Identity
+	resolveErr error
+}
 
 func (m *mockIdentityResolverForUser) Resolve(ctx context.Context, identifier string) (*identity.Identity, error) {
-	return nil, nil
+	if m.resolveErr != nil {
+		return nil, m.resolveErr
+	}
+	return m.identities[identifier], nil
 }
 
 func (m *mockIdentityResolverForUser) ResolveHandle(ctx context.Context, handle string) (string, string, error) {
@@ -187,6 +194,36 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		// Verify no UpdateProfile calls were made
 		if len(mockService.updatedCalls) != 0 {
 			t.Errorf("Expected 0 UpdateProfile calls, got %d", len(mockService.updatedCalls))
+		}
+	})
+
+	t.Run("indexes an unknown profile hosted by a trusted bridge", func(t *testing.T) {
+		const did = "did:plc:bridgedprofile"
+		const bridgePDS = "https://bridge.example"
+		mockService := newMockUserService()
+		mockResolver := &mockIdentityResolverForUser{identities: map[string]*identity.Identity{
+			did: {DID: did, Handle: "alice.lemmy.bridge.example", PDSURL: bridgePDS},
+		}}
+		consumer := NewUserEventConsumer(mockService, mockResolver, "wss://jetstream.example.com", "",
+			WithUserBridgeTrust(NewBridgeTrust([]string{bridgePDS})))
+
+		event := &JetstreamEvent{
+			Did: did, Kind: "commit", TimeUS: time.Now().UnixMicro(),
+			Commit: &CommitEvent{
+				Operation: "create", Collection: CovesProfileCollection, RKey: "self", CID: "bafybridge",
+				Record: map[string]interface{}{"displayName": "Alice from Lemmy"},
+			},
+		}
+
+		if err := consumer.HandleEvent(context.Background(), event); err != nil {
+			t.Fatalf("trusted bridge profile failed: %v", err)
+		}
+		indexed := mockService.users[did]
+		if indexed == nil {
+			t.Fatal("trusted bridge profile identity was not indexed")
+		}
+		if indexed.PDSURL != bridgePDS || indexed.DisplayName != "Alice from Lemmy" {
+			t.Fatalf("unexpected indexed bridge profile: %+v", indexed)
 		}
 	})
 

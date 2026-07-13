@@ -1,6 +1,7 @@
 package jetstream
 
 import (
+	"Coves/internal/atproto/identity"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
@@ -23,6 +24,10 @@ type PostEventConsumer struct {
 	// bridgeTrust gates whether a post's community repo may assert bridgedStats.
 	// nil means default-deny (bridgedStats are ignored for every post).
 	bridgeTrust *BridgeTrust
+	// identityResolver is used only when relay scheduling delivers a post
+	// before its author's profile. The identity is admitted only when its PDS
+	// passes bridgeTrust.
+	identityResolver identity.Resolver
 }
 
 // PostEventConsumerOption configures optional PostEventConsumer behaviour.
@@ -32,6 +37,12 @@ type PostEventConsumerOption func(*PostEventConsumer)
 // may assert bridgedStats on their posts. Without it, bridgedStats are default-denied.
 func WithPostBridgeTrust(bt *BridgeTrust) PostEventConsumerOption {
 	return func(c *PostEventConsumer) { c.bridgeTrust = bt }
+}
+
+// WithPostIdentityResolver enables safe discovery of bridged authors whose
+// profile-repo event has not reached the AppView yet.
+func WithPostIdentityResolver(resolver identity.Resolver) PostEventConsumerOption {
+	return func(c *PostEventConsumer) { c.identityResolver = resolver }
 }
 
 // NewPostEventConsumer creates a new Jetstream consumer for post events
@@ -577,8 +588,25 @@ func (c *PostEventConsumer) validatePostEvent(ctx context.Context, repoDID strin
 	if err != nil {
 		// Use proper error type checking with errors.Is()
 		if errors.Is(err, users.ErrUserNotFound) {
-			// Policy rejection - author must be indexed before posts.
-			return nil, fmt.Errorf("author not found: %s - cannot index post before author", post.Author)
+			// BigSky preserves order within a repo, not across repos. A post in
+			// a community repo can therefore arrive before actor.profile in the
+			// author's repo. Resolve and minimally index only identities hosted
+			// by an explicitly trusted bridge; unknown native users remain
+			// rejected by default.
+			if c.identityResolver != nil {
+				resolved, resolveErr := c.identityResolver.Resolve(ctx, post.Author)
+				if resolveErr != nil {
+					return nil, fmt.Errorf("%w: resolve missing post author %s: %v", errValidationInfra, post.Author, resolveErr)
+				}
+				if resolved != nil && resolved.DID == post.Author &&
+					c.bridgeTrust.TrustsPDS(resolved.PDSURL) {
+					if indexErr := c.userService.IndexUser(ctx, resolved.DID, resolved.Handle, resolved.PDSURL); indexErr != nil {
+						return nil, fmt.Errorf("%w: index trusted bridge author %s: %v", errValidationInfra, post.Author, indexErr)
+					}
+					return community, nil
+				}
+			}
+			return nil, fmt.Errorf("author not found: %s - cannot index untrusted post author", post.Author)
 		}
 		// Infrastructure fault (DB error): not an attack.
 		return nil, fmt.Errorf("%w: failed to verify author exists: %v", errValidationInfra, err)

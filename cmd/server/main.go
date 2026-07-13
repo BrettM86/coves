@@ -28,23 +28,23 @@ import (
 	imageproxyhandlers "Coves/internal/api/handlers/imageproxy"
 	"Coves/internal/core/imageproxy"
 
-	indigoauth "github.com/bluesky-social/indigo/atproto/auth"
-	indigoidentity "github.com/bluesky-social/indigo/atproto/identity"
+	"Coves/internal/core/adminreports"
 	"Coves/internal/core/aggregators"
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/blueskypost"
 	"Coves/internal/core/comments"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/communityFeeds"
+	"Coves/internal/core/communitysuggestions"
 	"Coves/internal/core/discover"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/timeline"
 	"Coves/internal/core/unfurl"
-	"Coves/internal/core/adminreports"
-	"Coves/internal/core/communitysuggestions"
 	"Coves/internal/core/userblocks"
 	"Coves/internal/core/users"
 	"Coves/internal/core/votes"
+	indigoauth "github.com/bluesky-social/indigo/atproto/auth"
+	indigoidentity "github.com/bluesky-social/indigo/atproto/identity"
 
 	"github.com/go-chi/chi/v5"
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
@@ -408,6 +408,21 @@ func main() {
 
 	// Create user consumer with session handle updater to sync OAuth sessions on handle changes
 	var consumerOpts []jetstream.ConsumerOption
+
+	// A trusted bridge hosts many virtual repos. Its profile records may be
+	// the first time Coves sees those identities, and relay scheduling may
+	// deliver profiles and posts in either order. Share one provenance gate
+	// across the user, post, and comment consumers.
+	var trustedBridgePDSHosts []string
+	if hosts := os.Getenv("TRUSTED_BRIDGE_PDS_HOSTS"); hosts != "" {
+		for _, h := range strings.Split(hosts, ",") {
+			if h = strings.TrimSpace(h); h != "" {
+				trustedBridgePDSHosts = append(trustedBridgePDSHosts, h)
+			}
+		}
+	}
+	bridgeTrust := jetstream.NewBridgeTrust(trustedBridgePDSHosts)
+	consumerOpts = append(consumerOpts, jetstream.WithUserBridgeTrust(bridgeTrust))
 	if sessionUpdater, ok := baseOAuthStore.(jetstream.SessionHandleUpdater); ok {
 		consumerOpts = append(consumerOpts, jetstream.WithSessionHandleUpdater(sessionUpdater))
 		log.Println("✅ OAuth session handle sync enabled for identity changes")
@@ -755,15 +770,6 @@ func main() {
 	// bridgedStats. Configured via TRUSTED_BRIDGE_PDS_HOSTS (comma-separated PDS host
 	// URLs), mirroring the COMMUNITY_CREATORS allowlist convention. Empty => bridgedStats
 	// are universally ignored (safe default for deployments with no bridge).
-	var trustedBridgePDSHosts []string
-	if hosts := os.Getenv("TRUSTED_BRIDGE_PDS_HOSTS"); hosts != "" {
-		for _, h := range strings.Split(hosts, ",") {
-			if h = strings.TrimSpace(h); h != "" {
-				trustedBridgePDSHosts = append(trustedBridgePDSHosts, h)
-			}
-		}
-	}
-	bridgeTrust := jetstream.NewBridgeTrust(trustedBridgePDSHosts)
 	if len(trustedBridgePDSHosts) > 0 {
 		log.Printf("bridgedStats provenance: trusting %d bridge PDS host(s)", len(trustedBridgePDSHosts))
 	} else {
@@ -771,7 +777,8 @@ func main() {
 	}
 
 	postEventConsumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService, db,
-		jetstream.WithPostBridgeTrust(bridgeTrust))
+		jetstream.WithPostBridgeTrust(bridgeTrust),
+		jetstream.WithPostIdentityResolver(identityResolver))
 	postJetstreamConnector := jetstream.NewPostJetstreamConnector(postEventConsumer, postJetstreamURL)
 
 	go func() {
@@ -781,8 +788,7 @@ func main() {
 	}()
 
 	log.Printf("Started Jetstream post consumer: %s", postJetstreamURL)
-	log.Println("  - Indexing: social.coves.community.post CREATE operations")
-	log.Println("  - UPDATE/DELETE indexing deferred until those features are implemented")
+	log.Println("  - Indexing: social.coves.community.post CREATE/UPDATE/DELETE operations")
 
 	// Start Jetstream consumer for aggregators
 	// This consumer indexes aggregator service declarations and authorization records

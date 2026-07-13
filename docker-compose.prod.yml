@@ -115,6 +115,11 @@ services:
       # Comma-separated list of DIDs
       TRUSTED_AGGREGATOR_DIDS: ${TRUSTED_AGGREGATOR_DIDS:-}
 
+      # Trusted virtual bridge PDS hosts. Required for Tidepool-authored
+      # profiles/posts to be indexed and for bridge-asserted bridgedStats to
+      # be accepted. Example: https://bridge.coves.social
+      TRUSTED_BRIDGE_PDS_HOSTS: ${TRUSTED_BRIDGE_PDS_HOSTS:-}
+
       # Image proxy configuration (on-the-fly resizing with disk cache)
       IMAGE_PROXY_ENABLED: ${IMAGE_PROXY_ENABLED:-true}
       IMAGE_PROXY_BASE_URL: ${IMAGE_PROXY_BASE_URL:-https://coves.social}

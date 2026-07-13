@@ -73,8 +73,9 @@ type CommitEvent struct {
 type UserEventConsumer struct {
 	userService          users.UserService
 	identityResolver     identity.Resolver
-	sessionHandleUpdater SessionHandleUpdater    // Optional: updates OAuth sessions on handle change
-	userBlockRepo        userblocks.Repository   // Optional: indexes user-to-user blocks
+	sessionHandleUpdater SessionHandleUpdater  // Optional: updates OAuth sessions on handle change
+	userBlockRepo        userblocks.Repository // Optional: indexes user-to-user blocks
+	bridgeTrust          *BridgeTrust          // Optional: admits new identities hosted by trusted bridge PDSes
 	wsURL                string
 	pdsFilter            string // Optional: only index users from specific PDS
 }
@@ -95,6 +96,15 @@ func WithSessionHandleUpdater(updater SessionHandleUpdater) ConsumerOption {
 func WithUserBlockRepo(repo userblocks.Repository) ConsumerOption {
 	return func(c *UserEventConsumer) {
 		c.userBlockRepo = repo
+	}
+}
+
+// WithUserBridgeTrust enables discovery of bridged profiles. Unknown native
+// users remain ignored, preserving the consumer's avoid-indexing-the-world
+// policy.
+func WithUserBridgeTrust(bt *BridgeTrust) ConsumerOption {
+	return func(c *UserEventConsumer) {
+		c.bridgeTrust = bt
 	}
 }
 
@@ -350,8 +360,9 @@ func (c *UserEventConsumer) handleAccountEvent(ctx context.Context, event *Jetst
 
 // handleCommitEvent processes commit events for user-related collections.
 // Routes to appropriate handler based on collection:
-// - social.coves.actor.profile: Profile updates for users in our database
-// - social.coves.actor.block: User-to-user block create/delete events
+//   - social.coves.actor.profile: Profile updates for known users, plus discovery
+//     of unknown identities hosted by an explicitly trusted bridge PDS
+//   - social.coves.actor.block: User-to-user block create/delete events
 func (c *UserEventConsumer) handleCommitEvent(ctx context.Context, event *JetstreamEvent) error {
 	if event.Commit == nil {
 		slog.Warn("received nil commit in handleCommitEvent (malformed event)", slog.String("did", event.Did))
@@ -368,24 +379,42 @@ func (c *UserEventConsumer) handleCommitEvent(ctx context.Context, event *Jetstr
 	}
 }
 
-// handleProfileCommit processes profile commit events for users already in our database.
-// This syncs profile data (displayName, bio, avatar, banner) from Coves profiles.
+// handleProfileCommit processes profile commit events. Native profiles still update
+// only existing users. A previously unknown identity may be indexed when DID
+// resolution proves it is hosted by an explicitly trusted bridge PDS; this is how
+// virtual bridge users enter the AppView without opening the door to indexing every
+// profile on the network.
 func (c *UserEventConsumer) handleProfileCommit(ctx context.Context, event *JetstreamEvent) error {
 	// Profile handling requires userService
 	if c.userService == nil {
 		return nil
 	}
 
-	// Only process users who exist in our database
+	// Only process users who exist in our database, except trusted bridge
+	// profiles whose first event is the profile itself.
 	_, err := c.userService.GetUserByDID(ctx, event.Did)
 	if err != nil {
 		if errors.Is(err, users.ErrUserNotFound) {
-			// User doesn't exist in our database - skip this event
-			// They'll be indexed when they actually interact with Coves
-			return nil
+			if event.Commit.Operation != "create" && event.Commit.Operation != "update" {
+				return nil
+			}
+			if c.identityResolver == nil {
+				return nil
+			}
+			resolved, resolveErr := c.identityResolver.Resolve(ctx, event.Did)
+			if resolveErr != nil {
+				return fmt.Errorf("failed to resolve unknown profile identity %s: %w", event.Did, resolveErr)
+			}
+			if resolved == nil || resolved.DID != event.Did || !c.bridgeTrust.TrustsPDS(resolved.PDSURL) {
+				return nil
+			}
+			if indexErr := c.userService.IndexUser(ctx, resolved.DID, resolved.Handle, resolved.PDSURL); indexErr != nil {
+				return fmt.Errorf("failed to index trusted bridge profile identity %s: %w", event.Did, indexErr)
+			}
+		} else {
+			// Database error - propagate so the connector can report it.
+			return fmt.Errorf("failed to check if user exists: %w", err)
 		}
-		// Database error - propagate so it can be retried
-		return fmt.Errorf("failed to check if user exists: %w", err)
 	}
 
 	switch event.Commit.Operation {
