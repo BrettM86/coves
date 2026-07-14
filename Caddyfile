@@ -162,12 +162,110 @@ tdpl.io {
 }
 
 # Bridged-handle subdomains: alice.lemmy-world.tdpl.io etc. — always two
-# labels below the apex. Certificates are issued on demand at handshake time
-# (per exact hostname, HTTP-01), gated by the global on_demand_tls ask above,
-# because a single wildcard cert only covers one label level. Requires the
-# *.tdpl.io DNS record to point DIRECTLY at this server (no CDN proxying).
-# Only /.well-known/atproto-did and resolveHandle matter on these hosts;
-# Tidepool answers from the Host header.
+# labels below the apex (name.instance-label.tdpl.io). A wildcard cert only
+# covers ONE label level, so one *.<instance>.tdpl.io wildcard per bridged
+# instance covers all of that instance's users with a single certificate,
+# issued ahead of time via DNS-01 (requires CLOUDFLARE_API_TOKEN_TDPL, a
+# scoped token with Zone:DNS:Edit on the tdpl.io zone ONLY — separate from
+# CLOUDFLARE_API_TOKEN, which is scoped to coves.social).
+#
+# Instance list generated from production bridged_actors (2026-07-13):
+#   docker exec tidepool-prod-postgres psql -U tidepool -d tidepool -t -A -c \
+#     "SELECT DISTINCT split_part(handle,'.',2) FROM bridged_actors
+#      WHERE handle LIKE '%.tdpl.io'
+#        AND array_length(string_to_array(handle,'.'),1) = 4 ORDER BY 1"
+# Instances NOT listed here still work via the on-demand catch-all block
+# below (degraded: per-handle handshake-time issuance) — add a line here
+# when a new instance shows up, then force-recreate caddy.
+*.anarchist-nexus.tdpl.io,
+*.breakfast-haus.tdpl.io,
+*.discuss-online.tdpl.io,
+*.discuss-tchncs-de.tdpl.io,
+*.downonthestreet-eu.tdpl.io,
+*.europe-pub.tdpl.io,
+*.feddit-cl.tdpl.io,
+*.feddit-dk.tdpl.io,
+*.feddit-it.tdpl.io,
+*.feddit-nl.tdpl.io,
+*.feddit-nu.tdpl.io,
+*.feddit-org.tdpl.io,
+*.feddit-uk.tdpl.io,
+*.fedia-io.tdpl.io,
+*.growers-social.tdpl.io,
+*.hexbear-net.tdpl.io,
+*.infosec-pub.tdpl.io,
+*.jlai-lu.tdpl.io,
+*.kakera-kintsugi-moe.tdpl.io,
+*.leminal-space.tdpl.io,
+*.lemmus-org.tdpl.io,
+*.lemmy-blahaj-zone.tdpl.io,
+*.lemmy-ca.tdpl.io,
+*.lemmy-cafe.tdpl.io,
+*.lemmy-curiana-net.tdpl.io,
+*.lemmy-dbzer0-com.tdpl.io,
+*.lemmy-decronym-xyz.tdpl.io,
+*.lemmy-linuxuserspace-show.tdpl.io,
+*.lemmy-manganiello-tech.tdpl.io,
+*.lemmy-ml.tdpl.io,
+*.lemmy-nz.tdpl.io,
+*.lemmy-pt.tdpl.io,
+*.lemmy-radio.tdpl.io,
+*.lemmy-sdf-org.tdpl.io,
+*.lemmy-today.tdpl.io,
+*.lemmy-world.tdpl.io,
+*.lemmy-wtf.tdpl.io,
+*.lemmy-zip.tdpl.io,
+*.literature-cafe.tdpl.io,
+*.mander-xyz.tdpl.io,
+*.mas-to.tdpl.io,
+*.mastodon-social.tdpl.io,
+*.moist-catsweat-com.tdpl.io,
+*.multiverse-soulism-net.tdpl.io,
+*.pawb-social.tdpl.io,
+*.pie-zerojay-com.tdpl.io,
+*.piefed-blahaj-zone.tdpl.io,
+*.piefed-ca.tdpl.io,
+*.piefed-social.tdpl.io,
+*.piefed-world.tdpl.io,
+*.piefed-zeromedia-vip.tdpl.io,
+*.piefed-zip.tdpl.io,
+*.programming-dev.tdpl.io,
+*.quokk-au.tdpl.io,
+*.reddit-kokomo-cloud.tdpl.io,
+*.reddthat-com.tdpl.io,
+*.sh-itjust-works.tdpl.io,
+*.shredderfood-net.tdpl.io,
+*.slrpnk-net.tdpl.io,
+*.sopuli-xyz.tdpl.io,
+*.suppo-fi.tdpl.io,
+*.swg-empire-de.tdpl.io,
+*.tarte-nuage-libre-fr.tdpl.io,
+*.thelemmy-club.tdpl.io {
+    tls {
+        dns cloudflare {env.CLOUDFLARE_API_TOKEN_TDPL}
+    }
+
+    reverse_proxy tidepool:80 {
+        header_up X-Real-IP {remote_host}
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options "nosniff"
+        -Server
+    }
+}
+
+# On-demand catch-all for bridged handles on instances NOT yet listed in the
+# wildcard block above (and any single-label *.tdpl.io hosts). Certificates
+# are issued on demand at handshake time (per exact hostname, HTTP-01),
+# gated by the global on_demand_tls ask above. Degraded path: issuance
+# blocks the first handshake and draws from Let's Encrypt's
+# 50-new-certs/week bucket — add new instances to the wildcard block above
+# as they appear. Requires the *.tdpl.io DNS record to point DIRECTLY at
+# this server (no CDN proxying). Only /.well-known/atproto-did and
+# resolveHandle matter on these hosts; Tidepool answers from the Host
+# header.
 *.tdpl.io, *.*.tdpl.io {
     tls {
         on_demand

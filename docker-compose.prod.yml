@@ -262,6 +262,11 @@ services:
       # Create at: Cloudflare Dashboard → My Profile → API Tokens → Create Token
       # Permissions: Zone:DNS:Edit for coves.social zone
       CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
+      # Separate token for the tdpl.io zone (Tidepool bridged-instance
+      # wildcards, e.g. *.lemmy-world.tdpl.io). Same Zone:DNS:Edit
+      # permission, scoped to tdpl.io ONLY — split from the coves.social
+      # token so either can be rotated/revoked without touching the other.
+      CLOUDFLARE_API_TOKEN_TDPL: ${CLOUDFLARE_API_TOKEN_TDPL}
       # ACME account email, substituted into the Caddyfile's {$ACME_EMAIL}
       # at parse time. Use a role address (e.g. support@coves.social) —
       # the Caddyfile is committed to a public repo, the env file is not.
