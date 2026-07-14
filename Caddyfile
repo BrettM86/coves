@@ -249,8 +249,22 @@ tdpl.io {
     # force_automate adds these names to the automate cert loader, the
     # documented bypass. NOTE: must be the directive argument (not a block
     # subdirective) on Caddy <= 2.11.
+    #
+    # Two issuers, in priority order. A bare `dns` shortcut would build a
+    # SINGLE Let's Encrypt issuer with no fallback — and LE's
+    # 50-new-certs/week bucket for tdpl.io is regularly exhausted by the
+    # on-demand catch-all below, 429ing every wildcard. ZeroSSL (no
+    # per-domain weekly cap) reuses the ACME account already registered in
+    # storage by the pre-2.10 image's default fallback, so no EAB config
+    # is needed here.
     tls force_automate {
-        dns cloudflare {env.CLOUDFLARE_API_TOKEN_TDPL}
+        issuer acme {
+            dns cloudflare {env.CLOUDFLARE_API_TOKEN_TDPL}
+        }
+        issuer acme {
+            ca https://acme.zerossl.com/v2/DV90
+            dns cloudflare {env.CLOUDFLARE_API_TOKEN_TDPL}
+        }
     }
 
     reverse_proxy tidepool:80 {
