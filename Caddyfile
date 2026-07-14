@@ -17,8 +17,11 @@
     # provisioned as a fallback CA — without it Let's Encrypt is the ONLY
     # issuer, and hitting LE's 50-new-certs-per-domain-per-week limit with
     # on-demand handle certs would hard-fail new handshakes instead of
-    # falling back.
-    email brettmay0212@gmail.com
+    # falling back. {$ACME_EMAIL} is substituted from the caddy container's
+    # environment when the Caddyfile is parsed (set ACME_EMAIL in .env; a
+    # role address like support@<domain> — never a personal one, this file
+    # is public).
+    email {$ACME_EMAIL}
 
     on_demand_tls {
         ask http://tidepool:80/.well-known/tidepool-tls-ask

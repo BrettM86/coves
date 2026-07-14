@@ -262,6 +262,10 @@ services:
       # Create at: Cloudflare Dashboard → My Profile → API Tokens → Create Token
       # Permissions: Zone:DNS:Edit for coves.social zone
       CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN}
+      # ACME account email, substituted into the Caddyfile's {$ACME_EMAIL}
+      # at parse time. Use a role address (e.g. support@coves.social) —
+      # the Caddyfile is committed to a public repo, the env file is not.
+      ACME_EMAIL: ${ACME_EMAIL:-}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
