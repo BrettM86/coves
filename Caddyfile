@@ -243,6 +243,14 @@ tdpl.io {
 *.thelemmy-club.tdpl.io {
     tls {
         dns cloudflare {env.CLOUDFLARE_API_TOKEN_TDPL}
+        # Without this, NONE of the wildcards above are ever issued: the
+        # on-demand catch-all below puts *.*.tdpl.io in the same managed
+        # set, and since Caddy 2.10 a covering wildcard silently wins over
+        # its subdomains (caddytls managingWildcardFor), deferring all 64
+        # names to a policy that only issues at handshake time — i.e.
+        # never. force_automate adds these names to the automate loader,
+        # the documented escape hatch from that preference.
+        force_automate
     }
 
     reverse_proxy tidepool:80 {
