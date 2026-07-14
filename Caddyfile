@@ -262,7 +262,7 @@ tdpl.io {
             dns cloudflare {env.CLOUDFLARE_API_TOKEN_TDPL}
         }
         issuer acme {
-            ca https://acme.zerossl.com/v2/DV90
+            dir https://acme.zerossl.com/v2/DV90
             dns cloudflare {env.CLOUDFLARE_API_TOKEN_TDPL}
         }
     }
