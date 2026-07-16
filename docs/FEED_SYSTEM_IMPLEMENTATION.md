@@ -135,7 +135,7 @@ ORDER BY [hot/top/new sorting]
 
 Both repositories include:
 - Optimized single-query execution with JOINs
-- Hot ranking: `score / (age_in_hours + 2)^1.5`
+- Hot ranking: `(sign(score) * ln(|score| + 1) + 1) / (max(age_in_hours, 0) + 2)^1.5` (log-damped, shared via `hotRankSQL` in `feed_repo_base.go`)
 - Cursor-based pagination with precision handling
 - Parameterized queries (SQL injection safe)
 

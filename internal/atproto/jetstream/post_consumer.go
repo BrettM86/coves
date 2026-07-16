@@ -123,6 +123,15 @@ func (c *PostEventConsumer) createPost(ctx context.Context, repoDID string, comm
 		createdAt = time.Now()
 	}
 
+	// SECURITY: Clamp future timestamps to now. created_at drives the "new" sort
+	// and the hot-rank age, so a record asserting a future date (hostile or
+	// clock-skewed federated repo) could otherwise pin itself to the top of
+	// feeds until wall-clock catches up.
+	if now := time.Now(); createdAt.After(now) {
+		log.Printf("Warning: post %s has future createdAt %s, clamping to now", uri, postRecord.CreatedAt)
+		createdAt = now
+	}
+
 	// Build post entity
 	post := &posts.Post{
 		URI:          uri,

@@ -236,6 +236,180 @@ func TestGetDiscover_HotSort(t *testing.T) {
 	assert.True(t, uris[post3URI], "Should contain brand new post")
 }
 
+// TestGetDiscover_HotSort_LogDampedRanking pins the tuning of the log-damped
+// hot rank: (SIGN(score)*LN(ABS(score)+1) + 1) / (age_hours + 2)^1.5
+//
+// The scenario mirrors the federation problem that motivated the formula: a
+// bridged Lemmy post with a huge vote count from a much larger population must
+// not bury fresh organic posts for days. At the same time, votes still matter —
+// a day-old genuinely popular post should outrank a six-hour-old post nobody
+// voted on.
+func TestGetDiscover_HotSort_LogDampedRanking(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	db := setupTestDB(t)
+	t.Cleanup(func() { _ = db.Close() })
+
+	// Setup services
+	discoverRepo := postgres.NewDiscoverRepository(db, "test-cursor-secret")
+	discoverService := discoverCore.NewDiscoverService(discoverRepo)
+	handler := discover.NewGetDiscoverHandler(discoverService, nil, nil)
+
+	ctx := context.Background()
+	testID := time.Now().UnixNano()
+
+	communityDID, err := createFeedTestCommunity(db, ctx, fmt.Sprintf("ranking-%d", testID), fmt.Sprintf("alice-%d.test", testID))
+	require.NoError(t, err)
+
+	// A bridged Lemmy-style blowout: 782 votes, a day old (rank ≈ 0.058)
+	blowoutURI := createTestPost(t, db, communityDID, "did:plc:lemmy", "Federated blowout", 782, time.Now().Add(-24*time.Hour))
+	// A brand-new organic post with no votes yet (rank ≈ 0.33)
+	freshURI := createTestPost(t, db, communityDID, "did:plc:alice", "Fresh organic post", 0, time.Now().Add(-5*time.Minute))
+	// A six-hour-old post with no votes (rank ≈ 0.044)
+	sixHourURI := createTestPost(t, db, communityDID, "did:plc:bob", "Six hour old post", 0, time.Now().Add(-6*time.Hour))
+	// A brand-new but downvoted post (rank ≈ -0.26)
+	downvotedURI := createTestPost(t, db, communityDID, "did:plc:carol", "Downvoted post", -5, time.Now().Add(-5*time.Minute))
+
+	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.feed.getDiscover?sort=hot&limit=50", nil)
+	rec := httptest.NewRecorder()
+	handler.HandleGetDiscover(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var response discoverCore.DiscoverResponse
+	err = json.Unmarshal(rec.Body.Bytes(), &response)
+	require.NoError(t, err)
+
+	position := make(map[string]int)
+	for i, post := range response.Feed {
+		position[post.Post.URI] = i
+	}
+	for _, uri := range []string{blowoutURI, freshURI, sixHourURI, downvotedURI} {
+		require.Contains(t, position, uri, "All posts should appear in the hot feed")
+	}
+
+	assert.Less(t, position[freshURI], position[blowoutURI],
+		"Fresh 0-vote post should outrank a day-old vote blowout")
+	assert.Less(t, position[blowoutURI], position[sixHourURI],
+		"Day-old high-vote post should still outrank a 6h-old 0-vote post")
+	assert.Less(t, position[sixHourURI], position[downvotedURI],
+		"Post at score -5 (negative rank) should rank below these positive-rank posts")
+}
+
+// TestGetDiscover_HotSort_PaginationCoversNegativeScores paginates the exact
+// LogDampedRanking scenario one post at a time. This exercises the cursor-side
+// hot-rank expression (rebuilt with a pinned timestamp) against the live ORDER
+// BY across the positive-to-negative rank boundary: every post must appear
+// exactly once, in rank order, with no skips or duplicates. A divergence
+// between the live and cursor formulas fails this test.
+func TestGetDiscover_HotSort_PaginationCoversNegativeScores(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	db := setupTestDB(t)
+	t.Cleanup(func() { _ = db.Close() })
+
+	discoverRepo := postgres.NewDiscoverRepository(db, "test-cursor-secret")
+	discoverService := discoverCore.NewDiscoverService(discoverRepo)
+	handler := discover.NewGetDiscoverHandler(discoverService, nil, nil)
+
+	ctx := context.Background()
+	testID := time.Now().UnixNano()
+
+	communityDID, err := createFeedTestCommunity(db, ctx, fmt.Sprintf("hotpage-%d", testID), fmt.Sprintf("alice-%d.test", testID))
+	require.NoError(t, err)
+
+	blowoutURI := createTestPost(t, db, communityDID, "did:plc:lemmy", "Federated blowout", 782, time.Now().Add(-24*time.Hour))
+	freshURI := createTestPost(t, db, communityDID, "did:plc:alice", "Fresh organic post", 0, time.Now().Add(-5*time.Minute))
+	sixHourURI := createTestPost(t, db, communityDID, "did:plc:bob", "Six hour old post", 0, time.Now().Add(-6*time.Hour))
+	downvotedURI := createTestPost(t, db, communityDID, "did:plc:carol", "Downvoted post", -5, time.Now().Add(-5*time.Minute))
+
+	expectedOrder := []string{freshURI, blowoutURI, sixHourURI, downvotedURI}
+
+	// Paginate to exhaustion, one post per page (setupTestDB wiped the posts
+	// table, so the feed contains exactly these four posts)
+	var seen []string
+	cursor := ""
+	for page := 0; page < 10; page++ {
+		url := "/xrpc/social.coves.feed.getDiscover?sort=hot&limit=1"
+		if cursor != "" {
+			url += "&cursor=" + cursor
+		}
+		req := httptest.NewRequest(http.MethodGet, url, nil)
+		rec := httptest.NewRecorder()
+		handler.HandleGetDiscover(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code, "page %d should succeed", page)
+
+		var response discoverCore.DiscoverResponse
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
+
+		for _, post := range response.Feed {
+			seen = append(seen, post.Post.URI)
+		}
+		if response.Cursor == nil {
+			break
+		}
+		cursor = *response.Cursor
+	}
+
+	assert.Equal(t, expectedOrder, seen,
+		"Pagination should return every post exactly once, in hot-rank order")
+}
+
+// TestGetDiscover_HotSort_FutureDatedPost guards the feed against records
+// asserting a future created_at (hostile or clock-skewed federated repos).
+// The ingestion path clamps these to now, but this test inserts one directly
+// to pin the SQL-level defence in hotRankSQL: GREATEST(age, 0) means a
+// future-dated post ranks like a brand-new 0-vote post — it must not error
+// the query (negative POWER base) and must not outrank a post with real votes.
+func TestGetDiscover_HotSort_FutureDatedPost(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	db := setupTestDB(t)
+	t.Cleanup(func() { _ = db.Close() })
+
+	discoverRepo := postgres.NewDiscoverRepository(db, "test-cursor-secret")
+	discoverService := discoverCore.NewDiscoverService(discoverRepo)
+	handler := discover.NewGetDiscoverHandler(discoverService, nil, nil)
+
+	ctx := context.Background()
+	testID := time.Now().UnixNano()
+
+	communityDID, err := createFeedTestCommunity(db, ctx, fmt.Sprintf("future-%d", testID), fmt.Sprintf("alice-%d.test", testID))
+	require.NoError(t, err)
+
+	// A 0-vote post claiming to be from 10 days in the future
+	futureURI := createTestPost(t, db, communityDID, "did:plc:mallory", "Future dated post", 0, time.Now().Add(240*time.Hour))
+	// A recent post with modest genuine engagement (rank ≈ 0.95 vs the clamped ≈ 0.35)
+	votedURI := createTestPost(t, db, communityDID, "did:plc:alice", "Recent voted post", 50, time.Now().Add(-1*time.Hour))
+
+	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.feed.getDiscover?sort=hot&limit=50", nil)
+	rec := httptest.NewRecorder()
+	handler.HandleGetDiscover(rec, req)
+
+	// Before the GREATEST age clamp this query 500'd with "a negative number
+	// raised to a non-integer power yields a complex result"
+	require.Equal(t, http.StatusOK, rec.Code, "Future-dated post must not break the hot feed")
+
+	var response discoverCore.DiscoverResponse
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
+
+	position := make(map[string]int)
+	for i, post := range response.Feed {
+		position[post.Post.URI] = i
+	}
+	require.Contains(t, position, futureURI)
+	require.Contains(t, position, votedURI)
+
+	assert.Less(t, position[votedURI], position[futureURI],
+		"Future-dated 0-vote post should rank like a fresh post, not above genuinely engaged posts")
+}
+
 // TestGetDiscover_Pagination tests cursor-based pagination
 func TestGetDiscover_Pagination(t *testing.T) {
 	if testing.Short() {

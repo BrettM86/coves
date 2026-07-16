@@ -84,25 +84,36 @@ This keeps Alpha simple and focused on core browsing functionality.
 
 ### 1. Sorting Algorithms
 
-#### **Hot (Reddit Algorithm)**
+#### **Hot (Log-Damped Reddit Algorithm)**
 
 Balances score and recency for discovery:
 
 ```sql
-ORDER BY (score / POWER(age_hours + 2, 1.5)) DESC
+ORDER BY ((SIGN(score) * LN(ABS(score) + 1) + 1)
+          / POWER(GREATEST(age_hours, 0) + 2, 1.5)) DESC
 ```
 
 **How it works:**
 - New posts with low scores can outrank old posts with high scores
-- Decay factor (1.5) tuned for forum dynamics
-- Posts "age out" naturally over time
+- Score is log-damped so vote blowouts from larger federated populations
+  (e.g. bridged Lemmy communities) can't bury fresh organic posts for days:
+  0 → 10 votes counts as much as 10 → ~120
+- SIGN/ABS keep the expression defined for negative scores (downvoted posts sink)
+- GREATEST(age, 0) makes a future-dated `createdAt` rank like a brand-new post
+  (ingestion also clamps future timestamps to now)
+- Decay factor (1.5) tuned for forum dynamics; posts "age out" naturally
 
 **Example:**
-- Post A: 100 upvotes, 1 day old → Rank: 10.4
-- Post B: 10 upvotes, 1 hour old → Rank: 3.5
-- Post C: 50 upvotes, 12 hours old → Rank: 5.1
+- Post A: 782 upvotes, 1 day old → Rank: 0.058
+- Post B: 0 upvotes, brand new → Rank: 0.354
+- Post C: 0 upvotes, 6 hours old → Rank: 0.044
 
-**Result:** Fresh content surfaces while respecting engagement
+**Result:** Fresh content surfaces while respecting engagement — a day-old
+federated blowout still outranks stale 0-vote posts, but never fresh ones
+
+The expression is built in one place (`hotRankSQL` in
+`internal/db/postgres/feed_repo_base.go`) and shared by the live ORDER BY and
+the cursor pagination comparison, so the two can't drift apart.
 
 #### **Top (Score-Based)**
 
@@ -698,9 +709,9 @@ GET /xrpc/social.coves.community.post.get?uris=[...]
 - ✅ All queries use parameterized statements
 - ✅ **Dynamic ORDER BY uses whitelist map** (defense-in-depth)
   ```go
-  var sortClauses = map[string]string{
-      "hot": `(p.score / POWER(...)) DESC, p.created_at DESC`,
-      "top": `p.score DESC, p.created_at DESC`,
+  var feedSortClauses = map[string]string{
+      "hot": feedHotRankExpression + ` DESC, p.created_at DESC, p.uri DESC`,
+      "top": `p.score DESC, p.created_at DESC, p.uri DESC`,
       "new": `p.created_at DESC, p.uri DESC`,
   }
   ```

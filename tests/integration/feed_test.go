@@ -572,9 +572,9 @@ func TestGetCommunityFeed_HotPaginationBug(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create posts that reproduce the bug:
-	// Post A: Recent, low score (hot_rank ~17.6) - should be on page 1
-	// Post B: Old, high score (hot_rank ~10.4) - should be on page 2
-	// Post C: Older, medium score (hot_rank ~8.2) - should be on page 2
+	// Post A: Recent, low score (hot_rank ~0.75) - should be on page 1
+	// Post B: Old, high score (hot_rank ~0.042) - should be on page 2
+	// Post C: Older, medium score (hot_rank ~0.021) - should be on page 2
 	//
 	// Bug: If cursor stores raw score (17) from Post A, Post B (score=100) gets filtered out
 	// because WHERE p.score < 17 excludes it, even though hot_rank(B) < hot_rank(A)
@@ -675,14 +675,14 @@ func TestGetCommunityFeed_HotCursorPrecision(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create posts with very similar ages (fractions of seconds apart)
-	// This creates hot ranks that differ by tiny amounts (<1e-6)
+	// This creates hot ranks that differ by tiny amounts (~1e-5)
 	// Without full precision, pagination would drop the second post
 	baseTime := time.Now().Add(-2 * time.Hour)
 
-	// Post A: 2 hours old, score 50 (hot_rank ~8.24)
+	// Post A: 2 hours old, score 50 (hot_rank ~0.617)
 	postA := createTestPost(t, db, communityDID, "did:plc:alice", "Post A", 50, baseTime)
 
-	// Post B: 2 hours + 100ms old, score 50 (hot_rank ~8.239999... - differs by <1e-6)
+	// Post B: 2 hours + 100ms old, score 50 (hot_rank ~0.6169999... - differs by ~1e-5)
 	// This is the critical post that would get dropped with low precision
 	postB := createTestPost(t, db, communityDID, "did:plc:bob", "Post B", 50, baseTime.Add(100*time.Millisecond))
 
@@ -721,7 +721,7 @@ func TestGetCommunityFeed_HotCursorPrecision(t *testing.T) {
 	require.NoError(t, err)
 
 	// CRITICAL: Page 2 must contain the remaining posts
-	// Without full precision, Post B (with hot_rank differing by <1e-6) would be filtered out
+	// Without full precision, Post B (with hot_rank differing by ~1e-5) would be filtered out
 	assert.GreaterOrEqual(t, len(page2.Feed), 2, "Page 2 should contain at least 2 remaining posts")
 
 	// Verify all posts appear across pages

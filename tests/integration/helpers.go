@@ -320,11 +320,17 @@ func createTestPost(t *testing.T, db *sql.DB, communityDID, authorDID, title str
 	rkey := fmt.Sprintf("post-%d", time.Now().UnixNano())
 	uri := fmt.Sprintf("at://%s/social.coves.community.post/%s", communityDID, rkey)
 
+	// Derive vote counts from score so the invariant score = upvotes - downvotes holds
+	upvotes, downvotes := score, 0
+	if score < 0 {
+		upvotes, downvotes = 0, -score
+	}
+
 	// Insert post
 	_, err := db.ExecContext(ctx, `
-		INSERT INTO posts (uri, cid, rkey, author_did, community_did, title, created_at, score, upvote_count)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-	`, uri, "bafytest", rkey, authorDID, communityDID, title, createdAt, score, score)
+		INSERT INTO posts (uri, cid, rkey, author_did, community_did, title, created_at, score, upvote_count, downvote_count)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	`, uri, "bafytest", rkey, authorDID, communityDID, title, createdAt, score, upvotes, downvotes)
 	if err != nil {
 		t.Fatalf("Failed to create test post: %v", err)
 	}

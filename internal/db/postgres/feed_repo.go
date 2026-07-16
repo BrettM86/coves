@@ -12,26 +12,12 @@ type postgresFeedRepo struct {
 	*feedRepoBase
 }
 
-// sortClauses maps sort types to safe SQL ORDER BY clauses
-// This whitelist prevents SQL injection via dynamic ORDER BY construction
-// Note: Hot ranking uses (score + 1) to ensure new posts with 0 votes still appear
-var communityFeedSortClauses = map[string]string{
-	"hot": `((p.score + 1) / POWER(EXTRACT(EPOCH FROM (NOW() - p.created_at))/3600 + 2, 1.5)) DESC, p.created_at DESC, p.uri DESC`,
-	"top": `p.score DESC, p.created_at DESC, p.uri DESC`,
-	"new": `p.created_at DESC, p.uri DESC`,
-}
-
-// hotRankExpression is the SQL expression for computing the hot rank
-// NOTE: Uses NOW() which means hot_rank changes over time - this is expected behavior
-// for hot sorting (posts naturally age out). Slight time drift between cursor creation
-// and usage may cause minor reordering but won't drop posts entirely (unlike using raw score).
-// Uses (score + 1) so new posts with 0 votes still get a positive rank
-const communityFeedHotRankExpression = `((p.score + 1) / POWER(EXTRACT(EPOCH FROM (NOW() - p.created_at))/3600 + 2, 1.5))`
-
 // NewCommunityFeedRepository creates a new PostgreSQL feed repository
+// Sorting (including the log-damped hot rank) is shared across all post feeds —
+// see feedSortClauses and hotRankSQL in feed_repo_base.go
 func NewCommunityFeedRepository(db *sql.DB, cursorSecret string) communityFeeds.Repository {
 	return &postgresFeedRepo{
-		feedRepoBase: newFeedRepoBase(db, communityFeedHotRankExpression, communityFeedSortClauses, cursorSecret),
+		feedRepoBase: newFeedRepoBase(db, cursorSecret),
 	}
 }
 
@@ -64,7 +50,7 @@ func (r *postgresFeedRepo) GetCommunityFeed(ctx context.Context, req communityFe
 			p.created_at, p.edited_at, p.indexed_at,
 			p.upvote_count + p.bridged_upvote_count AS upvote_count, p.downvote_count + p.bridged_downvote_count AS downvote_count, p.score, p.comment_count,
 			%s as hot_rank
-		FROM posts p`, communityFeedHotRankExpression)
+		FROM posts p`, feedHotRankExpression)
 	} else {
 		selectClause = `
 		SELECT

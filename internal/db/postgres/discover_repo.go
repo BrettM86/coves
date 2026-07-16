@@ -12,23 +12,12 @@ type postgresDiscoverRepo struct {
 	*feedRepoBase
 }
 
-// sortClauses maps sort types to safe SQL ORDER BY clauses
-// Note: Hot ranking uses (score + 1) to ensure new posts with 0 votes still appear
-// (otherwise 0/time_decay = 0 and they sink to the bottom)
-var discoverSortClauses = map[string]string{
-	"hot": `((p.score + 1) / POWER(EXTRACT(EPOCH FROM (NOW() - p.created_at))/3600 + 2, 1.5)) DESC, p.created_at DESC, p.uri DESC`,
-	"top": `p.score DESC, p.created_at DESC, p.uri DESC`,
-	"new": `p.created_at DESC, p.uri DESC`,
-}
-
-// hotRankExpression for discover feed
-// Uses (score + 1) so new posts with 0 votes still get a positive rank
-const discoverHotRankExpression = `((p.score + 1) / POWER(EXTRACT(EPOCH FROM (NOW() - p.created_at))/3600 + 2, 1.5))`
-
 // NewDiscoverRepository creates a new PostgreSQL discover repository
+// Sorting (including the log-damped hot rank) is shared across all post feeds —
+// see feedSortClauses and hotRankSQL in feed_repo_base.go
 func NewDiscoverRepository(db *sql.DB, cursorSecret string) discover.Repository {
 	return &postgresDiscoverRepo{
-		feedRepoBase: newFeedRepoBase(db, discoverHotRankExpression, discoverSortClauses, cursorSecret),
+		feedRepoBase: newFeedRepoBase(db, cursorSecret),
 	}
 }
 
@@ -59,7 +48,7 @@ func (r *postgresDiscoverRepo) GetDiscover(ctx context.Context, req discover.Get
 			p.created_at, p.edited_at, p.indexed_at,
 			p.upvote_count + p.bridged_upvote_count AS upvote_count, p.downvote_count + p.bridged_downvote_count AS downvote_count, p.score, p.comment_count,
 			%s as hot_rank
-		FROM posts p`, discoverHotRankExpression)
+		FROM posts p`, feedHotRankExpression)
 	} else {
 		selectClause = `
 		SELECT

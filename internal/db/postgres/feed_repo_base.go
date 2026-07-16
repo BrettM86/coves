@@ -17,8 +17,25 @@ import (
 	"Coves/internal/core/posts"
 )
 
-// feedRepoBase contains shared logic for timeline and discover feed repositories
-// This eliminates ~85% code duplication and ensures bug fixes apply to both feeds
+// feedHotRankExpression is the live hot-rank expression shared by the discover,
+// timeline, and community feed queries (both the hot_rank SELECT column and the
+// ORDER BY). It uses NOW(), so a post's rank decays between requests — expected
+// for hot sorting. parseCursor rebuilds the same formula with the cursor's
+// pinned timestamp so pagination stays stable; the two MUST stay in sync, which
+// is why both go through hotRankSQL.
+var feedHotRankExpression = hotRankSQL("p", "NOW()")
+
+// feedSortClauses whitelists ORDER BY clauses for all post feeds
+// (discover, timeline, community), preventing SQL injection via dynamic ORDER BY
+var feedSortClauses = map[string]string{
+	"hot": feedHotRankExpression + ` DESC, p.created_at DESC, p.uri DESC`,
+	"top": `p.score DESC, p.created_at DESC, p.uri DESC`,
+	"new": `p.created_at DESC, p.uri DESC`,
+}
+
+// feedRepoBase contains shared logic for the discover, timeline, and community
+// feed repositories
+// This eliminates ~85% code duplication and ensures bug fixes apply to all feeds
 //
 // DATABASE INDEXES REQUIRED:
 // The feed queries rely on these indexes (created in migration 011_create_posts_table.sql):
@@ -35,7 +52,7 @@ import (
 //   - Used by: Timeline feed (JOIN with subscriptions)
 //   - Covers: User subscription lookup
 //
-// 4. Hot sort uses computed expression: (score / POWER(age_hours + 2, 1.5))
+// 4. Hot sort uses computed expression: see hotRankSQL below
 //   - Cannot be indexed directly (computed at query time)
 //   - Uses idx_posts_community_created for base ordering
 //   - Performance: ~10-20ms for timeline, ~8-15ms for discover (acceptable for alpha)
@@ -47,19 +64,39 @@ import (
 // - Cursor pagination is stable (no offset drift)
 // - Limit+1 pattern checks for next page without extra query
 type feedRepoBase struct {
-	db                *sql.DB
-	hotRankExpression string
-	sortClauses       map[string]string
-	cursorSecret      string // HMAC secret for cursor integrity protection
+	db           *sql.DB
+	cursorSecret string // HMAC secret for cursor integrity protection
+}
+
+// hotRankSQL builds the hot-rank SQL expression for a posts-table alias and a
+// "now" expression (NOW() for live sorting, a $n::timestamptz parameter for
+// stable cursor comparison across pages).
+//
+// Formula: (SIGN(score) * LN(ABS(score) + 1) + 1) / (age_hours + 2)^1.5
+//
+// The numerator is log-dampened so vote counts from different-sized populations
+// (e.g. bridged Lemmy communities with thousands of voters) can't dominate the
+// feed for days: going from 0 to 10 votes counts as much as going from 10 to
+// ~120. A 0-vote post still gets a numerator of 1 so brand-new organic posts
+// surface, and SIGN/ABS keep the expression defined and monotonic for negative
+// scores (LN of a non-positive value errors in PostgreSQL).
+//
+// GREATEST(age, 0) clamps negative age — created_at after the "now" expression,
+// from posts created between paginated requests or federated records with
+// future timestamps. Clamping the age (not the POWER base) means a future-dated
+// post ranks exactly like a brand-new one instead of gaining a boost, and the
+// POWER base stays >= 2 so it can never error on a negative base.
+func hotRankSQL(alias, nowExpr string) string {
+	return fmt.Sprintf(
+		`((SIGN(%[1]s.score) * LN(ABS(%[1]s.score) + 1) + 1) / POWER(GREATEST(EXTRACT(EPOCH FROM (%[2]s - %[1]s.created_at))/3600, 0) + 2, 1.5))`,
+		alias, nowExpr)
 }
 
 // newFeedRepoBase creates a new base repository with shared feed logic
-func newFeedRepoBase(db *sql.DB, hotRankExpr string, sortClauses map[string]string, cursorSecret string) *feedRepoBase {
+func newFeedRepoBase(db *sql.DB, cursorSecret string) *feedRepoBase {
 	return &feedRepoBase{
-		db:                db,
-		hotRankExpression: hotRankExpr,
-		sortClauses:       sortClauses,
-		cursorSecret:      cursorSecret,
+		db:           db,
+		cursorSecret: cursorSecret,
 	}
 }
 
@@ -67,9 +104,9 @@ func newFeedRepoBase(db *sql.DB, hotRankExpr string, sortClauses map[string]stri
 // Uses whitelist map to prevent SQL injection via dynamic ORDER BY
 func (r *feedRepoBase) buildSortClause(sort, timeframe string) (string, string) {
 	// Use whitelist map for ORDER BY clause (defense-in-depth against SQL injection)
-	orderBy := r.sortClauses[sort]
+	orderBy := feedSortClauses[sort]
 	if orderBy == "" {
-		orderBy = r.sortClauses["hot"] // safe default
+		orderBy = feedSortClauses["hot"] // safe default
 	}
 
 	// Add time filter for "top" sort
@@ -107,7 +144,8 @@ func (r *feedRepoBase) buildTimeFilter(timeframe string) string {
 }
 
 // parseCursor decodes and validates pagination cursor
-// paramOffset is the starting parameter number for cursor values ($2 for discover, $3 for timeline)
+// paramOffset is the starting parameter number for cursor values
+// ($2 for discover, $3 for timeline and community feed)
 func (r *feedRepoBase) parseCursor(cursor *string, sort string, paramOffset int) (string, []interface{}, error) {
 	if cursor == nil || *cursor == "" {
 		return "", nil, nil
@@ -199,8 +237,11 @@ func (r *feedRepoBase) parseCursor(cursor *string, sort string, paramOffset int)
 		// CRITICAL: cursor_timestamp is when the cursor was created, used for stable hot_rank comparison
 		// This prevents pagination bugs caused by hot_rank drift when NOW() changes between requests
 		//
-		// PRECISION FIX: We DON'T use hot_rank in the cursor comparison at all!
-		// Instead, we use (created_at, uri) as the cursor key, which are deterministic values stored in DB.
+		// PRECISION FIX: We DON'T serialize the hot_rank value into the cursor!
+		// Instead, the cursor stores (created_at, uri) — deterministic values from the DB —
+		// and the comparison recomputes the cursor post's rank via subquery using the
+		// exact same SQL expression as the main query, so both sides of the float
+		// comparison are computed identically.
 		// The hot sort ORDER BY is: hot_rank DESC, created_at DESC, uri DESC
 		// For posts with the same hot_rank, created_at and uri provide stable ordering.
 		//
@@ -234,13 +275,11 @@ func (r *feedRepoBase) parseCursor(cursor *string, sort string, paramOffset int)
 		// CRITICAL: Use cursor_timestamp instead of NOW() for stable hot_rank comparison
 		// This ensures posts don't drift across page boundaries due to time passing
 		//
-		// BUGFIX: Use GREATEST(..., 0.1) to prevent negative base in POWER function
-		// When posts are created AFTER the cursor_timestamp (new posts between page requests),
-		// the (cursor_timestamp - created_at) becomes negative, which causes PostgreSQL to fail
-		// with "a negative number raised to a non-integer power yields a complex result"
-		stableHotRankExpr := fmt.Sprintf(
-			`((p.score + 1) / POWER(GREATEST(EXTRACT(EPOCH FROM ($%d::timestamptz - p.created_at))/3600 + 2, 0.1), 1.5))`,
-			paramOffset+2)
+		// Both expressions come from hotRankSQL — the same builder used for the
+		// live ORDER BY — so the ranking formula can never diverge between
+		// sorting and pagination
+		cursorTimestampParam := fmt.Sprintf("$%d::timestamptz", paramOffset+2)
+		stableHotRankExpr := hotRankSQL("p", cursorTimestampParam)
 
 		// Filter by cursor position in the hot-sorted result set
 		// The ORDER BY is: hot_rank DESC, created_at DESC, uri DESC
@@ -253,9 +292,7 @@ func (r *feedRepoBase) parseCursor(cursor *string, sort string, paramOffset int)
 		//
 		// To avoid floating-point comparison issues with hot_rank, we use a subquery
 		// to get the cursor post's hot_rank and compare using the SAME expression
-		cursorHotRankExpr := fmt.Sprintf(
-			`((cursor_post.score + 1) / POWER(GREATEST(EXTRACT(EPOCH FROM ($%d::timestamptz - cursor_post.created_at))/3600 + 2, 0.1), 1.5))`,
-			paramOffset+2)
+		cursorHotRankExpr := hotRankSQL("cursor_post", cursorTimestampParam)
 
 		// Use a subquery to find the cursor post and compare hot_ranks using identical expressions
 		// This ensures floating-point values are computed the same way on both sides
@@ -442,13 +479,4 @@ func (r *feedRepoBase) scanFeedPost(rows *sql.Rows) (*posts.PostView, float64, e
 	}
 
 	return &postView, hotRankValue, nil
-}
-
-// nullStringPtr converts sql.NullString to *string
-// Helper function used by feed scanning logic across all feed types
-func nullStringPtr(ns sql.NullString) *string {
-	if !ns.Valid {
-		return nil
-	}
-	return &ns.String
 }
