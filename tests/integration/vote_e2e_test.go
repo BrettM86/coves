@@ -909,6 +909,14 @@ func TestVoteE2E_JetstreamIndexing(t *testing.T) {
 	postURI := createTestPost(t, db, testCommunityDID, testUser.DID, "Test Post", 0, time.Now())
 	postCID := "bafypostjetstream"
 
+	// Capture the time before the PDS write: the Jetstream subscription below
+	// connects AFTER the write, so it must use a cursor from before the write
+	// to replay the event. A live-tail subscription races event propagation
+	// (PDS → relay → Jetstream) and loses whenever the pipeline is warm —
+	// this was a reliable failure under `make test-all` and a pass in
+	// isolation before the cursor was added.
+	subscribeCursorUS := time.Now().Add(-2 * time.Second).UnixMicro()
+
 	// Write vote directly to PDS
 	t.Logf("\n📝 Writing vote to PDS...")
 	voteRecord := map[string]interface{}{
@@ -939,7 +947,7 @@ func TestVoteE2E_JetstreamIndexing(t *testing.T) {
 	pdsHostname = strings.TrimPrefix(pdsHostname, "https://")
 	pdsHostname = strings.Split(pdsHostname, ":")[0]
 
-	jetstreamURL := fmt.Sprintf("ws://%s:6008/subscribe?wantedCollections=social.coves.feed.vote", pdsHostname)
+	jetstreamURL := fmt.Sprintf("ws://%s:6008/subscribe?wantedCollections=social.coves.feed.vote&cursor=%d", pdsHostname, subscribeCursorUS)
 	t.Logf("   Jetstream URL: %s", jetstreamURL)
 	t.Logf("   Looking for vote DID: %s", userDID)
 

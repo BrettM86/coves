@@ -59,7 +59,7 @@ func (c *VoteEventConsumer) HandleEvent(ctx context.Context, event *JetstreamEve
 // createVote indexes a new vote from the firehose and updates post counts
 func (c *VoteEventConsumer) createVote(ctx context.Context, repoDID string, commit *CommitEvent) error {
 	if commit.Record == nil {
-		return fmt.Errorf("vote create event missing record data")
+		return fmt.Errorf("%w: vote create event missing record data", ErrPermanentEvent)
 	}
 
 	// Parse the vote record
@@ -444,19 +444,22 @@ func (c *VoteEventConsumer) validateVoteEvent(ctx context.Context, repoDID strin
 	// - Communities cannot create votes in their repos (different collection)
 	// - Fake DIDs will fail PDS authentication
 
+	// All rejections below are PERMANENT (ErrPermanentEvent): they depend only on
+	// the immutable event payload, so retries and redrives would fail identically.
+
 	// Validate DID format (basic sanity check)
 	if !strings.HasPrefix(repoDID, "did:") {
-		return fmt.Errorf("invalid voter DID format: %s", repoDID)
+		return fmt.Errorf("%w: invalid voter DID format: %s", ErrPermanentEvent, repoDID)
 	}
 
 	// Validate vote direction
 	if vote.Direction != "up" && vote.Direction != "down" {
-		return fmt.Errorf("invalid vote direction: %s (must be 'up' or 'down')", vote.Direction)
+		return fmt.Errorf("%w: invalid vote direction: %s (must be 'up' or 'down')", ErrPermanentEvent, vote.Direction)
 	}
 
 	// Validate subject has both URI and CID (strong reference)
 	if vote.Subject.URI == "" || vote.Subject.CID == "" {
-		return fmt.Errorf("invalid subject: must have both URI and CID (strong reference)")
+		return fmt.Errorf("%w: invalid subject: must have both URI and CID (strong reference)", ErrPermanentEvent)
 	}
 
 	return nil
@@ -480,7 +483,8 @@ func parseVoteRecord(record map[string]interface{}) (*VoteRecordFromJetstream, e
 	// Extract subject (strong reference)
 	subjectMap, ok := record["subject"].(map[string]interface{})
 	if !ok {
-		return nil, fmt.Errorf("missing or invalid subject field")
+		// PERMANENT: structurally invalid record — replays parse identically.
+		return nil, fmt.Errorf("%w: missing or invalid subject field", ErrPermanentEvent)
 	}
 
 	subjectURI, _ := subjectMap["uri"].(string)

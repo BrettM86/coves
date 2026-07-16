@@ -39,7 +39,7 @@ func TestUserIndexingFromJetstream(t *testing.T) {
 			},
 		}
 
-		consumer := jetstream.NewUserEventConsumer(userService, resolver, "", "")
+		consumer := jetstream.NewUserEventConsumer(userService, resolver)
 
 		// Handle the event - should return nil (skip silently, not error)
 		err := consumer.HandleIdentityEventPublic(ctx, &event)
@@ -77,7 +77,7 @@ func TestUserIndexingFromJetstream(t *testing.T) {
 			},
 		}
 
-		consumer := jetstream.NewUserEventConsumer(userService, resolver, "", "")
+		consumer := jetstream.NewUserEventConsumer(userService, resolver)
 
 		// Handle duplicate event - should not error
 		err = consumer.HandleIdentityEventPublic(ctx, &event)
@@ -120,7 +120,7 @@ func TestUserIndexingFromJetstream(t *testing.T) {
 			}
 		}
 
-		consumer := jetstream.NewUserEventConsumer(userService, resolver, "", "")
+		consumer := jetstream.NewUserEventConsumer(userService, resolver)
 
 		// Send identity events with new handles
 		for _, u := range testUsers {
@@ -155,7 +155,7 @@ func TestUserIndexingFromJetstream(t *testing.T) {
 	})
 
 	t.Run("Skip invalid events", func(t *testing.T) {
-		consumer := jetstream.NewUserEventConsumer(userService, resolver, "", "")
+		consumer := jetstream.NewUserEventConsumer(userService, resolver)
 
 		// Missing DID
 		invalidEvent1 := jetstream.JetstreamEvent{
@@ -262,7 +262,7 @@ func TestUserIndexingFromJetstream(t *testing.T) {
 			},
 		}
 
-		consumer := jetstream.NewUserEventConsumer(userService, resolver, "", "")
+		consumer := jetstream.NewUserEventConsumer(userService, resolver)
 		err = consumer.HandleIdentityEventPublic(ctx, &event)
 		if err != nil {
 			t.Fatalf("failed to handle handle change event: %v", err)

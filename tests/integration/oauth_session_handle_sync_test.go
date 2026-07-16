@@ -95,8 +95,6 @@ func TestOAuthSessionHandleSync(t *testing.T) {
 		consumer := jetstream.NewUserEventConsumer(
 			userService,
 			resolver,
-			"", // No WebSocket URL - we'll call HandleIdentityEventPublic directly
-			"",
 			jetstream.WithSessionHandleUpdater(sessionUpdater),
 		)
 
@@ -166,7 +164,7 @@ func TestOAuthSessionHandleSync(t *testing.T) {
 		// 3. Process identity event with new handle
 		sessionUpdater := baseOAuthStore.(jetstream.SessionHandleUpdater)
 		consumer := jetstream.NewUserEventConsumer(
-			userService, resolver, "", "",
+			userService, resolver,
 			jetstream.WithSessionHandleUpdater(sessionUpdater),
 		)
 
@@ -211,7 +209,7 @@ func TestOAuthSessionHandleSync(t *testing.T) {
 		// 2. Process identity event
 		sessionUpdater := baseOAuthStore.(jetstream.SessionHandleUpdater)
 		consumer := jetstream.NewUserEventConsumer(
-			userService, resolver, "", "",
+			userService, resolver,
 			jetstream.WithSessionHandleUpdater(sessionUpdater),
 		)
 
@@ -252,7 +250,7 @@ func TestOAuthSessionHandleSync(t *testing.T) {
 
 		// 2. Create consumer WITHOUT session handle updater
 		consumer := jetstream.NewUserEventConsumer(
-			userService, resolver, "", "",
+			userService, resolver,
 			// No WithSessionHandleUpdater - testing backward compatibility
 		)
 
@@ -328,17 +326,16 @@ func TestOAuthSessionHandleSync_LiveJetstream(t *testing.T) {
 	consumer := jetstream.NewUserEventConsumer(
 		userService,
 		resolver,
-		"ws://localhost:6008/subscribe",
-		"",
 		jetstream.WithSessionHandleUpdater(sessionUpdater),
 	)
+	connector := jetstream.NewConnector("users-test", "ws://localhost:6008/subscribe", consumer)
 
 	// Start consumer in background
 	consumerCtx, consumerCancel := context.WithCancel(ctx)
 	defer consumerCancel()
 
 	go func() {
-		if err := consumer.Start(consumerCtx); err != nil && err != context.Canceled {
+		if err := connector.Start(consumerCtx); err != nil && err != context.Canceled {
 			t.Logf("Consumer stopped: %v", err)
 		}
 	}()

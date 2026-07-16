@@ -150,7 +150,7 @@ func (c *CommunityEventConsumer) handleCommunityProfile(ctx context.Context, did
 // createCommunity indexes a new community from the firehose
 func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string, commit *CommitEvent) error {
 	if commit.Record == nil {
-		return fmt.Errorf("community profile create event missing record data")
+		return fmt.Errorf("%w: community profile create event missing record data", ErrPermanentEvent)
 	}
 
 	// Parse the community profile record
@@ -202,9 +202,10 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 	//   - rkey MUST be "self" for community profiles
 	//   - URI: at://community_did/social.coves.community.profile/self
 
-	// REJECT non-V2 communities (pre-production: no V1 compatibility)
+	// REJECT non-V2 communities (pre-production: no V1 compatibility).
+	// PERMANENT: the rkey is immutable — replays fail identically.
 	if commit.RKey != "self" {
-		return fmt.Errorf("invalid community profile rkey: expected 'self', got '%s' (V1 communities not supported)", commit.RKey)
+		return fmt.Errorf("%w: invalid community profile rkey: expected 'self', got '%s' (V1 communities not supported)", ErrPermanentEvent, commit.RKey)
 	}
 
 	uri := fmt.Sprintf("at://%s/social.coves.community.profile/self", did)
@@ -273,12 +274,13 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 // updateCommunity updates an existing community from the firehose
 func (c *CommunityEventConsumer) updateCommunity(ctx context.Context, did string, commit *CommitEvent) error {
 	if commit.Record == nil {
-		return fmt.Errorf("community profile update event missing record data")
+		return fmt.Errorf("%w: community profile update event missing record data", ErrPermanentEvent)
 	}
 
-	// REJECT non-V2 communities (pre-production: no V1 compatibility)
+	// REJECT non-V2 communities (pre-production: no V1 compatibility).
+	// PERMANENT: the rkey is immutable — replays fail identically.
 	if commit.RKey != "self" {
-		return fmt.Errorf("invalid community profile rkey: expected 'self', got '%s' (V1 communities not supported)", commit.RKey)
+		return fmt.Errorf("%w: invalid community profile rkey: expected 'self', got '%s' (V1 communities not supported)", ErrPermanentEvent, commit.RKey)
 	}
 
 	// Parse profile
@@ -394,9 +396,10 @@ func (c *CommunityEventConsumer) verifyHostedByClaim(ctx context.Context, handle
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	// Verify hostedByDID is did:web format
+	// Verify hostedByDID is did:web format.
+	// PERMANENT: derived purely from the immutable record — replays fail identically.
 	if !strings.HasPrefix(hostedByDID, "did:web:") {
-		return fmt.Errorf("hostedByDID must use did:web method, got: %s", hostedByDID)
+		return fmt.Errorf("%w: hostedByDID must use did:web method, got: %s", ErrPermanentEvent, hostedByDID)
 	}
 
 	// Extract domain from did:web DID
@@ -408,12 +411,13 @@ func (c *CommunityEventConsumer) verifyHostedByClaim(ctx context.Context, handle
 	//   - "gaming.community.coves.social" → domain: "coves.social"
 	handleDomain := extractDomainFromHandle(handle)
 	if handleDomain == "" {
-		return fmt.Errorf("failed to extract domain from handle: %s", handle)
+		return fmt.Errorf("%w: failed to extract domain from handle: %s", ErrPermanentEvent, handle)
 	}
 
-	// Verify handle domain matches hostedBy domain
+	// Verify handle domain matches hostedBy domain.
+	// PERMANENT security rejection: the mismatch is inherent to the record.
 	if handleDomain != hostedByDomain {
-		return fmt.Errorf("handle domain (%s) doesn't match hostedBy domain (%s)", handleDomain, hostedByDomain)
+		return fmt.Errorf("%w: handle domain (%s) doesn't match hostedBy domain (%s)", ErrPermanentEvent, handleDomain, hostedByDomain)
 	}
 
 	// SECURITY: Verify DID document exists and is valid (Bluesky-compatible security model)
@@ -617,13 +621,14 @@ func (c *CommunityEventConsumer) handleSubscription(ctx context.Context, userDID
 // createSubscription indexes a new subscription with retry logic
 func (c *CommunityEventConsumer) createSubscription(ctx context.Context, userDID string, commit *CommitEvent) error {
 	if commit.Record == nil {
-		return fmt.Errorf("subscription create event missing record data")
+		return fmt.Errorf("%w: subscription create event missing record data", ErrPermanentEvent)
 	}
 
 	// Extract community DID from record's subject field (following atProto conventions)
 	communityDID, ok := commit.Record["subject"].(string)
 	if !ok {
-		return fmt.Errorf("subscription record missing subject field")
+		// PERMANENT: structurally invalid record — replays parse identically.
+		return fmt.Errorf("%w: subscription record missing subject field", ErrPermanentEvent)
 	}
 
 	// Extract contentVisibility with clamping and default value
@@ -655,6 +660,9 @@ func (c *CommunityEventConsumer) createSubscription(ctx context.Context, userDID
 				userDID, communityDID, contentVisibility)
 			return nil
 		}
+		// Deliberately NOT ErrPermanentEvent: "community not found" here is an
+		// ORDERING failure (the community's create event may simply not have been
+		// indexed yet) — the redrive will succeed once the community arrives.
 		return fmt.Errorf("failed to index subscription: %w", err)
 	}
 
@@ -717,13 +725,14 @@ func (c *CommunityEventConsumer) handleBlock(ctx context.Context, userDID string
 // createBlock indexes a new block
 func (c *CommunityEventConsumer) createBlock(ctx context.Context, userDID string, commit *CommitEvent) error {
 	if commit.Record == nil {
-		return fmt.Errorf("block create event missing record data")
+		return fmt.Errorf("%w: block create event missing record data", ErrPermanentEvent)
 	}
 
 	// Extract community DID from record's subject field (following atProto conventions)
 	communityDID, ok := commit.Record["subject"].(string)
 	if !ok {
-		return fmt.Errorf("block record missing subject field")
+		// PERMANENT: structurally invalid record — replays parse identically.
+		return fmt.Errorf("%w: block record missing subject field", ErrPermanentEvent)
 	}
 
 	// Build AT-URI for block record
@@ -826,7 +835,9 @@ func parseCommunityProfile(record map[string]interface{}) (*CommunityProfile, er
 
 	var profile CommunityProfile
 	if err := json.Unmarshal(recordJSON, &profile); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal profile: %w", err)
+		// PERMANENT: the record's shape doesn't match the lexicon; replaying the
+		// identical bytes can never parse differently.
+		return nil, fmt.Errorf("%w: failed to unmarshal profile: %v", ErrPermanentEvent, err)
 	}
 
 	// The lexicon marks visibility optional with default "public"

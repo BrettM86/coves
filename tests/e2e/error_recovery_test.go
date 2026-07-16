@@ -55,18 +55,20 @@ func testJetstreamReconnection(t *testing.T) {
 	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
 
 	t.Run("Consumer retries on connection failure", func(t *testing.T) {
-		// The Jetstream consumer's Start() method has built-in retry logic
-		// It runs an infinite loop that calls connect(), and on error, waits 5s and retries
-		// This is verified by reading the source code in internal/atproto/jetstream/user_consumer.go:71-86
+		// The Jetstream connector's Start() method has built-in retry logic
+		// It runs an infinite loop that calls connect(), and on error, waits and retries
+		// See internal/atproto/jetstream/connector.go
 
-		// Test: Consumer with invalid URL should keep retrying until context timeout
-		consumer := jetstream.NewUserEventConsumer(userService, resolver, "ws://invalid:9999/subscribe", "")
+		// Test: Connector with invalid URL should keep retrying until context timeout
+		consumer := jetstream.NewUserEventConsumer(userService, resolver)
+		connector := jetstream.NewConnector("users-test", "ws://invalid:9999/subscribe", consumer,
+			jetstream.WithReconnectDelay(500*time.Millisecond))
 
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 
-		// Start consumer with invalid URL - it will try to connect and fail repeatedly
-		err := consumer.Start(ctx)
+		// Start connector with invalid URL - it will try to connect and fail repeatedly
+		err := connector.Start(ctx)
 
 		// Should return context.DeadlineExceeded (from our timeout)
 		// not a connection error (which would mean it gave up after first failure)
@@ -98,7 +100,7 @@ func testJetstreamReconnection(t *testing.T) {
 			t.Fatalf("Failed to create test user: %v", err)
 		}
 
-		consumer := jetstream.NewUserEventConsumer(userService, resolver, "", "")
+		consumer := jetstream.NewUserEventConsumer(userService, resolver)
 
 		// Send identity event with new handle
 		event := jetstream.JetstreamEvent{
@@ -201,7 +203,7 @@ func testMalformedJetstreamEvents(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			consumer := jetstream.NewUserEventConsumer(userService, resolver, "", "")
+			consumer := jetstream.NewUserEventConsumer(userService, resolver)
 			ctx := context.Background()
 
 			// Attempt to process malformed event
@@ -241,7 +243,7 @@ func testMalformedJetstreamEvents(t *testing.T) {
 			t.Fatalf("Failed to create test user: %v", err)
 		}
 
-		consumer := jetstream.NewUserEventConsumer(userService, resolver, "", "")
+		consumer := jetstream.NewUserEventConsumer(userService, resolver)
 
 		// Send valid identity event with new handle
 		validEvent := jetstream.JetstreamEvent{
@@ -399,7 +401,7 @@ func testPDSUnavailability(t *testing.T) {
 			t.Fatalf("Failed to create test user: %v", err)
 		}
 
-		consumer := jetstream.NewUserEventConsumer(userService, resolver, "", "")
+		consumer := jetstream.NewUserEventConsumer(userService, resolver)
 
 		event := jetstream.JetstreamEvent{
 			Did:  "did:plc:pdsfail123",
@@ -445,7 +447,7 @@ func testPDSUnavailability(t *testing.T) {
 		}
 
 		// Now operations that require PDS should work
-		consumer := jetstream.NewUserEventConsumer(userService, resolver, "", "")
+		consumer := jetstream.NewUserEventConsumer(userService, resolver)
 
 		event := jetstream.JetstreamEvent{
 			Did:  "did:plc:pdsrecovery123",
@@ -488,7 +490,7 @@ func testOutOfOrderEvents(t *testing.T) {
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
 	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
-	consumer := jetstream.NewUserEventConsumer(userService, resolver, "", "")
+	consumer := jetstream.NewUserEventConsumer(userService, resolver)
 	ctx := context.Background()
 
 	t.Run("Handle updates arriving out of order", func(t *testing.T) {

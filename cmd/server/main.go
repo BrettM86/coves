@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -398,13 +400,46 @@ func main() {
 		log.Println("Community creation via write-forward is disabled")
 	}
 
+	// Jetstream consumer infrastructure: cursor persistence + dead letter queue.
+	// Cursors let every consumer resume from its last processed event after a
+	// restart/deploy/crash instead of silently losing the gap; the dead letter
+	// queue captures events that fail all in-line retries so a background
+	// redriver can replay them once the failure clears.
+	jetstreamStateStore := jetstream.NewPostgresStateStore(db)
+
+	// All consumers run on one cancellable context so SIGTERM drains them:
+	// read loops unblock, an interrupted in-flight event is abandoned without
+	// advancing the cursor (it replays idempotently on next boot), and the
+	// final cursor is flushed.
+	consumerCtx, consumerCancel := context.WithCancel(context.Background())
+	var consumerWG sync.WaitGroup
+	var jetstreamConnectors []*jetstream.Connector
+	consumerHandlers := make(map[string]jetstream.EventHandler)
+
+	// startJetstreamConsumer wires a consumer to Jetstream with cursor
+	// persistence, retry + dead-letter, and graceful shutdown. The name keys
+	// the persisted cursor and dead letter rows — it must stay stable.
+	startJetstreamConsumer := func(name, wsURL string, handler jetstream.EventHandler) {
+		connector := jetstream.NewConnector(name, wsURL, handler,
+			jetstream.WithCursorStore(jetstreamStateStore),
+			jetstream.WithDeadLetterWriter(jetstreamStateStore),
+		)
+		jetstreamConnectors = append(jetstreamConnectors, connector)
+		consumerHandlers[name] = handler
+		consumerWG.Add(1)
+		go func() {
+			defer consumerWG.Done()
+			if startErr := connector.Start(consumerCtx); startErr != nil && !errors.Is(startErr, context.Canceled) {
+				log.Printf("Jetstream %s consumer stopped: %v", name, startErr)
+			}
+		}()
+	}
+
 	// Start Jetstream consumer for read-forward user indexing
 	jetstreamURL := os.Getenv("JETSTREAM_URL")
 	if jetstreamURL == "" {
 		jetstreamURL = "wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=social.coves.actor.profile&wantedCollections=social.coves.actor.block"
 	}
-
-	pdsFilter := os.Getenv("JETSTREAM_PDS_FILTER") // Optional: filter to specific PDS
 
 	// Create user consumer with session handle updater to sync OAuth sessions on handle changes
 	var consumerOpts []jetstream.ConsumerOption
@@ -432,13 +467,8 @@ func main() {
 	userBlockRepo := postgresRepo.NewUserBlockRepository(db)
 	consumerOpts = append(consumerOpts, jetstream.WithUserBlockRepo(userBlockRepo))
 
-	userConsumer := jetstream.NewUserEventConsumer(userService, identityResolver, jetstreamURL, pdsFilter, consumerOpts...)
-	ctx := context.Background()
-	go func() {
-		if startErr := userConsumer.Start(ctx); startErr != nil {
-			log.Printf("Jetstream consumer stopped: %v", startErr)
-		}
-	}()
+	userConsumer := jetstream.NewUserEventConsumer(userService, identityResolver, consumerOpts...)
+	startJetstreamConsumer(jetstream.ConsumerUsers, jetstreamURL, userConsumer)
 
 	log.Printf("Started Jetstream user consumer: %s", jetstreamURL)
 
@@ -463,13 +493,7 @@ func main() {
 
 	// Pass identity resolver to consumer for PLC handle resolution (source of truth)
 	communityEventConsumer := jetstream.NewCommunityEventConsumer(communityRepo, instanceDID, skipDIDWebVerification, identityResolver)
-	communityJetstreamConnector := jetstream.NewCommunityJetstreamConnector(communityEventConsumer, communityJetstreamURL)
-
-	go func() {
-		if startErr := communityJetstreamConnector.Start(ctx); startErr != nil {
-			log.Printf("Community Jetstream consumer stopped: %v", startErr)
-		}
-	}()
+	startJetstreamConsumer(jetstream.ConsumerCommunities, communityJetstreamURL, communityEventConsumer)
 
 	log.Printf("Started Jetstream community consumer: %s", communityJetstreamURL)
 	log.Println("  - Indexing: social.coves.community.profile (community profiles)")
@@ -779,13 +803,7 @@ func main() {
 	postEventConsumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService, db,
 		jetstream.WithPostBridgeTrust(bridgeTrust),
 		jetstream.WithPostIdentityResolver(identityResolver))
-	postJetstreamConnector := jetstream.NewPostJetstreamConnector(postEventConsumer, postJetstreamURL)
-
-	go func() {
-		if startErr := postJetstreamConnector.Start(ctx); startErr != nil {
-			log.Printf("Post Jetstream consumer stopped: %v", startErr)
-		}
-	}()
+	startJetstreamConsumer(jetstream.ConsumerPosts, postJetstreamURL, postEventConsumer)
 
 	log.Printf("Started Jetstream post consumer: %s", postJetstreamURL)
 	log.Println("  - Indexing: social.coves.community.post CREATE/UPDATE/DELETE operations")
@@ -804,13 +822,7 @@ func main() {
 	}
 
 	aggregatorEventConsumer := jetstream.NewAggregatorEventConsumer(aggregatorRepo)
-	aggregatorJetstreamConnector := jetstream.NewAggregatorJetstreamConnector(aggregatorEventConsumer, aggregatorJetstreamURL)
-
-	go func() {
-		if startErr := aggregatorJetstreamConnector.Start(ctx); startErr != nil {
-			log.Printf("Aggregator Jetstream consumer stopped: %v", startErr)
-		}
-	}()
+	startJetstreamConsumer(jetstream.ConsumerAggregators, aggregatorJetstreamURL, aggregatorEventConsumer)
 
 	log.Printf("Started Jetstream aggregator consumer: %s", aggregatorJetstreamURL)
 	log.Println("  - Indexing: social.coves.aggregator.service (service declarations)")
@@ -825,13 +837,7 @@ func main() {
 	}
 
 	voteEventConsumer := jetstream.NewVoteEventConsumer(voteRepo, userService, db)
-	voteJetstreamConnector := jetstream.NewVoteJetstreamConnector(voteEventConsumer, voteJetstreamURL)
-
-	go func() {
-		if startErr := voteJetstreamConnector.Start(ctx); startErr != nil {
-			log.Printf("Vote Jetstream consumer stopped: %v", startErr)
-		}
-	}()
+	startJetstreamConsumer(jetstream.ConsumerVotes, voteJetstreamURL, voteEventConsumer)
 
 	log.Printf("Started Jetstream vote consumer: %s", voteJetstreamURL)
 	log.Println("  - Indexing: social.coves.feed.vote CREATE/DELETE operations")
@@ -847,17 +853,22 @@ func main() {
 
 	commentEventConsumer := jetstream.NewCommentEventConsumer(commentRepo, db,
 		jetstream.WithCommentBridgeTrust(bridgeTrust))
-	commentJetstreamConnector := jetstream.NewCommentJetstreamConnector(commentEventConsumer, commentJetstreamURL)
-
-	go func() {
-		if startErr := commentJetstreamConnector.Start(ctx); startErr != nil {
-			log.Printf("Comment Jetstream consumer stopped: %v", startErr)
-		}
-	}()
+	startJetstreamConsumer(jetstream.ConsumerComments, commentJetstreamURL, commentEventConsumer)
 
 	log.Printf("Started Jetstream comment consumer: %s", commentJetstreamURL)
 	log.Println("  - Indexing: social.coves.community.comment CREATE/UPDATE/DELETE operations")
 	log.Println("  - Updating: Post comment counts and comment reply counts atomically")
+
+	// Start the dead letter redriver: replays events that failed all in-line
+	// retries against the same consumers, so transient failures (e.g. a
+	// Postgres blip) self-heal instead of silently losing the event.
+	deadLetterRedriver := jetstream.NewDeadLetterRedriver(jetstreamStateStore, consumerHandlers)
+	consumerWG.Add(1)
+	go func() {
+		defer consumerWG.Done()
+		deadLetterRedriver.Run(consumerCtx)
+	}()
+	log.Println("Started Jetstream dead letter redriver")
 
 	// Register XRPC routes
 	routes.RegisterUserRoutesWithOptions(r, userService, authMiddleware, oauthClient.ClientApp, &routes.UserRouteOptions{
@@ -997,6 +1008,8 @@ func main() {
 	log.Println("  - GET /static/* (static assets)")
 
 	// Health check endpoints
+	// /health and /xrpc/_health stay pure liveness checks (Docker healthcheck
+	// targets) — a Jetstream outage must not restart-loop the whole AppView.
 	healthHandler := func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write([]byte("OK")); err != nil {
@@ -1005,6 +1018,13 @@ func main() {
 	}
 	r.Get("/health", healthHandler)
 	r.Get("/xrpc/_health", healthHandler)
+
+	// /health/consumers reports indexing health: per-consumer connection
+	// state, cursor position, and dead letter backlog. Returns 503 when any
+	// consumer has been disconnected past the stalled threshold (see
+	// consumerHealthHandler), so monitoring can alert on stalled indexing
+	// even while the HTTP server is fine.
+	r.Get("/health/consumers", consumerHealthHandler(jetstreamConnectors, jetstreamStateStore))
 
 	// Check PORT first (docker-compose), then APPVIEW_PORT (legacy)
 	port := os.Getenv("PORT")
@@ -1039,7 +1059,7 @@ func main() {
 	log.Println("Shutting down server...")
 
 	// Graceful shutdown with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	// Stop background jobs
@@ -1047,10 +1067,137 @@ func main() {
 	tokenRefreshCancel()
 	imageProxyCacheCleanupCancel()
 
-	if err := server.Shutdown(ctx); err != nil {
-		log.Fatalf("Server shutdown error: %v", err)
+	// Drain Jetstream consumers: cancelling the context unblocks their read
+	// loops and flushes cursors so the next boot resumes from the last
+	// processed event (minus a small deliberate replay rewind; idempotent
+	// handlers absorb the overlap).
+	consumerCancel()
+	consumersDrained := make(chan struct{})
+	go func() {
+		consumerWG.Wait()
+		close(consumersDrained)
+	}()
+
+	// Never log.Fatalf here: that would skip the consumer drain below and the
+	// final cursor flush. Deferred cleanups (DB close, OTel flush) also still
+	// need to run, so log the failure and return normally instead of exiting
+	// non-zero via os.Exit (which would skip those defers).
+	shutdownFailed := false
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		shutdownFailed = true
+		log.Printf("Server shutdown error: %v", err)
 	}
-	log.Println("Server stopped gracefully")
+
+	select {
+	case <-consumersDrained:
+		log.Println("Jetstream consumers drained and cursors flushed")
+	case <-shutdownCtx.Done():
+		log.Println("Timed out waiting for Jetstream consumers to drain")
+	}
+
+	if shutdownFailed {
+		log.Println("Server stopped with shutdown errors")
+	} else {
+		log.Println("Server stopped gracefully")
+	}
+}
+
+// consumerStalledThreshold is how long a consumer may be disconnected before
+// /health/consumers reports "stalled" (503).
+const consumerStalledThreshold = 60 * time.Second
+
+// consumerHealth is one consumer's entry in the /health/consumers response.
+//
+// LastEventAgeSeconds and CursorAgeSeconds are informational signals for
+// operator alerting, NOT auto-503 inputs: a quiet local stream legitimately
+// receives no events, so a large age alone cannot distinguish "nothing to
+// index" from "connected but wedged". Operators who know their stream's
+// expected cadence can alert on these externally.
+type consumerHealth struct {
+	jetstream.ConnectorStatus
+	DeadLetterBacklog   int64  `json:"deadLetterBacklog"`
+	LastEventAgeSeconds *int64 `json:"lastEventAgeSeconds,omitempty"` // omitted if no event received yet
+	CursorAgeSeconds    *int64 `json:"cursorAgeSeconds,omitempty"`    // omitted if the cursor is still 0
+}
+
+// consumerHealthResponse is the /health/consumers response body.
+type consumerHealthResponse struct {
+	Status string `json:"status"` // "ok", "degraded", or "stalled"
+	// DeadLetterBacklogUnknown distinguishes "backlog is 0" from "the backlog
+	// could not be counted" (e.g. Postgres is down): without it the endpoint
+	// would look healthier the sicker the database gets.
+	DeadLetterBacklogUnknown bool             `json:"deadLetterBacklogUnknown,omitempty"`
+	Consumers                []consumerHealth `json:"consumers"`
+}
+
+// buildConsumerHealthResponse is the pure decision core of /health/consumers,
+// extracted so tests can drive it with hand-built statuses. Rules:
+//   - any consumer disconnected longer than consumerStalledThreshold →
+//     "stalled" + 503. A connector that has never connected reports no
+//     DisconnectedSince and is NOT stalled (boot grace: consumers start
+//     alongside the HTTP server and need a moment to connect).
+//   - dead letter backlog uncountable → "degraded" + 200 (stalled wins).
+//   - otherwise "ok" + 200.
+func buildConsumerHealthResponse(statuses []jetstream.ConnectorStatus, backlogs map[string]int64, backlogUnknown bool, now time.Time) (consumerHealthResponse, int) {
+	response := consumerHealthResponse{Status: "ok"}
+	httpCode := http.StatusOK
+	if backlogUnknown {
+		response.Status = "degraded"
+		response.DeadLetterBacklogUnknown = true
+	}
+
+	for _, status := range statuses {
+		if !status.Connected && status.DisconnectedSince != nil &&
+			now.Sub(*status.DisconnectedSince) > consumerStalledThreshold {
+			response.Status = "stalled"
+			httpCode = http.StatusServiceUnavailable
+		}
+
+		entry := consumerHealth{
+			ConnectorStatus:   status,
+			DeadLetterBacklog: backlogs[status.Name],
+		}
+		if status.LastEventAt != nil {
+			age := int64(now.Sub(*status.LastEventAt).Seconds())
+			entry.LastEventAgeSeconds = &age
+		}
+		if status.CursorTimeUS != 0 {
+			age := int64(now.Sub(time.UnixMicro(status.CursorTimeUS)).Seconds())
+			entry.CursorAgeSeconds = &age
+		}
+		response.Consumers = append(response.Consumers, entry)
+	}
+	return response, httpCode
+}
+
+// consumerHealthHandler reports Jetstream consumer health as JSON: connection
+// state, cursor position, processed/dead-lettered counts, event/cursor ages,
+// and the dead letter backlog per consumer. Responds 503 when any consumer
+// has been disconnected longer than consumerStalledThreshold (indexing is
+// stalled) so monitoring can alert on it.
+func consumerHealthHandler(connectors []*jetstream.Connector, deadLetterQueue jetstream.DeadLetterQueue) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		backlogs, err := deadLetterQueue.CountDeadLetters(r.Context())
+		backlogUnknown := err != nil
+		if backlogUnknown {
+			// Log the error server-side only: this is a public endpoint, so
+			// the response carries just the deadLetterBacklogUnknown flag.
+			log.Printf("Failed to count dead letters for health check: %v", err)
+		}
+
+		statuses := make([]jetstream.ConnectorStatus, 0, len(connectors))
+		for _, connector := range connectors {
+			statuses = append(statuses, connector.Status())
+		}
+
+		response, httpCode := buildConsumerHealthResponse(statuses, backlogs, backlogUnknown, time.Now())
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(httpCode)
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			log.Printf("Failed to write consumer health response: %v", err)
+		}
+	}
 }
 
 // authenticateWithPDS creates a session on the PDS and returns an access token

@@ -79,9 +79,9 @@ func (c *PostEventConsumer) HandleEvent(ctx context.Context, event *JetstreamEve
 	if commit.Collection == "social.coves.community.post" {
 		switch commit.Operation {
 		case "create":
-			return c.createPost(ctx, event.Did, commit)
+			return c.createPost(ctx, event.Did, commit, event.TimeUS)
 		case "update":
-			return c.updatePost(ctx, event.Did, commit)
+			return c.updatePost(ctx, event.Did, commit, event.TimeUS)
 		case "delete":
 			return c.deletePost(ctx, event.Did, commit)
 		}
@@ -91,10 +91,37 @@ func (c *PostEventConsumer) HandleEvent(ctx context.Context, event *JetstreamEve
 	return nil
 }
 
+// eventTime converts a Jetstream time_us wall-clock timestamp to a time.Time.
+// ok is false when the event carries no timestamp (TimeUS == 0 — synthetic or
+// legacy test events), in which case recency guards are bypassed and updates
+// apply unconditionally (backward compatible).
+func eventTime(timeUS int64) (time.Time, bool) {
+	if timeUS <= 0 {
+		return time.Time{}, false
+	}
+	return time.UnixMicro(timeUS).UTC(), true
+}
+
+// indexedAtForEvent returns the row watermark recorded for an applied event: the
+// Jetstream event time when available, falling back to wall clock for synthetic
+// events (TimeUS == 0). Keeping the watermark in Jetstream's clock domain (event
+// time compared against event time, never against AppView wall clock) is what
+// makes the stale-redrive recency guard exact: Jetstream time_us is monotonic
+// per stream, so a live in-order update always carries a time_us strictly
+// greater than the watermark left by the previous applied event, while a
+// DeadLetterRedriver replay of an OLDER failed update carries a smaller one and
+// is skipped instead of silently reverting newer content.
+func indexedAtForEvent(timeUS int64) time.Time {
+	if t, ok := eventTime(timeUS); ok {
+		return t
+	}
+	return time.Now()
+}
+
 // createPost indexes a new post from the firehose
-func (c *PostEventConsumer) createPost(ctx context.Context, repoDID string, commit *CommitEvent) error {
+func (c *PostEventConsumer) createPost(ctx context.Context, repoDID string, commit *CommitEvent, timeUS int64) error {
 	if commit.Record == nil {
-		return fmt.Errorf("post create event missing record data")
+		return fmt.Errorf("%w: post create event missing record data", ErrPermanentEvent)
 	}
 
 	// Parse the post record
@@ -142,7 +169,7 @@ func (c *PostEventConsumer) createPost(ctx context.Context, repoDID string, comm
 		Title:        postRecord.Title,
 		Content:      postRecord.Content,
 		CreatedAt:    createdAt,
-		IndexedAt:    time.Now(),
+		IndexedAt:    indexedAtForEvent(timeUS), // recency-guard watermark (see indexedAtForEvent)
 		// Native stats remain at 0 (no native votes yet); bridged stats applied below.
 		UpvoteCount:   0,
 		DownvoteCount: 0,
@@ -241,9 +268,9 @@ func (c *PostEventConsumer) deletePost(ctx context.Context, repoDID string, comm
 // author must exist). We additionally reject reassignment: an update may not move a
 // post to a different community or author. Reassignment, a missing stored row, and a
 // soft-deleted stored row are all skipped (logged, no error).
-func (c *PostEventConsumer) updatePost(ctx context.Context, repoDID string, commit *CommitEvent) error {
+func (c *PostEventConsumer) updatePost(ctx context.Context, repoDID string, commit *CommitEvent, timeUS int64) error {
 	if commit.Record == nil {
-		return fmt.Errorf("post update event missing record data")
+		return fmt.Errorf("%w: post update event missing record data", ErrPermanentEvent)
 	}
 
 	postRecord, err := parsePostRecord(commit.Record)
@@ -267,11 +294,12 @@ func (c *PostEventConsumer) updatePost(ctx context.Context, repoDID string, comm
 		storedAuthorDID    string
 		storedDeletedAt    *time.Time
 		storedAsOf         *time.Time
+		storedIndexedAt    time.Time
 	)
 	err = c.db.QueryRowContext(ctx,
-		`SELECT id, community_did, author_did, deleted_at, bridged_stats_as_of FROM posts WHERE uri = $1`,
+		`SELECT id, community_did, author_did, deleted_at, bridged_stats_as_of, indexed_at FROM posts WHERE uri = $1`,
 		uri,
-	).Scan(&storedID, &storedCommunityDID, &storedAuthorDID, &storedDeletedAt, &storedAsOf)
+	).Scan(&storedID, &storedCommunityDID, &storedAuthorDID, &storedDeletedAt, &storedAsOf, &storedIndexedAt)
 	if err == sql.ErrNoRows {
 		// Not indexed yet (out-of-order delivery). Jetstream will replay CREATE; skip.
 		log.Printf("Update event for non-indexed post: %s (will be indexed on CREATE)", uri)
@@ -284,6 +312,21 @@ func (c *PostEventConsumer) updatePost(ctx context.Context, repoDID string, comm
 	// Skip soft-deleted rows: a deleted post should not be resurrected by an edit.
 	if storedDeletedAt != nil {
 		log.Printf("Update event for soft-deleted post: %s (skipping)", uri)
+		return nil
+	}
+
+	// RECENCY GUARD: a redriven (DeadLetterRedriver) or rewound update can arrive
+	// AFTER a newer update was already indexed. indexed_at is the watermark of the
+	// last applied event for this row (event time, see indexedAtForEvent); an event
+	// whose time_us is not strictly newer must be skipped, or a stale replay would
+	// silently revert newer content. Skipping is SUCCESS (the newer state wins) —
+	// returning an error would re-dead-letter an event that must never be applied.
+	// This Go pre-check exists for clean logging; the UPDATE below repeats the
+	// comparison atomically so a concurrent newer write between this read and the
+	// write still cannot be clobbered.
+	if evTime, ok := eventTime(timeUS); ok && !storedIndexedAt.Before(evTime) {
+		log.Printf("INFO: skipping stale post update for %s (event time %s <= last indexed %s; newer state already applied)",
+			uri, evTime.Format(time.RFC3339Nano), storedIndexedAt.Format(time.RFC3339Nano))
 		return nil
 	}
 
@@ -357,6 +400,11 @@ func (c *PostEventConsumer) updatePost(ctx context.Context, repoDID string, comm
 	// LIVE native counts plus whichever bridged counts win, so concurrent native votes
 	// are never clobbered. $10 is the incoming asOf (NULL => no bridged change); the
 	// stored asOf is read directly from the row, keeping the compare atomic.
+	//
+	// $11 is the event's Jetstream time_us. The WHERE clause repeats the recency
+	// guard atomically (indexed_at must be strictly older than the event, unless the
+	// event carries no timestamp), and indexed_at is advanced to the event time on
+	// every applied update so the NEXT stale replay is blocked too.
 	updateQuery := `
 		UPDATE posts
 		SET
@@ -371,6 +419,9 @@ func (c *PostEventConsumer) updatePost(ctx context.Context, repoDID string, comm
 				  OR content_facets IS DISTINCT FROM $5 OR embed IS DISTINCT FROM $6
 				  OR content_labels IS DISTINCT FROM $7
 				THEN NOW() ELSE edited_at END,
+			indexed_at = CASE
+				WHEN $11::bigint > 0 THEN to_timestamp($11::bigint / 1000000.0)
+				ELSE indexed_at END,
 			bridged_upvote_count = CASE
 				WHEN $10::timestamptz IS NOT NULL AND (bridged_stats_as_of IS NULL OR $10 >= bridged_stats_as_of)
 				THEN $8 ELSE bridged_upvote_count END,
@@ -388,25 +439,29 @@ func (c *PostEventConsumer) updatePost(ctx context.Context, repoDID string, comm
 					WHEN $10::timestamptz IS NOT NULL AND (bridged_stats_as_of IS NULL OR $10 >= bridged_stats_as_of)
 					THEN $9 ELSE bridged_downvote_count END
 		WHERE id = $1 AND deleted_at IS NULL
+		  AND ($11::bigint <= 0 OR indexed_at < to_timestamp($11::bigint / 1000000.0))
 	`
 	result, err := c.db.ExecContext(ctx, updateQuery,
 		storedID, commit.CID, postRecord.Title, postRecord.Content,
 		facetsJSON, embedJSON, labelsJSON,
 		incomingUp, incomingDown, incomingAsOf,
+		timeUS,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to update post: %w", err)
 	}
 
-	// A post can be soft-deleted between the load above and this UPDATE; the
-	// deleted_at IS NULL guard then matches no rows. Report that as a skip instead of
-	// falsely logging a successful update (mirrors vote_consumer's RowsAffected check).
+	// A post can be soft-deleted — or overtaken by a concurrent NEWER update (recency
+	// guard) — between the load above and this UPDATE; the WHERE guards then match no
+	// rows. Report that as a skip instead of falsely logging a successful update
+	// (mirrors vote_consumer's RowsAffected check). Both cases are success: the row's
+	// current state supersedes this event.
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("failed to check post update result: %w", err)
 	}
 	if rowsAffected == 0 {
-		log.Printf("Update event for post that vanished/was deleted between load and update: %s (skipping)", uri)
+		log.Printf("Update event for post that was deleted or superseded by a newer update between load and write: %s (skipping)", uri)
 		return nil
 	}
 
@@ -469,8 +524,8 @@ func (c *PostEventConsumer) indexPostAndReconcileCounts(ctx context.Context, pos
 		) VALUES (
 			$1, $2, $3, $4, $5,
 			$6, $7, $8, $9, $10,
-			$11, NOW(),
-			$12, $13, $14, $15
+			$11, $12,
+			$13, $14, $15, $16
 		)
 		ON CONFLICT (uri) DO NOTHING
 		RETURNING id
@@ -481,7 +536,7 @@ func (c *PostEventConsumer) indexPostAndReconcileCounts(ctx context.Context, pos
 		ctx, insertQuery,
 		post.URI, post.CID, post.RKey, post.AuthorDID, post.CommunityDID,
 		post.Title, post.Content, facetsJSON, embedJSON, labelsJSON,
-		post.CreatedAt,
+		post.CreatedAt, post.IndexedAt,
 		post.BridgedUpvoteCount, post.BridgedDownvoteCount, post.BridgedStatsAsOf, post.Score,
 	).Scan(&postID)
 
@@ -570,8 +625,10 @@ func (c *PostEventConsumer) validatePostEvent(ctx context.Context, repoDID strin
 	//   - We verify event.Did (repo owner) == post.community (claimed community)
 	//   - Reject if mismatch
 	if repoDID != post.Community {
-		return nil, fmt.Errorf("repository DID (%s) doesn't match community DID (%s) - posts must come from community repos",
-			repoDID, post.Community)
+		// PERMANENT: a spoofed repo can never become valid — retrying or redriving
+		// this event would reject it identically every time.
+		return nil, fmt.Errorf("%w: repository DID (%s) doesn't match community DID (%s) - posts must come from community repos",
+			ErrPermanentEvent, repoDID, post.Community)
 	}
 
 	// CRITICAL: Verify community exists in AppView.
@@ -583,6 +640,9 @@ func (c *PostEventConsumer) validatePostEvent(ctx context.Context, repoDID strin
 	if err != nil {
 		if communities.IsNotFound(err) {
 			// Policy rejection - community must be indexed before posts.
+			// Deliberately NOT ErrPermanentEvent: this is an ORDERING failure (the
+			// community's create event may not have been indexed yet) — the redrive
+			// will succeed once the community arrives.
 			return nil, fmt.Errorf("community not found: %s - cannot index post before community", post.Community)
 		}
 		// Infrastructure fault (DB error): not an attack. Tag it so the caller logs it
@@ -663,18 +723,21 @@ func parsePostRecord(record map[string]interface{}) (*PostRecordFromJetstream, e
 
 	var post PostRecordFromJetstream
 	if err := json.Unmarshal(recordJSON, &post); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal post record: %w", err)
+		// PERMANENT: the record's shape doesn't match the lexicon (wrong field
+		// types); replaying the identical bytes can never parse differently.
+		return nil, fmt.Errorf("%w: failed to unmarshal post record: %v", ErrPermanentEvent, err)
 	}
 
-	// Validate required fields
+	// Validate required fields. PERMANENT: a record missing required fields is
+	// structurally invalid forever — retries and redrives cannot fix it.
 	if post.Community == "" {
-		return nil, fmt.Errorf("post record missing community field")
+		return nil, fmt.Errorf("%w: post record missing community field", ErrPermanentEvent)
 	}
 	if post.Author == "" {
-		return nil, fmt.Errorf("post record missing author field")
+		return nil, fmt.Errorf("%w: post record missing author field", ErrPermanentEvent)
 	}
 	if post.CreatedAt == "" {
-		return nil, fmt.Errorf("post record missing createdAt field")
+		return nil, fmt.Errorf("%w: post record missing createdAt field", ErrPermanentEvent)
 	}
 
 	return &post, nil

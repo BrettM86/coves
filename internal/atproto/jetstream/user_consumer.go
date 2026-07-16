@@ -6,16 +6,12 @@ import (
 	"Coves/internal/core/userblocks"
 	"Coves/internal/core/users"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"log/slog"
 	"strings"
-	"sync"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 // CovesProfileCollection is the atProto collection for Coves user profiles.
@@ -69,15 +65,15 @@ type CommitEvent struct {
 	CID        string                 `json:"cid,omitempty"`
 }
 
-// UserEventConsumer consumes user-related events from Jetstream
+// UserEventConsumer consumes user-related events from Jetstream.
+// Connection management (WebSocket, cursor, retries, dead letters) lives in
+// Connector; this type only implements EventHandler.
 type UserEventConsumer struct {
 	userService          users.UserService
 	identityResolver     identity.Resolver
 	sessionHandleUpdater SessionHandleUpdater  // Optional: updates OAuth sessions on handle change
 	userBlockRepo        userblocks.Repository // Optional: indexes user-to-user blocks
 	bridgeTrust          *BridgeTrust          // Optional: admits new identities hosted by trusted bridge PDSes
-	wsURL                string
-	pdsFilter            string // Optional: only index users from specific PDS
 }
 
 // ConsumerOption is a functional option for configuring UserEventConsumer
@@ -109,12 +105,10 @@ func WithUserBridgeTrust(bt *BridgeTrust) ConsumerOption {
 }
 
 // NewUserEventConsumer creates a new Jetstream consumer for user events
-func NewUserEventConsumer(userService users.UserService, identityResolver identity.Resolver, wsURL, pdsFilter string, opts ...ConsumerOption) *UserEventConsumer {
+func NewUserEventConsumer(userService users.UserService, identityResolver identity.Resolver, opts ...ConsumerOption) *UserEventConsumer {
 	c := &UserEventConsumer{
 		userService:      userService,
 		identityResolver: identityResolver,
-		wsURL:            wsURL,
-		pdsFilter:        pdsFilter,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -122,129 +116,10 @@ func NewUserEventConsumer(userService users.UserService, identityResolver identi
 	return c
 }
 
-// Start begins consuming events from Jetstream
-// Runs indefinitely, reconnecting on errors
-func (c *UserEventConsumer) Start(ctx context.Context) error {
-	log.Printf("Starting Jetstream user consumer: %s", c.wsURL)
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Println("Jetstream consumer shutting down")
-			return ctx.Err()
-		default:
-			if err := c.connect(ctx); err != nil {
-				log.Printf("Jetstream connection error: %v. Retrying in 5s...", err)
-				time.Sleep(5 * time.Second)
-				continue
-			}
-		}
-	}
-}
-
-// connect establishes WebSocket connection and processes events
-func (c *UserEventConsumer) connect(ctx context.Context) error {
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, c.wsURL, nil)
-	if err != nil {
-		return fmt.Errorf("failed to connect to Jetstream: %w", err)
-	}
-	defer func() {
-		if err := conn.Close(); err != nil {
-			log.Printf("Failed to close WebSocket connection: %v", err)
-		}
-	}()
-
-	log.Println("Connected to Jetstream")
-
-	// Set read deadline to detect connection issues
-	if err := conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
-		log.Printf("Failed to set read deadline: %v", err)
-	}
-
-	// Set pong handler to keep connection alive
-	conn.SetPongHandler(func(string) error {
-		if err := conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
-			log.Printf("Failed to set read deadline in pong handler: %v", err)
-		}
-		return nil
-	})
-
-	// Start ping ticker
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	done := make(chan struct{})
-	var closeOnce sync.Once // Ensure done channel is only closed once
-
-	// Goroutine to send pings
-	go func() {
-		for {
-			select {
-			case <-ticker.C:
-				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-					log.Printf("Ping error: %v", err)
-					closeOnce.Do(func() { close(done) })
-					return
-				}
-			case <-done:
-				return
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	// Read messages
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-done:
-			return fmt.Errorf("connection closed")
-		default:
-			_, message, err := conn.ReadMessage()
-			if err != nil {
-				closeOnce.Do(func() { close(done) })
-				return fmt.Errorf("read error: %w", err)
-			}
-
-			// Reset read deadline on successful read
-			if err := conn.SetReadDeadline(time.Now().Add(60 * time.Second)); err != nil {
-				log.Printf("Failed to set read deadline: %v", err)
-			}
-
-			if err := c.handleEvent(ctx, message); err != nil {
-				log.Printf("Error handling event: %v", err)
-				// Continue processing other events
-			}
-		}
-	}
-}
-
-// handleEvent processes a single Jetstream event
-func (c *UserEventConsumer) handleEvent(ctx context.Context, data []byte) error {
-	var event JetstreamEvent
-	if err := json.Unmarshal(data, &event); err != nil {
-		return fmt.Errorf("failed to parse event: %w", err)
-	}
-
-	// We're interested in identity events (handle updates), account events (new users),
-	// and commit events (profile updates from social.coves.actor.profile)
-	switch event.Kind {
-	case "identity":
-		return c.handleIdentityEvent(ctx, &event)
-	case "account":
-		return c.handleAccountEvent(ctx, &event)
-	case "commit":
-		return c.handleCommitEvent(ctx, &event)
-	default:
-		// Ignore other event types
-		return nil
-	}
-}
-
-// HandleEvent processes a Jetstream event for user-related records.
-// This is the public entry point used by tests and external callers.
+// HandleEvent implements EventHandler; it is invoked by the Connector for live
+// events and by the DeadLetterRedriver for replays, so it must stay idempotent.
+// The two callers may invoke the same consumer instance concurrently, so it must
+// also hold no unguarded mutable in-memory state (all state lives in the DB).
 func (c *UserEventConsumer) HandleEvent(ctx context.Context, event *JetstreamEvent) error {
 	switch event.Kind {
 	case "identity":
@@ -270,14 +145,15 @@ func (c *UserEventConsumer) HandleIdentityEventPublic(ctx context.Context, event
 // This prevents indexing millions of Bluesky users who never interact with Coves.
 func (c *UserEventConsumer) handleIdentityEvent(ctx context.Context, event *JetstreamEvent) error {
 	if event.Identity == nil {
-		return fmt.Errorf("identity event missing identity data")
+		// PERMANENT: structurally invalid event — replays fail identically.
+		return fmt.Errorf("%w: identity event missing identity data", ErrPermanentEvent)
 	}
 
 	did := event.Identity.Did
 	handle := event.Identity.Handle
 
 	if did == "" || handle == "" {
-		return fmt.Errorf("identity event missing did or handle")
+		return fmt.Errorf("%w: identity event missing did or handle", ErrPermanentEvent)
 	}
 
 	// Only process users who exist in our database (i.e., have used Coves before)
@@ -345,12 +221,13 @@ func (c *UserEventConsumer) handleIdentityEvent(ctx context.Context, event *Jets
 // handleAccountEvent processes account events (account creation/updates)
 func (c *UserEventConsumer) handleAccountEvent(ctx context.Context, event *JetstreamEvent) error {
 	if event.Account == nil {
-		return fmt.Errorf("account event missing account data")
+		// PERMANENT: structurally invalid event — replays fail identically.
+		return fmt.Errorf("%w: account event missing account data", ErrPermanentEvent)
 	}
 
 	did := event.Account.Did
 	if did == "" {
-		return fmt.Errorf("account event missing did")
+		return fmt.Errorf("%w: account event missing did", ErrPermanentEvent)
 	}
 
 	// Account events don't include handle, so we skip them.
@@ -392,9 +269,10 @@ func (c *UserEventConsumer) handleProfileCommit(ctx context.Context, event *Jets
 
 	// Only process users who exist in our database, except trusted bridge
 	// profiles whose first event is the profile itself.
-	_, err := c.userService.GetUserByDID(ctx, event.Did)
+	existingUser, err := c.userService.GetUserByDID(ctx, event.Did)
 	if err != nil {
 		if errors.Is(err, users.ErrUserNotFound) {
+			existingUser = nil // freshly discovered identity: recency guard below must not apply
 			if event.Commit.Operation != "create" && event.Commit.Operation != "update" {
 				return nil
 			}
@@ -415,6 +293,25 @@ func (c *UserEventConsumer) handleProfileCommit(ctx context.Context, event *Jets
 			// Database error - propagate so the connector can report it.
 			return fmt.Errorf("failed to check if user exists: %w", err)
 		}
+	}
+
+	// RECENCY GUARD: a redriven (DeadLetterRedriver) or rewound profile event can
+	// arrive AFTER a newer profile write was already applied; applying it would
+	// silently revert the newer profile. users.updated_at is bumped by every
+	// UpdateProfile/UpdateHandle, so an event older than the row's last successful
+	// write is skipped. Skipping is SUCCESS — the newer state wins.
+	//
+	// CAVEAT (unlike posts/comments, which store the Jetstream event time as their
+	// watermark): updated_at is AppView wall clock, so this compares across clock
+	// domains. That is safe for redrives (replayed minutes after the newer write)
+	// and for human-paced profile edits; only two writes for the same user landing
+	// within the ingest lag could be spuriously skipped, and the next profile edit
+	// self-heals. Making this exact needs a dedicated event-time watermark column.
+	if evTime, ok := eventTime(event.TimeUS); ok &&
+		existingUser != nil && !existingUser.UpdatedAt.IsZero() && !existingUser.UpdatedAt.Before(evTime) {
+		log.Printf("INFO: skipping stale profile event for %s (event time %s <= last user write %s; newer state already applied)",
+			event.Did, evTime.Format(time.RFC3339Nano), existingUser.UpdatedAt.Format(time.RFC3339Nano))
+		return nil
 	}
 
 	switch event.Commit.Operation {
@@ -517,28 +414,31 @@ func (c *UserEventConsumer) handleUserBlock(ctx context.Context, userDID string,
 // createUserBlock indexes a new user-to-user block from the firehose.
 func (c *UserEventConsumer) createUserBlock(ctx context.Context, userDID string, commit *CommitEvent) error {
 	if commit.Record == nil {
-		return fmt.Errorf("user block create event missing record data")
+		return fmt.Errorf("%w: user block create event missing record data", ErrPermanentEvent)
 	}
+
+	// The rejections below are PERMANENT (ErrPermanentEvent): they depend only on
+	// the immutable event payload, so retries and redrives would fail identically.
 
 	// Validate userDID format (untrusted firehose data)
 	if !strings.HasPrefix(userDID, "did:") {
-		return fmt.Errorf("invalid blocker DID format from firehose: %s", userDID)
+		return fmt.Errorf("%w: invalid blocker DID format from firehose: %s", ErrPermanentEvent, userDID)
 	}
 
 	// Extract blocked user DID from record's subject field
 	blockedDID, ok := commit.Record["subject"].(string)
 	if !ok {
-		return fmt.Errorf("user block record missing subject field")
+		return fmt.Errorf("%w: user block record missing subject field", ErrPermanentEvent)
 	}
 
 	// Validate blockedDID format (untrusted firehose data)
 	if !strings.HasPrefix(blockedDID, "did:") {
-		return fmt.Errorf("invalid blocked DID format from firehose: %s", blockedDID)
+		return fmt.Errorf("%w: invalid blocked DID format from firehose: %s", ErrPermanentEvent, blockedDID)
 	}
 
 	// Validate rkey is non-empty before building AT-URI
 	if commit.RKey == "" {
-		return fmt.Errorf("user block create event missing rkey")
+		return fmt.Errorf("%w: user block create event missing rkey", ErrPermanentEvent)
 	}
 
 	// Build AT-URI for the block record (lives in the blocker's repository)
@@ -570,9 +470,10 @@ func (c *UserEventConsumer) createUserBlock(ctx context.Context, userDID string,
 // deleteUserBlock removes a user-to-user block from the index.
 // DELETE operations don't include record data, so we look up the block by its URI.
 func (c *UserEventConsumer) deleteUserBlock(ctx context.Context, userDID string, commit *CommitEvent) error {
-	// Validate rkey is non-empty before building AT-URI
+	// Validate rkey is non-empty before building AT-URI.
+	// PERMANENT: the rkey is immutable — replays fail identically.
 	if commit.RKey == "" {
-		return fmt.Errorf("user block delete event missing rkey")
+		return fmt.Errorf("%w: user block delete event missing rkey", ErrPermanentEvent)
 	}
 
 	// Build AT-URI from the rkey

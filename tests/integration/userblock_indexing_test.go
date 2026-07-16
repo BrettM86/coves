@@ -262,7 +262,7 @@ func TestUserBlockIndexing_DeleteNonExistent(t *testing.T) {
 // handling doesn't need them.
 func createUserBlockConsumer(t *testing.T, repo userblocks.Repository) *jetstream.UserEventConsumer {
 	t.Helper()
-	return jetstream.NewUserEventConsumer(nil, nil, "", "", jetstream.WithUserBlockRepo(repo))
+	return jetstream.NewUserEventConsumer(nil, nil, jetstream.WithUserBlockRepo(repo))
 }
 
 // cleanupUserBlockTestDB is defined in userblock_repo_test.go

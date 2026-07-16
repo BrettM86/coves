@@ -4,7 +4,6 @@ import (
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/users"
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -131,7 +130,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 	t.Run("ignores commits for unknown collections", func(t *testing.T) {
 		mockService := newMockUserService()
 		mockResolver := &mockIdentityResolverForUser{}
-		consumer := NewUserEventConsumer(mockService, mockResolver, "wss://jetstream.example.com", "")
+		consumer := NewUserEventConsumer(mockService, mockResolver)
 		ctx := context.Background()
 
 		// Event with a non-profile collection (e.g., social.coves.post)
@@ -151,7 +150,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			},
 		}
 
-		err := consumer.handleEvent(ctx, mustMarshalEvent(event))
+		err := consumer.HandleEvent(ctx, event)
 		if err != nil {
 			t.Errorf("Expected no error for unknown collection, got: %v", err)
 		}
@@ -166,7 +165,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		mockService := newMockUserService()
 		// Don't add any users - the user lookup will fail
 		mockResolver := &mockIdentityResolverForUser{}
-		consumer := NewUserEventConsumer(mockService, mockResolver, "wss://jetstream.example.com", "")
+		consumer := NewUserEventConsumer(mockService, mockResolver)
 		ctx := context.Background()
 
 		event := &JetstreamEvent{
@@ -185,7 +184,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			},
 		}
 
-		err := consumer.handleEvent(ctx, mustMarshalEvent(event))
+		err := consumer.HandleEvent(ctx, event)
 		// Should return nil (not an error) for users not in our database
 		if err != nil {
 			t.Errorf("Expected nil error for unknown user, got: %v", err)
@@ -204,7 +203,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		mockResolver := &mockIdentityResolverForUser{identities: map[string]*identity.Identity{
 			did: {DID: did, Handle: "alice.lemmy.bridge.example", PDSURL: bridgePDS},
 		}}
-		consumer := NewUserEventConsumer(mockService, mockResolver, "wss://jetstream.example.com", "",
+		consumer := NewUserEventConsumer(mockService, mockResolver,
 			WithUserBridgeTrust(NewBridgeTrust([]string{bridgePDS})))
 
 		event := &JetstreamEvent{
@@ -235,7 +234,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			PDSURL: "https://bsky.social",
 		}
 		mockResolver := &mockIdentityResolverForUser{}
-		consumer := NewUserEventConsumer(mockService, mockResolver, "wss://jetstream.example.com", "")
+		consumer := NewUserEventConsumer(mockService, mockResolver)
 		ctx := context.Background()
 
 		event := &JetstreamEvent{
@@ -254,7 +253,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			},
 		}
 
-		err := consumer.handleEvent(ctx, mustMarshalEvent(event))
+		err := consumer.HandleEvent(ctx, event)
 		if err != nil {
 			t.Fatalf("Expected no error, got: %v", err)
 		}
@@ -277,7 +276,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			PDSURL: "https://bsky.social",
 		}
 		mockResolver := &mockIdentityResolverForUser{}
-		consumer := NewUserEventConsumer(mockService, mockResolver, "wss://jetstream.example.com", "")
+		consumer := NewUserEventConsumer(mockService, mockResolver)
 		ctx := context.Background()
 
 		event := &JetstreamEvent{
@@ -296,7 +295,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			},
 		}
 
-		err := consumer.handleEvent(ctx, mustMarshalEvent(event))
+		err := consumer.HandleEvent(ctx, event)
 		if err != nil {
 			t.Fatalf("Expected no error, got: %v", err)
 		}
@@ -319,7 +318,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			PDSURL: "https://bsky.social",
 		}
 		mockResolver := &mockIdentityResolverForUser{}
-		consumer := NewUserEventConsumer(mockService, mockResolver, "wss://jetstream.example.com", "")
+		consumer := NewUserEventConsumer(mockService, mockResolver)
 		ctx := context.Background()
 
 		event := &JetstreamEvent{
@@ -343,7 +342,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			},
 		}
 
-		err := consumer.handleEvent(ctx, mustMarshalEvent(event))
+		err := consumer.HandleEvent(ctx, event)
 		if err != nil {
 			t.Fatalf("Expected no error, got: %v", err)
 		}
@@ -366,7 +365,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			PDSURL: "https://bsky.social",
 		}
 		mockResolver := &mockIdentityResolverForUser{}
-		consumer := NewUserEventConsumer(mockService, mockResolver, "wss://jetstream.example.com", "")
+		consumer := NewUserEventConsumer(mockService, mockResolver)
 		ctx := context.Background()
 
 		event := &JetstreamEvent{
@@ -390,7 +389,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			},
 		}
 
-		err := consumer.handleEvent(ctx, mustMarshalEvent(event))
+		err := consumer.HandleEvent(ctx, event)
 		if err != nil {
 			t.Fatalf("Expected no error, got: %v", err)
 		}
@@ -413,7 +412,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			PDSURL: "https://bsky.social",
 		}
 		mockResolver := &mockIdentityResolverForUser{}
-		consumer := NewUserEventConsumer(mockService, mockResolver, "wss://jetstream.example.com", "")
+		consumer := NewUserEventConsumer(mockService, mockResolver)
 		ctx := context.Background()
 
 		event := &JetstreamEvent{
@@ -445,7 +444,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			},
 		}
 
-		err := consumer.handleEvent(ctx, mustMarshalEvent(event))
+		err := consumer.HandleEvent(ctx, event)
 		if err != nil {
 			t.Fatalf("Expected no error, got: %v", err)
 		}
@@ -481,7 +480,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			BannerCID:   "existingbanner",
 		}
 		mockResolver := &mockIdentityResolverForUser{}
-		consumer := NewUserEventConsumer(mockService, mockResolver, "wss://jetstream.example.com", "")
+		consumer := NewUserEventConsumer(mockService, mockResolver)
 		ctx := context.Background()
 
 		event := &JetstreamEvent{
@@ -496,7 +495,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			},
 		}
 
-		err := consumer.handleEvent(ctx, mustMarshalEvent(event))
+		err := consumer.HandleEvent(ctx, event)
 		if err != nil {
 			t.Fatalf("Expected no error, got: %v", err)
 		}
@@ -530,7 +529,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			DisplayName: "Old Name",
 		}
 		mockResolver := &mockIdentityResolverForUser{}
-		consumer := NewUserEventConsumer(mockService, mockResolver, "wss://jetstream.example.com", "")
+		consumer := NewUserEventConsumer(mockService, mockResolver)
 		ctx := context.Background()
 
 		event := &JetstreamEvent{
@@ -550,7 +549,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			},
 		}
 
-		err := consumer.handleEvent(ctx, mustMarshalEvent(event))
+		err := consumer.HandleEvent(ctx, event)
 		if err != nil {
 			t.Fatalf("Expected no error, got: %v", err)
 		}
@@ -573,7 +572,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		mockService.shouldFailGet = true
 		mockService.getError = errors.New("database connection error")
 		mockResolver := &mockIdentityResolverForUser{}
-		consumer := NewUserEventConsumer(mockService, mockResolver, "wss://jetstream.example.com", "")
+		consumer := NewUserEventConsumer(mockService, mockResolver)
 		ctx := context.Background()
 
 		event := &JetstreamEvent{
@@ -592,7 +591,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			},
 		}
 
-		err := consumer.handleEvent(ctx, mustMarshalEvent(event))
+		err := consumer.HandleEvent(ctx, event)
 		if err == nil {
 			t.Fatal("Expected error for database failure, got nil")
 		}
@@ -604,7 +603,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 	t.Run("handles nil commit gracefully", func(t *testing.T) {
 		mockService := newMockUserService()
 		mockResolver := &mockIdentityResolverForUser{}
-		consumer := NewUserEventConsumer(mockService, mockResolver, "wss://jetstream.example.com", "")
+		consumer := NewUserEventConsumer(mockService, mockResolver)
 		ctx := context.Background()
 
 		event := &JetstreamEvent{
@@ -614,7 +613,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			Commit: nil, // No commit data
 		}
 
-		err := consumer.handleEvent(ctx, mustMarshalEvent(event))
+		err := consumer.HandleEvent(ctx, event)
 		if err != nil {
 			t.Errorf("Expected no error for nil commit, got: %v", err)
 		}
@@ -628,7 +627,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			PDSURL: "https://bsky.social",
 		}
 		mockResolver := &mockIdentityResolverForUser{}
-		consumer := NewUserEventConsumer(mockService, mockResolver, "wss://jetstream.example.com", "")
+		consumer := NewUserEventConsumer(mockService, mockResolver)
 		ctx := context.Background()
 
 		event := &JetstreamEvent{
@@ -645,7 +644,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			},
 		}
 
-		err := consumer.handleEvent(ctx, mustMarshalEvent(event))
+		err := consumer.HandleEvent(ctx, event)
 		if err != nil {
 			t.Errorf("Expected no error for nil record, got: %v", err)
 		}
@@ -659,7 +658,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			PDSURL: "https://bsky.social",
 		}
 		mockResolver := &mockIdentityResolverForUser{}
-		consumer := NewUserEventConsumer(mockService, mockResolver, "wss://jetstream.example.com", "")
+		consumer := NewUserEventConsumer(mockService, mockResolver)
 		ctx := context.Background()
 
 		event := &JetstreamEvent{
@@ -682,7 +681,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 			},
 		}
 
-		err := consumer.handleEvent(ctx, mustMarshalEvent(event))
+		err := consumer.HandleEvent(ctx, event)
 		if err != nil {
 			t.Fatalf("Expected no error, got: %v", err)
 		}
@@ -716,7 +715,7 @@ func TestUserConsumer_PropagatesUpdateProfileError(t *testing.T) {
 		}
 		mockService.updateError = errors.New("database write error")
 		mockResolver := &mockIdentityResolverForUser{}
-		consumer := NewUserEventConsumer(mockService, mockResolver, "wss://jetstream.example.com", "")
+		consumer := NewUserEventConsumer(mockService, mockResolver)
 		ctx := context.Background()
 
 		event := &JetstreamEvent{
@@ -735,7 +734,7 @@ func TestUserConsumer_PropagatesUpdateProfileError(t *testing.T) {
 			},
 		}
 
-		err := consumer.handleEvent(ctx, mustMarshalEvent(event))
+		err := consumer.HandleEvent(ctx, event)
 		if err == nil {
 			t.Fatal("Expected error for UpdateProfile failure, got nil")
 		}
@@ -845,13 +844,4 @@ func TestExtractBlobCID(t *testing.T) {
 			t.Errorf("Expected empty CID for non-map ref, got '%s'", cid)
 		}
 	})
-}
-
-// mustMarshalEvent marshals an event to JSON bytes for testing
-func mustMarshalEvent(event *JetstreamEvent) []byte {
-	data, err := json.Marshal(event)
-	if err != nil {
-		panic(err)
-	}
-	return data
 }

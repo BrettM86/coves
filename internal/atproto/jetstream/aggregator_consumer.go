@@ -80,13 +80,14 @@ func (c *AggregatorEventConsumer) handleAuthorization(ctx context.Context, commu
 // upsertAggregator indexes or updates an aggregator service declaration
 func (c *AggregatorEventConsumer) upsertAggregator(ctx context.Context, did string, commit *CommitEvent) error {
 	if commit.Record == nil {
-		return fmt.Errorf("aggregator service event missing record data")
+		return fmt.Errorf("%w: aggregator service event missing record data", ErrPermanentEvent)
 	}
 
 	// Verify rkey is "self" (canonical location for service declaration)
 	// Following Bluesky's pattern: app.bsky.feed.generator and app.bsky.labeler.service use /self
+	// PERMANENT: the rkey is immutable — replays fail identically.
 	if commit.RKey != "self" {
-		return fmt.Errorf("invalid aggregator service rkey: expected 'self', got '%s'", commit.RKey)
+		return fmt.Errorf("%w: invalid aggregator service rkey: expected 'self', got '%s'", ErrPermanentEvent, commit.RKey)
 	}
 
 	// Parse the service declaration record
@@ -95,9 +96,10 @@ func (c *AggregatorEventConsumer) upsertAggregator(ctx context.Context, did stri
 		return fmt.Errorf("failed to parse aggregator service: %w", err)
 	}
 
-	// Validate DID matches repo DID (security check)
+	// Validate DID matches repo DID (security check).
+	// PERMANENT: a spoofed declaration can never become valid on replay.
 	if service.DID != "" && service.DID != did {
-		return fmt.Errorf("service record DID (%s) does not match repo DID (%s)", service.DID, did)
+		return fmt.Errorf("%w: service record DID (%s) does not match repo DID (%s)", ErrPermanentEvent, service.DID, did)
 	}
 
 	// Build AT-URI for this record
@@ -174,7 +176,7 @@ func (c *AggregatorEventConsumer) deleteAggregator(ctx context.Context, did stri
 // upsertAuthorization indexes or updates an authorization record
 func (c *AggregatorEventConsumer) upsertAuthorization(ctx context.Context, communityDID string, commit *CommitEvent) error {
 	if commit.Record == nil {
-		return fmt.Errorf("authorization event missing record data")
+		return fmt.Errorf("%w: authorization event missing record data", ErrPermanentEvent)
 	}
 
 	// Parse the authorization record
@@ -183,10 +185,11 @@ func (c *AggregatorEventConsumer) upsertAuthorization(ctx context.Context, commu
 		return fmt.Errorf("failed to parse authorization: %w", err)
 	}
 
-	// Validate communityDid matches repo DID (security check)
+	// Validate communityDid matches repo DID (security check).
+	// PERMANENT: a spoofed authorization can never become valid on replay.
 	if authRecord.CommunityDid != "" && authRecord.CommunityDid != communityDID {
-		return fmt.Errorf("authorization record communityDid (%s) does not match repo DID (%s)",
-			authRecord.CommunityDid, communityDID)
+		return fmt.Errorf("%w: authorization record communityDid (%s) does not match repo DID (%s)",
+			ErrPermanentEvent, authRecord.CommunityDid, communityDID)
 	}
 
 	// Build AT-URI for this record
@@ -291,12 +294,13 @@ func parseAggregatorService(record interface{}) (*AggregatorServiceRecord, error
 
 	var service AggregatorServiceRecord
 	if err := json.Unmarshal(recordBytes, &service); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal service record: %w", err)
+		// PERMANENT: the record's shape doesn't match the lexicon; replays parse identically.
+		return nil, fmt.Errorf("%w: failed to unmarshal service record: %v", ErrPermanentEvent, err)
 	}
 
-	// Validate required fields
+	// Validate required fields. PERMANENT: structurally invalid forever.
 	if service.DisplayName == "" {
-		return nil, fmt.Errorf("displayName is required")
+		return nil, fmt.Errorf("%w: displayName is required", ErrPermanentEvent)
 	}
 
 	return &service, nil
@@ -326,21 +330,22 @@ func parseAggregatorAuthorization(record interface{}) (*AggregatorAuthorizationR
 
 	var auth AggregatorAuthorizationRecord
 	if err := json.Unmarshal(recordBytes, &auth); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal authorization record: %w", err)
+		// PERMANENT: the record's shape doesn't match the lexicon; replays parse identically.
+		return nil, fmt.Errorf("%w: failed to unmarshal authorization record: %v", ErrPermanentEvent, err)
 	}
 
-	// Validate required fields per lexicon
+	// Validate required fields per lexicon. PERMANENT: structurally invalid forever.
 	if auth.Aggregator == "" {
-		return nil, fmt.Errorf("aggregatorDid is required")
+		return nil, fmt.Errorf("%w: aggregatorDid is required", ErrPermanentEvent)
 	}
 	if auth.CommunityDid == "" {
-		return nil, fmt.Errorf("communityDid is required")
+		return nil, fmt.Errorf("%w: communityDid is required", ErrPermanentEvent)
 	}
 	if auth.CreatedAt == "" {
-		return nil, fmt.Errorf("createdAt is required")
+		return nil, fmt.Errorf("%w: createdAt is required", ErrPermanentEvent)
 	}
 	if auth.CreatedBy == "" {
-		return nil, fmt.Errorf("createdBy is required")
+		return nil, fmt.Errorf("%w: createdBy is required", ErrPermanentEvent)
 	}
 
 	return &auth, nil

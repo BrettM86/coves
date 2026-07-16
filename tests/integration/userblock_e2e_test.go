@@ -97,7 +97,7 @@ func TestUserBlockE2E_BlockAndUnblock(t *testing.T) {
 	defer httpServer.Close()
 
 	// Setup Jetstream consumer with block repo
-	userConsumer := jetstream.NewUserEventConsumer(nil, nil, "", "",
+	userConsumer := jetstream.NewUserEventConsumer(nil, nil,
 		jetstream.WithUserBlockRepo(blockRepo))
 
 	// ====================================================================================

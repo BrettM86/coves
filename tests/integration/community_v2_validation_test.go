@@ -5,6 +5,7 @@ import (
 	"Coves/internal/core/communities"
 	"Coves/internal/db/postgres"
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -110,11 +111,17 @@ func TestCommunityConsumer_V2RKeyValidation(t *testing.T) {
 			t.Error("V1 community with TID rkey should be rejected")
 		}
 
-		// Verify error message indicates V1 not supported
+		// Verify error message indicates V1 not supported. The rejection is now
+		// wrapped with jetstream.ErrPermanentEvent (invalid rkey can never succeed
+		// on retry/redrive), so match the substring and the sentinel rather than
+		// the exact string.
 		if err != nil {
 			errMsg := err.Error()
-			if errMsg != "invalid community profile rkey: expected 'self', got '3k2j4h5g6f7d' (V1 communities not supported)" {
+			if !contains(errMsg, "invalid community profile rkey: expected 'self', got '3k2j4h5g6f7d' (V1 communities not supported)") {
 				t.Errorf("Expected V1 rejection error, got: %s", errMsg)
+			}
+			if !errors.Is(err, jetstream.ErrPermanentEvent) {
+				t.Errorf("Expected V1 rejection to be a permanent event failure, got: %v", err)
 			}
 		}
 

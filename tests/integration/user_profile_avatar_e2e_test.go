@@ -117,7 +117,7 @@ func TestUserProfileAvatarE2E_UpdateWithAvatar(t *testing.T) {
 	userService := users.NewUserService(userRepo, identityResolver, pdsURL, nil, "")
 
 	// Setup user consumer for processing Jetstream events
-	userConsumer := jetstream.NewUserEventConsumer(userService, identityResolver, jetstreamURL, "")
+	userConsumer := jetstream.NewUserEventConsumer(userService, identityResolver)
 
 	// Setup HTTP server with all user routes using password-based PDS client for E2E tests
 	e2eAuth := NewE2EOAuthMiddleware()

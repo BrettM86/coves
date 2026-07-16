@@ -100,9 +100,9 @@ func (c *CommentEventConsumer) HandleEvent(ctx context.Context, event *Jetstream
 	if commit.Collection == CommentCollection {
 		switch commit.Operation {
 		case "create":
-			return c.createComment(ctx, event.Did, commit)
+			return c.createComment(ctx, event.Did, commit, event.TimeUS)
 		case "update":
-			return c.updateComment(ctx, event.Did, commit)
+			return c.updateComment(ctx, event.Did, commit, event.TimeUS)
 		case "delete":
 			return c.deleteComment(ctx, event.Did, commit)
 		}
@@ -113,9 +113,9 @@ func (c *CommentEventConsumer) HandleEvent(ctx context.Context, event *Jetstream
 }
 
 // createComment indexes a new comment from the firehose and updates parent counts
-func (c *CommentEventConsumer) createComment(ctx context.Context, repoDID string, commit *CommitEvent) error {
+func (c *CommentEventConsumer) createComment(ctx context.Context, repoDID string, commit *CommitEvent, timeUS int64) error {
 	if commit.Record == nil {
-		return fmt.Errorf("comment create event missing record data")
+		return fmt.Errorf("%w: comment create event missing record data", ErrPermanentEvent)
 	}
 
 	// Parse the comment record
@@ -163,7 +163,7 @@ func (c *CommentEventConsumer) createComment(ctx context.Context, repoDID string
 		ContentLabels: labelsJSON,
 		Langs:         commentRecord.Langs,
 		CreatedAt:     createdAt,
-		IndexedAt:     time.Now(),
+		IndexedAt:     indexedAtForEvent(timeUS), // recency-guard watermark (see indexedAtForEvent in post_consumer.go)
 	}
 
 	// Apply bridge-asserted origin-platform vote aggregates if the record carries them,
@@ -202,9 +202,9 @@ func (c *CommentEventConsumer) createComment(ctx context.Context, repoDID string
 // replayed): the folded bridged counts only self-heal on the bridge's next record
 // edit. We therefore skip benign no-ops (missing row, soft-deleted row) cleanly and
 // reserve errors for transient infra faults.
-func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string, commit *CommitEvent) error {
+func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string, commit *CommitEvent, timeUS int64) error {
 	if commit.Record == nil {
-		return fmt.Errorf("comment update event missing record data")
+		return fmt.Errorf("%w: comment update event missing record data", ErrPermanentEvent)
 	}
 
 	// Parse the updated comment record
@@ -232,11 +232,12 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 		storedParentURI, storedParentCID string
 		storedDeletedAt                  *time.Time
 		storedAsOf                       *time.Time
+		storedIndexedAt                  time.Time
 	)
 	err = c.db.QueryRowContext(ctx,
-		`SELECT root_uri, root_cid, parent_uri, parent_cid, deleted_at, bridged_stats_as_of
+		`SELECT root_uri, root_cid, parent_uri, parent_cid, deleted_at, bridged_stats_as_of, indexed_at
 		 FROM comments WHERE uri = $1`, uri,
-	).Scan(&storedRootURI, &storedRootCID, &storedParentURI, &storedParentCID, &storedDeletedAt, &storedAsOf)
+	).Scan(&storedRootURI, &storedRootCID, &storedParentURI, &storedParentCID, &storedDeletedAt, &storedAsOf, &storedIndexedAt)
 	if err == sql.ErrNoRows {
 		// Comment not indexed yet: its CREATE event will index it when it arrives.
 		log.Printf("Update event for non-indexed comment: %s (will be indexed on CREATE)", uri)
@@ -244,6 +245,19 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 	}
 	if err != nil {
 		return fmt.Errorf("failed to load stored comment for update: %w", err)
+	}
+
+	// RECENCY GUARD: a redriven (DeadLetterRedriver) or rewound update can arrive
+	// AFTER a newer update was already indexed. indexed_at is the watermark of the
+	// last applied event for this row (event time, see indexedAtForEvent in
+	// post_consumer.go); an event whose time_us is not strictly newer is skipped,
+	// or a stale replay would silently revert newer content. Skipping is SUCCESS
+	// (the newer state wins) — an error would re-dead-letter an event that must
+	// never be applied. The UPDATE below repeats this comparison atomically.
+	if evTime, ok := eventTime(timeUS); ok && !storedIndexedAt.Before(evTime) {
+		log.Printf("INFO: skipping stale comment update for %s (event time %s <= last indexed %s; newer state already applied)",
+			uri, evTime.Format(time.RFC3339Nano), storedIndexedAt.Format(time.RFC3339Nano))
+		return nil
 	}
 
 	// Skip soft-deleted rows. A moderator-removed (or author-deleted) comment must not be
@@ -266,7 +280,9 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 		log.Printf("  Incoming root: %s (CID: %s)", commentRecord.Reply.Root.URI, commentRecord.Reply.Root.CID)
 		log.Printf("  Existing parent: %s (CID: %s)", storedParentURI, storedParentCID)
 		log.Printf("  Incoming parent: %s (CID: %s)", commentRecord.Reply.Parent.URI, commentRecord.Reply.Parent.CID)
-		return fmt.Errorf("comment threading references cannot be changed after creation")
+		// PERMANENT: threading reassignment is a policy rejection that no retry or
+		// redrive can ever make valid.
+		return fmt.Errorf("%w: comment threading references cannot be changed after creation", ErrPermanentEvent)
 	}
 
 	// Serialize optional JSON fields
@@ -300,26 +316,68 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 		}
 	}
 
-	// Build comment update entity (preserves native vote counts and created_at). The
-	// Bridged* fields carry the INCOMING candidate; repo.Update applies them atomically
-	// only when incomingAsOf is non-nil and newer-or-equal to the stored asOf, and always
-	// recomputes the inclusive score from live native counts so concurrent votes survive.
-	comment := &comments.Comment{
-		URI:                  uri,
-		CID:                  commit.CID,
-		Content:              commentRecord.Content,
-		ContentFacets:        facetsJSON,
-		Embed:                embedJSON,
-		ContentLabels:        labelsJSON,
-		Langs:                commentRecord.Langs,
-		BridgedUpvoteCount:   incomingUp,
-		BridgedDownvoteCount: incomingDn,
-		BridgedStatsAsOf:     incomingAsOf,
+	// Single atomic UPDATE, issued inline (mirroring post_consumer) rather than via
+	// commentRepo.Update because the consumer additionally needs the recency guard:
+	// the WHERE clause re-checks that indexed_at is strictly older than the event's
+	// time_us ($11) and the SET advances indexed_at to the event time on every
+	// applied update, so a stale redriven update can never clobber a concurrently
+	// applied newer one (the Go pre-check above only exists for clean logging).
+	// The bridged columns and inclusive score keep repo.Update's semantics: apply the
+	// incoming aggregate only when incomingAsOf ($10) is non-NULL and newer-or-equal
+	// to the stored asOf, and always recompute score from LIVE native counts so
+	// concurrent votes survive.
+	updateQuery := `
+		UPDATE comments
+		SET
+			cid = $2,
+			content = $3,
+			content_facets = $4,
+			embed = $5,
+			content_labels = $6,
+			langs = $7,
+			indexed_at = CASE
+				WHEN $11::bigint > 0 THEN to_timestamp($11::bigint / 1000000.0)
+				ELSE indexed_at END,
+			bridged_upvote_count = CASE
+				WHEN $10::timestamptz IS NOT NULL AND (bridged_stats_as_of IS NULL OR $10 >= bridged_stats_as_of)
+				THEN $8 ELSE bridged_upvote_count END,
+			bridged_downvote_count = CASE
+				WHEN $10::timestamptz IS NOT NULL AND (bridged_stats_as_of IS NULL OR $10 >= bridged_stats_as_of)
+				THEN $9 ELSE bridged_downvote_count END,
+			bridged_stats_as_of = CASE
+				WHEN $10::timestamptz IS NOT NULL AND (bridged_stats_as_of IS NULL OR $10 >= bridged_stats_as_of)
+				THEN $10 ELSE bridged_stats_as_of END,
+			score = upvote_count - downvote_count
+				+ CASE
+					WHEN $10::timestamptz IS NOT NULL AND (bridged_stats_as_of IS NULL OR $10 >= bridged_stats_as_of)
+					THEN $8 ELSE bridged_upvote_count END
+				- CASE
+					WHEN $10::timestamptz IS NOT NULL AND (bridged_stats_as_of IS NULL OR $10 >= bridged_stats_as_of)
+					THEN $9 ELSE bridged_downvote_count END
+		WHERE uri = $1 AND deleted_at IS NULL
+		  AND ($11::bigint <= 0 OR indexed_at < to_timestamp($11::bigint / 1000000.0))
+	`
+	result, err := c.db.ExecContext(ctx, updateQuery,
+		uri, commit.CID, commentRecord.Content,
+		facetsJSON, embedJSON, labelsJSON, pq.Array(commentRecord.Langs),
+		incomingUp, incomingDn, incomingAsOf,
+		timeUS,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update comment: %w", err)
 	}
 
-	// Update the comment in repository
-	if err := c.commentRepo.Update(ctx, comment); err != nil {
-		return fmt.Errorf("failed to update comment: %w", err)
+	// The comment can be soft-deleted — or overtaken by a concurrent NEWER update
+	// (recency guard) — between the load above and this UPDATE; the WHERE guards then
+	// match no rows. Both cases are success: the row's current state supersedes this
+	// event, so skip instead of erroring (an error would re-dead-letter the event).
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to check comment update result: %w", err)
+	}
+	if rowsAffected == 0 {
+		log.Printf("Update event for comment that was deleted or superseded by a newer update between load and write: %s (skipping)", uri)
+		return nil
 	}
 
 	if incomingAsOf != nil {
@@ -448,7 +506,7 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 			comment.ContentLabels,
 			pq.Array(comment.Langs),
 			comment.CreatedAt,
-			time.Now(),
+			comment.IndexedAt,
 			comment.BridgedUpvoteCount,
 			comment.BridgedDownvoteCount,
 			comment.BridgedStatsAsOf,
@@ -485,7 +543,7 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 			comment.URI, comment.CID, comment.RKey, comment.CommenterDID,
 			comment.RootURI, comment.RootCID, comment.ParentURI, comment.ParentCID,
 			comment.Content, comment.ContentFacets, comment.Embed, comment.ContentLabels, pq.Array(comment.Langs),
-			comment.CreatedAt, time.Now(),
+			comment.CreatedAt, comment.IndexedAt,
 			comment.BridgedUpvoteCount, comment.BridgedDownvoteCount, comment.BridgedStatsAsOf, comment.Score,
 		).Scan(&commentID)
 		if err == sql.ErrNoRows {
@@ -703,39 +761,42 @@ func (c *CommentEventConsumer) validateCommentEvent(ctx context.Context, repoDID
 	// - Comment must come from user's own PDS repository (verified by atProto)
 	// - Fake DIDs will fail PDS authentication
 
+	// All rejections below are PERMANENT (ErrPermanentEvent): they depend only on
+	// the immutable event payload, so retries and redrives would fail identically.
+
 	// Validate DID format (basic sanity check)
 	if !strings.HasPrefix(repoDID, "did:") {
-		return fmt.Errorf("invalid commenter DID format: %s", repoDID)
+		return fmt.Errorf("%w: invalid commenter DID format: %s", ErrPermanentEvent, repoDID)
 	}
 
 	// Validate content is not empty (required per lexicon)
 	if comment.Content == "" {
-		return fmt.Errorf("comment content is required")
+		return fmt.Errorf("%w: comment content is required", ErrPermanentEvent)
 	}
 
 	// Validate content length (defensive check - PDS should enforce this)
 	// Per lexicon: max 3000 graphemes, ~30000 bytes
 	// We check bytes as a simple defensive measure
 	if len(comment.Content) > MaxCommentContentBytes {
-		return fmt.Errorf("comment content exceeds maximum length (%d bytes): got %d bytes", MaxCommentContentBytes, len(comment.Content))
+		return fmt.Errorf("%w: comment content exceeds maximum length (%d bytes): got %d bytes", ErrPermanentEvent, MaxCommentContentBytes, len(comment.Content))
 	}
 
 	// Validate reply references exist
 	if comment.Reply.Root.URI == "" || comment.Reply.Root.CID == "" {
-		return fmt.Errorf("invalid root reference: must have both URI and CID")
+		return fmt.Errorf("%w: invalid root reference: must have both URI and CID", ErrPermanentEvent)
 	}
 
 	if comment.Reply.Parent.URI == "" || comment.Reply.Parent.CID == "" {
-		return fmt.Errorf("invalid parent reference: must have both URI and CID")
+		return fmt.Errorf("%w: invalid parent reference: must have both URI and CID", ErrPermanentEvent)
 	}
 
 	// Validate AT-URI structure for root and parent
 	if err := validateATURI(comment.Reply.Root.URI); err != nil {
-		return fmt.Errorf("invalid root URI: %w", err)
+		return fmt.Errorf("%w: invalid root URI: %v", ErrPermanentEvent, err)
 	}
 
 	if err := validateATURI(comment.Reply.Parent.URI); err != nil {
-		return fmt.Errorf("invalid parent URI: %w", err)
+		return fmt.Errorf("%w: invalid parent URI: %v", ErrPermanentEvent, err)
 	}
 
 	return nil
@@ -801,16 +862,18 @@ func parseCommentRecord(record map[string]interface{}) (*CommentRecordFromJetstr
 
 	var comment CommentRecordFromJetstream
 	if err := json.Unmarshal(recordJSON, &comment); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal comment record: %w", err)
+		// PERMANENT: the record's shape doesn't match the lexicon; replaying the
+		// identical bytes can never parse differently.
+		return nil, fmt.Errorf("%w: failed to unmarshal comment record: %v", ErrPermanentEvent, err)
 	}
 
-	// Validate required fields
+	// Validate required fields. PERMANENT: structurally invalid forever.
 	if comment.Content == "" {
-		return nil, fmt.Errorf("comment record missing content field")
+		return nil, fmt.Errorf("%w: comment record missing content field", ErrPermanentEvent)
 	}
 
 	if comment.CreatedAt == "" {
-		return nil, fmt.Errorf("comment record missing createdAt field")
+		return nil, fmt.Errorf("%w: comment record missing createdAt field", ErrPermanentEvent)
 	}
 
 	return &comment, nil

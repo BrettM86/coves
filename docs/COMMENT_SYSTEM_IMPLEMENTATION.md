@@ -673,13 +673,9 @@ if commentJetstreamURL == "" {
 }
 
 commentEventConsumer := jetstream.NewCommentEventConsumer(commentRepo, db)
-commentJetstreamConnector := jetstream.NewCommentJetstreamConnector(commentEventConsumer, commentJetstreamURL)
-
-go func() {
-    if startErr := commentJetstreamConnector.Start(ctx); startErr != nil {
-        log.Printf("Comment Jetstream consumer stopped: %v", startErr)
-    }
-}()
+// startJetstreamConsumer wires the consumer to the shared jetstream.Connector,
+// which adds cursor persistence, retry + dead-letter, and graceful shutdown.
+startJetstreamConsumer("comments", commentJetstreamURL, commentEventConsumer)
 
 log.Printf("Started Jetstream comment consumer: %s", commentJetstreamURL)
 log.Println("  - Indexing: social.coves.community.comment CREATE/UPDATE/DELETE operations")
