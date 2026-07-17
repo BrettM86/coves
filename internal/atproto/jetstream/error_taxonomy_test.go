@@ -245,15 +245,29 @@ func TestUserConsumer_ValidationRejections_ArePermanent(t *testing.T) {
 	consumer := NewUserEventConsumer(newMockUserService(), &mockIdentityResolverForUser{})
 	ctx := context.Background()
 
-	t.Run("identity event missing handle", func(t *testing.T) {
+	t.Run("identity event missing did", func(t *testing.T) {
+		err := consumer.HandleEvent(ctx, &JetstreamEvent{
+			Kind:     "identity",
+			Did:      "did:plc:someuser",
+			TimeUS:   time.Now().UnixMicro(),
+			Identity: &IdentityEvent{Did: "", Handle: "some.handle"},
+		})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrPermanentEvent)
+	})
+
+	t.Run("identity event missing handle is a SKIP, not an error", func(t *testing.T) {
+		// Jetstream emits handle-less identity events when a handle is
+		// invalidated/tombstoned — valid events with nothing for us to apply.
+		// Erroring here would dead-letter the entire network's handle
+		// invalidations as permanent failures (junk DLQ rows at scale).
 		err := consumer.HandleEvent(ctx, &JetstreamEvent{
 			Kind:     "identity",
 			Did:      "did:plc:someuser",
 			TimeUS:   time.Now().UnixMicro(),
 			Identity: &IdentityEvent{Did: "did:plc:someuser", Handle: ""},
 		})
-		require.Error(t, err)
-		assert.ErrorIs(t, err, ErrPermanentEvent)
+		require.NoError(t, err)
 	})
 
 	t.Run("user block with invalid blocked DID", func(t *testing.T) {

@@ -174,7 +174,9 @@ func TestUserIndexingFromJetstream(t *testing.T) {
 			t.Error("expected error for missing DID, got nil")
 		}
 
-		// Missing handle
+		// Missing handle: a VALID event (handle invalidated/tombstoned) with
+		// nothing to apply — must be skipped without error, or every such
+		// event network-wide dead-letters as a permanent failure.
 		invalidEvent2 := jetstream.JetstreamEvent{
 			Did:  "did:plc:invalid",
 			Kind: "identity",
@@ -187,8 +189,8 @@ func TestUserIndexingFromJetstream(t *testing.T) {
 		}
 
 		err = consumer.HandleIdentityEventPublic(ctx, &invalidEvent2)
-		if err == nil {
-			t.Error("expected error for missing handle, got nil")
+		if err != nil {
+			t.Errorf("handle-less identity event must be skipped without error, got: %v", err)
 		}
 
 		// Missing identity data

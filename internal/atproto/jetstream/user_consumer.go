@@ -174,8 +174,19 @@ func (c *UserEventConsumer) handleIdentityEvent(ctx context.Context, event *Jets
 	did := event.Identity.Did
 	handle := event.Identity.Handle
 
-	if did == "" || handle == "" {
-		return fmt.Errorf("%w: identity event missing did or handle", ErrPermanentEvent)
+	if did == "" {
+		// PERMANENT: structurally invalid event — replays fail identically.
+		return fmt.Errorf("%w: identity event missing did", ErrPermanentEvent)
+	}
+
+	// A handle-less identity event is VALID, not malformed: Jetstream emits it
+	// when an identity's handle is invalidated or tombstoned. We index only
+	// known users and have no handle-invalid state to record, so there is
+	// nothing to apply — skip. (Erroring here dead-lettered every such event
+	// network-wide as a permanent failure: tens of thousands of junk DLQ rows
+	// per day on the unfiltered identity stream.)
+	if handle == "" {
+		return nil
 	}
 
 	// Only process users who exist in our database (i.e., have used Coves before)

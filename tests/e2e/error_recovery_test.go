@@ -174,21 +174,24 @@ func testMalformedJetstreamEvents(t *testing.T) {
 					Time:   time.Now().Format(time.RFC3339),
 				},
 			},
-			shouldLog: "missing did or handle",
+			shouldLog: "missing did",
 		},
 		{
-			name: "Missing handle",
+			// A handle-less identity event is VALID (handle invalidated or
+			// tombstoned) — it must be skipped without error, or every such
+			// event network-wide dead-letters as a permanent failure.
+			name: "Missing handle is skipped, not errored",
 			event: jetstream.JetstreamEvent{
 				Did:  "did:plc:test",
 				Kind: "identity",
 				Identity: &jetstream.IdentityEvent{
 					Did:    "did:plc:test",
-					Handle: "", // Missing
+					Handle: "", // Handle invalidated
 					Seq:    1,
 					Time:   time.Now().Format(time.RFC3339),
 				},
 			},
-			shouldLog: "missing did or handle",
+			shouldLog: "",
 		},
 		{
 			name: "Empty identity event",
@@ -197,7 +200,7 @@ func testMalformedJetstreamEvents(t *testing.T) {
 				Kind:     "identity",
 				Identity: &jetstream.IdentityEvent{},
 			},
-			shouldLog: "missing did or handle",
+			shouldLog: "missing did",
 		},
 	}
 
