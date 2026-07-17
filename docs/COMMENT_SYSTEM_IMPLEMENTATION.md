@@ -1454,8 +1454,9 @@ go build ./cmd/server
 
 ### Environment Variables
 ```bash
-# Jetstream URL (optional, defaults to localhost:6008)
-export COMMENT_JETSTREAM_URL="ws://localhost:6008/subscribe?wantedCollections=social.coves.community.comment"
+# Jetstream feeds (optional in dev; defaults to the local dev Jetstream).
+# NOTE: the legacy COMMENT_JETSTREAM_URL variable is now rejected at boot.
+export JETSTREAM_FEEDS="self=ws://localhost:6008"
 
 # Database URL
 export TEST_DATABASE_URL="postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"

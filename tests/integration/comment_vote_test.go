@@ -289,12 +289,14 @@ func TestCommentVote_CreateAndUpdate(t *testing.T) {
 			t.Fatalf("Expected upvote_count = 1 before delete, got %d", commentAfterVote.UpvoteCount)
 		}
 
-		// Delete vote
+		// Delete vote. The rev must be LATER than the create's: revs are the
+		// repo's monotonic commit IDs, and the rev gate treats an equal rev as
+		// the same event replayed (a no-op by design).
 		deleteVoteEvent := &jetstream.JetstreamEvent{
 			Did:  testUser.DID,
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
-				Rev:        "test-rev",
+				Rev:        "test-rev-2",
 				Operation:  "delete",
 				Collection: "social.coves.feed.vote",
 				RKey:       voteRKey,

@@ -847,7 +847,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 // TestAggregator_E2E_LivePDS tests the COMPLETE end-to-end flow with a live PDS
 // This would require:
 // - Live PDS running at PDS_URL
-// - Live Jetstream running at JETSTREAM_URL
+// - Live Jetstream running at the local dev Jetstream (ws://localhost:6008; configured via JETSTREAM_FEEDS)
 // - Ability to provision aggregator accounts on PDS
 // - Real WebSocket connection to Jetstream firehose
 //

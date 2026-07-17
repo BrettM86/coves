@@ -57,7 +57,8 @@ All 6 critical E2E test suites have been implemented and are passing:
   - `INSTANCE_DOMAIN=coves.social`
   - `PDS_URL=https://coves.me` (separate domain)
   - `SKIP_DID_WEB_VERIFICATION=false` (production)
-  - `JETSTREAM_URL=wss://jetstream2.us-east.bsky.network/subscribe`
+  - `JETSTREAM_FEEDS=bsky=wss://jetstream2.us-east.bsky.network;self=ws://tidepool-prod-jetstream:8080`
+    (the six legacy `*_JETSTREAM_URL` vars are now rejected at boot)
 
 **Verification**:
 - `curl https://coves.social/.well-known/did.json` (should return DID document)
@@ -262,7 +263,8 @@ This document tracks the remaining work required to launch Coves alpha with real
     - [ ] `PDS_URL=https://coves.me` (separate domain)
     - [ ] `AUTH_SKIP_VERIFY=false`
     - [ ] `SKIP_DID_WEB_VERIFICATION=false`
-    - [ ] `JETSTREAM_URL=wss://jetstream2.us-east.bsky.network/subscribe`
+    - [ ] `JETSTREAM_FEEDS=bsky=wss://jetstream2.us-east.bsky.network;self=ws://tidepool-prod-jetstream:8080`
+      (legacy `JETSTREAM_URL` / `*_JETSTREAM_URL` vars are rejected at boot — remove them)
   - [ ] **PDS Environment Variables**
     - [ ] `PDS_HOSTNAME=coves.me`
     - [ ] `PDS_PORT=2583`

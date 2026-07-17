@@ -65,6 +65,11 @@ func NewPostEventConsumer(
 	return c
 }
 
+// RevGated reports whether this consumer applies the per-record rev gate; always true
+// for posts (gating is hardwired via c.db). main.go checks this at boot to refuse
+// multi-feed operation with an ungated consumer.
+func (c *PostEventConsumer) RevGated() bool { return true }
+
 // HandleEvent processes a Jetstream event for post records
 // Handles CREATE, UPDATE, and DELETE operations
 func (c *PostEventConsumer) HandleEvent(ctx context.Context, event *JetstreamEvent) error {
@@ -226,8 +231,8 @@ func (c *PostEventConsumer) createPost(ctx context.Context, repoDID string, comm
 		post.ContentLabels = &labelsStr
 	}
 
-	// Atomically: Index post + Reconcile comment count for out-of-order arrivals
-	if err := c.indexPostAndReconcileCounts(ctx, post); err != nil {
+	// Atomically: Rev-gate + Index post + Reconcile comment count for out-of-order arrivals
+	if err := c.indexPostAndReconcileCounts(ctx, post, commit.Rev); err != nil {
 		return fmt.Errorf("failed to index post and reconcile counts: %w", err)
 	}
 
@@ -243,9 +248,41 @@ func (c *PostEventConsumer) deletePost(ctx context.Context, repoDID string, comm
 	// Format: at://community_did/social.coves.community.post/rkey
 	uri := fmt.Sprintf("at://%s/social.coves.community.post/%s", repoDID, commit.RKey)
 
-	// Soft delete the post in AppView
-	if err := c.postRepo.SoftDelete(ctx, uri); err != nil {
+	// REV GATE + soft delete in one transaction (the repo's SoftDelete is not
+	// transaction-aware, and the delete's rev must be recorded atomically with
+	// the tombstone: it is what rejects a stale cross-feed copy of the CREATE
+	// arriving later and resurrecting the post). The gate row is advanced even
+	// when the post was never indexed, so the late create of an already-deleted
+	// record is rejected too.
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && rollbackErr != sql.ErrTxDone {
+			log.Printf("Failed to rollback transaction: %v", rollbackErr)
+		}
+	}()
+
+	won, err := tryAdvanceRecordRev(ctx, tx, uri, commit.Rev)
+	if err != nil {
+		return err
+	}
+	if !won {
+		logSkippedStaleRev(ConsumerPosts, "delete", uri, commit.Rev)
+		return nil
+	}
+
+	// Same statement as postRepo.SoftDelete, inlined for transactionality.
+	// Idempotent: zero rows (already deleted or never indexed) is success.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE posts SET deleted_at = NOW() WHERE uri = $1 AND deleted_at IS NULL`, uri,
+	); err != nil {
 		return fmt.Errorf("failed to soft delete post: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit post delete transaction: %w", err)
 	}
 
 	log.Printf("✓ Deleted post: %s (community: %s, rkey: %s)", uri, repoDID, commit.RKey)
@@ -441,7 +478,32 @@ func (c *PostEventConsumer) updatePost(ctx context.Context, repoDID string, comm
 		WHERE id = $1 AND deleted_at IS NULL
 		  AND ($11::bigint <= 0 OR indexed_at < to_timestamp($11::bigint / 1000000.0))
 	`
-	result, err := c.db.ExecContext(ctx, updateQuery,
+	// REV GATE + UPDATE in one transaction. The gate (strictly-newer rev wins)
+	// is the cross-feed ordering guard: the time_us recency guard in the WHERE
+	// clause below cannot reject a stale copy delivered by ANOTHER feed, because
+	// each feed stamps its own emission time — a pre-edit update replayed by the
+	// lagging bsky feed carries a NEWER time_us than the edit it would regress.
+	// Only rev, assigned by the repo itself, orders events across feeds.
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && rollbackErr != sql.ErrTxDone {
+			log.Printf("Failed to rollback transaction: %v", rollbackErr)
+		}
+	}()
+
+	won, err := tryAdvanceRecordRev(ctx, tx, uri, commit.Rev)
+	if err != nil {
+		return err
+	}
+	if !won {
+		logSkippedStaleRev(ConsumerPosts, "update", uri, commit.Rev)
+		return nil
+	}
+
+	result, err := tx.ExecContext(ctx, updateQuery,
 		storedID, commit.CID, postRecord.Title, postRecord.Content,
 		facetsJSON, embedJSON, labelsJSON,
 		incomingUp, incomingDown, incomingAsOf,
@@ -461,8 +523,14 @@ func (c *PostEventConsumer) updatePost(ctx context.Context, repoDID string, comm
 		return fmt.Errorf("failed to check post update result: %w", err)
 	}
 	if rowsAffected == 0 {
+		// The deferred rollback also reverts the gate advance — conservative: a
+		// replay re-evaluates against whatever state superseded this event.
 		log.Printf("Update event for post that was deleted or superseded by a newer update between load and write: %s (skipping)", uri)
 		return nil
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit post update transaction: %w", err)
 	}
 
 	if incomingAsOf != nil {
@@ -486,7 +554,7 @@ func parseBridgedAsOf(asOf, uri string) (time.Time, error) {
 
 // indexPostAndReconcileCounts atomically indexes a post and reconciles comment counts
 // This fixes the race condition where comments arrive before their parent post
-func (c *PostEventConsumer) indexPostAndReconcileCounts(ctx context.Context, post *posts.Post) error {
+func (c *PostEventConsumer) indexPostAndReconcileCounts(ctx context.Context, post *posts.Post, rev string) error {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -496,6 +564,20 @@ func (c *PostEventConsumer) indexPostAndReconcileCounts(ctx context.Context, pos
 			log.Printf("Failed to rollback transaction: %v", rollbackErr)
 		}
 	}()
+
+	// 0. REV GATE: apply this create only if its rev is strictly newer than the
+	// last applied event for this record — rejects duplicate replays (equal rev)
+	// and stale cross-feed copies of a create arriving after the post's delete
+	// (which would resurrect it). Runs first, inside the transaction, so gate
+	// and writes commit or roll back together.
+	won, err := tryAdvanceRecordRev(ctx, tx, post.URI, rev)
+	if err != nil {
+		return err
+	}
+	if !won {
+		logSkippedStaleRev(ConsumerPosts, "create", post.URI, rev)
+		return nil
+	}
 
 	// 1. Insert the post (idempotent with RETURNING clause)
 	var facetsJSON, embedJSON, labelsJSON sql.NullString
@@ -542,6 +624,18 @@ func (c *PostEventConsumer) indexPostAndReconcileCounts(ctx context.Context, pos
 
 	// If no rows returned, post already exists (idempotent - OK for Jetstream replays)
 	if insertErr == sql.ErrNoRows {
+		// KNOWN LIMITATION (accepted): a genuine RE-CREATE of the same rkey while
+		// the row is still ACTIVE also lands here and is treated as an idempotent
+		// duplicate, dropping the new content. Reaching that state requires the
+		// exact sequence: create A applied → delete dead-lettered (failed, never
+		// applied) → re-create B (same rkey, strictly newer rev) arrives while
+		// the row is still active. B's content is never applied, the gate
+		// advances to B's rev, and the redriven delete A is then gate-rejected —
+		// the row survives with A's content. This needs a dead-lettered delete
+		// AND an rkey reuse inside the redrive window; rare enough to document
+		// rather than plumb a full content upsert through the create path
+		// (comments implement the in-place re-create because their resurrection
+		// machinery already exists; see comment_consumer.go).
 		log.Printf("Post already indexed: %s (idempotent)", post.URI)
 		if commitErr := tx.Commit(); commitErr != nil {
 			return fmt.Errorf("failed to commit transaction: %w", commitErr)

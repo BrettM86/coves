@@ -62,6 +62,11 @@ func NewCommentEventConsumer(
 	return c
 }
 
+// RevGated reports whether this consumer applies the per-record rev gate; always true
+// for comments (gating is hardwired via c.db). main.go checks this at boot to refuse
+// multi-feed operation with an ungated consumer.
+func (c *CommentEventConsumer) RevGated() bool { return true }
+
 // bridgeStatsAllowedForRepo reports whether the given comment repo (a user DID) is a
 // trusted bridge, i.e. whether its records may assert bridgedStats. It resolves the
 // repo's PDS host from the already-indexed users row (users.pds_url, populated from
@@ -186,8 +191,8 @@ func (c *CommentEventConsumer) createComment(ctx context.Context, repoDID string
 		}
 	}
 
-	// Atomically: Index comment + Update parent counts
-	if err := c.indexCommentAndUpdateCounts(ctx, comment); err != nil {
+	// Atomically: Rev-gate + Index comment + Update parent counts
+	if err := c.indexCommentAndUpdateCounts(ctx, comment, commit.Rev); err != nil {
 		return fmt.Errorf("failed to index comment and update counts: %w", err)
 	}
 
@@ -357,7 +362,32 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 		WHERE uri = $1 AND deleted_at IS NULL
 		  AND ($11::bigint <= 0 OR indexed_at < to_timestamp($11::bigint / 1000000.0))
 	`
-	result, err := c.db.ExecContext(ctx, updateQuery,
+	// REV GATE + UPDATE in one transaction. The gate (strictly-newer rev wins)
+	// is the cross-feed ordering guard: the time_us recency guard in the WHERE
+	// clause below cannot reject a stale copy delivered by ANOTHER feed, because
+	// each feed stamps its own emission time — a pre-edit update replayed by the
+	// lagging bsky feed carries a NEWER time_us than the edit it would regress.
+	// Only rev, assigned by the repo itself, orders events across feeds.
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && rollbackErr != sql.ErrTxDone {
+			log.Printf("Failed to rollback transaction: %v", rollbackErr)
+		}
+	}()
+
+	won, err := tryAdvanceRecordRev(ctx, tx, uri, commit.Rev)
+	if err != nil {
+		return err
+	}
+	if !won {
+		logSkippedStaleRev(ConsumerComments, "update", uri, commit.Rev)
+		return nil
+	}
+
+	result, err := tx.ExecContext(ctx, updateQuery,
 		uri, commit.CID, commentRecord.Content,
 		facetsJSON, embedJSON, labelsJSON, pq.Array(commentRecord.Langs),
 		incomingUp, incomingDn, incomingAsOf,
@@ -371,6 +401,8 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 	// (recency guard) — between the load above and this UPDATE; the WHERE guards then
 	// match no rows. Both cases are success: the row's current state supersedes this
 	// event, so skip instead of erroring (an error would re-dead-letter the event).
+	// The deferred rollback also reverts the gate advance, which is the conservative
+	// choice: a replay re-evaluates against whatever state superseded this event.
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("failed to check comment update result: %w", err)
@@ -378,6 +410,10 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 	if rowsAffected == 0 {
 		log.Printf("Update event for comment that was deleted or superseded by a newer update between load and write: %s (skipping)", uri)
 		return nil
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit comment update transaction: %w", err)
 	}
 
 	if incomingAsOf != nil {
@@ -388,33 +424,24 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 	return nil
 }
 
-// deleteComment soft-deletes a comment and updates parent counts
+// deleteComment soft-deletes a comment, blanking content to preserve thread
+// structure while respecting user privacy: the row remains and is shown as
+// "[deleted]" in thread views, so parent counts are intentionally NOT
+// decremented.
+//
+// The rev-gate claim runs FIRST, inside the same transaction as the soft
+// delete (mirrors deletePost). Claiming before touching the comments table
+// closes the not-found tombstone race: a concurrent create of the same
+// comment (another feed's copy, or a DeadLetterRedriver replay) serializes on
+// the gate row lock, so it either commits before our delete (which then finds
+// and soft-deletes the row) or blocks until our tombstone commits (its
+// equal-or-older rev then loses the gate). The gate row is advanced — and
+// committed — even when the comment was never indexed, so the create's late
+// copy is rejected too.
 func (c *CommentEventConsumer) deleteComment(ctx context.Context, repoDID string, commit *CommitEvent) error {
 	// Build AT-URI for the comment being deleted
 	uri := fmt.Sprintf("at://%s/social.coves.community.comment/%s", repoDID, commit.RKey)
 
-	// Get existing comment to know its parent (for decrementing the right counter)
-	existingComment, err := c.commentRepo.GetByURI(ctx, uri)
-	if err != nil {
-		if err == comments.ErrCommentNotFound {
-			// Idempotent: Comment already deleted or never existed
-			log.Printf("Comment already deleted or not found: %s", uri)
-			return nil
-		}
-		return fmt.Errorf("failed to get existing comment: %w", err)
-	}
-
-	// Atomically: Soft-delete comment + Update parent counts
-	if err := c.deleteCommentAndUpdateCounts(ctx, existingComment); err != nil {
-		return fmt.Errorf("failed to delete comment and update counts: %w", err)
-	}
-
-	log.Printf("✓ Deleted comment: %s", uri)
-	return nil
-}
-
-// indexCommentAndUpdateCounts atomically indexes a comment and updates parent counts
-func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, comment *comments.Comment) error {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -425,14 +452,94 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 		}
 	}()
 
+	// 0. REV GATE (see indexCommentAndUpdateCounts): skip duplicate replays and
+	// stale cross-feed copies; the claimed row doubles as the tombstone that
+	// rejects the create's later copies.
+	won, err := tryAdvanceRecordRev(ctx, tx, uri, commit.Rev)
+	if err != nil {
+		return err
+	}
+	if !won {
+		logSkippedStaleRev(ConsumerComments, "delete", uri, commit.Rev)
+		return nil
+	}
+
+	// 1. Soft-delete the comment: blank content but preserve structure.
+	// DELETE event from Jetstream = author deleted their own comment (the repo
+	// owner IS the commenter), so deleted_by is the repo DID.
+	// Use the repository's transaction-aware method for DRY.
+	repoTx, ok := c.commentRepo.(comments.RepositoryTx)
+	if !ok {
+		return fmt.Errorf("comment repository does not support transactional operations")
+	}
+
+	rowsAffected, err := repoTx.SoftDeleteWithReasonTx(ctx, tx, uri, comments.DeletionReasonAuthor, repoDID)
+	if err != nil {
+		return fmt.Errorf("failed to delete comment: %w", err)
+	}
+
+	// Idempotent: zero rows means the comment was already deleted or never
+	// indexed. Commit anyway — the gate advance is the tombstone that rejects
+	// a stale cross-feed copy of the CREATE arriving later for a record that
+	// no longer exists on the PDS.
+	if rowsAffected == 0 {
+		if commitErr := tx.Commit(); commitErr != nil {
+			return fmt.Errorf("failed to commit transaction: %w", commitErr)
+		}
+		log.Printf("Comment already deleted or not found: %s", uri)
+		return nil
+	}
+
+	// NOTE: We intentionally do NOT decrement parent counts (comment_count/reply_count)
+	// Deleted comments are shown as "[deleted]" placeholders to preserve thread structure,
+	// so they should still count toward the displayed total.
+
+	// Commit transaction
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	log.Printf("✓ Deleted comment: %s", uri)
+	return nil
+}
+
+// indexCommentAndUpdateCounts atomically indexes a comment and updates parent counts
+func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, comment *comments.Comment, rev string) error {
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && rollbackErr != sql.ErrTxDone {
+			log.Printf("Failed to rollback transaction: %v", rollbackErr)
+		}
+	}()
+
+	// 0. REV GATE: apply this create only if its rev is strictly newer than the
+	// last applied event for this record. This is what makes the resurrection
+	// branch below SAFE: a stale cross-feed copy of the original create arriving
+	// after the comment's delete carries an older rev than the tombstoned delete
+	// and is rejected here, while a genuine re-creation of the rkey carries a
+	// fresh, higher rev and passes through to the resurrection path. Runs first,
+	// inside the transaction, so gate and writes commit or roll back together.
+	won, err := tryAdvanceRecordRev(ctx, tx, comment.URI, rev)
+	if err != nil {
+		return err
+	}
+	if !won {
+		logSkippedStaleRev(ConsumerComments, "create", comment.URI, rev)
+		return nil
+	}
+
 	// 1. Check if comment exists and handle resurrection case
 	// In atProto, deleted records' rkeys become available - users can recreate with same rkey
 	// We must distinguish: idempotent replay (skip) vs resurrection (update + restore counts)
 	var existingID int64
+	var existingCID string
 	var existingDeletedAt *time.Time
 	var existingParentURI, existingRootURI string
-	checkQuery := `SELECT id, deleted_at, parent_uri, root_uri FROM comments WHERE uri = $1`
-	checkErr := tx.QueryRowContext(ctx, checkQuery, comment.URI).Scan(&existingID, &existingDeletedAt, &existingParentURI, &existingRootURI)
+	checkQuery := `SELECT id, cid, deleted_at, parent_uri, root_uri FROM comments WHERE uri = $1`
+	checkErr := tx.QueryRowContext(ctx, checkQuery, comment.URI).Scan(&existingID, &existingCID, &existingDeletedAt, &existingParentURI, &existingRootURI)
 
 	var commentID int64
 	var isResurrectionWithSameParent bool // Track if we should skip parent count increment
@@ -440,7 +547,67 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 	if checkErr == nil {
 		// Comment exists
 		if existingDeletedAt == nil {
-			// Not deleted - this is an idempotent replay, skip gracefully
+			// Active row. Usually this is an idempotent replay of the same create
+			// (same CID; equal revs are already rejected by the gate, and empty-rev
+			// synthetic events land here too). But the gate can also admit a create
+			// with a STRICTLY NEWER rev for an rkey whose row is still active:
+			// create A applied → delete dead-lettered (failed, never applied) →
+			// genuine re-create B of the same rkey. B carries new content and a new
+			// CID; treating it as a duplicate would drop that content forever (the
+			// gate has advanced to B's rev, so no replay can fix it). When the gate
+			// won with a real rev, the incoming CID differs, and the threading refs
+			// are UNCHANGED, apply B's record content in place — without touching
+			// deletion metadata, reply counts, or native votes.
+			if rev != "" && comment.CID != existingCID &&
+				existingParentURI == comment.ParentURI && existingRootURI == comment.RootURI {
+				log.Printf("Re-create of active comment with newer rev: %s (applying new content, CID %s -> %s)",
+					comment.URI, existingCID, comment.CID)
+				recreateQuery := `
+					UPDATE comments
+					SET
+						cid = $1,
+						root_cid = $2,
+						parent_cid = $3,
+						content = $4,
+						content_facets = $5,
+						embed = $6,
+						content_labels = $7,
+						langs = $8,
+						created_at = $9,
+						indexed_at = $10,
+						bridged_upvote_count = $11,
+						bridged_downvote_count = $12,
+						bridged_stats_as_of = $13,
+						-- Recompute the inclusive score from the SURVIVING native
+						-- counts plus the incoming bridged values (see the resurrect
+						-- path below for the migration 031 invariant).
+						score = upvote_count + $11 - downvote_count - $12
+					WHERE id = $14
+				`
+				if _, err = tx.ExecContext(ctx, recreateQuery,
+					comment.CID, comment.RootCID, comment.ParentCID,
+					comment.Content, comment.ContentFacets, comment.Embed, comment.ContentLabels,
+					pq.Array(comment.Langs), comment.CreatedAt, comment.IndexedAt,
+					comment.BridgedUpvoteCount, comment.BridgedDownvoteCount, comment.BridgedStatsAsOf,
+					existingID,
+				); err != nil {
+					return fmt.Errorf("failed to apply re-created comment content: %w", err)
+				}
+				// Parent unchanged and the row was never decounted, so parent counts
+				// are already correct — commit without the increment sections below.
+				if commitErr := tx.Commit(); commitErr != nil {
+					return fmt.Errorf("failed to commit transaction: %w", commitErr)
+				}
+				return nil
+			}
+			// KNOWN LIMITATION (accepted): the same dead-lettered-delete +
+			// same-rkey-re-create sequence with a CHANGED parent/root lands here
+			// and is skipped as a duplicate, keeping the OLD row. Applying it
+			// would require decrementing the old parent's reply/comment counts
+			// and incrementing the new ones for a row that was never decounted —
+			// re-plumbing the count machinery for a case that additionally needs
+			// a dead-lettered delete AND a cross-thread rkey reuse inside the
+			// redrive window. Documented rather than fixed.
 			log.Printf("Comment already indexed: %s (idempotent replay)", comment.URI)
 			if commitErr := tx.Commit(); commitErr != nil {
 				return fmt.Errorf("failed to commit transaction: %w", commitErr)
@@ -688,55 +855,6 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 		}
 		return nil
 	}
-
-	// Commit transaction
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	return nil
-}
-
-// deleteCommentAndUpdateCounts atomically soft-deletes a comment and updates parent counts
-// Blanks content to preserve thread structure while respecting user privacy
-// The comment remains in the database but is shown as "[deleted]" in thread views
-func (c *CommentEventConsumer) deleteCommentAndUpdateCounts(ctx context.Context, comment *comments.Comment) error {
-	tx, err := c.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-	defer func() {
-		if rollbackErr := tx.Rollback(); rollbackErr != nil && rollbackErr != sql.ErrTxDone {
-			log.Printf("Failed to rollback transaction: %v", rollbackErr)
-		}
-	}()
-
-	// 1. Soft-delete the comment: blank content but preserve structure
-	// DELETE event from Jetstream = author deleted their own comment
-	// Content is blanked to respect user privacy while preserving thread structure
-	// Use the repository's transaction-aware method for DRY
-	repoTx, ok := c.commentRepo.(comments.RepositoryTx)
-	if !ok {
-		return fmt.Errorf("comment repository does not support transactional operations")
-	}
-
-	rowsAffected, err := repoTx.SoftDeleteWithReasonTx(ctx, tx, comment.URI, comments.DeletionReasonAuthor, comment.CommenterDID)
-	if err != nil {
-		return fmt.Errorf("failed to delete comment: %w", err)
-	}
-
-	// Idempotent: If no rows affected, comment already deleted - return early
-	if rowsAffected == 0 {
-		log.Printf("Comment already deleted: %s (idempotent)", comment.URI)
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("failed to commit transaction: %w", err)
-		}
-		return nil
-	}
-
-	// NOTE: We intentionally do NOT decrement parent counts (comment_count/reply_count)
-	// Deleted comments are shown as "[deleted]" placeholders to preserve thread structure,
-	// so they should still count toward the displayed total.
 
 	// Commit transaction
 	if err := tx.Commit(); err != nil {

@@ -12,15 +12,39 @@ import (
 // AggregatorEventConsumer consumes aggregator-related events from Jetstream
 // Following Bluesky's pattern: feed generators (app.bsky.feed.generator) and labelers (app.bsky.labeler.service)
 type AggregatorEventConsumer struct {
-	repo aggregators.Repository // Repository for aggregator operations
+	repo    aggregators.Repository // Repository for aggregator operations
+	revGate *RevGate               // Optional: cross-feed ordering guard for commit events (nil = ungated)
+}
+
+// AggregatorConsumerOption configures optional AggregatorEventConsumer behaviour.
+type AggregatorConsumerOption func(*AggregatorEventConsumer)
+
+// WithAggregatorRevGate installs the per-record rev gate (see rev_gate.go) so
+// service and authorization commits are applied in repo commit order even when
+// the same repo is carried by multiple Jetstream feeds. Both record types are
+// hard-deleted, so the gate row is the tombstone that rejects a stale
+// cross-feed copy of the create arriving after the delete.
+func WithAggregatorRevGate(gate *RevGate) AggregatorConsumerOption {
+	return func(c *AggregatorEventConsumer) {
+		c.revGate = gate
+	}
 }
 
 // NewAggregatorEventConsumer creates a new Jetstream consumer for aggregator events
-func NewAggregatorEventConsumer(repo aggregators.Repository) *AggregatorEventConsumer {
-	return &AggregatorEventConsumer{
+func NewAggregatorEventConsumer(repo aggregators.Repository, opts ...AggregatorConsumerOption) *AggregatorEventConsumer {
+	c := &AggregatorEventConsumer{
 		repo: repo,
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
+
+// RevGated reports whether this consumer applies the per-record rev gate (true when a
+// gate was injected via WithAggregatorRevGate). main.go checks this at boot to refuse
+// multi-feed operation with an ungated consumer.
+func (c *AggregatorEventConsumer) RevGated() bool { return c.revGate != nil }
 
 // HandleEvent processes a Jetstream event for aggregator records
 // This is called by the main Jetstream consumer when it receives commit events
@@ -36,11 +60,19 @@ func (c *AggregatorEventConsumer) HandleEvent(ctx context.Context, event *Jetstr
 	// IMPORTANT: Collection names refer to RECORD TYPES in repositories
 	// - social.coves.aggregator.service: Service declaration (in aggregator's own repo, rkey="self")
 	// - social.coves.aggregator.authorization: Authorization (in community's repo, any rkey)
+	// Both collections run under the rev gate (check→write→advance, see
+	// rev_gate.go): events apply in repo commit order even when the same repo
+	// is carried by multiple Jetstream feeds, and the gate row survives the
+	// hard deletes below as the tombstone rejecting stale create copies.
 	switch commit.Collection {
 	case "social.coves.aggregator.service":
-		return c.handleServiceDeclaration(ctx, event.Did, commit)
+		return applyGated(ctx, c.revGate, ConsumerAggregators, event.Did, commit, func() error {
+			return c.handleServiceDeclaration(ctx, event.Did, commit)
+		})
 	case "social.coves.aggregator.authorization":
-		return c.handleAuthorization(ctx, event.Did, commit)
+		return applyGated(ctx, c.revGate, ConsumerAggregators, event.Did, commit, func() error {
+			return c.handleAuthorization(ctx, event.Did, commit)
+		})
 	default:
 		// Not an aggregator-related collection
 		return nil

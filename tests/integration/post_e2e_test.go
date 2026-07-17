@@ -320,7 +320,7 @@ func TestPostCreation_E2E_WithJetstream(t *testing.T) {
 //
 // This is a TRUE E2E test that requires:
 // - Live PDS running at PDS_URL (default: http://localhost:3001)
-// - Live Jetstream running at JETSTREAM_URL (default: ws://localhost:6008/subscribe)
+// - Live Jetstream running at the local dev Jetstream (JETSTREAM_FEEDS default: self=ws://localhost:6008)
 // - Test database running
 func TestPostCreation_E2E_LivePDS(t *testing.T) {
 	if testing.Short() {

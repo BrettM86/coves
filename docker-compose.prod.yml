@@ -67,15 +67,19 @@ services:
       # PDS connection (separate domain!)
       PDS_URL: https://coves.me
 
-      # Jetstream (Bluesky production firehose)
-      JETSTREAM_URL: wss://jetstream2.us-east.bsky.network/subscribe
-
-      # Custom lexicon consumers (use production Jetstream with collection filters)
-      COMMUNITY_JETSTREAM_URL: wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=social.coves.community.profile&wantedCollections=social.coves.community.subscription
-      POST_JETSTREAM_URL: wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=social.coves.community.post
-      AGGREGATOR_JETSTREAM_URL: wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=social.coves.aggregator.service&wantedCollections=social.coves.aggregator.authorization
-      VOTE_JETSTREAM_URL: wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=social.coves.feed.vote
-      COMMENT_JETSTREAM_URL: wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=social.coves.community.comment
+      # Jetstream feeds: every consumer runs once per feed; per-consumer
+      # collection filters are derived in code (jetstream.WantedCollections).
+      #   bsky = Bluesky's public Jetstream (third-party PDS records + redundancy;
+      #          keeps the legacy consumer names so live cursors carry over)
+      #   self = self-hosted relay+Jetstream pair (tidepool stack, deployed
+      #          2026-07-17) on this same network, crawling tdpl.io +
+      #          pds.coves.me with no bsky.network account quotas. Addressed
+      #          by CONTAINER name on port 8080 — the tidepool stack's bare
+      #          `jetstream` service alias is the same cross-stack trap as
+      #          the `postgres` alias, and 6008 is the local dev port.
+      # Rev-gating (migration 033) makes the cross-feed overlap safe; expect
+      # "rev-gate: skipped stale" log lines for the lagging bsky copies.
+      JETSTREAM_FEEDS: "bsky=wss://jetstream2.us-east.bsky.network;self=ws://tidepool-prod-jetstream:8080"
 
       # Security - MUST be false in production
       AUTH_SKIP_VERIFY: "false"

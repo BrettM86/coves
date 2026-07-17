@@ -407,6 +407,53 @@ func main() {
 	// redriver can replay them once the failure clears.
 	jetstreamStateStore := jetstream.NewPostgresStateStore(db)
 
+	// Rev gate: the per-record ordering guard that makes it safe to run every
+	// consumer against MULTIPLE Jetstream feeds carrying the same repos (see
+	// rev_gate.go / migration 033). Posts/votes/comments gate inside their own
+	// transactions; the repo-method consumers get this gate injected.
+	revGate := jetstream.NewRevGate(db)
+
+	// Feed topology. Each entry is <key>=<baseURL>; every consumer runs once
+	// per feed with its collection filters appended (see feeds.go). The "bsky"
+	// feed keeps the legacy consumer names so live cursors carry over.
+	for _, legacy := range []string{
+		"JETSTREAM_URL", "COMMUNITY_JETSTREAM_URL", "POST_JETSTREAM_URL",
+		"AGGREGATOR_JETSTREAM_URL", "VOTE_JETSTREAM_URL", "COMMENT_JETSTREAM_URL",
+	} {
+		if os.Getenv(legacy) != "" {
+			log.Fatalf("%s is no longer supported: configure feeds via JETSTREAM_FEEDS "+
+				"(e.g. \"bsky=wss://jetstream2.us-east.bsky.network;self=ws://tidepool-prod-jetstream:8080\") "+
+				"and remove the legacy variable", legacy)
+		}
+	}
+	feedsSpec := os.Getenv("JETSTREAM_FEEDS")
+	if feedsSpec == "" {
+		if !isDevEnv {
+			log.Fatalf("JETSTREAM_FEEDS is required in production (the localhost default is dev-only): " +
+				"set semicolon-separated <feedKey>=<baseURL> entries, e.g. " +
+				"\"bsky=wss://jetstream2.us-east.bsky.network;self=ws://tidepool-prod-jetstream:8080\"")
+		}
+		// Dev default: the local dev-stack Jetstream only. Production always
+		// sets JETSTREAM_FEEDS explicitly (see docker-compose.prod.yml).
+		feedsSpec = "self=ws://localhost:6008"
+	}
+	jetstreamFeeds, err := jetstream.ParseFeeds(feedsSpec)
+	if err != nil {
+		log.Fatalf("Invalid JETSTREAM_FEEDS: %v", err)
+	}
+	hasPrimaryFeed := false
+	for _, feed := range jetstreamFeeds {
+		if feed.Key == jetstream.PrimaryFeedKey {
+			hasPrimaryFeed = true
+			break
+		}
+	}
+	if !hasPrimaryFeed {
+		// Expected in local dev (self-only feed); in production this usually
+		// means cursor continuity from the single-feed era is being forfeited.
+		log.Printf("⚠️  No JETSTREAM_FEEDS entry uses the primary key %q: every consumer name will be suffixed \"@<feedKey>\", so cursors persisted under the bare legacy names will NOT be used", jetstream.PrimaryFeedKey)
+	}
+
 	// All consumers run on one cancellable context so SIGTERM drains them:
 	// read loops unblock, an interrupted in-flight event is abandoned without
 	// advancing the cursor (it replays idempotently on next boot), and the
@@ -435,10 +482,16 @@ func main() {
 		}()
 	}
 
-	// Start Jetstream consumer for read-forward user indexing
-	jetstreamURL := os.Getenv("JETSTREAM_URL")
-	if jetstreamURL == "" {
-		jetstreamURL = "wss://jetstream2.us-east.bsky.network/subscribe?wantedCollections=social.coves.actor.profile&wantedCollections=social.coves.actor.block"
+	// registerFeedConsumer defers wiring until every consumer exists; the
+	// feeds×consumers loop below then starts one connector per (feed,
+	// consumer) pair. Registration order is preserved.
+	type feedConsumer struct {
+		name    string
+		handler jetstream.EventHandler
+	}
+	var feedConsumers []feedConsumer
+	registerFeedConsumer := func(name string, handler jetstream.EventHandler) {
+		feedConsumers = append(feedConsumers, feedConsumer{name: name, handler: handler})
 	}
 
 	// Create user consumer with session handle updater to sync OAuth sessions on handle changes
@@ -458,6 +511,7 @@ func main() {
 	}
 	bridgeTrust := jetstream.NewBridgeTrust(trustedBridgePDSHosts)
 	consumerOpts = append(consumerOpts, jetstream.WithUserBridgeTrust(bridgeTrust))
+	consumerOpts = append(consumerOpts, jetstream.WithUserRevGate(revGate))
 	if sessionUpdater, ok := baseOAuthStore.(jetstream.SessionHandleUpdater); ok {
 		consumerOpts = append(consumerOpts, jetstream.WithSessionHandleUpdater(sessionUpdater))
 		log.Println("✅ OAuth session handle sync enabled for identity changes")
@@ -468,21 +522,15 @@ func main() {
 	consumerOpts = append(consumerOpts, jetstream.WithUserBlockRepo(userBlockRepo))
 
 	userConsumer := jetstream.NewUserEventConsumer(userService, identityResolver, consumerOpts...)
-	startJetstreamConsumer(jetstream.ConsumerUsers, jetstreamURL, userConsumer)
+	registerFeedConsumer(jetstream.ConsumerUsers, userConsumer)
+	log.Println("Registered Jetstream user consumer (actor profiles + blocks)")
 
-	log.Printf("Started Jetstream user consumer: %s", jetstreamURL)
-
-	// Start Jetstream consumer for community events (profiles and subscriptions)
-	// This consumer indexes:
+	// Register Jetstream consumer for community events. This consumer indexes:
 	// 1. Community profiles (social.coves.community.profile) - in community's own repo
 	// 2. User subscriptions (social.coves.community.subscription) - in user's repo
-	communityJetstreamURL := os.Getenv("COMMUNITY_JETSTREAM_URL")
-	if communityJetstreamURL == "" {
-		// Local Jetstream for communities - filter to our instance's collections
-		// IMPORTANT: We listen to social.coves.community.subscription (not social.coves.community.subscribe)
-		// because subscriptions are RECORD TYPES in the communities namespace, not XRPC procedures
-		communityJetstreamURL = "ws://localhost:6008/subscribe?wantedCollections=social.coves.community.profile&wantedCollections=social.coves.community.subscription"
-	}
+	// 3. Community blocks (social.coves.community.block) - in user's repo
+	// (Record-type collections, not XRPC procedures; filters come from
+	// jetstream.WantedCollections.)
 
 	// Initialize community event consumer with did:web verification
 	skipDIDWebVerification := os.Getenv("SKIP_DID_WEB_VERIFICATION") == "true"
@@ -492,12 +540,10 @@ func main() {
 	}
 
 	// Pass identity resolver to consumer for PLC handle resolution (source of truth)
-	communityEventConsumer := jetstream.NewCommunityEventConsumer(communityRepo, instanceDID, skipDIDWebVerification, identityResolver)
-	startJetstreamConsumer(jetstream.ConsumerCommunities, communityJetstreamURL, communityEventConsumer)
-
-	log.Printf("Started Jetstream community consumer: %s", communityJetstreamURL)
-	log.Println("  - Indexing: social.coves.community.profile (community profiles)")
-	log.Println("  - Indexing: social.coves.community.subscription (user subscriptions)")
+	communityEventConsumer := jetstream.NewCommunityEventConsumer(communityRepo, instanceDID, skipDIDWebVerification, identityResolver,
+		jetstream.WithCommunityRevGate(revGate))
+	registerFeedConsumer(jetstream.ConsumerCommunities, communityEventConsumer)
+	log.Println("Registered Jetstream community consumer (profiles, subscriptions, blocks)")
 
 	// Start OAuth session cleanup background job with cancellable context
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
@@ -779,14 +825,8 @@ func main() {
 	})
 	log.Printf("Image proxy URL generation config set (enabled: %v)", imageProxyConfig.Enabled)
 
-	// Start Jetstream consumer for posts
+	// Register Jetstream consumer for posts
 	// This consumer indexes posts created in community repositories via the firehose
-	// Currently handles only CREATE operations - UPDATE/DELETE deferred until those features exist
-	postJetstreamURL := os.Getenv("POST_JETSTREAM_URL")
-	if postJetstreamURL == "" {
-		// Listen to post record creation events
-		postJetstreamURL = "ws://localhost:6008/subscribe?wantedCollections=social.coves.community.post"
-	}
 
 	// Provenance gate for bridge-asserted vote aggregates (bridgedStats). Only records
 	// whose repo is hosted on a trusted bridge PDS may inflate their displayed vote
@@ -803,61 +843,67 @@ func main() {
 	postEventConsumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService, db,
 		jetstream.WithPostBridgeTrust(bridgeTrust),
 		jetstream.WithPostIdentityResolver(identityResolver))
-	startJetstreamConsumer(jetstream.ConsumerPosts, postJetstreamURL, postEventConsumer)
+	registerFeedConsumer(jetstream.ConsumerPosts, postEventConsumer)
+	log.Println("Registered Jetstream post consumer (CREATE/UPDATE/DELETE)")
 
-	log.Printf("Started Jetstream post consumer: %s", postJetstreamURL)
-	log.Println("  - Indexing: social.coves.community.post CREATE/UPDATE/DELETE operations")
+	// Register Jetstream consumer for aggregators: service declarations and
+	// authorization records, following Bluesky's feed generator/labeler pattern
+	aggregatorEventConsumer := jetstream.NewAggregatorEventConsumer(aggregatorRepo,
+		jetstream.WithAggregatorRevGate(revGate))
+	registerFeedConsumer(jetstream.ConsumerAggregators, aggregatorEventConsumer)
+	log.Println("Registered Jetstream aggregator consumer (services + authorizations)")
 
-	// Start Jetstream consumer for aggregators
-	// This consumer indexes aggregator service declarations and authorization records
-	// Following Bluesky's pattern for feed generators and labelers
-	// NOTE: Uses the same Jetstream as communities, just filtering different collections
-	aggregatorJetstreamURL := communityJetstreamURL
-	// Override if specific URL needed for testing
-	if envURL := os.Getenv("AGGREGATOR_JETSTREAM_URL"); envURL != "" {
-		aggregatorJetstreamURL = envURL
-	} else if aggregatorJetstreamURL == "" {
-		// Fallback if community URL also not set
-		aggregatorJetstreamURL = "ws://localhost:6008/subscribe?wantedCollections=social.coves.aggregator.service&wantedCollections=social.coves.aggregator.authorization"
-	}
-
-	aggregatorEventConsumer := jetstream.NewAggregatorEventConsumer(aggregatorRepo)
-	startJetstreamConsumer(jetstream.ConsumerAggregators, aggregatorJetstreamURL, aggregatorEventConsumer)
-
-	log.Printf("Started Jetstream aggregator consumer: %s", aggregatorJetstreamURL)
-	log.Println("  - Indexing: social.coves.aggregator.service (service declarations)")
-	log.Println("  - Indexing: social.coves.aggregator.authorization (authorization records)")
-
-	// Start Jetstream consumer for votes
-	// This consumer indexes votes from user repositories and updates post vote counts
-	voteJetstreamURL := os.Getenv("VOTE_JETSTREAM_URL")
-	if voteJetstreamURL == "" {
-		// Listen to vote record CREATE/DELETE events from user repositories
-		voteJetstreamURL = "ws://localhost:6008/subscribe?wantedCollections=social.coves.feed.vote"
-	}
-
+	// Register Jetstream consumer for votes: indexes votes from user
+	// repositories and updates post/comment vote counts atomically
 	voteEventConsumer := jetstream.NewVoteEventConsumer(voteRepo, userService, db)
-	startJetstreamConsumer(jetstream.ConsumerVotes, voteJetstreamURL, voteEventConsumer)
+	registerFeedConsumer(jetstream.ConsumerVotes, voteEventConsumer)
+	log.Println("Registered Jetstream vote consumer (CREATE/DELETE + count updates)")
 
-	log.Printf("Started Jetstream vote consumer: %s", voteJetstreamURL)
-	log.Println("  - Indexing: social.coves.feed.vote CREATE/DELETE operations")
-	log.Println("  - Updating: Post vote counts atomically")
-
-	// Start Jetstream consumer for comments
-	// This consumer indexes comments from user repositories and updates parent counts
-	commentJetstreamURL := os.Getenv("COMMENT_JETSTREAM_URL")
-	if commentJetstreamURL == "" {
-		// Listen to comment record CREATE/UPDATE/DELETE events from user repositories
-		commentJetstreamURL = "ws://localhost:6008/subscribe?wantedCollections=social.coves.community.comment"
-	}
-
+	// Register Jetstream consumer for comments: indexes comments from user
+	// repositories and updates parent post/comment counts atomically
 	commentEventConsumer := jetstream.NewCommentEventConsumer(commentRepo, db,
 		jetstream.WithCommentBridgeTrust(bridgeTrust))
-	startJetstreamConsumer(jetstream.ConsumerComments, commentJetstreamURL, commentEventConsumer)
+	registerFeedConsumer(jetstream.ConsumerComments, commentEventConsumer)
+	log.Println("Registered Jetstream comment consumer (CREATE/UPDATE/DELETE + count updates)")
 
-	log.Printf("Started Jetstream comment consumer: %s", commentJetstreamURL)
-	log.Println("  - Indexing: social.coves.community.comment CREATE/UPDATE/DELETE operations")
-	log.Println("  - Updating: Post comment counts and comment reply counts atomically")
+	// FAIL CLOSED: with more than one feed, every consumer MUST be rev-gated —
+	// an ungated consumer would apply the lagging feed's stale copies (zombie
+	// deletes, regressed edits), which is silent data corruption, not a
+	// degraded mode. A forgotten WithXRevGate option must stop the boot, not
+	// ship the bug.
+	if len(jetstreamFeeds) > 1 {
+		for _, fc := range feedConsumers {
+			gated, ok := fc.handler.(interface{ RevGated() bool })
+			if !ok || !gated.RevGated() {
+				log.Fatalf("consumer %q is not rev-gated but %d Jetstream feeds are configured; "+
+					"multi-feed operation requires every consumer to carry the rev gate (see rev_gate.go)",
+					fc.name, len(jetstreamFeeds))
+			}
+		}
+	}
+
+	// Start every registered consumer on every configured feed. Consumer names
+	// on the primary ("bsky") feed stay bare so live cursors carry over from
+	// the single-feed era; other feeds get "<consumer>@<feed>" names, which
+	// start cursor-less and live-tail (recovering older records requires the
+	// source PDSes to re-emit them — see Tidepool's POST /admin/reemit).
+	// Rev-gating makes the cross-feed overlap safe; expect "rev-gate: skipped
+	// stale" log lines for the lagging feed's copies — that is the system
+	// working, not an error.
+	for _, feed := range jetstreamFeeds {
+		for _, fc := range feedConsumers {
+			collections, collectionsErr := jetstream.WantedCollections(fc.name)
+			if collectionsErr != nil {
+				log.Fatalf("Failed to resolve wantedCollections for consumer %s: %v", fc.name, collectionsErr)
+			}
+			wsURL, urlErr := jetstream.SubscribeURL(feed.BaseURL, collections)
+			if urlErr != nil {
+				log.Fatalf("Failed to build Jetstream URL for consumer %s on feed %s: %v", fc.name, feed.Key, urlErr)
+			}
+			startJetstreamConsumer(jetstream.FeedConsumerName(fc.name, feed.Key), wsURL, fc.handler)
+		}
+		log.Printf("Started %d Jetstream consumers on feed %q (%s)", len(feedConsumers), feed.Key, feed.BaseURL)
+	}
 
 	// Start the dead letter redriver: replays events that failed all in-line
 	// retries against the same consumers, so transient failures (e.g. a

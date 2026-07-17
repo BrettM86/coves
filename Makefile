@@ -128,7 +128,10 @@ test: ## Run fast unit/integration tests (skips slow E2E tests)
 	@echo "$(GREEN)Running migrations on test database...$(RESET)"
 	@goose -dir internal/db/migrations postgres "postgresql://$(POSTGRES_TEST_USER):$(POSTGRES_TEST_PASSWORD)@localhost:$(POSTGRES_TEST_PORT)/$(POSTGRES_TEST_DB)?sslmode=disable" up || true
 	@echo "$(GREEN)Running fast tests (use 'make e2e-test' for E2E tests)...$(RESET)"
-	@go test ./cmd/... ./internal/... ./tests/... -short -v
+	@# -p 1 runs packages sequentially: the integration suite's setup wipes
+	@# shared test-DB tables (unscoped DELETEs), so package-parallel runs race
+	@# and randomly kill other packages' fixtures (jetstream DB tests above all).
+	@go test -p 1 ./cmd/... ./internal/... ./tests/... -short -v
 	@echo "$(GREEN)✓ Tests complete$(RESET)"
 
 e2e-test: ## Run automated E2E tests (requires: make dev-up + make run in another terminal)

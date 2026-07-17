@@ -74,6 +74,7 @@ type UserEventConsumer struct {
 	sessionHandleUpdater SessionHandleUpdater  // Optional: updates OAuth sessions on handle change
 	userBlockRepo        userblocks.Repository // Optional: indexes user-to-user blocks
 	bridgeTrust          *BridgeTrust          // Optional: admits new identities hosted by trusted bridge PDSes
+	revGate              *RevGate              // Optional: cross-feed ordering guard for commit events (nil = ungated)
 }
 
 // ConsumerOption is a functional option for configuring UserEventConsumer
@@ -104,6 +105,15 @@ func WithUserBridgeTrust(bt *BridgeTrust) ConsumerOption {
 	}
 }
 
+// WithUserRevGate installs the per-record rev gate (see rev_gate.go) so profile
+// and block commits are applied in repo commit order even when the same repo is
+// carried by multiple Jetstream feeds. Without it, commit events are ungated.
+func WithUserRevGate(gate *RevGate) ConsumerOption {
+	return func(c *UserEventConsumer) {
+		c.revGate = gate
+	}
+}
+
 // NewUserEventConsumer creates a new Jetstream consumer for user events
 func NewUserEventConsumer(userService users.UserService, identityResolver identity.Resolver, opts ...ConsumerOption) *UserEventConsumer {
 	c := &UserEventConsumer{
@@ -115,6 +125,11 @@ func NewUserEventConsumer(userService users.UserService, identityResolver identi
 	}
 	return c
 }
+
+// RevGated reports whether this consumer applies the per-record rev gate (true when a
+// gate was injected via WithUserRevGate). main.go checks this at boot to refuse
+// multi-feed operation with an ungated consumer.
+func (c *UserEventConsumer) RevGated() bool { return c.revGate != nil }
 
 // HandleEvent implements EventHandler; it is invoked by the Connector for live
 // events and by the DeadLetterRedriver for replays, so it must stay idempotent.
@@ -143,6 +158,13 @@ func (c *UserEventConsumer) HandleIdentityEventPublic(ctx context.Context, event
 // NOTE: This only UPDATES existing users - it does NOT create new users.
 // Users are created during OAuth login or signup, not from Jetstream events.
 // This prevents indexing millions of Bluesky users who never interact with Coves.
+//
+// KNOWN LIMITATION (accepted): identity events carry NO rev (they are not repo
+// commits), so cross-feed ordering of handle changes is NOT rev-gated. A lagging
+// feed's stale identity event can transiently revert a handle until the next
+// identity event for that DID arrives. Re-resolving the DID against PLC (the
+// source of truth) on every identity event would fix this and is deliberately
+// not implemented yet.
 func (c *UserEventConsumer) handleIdentityEvent(ctx context.Context, event *JetstreamEvent) error {
 	if event.Identity == nil {
 		// PERMANENT: structurally invalid event — replays fail identically.
@@ -295,6 +317,21 @@ func (c *UserEventConsumer) handleProfileCommit(ctx context.Context, event *Jets
 		}
 	}
 
+	// REV GATE: the exact cross-feed ordering guard. rev is the repo's own
+	// monotonic commit TID, so unlike the wall-clock guard below it orders the
+	// same repo's events correctly across feeds with hours of skew. Checked
+	// before the write and advanced after it (check→write→advance; the write is
+	// idempotent, so a crash in between replays safely).
+	uri := commitRecordURI(event.Did, event.Commit)
+	stale, err := c.revGate.IsStale(ctx, uri, event.Commit.Rev)
+	if err != nil {
+		return err
+	}
+	if stale {
+		logSkippedStaleRev(ConsumerUsers, event.Commit.Operation, uri, event.Commit.Rev)
+		return nil
+	}
+
 	// RECENCY GUARD: a redriven (DeadLetterRedriver) or rewound profile event can
 	// arrive AFTER a newer profile write was already applied; applying it would
 	// silently revert the newer profile. users.updated_at is bumped by every
@@ -306,7 +343,8 @@ func (c *UserEventConsumer) handleProfileCommit(ctx context.Context, event *Jets
 	// domains. That is safe for redrives (replayed minutes after the newer write)
 	// and for human-paced profile edits; only two writes for the same user landing
 	// within the ingest lag could be spuriously skipped, and the next profile edit
-	// self-heals. Making this exact needs a dedicated event-time watermark column.
+	// self-heals. The rev gate above is exact for events that carry a rev; this
+	// guard remains for rev-less events (old dead letters, synthetic tests).
 	if evTime, ok := eventTime(event.TimeUS); ok &&
 		existingUser != nil && !existingUser.UpdatedAt.IsZero() && !existingUser.UpdatedAt.Before(evTime) {
 		log.Printf("INFO: skipping stale profile event for %s (event time %s <= last user write %s; newer state already applied)",
@@ -314,14 +352,19 @@ func (c *UserEventConsumer) handleProfileCommit(ctx context.Context, event *Jets
 		return nil
 	}
 
+	var opErr error
 	switch event.Commit.Operation {
 	case "create", "update":
-		return c.handleProfileUpdate(ctx, event.Did, event.Commit)
+		opErr = c.handleProfileUpdate(ctx, event.Did, event.Commit)
 	case "delete":
-		return c.handleProfileDelete(ctx, event.Did)
+		opErr = c.handleProfileDelete(ctx, event.Did)
 	default:
 		return nil
 	}
+	if opErr != nil {
+		return opErr
+	}
+	return c.revGate.Advance(ctx, uri, event.Commit.Rev)
 }
 
 // handleProfileUpdate processes profile create/update operations
@@ -398,17 +441,22 @@ func (c *UserEventConsumer) handleUserBlock(ctx context.Context, userDID string,
 		return nil
 	}
 
-	switch commit.Operation {
-	case "create":
-		return c.createUserBlock(ctx, userDID, commit)
-	case "delete":
-		return c.deleteUserBlock(ctx, userDID, commit)
-	default:
-		// Update operations shouldn't happen on blocks, but ignore gracefully
-		log.Printf("Ignoring unexpected operation on user block: %s (userDID=%s, rkey=%s)",
-			commit.Operation, userDID, commit.RKey)
-		return nil
-	}
+	// REV GATE (check→write→advance, see rev_gate.go). The gate row survives
+	// the hard delete of the block row, so a stale cross-feed copy of the
+	// block's CREATE arriving after the unblock cannot re-index a phantom block.
+	return applyGated(ctx, c.revGate, ConsumerUsers, userDID, commit, func() error {
+		switch commit.Operation {
+		case "create":
+			return c.createUserBlock(ctx, userDID, commit)
+		case "delete":
+			return c.deleteUserBlock(ctx, userDID, commit)
+		default:
+			// Update operations shouldn't happen on blocks, but ignore gracefully
+			log.Printf("Ignoring unexpected operation on user block: %s (userDID=%s, rkey=%s)",
+				commit.Operation, userDID, commit.RKey)
+			return nil
+		}
+	})
 }
 
 // createUserBlock indexes a new user-to-user block from the firehose.

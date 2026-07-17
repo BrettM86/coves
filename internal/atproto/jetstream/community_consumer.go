@@ -28,6 +28,22 @@ type CommunityEventConsumer struct {
 	wellKnownLimiter *rate.Limiter                    // Rate limiter for .well-known fetches
 	instanceDID      string                           // DID of this Coves instance
 	skipVerification bool                             // Skip did:web verification (for dev mode)
+	revGate          *RevGate                         // Optional: cross-feed ordering guard for commit events (nil = ungated)
+}
+
+// CommunityConsumerOption configures optional CommunityEventConsumer behaviour.
+type CommunityConsumerOption func(*CommunityEventConsumer)
+
+// WithCommunityRevGate installs the per-record rev gate (see rev_gate.go) so
+// profile, subscription, and block commits are applied in repo commit order even
+// when the same repo is carried by multiple Jetstream feeds. Subscriptions and
+// blocks are HARD-deleted, so the gate row is the only tombstone that can reject
+// a stale cross-feed copy of the create arriving after the delete (which would
+// otherwise silently re-subscribe/re-block the user).
+func WithCommunityRevGate(gate *RevGate) CommunityConsumerOption {
+	return func(c *CommunityEventConsumer) {
+		c.revGate = gate
+	}
 }
 
 // cachedDIDDoc represents a cached verification result with expiration
@@ -42,7 +58,7 @@ type cachedDIDDoc struct {
 // identityResolver: Optional resolver for resolving handles from DIDs (can be nil for tests)
 func NewCommunityEventConsumer(repo communities.Repository, instanceDID string, skipVerification bool, identityResolver interface {
 	Resolve(context.Context, string) (*identity.Identity, error)
-},
+}, opts ...CommunityConsumerOption,
 ) *CommunityEventConsumer {
 	// Create bounded LRU cache for DID document verification results
 	// Max 1000 entries to prevent unbounded memory growth (PR review feedback)
@@ -58,7 +74,7 @@ func NewCommunityEventConsumer(repo communities.Repository, instanceDID string, 
 			log.Printf("CRITICAL: Failed to create fallback DID cache (size=1): %v", fallbackErr)
 			panic(fmt.Sprintf("cannot create LRU cache: primary error=%v, fallback error=%v", err, fallbackErr))
 		}
-		return &CommunityEventConsumer{
+		fallback := &CommunityEventConsumer{
 			repo:             repo,
 			identityResolver: identityResolver,
 			instanceDID:      instanceDID,
@@ -74,9 +90,13 @@ func NewCommunityEventConsumer(repo communities.Repository, instanceDID string, 
 			didCache:         cache,
 			wellKnownLimiter: rate.NewLimiter(10, 20),
 		}
+		for _, opt := range opts {
+			opt(fallback)
+		}
+		return fallback
 	}
 
-	return &CommunityEventConsumer{
+	consumer := &CommunityEventConsumer{
 		repo:             repo,
 		identityResolver: identityResolver, // Optional - can be nil for tests
 		instanceDID:      instanceDID,
@@ -97,7 +117,16 @@ func NewCommunityEventConsumer(repo communities.Repository, instanceDID string, 
 		// Prevents DoS via excessive .well-known fetches
 		wellKnownLimiter: rate.NewLimiter(10, 20),
 	}
+	for _, opt := range opts {
+		opt(consumer)
+	}
+	return consumer
 }
+
+// RevGated reports whether this consumer applies the per-record rev gate (true when a
+// gate was injected via WithCommunityRevGate). main.go checks this at boot to refuse
+// multi-feed operation with an ungated consumer.
+func (c *CommunityEventConsumer) RevGated() bool { return c.revGate != nil }
 
 // HandleEvent processes a Jetstream event for community records
 // This is called by the main Jetstream consumer when it receives commit events
@@ -117,15 +146,27 @@ func (c *CommunityEventConsumer) HandleEvent(ctx context.Context, event *Jetstre
 	//
 	// XRPC procedures (social.coves.community.subscribe/unsubscribe) are just HTTP endpoints
 	// that CREATE or DELETE records in these collections
+	// All three collections run under the rev gate (check→write→advance, see
+	// rev_gate.go): events apply in repo commit order even when the same repo
+	// is carried by multiple Jetstream feeds. Subscriptions and blocks are
+	// HARD-deleted, so the gate row is the tombstone that rejects a stale
+	// cross-feed copy of the create arriving after the delete — without it,
+	// an unsubscribed user would be silently re-subscribed hours later.
 	switch commit.Collection {
 	case "social.coves.community.profile":
-		return c.handleCommunityProfile(ctx, event.Did, commit)
+		return applyGated(ctx, c.revGate, ConsumerCommunities, event.Did, commit, func() error {
+			return c.handleCommunityProfile(ctx, event.Did, commit)
+		})
 	case "social.coves.community.subscription":
 		// Handle both create (subscribe) and delete (unsubscribe) operations
-		return c.handleSubscription(ctx, event.Did, commit)
+		return applyGated(ctx, c.revGate, ConsumerCommunities, event.Did, commit, func() error {
+			return c.handleSubscription(ctx, event.Did, commit)
+		})
 	case "social.coves.community.block":
 		// Handle both create (block) and delete (unblock) operations
-		return c.handleBlock(ctx, event.Did, commit)
+		return applyGated(ctx, c.revGate, ConsumerCommunities, event.Did, commit, func() error {
+			return c.handleBlock(ctx, event.Did, commit)
+		})
 	default:
 		// Not a community-related collection
 		return nil
@@ -673,7 +714,13 @@ func (c *CommunityEventConsumer) createSubscription(ctx context.Context, userDID
 
 // deleteSubscription removes a subscription from the index
 // DELETE operations don't include record data, so we need to look up the subscription
-// by its URI to find which community the user unsubscribed from
+// by its URI to find which community the user unsubscribed from.
+//
+// Cross-rkey safety: the rev gate is per record URI, so it cannot order a
+// redriven unsubscribe of rkey A against a newer subscribe under rkey B.
+// SubscribeWithCount therefore pins the row's record_uri to the NEWEST record
+// (last-write-wins on conflict); the redriven delete of the old URI then finds
+// no row here and is skipped instead of tearing down the valid subscription.
 func (c *CommunityEventConsumer) deleteSubscription(ctx context.Context, userDID string, commit *CommitEvent) error {
 	// Build AT-URI from the rkey
 	uri := fmt.Sprintf("at://%s/social.coves.community.subscription/%s", userDID, commit.RKey)

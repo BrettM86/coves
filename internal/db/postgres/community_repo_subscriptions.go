@@ -50,13 +50,24 @@ func (r *postgresCommunityRepo) SubscribeWithCount(ctx context.Context, subscrip
 		}
 	}()
 
-	// Insert subscription with ON CONFLICT DO NOTHING for idempotency
+	// Insert subscription; idempotent for Jetstream replays. On conflict (the
+	// user already has an active subscription row for this community) the
+	// stored record_uri/record_cid are updated to the INCOMING record
+	// (last-write-wins). This matters when the user re-subscribed under a NEW
+	// rkey while the old rkey's unsubscribe was dead-lettered: pinning the row
+	// to the newest record means the redriven delete of the OLD record URI no
+	// longer matches the row (the consumer looks it up by record_uri) and is
+	// skipped, instead of tearing down a valid newer subscription.
+	// (xmax = 0) distinguishes a fresh insert (count must be incremented) from
+	// a conflict-update (row already existed; count unchanged).
 	query := `
 		INSERT INTO community_subscriptions (user_did, community_did, subscribed_at, record_uri, record_cid, content_visibility)
 		VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (user_did, community_did) DO NOTHING
-		RETURNING id, subscribed_at, content_visibility`
+		ON CONFLICT (user_did, community_did) DO UPDATE
+		SET record_uri = EXCLUDED.record_uri, record_cid = EXCLUDED.record_cid
+		RETURNING id, subscribed_at, content_visibility, (xmax = 0) AS inserted`
 
+	var inserted bool
 	err = tx.QueryRowContext(ctx, query,
 		subscription.UserDID,
 		subscription.CommunityDID,
@@ -64,28 +75,22 @@ func (r *postgresCommunityRepo) SubscribeWithCount(ctx context.Context, subscrip
 		nullString(subscription.RecordURI),
 		nullString(subscription.RecordCID),
 		subscription.ContentVisibility,
-	).Scan(&subscription.ID, &subscription.SubscribedAt, &subscription.ContentVisibility)
-
-	// If no rows returned, subscription already existed (idempotent behavior)
-	if err == sql.ErrNoRows {
-		// Get existing subscription
-		query = `SELECT id, subscribed_at, content_visibility FROM community_subscriptions WHERE user_did = $1 AND community_did = $2`
-		err = tx.QueryRowContext(ctx, query, subscription.UserDID, subscription.CommunityDID).Scan(&subscription.ID, &subscription.SubscribedAt, &subscription.ContentVisibility)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get existing subscription: %w", err)
-		}
-		// Don't increment count - subscription already existed
-		if commitErr := tx.Commit(); commitErr != nil {
-			return nil, fmt.Errorf("failed to commit transaction: %w", commitErr)
-		}
-		return subscription, nil
-	}
+	).Scan(&subscription.ID, &subscription.SubscribedAt, &subscription.ContentVisibility, &inserted)
 
 	if err != nil {
 		if strings.Contains(err.Error(), "foreign key") {
 			return nil, communities.ErrCommunityNotFound
 		}
 		return nil, fmt.Errorf("failed to create subscription: %w", err)
+	}
+
+	// Subscription already existed (idempotent replay or re-subscribe under a
+	// new rkey): record pointer refreshed above, count stays as-is.
+	if !inserted {
+		if commitErr := tx.Commit(); commitErr != nil {
+			return nil, fmt.Errorf("failed to commit transaction: %w", commitErr)
+		}
+		return subscription, nil
 	}
 
 	// Increment subscriber count only if insert succeeded
