@@ -5,18 +5,21 @@ import (
 	"log"
 	"net/http"
 
+	"Coves/internal/api/handlers/common"
 	"Coves/internal/core/communities"
 )
 
 // GetHandler handles community retrieval
 type GetHandler struct {
 	service communities.Service
+	repo    communities.Repository
 }
 
 // NewGetHandler creates a new get handler
-func NewGetHandler(service communities.Service) *GetHandler {
+func NewGetHandler(service communities.Service, repo communities.Repository) *GetHandler {
 	return &GetHandler{
 		service: service,
+		repo:    repo,
 	}
 }
 
@@ -41,6 +44,9 @@ func (h *GetHandler) HandleGet(w http.ResponseWriter, r *http.Request) {
 		handleServiceError(w, err)
 		return
 	}
+
+	// Populate viewer state (viewer.subscribed) if authenticated
+	common.PopulateCommunityViewerState(r.Context(), r, h.repo, []*communities.Community{community})
 
 	// Convert to detailed view for API response
 	view := community.ToCommunityViewDetailed()
