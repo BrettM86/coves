@@ -36,8 +36,11 @@ func handleServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "AlreadyExists", err.Error())
 	case errors.Is(err, userblocks.ErrCannotBlockSelf):
 		writeError(w, http.StatusBadRequest, "InvalidRequest", "cannot block yourself")
-	// PDS-specific errors
-	case errors.Is(err, pds.ErrUnauthorized), errors.Is(err, pds.ErrForbidden):
+	// PDS-specific errors. 403 is a permissions problem (e.g. missing OAuth
+	// scope), not an expired session — it must not trigger a client sign-out.
+	case errors.Is(err, pds.ErrForbidden):
+		writeError(w, http.StatusForbidden, "PermissionDenied", "Your session does not have permission for this action. Sign out and back in to grant it.")
+	case errors.Is(err, pds.ErrUnauthorized):
 		writeError(w, http.StatusUnauthorized, "AuthRequired", "Authentication required or session expired")
 	case errors.Is(err, pds.ErrBadRequest):
 		writeError(w, http.StatusBadRequest, "InvalidRequest", "Invalid request to PDS")

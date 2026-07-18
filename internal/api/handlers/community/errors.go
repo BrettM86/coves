@@ -51,7 +51,11 @@ func handleServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "NotFound", "Record not found on PDS")
 	case errors.Is(err, pds.ErrConflict):
 		writeError(w, http.StatusConflict, "Conflict", "Record was modified by another operation")
-	case errors.Is(err, pds.ErrUnauthorized), errors.Is(err, pds.ErrForbidden):
+	case errors.Is(err, pds.ErrForbidden):
+		// 403 is a permissions problem (e.g. missing OAuth scope), not an
+		// expired session — it must not trigger a client sign-out.
+		writeError(w, http.StatusForbidden, "PermissionDenied", "Your session does not have permission for this action. Sign out and back in to grant it.")
+	case errors.Is(err, pds.ErrUnauthorized):
 		// PDS auth errors should prompt re-authentication
 		writeError(w, http.StatusUnauthorized, "AuthRequired", "Authentication required or session expired")
 	default:

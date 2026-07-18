@@ -667,7 +667,9 @@ func TestUpdateProfileHandler_PutRecordPayloadTooLarge(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "PayloadTooLarge")
 }
 
-// TestUpdateProfileHandler_PutRecordForbidden tests PutRecord forbidden error
+// TestUpdateProfileHandler_PutRecordForbidden tests that a PDS 403 maps to
+// PermissionDenied (403), NOT AuthExpired (401) — a permissions error must not
+// trigger a client sign-out of a valid session.
 func TestUpdateProfileHandler_PutRecordForbidden(t *testing.T) {
 	mockClient := &mockPDSClient{
 		putRecordError: pds.ErrForbidden,
@@ -689,8 +691,8 @@ func TestUpdateProfileHandler_PutRecordForbidden(t *testing.T) {
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusUnauthorized, w.Code)
-	assert.Contains(t, w.Body.String(), "AuthExpired")
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.Contains(t, w.Body.String(), "PermissionDenied")
 }
 
 // TestUpdateProfileHandler_Success tests successful profile update
@@ -1212,7 +1214,9 @@ func TestUpdateProfileHandler_BannerUploadPayloadTooLarge(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "BannerTooLarge")
 }
 
-// TestUpdateProfileHandler_BannerUploadForbidden tests banner upload forbidden error
+// TestUpdateProfileHandler_BannerUploadForbidden tests that a PDS 403 on blob
+// upload maps to PermissionDenied (403), NOT AuthExpired (401) — a missing
+// blob:*/* scope must not trigger a client sign-out of a valid session.
 func TestUpdateProfileHandler_BannerUploadForbidden(t *testing.T) {
 	mockClient := &mockPDSClient{
 		uploadBlobError: pds.ErrForbidden,
@@ -1236,8 +1240,37 @@ func TestUpdateProfileHandler_BannerUploadForbidden(t *testing.T) {
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusUnauthorized, w.Code)
-	assert.Contains(t, w.Body.String(), "AuthExpired")
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.Contains(t, w.Body.String(), "PermissionDenied")
+}
+
+// TestUpdateProfileHandler_AvatarUploadForbidden tests that a PDS 403 on avatar
+// upload maps to PermissionDenied (403), NOT AuthExpired (401).
+func TestUpdateProfileHandler_AvatarUploadForbidden(t *testing.T) {
+	mockClient := &mockPDSClient{
+		uploadBlobError: pds.ErrForbidden,
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	reqBody := UpdateProfileRequest{
+		DisplayName:    strPtr("Test User"),
+		AvatarBlob:     []byte("fake image data"),
+		AvatarMimeType: "image/jpeg",
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	testDID := "did:plc:testuser123"
+	session := createTestOAuthSession(testDID)
+	req = setTestOAuthSession(req, testDID, session)
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.Contains(t, w.Body.String(), "PermissionDenied")
 }
 
 // TestUpdateProfileHandler_BannerUploadGenericError tests banner upload with generic error

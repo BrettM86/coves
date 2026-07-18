@@ -221,9 +221,14 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				slog.String("did", userDID),
 				slog.String("error", err.Error()),
 			)
-			// Map specific PDS errors to user-friendly messages
+			// Map specific PDS errors to user-friendly messages.
+			// 403 is a permissions problem (e.g. the OAuth grant predates the
+			// blob:*/* scope), NOT an expired session — it must not trigger a
+			// client sign-out, and signing in again is what re-grants the scope.
 			switch {
-			case errors.Is(err, pds.ErrUnauthorized), errors.Is(err, pds.ErrForbidden):
+			case errors.Is(err, pds.ErrForbidden):
+				writeUpdateProfileError(w, http.StatusForbidden, "PermissionDenied", "Your session does not have permission to upload images. Sign out and back in to grant it.")
+			case errors.Is(err, pds.ErrUnauthorized):
 				writeUpdateProfileError(w, http.StatusUnauthorized, "AuthExpired", "Your session may have expired. Please re-authenticate.")
 			case errors.Is(err, pds.ErrRateLimited):
 				writeUpdateProfileError(w, http.StatusTooManyRequests, "RateLimited", "Too many requests. Please try again later.")
@@ -255,9 +260,12 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				slog.String("did", userDID),
 				slog.String("error", err.Error()),
 			)
-			// Map specific PDS errors to user-friendly messages
+			// Map specific PDS errors to user-friendly messages.
+			// 403 is a permissions problem, not an expired session (see avatar case).
 			switch {
-			case errors.Is(err, pds.ErrUnauthorized), errors.Is(err, pds.ErrForbidden):
+			case errors.Is(err, pds.ErrForbidden):
+				writeUpdateProfileError(w, http.StatusForbidden, "PermissionDenied", "Your session does not have permission to upload images. Sign out and back in to grant it.")
+			case errors.Is(err, pds.ErrUnauthorized):
 				writeUpdateProfileError(w, http.StatusUnauthorized, "AuthExpired", "Your session may have expired. Please re-authenticate.")
 			case errors.Is(err, pds.ErrRateLimited):
 				writeUpdateProfileError(w, http.StatusTooManyRequests, "RateLimited", "Too many requests. Please try again later.")
@@ -289,9 +297,12 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			slog.String("pds_url", session.HostURL),
 			slog.String("error", err.Error()),
 		)
-		// Map PDS errors to user-friendly messages
+		// Map PDS errors to user-friendly messages.
+		// 403 is a permissions problem, not an expired session (see avatar case).
 		switch {
-		case errors.Is(err, pds.ErrUnauthorized), errors.Is(err, pds.ErrForbidden):
+		case errors.Is(err, pds.ErrForbidden):
+			writeUpdateProfileError(w, http.StatusForbidden, "PermissionDenied", "Your session does not have permission to update your profile. Sign out and back in to grant it.")
+		case errors.Is(err, pds.ErrUnauthorized):
 			writeUpdateProfileError(w, http.StatusUnauthorized, "AuthExpired", "Your session may have expired. Please re-authenticate.")
 		case errors.Is(err, pds.ErrRateLimited):
 			writeUpdateProfileError(w, http.StatusTooManyRequests, "RateLimited", "Too many requests. Please try again later.")
