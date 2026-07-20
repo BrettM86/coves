@@ -1,12 +1,15 @@
 package pds
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/bluesky-social/indigo/atproto/atclient"
@@ -1402,4 +1405,223 @@ func TestClient_TypedErrors_PutRecord(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestClient_UploadBlob tests the UploadBlob method with a mock server.
+//
+// UploadBlob must send the caller's mimeType as the request Content-Type
+// (indigo's generated helper hardcodes "*/*", which fails the PDS OAuth
+// blob-scope check), and must reject empty or wildcard MIME types locally
+// with ErrBadRequest before any HTTP request is made.
+func TestClient_UploadBlob(t *testing.T) {
+	// A real, syntactically valid CIDv1 so lexutil decoding succeeds.
+	const validCID = "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"
+
+	// newTestClient mirrors the scaffolding used by TestClient_CreateRecord and siblings.
+	newTestClient := func(serverURL string) *client {
+		apiClient := atclient.NewAPIClient(serverURL)
+		apiClient.Auth = &bearerAuth{token: "test-token"}
+
+		return &client{
+			apiClient: apiClient,
+			did:       "did:plc:test",
+			host:      serverURL,
+		}
+	}
+
+	t.Run("successful upload", func(t *testing.T) {
+		uploadData := []byte{0x89, 0x50, 0x4E, 0x47} // PNG magic bytes
+
+		// Create mock server
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Verify method
+			if r.Method != http.MethodPost {
+				t.Errorf("expected POST request, got %s", r.Method)
+			}
+
+			// Verify path
+			if !strings.Contains(r.URL.Path, "com.atproto.repo.uploadBlob") {
+				t.Errorf("path = %q, want it to contain %q", r.URL.Path, "com.atproto.repo.uploadBlob")
+			}
+
+			// Verify the caller's mimeType is sent as the Content-Type exactly
+			// (not indigo's hardcoded "*/*")
+			if got := r.Header.Get("Content-Type"); got != "image/png" {
+				t.Errorf("Content-Type = %q, want %q", got, "image/png")
+			}
+
+			// Verify the raw blob bytes arrive unchanged
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("failed to read request body: %v", err)
+			}
+			if !bytes.Equal(body, uploadData) {
+				t.Errorf("request body = %v, want %v", body, uploadData)
+			}
+
+			// Send response
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]any{
+				"blob": map[string]any{
+					"$type":    "blob",
+					"ref":      map[string]string{"$link": validCID},
+					"mimeType": "image/png",
+					"size":     len(uploadData),
+				},
+			})
+		}))
+		defer server.Close()
+
+		c := newTestClient(server.URL)
+
+		ctx := context.Background()
+		blobRef, err := c.UploadBlob(ctx, uploadData, "image/png")
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if blobRef == nil {
+			t.Fatal("expected BlobRef, got nil")
+		}
+
+		if blobRef.Type != "blob" {
+			t.Errorf("Type = %q, want %q", blobRef.Type, "blob")
+		}
+		if blobRef.Ref["$link"] != validCID {
+			t.Errorf("Ref[$link] = %q, want %q", blobRef.Ref["$link"], validCID)
+		}
+		if blobRef.MimeType != "image/png" {
+			t.Errorf("MimeType = %q, want %q", blobRef.MimeType, "image/png")
+		}
+		if blobRef.Size != len(uploadData) {
+			t.Errorf("Size = %d, want %d", blobRef.Size, len(uploadData))
+		}
+	})
+
+	t.Run("empty mimeType rejected before any request", func(t *testing.T) {
+		var requestCount atomic.Int64
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requestCount.Add(1)
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+
+		c := newTestClient(server.URL)
+
+		ctx := context.Background()
+		blobRef, err := c.UploadBlob(ctx, []byte("data"), "")
+
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !errors.Is(err, ErrBadRequest) {
+			t.Errorf("expected errors.Is(%v, ErrBadRequest) to be true", err)
+		}
+		if blobRef != nil {
+			t.Errorf("expected nil BlobRef, got %+v", blobRef)
+		}
+		if got := requestCount.Load(); got != 0 {
+			t.Errorf("server received %d requests, want 0 (rejection must happen before any HTTP request)", got)
+		}
+	})
+
+	t.Run("wildcard mimeType rejected before any request", func(t *testing.T) {
+		wildcardMimeTypes := []string{"*/*", "image/*"}
+
+		for _, mimeType := range wildcardMimeTypes {
+			t.Run(mimeType, func(t *testing.T) {
+				var requestCount atomic.Int64
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					requestCount.Add(1)
+					w.WriteHeader(http.StatusOK)
+				}))
+				defer server.Close()
+
+				c := newTestClient(server.URL)
+
+				ctx := context.Background()
+				blobRef, err := c.UploadBlob(ctx, []byte("data"), mimeType)
+
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !errors.Is(err, ErrBadRequest) {
+					t.Errorf("expected errors.Is(%v, ErrBadRequest) to be true", err)
+				}
+				if blobRef != nil {
+					t.Errorf("expected nil BlobRef, got %+v", blobRef)
+				}
+				if got := requestCount.Load(); got != 0 {
+					t.Errorf("server received %d requests, want 0 (rejection must happen before any HTTP request)", got)
+				}
+			})
+		}
+	})
+
+	t.Run("403 returns ErrForbidden", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]any{
+				"error":   "TestError",
+				"message": "Test error message",
+			})
+		}))
+		defer server.Close()
+
+		c := newTestClient(server.URL)
+
+		ctx := context.Background()
+		_, err := c.UploadBlob(ctx, []byte("data"), "image/png")
+
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !errors.Is(err, ErrForbidden) {
+			t.Errorf("expected errors.Is(%v, ErrForbidden) to be true", err)
+		}
+	})
+
+	t.Run("200 with invalid blob returns error without panic", func(t *testing.T) {
+		tests := []struct {
+			name         string
+			responseBody string
+		}{
+			{
+				name:         "missing blob",
+				responseBody: `{}`,
+			},
+			{
+				name:         "blob without ref",
+				responseBody: `{"blob":{"$type":"blob","mimeType":"image/png","size":3}}`,
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusOK)
+					if _, err := w.Write([]byte(tt.responseBody)); err != nil {
+						t.Errorf("failed to write response: %v", err)
+					}
+				}))
+				defer server.Close()
+
+				c := newTestClient(server.URL)
+
+				ctx := context.Background()
+				blobRef, err := c.UploadBlob(ctx, []byte("abc"), "image/png")
+
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if blobRef != nil {
+					t.Errorf("expected nil BlobRef, got %+v", blobRef)
+				}
+			})
+		}
+	})
 }

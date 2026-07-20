@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"Coves/internal/core/blobs"
 
@@ -277,15 +278,21 @@ func (c *client) PutRecord(ctx context.Context, collection string, rkey string, 
 // granted accept patterns against the request's Content-Type and requires a
 // concrete type — "*/*" never matches, so every upload through the generated
 // helper fails with ScopeMissingError even when blob:*/* was granted.
+// Empty or wildcard MIME types are therefore rejected locally with
+// ErrBadRequest before any request is made.
 func (c *client) UploadBlob(ctx context.Context, data []byte, mimeType string) (*blobs.BlobRef, error) {
-	if mimeType == "" {
-		return nil, fmt.Errorf("uploadBlob: mimeType is required (the PDS blob scope check rejects wildcard content types)")
+	if mimeType == "" || strings.Contains(mimeType, "*") {
+		return nil, fmt.Errorf("uploadBlob: %w: mimeType must be a concrete MIME type such as \"image/png\" (the PDS blob scope check rejects empty or wildcard content types)", ErrBadRequest)
 	}
 
 	var result comatproto.RepoUploadBlob_Output
 	err := c.apiClient.LexDo(ctx, lexutil.Procedure, mimeType, "com.atproto.repo.uploadBlob", nil, bytes.NewReader(data), &result)
 	if err != nil {
 		return nil, wrapAPIError(err, "uploadBlob")
+	}
+
+	if result.Blob == nil || !result.Blob.Ref.Defined() {
+		return nil, fmt.Errorf("uploadBlob: PDS returned success without a valid blob ref")
 	}
 
 	return &blobs.BlobRef{
