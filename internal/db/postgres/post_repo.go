@@ -23,8 +23,9 @@ type postgresPostRepo struct {
 
 // postViewSelectColumns is the ordered SELECT list for hydrating a posts.PostView row.
 // It MUST stay byte-aligned with the positional Scan in scanPostView. It is the single
-// source of truth shared by GetViewsByURIs and GetByAuthor, so the column order can only
-// be defined in one place and the two queries cannot drift apart and silently mis-scan.
+// source of truth shared by GetViewsByURIs, GetByAuthor, and (via feedPostSelectClause)
+// the community/timeline/discover feed queries, so the column order can only be defined
+// in one place and the queries cannot drift apart and silently mis-scan.
 //
 // Displayed upvote/downvote counts fold in the bridge-asserted aggregates
 // (upvote_count + bridged_upvote_count, etc.) so federated/bridged content shows the
@@ -32,7 +33,7 @@ type postgresPostRepo struct {
 // it is selected as-is.
 const postViewSelectColumns = `
 		p.uri, p.cid, p.rkey,
-		p.author_did, u.handle as author_handle,
+		p.author_did, u.handle as author_handle, u.display_name as author_display_name, u.avatar_cid as author_avatar, u.pds_url as author_pds_url,
 		p.community_did, c.handle as community_handle, c.name as community_name, c.avatar_cid as community_avatar, c.pds_url as community_pds_url,
 		p.title, p.content, p.content_facets, p.embed, p.content_labels,
 		p.created_at, p.edited_at, p.indexed_at,
@@ -158,7 +159,8 @@ func (r *postgresPostRepo) GetByURI(ctx context.Context, uri string) (*posts.Pos
 // GetViewsByURIs retrieves full post views for a set of canonical (DID-based) AT-URIs.
 // Returns a map keyed by URI; URIs that are missing or soft-deleted are simply absent
 // from the map (the caller emits notFoundPost markers for those).
-// Reuses scanPostView for row scanning, so the SELECT column order must match GetByAuthor.
+// Row scanning goes through the shared scanPostView, whose Scan order is kept aligned
+// with the single source of truth for the SELECT list, postViewSelectColumns.
 // Backs the social.coves.community.post.get endpoint (feed hydration + permalinks).
 func (r *postgresPostRepo) GetViewsByURIs(ctx context.Context, uris []string) (map[string]*posts.PostView, error) {
 	result := make(map[string]*posts.PostView, len(uris))
@@ -188,7 +190,7 @@ func (r *postgresPostRepo) GetViewsByURIs(ctx context.Context, uris []string) (m
 	}()
 
 	for rows.Next() {
-		postView, err := r.scanPostView(rows)
+		postView, err := scanPostView(rows)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan post: %w", err)
 		}
@@ -284,7 +286,7 @@ func (r *postgresPostRepo) GetByAuthor(ctx context.Context, req posts.GetAuthorP
 	// Scan results
 	var postViews []*posts.PostView
 	for rows.Next() {
-		postView, err := r.scanPostView(rows)
+		postView, err := scanPostView(rows)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to scan author post: %w", err)
 		}
@@ -378,36 +380,49 @@ func (r *postgresPostRepo) SoftDelete(ctx context.Context, uri string) error {
 	return nil
 }
 
-// scanPostView scans a database row into a PostView. Shared by GetByAuthor and
-// GetViewsByURIs, which both SELECT postViewSelectColumns; the Scan order below MUST
-// stay byte-aligned with that column list.
-func (r *postgresPostRepo) scanPostView(rows *sql.Rows) (*posts.PostView, error) {
+// scanPostView scans a database row into a PostView. Shared by GetByAuthor,
+// GetViewsByURIs, and the feed repositories (via scanFeedPost), which all SELECT
+// postViewSelectColumns; the Scan order below MUST stay byte-aligned with that column
+// list. extraDest receives any columns a caller appends after postViewSelectColumns
+// (the feed queries append hot_rank).
+func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, error) {
 	var (
-		postView        posts.PostView
-		authorView      posts.AuthorView
-		communityRef    posts.CommunityRef
-		title, content  sql.NullString
-		facets, embed   sql.NullString
-		labelsJSON      sql.NullString
-		editedAt        sql.NullTime
-		communityHandle sql.NullString
-		communityAvatar sql.NullString
-		communityPDSURL sql.NullString
+		postView          posts.PostView
+		authorView        posts.AuthorView
+		communityRef      posts.CommunityRef
+		title, content    sql.NullString
+		facets, embed     sql.NullString
+		labelsJSON        sql.NullString
+		editedAt          sql.NullTime
+		authorDisplayName sql.NullString
+		authorAvatar      sql.NullString
+		authorPDSURL      sql.NullString
+		communityHandle   sql.NullString
+		communityAvatar   sql.NullString
+		communityPDSURL   sql.NullString
 	)
 
-	err := rows.Scan(
+	dest := []interface{}{
 		&postView.URI, &postView.CID, &postView.RKey,
-		&authorView.DID, &authorView.Handle,
+		&authorView.DID, &authorView.Handle, &authorDisplayName, &authorAvatar, &authorPDSURL,
 		&communityRef.DID, &communityHandle, &communityRef.Name, &communityAvatar, &communityPDSURL,
 		&title, &content, &facets, &embed, &labelsJSON,
 		&postView.CreatedAt, &editedAt, &postView.IndexedAt,
 		&postView.UpvoteCount, &postView.DownvoteCount, &postView.Score, &postView.CommentCount,
-	)
-	if err != nil {
+	}
+	dest = append(dest, extraDest...)
+
+	if err := rows.Scan(dest...); err != nil {
 		return nil, err
 	}
 
-	// Build author view
+	// Build author view with profile hydration (avatar_small preset, same as community avatars)
+	if authorDisplayName.Valid && authorDisplayName.String != "" {
+		authorView.DisplayName = &authorDisplayName.String
+	}
+	if avatarURL := blobs.HydrateImageURL(communities.GetImageProxyConfig(), authorPDSURL.String, authorView.DID, authorAvatar.String, "avatar_small"); avatarURL != "" {
+		authorView.Avatar = &avatarURL
+	}
 	postView.Author = &authorView
 
 	// Build community ref
@@ -481,7 +496,7 @@ func (r *postgresPostRepo) scanPostView(rows *sql.Rows) (*posts.PostView, error)
 	if facetArray != nil {
 		record["facets"] = facetArray
 	}
-	if embed.Valid {
+	if postView.Embed != nil {
 		record["embed"] = postView.Embed
 	}
 	if labelsJSON.Valid {

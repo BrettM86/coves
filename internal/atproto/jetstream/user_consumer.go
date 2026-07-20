@@ -15,9 +15,9 @@ import (
 )
 
 // CovesProfileCollection is the atProto collection for Coves user profiles.
-// NOTE: This constant is intentionally duplicated in internal/api/handlers/user/update_profile.go
-// to avoid circular dependencies between packages. Keep both definitions in sync.
-const CovesProfileCollection = "social.coves.actor.profile"
+// NOTE: Alias of users.ProfileCollection, the canonical definition — kept as an
+// exported constant of this package because existing callers reference it here.
+const CovesProfileCollection = users.ProfileCollection
 
 // CovesActorBlockCollection is the atProto collection for user-to-user blocks.
 // Records live in the blocker's repository at at://blocker_did/social.coves.actor.block/{tid}

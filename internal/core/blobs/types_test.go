@@ -254,6 +254,37 @@ func TestHydrateImageURL_EmptyPresetUsesDirectURL(t *testing.T) {
 	}
 }
 
+func TestHydrateImageURL_ProxyEnabledEmptyCIDReturnsEmpty(t *testing.T) {
+	// Missing CID (e.g. an author with no avatar) is normal data, not a config
+	// problem: the function must return "" without attempting proxy URL generation
+	// (which would emit a spurious config warning on the hot feed path).
+	config := ImageURLConfig{
+		ProxyEnabled: true,
+		ProxyBaseURL: "https://coves.social",
+	}
+	pdsURL := "https://pds.example.com"
+	did := "did:plc:abc123"
+	preset := "avatar"
+
+	if result := HydrateImageURL(config, pdsURL, did, "", preset); result != "" {
+		t.Errorf("HydrateImageURL with proxy enabled and empty cid = %q, want empty string", result)
+	}
+}
+
+func TestHydrateImageURL_ProxyEnabledEmptyDIDReturnsEmpty(t *testing.T) {
+	config := ImageURLConfig{
+		ProxyEnabled: true,
+		ProxyBaseURL: "https://coves.social",
+	}
+	pdsURL := "https://pds.example.com"
+	cid := "bafyreiabc123"
+	preset := "avatar"
+
+	if result := HydrateImageURL(config, pdsURL, "", cid, preset); result != "" {
+		t.Errorf("HydrateImageURL with proxy enabled and empty did = %q, want empty string", result)
+	}
+}
+
 func TestImageURLConfig(t *testing.T) {
 	// Test that ImageURLConfig holds correct fields
 	config := ImageURLConfig{

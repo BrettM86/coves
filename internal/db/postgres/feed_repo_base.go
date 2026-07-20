@@ -6,14 +6,10 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
-	"Coves/internal/core/blobs"
-	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
 )
 
@@ -354,129 +350,32 @@ func (r *feedRepoBase) buildCursor(post *posts.PostView, sort string, hotRank fl
 	return base64.StdEncoding.EncodeToString([]byte(signed))
 }
 
-// scanFeedPost scans a database row into a PostView
-// This is the shared scanning logic used by both timeline and discover feeds
-func (r *feedRepoBase) scanFeedPost(rows *sql.Rows) (*posts.PostView, float64, error) {
-	var (
-		postView        posts.PostView
-		authorView      posts.AuthorView
-		communityRef    posts.CommunityRef
-		title, content  sql.NullString
-		facets, embed   sql.NullString
-		labelsJSON      sql.NullString
-		editedAt        sql.NullTime
-		communityHandle sql.NullString
-		communityAvatar sql.NullString
-		communityPDSURL sql.NullString
-		hotRank         sql.NullFloat64
-	)
+// feedPostSelectClause builds the SELECT ... FROM posts p clause shared by the
+// community, timeline, and discover feed queries. It is postViewSelectColumns (the
+// single source of truth for PostView hydration, see post_repo.go) plus a hot_rank
+// column: pass feedHotRankExpression for hot sort, or "NULL::numeric" for other sorts.
+func feedPostSelectClause(hotRankExpr string) string {
+	return `
+		SELECT` + postViewSelectColumns + `,
+			` + hotRankExpr + ` as hot_rank
+		FROM posts p`
+}
 
-	err := rows.Scan(
-		&postView.URI, &postView.CID, &postView.RKey,
-		&authorView.DID, &authorView.Handle,
-		&communityRef.DID, &communityHandle, &communityRef.Name, &communityAvatar, &communityPDSURL,
-		&title, &content, &facets, &embed, &labelsJSON,
-		&postView.CreatedAt, &editedAt, &postView.IndexedAt,
-		&postView.UpvoteCount, &postView.DownvoteCount, &postView.Score, &postView.CommentCount,
-		&hotRank,
-	)
+// scanFeedPost scans a database row into a PostView plus its computed hot_rank.
+// Rows MUST be selected via feedPostSelectClause; all PostView hydration is delegated
+// to scanPostView so feed and post queries can never drift apart.
+func (r *feedRepoBase) scanFeedPost(rows *sql.Rows) (*posts.PostView, float64, error) {
+	var hotRank sql.NullFloat64
+	postView, err := scanPostView(rows, &hotRank)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	// Build author view
-	postView.Author = &authorView
-
-	// Build community ref
-	if communityHandle.Valid {
-		communityRef.Handle = communityHandle.String
-	}
-	// Hydrate avatar CID to URL using image proxy config (avatar_small preset for feed lists)
-	if avatarURL := blobs.HydrateImageURL(communities.GetImageProxyConfig(), communityPDSURL.String, communityRef.DID, communityAvatar.String, "avatar_small"); avatarURL != "" {
-		communityRef.Avatar = &avatarURL
-	}
-	if communityPDSURL.Valid {
-		communityRef.PDSURL = communityPDSURL.String
-	}
-	postView.Community = &communityRef
-
-	// Parse facets JSON into local variable (will be added to record below)
-	// Log errors but continue - a single malformed post shouldn't break the entire feed
-	var facetArray []interface{}
-	if facets.Valid {
-		if err := json.Unmarshal([]byte(facets.String), &facetArray); err != nil {
-			slog.Warn("[FEED] failed to parse facets JSON",
-				"post_uri", postView.URI,
-				"error", err,
-			)
-		}
-	}
-
-	// Parse embed JSON
-	// Log errors but continue - a single malformed post shouldn't break the entire feed
-	if embed.Valid {
-		var embedData interface{}
-		if err := json.Unmarshal([]byte(embed.String), &embedData); err != nil {
-			slog.Warn("[FEED] failed to parse embed JSON",
-				"post_uri", postView.URI,
-				"error", err,
-			)
-		} else {
-			postView.Embed = embedData
-		}
-	}
-
-	// Build stats
-	postView.Stats = &posts.PostStats{
-		Upvotes:      postView.UpvoteCount,
-		Downvotes:    postView.DownvoteCount,
-		Score:        postView.Score,
-		CommentCount: postView.CommentCount,
-	}
-
-	// Build the record (required by lexicon)
-	record := map[string]interface{}{
-		"$type":     "social.coves.community.post",
-		"community": communityRef.DID,
-		"author":    authorView.DID,
-		"createdAt": postView.CreatedAt.Format(time.RFC3339),
-	}
-
-	// Add optional fields to record if present
-	if title.Valid {
-		record["title"] = title.String
-	}
-	if content.Valid {
-		record["content"] = content.String
-	}
-	// Add facets to record if present
-	if facetArray != nil {
-		record["facets"] = facetArray
-	}
-	if postView.Embed != nil {
-		record["embed"] = postView.Embed
-	}
-	if labelsJSON.Valid {
-		// Labels are stored as JSONB containing full com.atproto.label.defs#selfLabels structure
-		// Deserialize and include in record
-		var selfLabels posts.SelfLabels
-		if err := json.Unmarshal([]byte(labelsJSON.String), &selfLabels); err != nil {
-			slog.Warn("[FEED] failed to parse labels JSON",
-				"post_uri", postView.URI,
-				"error", err,
-			)
-		} else {
-			record["labels"] = selfLabels
-		}
-	}
-
-	postView.Record = record
-
-	// Return the computed hot_rank (0.0 if NULL for non-hot sorts)
+	// hot_rank is NULL for non-hot sorts
 	hotRankValue := 0.0
 	if hotRank.Valid {
 		hotRankValue = hotRank.Float64
 	}
 
-	return &postView, hotRankValue, nil
+	return postView, hotRankValue, nil
 }

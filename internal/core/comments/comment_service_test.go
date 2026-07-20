@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Mock implementations for testing
@@ -1480,6 +1481,105 @@ func TestCommentService_buildCommentView_BasicFields(t *testing.T) {
 	assert.Equal(t, 1, result.Stats.Downvotes)
 	assert.Equal(t, 4, result.Stats.Score)
 	assert.Equal(t, 0, result.Stats.ReplyCount)
+}
+
+func TestCommentService_buildCommentView_HydratesAuthorProfile(t *testing.T) {
+	// Setup
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	postURI := "at://did:plc:post123/app.bsky.feed.post/test"
+	commenterDID := "did:plc:commenter123"
+	comment := createTestComment("at://did:plc:commenter123/comment/1", commenterDID, "commenter.test", postURI, postURI, 0)
+
+	usersByDID := map[string]*users.User{
+		commenterDID: {
+			DID:         commenterDID,
+			Handle:      "commenter.test",
+			PDSURL:      "https://pds.example.com",
+			DisplayName: "Commenter Display",
+			AvatarCID:   "bafkreicommenteravatar",
+		},
+	}
+
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
+
+	// Execute
+	result := service.buildCommentView(comment, nil, nil, usersByDID)
+
+	// Verify author profile hydration
+	require.NotNil(t, result.Author)
+	require.NotNil(t, result.Author.DisplayName, "display name must be hydrated from indexed user")
+	assert.Equal(t, "Commenter Display", *result.Author.DisplayName)
+	require.NotNil(t, result.Author.Avatar, "avatar must be hydrated from indexed user")
+	assert.Contains(t, *result.Author.Avatar, "bafkreicommenteravatar", "avatar URL must reference the avatar CID")
+	assert.Contains(t, *result.Author.Avatar, "did%3Aplc%3Acommenter123", "avatar URL must reference the author's own DID")
+}
+
+func TestCommentService_buildPostView_HydratesAuthorProfile(t *testing.T) {
+	// Setup
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	authorDID := "did:plc:postauthor123"
+	communityDID := "did:plc:community123"
+	post := createTestPost("at://did:plc:postauthor123/social.coves.community.post/test", authorDID, communityDID)
+
+	author := createTestUser(authorDID, "postauthor.test")
+	author.DisplayName = "Post Author Display"
+	author.AvatarCID = "bafkreipostauthoravatar"
+	author.PDSURL = "https://pds.example.com"
+	_, _ = userRepo.Create(context.Background(), author)
+
+	community := createTestCommunity(communityDID, "c-test.coves.social")
+	_, _ = communityRepo.Create(context.Background(), community)
+
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
+
+	// Execute
+	result := service.buildPostView(context.Background(), post, nil)
+
+	// Verify author profile hydration
+	require.NotNil(t, result.Author)
+	require.NotNil(t, result.Author.DisplayName, "display name must be hydrated from indexed user")
+	assert.Equal(t, "Post Author Display", *result.Author.DisplayName)
+	require.NotNil(t, result.Author.Avatar, "avatar must be hydrated from indexed user")
+	assert.Contains(t, *result.Author.Avatar, "bafkreipostauthoravatar", "avatar URL must reference the avatar CID")
+	assert.Contains(t, *result.Author.Avatar, "did%3Aplc%3Apostauthor123", "avatar URL must reference the author's own DID")
+}
+
+func TestCommentService_buildCommentView_NoProfileLeavesAuthorBare(t *testing.T) {
+	// Setup: user indexed without profile data (e.g. profile event missed)
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	postURI := "at://did:plc:post123/app.bsky.feed.post/test"
+	commenterDID := "did:plc:commenter123"
+	comment := createTestComment("at://did:plc:commenter123/comment/1", commenterDID, "commenter.test", postURI, postURI, 0)
+
+	usersByDID := map[string]*users.User{
+		commenterDID: {
+			DID:    commenterDID,
+			Handle: "commenter.test",
+			PDSURL: "https://pds.example.com",
+		},
+	}
+
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
+
+	// Execute
+	result := service.buildCommentView(comment, nil, nil, usersByDID)
+
+	// Verify: no fabricated profile data
+	require.NotNil(t, result.Author)
+	assert.Nil(t, result.Author.DisplayName)
+	assert.Nil(t, result.Author.Avatar)
 }
 
 func TestCommentService_buildCommentView_TopLevelComment(t *testing.T) {

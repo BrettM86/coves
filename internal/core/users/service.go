@@ -49,6 +49,11 @@ const (
 // can't pin a captcha-verified caller for the request's full lifetime.
 const pdsAdminCallTimeout = 10 * time.Second
 
+// profileBackfillTimeout bounds the detached profile-backfill fetch+store. The
+// backfill goroutine is decoupled from the caller's request context, so this
+// is its only deadline.
+const profileBackfillTimeout = 10 * time.Second
+
 type userService struct {
 	userRepo         UserRepository
 	identityResolver identity.Resolver
@@ -66,6 +71,30 @@ type userService struct {
 	// pdsAdminClient is reused across calls so HTTP/1.1 keep-alive and TLS
 	// session resumption actually kick in.
 	pdsAdminClient *http.Client
+
+	// profileBackfillClient, when non-nil, enables profile backfill on IndexUser:
+	// a user indexed with no profile data gets their social.coves.actor.profile
+	// record fetched directly from their PDS. This reconciles profile firehose
+	// events that were missed (a profile is written once at rkey "self", so a
+	// missed create event is never re-emitted). nil → backfill disabled.
+	profileBackfillClient *http.Client
+}
+
+// UserServiceOption configures optional behavior on the user service.
+type UserServiceOption func(*userService)
+
+// WithProfileBackfill enables best-effort profile backfill during IndexUser (see
+// profileBackfillClient). Pass nil to use a default client with a 10s timeout.
+// The fetch+store runs in a detached goroutine so it never blocks IndexUser
+// callers (OAuth login, Jetstream consumers); failures are logged only — run
+// cmd/backfill-profiles to reconcile users whose backfill fetch failed.
+func WithProfileBackfill(client *http.Client) UserServiceOption {
+	return func(s *userService) {
+		if client == nil {
+			client = &http.Client{Timeout: 10 * time.Second}
+		}
+		s.profileBackfillClient = client
+	}
 }
 
 // NewUserService creates a new user service.
@@ -79,8 +108,9 @@ func NewUserService(
 	defaultPDS string,
 	turnstile TurnstileVerifier,
 	pdsAdminPassword string,
+	opts ...UserServiceOption,
 ) UserService {
-	return &userService{
+	s := &userService{
 		userRepo:         userRepo,
 		identityResolver: identityResolver,
 		defaultPDS:       defaultPDS,
@@ -88,6 +118,10 @@ func NewUserService(
 		pdsAdminPassword: pdsAdminPassword,
 		pdsAdminClient:   &http.Client{Timeout: pdsAdminCallTimeout},
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // CreateUser creates a new user in the AppView database
@@ -356,9 +390,13 @@ func (s *userService) mintInviteCode(ctx context.Context) (string, error) {
 // IndexUser creates or updates a user in the local database.
 // This is idempotent and safe to call multiple times for the same user.
 // If the user exists, their handle is updated if it changed.
+// When profile backfill is enabled (WithProfileBackfill) and the indexed user has no
+// profile data, their profile record is fetched from their PDS asynchronously and
+// best-effort — this heals users whose profile firehose event was never delivered
+// without ever blocking or failing the IndexUser call itself.
 func (s *userService) IndexUser(ctx context.Context, did, handle, pdsURL string) error {
 	// Try to create the user (idempotent - CreateUser returns existing user if DID exists)
-	_, err := s.CreateUser(ctx, CreateUserRequest{
+	user, err := s.CreateUser(ctx, CreateUserRequest{
 		DID:    did,
 		Handle: handle,
 		PDSURL: pdsURL,
@@ -367,18 +405,90 @@ func (s *userService) IndexUser(ctx context.Context, did, handle, pdsURL string)
 	if err != nil {
 		// Check if it's a handle conflict (user exists with different handle)
 		// In this case, update the handle instead
-		if errors.Is(err, ErrHandleAlreadyTaken) {
-			// User exists but handle changed - update it
-			_, updateErr := s.UpdateHandle(ctx, did, handle)
-			if updateErr != nil {
-				return fmt.Errorf("failed to update handle for existing user: %w", updateErr)
-			}
-			return nil
+		if !errors.Is(err, ErrHandleAlreadyTaken) {
+			return err
 		}
-		return err
+		// User exists but handle changed - update it
+		user, err = s.UpdateHandle(ctx, did, handle)
+		if err != nil {
+			return fmt.Errorf("failed to update handle for existing user: %w", err)
+		}
 	}
 
+	// Best-effort and asynchronous: never fails or blocks indexing (a dead or
+	// slow PDS must not stall a login callback or firehose event, and must not
+	// dead-letter the post/comment event that triggered this index).
+	s.maybeBackfillProfile(ctx, user)
+
 	return nil
+}
+
+// maybeBackfillProfile reconciles a missing profile for a freshly indexed user. A
+// profile record fires exactly one firehose event (rkey "self" is written once); if
+// that event was missed — e.g. relay throttling — nothing ever replays it, so the
+// AppView must reconcile by reading the record directly from the user's own PDS.
+// Only users with a completely empty profile are touched: for anyone else the
+// firehose is the source of truth and a fetch could race a newer update.
+//
+// The emptiness check runs synchronously (the common no-op paths spawn nothing);
+// when a fetch is actually needed, the fetch+store runs in a detached goroutine —
+// decoupled from the caller's context via context.WithoutCancel with its own
+// profileBackfillTimeout deadline — so a slow or dead PDS never blocks the
+// IndexUser caller (OAuth login callback, Jetstream consumers) and the fetch is
+// not killed when the triggering request context ends.
+func (s *userService) maybeBackfillProfile(ctx context.Context, user *User) {
+	if s.profileBackfillClient == nil || user == nil {
+		return
+	}
+	if user.DisplayName != "" || user.Bio != "" || user.AvatarCID != "" || user.BannerCID != "" {
+		return // profile already indexed — firehose keeps it current
+	}
+
+	go s.backfillProfile(context.WithoutCancel(ctx), user.DID, user.PDSURL)
+}
+
+// backfillProfile is the detached best-effort fetch+store behind
+// maybeBackfillProfile. Failures are logged only — for firehose-discovered users
+// there is no automatic retry; run cmd/backfill-profiles to reconcile.
+func (s *userService) backfillProfile(ctx context.Context, did, pdsURL string) {
+	ctx, cancel := context.WithTimeout(ctx, profileBackfillTimeout)
+	defer cancel()
+
+	input, err := FetchProfileRecord(ctx, s.profileBackfillClient, pdsURL, did)
+	if err != nil {
+		slog.Warn("profile backfill: failed to fetch profile record (run cmd/backfill-profiles to reconcile)",
+			slog.String("did", did),
+			slog.String("pds_url", pdsURL),
+			slog.String("error", err.Error()))
+		return
+	}
+	if input == nil {
+		return // user has no profile record — nothing to apply
+	}
+
+	// Re-check emptiness before writing: a concurrent firehose profile event may
+	// have landed while we were fetching, and the firehose is the source of truth.
+	current, err := s.userRepo.GetByDID(ctx, did)
+	if err != nil {
+		slog.Warn("profile backfill: failed to re-check user before storing fetched profile",
+			slog.String("did", did),
+			slog.String("error", err.Error()))
+		return
+	}
+	if current.DisplayName != "" || current.Bio != "" || current.AvatarCID != "" || current.BannerCID != "" {
+		return // firehose delivered a profile while we were fetching — keep it
+	}
+
+	if _, err := s.userRepo.UpdateProfile(ctx, did, *input); err != nil {
+		slog.Warn("profile backfill: failed to store fetched profile",
+			slog.String("did", did),
+			slog.String("error", err.Error()))
+		return
+	}
+
+	slog.Info("profile backfill: hydrated profile from PDS",
+		slog.String("did", did),
+		slog.String("pds_url", pdsURL))
 }
 
 // GetProfile retrieves a user's full profile with aggregated statistics.

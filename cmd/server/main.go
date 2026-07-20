@@ -287,8 +287,12 @@ func main() {
 	}
 
 	// Initialize user repository and service early (needed for OAuth user indexing)
+	// Profile backfill: users indexed with no profile data (e.g. their profile
+	// firehose event was missed) get social.coves.actor.profile fetched from
+	// their PDS asynchronously, best-effort, during IndexUser.
 	userRepo := postgresRepo.NewUserRepository(db)
-	userService := users.NewUserService(userRepo, identityResolver, defaultPDS, turnstileVerifier, pdsAdminPassword)
+	userService := users.NewUserService(userRepo, identityResolver, defaultPDS, turnstileVerifier, pdsAdminPassword,
+		users.WithProfileBackfill(&http.Client{Timeout: 10 * time.Second}))
 
 	// Create OAuth handler for HTTP endpoints
 	// WithUserIndexer ensures users are indexed into local database after OAuth login

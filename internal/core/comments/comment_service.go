@@ -1,6 +1,7 @@
 package comments
 
 import (
+	"Coves/internal/core/blobs"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
@@ -419,6 +420,23 @@ func (s *commentService) buildThreadViews(
 	return threadViews, nil
 }
 
+// hydrateAuthorProfile fills display name and avatar on an author view from an indexed
+// user row. The avatar CID is transformed to an image-proxy URL against the author's
+// own PDS (avatar_small preset, matching post/feed author avatars). nil user (author
+// not indexed / not found) leaves the view with DID+handle only.
+func hydrateAuthorProfile(view *posts.AuthorView, user *users.User) {
+	if user == nil {
+		return
+	}
+	if user.DisplayName != "" {
+		displayName := user.DisplayName
+		view.DisplayName = &displayName
+	}
+	if avatarURL := blobs.HydrateImageURL(communities.GetImageProxyConfig(), user.PDSURL, user.DID, user.AvatarCID, "avatar_small"); avatarURL != "" {
+		view.Avatar = &avatarURL
+	}
+}
+
 // buildCommentView converts a Comment entity to a CommentView with full metadata
 // Constructs author view, stats, and references to parent post/comment
 // voteStates map contains viewer's vote state for comments (from GetVoteStateForComments)
@@ -440,12 +458,8 @@ func (s *commentService) buildCommentView(
 	authorView := &posts.AuthorView{
 		DID:    comment.CommenterDID,
 		Handle: authorHandle,
-		// DisplayName, Avatar, Reputation will be populated when user profile schema is extended
-		// Currently User model only has DID, Handle, PDSURL fields
-		DisplayName: nil,
-		Avatar:      nil,
-		Reputation:  nil,
 	}
+	hydrateAuthorProfile(authorView, usersByDID[comment.CommenterDID])
 
 	// Build aggregated statistics
 	stats := &CommentStats{
@@ -964,7 +978,9 @@ func (s *commentService) buildPostView(ctx context.Context, post *posts.Post, vi
 	// Build author view - fetch user to get handle (required by lexicon)
 	// The lexicon marks authorView.handle with format:"handle", so DIDs are invalid
 	authorHandle := post.AuthorDID // Fallback if user not found
+	var author *users.User
 	if user, err := s.userRepo.GetByDID(ctx, post.AuthorDID); err == nil {
+		author = user
 		authorHandle = user.Handle
 	} else {
 		// Log warning but don't fail the entire request
@@ -974,12 +990,8 @@ func (s *commentService) buildPostView(ctx context.Context, post *posts.Post, vi
 	authorView := &posts.AuthorView{
 		DID:    post.AuthorDID,
 		Handle: authorHandle,
-		// DisplayName, Avatar, Reputation will be populated when user profile schema is extended
-		// Currently User model only has DID, Handle, PDSURL fields
-		DisplayName: nil,
-		Avatar:      nil,
-		Reputation:  nil,
 	}
+	hydrateAuthorProfile(authorView, author)
 
 	// Build community reference - fetch community to get name and avatar (required by lexicon)
 	// The lexicon marks communityRef.name and handle as required, so DIDs alone are insufficient

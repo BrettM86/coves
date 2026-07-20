@@ -54,6 +54,13 @@ func HydrateImageURL(config ImageURLConfig, pdsURL, did, cid, preset string) str
 		return HydrateBlobURL(pdsURL, did, cid)
 	}
 
+	// Missing DID/CID is normal data (e.g. an author with no avatar), not a proxy
+	// configuration problem — skip the proxy attempt (and its config warning) and
+	// fall back to HydrateBlobURL, which returns "" for empty inputs.
+	if did == "" || cid == "" {
+		return HydrateBlobURL(pdsURL, did, cid)
+	}
+
 	// Determine which base URL to use
 	baseURL := config.ProxyBaseURL
 	if config.CDNURL != "" {

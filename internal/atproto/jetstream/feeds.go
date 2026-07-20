@@ -54,7 +54,7 @@ var feedKeyPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 // that class of drift.
 var consumerWantedCollections = map[string][]string{
 	ConsumerUsers: {
-		"social.coves.actor.profile",
+		CovesProfileCollection,
 		"social.coves.actor.block",
 	},
 	ConsumerCommunities: {

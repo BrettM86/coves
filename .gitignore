@@ -58,5 +58,8 @@ Thumbs.db
 # Local-only Claude Code commands (contains prod host references)
 .claude/commands/deploy.md
 
+# Per-machine Claude Code agent memory (local review-agent state, not shared config)
+.claude/agent-memory/
+
 # Beads issue tracker (local runtime state)
 .beads/

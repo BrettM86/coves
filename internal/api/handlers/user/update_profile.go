@@ -10,14 +10,15 @@ import (
 
 	"Coves/internal/api/middleware"
 	"Coves/internal/atproto/pds"
+	"Coves/internal/core/users"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 )
 
 // CovesProfileCollection is the atProto collection for Coves user profiles.
-// NOTE: This constant is intentionally duplicated in internal/atproto/jetstream/user_consumer.go
-// to avoid circular dependencies between packages. Keep both definitions in sync.
-const CovesProfileCollection = "social.coves.actor.profile"
+// NOTE: Alias of users.ProfileCollection, the canonical definition — kept as an
+// exported constant of this package because existing callers reference it here.
+const CovesProfileCollection = users.ProfileCollection
 
 // PDSClientFactory creates PDS clients from session data.
 // Used to allow injection of different auth mechanisms (OAuth for production, password for E2E tests).

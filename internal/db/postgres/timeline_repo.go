@@ -37,31 +37,13 @@ func (r *postgresTimelineRepo) GetTimeline(ctx context.Context, req timeline.Get
 		return nil, nil, timeline.ErrInvalidCursor
 	}
 
-	// Build the main query
+	// Build the main query (shared column list — see feedPostSelectClause)
 	// For hot sort, we need to compute and return the hot_rank for cursor building
 	var selectClause string
 	if req.Sort == "hot" {
-		selectClause = fmt.Sprintf(`
-		SELECT
-			p.uri, p.cid, p.rkey,
-			p.author_did, u.handle as author_handle,
-			p.community_did, c.handle as community_handle, c.name as community_name, c.avatar_cid as community_avatar, c.pds_url as community_pds_url,
-			p.title, p.content, p.content_facets, p.embed, p.content_labels,
-			p.created_at, p.edited_at, p.indexed_at,
-			p.upvote_count + p.bridged_upvote_count AS upvote_count, p.downvote_count + p.bridged_downvote_count AS downvote_count, p.score, p.comment_count,
-			%s as hot_rank
-		FROM posts p`, feedHotRankExpression)
+		selectClause = feedPostSelectClause(feedHotRankExpression)
 	} else {
-		selectClause = `
-		SELECT
-			p.uri, p.cid, p.rkey,
-			p.author_did, u.handle as author_handle,
-			p.community_did, c.handle as community_handle, c.name as community_name, c.avatar_cid as community_avatar, c.pds_url as community_pds_url,
-			p.title, p.content, p.content_facets, p.embed, p.content_labels,
-			p.created_at, p.edited_at, p.indexed_at,
-			p.upvote_count + p.bridged_upvote_count AS upvote_count, p.downvote_count + p.bridged_downvote_count AS downvote_count, p.score, p.comment_count,
-			NULL::numeric as hot_rank
-		FROM posts p`
+		selectClause = feedPostSelectClause("NULL::numeric")
 	}
 
 	// Join with community_subscriptions to get posts from subscribed communities
