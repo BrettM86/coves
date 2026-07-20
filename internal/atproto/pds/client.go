@@ -14,6 +14,7 @@ import (
 	comatproto "github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/atproto/atclient"
 	"github.com/bluesky-social/indigo/atproto/syntax"
+	lexutil "github.com/bluesky-social/indigo/lex/util"
 )
 
 // Client provides authenticated access to a user's PDS repository.
@@ -41,9 +42,10 @@ type Client interface {
 
 	// UploadBlob uploads binary data to the user's PDS repository.
 	// Returns a BlobRef that can be used in records.
-	// Note: The mimeType parameter is accepted for interface compatibility, but the PDS
-	// performs its own MIME type detection from the blob content. The returned BlobRef
-	// will contain the PDS-detected MIME type.
+	// mimeType is required and is sent as the request Content-Type: a PDS
+	// enforcing the granular blob:*/* OAuth scope matches the granted accept
+	// patterns against it and rejects wildcard content types, so it must be
+	// the blob's concrete MIME type (e.g. "image/png").
 	UploadBlob(ctx context.Context, data []byte, mimeType string) (*blobs.BlobRef, error)
 
 	// DID returns the authenticated user's DID.
@@ -268,8 +270,20 @@ func (c *client) PutRecord(ctx context.Context, collection string, rkey string, 
 }
 
 // UploadBlob uploads binary data to the user's PDS repository.
+//
+// The blob's real MIME type MUST be sent as the Content-Type. Indigo's
+// generated RepoUploadBlob helper hardcodes "*/*" (the lexicon's accepted
+// encoding), but a PDS enforcing the granular blob:*/* OAuth scope matches the
+// granted accept patterns against the request's Content-Type and requires a
+// concrete type — "*/*" never matches, so every upload through the generated
+// helper fails with ScopeMissingError even when blob:*/* was granted.
 func (c *client) UploadBlob(ctx context.Context, data []byte, mimeType string) (*blobs.BlobRef, error) {
-	result, err := comatproto.RepoUploadBlob(ctx, c.apiClient, bytes.NewReader(data))
+	if mimeType == "" {
+		return nil, fmt.Errorf("uploadBlob: mimeType is required (the PDS blob scope check rejects wildcard content types)")
+	}
+
+	var result comatproto.RepoUploadBlob_Output
+	err := c.apiClient.LexDo(ctx, lexutil.Procedure, mimeType, "com.atproto.repo.uploadBlob", nil, bytes.NewReader(data), &result)
 	if err != nil {
 		return nil, wrapAPIError(err, "uploadBlob")
 	}
