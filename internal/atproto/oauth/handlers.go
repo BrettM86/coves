@@ -494,10 +494,33 @@ func (h *OAuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		// We'll handle errors after ProcessCallback - for now just capture the result
 	}
 
+	// Authorization server errors (user cancelled/denied, expired request, ...)
+	// arrive as ?error=...&error_description=... instead of a code. Send the
+	// user back to the client instead of stranding them on a raw error page:
+	// mobile flows redirect to the app's (allowlisted) custom-scheme redirect
+	// URI with the error params; web flows go back to the login page.
+	if asError := r.URL.Query().Get("error"); asError != "" {
+		asErrorDesc := r.URL.Query().Get("error_description")
+		slog.Info("OAuth callback returned authorization server error",
+			"error", asError, "description", asErrorDesc)
+		if h.redirectMobileError(w, r, serverMobileData, asError, asErrorDesc) {
+			return
+		}
+		// Web flow: back to the app root (login state) — not a raw text page.
+		clearMobileCookies(w)
+		http.Redirect(w, r, "/?oauth_error="+url.QueryEscape(asError), http.StatusFound)
+		return
+	}
+
 	// Process the callback (this deletes the oauth_requests row)
 	sessData, err := h.client.ClientApp.ProcessCallback(ctx, r.URL.Query())
 	if err != nil {
 		slog.Error("failed to process OAuth callback", "error", err)
+		// Give mobile flows closure in the app rather than a dead-end page.
+		// Details stay in the server log; the app only gets a generic code.
+		if h.redirectMobileError(w, r, serverMobileData, "server_error", "OAuth callback failed") {
+			return
+		}
 		http.Error(w, fmt.Sprintf("OAuth callback failed: %v", err), http.StatusBadRequest)
 		return
 	}
@@ -779,6 +802,64 @@ func (h *OAuthHandler) handleWebCallback(w http.ResponseWriter, r *http.Request,
 		redirectURL = h.client.Config.PublicURL + "/"
 	}
 	http.Redirect(w, r, redirectURL, http.StatusFound)
+}
+
+// redirectMobileError sends an OAuth error outcome (user denied consent,
+// cancelled sign-in, failed code exchange, ...) back to the mobile app's
+// redirect URI as ?error=...&error_description=..., so the user lands in the
+// app instead of on a raw error page at the AppView callback URL.
+//
+// Returns false when this is not a (valid) mobile flow — the caller must then
+// handle the error itself. The redirect target is only ever an allowlisted
+// redirect URI, preferring the server-side stored one (keyed by OAuth state)
+// over the cookie; when the cookie-based CSRF binding is present it must
+// validate. No tokens are involved on this path — the redirect only carries
+// the error code the authorization server already showed the user.
+func (h *OAuthHandler) redirectMobileError(w http.ResponseWriter, r *http.Request, serverMobileData *MobileOAuthData, errCode, errDesc string) bool {
+	mobileRedirectCookie, err := r.Cookie("mobile_redirect_uri")
+	if err != nil || mobileRedirectCookie.Value == "" {
+		return false
+	}
+	redirectURI, err := url.QueryUnescape(mobileRedirectCookie.Value)
+	if err != nil || redirectURI == "" {
+		return false
+	}
+
+	// If the binding cookies from /oauth/mobile/login are present, they must
+	// validate (defense in depth against planted cookies).
+	if csrfCookie, csrfErr := r.Cookie("oauth_csrf"); csrfErr == nil {
+		if bindingCookie, bindErr := r.Cookie("mobile_redirect_binding"); bindErr == nil {
+			if !validateMobileRedirectBinding(csrfCookie.Value, redirectURI, bindingCookie.Value) {
+				slog.Warn("mobile error redirect: binding validation failed, not redirecting",
+					"scheme", extractScheme(redirectURI))
+				return false
+			}
+		}
+	}
+
+	// Prefer the server-side redirect URI stored when the flow started; it
+	// cannot have been planted via cross-site cookie writes.
+	if serverMobileData != nil && serverMobileData.RedirectURI != "" {
+		redirectURI = serverMobileData.RedirectURI
+	}
+
+	if !h.isAllowedRedirectURI(redirectURI) {
+		slog.Warn("mobile error redirect: redirect URI not in allowlist",
+			"scheme", extractScheme(redirectURI))
+		return false
+	}
+
+	clearMobileCookies(w)
+
+	errorURL := fmt.Sprintf("%s?error=%s", redirectURI, url.QueryEscape(errCode))
+	if errDesc != "" {
+		errorURL += "&error_description=" + url.QueryEscape(errDesc)
+	}
+
+	slog.Info("redirecting OAuth error to mobile app",
+		"error", errCode, "scheme", extractScheme(redirectURI))
+	http.Redirect(w, r, errorURL, http.StatusFound)
+	return true
 }
 
 // handleMobileCallback handles the mobile OAuth callback flow.
