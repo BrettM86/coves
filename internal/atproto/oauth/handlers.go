@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"log/slog"
@@ -478,37 +479,82 @@ func (h *OAuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 	// IMPORTANT: Look up mobile CSRF data BEFORE ProcessCallback
 	// ProcessCallback deletes the oauth_requests row, so we must retrieve mobile data first.
-	// We store it in a local variable for validation after ProcessCallback completes.
+	// Both the success path and the error paths below consume this result (all of
+	// them tolerate a nil result). The lookup is unconditional whenever we have a
+	// state and a mobile store - NOT gated on the mobile cookies - so mobile flows
+	// are recognized from server-side data even when the browser dropped cookies,
+	// and so we can distinguish real callbacks from forged ones.
 	var serverMobileData *MobileOAuthData
 	var mobileDataLookupErr error
+	stateRowExists := false
 	oauthState := r.URL.Query().Get("state")
 
-	// Check if this might be a mobile callback (mobile_redirect_uri cookie present)
-	// We do a preliminary check here to decide if we need to fetch mobile data
+	// Cookie presence is tracked for observability only - the server-side data,
+	// keyed by the OAuth state, is what qualifies a mobile flow.
 	mobileRedirectCookie, _ := r.Cookie("mobile_redirect_uri")
-	isMobileFlow := mobileRedirectCookie != nil && mobileRedirectCookie.Value != ""
+	hadMobileCookie := mobileRedirectCookie != nil && mobileRedirectCookie.Value != ""
 
-	if isMobileFlow && h.mobileStore != nil && oauthState != "" {
-		// Fetch mobile data BEFORE ProcessCallback deletes the row
+	if h.mobileStore != nil && oauthState != "" {
 		serverMobileData, mobileDataLookupErr = h.mobileStore.GetMobileOAuthData(ctx, oauthState)
-		// We'll handle errors after ProcessCallback - for now just capture the result
+		switch {
+		case mobileDataLookupErr == nil:
+			// A pending oauth_requests row exists for this state.
+			// serverMobileData is nil for web flows, non-nil for mobile flows.
+			stateRowExists = true
+		case errors.Is(mobileDataLookupErr, ErrAuthRequestNotFound):
+			// No pending auth request for this state - expected for forged or
+			// expired callbacks. Not a lookup failure.
+			mobileDataLookupErr = nil
+		}
 	}
 
 	// Authorization server errors (user cancelled/denied, expired request, ...)
 	// arrive as ?error=...&error_description=... instead of a code. Send the
-	// user back to the client instead of stranding them on a raw error page:
-	// mobile flows redirect to the app's (allowlisted) custom-scheme redirect
-	// URI with the error params; web flows go back to the login page.
+	// user back to the client instead of stranding them on a raw error page.
+	//
+	// SECURITY: this endpoint is reachable via cross-site GET riding the
+	// victim's SameSite=Lax cookies, with attacker-chosen error params. So the
+	// error is only honored when the state param correlates with a pending
+	// oauth_requests row (mirroring indigo's ProcessCallback, which validates
+	// state before looking at error), and the outgoing code is clamped to a
+	// known OAuth error code.
 	if asError := r.URL.Query().Get("error"); asError != "" {
-		asErrorDesc := r.URL.Query().Get("error_description")
+		rawDesc := r.URL.Query().Get("error_description")
+		errCode, errDesc := clampOAuthError(asError, rawDesc)
 		slog.Info("OAuth callback returned authorization server error",
-			"error", asError, "description", asErrorDesc)
-		if h.redirectMobileError(w, r, serverMobileData, asError, asErrorDesc) {
+			"error", asError, "clamped_error", errCode, "description", rawDesc)
+
+		// (a) Forged or expired: no state, or no pending auth request for it.
+		// Do NOT clear mobile cookies (a forged request must not kill an
+		// in-flight login) and do NOT redirect into the app.
+		if oauthState == "" || (h.mobileStore != nil && mobileDataLookupErr == nil && !stateRowExists) {
+			slog.Warn("OAuth callback error without matching pending auth request - possible forged callback",
+				"error", asError, "state_present", oauthState != "", "had_mobile_cookie", hadMobileCookie)
+			h.webErrorRedirect(w, r, "invalid_request")
 			return
 		}
-		// Web flow: back to the app root (login state) — not a raw text page.
+
+		// Lookup failed: we cannot tell a real callback from a forged one, so
+		// keep cookies intact and degrade to a generic web error.
+		if mobileDataLookupErr != nil {
+			slog.Warn("failed to look up OAuth request state while handling authorization server error",
+				"error", mobileDataLookupErr, "had_mobile_cookie", hadMobileCookie)
+			h.webErrorRedirect(w, r, "server_error")
+			return
+		}
+
+		// (b) Pending row with server-stored mobile redirect data: deliver the
+		// error into the app (allowlist-checked, clears mobile cookies).
+		if h.redirectMobileError(w, r, serverMobileData, errCode, errDesc) {
+			return
+		}
+
+		// (c) Pending row without mobile data (web flow), or no mobile store to
+		// correlate against: end the flow on the web side, not a raw text page.
+		slog.Info("returning OAuth error to web client",
+			"error", errCode, "had_mobile_cookie", hadMobileCookie)
 		clearMobileCookies(w)
-		http.Redirect(w, r, "/?oauth_error="+url.QueryEscape(asError), http.StatusFound)
+		h.webErrorRedirect(w, r, errCode)
 		return
 	}
 
@@ -516,12 +562,19 @@ func (h *OAuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	sessData, err := h.client.ClientApp.ProcessCallback(ctx, r.URL.Query())
 	if err != nil {
 		slog.Error("failed to process OAuth callback", "error", err)
+		if mobileDataLookupErr != nil {
+			slog.Warn("mobile OAuth data lookup had failed before callback processing",
+				"error", mobileDataLookupErr, "had_mobile_cookie", hadMobileCookie)
+		}
 		// Give mobile flows closure in the app rather than a dead-end page.
-		// Details stay in the server log; the app only gets a generic code.
+		// Details stay in the server log; the client only gets a generic code.
 		if h.redirectMobileError(w, r, serverMobileData, "server_error", "OAuth callback failed") {
 			return
 		}
-		http.Error(w, fmt.Sprintf("OAuth callback failed: %v", err), http.StatusBadRequest)
+		slog.Info("returning OAuth error to web client",
+			"error", "server_error", "had_mobile_cookie", hadMobileCookie)
+		clearMobileCookies(w)
+		h.webErrorRedirect(w, r, "server_error")
 		return
 	}
 
@@ -804,44 +857,106 @@ func (h *OAuthHandler) handleWebCallback(w http.ResponseWriter, r *http.Request,
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 
+// oauthErrorCodes are the RFC 6749 / OIDC authorization error codes we allow
+// to flow through to clients. Anything else is collapsed to server_error so
+// attacker-chosen strings never reach the app or the web frontend.
+var oauthErrorCodes = map[string]bool{
+	"access_denied":             true,
+	"invalid_request":           true,
+	"unauthorized_client":       true,
+	"server_error":              true,
+	"temporarily_unavailable":   true,
+	"invalid_scope":             true,
+	"unsupported_response_type": true,
+	"login_required":            true,
+	"interaction_required":      true,
+}
+
+// clampOAuthError restricts an authorization server error to a known OAuth
+// error code. Unknown codes become server_error, and the (equally untrusted)
+// description is dropped with them.
+func clampOAuthError(code, description string) (string, string) {
+	if oauthErrorCodes[code] {
+		return code, description
+	}
+	return "server_error", ""
+}
+
+// webErrorRedirect ends a failed OAuth flow on the web side: it clamps the
+// error code to a known OAuth code and redirects to the web app root with
+// ?oauth_error=<code>, mirroring handleWebCallback's PublicURL/DevMode
+// handling (absolute PublicURL in production, relative path in dev).
+// It does NOT touch cookies; callers decide whether to clear mobile cookies.
+func (h *OAuthHandler) webErrorRedirect(w http.ResponseWriter, r *http.Request, errCode string) {
+	code, _ := clampOAuthError(errCode, "")
+	target := "/?oauth_error=" + url.QueryEscape(code)
+	if !h.client.Config.DevMode {
+		target = h.client.Config.PublicURL + target
+	}
+	http.Redirect(w, r, target, http.StatusFound)
+}
+
 // redirectMobileError sends an OAuth error outcome (user denied consent,
 // cancelled sign-in, failed code exchange, ...) back to the mobile app's
 // redirect URI as ?error=...&error_description=..., so the user lands in the
 // app instead of on a raw error page at the AppView callback URL.
 //
-// Returns false when this is not a (valid) mobile flow — the caller must then
-// handle the error itself. The redirect target is only ever an allowlisted
-// redirect URI, preferring the server-side stored one (keyed by OAuth state)
-// over the cookie; when the cookie-based CSRF binding is present it must
-// validate. No tokens are involved on this path — the redirect only carries
-// the error code the authorization server already showed the user.
+// The flow is qualified by SERVER-SIDE data: serverMobileData is the mobile
+// redirect information stored (keyed by the OAuth state) when
+// /oauth/mobile/login started the flow, and its redirect URI is the only
+// redirect target. Cookies are a secondary binding check, not a prerequisite:
+// when both the CSRF and binding cookies are present the binding must
+// validate; a partial pair fails closed; when both are absent the
+// server-stored data alone is sufficient. Whatever URI is used must pass the
+// redirect URI allowlist.
+//
+// Returns false when this is not a qualified mobile flow - the caller must
+// then handle the error itself (cookies are left untouched). On a successful
+// redirect the mobile cookies are cleared. No tokens are involved on this
+// path - the redirect carries only an OAuth error code — either the one the
+// authorization server returned or a generic server_error — never internal
+// details or tokens.
 func (h *OAuthHandler) redirectMobileError(w http.ResponseWriter, r *http.Request, serverMobileData *MobileOAuthData, errCode, errDesc string) bool {
-	mobileRedirectCookie, err := r.Cookie("mobile_redirect_uri")
-	if err != nil || mobileRedirectCookie.Value == "" {
-		return false
-	}
-	redirectURI, err := url.QueryUnescape(mobileRedirectCookie.Value)
-	if err != nil || redirectURI == "" {
-		return false
-	}
+	// Clamp defensively so no caller can leak an unknown code into the app.
+	errCode, errDesc = clampOAuthError(errCode, errDesc)
 
-	// If the binding cookies from /oauth/mobile/login are present, they must
-	// validate (defense in depth against planted cookies).
-	if csrfCookie, csrfErr := r.Cookie("oauth_csrf"); csrfErr == nil {
-		if bindingCookie, bindErr := r.Cookie("mobile_redirect_binding"); bindErr == nil {
-			if !validateMobileRedirectBinding(csrfCookie.Value, redirectURI, bindingCookie.Value) {
-				slog.Warn("mobile error redirect: binding validation failed, not redirecting",
-					"scheme", extractScheme(redirectURI))
-				return false
-			}
+	// Server-stored redirect data is the primary (and only) qualification and
+	// target; it cannot have been planted via cross-site cookie writes.
+	if serverMobileData == nil || serverMobileData.RedirectURI == "" {
+		return false
+	}
+	redirectURI := serverMobileData.RedirectURI
+
+	// Observability: a redirect cookie that fails decoding is suspicious even
+	// though the server-stored URI is what we redirect to.
+	if cookie, cookieErr := r.Cookie("mobile_redirect_uri"); cookieErr == nil && cookie.Value != "" {
+		if _, unescapeErr := url.QueryUnescape(cookie.Value); unescapeErr != nil {
+			slog.Warn("mobile error redirect: mobile_redirect_uri cookie failed to decode",
+				"error", unescapeErr)
 		}
 	}
 
-	// Prefer the server-side redirect URI stored when the flow started; it
-	// cannot have been planted via cross-site cookie writes.
-	if serverMobileData != nil && serverMobileData.RedirectURI != "" {
-		redirectURI = serverMobileData.RedirectURI
+	// Cookie-based CSRF binding is a secondary check when present.
+	csrfCookie, csrfErr := r.Cookie("oauth_csrf")
+	bindingCookie, bindingErr := r.Cookie("mobile_redirect_binding")
+	hasCSRF := csrfErr == nil && csrfCookie.Value != ""
+	hasBinding := bindingErr == nil && bindingCookie.Value != ""
+	switch {
+	case hasCSRF != hasBinding:
+		// Exactly one of the pair present: fail closed - a legitimate
+		// /oauth/mobile/login sets both together.
+		slog.Warn("mobile error redirect: partial binding cookie pair, not redirecting",
+			"has_csrf", hasCSRF, "has_binding", hasBinding)
+		return false
+	case hasCSRF && hasBinding:
+		if !validateMobileRedirectBinding(csrfCookie.Value, redirectURI, bindingCookie.Value) {
+			slog.Warn("mobile error redirect: binding validation failed, not redirecting",
+				"scheme", extractScheme(redirectURI))
+			return false
+		}
 	}
+	// Both absent: proceed on server-stored data alone (e.g. the browser
+	// dropped the cookies mid-flow).
 
 	if !h.isAllowedRedirectURI(redirectURI) {
 		slog.Warn("mobile error redirect: redirect URI not in allowlist",
