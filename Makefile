@@ -386,6 +386,4 @@ docs: ## Open project documentation
 	@echo "$(CYAN)Project Documentation:$(RESET)"
 	@echo "  - Setup Guide:        docs/LOCAL_DEVELOPMENT.md"
 	@echo "  - Project Structure:  PROJECT_STRUCTURE.md"
-	@echo "  - Build Guide:        CLAUDE.md"
 	@echo "  - atProto Guide:      ATPROTO_GUIDE.md"
-	@echo "  - PRD:                PRD.md"

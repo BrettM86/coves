@@ -58,6 +58,10 @@ Thumbs.db
 # Local-only Claude Code commands (contains prod host references)
 .claude/commands/deploy.md
 
+# Internal planning / AI-builder docs — kept locally, not published
+/PRD.md
+/CLAUDE.md
+
 # Per-machine Claude Code agent memory (local review-agent state, not shared config)
 .claude/agent-memory/
 

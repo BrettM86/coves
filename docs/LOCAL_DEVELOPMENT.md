@@ -440,10 +440,8 @@ LOG_LEVEL=debug
 
 ## Additional Resources
 
-- [CLAUDE.md](../CLAUDE.md) - Build guidelines and security practices
 - [ATPROTO_GUIDE.md](../ATPROTO_GUIDE.md) - Comprehensive atProto implementation guide
 - [PROJECT_STRUCTURE.md](../PROJECT_STRUCTURE.md) - Project organization
-- [PRD.md](../PRD.md) - Product requirements and roadmap
 
 ## Getting Help
 
