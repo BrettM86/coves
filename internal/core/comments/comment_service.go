@@ -4,6 +4,7 @@ import (
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
+	"Coves/internal/core/richtext"
 	"Coves/internal/core/users"
 	"context"
 	"encoding/json"
@@ -699,6 +700,18 @@ func (s *commentService) CreateComment(ctx context.Context, session *oauth.Clien
 		return nil, ErrContentTooLong
 	}
 
+	// Validate facets against the canonical (trimmed) content. Byte offsets are
+	// only meaningful against the exact string that gets stored, so when the
+	// client sent surrounding whitespace its offsets are shifted relative to the
+	// trimmed content — rejecting loudly here prevents silently persisting
+	// misaligned annotations into the signed PDS record.
+	if len(req.Facets) > 0 && content != req.Content {
+		return nil, fmt.Errorf("%w: facet byte offsets must be computed against content without leading/trailing whitespace", ErrInvalidFacets)
+	}
+	if err := richtext.ValidateFacets(req.Facets, len(content)); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidFacets, err)
+	}
+
 	// Validate reply references
 	if err := validateReplyRef(req.Reply); err != nil {
 		return nil, err
@@ -787,6 +800,15 @@ func (s *commentService) UpdateComment(ctx context.Context, session *oauth.Clien
 	// Validate content length (max 10000 graphemes)
 	if uniseg.GraphemeClusterCount(content) > maxCommentGraphemes {
 		return nil, ErrContentTooLong
+	}
+
+	// Validate facets against the canonical (trimmed) content. See CreateComment
+	// for why offsets computed against untrimmed content must be rejected loudly.
+	if len(req.Facets) > 0 && content != req.Content {
+		return nil, fmt.Errorf("%w: facet byte offsets must be computed against content without leading/trailing whitespace", ErrInvalidFacets)
+	}
+	if err := richtext.ValidateFacets(req.Facets, len(content)); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidFacets, err)
 	}
 
 	// Create PDS client for this session

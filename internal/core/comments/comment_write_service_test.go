@@ -328,6 +328,120 @@ func TestCreateComment_ContentTooLong(t *testing.T) {
 	}
 }
 
+func TestCreateComment_InvalidFacets(t *testing.T) {
+	// Setup
+	ctx := context.Background()
+	mockClient := newMockPDSClient("did:plc:test123")
+	factory := &mockPDSClientFactory{client: mockClient}
+
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	service := NewCommentServiceWithPDSFactory(
+		commentRepo,
+		userRepo,
+		postRepo,
+		communityRepo,
+		nil,
+		factory.create,
+	)
+
+	req := CreateCommentRequest{
+		Reply: ReplyRef{
+			Root: StrongRef{
+				URI: "at://did:plc:author/social.coves.community.post/root123",
+				CID: "bafyroot",
+			},
+			Parent: StrongRef{
+				URI: "at://did:plc:author/social.coves.community.post/root123",
+				CID: "bafyroot",
+			},
+		},
+		Content: "Hello world",
+		// byteEnd slices beyond the 11-byte content
+		Facets: []interface{}{
+			map[string]interface{}{
+				"index": map[string]interface{}{
+					"byteStart": float64(0),
+					"byteEnd":   float64(999),
+				},
+				"features": []interface{}{
+					map[string]interface{}{"$type": "social.coves.richtext.facet#bold"},
+				},
+			},
+		},
+	}
+
+	session := createTestSession("did:plc:test123")
+
+	// Execute
+	_, err := service.CreateComment(ctx, session, req)
+
+	// Verify
+	if !errors.Is(err, ErrInvalidFacets) {
+		t.Errorf("Expected ErrInvalidFacets, got: %v", err)
+	}
+}
+
+func TestCreateComment_ValidFacets(t *testing.T) {
+	// Setup
+	ctx := context.Background()
+	mockClient := newMockPDSClient("did:plc:test123")
+	factory := &mockPDSClientFactory{client: mockClient}
+
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	service := NewCommentServiceWithPDSFactory(
+		commentRepo,
+		userRepo,
+		postRepo,
+		communityRepo,
+		nil,
+		factory.create,
+	)
+
+	req := CreateCommentRequest{
+		Reply: ReplyRef{
+			Root: StrongRef{
+				URI: "at://did:plc:author/social.coves.community.post/root123",
+				CID: "bafyroot",
+			},
+			Parent: StrongRef{
+				URI: "at://did:plc:author/social.coves.community.post/root123",
+				CID: "bafyroot",
+			},
+		},
+		Content: "Quoted line\nnormal text",
+		// A block-level facet covering the first line ("Quoted line" = bytes 0-11)
+		Facets: []interface{}{
+			map[string]interface{}{
+				"index": map[string]interface{}{
+					"byteStart": float64(0),
+					"byteEnd":   float64(11),
+				},
+				"features": []interface{}{
+					map[string]interface{}{"$type": "social.coves.richtext.facet#blockquote", "level": float64(1)},
+				},
+			},
+		},
+	}
+
+	session := createTestSession("did:plc:test123")
+
+	// Execute
+	_, err := service.CreateComment(ctx, session, req)
+
+	// Verify
+	if err != nil {
+		t.Errorf("Expected comment with valid block facet to succeed, got: %v", err)
+	}
+}
+
 func TestCreateComment_InvalidReplyRootURI(t *testing.T) {
 	// Setup
 	ctx := context.Background()
@@ -622,6 +736,114 @@ func TestUpdateComment_Success(t *testing.T) {
 	}
 	if resp.CID == "" {
 		t.Error("Expected new CID to be set")
+	}
+}
+
+func TestUpdateComment_InvalidFacets(t *testing.T) {
+	// Setup
+	ctx := context.Background()
+	mockClient := newMockPDSClient("did:plc:test123")
+	factory := &mockPDSClientFactory{client: mockClient}
+
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	service := NewCommentServiceWithPDSFactory(
+		commentRepo,
+		userRepo,
+		postRepo,
+		communityRepo,
+		nil,
+		factory.create,
+	)
+
+	req := UpdateCommentRequest{
+		URI:     "at://did:plc:test123/social.coves.community.comment/testcomment123",
+		Content: "Hello world",
+		// byteEnd slices beyond the 11-byte content
+		Facets: []interface{}{
+			map[string]interface{}{
+				"index": map[string]interface{}{
+					"byteStart": float64(0),
+					"byteEnd":   float64(999),
+				},
+				"features": []interface{}{
+					map[string]interface{}{"$type": "social.coves.richtext.facet#bold"},
+				},
+			},
+		},
+	}
+
+	session := createTestSession("did:plc:test123")
+
+	// Execute
+	_, err := service.UpdateComment(ctx, session, req)
+
+	// Verify
+	if !errors.Is(err, ErrInvalidFacets) {
+		t.Errorf("Expected ErrInvalidFacets, got: %v", err)
+	}
+}
+
+func TestCreateComment_FacetsRejectUntrimmedContent(t *testing.T) {
+	// Facet byte offsets are only meaningful against the trimmed content the
+	// service persists; content with surrounding whitespace plus facets must be
+	// rejected loudly instead of silently persisting shifted annotations.
+	ctx := context.Background()
+	mockClient := newMockPDSClient("did:plc:test123")
+	factory := &mockPDSClientFactory{client: mockClient}
+
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	service := NewCommentServiceWithPDSFactory(
+		commentRepo,
+		userRepo,
+		postRepo,
+		communityRepo,
+		nil,
+		factory.create,
+	)
+
+	req := CreateCommentRequest{
+		Reply: ReplyRef{
+			Root: StrongRef{
+				URI: "at://did:plc:author/social.coves.community.post/root123",
+				CID: "bafyroot",
+			},
+			Parent: StrongRef{
+				URI: "at://did:plc:author/social.coves.community.post/root123",
+				CID: "bafyroot",
+			},
+		},
+		Content: " Hello world",
+		// In-bounds against the trimmed content, but computed against the
+		// untrimmed content the client sent — one byte off after trimming
+		Facets: []interface{}{
+			map[string]interface{}{
+				"index": map[string]interface{}{
+					"byteStart": float64(1),
+					"byteEnd":   float64(6),
+				},
+				"features": []interface{}{
+					map[string]interface{}{"$type": "social.coves.richtext.facet#bold"},
+				},
+			},
+		},
+	}
+
+	session := createTestSession("did:plc:test123")
+
+	// Execute
+	_, err := service.CreateComment(ctx, session, req)
+
+	// Verify
+	if !errors.Is(err, ErrInvalidFacets) {
+		t.Errorf("Expected ErrInvalidFacets for untrimmed content with facets, got: %v", err)
 	}
 }
 

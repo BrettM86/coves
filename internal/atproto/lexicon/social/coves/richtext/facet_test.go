@@ -316,6 +316,37 @@ func TestFacetFeatureTypes(t *testing.T) {
 				"reason": "Plot spoiler",
 			},
 		},
+		{
+			name:     "blockquote",
+			typeName: "social.coves.richtext.facet#blockquote",
+			feature: map[string]interface{}{
+				"$type": "social.coves.richtext.facet#blockquote",
+				"level": 1,
+			},
+		},
+		{
+			name:     "heading",
+			typeName: "social.coves.richtext.facet#heading",
+			feature: map[string]interface{}{
+				"$type": "social.coves.richtext.facet#heading",
+				"level": 2,
+			},
+		},
+		{
+			name:     "code",
+			typeName: "social.coves.richtext.facet#code",
+			feature: map[string]interface{}{
+				"$type": "social.coves.richtext.facet#code",
+			},
+		},
+		{
+			name:     "codeBlock",
+			typeName: "social.coves.richtext.facet#codeBlock",
+			feature: map[string]interface{}{
+				"$type":    "social.coves.richtext.facet#codeBlock",
+				"language": "go",
+			},
+		},
 	}
 
 	for _, ft := range featureTypes {
@@ -323,6 +354,22 @@ func TestFacetFeatureTypes(t *testing.T) {
 			// Verify the $type field is present and correct
 			if typeVal, ok := ft.feature["$type"].(string); !ok || typeVal != ft.typeName {
 				t.Errorf("Feature type mismatch: got %v, want %s", ft.feature["$type"], ft.typeName)
+			}
+
+			// Verify the level attribute survives a marshal round-trip
+			// (blockquote/heading)
+			if level, hasLevel := ft.feature["level"]; hasLevel {
+				data, err := json.Marshal(ft.feature)
+				if err != nil {
+					t.Fatalf("Failed to marshal feature: %v", err)
+				}
+				var decoded map[string]interface{}
+				if err := json.Unmarshal(data, &decoded); err != nil {
+					t.Fatalf("Failed to unmarshal feature: %v", err)
+				}
+				if decodedLevel, ok := decoded["level"].(float64); !ok || int(decodedLevel) != level.(int) {
+					t.Errorf("level attribute lost in round-trip: got %v, want %v", decoded["level"], level)
+				}
 			}
 
 			// Create a complete facet with this feature
@@ -345,5 +392,83 @@ func TestFacetFeatureTypes(t *testing.T) {
 				t.Errorf("Failed to unmarshal facet: %v", err)
 			}
 		})
+	}
+}
+
+// TestBlockFacetConventions documents the byte-range conventions for block-level
+// features (blockquote, heading, codeBlock) on realistic bridged content:
+//   - Block ranges span whole lines, excluding the trailing newline
+//   - Nested quotes are disjoint ranges with increasing level, NOT nested ranges
+//   - Source markers ('>', '#', code fences) are stripped by the writer;
+//     the plaintext must stay readable when every facet is ignored
+func TestBlockFacetConventions(t *testing.T) {
+	// A bridged Lemmy post: heading, a two-level nested quote, and a code block.
+	// Markdown source would have been:
+	//   ## The Button\n> They said\n> > Do not press\nUse:\n```go\nfmt.Println("hi")\n```
+	content := "The Button\nThey said\nDo not press\nUse:\nfmt.Println(\"hi\")"
+
+	lines := map[string][2]int{
+		"The Button":          {0, 10},  // heading, level 2
+		"They said":           {11, 20}, // blockquote, level 1
+		"Do not press":        {21, 33}, // blockquote, level 2 (disjoint range, deeper level)
+		"fmt.Println(\"hi\")": {39, 56}, // codeBlock
+	}
+	// Verify the documented offsets actually slice the content correctly
+	for text, span := range lines {
+		if got := content[span[0]:span[1]]; got != text {
+			t.Fatalf("documented span [%d:%d] slices to %q, want %q", span[0], span[1], got, text)
+		}
+	}
+
+	facets := []map[string]interface{}{
+		{
+			"index": map[string]interface{}{"byteStart": 0, "byteEnd": 10},
+			"features": []interface{}{
+				map[string]interface{}{"$type": "social.coves.richtext.facet#heading", "level": 2},
+			},
+		},
+		{
+			"index": map[string]interface{}{"byteStart": 11, "byteEnd": 20},
+			"features": []interface{}{
+				map[string]interface{}{"$type": "social.coves.richtext.facet#blockquote", "level": 1},
+			},
+		},
+		{
+			"index": map[string]interface{}{"byteStart": 21, "byteEnd": 33},
+			"features": []interface{}{
+				map[string]interface{}{"$type": "social.coves.richtext.facet#blockquote", "level": 2},
+			},
+		},
+		{
+			"index": map[string]interface{}{"byteStart": 39, "byteEnd": 56},
+			"features": []interface{}{
+				map[string]interface{}{"$type": "social.coves.richtext.facet#codeBlock", "language": "go"},
+			},
+		},
+	}
+
+	for i, f := range facets {
+		index := f["index"].(map[string]interface{})
+		start, end := index["byteStart"].(int), index["byteEnd"].(int)
+
+		// Block ranges never start or end mid-line: the byte before the range
+		// (if any) and the byte after (if any) must be newlines.
+		if start > 0 && content[start-1] != '\n' {
+			t.Errorf("facet %d starts mid-line at byte %d", i, start)
+		}
+		if end < len(content) && content[end] != '\n' {
+			t.Errorf("facet %d ends mid-line at byte %d", i, end)
+		}
+		// Ranges exclude the trailing newline
+		if content[end-1] == '\n' {
+			t.Errorf("facet %d range includes its trailing newline", i)
+		}
+	}
+
+	// Nested quotes: the level-1 and level-2 ranges are disjoint, not nested
+	q1End := facets[1]["index"].(map[string]interface{})["byteEnd"].(int)
+	q2Start := facets[2]["index"].(map[string]interface{})["byteStart"].(int)
+	if q2Start < q1End {
+		t.Error("nested quote ranges must be disjoint (level on separate ranges), not containment")
 	}
 }

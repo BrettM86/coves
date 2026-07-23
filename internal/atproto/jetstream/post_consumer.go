@@ -4,6 +4,7 @@ import (
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
+	"Coves/internal/core/richtext"
 	"Coves/internal/core/users"
 	"context"
 	"database/sql"
@@ -204,6 +205,7 @@ func (c *PostEventConsumer) createPost(ctx context.Context, repoDID string, comm
 
 	// Serialize JSON fields (facets, embed, labels)
 	// Return error if any non-empty field fails to serialize (prevents silent data loss)
+	postRecord.Facets = sanitizedPostFacets(postRecord, uri)
 	if postRecord.Facets != nil {
 		facetsJSON, marshalErr := json.Marshal(postRecord.Facets)
 		if marshalErr != nil {
@@ -376,6 +378,7 @@ func (c *PostEventConsumer) updatePost(ctx context.Context, repoDID string, comm
 
 	// Serialize optional JSON content fields (return on failure to avoid silent data loss).
 	var facetsJSON, embedJSON, labelsJSON sql.NullString
+	postRecord.Facets = sanitizedPostFacets(postRecord, uri)
 	if postRecord.Facets != nil {
 		b, marshalErr := json.Marshal(postRecord.Facets)
 		if marshalErr != nil {
@@ -805,6 +808,27 @@ type BridgedStatsFromJetstream struct {
 	Upvotes   int    `json:"upvotes"`
 	Downvotes int    `json:"downvotes"`
 	AsOf      string `json:"asOf"`
+}
+
+// sanitizedPostFacets drops facets whose byte ranges fall outside the post's
+// content (or are otherwise structurally invalid) before indexing. Firehose
+// records from federated repos cannot be rejected back to their author, and
+// clients must never receive ranges that slice outside the content, so invalid
+// facets are dropped rather than failing the event. Returns nil when no
+// facets survive, preserving the callers' nil-means-absent serialization.
+func sanitizedPostFacets(postRecord *PostRecordFromJetstream, uri string) []interface{} {
+	if postRecord.Facets == nil {
+		return nil
+	}
+	contentByteLen := 0
+	if postRecord.Content != nil {
+		contentByteLen = len(*postRecord.Content)
+	}
+	kept, dropped := richtext.SanitizeFacets(postRecord.Facets, contentByteLen)
+	if dropped > 0 {
+		log.Printf("Warning: dropped %d invalid facet(s) on post %s during indexing", dropped, uri)
+	}
+	return kept
 }
 
 // parsePostRecord converts a raw Jetstream record map to a PostRecordFromJetstream

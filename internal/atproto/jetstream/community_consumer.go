@@ -4,6 +4,7 @@ import (
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/utils"
 	"Coves/internal/core/communities"
+	"Coves/internal/core/richtext"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -287,9 +288,11 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 		community.BannerCID = bannerCID
 	}
 
-	// Handle description facets (rich text)
-	if profile.DescriptionFacets != nil {
-		facetsJSON, marshalErr := json.Marshal(profile.DescriptionFacets)
+	// Handle description facets (rich text). Sanitized like post/comment facets:
+	// federated profiles cannot be rejected back to their author, and clients
+	// must never receive ranges that slice outside the description.
+	if kept := sanitizedDescriptionFacets(profile, did); kept != nil {
+		facetsJSON, marshalErr := json.Marshal(kept)
 		if marshalErr != nil {
 			log.Printf("WARNING: Failed to marshal description facets for community %s: %v (facets will be omitted)", did, marshalErr)
 		} else {
@@ -392,12 +395,20 @@ func (c *CommunityEventConsumer) updateCommunity(ctx context.Context, did string
 		existing.BannerCID = bannerCID
 	}
 
-	// Update description facets
-	if profile.DescriptionFacets != nil {
-		facetsJSON, marshalErr := json.Marshal(profile.DescriptionFacets)
-		if marshalErr == nil {
+	// Update description facets (sanitized; see the create path). The incoming
+	// record replaces the stored one wholesale, so a record without (surviving)
+	// facets clears the stored facets — keeping them would leave stale offsets
+	// annotating the freshly updated description text.
+	if kept := sanitizedDescriptionFacets(profile, existing.DID); kept != nil {
+		facetsJSON, marshalErr := json.Marshal(kept)
+		if marshalErr != nil {
+			log.Printf("WARNING: Failed to marshal description facets for community %s: %v (clearing stored facets)", existing.DID, marshalErr)
+			existing.DescriptionFacets = nil
+		} else {
 			existing.DescriptionFacets = facetsJSON
 		}
+	} else {
+		existing.DescriptionFacets = nil
 	}
 
 	// Save updates
@@ -846,6 +857,23 @@ func (c *CommunityEventConsumer) deleteBlock(ctx context.Context, userDID string
 }
 
 // Helper types and functions
+
+// sanitizedDescriptionFacets drops description facets whose byte ranges fall
+// outside the community description (or are otherwise structurally invalid)
+// before indexing, mirroring the post/comment consumers: firehose records from
+// federated repos cannot be rejected back to their author, and clients must
+// never receive ranges that slice outside the description. Returns nil when no
+// facets survive.
+func sanitizedDescriptionFacets(profile *CommunityProfile, did string) []interface{} {
+	if profile.DescriptionFacets == nil {
+		return nil
+	}
+	kept, dropped := richtext.SanitizeFacets(profile.DescriptionFacets, len(profile.Description))
+	if dropped > 0 {
+		log.Printf("Warning: dropped %d invalid description facet(s) on community %s during indexing", dropped, did)
+	}
+	return kept
+}
 
 type CommunityProfile struct {
 	CreatedAt         time.Time              `json:"createdAt"`

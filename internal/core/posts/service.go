@@ -20,6 +20,7 @@ import (
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/blueskypost"
 	"Coves/internal/core/communities"
+	"Coves/internal/core/richtext"
 	"Coves/internal/core/unfurl"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
@@ -402,6 +403,17 @@ func (s *postService) validateCreateRequest(req *CreatePostRequest) error {
 		}
 		// Simplified grapheme check (actual implementation would need unicode library)
 		// For Alpha, byte length check is sufficient
+	}
+
+	// Validate facets structurally against the content they annotate.
+	// Catches out-of-range byte slices at the API boundary instead of
+	// persisting a record whose annotations slice outside the content.
+	contentByteLen := 0
+	if req.Content != nil {
+		contentByteLen = len(*req.Content)
+	}
+	if err := richtext.ValidateFacets(req.Facets, contentByteLen); err != nil {
+		return NewValidationError("facets", err.Error())
 	}
 
 	// Validate content labels are from known values

@@ -21,6 +21,10 @@ var (
 	// ErrContentEmpty indicates comment content is empty
 	ErrContentEmpty = errors.New("comment content is required")
 
+	// ErrInvalidFacets indicates rich text facets are malformed or reference
+	// byte ranges outside the comment content
+	ErrInvalidFacets = errors.New("invalid rich text facets")
+
 	// ErrNotAuthorized indicates the user is not authorized to perform this action
 	ErrNotAuthorized = errors.New("not authorized")
 
@@ -55,5 +59,6 @@ func IsValidationError(err error) bool {
 	return errors.Is(err, ErrInvalidReply) ||
 		errors.Is(err, ErrContentTooLong) ||
 		errors.Is(err, ErrContentEmpty) ||
+		errors.Is(err, ErrInvalidFacets) ||
 		errors.Is(err, ErrInvalidCursor)
 }

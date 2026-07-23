@@ -3,6 +3,7 @@ package jetstream
 import (
 	"Coves/internal/atproto/utils"
 	"Coves/internal/core/comments"
+	"Coves/internal/core/richtext"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -147,7 +148,7 @@ func (c *CommentEventConsumer) createComment(ctx context.Context, repoDID string
 	}
 
 	// Serialize optional JSON fields
-	facetsJSON, embedJSON, labelsJSON, err := serializeOptionalFields(commentRecord)
+	facetsJSON, embedJSON, labelsJSON, err := serializeOptionalFields(commentRecord, uri)
 	if err != nil {
 		return fmt.Errorf("failed to serialize optional fields: %w", err)
 	}
@@ -291,7 +292,7 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 	}
 
 	// Serialize optional JSON fields
-	facetsJSON, embedJSON, labelsJSON, err := serializeOptionalFields(commentRecord)
+	facetsJSON, embedJSON, labelsJSON, err := serializeOptionalFields(commentRecord, uri)
 	if err != nil {
 		return fmt.Errorf("failed to serialize optional fields: %w", err)
 	}
@@ -1000,15 +1001,26 @@ func parseCommentRecord(record map[string]interface{}) (*CommentRecordFromJetstr
 // serializeOptionalFields serializes facets, embed, and labels from a comment record to JSON strings
 // Returns nil pointers for empty/nil fields (DRY helper to avoid duplication)
 // Returns an error if any non-empty field fails to serialize (prevents silent data loss)
-func serializeOptionalFields(commentRecord *CommentRecordFromJetstream) (facetsJSON, embedJSON, labelsJSON *string, err error) {
-	// Serialize facets if present
+// Facets whose byte ranges fall outside the content (or are otherwise structurally
+// invalid) are dropped rather than failing the event: firehose records from federated
+// repos cannot be rejected back to their author, and clients must never receive
+// ranges that slice outside the content. The input record is not mutated.
+// uri is used only for the drop log line.
+func serializeOptionalFields(commentRecord *CommentRecordFromJetstream, uri string) (facetsJSON, embedJSON, labelsJSON *string, err error) {
+	// Sanitize + serialize facets if any survive
 	if len(commentRecord.Facets) > 0 {
-		facetsBytes, marshalErr := json.Marshal(commentRecord.Facets)
-		if marshalErr != nil {
-			return nil, nil, nil, fmt.Errorf("failed to serialize facets: %w", marshalErr)
+		kept, dropped := richtext.SanitizeFacets(commentRecord.Facets, len(commentRecord.Content))
+		if dropped > 0 {
+			log.Printf("Warning: dropped %d invalid facet(s) on comment %s during indexing", dropped, uri)
 		}
-		facetsStr := string(facetsBytes)
-		facetsJSON = &facetsStr
+		if len(kept) > 0 {
+			facetsBytes, marshalErr := json.Marshal(kept)
+			if marshalErr != nil {
+				return nil, nil, nil, fmt.Errorf("failed to serialize facets: %w", marshalErr)
+			}
+			facetsStr := string(facetsBytes)
+			facetsJSON = &facetsStr
+		}
 	}
 
 	// Serialize embed if present

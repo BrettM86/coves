@@ -170,6 +170,93 @@ func TestValidateRecord(t *testing.T) {
 			shouldFail: false,
 		},
 		{
+			name:       "Valid post record with block-level richtext facets",
+			recordType: "social.coves.community.post",
+			recordData: map[string]interface{}{
+				"$type":     "social.coves.community.post",
+				"community": "did:plc:programming123",
+				"author":    "did:plc:testauthor123",
+				"title":     "Cross-posted from Lemmy",
+				"content":   "The Button\nThey said\nDo not press\nUse:\nfmt.Println(\"hi\")",
+				"facets": []interface{}{
+					map[string]interface{}{
+						"index": map[string]interface{}{"byteStart": int64(0), "byteEnd": int64(10)},
+						"features": []interface{}{
+							map[string]interface{}{"$type": "social.coves.richtext.facet#heading", "level": int64(2)},
+						},
+					},
+					map[string]interface{}{
+						"index": map[string]interface{}{"byteStart": int64(11), "byteEnd": int64(20)},
+						"features": []interface{}{
+							map[string]interface{}{"$type": "social.coves.richtext.facet#blockquote", "level": int64(1)},
+						},
+					},
+					map[string]interface{}{
+						"index": map[string]interface{}{"byteStart": int64(21), "byteEnd": int64(33)},
+						"features": []interface{}{
+							map[string]interface{}{"$type": "social.coves.richtext.facet#blockquote", "level": int64(2)},
+						},
+					},
+					map[string]interface{}{
+						"index": map[string]interface{}{"byteStart": int64(39), "byteEnd": int64(56)},
+						"features": []interface{}{
+							map[string]interface{}{"$type": "social.coves.richtext.facet#codeBlock", "language": "go"},
+						},
+					},
+					map[string]interface{}{
+						// inline code on "hi" (bytes 52-54 of the content above)
+						"index": map[string]interface{}{"byteStart": int64(52), "byteEnd": int64(54)},
+						"features": []interface{}{
+							map[string]interface{}{"$type": "social.coves.richtext.facet#code"},
+						},
+					},
+				},
+				"createdAt": "2026-07-22T10:00:00Z",
+			},
+			shouldFail: false,
+		},
+		{
+			name:       "Invalid post record - heading facet missing required level",
+			recordType: "social.coves.community.post",
+			recordData: map[string]interface{}{
+				"$type":     "social.coves.community.post",
+				"community": "did:plc:programming123",
+				"author":    "did:plc:testauthor123",
+				"content":   "Some heading text",
+				"facets": []interface{}{
+					map[string]interface{}{
+						"index": map[string]interface{}{"byteStart": int64(0), "byteEnd": int64(12)},
+						"features": []interface{}{
+							map[string]interface{}{"$type": "social.coves.richtext.facet#heading"},
+						},
+					},
+				},
+				"createdAt": "2026-07-22T10:00:00Z",
+			},
+			shouldFail:    true,
+			errorContains: "required field missing",
+		},
+		{
+			name:       "Invalid post record - heading facet level out of range",
+			recordType: "social.coves.community.post",
+			recordData: map[string]interface{}{
+				"$type":     "social.coves.community.post",
+				"community": "did:plc:programming123",
+				"author":    "did:plc:testauthor123",
+				"content":   "Some heading text",
+				"facets": []interface{}{
+					map[string]interface{}{
+						"index": map[string]interface{}{"byteStart": int64(0), "byteEnd": int64(12)},
+						"features": []interface{}{
+							map[string]interface{}{"$type": "social.coves.richtext.facet#heading", "level": int64(9)},
+						},
+					},
+				},
+				"createdAt": "2026-07-22T10:00:00Z",
+			},
+			shouldFail: true,
+		},
+		{
 			name:       "Invalid post record - missing required field",
 			recordType: "social.coves.community.post",
 			recordData: map[string]interface{}{
