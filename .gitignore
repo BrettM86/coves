@@ -67,3 +67,4 @@ Thumbs.db
 
 # Beads issue tracker (local runtime state)
 .beads/
+scripts/.env.lexicon

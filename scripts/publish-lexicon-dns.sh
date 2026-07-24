@@ -10,10 +10,20 @@
 # Idempotent: existing records are updated in place, missing ones created.
 set -euo pipefail
 
+# NEVER hardcode CF_API_TOKEN in this file — it is tracked in git and pushed
+# to public remotes. Put secrets in scripts/.env.lexicon (gitignored):
+#   CF_API_TOKEN=...
+#   LEXICON_DID=did:web:coves.social
+ENV_FILE="$(dirname "$0")/.env.lexicon"
+if [[ -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+fi
+
 ZONE_NAME="coves.social"
 
 if [[ -z "${CF_API_TOKEN:-}" || -z "${LEXICON_DID:-}" ]]; then
-  echo "error: CF_API_TOKEN and LEXICON_DID must be set" >&2
+  echo "error: CF_API_TOKEN and LEXICON_DID must be set (env or scripts/.env.lexicon)" >&2
   exit 1
 fi
 
