@@ -62,7 +62,8 @@
             "video",
             "website"
           ],
-          "description": "Type hint for content rendering and filtering"
+          "description": "Type hint for content rendering and filtering",
+          "maxLength": 64
         },
         "provider": {
           "type": "string",
@@ -179,7 +180,8 @@
             "video",
             "website"
           ],
-          "description": "Type hint for content rendering and filtering"
+          "description": "Type hint for content rendering and filtering",
+          "maxLength": 64
         },
         "provider": {
           "type": "string",

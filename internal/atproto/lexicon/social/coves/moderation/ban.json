@@ -8,7 +8,12 @@
       "key": "tid",
       "record": {
         "type": "object",
-        "required": ["community", "subject", "banType", "createdAt"],
+        "required": [
+          "community",
+          "subject",
+          "banType",
+          "createdAt"
+        ],
         "properties": {
           "community": {
             "type": "string",
@@ -22,8 +27,12 @@
           },
           "banType": {
             "type": "string",
-            "knownValues": ["moderator", "tribunal"],
-            "description": "How the ban was imposed"
+            "knownValues": [
+              "moderator",
+              "tribunal"
+            ],
+            "description": "How the ban was imposed",
+            "maxLength": 64
           },
           "reason": {
             "type": "string",
@@ -48,7 +57,12 @@
           },
           "status": {
             "type": "string",
-            "knownValues": ["active", "expired", "revoked"]
+            "knownValues": [
+              "active",
+              "expired",
+              "revoked"
+            ],
+            "maxLength": 64
           },
           "expiresAt": {
             "type": "string",

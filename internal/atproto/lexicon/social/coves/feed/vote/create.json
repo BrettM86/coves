@@ -9,7 +9,10 @@
         "encoding": "application/json",
         "schema": {
           "type": "object",
-          "required": ["subject", "direction"],
+          "required": [
+            "subject",
+            "direction"
+          ],
           "properties": {
             "subject": {
               "type": "ref",
@@ -18,8 +21,12 @@
             },
             "direction": {
               "type": "string",
-              "knownValues": ["up", "down"],
-              "description": "Vote direction: up for upvote, down for downvote"
+              "knownValues": [
+                "up",
+                "down"
+              ],
+              "description": "Vote direction: up for upvote, down for downvote",
+              "maxLength": 64
             }
           }
         }

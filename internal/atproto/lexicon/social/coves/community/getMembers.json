@@ -23,7 +23,8 @@
             "default": 50
           },
           "cursor": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 500
           },
           "sort": {
             "type": "string",
@@ -53,7 +54,8 @@
               }
             },
             "cursor": {
-              "type": "string"
+              "type": "string",
+              "maxLength": 500
             }
           }
         }

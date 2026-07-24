@@ -43,7 +43,8 @@
             "unlisted",
             "private"
           ],
-          "description": "Community visibility level"
+          "description": "Community visibility level",
+          "maxLength": 64
         },
         "subscriberCount": {
           "type": "integer",
@@ -151,7 +152,8 @@
             "unlisted",
             "private"
           ],
-          "description": "Community visibility level"
+          "description": "Community visibility level",
+          "maxLength": 64
         },
         "moderationType": {
           "type": "string",
@@ -159,7 +161,8 @@
             "moderator",
             "sortition"
           ],
-          "description": "Type of moderation system"
+          "description": "Type of moderation system",
+          "maxLength": 64
         },
         "contentWarnings": {
           "type": "array",
