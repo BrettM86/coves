@@ -120,8 +120,15 @@ coves.social {
     # Cloudflare-allowing CSP there (see internal/web/handlers.go TurnstileHandler).
     # Caddy's `header` directive REPLACES the upstream value, so without this
     # carve-out the site-wide CSP below strangles the widget (api.js is blocked).
+    # TODO(frontend-deploy): when the SvelteKit frontend service joins this
+    # stack, carve its routes out of this header (like the turnstile carve-out
+    # above) and let the app's own CSP pass through. SvelteKit emits a
+    # per-request nonce'd `script-src 'self'` header; this static header
+    # REPLACES it, and its `'unsafe-inline'` (needed because a static header
+    # can't carry nonces) silently downgrades the frontend's script-src
+    # hardening. Flagged in the July 2026 frontend security review.
     @csp_default not path /m/turnstile.html
-    header @csp_default Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://*.bsky.network wss://*.bsky.network"
+    header @csp_default Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://*.bsky.network wss://*.bsky.network; base-uri 'self'; object-src 'none'; frame-ancestors 'none'"
 
     # Enable compression
     encode gzip zstd
