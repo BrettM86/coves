@@ -262,9 +262,9 @@ type ViewerState struct {
 
 // Filter constants for GetAuthorPosts
 const (
-	FilterPostsWithReplies = "posts_with_replies"
-	FilterPostsNoReplies   = "posts_no_replies"
-	FilterPostsWithMedia   = "posts_with_media"
+	FilterPostsWithReplies = "posts-with-replies"
+	FilterPostsNoReplies   = "posts-no-replies"
+	FilterPostsWithMedia   = "posts-with-media"
 )
 
 // GetAuthorPostsRequest represents input for fetching author's posts

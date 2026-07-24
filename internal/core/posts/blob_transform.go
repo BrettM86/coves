@@ -42,6 +42,9 @@ func TransformBlobRefsToURLs(postView *PostView) {
 	if embedType == "social.coves.embed.external" {
 		if external, ok := embedMap["external"].(map[string]interface{}); ok {
 			transformThumbToURL(external, communityDID, pdsURL)
+			// The served shape no longer matches the record schema (thumb is a
+			// URL string, not a blob), so declare the view type on the wire
+			embedMap["$type"] = "social.coves.embed.external#view"
 		}
 	}
 }
@@ -166,9 +169,11 @@ func TransformPostEmbeds(ctx context.Context, postView *PostView, blueskyService
 			"message":     errorMessage,
 			"retryable":   retryable,
 		}
+		embedMap["$type"] = "social.coves.embed.post#view"
 		return
 	}
 
 	// Add resolved data to embed
 	embedMap["resolved"] = result
+	embedMap["$type"] = "social.coves.embed.post#view"
 }

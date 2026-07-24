@@ -29,10 +29,11 @@ type CreateVoteInput struct {
 	Direction string `json:"direction"`
 }
 
-// CreateVoteOutput represents the response body for creating a vote
+// CreateVoteOutput represents the response body for creating a vote.
+// URI and CID are omitted when an existing same-direction vote was toggled off.
 type CreateVoteOutput struct {
-	URI string `json:"uri"`
-	CID string `json:"cid"`
+	URI string `json:"uri,omitempty"`
+	CID string `json:"cid,omitempty"`
 }
 
 // HandleCreateVote creates a vote on a post or comment

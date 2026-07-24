@@ -9,7 +9,9 @@
         "encoding": "application/json",
         "schema": {
           "type": "object",
-          "required": ["uri"],
+          "required": [
+            "uri"
+          ],
           "properties": {
             "uri": {
               "type": "string",
@@ -24,8 +26,8 @@
             },
             "content": {
               "type": "string",
-              "maxLength": 50000,
-              "maxGraphemes": 20000,
+              "maxLength": 100000,
+              "maxGraphemes": 10000,
               "description": "Updated content - main text for text posts, description for media, etc."
             },
             "facets": {
@@ -67,13 +69,13 @@
               "maxLength": 8,
               "items": {
                 "type": "string",
-                "maxLength": 64,
+                "maxLength": 640,
                 "maxGraphemes": 64
               }
             },
             "editNote": {
               "type": "string",
-              "maxLength": 300,
+              "maxLength": 3000,
               "maxGraphemes": 300,
               "description": "Optional note explaining the edit"
             }
@@ -84,7 +86,10 @@
         "encoding": "application/json",
         "schema": {
           "type": "object",
-          "required": ["uri", "cid"],
+          "required": [
+            "uri",
+            "cid"
+          ],
           "properties": {
             "uri": {
               "type": "string",

@@ -9,7 +9,9 @@
         "encoding": "application/json",
         "schema": {
           "type": "object",
-          "required": ["community"],
+          "required": [
+            "community"
+          ],
           "properties": {
             "community": {
               "type": "string",
@@ -67,7 +69,7 @@
               "maxLength": 8,
               "items": {
                 "type": "string",
-                "maxLength": 64,
+                "maxLength": 640,
                 "maxGraphemes": 64
               }
             }
@@ -78,7 +80,10 @@
         "encoding": "application/json",
         "schema": {
           "type": "object",
-          "required": ["uri", "cid"],
+          "required": [
+            "uri",
+            "cid"
+          ],
           "properties": {
             "uri": {
               "type": "string",

@@ -43,7 +43,7 @@
               "type": "array",
               "items": {
                 "type": "ref",
-                "ref": "social.coves.moderation.ban"
+                "ref": "social.coves.moderation.defs#banView"
               }
             },
             "cursor": {

@@ -423,14 +423,22 @@ func validateCrossReferences(catalog *lexicon.BaseCatalog, verbose bool) error {
 		"social.coves.richtext.facet#strikethrough",
 		"social.coves.richtext.facet#spoiler",
 
+		// Embed views
+		"social.coves.embed.external#view",
+		"social.coves.embed.external#viewExternal",
+		"social.coves.embed.post#view",
+
+		// Moderation views
+		"social.coves.moderation.defs#banView",
+
 		// Post types and views
-		"social.coves.community.post.get#postView",
-		"social.coves.community.post.get#authorView",
-		"social.coves.community.post.get#communityRef",
-		"social.coves.community.post.get#postStats",
-		"social.coves.community.post.get#viewerState",
-		"social.coves.community.post.get#notFoundPost",
-		"social.coves.community.post.get#blockedPost",
+		"social.coves.community.post.defs#postView",
+		"social.coves.community.post.defs#authorView",
+		"social.coves.community.post.defs#communityRef",
+		"social.coves.community.post.defs#postStats",
+		"social.coves.community.post.defs#viewerState",
+		"social.coves.community.post.defs#notFoundPost",
+		"social.coves.community.post.defs#blockedPost",
 
 		// Post record types (removed - no longer exists in new structure)
 

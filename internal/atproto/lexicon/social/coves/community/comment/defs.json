@@ -19,7 +19,7 @@
         },
         "author": {
           "type": "ref",
-          "ref": "social.coves.community.post.get#authorView",
+          "ref": "social.coves.community.post.defs#authorView",
           "description": "Comment author information"
         },
         "record": {
@@ -38,10 +38,10 @@
         },
         "embed": {
           "type": "union",
-          "description": "Embedded content in the comment (images or quoted post)",
+          "description": "Embedded content from the comment record (images or quoted post). The AppView may transform blob references into fetchable URLs and enrich quoted posts with a resolved view.",
           "refs": [
-            "social.coves.embed.images#view",
-            "social.coves.embed.post#view"
+            "social.coves.embed.images",
+            "social.coves.embed.post"
           ]
         },
         "createdAt": {

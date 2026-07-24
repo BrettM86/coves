@@ -5,23 +5,32 @@
     "main": {
       "type": "object",
       "description": "Video embed with metadata",
-      "required": ["video"],
+      "required": [
+        "video"
+      ],
       "properties": {
         "video": {
           "type": "blob",
-          "accept": ["video/mp4", "video/webm"],
+          "accept": [
+            "video/mp4",
+            "video/webm"
+          ],
           "maxSize": 100000000,
           "description": "Video blob reference"
         },
         "thumbnail": {
           "type": "blob",
-          "accept": ["image/png", "image/jpeg", "image/webp"],
+          "accept": [
+            "image/png",
+            "image/jpeg",
+            "image/webp"
+          ],
           "maxSize": 1000000,
           "description": "Video thumbnail image"
         },
         "alt": {
           "type": "string",
-          "maxLength": 1000,
+          "maxLength": 10000,
           "maxGraphemes": 1000,
           "description": "Alt text describing video content"
         },

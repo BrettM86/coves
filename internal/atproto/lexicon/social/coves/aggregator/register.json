@@ -18,8 +18,8 @@
             },
             "domain": {
               "type": "string",
-              "format": "uri",
-              "description": "Domain where the aggregator is hosted (e.g., 'rss-bot.example.com'). Must serve .well-known/atproto-did file containing the DID."
+              "maxLength": 253,
+              "description": "Hostname where the aggregator is hosted, without scheme (e.g., 'rss-bot.example.com'). Must serve a .well-known/atproto-did file containing the DID."
             }
           }
         }

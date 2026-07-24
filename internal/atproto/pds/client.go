@@ -154,6 +154,12 @@ func (c *client) CreateRecord(ctx context.Context, collection string, rkey strin
 		return "", "", wrapAPIError(err, "createRecord")
 	}
 
+	// A 200 with an empty uri/cid means the PDS (or a proxy in front of it)
+	// returned a malformed body; callers must never mistake it for success
+	if result.URI == "" || result.CID == "" {
+		return "", "", fmt.Errorf("createRecord: PDS returned success without uri/cid (collection %s)", collection)
+	}
+
 	return result.URI, result.CID, nil
 }
 

@@ -843,6 +843,8 @@ func (s *postService) validateGetAuthorPostsRequest(req *GetAuthorPostsRequest) 
 	}
 
 	// Validate and set defaults for filter
+	// Legacy snake_case values are normalized so pre-rename clients keep working
+	req.Filter = strings.ReplaceAll(req.Filter, "_", "-")
 	validFilters := map[string]bool{
 		FilterPostsWithReplies: true,
 		FilterPostsNoReplies:   true,
@@ -852,7 +854,7 @@ func (s *postService) validateGetAuthorPostsRequest(req *GetAuthorPostsRequest) 
 		req.Filter = FilterPostsWithReplies // Default
 	}
 	if !validFilters[req.Filter] {
-		return NewValidationError("filter", "filter must be one of: posts_with_replies, posts_no_replies, posts_with_media")
+		return NewValidationError("filter", "filter must be one of: posts-with-replies, posts-no-replies, posts-with-media")
 	}
 
 	// Validate and set defaults for limit

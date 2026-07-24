@@ -3,7 +3,7 @@
   "name": "testcommunity",
   "displayName": "Test Community",
   "creator": "did:plc:creator123",
-  "moderationType": "anarchy",
+  "moderationType": 12345,
   "federatedFrom": "coves",
   "createdAt": "2023-12-01T08:00:00Z"
 }

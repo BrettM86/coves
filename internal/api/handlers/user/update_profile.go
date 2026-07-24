@@ -13,6 +13,7 @@ import (
 	"Coves/internal/core/users"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
+	"github.com/rivo/uniseg"
 )
 
 // CovesProfileCollection is the atProto collection for Coves user profiles.
@@ -25,10 +26,14 @@ const CovesProfileCollection = users.ProfileCollection
 type PDSClientFactory func(ctx context.Context, session *oauth.ClientSessionData) (pds.Client, error)
 
 const (
-	// MaxDisplayNameLength is the maximum allowed length for display names (per atProto lexicon)
-	MaxDisplayNameLength = 64
-	// MaxBioLength is the maximum allowed length for bio/description (per atProto lexicon)
-	MaxBioLength = 256
+	// MaxDisplayNameGraphemes is the maximum display name length in graphemes (per atProto lexicon)
+	MaxDisplayNameGraphemes = 64
+	// MaxDisplayNameBytes is the maximum display name length in bytes (per atProto lexicon)
+	MaxDisplayNameBytes = 640
+	// MaxBioGraphemes is the maximum bio/description length in graphemes (per atProto lexicon)
+	MaxBioGraphemes = 256
+	// MaxBioBytes is the maximum bio/description length in bytes (per atProto lexicon)
+	MaxBioBytes = 2560
 	// MaxAvatarBlobSize is the maximum allowed avatar size in bytes (1MB per lexicon)
 	MaxAvatarBlobSize = 1_000_000
 	// MaxBannerBlobSize is the maximum allowed banner size in bytes (2MB per lexicon)
@@ -138,17 +143,19 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Validate displayName length
-	if req.DisplayName != nil && len(*req.DisplayName) > MaxDisplayNameLength {
+	// Validate displayName length (grapheme + byte caps per lexicon)
+	if req.DisplayName != nil &&
+		(uniseg.GraphemeClusterCount(*req.DisplayName) > MaxDisplayNameGraphemes || len(*req.DisplayName) > MaxDisplayNameBytes) {
 		writeUpdateProfileError(w, http.StatusBadRequest, "DisplayNameTooLong",
-			fmt.Sprintf("Display name exceeds %d character limit", MaxDisplayNameLength))
+			fmt.Sprintf("Display name exceeds %d character limit", MaxDisplayNameGraphemes))
 		return
 	}
 
-	// Validate bio length
-	if req.Bio != nil && len(*req.Bio) > MaxBioLength {
+	// Validate bio length (grapheme + byte caps per lexicon)
+	if req.Bio != nil &&
+		(uniseg.GraphemeClusterCount(*req.Bio) > MaxBioGraphemes || len(*req.Bio) > MaxBioBytes) {
 		writeUpdateProfileError(w, http.StatusBadRequest, "BioTooLong",
-			fmt.Sprintf("Bio exceeds %d character limit", MaxBioLength))
+			fmt.Sprintf("Bio exceeds %d character limit", MaxBioGraphemes))
 		return
 	}
 

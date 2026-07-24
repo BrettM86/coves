@@ -131,15 +131,14 @@ func TestValidateRecord(t *testing.T) {
 			shouldFail: false,
 		},
 		{
-			name:       "Invalid actor profile - missing required field",
+			name:       "Invalid actor profile - wrong field type",
 			recordType: "social.coves.actor.profile",
 			recordData: map[string]interface{}{
 				"$type":       "social.coves.actor.profile",
-				"displayName": "Alice Johnson",
-				// Missing required createdAt
+				"displayName": int64(12345),
+				"createdAt":   "2024-01-15T10:30:00Z",
 			},
-			shouldFail:    true,
-			errorContains: "required field missing",
+			shouldFail: true,
 		},
 		{
 			name:       "Valid community profile",

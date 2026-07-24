@@ -3,7 +3,7 @@
   "user": "did:plc:trustedmoderator",
   "community": "did:plc:programmingcommunity",
   "role": "moderator",
-  "permissions": ["remove_posts", "remove_comments", "manage_wiki"],
+  "permissions": ["remove-posts", "remove-comments", "manage-wiki"],
   "createdAt": "2024-06-15T10:00:00Z",
   "createdBy": "did:plc:communityowner"
 }

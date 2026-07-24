@@ -346,7 +346,7 @@ func TestUpdateProfileHandler_BannerBlobWithoutMimeType(t *testing.T) {
 func TestUpdateProfileHandler_DisplayNameTooLong(t *testing.T) {
 	handler := createTestHandler()
 
-	longName := strings.Repeat("a", MaxDisplayNameLength+1)
+	longName := strings.Repeat("a", MaxDisplayNameGraphemes+1)
 	reqBody := UpdateProfileRequest{
 		DisplayName: &longName,
 	}
@@ -370,7 +370,7 @@ func TestUpdateProfileHandler_DisplayNameTooLong(t *testing.T) {
 func TestUpdateProfileHandler_BioTooLong(t *testing.T) {
 	handler := createTestHandler()
 
-	longBio := strings.Repeat("a", MaxBioLength+1)
+	longBio := strings.Repeat("a", MaxBioGraphemes+1)
 	reqBody := UpdateProfileRequest{
 		Bio: &longBio,
 	}

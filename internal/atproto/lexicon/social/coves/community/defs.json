@@ -5,7 +5,10 @@
     "communityView": {
       "type": "object",
       "description": "Basic community view with essential information and basic stats",
-      "required": ["did", "name"],
+      "required": [
+        "did",
+        "name"
+      ],
       "properties": {
         "did": {
           "type": "string",
@@ -19,8 +22,7 @@
         },
         "name": {
           "type": "string",
-          "maxLength": 64,
-          "maxGraphemes": 64,
+          "maxLength": 63,
           "description": "Short community name"
         },
         "displayName": {
@@ -36,7 +38,11 @@
         },
         "visibility": {
           "type": "string",
-          "knownValues": ["public", "unlisted", "private"],
+          "knownValues": [
+            "public",
+            "unlisted",
+            "private"
+          ],
           "description": "Community visibility level"
         },
         "subscriberCount": {
@@ -73,7 +79,10 @@
     "communityViewDetailed": {
       "type": "object",
       "description": "Detailed community view with stats and viewer state",
-      "required": ["did", "name"],
+      "required": [
+        "did",
+        "name"
+      ],
       "properties": {
         "did": {
           "type": "string",
@@ -87,8 +96,7 @@
         },
         "name": {
           "type": "string",
-          "maxLength": 64,
-          "maxGraphemes": 64,
+          "maxLength": 63,
           "description": "Short community name"
         },
         "displayName": {
@@ -138,12 +146,19 @@
         },
         "visibility": {
           "type": "string",
-          "knownValues": ["public", "unlisted", "private"],
+          "knownValues": [
+            "public",
+            "unlisted",
+            "private"
+          ],
           "description": "Community visibility level"
         },
         "moderationType": {
           "type": "string",
-          "knownValues": ["moderator", "sortition"],
+          "knownValues": [
+            "moderator",
+            "sortition"
+          ],
           "description": "Type of moderation system"
         },
         "contentWarnings": {
@@ -151,7 +166,11 @@
           "description": "Required content warnings for this community",
           "items": {
             "type": "string",
-            "knownValues": ["nsfw", "violence", "spoilers"],
+            "knownValues": [
+              "nsfw",
+              "violence",
+              "spoilers"
+            ],
             "maxLength": 32
           }
         },
