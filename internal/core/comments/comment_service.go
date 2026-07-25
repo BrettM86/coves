@@ -709,7 +709,13 @@ func (s *commentService) CreateComment(ctx context.Context, session *oauth.Clien
 		return nil, fmt.Errorf("%w: facet byte offsets must be computed against content without leading/trailing whitespace", ErrInvalidFacets)
 	}
 	if err := richtext.ValidateFacets(req.Facets, len(content)); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidFacets, err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidFacets, err)
+	}
+	// Encode link targets into the `format: uri` the lexicon declares, so a
+	// pasted URL containing an accented character cannot produce a record that
+	// fails schema validation for anyone consuming our firehose.
+	if err := richtext.NormalizeLinkURIs(req.Facets); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidFacets, err)
 	}
 
 	// Validate reply references
@@ -808,7 +814,12 @@ func (s *commentService) UpdateComment(ctx context.Context, session *oauth.Clien
 		return nil, fmt.Errorf("%w: facet byte offsets must be computed against content without leading/trailing whitespace", ErrInvalidFacets)
 	}
 	if err := richtext.ValidateFacets(req.Facets, len(content)); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidFacets, err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidFacets, err)
+	}
+	// See CreateComment: link targets are encoded to the lexicon's uri format
+	// before the edited record is signed.
+	if err := richtext.NormalizeLinkURIs(req.Facets); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidFacets, err)
 	}
 
 	// Create PDS client for this session

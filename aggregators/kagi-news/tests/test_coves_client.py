@@ -3,6 +3,7 @@ Unit tests for CovesClient.
 
 Tests the client's local functionality without requiring live infrastructure.
 """
+import logging
 import pytest
 from unittest.mock import Mock
 from src.coves_client import (
@@ -264,3 +265,120 @@ class TestCreateExternalEmbed:
         )
 
         assert embed["external"]["sources"][0]["extra_field"] == "should be preserved"
+
+
+class TestCreateExternalEmbedSanitizesURIs:
+    """
+    The bridge is the source of the schema-invalid records this fix exists for.
+    These cover the branches added when URI sanitizing was wired in: encoding,
+    dropping an unusable source, and refusing to publish without a primary link.
+    """
+
+    @pytest.fixture
+    def client(self):
+        return CovesClient(api_url="http://localhost:8081", api_key=VALID_TEST_API_KEY)
+
+    def test_primary_uri_is_encoded(self, client):
+        embed = client.create_external_embed(
+            uri="https://kagi.com/news/rudy_gobert_pokémon_lineup/",
+            title="T", description="D",
+        )
+        assert embed["external"]["uri"] == (
+            "https://kagi.com/news/rudy_gobert_pok%C3%A9mon_lineup/"
+        )
+
+    def test_every_source_uri_is_encoded(self, client):
+        embed = client.create_external_embed(
+            uri="https://kagi.com/news/daily", title="T", description="D",
+            sources=[
+                {"uri": "https://example.com/café", "title": "A", "domain": "example.com"},
+                {"uri": "https://exämple.com/x", "title": "B", "domain": "x.com"},
+            ],
+        )
+        assert [s["uri"] for s in embed["external"]["sources"]] == [
+            "https://example.com/caf%C3%A9",
+            "https://xn--exmple-cua.com/x",
+        ]
+
+    def test_source_metadata_survives_sanitizing(self, client):
+        """The rebuild must not drop sibling keys of a source that needed encoding."""
+        embed = client.create_external_embed(
+            uri="https://kagi.com/news/daily", title="T", description="D",
+            sources=[{
+                "uri": "https://example.com/café",
+                "title": "Accented",
+                "domain": "example.com",
+                "sourcePost": {"uri": "at://did:plc:x/c/1", "cid": "bafy"},
+            }],
+        )
+        source = embed["external"]["sources"][0]
+        assert source["title"] == "Accented"
+        assert source["domain"] == "example.com"
+        assert source["sourcePost"] == {"uri": "at://did:plc:x/c/1", "cid": "bafy"}
+
+    def test_unusable_source_is_dropped_and_the_rest_survive(self, client):
+        embed = client.create_external_embed(
+            uri="https://kagi.com/news/daily", title="T", description="D",
+            sources=[
+                {"uri": "https://example.com/ok", "title": "keep"},
+                {"uri": "not a url at all", "title": "drop"},
+                {"uri": "https://example.com/café", "title": "keep"},
+            ],
+        )
+        assert [s["uri"] for s in embed["external"]["sources"]] == [
+            "https://example.com/ok",
+            "https://example.com/caf%C3%A9",
+        ]
+
+    def test_source_missing_uri_key_is_dropped_not_raised(self, client):
+        embed = client.create_external_embed(
+            uri="https://kagi.com/news/daily", title="T", description="D",
+            sources=[{"title": "no uri"}, {"uri": "https://example.com/ok"}],
+        )
+        assert [s["uri"] for s in embed["external"]["sources"]] == ["https://example.com/ok"]
+
+    def test_non_string_source_uri_is_dropped_not_raised(self, client):
+        """A malformed feed must cost one source, never the whole post."""
+        embed = client.create_external_embed(
+            uri="https://kagi.com/news/daily", title="T", description="D",
+            sources=[{"uri": 42}, {"uri": None}, {"uri": "https://example.com/ok"}],
+        )
+        assert [s["uri"] for s in embed["external"]["sources"]] == ["https://example.com/ok"]
+
+    def test_all_sources_unusable_omits_the_key(self, client):
+        """Documented degradation: the embed ships, but with no sources key."""
+        embed = client.create_external_embed(
+            uri="https://kagi.com/news/daily", title="T", description="D",
+            sources=[{"uri": "not a url"}, {"uri": "also not a url"}],
+        )
+        assert "sources" not in embed["external"]
+
+    def test_all_sources_dropped_is_logged_at_error(self, client, caplog):
+        """Total attribution loss must be visible above warning level."""
+        with caplog.at_level(logging.ERROR):
+            client.create_external_embed(
+                uri="https://kagi.com/news/daily", title="T", description="D",
+                sources=[{"uri": "not a url"}],
+            )
+        assert any(r.levelno >= logging.ERROR for r in caplog.records)
+
+    def test_logs_do_not_leak_the_rejected_uri(self, client, caplog):
+        """Feed URLs can carry signed-URL tokens; they must not reach the logs."""
+        secret = "https://example.com/x?token=SUPERSECRETVALUE&z=é"
+        with caplog.at_level(logging.WARNING):
+            client.create_external_embed(
+                uri="https://kagi.com/news/daily", title="T", description="D",
+                sources=[{"uri": secret + "\x00"}],
+            )
+        assert "SUPERSECRETVALUE" not in caplog.text
+
+    def test_unusable_primary_uri_raises(self, client):
+        """A post with no resolvable link is not worth publishing."""
+        with pytest.raises(ValueError):
+            client.create_external_embed(uri="not a url at all", title="T", description="D")
+
+    def test_forbidden_scheme_in_primary_uri_raises(self, client):
+        with pytest.raises(ValueError, match="not allowed in a rendered link"):
+            client.create_external_embed(
+                uri="javascript:alert(1)", title="T", description="D",
+            )

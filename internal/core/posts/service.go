@@ -92,6 +92,19 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 		return nil, err
 	}
 
+	// 1b. Normalize the fields the lexicon declares as `format: uri` before any
+	// of them reach the record. Runs here, ahead of the community and PDS work,
+	// so an unrecoverable URI fails fast without burning a DB lookup or an
+	// unfurl fetch. Mutates req in place; the record built in step 9 reads these
+	// same values, and the unfurl step below then works from the encoded URI,
+	// which dereferences identically.
+	if err := normalizeEmbedURIs(req.Embed); err != nil {
+		return nil, err
+	}
+	if err := richtext.NormalizeLinkURIs(req.Facets); err != nil {
+		return nil, NewValidationErrorFrom("facets", err)
+	}
+
 	// 2. SECURITY: Extract authenticated DID from context (set by JWT middleware)
 	// Defense-in-depth: verify service layer receives correct DID even if handler is bypassed
 	authenticatedDID := middleware.GetAuthenticatedDID(ctx)

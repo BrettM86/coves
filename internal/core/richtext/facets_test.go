@@ -2,8 +2,11 @@ package richtext
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+
+	"Coves/internal/validation"
 )
 
 // facet builds a well-formed facet map the way encoding/json would decode it
@@ -537,5 +540,217 @@ func TestSanitizeFacets_RoundTrip(t *testing.T) {
 	}
 	if strings.Contains(string(out), "#bold") {
 		t.Errorf("out-of-range facet survived sanitization: %s", out)
+	}
+}
+
+// TestNormalizeLinkURIs covers the write-path repair of #link feature targets.
+// facet#link.uri carries the same `format: uri` as the external embed fields, so
+// a body link containing a raw accented character invalidates the record just as
+// a bad embed URI does.
+func TestNormalizeLinkURIs(t *testing.T) {
+	linkFacet := func(uri string) map[string]interface{} {
+		return map[string]interface{}{
+			"index": map[string]interface{}{"byteStart": float64(0), "byteEnd": float64(4)},
+			"features": []interface{}{
+				map[string]interface{}{"$type": featureTypeLink, "uri": uri},
+			},
+		}
+	}
+
+	t.Run("accented link target is percent-encoded in place", func(t *testing.T) {
+		facets := []interface{}{linkFacet("https://example.com/rudy_gobert_pokémon_lineup/")}
+		if err := NormalizeLinkURIs(facets); err != nil {
+			t.Fatalf("NormalizeLinkURIs() = %v, want nil", err)
+		}
+		features := facets[0].(map[string]interface{})["features"].([]interface{})
+		got := features[0].(map[string]interface{})["uri"].(string)
+		want := "https://example.com/rudy_gobert_pok%C3%A9mon_lineup/"
+		if got != want {
+			t.Errorf("link uri = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("conforming link target is left byte-identical", func(t *testing.T) {
+		const uri = "https://example.com/pok%C3%A9mon"
+		facets := []interface{}{linkFacet(uri)}
+		if err := NormalizeLinkURIs(facets); err != nil {
+			t.Fatalf("NormalizeLinkURIs() = %v, want nil", err)
+		}
+		features := facets[0].(map[string]interface{})["features"].([]interface{})
+		if got := features[0].(map[string]interface{})["uri"].(string); got != uri {
+			t.Errorf("link uri = %q, want it unchanged as %q", got, uri)
+		}
+	})
+
+	t.Run("non-link features are untouched", func(t *testing.T) {
+		facets := []interface{}{
+			map[string]interface{}{
+				"index": map[string]interface{}{"byteStart": float64(0), "byteEnd": float64(4)},
+				"features": []interface{}{
+					map[string]interface{}{"$type": featureTypeHeading, "level": float64(2)},
+					map[string]interface{}{"$type": "social.coves.richtext.facet#bold"},
+				},
+			},
+		}
+		if err := NormalizeLinkURIs(facets); err != nil {
+			t.Fatalf("NormalizeLinkURIs() = %v, want nil", err)
+		}
+		features := facets[0].(map[string]interface{})["features"].([]interface{})
+		if _, present := features[0].(map[string]interface{})["uri"]; present {
+			t.Error("normalization invented a uri on a heading feature")
+		}
+	})
+
+	t.Run("every link across every facet is normalized", func(t *testing.T) {
+		facets := []interface{}{
+			linkFacet("https://example.com/café"),
+			linkFacet("https://example.com/plain"),
+			linkFacet("https://exämple.com/x"),
+		}
+		if err := NormalizeLinkURIs(facets); err != nil {
+			t.Fatalf("NormalizeLinkURIs() = %v, want nil", err)
+		}
+		want := []string{
+			"https://example.com/caf%C3%A9",
+			"https://example.com/plain",
+			"https://xn--exmple-cua.com/x",
+		}
+		for i, w := range want {
+			features := facets[i].(map[string]interface{})["features"].([]interface{})
+			if got := features[0].(map[string]interface{})["uri"].(string); got != w {
+				t.Errorf("facet %d link uri = %q, want %q", i, got, w)
+			}
+		}
+	})
+
+	t.Run("unrecoverable link target is reported with its position", func(t *testing.T) {
+		facets := []interface{}{
+			linkFacet("https://example.com/ok"),
+			linkFacet("not a url at all"),
+		}
+		err := NormalizeLinkURIs(facets)
+		if err == nil {
+			t.Fatal("NormalizeLinkURIs() = nil, want error for a scheme-less link target")
+		}
+		if !strings.Contains(err.Error(), "facet 1") {
+			t.Errorf("error = %q, want it to identify facet 1", err)
+		}
+	})
+
+	t.Run("link feature with no uri is rejected", func(t *testing.T) {
+		facets := []interface{}{
+			map[string]interface{}{
+				"index":    map[string]interface{}{"byteStart": float64(0), "byteEnd": float64(4)},
+				"features": []interface{}{map[string]interface{}{"$type": featureTypeLink}},
+			},
+		}
+		if err := NormalizeLinkURIs(facets); err == nil {
+			t.Fatal("NormalizeLinkURIs() = nil, want error for a link feature with no uri")
+		}
+	})
+
+	t.Run("empty and structurally malformed input is a no-op", func(t *testing.T) {
+		if err := NormalizeLinkURIs(nil); err != nil {
+			t.Errorf("NormalizeLinkURIs(nil) = %v, want nil", err)
+		}
+		// ValidateFacets is what reports these; normalization must not panic.
+		junk := []interface{}{"not an object", map[string]interface{}{"features": "not an array"}}
+		if err := NormalizeLinkURIs(junk); err != nil {
+			t.Errorf("NormalizeLinkURIs(junk) = %v, want nil", err)
+		}
+	})
+}
+
+// TestSanitizeFacetsKeepsUnencodedLinks pins the deliberate asymmetry: the
+// firehose path must NOT drop a link facet whose uri is unencoded, or reindexing
+// an already-federated post would silently strip its links.
+func TestSanitizeFacetsKeepsUnencodedLinks(t *testing.T) {
+	facets := []interface{}{
+		map[string]interface{}{
+			"index": map[string]interface{}{"byteStart": float64(0), "byteEnd": float64(4)},
+			"features": []interface{}{
+				map[string]interface{}{
+					"$type": featureTypeLink,
+					"uri":   "https://example.com/rudy_gobert_pokémon_lineup/",
+				},
+			},
+		},
+	}
+	kept, dropped := SanitizeFacets(facets, 10)
+	if dropped != 0 {
+		t.Errorf("dropped = %d, want 0: ingest must not strip links over an encoding nit", dropped)
+	}
+	if len(kept) != 1 {
+		t.Fatalf("kept %d facets, want 1", len(kept))
+	}
+	features := kept[0].(map[string]interface{})["features"].([]interface{})
+	if got := features[0].(map[string]interface{})["uri"].(string); got != "https://example.com/rudy_gobert_pokémon_lineup/" {
+		t.Errorf("ingest rewrote a federated link uri to %q; it must pass through verbatim", got)
+	}
+}
+
+// TestNormalizeLinkURIsRejectsForbiddenSchemes covers the stored-XSS vector.
+// A #link feature is rendered as an href by every client, so a javascript: or
+// data: target must be refused outright rather than percent-encoded into a
+// schema-valid record and signed into the firehose.
+func TestNormalizeLinkURIsRejectsForbiddenSchemes(t *testing.T) {
+	linkFacet := func(uri string) map[string]interface{} {
+		return map[string]interface{}{
+			"index": map[string]interface{}{"byteStart": float64(0), "byteEnd": float64(4)},
+			"features": []interface{}{
+				map[string]interface{}{"$type": featureTypeLink, "uri": uri},
+			},
+		}
+	}
+
+	for _, uri := range []string{
+		"javascript:alert(document.cookie)",
+		"javascript:alert('é')",
+		"data:text/html,<script>alert(1)</script>",
+		"vbscript:msgbox(1)",
+		"file:///etc/passwd",
+		"mailto:someone@example.com",
+	} {
+		t.Run(uri, func(t *testing.T) {
+			facets := []interface{}{linkFacet(uri)}
+			err := NormalizeLinkURIs(facets)
+			if err == nil {
+				t.Fatalf("NormalizeLinkURIs(%q) = nil, want the scheme refused", uri)
+			}
+			if !errors.Is(err, validation.ErrURISchemeNotAllowed) {
+				t.Errorf("error = %v, want ErrURISchemeNotAllowed", err)
+			}
+			// The facet must be left alone rather than half-rewritten.
+			features := facets[0].(map[string]interface{})["features"].([]interface{})
+			if got := features[0].(map[string]interface{})["uri"].(string); got != uri {
+				t.Errorf("uri was rewritten to %q despite the error", got)
+			}
+		})
+	}
+}
+
+// TestNormalizeLinkURIsPreservesReservedEscapes guards the same regression as
+// the validation package's test, one layer up: a link target naming one
+// resource must never come back naming another.
+func TestNormalizeLinkURIsPreservesReservedEscapes(t *testing.T) {
+	facets := []interface{}{
+		map[string]interface{}{
+			"index": map[string]interface{}{"byteStart": float64(0), "byteEnd": float64(4)},
+			"features": []interface{}{
+				map[string]interface{}{
+					"$type": featureTypeLink,
+					"uri":   "https://web.archive.org/web/2020/https%3A%2F%2Fexample.com/café",
+				},
+			},
+		},
+	}
+	if err := NormalizeLinkURIs(facets); err != nil {
+		t.Fatalf("NormalizeLinkURIs() = %v, want nil", err)
+	}
+	features := facets[0].(map[string]interface{})["features"].([]interface{})
+	got := features[0].(map[string]interface{})["uri"].(string)
+	want := "https://web.archive.org/web/2020/https%3A%2F%2Fexample.com/caf%C3%A9"
+	if got != want {
+		t.Errorf("link uri\n got %q\nwant %q", got, want)
 	}
 }

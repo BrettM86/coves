@@ -1,6 +1,7 @@
 """
 Tests for coves_client module.
 """
+import logging
 import pytest
 from unittest.mock import MagicMock, patch
 import requests
@@ -284,3 +285,72 @@ class TestGetTimestamp:
         # Should be parseable as ISO format
         from datetime import datetime
         datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+
+
+class TestCreateExternalEmbedSanitizesURIs:
+    """
+    The bridge is the source of the schema-invalid records this fix exists for.
+    Covers the branches added when URI sanitizing was wired in.
+    """
+
+    @pytest.fixture
+    def client(self):
+        return CovesClient("https://coves.social", "ckapi_" + "a" * 64)
+
+    def test_primary_uri_is_encoded(self, client):
+        embed = client.create_external_embed(
+            uri="https://reddit.com/r/nba/pokémon_lineup/", title="T", description="D",
+        )
+        assert embed["external"]["uri"] == "https://reddit.com/r/nba/pok%C3%A9mon_lineup/"
+
+    def test_source_uris_are_encoded(self, client):
+        embed = client.create_external_embed(
+            uri="https://reddit.com/r/nba/x", title="T", description="D",
+            sources=[{"uri": "https://example.com/café", "title": "A"}],
+        )
+        assert embed["external"]["sources"][0]["uri"] == "https://example.com/caf%C3%A9"
+
+    def test_reserved_escape_is_preserved(self, client):
+        embed = client.create_external_embed(
+            uri="https://web.archive.org/a%2Fb/café", title="T", description="D",
+        )
+        assert embed["external"]["uri"] == "https://web.archive.org/a%2Fb/caf%C3%A9"
+
+    def test_sole_source_dropped_omits_key_and_logs_error(self, client, caplog):
+        """
+        This bridge passes exactly one source (the Reddit permalink), so losing
+        it means publishing with no attribution at all — and the post is marked
+        posted, so it never retries. That must be loud.
+        """
+        with caplog.at_level(logging.ERROR):
+            embed = client.create_external_embed(
+                uri="https://reddit.com/r/nba/x", title="T", description="D",
+                sources=[{"uri": "not a url at all"}],
+            )
+        assert "sources" not in embed["external"]
+        assert any(r.levelno >= logging.ERROR for r in caplog.records)
+
+    def test_non_string_source_uri_is_dropped_not_raised(self, client):
+        embed = client.create_external_embed(
+            uri="https://reddit.com/r/nba/x", title="T", description="D",
+            sources=[{"uri": 42}, {"uri": "https://example.com/ok"}],
+        )
+        assert [s["uri"] for s in embed["external"]["sources"]] == ["https://example.com/ok"]
+
+    def test_logs_do_not_leak_the_rejected_uri(self, client, caplog):
+        with caplog.at_level(logging.WARNING):
+            client.create_external_embed(
+                uri="https://reddit.com/r/nba/x", title="T", description="D",
+                sources=[{"uri": "https://e.com/x?token=SUPERSECRETVALUE\x00"}],
+            )
+        assert "SUPERSECRETVALUE" not in caplog.text
+
+    def test_unusable_primary_uri_raises(self, client):
+        with pytest.raises(ValueError):
+            client.create_external_embed(uri="not a url", title="T", description="D")
+
+    def test_forbidden_scheme_raises(self, client):
+        with pytest.raises(ValueError, match="not allowed in a rendered link"):
+            client.create_external_embed(
+                uri="javascript:alert(1)", title="T", description="D",
+            )

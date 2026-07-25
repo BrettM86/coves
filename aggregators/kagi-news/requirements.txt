@@ -4,6 +4,10 @@ beautifulsoup4==4.12.3
 requests==2.31.0
 pyyaml==6.0.1
 anthropic>=0.40.0
+# IDNA2008/UTS-46 host encoding for uri_sanitizer. Also pulled in transitively
+# by requests, but declared explicitly because we import it directly — and
+# because the AppView's Go normalizer is matched against this exact behaviour.
+idna>=3.4
 
 # Testing
 pytest==8.1.1

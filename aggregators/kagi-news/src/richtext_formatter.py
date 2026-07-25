@@ -8,6 +8,7 @@ import logging
 from typing import Dict
 from src.citations import build_index, tokenize
 from src.models import KagiStory
+from src.uri_sanitizer import sanitize_uri
 
 logger = logging.getLogger(__name__)
 
@@ -200,7 +201,24 @@ class RichTextBuilder:
         return self._get_current_byte_position()
 
     def add_link(self, text: str, uri: str):
-        """Add text with link facet."""
+        """
+        Add text with link facet.
+
+        facet#link.uri carries the same `format: uri` as the embed fields, so a
+        citation URL with a literal accented character invalidates the whole
+        record. If the URL cannot be encoded at all the text is still emitted,
+        just unlinked — losing a link beats losing the sentence, and the byte
+        offsets of later facets are unaffected either way.
+        """
+        try:
+            uri = sanitize_uri(uri)
+        except ValueError as e:
+            # The URI is deliberately not logged: citation URLs can carry
+            # tracking tokens or credentials in the query string.
+            logger.warning("Emitting %r as plain text, unusable link uri (%s)", text, e)
+            self.content_parts.append(text)
+            return
+
         start_byte = self._get_current_byte_position()
         self.content_parts.append(text)
         end_byte = self._get_current_byte_position()

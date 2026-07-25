@@ -7,6 +7,8 @@ import logging
 import requests
 from typing import Dict, List, Optional
 
+from src.uri_sanitizer import sanitize_uri
+
 logger = logging.getLogger(__name__)
 
 
@@ -203,15 +205,45 @@ class CovesClient:
 
         Returns:
             Embed dictionary ready for post creation
+
+        Raises:
+            ValueError: if uri carries no recoverable URI. The post is
+                meaningless without its primary link, so this propagates to the
+                caller rather than publishing a linkless post.
         """
+        # Scraped URLs arrive with characters the atproto `uri` format forbids
+        # (a literal 'é' in a slug, a stray space). Encoding them here is what
+        # keeps every record this bridge publishes schema-valid.
         external = {
-            "uri": uri,
+            "uri": sanitize_uri(uri),
             "title": title,
             "description": description
         }
 
         if sources:
-            external["sources"] = sources
+            sanitized_sources = []
+            for index, source in enumerate(sources):
+                try:
+                    sanitized_sources.append({**source, "uri": sanitize_uri(source["uri"])})
+                except (ValueError, KeyError, TypeError) as e:
+                    # One unusable source link must not cost the whole post —
+                    # drop the entry and keep publishing. The URI itself is
+                    # deliberately not logged: scraped URLs can carry tokens or
+                    # credentials in the query string.
+                    logger.warning(
+                        "Dropping source %d/%d (%s: %s)",
+                        index + 1, len(sources), type(e).__name__, e
+                    )
+            dropped = len(sources) - len(sanitized_sources)
+            if dropped:
+                # Escalate when nothing survived. This bridge passes exactly one
+                # source — the Reddit permalink — so "dropped a source" and
+                # "published with no attribution at all" are the same event, and
+                # the post is marked as posted so it never retries.
+                log = logger.error if not sanitized_sources else logger.warning
+                log("Dropped %d of %d sources", dropped, len(sources))
+            if sanitized_sources:
+                external["sources"] = sanitized_sources
 
         if embed_type:
             external["embedType"] = embed_type

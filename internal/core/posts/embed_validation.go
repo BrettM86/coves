@@ -1,6 +1,10 @@
 package posts
 
-import "fmt"
+import (
+	"fmt"
+
+	"Coves/internal/validation"
+)
 
 // Embed union member $type discriminators accepted by
 // social.coves.community.post.create. Keep this set in sync with the embed
@@ -16,6 +20,12 @@ const (
 	embedTypeExternal = "social.coves.embed.external"
 	embedTypePost     = "social.coves.embed.post"
 )
+
+// maxEmbedSources mirrors the maxLength on the sources array in
+// social.coves.embed.external. Without it an authenticated client can post an
+// arbitrarily long array, and the AppView would normalize every entry and then
+// sign a record violating the schema this normalization exists to guarantee.
+const maxEmbedSources = 50
 
 // validateEmbed verifies that a client-provided embed conforms to one of the
 // post.create lexicon union members: it must carry a recognized $type
@@ -111,6 +121,83 @@ func validateEmbed(embed map[string]interface{}) error {
 		return NewValidationError("embed",
 			fmt.Sprintf("unknown embed $type %q (allowed: %s, %s, %s, %s)",
 				embedType, embedTypeImages, embedTypeVideo, embedTypeExternal, embedTypePost))
+	}
+
+	return nil
+}
+
+// normalizeEmbedURIs rewrites, in place, every field of an external embed that
+// the lexicon declares as `format: uri` — external.uri and each
+// external.sources[].uri — into a form that satisfies that format.
+//
+// The AppView signs community post records into the community's PDS itself, and
+// the PDS does not validate custom social.coves.* lexicons. That makes this the
+// only point in the pipeline that can guarantee a schema-conforming record no
+// matter which client produced it, which matters because these URIs federate:
+// any third-party tool that resolves our lexicons and validates the firehose
+// judges the bytes we wrote. An unencoded character in a URL is a client bug,
+// not user intent, so it is repaired rather than rejected — see
+// validation.NormalizeURI. Input that carries no recoverable URI at all still
+// fails loudly instead of being persisted as a broken link.
+//
+// Must run after validateEmbed, which establishes the structure this walks.
+// Non-external embeds carry no `format: uri` fields and are left untouched.
+func normalizeEmbedURIs(embed map[string]interface{}) error {
+	if embed == nil {
+		return nil
+	}
+	if embedType, _ := embed["$type"].(string); embedType != embedTypeExternal {
+		return nil
+	}
+	external, ok := embed["external"].(map[string]interface{})
+	if !ok {
+		// validateEmbed already rejects this; nothing to normalize.
+		return nil
+	}
+
+	if raw, ok := external["uri"].(string); ok {
+		normalized, err := validation.NormalizeURI(raw)
+		if err != nil {
+			return NewValidationErrorFrom("embed.external.uri", err)
+		}
+		external["uri"] = normalized
+	}
+
+	rawSources, present := external["sources"]
+	if !present {
+		return nil
+	}
+	// A present-but-wrong-typed sources value must be rejected, not skipped:
+	// validateEmbed does not inspect sources at all, so returning nil here would
+	// sign the very schema-invalid record this function exists to prevent.
+	sources, ok := rawSources.([]interface{})
+	if !ok {
+		return NewValidationError("embed.external.sources",
+			fmt.Sprintf("embed.external.sources must be an array, got %T", rawSources))
+	}
+	if len(sources) > maxEmbedSources {
+		return NewValidationError("embed.external.sources",
+			fmt.Sprintf("too many sources: %d (max %d)", len(sources), maxEmbedSources))
+	}
+	for i, entry := range sources {
+		field := fmt.Sprintf("embed.external.sources[%d].uri", i)
+		source, ok := entry.(map[string]interface{})
+		if !ok {
+			return NewValidationError(field,
+				fmt.Sprintf("embed.external.sources[%d] must be an object", i))
+		}
+		// uri is required on #source; a source without one is an unusable
+		// dangling entry that would fail schema validation downstream.
+		raw, ok := source["uri"].(string)
+		if !ok || raw == "" {
+			return NewValidationError(field,
+				fmt.Sprintf("embed.external.sources[%d] requires a non-empty 'uri' string", i))
+		}
+		normalized, err := validation.NormalizeURI(raw)
+		if err != nil {
+			return NewValidationErrorFrom(field, err)
+		}
+		source["uri"] = normalized
 	}
 
 	return nil

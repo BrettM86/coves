@@ -14,6 +14,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+
+	"Coves/internal/validation"
 )
 
 // MaxFacets is the maximum number of facets accepted on a single record.
@@ -27,14 +29,17 @@ const MaxFacets = 200
 // otherwise have an unbounded dimension that MaxFacets cannot cap.
 const MaxFeaturesPerFacet = 20
 
-// Known feature $types with attribute constraints, mirrored from the
-// social.coves.richtext.facet lexicon. Only KNOWN types are checked — unknown
-// $types pass untouched, keeping the union open for forward compatibility.
+// Known feature $types from the social.coves.richtext.facet lexicon. All but
+// featureTypeLink carry attribute constraints enforced by checkKnownFeature;
+// featureTypeLink is used only by NormalizeLinkURIs, which owns its uri rules.
+// Only KNOWN types are checked — unknown $types pass untouched, keeping the
+// union open for forward compatibility.
 const (
 	featureTypeBlockquote = "social.coves.richtext.facet#blockquote"
 	featureTypeHeading    = "social.coves.richtext.facet#heading"
 	featureTypeCodeBlock  = "social.coves.richtext.facet#codeBlock"
 	featureTypeSpoiler    = "social.coves.richtext.facet#spoiler"
+	featureTypeLink       = "social.coves.richtext.facet#link"
 )
 
 const (
@@ -88,6 +93,56 @@ func SanitizeFacets(facets []interface{}, contentByteLen int) (kept []interface{
 		kept = kept[:MaxFacets]
 	}
 	return kept, dropped
+}
+
+// NormalizeLinkURIs rewrites the uri of every #link feature in place into a form
+// that satisfies the `format: uri` the facet lexicon declares for it, returning
+// an error for the first uri that carries no recoverable URI at all.
+//
+// This is deliberately paired with ValidateFacets (the API write path) and NOT
+// with SanitizeFacets (firehose ingest). On the write path the AppView still
+// controls the bytes and can repair them before signing the record. At ingest
+// the record is already signed by someone else, and an unencoded character in a
+// link target is a schema violation rather than a rendering hazard — the byte
+// ranges are what could slice content, and those are checked separately. Making
+// the firehose drop these facets would strip links out of already-federated
+// records on reindex, trading a validation nit for visible content loss.
+//
+// Structurally malformed facets and features are skipped rather than reported:
+// callers run ValidateFacets first, which is what reports those. The one
+// structural rule this function owns is a #link feature carrying no uri —
+// checkKnownFeature has no #link arm, so nothing else rejects it.
+func NormalizeLinkURIs(facets []interface{}) error {
+	for i, entry := range facets {
+		facet, ok := entry.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		features, ok := facet["features"].([]interface{})
+		if !ok {
+			continue
+		}
+		for j, featureRaw := range features {
+			feature, ok := featureRaw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if featureType, _ := feature["$type"].(string); featureType != featureTypeLink {
+				continue
+			}
+			raw, ok := feature["uri"].(string)
+			if !ok || raw == "" {
+				return fmt.Errorf("facet %d: features[%d] (%s): missing required 'uri' string",
+					i, j, featureTypeLink)
+			}
+			normalized, err := validation.NormalizeURI(raw)
+			if err != nil {
+				return fmt.Errorf("facet %d: features[%d] (%s): %w", i, j, featureTypeLink, err)
+			}
+			feature["uri"] = normalized
+		}
+	}
+	return nil
 }
 
 // checkFacet validates the structure of a single facet entry: an object with a

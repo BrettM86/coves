@@ -37,10 +37,21 @@ var (
 type ValidationError struct {
 	Field   string
 	Message string
+	// Err is the underlying cause, when there is one. It keeps sentinels from
+	// packages like internal/validation matchable with errors.Is after the
+	// error has been given field context — without it, wrapping a typed error
+	// here would flatten it to a string and the sentinel would be unreachable
+	// from any caller.
+	Err error
 }
 
 func (e *ValidationError) Error() string {
 	return fmt.Sprintf("validation error (%s): %s", e.Field, e.Message)
+}
+
+// Unwrap exposes the underlying cause to errors.Is/errors.As.
+func (e *ValidationError) Unwrap() error {
+	return e.Err
 }
 
 // NewValidationError creates a new validation error
@@ -48,6 +59,16 @@ func NewValidationError(field, message string) error {
 	return &ValidationError{
 		Field:   field,
 		Message: message,
+	}
+}
+
+// NewValidationErrorFrom creates a validation error that keeps cause matchable
+// via errors.Is while presenting a field-scoped message to the client.
+func NewValidationErrorFrom(field string, cause error) error {
+	return &ValidationError{
+		Field:   field,
+		Message: cause.Error(),
+		Err:     cause,
 	}
 }
 

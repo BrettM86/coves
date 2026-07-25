@@ -520,3 +520,67 @@ class TestRichTextFormatterCitations:
         assert matching, (
             f"expected multi-byte-aware link facet at bytes {start_byte}..{end_byte}; got {result['facets']}"
         )
+
+
+class TestAddLinkSanitizesURIs:
+    """
+    facet#link.uri carries the same `format: uri` as the embed fields, so a
+    citation URL with a raw accented character invalidates the whole record.
+    """
+
+    def _builder(self):
+        from src.richtext_formatter import RichTextBuilder
+        return RichTextBuilder()
+
+    def test_link_uri_is_encoded(self):
+        builder = self._builder()
+        builder.add_link("Kagi", "https://kagi.com/news/pokémon/")
+        assert builder.facets[0]["features"][0]["uri"] == (
+            "https://kagi.com/news/pok%C3%A9mon/"
+        )
+
+    def test_reserved_escape_in_link_is_preserved(self):
+        builder = self._builder()
+        builder.add_link("Archived", "https://web.archive.org/a%2Fb/café")
+        assert builder.facets[0]["features"][0]["uri"] == (
+            "https://web.archive.org/a%2Fb/caf%C3%A9"
+        )
+
+    def test_unusable_uri_degrades_to_plain_text(self):
+        builder = self._builder()
+        builder.add_link("just words", "not a url at all")
+        assert "".join(builder.content_parts) == "just words"
+        assert builder.facets == []
+
+    def test_forbidden_scheme_degrades_to_plain_text(self):
+        """A javascript: target must never become a rendered link facet."""
+        builder = self._builder()
+        builder.add_link("click me", "javascript:alert(document.cookie)")
+        assert "".join(builder.content_parts) == "click me"
+        assert builder.facets == []
+
+    def test_degraded_link_leaves_later_byte_offsets_correct(self):
+        """
+        The docstring claims offsets are unaffected by the fallback. Emitting the
+        text without a facet must keep every subsequent facet aligned, or the
+        whole annotation stream slides.
+        """
+        builder = self._builder()
+        builder.add_link("bad", "not a url at all")   # degrades, no facet
+        builder.add_link("gòòd", "https://example.com/café")
+
+        content = "".join(builder.content_parts)
+        assert content == "badgòòd"
+        assert len(builder.facets) == 1
+
+        index = builder.facets[0]["index"]
+        encoded = content.encode("utf-8")
+        # The surviving facet must slice exactly the text it annotates.
+        assert encoded[index["byteStart"]:index["byteEnd"]].decode("utf-8") == "gòòd"
+
+    def test_logs_do_not_leak_the_rejected_uri(self, caplog):
+        import logging
+        builder = self._builder()
+        with caplog.at_level(logging.WARNING):
+            builder.add_link("x", "https://example.com/a?token=SUPERSECRETVALUE\x00")
+        assert "SUPERSECRETVALUE" not in caplog.text

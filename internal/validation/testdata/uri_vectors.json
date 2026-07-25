@@ -1,0 +1,249 @@
+{
+  "_comment": [
+    "Shared conformance vectors for the atproto `uri` normalizer.",
+    "",
+    "Consumed by BOTH internal/validation/uri_test.go and the Python bridges'",
+    "aggregators/*/tests/test_uri_sanitizer.py. This file is the single source of",
+    "truth for the transform: the Go and Python implementations are independent,",
+    "and a comment claiming they are 'kept in step' is not enforceable — this is.",
+    "A one-sided change to either implementation turns the other's suite red.",
+    "",
+    "Each case has an `input` and either an `output` (normalization succeeds and",
+    "must produce exactly this string) or an `error` naming the failure class.",
+    "Error classes map to Go sentinels in uri.go and to the message substrings",
+    "asserted by the Python tests:",
+    "  empty            -> ErrURIEmpty",
+    "  no_scheme        -> ErrURINoScheme",
+    "  bad_scheme       -> ErrURIBadScheme",
+    "  scheme_forbidden -> ErrURISchemeNotAllowed",
+    "  too_long         -> ErrURITooLong",
+    "  unnormalizable   -> ErrURIUnnormalizable (includes punycode failures)"
+  ],
+  "cases": [
+    {
+      "name": "plain ascii url is untouched",
+      "input": "https://example.com/article",
+      "output": "https://example.com/article"
+    },
+    {
+      "name": "the production bug: accented path byte is percent-encoded",
+      "input": "https://kagi.com/news/rudy_gobert_pokémon_lineup/",
+      "output": "https://kagi.com/news/rudy_gobert_pok%C3%A9mon_lineup/"
+    },
+    {
+      "name": "existing percent-escapes are not double-encoded",
+      "input": "https://example.com/rudy_gobert_pok%C3%A9mon_lineup/",
+      "output": "https://example.com/rudy_gobert_pok%C3%A9mon_lineup/"
+    },
+    {
+      "name": "reserved chars stay escaped: %2F must NOT become a path separator",
+      "input": "https://example.com/a%2Fb/café",
+      "output": "https://example.com/a%2Fb/caf%C3%A9"
+    },
+    {
+      "name": "archive-style nested url survives intact",
+      "input": "https://web.archive.org/web/2020/https%3A%2F%2Fexample.com/café",
+      "output": "https://web.archive.org/web/2020/https%3A%2F%2Fexample.com/caf%C3%A9"
+    },
+    {
+      "name": "bare percent that is not an escape is preserved alongside encoding",
+      "input": "https://example.com/100%discount/café",
+      "output": "https://example.com/100%discount/caf%C3%A9"
+    },
+    {
+      "name": "bare percent alone is already conforming",
+      "input": "https://example.com/100%discount",
+      "output": "https://example.com/100%discount"
+    },
+    {
+      "name": "multibyte CJK path",
+      "input": "https://example.com/記事/1",
+      "output": "https://example.com/%E8%A8%98%E4%BA%8B/1"
+    },
+    {
+      "name": "emoji path",
+      "input": "https://example.com/🎉",
+      "output": "https://example.com/%F0%9F%8E%89"
+    },
+    {
+      "name": "space in path",
+      "input": "https://example.com/with space",
+      "output": "https://example.com/with%20space"
+    },
+    {
+      "name": "interior tab is escaped, never deleted",
+      "input": "https://example.com/a\tb/café",
+      "output": "https://example.com/a%09b/caf%C3%A9"
+    },
+    {
+      "name": "interior newline is escaped, never deleted",
+      "input": "https://example.com/a\nb/café",
+      "output": "https://example.com/a%0Ab/caf%C3%A9"
+    },
+    {
+      "name": "non-ascii query string",
+      "input": "https://example.com/search?q=pokémon&page=1",
+      "output": "https://example.com/search?q=pok%C3%A9mon&page=1"
+    },
+    {
+      "name": "non-ascii fragment",
+      "input": "https://example.com/a#pokémon",
+      "output": "https://example.com/a#pok%C3%A9mon"
+    },
+    {
+      "name": "query and fragment that already conform",
+      "input": "https://example.com/a?b=c&d=e#frag",
+      "output": "https://example.com/a?b=c&d=e#frag"
+    },
+    {
+      "name": "non-ascii host is punycoded, not percent-encoded",
+      "input": "https://exämple.com/path",
+      "output": "https://xn--exmple-cua.com/path"
+    },
+    {
+      "name": "uppercase non-ascii host case-folds to the canonical label",
+      "input": "https://EXÄMPLE.com/x",
+      "output": "https://xn--exmple-cua.com/x"
+    },
+    {
+      "name": "sharp s maps per UTS 46 non-transitional",
+      "input": "https://faß.de/x",
+      "output": "https://xn--fa-hia.de/x"
+    },
+    {
+      "name": "non-ascii host keeps its port",
+      "input": "https://exämple.com:8443/path",
+      "output": "https://xn--exmple-cua.com:8443/path"
+    },
+    {
+      "name": "non-ascii host and path together",
+      "input": "https://exämple.com/pokémon",
+      "output": "https://xn--exmple-cua.com/pok%C3%A9mon"
+    },
+    {
+      "name": "ascii host with port is untouched while path encodes",
+      "input": "https://example.com:8443/pokémon",
+      "output": "https://example.com:8443/pok%C3%A9mon"
+    },
+    {
+      "name": "non-ascii userinfo is percent-encoded, host is punycoded",
+      "input": "https://usér:pw@exämple.com/p",
+      "output": "https://us%C3%A9r:pw@xn--exmple-cua.com/p"
+    },
+    {
+      "name": "ipv6 literal with non-ascii userinfo keeps its brackets",
+      "input": "https://üser@[2001:db8::1]:8080/p",
+      "output": "https://%C3%BCser@[2001:db8::1]:8080/p"
+    },
+    {
+      "name": "at-uri with non-ascii rkey encodes without misreading the did as a port",
+      "input": "at://did:plc:abc123/social.coves.community.post/héllo",
+      "output": "at://did:plc:abc123/social.coves.community.post/h%C3%A9llo"
+    },
+    {
+      "name": "at-uri that already conforms",
+      "input": "at://did:plc:abc123/social.coves.community.post/3kabc",
+      "output": "at://did:plc:abc123/social.coves.community.post/3kabc"
+    },
+    {
+      "name": "opaque uri (no authority) encodes its body",
+      "input": "urn:isbn:café-2024",
+      "output": "urn:isbn:caf%C3%A9-2024"
+    },
+    {
+      "name": "opaque uri with query and fragment encodes throughout",
+      "input": "magnet:?xt=urn:btih:café&dn=naïve",
+      "output": "magnet:?xt=urn:btih:caf%C3%A9&dn=na%C3%AFve"
+    },
+    {
+      "name": "surrounding whitespace is stripped, not escaped",
+      "input": "  https://example.com/article\n",
+      "output": "https://example.com/article"
+    },
+    {
+      "name": "uppercase scheme is lowercased",
+      "input": "HTTPS://example.com/article",
+      "output": "https://example.com/article"
+    },
+    {
+      "name": "boundary: 0x21 and 0x7E are conforming and pass through",
+      "input": "https://example.com/!~",
+      "output": "https://example.com/!~"
+    },
+    {
+      "name": "boundary: 0x7F DEL is escaped",
+      "input": "https://example.com/ab/é",
+      "output": "https://example.com/a%7Fb/%C3%A9"
+    },
+    {
+      "name": "empty string",
+      "input": "",
+      "error": "empty"
+    },
+    {
+      "name": "whitespace only",
+      "input": "   \t\n ",
+      "error": "empty"
+    },
+    {
+      "name": "bare hostname with no scheme",
+      "input": "example.com/path",
+      "error": "no_scheme"
+    },
+    {
+      "name": "free text is not a uri",
+      "input": "not a url at all",
+      "error": "no_scheme"
+    },
+    {
+      "name": "scheme with digits cannot appear in the atproto format",
+      "input": "s3://bucket/key",
+      "error": "bad_scheme"
+    },
+    {
+      "name": "javascript scheme is refused rather than repaired",
+      "input": "javascript:alert('é')",
+      "error": "scheme_forbidden"
+    },
+    {
+      "name": "data scheme is refused",
+      "input": "data:text/html,<script>é</script>",
+      "error": "scheme_forbidden"
+    },
+    {
+      "name": "vbscript scheme is refused",
+      "input": "vbscript:msgbox(1)",
+      "error": "scheme_forbidden"
+    },
+    {
+      "name": "file scheme is refused",
+      "input": "file:///etc/passwd",
+      "error": "scheme_forbidden"
+    },
+    {
+      "name": "mailto scheme is refused (harvesting vector, not a fetchable resource)",
+      "input": "mailto:josé@example.com",
+      "error": "scheme_forbidden"
+    },
+    {
+      "name": "mailto scheme is refused even when already conforming",
+      "input": "mailto:someone@example.com",
+      "error": "scheme_forbidden"
+    },
+    {
+      "name": "scheme with no body names no resource",
+      "input": "https:",
+      "error": "unnormalizable"
+    },
+    {
+      "name": "empty host label is not resolvable",
+      "input": "https://ä..com/x",
+      "error": "unnormalizable"
+    },
+    {
+      "name": "over-long host label is not resolvable",
+      "input": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaä.com/",
+      "error": "unnormalizable"
+    }
+  ]
+}
