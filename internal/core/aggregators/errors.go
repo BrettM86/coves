@@ -2,7 +2,8 @@ package aggregators
 
 import (
 	"errors"
-	"fmt"
+
+	coreerrors "Coves/internal/core/errors"
 )
 
 // Domain errors
@@ -26,22 +27,15 @@ var (
 	ErrOAuthSessionMismatch = errors.New("OAuth session DID does not match aggregator DID")
 )
 
-// ValidationError represents a validation error with field details
-type ValidationError struct {
-	Field   string
-	Message string
-}
-
-func (e *ValidationError) Error() string {
-	return fmt.Sprintf("validation error: %s - %s", e.Field, e.Message)
-}
+// ValidationError is the shared validation error type. It is aliased rather
+// than redefined so that one errors.As at the API boundary matches validation
+// failures from every domain package, instead of each handler needing to know
+// which domains it might hear from.
+type ValidationError = coreerrors.ValidationError
 
 // NewValidationError creates a new validation error
 func NewValidationError(field, message string) error {
-	return &ValidationError{
-		Field:   field,
-		Message: message,
-	}
+	return coreerrors.NewValidationError(field, message)
 }
 
 // Error classification helpers for handlers to map to HTTP status codes
@@ -52,8 +46,9 @@ func IsNotFound(err error) bool {
 }
 
 func IsValidationError(err error) bool {
-	var validationErr *ValidationError
-	return errors.As(err, &validationErr) || errors.Is(err, ErrInvalidConfig) || errors.Is(err, ErrConfigSchemaValidation)
+	return coreerrors.IsValidationError(err) ||
+		errors.Is(err, ErrInvalidConfig) ||
+		errors.Is(err, ErrConfigSchemaValidation)
 }
 
 func IsUnauthorized(err error) bool {

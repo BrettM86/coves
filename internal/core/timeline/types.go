@@ -1,6 +1,7 @@
 package timeline
 
 import (
+	coreerrors "Coves/internal/core/errors"
 	"Coves/internal/core/posts"
 	"context"
 	"errors"
@@ -85,26 +86,22 @@ var (
 	ErrUnauthorized  = errors.New("unauthorized")
 )
 
-// ValidationError represents a validation error with field context
-type ValidationError struct {
-	Field   string
-	Message string
-}
-
-func (e *ValidationError) Error() string {
-	return e.Message
-}
+// ValidationError is the shared validation error type. It is aliased rather
+// than redefined so that one errors.As at the API boundary matches validation
+// failures from every domain package, instead of each handler needing to know
+// which domains it might hear from.
+type ValidationError = coreerrors.ValidationError
 
 // NewValidationError creates a new validation error
 func NewValidationError(field, message string) error {
-	return &ValidationError{
-		Field:   field,
-		Message: message,
-	}
+	return coreerrors.NewValidationError(field, message)
 }
 
-// IsValidationError checks if an error is a validation error
+// IsValidationError checks if an error is a validation error.
+//
+// This unwraps, unlike the bare type assertion it replaces: a validation error
+// that any layer wrapped with %w for context used to stop being recognised
+// here, and fell through to a 500 instead of a 400.
 func IsValidationError(err error) bool {
-	_, ok := err.(*ValidationError)
-	return ok
+	return coreerrors.IsValidationError(err)
 }

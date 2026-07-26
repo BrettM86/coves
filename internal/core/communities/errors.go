@@ -2,7 +2,8 @@ package communities
 
 import (
 	"errors"
-	"fmt"
+
+	coreerrors "Coves/internal/core/errors"
 )
 
 // Domain errors for communities
@@ -47,22 +48,15 @@ var (
 	ErrInvalidInput = errors.New("invalid input")
 )
 
-// ValidationError wraps input validation errors with field details
-type ValidationError struct {
-	Field   string
-	Message string
-}
-
-func (e *ValidationError) Error() string {
-	return fmt.Sprintf("%s: %s", e.Field, e.Message)
-}
+// ValidationError is the shared validation error type. It is aliased rather
+// than redefined so that one errors.As at the API boundary matches validation
+// failures from every domain package, instead of each handler needing to know
+// which domains it might hear from.
+type ValidationError = coreerrors.ValidationError
 
 // NewValidationError creates a new validation error
 func NewValidationError(field, message string) *ValidationError {
-	return &ValidationError{
-		Field:   field,
-		Message: message,
-	}
+	return coreerrors.NewValidationError(field, message)
 }
 
 // IsNotFound checks if error is a "not found" error
@@ -83,6 +77,5 @@ func IsConflict(err error) bool {
 
 // IsValidationError checks if error is a validation error
 func IsValidationError(err error) bool {
-	var valErr *ValidationError
-	return errors.As(err, &valErr) || errors.Is(err, ErrInvalidInput)
+	return coreerrors.IsValidationError(err) || errors.Is(err, ErrInvalidInput)
 }

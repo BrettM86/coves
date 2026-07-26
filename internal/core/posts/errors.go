@@ -3,6 +3,9 @@ package posts
 import (
 	"errors"
 	"fmt"
+	"strings"
+
+	coreerrors "Coves/internal/core/errors"
 )
 
 // Sentinel errors for common post operations
@@ -33,49 +36,26 @@ var (
 	ErrActorNotFound = errors.New("actor not found")
 )
 
-// ValidationError represents a validation error with field context
-type ValidationError struct {
-	Field   string
-	Message string
-	// Err is the underlying cause, when there is one. It keeps sentinels from
-	// packages like internal/validation matchable with errors.Is after the
-	// error has been given field context — without it, wrapping a typed error
-	// here would flatten it to a string and the sentinel would be unreachable
-	// from any caller.
-	Err error
-}
-
-func (e *ValidationError) Error() string {
-	return fmt.Sprintf("validation error (%s): %s", e.Field, e.Message)
-}
-
-// Unwrap exposes the underlying cause to errors.Is/errors.As.
-func (e *ValidationError) Unwrap() error {
-	return e.Err
-}
+// ValidationError is the shared validation error type. It is aliased rather
+// than redefined so that one errors.As at the API boundary matches validation
+// failures from every domain package, instead of each handler needing to know
+// which domains it might hear from.
+type ValidationError = coreerrors.ValidationError
 
 // NewValidationError creates a new validation error
 func NewValidationError(field, message string) error {
-	return &ValidationError{
-		Field:   field,
-		Message: message,
-	}
+	return coreerrors.NewValidationError(field, message)
 }
 
 // NewValidationErrorFrom creates a validation error that keeps cause matchable
 // via errors.Is while presenting a field-scoped message to the client.
 func NewValidationErrorFrom(field string, cause error) error {
-	return &ValidationError{
-		Field:   field,
-		Message: cause.Error(),
-		Err:     cause,
-	}
+	return coreerrors.NewValidationErrorFrom(field, cause)
 }
 
 // IsValidationError checks if error is a validation error
 func IsValidationError(err error) bool {
-	var valErr *ValidationError
-	return errors.As(err, &valErr)
+	return coreerrors.IsValidationError(err)
 }
 
 // ContentRuleViolation represents a violation of community content rules
@@ -103,51 +83,41 @@ func IsContentRuleViolation(err error) bool {
 	return errors.As(err, &violation)
 }
 
-// NotFoundError represents a resource not found error
-type NotFoundError struct {
-	Resource string // e.g., "post", "community"
-	ID       string // Resource identifier
-}
-
-func (e *NotFoundError) Error() string {
-	return fmt.Sprintf("%s not found: %s", e.Resource, e.ID)
-}
+// NotFoundError is the shared not-found error type, aliased for the same
+// reason as ValidationError above.
+type NotFoundError = coreerrors.NotFoundError
 
 // NewNotFoundError creates a new not found error
 func NewNotFoundError(resource, id string) error {
-	return &NotFoundError{
-		Resource: resource,
-		ID:       id,
-	}
+	return coreerrors.NewNotFoundError(resource, id)
 }
 
-// IsNotFound checks if error is a not found error
+// IsNotFound checks if error is a not found error.
+//
+// errors.Is rather than == : these sentinels travel up through service layers
+// that wrap them with %w for context, and an == comparison stops matching the
+// moment anyone adds that context — silently turning a 404 into a 500.
 func IsNotFound(err error) bool {
-	var notFoundErr *NotFoundError
-	return errors.As(err, &notFoundErr) || err == ErrCommunityNotFound || err == ErrNotFound
+	return coreerrors.IsNotFound(err) ||
+		errors.Is(err, ErrCommunityNotFound) ||
+		errors.Is(err, ErrNotFound)
 }
 
-// IsConflict checks if error is due to duplicate/conflict
+// IsConflict checks if error is due to duplicate/conflict.
+//
+// This inspects the message because the conflict usually originates in the
+// PostgreSQL driver as a unique-violation string rather than as a typed error
+// the repository translates. Typed conflicts (coreerrors.ConflictError) are
+// checked first so callers that do return one are matched exactly.
 func IsConflict(err error) bool {
 	if err == nil {
 		return false
 	}
-	// Check for common conflict indicators in error message
-	errStr := err.Error()
-	return contains(errStr, "already indexed") ||
-		contains(errStr, "duplicate key") ||
-		contains(errStr, "already exists")
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && anySubstring(s, substr)
-}
-
-func anySubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
+	if coreerrors.IsConflict(err) {
+		return true
 	}
-	return false
+	message := err.Error()
+	return strings.Contains(message, "already indexed") ||
+		strings.Contains(message, "duplicate key") ||
+		strings.Contains(message, "already exists")
 }
