@@ -16,13 +16,13 @@ import (
 // --- Mock Repository ---
 
 type mockRepo struct {
-	blockUserFn       func(ctx context.Context, block *UserBlock) (*UserBlock, error)
-	unblockUserFn     func(ctx context.Context, blockerDID, blockedDID string) error
-	getBlockFn        func(ctx context.Context, blockerDID, blockedDID string) (*UserBlock, error)
-	getBlockByURIFn   func(ctx context.Context, recordURI string) (*UserBlock, error)
-	listBlockedFn     func(ctx context.Context, blockerDID string, limit, offset int) ([]*UserBlock, error)
-	isBlockedFn       func(ctx context.Context, blockerDID, blockedDID string) (bool, error)
-	areBlockedFn      func(ctx context.Context, blockerDID string, blockedDIDs []string) (map[string]bool, error)
+	blockUserFn     func(ctx context.Context, block *UserBlock) (*UserBlock, error)
+	unblockUserFn   func(ctx context.Context, blockerDID, blockedDID string) error
+	getBlockFn      func(ctx context.Context, blockerDID, blockedDID string) (*UserBlock, error)
+	getBlockByURIFn func(ctx context.Context, recordURI string) (*UserBlock, error)
+	listBlockedFn   func(ctx context.Context, blockerDID string, limit, offset int) ([]*UserBlock, error)
+	isBlockedFn     func(ctx context.Context, blockerDID, blockedDID string) (bool, error)
+	areBlockedFn    func(ctx context.Context, blockerDID string, blockedDIDs []string) (map[string]bool, error)
 }
 
 func (m *mockRepo) BlockUser(ctx context.Context, block *UserBlock) (*UserBlock, error) {

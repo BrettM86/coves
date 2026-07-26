@@ -70,7 +70,7 @@ func TestBlueskyPostCrossPosting_URLParsing(t *testing.T) {
 		invalidURLs := []string{
 			"https://twitter.com/user/status/123",
 			"https://example.com/post/123",
-			"https://bsky.app/profile/user", // Missing post path
+			"https://bsky.app/profile/user",         // Missing post path
 			"http://bsky.app/profile/user/post/123", // Wrong scheme
 			"",
 		}

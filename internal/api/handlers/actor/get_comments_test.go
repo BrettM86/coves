@@ -133,8 +133,8 @@ func TestGetCommentsHandler_Success(t *testing.T) {
 			return &comments.GetActorCommentsResponse{
 				Comments: []*comments.CommentView{
 					{
-						URI:       "at://did:plc:testuser/social.coves.community.comment/abc123",
-						CID:       "bafytest123",
+						URI: "at://did:plc:testuser/social.coves.community.comment/abc123",
+						CID: "bafytest123",
 						Record: &comments.CommentRecord{
 							Type:      "social.coves.community.comment",
 							Content:   "Test comment content",

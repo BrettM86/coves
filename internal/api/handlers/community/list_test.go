@@ -129,7 +129,9 @@ func (r *listTestRepo) Subscribe(ctx context.Context, subscription *communities.
 func (r *listTestRepo) SubscribeWithCount(ctx context.Context, subscription *communities.Subscription) (*communities.Subscription, error) {
 	return nil, nil
 }
-func (r *listTestRepo) Unsubscribe(ctx context.Context, userDID, communityDID string) error { return nil }
+func (r *listTestRepo) Unsubscribe(ctx context.Context, userDID, communityDID string) error {
+	return nil
+}
 func (r *listTestRepo) UnsubscribeWithCount(ctx context.Context, userDID, communityDID string) error {
 	return nil
 }

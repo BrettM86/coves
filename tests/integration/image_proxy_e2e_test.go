@@ -504,7 +504,7 @@ func createImageProxyTestServerWithCache(t *testing.T, pdsURL string, identityRe
 	cache, err := imageproxycore.NewDiskCache(cacheDir, 1, 0)
 	require.NoError(t, err, "Failed to create disk cache") // 1GB max
 	processor := imageproxycore.NewProcessor()
-	fetcher := imageproxycore.NewPDSFetcher(30 * time.Second, 10)
+	fetcher := imageproxycore.NewPDSFetcher(30*time.Second, 10)
 	config := imageproxycore.Config{
 		Enabled:         true,
 		CachePath:       cacheDir,
@@ -568,7 +568,7 @@ func TestImageProxy_MockPDS(t *testing.T) {
 	cache, err := imageproxycore.NewDiskCache(cacheDir, 1, 0)
 	require.NoError(t, err, "Failed to create disk cache")
 	processor := imageproxycore.NewProcessor()
-	fetcher := imageproxycore.NewPDSFetcher(30 * time.Second, 10)
+	fetcher := imageproxycore.NewPDSFetcher(30*time.Second, 10)
 	config := imageproxycore.Config{
 		Enabled:         true,
 		CachePath:       cacheDir,
@@ -660,7 +660,7 @@ func TestImageProxy_ErrorHandling(t *testing.T) {
 	cache, err := imageproxycore.NewDiskCache(cacheDir, 1, 0)
 	require.NoError(t, err, "Failed to create disk cache")
 	processor := imageproxycore.NewProcessor()
-	fetcher := imageproxycore.NewPDSFetcher(1 * time.Second, 10) // Short timeout
+	fetcher := imageproxycore.NewPDSFetcher(1*time.Second, 10) // Short timeout
 	config := imageproxycore.Config{
 		Enabled:         true,
 		CachePath:       cacheDir,
@@ -773,7 +773,7 @@ func TestImageProxy_UnsupportedFormat(t *testing.T) {
 	cache, err := imageproxycore.NewDiskCache(cacheDir, 1, 0)
 	require.NoError(t, err, "Failed to create disk cache")
 	processor := imageproxycore.NewProcessor()
-	fetcher := imageproxycore.NewPDSFetcher(30 * time.Second, 10)
+	fetcher := imageproxycore.NewPDSFetcher(30*time.Second, 10)
 	config := imageproxycore.DefaultConfig()
 
 	service, err := imageproxycore.NewService(cache, processor, fetcher, config)
@@ -841,7 +841,7 @@ func TestImageProxy_LargeImage(t *testing.T) {
 	cache, err := imageproxycore.NewDiskCache(cacheDir, 1, 0)
 	require.NoError(t, err, "Failed to create disk cache")
 	processor := imageproxycore.NewProcessor()
-	fetcher := imageproxycore.NewPDSFetcher(30 * time.Second, 10)
+	fetcher := imageproxycore.NewPDSFetcher(30*time.Second, 10)
 	config := imageproxycore.DefaultConfig()
 
 	service, err := imageproxycore.NewService(cache, processor, fetcher, config)
@@ -907,7 +907,7 @@ func TestImageProxy_ResponseJSON(t *testing.T) {
 	cache, err := imageproxycore.NewDiskCache(cacheDir, 1, 0)
 	require.NoError(t, err, "Failed to create disk cache")
 	processor := imageproxycore.NewProcessor()
-	fetcher := imageproxycore.NewPDSFetcher(1 * time.Second, 10)
+	fetcher := imageproxycore.NewPDSFetcher(1*time.Second, 10)
 	config := imageproxycore.DefaultConfig()
 
 	service, err := imageproxycore.NewService(cache, processor, fetcher, config)

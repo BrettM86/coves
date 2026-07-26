@@ -54,40 +54,40 @@ func ResetImageProxyConfigForTesting() {
 // Community represents a Coves community indexed from the firehose
 // Communities are federated, instance-scoped forums built on atProto
 type Community struct {
-	CreatedAt              time.Time `json:"createdAt" db:"created_at"`
-	UpdatedAt              time.Time `json:"updatedAt" db:"updated_at"`
-	RecordURI              string    `json:"recordUri,omitempty" db:"record_uri"`
-	FederatedFrom          string    `json:"federatedFrom,omitempty" db:"federated_from"`
-	DisplayName            string    `json:"displayName" db:"display_name"`
-	Description            string    `json:"description" db:"description"`
-	PDSURL                 string    `json:"-" db:"pds_url"`
-	AvatarCID              string    `json:"avatarCid,omitempty" db:"avatar_cid"`
-	BannerCID              string    `json:"bannerCid,omitempty" db:"banner_cid"`
-	OwnerDID               string    `json:"ownerDid" db:"owner_did"`
-	CreatedByDID           string    `json:"createdByDid" db:"created_by_did"`
-	HostedByDID            string    `json:"hostedByDid" db:"hosted_by_did"`
-	PDSEmail               string    `json:"-" db:"pds_email"`
-	PDSPassword            string    `json:"-" db:"pds_password_encrypted"`
-	Name                   string    `json:"name" db:"name"`                 // Short name (e.g., "gardening")
-	DisplayHandle          string    `json:"displayHandle,omitempty" db:"-"` // UI hint: !gardening@coves.social (computed, not stored)
-	RecordCID              string    `json:"recordCid,omitempty" db:"record_cid"`
-	FederatedID            string    `json:"federatedId,omitempty" db:"federated_id"`
-	PDSAccessToken         string    `json:"-" db:"pds_access_token"`
-	SigningKeyPEM          string    `json:"-" db:"signing_key_encrypted"`
-	ModerationType         string    `json:"moderationType,omitempty" db:"moderation_type"`
-	Handle                 string    `json:"handle" db:"handle"` // Canonical atProto handle (e.g., gardening.community.coves.social)
-	PDSRefreshToken        string    `json:"-" db:"pds_refresh_token"`
-	Visibility             string    `json:"visibility" db:"visibility"`
-	RotationKeyPEM         string    `json:"-" db:"rotation_key_encrypted"`
-	DID                    string    `json:"did" db:"did"`
-	ContentWarnings        []string  `json:"contentWarnings,omitempty" db:"content_warnings"`
-	DescriptionFacets      []byte    `json:"descriptionFacets,omitempty" db:"description_facets"`
-	PostCount              int       `json:"postCount" db:"post_count"`
-	SubscriberCount        int       `json:"subscriberCount" db:"subscriber_count"`
-	MemberCount            int       `json:"memberCount" db:"member_count"`
-	ID                     int                    `json:"id" db:"id"`
-	AllowExternalDiscovery bool                   `json:"allowExternalDiscovery" db:"allow_external_discovery"`
-	Viewer                 *CommunityViewerState  `json:"viewer,omitempty" db:"-"`
+	CreatedAt              time.Time             `json:"createdAt" db:"created_at"`
+	UpdatedAt              time.Time             `json:"updatedAt" db:"updated_at"`
+	RecordURI              string                `json:"recordUri,omitempty" db:"record_uri"`
+	FederatedFrom          string                `json:"federatedFrom,omitempty" db:"federated_from"`
+	DisplayName            string                `json:"displayName" db:"display_name"`
+	Description            string                `json:"description" db:"description"`
+	PDSURL                 string                `json:"-" db:"pds_url"`
+	AvatarCID              string                `json:"avatarCid,omitempty" db:"avatar_cid"`
+	BannerCID              string                `json:"bannerCid,omitempty" db:"banner_cid"`
+	OwnerDID               string                `json:"ownerDid" db:"owner_did"`
+	CreatedByDID           string                `json:"createdByDid" db:"created_by_did"`
+	HostedByDID            string                `json:"hostedByDid" db:"hosted_by_did"`
+	PDSEmail               string                `json:"-" db:"pds_email"`
+	PDSPassword            string                `json:"-" db:"pds_password_encrypted"`
+	Name                   string                `json:"name" db:"name"`                 // Short name (e.g., "gardening")
+	DisplayHandle          string                `json:"displayHandle,omitempty" db:"-"` // UI hint: !gardening@coves.social (computed, not stored)
+	RecordCID              string                `json:"recordCid,omitempty" db:"record_cid"`
+	FederatedID            string                `json:"federatedId,omitempty" db:"federated_id"`
+	PDSAccessToken         string                `json:"-" db:"pds_access_token"`
+	SigningKeyPEM          string                `json:"-" db:"signing_key_encrypted"`
+	ModerationType         string                `json:"moderationType,omitempty" db:"moderation_type"`
+	Handle                 string                `json:"handle" db:"handle"` // Canonical atProto handle (e.g., gardening.community.coves.social)
+	PDSRefreshToken        string                `json:"-" db:"pds_refresh_token"`
+	Visibility             string                `json:"visibility" db:"visibility"`
+	RotationKeyPEM         string                `json:"-" db:"rotation_key_encrypted"`
+	DID                    string                `json:"did" db:"did"`
+	ContentWarnings        []string              `json:"contentWarnings,omitempty" db:"content_warnings"`
+	DescriptionFacets      []byte                `json:"descriptionFacets,omitempty" db:"description_facets"`
+	PostCount              int                   `json:"postCount" db:"post_count"`
+	SubscriberCount        int                   `json:"subscriberCount" db:"subscriber_count"`
+	MemberCount            int                   `json:"memberCount" db:"member_count"`
+	ID                     int                   `json:"id" db:"id"`
+	AllowExternalDiscovery bool                  `json:"allowExternalDiscovery" db:"allow_external_discovery"`
+	Viewer                 *CommunityViewerState `json:"viewer,omitempty" db:"-"`
 }
 
 // CommunityViewerState contains viewer-specific state for community list views.

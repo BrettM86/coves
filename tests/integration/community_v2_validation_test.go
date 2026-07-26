@@ -274,7 +274,7 @@ func TestCommunityConsumer_HandleField(t *testing.T) {
 				Record: map[string]interface{}{
 					"$type":      "social.coves.community.profile",
 					"handle":     "c-gamingtest.coves.social", // atProto handle (DNS-resolvable)
-					"name":       "gamingtest",                        // Short name for !mentions
+					"name":       "gamingtest",                // Short name for !mentions
 					"createdBy":  "did:plc:user123",
 					"hostedBy":   "did:web:coves.social",
 					"visibility": "public",

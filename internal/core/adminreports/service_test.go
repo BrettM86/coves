@@ -347,8 +347,8 @@ func TestIsValidReason(t *testing.T) {
 		{"illegal", true},
 		{"other", true},
 		{"invalid", false},
-		{"CSAM", false},  // case-sensitive
-		{"Spam", false},  // case-sensitive
+		{"CSAM", false}, // case-sensitive
+		{"Spam", false}, // case-sensitive
 		{"", false},
 		{" spam", false}, // with space
 	}

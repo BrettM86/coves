@@ -892,11 +892,11 @@ func TestGetAPIKeyResponse_OmitsEmptyOptionalFields(t *testing.T) {
 
 // mockAPIKeyService implements aggregators.APIKeyServiceInterface for testing
 type mockAPIKeyService struct {
-	generateKeyFunc            func(ctx context.Context, aggregatorDID string, oauthSession *oauthlib.ClientSessionData) (plainKey string, keyPrefix string, err error)
-	getAPIKeyInfoFunc          func(ctx context.Context, aggregatorDID string) (*aggregators.APIKeyInfo, error)
-	revokeKeyFunc              func(ctx context.Context, aggregatorDID string) error
-	failedLastUsedUpdates      int64
-	failedNonceUpdates         int64
+	generateKeyFunc       func(ctx context.Context, aggregatorDID string, oauthSession *oauthlib.ClientSessionData) (plainKey string, keyPrefix string, err error)
+	getAPIKeyInfoFunc     func(ctx context.Context, aggregatorDID string) (*aggregators.APIKeyInfo, error)
+	revokeKeyFunc         func(ctx context.Context, aggregatorDID string) error
+	failedLastUsedUpdates int64
+	failedNonceUpdates    int64
 }
 
 func (m *mockAPIKeyService) GenerateKey(ctx context.Context, aggregatorDID string, oauthSession *oauthlib.ClientSessionData) (string, string, error) {

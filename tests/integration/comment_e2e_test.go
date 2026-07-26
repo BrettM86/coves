@@ -1227,4 +1227,3 @@ func TestCommentE2E_ValidationErrors(t *testing.T) {
 		}
 	})
 }
-

@@ -18,8 +18,8 @@ import (
 
 // UserHandler handles user-related XRPC endpoints
 type UserHandler struct {
-	userService    users.UserService
-	userBlockRepo  userblocks.Repository // Optional: for hydrating viewer.blocking on profiles
+	userService   users.UserService
+	userBlockRepo userblocks.Repository // Optional: for hydrating viewer.blocking on profiles
 }
 
 // NewUserHandler creates a new user handler

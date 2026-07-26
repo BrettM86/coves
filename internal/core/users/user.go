@@ -79,7 +79,7 @@ type ProfileViewDetailed struct {
 	Stats       *ProfileStats `json:"stats,omitempty"`
 	DisplayName string        `json:"displayName,omitempty"`
 	// Bio is the user's biography/description. Maps to JSON "description" for atProto lexicon compatibility.
-	Bio    string `json:"description,omitempty"`
+	Bio    string              `json:"description,omitempty"`
 	Avatar string              `json:"avatar,omitempty"` // URL, not CID
 	Banner string              `json:"banner,omitempty"` // URL, not CID
 	Viewer *ProfileViewerState `json:"viewer,omitempty"`

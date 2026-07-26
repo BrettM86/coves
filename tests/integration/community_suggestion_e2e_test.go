@@ -21,14 +21,14 @@ import (
 
 // suggestionResponse represents the JSON response for a single community suggestion
 type suggestionResponse struct {
-	ID           int64   `json:"id"`
-	Title        string  `json:"title"`
-	Description  string  `json:"description"`
-	SubmitterDID string  `json:"submitterDid"`
-	Status       string  `json:"status"`
-	VoteCount    int     `json:"voteCount"`
-	CreatedAt    string  `json:"createdAt"`
-	UpdatedAt    string  `json:"updatedAt"`
+	ID           int64  `json:"id"`
+	Title        string `json:"title"`
+	Description  string `json:"description"`
+	SubmitterDID string `json:"submitterDid"`
+	Status       string `json:"status"`
+	VoteCount    int    `json:"voteCount"`
+	CreatedAt    string `json:"createdAt"`
+	UpdatedAt    string `json:"updatedAt"`
 	Viewer       *struct {
 		Vote *int `json:"vote"`
 	} `json:"viewer"`

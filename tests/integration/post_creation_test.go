@@ -144,9 +144,9 @@ func TestPostCreation_Basic(t *testing.T) {
 		// Extract name from handle: "c-gardening.coves.social" -> "gardening"
 		// Scoped format: !gardening@coves.social
 		handleParts := strings.Split(testCommunity.Handle, ".")
-		communityNameWithPrefix := handleParts[0] // "c-gardening"
+		communityNameWithPrefix := handleParts[0]                          // "c-gardening"
 		communityName := strings.TrimPrefix(communityNameWithPrefix, "c-") // "gardening"
-		instanceDomain := strings.Join(handleParts[1:], ".") // "coves.social"
+		instanceDomain := strings.Join(handleParts[1:], ".")               // "coves.social"
 		scopedHandle := fmt.Sprintf("!%s@%s", communityName, instanceDomain)
 
 		req := posts.CreatePostRequest{

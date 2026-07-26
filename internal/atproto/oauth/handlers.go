@@ -159,11 +159,11 @@ type UserIndexer interface {
 type OAuthHandler struct {
 	client              *OAuthClient
 	store               oauth.ClientAuthStore
-	mobileStore         MobileOAuthStore    // For server-side CSRF validation
-	userIndexer         UserIndexer         // For indexing users after OAuth login
-	devResolver         *DevHandleResolver  // For dev mode: resolve handles via local PDS
-	devAuthResolver     *DevAuthResolver    // For dev mode: bypass HTTPS validation for localhost OAuth
-	allowedRedirectURIs map[string]bool     // Combined allowlist for mobile + external OAuth clients
+	mobileStore         MobileOAuthStore   // For server-side CSRF validation
+	userIndexer         UserIndexer        // For indexing users after OAuth login
+	devResolver         *DevHandleResolver // For dev mode: resolve handles via local PDS
+	devAuthResolver     *DevAuthResolver   // For dev mode: bypass HTTPS validation for localhost OAuth
+	allowedRedirectURIs map[string]bool    // Combined allowlist for mobile + external OAuth clients
 }
 
 // OAuthHandlerOption is a functional option for configuring OAuthHandler

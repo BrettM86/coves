@@ -48,13 +48,13 @@ func TestProcessor_Process_CoverFit(t *testing.T) {
 	proc := NewProcessor()
 
 	tests := []struct {
-		name         string
-		srcWidth     int
-		srcHeight    int
-		preset       Preset
-		wantWidth    int
-		wantHeight   int
-		description  string
+		name        string
+		srcWidth    int
+		srcHeight   int
+		preset      Preset
+		wantWidth   int
+		wantHeight  int
+		description string
 	}{
 		{
 			name:        "landscape image to square avatar",

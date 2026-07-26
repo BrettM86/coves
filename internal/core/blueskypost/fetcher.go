@@ -110,15 +110,15 @@ type blueskyAPIEmbedRecord struct {
 	Record *blueskyAPIViewRecord `json:"record,omitempty"`
 
 	// For record#view - direct viewRecord fields
-	URI        string                 `json:"uri,omitempty"`
-	CID        string                 `json:"cid,omitempty"`
-	Author     *blueskyAPIAuthor      `json:"author,omitempty"`
-	Value      *blueskyAPIRecordValue `json:"value,omitempty"`
-	LikeCount  int                    `json:"likeCount,omitempty"`
-	ReplyCount int                    `json:"replyCount,omitempty"`
-	RepostCount int                   `json:"repostCount,omitempty"`
-	IndexedAt  string                 `json:"indexedAt,omitempty"`
-	Embeds     []json.RawMessage      `json:"embeds,omitempty"`
+	URI         string                 `json:"uri,omitempty"`
+	CID         string                 `json:"cid,omitempty"`
+	Author      *blueskyAPIAuthor      `json:"author,omitempty"`
+	Value       *blueskyAPIRecordValue `json:"value,omitempty"`
+	LikeCount   int                    `json:"likeCount,omitempty"`
+	ReplyCount  int                    `json:"replyCount,omitempty"`
+	RepostCount int                    `json:"repostCount,omitempty"`
+	IndexedAt   string                 `json:"indexedAt,omitempty"`
+	Embeds      []json.RawMessage      `json:"embeds,omitempty"`
 }
 
 // blueskyAPIViewRecord represents the viewRecord structure for quoted posts

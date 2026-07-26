@@ -28,7 +28,7 @@ func TestPDSFetcher_Fetch_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	fetcher := NewPDSFetcher(5 * time.Second, 10)
+	fetcher := NewPDSFetcher(5*time.Second, 10)
 	ctx := context.Background()
 
 	data, err := fetcher.Fetch(ctx, server.URL, "did:plc:test123", "bafyreicid123")
@@ -46,7 +46,7 @@ func TestPDSFetcher_Fetch_NotFound(t *testing.T) {
 	}))
 	defer server.Close()
 
-	fetcher := NewPDSFetcher(5 * time.Second, 10)
+	fetcher := NewPDSFetcher(5*time.Second, 10)
 	ctx := context.Background()
 
 	_, err := fetcher.Fetch(ctx, server.URL, "did:plc:test123", "bafyreicid123")
@@ -64,7 +64,7 @@ func TestPDSFetcher_Fetch_Timeout(t *testing.T) {
 	defer server.Close()
 
 	// Use a very short timeout
-	fetcher := NewPDSFetcher(50 * time.Millisecond, 10)
+	fetcher := NewPDSFetcher(50*time.Millisecond, 10)
 	ctx := context.Background()
 
 	_, err := fetcher.Fetch(ctx, server.URL, "did:plc:test123", "bafyreicid123")
@@ -74,7 +74,7 @@ func TestPDSFetcher_Fetch_Timeout(t *testing.T) {
 }
 
 func TestPDSFetcher_Fetch_NetworkError(t *testing.T) {
-	fetcher := NewPDSFetcher(5 * time.Second, 10)
+	fetcher := NewPDSFetcher(5*time.Second, 10)
 	ctx := context.Background()
 
 	// Use an invalid URL that will cause a network error
@@ -92,7 +92,7 @@ func TestPDSFetcher_Fetch_ContextCancellation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	fetcher := NewPDSFetcher(5 * time.Second, 10)
+	fetcher := NewPDSFetcher(5*time.Second, 10)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Cancel the context immediately
@@ -114,7 +114,7 @@ func TestPDSFetcher_Fetch_ServerError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	fetcher := NewPDSFetcher(5 * time.Second, 10)
+	fetcher := NewPDSFetcher(5*time.Second, 10)
 	ctx := context.Background()
 
 	_, err := fetcher.Fetch(ctx, server.URL, "did:plc:test123", "bafyreicid123")
@@ -132,7 +132,7 @@ func TestPDSFetcher_Fetch_URLConstruction(t *testing.T) {
 	}))
 	defer server.Close()
 
-	fetcher := NewPDSFetcher(5 * time.Second, 10)
+	fetcher := NewPDSFetcher(5*time.Second, 10)
 	ctx := context.Background()
 
 	_, err := fetcher.Fetch(ctx, server.URL, "did:plc:abc123", "bafyreicid456")
