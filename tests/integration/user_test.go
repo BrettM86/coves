@@ -197,8 +197,20 @@ func TestUserCreationAndRetrieval(t *testing.T) {
 
 	// Test 4: Resolve handle to DID (using real handle)
 	t.Run("Resolve Handle to DID", func(t *testing.T) {
-		// Test with a real atProto handle
-		did, err := userService.ResolveHandleToDID(ctx, "bretton.dev")
+		// bretton.dev is a real handle registered on the PRODUCTION PLC directory,
+		// so this subtest needs its own resolver pinned there. The suite-wide
+		// resolver above uses identity.DefaultConfig(), which follows
+		// PLC_DIRECTORY_URL to the local PLC - correct for every other test, but
+		// it 404s on handles that only exist upstream.
+		//
+		// READ-ONLY: ResolveHandleToDID performs HTTP GET lookups only. It never
+		// registers or mutates anything on the production directory.
+		productionPLCConfig := identity.DefaultConfig()
+		productionPLCConfig.PLCURL = "https://plc.directory"
+		productionResolver := identity.NewResolver(db, productionPLCConfig)
+		productionUserService := users.NewUserService(userRepo, productionResolver, "http://localhost:3001", nil, "")
+
+		did, err := productionUserService.ResolveHandleToDID(ctx, "bretton.dev")
 		if err != nil {
 			t.Fatalf("Failed to resolve handle bretton.dev: %v", err)
 		}

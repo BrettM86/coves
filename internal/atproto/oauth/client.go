@@ -42,6 +42,15 @@ func NewOAuthClient(config *OAuthConfig, store oauth.ClientAuthStore) (*OAuthCli
 		return nil, fmt.Errorf("config is required")
 	}
 
+	// PLCURL must be explicit. An empty value used to fall through to indigo's
+	// default directory, which is the production plc.directory - so a test or a
+	// misconfigured deploy that simply forgot the field would silently resolve
+	// identities against production. Callers must name the directory they mean:
+	// "https://plc.directory" in production, the local PLC in dev and tests.
+	if config.PLCURL == "" {
+		return nil, fmt.Errorf("PLCURL is required (use the local PLC directory in dev/test, \"https://plc.directory\" in production)")
+	}
+
 	// Validate seal secret
 	var sealSecret []byte
 	if config.SealSecret != "" {
@@ -132,25 +141,21 @@ func NewOAuthClient(config *OAuthConfig, store oauth.ClientAuthStore) (*OAuthCli
 	// This protects against SSRF attacks via malicious PDS URLs, DID documents, and JWKS URIs
 	clientApp.Client = NewSSRFSafeHTTPClient(config.AllowPrivateIPs)
 
-	// Override the directory if a custom PLC URL is configured
-	// This is necessary for local development with a local PLC directory
-	if config.PLCURL != "" {
-		// Use SSRF-safe HTTP client for PLC directory requests
-		httpClient := NewSSRFSafeHTTPClient(config.AllowPrivateIPs)
-		baseDir := &identity.BaseDirectory{
-			PLCURL:     config.PLCURL,
-			HTTPClient: *httpClient,
-			UserAgent:  "Coves/1.0",
-		}
-		// Wrap in cache directory for better performance
-		// Use pointer since CacheDirectory methods have pointer receivers
-		cacheDir := identity.NewCacheDirectory(baseDir, 100_000, time.Hour*24, time.Minute*2, time.Minute*5)
-		clientApp.Dir = &cacheDir
-		// Log the PLC URL being used for OAuth directory resolution
-		fmt.Printf("🔐 OAuth client directory configured with PLC URL: %s (AllowPrivateIPs: %v)\n", config.PLCURL, config.AllowPrivateIPs)
-	} else {
-		fmt.Println("⚠️  OAuth client using DEFAULT PLC directory (production plc.directory)")
+	// Always override the directory so resolution goes to the configured PLC
+	// rather than indigo's default. Use SSRF-safe HTTP client for PLC requests.
+	httpClient := NewSSRFSafeHTTPClient(config.AllowPrivateIPs)
+	baseDir := &identity.BaseDirectory{
+		PLCURL:     config.PLCURL,
+		HTTPClient: *httpClient,
+		UserAgent:  "Coves/1.0",
 	}
+	// Wrap in cache directory for better performance
+	// Use pointer since CacheDirectory methods have pointer receivers
+	cacheDir := identity.NewCacheDirectory(baseDir, 100_000, time.Hour*24, time.Minute*2, time.Minute*5)
+	clientApp.Dir = &cacheDir
+	slog.Info("OAuth client directory configured",
+		"plc_url", config.PLCURL,
+		"allow_private_ips", config.AllowPrivateIPs)
 
 	return &OAuthClient{
 		ClientApp:  clientApp,

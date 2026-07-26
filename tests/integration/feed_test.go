@@ -937,7 +937,11 @@ func TestGetCommunityFeed_BlobURLTransformation(t *testing.T) {
 	embedMap, ok := feedPost.Post.Embed.(map[string]interface{})
 	require.True(t, ok, "Embed should be a map")
 
-	assert.Equal(t, "social.coves.embed.external", embedMap["$type"], "Embed type should be external")
+	// The AppView rewrites the thumb blob ref into a URL, so the served shape no
+	// longer matches the record schema. Per the postView embed union in
+	// social/coves/community/post/defs.json, it must therefore declare the #view
+	// variant on the wire rather than the record type.
+	assert.Equal(t, "social.coves.embed.external#view", embedMap["$type"], "Transformed embed should be declared as the external view type")
 
 	external, ok := embedMap["external"].(map[string]interface{})
 	require.True(t, ok, "External should be a map")

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -106,15 +107,13 @@ func TestOAuth_SessionFixationAttackPrevention(t *testing.T) {
 		// validation would prevent the attack
 		handler.HandleCallback(rec, req)
 
-		// Step 4: Verify the attack was prevented
-		// The handler should reject the request due to missing binding
-		// Since ProcessCallback will fail first (no real OAuth code), we expect
-		// a 400 error, but the important thing is it doesn't redirect to evil://steal
-
-		assert.NotEqual(t, http.StatusFound, rec.Code,
-			"Should not redirect when ProcessCallback fails")
-		assert.NotContains(t, rec.Header().Get("Location"), "evil://",
-			"Should never redirect to attacker's URI")
+		// Step 4: Verify the attack was prevented.
+		// ProcessCallback fails first (no real OAuth code), so the flow ends on
+		// the first-party error target. The important thing is that the planted
+		// cookie never steers the redirect to evil://steal - qualifying a mobile
+		// flow requires server-side data keyed by the OAuth state, which the
+		// attacker cannot plant.
+		assertCallbackEndedSafely(t, rec, attackerRedirectURI, "evil://")
 	})
 
 	t.Run("legitimate mobile flow - with valid binding", func(t *testing.T) {
@@ -171,11 +170,11 @@ func TestOAuth_SessionFixationAttackPrevention(t *testing.T) {
 		rec := httptest.NewRecorder()
 		handler.HandleCallback(rec, req)
 
-		// This will also fail at ProcessCallback (no real OAuth code)
-		// but we're verifying the binding validation logic is in place
-		// In a real integration test with PDS, this would succeed
-		assert.NotEqual(t, http.StatusFound, rec.Code,
-			"Should not redirect when ProcessCallback fails (expected in mock test)")
+		// This also fails at ProcessCallback (no real OAuth code), so the flow
+		// ends on the first-party error target rather than in the app: a mobile
+		// redirect requires server-side data for this OAuth state, and this mock
+		// callback never created one. Cookies alone are not sufficient.
+		assertCallbackEndedSafely(t, rec)
 	})
 
 	t.Run("binding mismatch - attacker tries wrong binding", func(t *testing.T) {
@@ -296,10 +295,48 @@ func TestOAuth_SessionFixationAttackPrevention(t *testing.T) {
 		handler.HandleCallback(rec, req)
 
 		// Should fail because hash(attackerCSRF + redirectURI) != hash(originalCSRF + redirectURI)
-		// This is the key security fix - CSRF token VALUE is now validated
-		assert.NotEqual(t, http.StatusFound, rec.Code,
-			"Should not redirect when CSRF token doesn't match binding")
+		// This is the key security fix - CSRF token VALUE is now validated, so
+		// the swapped cookie cannot steer the callback into the app.
+		assertCallbackEndedSafely(t, rec, redirectURI)
 	})
+}
+
+// assertCallbackEndedSafely asserts that a callback which failed to produce a
+// session ended the flow without leaking anything to an attacker.
+//
+// A failed ProcessCallback no longer renders a raw 400: HandleCallback answers
+// with a first-party 302 to /?oauth_error=<generic code> so the user lands back
+// in the app instead of on a dead-end error page. So the status code proves
+// nothing on its own - the DESTINATION is the security property. A mobile
+// redirect is only ever chosen from SERVER-SIDE data keyed by the OAuth state,
+// which a planted cookie cannot create, so an attacker-supplied URI must never
+// appear here.
+func assertCallbackEndedSafely(t *testing.T, rec *httptest.ResponseRecorder, forbiddenURIs ...string) {
+	t.Helper()
+
+	location := rec.Header().Get("Location")
+
+	for _, forbidden := range forbiddenURIs {
+		assert.NotContains(t, location, forbidden,
+			"Should never redirect to attacker-controlled URI %q", forbidden)
+	}
+
+	if location != "" {
+		// Must be first-party: a relative path, not an absolute URL to some
+		// other origin or a custom deep-link scheme.
+		assert.True(t, strings.HasPrefix(location, "/") && !strings.HasPrefix(location, "//"),
+			"Failed callback should redirect to a first-party path, got %q", location)
+		assert.Contains(t, location, "oauth_error=",
+			"Failed callback should redirect to the generic OAuth error target, got %q", location)
+	}
+
+	// Whatever the outcome, no session material may ride along on the wire.
+	for _, credential := range []string{"access_token", "session_id", "sealed", "did:plc:"} {
+		assert.NotContains(t, location, credential,
+			"Redirect target must not carry session material (%s), got %q", credential, location)
+	}
+	assert.NotContains(t, rec.Body.String(), "access-token",
+		"Response body must not echo an access token")
 }
 
 // generateMobileRedirectBindingForTest generates a binding for testing

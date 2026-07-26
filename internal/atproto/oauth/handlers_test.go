@@ -13,12 +13,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testPLCURL is the PLC directory these unit tests configure their OAuth clients
+// with. It is deliberately an unroutable address rather than a real directory:
+// these tests never need to resolve an identity, so any resolution attempt is a
+// bug and should fail with a connection error instead of silently reaching the
+// production plc.directory. OAuthConfig.PLCURL is required, so it must be set.
+const testPLCURL = "http://127.0.0.1:1"
+
 // TestHandleClientMetadata tests the client metadata endpoint
 func TestHandleClientMetadata(t *testing.T) {
 	// Create a test OAuth client configuration
 	config := &OAuthConfig{
 		PublicURL:       "https://coves.social",
 		Scopes:          []string{"atproto"},
+		PLCURL:          testPLCURL,
 		DevMode:         false,
 		AllowPrivateIPs: false,
 		SealSecret:      "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=", // base64 encoded 32 bytes
@@ -63,6 +71,7 @@ func TestHandleLogin(t *testing.T) {
 	config := &OAuthConfig{
 		PublicURL:       "https://coves.social",
 		Scopes:          []string{"atproto"},
+		PLCURL:          testPLCURL,
 		DevMode:         true, // Use dev mode to avoid real PDS calls
 		AllowPrivateIPs: true, // Allow private IPs in dev mode
 		SealSecret:      "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=",
@@ -102,6 +111,7 @@ func TestHandleMobileLogin(t *testing.T) {
 	config := &OAuthConfig{
 		PublicURL:       "https://coves.social",
 		Scopes:          []string{"atproto"},
+		PLCURL:          testPLCURL,
 		DevMode:         true,
 		AllowPrivateIPs: true,
 		SealSecret:      "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=",
@@ -212,6 +222,7 @@ func TestSealAndUnsealSessionData(t *testing.T) {
 	config := &OAuthConfig{
 		PublicURL:       "https://coves.social",
 		Scopes:          []string{"atproto"},
+		PLCURL:          testPLCURL,
 		DevMode:         false,
 		AllowPrivateIPs: false,
 		SealSecret:      "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=",
@@ -257,6 +268,7 @@ func TestConfidentialClientTransition(t *testing.T) {
 		return &OAuthConfig{
 			PublicURL:       "https://coves.social",
 			Scopes:          []string{"atproto"},
+			PLCURL:          testPLCURL,
 			DevMode:         false,
 			AllowPrivateIPs: false,
 			SealSecret:      "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=",
@@ -328,6 +340,7 @@ func TestHandleClientJWKS(t *testing.T) {
 		config := &OAuthConfig{
 			PublicURL:       "https://coves.social",
 			Scopes:          []string{"atproto"},
+			PLCURL:          testPLCURL,
 			DevMode:         false,
 			AllowPrivateIPs: false,
 			SealSecret:      "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=",
@@ -358,6 +371,7 @@ func TestHandleClientJWKS(t *testing.T) {
 		config := &OAuthConfig{
 			PublicURL:       "https://coves.social",
 			Scopes:          []string{"atproto"},
+			PLCURL:          testPLCURL,
 			DevMode:         false,
 			AllowPrivateIPs: false,
 			SealSecret:      "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=",
@@ -436,6 +450,7 @@ func TestConfidentialClientWithDevMode(t *testing.T) {
 	config := &OAuthConfig{
 		PublicURL:       "http://127.0.0.1:8081",
 		Scopes:          []string{"atproto"},
+		PLCURL:          testPLCURL,
 		DevMode:         true, // Dev mode enabled
 		AllowPrivateIPs: true,
 		SealSecret:      "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=",
@@ -464,6 +479,7 @@ func TestSessionTTLsForConfidentialClient(t *testing.T) {
 	config := &OAuthConfig{
 		PublicURL:       "https://coves.social",
 		Scopes:          []string{"atproto"},
+		PLCURL:          testPLCURL,
 		DevMode:         false,
 		AllowPrivateIPs: false,
 		SealSecret:      "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=",

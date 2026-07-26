@@ -378,6 +378,7 @@ func createTestOAuthHandler(t *testing.T) *OAuthHandler {
 	config := &OAuthConfig{
 		PublicURL:       "https://coves.social",
 		Scopes:          []string{"atproto"},
+		PLCURL:          testPLCURL,
 		DevMode:         true, // Dev mode to avoid real PDS calls
 		AllowPrivateIPs: true,
 		SealSecret:      "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=", // base64 encoded 32 bytes
@@ -416,16 +417,16 @@ func TestOAuthHandler_isAllowedRedirectURI(t *testing.T) {
 
 		// These URIs should be rejected
 		rejectedURIs := []string{
-			"http://localhost:5173/callback",           // Localhost (use Vite proxy instead)
-			"http://localhost:3000/callback",           // Localhost
-			"http://evil.com/callback",                // Evil domain
-			"https://example.com/oauth",               // Random HTTPS
-			"https://coves.social/wrong/path",         // Right domain, wrong path
-			"evil://steal",                            // Evil custom scheme
-			"coves-app://callback",                    // Old/wrong custom scheme
-			"coves://oauth/callback",                  // Wrong custom scheme (not reverse-domain)
-			"",                                        // Empty
-			"not-a-uri",                               // Invalid URI
+			"http://localhost:5173/callback",  // Localhost (use Vite proxy instead)
+			"http://localhost:3000/callback",  // Localhost
+			"http://evil.com/callback",        // Evil domain
+			"https://example.com/oauth",       // Random HTTPS
+			"https://coves.social/wrong/path", // Right domain, wrong path
+			"evil://steal",                    // Evil custom scheme
+			"coves-app://callback",            // Old/wrong custom scheme
+			"coves://oauth/callback",          // Wrong custom scheme (not reverse-domain)
+			"",                                // Empty
+			"not-a-uri",                       // Invalid URI
 		}
 
 		for _, uri := range rejectedURIs {

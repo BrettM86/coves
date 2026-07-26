@@ -106,6 +106,7 @@ func newErrorRedirectTestHandler(t *testing.T, devMode bool) (*OAuthHandler, *fa
 	config := &OAuthConfig{
 		PublicURL:       "https://coves.social",
 		Scopes:          []string{"atproto"},
+		PLCURL:          testPLCURL,
 		DevMode:         devMode,
 		AllowPrivateIPs: devMode,
 		SealSecret:      "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=", // base64 encoded 32 bytes

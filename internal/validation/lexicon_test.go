@@ -1,6 +1,7 @@
 package validation
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -27,11 +28,14 @@ func TestValidateActorProfile(t *testing.T) {
 		t.Fatalf("Failed to create validator: %v", err)
 	}
 
-	// Valid profile
+	// Valid profile. Note social.coves.actor.profile has no required fields:
+	// every property is optional, matching app.bsky.actor.profile. A handle is
+	// NOT part of the record - it lives in the DID document - so this record
+	// carries only profile presentation fields.
 	validProfile := map[string]interface{}{
 		"$type":       "social.coves.actor.profile",
-		"handle":      "test.example.com",
 		"displayName": "Test User",
+		"description": "A test bio",
 		"createdAt":   "2024-01-01T00:00:00Z",
 	}
 
@@ -39,14 +43,50 @@ func TestValidateActorProfile(t *testing.T) {
 		t.Errorf("Valid profile failed validation: %v", err)
 	}
 
-	// Invalid profile - missing required field
-	invalidProfile := map[string]interface{}{
-		"$type":       "social.coves.actor.profile",
-		"displayName": "Test User",
+	// A profile with no fields at all is valid, precisely because the schema
+	// requires nothing. Asserting this pins the "required: []" decision so a
+	// future schema change that reintroduces a required field fails loudly here.
+	minimalProfile := map[string]interface{}{
+		"$type": "social.coves.actor.profile",
 	}
 
-	if err := validator.ValidateActorProfile(invalidProfile); err == nil {
-		t.Error("Invalid profile passed validation when it should have failed")
+	if err := validator.ValidateActorProfile(minimalProfile); err != nil {
+		t.Errorf("Minimal profile failed validation: %v", err)
+	}
+
+	// Invalid profiles - since no field is required, the enforceable failures
+	// are constraint violations on the fields that ARE present.
+	invalidProfiles := map[string]map[string]interface{}{
+		"wrong $type": {
+			"$type":       "social.coves.community.post",
+			"displayName": "Test User",
+		},
+		"displayName over maxLength": {
+			"$type":       "social.coves.actor.profile",
+			"displayName": strings.Repeat("a", 641),
+		},
+		"displayName over maxGraphemes": {
+			"$type":       "social.coves.actor.profile",
+			"displayName": strings.Repeat("é", 65),
+		},
+		"description over maxLength": {
+			"$type":       "social.coves.actor.profile",
+			"description": strings.Repeat("a", 2561),
+		},
+		"createdAt not a datetime": {
+			"$type":     "social.coves.actor.profile",
+			"createdAt": "January 1st, 2024",
+		},
+		"displayName wrong JSON type": {
+			"$type":       "social.coves.actor.profile",
+			"displayName": 12345,
+		},
+	}
+
+	for name, profile := range invalidProfiles {
+		if err := validator.ValidateActorProfile(profile); err == nil {
+			t.Errorf("Invalid profile (%s) passed validation when it should have failed", name)
+		}
 	}
 }
 
