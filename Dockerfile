@@ -39,11 +39,10 @@ RUN addgroup -g 1000 coves && \
 WORKDIR /app
 
 # Copy binary from builder
+# Migrations are embedded in the binary (see internal/db/migrations/embed.go),
+# so there is no migrations directory to copy. Note the static assets below are
+# still resolved relative to WORKDIR.
 COPY --from=builder /build/coves-server /app/coves-server
-
-# Copy migrations (needed for goose)
-# Must maintain path structure as app looks for internal/db/migrations
-COPY --from=builder /build/internal/db/migrations /app/internal/db/migrations
 
 # Copy static assets (images, etc. for the web interface)
 COPY --from=builder /build/static /app/static

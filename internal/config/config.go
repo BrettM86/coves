@@ -1,0 +1,650 @@
+package config
+
+import (
+	"crypto/rand"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"net/url"
+	"strings"
+	"time"
+)
+
+// devCursorSecret is the placeholder HMAC key used for pagination cursors when
+// CURSOR_SECRET is unset. It is only ever accepted in dev: in production a
+// known cursor secret lets anyone forge a signed cursor, so Validate rejects it.
+const devCursorSecret = "dev-cursor-secret-change-in-production"
+
+const (
+	// sealSecretBytes is the decoded length oauth.NewOAuthClient requires of
+	// OAUTH_SEAL_SECRET.
+	sealSecretBytes = 32
+
+	// minSecretLength is the shortest value accepted for a production secret
+	// that is used directly as key material rather than decoded.
+	minSecretLength = 16
+)
+
+// placeholderPrefix marks the documented "fill this in" values in
+// .env.prod.example. They are published in the repository, so a production
+// deployment still carrying one has no secret at all.
+const placeholderPrefix = "CHANGE_ME"
+
+// isPlaceholder reports whether value is one of the documented placeholders.
+func isPlaceholder(value string) bool {
+	return strings.HasPrefix(value, placeholderPrefix)
+}
+
+// requirePublicHost rejects a URL that is empty or points at the loopback
+// interface, which in production means the dev default was never replaced.
+func requirePublicHost(name, rawURL string) error {
+	if rawURL == "" {
+		return fmt.Errorf("%s is required in production", name)
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("%s is not a valid URL: %w", name, err)
+	}
+	host := parsed.Hostname()
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+		return fmt.Errorf("%s must not point at localhost in production (got %q); "+
+			"the loopback default is dev-only and leaves this unreachable to clients",
+			name, rawURL)
+	}
+	return nil
+}
+
+// legacyJetstreamVars are single-feed environment variables replaced by
+// JETSTREAM_FEEDS. They are rejected rather than ignored — silently dropping a
+// configured firehose URL would leave the AppView indexing nothing while
+// looking healthy.
+var legacyJetstreamVars = []string{
+	"JETSTREAM_URL",
+	"COMMUNITY_JETSTREAM_URL",
+	"POST_JETSTREAM_URL",
+	"AGGREGATOR_JETSTREAM_URL",
+	"VOTE_JETSTREAM_URL",
+	"COMMENT_JETSTREAM_URL",
+}
+
+// Config is the fully resolved server configuration. Defaults are applied
+// during Load; Validate then enforces the constraints that differ between dev
+// and production.
+type Config struct {
+	// IsDevEnv relaxes several production requirements (private-IP OAuth
+	// resolution, generated secrets, localhost defaults). It must never be
+	// true in a real deployment.
+	IsDevEnv bool
+
+	Database  DatabaseConfig
+	Server    ServerConfig
+	Identity  IdentityConfig
+	OAuth     OAuthConfig
+	Instance  InstanceConfig
+	PDS       PDSConfig
+	Jetstream JetstreamConfig
+	Signup    SignupConfig
+
+	// CursorSecret is the HMAC key that signs pagination cursors, preventing
+	// clients from forging or tampering with them.
+	CursorSecret string
+}
+
+// DatabaseConfig holds the AppView PostgreSQL connection and pool settings.
+//
+// The pool bounds matter: database/sql defaults to an unlimited number of open
+// connections, so a traffic spike can open connections until PostgreSQL's
+// max_connections (100 by default) is exhausted — which locks out every other
+// client, including psql and the maintenance commands under cmd/.
+type DatabaseConfig struct {
+	// URL is the libpq connection string for the AppView database.
+	URL string
+
+	// MaxOpenConns caps total connections (in use + idle). Kept well below
+	// PostgreSQL's default max_connections of 100 so operators and the
+	// backfill/reindex tools can still connect during a spike.
+	MaxOpenConns int
+
+	// MaxIdleConns caps connections retained for reuse. The database/sql
+	// default is 2, which forces a fresh connection and PostgreSQL startup
+	// handshake for nearly every query under concurrency; matching
+	// MaxOpenConns avoids that churn.
+	MaxIdleConns int
+
+	// ConnMaxLifetime retires connections after this age, so a rolling
+	// PostgreSQL restart or failover does not strand the pool on dead
+	// connections.
+	ConnMaxLifetime time.Duration
+
+	// ConnMaxIdleTime releases connections idle for this long, returning
+	// server-side memory after a spike subsides.
+	ConnMaxIdleTime time.Duration
+
+	// StatementTimeout bounds how long a single query may run server-side.
+	// This is enforced by PostgreSQL rather than by the client, so a runaway
+	// query is actually cancelled instead of merely being abandoned while it
+	// continues to hold a connection and a backend process. Zero disables it.
+	StatementTimeout time.Duration
+}
+
+// ServerConfig holds the HTTP listener settings.
+//
+// The timeouts are required, not optional hardening: with all four at zero
+// (the net/http default) a single client that opens a connection and never
+// completes its request headers pins a goroutine and a file descriptor
+// indefinitely. Enough of them exhaust the process's file-descriptor limit —
+// the classic slowloris attack. Validate enforces that none is zero.
+type ServerConfig struct {
+	// Port is the TCP port to listen on.
+	Port string
+
+	// ReadHeaderTimeout bounds the time allowed to send request headers.
+	// This is the specific defence against slowloris.
+	ReadHeaderTimeout time.Duration
+
+	// ReadTimeout bounds reading the entire request, headers plus body.
+	ReadTimeout time.Duration
+
+	// WriteTimeout bounds the time from end-of-headers to end-of-response.
+	// It must comfortably exceed the slowest legitimate handler — the image
+	// proxy, which may spend IMAGE_PROXY_FETCH_TIMEOUT_SECONDS (30s by
+	// default) fetching from a remote PDS before it encodes anything.
+	WriteTimeout time.Duration
+
+	// IdleTimeout bounds how long an idle keep-alive connection is kept open.
+	IdleTimeout time.Duration
+
+	// ShutdownTimeout bounds graceful shutdown: draining in-flight requests
+	// and flushing Jetstream consumer cursors.
+	ShutdownTimeout time.Duration
+}
+
+// IdentityConfig holds atProto identity resolution settings.
+type IdentityConfig struct {
+	// PLCURL is the PLC directory used to resolve DIDs.
+	PLCURL string
+
+	// ResolverPLCURL is the PLC directory used by the identity resolver. In
+	// dev this is forced to the local PLC so end-to-end tests never touch
+	// plc.directory; in production IDENTITY_PLC_URL may point reads at a
+	// separate mirror.
+	ResolverPLCURL string
+
+	// CacheTTL overrides the resolver's default cache lifetime. Zero means
+	// use the resolver default.
+	CacheTTL time.Duration
+}
+
+// OAuthConfig holds the atProto OAuth client settings.
+type OAuthConfig struct {
+	// PublicURL is this AppView's externally reachable base URL. It appears
+	// in the OAuth client metadata and the redirect URI, so it must match
+	// what the authorization server sees.
+	PublicURL string
+
+	// SealSecret encrypts the sealed session tokens handed to clients. It
+	// must be stable across restarts: rotating it invalidates every live
+	// session, signing out every mobile and web user.
+	SealSecret string
+
+	// SealSecretGenerated reports that SealSecret was randomly generated
+	// because OAUTH_SEAL_SECRET was unset. Dev-only, and worth warning about
+	// loudly — it means every restart signs all users out.
+	SealSecretGenerated bool
+
+	// ClientPrivateKeyMultibase and ClientKeyID upgrade this to a
+	// confidential OAuth client when both are set, which raises the session
+	// lifetime the authorization server will grant.
+	ClientPrivateKeyMultibase string
+	ClientKeyID               string
+}
+
+// InstanceConfig holds this Coves instance's atProto identity.
+type InstanceConfig struct {
+	// DID identifies this instance and is the audience for aggregator
+	// service JWTs.
+	DID string
+
+	// Domain suffixes community handles. For did:web instance DIDs it is
+	// derived from the DID itself rather than read from the environment:
+	// allowing an arbitrary domain would let an instance mint handles like
+	// !leagueoflegends@riotgames.com and impersonate another operator.
+	Domain string
+
+	// AllowedCommunityCreators restricts community creation to these DIDs.
+	// Nil means any authenticated user may create a community.
+	AllowedCommunityCreators []string
+
+	// TrustedBridgePDSHosts may assert bridged vote aggregates
+	// (bridgedStats) for the repos they host. Every other repo is
+	// default-denied so it cannot inflate its own vote counts. Nil means
+	// bridgedStats are ignored everywhere.
+	TrustedBridgePDSHosts []string
+
+	// SkipDIDWebVerification disables did:web domain verification in the
+	// community consumer. Dev-only: it is what stops a community record from
+	// claiming to be hosted by a domain it does not control.
+	SkipDIDWebVerification bool
+}
+
+// PDSConfig holds the settings for this instance's own PDS account, used to
+// write the community records the instance owns.
+type PDSConfig struct {
+	// URL is the default PDS for this instance.
+	URL string
+
+	// InstanceHandle and InstancePassword authenticate the instance's PDS
+	// account. When either is empty, community write-forward is disabled.
+	InstanceHandle   string
+	InstancePassword string
+
+	// AdminPassword mints single-use PDS invite codes after a successful
+	// captcha. Empty disables the signup-token endpoint.
+	AdminPassword string
+}
+
+// HasInstanceCredentials reports whether the instance can authenticate with
+// its PDS to write community records.
+func (p PDSConfig) HasInstanceCredentials() bool {
+	return p.InstanceHandle != "" && p.InstancePassword != ""
+}
+
+// JetstreamConfig holds the firehose feed topology.
+type JetstreamConfig struct {
+	// FeedsSpec is the raw semicolon-separated <feedKey>=<baseURL> list.
+	// Parsing into feeds lives in the jetstream package, which owns the
+	// primary-feed and cursor-naming semantics.
+	FeedsSpec string
+}
+
+// SignupConfig holds the bot-protected signup settings.
+//
+// Signup stays gated by the PDS's own PDS_INVITE_REQUIRED, so missing config
+// here means signup is closed, never that it is open and unprotected.
+type SignupConfig struct {
+	// TurnstileSiteKey is the public Cloudflare key embedded in the mobile
+	// WebView captcha page. Empty makes that page return 503.
+	TurnstileSiteKey string
+
+	// TurnstileSecretKey verifies captcha tokens server-side.
+	TurnstileSecretKey string
+}
+
+// TokenEndpointEnabled reports whether the signup-token endpoint can operate.
+// It needs both the captcha secret and (from PDSConfig) an admin password to
+// mint invite codes, so the caller passes the latter in.
+func (s SignupConfig) TokenEndpointEnabled(pdsAdminPassword string) bool {
+	return s.TurnstileSecretKey != "" && pdsAdminPassword != ""
+}
+
+// Load reads the full server configuration from the environment, applies
+// defaults, and validates the result. A returned error is fatal: the process
+// is misconfigured and should not start.
+func Load() (*Config, error) {
+	isDevEnv, err := boolVar("IS_DEV_ENV", false)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg := &Config{IsDevEnv: isDevEnv}
+
+	if err := cfg.loadDatabase(); err != nil {
+		return nil, err
+	}
+	if err := cfg.loadServer(); err != nil {
+		return nil, err
+	}
+	if err := cfg.loadIdentity(); err != nil {
+		return nil, err
+	}
+	if err := cfg.loadOAuth(); err != nil {
+		return nil, err
+	}
+	if err := cfg.loadInstance(); err != nil {
+		return nil, err
+	}
+	if err := cfg.loadJetstream(); err != nil {
+		return nil, err
+	}
+
+	cfg.PDS = PDSConfig{
+		URL:              stringVar("PDS_URL", "http://localhost:3001"),
+		InstanceHandle:   lookup("PDS_INSTANCE_HANDLE"),
+		InstancePassword: lookup("PDS_INSTANCE_PASSWORD"),
+		AdminPassword:    lookup("PDS_ADMIN_PASSWORD"),
+	}
+
+	cfg.Signup = SignupConfig{
+		TurnstileSiteKey:   lookup("TURNSTILE_SITE_KEY"),
+		TurnstileSecretKey: lookup("TURNSTILE_SECRET_KEY"),
+	}
+
+	cfg.CursorSecret = stringVar("CURSOR_SECRET", devCursorSecret)
+
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+func (c *Config) loadDatabase() error {
+	maxOpen, err := intVar("DB_MAX_OPEN_CONNS", 25)
+	if err != nil {
+		return err
+	}
+	// Default idle to open so a burst of concurrent queries reuses warm
+	// connections instead of reconnecting; database/sql's default of 2 makes
+	// the pool thrash under exactly the load it exists to absorb.
+	maxIdle, err := intVar("DB_MAX_IDLE_CONNS", maxOpen)
+	if err != nil {
+		return err
+	}
+	connMaxLifetime, err := durationVar("DB_CONN_MAX_LIFETIME", 30*time.Minute)
+	if err != nil {
+		return err
+	}
+	connMaxIdleTime, err := durationVar("DB_CONN_MAX_IDLE_TIME", 5*time.Minute)
+	if err != nil {
+		return err
+	}
+	statementTimeout, err := durationVar("DB_STATEMENT_TIMEOUT", 30*time.Second)
+	if err != nil {
+		return err
+	}
+
+	c.Database = DatabaseConfig{
+		URL: stringVar("DATABASE_URL",
+			"postgres://dev_user:dev_password@localhost:5435/coves_dev?sslmode=disable"),
+		MaxOpenConns:     maxOpen,
+		MaxIdleConns:     maxIdle,
+		ConnMaxLifetime:  connMaxLifetime,
+		ConnMaxIdleTime:  connMaxIdleTime,
+		StatementTimeout: statementTimeout,
+	}
+	return nil
+}
+
+func (c *Config) loadServer() error {
+	readHeaderTimeout, err := durationVar("HTTP_READ_HEADER_TIMEOUT", 10*time.Second)
+	if err != nil {
+		return err
+	}
+	readTimeout, err := durationVar("HTTP_READ_TIMEOUT", 30*time.Second)
+	if err != nil {
+		return err
+	}
+	// Generous by design: the image proxy may spend its full fetch timeout
+	// (30s default) pulling a source image from a remote PDS before writing
+	// a single byte. The goal is a bound, not an aggressive one.
+	writeTimeout, err := durationVar("HTTP_WRITE_TIMEOUT", 120*time.Second)
+	if err != nil {
+		return err
+	}
+	idleTimeout, err := durationVar("HTTP_IDLE_TIMEOUT", 120*time.Second)
+	if err != nil {
+		return err
+	}
+	shutdownTimeout, err := durationVar("HTTP_SHUTDOWN_TIMEOUT", 30*time.Second)
+	if err != nil {
+		return err
+	}
+
+	// PORT is what docker-compose sets; APPVIEW_PORT is the legacy name.
+	port := stringVar("PORT", stringVar("APPVIEW_PORT", "8080"))
+
+	c.Server = ServerConfig{
+		Port:              port,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+		ShutdownTimeout:   shutdownTimeout,
+	}
+	return nil
+}
+
+func (c *Config) loadIdentity() error {
+	cacheTTL, err := durationVar("IDENTITY_CACHE_TTL", 0)
+	if err != nil {
+		return err
+	}
+
+	plcURL := stringVar("PLC_DIRECTORY_URL", "https://plc.directory")
+
+	// In dev, identity resolution must use the same local PLC that
+	// registration writes to, or end-to-end tests resolve DIDs that do not
+	// exist yet. In production a separate read mirror may be configured.
+	resolverPLCURL := plcURL
+	if !c.IsDevEnv {
+		resolverPLCURL = stringVar("IDENTITY_PLC_URL", plcURL)
+	}
+
+	c.Identity = IdentityConfig{
+		PLCURL:         plcURL,
+		ResolverPLCURL: resolverPLCURL,
+		CacheTTL:       cacheTTL,
+	}
+	return nil
+}
+
+func (c *Config) loadOAuth() error {
+	sealSecret := lookup("OAUTH_SEAL_SECRET")
+	generated := false
+	if sealSecret == "" && c.IsDevEnv {
+		// Dev convenience only. Validate rejects an empty secret in
+		// production, where a per-boot random key would sign every user out
+		// on each deploy.
+		randomBytes := make([]byte, 32)
+		if _, err := rand.Read(randomBytes); err != nil {
+			return fmt.Errorf("generating dev OAuth seal secret: %w", err)
+		}
+		sealSecret = base64.StdEncoding.EncodeToString(randomBytes)
+		generated = true
+	}
+
+	c.OAuth = OAuthConfig{
+		PublicURL:                 stringVar("APPVIEW_PUBLIC_URL", "http://localhost:8080"),
+		SealSecret:                sealSecret,
+		SealSecretGenerated:       generated,
+		ClientPrivateKeyMultibase: lookup("OAUTH_CLIENT_PRIVATE_KEY"),
+		ClientKeyID:               lookup("OAUTH_CLIENT_KEY_ID"),
+	}
+	return nil
+}
+
+func (c *Config) loadInstance() error {
+	skipDIDWeb, err := boolVar("SKIP_DID_WEB_VERIFICATION", false)
+	if err != nil {
+		return err
+	}
+
+	did := stringVar("INSTANCE_DID", "did:web:coves.social")
+
+	// For did:web the DID *is* the domain claim, so deriving the domain from
+	// it keeps the two from drifting apart. Only non-web DIDs (did:plc) need
+	// INSTANCE_DOMAIN, and then it is required.
+	var domain string
+	if suffix, ok := strings.CutPrefix(did, "did:web:"); ok {
+		domain = suffix
+	} else {
+		domain = lookup("INSTANCE_DOMAIN")
+	}
+
+	c.Instance = InstanceConfig{
+		DID:                      did,
+		Domain:                   domain,
+		AllowedCommunityCreators: csvVar("COMMUNITY_CREATORS"),
+		TrustedBridgePDSHosts:    csvVar("TRUSTED_BRIDGE_PDS_HOSTS"),
+		SkipDIDWebVerification:   skipDIDWeb,
+	}
+	return nil
+}
+
+func (c *Config) loadJetstream() error {
+	for _, legacy := range legacyJetstreamVars {
+		if lookup(legacy) != "" {
+			return fmt.Errorf("%s is no longer supported: configure feeds via JETSTREAM_FEEDS "+
+				"(e.g. \"bsky=wss://jetstream2.us-east.bsky.network;self=ws://tidepool-prod-jetstream:8080\") "+
+				"and remove the legacy variable", legacy)
+		}
+	}
+
+	feedsSpec := lookup("JETSTREAM_FEEDS")
+	if feedsSpec == "" && c.IsDevEnv {
+		// Dev default: the local dev-stack Jetstream only. Production must
+		// always be explicit — see Validate.
+		feedsSpec = "self=ws://localhost:6008"
+	}
+
+	c.Jetstream = JetstreamConfig{FeedsSpec: feedsSpec}
+	return nil
+}
+
+// Validate enforces the constraints that Load's defaults cannot express,
+// notably the ones that differ between dev and production. It returns every
+// problem at once so a misconfigured deployment can be fixed in a single pass
+// instead of one restart per mistake.
+func (c *Config) Validate() error {
+	var problems []string
+
+	if c.Database.URL == "" {
+		problems = append(problems, "DATABASE_URL is required")
+	}
+	if c.Database.MaxOpenConns == 0 {
+		problems = append(problems, "DB_MAX_OPEN_CONNS must be greater than 0 "+
+			"(an unbounded pool can exhaust PostgreSQL's max_connections)")
+	}
+	if c.Database.MaxIdleConns > c.Database.MaxOpenConns {
+		problems = append(problems, fmt.Sprintf(
+			"DB_MAX_IDLE_CONNS (%d) must not exceed DB_MAX_OPEN_CONNS (%d)",
+			c.Database.MaxIdleConns, c.Database.MaxOpenConns))
+	}
+	if c.Server.Port == "" {
+		problems = append(problems, "PORT must not be empty")
+	}
+
+	// Every listener timeout must be positive. net/http reads zero as "no
+	// deadline", so an explicit HTTP_READ_TIMEOUT=0s silently restores the
+	// unbounded-connection exposure these settings exist to close — and
+	// HTTP_SHUTDOWN_TIMEOUT=0s yields an already-expired context, so nothing
+	// ever drains. Checking only ReadHeaderTimeout left four ways back in.
+	for _, timeout := range []struct {
+		name  string
+		value time.Duration
+		why   string
+	}{
+		{
+			"HTTP_READ_HEADER_TIMEOUT", c.Server.ReadHeaderTimeout,
+			"zero leaves the server open to slowloris connections",
+		},
+		{
+			"HTTP_READ_TIMEOUT", c.Server.ReadTimeout,
+			"zero lets a client hold a connection open indefinitely while sending a body",
+		},
+		{
+			"HTTP_WRITE_TIMEOUT", c.Server.WriteTimeout,
+			"zero lets a slow consumer hold a response open indefinitely",
+		},
+		{
+			"HTTP_IDLE_TIMEOUT", c.Server.IdleTimeout,
+			"zero lets idle keep-alive connections accumulate without bound",
+		},
+		{
+			"HTTP_SHUTDOWN_TIMEOUT", c.Server.ShutdownTimeout,
+			"zero expires the shutdown deadline immediately, so nothing drains and " +
+				"Jetstream cursors are never flushed",
+		},
+	} {
+		if timeout.value <= 0 {
+			problems = append(problems, fmt.Sprintf("%s must be greater than 0 (%s)",
+				timeout.name, timeout.why))
+		}
+	}
+
+	// A ReadTimeout below ReadHeaderTimeout makes the latter unreachable: the
+	// whole-request deadline fires first, so the slowloris guard never applies.
+	if c.Server.ReadTimeout > 0 && c.Server.ReadHeaderTimeout > c.Server.ReadTimeout {
+		problems = append(problems, fmt.Sprintf(
+			"HTTP_READ_HEADER_TIMEOUT (%s) must not exceed HTTP_READ_TIMEOUT (%s)",
+			c.Server.ReadHeaderTimeout, c.Server.ReadTimeout))
+	}
+
+	if c.Instance.Domain == "" {
+		problems = append(problems,
+			"INSTANCE_DOMAIN is required when INSTANCE_DID is not a did:web DID")
+	}
+	if !strings.HasPrefix(c.Instance.DID, "did:") {
+		// This becomes the audience every aggregator service JWT is validated
+		// against, so a non-DID value fails every aggregator request at
+		// runtime rather than at startup.
+		problems = append(problems, fmt.Sprintf(
+			"INSTANCE_DID must be a DID (got %q)", c.Instance.DID))
+	}
+
+	if !c.IsDevEnv {
+		switch {
+		case c.OAuth.SealSecret == "":
+			problems = append(problems, "OAUTH_SEAL_SECRET is required in production")
+		case isPlaceholder(c.OAuth.SealSecret):
+			problems = append(problems, "OAUTH_SEAL_SECRET is still set to a documented "+
+				"placeholder value; generate one with: openssl rand -base64 32")
+		default:
+			// Checked here rather than left to oauth.NewOAuthClient, which
+			// runs after schema migrations have already been applied. A
+			// config error should stop the process before it changes
+			// anything.
+			decoded, err := base64.StdEncoding.DecodeString(c.OAuth.SealSecret)
+			if err != nil {
+				problems = append(problems, "OAUTH_SEAL_SECRET must be base64: "+err.Error())
+			} else if len(decoded) != sealSecretBytes {
+				problems = append(problems, fmt.Sprintf(
+					"OAUTH_SEAL_SECRET must decode to %d bytes, got %d; "+
+						"generate one with: openssl rand -base64 %d",
+					sealSecretBytes, len(decoded), sealSecretBytes))
+			}
+		}
+
+		switch {
+		case c.CursorSecret == devCursorSecret:
+			problems = append(problems, "CURSOR_SECRET is required in production "+
+				"(the dev placeholder is public, so anyone could forge pagination cursors)")
+		case isPlaceholder(c.CursorSecret):
+			// The shipped .env.prod.example carries CHANGE_ME_CURSOR_SECRET,
+			// which is every bit as public as the dev constant. Rejecting
+			// only the latter left the documented placeholder usable.
+			problems = append(problems, "CURSOR_SECRET is still set to a documented "+
+				"placeholder value; generate one with: openssl rand -base64 32")
+		case len(c.CursorSecret) < minSecretLength:
+			problems = append(problems, fmt.Sprintf(
+				"CURSOR_SECRET must be at least %d characters to be a usable HMAC key",
+				minSecretLength))
+		}
+
+		if c.Jetstream.FeedsSpec == "" {
+			problems = append(problems, "JETSTREAM_FEEDS is required in production "+
+				"(the localhost default is dev-only): set semicolon-separated <feedKey>=<baseURL> "+
+				"entries, e.g. \"bsky=wss://jetstream2.us-east.bsky.network;self=ws://tidepool-prod-jetstream:8080\"")
+		}
+		if c.Instance.SkipDIDWebVerification {
+			problems = append(problems, "SKIP_DID_WEB_VERIFICATION must not be enabled in production "+
+				"(it lets a community claim a hostedBy domain it does not control)")
+		}
+
+		// The localhost defaults exist for dev. Reaching production with one
+		// still in place used to boot cleanly and then fail at first use, in
+		// somebody else's logs: an unset APPVIEW_PUBLIC_URL puts
+		// http://localhost:8080 into the OAuth client metadata and redirect
+		// URI, so every login is rejected by the authorization server.
+		if err := requirePublicHost("APPVIEW_PUBLIC_URL", c.OAuth.PublicURL); err != nil {
+			problems = append(problems, err.Error())
+		}
+		if err := requirePublicHost("PDS_URL", c.PDS.URL); err != nil {
+			problems = append(problems, err.Error())
+		}
+	}
+
+	if len(problems) == 0 {
+		return nil
+	}
+	return errors.New("invalid configuration:\n  - " + strings.Join(problems, "\n  - "))
+}
