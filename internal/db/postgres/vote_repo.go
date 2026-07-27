@@ -4,6 +4,7 @@ import (
 	"Coves/internal/core/votes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -43,7 +44,7 @@ func (r *postgresVoteRepo) Create(ctx context.Context, vote *votes.Vote) error {
 	).Scan(&vote.ID, &vote.IndexedAt)
 
 	// ON CONFLICT DO NOTHING returns no rows if duplicate - this is OK (idempotent)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil // Vote already exists, no error for idempotency
 	}
 
@@ -85,7 +86,7 @@ func (r *postgresVoteRepo) GetByURI(ctx context.Context, uri string) (*votes.Vot
 		&vote.CreatedAt, &vote.IndexedAt, &vote.DeletedAt,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, votes.ErrVoteNotFound
 	}
 	if err != nil {
@@ -115,7 +116,7 @@ func (r *postgresVoteRepo) GetByVoterAndSubject(ctx context.Context, voterDID, s
 		&vote.CreatedAt, &vote.IndexedAt, &vote.DeletedAt,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, votes.ErrVoteNotFound
 	}
 	if err != nil {

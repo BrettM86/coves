@@ -4,6 +4,7 @@ import (
 	"Coves/internal/core/communitysuggestions"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -88,7 +89,7 @@ func (r *postgresCommunitySuggestionRepo) GetByID(ctx context.Context, id int64)
 		&suggestion.VoteCount, &suggestion.CreatedAt, &suggestion.UpdatedAt,
 	)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, communitysuggestions.ErrSuggestionNotFound
 		}
 		return nil, fmt.Errorf("failed to get community suggestion by ID: %w", err)
@@ -319,7 +320,7 @@ func (r *postgresCommunitySuggestionRepo) DeleteVote(ctx context.Context, sugges
 	var deletedValue int
 	err = tx.QueryRowContext(ctx, deleteQuery, suggestionID, voterDID).Scan(&deletedValue)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return 0, communitysuggestions.ErrVoteNotFound
 		}
 		return 0, fmt.Errorf("failed to delete vote: %w", err)
@@ -480,7 +481,7 @@ func (r *postgresCommunitySuggestionRepo) GetVote(ctx context.Context, suggestio
 		&vote.Value, &vote.CreatedAt,
 	)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, communitysuggestions.ErrVoteNotFound
 		}
 		return nil, fmt.Errorf("failed to get vote: %w", err)

@@ -339,7 +339,7 @@ func (c *PostEventConsumer) updatePost(ctx context.Context, repoDID string, comm
 		`SELECT id, community_did, author_did, deleted_at, bridged_stats_as_of, indexed_at FROM posts WHERE uri = $1`,
 		uri,
 	).Scan(&storedID, &storedCommunityDID, &storedAuthorDID, &storedDeletedAt, &storedAsOf, &storedIndexedAt)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		// Not indexed yet (out-of-order delivery). Jetstream will replay CREATE; skip.
 		log.Printf("Update event for non-indexed post: %s (will be indexed on CREATE)", uri)
 		return nil
@@ -626,7 +626,7 @@ func (c *PostEventConsumer) indexPostAndReconcileCounts(ctx context.Context, pos
 	).Scan(&postID)
 
 	// If no rows returned, post already exists (idempotent - OK for Jetstream replays)
-	if insertErr == sql.ErrNoRows {
+	if errors.Is(insertErr, sql.ErrNoRows) {
 		// KNOWN LIMITATION (accepted): a genuine RE-CREATE of the same rkey while
 		// the row is still ACTIVE also lands here and is treated as an idempotent
 		// duplicate, dropping the new content. Reaching that state requires the

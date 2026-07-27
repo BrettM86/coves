@@ -4,6 +4,7 @@ import (
 	"Coves/internal/core/aggregators"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -99,7 +100,7 @@ func (r *postgresAggregatorRepo) GetAggregator(ctx context.Context, did string) 
 		&recordCID,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, aggregators.ErrAggregatorNotFound
 	}
 	if err != nil {
@@ -434,7 +435,7 @@ func (r *postgresAggregatorRepo) GetAuthorization(ctx context.Context, aggregato
 		&recordCID,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, aggregators.ErrAuthorizationNotFound
 	}
 	if err != nil {
@@ -487,7 +488,7 @@ func (r *postgresAggregatorRepo) GetAuthorizationByURI(ctx context.Context, reco
 		&recordCID,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, aggregators.ErrAuthorizationNotFound
 	}
 	if err != nil {
@@ -795,7 +796,7 @@ func (r *postgresAggregatorRepo) GetByAPIKeyHash(ctx context.Context, keyHash st
 		&apiKeyRevokedAt,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, aggregators.ErrAggregatorNotFound
 	}
 	if err != nil {
@@ -1025,7 +1026,7 @@ func (r *postgresAggregatorRepo) GetAggregatorCredentials(ctx context.Context, d
 		&oauthDPoPPDSNonce,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, aggregators.ErrAggregatorNotFound
 	}
 	if err != nil {
@@ -1119,7 +1120,7 @@ func (r *postgresAggregatorRepo) GetCredentialsByAPIKeyHash(ctx context.Context,
 		&oauthDPoPPDSNonce,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, aggregators.ErrAPIKeyInvalid
 	}
 	if err != nil {

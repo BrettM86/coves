@@ -1,19 +1,15 @@
 package aggregator
 
 import (
-	"Coves/internal/core/aggregators"
-	"Coves/internal/core/communities"
 	"bytes"
 	"encoding/json"
 	"log"
 	"net/http"
-)
 
-// ErrorResponse represents an XRPC error response
-type ErrorResponse struct {
-	Error   string `json:"error"`
-	Message string `json:"message"`
-}
+	"Coves/internal/api/xrpc"
+	"Coves/internal/core/aggregators"
+	"Coves/internal/core/communities"
+)
 
 // writeJSONResponse buffers the JSON encoding before sending headers.
 // This ensures that encoding failures don't result in partial responses
@@ -40,44 +36,31 @@ func writeJSONResponse(w http.ResponseWriter, statusCode int, data interface{}) 
 	return true
 }
 
-// writeError writes a JSON error response with proper buffering
+// errorMapper maps aggregator service errors to XRPC responses.
+//
+// Handlers here call into communities as well, to resolve a community
+// identifier, so those errors are checked first and answer with the more
+// specific CommunityNotFound.
+var errorMapper = xrpc.NewMapper("aggregator",
+	xrpc.MatchDetail(communities.IsNotFound, http.StatusNotFound, "CommunityNotFound"),
+	xrpc.MatchDetail(communities.IsValidationError, http.StatusBadRequest, "InvalidRequest"),
+
+	xrpc.MatchDetail(aggregators.IsNotFound, http.StatusNotFound, "NotFound"),
+	xrpc.MatchDetail(aggregators.IsValidationError, http.StatusBadRequest, "InvalidRequest"),
+	xrpc.MatchDetail(aggregators.IsUnauthorized, http.StatusForbidden, "Forbidden"),
+	xrpc.MatchDetail(aggregators.IsConflict, http.StatusConflict, "Conflict"),
+	xrpc.MatchDetail(aggregators.IsRateLimited, http.StatusTooManyRequests, "RateLimitExceeded"),
+	xrpc.Match(aggregators.IsNotImplemented, http.StatusNotImplemented,
+		"NotImplemented", "This feature is not yet available (Phase 2)"),
+)
+
+// writeError writes a JSON error response with proper buffering.
 func writeError(w http.ResponseWriter, statusCode int, errorType, message string) {
-	writeJSONResponse(w, statusCode, ErrorResponse{
-		Error:   errorType,
-		Message: message,
-	})
+	xrpc.WriteError(w, statusCode, errorType, message)
 }
 
-// handleServiceError maps service errors to HTTP responses
-// Handles errors from both aggregators and communities packages
+// handleServiceError maps service errors to HTTP responses.
+// Handles errors from both aggregators and communities packages.
 func handleServiceError(w http.ResponseWriter, err error) {
-	if err == nil {
-		return
-	}
-
-	// Map domain errors to HTTP status codes
-	// Check community errors first (for ResolveCommunityIdentifier calls)
-	switch {
-	case communities.IsNotFound(err):
-		writeError(w, http.StatusNotFound, "CommunityNotFound", err.Error())
-	case communities.IsValidationError(err):
-		writeError(w, http.StatusBadRequest, "InvalidRequest", err.Error())
-	case aggregators.IsNotFound(err):
-		writeError(w, http.StatusNotFound, "NotFound", err.Error())
-	case aggregators.IsValidationError(err):
-		writeError(w, http.StatusBadRequest, "InvalidRequest", err.Error())
-	case aggregators.IsUnauthorized(err):
-		writeError(w, http.StatusForbidden, "Forbidden", err.Error())
-	case aggregators.IsConflict(err):
-		writeError(w, http.StatusConflict, "Conflict", err.Error())
-	case aggregators.IsRateLimited(err):
-		writeError(w, http.StatusTooManyRequests, "RateLimitExceeded", err.Error())
-	case aggregators.IsNotImplemented(err):
-		writeError(w, http.StatusNotImplemented, "NotImplemented", "This feature is not yet available (Phase 2)")
-	default:
-		// Internal errors - don't leak details
-		log.Printf("ERROR: Aggregator service error: %v", err)
-		writeError(w, http.StatusInternalServerError, "InternalServerError",
-			"An internal error occurred")
-	}
+	errorMapper.Write(w, err)
 }

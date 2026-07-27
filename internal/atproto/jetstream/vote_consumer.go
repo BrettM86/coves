@@ -6,6 +6,7 @@ import (
 	"Coves/internal/core/votes"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -160,7 +161,7 @@ func (c *VoteEventConsumer) deleteVote(ctx context.Context, repoDID string, comm
 	err = tx.QueryRowContext(ctx,
 		`SELECT direction, subject_uri, deleted_at FROM votes WHERE uri = $1`, uri,
 	).Scan(&direction, &subjectURI, &deletedAt)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		// Idempotent: vote never indexed. Commit the gate advance anyway — it
 		// is the tombstone that rejects a stale cross-feed copy of the CREATE
 		// arriving later for a record that no longer exists on the PDS.
@@ -392,7 +393,7 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 	).Scan(&voteID)
 
 	// If no rows returned, vote already exists (idempotent - OK for Jetstream replays)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		// KNOWN LIMITATION (accepted): a genuine RE-CREATE of the same rkey while
 		// the row is still ACTIVE also lands here and is treated as an idempotent
 		// duplicate. Reaching that state requires the exact sequence: create A

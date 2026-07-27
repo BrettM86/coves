@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -134,7 +135,7 @@ func (r *postgresPostRepo) GetByURI(ctx context.Context, uri string) (*posts.Pos
 		&post.UpvoteCount, &post.DownvoteCount, &post.Score, &post.CommentCount,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, posts.ErrNotFound
 	}
 	if err != nil {

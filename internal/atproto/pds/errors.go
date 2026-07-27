@@ -26,12 +26,33 @@ var (
 
 	// ErrPayloadTooLarge indicates the request payload exceeds PDS limits (HTTP 413).
 	ErrPayloadTooLarge = errors.New("payload too large")
+
+	// ErrSessionExpired indicates a stored OAuth session could not be resumed:
+	// the refresh token expired, the session was revoked on the PDS, or the
+	// DPoP key no longer matches. Unlike ErrUnauthorized this is detected
+	// locally, before any request reaches the PDS, so it carries no HTTP
+	// status — but it has the same remedy, and a client that is not told to
+	// re-authenticate will retry forever.
+	ErrSessionExpired = errors.New("oauth session expired")
 )
 
 // IsAuthError returns true if the error is an authentication/authorization error.
-// This is a convenience function for checking if re-authentication might help.
+//
+// It deliberately spans both 401 and 403, so it must NOT be used to pick an
+// HTTP status: 401 means "sign in again" while 403 means "your session lacks
+// the scope for this", and collapsing them leaves clients unable to tell a
+// dead session from a permissions gap. Use IsReauthRequired for that decision,
+// or match the individual sentinels.
 func IsAuthError(err error) bool {
-	return errors.Is(err, ErrUnauthorized) || errors.Is(err, ErrForbidden)
+	return errors.Is(err, ErrUnauthorized) || errors.Is(err, ErrForbidden) || errors.Is(err, ErrSessionExpired)
+}
+
+// IsReauthRequired reports whether the user's session is no longer usable and
+// the client must start a new sign-in. This is the check that should drive a
+// 401 response. ErrForbidden is excluded: re-authenticating with the same
+// scopes would fail the same way.
+func IsReauthRequired(err error) bool {
+	return errors.Is(err, ErrUnauthorized) || errors.Is(err, ErrSessionExpired)
 }
 
 // IsConflictError returns true if the error indicates a conflict (e.g., duplicate record).

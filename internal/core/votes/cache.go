@@ -170,7 +170,7 @@ func (c *VoteCache) fetchAllVotesFromPDS(ctx context.Context, pdsClient pds.Clie
 		result, err := pdsClient.ListRecords(ctx, collection, pageSize, cursor)
 		if err != nil {
 			if pds.IsAuthError(err) {
-				return nil, ErrNotAuthorized
+				return nil, fmt.Errorf("%w: %w", ErrNotAuthorized, err)
 			}
 			return nil, fmt.Errorf("listRecords failed: %w", err)
 		}

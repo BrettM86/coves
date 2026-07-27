@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -83,7 +84,7 @@ func (c *CommentEventConsumer) bridgeStatsAllowedForRepo(ctx context.Context, re
 	var pdsURL string
 	err := c.db.QueryRowContext(ctx, `SELECT pds_url FROM users WHERE did = $1`, repoDID).Scan(&pdsURL)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			log.Printf("debug: ignoring bridgedStats from repo %s (user not indexed; provenance unverifiable)", repoDID)
 		} else {
 			log.Printf("Warning: bridgedStats provenance check failed for repo %s: %v", repoDID, err)
@@ -244,7 +245,7 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 		`SELECT root_uri, root_cid, parent_uri, parent_cid, deleted_at, bridged_stats_as_of, indexed_at
 		 FROM comments WHERE uri = $1`, uri,
 	).Scan(&storedRootURI, &storedRootCID, &storedParentURI, &storedParentCID, &storedDeletedAt, &storedAsOf, &storedIndexedAt)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		// Comment not indexed yet: its CREATE event will index it when it arrives.
 		log.Printf("Update event for non-indexed comment: %s (will be indexed on CREATE)", uri)
 		return nil
@@ -684,7 +685,7 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 			return fmt.Errorf("failed to resurrect comment: %w", err)
 		}
 
-	} else if checkErr == sql.ErrNoRows {
+	} else if errors.Is(checkErr, sql.ErrNoRows) {
 		// Comment doesn't exist - insert new comment
 		// Use ON CONFLICT DO NOTHING to handle race conditions gracefully
 		// (e.g., duplicate Jetstream events from reconnections/retries)
@@ -714,7 +715,7 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 			comment.CreatedAt, comment.IndexedAt,
 			comment.BridgedUpvoteCount, comment.BridgedDownvoteCount, comment.BridgedStatsAsOf, comment.Score,
 		).Scan(&commentID)
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			// ON CONFLICT triggered - comment was inserted by concurrent process
 			// This is an idempotent replay, skip gracefully
 			log.Printf("Comment already indexed (concurrent insert): %s", comment.URI)

@@ -1,12 +1,13 @@
 package post
 
 import (
-	"Coves/internal/api/middleware"
-	"Coves/internal/core/posts"
 	"encoding/json"
-	"errors"
 	"log"
 	"net/http"
+
+	"Coves/internal/api/middleware"
+	"Coves/internal/api/xrpc"
+	"Coves/internal/core/posts"
 )
 
 // DeleteHandler handles post deletion requests
@@ -80,25 +81,23 @@ func (h *DeleteHandler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// deleteErrorMapper narrows the package mapper for the delete path, which names
+// the missing post and the refused action more precisely than the generic rules
+// do; everything else it inherits.
+//
+// Note that deleting does NOT write to the caller's repo — posts live in the
+// community's, and the delete authenticates with the community's service token.
+// The service therefore strips the pds sentinels off a rejected community
+// credential before it reaches here (see posts.communityCredentialFailure), so
+// the inherited re-auth rule only ever fires on the caller's own session.
+var deleteErrorMapper = errorMapper.With(
+	xrpc.Sentinel(posts.ErrNotFound, http.StatusNotFound,
+		"PostNotFound", "Post not found"),
+	xrpc.Sentinel(posts.ErrNotAuthorized, http.StatusForbidden,
+		"NotAuthorized", "You are not authorized to delete this post"),
+)
+
 // handleDeleteError maps delete-specific service errors to HTTP responses
 func handleDeleteError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, posts.ErrNotFound):
-		writeError(w, http.StatusNotFound, "PostNotFound", "Post not found")
-
-	case errors.Is(err, posts.ErrNotAuthorized):
-		writeError(w, http.StatusForbidden, "NotAuthorized", "You are not authorized to delete this post")
-
-	case errors.Is(err, posts.ErrCommunityNotFound):
-		writeError(w, http.StatusNotFound, "CommunityNotFound", "Community not found")
-
-	case posts.IsValidationError(err):
-		writeError(w, http.StatusBadRequest, "InvalidRequest", err.Error())
-
-	default:
-		// Don't leak internal error details to clients
-		log.Printf("Unexpected error in post delete handler: %v", err)
-		writeError(w, http.StatusInternalServerError, "InternalServerError",
-			"An internal error occurred")
-	}
+	deleteErrorMapper.Write(w, err)
 }

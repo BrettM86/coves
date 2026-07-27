@@ -2,8 +2,11 @@ package pds
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+
+	covesoauth "Coves/internal/atproto/oauth"
 
 	"github.com/bluesky-social/indigo/atproto/atclient"
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
@@ -32,9 +35,8 @@ func NewFromOAuthSession(ctx context.Context, oauthClient *oauth.ClientApp, sess
 	// - DPoP key mismatch → Session data corrupted, re-authenticate
 	sess, err := oauthClient.ResumeSession(ctx, sessionData.AccountDID, sessionData.SessionID)
 	if err != nil {
-		// Include DID and session context for debugging
-		return nil, fmt.Errorf("failed to resume OAuth session for DID=%s, sessionID=%s: %w",
-			sessionData.AccountDID.String(), sessionData.SessionID, err)
+		return nil, classifyResumeFailure(err,
+			sessionData.AccountDID.String(), sessionData.SessionID)
 	}
 
 	// APIClient() returns an *atclient.APIClient configured with DPoP auth
@@ -45,6 +47,31 @@ func NewFromOAuthSession(ctx context.Context, oauthClient *oauth.ClientApp, sess
 		did:       sessionData.AccountDID.String(),
 		host:      sessionData.HostURL,
 	}, nil
+}
+
+// classifyResumeFailure decides whether a failed session resume means the user
+// must sign in again.
+//
+// Tag ONLY a session that is genuinely gone. ResumeSession is a session-store
+// read and nothing more, so its failures split two ways: the row is absent or
+// past its expiry (terminal — signing in again is the fix), or the store itself
+// failed (a database outage, an exhausted pool, a cancelled request).
+//
+// The distinction has to be made here because the API boundary checks
+// re-authentication ahead of every other rule, so anything tagged expired
+// answers 401. Tagging the whole class would turn a few seconds of database
+// trouble into a sign-out for every user with a request in flight, and would
+// hide the outage from 5xx alerting at the same time.
+//
+// Either way the cause stays wrapped, so it reaches the logs and — for a
+// cancelled or timed-out request — still matches the boundary's lifecycle rules.
+func classifyResumeFailure(err error, did, sessionID string) error {
+	if errors.Is(err, covesoauth.ErrSessionNotFound) {
+		return fmt.Errorf("failed to resume OAuth session for DID=%s, sessionID=%s: %w: %w",
+			did, sessionID, ErrSessionExpired, err)
+	}
+	return fmt.Errorf("failed to resume OAuth session for DID=%s, sessionID=%s: %w",
+		did, sessionID, err)
 }
 
 // NewFromPasswordAuth creates a PDS client using password authentication.

@@ -4,6 +4,7 @@ import (
 	"Coves/internal/core/communities"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -63,7 +64,7 @@ func (r *postgresCommunityRepo) GetMembership(ctx context.Context, userDID, comm
 		&membership.IsModerator,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, communities.ErrMembershipNotFound
 	}
 	if err != nil {
@@ -95,7 +96,7 @@ func (r *postgresCommunityRepo) UpdateMembership(ctx context.Context, membership
 		membership.IsModerator,
 	).Scan(&membership.LastActiveAt)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, communities.ErrMembershipNotFound
 	}
 	if err != nil {

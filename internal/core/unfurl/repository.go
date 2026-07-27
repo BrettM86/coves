@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -32,7 +33,7 @@ func (r *postgresUnfurlRepo) Get(ctx context.Context, url string) (*UnfurlResult
 	var provider string
 
 	err := r.db.QueryRowContext(ctx, query, url).Scan(&metadataJSON, &thumbnailURL, &provider)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		// Not found or expired is not an error
 		return nil, nil
 	}

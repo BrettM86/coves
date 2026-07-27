@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -50,7 +51,7 @@ func (r *postgresCommentRepo) Create(ctx context.Context, comment *comments.Comm
 	).Scan(&comment.ID, &comment.IndexedAt)
 
 	// ON CONFLICT DO NOTHING returns no rows if duplicate - this is OK (idempotent)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil // Comment already exists, no error for idempotency
 	}
 
@@ -130,7 +131,7 @@ func (r *postgresCommentRepo) Update(ctx context.Context, comment *comments.Comm
 		&comment.ReplyCount,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return comments.ErrCommentNotFound
 	}
 	if err != nil {
@@ -172,7 +173,7 @@ func (r *postgresCommentRepo) GetByURI(ctx context.Context, uri string) (*commen
 		&comment.UpvoteCount, &comment.DownvoteCount, &comment.Score, &comment.ReplyCount,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, comments.ErrCommentNotFound
 	}
 	if err != nil {

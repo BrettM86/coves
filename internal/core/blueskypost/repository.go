@@ -38,7 +38,7 @@ func (r *postgresBlueskyPostRepo) Get(ctx context.Context, atURI string) (*Blues
 	var metadataJSON []byte
 
 	err := r.db.QueryRowContext(ctx, query, atURI).Scan(&metadataJSON)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		// Not found or expired is a cache miss
 		return nil, ErrCacheMiss
 	}

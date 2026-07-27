@@ -70,7 +70,7 @@ func (s *PostgresOAuthStore) GetSession(ctx context.Context, did syntax.DID, ses
 		&dpopPrivateKeyMultibase,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrSessionNotFound
 	}
 	if err != nil {
@@ -284,7 +284,7 @@ func (s *PostgresOAuthStore) GetAuthRequestInfo(ctx context.Context, state strin
 		&createdAt,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrAuthRequestNotFound
 	}
 	if err != nil {
@@ -624,7 +624,7 @@ func (s *PostgresOAuthStore) GetMobileOAuthData(ctx context.Context, state strin
 	var csrfToken, redirectURI sql.NullString
 	err := s.db.QueryRowContext(ctx, query, state).Scan(&csrfToken, &redirectURI)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrAuthRequestNotFound
 	}
 	if err != nil {

@@ -88,64 +88,41 @@ func (h *DeleteHandler) HandleDeleteAccount(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-// writeJSONError writes a JSON error response
-// Marshals JSON before writing headers to catch encoding errors
-func writeJSONError(w http.ResponseWriter, statusCode int, errorType, message string) {
-	responseBytes, err := json.Marshal(map[string]interface{}{
-		"error":   errorType,
-		"message": message,
-	})
-	if err != nil {
-		// Fallback to plain text if JSON encoding fails (should never happen with simple strings)
-		slog.Error("failed to marshal error response", slog.String("error", err.Error()))
-		w.Header().Set("Content-Type", "text/plain")
-		w.WriteHeader(statusCode)
-		_, _ = w.Write([]byte(message))
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	if _, writeErr := w.Write(responseBytes); writeErr != nil {
-		slog.Warn("failed to write error response", slog.String("error", writeErr.Error()))
-	}
-}
-
 // handleServiceError maps service errors to HTTP responses.
 // operation is a human-readable label for log messages (e.g. "account deletion", "get profile").
 func handleServiceError(w http.ResponseWriter, err error, userDID, operation string) {
-	// Check for specific error types
+	if err == nil {
+		slog.Error(operation+" reached its error path without an error",
+			slog.String("did", userDID))
+		accountErrorMapper.Write(w, err)
+		return
+	}
+
+	// The DID and operation are worth recording on every failure here, not just
+	// the unmapped ones the mapper logs, so account problems can be traced to a
+	// user. Severity follows the answer, though: a mistyped DID or a missing
+	// account is the caller's ordinary mistake, and logging those at ERROR — as
+	// this did before the outcome was available to branch on — buries real
+	// faults in alert noise.
+	mapping, matched := accountErrorMapper.Resolve(err)
 	switch {
-	case errors.Is(err, users.ErrUserNotFound):
-		writeJSONError(w, http.StatusNotFound, "AccountNotFound", "Account not found")
-
-	case errors.Is(err, context.DeadlineExceeded):
-		slog.Error(operation+" timed out",
-			slog.String("did", userDID),
-			slog.String("error", err.Error()),
-		)
-		writeJSONError(w, http.StatusGatewayTimeout, "Timeout", "Request timed out")
-
 	case errors.Is(err, context.Canceled):
 		slog.Info(operation+" canceled",
 			slog.String("did", userDID),
 			slog.String("error", err.Error()),
 		)
-		writeJSONError(w, http.StatusBadRequest, "RequestCanceled", "Request was canceled")
-
+	case matched && mapping.Status < http.StatusInternalServerError:
+		slog.Info(operation+" rejected",
+			slog.String("did", userDID),
+			slog.String("code", mapping.Code),
+			slog.String("error", err.Error()),
+		)
 	default:
-		// Check for InvalidDIDError
-		var invalidDIDErr *users.InvalidDIDError
-		if errors.As(err, &invalidDIDErr) {
-			writeJSONError(w, http.StatusBadRequest, "InvalidDID", invalidDIDErr.Error())
-			return
-		}
-
-		// Internal server error - don't leak details
 		slog.Error(operation+" failed",
 			slog.String("did", userDID),
 			slog.String("error", err.Error()),
 		)
-		writeJSONError(w, http.StatusInternalServerError, "InternalServerError", "An internal error occurred")
 	}
+
+	accountErrorMapper.Write(w, err)
 }

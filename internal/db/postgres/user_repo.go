@@ -4,6 +4,7 @@ import (
 	"Coves/internal/core/users"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -55,7 +56,7 @@ func (r *postgresUserRepo) GetByDID(ctx context.Context, did string) (*users.Use
 		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt,
 			&displayName, &bio, &avatarCID, &bannerCID)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, users.ErrUserNotFound
 	}
 	if err != nil {
@@ -80,7 +81,7 @@ func (r *postgresUserRepo) GetByHandle(ctx context.Context, handle string) (*use
 		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt,
 			&displayName, &bio, &avatarCID, &bannerCID)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, users.ErrUserNotFound
 	}
 	if err != nil {
@@ -109,7 +110,7 @@ func (r *postgresUserRepo) UpdateHandle(ctx context.Context, did, newHandle stri
 		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt,
 			&displayName, &bio, &avatarCID, &bannerCID)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, users.ErrUserNotFound
 	}
 	if err != nil {
@@ -370,7 +371,7 @@ func (r *postgresUserRepo) UpdateProfile(ctx context.Context, did string, input 
 		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt,
 			&displayNameVal, &bioVal, &avatarCIDVal, &bannerCIDVal)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, users.ErrUserNotFound
 	}
 	if err != nil {

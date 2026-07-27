@@ -4,6 +4,7 @@ import (
 	"Coves/internal/core/communities"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -203,7 +204,7 @@ func (r *postgresCommunityRepo) GetSubscription(ctx context.Context, userDID, co
 		&subscription.ContentVisibility,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, communities.ErrSubscriptionNotFound
 	}
 	if err != nil {
@@ -237,7 +238,7 @@ func (r *postgresCommunityRepo) GetSubscriptionByURI(ctx context.Context, record
 		&subscription.ContentVisibility,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, communities.ErrSubscriptionNotFound
 	}
 	if err != nil {

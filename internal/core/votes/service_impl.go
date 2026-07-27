@@ -144,7 +144,7 @@ func (s *voteService) CreateVote(ctx context.Context, session *oauth.ClientSessi
 					"voter", session.AccountDID,
 					"rkey", existing.RKey)
 				if pds.IsAuthError(err) {
-					return nil, ErrNotAuthorized
+					return nil, fmt.Errorf("%w: %w", ErrNotAuthorized, err)
 				}
 				return nil, fmt.Errorf("failed to delete vote: %w", err)
 			}
@@ -173,7 +173,7 @@ func (s *voteService) CreateVote(ctx context.Context, session *oauth.ClientSessi
 				"voter", session.AccountDID,
 				"rkey", existing.RKey)
 			if pds.IsAuthError(err) {
-				return nil, ErrNotAuthorized
+				return nil, fmt.Errorf("%w: %w", ErrNotAuthorized, err)
 			}
 			return nil, fmt.Errorf("failed to delete existing vote: %w", err)
 		}
@@ -194,7 +194,7 @@ func (s *voteService) CreateVote(ctx context.Context, session *oauth.ClientSessi
 			"subject", req.Subject.URI,
 			"direction", req.Direction)
 		if pds.IsAuthError(err) {
-			return nil, ErrNotAuthorized
+			return nil, fmt.Errorf("%w: %w", ErrNotAuthorized, err)
 		}
 		return nil, fmt.Errorf("failed to create vote: %w", err)
 	}
@@ -261,7 +261,7 @@ func (s *voteService) DeleteVote(ctx context.Context, session *oauth.ClientSessi
 			"voter", session.AccountDID,
 			"rkey", existing.RKey)
 		if pds.IsAuthError(err) {
-			return ErrNotAuthorized
+			return fmt.Errorf("%w: %w", ErrNotAuthorized, err)
 		}
 		return fmt.Errorf("failed to delete vote: %w", err)
 	}
@@ -372,7 +372,7 @@ func (s *voteService) findExistingVoteFromPDS(ctx context.Context, pdsClient pds
 		if err != nil {
 			// Check for auth errors using typed errors
 			if pds.IsAuthError(err) {
-				return nil, ErrNotAuthorized
+				return nil, fmt.Errorf("%w: %w", ErrNotAuthorized, err)
 			}
 			return nil, fmt.Errorf("listRecords failed: %w", err)
 		}

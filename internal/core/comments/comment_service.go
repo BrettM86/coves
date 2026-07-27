@@ -756,7 +756,7 @@ func (s *commentService) CreateComment(ctx context.Context, session *oauth.Clien
 			"root", req.Reply.Root.URI,
 			"parent", req.Reply.Parent.URI)
 		if pds.IsAuthError(err) {
-			return nil, ErrNotAuthorized
+			return nil, fmt.Errorf("%w: %w", ErrNotAuthorized, err)
 		}
 		return nil, fmt.Errorf("failed to create comment: %w", err)
 	}
@@ -839,10 +839,10 @@ func (s *commentService) UpdateComment(ctx context.Context, session *oauth.Clien
 			"uri", req.URI,
 			"rkey", rkey)
 		if pds.IsAuthError(err) {
-			return nil, ErrNotAuthorized
+			return nil, fmt.Errorf("%w: %w", ErrNotAuthorized, err)
 		}
 		if errors.Is(err, pds.ErrNotFound) {
-			return nil, ErrCommentNotFound
+			return nil, fmt.Errorf("%w: %w", ErrCommentNotFound, err)
 		}
 		return nil, fmt.Errorf("failed to fetch existing comment: %w", err)
 	}
@@ -891,10 +891,10 @@ func (s *commentService) UpdateComment(ctx context.Context, session *oauth.Clien
 			"uri", req.URI,
 			"rkey", rkey)
 		if pds.IsAuthError(err) {
-			return nil, ErrNotAuthorized
+			return nil, fmt.Errorf("%w: %w", ErrNotAuthorized, err)
 		}
 		if errors.Is(err, pds.ErrConflict) {
-			return nil, ErrConcurrentModification
+			return nil, fmt.Errorf("%w: %w", ErrConcurrentModification, err)
 		}
 		return nil, fmt.Errorf("failed to update comment: %w", err)
 	}
@@ -951,10 +951,10 @@ func (s *commentService) DeleteComment(ctx context.Context, session *oauth.Clien
 			"uri", req.URI,
 			"rkey", rkey)
 		if pds.IsAuthError(err) {
-			return ErrNotAuthorized
+			return fmt.Errorf("%w: %w", ErrNotAuthorized, err)
 		}
 		if errors.Is(err, pds.ErrNotFound) {
-			return ErrCommentNotFound
+			return fmt.Errorf("%w: %w", ErrCommentNotFound, err)
 		}
 		return fmt.Errorf("failed to verify comment: %w", err)
 	}
@@ -966,7 +966,7 @@ func (s *commentService) DeleteComment(ctx context.Context, session *oauth.Clien
 			"uri", req.URI,
 			"rkey", rkey)
 		if pds.IsAuthError(err) {
-			return ErrNotAuthorized
+			return fmt.Errorf("%w: %w", ErrNotAuthorized, err)
 		}
 		return fmt.Errorf("failed to delete comment: %w", err)
 	}

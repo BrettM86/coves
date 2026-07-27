@@ -922,6 +922,22 @@ func validateDIDFormat(did string) error {
 	}
 }
 
+// communityCredentialFailure reports that the *community's* stored PDS
+// credentials were rejected, deliberately severing the pds sentinel from the
+// chain with %v rather than %w.
+//
+// Posts live in the community's repo, so deletes authenticate with the
+// community's service token, not the caller's OAuth session. If that token were
+// allowed to surface pds.ErrUnauthorized, the API boundary would read it as the
+// caller's session being dead and answer 401 — telling a user with a perfectly
+// healthy session to sign in again over a server-side credential problem they
+// cannot fix, and hiding a real outage from 5xx alerting. Unclassified is the
+// correct answer here: it becomes a logged 500.
+func communityCredentialFailure(operation, communityDID string, err error) error {
+	return fmt.Errorf("community PDS credentials rejected during %s for %s: %v",
+		operation, communityDID, err)
+}
+
 // DeletePost deletes a post from the community's PDS repository
 // SECURITY: Only the post author can delete their own posts
 // Flow:
@@ -979,6 +995,9 @@ func (s *postService) DeletePost(ctx context.Context, session *oauth.ClientSessi
 			log.Printf("[POST-DELETE] Post not found on PDS (already deleted?): %s", req.URI)
 			return nil
 		}
+		if pds.IsAuthError(err) {
+			return communityCredentialFailure("fetch post", community.DID, err)
+		}
 		return fmt.Errorf("failed to fetch post from PDS: %w", err)
 	}
 
@@ -1001,6 +1020,9 @@ func (s *postService) DeletePost(ctx context.Context, session *oauth.ClientSessi
 			// Already deleted - idempotent success
 			log.Printf("[POST-DELETE] Post already deleted from PDS: %s", req.URI)
 			return nil
+		}
+		if pds.IsAuthError(err) {
+			return communityCredentialFailure("delete post", community.DID, err)
 		}
 		return fmt.Errorf("failed to delete post from PDS: %w", err)
 	}

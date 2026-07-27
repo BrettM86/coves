@@ -3,6 +3,7 @@ package routes
 import (
 	"Coves/internal/api/handlers/user"
 	"Coves/internal/api/middleware"
+	"Coves/internal/api/xrpc"
 	"Coves/internal/core/userblocks"
 	"Coves/internal/core/users"
 	"encoding/json"
@@ -127,7 +128,19 @@ func (h *UserHandler) GetProfile(w http.ResponseWriter, r *http.Request) {
 		// Resolve handle to DID
 		resolvedDID, err := h.userService.ResolveHandleToDID(ctx, actor)
 		if err != nil {
-			writeXRPCError(w, "ProfileNotFound", "user not found", http.StatusNotFound)
+			// Only an actually-absent handle is a 404. Reporting a DNS outage or
+			// a broken PLC directory as "user not found" tells the caller their
+			// handle is wrong and hides the outage from anyone watching 5xx.
+			var invalidHandle *users.InvalidHandleError
+			switch {
+			case errors.Is(err, users.ErrUserNotFound):
+				writeXRPCError(w, "ProfileNotFound", "user not found", http.StatusNotFound)
+			case errors.As(err, &invalidHandle):
+				writeXRPCError(w, "InvalidRequest", "actor is not a valid handle or DID", http.StatusBadRequest)
+			default:
+				log.Printf("Failed to resolve handle %s: %v", actor, err)
+				writeXRPCError(w, "InternalError", "failed to resolve handle", http.StatusInternalServerError)
+			}
 			return
 		}
 		did = resolvedDID
@@ -174,16 +187,12 @@ func (h *UserHandler) GetProfile(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// writeXRPCError writes a standardized XRPC error response
+// writeXRPCError writes a standardized XRPC error response.
+//
+// Argument order differs from xrpc.WriteError to match this file's existing
+// call sites.
 func writeXRPCError(w http.ResponseWriter, errorName, message string, statusCode int) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	if err := json.NewEncoder(w).Encode(map[string]interface{}{
-		"error":   errorName,
-		"message": message,
-	}); err != nil {
-		log.Printf("Failed to encode error response: %v", err)
-	}
+	xrpc.WriteError(w, statusCode, errorName, message)
 }
 
 // Signup handles social.coves.actor.signup

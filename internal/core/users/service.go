@@ -224,6 +224,19 @@ func (s *userService) ResolveHandleToDID(ctx context.Context, handle string) (st
 	// Slow path: use identity resolver for external DNS/HTTPS resolution
 	did, _, err := s.identityResolver.ResolveHandle(ctx, handle)
 	if err != nil {
+		// Translate the resolver's typed errors into this package's vocabulary so
+		// callers can tell "no such handle" from "resolution broke". Without this
+		// the two are indistinguishable at the API boundary and a nonexistent
+		// handle — the single most common failure of a public profile lookup —
+		// reads as a server fault.
+		var notFound *identity.ErrNotFound
+		var invalidIdentifier *identity.ErrInvalidIdentifier
+		switch {
+		case errors.As(err, &notFound):
+			return "", fmt.Errorf("%w: %w", ErrUserNotFound, err)
+		case errors.As(err, &invalidIdentifier):
+			return "", &InvalidHandleError{Handle: handle, Reason: invalidIdentifier.Reason}
+		}
 		return "", fmt.Errorf("failed to resolve handle %s: %w", handle, err)
 	}
 

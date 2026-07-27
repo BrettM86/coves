@@ -3,6 +3,7 @@ package jetstream
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 )
@@ -90,7 +91,7 @@ func recordRevIsStale(ctx context.Context, q revGateQuerier, uri, rev string) (b
 	err := q.QueryRowContext(ctx,
 		`SELECT rev >= $2 FROM jetstream_record_revs WHERE record_uri = $1`, uri, rev,
 	).Scan(&stale)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {

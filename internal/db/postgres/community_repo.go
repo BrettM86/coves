@@ -4,6 +4,7 @@ import (
 	"Coves/internal/core/communities"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -161,7 +162,7 @@ func (r *postgresCommunityRepo) GetByDID(ctx context.Context, did string) (*comm
 		&recordURI, &recordCID,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, communities.ErrCommunityNotFound
 	}
 	if err != nil {
@@ -225,7 +226,7 @@ func (r *postgresCommunityRepo) GetByHandle(ctx context.Context, handle string) 
 		&recordURI, &recordCID,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, communities.ErrCommunityNotFound
 	}
 	if err != nil {
@@ -291,7 +292,7 @@ func (r *postgresCommunityRepo) Update(ctx context.Context, community *communiti
 		community.PDSURL,
 	).Scan(&community.UpdatedAt)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, communities.ErrCommunityNotFound
 	}
 	if err != nil {
@@ -317,7 +318,7 @@ func (r *postgresCommunityRepo) UpdateCredentials(ctx context.Context, did, acce
 	var returnedDID string
 	err := r.db.QueryRowContext(ctx, query, did, accessToken, refreshToken).Scan(&returnedDID)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return communities.ErrCommunityNotFound
 	}
 	if err != nil {

@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -46,7 +47,7 @@ func (r *postgresCache) Get(ctx context.Context, identifier string) (*Identity, 
 		&expiresAt,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, &ErrCacheMiss{Identifier: identifier}
 	}
 	if err != nil {

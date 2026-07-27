@@ -4,6 +4,7 @@ import (
 	"Coves/internal/core/communities"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 )
@@ -72,7 +73,7 @@ func (r *postgresCommunityRepo) GetBlock(ctx context.Context, userDID, community
 		&block.RecordCID,
 	)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, communities.ErrBlockNotFound
 		}
 		return nil, fmt.Errorf("failed to get block: %w", err)
@@ -99,7 +100,7 @@ func (r *postgresCommunityRepo) GetBlockByURI(ctx context.Context, recordURI str
 		&block.RecordCID,
 	)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, communities.ErrBlockNotFound
 		}
 		return nil, fmt.Errorf("failed to get block by URI: %w", err)

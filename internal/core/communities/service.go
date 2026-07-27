@@ -801,7 +801,7 @@ func (s *communityService) SubscribeToCommunity(ctx context.Context, session *oa
 	recordURI, recordCID, err := pdsClient.CreateRecord(ctx, "social.coves.community.subscription", tid.String(), subRecord)
 	if err != nil {
 		if pds.IsAuthError(err) {
-			return nil, ErrUnauthorized
+			return nil, fmt.Errorf("%w: %w", ErrUnauthorized, err)
 		}
 		return nil, fmt.Errorf("failed to create subscription on PDS: %w", err)
 	}
@@ -856,7 +856,7 @@ func (s *communityService) UnsubscribeFromCommunity(ctx context.Context, session
 	// CRITICAL: Delete from social.coves.community.subscription (RECORD TYPE), not social.coves.community.unsubscribe
 	if err := pdsClient.DeleteRecord(ctx, "social.coves.community.subscription", rkey); err != nil {
 		if pds.IsAuthError(err) {
-			return ErrUnauthorized
+			return fmt.Errorf("%w: %w", ErrUnauthorized, err)
 		}
 		return fmt.Errorf("failed to delete subscription on PDS: %w", err)
 	}
@@ -954,7 +954,7 @@ func (s *communityService) BlockCommunity(ctx context.Context, session *oauth.Cl
 	if err != nil {
 		// Check for auth errors first
 		if pds.IsAuthError(err) {
-			return nil, ErrUnauthorized
+			return nil, fmt.Errorf("%w: %w", ErrUnauthorized, err)
 		}
 
 		// Check if this is a duplicate/conflict error from PDS
@@ -1027,7 +1027,7 @@ func (s *communityService) UnblockCommunity(ctx context.Context, session *oauth.
 	// Write-forward: delete record from PDS using DPoP-authenticated client
 	if err := pdsClient.DeleteRecord(ctx, "social.coves.community.block", rkey); err != nil {
 		if pds.IsAuthError(err) {
-			return ErrUnauthorized
+			return fmt.Errorf("%w: %w", ErrUnauthorized, err)
 		}
 		return fmt.Errorf("failed to delete block on PDS: %w", err)
 	}

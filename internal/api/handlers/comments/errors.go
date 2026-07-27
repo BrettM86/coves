@@ -1,83 +1,69 @@
 package comments
 
 import (
-	"Coves/internal/core/comments"
-	"encoding/json"
-	"errors"
-	"log"
 	"net/http"
+
+	"Coves/internal/api/xrpc"
+	"Coves/internal/core/comments"
 )
 
-// errorResponse represents a standardized JSON error response
-type errorResponse struct {
-	Error   string `json:"error"`
-	Message string `json:"message"`
-}
+// errorMapper maps comment service errors to XRPC responses.
+//
+// comments signals validation and not-found with sentinels rather than the
+// shared typed errors, so unlike most packages it spells out both groups here.
+// Everything else — dead sessions, other PDS failures, request lifecycle —
+// comes from xrpc's shared rules.
+var errorMapper = xrpc.NewMapper("comments",
+	// Not found.
+	xrpc.Sentinel(comments.ErrCommentNotFound, http.StatusNotFound,
+		"CommentNotFound", "Comment not found"),
+	xrpc.Sentinel(comments.ErrParentNotFound, http.StatusNotFound,
+		"ParentNotFound", "Parent post or comment not found"),
+	xrpc.Sentinel(comments.ErrRootNotFound, http.StatusNotFound,
+		"RootNotFound", "Root post not found"),
 
-// writeError writes a JSON error response with the given status code
+	// Validation.
+	xrpc.Sentinel(comments.ErrInvalidReply, http.StatusBadRequest,
+		"InvalidReply", "The reply reference is invalid or malformed"),
+	xrpc.Sentinel(comments.ErrContentTooLong, http.StatusBadRequest,
+		"ContentTooLong", "Comment content exceeds 10000 graphemes"),
+	xrpc.Sentinel(comments.ErrContentEmpty, http.StatusBadRequest,
+		"ContentEmpty", "Comment content is required"),
+	// The error names which facet and which field, which is client-actionable
+	// and carries no internal state.
+	xrpc.SentinelDetail(comments.ErrInvalidFacets, http.StatusBadRequest,
+		"InvalidFacets"),
+	// Fixed message: the repository layer wraps this one with detail the client
+	// has no use for.
+	xrpc.Sentinel(comments.ErrInvalidCursor, http.StatusBadRequest,
+		"InvalidRequest", "Invalid or mismatched pagination cursor"),
+
+	// A concurrent edit lost the optimistic-locking race on PutRecord. This
+	// used to be absent, on the theory that the PDS never surfaced a conflict —
+	// it does, and the omission turned every lost race into a 500.
+	xrpc.Sentinel(comments.ErrConcurrentModification, http.StatusConflict,
+		"ConcurrentModification", "The comment was modified by another request. Fetch it again and retry."),
+
+	// Authorization.
+	xrpc.Sentinel(comments.ErrNotAuthorized, http.StatusForbidden,
+		"NotAuthorized", "User is not authorized to perform this action"),
+	xrpc.Sentinel(comments.ErrBanned, http.StatusForbidden,
+		"Banned", "User is banned from this community"),
+
+	// Catch-alls for sentinels added to the domain without a rule here: a new
+	// not-found still answers 404 rather than 500.
+	xrpc.Match(comments.IsNotFound, http.StatusNotFound,
+		"NotFound", "The requested resource was not found"),
+	xrpc.Match(comments.IsValidationError, http.StatusBadRequest,
+		"InvalidRequest", "The request contains invalid data"),
+)
+
+// writeError writes a JSON error response with the given status code.
 func writeError(w http.ResponseWriter, statusCode int, errorType, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	if err := json.NewEncoder(w).Encode(errorResponse{
-		Error:   errorType,
-		Message: message,
-	}); err != nil {
-		log.Printf("Failed to encode error response: %v", err)
-	}
+	xrpc.WriteError(w, statusCode, errorType, message)
 }
 
-// handleServiceError maps service-layer errors to HTTP responses
-// This follows the error handling pattern from other handlers (post, community)
+// handleServiceError maps service-layer errors to HTTP responses.
 func handleServiceError(w http.ResponseWriter, err error) {
-	switch {
-	case comments.IsNotFound(err):
-		// Map specific not found errors to appropriate messages
-		switch {
-		case errors.Is(err, comments.ErrCommentNotFound):
-			writeError(w, http.StatusNotFound, "CommentNotFound", "Comment not found")
-		case errors.Is(err, comments.ErrParentNotFound):
-			writeError(w, http.StatusNotFound, "ParentNotFound", "Parent post or comment not found")
-		case errors.Is(err, comments.ErrRootNotFound):
-			writeError(w, http.StatusNotFound, "RootNotFound", "Root post not found")
-		default:
-			writeError(w, http.StatusNotFound, "NotFound", err.Error())
-		}
-
-	case comments.IsValidationError(err):
-		// Map specific validation errors to appropriate messages
-		switch {
-		case errors.Is(err, comments.ErrInvalidReply):
-			writeError(w, http.StatusBadRequest, "InvalidReply", "The reply reference is invalid or malformed")
-		case errors.Is(err, comments.ErrContentTooLong):
-			writeError(w, http.StatusBadRequest, "ContentTooLong", "Comment content exceeds 10000 graphemes")
-		case errors.Is(err, comments.ErrContentEmpty):
-			writeError(w, http.StatusBadRequest, "ContentEmpty", "Comment content is required")
-		case errors.Is(err, comments.ErrInvalidFacets):
-			// err carries the structural detail (which facet, which field); it is
-			// client-actionable and contains no internal state
-			writeError(w, http.StatusBadRequest, "InvalidFacets", err.Error())
-		case errors.Is(err, comments.ErrInvalidCursor):
-			// Fixed message avoids leaking internal wrapping detail from the repository layer
-			writeError(w, http.StatusBadRequest, "InvalidRequest", "Invalid or mismatched pagination cursor")
-		default:
-			writeError(w, http.StatusBadRequest, "InvalidRequest", err.Error())
-		}
-
-	case errors.Is(err, comments.ErrNotAuthorized):
-		writeError(w, http.StatusForbidden, "NotAuthorized", "User is not authorized to perform this action")
-
-	case errors.Is(err, comments.ErrBanned):
-		writeError(w, http.StatusForbidden, "Banned", "User is banned from this community")
-
-	// NOTE: IsConflict case removed - the PDS handles duplicate detection via CreateRecord,
-	// so ErrCommentAlreadyExists is never returned from the service layer. If the PDS rejects
-	// a duplicate record, it returns an auth/validation error which is handled by other cases.
-	// Keeping this code would be dead code that never executes.
-
-	default:
-		// Don't leak internal error details to clients
-		log.Printf("Unexpected error in comments handler: %v", err)
-		writeError(w, http.StatusInternalServerError, "InternalServerError",
-			"An internal error occurred")
-	}
+	errorMapper.Write(w, err)
 }
