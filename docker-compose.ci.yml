@@ -1,0 +1,316 @@
+# Coves hermetic CI stack — the infrastructure behind `make ci`.
+#
+# WHY THIS IS A SEPARATE FILE, NOT AN OVERRIDE OF docker-compose.dev.yml
+# ---------------------------------------------------------------------
+# The dev compose pins `container_name`, an explicit `name:` on every volume,
+# and `name: coves-dev-network`. All three defeat Compose's project scoping, so
+# running the dev stack under a second project name would still collide on
+# container names and still share the dev volumes. Isolation has to be built in
+# from the start rather than layered on.
+#
+# THE SHARED NETWORK NAMESPACE
+# ----------------------------
+# Every service here runs with `network_mode: "service:netns"`, so the whole
+# stack shares one network namespace. Consequences, all of them intentional:
+#
+#   * Services address each other as localhost:<port> — no peer DNS names. Each
+#     service therefore listens on the port the rest of the stack expects,
+#     matching the dev stack's published ports (PDS 3001, PLC 3002, AppView
+#     8081, Postgres 5435/5434/5436).
+#
+#   * The test suite needs no changes. tests/e2e/*.go hardcodes
+#     "http://localhost:8081" and "localhost:3001" with no env indirection, and
+#     tests/integration falls back to "localhost:3001" / "localhost:5434" when
+#     PDS_URL / TEST_DATABASE_URL are unset. In this namespace those literals
+#     resolve to the CI stack — so the fallback that would silently hit your dev
+#     PDS from the host is correct here instead of dangerous.
+#
+#   * Cross-service URLs stay coherent. The PDS fetches the AppView's OAuth
+#     client metadata at APPVIEW_PUBLIC_URL (http://127.0.0.1:8081); with
+#     per-service namespaces that loopback address points at nothing inside the
+#     PDS container, which would break OAuth E2E. One namespace fixes the whole
+#     class of problem rather than each instance of it.
+#
+#   * NOTHING is published to the host. `make ci` therefore runs concurrently
+#     with `make dev-up` and cannot touch it in either direction.
+#
+# Images are pinned by digest or SHA tag so that an upstream push can never turn
+# this gate red on its own.
+#
+# Usage: driven by scripts/ci.sh, which stages startup so the instance PDS
+# account exists before the AppView boots. Not intended for direct `up`.
+
+services:
+  # Owns the network namespace every other service joins. Does nothing else;
+  # it exists because a namespace needs a container to belong to and no real
+  # service should be load-bearing for the others' networking.
+  netns:
+    image: alpine:3.19
+    command: ["sleep", "infinity"]
+    init: true
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 2s
+      timeout: 2s
+      retries: 3
+    networks:
+      - ci
+
+  # ---------------------------------------------------------------------------
+  # Databases
+  # ---------------------------------------------------------------------------
+
+  # AppView database. Migrated by the server itself at boot
+  # (cmd/server/database.go uses the embedded migration FS), so CI runs no
+  # external migration step for it.
+  postgres:
+    image: postgres:15
+    network_mode: "service:netns"
+    command: ["-p", "5435"]
+    environment:
+      POSTGRES_DB: coves_dev
+      POSTGRES_USER: dev_user
+      POSTGRES_PASSWORD: dev_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -p 5435 -U dev_user -d coves_dev"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    depends_on:
+      netns:
+        condition: service_healthy
+
+  # Test database, read directly by tests/integration. Those tests run their own
+  # migrations via goose.Up(db, "../../internal/db/migrations"), so this needs no
+  # migration step either — only to exist and be empty.
+  postgres-test:
+    image: postgres:15
+    network_mode: "service:netns"
+    command: ["-p", "5434"]
+    environment:
+      POSTGRES_DB: coves_test
+      POSTGRES_USER: test_user
+      POSTGRES_PASSWORD: test_password
+    volumes:
+      - postgres-test-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -p 5434 -U test_user -d coves_test"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    depends_on:
+      netns:
+        condition: service_healthy
+
+  postgres-plc:
+    image: postgres:15
+    network_mode: "service:netns"
+    command: ["-p", "5436"]
+    environment:
+      POSTGRES_DB: plc_dev
+      POSTGRES_USER: plc_user
+      POSTGRES_PASSWORD: plc_password
+    volumes:
+      - postgres-plc-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -p 5436 -U plc_user -d plc_dev"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    depends_on:
+      netns:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # atProto infrastructure
+  # ---------------------------------------------------------------------------
+
+  # Local PLC directory, so CI registers DIDs against its own registry and never
+  # touches plc.directory. Pre-baked (see docker/plc/Dockerfile) because the dev
+  # stack's approach — git clone plus yarn install at container start — costs
+  # minutes against the wiped volumes CI uses.
+  plc-directory:
+    build:
+      context: ./docker/plc
+    network_mode: "service:netns"
+    environment:
+      # Overrides the image default of 3000: in a shared namespace this must be
+      # the port the rest of the stack looks for PLC on.
+      PORT: 3002
+      DATABASE_URL: postgresql://plc_user:plc_password@localhost:5436/plc_dev?sslmode=disable
+      DEBUG_MODE: "1"
+      LOG_ENABLED: "true"
+      LOG_LEVEL: warn
+      LOG_DESTINATION: "1"
+      NODE_ENV: development
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3002/"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+    depends_on:
+      postgres-plc:
+        condition: service_healthy
+
+  # Pinned by digest rather than the dev stack's :latest tag.
+  # sha256:1fa8bbce… resolved 2026-07-28 from ghcr.io/bluesky-social/pds:latest.
+  pds:
+    image: ghcr.io/bluesky-social/pds@sha256:1fa8bbceabb65d8e1710749b1ea92c1c20a7489ca38da4a0a5f64c0c10a70c29
+    network_mode: "service:netns"
+    environment:
+      PDS_HOSTNAME: localhost
+      PDS_PORT: 3001
+      PDS_DATA_DIRECTORY: /pds
+      PDS_BLOBSTORE_DISK_LOCATION: /pds/blocks
+      # Loopback, not the dev stack's http://plc-directory:3000 — see header.
+      PDS_DID_PLC_URL: http://localhost:3002
+      PDS_JWT_SECRET: local-dev-jwt-secret-change-in-production
+      PDS_ADMIN_PASSWORD: admin
+      PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX: af514fb84c4356241deed29feb392d1ee359f99c05a7b8f7bff2e5f2614f64b2
+      PDS_SERVICE_HANDLE_DOMAINS: .local.coves.dev,.coves.social
+      PDS_DEV_MODE: "true"
+      PDS_INVITE_REQUIRED: "false"
+      NODE_ENV: development
+      LOG_ENABLED: "false"
+      LOG_LEVEL: warn
+    volumes:
+      - pds-data:/pds
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3001/xrpc/_health"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+    depends_on:
+      plc-directory:
+        condition: service_healthy
+
+  # Same SHA tag the dev stack pins.
+  jetstream:
+    image: ghcr.io/bluesky-social/jetstream:sha-306e463693365e21a5ffd3ec051a5a7920000214
+    network_mode: "service:netns"
+    environment:
+      JETSTREAM_WS_URL: ws://localhost:3001/xrpc/com.atproto.sync.subscribeRepos
+      JETSTREAM_LISTEN_ADDR: ":6008"
+      JETSTREAM_METRICS_LISTEN_ADDR: ":6009"
+      JETSTREAM_DATA_DIR: /data
+      JETSTREAM_EVENT_TTL: 24h
+      JETSTREAM_LIVENESS_TTL: 24h
+      JETSTREAM_WORKER_COUNT: 10
+      JETSTREAM_MAX_QUEUE_SIZE: 1000
+      LOG_LEVEL: warn
+    volumes:
+      - jetstream-data:/data
+    # The upstream image ships no HTTP client, so it cannot probe itself — the
+    # dev compose disables its healthcheck for the same reason. Readiness is
+    # gated externally instead, by curling :6009/metrics from the runner (which
+    # shares this namespace). See scripts/ci-runner.sh.
+    healthcheck:
+      disable: true
+    depends_on:
+      pds:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # The system under test
+  # ---------------------------------------------------------------------------
+
+  # Built from the working tree every run. This is the difference that matters
+  # most versus `make test-all`, which tests whatever binary a long-running
+  # `make run` started in another terminal — potentially several edits stale.
+  appview:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Native architecture. The Dockerfile defaults to amd64 for the prod
+        # deploy target; building amd64 under emulation on an arm64 dev machine
+        # would slow every CI run down substantially. Set by scripts/ci.sh.
+        GOARCH: ${COVES_CI_GOARCH:?must be set by scripts/ci.sh}
+        # What `make run` uses: the localhost OAuth resolvers live behind it.
+        BUILD_TAGS: dev
+    network_mode: "service:netns"
+    env_file:
+      - .env.ci
+    environment:
+      # .env.ci silences logs so the go test -json stream stays readable. The
+      # AppView is exempt: when an E2E test fails, these logs are the only
+      # record of what the server actually did.
+      LOG_ENABLED: "true"
+      LOG_LEVEL: info
+    healthcheck:
+      # Overrides the image's own HEALTHCHECK, which probes port 8080.
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8081/xrpc/_health"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+    depends_on:
+      postgres:
+        condition: service_healthy
+      pds:
+        condition: service_healthy
+      plc-directory:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Test runner
+  # ---------------------------------------------------------------------------
+
+  runner:
+    build:
+      context: ./docker/ci-runner
+    network_mode: "service:netns"
+    env_file:
+      - .env.ci
+    volumes:
+      # The checkout. Read-write because the Go toolchain and goose both expect
+      # a normal working tree; scripts/ci.sh asserts afterwards that the run
+      # left it clean, so a test that writes into the repo is caught rather
+      # than tolerated.
+      - .:/src
+      # Module and build caches persist across runs — this is what makes a warm
+      # `make ci` fast. Discarded by `make ci-clean`.
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/go-build-cache
+    depends_on:
+      postgres:
+        condition: service_healthy
+      postgres-test:
+        condition: service_healthy
+      appview:
+        condition: service_healthy
+      jetstream:
+        condition: service_started
+
+networks:
+  # Unnamed on purpose: Compose scopes it to the project, so concurrent stacks
+  # (and the dev stack's coves-dev-network) cannot collide.
+  ci:
+    driver: bridge
+
+volumes:
+  # State volumes are unnamed, so Compose scopes them to the project and
+  # `docker compose -p <project> down -v` removes exactly this run's state and
+  # nothing else. Every run therefore starts from an empty PDS, an empty PLC
+  # registry, and empty databases — no accumulated accounts, no handle
+  # collisions, no fixtures left behind by a previous run.
+  postgres-data:
+  postgres-test-data:
+  postgres-plc-data:
+  pds-data:
+  jetstream-data:
+
+  # The Go caches are deliberately the exception: external, so the teardown that
+  # wipes state cannot wipe them. This is what separates "every run starts from
+  # clean state" (required for trustworthiness) from "every run recompiles the
+  # world" (which would make the gate too slow to run often, and a gate nobody
+  # runs is worth nothing).
+  #
+  # scripts/ci.sh creates them if absent; `make ci-clean` removes them.
+  go-mod-cache:
+    external: true
+    name: coves-ci-go-mod-cache
+  go-build-cache:
+    external: true
+    name: coves-ci-go-build-cache

@@ -1,0 +1,95 @@
+# Skips the CI gate tolerates.
+#
+# `make ci` treats a skipped test as a FAILURE unless it is listed here. That
+# inversion is the point: `go test` counts a skip as "not a failure", so without
+# this file a suite that quietly stops running looks identical to a suite that
+# passes. Stop the PDS and `make test-all` still prints its success banner.
+#
+# FORMAT
+#
+#   <import-path> <TestName>    # why this skip is acceptable
+#   ~<import-path> <TestName>   # ...and this one may or may not skip
+#
+# The reason is mandatory — cmd/ci-report rejects an entry without one. A
+# TestName may end in "/*" to cover a test and all of its subtests.
+#
+# A leading "~" marks the entry CONDITIONAL: the test may skip on one run and
+# run on the next, so its absence is not treated as staleness. Reserve it for
+# skips that depend on something outside our control. Deterministic skips must
+# NOT carry it, so that the day one stops skipping, the gate says so.
+#
+# RULES
+#
+#   * Adding an entry is a coverage decision. It belongs in a diff, with a
+#     reason a reviewer can weigh — not in a green checkmark nobody reads.
+#   * A stale non-conditional entry (listed, but did not skip) fails the gate.
+#     Either the test now runs — delete the line — or it no longer exists.
+#   * "The infrastructure was not available" is NOT a valid reason. The gate
+#     builds its own infrastructure; if a test cannot find it, that is a bug in
+#     the stack, not an exemption.
+#
+# Derived from a full hermetic run on 2026-07-28: 3295 tests, 3274 passed, 0
+# failed, 21 skipped. Two of those 21 were a real defect — three tests in
+# blob_upload_e2e_test.go built PDS handles from time.Now().Unix(), collided
+# with each other inside a single run, and skipped on "Handle already taken".
+# They now use uniqueTestID() and run, so they are deliberately absent here.
+
+# =============================================================================
+# 1. Opt-in tests that reach the public internet (2)
+# =============================================================================
+# These must never be able to fail a merge because a third party had an outage.
+# They are gated on TEST_REAL_HANDLES=1 and belong in a scheduled external run,
+# not in the merge gate.
+Coves/tests/integration TestIdentityResolverRealHandles  # opt-in TEST_REAL_HANDLES=1; resolves real handles over the public internet
+Coves/tests/integration TestResolveDID                   # opt-in TEST_REAL_HANDLES=1; resolves real DIDs against the live PLC directory
+
+# =============================================================================
+# 2. Structural skips in the data-driven lexicon suite (8)
+# =============================================================================
+# TestLexiconSchemaValidation generates a subtest per lexicon file and skips the
+# defs-only ones, which legitimately have no "main" section to validate. Listed
+# individually rather than as TestLexiconSchemaValidation/* on purpose: a
+# wildcard would also swallow a real lexicon that started skipping, which is
+# exactly the signal this file exists to preserve. Adding a defs file means
+# adding a line here — a deliberate, reviewable act.
+Coves/tests TestLexiconSchemaValidation/com.atproto.label.defs             # defs-only lexicon: no main section to validate
+Coves/tests TestLexiconSchemaValidation/social.coves.actor.defs            # defs-only lexicon: no main section to validate
+Coves/tests TestLexiconSchemaValidation/social.coves.aggregator.defs       # defs-only lexicon: no main section to validate
+Coves/tests TestLexiconSchemaValidation/social.coves.community.comment.defs # defs-only lexicon: no main section to validate
+Coves/tests TestLexiconSchemaValidation/social.coves.community.defs        # defs-only lexicon: no main section to validate
+Coves/tests TestLexiconSchemaValidation/social.coves.community.post.defs   # defs-only lexicon: no main section to validate
+Coves/tests TestLexiconSchemaValidation/social.coves.feed.defs             # defs-only lexicon: no main section to validate
+Coves/tests TestLexiconSchemaValidation/social.coves.moderation.defs       # defs-only lexicon: no main section to validate
+
+# =============================================================================
+# 3. Conditional: unfurl tests against third-party URLs (3)
+# =============================================================================
+# These fetch real URLs (streamable.com, kite.kagi.com) and skip when the fetch
+# fails, so whether they skip depends on someone else's uptime. Marked "~" so
+# the gate neither fails when they skip nor complains when they run.
+#
+# The better end state is to make these deterministic — either an explicit
+# opt-in gate like TEST_REAL_HANDLES, or an httptest fixture as the other
+# 20 files in this suite already use — at which point these become ordinary
+# entries or disappear.
+~Coves/tests/integration TestPostUnfurl_CacheHit                              # fetches a live third-party URL; skips when unreachable
+~Coves/tests/integration TestPostUnfurl_KagiKite                              # fetches kite.kagi.com; skips when unreachable
+~Coves/tests/integration TestPostUnfurl_Streamable/Verify_unfurl_was_cached   # depends on the live streamable.com fetch above succeeding
+
+# =============================================================================
+# 4. Tests that never run, and should be deleted or implemented (6)
+# =============================================================================
+# TECHNICAL DEBT, not exemptions. Every one of these skips unconditionally, so
+# each is a test that has never once verified anything — a green checkmark
+# standing in for coverage that does not exist. They are listed so the gate can
+# pass today, and so the debt is visible in a reviewed file rather than buried
+# in 355 skip sites.
+#
+# Each wants a decision: implement it, or delete it. CLAUDE.md's "no stubs, no
+# placeholder code" rule says a permanently-skipped test should not survive.
+Coves/internal/atproto/oauth TestParseSessionToken                                   # DEBT: tests parseSessionToken, which no longer exists (sealed tokens replaced it) — delete
+Coves/internal/core/aggregators TestAPIKeyService_RefreshTokensIfNeeded_ExpiredNilTokens # DEBT: "requires fully configured OAuth app"; asserts nothing — implement against the CI stack or delete
+Coves/internal/core/aggregators TestAPIKeyService_RefreshTokensIfNeeded_WithinBuffer     # DEBT: same as above
+Coves/tests/integration TestAggregator_E2E_LivePDS                                   # DEBT: "not yet implemented" — the CI stack now provides the live PDS it wanted
+Coves/tests/integration TestOAuthTokenVerification/Session_expiration_handling       # DEBT: defers to TestOAuthE2E_TokenExpiration; an empty subtest that reads as coverage
+Coves/tests/unit TestCommunityService_PDSTimeouts/read_operations_get_10s_timeout     # DEBT: "verified in code review" is not a test — implement or delete

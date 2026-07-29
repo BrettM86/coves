@@ -68,3 +68,7 @@ Thumbs.db
 # Beads issue tracker (local runtime state)
 .beads/
 scripts/.env.lexicon
+
+# Artifacts from `make ci`: the raw go test -json stream, the machine-readable
+# gate summary, and service logs captured on failure. Per-run output, not source.
+.ci-out/

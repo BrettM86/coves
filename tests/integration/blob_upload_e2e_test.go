@@ -533,24 +533,33 @@ func TestBlobUpload_Validation(t *testing.T) {
 	community := createTestCommunityWithBlobCredentials(t, communityRepo, "validation")
 	ctx := context.Background()
 
+	// require.Error, not assert.Error, before every err.Error() below: assert
+	// records the failure and continues, so a nil error goes straight into a nil
+	// dereference. That panic kills the whole package binary, taking every later
+	// test in tests/integration down with it — which is exactly what happened
+	// the first time these subtests ran (~800 tests never executed).
 	t.Run("Reject empty data", func(t *testing.T) {
 		_, err := blobService.UploadBlob(ctx, community, []byte{}, "image/png")
-		assert.Error(t, err, "Should reject empty data")
+		require.Error(t, err, "Should reject empty data")
 		assert.Contains(t, err.Error(), "cannot be empty", "Error should mention empty data")
 	})
 
 	t.Run("Reject invalid MIME type", func(t *testing.T) {
 		imageData := createTestPNG(t, 1, 1, color.White)
 		_, err := blobService.UploadBlob(ctx, community, imageData, "application/pdf")
-		assert.Error(t, err, "Should reject unsupported MIME type")
+		require.Error(t, err, "Should reject unsupported MIME type")
 		assert.Contains(t, err.Error(), "unsupported MIME type", "Error should mention MIME type")
 	})
 
 	t.Run("Reject oversized blob", func(t *testing.T) {
-		// Create data larger than 1MB limit
-		largeData := make([]byte, 1048577) // 1MB + 1 byte
+		// The limit this asserts is the one the service actually enforces:
+		// blobs.maxSize, 6MB (internal/core/blobs/service.go). This subtest
+		// previously sent 1MB+1 against a comment claiming a "1MB limit" — a
+		// mismatch that survived because the test never ran.
+		const maxBlobSize = 6291456
+		largeData := make([]byte, maxBlobSize+1)
 		_, err := blobService.UploadBlob(ctx, community, largeData, "image/png")
-		assert.Error(t, err, "Should reject oversized blob")
+		require.Error(t, err, "Should reject a blob larger than the 6MB limit")
 		assert.Contains(t, err.Error(), "exceeds maximum", "Error should mention size limit")
 	})
 
@@ -641,19 +650,29 @@ func createTestCommunityWithBlobCredentials(t *testing.T, repo communities.Repos
 
 	ctx := context.Background()
 	pdsURL := getTestPDSURL()
-	uniqueID := time.Now().Unix() // Use seconds instead of nanoseconds to keep handle short
+
+	// uniqueTestID() rather than a bare time.Now().Unix(): three tests in this
+	// file call this helper, and with second granularity they collide inside a
+	// single run ("Handle already taken"), which is how blob upload for comments
+	// and blob validation ended up silently skipped. uniqueTestID() combines
+	// Unix seconds (monotonic across runs) with an atomic counter (unique within
+	// a run) in base36, which also keeps the local label under the PDS cap.
+	uniqueID := uniqueTestID()
 
 	// Create REAL PDS account for the community (instead of fake credentials)
 	// Use .local.coves.dev domain (same as user_journey_e2e_test.go) which is supported by test PDS
 	// Keep handle short to avoid "Handle too long" error (max 63 chars for atProto handles)
-	handle := fmt.Sprintf("blob%d.local.coves.dev", uniqueID)
-	email := fmt.Sprintf("blob%d@test.example", uniqueID)
+	handle := fmt.Sprintf("blob%s.local.coves.dev", uniqueID)
+	email := fmt.Sprintf("blob%s@test.example", uniqueID)
 	password := "test-blob-password-123"
 
 	t.Logf("Creating real PDS account for blob test: %s", handle)
 	accessToken, communityDID, err := createPDSAccount(pdsURL, handle, email, password)
+	// Deliberately fatal, not a skip: the enclosing tests already health-checked
+	// the PDS, so a failure here is a real defect rather than absent
+	// infrastructure. Skipping is what hid the handle collision above.
 	if err != nil {
-		t.Skipf("Failed to create PDS account (PDS may not be running): %v", err)
+		t.Fatalf("Failed to create PDS account for blob test: %v", err)
 	}
 
 	t.Logf("✓ Created real PDS account: DID=%s", communityDID)
@@ -661,7 +680,7 @@ func createTestCommunityWithBlobCredentials(t *testing.T, repo communities.Repos
 	community := &communities.Community{
 		DID:             communityDID, // Use REAL DID from PDS
 		Handle:          handle,
-		Name:            fmt.Sprintf("blob%d", uniqueID),
+		Name:            fmt.Sprintf("blob%s", uniqueID),
 		DisplayName:     "Blob Upload Test Community",
 		OwnerDID:        communityDID,
 		CreatedByDID:    "did:plc:creator123",

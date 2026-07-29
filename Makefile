@@ -1,4 +1,4 @@
-.PHONY: help dev-up dev-up-otel dev-down dev-logs dev-status dev-reset test test-all e2e-test clean verify-stack create-test-account mobile-full-setup
+.PHONY: help dev-up dev-up-otel dev-down dev-logs dev-status dev-reset test test-all ci ci-clean e2e-test clean verify-stack create-test-account mobile-full-setup
 
 # Default target - show help
 .DEFAULT_GOAL := help
@@ -222,9 +222,20 @@ test-all: ## Run ALL tests with live infrastructure (required before merge)
 	@LOG_ENABLED=false go test ./tests/e2e/... -timeout 180s
 	@echo ""
 	@echo "$(GREEN)═══════════════════════════════════════════════════════════════$(RESET)"
-	@echo "$(GREEN)  ✓ ALL TESTS PASSED - Safe to merge                           $(RESET)"
+	@echo "$(GREEN)  ✓ No test failures                                           $(RESET)"
+	@echo "$(YELLOW)  Note: this counts skips as passes. A test whose infrastructure$(RESET)"
+	@echo "$(YELLOW)  is missing skips itself, so a partial stack still prints this.$(RESET)"
+	@echo "$(YELLOW)  Run 'make ci' for the gate that enforces coverage.$(RESET)"
 	@echo "$(GREEN)═══════════════════════════════════════════════════════════════$(RESET)"
 	@echo ""
+
+ci: ## Hermetic merge gate - builds its own stack from scratch, runs everything, enforces the skip allowlist
+	@./scripts/ci.sh
+
+ci-clean: ## Remove the CI Go module/build cache volumes (forces a fully cold next run)
+	@echo "$(YELLOW)Removing CI cache volumes...$(RESET)"
+	@docker volume rm coves-ci-go-mod-cache coves-ci-go-build-cache 2>/dev/null || true
+	@echo "$(GREEN)✓ CI caches removed - the next 'make ci' will be cold$(RESET)"
 
 ##@ Code Quality
 
