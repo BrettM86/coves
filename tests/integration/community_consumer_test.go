@@ -82,6 +82,22 @@ func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
 		if community.Visibility != "public" {
 			t.Errorf("Expected Visibility 'public', got %s", community.Visibility)
 		}
+
+		// V2: the record URI the consumer builds must point at the COMMUNITY's
+		// own repository, not at the instance's. The consumer constructs it from
+		// the event's repo DID (community_consumer.go: "at://%s/…/self"), so a
+		// regression here would silently record every federated community's
+		// profile as living in whichever repo the AppView happened to think it
+		// owned — and nothing else in the consumer's own tests looks at the URI.
+		// This assertion came from tests/integration/community_e2e_test.go's
+		// Part 2, which needed a real PDS and a real Jetstream to make it.
+		expectedURI := fmt.Sprintf("at://%s/social.coves.community.profile/self", communityDID)
+		if community.RecordURI != expectedURI {
+			t.Errorf("Expected RecordURI %s, got %s", expectedURI, community.RecordURI)
+		}
+		if community.RecordCID != "bafy123abc" {
+			t.Errorf("Expected the commit's CID bafy123abc, got %s", community.RecordCID)
+		}
 	})
 
 	t.Run("updates existing community", func(t *testing.T) {

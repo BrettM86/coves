@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -262,5 +263,163 @@ func TestCreateHandler_RequiresAuth(t *testing.T) {
 	}
 	if errResp.Error != "AuthRequired" {
 		t.Errorf("Expected error AuthRequired, got %s", errResp.Error)
+	}
+}
+
+// The create handler's contract with a client: which fields it refuses to take
+// from the request, and what a success answers.
+//
+// The refusals came down a tier from tests/integration/community_e2e_test.go's
+// "Create via XRPC endpoint" subtest, which stated them only as a comment
+// ("NOTE: Both createdByDid and hostedByDid are derived server-side") while
+// asserting neither. They are the community domain's authorship boundary — a
+// client that could set createdByDid would create communities in someone else's
+// name, and one that could set hostedByDid would claim this instance hosts a
+// community for a domain it does not own — so they are worth an actual test.
+
+// createdBy runs one create request as userDID and returns the service request
+// it produced alongside the recorder.
+func createdBy(t *testing.T, userDID string, body map[string]any) (communities.CreateCommunityRequest, *httptest.ResponseRecorder) {
+	t.Helper()
+
+	var forwarded communities.CreateCommunityRequest
+	handler := NewCreateHandler(&mockCommunityService{
+		createFunc: func(_ context.Context, req communities.CreateCommunityRequest) (*communities.Community, error) {
+			forwarded = req
+			return &communities.Community{
+				DID:       "did:plc:created",
+				Handle:    "c-" + req.Name + ".coves.social",
+				RecordURI: "at://did:plc:created/social.coves.community.profile/self",
+				RecordCID: "bafycreated",
+				// Seeded so the response assertion can prove the handler serves
+				// a hand-built envelope rather than the entity — see
+				// assertRecordWriteEnvelope in update_test.go. A community
+				// created through the service really does carry these.
+				PDSPassword:     "hunter2",
+				PDSAccessToken:  "access-jwt",
+				PDSRefreshToken: "refresh-jwt",
+			}, nil
+		},
+	}, nil)
+
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("encoding the request body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.create", bytes.NewReader(encoded))
+	req.Header.Set("Content-Type", "application/json")
+	if userDID != "" {
+		req = req.WithContext(context.WithValue(req.Context(), middleware.UserDIDKey, userDID))
+	}
+
+	w := httptest.NewRecorder()
+	handler.HandleCreate(w, req)
+	return forwarded, w
+}
+
+func TestCreateHandler_DerivesTheCreatorFromTheSession(t *testing.T) {
+	t.Parallel()
+
+	forwarded, w := createdBy(t, "did:plc:author", map[string]any{
+		"name":        "gaming",
+		"displayName": "Gaming",
+		"visibility":  "public",
+	})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if forwarded.CreatedByDID != "did:plc:author" {
+		t.Errorf("expected the authenticated DID as the creator, service saw %q", forwarded.CreatedByDID)
+	}
+	if forwarded.HostedByDID != "" {
+		t.Errorf("the handler must leave hostedByDid empty for the service to stamp, forwarded %q", forwarded.HostedByDID)
+	}
+}
+
+func TestCreateHandler_RefusesClientSuppliedAuthorship(t *testing.T) {
+	t.Parallel()
+
+	// Refused outright rather than overwritten: silently replacing a supplied
+	// createdByDid would let a client believe it had created a community on
+	// another user's behalf, and the 400 is what tells it otherwise.
+	for _, field := range []string{"createdByDid", "hostedByDid"} {
+		t.Run(field, func(t *testing.T) {
+			t.Parallel()
+
+			forwarded, w := createdBy(t, "did:plc:author", map[string]any{
+				"name":       "gaming",
+				"visibility": "public",
+				field:        "did:plc:someoneelse",
+			})
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 when a client supplies %s, got %d: %s", field, w.Code, w.Body.String())
+			}
+			if forwarded.Name != "" {
+				t.Errorf("the handler forwarded the request to the service instead of rejecting it")
+			}
+
+			var errResp struct {
+				Error   string `json:"error"`
+				Message string `json:"message"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &errResp); err != nil {
+				t.Fatalf("decoding the error response: %v (body %q)", err, w.Body.String())
+			}
+			if errResp.Error != "InvalidRequest" {
+				t.Errorf("expected error InvalidRequest, got %q", errResp.Error)
+			}
+			if !strings.Contains(errResp.Message, field) {
+				t.Errorf("the message should name the offending field %q, got %q", field, errResp.Message)
+			}
+		})
+	}
+}
+
+func TestCreateHandler_SuccessResponse(t *testing.T) {
+	t.Parallel()
+
+	// The four fields social.coves.community.create's lexicon promises, and only
+	// those four. A client writes the community's first post against this uri
+	// and addresses it by this did, so a renamed key is a broken client rather
+	// than a cosmetic change — and an EXTRA key is a credential leak, which is
+	// why the assertion is on the exact key set.
+	_, w := createdBy(t, "did:plc:author", map[string]any{
+		"name":       "gaming",
+		"visibility": "public",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	assertRecordWriteEnvelope(t, w, map[string]string{
+		"uri":    "at://did:plc:created/social.coves.community.profile/self",
+		"cid":    "bafycreated",
+		"did":    "did:plc:created",
+		"handle": "c-gaming.coves.social",
+	})
+}
+
+func TestCreateHandler_MalformedBody(t *testing.T) {
+	t.Parallel()
+
+	handler := NewCreateHandler(&mockCommunityService{
+		createFunc: func(context.Context, communities.CreateCommunityRequest) (*communities.Community, error) {
+			t.Error("the service was called with an undecodable request body")
+			return nil, nil
+		},
+	}, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.community.create",
+		bytes.NewReader([]byte("{not json")))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(context.WithValue(req.Context(), middleware.UserDIDKey, "did:plc:author"))
+
+	w := httptest.NewRecorder()
+	handler.HandleCreate(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a malformed body, got %d: %s", w.Code, w.Body.String())
 	}
 }
