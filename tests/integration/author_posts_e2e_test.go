@@ -11,20 +11,18 @@ import (
 	"Coves/internal/core/users"
 	"Coves/internal/core/votes"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	_ "github.com/lib/pq"
-	"github.com/pressly/goose/v3"
 )
 
 // getPostTitleFromView extracts title from PostView.Record.
@@ -48,25 +46,7 @@ func getPostTitleFromView(t *testing.T, pv *posts.PostView) string {
 // TestGetAuthorPosts_E2E_Success tests the full author posts flow with real PDS
 // Flow: Create user on PDS → Create posts → Query via XRPC → Verify response
 func TestGetAuthorPosts_E2E_Success(t *testing.T) {
-	// Setup test database
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
-	}
-
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	// Run migrations
-	if dialectErr := goose.SetDialect("postgres"); dialectErr != nil {
-		t.Fatalf("Failed to set goose dialect: %v", dialectErr)
-	}
-	if migrateErr := goose.Up(db, "../../internal/db/migrations"); migrateErr != nil {
-		t.Fatalf("Failed to run migrations: %v", migrateErr)
-	}
+	db := testkit.DB(t)
 
 	// Check if PDS is running
 	pdsURL := getTestPDSURL()
@@ -289,8 +269,7 @@ func TestGetAuthorPosts_E2E_Success(t *testing.T) {
 
 // TestGetAuthorPosts_FilterLogic tests the different filter options
 func TestGetAuthorPosts_FilterLogic(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 
@@ -424,8 +403,7 @@ func TestGetAuthorPosts_FilterLogic(t *testing.T) {
 
 // TestGetAuthorPosts_ServiceErrors tests error handling in the service layer
 func TestGetAuthorPosts_ServiceErrors(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 
@@ -538,8 +516,7 @@ func TestGetAuthorPosts_ServiceErrors(t *testing.T) {
 
 // TestGetAuthorPosts_WithJetstreamIndexing tests the full flow including Jetstream indexing
 func TestGetAuthorPosts_WithJetstreamIndexing(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	pdsURL := getTestPDSURL()
@@ -647,8 +624,7 @@ func TestGetAuthorPosts_WithJetstreamIndexing(t *testing.T) {
 
 // TestGetAuthorPosts_CommunityFilter tests filtering posts by community
 func TestGetAuthorPosts_CommunityFilter(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 

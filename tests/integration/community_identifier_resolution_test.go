@@ -5,6 +5,7 @@ package integration
 import (
 	"Coves/internal/core/communities"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
 	"fmt"
 	"os"
@@ -17,12 +18,7 @@ import (
 
 // TestCommunityIdentifierResolution tests all formats accepted by ResolveCommunityIdentifier
 func TestCommunityIdentifierResolution(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	ctx := context.Background()
@@ -213,12 +209,7 @@ func TestCommunityIdentifierResolution(t *testing.T) {
 
 // TestResolveScopedIdentifier_InputValidation tests input sanitization
 func TestResolveScopedIdentifier_InputValidation(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	ctx := context.Background()
@@ -388,12 +379,7 @@ func TestGetDisplayHandle(t *testing.T) {
 
 // TestIdentifierResolution_ErrorContext verifies error messages include identifier context
 func TestIdentifierResolution_ErrorContext(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	ctx := context.Background()
@@ -451,12 +437,7 @@ func TestIdentifierResolution_ErrorContext(t *testing.T) {
 // TestGetCommunity_IdentifierResolution tests all formats accepted by GetCommunity
 // This is distinct from ResolveCommunityIdentifier - GetCommunity returns the full Community object
 func TestGetCommunity_IdentifierResolution(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	ctx := context.Background()

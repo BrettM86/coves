@@ -6,6 +6,7 @@ import (
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/comments"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
 	"fmt"
 	"testing"
@@ -13,12 +14,7 @@ import (
 )
 
 func TestCommentConsumer_CreateComment(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	commentRepo := postgres.NewCommentRepository(db)
@@ -171,12 +167,7 @@ func TestCommentConsumer_CreateComment(t *testing.T) {
 }
 
 func TestCommentConsumer_Threading(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	commentRepo := postgres.NewCommentRepository(db)
@@ -327,12 +318,7 @@ func TestCommentConsumer_Threading(t *testing.T) {
 }
 
 func TestCommentConsumer_UpdateComment(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	commentRepo := postgres.NewCommentRepository(db)
@@ -453,12 +439,7 @@ func TestCommentConsumer_UpdateComment(t *testing.T) {
 }
 
 func TestCommentConsumer_DeleteComment(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	commentRepo := postgres.NewCommentRepository(db)
@@ -631,12 +612,7 @@ func TestCommentConsumer_DeleteComment(t *testing.T) {
 }
 
 func TestCommentConsumer_SecurityValidation(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	commentRepo := postgres.NewCommentRepository(db)
@@ -884,21 +860,10 @@ func TestCommentConsumer_SecurityValidation(t *testing.T) {
 }
 
 func TestCommentRepository_Queries(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	commentRepo := postgres.NewCommentRepository(db)
-
-	// Clean up any existing test data from previous runs
-	_, err := db.ExecContext(ctx, "DELETE FROM comments WHERE commenter_did LIKE 'did:plc:%'")
-	if err != nil {
-		t.Fatalf("Failed to clean up test comments: %v", err)
-	}
 
 	testUser := createTestUser(t, db, "query.test", "did:plc:query123")
 	testCommunity, err := createFeedTestCommunity(db, ctx, "querycommunity", "owner6.test")
@@ -1053,12 +1018,7 @@ func TestCommentRepository_Queries(t *testing.T) {
 // TestCommentConsumer_OutOfOrderReconciliation tests that parent counts are
 // correctly reconciled when child comments arrive before their parent
 func TestCommentConsumer_OutOfOrderReconciliation(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	commentRepo := postgres.NewCommentRepository(db)
@@ -1072,12 +1032,6 @@ func TestCommentConsumer_OutOfOrderReconciliation(t *testing.T) {
 	postURI := createTestPost(t, db, testCommunity, testUser.DID, "OOO Test Post", 0, time.Now())
 
 	t.Run("Child arrives before parent - count reconciled", func(t *testing.T) {
-		// Clean up comments to ensure isolation from other tests
-		_, cleanErr := db.ExecContext(ctx, "DELETE FROM comments")
-		if cleanErr != nil {
-			t.Fatalf("Failed to clean up comments: %v", cleanErr)
-		}
-
 		// Scenario: User A creates comment C1 on post
 		//           User B creates reply C2 to C1
 		//           Jetstream delivers C2 before C1 (different repos)
@@ -1207,12 +1161,6 @@ func TestCommentConsumer_OutOfOrderReconciliation(t *testing.T) {
 	})
 
 	t.Run("Multiple children arrive before parent", func(t *testing.T) {
-		// Clean up comments from previous subtest to ensure isolation
-		_, cleanErr := db.ExecContext(ctx, "DELETE FROM comments")
-		if cleanErr != nil {
-			t.Fatalf("Failed to clean up comments: %v", cleanErr)
-		}
-
 		parentRkey := generateTID()
 		parentURI := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, parentRkey)
 
@@ -1323,12 +1271,7 @@ func TestCommentConsumer_OutOfOrderReconciliation(t *testing.T) {
 // TestCommentConsumer_Resurrection tests that soft-deleted comments can be recreated
 // In atProto, deleted records' rkeys become available for reuse
 func TestCommentConsumer_Resurrection(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	commentRepo := postgres.NewCommentRepository(db)
@@ -1628,12 +1571,7 @@ func TestCommentConsumer_Resurrection(t *testing.T) {
 
 // TestCommentConsumer_ThreadingImmutability tests that UPDATE events cannot change threading refs
 func TestCommentConsumer_ThreadingImmutability(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	commentRepo := postgres.NewCommentRepository(db)

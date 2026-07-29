@@ -12,6 +12,7 @@ import (
 	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -50,12 +51,7 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 	if resp != nil {
 		_ = resp.Body.Close()
 	}
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	// Setup repositories
 	aggregatorRepo := postgres.NewAggregatorRepository(db)
@@ -83,14 +79,6 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 	e2eAuth := NewE2EOAuthMiddleware()
 
 	ctx := context.Background()
-
-	// Cleanup test data (aggregators and communities will be created via real PDS in test parts)
-	_, _ = db.Exec("DELETE FROM aggregator_posts WHERE aggregator_did LIKE 'did:plc:%'")
-	_, _ = db.Exec("DELETE FROM aggregator_authorizations WHERE aggregator_did LIKE 'did:plc:%'")
-	_, _ = db.Exec("DELETE FROM aggregators WHERE did LIKE 'did:plc:%'")
-	_, _ = db.Exec("DELETE FROM posts WHERE community_did LIKE 'did:plc:%'")
-	_, _ = db.Exec("DELETE FROM communities WHERE did LIKE 'did:plc:%'")
-	_, _ = db.Exec("DELETE FROM users WHERE did LIKE 'did:plc:%'")
 
 	// ====================================================================================
 	// Part 1: Service Declaration via Real PDS

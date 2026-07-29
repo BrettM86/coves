@@ -5,6 +5,7 @@ package integration
 import (
 	"Coves/internal/core/communities"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
 	"fmt"
 	"strings"
@@ -15,12 +16,7 @@ import (
 // TestCommunityRepository_PasswordEncryption verifies P0 fix:
 // Password must be encrypted (not hashed) so we can recover it for session renewal
 func TestCommunityRepository_PasswordEncryption(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	ctx := context.Background()
@@ -139,12 +135,7 @@ func TestCommunityRepository_PasswordEncryption(t *testing.T) {
 // TestCommunityService_NameValidation verifies P1 fix:
 // Community names must respect DNS label limits (63 chars max)
 func TestCommunityService_NameValidation(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	provisioner := communities.NewPDSAccountProvisioner("test.local", "http://localhost:3001")
@@ -307,12 +298,7 @@ func TestCommunityService_NameValidation(t *testing.T) {
 // TestPasswordSecurity verifies password generation security properties
 // Critical for P0: Passwords must be unpredictable and have sufficient entropy
 func TestPasswordSecurity(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	ctx := context.Background()
@@ -388,12 +374,7 @@ func TestPasswordSecurity(t *testing.T) {
 	t.Run("password has sufficient length", func(t *testing.T) {
 		// The implementation uses 32-character passwords
 		// We can verify this indirectly through the database
-		db := setupTestDB(t)
-		defer func() {
-			if err := db.Close(); err != nil {
-				t.Logf("Failed to close database: %v", err)
-			}
-		}()
+		db := testkit.DB(t)
 
 		repo := postgres.NewCommunityRepository(db)
 		uniqueSuffix := fmt.Sprintf("%d", time.Now().UnixNano())
@@ -446,12 +427,7 @@ func TestPasswordSecurity(t *testing.T) {
 // TestConcurrentProvisioning verifies thread-safety during community creation
 // Critical: Prevents race conditions that could create duplicate communities
 func TestConcurrentProvisioning(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	ctx := context.Background()
@@ -703,12 +679,7 @@ func TestPDSNetworkFailures(t *testing.T) {
 // TestTokenValidation verifies that PDS-returned tokens meet requirements
 // Critical for P0: Tokens must be valid JWTs that can be used for authentication
 func TestTokenValidation(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	ctx := context.Background()

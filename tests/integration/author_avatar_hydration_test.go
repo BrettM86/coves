@@ -6,6 +6,7 @@ import (
 	"Coves/internal/core/communityFeeds"
 	"Coves/internal/core/posts"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
 	"fmt"
 	"net/url"
@@ -24,8 +25,7 @@ import (
 // Regression test for the bug where feeds and post views only hydrated the
 // community avatar and author cards were always bare even for fully indexed users.
 func TestAuthorProfileHydration(t *testing.T) {
-	db := setupTestDB(t)
-	t.Cleanup(func() { _ = db.Close() })
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	testID := uniqueTestID()

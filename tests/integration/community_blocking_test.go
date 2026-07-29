@@ -5,6 +5,7 @@ package integration
 import (
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/communities"
+	"Coves/tests/testkit"
 	"context"
 	"database/sql"
 	"fmt"
@@ -17,8 +18,7 @@ import (
 // TestCommunityBlocking_Indexing tests Jetstream indexing of block events
 func TestCommunityBlocking_Indexing(t *testing.T) {
 	ctx := context.Background()
-	db := setupTestDB(t)
-	defer cleanupBlockingTestDB(t, db)
+	db := testkit.DB(t)
 
 	repo := createBlockingTestCommunityRepo(t, db)
 	// Skip verification in tests
@@ -205,8 +205,7 @@ func TestCommunityBlocking_Indexing(t *testing.T) {
 // TestCommunityBlocking_ListBlocked tests listing blocked communities
 func TestCommunityBlocking_ListBlocked(t *testing.T) {
 	ctx := context.Background()
-	db := setupTestDB(t)
-	defer cleanupBlockingTestDB(t, db)
+	db := testkit.DB(t)
 
 	repo := createBlockingTestCommunityRepo(t, db)
 	userDID := "did:plc:test-user-list"
@@ -282,8 +281,7 @@ func TestCommunityBlocking_ListBlocked(t *testing.T) {
 // TestCommunityBlocking_IsBlocked tests the fast block check
 func TestCommunityBlocking_IsBlocked(t *testing.T) {
 	ctx := context.Background()
-	db := setupTestDB(t)
-	defer cleanupBlockingTestDB(t, db)
+	db := testkit.DB(t)
 
 	repo := createBlockingTestCommunityRepo(t, db)
 
@@ -346,8 +344,7 @@ func TestCommunityBlocking_IsBlocked(t *testing.T) {
 // TestCommunityBlocking_GetBlock tests block retrieval
 func TestCommunityBlocking_GetBlock(t *testing.T) {
 	ctx := context.Background()
-	db := setupTestDB(t)
-	defer cleanupBlockingTestDB(t, db)
+	db := testkit.DB(t)
 
 	repo := createBlockingTestCommunityRepo(t, db)
 
@@ -439,21 +436,4 @@ func createBlockingTestCommunity(t *testing.T, repo communities.Repository, name
 	}
 
 	return created
-}
-
-func cleanupBlockingTestDB(t *testing.T, db *sql.DB) {
-	// Clean up test data
-	_, err := db.Exec("DELETE FROM community_blocks WHERE user_did LIKE 'did:plc:test-%'")
-	if err != nil {
-		t.Logf("Warning: Failed to clean up blocks: %v", err)
-	}
-
-	_, err = db.Exec("DELETE FROM communities WHERE did LIKE 'did:plc:test-community-%'")
-	if err != nil {
-		t.Logf("Warning: Failed to clean up communities: %v", err)
-	}
-
-	if closeErr := db.Close(); closeErr != nil {
-		t.Logf("Failed to close database: %v", closeErr)
-	}
 }

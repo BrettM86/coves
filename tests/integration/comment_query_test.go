@@ -7,6 +7,7 @@ import (
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/comments"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -23,12 +24,7 @@ import (
 
 // TestCommentQuery_BasicFetch tests fetching top-level comments with default params
 func TestCommentQuery_BasicFetch(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	testUser := createTestUser(t, db, "basicfetch.test", "did:plc:basicfetch123")
@@ -83,12 +79,7 @@ func TestCommentQuery_BasicFetch(t *testing.T) {
 
 // TestCommentQuery_NestedReplies tests fetching comments with nested reply structure
 func TestCommentQuery_NestedReplies(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	testUser := createTestUser(t, db, "nested.test", "did:plc:nested123")
@@ -173,12 +164,7 @@ func TestCommentQuery_NestedReplies(t *testing.T) {
 
 // TestCommentQuery_DepthLimit tests depth limiting works correctly
 func TestCommentQuery_DepthLimit(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	testUser := createTestUser(t, db, "depth.test", "did:plc:depth123")
@@ -257,12 +243,7 @@ func TestCommentQuery_DepthLimit(t *testing.T) {
 
 // TestCommentQuery_HotSorting tests hot sorting with Lemmy algorithm
 func TestCommentQuery_HotSorting(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	testUser := createTestUser(t, db, "hot.test", "did:plc:hot123")
@@ -308,12 +289,7 @@ func TestCommentQuery_HotSorting(t *testing.T) {
 
 // TestCommentQuery_TopSorting tests top sorting with score-based ordering
 func TestCommentQuery_TopSorting(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	testUser := createTestUser(t, db, "top.test", "did:plc:top123")
@@ -371,12 +347,7 @@ func TestCommentQuery_TopSorting(t *testing.T) {
 
 // TestCommentQuery_NewSorting tests chronological sorting
 func TestCommentQuery_NewSorting(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	testUser := createTestUser(t, db, "new.test", "did:plc:new123")
@@ -410,12 +381,7 @@ func TestCommentQuery_NewSorting(t *testing.T) {
 
 // TestCommentQuery_Pagination tests cursor-based pagination
 func TestCommentQuery_Pagination(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	testUser := createTestUser(t, db, "page.test", "did:plc:page123")
@@ -484,12 +450,7 @@ func TestCommentQuery_Pagination(t *testing.T) {
 
 // TestCommentQuery_EmptyThread tests fetching comments from a post with no comments
 func TestCommentQuery_EmptyThread(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	testUser := createTestUser(t, db, "empty.test", "did:plc:empty123")
@@ -520,12 +481,7 @@ func TestCommentQuery_EmptyThread(t *testing.T) {
 
 // TestCommentQuery_DeletedComments tests that soft-deleted comments are excluded
 func TestCommentQuery_DeletedComments(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	commentRepo := postgres.NewCommentRepository(db)
@@ -645,12 +601,7 @@ func TestCommentQuery_DeletedComments(t *testing.T) {
 
 // TestCommentQuery_InvalidInputs tests error handling for invalid inputs
 func TestCommentQuery_InvalidInputs(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	service := setupCommentService(db)
@@ -745,12 +696,7 @@ func TestCommentQuery_InvalidInputs(t *testing.T) {
 
 // TestCommentQuery_HTTPHandler tests the HTTP handler end-to-end
 func TestCommentQuery_HTTPHandler(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	testUser := createTestUser(t, db, "http.test", "did:plc:http123")
@@ -804,12 +750,7 @@ func TestCommentQuery_HTTPHandler(t *testing.T) {
 // TestCommentQuery_ParentRkeySubtree tests fetching a comment subtree via parentRkey
 // Backs the comment-permalink page and "continue this thread" for deep threads
 func TestCommentQuery_ParentRkeySubtree(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	testUser := createTestUser(t, db, "subtree.test", "did:plc:subtree123")
@@ -1117,7 +1058,6 @@ func TestCommentQuery_ParentRkeySubtree(t *testing.T) {
 			fmt.Sprintf("at://%s/social.coves.actor.block/subtreeblock", blockerDID),
 			"bafysubtreeblockcid")
 		require.NoError(t, err, "Failed to record viewer block")
-		defer func() { _, _ = db.Exec("DELETE FROM user_blocks WHERE blocker_did = $1", blockerDID) }()
 
 		blockedReq := &comments.GetCommentsRequest{
 			PostURI:    postURI,
@@ -1205,12 +1145,7 @@ func TestCommentQuery_ParentRkeySubtree(t *testing.T) {
 
 // TestCommentQuery_ParentRkeyHTTPHandler tests the real XRPC handler with parentRkey
 func TestCommentQuery_ParentRkeyHTTPHandler(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	testUser := createTestUser(t, db, "subtreehttp.test", "did:plc:subtreehttp123")

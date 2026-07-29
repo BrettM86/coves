@@ -7,6 +7,7 @@ import (
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/communities"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
 	"errors"
 	"fmt"
@@ -15,12 +16,7 @@ import (
 )
 
 func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	ctx := context.Background()
@@ -226,12 +222,7 @@ func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
 }
 
 func TestCommunityConsumer_HandleSubscription(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	ctx := context.Background()
@@ -316,12 +307,7 @@ func TestCommunityConsumer_HandleSubscription(t *testing.T) {
 }
 
 func TestCommunityConsumer_IgnoresNonCommunityEvents(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	// Use mock resolver (though these tests don't create communities, so it won't be called)
@@ -406,12 +392,7 @@ func (m *mockIdentityResolver) Resolve(ctx context.Context, did string) (*identi
 }
 
 func TestCommunityConsumer_PLCHandleResolution(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	ctx := context.Background()

@@ -8,8 +8,8 @@ import (
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/communities"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -22,7 +22,6 @@ import (
 
 	"github.com/gorilla/websocket"
 	_ "github.com/lib/pq"
-	"github.com/pressly/goose/v3"
 )
 
 // TestCommunityUpdateE2E_WithJetstream tests the FULL community update flow with REAL Jetstream
@@ -30,25 +29,7 @@ import (
 //
 // This is a TRUE E2E test - no simulated Jetstream events!
 func TestCommunityUpdateE2E_WithJetstream(t *testing.T) {
-	// Setup test database
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
-	}
-
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	// Run migrations
-	if dialectErr := goose.SetDialect("postgres"); dialectErr != nil {
-		t.Fatalf("Failed to set goose dialect: %v", dialectErr)
-	}
-	if migrateErr := goose.Up(db, "../../internal/db/migrations"); migrateErr != nil {
-		t.Fatalf("Failed to run migrations: %v", migrateErr)
-	}
+	db := testkit.DB(t)
 
 	// Check if PDS is running
 	pdsURL := os.Getenv("PDS_URL")

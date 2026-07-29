@@ -5,6 +5,7 @@ package integration
 import (
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
 	"fmt"
 	"net/http"
@@ -16,12 +17,7 @@ import (
 
 // TestHostedByVerification_DomainMatching tests that hostedBy domain must match handle domain
 func TestHostedByVerification_DomainMatching(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	ctx := context.Background()
@@ -241,12 +237,7 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 // TestBidirectionalDIDVerification tests the full bidirectional verification with mock HTTP server
 // This test verifies that the DID document must claim the handle in alsoKnownAs field
 func TestBidirectionalDIDVerification(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	ctx := context.Background()
@@ -395,12 +386,7 @@ func TestBidirectionalDIDVerification(t *testing.T) {
 // TestExtractDomainFromHandle tests the domain extraction logic for various handle formats
 func TestExtractDomainFromHandle(t *testing.T) {
 	// This is an internal function test - we'll test it through the consumer
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	ctx := context.Background()

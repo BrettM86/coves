@@ -8,14 +8,13 @@ import (
 	"Coves/internal/atproto/utils"
 	"Coves/internal/core/comments"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -23,35 +22,12 @@ import (
 	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	_ "github.com/lib/pq"
-	"github.com/pressly/goose/v3"
 )
 
 // TestCommentWrite_CreateTopLevelComment tests creating a comment on a post via E2E flow
 func TestCommentWrite_CreateTopLevelComment(t *testing.T) {
 
-	// Setup test database
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
-	}
-
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
-	}
-	defer func() {
-		if closeErr := db.Close(); closeErr != nil {
-			t.Logf("Failed to close database: %v", closeErr)
-		}
-	}()
-
-	// Run migrations
-	if dialectErr := goose.SetDialect("postgres"); dialectErr != nil {
-		t.Fatalf("Failed to set goose dialect: %v", dialectErr)
-	}
-	if migrateErr := goose.Up(db, "../../internal/db/migrations"); migrateErr != nil {
-		t.Fatalf("Failed to run migrations: %v", migrateErr)
-	}
+	db := testkit.DB(t)
 
 	// Check if PDS is running
 	pdsURL := getTestPDSURL()
@@ -279,8 +255,7 @@ func TestCommentWrite_CreateTopLevelComment(t *testing.T) {
 
 // TestCommentWrite_CreateNestedReply tests creating a reply to another comment
 func TestCommentWrite_CreateNestedReply(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	pdsURL := getTestPDSURL()
@@ -426,8 +401,7 @@ func TestCommentWrite_CreateNestedReply(t *testing.T) {
 
 // TestCommentWrite_UpdateComment tests updating an existing comment
 func TestCommentWrite_UpdateComment(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	pdsURL := getTestPDSURL()
@@ -543,8 +517,7 @@ func TestCommentWrite_UpdateComment(t *testing.T) {
 
 // TestCommentWrite_DeleteComment tests deleting a comment
 func TestCommentWrite_DeleteComment(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	pdsURL := getTestPDSURL()
@@ -648,9 +621,6 @@ func TestCommentWrite_DeleteComment(t *testing.T) {
 
 // TestCommentWrite_CannotUpdateOthersComment tests authorization for updates
 func TestCommentWrite_CannotUpdateOthersComment(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-
 	ctx := context.Background()
 	pdsURL := getTestPDSURL()
 
@@ -724,9 +694,6 @@ func TestCommentWrite_CannotUpdateOthersComment(t *testing.T) {
 
 // TestCommentWrite_CannotDeleteOthersComment tests authorization for deletes
 func TestCommentWrite_CannotDeleteOthersComment(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-
 	ctx := context.Background()
 	pdsURL := getTestPDSURL()
 
@@ -806,8 +773,7 @@ func parseTestDID(did string) (syntax.DID, error) {
 // CID validation correctly detects concurrent modifications.
 // This verifies the optimistic locking mechanism that prevents lost updates.
 func TestCommentWrite_ConcurrentModificationDetection(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	pdsURL := getTestPDSURL()

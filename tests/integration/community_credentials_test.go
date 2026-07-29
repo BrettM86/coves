@@ -5,6 +5,7 @@ package integration
 import (
 	"Coves/internal/core/communities"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
 	"fmt"
 	"testing"
@@ -13,12 +14,7 @@ import (
 
 // TestCommunityRepository_CredentialPersistence tests that PDS credentials are properly persisted
 func TestCommunityRepository_CredentialPersistence(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	ctx := context.Background()
@@ -124,12 +120,7 @@ func TestCommunityRepository_CredentialPersistence(t *testing.T) {
 
 // TestCommunityRepository_EncryptedCredentials tests encryption at rest
 func TestCommunityRepository_EncryptedCredentials(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	ctx := context.Background()
@@ -241,12 +232,7 @@ func TestCommunityRepository_EncryptedCredentials(t *testing.T) {
 
 // TestCommunityRepository_V2OwnershipModel tests that communities are self-owned
 func TestCommunityRepository_V2OwnershipModel(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	ctx := context.Background()

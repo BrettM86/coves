@@ -6,6 +6,7 @@ import (
 	"Coves/internal/core/aggregators"
 	"Coves/internal/core/communities"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,12 +16,7 @@ import (
 
 // TestAggregatorRepository_Create tests basic aggregator creation
 func TestAggregatorRepository_Create(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewAggregatorRepository(db)
 	ctx := context.Background()
@@ -121,12 +117,7 @@ func TestAggregatorRepository_Create(t *testing.T) {
 
 // TestAggregatorRepository_IsAggregator tests the fast existence check
 func TestAggregatorRepository_IsAggregator(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewAggregatorRepository(db)
 	ctx := context.Background()
@@ -172,12 +163,7 @@ func TestAggregatorRepository_IsAggregator(t *testing.T) {
 
 // TestAggregatorAuthorization_Create tests authorization creation
 func TestAggregatorAuthorization_Create(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	aggRepo := postgres.NewAggregatorRepository(db)
 	commRepo := postgres.NewCommunityRepository(db)
@@ -331,12 +317,7 @@ func TestAggregatorAuthorization_Create(t *testing.T) {
 
 // TestAggregatorAuthorization_IsAuthorized tests fast authorization check
 func TestAggregatorAuthorization_IsAuthorized(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	aggRepo := postgres.NewAggregatorRepository(db)
 	commRepo := postgres.NewCommunityRepository(db)
@@ -469,12 +450,7 @@ func TestAggregatorAuthorization_IsAuthorized(t *testing.T) {
 
 // TestAggregatorService_PostCreationIntegration tests the full post creation flow with aggregators
 func TestAggregatorService_PostCreationIntegration(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	aggRepo := postgres.NewAggregatorRepository(db)
 	commRepo := postgres.NewCommunityRepository(db)
@@ -568,12 +544,7 @@ func TestAggregatorService_PostCreationIntegration(t *testing.T) {
 
 // TestAggregatorService_RateLimiting tests rate limit enforcement
 func TestAggregatorService_RateLimiting(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	aggRepo := postgres.NewAggregatorRepository(db)
 	commRepo := postgres.NewCommunityRepository(db)
@@ -659,12 +630,7 @@ func TestAggregatorService_RateLimiting(t *testing.T) {
 
 // TestAggregatorPostService_Integration tests the posts service integration
 func TestAggregatorPostService_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	aggRepo := postgres.NewAggregatorRepository(db)
 	aggService := aggregators.NewAggregatorService(aggRepo, nil)
@@ -710,12 +676,7 @@ func TestAggregatorPostService_Integration(t *testing.T) {
 
 // TestAggregatorTriggers tests database triggers for auto-updating stats
 func TestAggregatorTriggers(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	aggRepo := postgres.NewAggregatorRepository(db)
 	commRepo := postgres.NewCommunityRepository(db)
@@ -824,12 +785,7 @@ func TestAggregatorTriggers(t *testing.T) {
 
 // TestAggregatorAuthorization_DisabledAtField tests that disabledAt is properly stored and retrieved
 func TestAggregatorAuthorization_DisabledAtField(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	aggRepo := postgres.NewAggregatorRepository(db)
 	commRepo := postgres.NewCommunityRepository(db)

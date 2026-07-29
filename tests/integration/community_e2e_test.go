@@ -13,7 +13,6 @@ import (
 	"Coves/tests/testkit"
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,7 +29,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 	_ "github.com/lib/pq"
-	"github.com/pressly/goose/v3"
 )
 
 // TestCommunity_E2E is a TRUE end-to-end test covering the complete flow:
@@ -45,43 +43,7 @@ import (
 // - Complete data flow from HTTP write to HTTP read via real infrastructure
 func TestCommunity_E2E(t *testing.T) {
 
-	// Setup test database
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
-	}
-
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
-	}
-	defer func() {
-		if closeErr := db.Close(); closeErr != nil {
-			t.Logf("Failed to close database: %v", closeErr)
-		}
-	}()
-
-	// Run migrations
-	if dialectErr := goose.SetDialect("postgres"); dialectErr != nil {
-		t.Fatalf("Failed to set goose dialect: %v", dialectErr)
-	}
-	if migrateErr := goose.Up(db, "../../internal/db/migrations"); migrateErr != nil {
-		t.Fatalf("Failed to run migrations: %v", migrateErr)
-	}
-
-	// Clean up test data from previous runs (order matters due to FK constraints)
-	// Delete subscriptions first (references communities and users)
-	if _, cleanErr := db.Exec("DELETE FROM community_subscriptions"); cleanErr != nil {
-		t.Logf("Warning: Failed to clean up subscriptions: %v", cleanErr)
-	}
-	// Delete posts (references communities)
-	if _, cleanErr := db.Exec("DELETE FROM posts"); cleanErr != nil {
-		t.Logf("Warning: Failed to clean up posts: %v", cleanErr)
-	}
-	// Delete communities
-	if _, cleanErr := db.Exec("DELETE FROM communities"); cleanErr != nil {
-		t.Logf("Warning: Failed to clean up communities: %v", cleanErr)
-	}
+	db := testkit.DB(t)
 
 	// Check if PDS is running
 	pdsURL := os.Getenv("PDS_URL")

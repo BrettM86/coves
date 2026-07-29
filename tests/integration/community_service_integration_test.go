@@ -5,6 +5,7 @@ package integration
 import (
 	"Coves/internal/core/communities"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -41,12 +42,7 @@ func TestCommunityService_CreateWithRealPDS(t *testing.T) {
 	}()
 
 	// Setup test database
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	repo := postgres.NewCommunityRepository(db)
@@ -291,12 +287,7 @@ func TestCommunityService_UpdateWithRealPDS(t *testing.T) {
 	}()
 
 	// Setup test database
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	repo := postgres.NewCommunityRepository(db)
@@ -482,12 +473,7 @@ func TestPasswordAuthentication(t *testing.T) {
 	}()
 
 	// Setup test database
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	repo := postgres.NewCommunityRepository(db)

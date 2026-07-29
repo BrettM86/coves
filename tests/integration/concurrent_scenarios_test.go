@@ -8,6 +8,7 @@ import (
 	"Coves/internal/core/communities"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
 	"fmt"
 	"sync"
@@ -18,12 +19,7 @@ import (
 // TestConcurrentVoting_MultipleUsersOnSamePost tests race conditions when multiple users
 // vote on the same post simultaneously
 func TestConcurrentVoting_MultipleUsersOnSamePost(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	voteRepo := postgres.NewVoteRepository(db)
@@ -325,12 +321,7 @@ func TestConcurrentVoting_MultipleUsersOnSamePost(t *testing.T) {
 // TestConcurrentCommenting_MultipleUsersOnSamePost tests race conditions when multiple users
 // comment on the same post simultaneously
 func TestConcurrentCommenting_MultipleUsersOnSamePost(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	commentRepo := postgres.NewCommentRepository(db)
@@ -583,12 +574,7 @@ func TestConcurrentCommenting_MultipleUsersOnSamePost(t *testing.T) {
 // TestConcurrentCommunityCreation tests race conditions when multiple goroutines
 // try to create communities with the same handle
 func TestConcurrentCommunityCreation_DuplicateHandle(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	repo := postgres.NewCommunityRepository(db)
@@ -718,12 +704,7 @@ func TestConcurrentCommunityCreation_DuplicateHandle(t *testing.T) {
 // TestConcurrentSubscription tests race conditions when multiple users subscribe
 // to the same community simultaneously
 func TestConcurrentSubscription_RaceConditions(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	communityRepo := postgres.NewCommunityRepository(db)

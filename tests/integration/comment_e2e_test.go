@@ -8,14 +8,13 @@ import (
 	"Coves/internal/atproto/utils"
 	"Coves/internal/core/comments"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -24,31 +23,12 @@ import (
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/gorilla/websocket"
 	_ "github.com/lib/pq"
-	"github.com/pressly/goose/v3"
 )
 
 // TestCommentE2E_CreateWithJetstream tests the full comment creation flow with real Jetstream
 // Flow: Client → Service → PDS Write → Jetstream Firehose → Consumer → AppView
 func TestCommentE2E_CreateWithJetstream(t *testing.T) {
-	// Setup test database
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
-	}
-
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	// Run migrations
-	if dialectErr := goose.SetDialect("postgres"); dialectErr != nil {
-		t.Fatalf("Failed to set goose dialect: %v", dialectErr)
-	}
-	if migrateErr := goose.Up(db, "../../internal/db/migrations"); migrateErr != nil {
-		t.Fatalf("Failed to run migrations: %v", migrateErr)
-	}
+	db := testkit.DB(t)
 
 	// Check if PDS is running
 	pdsURL := getTestPDSURL()
@@ -242,25 +222,7 @@ func TestCommentE2E_CreateWithJetstream(t *testing.T) {
 
 // TestCommentE2E_UpdateWithJetstream tests comment update with real Jetstream indexing
 func TestCommentE2E_UpdateWithJetstream(t *testing.T) {
-	// Setup test database
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
-	}
-
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	// Run migrations
-	if dialectErr := goose.SetDialect("postgres"); dialectErr != nil {
-		t.Fatalf("Failed to set goose dialect: %v", dialectErr)
-	}
-	if migrateErr := goose.Up(db, "../../internal/db/migrations"); migrateErr != nil {
-		t.Fatalf("Failed to run migrations: %v", migrateErr)
-	}
+	db := testkit.DB(t)
 
 	// Check if PDS is running
 	pdsURL := getTestPDSURL()
@@ -472,24 +434,7 @@ func TestCommentE2E_UpdateWithJetstream(t *testing.T) {
 
 // TestCommentE2E_DeleteWithJetstream tests comment deletion with real Jetstream indexing
 func TestCommentE2E_DeleteWithJetstream(t *testing.T) {
-	// Setup test database
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
-	}
-
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	if dialectErr := goose.SetDialect("postgres"); dialectErr != nil {
-		t.Fatalf("Failed to set goose dialect: %v", dialectErr)
-	}
-	if migrateErr := goose.Up(db, "../../internal/db/migrations"); migrateErr != nil {
-		t.Fatalf("Failed to run migrations: %v", migrateErr)
-	}
+	db := testkit.DB(t)
 
 	pdsURL := getTestPDSURL()
 	healthResp, err := http.Get(pdsURL + "/xrpc/_health")
@@ -881,24 +826,7 @@ func subscribeToJetstreamForCommentDelete(
 
 // TestCommentE2E_Authorization tests that users cannot modify other users' comments
 func TestCommentE2E_Authorization(t *testing.T) {
-	// Setup test database
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
-	}
-
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	if dialectErr := goose.SetDialect("postgres"); dialectErr != nil {
-		t.Fatalf("Failed to set goose dialect: %v", dialectErr)
-	}
-	if migrateErr := goose.Up(db, "../../internal/db/migrations"); migrateErr != nil {
-		t.Fatalf("Failed to run migrations: %v", migrateErr)
-	}
+	db := testkit.DB(t)
 
 	pdsURL := getTestPDSURL()
 	healthResp, err := http.Get(pdsURL + "/xrpc/_health")
@@ -1069,24 +997,7 @@ func TestCommentE2E_Authorization(t *testing.T) {
 
 // TestCommentE2E_ValidationErrors tests that validation errors are properly returned
 func TestCommentE2E_ValidationErrors(t *testing.T) {
-	// Setup test database
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
-	}
-
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	if dialectErr := goose.SetDialect("postgres"); dialectErr != nil {
-		t.Fatalf("Failed to set goose dialect: %v", dialectErr)
-	}
-	if migrateErr := goose.Up(db, "../../internal/db/migrations"); migrateErr != nil {
-		t.Fatalf("Failed to run migrations: %v", migrateErr)
-	}
+	db := testkit.DB(t)
 
 	pdsURL := getTestPDSURL()
 	healthResp, err := http.Get(pdsURL + "/xrpc/_health")

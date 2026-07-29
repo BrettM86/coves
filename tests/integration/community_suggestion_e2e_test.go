@@ -6,6 +6,7 @@ import (
 	"Coves/internal/api/routes"
 	"Coves/internal/core/communitysuggestions"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -205,22 +206,7 @@ func updateStatusRequest(t *testing.T, router http.Handler, token string, sugges
 func setupSuggestionTestRouter(t *testing.T, adminDIDs []string) (http.Handler, *E2EOAuthMiddleware) {
 	t.Helper()
 
-	db := setupTestDB(t)
-
-	// Clean up suggestion-specific tables at the start to avoid dirty state from previous runs
-	if _, err := db.Exec("DELETE FROM suggestion_votes"); err != nil {
-		t.Logf("Warning: Failed to clean up suggestion_votes: %v", err)
-	}
-	if _, err := db.Exec("DELETE FROM community_suggestions"); err != nil {
-		t.Logf("Warning: Failed to clean up community_suggestions: %v", err)
-	}
-
-	t.Cleanup(func() {
-		// Clean up at end too to leave DB clean
-		_, _ = db.Exec("DELETE FROM suggestion_votes")
-		_, _ = db.Exec("DELETE FROM community_suggestions")
-		_ = db.Close()
-	})
+	db := testkit.DB(t)
 
 	// Wire up real repository and service
 	repo := postgres.NewCommunitySuggestionRepository(db)

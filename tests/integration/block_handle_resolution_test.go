@@ -6,6 +6,7 @@ import (
 	"Coves/internal/api/handlers/community"
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/communities"
+	"Coves/tests/testkit"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -34,12 +35,7 @@ func createTestOAuthSessionForBlock(did string) *oauth.ClientSessionData {
 // TestBlockHandler_HandleResolution tests that the block handler accepts handles
 // in addition to DIDs and resolves them correctly
 func TestBlockHandler_HandleResolution(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 
@@ -272,12 +268,7 @@ func TestBlockHandler_HandleResolution(t *testing.T) {
 
 // TestUnblockHandler_HandleResolution tests that the unblock handler accepts handles
 func TestUnblockHandler_HandleResolution(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 

@@ -5,6 +5,7 @@ package integration
 import (
 	"Coves/internal/core/communities"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
 	"fmt"
 	"testing"
@@ -12,12 +13,7 @@ import (
 )
 
 func TestCommunityRepository_Create(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	ctx := context.Background()
@@ -123,12 +119,7 @@ func TestCommunityRepository_Create(t *testing.T) {
 }
 
 func TestCommunityRepository_GetByDID(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	ctx := context.Background()
@@ -181,12 +172,7 @@ func TestCommunityRepository_GetByDID(t *testing.T) {
 }
 
 func TestCommunityRepository_GetByHandle(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	ctx := context.Background()
@@ -227,12 +213,7 @@ func TestCommunityRepository_GetByHandle(t *testing.T) {
 }
 
 func TestCommunityRepository_Subscriptions(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	ctx := context.Background()
@@ -321,12 +302,7 @@ func TestCommunityRepository_Subscriptions(t *testing.T) {
 }
 
 func TestCommunityRepository_List(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	ctx := context.Background()
@@ -412,12 +388,7 @@ func TestCommunityRepository_List(t *testing.T) {
 }
 
 func TestCommunityRepository_GetSubscribedCommunityDIDs(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	ctx := context.Background()
@@ -530,7 +501,7 @@ func TestCommunityRepository_GetSubscribedCommunityDIDs(t *testing.T) {
 
 // TODO: Implement search functionality before re-enabling this test
 // func TestCommunityRepository_Search(t *testing.T) {
-// 	db := setupTestDB(t)
+// 	db := testkit.DB(t)
 // 	defer func() {
 // 		if err := db.Close(); err != nil {
 // 			t.Logf("Failed to close database: %v", err)

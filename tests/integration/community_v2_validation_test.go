@@ -6,6 +6,7 @@ import (
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/communities"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
 	"errors"
 	"fmt"
@@ -15,12 +16,7 @@ import (
 
 // TestCommunityConsumer_V2RKeyValidation tests that only V2 communities (rkey="self") are accepted
 func TestCommunityConsumer_V2RKeyValidation(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	// Skip verification in tests
@@ -250,12 +246,7 @@ func TestCommunityConsumer_V2RKeyValidation(t *testing.T) {
 
 // TestCommunityConsumer_HandleField tests the V2 handle field
 func TestCommunityConsumer_HandleField(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	// Skip verification in tests

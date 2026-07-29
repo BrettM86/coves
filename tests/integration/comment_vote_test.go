@@ -7,6 +7,7 @@ import (
 	"Coves/internal/core/comments"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
 	"fmt"
 	"testing"
@@ -15,12 +16,7 @@ import (
 
 // TestCommentVote_CreateAndUpdate tests voting on comments and vote count updates
 func TestCommentVote_CreateAndUpdate(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	commentRepo := postgres.NewCommentRepository(db)
@@ -325,12 +321,7 @@ func TestCommentVote_CreateAndUpdate(t *testing.T) {
 
 // TestCommentVote_ViewerState tests viewer vote state in comment query responses
 func TestCommentVote_ViewerState(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	commentRepo := postgres.NewCommentRepository(db)

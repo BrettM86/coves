@@ -7,6 +7,7 @@ import (
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/communities"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -33,12 +34,7 @@ func (m *getViewerMockService) GetCommunity(ctx context.Context, identifier stri
 // social.coves.community.get lexicon promise ("viewer state will be
 // included if authenticated").
 func TestCommunityGet_ViewerState(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	ctx := context.Background()

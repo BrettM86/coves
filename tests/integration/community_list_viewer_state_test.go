@@ -7,6 +7,7 @@ import (
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/communities"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -22,12 +23,7 @@ import (
 // TestCommunityList_ViewerState tests that the list communities endpoint
 // correctly populates viewer.subscribed field for authenticated users
 func TestCommunityList_ViewerState(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 	ctx := context.Background()

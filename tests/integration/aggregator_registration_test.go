@@ -7,6 +7,7 @@ import (
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -66,8 +67,7 @@ func (m *mockAggregatorIdentityResolver) Purge(ctx context.Context, identifier s
 
 func TestAggregatorRegistration_Success(t *testing.T) {
 	// Setup test database
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	testDID := "did:plc:test123"
 	testHandle := "aggregator.bsky.social"
@@ -154,8 +154,7 @@ func TestAggregatorRegistration_Success(t *testing.T) {
 
 func TestAggregatorRegistration_DomainVerificationFailed(t *testing.T) {
 	// Setup test database
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	// Setup test server that returns wrong DID
 	wellKnownServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -217,8 +216,7 @@ func TestAggregatorRegistration_DomainVerificationFailed(t *testing.T) {
 }
 
 func TestAggregatorRegistration_InvalidDID(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	tests := []struct {
 		name   string
@@ -275,8 +273,7 @@ func TestAggregatorRegistration_InvalidDID(t *testing.T) {
 }
 
 func TestAggregatorRegistration_AlreadyRegistered(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	// Pre-create user with same DID
 	existingDID := "did:plc:existing123"
@@ -355,8 +352,7 @@ func TestAggregatorRegistration_AlreadyRegistered(t *testing.T) {
 }
 
 func TestAggregatorRegistration_WellKnownNotAccessible(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	// Setup test server that returns 404 for .well-known
 	wellKnownServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -413,8 +409,7 @@ func TestAggregatorRegistration_WellKnownNotAccessible(t *testing.T) {
 }
 
 func TestAggregatorRegistration_WellKnownTooLarge(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	testDID := "did:plc:toolarge"
 
@@ -474,8 +469,7 @@ func TestAggregatorRegistration_WellKnownTooLarge(t *testing.T) {
 }
 
 func TestAggregatorRegistration_DIDResolutionFailed(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	testDID := "did:plc:nonexistent"
 
@@ -546,8 +540,7 @@ func TestAggregatorRegistration_DIDResolutionFailed(t *testing.T) {
 }
 
 func TestAggregatorRegistration_LargeWellKnownResponse(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	testDID := "did:plc:largedos123"
 
@@ -638,8 +631,7 @@ func TestAggregatorRegistration_E2E_WithRealInfrastructure(t *testing.T) {
 	// This is a TRUE E2E test that validates the full registration flow
 	// with real .well-known server and real identity resolution
 
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	testDID := "did:plc:e2etest123"
 	testHandle := "e2ebot.bsky.social"

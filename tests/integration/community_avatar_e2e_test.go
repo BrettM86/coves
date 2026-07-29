@@ -8,9 +8,9 @@ import (
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/communities"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"bytes"
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"image"
@@ -25,7 +25,6 @@ import (
 
 	"github.com/gorilla/websocket"
 	_ "github.com/lib/pq"
-	"github.com/pressly/goose/v3"
 )
 
 // createTestPNGImage creates a simple PNG image for testing
@@ -48,25 +47,7 @@ func createTestPNGImage(width, height int, c color.Color) []byte {
 // TestCommunityAvatarE2E_CreateWithAvatar tests creating a community with an avatar
 // Flow: CreateCommunity(avatar) → PDS uploadBlob + putRecord → Jetstream → Consumer → AppView
 func TestCommunityAvatarE2E_CreateWithAvatar(t *testing.T) {
-	// Setup test database
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
-	}
-
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	// Run migrations
-	if dialectErr := goose.SetDialect("postgres"); dialectErr != nil {
-		t.Fatalf("Failed to set goose dialect: %v", dialectErr)
-	}
-	if migrateErr := goose.Up(db, "../../internal/db/migrations"); migrateErr != nil {
-		t.Fatalf("Failed to run migrations: %v", migrateErr)
-	}
+	db := testkit.DB(t)
 
 	// Check if PDS is running
 	pdsURL := os.Getenv("PDS_URL")
@@ -294,25 +275,7 @@ func TestCommunityAvatarE2E_CreateWithAvatar(t *testing.T) {
 // TestCommunityAvatarE2E_UpdateWithAvatar tests updating a community's avatar
 // Flow: UpdateCommunity(avatar) → PDS uploadBlob + putRecord → Jetstream → Consumer → AppView
 func TestCommunityAvatarE2E_UpdateWithAvatar(t *testing.T) {
-	// Setup test database
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
-	}
-
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	// Run migrations
-	if dialectErr := goose.SetDialect("postgres"); dialectErr != nil {
-		t.Fatalf("Failed to set goose dialect: %v", dialectErr)
-	}
-	if migrateErr := goose.Up(db, "../../internal/db/migrations"); migrateErr != nil {
-		t.Fatalf("Failed to run migrations: %v", migrateErr)
-	}
+	db := testkit.DB(t)
 
 	// Check if PDS is running
 	pdsURL := os.Getenv("PDS_URL")
@@ -668,25 +631,7 @@ func TestCommunityAvatarE2E_UpdateWithAvatar(t *testing.T) {
 // TestCommunityAvatarE2E_UpdateWithBanner tests updating a community's banner
 // Flow: UpdateCommunity(banner) → PDS uploadBlob + putRecord → Jetstream → Consumer → AppView
 func TestCommunityAvatarE2E_UpdateWithBanner(t *testing.T) {
-	// Setup test database
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
-	}
-
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	// Run migrations
-	if dialectErr := goose.SetDialect("postgres"); dialectErr != nil {
-		t.Fatalf("Failed to set goose dialect: %v", dialectErr)
-	}
-	if migrateErr := goose.Up(db, "../../internal/db/migrations"); migrateErr != nil {
-		t.Fatalf("Failed to run migrations: %v", migrateErr)
-	}
+	db := testkit.DB(t)
 
 	// Check if PDS is running
 	pdsURL := os.Getenv("PDS_URL")

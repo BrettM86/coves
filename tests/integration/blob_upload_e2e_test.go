@@ -10,6 +10,7 @@ import (
 	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -51,12 +52,7 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 		t.Skipf("PDS health check failed at %s: status %d", pdsURL, healthResp.StatusCode)
 	}
 
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 
@@ -366,12 +362,7 @@ func TestBlobUpload_E2E_CommentWithImage(t *testing.T) {
 		t.Skipf("PDS health check failed at %s: status %d", pdsURL, healthResp.StatusCode)
 	}
 
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 
@@ -519,8 +510,7 @@ func TestBlobUpload_PDS_MockServer(t *testing.T) {
 
 // TestBlobUpload_Validation tests blob upload validation
 func TestBlobUpload_Validation(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	communityRepo := postgres.NewCommunityRepository(db)
 	blobService := blobs.NewBlobService(getTestPDSURL())

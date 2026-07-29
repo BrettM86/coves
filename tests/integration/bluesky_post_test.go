@@ -3,6 +3,7 @@
 package integration
 
 import (
+	"Coves/tests/testkit"
 	"context"
 	"fmt"
 	"net/http"
@@ -23,8 +24,7 @@ func TestBlueskyPostCrossPosting_E2E_LivePDS(t *testing.T) {
 	}
 	_ = healthResp.Body.Close()
 
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 
