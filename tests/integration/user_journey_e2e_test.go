@@ -46,6 +46,43 @@ import (
 	timelineCore "Coves/internal/core/timeline"
 )
 
+// # WHY THIS FILE OVERRIDES jetstreamReadBudget
+//
+// This journey flaked 2 of 6 full-gate runs during task 12 — always the same
+// way: part 3's post commit never reached the subscriber inside 30 seconds, and
+// every later part failed behind it. It never reproduces standalone. The test
+// alone passes, the whole tests/integration package alone passes, and even the
+// gate's exact T1 invocation passes; only a full `make ci`, under build load,
+// loses the race.
+//
+// The mechanism is the one recorded in the loop's cross-iteration note [C]:
+// Jetstream account and identity events BYPASS wantedCollections, so the
+// package's own `-parallel 26` signup storm floods this subscriber's socket with
+// events it did not ask for. It has a fixed total read budget, spends it reading
+// account events, and never reaches the one post commit it wants.
+//
+// Two constants below buy headroom and, more importantly, DIAGNOSABILITY:
+//
+//   - journeyReadBudget (60s) replaces the package-wide jetstreamReadBudget for
+//     this file's two subscribers, doubling the room a storm has to clear.
+//   - journeyEventTimeout (75s) is every caller-side wait, and it is strictly
+//     LONGER than the subscriber's budget on purpose. They used to be equal at
+//     30s, a photo finish the subscriber could never win — so the failure always
+//     surfaced as the caller's opaque "Jetstream timeout" instead of the
+//     subscriber's own account of what it saw. Ordered this way, the subscriber
+//     always reports first, and it reports how many events it read and how many
+//     matched, which is what distinguishes a starved subscriber from a pipeline
+//     that genuinely dropped the commit.
+//
+// This is mitigation, not a fix. The real repair is rebuilding this journey on
+// testkit.Firehose, which re-dials and cursor-gates instead of spending one
+// deadline on whatever arrives; that is task 16's scope, and these constants die
+// with the file.
+const (
+	journeyReadBudget   = 60 * time.Second
+	journeyEventTimeout = 75 * time.Second
+)
+
 // TestFullUserJourney_E2E tests the complete user experience from signup to interaction:
 // 1. User A: Signup → Authenticate → Create Community → Create Post
 // 2. User B: Signup → Authenticate → Subscribe to Community
@@ -270,7 +307,7 @@ func TestFullUserJourney_E2E(t *testing.T) {
 			close(done)
 		case err := <-errorChan:
 			t.Fatalf("❌ Jetstream error: %v", err)
-		case <-time.After(30 * time.Second):
+		case <-time.After(journeyEventTimeout):
 			close(done)
 			// Check if simulation fallback is allowed (for CI environments)
 			if os.Getenv("ALLOW_SIMULATION_FALLBACK") == "true" {
@@ -338,7 +375,7 @@ func TestFullUserJourney_E2E(t *testing.T) {
 		jetstreamFilterURL := fmt.Sprintf("%s?wantedCollections=social.coves.community.post", jetstreamURL)
 
 		go func() {
-			err := subscribeToJetstreamForPost(ctx, withJetstreamCursor(jetstreamFilterURL, postCreateCursor), communityDID, postConsumer, eventChan, errorChan, done)
+			err := subscribeToJetstreamForPost(ctx, withJetstreamCursor(jetstreamFilterURL, postCreateCursor), communityDID, postConsumer, eventChan, done)
 			if err != nil {
 				errorChan <- err
 			}
@@ -350,7 +387,7 @@ func TestFullUserJourney_E2E(t *testing.T) {
 			close(done)
 		case err := <-errorChan:
 			t.Fatalf("❌ Jetstream error: %v", err)
-		case <-time.After(30 * time.Second):
+		case <-time.After(journeyEventTimeout):
 			close(done)
 			// Check if simulation fallback is allowed (for CI environments)
 			if os.Getenv("ALLOW_SIMULATION_FALLBACK") == "true" {
@@ -865,7 +902,14 @@ func subscribeToJetstreamForCommunity(
 	// ONE deadline for the whole subscription, not one per read: the
 	// budget is what the caller is willing to wait in total, and a
 	// per-read deadline would let a busy stream extend it indefinitely.
-	readDeadline := time.Now().Add(jetstreamReadBudget)
+	readDeadline := time.Now().Add(journeyReadBudget)
+
+	// Counted so the budget's expiry can say WHY it expired. A subscriber that
+	// read thousands of events and matched none was starved by the account-event
+	// storm described at journeyReadBudget; one that read nothing at all is
+	// looking at a dead firehose. The two need opposite fixes and used to be
+	// indistinguishable from the failure message.
+	var eventsSeen, eventsFromTarget int
 
 	// The gorilla/websocket library panics after 1000 repeated reads on a failed connection
 
@@ -897,12 +941,22 @@ func subscribeToJetstreamForCommunity(
 					// The deadline is the whole budget, so its expiry is the answer:
 					// no matching event arrived. Reading on would be reading a
 					// connection gorilla has already marked failed.
-					return fmt.Errorf("no matching event within %s", jetstreamReadBudget)
+					return fmt.Errorf(
+						"no matching event within %s: read %d event(s), %d from %s, none of them the "+
+							"commit this subscription was waiting for (a large count with no match means "+
+							"the subscriber was starved by unfiltered account/identity events, not that "+
+							"the firehose dropped the commit)",
+						journeyReadBudget, eventsSeen, eventsFromTarget, targetDID)
 				}
 
 				// For any other error, return immediately to avoid re-reading from failed connection
 				// The gorilla/websocket library panics on repeated reads after a connection failure
 				return fmt.Errorf("failed to read Jetstream message: %w", err)
+			}
+
+			eventsSeen++
+			if event.Did == targetDID {
+				eventsFromTarget++
 			}
 
 			if event.Did == targetDID && event.Kind == "commit" &&
@@ -964,4 +1018,91 @@ func simulatePostIndexing(t *testing.T, db *sql.DB, consumer *jetstream.PostEven
 		},
 	}
 	require.NoError(t, consumer.HandleEvent(ctx, &event))
+}
+
+// subscribeToJetstreamForPost subscribes to the real Jetstream firehose and
+// processes post events through the given consumer.
+//
+// It was defined in post_e2e_test.go until that file was replaced by
+// tests/e2e/post_contract_test.go, and moved here because this is its only
+// remaining caller. It is not a helper worth generalising: task 16 rebuilds the
+// user journey on testkit's cursor-gated subscriber, and this copy dies with the
+// last hand-rolled one.
+func subscribeToJetstreamForPost(
+	ctx context.Context,
+	jetstreamURL string,
+	targetDID string,
+	consumer *jetstream.PostEventConsumer,
+	eventChan chan<- *jetstream.JetstreamEvent,
+	done <-chan bool,
+) error {
+	conn, _, err := websocket.DefaultDialer.Dial(jetstreamURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to connect to Jetstream: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	// ONE deadline for the whole subscription, not one per read: the
+	// budget is what the caller is willing to wait in total, and a
+	// per-read deadline would let a busy stream extend it indefinitely.
+	readDeadline := time.Now().Add(journeyReadBudget)
+
+	// Counted so the budget's expiry can say WHY it expired. A subscriber that
+	// read thousands of events and matched none was starved by the account-event
+	// storm described at journeyReadBudget; one that read nothing at all is
+	// looking at a dead firehose. The two need opposite fixes and used to be
+	// indistinguishable from the failure message.
+	var eventsSeen, eventsFromTarget int
+
+	for {
+		select {
+		case <-done:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			if err := conn.SetReadDeadline(readDeadline); err != nil {
+				return fmt.Errorf("failed to set read deadline: %w", err)
+			}
+
+			var event jetstream.JetstreamEvent
+			err := conn.ReadJSON(&event)
+			if err != nil {
+				if websocket.IsCloseError(err, websocket.CloseNormalClosure) {
+					return fmt.Errorf("Jetstream closed the subscription before the event arrived")
+				}
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					// The deadline is the whole budget, so its expiry is the answer:
+					// no matching event arrived. Reading on would be reading a
+					// connection gorilla has already marked failed.
+					return fmt.Errorf(
+						"no matching event within %s: read %d event(s), %d from %s, none of them the "+
+							"commit this subscription was waiting for (a large count with no match means "+
+							"the subscriber was starved by unfiltered account/identity events, not that "+
+							"the firehose dropped the commit)",
+						journeyReadBudget, eventsSeen, eventsFromTarget, targetDID)
+				}
+				return fmt.Errorf("failed to read Jetstream message: %w", err)
+			}
+
+			eventsSeen++
+			if event.Did == targetDID {
+				eventsFromTarget++
+			}
+
+			if event.Did == targetDID && event.Kind == "commit" &&
+				event.Commit != nil && event.Commit.Collection == "social.coves.community.post" {
+				if err := consumer.HandleEvent(ctx, &event); err != nil {
+					return fmt.Errorf("failed to process event: %w", err)
+				}
+
+				select {
+				case eventChan <- &event:
+					return nil
+				case <-time.After(1 * time.Second):
+					return fmt.Errorf("timeout sending event to channel")
+				}
+			}
+		}
+	}
 }

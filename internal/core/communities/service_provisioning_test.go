@@ -114,6 +114,15 @@ func TestService_CreateProvisionsAResolvableAccount(t *testing.T) {
 	assert.Equal(t, "at://"+community.DID+"/social.coves.community.profile/self", community.RecordURI)
 	assert.Equal(t, community.DID, community.OwnerDID, "V2: a community owns itself")
 
+	// Provisioning must also hand back a usable SESSION on the new account, not
+	// only its password. Every later write into this repo — a post, a moderation
+	// action — goes out on these credentials after EnsureFreshToken, and the
+	// refresh token is the only thing that keeps that working past the access
+	// token's lifetime. A provisioner that stored one and dropped the other would
+	// look healthy here and fail hours later, on the first refresh.
+	assert.NotEmpty(t, community.PDSAccessToken, "provisioning must return an access token for the community's repo")
+	assert.NotEmpty(t, community.PDSRefreshToken, "without a refresh token the community's credentials expire unrecoverably")
+
 	record := pdsServer.Login(t, expectedHandle, community.PDSPassword).
 		GetRecord(t, "social.coves.community.profile", "self")
 	assert.Equal(t, name, record.Value["name"])

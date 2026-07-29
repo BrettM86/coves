@@ -19,7 +19,6 @@
 # Task 20 empties this file and flips cmd/contract-manifest to
 # -allow-pending=false, after which "has a contract" is the only passing state.
 
-social.coves.community.post          # task 12: post ingestion contract, with the post god-file decomposition
 social.coves.community.comment       # task 13: comment ingestion contract, with the comment god-file decomposition
 social.coves.feed.vote               # task 14: vote ingestion contract (the re-tap idempotency invariant lives here)
 #
