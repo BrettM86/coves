@@ -39,7 +39,7 @@ Stop the loop when every task is done, or on any blocked task.
 |---|------|-------|---|--------|--------|-------|
 | 1 | Gate green as imported: run `make ci`, fix what surfaces, record baseline timing + allowlist | 0 ⛩ | S | done | (no diff) | GREEN FIRST RUN: 3307 tests, 3288 pass, 0 fail, 19 skips (all allowlisted, 21 entries → 2 unused are ~conditional), 2.2 min WARM caches. No fixes → no review stream |
 | 2 | Move public-network tests to tests/live/ (+`live` tag, move-only); flip compose nets `internal: true` + module-cache pre-pull; cold-cache egress-blocked `make ci` green | 0 ⛩ | S | done | (see git log) | COLD egress-blocked GREEN 2:21; warm 1:57. 16 funcs → tests/live (4 files + helpers). Egress block found 4 runtime deps, not 1: Turnstile URL hardcoded (→ WithSiteverifyURL, dev-gated env), PLC healthcheck redirected to public web (→ /_health), 3 blueskypost tests dialed public.api.bsky.app (→ blueskyAPI seam), DNS-dependent 404 test (→ DID). Review: Codex "good" + Opus "safe as-is"; 9 fixes applied (unfurl E2E de-mocked via httptest OG, gate vets -tags live, non-dev override warns, prod default pinned, stub 127.0.0.1-only, GOPROXY=off, 404/500 handler tests, golden 200 parse, live cache purge+method asserts). 3281 tests / 14 allowlisted skips |
-| 3 | testkit core: db.go (template-clone, advisory lock), wait.go (WaitFor/Holds, terminal errs), fixtures.go (UniqueID run-prefix), scripts/test-db-prepare.sh, scripts/test-audit.sh (warn mode) + testkit's own tests | 1 | S | pending | | dependency rule: testkit imports NO internal/core/* |
+| 3 | testkit core: db.go (template-clone, advisory lock), wait.go (WaitFor/Holds, terminal errs), fixtures.go (UniqueID run-prefix), scripts/test-db-prepare.sh, scripts/test-audit.sh (warn mode) + testkit's own tests | 1 | S | done | (see git log) | 47 testkit tests, -race -shuffle clean; clone ~30ms (cheaper than spec est). Review: Codex needs-work (5 high) + Opus not-safe-as-is (2 high) → 15-item batch applied: template-drop name rail (found a panic-in-error-path bug), drop-before-close teardown, 55006 retry, sweep de-FORCEd + error-accumulating, wait-primitive deadline contract, max_connections=200 + ParallelBudget (CI: -parallel 53, inert until ph.3), bounded lock wait w/ holder diagnostics, grep -H audit fix. ADJUDICATION: Codex RIGHT / Opus WRONG on advisory-lock leak (async cancel can grant lock after Go sees error; fixed via Conn.Raw(ErrBadConn) eviction). make ci GREEN 3347 tests / 14 allowlisted skips |
 | 4 | testkit pds.go (absorb 4 factories, createPDSAccount×2, XRPC clients), firehose.go (generic cursor-gated), appview.go; fix 5 handle-collision sites | 1 ⛩ | S | pending | | then FULL PANEL review of tests/testkit (incl. pragma:security — PDS creds) |
 | 5 | Kill the lies: delete 6 debt tests; lexicon validator stops generating defs-only subtests (retire 8 allowlist entries); move 2 ratelimit files to internal/api/middleware (T0); fold tests/unit into internal/core/communities | 2 | M | pending | | |
 | 6 | Split multi-tier files by test func (manifest in commit msg); add build tags in place; retarget Makefile to tags; delete -short/testing.Short(); delete test-all | 2 ⛩ | S | pending | | identity_resolution, bluesky_post (what's left post-task-2), post_unfurl |
@@ -105,3 +105,29 @@ Stop the loop when every task is done, or on any blocked task.
   stage 1b `go vet -tags live` so the live tier can't rot invisibly.
 - **Docker flake**: containerd "failed to prepare extraction snapshot" can
   appear once on build; retry clears it — don't chase it as a regression.
+- **From task 3 (testkit — later phases MUST know)**: testkit.DB(t) is the
+  ONLY sanctioned DB path for migrated tests; template `coves_test_template`
+  guarded by validateTemplateName (won't drop non-test-shaped names).
+  `sql.DB.Close` WAITS on in-flight queries — always DROP (bounded ctx,
+  FORCE) before Close in teardown. `Conn.Raw(func(any) error { return
+  driver.ErrBadConn })` is the ONLY way to evict a session from a
+  database/sql pool — required on every error path of anything holding
+  session state (advisory locks, SET LOCAL, temp tables). CREATE DATABASE
+  ... TEMPLATE can hit SQLSTATE 55006 for a few ms after a template
+  connection closes (async backend exit) — cloneTemplate retries 3×.
+  Advisory lock key ('COVE',1) on the maintenance DB (coves_test); template
+  peeks need EXCLUSIVE (a source connection blocks cloning). goose: testkit
+  uses NewProvider (no globals); hazard only if a package mixes legacy
+  goose.Up with testkit in one binary (tasks 7-8 watch for it).
+  testkit.ParallelBudget wired into both go test invocations via
+  test-db-prepare.sh --print-parallel (CI computes 53); inert until phase 3
+  drops -p 1. Dev postgres-test won't see max_connections=200 until
+  recreated FROM THE MAIN CHECKOUT (worktree compose project-name mismatch
+  vs pinned container_name); CI unaffected. Audit baseline 911: sleep 60
+  (ph.3-4), skip 280 (ph.2), Short 162 (ph.2), dialer 30 (ph.4), host:port
+  288 (ph.3-4), public-hosts 91 (ph.2, ~91 exemption annotations needed —
+  big three: blueskypost/url_parser_test 19, aggregator_registration_test
+  14, jetstream/user_consumer_test 10). Testkit tests deliberately untagged
+  until task 6. REVIEWER CALIBRATION: on the lock-leak disagreement Codex
+  was right, Opus wrong (missed the failure path, traced only cancellation)
+  — weight Codex on DB/concurrency semantics.

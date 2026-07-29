@@ -75,6 +75,37 @@ echo "  ✓ tests/live compiles"
 echo
 
 # ---------------------------------------------------------------------------
+# 1c. Violation audit (advisory)
+# ---------------------------------------------------------------------------
+# docs/TEST_ARCHITECTURE.md §3.6.3. The suite is mid-migration and every count
+# below is scheduled against a phase, so this reports and never judges — the
+# `|| true` is belt-and-braces on top of the script's own exit 0. It becomes the
+# hard lint gate in the final phase, when the counts are zero.
+bash /src/scripts/test-audit.sh || true
+
+# ---------------------------------------------------------------------------
+# 1d. Test template database
+# ---------------------------------------------------------------------------
+# Provisions the migrated template that testkit.DB clones per test. Done here,
+# once, rather than inside the test binaries: `go test` runs packages as
+# separate processes and N of them racing to create the same database is a
+# built-in flake.
+#
+# This ADDS a database. The legacy path — tests/integration running goose
+# against the shared coves_test database — is untouched and still works.
+echo "▶ Preparing the test template database..."
+go run ./tests/testkit/cmd/testdbprepare
+
+# The connection budget, derived from the server's max_connections rather than
+# guessed: every test running under t.Parallel() holds its own clone pool.
+# Nothing uses t.Parallel() outside tests/testkit yet, so this is inert today —
+# it is wired now so that the phase enabling parallelism does not also have to
+# discover the ceiling by exhausting it.
+TEST_PARALLEL=$(bash /src/scripts/test-db-prepare.sh --print-parallel)
+echo "  ✓ connection budget allows -parallel $TEST_PARALLEL"
+echo
+
+# ---------------------------------------------------------------------------
 # 2. Run the suite
 # ---------------------------------------------------------------------------
 
@@ -119,7 +150,7 @@ progress_pid=$!
 trap 'kill "$progress_pid" 2>/dev/null || true' EXIT
 
 set +e
-go test -json -p 1 -count=1 -timeout "$TEST_TIMEOUT" \
+go test -json -p 1 -parallel "$TEST_PARALLEL" -count=1 -timeout "$TEST_TIMEOUT" \
     ./cmd/... ./internal/... ./tests/... \
     >>"$RAW" 2>&1
 set -e

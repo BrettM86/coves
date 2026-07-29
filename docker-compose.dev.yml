@@ -38,6 +38,11 @@ services:
   postgres-test:
     image: postgres:15
     container_name: coves-test-postgres
+    # Matches docker-compose.ci.yml: tests/testkit clones a database per test,
+    # each with its own pool, and testkit.ParallelBudget derives the safe
+    # `go test -parallel` value from this number. See the CI file for the full
+    # reasoning.
+    command: ["-c", "max_connections=200"]
     ports:
       - "${POSTGRES_TEST_PORT:-5434}:5432"
     environment:

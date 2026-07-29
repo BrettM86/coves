@@ -1,4 +1,4 @@
-.PHONY: help dev-up dev-up-otel dev-down dev-logs dev-status dev-reset test test-all ci ci-clean e2e-test clean verify-stack create-test-account mobile-full-setup
+.PHONY: help dev-up dev-up-otel dev-down dev-logs dev-status dev-reset test test-all test-db-prepare test-audit ci ci-clean e2e-test clean verify-stack create-test-account mobile-full-setup
 
 # Default target - show help
 .DEFAULT_GOAL := help
@@ -127,11 +127,20 @@ test: ## Run fast unit/integration tests (skips slow E2E tests)
 	@sleep 3
 	@echo "$(GREEN)Running migrations on test database...$(RESET)"
 	@goose -dir internal/db/migrations postgres "postgresql://$(POSTGRES_TEST_USER):$(POSTGRES_TEST_PASSWORD)@localhost:$(POSTGRES_TEST_PORT)/$(POSTGRES_TEST_DB)?sslmode=disable" up || true
+	@# Provisions the template database that testkit.DB clones per test, and
+	@# sweeps clones orphaned by killed runs. Additive: the goose line above
+	@# still migrates the shared database the not-yet-migrated tests use.
+	@./scripts/test-db-prepare.sh
 	@echo "$(GREEN)Running fast tests (use 'make e2e-test' for E2E tests)...$(RESET)"
 	@# -p 1 runs packages sequentially: the integration suite's setup wipes
 	@# shared test-DB tables (unscoped DELETEs), so package-parallel runs race
 	@# and randomly kill other packages' fixtures (jetstream DB tests above all).
-	@go test -p 1 ./cmd/... ./internal/... ./tests/... -short -v
+	@#
+	@# -parallel comes from the server's max_connections, because every test
+	@# under t.Parallel() holds its own clone pool. Inert until phase 3 enables
+	@# parallelism; wired now so the ceiling is never discovered by hitting it.
+	@go test -p 1 -parallel $$(./scripts/test-db-prepare.sh --print-parallel) \
+		./cmd/... ./internal/... ./tests/... -short -v
 	@echo "$(GREEN)✓ Tests complete$(RESET)"
 
 e2e-test: ## Run automated E2E tests (requires: make dev-up + make run in another terminal)
@@ -176,6 +185,12 @@ test-db-reset: ## Reset test database
 	@sleep 3
 	@goose -dir internal/db/migrations postgres "postgresql://$(POSTGRES_TEST_USER):$(POSTGRES_TEST_PASSWORD)@localhost:$(POSTGRES_TEST_PORT)/$(POSTGRES_TEST_DB)?sslmode=disable" up || true
 	@echo "$(GREEN)✓ Test database reset$(RESET)"
+
+test-db-prepare: ## Create or refresh the template database that testkit.DB clones per test
+	@./scripts/test-db-prepare.sh
+
+test-audit: ## Count test-suite invariant violations (warn only; -v for file:line)
+	@./scripts/test-audit.sh
 
 test-db-stop: ## Stop test database
 	@docker-compose -f docker-compose.dev.yml --env-file .env.dev --profile test stop postgres-test
