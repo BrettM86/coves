@@ -4,6 +4,7 @@ package integration
 
 import (
 	"Coves/internal/atproto/oauth"
+	"Coves/tests/testkit"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -17,7 +18,6 @@ import (
 	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/go-chi/chi/v5"
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -35,16 +35,7 @@ import (
 // 6. WITH THE FIX: Binding mismatch is detected, mobile cookies cleared, user gets web session
 func TestOAuth_SessionFixationAttackPrevention(t *testing.T) {
 	// Setup test database
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
-
-	// Run migrations
-	require.NoError(t, goose.SetDialect("postgres"))
-	require.NoError(t, goose.Up(db, "../../internal/db/migrations"))
+	db := testkit.DB(t)
 
 	// Setup OAuth client and store
 	store := SetupOAuthTestStore(t, db)

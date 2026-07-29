@@ -5,6 +5,7 @@ package integration
 import (
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/communities"
+	"Coves/tests/testkit"
 	"context"
 	"database/sql"
 	"fmt"
@@ -18,8 +19,7 @@ import (
 // from Jetstream events and stored in the AppView database
 func TestSubscriptionIndexing_ContentVisibility(t *testing.T) {
 	ctx := context.Background()
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
+	db := testkit.DB(t)
 
 	repo := createTestCommunityRepo(t, db)
 	// Skip verification in tests
@@ -239,8 +239,7 @@ func TestSubscriptionIndexing_ContentVisibility(t *testing.T) {
 // TestSubscriptionIndexing_DeleteOperations tests unsubscribe (DELETE) event handling
 func TestSubscriptionIndexing_DeleteOperations(t *testing.T) {
 	ctx := context.Background()
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
+	db := testkit.DB(t)
 
 	repo := createTestCommunityRepo(t, db)
 	// Skip verification in tests
@@ -351,8 +350,7 @@ func TestSubscriptionIndexing_DeleteOperations(t *testing.T) {
 // TestSubscriptionIndexing_SubscriberCount tests that subscriber counts are updated atomically
 func TestSubscriptionIndexing_SubscriberCount(t *testing.T) {
 	ctx := context.Background()
-	db := setupTestDB(t)
-	defer cleanupTestDB(t, db)
+	db := testkit.DB(t)
 
 	repo := createTestCommunityRepo(t, db)
 	// Skip verification in tests
@@ -485,12 +483,4 @@ func createTestCommunityRepo(t *testing.T, db interface{}) communities.Repositor
 	t.Helper()
 	// Import the postgres package to create a repo
 	return postgresRepo.NewCommunityRepository(db.(*sql.DB))
-}
-
-func cleanupTestDB(t *testing.T, db interface{}) {
-	t.Helper()
-	sqlDB := db.(*sql.DB)
-	if err := sqlDB.Close(); err != nil {
-		t.Logf("Failed to close database: %v", err)
-	}
 }

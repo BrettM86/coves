@@ -28,7 +28,6 @@ import (
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
-	_ "github.com/lib/pq"
 )
 
 // TestCommunity_E2E is a TRUE end-to-end test covering the complete flow:

@@ -5,6 +5,7 @@ package live
 import (
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/blueskypost"
+	"Coves/tests/testkit"
 	"context"
 	"database/sql"
 	"testing"
@@ -32,8 +33,7 @@ func productionPLCIdentityResolver(db *sql.DB) identity.Resolver {
 
 // TestBlueskyPostCrossPosting_URLParsing tests URL detection and parsing
 func TestBlueskyPostCrossPosting_URLParsing(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	// Use production PLC resolver for real Bluesky handles (READ-ONLY)
 	identityResolver := productionPLCIdentityResolver(db)
@@ -107,11 +107,7 @@ func TestBlueskyPostCrossPosting_URLParsing(t *testing.T) {
 
 // TestBlueskyPostCrossPosting_LiveAPI tests fetching real posts from Bluesky
 func TestBlueskyPostCrossPosting_LiveAPI(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-
-	// Cleanup cache from previous runs
-	_, _ = db.Exec("DELETE FROM bluesky_post_cache")
+	db := testkit.DB(t)
 
 	// Use production PLC resolver for real Bluesky handles (READ-ONLY)
 	identityResolver := productionPLCIdentityResolver(db)
@@ -386,8 +382,7 @@ func TestBlueskyPostCrossPosting_CircuitBreaker(t *testing.T) {
 	// We don't actually want to trip the circuit breaker against production,
 	// so this is more of a unit-level integration test.
 
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	// Use production PLC resolver for real Bluesky handles (READ-ONLY)
 	identityResolver := productionPLCIdentityResolver(db)
@@ -423,13 +418,9 @@ func TestBlueskyPostCrossPosting_CircuitBreaker(t *testing.T) {
 
 // TestBlueskyPostCrossPosting_E2E_PostCreation tests the full flow of creating a post with a Bluesky embed
 func TestBlueskyPostCrossPosting_E2E_PostCreation(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
-
-	// Cleanup cache
-	_, _ = db.Exec("DELETE FROM bluesky_post_cache WHERE at_uri LIKE 'at://did:plc:%'")
 
 	// Use production PLC resolver for real Bluesky handles (READ-ONLY)
 	identityResolver := productionPLCIdentityResolver(db)
@@ -490,11 +481,7 @@ func TestBlueskyPostCrossPosting_E2E_PostCreation(t *testing.T) {
 // TestBlueskyPostCrossPosting_EmbedConversion tests that Bluesky URLs in external embeds
 // are converted to social.coves.embed.post with proper strongRef (uri + cid)
 func TestBlueskyPostCrossPosting_EmbedConversion(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-
-	// Cleanup cache from previous runs
-	_, _ = db.Exec("DELETE FROM bluesky_post_cache")
+	db := testkit.DB(t)
 
 	// Use production PLC resolver for real Bluesky handles (READ-ONLY)
 	identityResolver := productionPLCIdentityResolver(db)

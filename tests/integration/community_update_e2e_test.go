@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	_ "github.com/lib/pq"
 )
 
 // TestCommunityUpdateE2E_WithJetstream tests the FULL community update flow with REAL Jetstream

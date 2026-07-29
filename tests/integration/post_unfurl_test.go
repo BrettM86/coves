@@ -11,6 +11,7 @@ import (
 	"Coves/internal/core/unfurl"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -26,12 +27,7 @@ import (
 
 // TestPostUnfurl_UnsupportedURL tests that posts with unsupported URLs still succeed
 func TestPostUnfurl_UnsupportedURL(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 
@@ -64,11 +60,6 @@ func TestPostUnfurl_UnsupportedURL(t *testing.T) {
 		nil, // blueskyService
 		"http://localhost:3001",
 	)
-
-	// Cleanup
-	_, _ = db.Exec("DELETE FROM posts WHERE community_did LIKE 'did:plc:unsupported%'")
-	_, _ = db.Exec("DELETE FROM communities WHERE did LIKE 'did:plc:unsupported%'")
-	_, _ = db.Exec("DELETE FROM users WHERE did LIKE 'did:plc:unsupported%'")
 
 	// Create test user
 	testUserDID := generateTestDID("unsupporteduser")
@@ -126,12 +117,7 @@ func TestPostUnfurl_UnsupportedURL(t *testing.T) {
 
 // TestPostUnfurl_MissingEmbedType tests posts without external embed type don't trigger unfurling
 func TestPostUnfurl_MissingEmbedType(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 
@@ -168,11 +154,6 @@ func TestPostUnfurl_MissingEmbedType(t *testing.T) {
 		nil, // blueskyService
 		"http://localhost:3001",
 	)
-
-	// Cleanup
-	_, _ = db.Exec("DELETE FROM posts WHERE community_did LIKE 'did:plc:noembed%'")
-	_, _ = db.Exec("DELETE FROM communities WHERE did LIKE 'did:plc:noembed%'")
-	_, _ = db.Exec("DELETE FROM users WHERE did LIKE 'did:plc:noembed%'")
 
 	// Create test user and community
 	testUserDID := generateTestDID("noembeduser")
@@ -261,12 +242,7 @@ func TestPostUnfurl_MissingEmbedType(t *testing.T) {
 // The kagi-news trusted aggregator already supplies authoritative metadata from
 // the Kagi JSON feed, so the unfurl path for Kite URLs is intentionally disabled.
 func TestPostUnfurl_KagiKiteExcluded(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 
@@ -302,12 +278,7 @@ func TestPostUnfurl_KagiKiteExcluded(t *testing.T) {
 // TestPostUnfurl_E2E_WithJetstream tests the full unfurl flow with Jetstream consumer
 // This simulates: Create post → unfurl → write to PDS → Jetstream event → index in AppView
 func TestPostUnfurl_E2E_WithJetstream(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 
@@ -342,12 +313,6 @@ func TestPostUnfurl_E2E_WithJetstream(t *testing.T) {
 	}))
 	defer unfurlTarget.Close()
 	targetURL := unfurlTarget.URL + "/e2etest"
-
-	// Cleanup
-	_, _ = db.Exec("DELETE FROM posts WHERE community_did LIKE 'did:plc:e2eunfurl%'")
-	_, _ = db.Exec("DELETE FROM communities WHERE did LIKE 'did:plc:e2eunfurl%'")
-	_, _ = db.Exec("DELETE FROM users WHERE did LIKE 'did:plc:e2eunfurl%'")
-	_, _ = db.Exec("DELETE FROM unfurl_cache WHERE url = $1", targetURL)
 
 	// Create test data
 	testUserDID := generateTestDID("e2eunfurluser")

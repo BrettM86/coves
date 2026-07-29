@@ -6,6 +6,7 @@ import (
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
 	"testing"
 )
@@ -18,12 +19,7 @@ import (
 // READ-ONLY: ResolveHandleToDID performs HTTP GET lookups only. It never
 // registers or mutates anything on the production directory.
 func TestResolveHandleToDID_RealHandle(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	userRepo := postgres.NewUserRepository(db)

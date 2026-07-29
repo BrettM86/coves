@@ -22,76 +22,8 @@
 package live
 
 import (
-	"database/sql"
 	"fmt"
-	"os"
-	"testing"
-
-	_ "github.com/lib/pq"
-	"github.com/pressly/goose/v3"
 )
-
-// setupTestDB connects to the test database, runs migrations, and clears the
-// tables these tests write to. Copied from tests/integration so the live tier
-// stands alone; the two converge again when the suite moves to testkit.DB(t).
-func setupTestDB(t *testing.T) *sql.DB {
-	testUser := os.Getenv("POSTGRES_TEST_USER")
-	testPassword := os.Getenv("POSTGRES_TEST_PASSWORD")
-	testPort := os.Getenv("POSTGRES_TEST_PORT")
-	testDB := os.Getenv("POSTGRES_TEST_DB")
-
-	if testUser == "" {
-		testUser = "test_user"
-	}
-	if testPassword == "" {
-		testPassword = "test_password"
-	}
-	if testPort == "" {
-		testPort = "5434"
-	}
-	if testDB == "" {
-		testDB = "coves_test"
-	}
-
-	dbURL := fmt.Sprintf("postgres://%s:%s@localhost:%s/%s?sslmode=disable",
-		testUser, testPassword, testPort, testDB)
-
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
-	}
-
-	db.SetMaxOpenConns(5)
-	db.SetMaxIdleConns(2)
-
-	if pingErr := db.Ping(); pingErr != nil {
-		t.Fatalf("Failed to ping test database: %v", pingErr)
-	}
-
-	if dialectErr := goose.SetDialect("postgres"); dialectErr != nil {
-		t.Fatalf("Failed to set goose dialect: %v", dialectErr)
-	}
-
-	if migrateErr := goose.Up(db, "../../internal/db/migrations"); migrateErr != nil {
-		t.Fatalf("Failed to run migrations: %v", migrateErr)
-	}
-
-	// Order matters: foreign keys point from subscriptions → communities/users,
-	// comments → posts, posts → communities.
-	for _, stmt := range []string{
-		"DELETE FROM community_subscriptions",
-		"DELETE FROM comments",
-		"DELETE FROM posts",
-		"DELETE FROM communities",
-		"DELETE FROM users WHERE handle LIKE '%.test'",
-	} {
-		if _, err := db.Exec(stmt); err != nil {
-			t.Logf("Warning: cleanup %q failed: %v", stmt, err)
-		}
-	}
-
-	return db
-}
 
 // generateTestDID builds a valid did:plc-shaped string for fixtures that never
 // need PLC registration.

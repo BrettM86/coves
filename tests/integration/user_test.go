@@ -8,13 +8,11 @@ import (
 	"Coves/internal/atproto/pds"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,8 +22,6 @@ import (
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/go-chi/chi/v5"
-	_ "github.com/lib/pq"
-	"github.com/pressly/goose/v3"
 )
 
 // testUserRouteOptions returns route options with a dummy PDS client factory.
@@ -38,90 +34,12 @@ func testUserRouteOptions() *routes.UserRouteOptions {
 	}
 }
 
-// TestMain controls test setup for the integration package.
-// Set LOG_ENABLED=false to suppress application log output during tests.
+// TestMain controls test setup for the integration package. The whole package
+// is integration-tagged, so its floor is the infrastructure every file here
+// assumes: Postgres for testkit.DB clones, the PDS for record writes, and
+// Jetstream for the consumer tests that read them back.
 func TestMain(m *testing.M) {
-	// Silence logs when LOG_ENABLED=false (what .env.ci sets for the gate)
-	if os.Getenv("LOG_ENABLED") == "false" {
-		log.SetOutput(io.Discard)
-	}
-
-	os.Exit(m.Run())
-}
-
-func setupTestDB(t *testing.T) *sql.DB {
-	// Build connection string from environment variables (set by .env.dev)
-	testUser := os.Getenv("POSTGRES_TEST_USER")
-	testPassword := os.Getenv("POSTGRES_TEST_PASSWORD")
-	testPort := os.Getenv("POSTGRES_TEST_PORT")
-	testDB := os.Getenv("POSTGRES_TEST_DB")
-
-	// Fallback to defaults if not set
-	if testUser == "" {
-		testUser = "test_user"
-	}
-	if testPassword == "" {
-		testPassword = "test_password"
-	}
-	if testPort == "" {
-		testPort = "5434"
-	}
-	if testDB == "" {
-		testDB = "coves_test"
-	}
-
-	dbURL := fmt.Sprintf("postgres://%s:%s@localhost:%s/%s?sslmode=disable",
-		testUser, testPassword, testPort, testDB)
-
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
-	}
-
-	// Limit connection pool to prevent "too many clients" error in parallel tests
-	db.SetMaxOpenConns(5)
-	db.SetMaxIdleConns(2)
-
-	if pingErr := db.Ping(); pingErr != nil {
-		t.Fatalf("Failed to ping test database: %v", pingErr)
-	}
-
-	if dialectErr := goose.SetDialect("postgres"); dialectErr != nil {
-		t.Fatalf("Failed to set goose dialect: %v", dialectErr)
-	}
-
-	if migrateErr := goose.Up(db, "../../internal/db/migrations"); migrateErr != nil {
-		t.Fatalf("Failed to run migrations: %v", migrateErr)
-	}
-
-	// Clean up any existing test data (order matters due to FK constraints)
-	// Delete subscriptions first (references communities and users)
-	_, err = db.Exec("DELETE FROM community_subscriptions")
-	if err != nil {
-		t.Logf("Warning: Failed to clean up subscriptions: %v", err)
-	}
-	// Delete comments (references posts)
-	_, err = db.Exec("DELETE FROM comments")
-	if err != nil {
-		t.Logf("Warning: Failed to clean up comments: %v", err)
-	}
-	// Delete posts (references communities)
-	_, err = db.Exec("DELETE FROM posts")
-	if err != nil {
-		t.Logf("Warning: Failed to clean up posts: %v", err)
-	}
-	// Delete communities
-	_, err = db.Exec("DELETE FROM communities")
-	if err != nil {
-		t.Logf("Warning: Failed to clean up communities: %v", err)
-	}
-	// Delete users
-	_, err = db.Exec("DELETE FROM users WHERE handle LIKE '%.test'")
-	if err != nil {
-		t.Logf("Warning: Failed to clean up test users: %v", err)
-	}
-
-	return db
+	os.Exit(testkit.Main(m, testkit.RequirePostgres, testkit.RequirePDS, testkit.RequireJetstream))
 }
 
 // generateTestDID generates a unique test DID for integration tests
@@ -133,12 +51,7 @@ func generateTestDID(suffix string) string {
 }
 
 func TestUserCreationAndRetrieval(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	// Wire up dependencies
 	userRepo := postgres.NewUserRepository(db)
@@ -203,12 +116,7 @@ func TestUserCreationAndRetrieval(t *testing.T) {
 }
 
 func TestGetProfileEndpoint(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	// Wire up dependencies
 	userRepo := postgres.NewUserRepository(db)
@@ -307,12 +215,7 @@ func TestGetProfileEndpoint(t *testing.T) {
 
 // TestDuplicateCreation tests that duplicate DID/handle creation fails properly
 func TestDuplicateCreation(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
@@ -367,12 +270,7 @@ func TestDuplicateCreation(t *testing.T) {
 
 // TestUserRepository_GetByDIDs tests the batch user retrieval functionality
 func TestUserRepository_GetByDIDs(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	userRepo := postgres.NewUserRepository(db)
 	ctx := context.Background()
@@ -531,12 +429,7 @@ func TestUserRepository_GetByDIDs(t *testing.T) {
 
 // TestProfileStats tests that profile stats are returned correctly
 func TestProfileStats(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	// Use unique test DID to avoid conflicts with other test runs
 	uniqueSuffix := time.Now().UnixNano()
@@ -679,12 +572,7 @@ func TestProfileStats(t *testing.T) {
 
 // TestProfileStats_CommentCount tests that comment counting works correctly
 func TestProfileStats_CommentCount(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	uniqueSuffix := time.Now().UnixNano()
 	testDID := fmt.Sprintf("did:plc:commentcount%d", uniqueSuffix)
@@ -774,12 +662,7 @@ func TestProfileStats_CommentCount(t *testing.T) {
 
 // TestProfileStats_CommunityCount tests that subscription counting works correctly
 func TestProfileStats_CommunityCount(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	uniqueSuffix := time.Now().UnixNano()
 	testDID := fmt.Sprintf("did:plc:subcount%d", uniqueSuffix)
@@ -838,12 +721,7 @@ func TestProfileStats_CommunityCount(t *testing.T) {
 
 // TestGetProfile_NonExistentDID tests that GetProfile returns appropriate error for non-existent DID
 func TestGetProfile_NonExistentDID(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
@@ -889,12 +767,7 @@ func TestGetProfile_NonExistentDID(t *testing.T) {
 
 // TestProfileStatsEndpoint tests the HTTP endpoint returns stats correctly
 func TestProfileStatsEndpoint(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	// Wire up dependencies
 	userRepo := postgres.NewUserRepository(db)
@@ -986,12 +859,7 @@ func TestProfileStatsEndpoint(t *testing.T) {
 
 // TestHandleValidation tests atProto handle validation rules
 func TestHandleValidation(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
@@ -1111,12 +979,7 @@ func TestHandleValidation(t *testing.T) {
 // TestAccountDeletion_Integration tests the complete account deletion flow
 // from handler → service → repository with a real database
 func TestAccountDeletion_Integration(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	uniqueSuffix := time.Now().UnixNano()
 	testDID := fmt.Sprintf("did:plc:deletetest%d", uniqueSuffix)

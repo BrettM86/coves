@@ -10,6 +10,7 @@ import (
 	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"bytes"
 	"context"
 	"database/sql"
@@ -28,8 +29,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
-	_ "github.com/lib/pq"
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -53,23 +52,7 @@ import (
 // - Timeline aggregation and feed generation
 func TestFullUserJourney_E2E(t *testing.T) {
 
-	// Setup test database
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
-	}
-
-	db, err := sql.Open("postgres", dbURL)
-	require.NoError(t, err, "Failed to connect to test database")
-	defer func() {
-		if closeErr := db.Close(); closeErr != nil {
-			t.Logf("Failed to close database: %v", closeErr)
-		}
-	}()
-
-	// Run migrations
-	require.NoError(t, goose.SetDialect("postgres"))
-	require.NoError(t, goose.Up(db, "../../internal/db/migrations"))
+	db := testkit.DB(t)
 
 	// Check if PDS is running
 	pdsURL := os.Getenv("PDS_URL")
@@ -152,31 +135,11 @@ func TestFullUserJourney_E2E(t *testing.T) {
 	httpServer := httptest.NewServer(r)
 	defer httpServer.Close()
 
-	// Cleanup test data from previous runs (clean up ALL journey test data).
-	// A single collision-free testID is shared by every handle/community name and the
-	// deferred cleanup patterns below (uniqueTestID stays short for PDS handle limits).
+	// A single collision-free testID is shared by every handle and community
+	// name. The database is a private clone, but the PDS is not: accounts
+	// persist across runs, so handles still have to be unique (uniqueTestID
+	// stays short for the PDS handle-length limit).
 	testID := uniqueTestID()
-	// Clean up previous test runs - use pattern that matches journey test data
-	// Handles are now shorter: alice{4-digit}.local.coves.dev, bob{4-digit}.local.coves.dev
-	_, _ = db.Exec("DELETE FROM votes WHERE voter_did LIKE '%alice%.local.coves.dev%' OR voter_did LIKE '%bob%.local.coves.dev%'")
-	_, _ = db.Exec("DELETE FROM comments WHERE commenter_did LIKE '%alice%.local.coves.dev%' OR commenter_did LIKE '%bob%.local.coves.dev%'")
-	_, _ = db.Exec("DELETE FROM posts WHERE community_did LIKE '%gj%'")
-	_, _ = db.Exec("DELETE FROM community_subscriptions WHERE user_did LIKE '%alice%.local.coves.dev%' OR user_did LIKE '%bob%.local.coves.dev%'")
-	_, _ = db.Exec("DELETE FROM communities WHERE handle LIKE 'gj%'")
-	_, _ = db.Exec("DELETE FROM users WHERE handle LIKE 'alice%.local.coves.dev' OR handle LIKE 'bob%.local.coves.dev'")
-
-	// Defer cleanup for current test run using specific timestamp pattern
-	defer func() {
-		alicePattern := fmt.Sprintf("%%alice%s%%", testID)
-		bobPattern := fmt.Sprintf("%%bob%s%%", testID)
-		gjPattern := fmt.Sprintf("%%gj%s%%", testID)
-		_, _ = db.Exec("DELETE FROM votes WHERE voter_did LIKE $1 OR voter_did LIKE $2", alicePattern, bobPattern)
-		_, _ = db.Exec("DELETE FROM comments WHERE commenter_did LIKE $1 OR commenter_did LIKE $2", alicePattern, bobPattern)
-		_, _ = db.Exec("DELETE FROM posts WHERE community_did LIKE $1", gjPattern)
-		_, _ = db.Exec("DELETE FROM community_subscriptions WHERE user_did LIKE $1 OR user_did LIKE $2", alicePattern, bobPattern)
-		_, _ = db.Exec("DELETE FROM communities WHERE handle LIKE $1", gjPattern)
-		_, _ = db.Exec("DELETE FROM users WHERE handle LIKE $1 OR handle LIKE $2", alicePattern, bobPattern)
-	}()
 
 	// Test variables to track state across steps
 	var (

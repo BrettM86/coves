@@ -7,6 +7,7 @@ import (
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/votes"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -72,8 +73,7 @@ func (m *mockVoteService) GetViewerVotesForSubjects(userDID string, subjectURIs 
 
 // TestGetDiscover_ShowsAllCommunities tests discover feed shows posts from ALL communities
 func TestGetDiscover_ShowsAllCommunities(t *testing.T) {
-	db := setupTestDB(t)
-	t.Cleanup(func() { _ = db.Close() })
+	db := testkit.DB(t)
 
 	// Setup services
 	discoverRepo := postgres.NewDiscoverRepository(db, "test-cursor-secret")
@@ -139,8 +139,7 @@ func TestGetDiscover_ShowsAllCommunities(t *testing.T) {
 
 // TestGetDiscover_NoAuthRequired tests discover feed works without authentication
 func TestGetDiscover_NoAuthRequired(t *testing.T) {
-	db := setupTestDB(t)
-	t.Cleanup(func() { _ = db.Close() })
+	db := testkit.DB(t)
 
 	// Setup services
 	discoverRepo := postgres.NewDiscoverRepository(db, "test-cursor-secret")
@@ -182,8 +181,7 @@ func TestGetDiscover_NoAuthRequired(t *testing.T) {
 
 // TestGetDiscover_HotSort tests hot sorting across all communities
 func TestGetDiscover_HotSort(t *testing.T) {
-	db := setupTestDB(t)
-	t.Cleanup(func() { _ = db.Close() })
+	db := testkit.DB(t)
 
 	// Setup services
 	discoverRepo := postgres.NewDiscoverRepository(db, "test-cursor-secret")
@@ -235,8 +233,7 @@ func TestGetDiscover_HotSort(t *testing.T) {
 // a day-old genuinely popular post should outrank a six-hour-old post nobody
 // voted on.
 func TestGetDiscover_HotSort_LogDampedRanking(t *testing.T) {
-	db := setupTestDB(t)
-	t.Cleanup(func() { _ = db.Close() })
+	db := testkit.DB(t)
 
 	// Setup services
 	discoverRepo := postgres.NewDiscoverRepository(db, "test-cursor-secret")
@@ -291,8 +288,7 @@ func TestGetDiscover_HotSort_LogDampedRanking(t *testing.T) {
 // exactly once, in rank order, with no skips or duplicates. A divergence
 // between the live and cursor formulas fails this test.
 func TestGetDiscover_HotSort_PaginationCoversNegativeScores(t *testing.T) {
-	db := setupTestDB(t)
-	t.Cleanup(func() { _ = db.Close() })
+	db := testkit.DB(t)
 
 	discoverRepo := postgres.NewDiscoverRepository(db, "test-cursor-secret")
 	discoverService := discoverCore.NewDiscoverService(discoverRepo)
@@ -311,8 +307,8 @@ func TestGetDiscover_HotSort_PaginationCoversNegativeScores(t *testing.T) {
 
 	expectedOrder := []string{freshURI, blowoutURI, sixHourURI, downvotedURI}
 
-	// Paginate to exhaustion, one post per page (setupTestDB wiped the posts
-	// table, so the feed contains exactly these four posts)
+	// Paginate to exhaustion, one post per page (the database is a private
+	// clone, so the feed contains exactly these four posts)
 	var seen []string
 	cursor := ""
 	for page := 0; page < 10; page++ {
@@ -348,8 +344,7 @@ func TestGetDiscover_HotSort_PaginationCoversNegativeScores(t *testing.T) {
 // future-dated post ranks like a brand-new 0-vote post — it must not error
 // the query (negative POWER base) and must not outrank a post with real votes.
 func TestGetDiscover_HotSort_FutureDatedPost(t *testing.T) {
-	db := setupTestDB(t)
-	t.Cleanup(func() { _ = db.Close() })
+	db := testkit.DB(t)
 
 	discoverRepo := postgres.NewDiscoverRepository(db, "test-cursor-secret")
 	discoverService := discoverCore.NewDiscoverService(discoverRepo)
@@ -390,8 +385,7 @@ func TestGetDiscover_HotSort_FutureDatedPost(t *testing.T) {
 
 // TestGetDiscover_Pagination tests cursor-based pagination
 func TestGetDiscover_Pagination(t *testing.T) {
-	db := setupTestDB(t)
-	t.Cleanup(func() { _ = db.Close() })
+	db := testkit.DB(t)
 
 	// Setup services
 	discoverRepo := postgres.NewDiscoverRepository(db, "test-cursor-secret")
@@ -443,8 +437,7 @@ func TestGetDiscover_Pagination(t *testing.T) {
 
 // TestGetDiscover_LimitValidation tests limit parameter validation
 func TestGetDiscover_LimitValidation(t *testing.T) {
-	db := setupTestDB(t)
-	t.Cleanup(func() { _ = db.Close() })
+	db := testkit.DB(t)
 
 	// Setup services
 	discoverRepo := postgres.NewDiscoverRepository(db, "test-cursor-secret")
@@ -469,8 +462,7 @@ func TestGetDiscover_LimitValidation(t *testing.T) {
 
 // TestGetDiscover_ViewerVoteState tests that authenticated users see their vote state on posts
 func TestGetDiscover_ViewerVoteState(t *testing.T) {
-	db := setupTestDB(t)
-	t.Cleanup(func() { _ = db.Close() })
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	testID := time.Now().UnixNano()
@@ -553,8 +545,7 @@ func TestGetDiscover_ViewerVoteState(t *testing.T) {
 
 // TestGetDiscover_NoViewerStateWithoutAuth tests that unauthenticated users don't get viewer state
 func TestGetDiscover_NoViewerStateWithoutAuth(t *testing.T) {
-	db := setupTestDB(t)
-	t.Cleanup(func() { _ = db.Close() })
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	testID := time.Now().UnixNano()

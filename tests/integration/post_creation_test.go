@@ -9,6 +9,7 @@ import (
 	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
 	"fmt"
 	"strings"
@@ -19,12 +20,7 @@ import (
 )
 
 func TestPostCreation_Basic(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	// Setup: Initialize services
 	userRepo := postgres.NewUserRepository(db)
@@ -47,11 +43,6 @@ func TestPostCreation_Basic(t *testing.T) {
 	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, "http://localhost:3001") // nil aggregatorService, blobService, unfurlService, blueskyService for user-only tests
 
 	ctx := context.Background()
-
-	// Cleanup: Remove any existing test data
-	_, _ = db.Exec("DELETE FROM posts WHERE community_did LIKE 'did:plc:test%'")
-	_, _ = db.Exec("DELETE FROM communities WHERE did LIKE 'did:plc:test%'")
-	_, _ = db.Exec("DELETE FROM users WHERE did LIKE 'did:plc:test%'")
 
 	// Setup: Create test user
 	testUserDID := generateTestDID("postauthor")
@@ -289,17 +280,7 @@ func TestPostCreation_Basic(t *testing.T) {
 
 // TestPostRepository_Create tests the repository layer
 func TestPostRepository_Create(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
-
-	// Cleanup first
-	_, _ = db.Exec("DELETE FROM posts WHERE community_did LIKE 'did:plc:test%'")
-	_, _ = db.Exec("DELETE FROM communities WHERE did LIKE 'did:plc:test%'")
-	_, _ = db.Exec("DELETE FROM users WHERE did LIKE 'did:plc:test%'")
+	db := testkit.DB(t)
 
 	// Setup: Create test user and community
 	ctx := context.Background()

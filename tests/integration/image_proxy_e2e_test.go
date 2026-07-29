@@ -29,6 +29,7 @@ import (
 	"Coves/internal/core/communities"
 	imageproxycore "Coves/internal/core/imageproxy"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 )
 
 // TestImageProxy_E2E tests the complete image proxy flow including:
@@ -47,8 +48,7 @@ func TestImageProxy_E2E(t *testing.T) {
 	_ = healthResp.Body.Close()
 
 	// Setup test database
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 
@@ -378,8 +378,7 @@ func TestImageProxy_CacheHit(t *testing.T) {
 	_ = healthResp.Body.Close()
 
 	// Setup test database
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 

@@ -9,9 +9,9 @@ import (
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,8 +29,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
-	_ "github.com/lib/pq"
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -60,19 +58,7 @@ func createTestAvatarPNG(width, height int, c color.Color) []byte {
 // 3. Jetstream consumer receives and processes the event
 // 4. GetProfile returns the correct avatar URL
 func TestUserProfileAvatarE2E_UpdateWithAvatar(t *testing.T) {
-	// Setup test database
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
-	}
-
-	db, err := sql.Open("postgres", dbURL)
-	require.NoError(t, err, "Failed to connect to test database")
-	defer func() { _ = db.Close() }()
-
-	// Run migrations
-	require.NoError(t, goose.SetDialect("postgres"))
-	require.NoError(t, goose.Up(db, "../../internal/db/migrations"))
+	db := testkit.DB(t)
 
 	// Check if PDS is running
 	pdsURL := os.Getenv("PDS_URL")
@@ -128,7 +114,6 @@ func TestUserProfileAvatarE2E_UpdateWithAvatar(t *testing.T) {
 
 	// Cleanup old test data
 	testID := uniqueTestID()
-	_, _ = db.Exec("DELETE FROM users WHERE handle LIKE 'avatartest%.local.coves.dev'")
 
 	t.Run("update profile with avatar via real PDS and Jetstream", func(t *testing.T) {
 		// Create test user account on PDS
@@ -354,19 +339,7 @@ func TestUserProfileAvatarE2E_UpdateWithAvatar(t *testing.T) {
 
 // TestUserProfileAvatarE2E_UpdateWithBanner tests the full flow of updating a user profile with a banner
 func TestUserProfileAvatarE2E_UpdateWithBanner(t *testing.T) {
-	// Setup test database
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
-	}
-
-	db, err := sql.Open("postgres", dbURL)
-	require.NoError(t, err, "Failed to connect to test database")
-	defer func() { _ = db.Close() }()
-
-	// Run migrations
-	require.NoError(t, goose.SetDialect("postgres"))
-	require.NoError(t, goose.Up(db, "../../internal/db/migrations"))
+	db := testkit.DB(t)
 
 	// Check if PDS is running
 	pdsURL := os.Getenv("PDS_URL")
@@ -417,7 +390,6 @@ func TestUserProfileAvatarE2E_UpdateWithBanner(t *testing.T) {
 	defer httpServer.Close()
 
 	testID := uniqueTestID()
-	_, _ = db.Exec("DELETE FROM users WHERE handle LIKE 'bannertest%.local.coves.dev'")
 
 	t.Run("update profile with banner via real PDS and Jetstream", func(t *testing.T) {
 		// Create test user account on PDS
@@ -594,19 +566,7 @@ func TestUserProfileAvatarE2E_UpdateWithBanner(t *testing.T) {
 
 // TestUserProfileAvatarE2E_UpdateDisplayNameAndBio tests updating non-blob profile fields
 func TestUserProfileAvatarE2E_UpdateDisplayNameAndBio(t *testing.T) {
-	// Setup test database
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
-	}
-
-	db, err := sql.Open("postgres", dbURL)
-	require.NoError(t, err, "Failed to connect to test database")
-	defer func() { _ = db.Close() }()
-
-	// Run migrations
-	require.NoError(t, goose.SetDialect("postgres"))
-	require.NoError(t, goose.Up(db, "../../internal/db/migrations"))
+	db := testkit.DB(t)
 
 	// Check if PDS is running
 	pdsURL := os.Getenv("PDS_URL")
@@ -794,19 +754,7 @@ func TestUserProfileAvatarE2E_UpdateDisplayNameAndBio(t *testing.T) {
 
 // TestUserProfileAvatarE2E_ReplaceAvatar tests replacing an existing avatar with a new one
 func TestUserProfileAvatarE2E_ReplaceAvatar(t *testing.T) {
-	// Setup test database
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
-	}
-
-	db, err := sql.Open("postgres", dbURL)
-	require.NoError(t, err, "Failed to connect to test database")
-	defer func() { _ = db.Close() }()
-
-	// Run migrations
-	require.NoError(t, goose.SetDialect("postgres"))
-	require.NoError(t, goose.Up(db, "../../internal/db/migrations"))
+	db := testkit.DB(t)
 
 	// Check if PDS is running
 	pdsURL := os.Getenv("PDS_URL")

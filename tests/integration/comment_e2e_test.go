@@ -22,7 +22,6 @@ import (
 	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/gorilla/websocket"
-	_ "github.com/lib/pq"
 )
 
 // TestCommentE2E_CreateWithJetstream tests the full comment creation flow with real Jetstream

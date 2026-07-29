@@ -4,8 +4,8 @@ package integration
 
 import (
 	"Coves/internal/core/userblocks"
+	"Coves/tests/testkit"
 	"context"
-	"database/sql"
 	"fmt"
 	"testing"
 	"time"
@@ -16,8 +16,7 @@ import (
 // TestUserBlockRepo_BlockUser tests creating user blocks
 func TestUserBlockRepo_BlockUser(t *testing.T) {
 	ctx := context.Background()
-	db := setupTestDB(t)
-	defer cleanupUserBlockTestDB(t, db)
+	db := testkit.DB(t)
 
 	repo := postgresRepo.NewUserBlockRepository(db)
 
@@ -120,8 +119,7 @@ func TestUserBlockRepo_BlockUser(t *testing.T) {
 // TestUserBlockRepo_UnblockUser tests removing user blocks
 func TestUserBlockRepo_UnblockUser(t *testing.T) {
 	ctx := context.Background()
-	db := setupTestDB(t)
-	defer cleanupUserBlockTestDB(t, db)
+	db := testkit.DB(t)
 
 	repo := postgresRepo.NewUserBlockRepository(db)
 
@@ -166,8 +164,7 @@ func TestUserBlockRepo_UnblockUser(t *testing.T) {
 // TestUserBlockRepo_GetBlock tests block retrieval by blocker + blocked DID
 func TestUserBlockRepo_GetBlock(t *testing.T) {
 	ctx := context.Background()
-	db := setupTestDB(t)
-	defer cleanupUserBlockTestDB(t, db)
+	db := testkit.DB(t)
 
 	repo := postgresRepo.NewUserBlockRepository(db)
 
@@ -215,8 +212,7 @@ func TestUserBlockRepo_GetBlock(t *testing.T) {
 // TestUserBlockRepo_GetBlockByURI tests block retrieval by record URI
 func TestUserBlockRepo_GetBlockByURI(t *testing.T) {
 	ctx := context.Background()
-	db := setupTestDB(t)
-	defer cleanupUserBlockTestDB(t, db)
+	db := testkit.DB(t)
 
 	repo := postgresRepo.NewUserBlockRepository(db)
 
@@ -261,8 +257,7 @@ func TestUserBlockRepo_GetBlockByURI(t *testing.T) {
 // TestUserBlockRepo_ListBlockedUsers tests listing blocked users with pagination
 func TestUserBlockRepo_ListBlockedUsers(t *testing.T) {
 	ctx := context.Background()
-	db := setupTestDB(t)
-	defer cleanupUserBlockTestDB(t, db)
+	db := testkit.DB(t)
 
 	repo := postgresRepo.NewUserBlockRepository(db)
 
@@ -357,8 +352,7 @@ func TestUserBlockRepo_ListBlockedUsers(t *testing.T) {
 // TestUserBlockRepo_IsBlocked tests the fast block check
 func TestUserBlockRepo_IsBlocked(t *testing.T) {
 	ctx := context.Background()
-	db := setupTestDB(t)
-	defer cleanupUserBlockTestDB(t, db)
+	db := testkit.DB(t)
 
 	repo := postgresRepo.NewUserBlockRepository(db)
 
@@ -433,8 +427,7 @@ func TestUserBlockRepo_IsBlocked(t *testing.T) {
 // TestUserBlockRepo_AreBlocked tests the batch block check
 func TestUserBlockRepo_AreBlocked(t *testing.T) {
 	ctx := context.Background()
-	db := setupTestDB(t)
-	defer cleanupUserBlockTestDB(t, db)
+	db := testkit.DB(t)
 
 	repo := postgresRepo.NewUserBlockRepository(db)
 
@@ -499,8 +492,7 @@ func TestUserBlockRepo_AreBlocked(t *testing.T) {
 // when processing DELETE operations (which only carry the record URI, not DID pairs).
 func TestUserBlockRepo_UnblockByRecordURI(t *testing.T) {
 	ctx := context.Background()
-	db := setupTestDB(t)
-	defer cleanupUserBlockTestDB(t, db)
+	db := testkit.DB(t)
 
 	repo := postgresRepo.NewUserBlockRepository(db)
 
@@ -540,19 +532,5 @@ func TestUserBlockRepo_UnblockByRecordURI(t *testing.T) {
 	_, err = repo.GetBlock(ctx, blockerDID, blockedDID)
 	if !userblocks.IsNotFound(err) {
 		t.Errorf("Expected ErrBlockNotFound after unblock-by-URI flow, got: %v", err)
-	}
-}
-
-// cleanupUserBlockTestDB removes test data from the user_blocks table
-func cleanupUserBlockTestDB(t *testing.T, db *sql.DB) {
-	t.Helper()
-
-	_, err := db.Exec("DELETE FROM user_blocks WHERE blocker_did LIKE 'did:plc:test-%'")
-	if err != nil {
-		t.Logf("Warning: Failed to clean up user blocks: %v", err)
-	}
-
-	if closeErr := db.Close(); closeErr != nil {
-		t.Logf("Failed to close database: %v", closeErr)
 	}
 }

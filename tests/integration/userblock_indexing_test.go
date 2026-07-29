@@ -5,6 +5,7 @@ package integration
 import (
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/userblocks"
+	"Coves/tests/testkit"
 	"context"
 	"fmt"
 	"testing"
@@ -17,8 +18,7 @@ import (
 // social.coves.actor.block is properly indexed in the AppView.
 func TestUserBlockIndexing_CreateEvent(t *testing.T) {
 	ctx := context.Background()
-	db := setupTestDB(t)
-	defer cleanupUserBlockTestDB(t, db)
+	db := testkit.DB(t)
 
 	repo := postgresRepo.NewUserBlockRepository(db)
 	consumer := createUserBlockConsumer(t, repo)
@@ -87,8 +87,7 @@ func TestUserBlockIndexing_CreateEvent(t *testing.T) {
 // properly removes a previously indexed block from the AppView.
 func TestUserBlockIndexing_DeleteEvent(t *testing.T) {
 	ctx := context.Background()
-	db := setupTestDB(t)
-	defer cleanupUserBlockTestDB(t, db)
+	db := testkit.DB(t)
 
 	repo := postgresRepo.NewUserBlockRepository(db)
 	consumer := createUserBlockConsumer(t, repo)
@@ -159,8 +158,7 @@ func TestUserBlockIndexing_DeleteEvent(t *testing.T) {
 // twice results in only 1 block (idempotent via ON CONFLICT DO UPDATE).
 func TestUserBlockIndexing_Idempotent(t *testing.T) {
 	ctx := context.Background()
-	db := setupTestDB(t)
-	defer cleanupUserBlockTestDB(t, db)
+	db := testkit.DB(t)
 
 	repo := postgresRepo.NewUserBlockRepository(db)
 	consumer := createUserBlockConsumer(t, repo)
@@ -212,8 +210,7 @@ func TestUserBlockIndexing_Idempotent(t *testing.T) {
 // non-existent block does not error (graceful/idempotent).
 func TestUserBlockIndexing_DeleteNonExistent(t *testing.T) {
 	ctx := context.Background()
-	db := setupTestDB(t)
-	defer cleanupUserBlockTestDB(t, db)
+	db := testkit.DB(t)
 
 	repo := postgresRepo.NewUserBlockRepository(db)
 	consumer := createUserBlockConsumer(t, repo)
@@ -250,5 +247,3 @@ func createUserBlockConsumer(t *testing.T, repo userblocks.Repository) *jetstrea
 	t.Helper()
 	return jetstream.NewUserEventConsumer(nil, nil, jetstream.WithUserBlockRepo(repo))
 }
-
-// cleanupUserBlockTestDB is defined in userblock_repo_test.go

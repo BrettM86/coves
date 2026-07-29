@@ -8,6 +8,7 @@ import (
 	"Coves/internal/core/communityFeeds"
 	"Coves/internal/core/posts"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -40,8 +41,7 @@ func getPostTitle(t *testing.T, pv *posts.PostView) string {
 
 // TestGetCommunityFeed_Hot tests hot feed sorting algorithm
 func TestGetCommunityFeed_Hot(t *testing.T) {
-	db := setupTestDB(t)
-	t.Cleanup(func() { _ = db.Close() })
+	db := testkit.DB(t)
 
 	// Setup services
 	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
@@ -115,8 +115,7 @@ func TestGetCommunityFeed_Hot(t *testing.T) {
 
 // TestGetCommunityFeed_Top_WithTimeframe tests top sorting with time filters
 func TestGetCommunityFeed_Top_WithTimeframe(t *testing.T) {
-	db := setupTestDB(t)
-	t.Cleanup(func() { _ = db.Close() })
+	db := testkit.DB(t)
 
 	// Setup services
 	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
@@ -189,8 +188,7 @@ func TestGetCommunityFeed_Top_WithTimeframe(t *testing.T) {
 
 // TestGetCommunityFeed_New tests chronological sorting
 func TestGetCommunityFeed_New(t *testing.T) {
-	db := setupTestDB(t)
-	t.Cleanup(func() { _ = db.Close() })
+	db := testkit.DB(t)
 
 	// Setup services
 	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
@@ -243,8 +241,7 @@ func TestGetCommunityFeed_New(t *testing.T) {
 
 // TestGetCommunityFeed_Pagination tests cursor-based pagination
 func TestGetCommunityFeed_Pagination(t *testing.T) {
-	db := setupTestDB(t)
-	t.Cleanup(func() { _ = db.Close() })
+	db := testkit.DB(t)
 
 	// Setup services
 	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
@@ -332,8 +329,7 @@ func TestGetCommunityFeed_Pagination(t *testing.T) {
 
 // TestGetCommunityFeed_InvalidCommunity tests error handling for invalid community
 func TestGetCommunityFeed_InvalidCommunity(t *testing.T) {
-	db := setupTestDB(t)
-	t.Cleanup(func() { _ = db.Close() })
+	db := testkit.DB(t)
 
 	// Setup services
 	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
@@ -366,8 +362,7 @@ func TestGetCommunityFeed_InvalidCommunity(t *testing.T) {
 
 // TestGetCommunityFeed_InvalidCursor tests cursor validation
 func TestGetCommunityFeed_InvalidCursor(t *testing.T) {
-	db := setupTestDB(t)
-	t.Cleanup(func() { _ = db.Close() })
+	db := testkit.DB(t)
 
 	// Setup services
 	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
@@ -420,8 +415,7 @@ func TestGetCommunityFeed_InvalidCursor(t *testing.T) {
 
 // TestGetCommunityFeed_EmptyFeed tests handling of empty communities
 func TestGetCommunityFeed_EmptyFeed(t *testing.T) {
-	db := setupTestDB(t)
-	t.Cleanup(func() { _ = db.Close() })
+	db := testkit.DB(t)
 
 	// Setup services
 	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
@@ -462,8 +456,7 @@ func TestGetCommunityFeed_EmptyFeed(t *testing.T) {
 
 // TestGetCommunityFeed_LimitValidation tests limit parameter validation
 func TestGetCommunityFeed_LimitValidation(t *testing.T) {
-	db := setupTestDB(t)
-	t.Cleanup(func() { _ = db.Close() })
+	db := testkit.DB(t)
 
 	// Setup services
 	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
@@ -513,8 +506,7 @@ func TestGetCommunityFeed_LimitValidation(t *testing.T) {
 // TestGetCommunityFeed_HotPaginationBug tests the critical hot pagination bug fix
 // Verifies that posts with higher raw scores but lower hot ranks don't get dropped during pagination
 func TestGetCommunityFeed_HotPaginationBug(t *testing.T) {
-	db := setupTestDB(t)
-	t.Cleanup(func() { _ = db.Close() })
+	db := testkit.DB(t)
 
 	// Setup services
 	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
@@ -612,8 +604,7 @@ func TestGetCommunityFeed_HotPaginationBug(t *testing.T) {
 // TestGetCommunityFeed_HotCursorPrecision tests that hot rank cursor preserves full float precision
 // Regression test for precision bug where posts with hot ranks differing by <1e-6 were dropped
 func TestGetCommunityFeed_HotCursorPrecision(t *testing.T) {
-	db := setupTestDB(t)
-	t.Cleanup(func() { _ = db.Close() })
+	db := testkit.DB(t)
 
 	// Setup services
 	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
@@ -712,8 +703,7 @@ func TestGetCommunityFeed_HotCursorPrecision(t *testing.T) {
 // Fix: Store the cursor creation timestamp in the cursor and use it for subsequent comparisons,
 // ensuring stable hot_rank computation across pagination requests.
 func TestGetCommunityFeed_HotCursorTimeDrift(t *testing.T) {
-	db := setupTestDB(t)
-	t.Cleanup(func() { _ = db.Close() })
+	db := testkit.DB(t)
 
 	// Setup services
 	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")
@@ -811,8 +801,7 @@ func TestGetCommunityFeed_HotCursorTimeDrift(t *testing.T) {
 
 // TestGetCommunityFeed_BlobURLTransformation tests that blob refs are transformed to URLs
 func TestGetCommunityFeed_BlobURLTransformation(t *testing.T) {
-	db := setupTestDB(t)
-	t.Cleanup(func() { _ = db.Close() })
+	db := testkit.DB(t)
 
 	// Setup services
 	feedRepo := postgres.NewCommunityFeedRepository(db, "test-cursor-secret")

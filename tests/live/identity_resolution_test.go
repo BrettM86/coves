@@ -4,6 +4,7 @@ package live
 
 import (
 	"Coves/internal/atproto/identity"
+	"Coves/tests/testkit"
 	"context"
 	"database/sql"
 	"testing"
@@ -13,11 +14,12 @@ import (
 // purgeIdentityCache removes any cached rows for the given identifiers, so the
 // next resolution provably goes to the network.
 //
-// The identity cache is a table in the shared test database and setupTestDB
-// does not clear it, so without this a run inherits rows from every previous
-// run: these tests would resolve entirely from Postgres and still pass with
-// the public internet unplugged, which is the one thing the live tier exists
-// to rule out.
+// testkit.DB hands each test an empty identity_cache, so this is no longer
+// about inheriting rows from a previous run. It is about the resolutions this
+// test itself performs: the cache is written on every successful resolve, and
+// a second lookup of the same identifier would be served from Postgres. These
+// tests would then pass with the public internet unplugged, which is the one
+// thing the live tier exists to rule out.
 func purgeIdentityCache(t *testing.T, db *sql.DB, identifiers ...string) {
 	t.Helper()
 	for _, id := range identifiers {
@@ -35,12 +37,7 @@ func purgeIdentityCache(t *testing.T, db *sql.DB, identifiers ...string) {
 // run and therefore never verified anything. Under -tags live it runs
 // unconditionally and fails when the public network is unreachable.
 func TestIdentityResolverRealHandles(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	resolver := identity.NewResolver(db, identity.Config{
 		PLCURL:   "https://plc.directory",
@@ -128,12 +125,7 @@ func TestIdentityResolverRealHandles(t *testing.T) {
 // TestResolveDID resolves a real DID document from the production PLC
 // directory. Opt-in via the `live` build tag; see TestIdentityResolverRealHandles.
 func TestResolveDID(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	resolver := identity.NewResolver(db, identity.Config{
 		PLCURL:   "https://plc.directory",
@@ -143,10 +135,9 @@ func TestResolveDID(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("Resolve Real DID Document", func(t *testing.T) {
-		// TestIdentityResolverRealHandles resolves the same handle and leaves it
-		// in the identity cache, which setupTestDB does not clear — so without
-		// this purge the resolution below is served from Postgres and the test
-		// proves nothing about the production PLC directory.
+		// Nothing in this test has resolved bsky.app yet, but the purge states
+		// the requirement the assertion below enforces: this resolution must
+		// reach the production PLC directory, not the identity cache.
 		purgeIdentityCache(t, db, "bsky.app")
 
 		// First resolve a handle to get a real DID

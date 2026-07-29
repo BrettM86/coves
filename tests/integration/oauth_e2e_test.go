@@ -4,6 +4,7 @@ package integration
 
 import (
 	"Coves/internal/atproto/oauth"
+	"Coves/tests/testkit"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -16,8 +17,6 @@ import (
 	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/go-chi/chi/v5"
-	_ "github.com/lib/pq"
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -34,16 +33,7 @@ import (
 // (HTTPS required for authorization servers and redirect URIs).
 func TestOAuth_Components(t *testing.T) {
 	// Setup test database
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
-
-	// Run migrations to ensure OAuth tables exist
-	require.NoError(t, goose.SetDialect("postgres"))
-	require.NoError(t, goose.Up(db, "../../internal/db/migrations"))
+	db := testkit.DB(t)
 
 	t.Log("🔧 Testing OAuth Components")
 
@@ -145,12 +135,7 @@ func testOAuthComponentsWithMockedSession(t *testing.T, ctx context.Context, _ i
 
 // TestOAuthE2E_TokenExpiration tests that expired sealed tokens are rejected
 func TestOAuthE2E_TokenExpiration(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-
-	// Run migrations
-	require.NoError(t, goose.SetDialect("postgres"))
-	require.NoError(t, goose.Up(db, "../../internal/db/migrations"))
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 
@@ -207,12 +192,7 @@ func TestOAuthE2E_TokenExpiration(t *testing.T) {
 
 // TestOAuthE2E_InvalidToken tests that invalid/tampered tokens are rejected
 func TestOAuthE2E_InvalidToken(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-
-	// Run migrations
-	require.NoError(t, goose.SetDialect("postgres"))
-	require.NoError(t, goose.Up(db, "../../internal/db/migrations"))
+	db := testkit.DB(t)
 
 	t.Log("🔒 Testing OAuth invalid token rejection...")
 
@@ -268,12 +248,7 @@ func TestOAuthE2E_InvalidToken(t *testing.T) {
 
 // TestOAuthE2E_SessionNotFound tests behavior when session doesn't exist in DB
 func TestOAuthE2E_SessionNotFound(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-
-	// Run migrations
-	require.NoError(t, goose.SetDialect("postgres"))
-	require.NoError(t, goose.Up(db, "../../internal/db/migrations"))
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 
@@ -300,12 +275,7 @@ func TestOAuthE2E_SessionNotFound(t *testing.T) {
 
 // TestOAuthE2E_MultipleSessionsPerUser tests that a user can have multiple active sessions
 func TestOAuthE2E_MultipleSessionsPerUser(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-
-	// Run migrations
-	require.NoError(t, goose.SetDialect("postgres"))
-	require.NoError(t, goose.Up(db, "../../internal/db/migrations"))
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 
@@ -385,12 +355,7 @@ func TestOAuthE2E_MultipleSessionsPerUser(t *testing.T) {
 
 // TestOAuthE2E_AuthRequestStorage tests OAuth auth request storage and retrieval
 func TestOAuthE2E_AuthRequestStorage(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-
-	// Run migrations
-	require.NoError(t, goose.SetDialect("postgres"))
-	require.NoError(t, goose.Up(db, "../../internal/db/migrations"))
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 
@@ -491,12 +456,7 @@ func TestOAuthE2E_AuthRequestStorage(t *testing.T) {
 
 // TestOAuthE2E_TokenRefresh tests the refresh token flow
 func TestOAuthE2E_TokenRefresh(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-
-	// Run migrations
-	require.NoError(t, goose.SetDialect("postgres"))
-	require.NoError(t, goose.Up(db, "../../internal/db/migrations"))
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 
@@ -743,12 +703,7 @@ func TestOAuthE2E_TokenRefresh(t *testing.T) {
 
 // TestOAuthE2E_SessionUpdate tests that refresh updates the session in database
 func TestOAuthE2E_SessionUpdate(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-
-	// Run migrations
-	require.NoError(t, goose.SetDialect("postgres"))
-	require.NoError(t, goose.Up(db, "../../internal/db/migrations"))
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 
@@ -826,12 +781,7 @@ func TestOAuthE2E_SessionUpdate(t *testing.T) {
 
 // TestOAuthE2E_RefreshTokenRotation tests refresh token rotation behavior
 func TestOAuthE2E_RefreshTokenRotation(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-
-	// Run migrations
-	require.NoError(t, goose.SetDialect("postgres"))
-	require.NoError(t, goose.Up(db, "../../internal/db/migrations"))
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 

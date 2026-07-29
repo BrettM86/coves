@@ -10,8 +10,8 @@ import (
 	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"net"
@@ -22,8 +22,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	_ "github.com/lib/pq"
-	"github.com/pressly/goose/v3"
 
 	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
@@ -32,19 +30,9 @@ import (
 // TestPostDeletion_JetstreamConsumer tests that the Jetstream consumer
 // correctly handles post deletion events by soft-deleting posts in the AppView database.
 func TestPostDeletion_JetstreamConsumer(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
-
-	// Cleanup old test data
-	_, _ = db.Exec("DELETE FROM posts WHERE community_did = 'did:plc:deltest123'")
-	_, _ = db.Exec("DELETE FROM communities WHERE did = 'did:plc:deltest123'")
-	_, _ = db.Exec("DELETE FROM users WHERE did = 'did:plc:delauthor123'")
 
 	// Setup repositories
 	userRepo := postgres.NewUserRepository(db)
@@ -227,8 +215,7 @@ func TestPostDeletion_JetstreamConsumer(t *testing.T) {
 
 // TestPostDeletion_Authorization tests that only the post author can delete their posts
 func TestPostDeletion_Authorization(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	pdsURL := getTestPDSURL()
@@ -345,8 +332,7 @@ func TestPostDeletion_Authorization(t *testing.T) {
 // TestPostDeletion_ServiceAuthorization tests the author verification logic in the service layer
 // This test requires a live PDS to fully test the authorization flow
 func TestPostDeletion_ServiceAuthorization_LivePDS(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	pdsURL := getTestPDSURL()
@@ -487,24 +473,7 @@ func TestPostDeletion_ServiceAuthorization_LivePDS(t *testing.T) {
 // 5. Receive delete event from Jetstream
 // 6. Verify post is soft-deleted in AppView DB
 func TestPostE2E_DeleteWithJetstream(t *testing.T) {
-	// Setup test database
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
-	}
-
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
-	}
-	defer func() { _ = db.Close() }()
-
-	if dialectErr := goose.SetDialect("postgres"); dialectErr != nil {
-		t.Fatalf("Failed to set goose dialect: %v", dialectErr)
-	}
-	if migrateErr := goose.Up(db, "../../internal/db/migrations"); migrateErr != nil {
-		t.Fatalf("Failed to run migrations: %v", migrateErr)
-	}
+	db := testkit.DB(t)
 
 	pdsURL := getTestPDSURL()
 	healthResp, err := http.Get(pdsURL + "/xrpc/_health")

@@ -10,6 +10,7 @@ import (
 	"Coves/internal/core/unfurl"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
 	"testing"
 	"time"
@@ -20,12 +21,7 @@ import (
 
 // TestPostUnfurl_Streamable tests that a post with a Streamable URL gets unfurled
 func TestPostUnfurl_Streamable(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 
@@ -65,12 +61,6 @@ func TestPostUnfurl_Streamable(t *testing.T) {
 		nil, // blueskyService not needed
 		"http://localhost:3001",
 	)
-
-	// Cleanup old test data
-	_, _ = db.Exec("DELETE FROM posts WHERE community_did LIKE 'did:plc:test%'")
-	_, _ = db.Exec("DELETE FROM communities WHERE did LIKE 'did:plc:test%'")
-	_, _ = db.Exec("DELETE FROM users WHERE did LIKE 'did:plc:test%'")
-	_, _ = db.Exec("DELETE FROM unfurl_cache WHERE url LIKE '%streamable.com%'")
 
 	// Create test user
 	testUserDID := generateTestDID("unfurlauthor")
@@ -164,12 +154,7 @@ func TestPostUnfurl_Streamable(t *testing.T) {
 
 // TestPostUnfurl_YouTube tests that a post with a YouTube URL gets unfurled
 func TestPostUnfurl_YouTube(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 
@@ -179,9 +164,6 @@ func TestPostUnfurl_YouTube(t *testing.T) {
 		unfurl.WithTimeout(30*time.Second),
 		unfurl.WithCacheTTL(24*time.Hour),
 	)
-
-	// Cleanup cache
-	_, _ = db.Exec("DELETE FROM unfurl_cache WHERE url LIKE '%youtube.com%'")
 
 	// Test YouTube URL
 	youtubeURL := "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
@@ -207,12 +189,7 @@ func TestPostUnfurl_YouTube(t *testing.T) {
 
 // TestPostUnfurl_Reddit tests that a post with a Reddit URL gets unfurled
 func TestPostUnfurl_Reddit(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 
@@ -222,9 +199,6 @@ func TestPostUnfurl_Reddit(t *testing.T) {
 		unfurl.WithTimeout(30*time.Second),
 		unfurl.WithCacheTTL(24*time.Hour),
 	)
-
-	// Cleanup cache
-	_, _ = db.Exec("DELETE FROM unfurl_cache WHERE url LIKE '%reddit.com%'")
 
 	// Use a well-known public Reddit post
 	redditURL := "https://www.reddit.com/r/programming/comments/1234/test/"
@@ -249,12 +223,7 @@ func TestPostUnfurl_Reddit(t *testing.T) {
 
 // TestPostUnfurl_CacheHit tests that the second post with the same URL uses cache
 func TestPostUnfurl_CacheHit(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 
@@ -267,7 +236,6 @@ func TestPostUnfurl_CacheHit(t *testing.T) {
 
 	// Cleanup cache
 	testURL := "https://streamable.com/test123"
-	_, _ = db.Exec("DELETE FROM unfurl_cache WHERE url = $1", testURL)
 
 	// First unfurl - should hit network
 	t.Log("First unfurl - expecting cache miss")
@@ -311,12 +279,7 @@ func TestPostUnfurl_CacheHit(t *testing.T) {
 
 // TestPostUnfurl_UserProvidedMetadata tests that user-provided metadata is preserved
 func TestPostUnfurl_UserProvidedMetadata(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 
@@ -354,12 +317,6 @@ func TestPostUnfurl_UserProvidedMetadata(t *testing.T) {
 		nil, // blueskyService
 		"http://localhost:3001",
 	)
-
-	// Cleanup
-	_, _ = db.Exec("DELETE FROM posts WHERE community_did LIKE 'did:plc:metadata%'")
-	_, _ = db.Exec("DELETE FROM communities WHERE did LIKE 'did:plc:metadata%'")
-	_, _ = db.Exec("DELETE FROM users WHERE did LIKE 'did:plc:metadata%'")
-	_, _ = db.Exec("DELETE FROM unfurl_cache WHERE url LIKE '%streamable.com%'")
 
 	// Create test user and community
 	testUserDID := generateTestDID("metadatauser")
@@ -422,12 +379,7 @@ func TestPostUnfurl_UserProvidedMetadata(t *testing.T) {
 
 // TestPostUnfurl_OpenGraph tests that OpenGraph URLs get unfurled
 func TestPostUnfurl_OpenGraph(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 
@@ -473,12 +425,7 @@ func TestPostUnfurl_OpenGraph(t *testing.T) {
 
 // TestPostUnfurl_SmartRouting tests that oEmbed still works while OpenGraph handles others
 func TestPostUnfurl_SmartRouting(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 
@@ -488,9 +435,6 @@ func TestPostUnfurl_SmartRouting(t *testing.T) {
 		unfurl.WithTimeout(30*time.Second),
 		unfurl.WithCacheTTL(24*time.Hour),
 	)
-
-	// Clean cache
-	_, _ = db.Exec("DELETE FROM unfurl_cache WHERE url LIKE '%youtube.com%' OR url LIKE '%wikipedia.org%'")
 
 	tests := []struct {
 		name             string
@@ -529,12 +473,7 @@ func TestPostUnfurl_SmartRouting(t *testing.T) {
 
 // TestPostUnfurl_KagiKite tests that Kagi Kite URLs get unfurled with story images
 func TestPostUnfurl_KagiKite(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	// Note: This test requires network access to kite.kagi.com
 	// It will be skipped if the URL is not reachable

@@ -4,6 +4,7 @@ package integration
 
 import (
 	"Coves/internal/atproto/identity"
+	"Coves/tests/testkit"
 	"context"
 	"fmt"
 	"testing"
@@ -17,12 +18,7 @@ func uniqueID() string {
 
 // TestIdentityCache tests the PostgreSQL identity cache operations
 func TestIdentityCache(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	cache := identity.NewPostgresCache(db, 5*time.Minute)
 	ctx := context.Background()
@@ -215,12 +211,7 @@ func TestIdentityCache(t *testing.T) {
 
 // TestIdentityCacheTTL tests that expired cache entries are not returned
 func TestIdentityCacheTTL(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	// Create cache with very short TTL (reduced from 1s to 100ms for faster, less flaky tests)
 	ttl := 100 * time.Millisecond
@@ -261,12 +252,7 @@ func TestIdentityCacheTTL(t *testing.T) {
 
 // TestIdentityResolverWithCache tests the caching resolver behavior
 func TestIdentityResolverWithCache(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	cache := identity.NewPostgresCache(db, 5*time.Minute)
 

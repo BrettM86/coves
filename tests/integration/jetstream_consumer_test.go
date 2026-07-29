@@ -7,18 +7,14 @@ import (
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
 	"testing"
 	"time"
 )
 
 func TestUserIndexingFromJetstream(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	// Wire up dependencies
 	userRepo := postgres.NewUserRepository(db)
@@ -311,12 +307,7 @@ func TestUserIndexingFromJetstream(t *testing.T) {
 }
 
 func TestUserServiceIdempotency(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())

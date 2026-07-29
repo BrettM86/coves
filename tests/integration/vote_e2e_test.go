@@ -8,9 +8,9 @@ import (
 	"Coves/internal/atproto/utils"
 	"Coves/internal/core/votes"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,37 +24,13 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
-	_ "github.com/lib/pq"
-	"github.com/pressly/goose/v3"
 )
 
 // TestVoteE2E_CreateUpvote tests the full vote creation flow with a real local PDS
 // Flow: Client → XRPC → PDS Write → Jetstream → Consumer → AppView
 func TestVoteE2E_CreateUpvote(t *testing.T) {
 
-	// Setup test database
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
-	}
-
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
-	}
-	defer func() {
-		if closeErr := db.Close(); closeErr != nil {
-			t.Logf("Failed to close database: %v", closeErr)
-		}
-	}()
-
-	// Run migrations
-	if dialectErr := goose.SetDialect("postgres"); dialectErr != nil {
-		t.Fatalf("Failed to set goose dialect: %v", dialectErr)
-	}
-	if migrateErr := goose.Up(db, "../../internal/db/migrations"); migrateErr != nil {
-		t.Fatalf("Failed to run migrations: %v", migrateErr)
-	}
+	db := testkit.DB(t)
 
 	// Check if PDS is running
 	pdsURL := os.Getenv("PDS_URL")
@@ -289,8 +265,7 @@ func TestVoteE2E_CreateUpvote(t *testing.T) {
 
 // TestVoteE2E_ToggleSameDirection tests voting twice in same direction (toggle off)
 func TestVoteE2E_ToggleSameDirection(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	pdsURL := getTestPDSURL()
@@ -455,8 +430,7 @@ func TestVoteE2E_ToggleSameDirection(t *testing.T) {
 
 // TestVoteE2E_ToggleDifferentDirection tests changing vote direction
 func TestVoteE2E_ToggleDifferentDirection(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	pdsURL := getTestPDSURL()
@@ -677,8 +651,7 @@ func TestVoteE2E_ToggleDifferentDirection(t *testing.T) {
 
 // TestVoteE2E_DeleteVote tests explicit vote deletion
 func TestVoteE2E_DeleteVote(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	pdsURL := getTestPDSURL()
@@ -864,8 +837,7 @@ func TestVoteE2E_DeleteVote(t *testing.T) {
 
 // TestVoteE2E_JetstreamIndexing tests real Jetstream firehose consumption
 func TestVoteE2E_JetstreamIndexing(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	pdsURL := getTestPDSURL()

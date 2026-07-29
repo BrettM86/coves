@@ -180,11 +180,10 @@ test-integration: ## T1 integration tier - needs Postgres; starts postgres-test 
 	@go test -tags integration -p 1 -parallel $$(./scripts/test-db-prepare.sh --print-parallel) \
 		./cmd/... ./internal/... ./tests/...
 	@echo ""
-	@echo "$(YELLOW)Note: the not-yet-migrated files under tests/integration also want$(RESET)"
-	@echo "$(YELLOW)a PDS and Jetstream, and they still SKIP themselves when those are$(RESET)"
-	@echo "$(YELLOW)missing — so a green run here does not mean the suite ran in full.$(RESET)"
-	@echo "$(YELLOW)Run 'make dev-up' first for the fuller local picture, and 'make ci'$(RESET)"
-	@echo "$(YELLOW)for the gate that refuses to count a skip as a pass.$(RESET)"
+	@echo "$(YELLOW)Note: tests/integration needs a PDS and Jetstream as well as Postgres,$(RESET)"
+	@echo "$(YELLOW)and its TestMain now says so up front — without 'make dev-up' the$(RESET)"
+	@echo "$(YELLOW)package fails once, naming the address it could not reach, instead of$(RESET)"
+	@echo "$(YELLOW)skipping test by test and reporting green. 'make ci' remains the gate.$(RESET)"
 
 test-e2e: ## T2 pipeline tier - needs the dev stack AND a running AppView
 	@# TRANSITIONAL. docs/TEST_ARCHITECTURE.md §3.5 puts this tier inside the

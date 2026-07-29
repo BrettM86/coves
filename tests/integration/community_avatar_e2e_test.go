@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	_ "github.com/lib/pq"
 )
 
 // createTestPNGImage creates a simple PNG image for testing

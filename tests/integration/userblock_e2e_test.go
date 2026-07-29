@@ -8,6 +8,7 @@ import (
 	"Coves/internal/atproto/utils"
 	"Coves/internal/core/userblocks"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -19,15 +20,13 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	_ "github.com/lib/pq"
 )
 
 // TestUserBlockE2E_BlockAndUnblock tests the full user block lifecycle with a real PDS.
 // Flow: Client -> XRPC -> PDS Write -> Verify on PDS -> Jetstream -> Consumer -> AppView
 // Then: Client -> XRPC Unblock -> PDS Delete -> Jetstream -> Consumer -> AppView removal
 func TestUserBlockE2E_BlockAndUnblock(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	pdsURL := getTestPDSURL()
@@ -41,11 +40,6 @@ func TestUserBlockE2E_BlockAndUnblock(t *testing.T) {
 		if closeErr := healthResp.Body.Close(); closeErr != nil {
 			t.Logf("Failed to close health response: %v", closeErr)
 		}
-	}()
-
-	// Clean up user_blocks at the end to avoid polluting other tests
-	defer func() {
-		_, _ = db.Exec("DELETE FROM user_blocks")
 	}()
 
 	// Setup repository
@@ -369,8 +363,7 @@ func TestUserBlockE2E_BlockAndUnblock(t *testing.T) {
 // TestUserBlockE2E_SelfBlockPrevented tests that a user cannot block themselves.
 // This validates the self-block guard in the service layer with a real PDS.
 func TestUserBlockE2E_SelfBlockPrevented(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	pdsURL := getTestPDSURL()
 
@@ -383,11 +376,6 @@ func TestUserBlockE2E_SelfBlockPrevented(t *testing.T) {
 		if closeErr := healthResp.Body.Close(); closeErr != nil {
 			t.Logf("Failed to close health response: %v", closeErr)
 		}
-	}()
-
-	// Clean up user_blocks at the end
-	defer func() {
-		_, _ = db.Exec("DELETE FROM user_blocks")
 	}()
 
 	// Setup repository

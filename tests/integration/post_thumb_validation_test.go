@@ -8,6 +8,7 @@ import (
 	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -44,12 +45,7 @@ func createTestCommunityWithCredentials(t *testing.T, repo communities.Repositor
 
 // TestPostHandler_ThumbValidation tests strict validation of thumb field in external embeds
 func TestPostHandler_ThumbValidation(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	// Setup services
 	communityRepo := postgres.NewCommunityRepository(db)
@@ -69,16 +65,7 @@ func TestPostHandler_ThumbValidation(t *testing.T) {
 
 	handler := post.NewCreateHandler(postService)
 
-	// The test helpers INSERT without upsert and test DIDs are stable across
-	// runs, so clean up any rows left by a previous run before recreating them.
-	// (Without this, running this test in isolation against the persistent test
-	// DB collides on users_pkey — the full suite only avoids it by collateral
-	// deletes in earlier-sorted tests.)
 	userDID := "did:plc:thumbtest" + t.Name()
-	communityDID := "did:plc:testcommunity" + t.Name()
-	_, _ = db.Exec("DELETE FROM posts WHERE community_did = $1", communityDID)
-	_, _ = db.Exec("DELETE FROM communities WHERE did = $1", communityDID)
-	_, _ = db.Exec("DELETE FROM users WHERE did = $1", userDID)
 
 	// Create test user and community with PDS credentials (use unique IDs)
 	testUser := createTestUser(t, db, "thumbtest.bsky.social", userDID)
@@ -305,12 +292,7 @@ func TestPostHandler_ThumbValidation(t *testing.T) {
 // tests still pass — guarding against regression of the silent-corruption bug
 // the validation exists to prevent.
 func TestPostHandler_EmbedValidation(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	communityRepo := postgres.NewCommunityRepository(db)
 	communityService := communities.NewCommunityServiceWithPDSFactory(
@@ -326,13 +308,7 @@ func TestPostHandler_EmbedValidation(t *testing.T) {
 	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, "http://localhost:3001")
 	handler := post.NewCreateHandler(postService)
 
-	// The test helpers INSERT without upsert and test DIDs are stable across
-	// runs, so clean up any rows left by a previous run before recreating them.
 	userDID := "did:plc:embedtest" + t.Name()
-	communityDID := "did:plc:testcommunity" + t.Name()
-	_, _ = db.Exec("DELETE FROM posts WHERE community_did = $1", communityDID)
-	_, _ = db.Exec("DELETE FROM communities WHERE did = $1", communityDID)
-	_, _ = db.Exec("DELETE FROM users WHERE did = $1", userDID)
 
 	testUser := createTestUser(t, db, "embedtest.bsky.social", userDID)
 	testCommunity := createTestCommunityWithCredentials(t, communityRepo, t.Name())

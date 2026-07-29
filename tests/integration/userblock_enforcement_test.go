@@ -8,8 +8,8 @@ import (
 	"Coves/internal/core/discover"
 	"Coves/internal/core/timeline"
 	"Coves/internal/core/userblocks"
+	"Coves/tests/testkit"
 	"context"
-	"database/sql"
 	"fmt"
 	"testing"
 	"time"
@@ -22,7 +22,7 @@ import (
 // but still shows them to unauthenticated viewers.
 func TestUserBlock_CommunityFeedFiltering(t *testing.T) {
 	ctx := context.Background()
-	db := setupTestDB(t)
+	db := testkit.DB(t)
 
 	testID := time.Now().UnixNano()
 
@@ -33,16 +33,6 @@ func TestUserBlock_CommunityFeedFiltering(t *testing.T) {
 	thirdPartyDID := fmt.Sprintf("did:plc:thirdparty-feed-%d", testID)
 	communityName := fmt.Sprintf("blockfeed-%d", testID)
 	ownerHandle := fmt.Sprintf("blockfeed-owner-%d.test", testID)
-
-	// Cleanup test data after the test
-	defer func() {
-		cleanupUserBlockEnforcementTestData(t, db, blockerDID, posterDID, communityName, ownerHandle)
-		// Also clean up third-party user
-		_, _ = db.Exec("DELETE FROM users WHERE did = $1", thirdPartyDID)
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
 
 	// Setup: Create test users
 	for _, u := range []struct{ did, handle string }{
@@ -184,7 +174,7 @@ func TestUserBlock_CommunityFeedFiltering(t *testing.T) {
 // but still shows them to unauthenticated viewers.
 func TestUserBlock_DiscoverFeedFiltering(t *testing.T) {
 	ctx := context.Background()
-	db := setupTestDB(t)
+	db := testkit.DB(t)
 
 	testID := time.Now().UnixNano()
 
@@ -193,14 +183,6 @@ func TestUserBlock_DiscoverFeedFiltering(t *testing.T) {
 	thirdPartyDID := fmt.Sprintf("did:plc:thirdparty-discover-%d", testID)
 	communityName := fmt.Sprintf("blockdisc-%d", testID)
 	ownerHandle := fmt.Sprintf("blockdisc-owner-%d.test", testID)
-
-	defer func() {
-		cleanupUserBlockEnforcementTestData(t, db, blockerDID, posterDID, communityName, ownerHandle)
-		_, _ = db.Exec("DELETE FROM users WHERE did = $1", thirdPartyDID)
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
 
 	// Setup: Create test users
 	for _, u := range []struct{ did, handle string }{
@@ -316,20 +298,13 @@ func TestUserBlock_DiscoverFeedFiltering(t *testing.T) {
 // returns block records, confirming that GetBlock returns a RecordURI when a block exists.
 func TestUserBlock_ProfileViewerState(t *testing.T) {
 	ctx := context.Background()
-	db := setupTestDB(t)
+	db := testkit.DB(t)
 
 	testID := time.Now().UnixNano()
 
 	userA := fmt.Sprintf("did:plc:profile-viewer-a-%d", testID)
 	userB := fmt.Sprintf("did:plc:profile-viewer-b-%d", testID)
 	expectedRecordURI := fmt.Sprintf("at://%s/social.coves.actor.block/profileblock1", userA)
-
-	defer func() {
-		_, _ = db.Exec("DELETE FROM user_blocks WHERE blocker_did = $1", userA)
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
 
 	// Create the user block repo
 	userBlockRepo := postgresRepo.NewUserBlockRepository(db)
@@ -385,22 +360,13 @@ func TestUserBlock_ProfileViewerState(t *testing.T) {
 // filtered out when querying with a viewerDID.
 func TestUserBlock_CommentFiltering(t *testing.T) {
 	ctx := context.Background()
-	db := setupTestDB(t)
+	db := testkit.DB(t)
 
 	testID := time.Now().UnixNano()
 
 	blockerDID := fmt.Sprintf("did:plc:blocker-comment-%d", testID)
 	commenterDID := fmt.Sprintf("did:plc:commenter-%d", testID)
 	otherCommenterDID := fmt.Sprintf("did:plc:othercommenter-%d", testID)
-
-	defer func() {
-		_, _ = db.Exec("DELETE FROM comments WHERE commenter_did IN ($1, $2)", commenterDID, otherCommenterDID)
-		_, _ = db.Exec("DELETE FROM user_blocks WHERE blocker_did = $1", blockerDID)
-		_, _ = db.Exec("DELETE FROM users WHERE did IN ($1, $2, $3)", blockerDID, commenterDID, otherCommenterDID)
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
 
 	// Create users
 	for _, u := range []struct{ did, handle string }{
@@ -501,7 +467,7 @@ func TestUserBlock_CommentFiltering(t *testing.T) {
 // blocked users' posts from the authenticated user's timeline feed.
 func TestUserBlock_TimelineFeedFiltering(t *testing.T) {
 	ctx := context.Background()
-	db := setupTestDB(t)
+	db := testkit.DB(t)
 
 	testID := time.Now().UnixNano()
 
@@ -510,19 +476,6 @@ func TestUserBlock_TimelineFeedFiltering(t *testing.T) {
 	otherAuthorDID := fmt.Sprintf("did:plc:other-timeline-%d", testID)
 	communityName := fmt.Sprintf("blocktl-%d", testID)
 	ownerHandle := fmt.Sprintf("blocktl-owner-%d.test", testID)
-
-	defer func() {
-		communityDID := fmt.Sprintf("did:plc:community-%s", communityName)
-		_, _ = db.Exec("DELETE FROM user_blocks WHERE blocker_did = $1", viewerDID)
-		_, _ = db.Exec("DELETE FROM community_subscriptions WHERE user_did = $1", viewerDID)
-		_, _ = db.Exec("DELETE FROM posts WHERE community_did = $1", communityDID)
-		_, _ = db.Exec("DELETE FROM communities WHERE did = $1", communityDID)
-		ownerDID := fmt.Sprintf("did:plc:%s", ownerHandle)
-		_, _ = db.Exec("DELETE FROM users WHERE did IN ($1, $2, $3, $4)", viewerDID, blockedAuthorDID, otherAuthorDID, ownerDID)
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
 
 	// Create users
 	for _, u := range []struct{ did, handle string }{
@@ -652,27 +605,4 @@ func discoverFeedContainsPost(posts []*discover.FeedViewPost, uri string) bool {
 		}
 	}
 	return false
-}
-
-// cleanupUserBlockEnforcementTestData removes test data created by block enforcement tests
-func cleanupUserBlockEnforcementTestData(t *testing.T, db *sql.DB, blockerDID, posterDID, communityName, ownerHandle string) {
-	t.Helper()
-
-	communityDID := fmt.Sprintf("did:plc:community-%s", communityName)
-	// createFeedTestCommunity builds ownerDID as "did:plc:{ownerHandle}" — match that here
-	ownerDID := fmt.Sprintf("did:plc:%s", ownerHandle)
-
-	// Delete in dependency order: blocks, posts, community subscriptions, communities, users
-	if _, err := db.Exec("DELETE FROM user_blocks WHERE blocker_did = $1 AND blocked_did = $2", blockerDID, posterDID); err != nil {
-		t.Logf("Warning: Failed to clean up user blocks: %v", err)
-	}
-	if _, err := db.Exec("DELETE FROM posts WHERE community_did = $1", communityDID); err != nil {
-		t.Logf("Warning: Failed to clean up posts: %v", err)
-	}
-	if _, err := db.Exec("DELETE FROM communities WHERE did = $1", communityDID); err != nil {
-		t.Logf("Warning: Failed to clean up communities: %v", err)
-	}
-	if _, err := db.Exec("DELETE FROM users WHERE did IN ($1, $2, $3)", blockerDID, posterDID, ownerDID); err != nil {
-		t.Logf("Warning: Failed to clean up users: %v", err)
-	}
 }

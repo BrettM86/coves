@@ -114,25 +114,6 @@ func SetupOAuthTestStore(t *testing.T, db *sql.DB) oauthlib.ClientAuthStore {
 	return wrappedStore
 }
 
-// CleanupOAuthTestData removes OAuth test data from the database
-func CleanupOAuthTestData(t *testing.T, db *sql.DB, did string) {
-	t.Helper()
-
-	ctx := context.Background()
-
-	// Delete sessions for this DID
-	_, err := db.ExecContext(ctx, "DELETE FROM oauth_sessions WHERE did = $1", did)
-	if err != nil {
-		t.Logf("Warning: Failed to cleanup OAuth sessions: %v", err)
-	}
-
-	// Delete auth requests (cleanup all expired ones)
-	_, err = db.ExecContext(ctx, "DELETE FROM oauth_requests WHERE created_at < NOW() - INTERVAL '1 hour'")
-	if err != nil {
-		t.Logf("Warning: Failed to cleanup OAuth auth requests: %v", err)
-	}
-}
-
 // VerifySessionData verifies that session data is properly stored and retrievable
 func VerifySessionData(t *testing.T, store oauthlib.ClientAuthStore, did syntax.DID, sessionID string) {
 	t.Helper()

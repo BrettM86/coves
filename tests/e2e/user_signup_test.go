@@ -4,7 +4,6 @@ package e2e
 
 import (
 	"bytes"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,9 +14,6 @@ import (
 	"time"
 
 	"Coves/tests/testkit"
-
-	_ "github.com/lib/pq"
-	"github.com/pressly/goose/v3"
 )
 
 // TestMain controls test setup for the e2e package.
@@ -328,57 +324,6 @@ func isAppViewAvailable(t *testing.T) bool {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	return resp.StatusCode == http.StatusOK
-}
-
-// setupTestDB connects to test database and runs migrations
-func setupTestDB(t *testing.T) *sql.DB {
-	// Build connection string from environment variables (set by .env.dev)
-	testUser := os.Getenv("POSTGRES_TEST_USER")
-	testPassword := os.Getenv("POSTGRES_TEST_PASSWORD")
-	testPort := os.Getenv("POSTGRES_TEST_PORT")
-	testDB := os.Getenv("POSTGRES_TEST_DB")
-
-	// Fallback to defaults if not set
-	if testUser == "" {
-		testUser = "test_user"
-	}
-	if testPassword == "" {
-		testPassword = "test_password"
-	}
-	if testPort == "" {
-		testPort = "5434"
-	}
-	if testDB == "" {
-		testDB = "coves_test"
-	}
-
-	dbURL := fmt.Sprintf("postgres://%s:%s@localhost:%s/%s?sslmode=disable",
-		testUser, testPassword, testPort, testDB)
-
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
-	}
-
-	if pingErr := db.Ping(); pingErr != nil {
-		t.Fatalf("Failed to ping test database: %v", pingErr)
-	}
-
-	if dialectErr := goose.SetDialect("postgres"); dialectErr != nil {
-		t.Fatalf("Failed to set goose dialect: %v", dialectErr)
-	}
-
-	if migrateErr := goose.Up(db, "../../internal/db/migrations"); migrateErr != nil {
-		t.Fatalf("Failed to run migrations: %v", migrateErr)
-	}
-
-	// Clean up any existing test data
-	_, err = db.Exec("DELETE FROM users WHERE handle LIKE '%.test' OR handle LIKE '%.local.coves.dev'")
-	if err != nil {
-		t.Logf("Warning: Failed to clean up test data: %v", err)
-	}
-
-	return db
 }
 
 // getProfileViaAPI queries the AppView API to get a user profile by DID

@@ -10,9 +10,9 @@ import (
 	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -24,8 +24,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	_ "github.com/lib/pq"
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -44,17 +42,7 @@ import (
 // NOTE: This test simulates the Jetstream event (step 4-5) since we don't have
 // a live PDS/Jetstream in test environment. For true live testing, use TestPostCreation_E2E_LivePDS.
 func TestPostCreation_E2E_WithJetstream(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
-
-	// Cleanup old test data first
-	_, _ = db.Exec("DELETE FROM posts WHERE community_did = 'did:plc:gaming123'")
-	_, _ = db.Exec("DELETE FROM communities WHERE did = 'did:plc:gaming123'")
-	_, _ = db.Exec("DELETE FROM users WHERE did = 'did:plc:alice123'")
+	db := testkit.DB(t)
 
 	// Setup repositories
 	userRepo := postgres.NewUserRepository(db)
@@ -325,23 +313,7 @@ func TestPostCreation_E2E_WithJetstream(t *testing.T) {
 // - Live Jetstream running at the local dev Jetstream (JETSTREAM_FEEDS default: self=ws://localhost:6008)
 // - Test database running
 func TestPostCreation_E2E_LivePDS(t *testing.T) {
-	// Setup test database
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
-	}
-
-	db, err := sql.Open("postgres", dbURL)
-	require.NoError(t, err, "Failed to connect to test database")
-	defer func() {
-		if closeErr := db.Close(); closeErr != nil {
-			t.Logf("Failed to close database: %v", closeErr)
-		}
-	}()
-
-	// Run migrations
-	require.NoError(t, goose.SetDialect("postgres"))
-	require.NoError(t, goose.Up(db, "../../internal/db/migrations"))
+	db := testkit.DB(t)
 
 	// Check if PDS is running
 	pdsURL := os.Getenv("PDS_URL")
@@ -411,11 +383,6 @@ func TestPostCreation_E2E_LivePDS(t *testing.T) {
 	createHandler := post.NewCreateHandler(postService)
 
 	ctx := context.Background()
-
-	// Cleanup old test data
-	_, _ = db.Exec("DELETE FROM posts WHERE community_did LIKE 'did:plc:e2etest%'")
-	_, _ = db.Exec("DELETE FROM communities WHERE did LIKE 'did:plc:e2etest%'")
-	_, _ = db.Exec("DELETE FROM users WHERE did LIKE 'did:plc:e2etest%'")
 
 	// Create test user (author)
 	author := createTestUser(t, db, "e2etestauthor.bsky.social", "did:plc:e2etestauthor123")

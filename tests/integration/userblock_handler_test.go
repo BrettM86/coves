@@ -8,6 +8,7 @@ import (
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/userblocks"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -134,17 +135,7 @@ type userBlockTestEnv struct {
 func setupUserBlockTestServer(t *testing.T) *userBlockTestEnv {
 	t.Helper()
 
-	db := setupTestDB(t)
-	t.Cleanup(func() {
-		// Clean up user_blocks before closing db
-		_, _ = db.Exec("DELETE FROM user_blocks")
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	})
-
-	// Clean up user_blocks from any prior runs
-	_, _ = db.Exec("DELETE FROM user_blocks")
+	db := testkit.DB(t)
 
 	repo := postgres.NewUserBlockRepository(db)
 	tracker := newMockPDSTracker()

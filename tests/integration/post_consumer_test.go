@@ -6,6 +6,7 @@ import (
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
 	"fmt"
 	"testing"
@@ -19,12 +20,7 @@ import (
 // comment suggests reconciliation is not implemented. This test verifies that
 // the reconciliation logic in post_consumer.go:210-226 works correctly.
 func TestPostConsumer_CommentCountReconciliation(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 

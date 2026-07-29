@@ -5,6 +5,7 @@ package integration
 import (
 	"Coves/internal/core/communities"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -96,12 +97,7 @@ func TestTokenRefresh_ExpirationDetection(t *testing.T) {
 // TestTokenRefresh_UpdateCredentials tests the repository UpdateCredentials method
 func TestTokenRefresh_UpdateCredentials(t *testing.T) {
 	ctx := context.Background()
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
 
@@ -162,12 +158,7 @@ func TestTokenRefresh_UpdateCredentials(t *testing.T) {
 // TestTokenRefresh_E2E_UpdateAfterTokenRefresh tests end-to-end token refresh during community update
 func TestTokenRefresh_E2E_UpdateAfterTokenRefresh(t *testing.T) {
 	ctx := context.Background()
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	// This test requires a real PDS for token refresh
 	// For now, we'll test the token expiration detection logic

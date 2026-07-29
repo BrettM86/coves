@@ -8,6 +8,7 @@ import (
 	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"bytes"
 	"encoding/json"
 	"net/http"
@@ -21,12 +22,7 @@ import (
 
 // TestPostHandler_SecurityValidation tests HTTP handler-level security checks
 func TestPostHandler_SecurityValidation(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	// Setup services
 	communityRepo := postgres.NewCommunityRepository(db)
@@ -387,12 +383,7 @@ func TestPostHandler_SecurityValidation(t *testing.T) {
 
 // TestPostHandler_SpecialCharacters tests content with special characters
 func TestPostHandler_SpecialCharacters(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	// Setup services
 	communityRepo := postgres.NewCommunityRepository(db)
@@ -469,12 +460,7 @@ func TestPostHandler_SpecialCharacters(t *testing.T) {
 
 // TestPostService_DIDValidationSecurity tests service-layer DID validation (defense-in-depth)
 func TestPostService_DIDValidationSecurity(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	// Setup services
 	communityRepo := postgres.NewCommunityRepository(db)

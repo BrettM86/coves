@@ -21,7 +21,6 @@ import (
 
 	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
-	_ "github.com/lib/pq"
 )
 
 // TestCommentWrite_CreateTopLevelComment tests creating a comment on a post via E2E flow

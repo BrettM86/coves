@@ -18,6 +18,7 @@ import (
 	"Coves/internal/atproto/oauth"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 )
 
 // TestOAuthSessionHandleSync tests that OAuth session handles are updated
@@ -35,12 +36,7 @@ import (
 //	TEST_DATABASE_URL="postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable" \
 //	  go test -v ./tests/integration/ -run "TestOAuthSessionHandleSync"
 func TestOAuthSessionHandleSync(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 
@@ -303,12 +299,7 @@ func TestOAuthSessionHandleSync_LiveJetstream(t *testing.T) {
 		t.Skip("PDS not available at localhost:3001 - run 'docker-compose up -d pds' first")
 	}
 
-	db := setupTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

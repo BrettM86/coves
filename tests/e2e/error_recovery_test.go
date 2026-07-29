@@ -7,19 +7,14 @@ import (
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"context"
-	"database/sql"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	_ "github.com/lib/pq"
-	"github.com/pressly/goose/v3"
 )
 
 // TestE2E_ErrorRecovery tests system resilience and recovery from various failures
@@ -41,12 +36,7 @@ func TestE2E_ErrorRecovery(t *testing.T) {
 // NOTE: This tests connection retry logic, not actual reconnection after disconnect.
 // True reconnection testing would require: connect → send events → disconnect → reconnect → continue
 func testJetstreamReconnection(t *testing.T) {
-	db := setupErrorRecoveryTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
@@ -136,12 +126,7 @@ func testJetstreamReconnection(t *testing.T) {
 // testMalformedJetstreamEvents verifies that malformed events are skipped gracefully
 // without crashing the consumer
 func testMalformedJetstreamEvents(t *testing.T) {
-	db := setupErrorRecoveryTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
@@ -279,12 +264,7 @@ func testMalformedJetstreamEvents(t *testing.T) {
 
 // testDatabaseConnectionRecovery verifies graceful handling of database connection loss
 func testDatabaseConnectionRecovery(t *testing.T) {
-	db := setupErrorRecoveryTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
@@ -354,12 +334,7 @@ func testDatabaseConnectionRecovery(t *testing.T) {
 
 // testPDSUnavailability verifies graceful degradation when PDS is temporarily unavailable
 func testPDSUnavailability(t *testing.T) {
-	db := setupErrorRecoveryTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
@@ -481,12 +456,7 @@ func testPDSUnavailability(t *testing.T) {
 
 // testOutOfOrderEvents verifies that events arriving out of sequence are handled correctly
 func testOutOfOrderEvents(t *testing.T) {
-	db := setupErrorRecoveryTestDB(t)
-	defer func() {
-		if err := db.Close(); err != nil {
-			t.Logf("Failed to close database: %v", err)
-		}
-	}()
+	db := testkit.DB(t)
 
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
@@ -616,60 +586,4 @@ func testOutOfOrderEvents(t *testing.T) {
 
 		t.Log("✓ Duplicate events handled idempotently")
 	})
-}
-
-// setupErrorRecoveryTestDB sets up a clean test database for error recovery tests
-func setupErrorRecoveryTestDB(t *testing.T) *sql.DB {
-	t.Helper()
-
-	testUser := os.Getenv("POSTGRES_TEST_USER")
-	testPassword := os.Getenv("POSTGRES_TEST_PASSWORD")
-	testPort := os.Getenv("POSTGRES_TEST_PORT")
-	testDB := os.Getenv("POSTGRES_TEST_DB")
-
-	if testUser == "" {
-		testUser = "test_user"
-	}
-	if testPassword == "" {
-		testPassword = "test_password"
-	}
-	if testPort == "" {
-		testPort = "5434"
-	}
-	if testDB == "" {
-		testDB = "coves_test"
-	}
-
-	dbURL := fmt.Sprintf("postgres://%s:%s@localhost:%s/%s?sslmode=disable",
-		testUser, testPassword, testPort, testDB)
-
-	db, err := sql.Open("postgres", dbURL)
-	if err != nil {
-		t.Fatalf("Failed to connect to test database: %v", err)
-	}
-
-	if pingErr := db.Ping(); pingErr != nil {
-		t.Fatalf("Failed to ping test database: %v", pingErr)
-	}
-
-	if dialectErr := goose.SetDialect("postgres"); dialectErr != nil {
-		t.Fatalf("Failed to set goose dialect: %v", dialectErr)
-	}
-
-	if migrateErr := goose.Up(db, "../../internal/db/migrations"); migrateErr != nil {
-		t.Fatalf("Failed to run migrations: %v", migrateErr)
-	}
-
-	// Clean up test data - be specific to avoid deleting unintended data
-	// Only delete known test handles from error recovery tests
-	_, _ = db.Exec(`DELETE FROM users WHERE handle IN (
-		'reconnect.test',
-		'recovery.test',
-		'pdsfail.test',
-		'pdsrecovery.test',
-		'malformed.test',
-		'outoforder.test'
-	)`)
-
-	return db
 }
