@@ -10,9 +10,11 @@ import (
 	"testing"
 )
 
+// TestMain is also the worked example of the TestMain every migrating package
+// gets: testkit's own tests exercise Postgres, the PDS and Jetstream, so all
+// three are probed once here rather than failing test by test.
 func TestMain(m *testing.M) {
-	SilenceLogs()
-	os.Exit(m.Run())
+	os.Exit(Main(m, RequirePostgres, RequirePDS, RequireJetstream))
 }
 
 // fakeT records what a testkit helper did to the test it was handed, so the
@@ -102,6 +104,31 @@ func resetTemplateVerification() {
 	templateMu.Lock()
 	defer templateMu.Unlock()
 	templateVerified = false
+}
+
+// swapEndpoints rebinds only the endpoint singleton, re-reading it from the
+// current environment, and registers the restore as a cleanup.
+//
+// Assigning endpointsOnce directly is a data race the moment `-shuffle=on`
+// reorders tests or anything runs in parallel — the accessors read it under
+// singletonMu, so writers must take that lock too. Every endpoint test needs to
+// re-read the environment after t.Setenv, so the locking lives here once rather
+// than being retyped (and forgotten) at each site.
+func swapEndpoints(t *testing.T) {
+	t.Helper()
+	singletonMu.Lock()
+	savedEndpoints, savedTemplateName := endpointsOnce, templateNameOnce
+	endpointsOnce = sync.OnceValue(loadEndpoints)
+	// The template name is validated against the maintenance database, so it
+	// has to be re-derived whenever the endpoints change.
+	templateNameOnce = sync.OnceValues(loadTemplateName)
+	singletonMu.Unlock()
+
+	t.Cleanup(func() {
+		singletonMu.Lock()
+		endpointsOnce, templateNameOnce = savedEndpoints, savedTemplateName
+		singletonMu.Unlock()
+	})
 }
 
 // swapSingletons rebinds the memoised process singletons and returns a function

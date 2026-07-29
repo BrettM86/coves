@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"Coves/tests/testkit"
+
 	_ "github.com/lib/pq"
 	"github.com/pressly/goose/v3"
 )
@@ -66,8 +68,9 @@ func TestE2E_UserSignup(t *testing.T) {
 
 	// Test 1: Create account on PDS
 	t.Run("Create account on PDS and verify indexing", func(t *testing.T) {
-		handle := fmt.Sprintf("alice-%d.local.coves.dev", time.Now().Unix())
-		email := fmt.Sprintf("alice-%d@test.com", time.Now().Unix())
+		label := testkit.UniqueIDWithPrefix(t, "alice")
+		handle := label + ".local.coves.dev"
+		email := label + "@test.com"
 
 		t.Logf("Creating account: %s", handle)
 
@@ -107,8 +110,9 @@ func TestE2E_UserSignup(t *testing.T) {
 
 	// Test 2: Idempotency (verify same user from multiple API calls)
 	t.Run("Idempotent indexing on duplicate events", func(t *testing.T) {
-		handle := fmt.Sprintf("bob-%d.local.coves.dev", time.Now().Unix())
-		email := fmt.Sprintf("bob-%d@test.com", time.Now().Unix())
+		label := testkit.UniqueIDWithPrefix(t, "bob")
+		handle := label + ".local.coves.dev"
+		email := label + "@test.com"
 
 		// Create account via AppView signup endpoint
 		did, err := createPDSAccount(t, handle, email, "test1234")
@@ -150,8 +154,9 @@ func TestE2E_UserSignup(t *testing.T) {
 		handles := make([]string, numUsers)
 
 		for i := 0; i < numUsers; i++ {
-			handle := fmt.Sprintf("user%d-%d.local.coves.dev", i, time.Now().Unix())
-			email := fmt.Sprintf("user%d-%d@test.com", i, time.Now().Unix())
+			label := testkit.UniqueIDWithPrefix(t, fmt.Sprintf("user%d", i))
+			handle := label + ".local.coves.dev"
+			email := label + "@test.com"
 
 			did, err := createPDSAccount(t, handle, email, "test1234")
 			if err != nil {

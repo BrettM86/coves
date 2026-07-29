@@ -8,6 +8,7 @@ import (
 	"Coves/internal/core/communities"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 	"bytes"
 	"context"
 	"database/sql"
@@ -174,7 +175,7 @@ func TestCommunity_E2E(t *testing.T) {
 	t.Run("1. Write-Forward to PDS", func(t *testing.T) {
 		// Use shorter names to avoid "Handle too long" errors
 		// atProto handles max: 63 chars, format: c-name.coves.social
-		communityName := fmt.Sprintf("e2e-%d", time.Now().Unix())
+		communityName := testkit.UniqueIDWithPrefix(t, "e2e")
 
 		createReq := communities.CreateCommunityRequest{
 			Name:                   communityName,
@@ -377,7 +378,7 @@ func TestCommunity_E2E(t *testing.T) {
 			//   - createdByDid: from JWT token (authenticated user)
 			//   - hostedByDid: from instance configuration (security: prevents spoofing)
 			createReq := map[string]interface{}{
-				"name":                   fmt.Sprintf("xrpc-%d", time.Now().Unix()),
+				"name":                   testkit.UniqueIDWithPrefix(t, "xrpc"),
 				"displayName":            "XRPC E2E Test",
 				"description":            "Testing true end-to-end flow",
 				"visibility":             "public",

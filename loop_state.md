@@ -40,7 +40,7 @@ Stop the loop when every task is done, or on any blocked task.
 | 1 | Gate green as imported: run `make ci`, fix what surfaces, record baseline timing + allowlist | 0 ⛩ | S | done | (no diff) | GREEN FIRST RUN: 3307 tests, 3288 pass, 0 fail, 19 skips (all allowlisted, 21 entries → 2 unused are ~conditional), 2.2 min WARM caches. No fixes → no review stream |
 | 2 | Move public-network tests to tests/live/ (+`live` tag, move-only); flip compose nets `internal: true` + module-cache pre-pull; cold-cache egress-blocked `make ci` green | 0 ⛩ | S | done | (see git log) | COLD egress-blocked GREEN 2:21; warm 1:57. 16 funcs → tests/live (4 files + helpers). Egress block found 4 runtime deps, not 1: Turnstile URL hardcoded (→ WithSiteverifyURL, dev-gated env), PLC healthcheck redirected to public web (→ /_health), 3 blueskypost tests dialed public.api.bsky.app (→ blueskyAPI seam), DNS-dependent 404 test (→ DID). Review: Codex "good" + Opus "safe as-is"; 9 fixes applied (unfurl E2E de-mocked via httptest OG, gate vets -tags live, non-dev override warns, prod default pinned, stub 127.0.0.1-only, GOPROXY=off, 404/500 handler tests, golden 200 parse, live cache purge+method asserts). 3281 tests / 14 allowlisted skips |
 | 3 | testkit core: db.go (template-clone, advisory lock), wait.go (WaitFor/Holds, terminal errs), fixtures.go (UniqueID run-prefix), scripts/test-db-prepare.sh, scripts/test-audit.sh (warn mode) + testkit's own tests | 1 | S | done | (see git log) | 47 testkit tests, -race -shuffle clean; clone ~30ms (cheaper than spec est). Review: Codex needs-work (5 high) + Opus not-safe-as-is (2 high) → 15-item batch applied: template-drop name rail (found a panic-in-error-path bug), drop-before-close teardown, 55006 retry, sweep de-FORCEd + error-accumulating, wait-primitive deadline contract, max_connections=200 + ParallelBudget (CI: -parallel 53, inert until ph.3), bounded lock wait w/ holder diagnostics, grep -H audit fix. ADJUDICATION: Codex RIGHT / Opus WRONG on advisory-lock leak (async cancel can grant lock after Go sees error; fixed via Conn.Raw(ErrBadConn) eviction). make ci GREEN 3347 tests / 14 allowlisted skips |
-| 4 | testkit pds.go (absorb 4 factories, createPDSAccount×2, XRPC clients), firehose.go (generic cursor-gated), appview.go; fix 5 handle-collision sites | 1 ⛩ | S | pending | | then FULL PANEL review of tests/testkit (incl. pragma:security — PDS creds) |
+| 4 | testkit pds.go (absorb 4 factories, createPDSAccount×2, XRPC clients), firehose.go (generic cursor-gated), appview.go; fix 5 handle-collision sites | 1 ⛩ | S | done | (see git log) | PHASE 1 COMPLETE. Worker found ALL 10 legacy subscribeToJetstream copies broken (gorilla corrupt-after-deadline → every "30s wait" gave up at ~5s — explains historical flakes). 5 factories not 4 (comments missed by helpers.go); old generateTID never emitted valid TIDs (now wraps indigo TIDClock); dep rule is TRANSITIVE (atproto/pds imports core/blobs → reimplemented). FULL PANEL (Codex+CR+SFH+TA+security): security CLEAN; ~28-item batch applied — same-time_us dedupe set, deadline-bounded dials, all-read-errors-recover, discard counting (clock-skew diagnosis), overflow=failure, lock-free blocking I/O, Event.Raw()/Into() (unblocks consumer migrations), XRPC-shaped 404 classification, PendingIfUnavailable, ConsumerHealth + WithConsumerHealth, option-pattern unification, testkit.Main(m, Require*...). CR false-positive on ParallelBudget wiring (discarded). testkit 117 tests -race -shuffle green; make ci GREEN 3429/14 |
 | 5 | Kill the lies: delete 6 debt tests; lexicon validator stops generating defs-only subtests (retire 8 allowlist entries); move 2 ratelimit files to internal/api/middleware (T0); fold tests/unit into internal/core/communities | 2 | M | pending | | |
 | 6 | Split multi-tier files by test func (manifest in commit msg); add build tags in place; retarget Makefile to tags; delete -short/testing.Short(); delete test-all | 2 ⛩ | S | pending | | identity_resolution, bluesky_post (what's left post-task-2), post_unfurl |
 | 7 | Migrate setupTestDB call sites → testkit.DB(t), batch 1 (~25 files) + delete their DELETE FROMs/cleanups | 3 | M | pending | | mechanical; gates are the reviewer |
@@ -131,3 +131,20 @@ Stop the loop when every task is done, or on any blocked task.
   until task 6. REVIEWER CALIBRATION: on the lock-leak disagreement Codex
   was right, Opus wrong (missed the failure path, traced only cancellation)
   — weight Codex on DB/concurrency semantics.
+- **From task 4 (testkit complete — MIGRATION CONTRACTS for tasks 7-8+)**:
+  canonical package setup is `testkit.Main(m, testkit.RequirePostgres,
+  testkit.RequirePDS, ...)` (opt-in probes; see testkit.go Layout doc).
+  Consumer-feeding tests use `ev.Into(&jetstreamEvent)` — never reconstruct
+  wire structs by hand. Options are component-qualified: WithAppViewBearer,
+  WithAppViewURL, WithFirehoseCursor. DeleteRecord is idempotent-silent on
+  the PDS (200 + no commit for missing rkey) — pair Await with
+  DeleteExistingRecord. `package testkit_test` (external test pkg) is the
+  sanctioned way to pin testkit's duplicated types against internal pkgs it
+  may not import (firehose_pin_test.go is the example). GORILLA TRAP
+  (tree-wide): any websocket loop that `continue`s after a read-deadline
+  timeout has a latent ~5s ceiling — the conn is CORRUPT after expiry and
+  must be re-dialled; all 10 legacy subscribeToJetstream copies had this
+  bug, so historical "Timeout: No Jetstream event received" failures were
+  often this, not slow indexing. testkit firehose recovers on ALL read
+  errors (only undecodable frames are terminal), counts cursor-predating
+  discards (clock-skew diagnosis), and FAILS on pending-buffer overflow.
