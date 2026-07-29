@@ -18,6 +18,7 @@ func uniqueID() string {
 
 // TestIdentityCache tests the PostgreSQL identity cache operations
 func TestIdentityCache(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	cache := identity.NewPostgresCache(db, 5*time.Minute)
@@ -211,6 +212,7 @@ func TestIdentityCache(t *testing.T) {
 
 // TestIdentityCacheTTL tests that expired cache entries are not returned
 func TestIdentityCacheTTL(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	// Create cache with very short TTL (reduced from 1s to 100ms for faster, less flaky tests)
@@ -252,6 +254,7 @@ func TestIdentityCacheTTL(t *testing.T) {
 
 // TestIdentityResolverWithCache tests the caching resolver behavior
 func TestIdentityResolverWithCache(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	cache := identity.NewPostgresCache(db, 5*time.Minute)

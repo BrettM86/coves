@@ -206,6 +206,7 @@ func getXRPC(t *testing.T, serverURL, path, token string) *http.Response {
 
 // TestUserBlockHandler_BlockUser tests the block user endpoint
 func TestUserBlockHandler_BlockUser(t *testing.T) {
+	t.Parallel()
 	env := setupUserBlockTestServer(t)
 
 	blockerDID := "did:plc:blocker123"
@@ -271,6 +272,7 @@ func TestUserBlockHandler_BlockUser(t *testing.T) {
 
 // TestUserBlockHandler_BlockUser_MissingSubject tests blocking with missing subject
 func TestUserBlockHandler_BlockUser_MissingSubject(t *testing.T) {
+	t.Parallel()
 	env := setupUserBlockTestServer(t)
 
 	blockerDID := "did:plc:blocker789"
@@ -302,6 +304,7 @@ func TestUserBlockHandler_BlockUser_MissingSubject(t *testing.T) {
 
 // TestUserBlockHandler_BlockUser_Unauthenticated tests blocking without auth
 func TestUserBlockHandler_BlockUser_Unauthenticated(t *testing.T) {
+	t.Parallel()
 	env := setupUserBlockTestServer(t)
 
 	// No token — unauthenticated request
@@ -318,6 +321,7 @@ func TestUserBlockHandler_BlockUser_Unauthenticated(t *testing.T) {
 
 // TestUserBlockHandler_BlockUser_SelfBlock tests that self-blocking returns 400
 func TestUserBlockHandler_BlockUser_SelfBlock(t *testing.T) {
+	t.Parallel()
 	env := setupUserBlockTestServer(t)
 
 	selfDID := "did:plc:selfblock"
@@ -348,6 +352,7 @@ func TestUserBlockHandler_BlockUser_SelfBlock(t *testing.T) {
 
 // TestUserBlockHandler_UnblockUser tests the unblock user endpoint
 func TestUserBlockHandler_UnblockUser(t *testing.T) {
+	t.Parallel()
 	env := setupUserBlockTestServer(t)
 
 	blockerDID := "did:plc:unblocker1"
@@ -442,6 +447,7 @@ func TestUserBlockHandler_UnblockUser(t *testing.T) {
 
 // TestUserBlockHandler_GetBlockedUsers tests listing blocked users
 func TestUserBlockHandler_GetBlockedUsers(t *testing.T) {
+	t.Parallel()
 	env := setupUserBlockTestServer(t)
 
 	blockerDID := "did:plc:lister1"
@@ -519,6 +525,7 @@ func TestUserBlockHandler_GetBlockedUsers(t *testing.T) {
 
 // TestUserBlockHandler_GetBlockedUsers_Unauthenticated tests that getBlockedUsers requires auth
 func TestUserBlockHandler_GetBlockedUsers_Unauthenticated(t *testing.T) {
+	t.Parallel()
 	env := setupUserBlockTestServer(t)
 
 	// No token — unauthenticated request
@@ -534,6 +541,7 @@ func TestUserBlockHandler_GetBlockedUsers_Unauthenticated(t *testing.T) {
 // TestUserBlockHandler_BlockUser_DuplicateConflict tests that blocking a user who is
 // already blocked on PDS returns the existing block (via repo lookup) or 409 Conflict.
 func TestUserBlockHandler_BlockUser_DuplicateConflict(t *testing.T) {
+	t.Parallel()
 	env := setupUserBlockTestServer(t)
 
 	blockerDID := "did:plc:conflict-blocker"
@@ -602,6 +610,7 @@ func TestUserBlockHandler_BlockUser_DuplicateConflict(t *testing.T) {
 // TestUserBlockHandler_BlockUser_DuplicateConflict_NotIndexed tests the 409 path when
 // PDS returns conflict but the block hasn't been indexed in AppView yet.
 func TestUserBlockHandler_BlockUser_DuplicateConflict_NotIndexed(t *testing.T) {
+	t.Parallel()
 	env := setupUserBlockTestServer(t)
 
 	blockerDID := "did:plc:conflict-noindex-blocker"

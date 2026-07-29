@@ -14,6 +14,7 @@ import (
 )
 
 func TestCommentConsumer_CreateComment(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -167,6 +168,7 @@ func TestCommentConsumer_CreateComment(t *testing.T) {
 }
 
 func TestCommentConsumer_Threading(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -318,6 +320,7 @@ func TestCommentConsumer_Threading(t *testing.T) {
 }
 
 func TestCommentConsumer_UpdateComment(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -439,6 +442,7 @@ func TestCommentConsumer_UpdateComment(t *testing.T) {
 }
 
 func TestCommentConsumer_DeleteComment(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -612,6 +616,7 @@ func TestCommentConsumer_DeleteComment(t *testing.T) {
 }
 
 func TestCommentConsumer_SecurityValidation(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -860,6 +865,7 @@ func TestCommentConsumer_SecurityValidation(t *testing.T) {
 }
 
 func TestCommentRepository_Queries(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -1018,6 +1024,7 @@ func TestCommentRepository_Queries(t *testing.T) {
 // TestCommentConsumer_OutOfOrderReconciliation tests that parent counts are
 // correctly reconciled when child comments arrive before their parent
 func TestCommentConsumer_OutOfOrderReconciliation(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -1271,6 +1278,7 @@ func TestCommentConsumer_OutOfOrderReconciliation(t *testing.T) {
 // TestCommentConsumer_Resurrection tests that soft-deleted comments can be recreated
 // In atProto, deleted records' rkeys become available for reuse
 func TestCommentConsumer_Resurrection(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -1571,6 +1579,7 @@ func TestCommentConsumer_Resurrection(t *testing.T) {
 
 // TestCommentConsumer_ThreadingImmutability tests that UPDATE events cannot change threading refs
 func TestCommentConsumer_ThreadingImmutability(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()

@@ -41,6 +41,7 @@ import (
 //
 // NOTE: Requires PDS running at http://localhost:3001
 func TestAggregator_E2E_WithJetstream(t *testing.T) {
+	t.Parallel()
 	// Check if PDS is available
 	pdsURL := "http://localhost:3001"
 	resp, err := http.Get(pdsURL + "/xrpc/_health")

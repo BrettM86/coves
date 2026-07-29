@@ -16,6 +16,7 @@ import (
 )
 
 func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
@@ -222,6 +223,7 @@ func TestCommunityConsumer_HandleCommunityProfile(t *testing.T) {
 }
 
 func TestCommunityConsumer_HandleSubscription(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
@@ -307,6 +309,7 @@ func TestCommunityConsumer_HandleSubscription(t *testing.T) {
 }
 
 func TestCommunityConsumer_IgnoresNonCommunityEvents(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
@@ -392,6 +395,7 @@ func (m *mockIdentityResolver) Resolve(ctx context.Context, did string) (*identi
 }
 
 func TestCommunityConsumer_PLCHandleResolution(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)

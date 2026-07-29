@@ -25,6 +25,7 @@ import (
 // Regression test for the bug where feeds and post views only hydrated the
 // community avatar and author cards were always bare even for fully indexed users.
 func TestAuthorProfileHydration(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()

@@ -7,6 +7,7 @@ import (
 )
 
 func TestCircuitBreaker_Basic(t *testing.T) {
+	t.Parallel()
 	cb := newCircuitBreaker()
 
 	provider := "test-provider"
@@ -26,6 +27,7 @@ func TestCircuitBreaker_Basic(t *testing.T) {
 }
 
 func TestCircuitBreaker_OpensAfterFailures(t *testing.T) {
+	t.Parallel()
 	cb := newCircuitBreaker()
 	provider := "failing-provider"
 
@@ -45,6 +47,7 @@ func TestCircuitBreaker_OpensAfterFailures(t *testing.T) {
 }
 
 func TestCircuitBreaker_RecoveryAfterSuccess(t *testing.T) {
+	t.Parallel()
 	cb := newCircuitBreaker()
 	provider := "recovery-provider"
 
@@ -68,6 +71,7 @@ func TestCircuitBreaker_RecoveryAfterSuccess(t *testing.T) {
 }
 
 func TestCircuitBreaker_HalfOpenTransition(t *testing.T) {
+	t.Parallel()
 	cb := newCircuitBreaker()
 	cb.openDuration = 100 * time.Millisecond // Short duration for testing
 	provider := "half-open-provider"
@@ -103,6 +107,7 @@ func TestCircuitBreaker_HalfOpenTransition(t *testing.T) {
 }
 
 func TestCircuitBreaker_MultipleProviders(t *testing.T) {
+	t.Parallel()
 	cb := newCircuitBreaker()
 
 	// Open circuit for provider A
@@ -124,6 +129,7 @@ func TestCircuitBreaker_MultipleProviders(t *testing.T) {
 }
 
 func TestCircuitBreaker_GetStats(t *testing.T) {
+	t.Parallel()
 	cb := newCircuitBreaker()
 
 	// Record some activity
@@ -150,6 +156,7 @@ func TestCircuitBreaker_GetStats(t *testing.T) {
 }
 
 func TestCircuitBreaker_FailureThresholdExact(t *testing.T) {
+	t.Parallel()
 	cb := newCircuitBreaker()
 	provider := "exact-threshold-provider"
 

@@ -14,6 +14,7 @@ import (
 
 // TestCommunityRepository_CredentialPersistence tests that PDS credentials are properly persisted
 func TestCommunityRepository_CredentialPersistence(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
@@ -120,6 +121,7 @@ func TestCommunityRepository_CredentialPersistence(t *testing.T) {
 
 // TestCommunityRepository_EncryptedCredentials tests encryption at rest
 func TestCommunityRepository_EncryptedCredentials(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
@@ -232,6 +234,7 @@ func TestCommunityRepository_EncryptedCredentials(t *testing.T) {
 
 // TestCommunityRepository_V2OwnershipModel tests that communities are self-owned
 func TestCommunityRepository_V2OwnershipModel(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)

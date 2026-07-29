@@ -35,6 +35,7 @@ func createTestOAuthSessionForBlock(did string) *oauth.ClientSessionData {
 // TestBlockHandler_HandleResolution tests that the block handler accepts handles
 // in addition to DIDs and resolves them correctly
 func TestBlockHandler_HandleResolution(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -268,6 +269,7 @@ func TestBlockHandler_HandleResolution(t *testing.T) {
 
 // TestUnblockHandler_HandleResolution tests that the unblock handler accepts handles
 func TestUnblockHandler_HandleResolution(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()

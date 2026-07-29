@@ -23,6 +23,7 @@ import (
 
 // TestGetTimeline_Basic tests timeline feed shows posts from subscribed communities
 func TestGetTimeline_Basic(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	// Setup services
@@ -107,6 +108,7 @@ func TestGetTimeline_Basic(t *testing.T) {
 
 // TestGetTimeline_HotSort tests hot sorting across multiple communities
 func TestGetTimeline_HotSort(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	// Setup services
@@ -173,6 +175,7 @@ func TestGetTimeline_HotSort(t *testing.T) {
 
 // TestGetTimeline_Pagination tests cursor-based pagination
 func TestGetTimeline_Pagination(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	// Setup services
@@ -244,6 +247,7 @@ func TestGetTimeline_Pagination(t *testing.T) {
 
 // TestGetTimeline_EmptyWhenNoSubscriptions tests timeline is empty when user has no subscriptions
 func TestGetTimeline_EmptyWhenNoSubscriptions(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	// Setup services
@@ -281,6 +285,7 @@ func TestGetTimeline_EmptyWhenNoSubscriptions(t *testing.T) {
 
 // TestGetTimeline_Unauthorized tests timeline requires authentication
 func TestGetTimeline_Unauthorized(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	// Setup services
@@ -305,6 +310,7 @@ func TestGetTimeline_Unauthorized(t *testing.T) {
 
 // TestGetTimeline_LimitValidation tests limit parameter validation
 func TestGetTimeline_LimitValidation(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	// Setup services
@@ -351,6 +357,7 @@ func TestGetTimeline_LimitValidation(t *testing.T) {
 // - Tests all sorting modes (hot, top, new) across communities
 // - Ensures proper aggregation and no cross-contamination
 func TestGetTimeline_MultiCommunity_E2E(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	// Setup services

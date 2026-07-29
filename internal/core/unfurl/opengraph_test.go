@@ -12,6 +12,7 @@ import (
 )
 
 func TestParseOpenGraph_ValidTags(t *testing.T) {
+	t.Parallel()
 	html := `
 <!DOCTYPE html>
 <html>
@@ -37,6 +38,7 @@ func TestParseOpenGraph_ValidTags(t *testing.T) {
 }
 
 func TestParseOpenGraph_MissingImage(t *testing.T) {
+	t.Parallel()
 	html := `
 <!DOCTYPE html>
 <html>
@@ -57,6 +59,7 @@ func TestParseOpenGraph_MissingImage(t *testing.T) {
 }
 
 func TestParseOpenGraph_FallbackToTitle(t *testing.T) {
+	t.Parallel()
 	html := `
 <!DOCTYPE html>
 <html>
@@ -76,6 +79,7 @@ func TestParseOpenGraph_FallbackToTitle(t *testing.T) {
 }
 
 func TestParseOpenGraph_PreferOpenGraphOverFallback(t *testing.T) {
+	t.Parallel()
 	html := `
 <!DOCTYPE html>
 <html>
@@ -97,6 +101,7 @@ func TestParseOpenGraph_PreferOpenGraphOverFallback(t *testing.T) {
 }
 
 func TestParseOpenGraph_MalformedHTML(t *testing.T) {
+	t.Parallel()
 	html := `
 <!DOCTYPE html>
 <html>
@@ -117,6 +122,7 @@ func TestParseOpenGraph_MalformedHTML(t *testing.T) {
 }
 
 func TestParseOpenGraph_Empty(t *testing.T) {
+	t.Parallel()
 	html := `
 <!DOCTYPE html>
 <html>
@@ -134,6 +140,7 @@ func TestParseOpenGraph_Empty(t *testing.T) {
 }
 
 func TestFetchOpenGraph_Success(t *testing.T) {
+	t.Parallel()
 	// Create test server with OpenGraph metadata
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Contains(t, r.Header.Get("User-Agent"), "CovesBot")
@@ -169,6 +176,7 @@ func TestFetchOpenGraph_Success(t *testing.T) {
 }
 
 func TestFetchOpenGraph_HTTPError(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
@@ -182,6 +190,7 @@ func TestFetchOpenGraph_HTTPError(t *testing.T) {
 }
 
 func TestFetchOpenGraph_Timeout(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(2 * time.Second)
 		w.WriteHeader(http.StatusOK)
@@ -195,6 +204,7 @@ func TestFetchOpenGraph_Timeout(t *testing.T) {
 }
 
 func TestFetchOpenGraph_NoMetadata(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		html := `<html><head></head><body><p>No metadata</p></body></html>`
 		w.Header().Set("Content-Type", "text/html")
@@ -215,6 +225,7 @@ func TestFetchOpenGraph_NoMetadata(t *testing.T) {
 }
 
 func TestIsOEmbedProvider(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		url      string
 		expected bool
@@ -238,6 +249,7 @@ func TestIsOEmbedProvider(t *testing.T) {
 }
 
 func TestIsSupported(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		url      string
 		expected bool
@@ -262,6 +274,7 @@ func TestIsSupported(t *testing.T) {
 }
 
 func TestGetAttr(t *testing.T) {
+	t.Parallel()
 	html := `<meta property="og:title" content="Test Title" name="test" />`
 	doc, err := parseOpenGraph(html)
 	require.NoError(t, err)

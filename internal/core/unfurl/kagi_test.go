@@ -12,6 +12,7 @@ import (
 )
 
 func TestFetchKagiKite_Success(t *testing.T) {
+	t.Parallel()
 	// Mock Kagi HTML response
 	mockHTML := `<!DOCTYPE html>
 <html>
@@ -46,6 +47,7 @@ func TestFetchKagiKite_Success(t *testing.T) {
 }
 
 func TestFetchKagiKite_NoImage(t *testing.T) {
+	t.Parallel()
 	mockHTML := `<!DOCTYPE html>
 <html>
 <head><title>Test Story</title></head>
@@ -69,6 +71,7 @@ func TestFetchKagiKite_NoImage(t *testing.T) {
 }
 
 func TestFetchKagiKite_FallbackToTitle(t *testing.T) {
+	t.Parallel()
 	mockHTML := `<!DOCTYPE html>
 <html>
 <head><title>Fallback Title</title></head>
@@ -94,6 +97,7 @@ func TestFetchKagiKite_FallbackToTitle(t *testing.T) {
 }
 
 func TestFetchKagiKite_ImageWithAltText(t *testing.T) {
+	t.Parallel()
 	mockHTML := `<!DOCTYPE html>
 <html>
 <head><title>News Story</title></head>
@@ -120,6 +124,7 @@ func TestFetchKagiKite_ImageWithAltText(t *testing.T) {
 }
 
 func TestFetchKagiKite_HTTPError(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
@@ -135,6 +140,7 @@ func TestFetchKagiKite_HTTPError(t *testing.T) {
 }
 
 func TestFetchKagiKite_Timeout(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(2 * time.Second)
 		w.WriteHeader(http.StatusOK)
@@ -150,6 +156,7 @@ func TestFetchKagiKite_Timeout(t *testing.T) {
 }
 
 func TestFetchKagiKite_MultipleImages_PicksSecond(t *testing.T) {
+	t.Parallel()
 	mockHTML := `<!DOCTYPE html>
 <html>
 <head><title>Story with multiple images</title></head>
@@ -177,6 +184,7 @@ func TestFetchKagiKite_MultipleImages_PicksSecond(t *testing.T) {
 }
 
 func TestFetchKagiKite_OnlyNonKagiImages_NoMatch(t *testing.T) {
+	t.Parallel()
 	mockHTML := `<!DOCTYPE html>
 <html>
 <head><title>Story with non-Kagi images</title></head>

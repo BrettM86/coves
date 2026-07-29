@@ -2,6 +2,17 @@
 
 package integration
 
+// SERIAL BY DESIGN — do not add t.Parallel() to this file.
+//
+// Its tests drive the Jetstream firehose through the hand-rolled
+// subscribeToJetstream* helpers below rather than testkit's cursor-gated
+// subscriber. Those helpers subscribe to one shared stream and match on the
+// first event of a collection, so a concurrent test writing the same
+// collection is delivered to them too and either steals the match or trips
+// their timeout. Per-test database clones do not isolate a shared websocket.
+//
+// docs/TEST_ARCHITECTURE.md §3.3 ("Parallelism is earned, not assumed").
+
 import (
 	"Coves/internal/api/handlers/user"
 	"Coves/internal/api/routes"
@@ -13,12 +24,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"image/png"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -160,7 +169,11 @@ func TestUserProfileAvatarE2E_UpdateWithAvatar(t *testing.T) {
 			}
 			defer func() { _ = conn.Close() }()
 
-			consecutiveTimeouts := 0
+			// ONE deadline for the whole subscription, not one per read: the
+			// budget is what the caller is willing to wait in total, and a
+			// per-read deadline would let a busy stream extend it indefinitely.
+			readDeadline := time.Now().Add(jetstreamReadBudget)
+
 			for {
 				select {
 				case <-done:
@@ -168,22 +181,18 @@ func TestUserProfileAvatarE2E_UpdateWithAvatar(t *testing.T) {
 				case <-subscribeCtx.Done():
 					return
 				default:
-					if deadlineErr := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); deadlineErr != nil {
+					if deadlineErr := conn.SetReadDeadline(readDeadline); deadlineErr != nil {
 						return
 					}
 
 					var event jetstream.JetstreamEvent
 					if readErr := conn.ReadJSON(&event); readErr != nil {
-						var netErr net.Error
-						if errors.As(readErr, &netErr) && netErr.Timeout() {
-							consecutiveTimeouts++
-							if consecutiveTimeouts >= 10 {
-								return // Connection stale, exit to prevent panic
-							}
-						}
-						continue
+						// Any read error ends this subscription. A gorilla connection is
+						// corrupt once its read deadline has expired, and looping on it
+						// is what reaches the panic that aborts the whole test binary.
+						// The caller's own timeout reports the missing event.
+						return
 					}
-					consecutiveTimeouts = 0
 
 					// Only process profile update events for our user
 					if event.Kind == "commit" && event.Commit != nil &&
@@ -229,7 +238,7 @@ func TestUserProfileAvatarE2E_UpdateWithAvatar(t *testing.T) {
 		// Wait for REAL Jetstream event
 		t.Logf("\n Waiting for profile update event from Jetstream...")
 		var realEvent *jetstream.JetstreamEvent
-		timeout := time.After(15 * time.Second)
+		timeout := time.After(jetstreamReadBudget)
 
 	eventLoop:
 		for {
@@ -432,7 +441,11 @@ func TestUserProfileAvatarE2E_UpdateWithBanner(t *testing.T) {
 			}
 			defer func() { _ = conn.Close() }()
 
-			consecutiveTimeouts := 0
+			// ONE deadline for the whole subscription, not one per read: the
+			// budget is what the caller is willing to wait in total, and a
+			// per-read deadline would let a busy stream extend it indefinitely.
+			readDeadline := time.Now().Add(jetstreamReadBudget)
+
 			for {
 				select {
 				case <-done:
@@ -440,22 +453,18 @@ func TestUserProfileAvatarE2E_UpdateWithBanner(t *testing.T) {
 				case <-subscribeCtx.Done():
 					return
 				default:
-					if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+					if err := conn.SetReadDeadline(readDeadline); err != nil {
 						return
 					}
 
 					var event jetstream.JetstreamEvent
 					if err := conn.ReadJSON(&event); err != nil {
-						var netErr net.Error
-						if errors.As(err, &netErr) && netErr.Timeout() {
-							consecutiveTimeouts++
-							if consecutiveTimeouts >= 10 {
-								return // Connection stale, exit to prevent panic
-							}
-						}
-						continue
+						// Any read error ends this subscription. A gorilla connection is
+						// corrupt once its read deadline has expired, and looping on it
+						// is what reaches the panic that aborts the whole test binary.
+						// The caller's own timeout reports the missing event.
+						return
 					}
-					consecutiveTimeouts = 0
 
 					if event.Kind == "commit" && event.Commit != nil &&
 						event.Commit.Collection == "social.coves.actor.profile" &&
@@ -496,7 +505,7 @@ func TestUserProfileAvatarE2E_UpdateWithBanner(t *testing.T) {
 		// Wait for Jetstream event
 		t.Logf("\n Waiting for profile update event from Jetstream...")
 		var realEvent *jetstream.JetstreamEvent
-		timeout := time.After(15 * time.Second)
+		timeout := time.After(jetstreamReadBudget)
 
 	eventLoop:
 		for {
@@ -646,7 +655,11 @@ func TestUserProfileAvatarE2E_UpdateDisplayNameAndBio(t *testing.T) {
 			}
 			defer func() { _ = conn.Close() }()
 
-			consecutiveTimeouts := 0
+			// ONE deadline for the whole subscription, not one per read: the
+			// budget is what the caller is willing to wait in total, and a
+			// per-read deadline would let a busy stream extend it indefinitely.
+			readDeadline := time.Now().Add(jetstreamReadBudget)
+
 			for {
 				select {
 				case <-done:
@@ -654,22 +667,18 @@ func TestUserProfileAvatarE2E_UpdateDisplayNameAndBio(t *testing.T) {
 				case <-subscribeCtx.Done():
 					return
 				default:
-					if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+					if err := conn.SetReadDeadline(readDeadline); err != nil {
 						return
 					}
 
 					var event jetstream.JetstreamEvent
 					if err := conn.ReadJSON(&event); err != nil {
-						var netErr net.Error
-						if errors.As(err, &netErr) && netErr.Timeout() {
-							consecutiveTimeouts++
-							if consecutiveTimeouts >= 10 {
-								return // Connection stale, exit to prevent panic
-							}
-						}
-						continue
+						// Any read error ends this subscription. A gorilla connection is
+						// corrupt once its read deadline has expired, and looping on it
+						// is what reaches the panic that aborts the whole test binary.
+						// The caller's own timeout reports the missing event.
+						return
 					}
-					consecutiveTimeouts = 0
 
 					if event.Kind == "commit" && event.Commit != nil &&
 						event.Commit.Collection == "social.coves.actor.profile" &&
@@ -704,7 +713,7 @@ func TestUserProfileAvatarE2E_UpdateDisplayNameAndBio(t *testing.T) {
 
 		// Wait for Jetstream event
 		var realEvent *jetstream.JetstreamEvent
-		timeout := time.After(15 * time.Second)
+		timeout := time.After(jetstreamReadBudget)
 
 	eventLoop:
 		for {
@@ -828,9 +837,13 @@ func TestUserProfileAvatarE2E_ReplaceAvatar(t *testing.T) {
 				return
 			}
 			defer func() { _ = conn.Close() }()
+
+			// ONE deadline for the whole subscription, not one per read: the
+			// budget is what the caller is willing to wait in total, and a
+			// per-read deadline would let a busy stream extend it indefinitely.
+			readDeadline := time.Now().Add(jetstreamReadBudget)
 			close(ready) // socket dialed; safe for the caller to write
 
-			consecutiveTimeouts := 0
 			for {
 				select {
 				case <-done:
@@ -838,22 +851,18 @@ func TestUserProfileAvatarE2E_ReplaceAvatar(t *testing.T) {
 				case <-subscribeCtx.Done():
 					return
 				default:
-					if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+					if err := conn.SetReadDeadline(readDeadline); err != nil {
 						return
 					}
 
 					var event jetstream.JetstreamEvent
 					if err := conn.ReadJSON(&event); err != nil {
-						var netErr net.Error
-						if errors.As(err, &netErr) && netErr.Timeout() {
-							consecutiveTimeouts++
-							if consecutiveTimeouts >= 10 {
-								return // Connection stale, exit to prevent panic
-							}
-						}
-						continue
+						// Any read error ends this subscription. A gorilla connection is
+						// corrupt once its read deadline has expired, and looping on it
+						// is what reaches the panic that aborts the whole test binary.
+						// The caller's own timeout reports the missing event.
+						return
 					}
-					consecutiveTimeouts = 0
 
 					if event.Kind == "commit" && event.Commit != nil &&
 						event.Commit.Collection == "social.coves.actor.profile" &&

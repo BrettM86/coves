@@ -16,6 +16,7 @@ import (
 
 // TestCommunityConsumer_V2RKeyValidation tests that only V2 communities (rkey="self") are accepted
 func TestCommunityConsumer_V2RKeyValidation(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
@@ -246,6 +247,7 @@ func TestCommunityConsumer_V2RKeyValidation(t *testing.T) {
 
 // TestCommunityConsumer_HandleField tests the V2 handle field
 func TestCommunityConsumer_HandleField(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)

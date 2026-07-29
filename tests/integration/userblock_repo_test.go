@@ -15,6 +15,7 @@ import (
 
 // TestUserBlockRepo_BlockUser tests creating user blocks
 func TestUserBlockRepo_BlockUser(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := testkit.DB(t)
 
@@ -118,6 +119,7 @@ func TestUserBlockRepo_BlockUser(t *testing.T) {
 
 // TestUserBlockRepo_UnblockUser tests removing user blocks
 func TestUserBlockRepo_UnblockUser(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := testkit.DB(t)
 
@@ -163,6 +165,7 @@ func TestUserBlockRepo_UnblockUser(t *testing.T) {
 
 // TestUserBlockRepo_GetBlock tests block retrieval by blocker + blocked DID
 func TestUserBlockRepo_GetBlock(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := testkit.DB(t)
 
@@ -211,6 +214,7 @@ func TestUserBlockRepo_GetBlock(t *testing.T) {
 
 // TestUserBlockRepo_GetBlockByURI tests block retrieval by record URI
 func TestUserBlockRepo_GetBlockByURI(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := testkit.DB(t)
 
@@ -256,6 +260,7 @@ func TestUserBlockRepo_GetBlockByURI(t *testing.T) {
 
 // TestUserBlockRepo_ListBlockedUsers tests listing blocked users with pagination
 func TestUserBlockRepo_ListBlockedUsers(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := testkit.DB(t)
 
@@ -351,6 +356,7 @@ func TestUserBlockRepo_ListBlockedUsers(t *testing.T) {
 
 // TestUserBlockRepo_IsBlocked tests the fast block check
 func TestUserBlockRepo_IsBlocked(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := testkit.DB(t)
 
@@ -426,6 +432,7 @@ func TestUserBlockRepo_IsBlocked(t *testing.T) {
 
 // TestUserBlockRepo_AreBlocked tests the batch block check
 func TestUserBlockRepo_AreBlocked(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := testkit.DB(t)
 
@@ -491,6 +498,7 @@ func TestUserBlockRepo_AreBlocked(t *testing.T) {
 // by record URI and then deleting it — the path used by the Jetstream consumer
 // when processing DELETE operations (which only carry the record URI, not DID pairs).
 func TestUserBlockRepo_UnblockByRecordURI(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := testkit.DB(t)
 

@@ -16,6 +16,7 @@ import (
 
 // TestCommentVote_CreateAndUpdate tests voting on comments and vote count updates
 func TestCommentVote_CreateAndUpdate(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -321,6 +322,7 @@ func TestCommentVote_CreateAndUpdate(t *testing.T) {
 
 // TestCommentVote_ViewerState tests viewer vote state in comment query responses
 func TestCommentVote_ViewerState(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()

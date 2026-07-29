@@ -225,6 +225,7 @@ func setupSuggestionTestRouter(t *testing.T, adminDIDs []string) (http.Handler, 
 // Community Suggestions & Voting feature. It tests the full stack:
 // HTTP handlers -> service -> repository -> PostgreSQL.
 func TestCommunitySuggestionE2E(t *testing.T) {
+	t.Parallel()
 	adminDID := "did:plc:testadmin"
 	userDID := "did:plc:testuser1"
 	user2DID := "did:plc:testuser2"
@@ -1112,6 +1113,7 @@ func TestCommunitySuggestionE2E(t *testing.T) {
 // TestCommunitySuggestionE2E_ViewerStateOnGet tests that the get endpoint properly
 // populates viewer state for authenticated users.
 func TestCommunitySuggestionE2E_ViewerStateOnGet(t *testing.T) {
+	t.Parallel()
 	adminDID := "did:plc:testadmin"
 	userDID := "did:plc:vieweruser1"
 	user2DID := "did:plc:vieweruser2"
@@ -1187,6 +1189,7 @@ func TestCommunitySuggestionE2E_ViewerStateOnGet(t *testing.T) {
 // TestCommunitySuggestionE2E_DownvoteFlow tests the full downvote lifecycle:
 // downvote, toggle off, then upvote.
 func TestCommunitySuggestionE2E_DownvoteFlow(t *testing.T) {
+	t.Parallel()
 	adminDID := "did:plc:testadmin"
 	userDID := "did:plc:downvoteuser1"
 	voterDID := "did:plc:downvotevoter1"

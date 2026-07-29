@@ -2,6 +2,17 @@
 
 package integration
 
+// SERIAL BY DESIGN — do not add t.Parallel() to this file.
+//
+// Its tests drive the Jetstream firehose through the hand-rolled
+// subscribeToJetstream* helpers below rather than testkit's cursor-gated
+// subscriber. Those helpers subscribe to one shared stream and match on the
+// first event of a collection, so a concurrent test writing the same
+// collection is delivered to them too and either steals the match or trips
+// their timeout. Per-test database clones do not isolate a shared websocket.
+//
+// docs/TEST_ARCHITECTURE.md §3.3 ("Parallelism is earned, not assumed").
+
 import (
 	"Coves/internal/api/middleware"
 	"Coves/internal/atproto/identity"
@@ -714,10 +725,10 @@ func subscribeToJetstreamForPostCreate(
 	}
 	defer func() { _ = conn.Close() }()
 
-	// Track consecutive timeouts to detect stale connections
-	// gorilla/websocket panics after 1000 repeated reads on a failed connection
-	consecutiveTimeouts := 0
-	const maxConsecutiveTimeouts = 10
+	// ONE deadline for the whole subscription, not one per read: the
+	// budget is what the caller is willing to wait in total, and a
+	// per-read deadline would let a busy stream extend it indefinitely.
+	readDeadline := time.Now().Add(jetstreamReadBudget)
 
 	for {
 		select {
@@ -726,7 +737,7 @@ func subscribeToJetstreamForPostCreate(
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-			if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			if err := conn.SetReadDeadline(readDeadline); err != nil {
 				return fmt.Errorf("failed to set read deadline: %w", err)
 			}
 
@@ -734,20 +745,16 @@ func subscribeToJetstreamForPostCreate(
 			err := conn.ReadJSON(&event)
 			if err != nil {
 				if websocket.IsCloseError(err, websocket.CloseNormalClosure) {
-					return nil
+					return fmt.Errorf("Jetstream closed the subscription before the event arrived")
 				}
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					consecutiveTimeouts++
-					if consecutiveTimeouts >= maxConsecutiveTimeouts {
-						return fmt.Errorf("connection appears stale after %d consecutive timeouts", consecutiveTimeouts)
-					}
-					continue
+					// The deadline is the whole budget, so its expiry is the answer:
+					// no matching event arrived. Reading on would be reading a
+					// connection gorilla has already marked failed.
+					return fmt.Errorf("no matching event within %s", jetstreamReadBudget)
 				}
 				return fmt.Errorf("failed to read Jetstream message: %w", err)
 			}
-
-			// Reset timeout counter on successful read
-			consecutiveTimeouts = 0
 
 			if event.Did == targetDID && event.Kind == "commit" &&
 				event.Commit != nil && event.Commit.Collection == "social.coves.community.post" &&
@@ -783,10 +790,10 @@ func subscribeToJetstreamForPostDelete(
 	}
 	defer func() { _ = conn.Close() }()
 
-	// Track consecutive timeouts to detect stale connections
-	// gorilla/websocket panics after 1000 repeated reads on a failed connection
-	consecutiveTimeouts := 0
-	const maxConsecutiveTimeouts = 10
+	// ONE deadline for the whole subscription, not one per read: the
+	// budget is what the caller is willing to wait in total, and a
+	// per-read deadline would let a busy stream extend it indefinitely.
+	readDeadline := time.Now().Add(jetstreamReadBudget)
 
 	for {
 		select {
@@ -795,7 +802,7 @@ func subscribeToJetstreamForPostDelete(
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-			if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			if err := conn.SetReadDeadline(readDeadline); err != nil {
 				return fmt.Errorf("failed to set read deadline: %w", err)
 			}
 
@@ -803,20 +810,16 @@ func subscribeToJetstreamForPostDelete(
 			err := conn.ReadJSON(&event)
 			if err != nil {
 				if websocket.IsCloseError(err, websocket.CloseNormalClosure) {
-					return nil
+					return fmt.Errorf("Jetstream closed the subscription before the event arrived")
 				}
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					consecutiveTimeouts++
-					if consecutiveTimeouts >= maxConsecutiveTimeouts {
-						return fmt.Errorf("connection appears stale after %d consecutive timeouts", consecutiveTimeouts)
-					}
-					continue
+					// The deadline is the whole budget, so its expiry is the answer:
+					// no matching event arrived. Reading on would be reading a
+					// connection gorilla has already marked failed.
+					return fmt.Errorf("no matching event within %s", jetstreamReadBudget)
 				}
 				return fmt.Errorf("failed to read Jetstream message: %w", err)
 			}
-
-			// Reset timeout counter on successful read
-			consecutiveTimeouts = 0
 
 			if event.Did == targetDID && event.Kind == "commit" &&
 				event.Commit != nil && event.Commit.Collection == "social.coves.community.post" &&

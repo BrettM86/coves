@@ -91,7 +91,7 @@ services:
     # max_connections is raised from the default 100 because tests/testkit
     # clones a database per test and each clone opens its own small pool. The
     # ceiling on `go test -parallel` is derived from this number
-    # (testkit.ParallelBudget), so the two move together instead of the suite
+    # (testkit.ConcurrencyBudget), so the two move together instead of the suite
     # discovering the limit as "sorry, too many clients already" in whichever
     # test happened to be unlucky.
     command: ["-p", "5434", "-c", "max_connections=200"]

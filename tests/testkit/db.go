@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/fs"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -70,6 +71,17 @@ const (
 	// an acceptable rule.
 	ClonePrefix = "tkclone_"
 
+	// PrivateTemplatePrefix marks a throwaway template database created by
+	// testkit's own tests, which need to drop and rebuild a template without
+	// pulling the shared one out from under another test binary.
+	//
+	// It is a SEPARATE prefix rather than a clone name because the two are
+	// dropped under different rules — and it is a sweepable one because a
+	// killed run would otherwise leave a fully migrated database behind
+	// forever: nothing else names it, and the clone sweep would not look at it.
+	// It contains "test" so that validateTemplateName accepts it.
+	PrivateTemplatePrefix = "tktmpl_test_"
+
 	// Advisory lock coordinates. The class id spells "COVE" in ASCII; object
 	// ids are allocated here as testkit grows more cluster-wide critical
 	// sections. Both halves are needed because Postgres advisory locks are
@@ -90,7 +102,7 @@ const (
 	// clonePoolMaxOpen bounds the connections a single test's pool may open.
 	//
 	// This is the connection budget from the spec: with a clone per test and
-	// tests running in parallel, pools multiply. ParallelBudget derives the
+	// tests running in parallel, pools multiply. ConcurrencyBudget derives the
 	// safe -parallel value from this and the server's max_connections, and the
 	// compose files raise max_connections to match.
 	clonePoolMaxOpen = 3
@@ -114,6 +126,19 @@ const (
 // cloneNamePattern is the safety rail: every destructive statement testkit
 // issues checks its target against this first.
 var cloneNamePattern = regexp.MustCompile(`^` + ClonePrefix + `[a-z0-9_]+$`)
+
+var privateTemplateNamePattern = regexp.MustCompile(`^` + PrivateTemplatePrefix + `[a-z0-9_]+$`)
+
+// sweepableFamilies are the database name families testkit creates and may drop
+// unattended. Both share the layout newSweepableName writes, so both can be
+// aged by name.
+var sweepableFamilies = []struct {
+	prefix  string
+	pattern *regexp.Regexp
+}{
+	{ClonePrefix, cloneNamePattern},
+	{PrivateTemplatePrefix, privateTemplateNamePattern},
+}
 
 // templateNamePattern constrains what may be used as a template database name.
 var templateNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
@@ -490,46 +515,6 @@ func EnsureTemplate(ctx context.Context) error {
 	return nil
 }
 
-// MigrateSharedDatabase brings the shared test database — the one named by
-// POSTGRES_TEST_DB, which testkit otherwise uses only for administration — up
-// to the current migration set.
-//
-// Nothing testkit owns needs this. It exists for the not-yet-migrated tests,
-// which connect to that database directly and expect its tables to be there.
-// Before this, the Makefile ran `goose up` against it and `make ci` relied on
-// whichever test binary happened to call goose.Up first — an ordering
-// coincidence that a -run filter or a new package would break, and whose
-// failure mode is a wall of "relation does not exist". Doing it here means the
-// one place that prepares databases prepares all of them, for every caller.
-//
-// Delete this along with tests/integration.
-func MigrateSharedDatabase(ctx context.Context) error {
-	shared := Endpoints().Postgres.Database
-
-	// Same exclusive lock the template provisioning uses. Two concurrent
-	// preparers running goose against one database is a deadlock or a partial
-	// migration, and the lock is already the thing that serialises them.
-	return withAdvisoryLock(ctx, false, func(ctx context.Context, _ *sql.Conn) error {
-		db, err := openDatabase(shared, 1)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = db.Close() }()
-
-		// goose.NewProvider, not the package-level goose.Up, for the reason in
-		// migrateAndStamp: the package API keeps its dialect and filesystem in
-		// globals that the legacy path also writes to.
-		provider, err := goose.NewProvider(goose.DialectPostgres, db, migrations.FS)
-		if err != nil {
-			return fmt.Errorf("configuring goose for %s: %w", Endpoints().Postgres.Redacted(shared), err)
-		}
-		if _, err := provider.Up(ctx); err != nil {
-			return fmt.Errorf("migrating %s: %w", Endpoints().Postgres.Redacted(shared), err)
-		}
-		return nil
-	})
-}
-
 // ProvisionTemplate creates or rebuilds the template database and reports what
 // it did. With force, the template is rebuilt even if its stamp already matches.
 //
@@ -726,65 +711,170 @@ func openDatabase(name string, maxOpen int) (*sql.DB, error) {
 // Connection budget
 // ---------------------------------------------------------------------------
 
-// appviewConnectionHeadroom is the number of connections reserved for everything
-// that is not a test clone: the AppView's own pool, the admin pool, psql
-// sessions, Postgres' superuser reserve.
-const appviewConnectionHeadroom = 40
+// connectionHeadroom is the number of connections the budget refuses to spend
+// on tests: Postgres' superuser reserve, a developer's psql, a concurrent
+// test-db-prepare, and slack for the burst between a clone's pool opening and
+// the previous test's pool closing.
+//
+// It does NOT cover the AppView, which talks to a different server (coves_dev
+// on :5435) in every configuration this repository ships.
+const connectionHeadroom = 40
 
-// ParallelBudget returns the largest `go test -parallel` value the server's
+// packageParallelism is the `go test -p` value the budget is divided across.
+//
+// -p and -parallel multiply: N test binaries each running M parallel tests hold
+// N × M clone pools at once. The server's max_connections therefore buys a
+// fixed number of concurrent test databases, and these two flags only decide
+// how that total is split between the dimensions.
+//
+// It is 1, and the reason is NOT the one that used to be written on `-p 1` in
+// the Makefile and the CI runner. That reason — tests/integration wiping shared
+// tables — is gone: every test owns a private clone and packages cannot corrupt
+// each other's data any more.
+//
+// The reason now is the ONE resource that stayed shared, and that no amount of
+// database isolation can partition: the Jetstream firehose. Running two test
+// binaries at once means tests/testkit's firehose tests subscribe while
+// tests/integration is creating PDS accounts 25 at a time — and Jetstream's
+// wantedCollections filter does not apply to account/identity events, so those
+// tests get a stream that is almost entirely other tests' account churn and
+// time out waiting for their own commit. Measured, not assumed: on a dev stack
+// with an accumulated Jetstream store, the full tagged run failed 2 of 4 times
+// at -p 2 and 0 of 4 times at -p 1, with the same -parallel.
+//
+// So the budget goes to within-package parallelism, which is where this tree's
+// wall clock lives anyway — tests/integration alone is most of it. Raise this
+// when Phase 4 of docs/TEST_ARCHITECTURE.md deletes tests/integration and its
+// ten hand-rolled subscribers, leaving testkit the only firehose consumer.
+const packageParallelism = 1
+
+// maxParallelPerPackage keeps a very large max_connections from producing a
+// -parallel value far past what the machine can usefully run.
+const maxParallelPerPackage = 64
+
+// nestedClonePools is the most testkit.DB clones a SINGLE test may hold open at
+// the same time, and therefore the multiplier the budget has to apply to every
+// parallel slot.
+//
+// One is the norm, but a test that calls testkit.DB and then calls it again in
+// a subtest holds two pools at once — the outer clone outlives the inner one.
+// TestPasswordSecurity in tests/integration does exactly that today. Budgeting
+// one pool per slot made the model understate the true peak, so the formula
+// could hand out a -parallel whose worst case sat above the ceiling it had just
+// computed.
+//
+// Two costs nothing here, which is why it is the conservative choice rather
+// than a tuned one: measured on this tree, -parallel 26 and -parallel 52 finish
+// the tagged run within noise of each other (91-95s vs 89-94s), because the
+// wall clock is dominated by the serial firehose block, not by how many clones
+// run at once. Raise it only if some test starts holding three.
+const nestedClonePools = 2
+
+// A Budget is the pair of `go test` concurrency flags a server can support.
+type Budget struct {
+	Packages int // -p:        test binaries running at once
+	Parallel int // -parallel: t.Parallel() tests at once within each binary
+}
+
+// Flags renders the budget as the flags themselves, so a caller can splice it
+// into a command line without knowing which flag is which.
+func (b Budget) Flags() string {
+	return fmt.Sprintf("-p %d -parallel %d", b.Packages, b.Parallel)
+}
+
+// ConcurrencyBudget returns the largest `go test` concurrency the server's
 // max_connections can support, given that every parallel test holds its own
-// clone pool.
+// clone pool and every test binary holds an admin pool.
 //
 // Without this the connection budget is an unwritten assumption, and the way it
 // surfaces is a run that fails with "sorry, too many clients already" in
 // whichever test happened to be unlucky — a failure that reads like a bug in
 // that test.
-func ParallelBudget(ctx context.Context) (int, error) {
+func ConcurrencyBudget(ctx context.Context) (Budget, error) {
 	db, err := adminDB()
 	if err != nil {
-		return 0, err
+		return Budget{}, err
 	}
 	var raw string
 	if err := db.QueryRowContext(ctx, "SHOW max_connections").Scan(&raw); err != nil {
-		return 0, fmt.Errorf("reading max_connections: %w", err)
+		return Budget{}, fmt.Errorf("reading max_connections: %w", err)
 	}
 	maxConns, err := strconv.Atoi(strings.TrimSpace(raw))
 	if err != nil {
-		return 0, fmt.Errorf("parsing max_connections %q: %w", raw, err)
+		return Budget{}, fmt.Errorf("parsing max_connections %q: %w", raw, err)
 	}
-	budget := (maxConns - appviewConnectionHeadroom) / clonePoolMaxOpen
-	// Floor of 1 (never zero, which go test would reject) and a ceiling that
-	// keeps a huge max_connections from producing a -parallel value far past
-	// the machine's ability to run tests anyway.
-	return max(1, min(budget, 64)), nil
+	return budgetFor(maxConns)
+}
+
+// budgetFor is the arithmetic on its own, so it can be tested at the sizes that
+// matter — including the ones no development server is configured with.
+func budgetFor(maxConns int) (Budget, error) {
+	// More test binaries than the machine has processors would divide the
+	// budget without buying any overlap, so GOMAXPROCS is the ceiling whatever
+	// packageParallelism asks for.
+	//
+	// CAVEAT, latent while packageParallelism is 1: this GOMAXPROCS is the
+	// PREPARE process's, and the flags it prints are consumed by a separate
+	// `go test` process. They agree today because both run in the same
+	// container with the same cgroup limits, and because a ceiling of 1 makes
+	// GOMAXPROCS irrelevant. The day packageParallelism rises, a prepare step
+	// running somewhere narrower than the test run (or wider) would size the
+	// budget for the wrong machine. Read it in the test process — or pass it in
+	// — before raising the constant.
+	packages := max(1, min(packageParallelism, runtime.GOMAXPROCS(0)))
+	available := maxConns - connectionHeadroom - packages*adminPoolMaxOpen
+	parallel := available / (packages * nestedClonePools * clonePoolMaxOpen)
+
+	// No floor of 1 here. Clamping an impossible budget up to one would report
+	// a limit this server cannot honour and then fail later as "sorry, too many
+	// clients already" somewhere unrelated — the exact failure this function
+	// exists to prevent. A server too small to run one test says so.
+	if parallel < 1 {
+		return Budget{}, fmt.Errorf(
+			"max_connections=%d cannot support even one test: %d packages need %d admin connections "+
+				"plus %d for a single test's clones, and %d are reserved as headroom; "+
+				"raise max_connections (the compose files set 200)",
+			maxConns, packages, packages*adminPoolMaxOpen,
+			nestedClonePools*clonePoolMaxOpen, connectionHeadroom)
+	}
+
+	return Budget{
+		Packages: packages,
+		Parallel: min(parallel, maxParallelPerPackage),
+	}, nil
 }
 
 // ---------------------------------------------------------------------------
 // Per-test clones
 // ---------------------------------------------------------------------------
 
-var cloneCounter = newCounter()
+var sweepableCounter = newCounter()
 
-// newCloneName builds a collision-free, sweepable clone name.
+// newSweepableName builds a collision-free, sweepable database name.
 //
-// Shape: tkclone_<created-unix-seconds base36>_<run prefix>_<counter base36>.
+// Shape: <prefix><created-unix-seconds base36>_<run prefix>_<counter base36>.
 // The run prefix is per-process random, so two concurrent `go test` processes
 // (or two developers against one Postgres) cannot collide. The timestamp is
 // there for the orphan sweep: pg_database records no creation time, so age
 // has to be written into the name.
-func newCloneName() string {
+func newSweepableName(prefix string) string {
 	return fmt.Sprintf("%s%s_%s_%s",
-		ClonePrefix,
+		prefix,
 		strconv.FormatInt(time.Now().Unix(), 36),
 		RunPrefix(),
-		strconv.FormatUint(cloneCounter.next(), 36),
+		strconv.FormatUint(sweepableCounter.next(), 36),
 	)
 }
+
+func newCloneName() string { return newSweepableName(ClonePrefix) }
 
 // DB returns a private, fully migrated Postgres database for this test.
 //
 // The database is a clone of the migrated template, so it starts with the
-// production schema and no rows. It is dropped when the test finishes; nothing
+// production schema and exactly the rows the migrations seed — which is not
+// none: 006 and 025 insert encryption keys, and code that decrypts community
+// or aggregator credentials depends on them being there. "Empty" means no rows
+// from any other test. It is dropped when the test finishes; nothing
 // the test writes is visible to any other test, and no cleanup code is needed
 // (or wanted — an explicit DELETE in a test body is a sign the test is still
 // assuming a shared database).
@@ -939,8 +1029,14 @@ type SweepResult struct {
 	Failed map[string]error
 }
 
-// SweepOrphanClones drops testkit clone databases that are older than maxAge
-// and have no sessions connected.
+// SweepOrphanClones drops testkit-created databases that are older than maxAge
+// and have no sessions connected: per-test clones AND the private templates
+// testkit's own tests build.
+//
+// Both families are swept because both are created by a process that intends
+// to drop them and may not survive to do it. A leaked private template is the
+// worse leak of the two — it is a fully migrated database that nothing else
+// names, so without this it would sit there until someone noticed by hand.
 //
 // Orphans come from processes that died between CREATE DATABASE and their
 // cleanup: a panicking test binary, a killed `go test`, a docker stop.
@@ -963,55 +1059,62 @@ func SweepOrphanClones(ctx context.Context, maxAge time.Duration) (SweepResult, 
 	if err != nil {
 		return result, err
 	}
+	cutoff := time.Now().Add(-maxAge)
+	for _, family := range sweepableFamilies {
+		names, err := databaseNamesWithPrefix(ctx, db, family.prefix)
+		if err != nil {
+			return result, err
+		}
+		for _, name := range names {
+			created, ok := sweepableCreatedAt(family.prefix, family.pattern, name)
+			if !ok {
+				// A name that matches the prefix but not the layout is not
+				// something testkit created, so it is not something testkit
+				// drops.
+				continue
+			}
+			if created.After(cutoff) {
+				continue
+			}
+
+			busy, err := databaseHasSessions(ctx, db, name)
+			if err != nil {
+				result.Failed[name] = err
+				continue
+			}
+			if busy {
+				result.Skipped = append(result.Skipped, name)
+				continue
+			}
+
+			if err := dropDatabaseIfIdle(ctx, db, family.pattern, name); err != nil {
+				result.Failed[name] = err
+				continue
+			}
+			result.Dropped = append(result.Dropped, name)
+		}
+	}
+	return result, nil
+}
+
+func databaseNamesWithPrefix(ctx context.Context, db *sql.DB, prefix string) ([]string, error) {
 	rows, err := db.QueryContext(ctx,
 		`SELECT datname FROM pg_database WHERE datname LIKE $1 ORDER BY datname`,
-		ClonePrefix+"%")
+		prefix+"%")
 	if err != nil {
-		return result, fmt.Errorf("listing clone databases: %w", err)
+		return nil, fmt.Errorf("listing %s databases: %w", prefix, err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	var candidates []string
+	var names []string
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
-			return result, err
+			return nil, err
 		}
-		candidates = append(candidates, name)
+		names = append(names, name)
 	}
-	if err := rows.Err(); err != nil {
-		return result, err
-	}
-
-	cutoff := time.Now().Add(-maxAge)
-	for _, name := range candidates {
-		created, ok := cloneCreatedAt(name)
-		if !ok {
-			// A name that matches the prefix but not the layout is not
-			// something testkit created, so it is not something testkit drops.
-			continue
-		}
-		if created.After(cutoff) {
-			continue
-		}
-
-		busy, err := databaseHasSessions(ctx, db, name)
-		if err != nil {
-			result.Failed[name] = err
-			continue
-		}
-		if busy {
-			result.Skipped = append(result.Skipped, name)
-			continue
-		}
-
-		if err := dropDatabaseIfIdle(ctx, db, name); err != nil {
-			result.Failed[name] = err
-			continue
-		}
-		result.Dropped = append(result.Dropped, name)
-	}
-	return result, nil
+	return names, rows.Err()
 }
 
 func databaseHasSessions(ctx context.Context, db *sql.DB, name string) (bool, error) {
@@ -1025,9 +1128,9 @@ func databaseHasSessions(ctx context.Context, db *sql.DB, name string) (bool, er
 
 // dropDatabaseIfIdle drops a clone WITHOUT FORCE, so a session that connected
 // between the idle check and here makes the drop fail rather than be killed.
-func dropDatabaseIfIdle(ctx context.Context, db *sql.DB, name string) error {
-	if !cloneNamePattern.MatchString(name) {
-		return fmt.Errorf("refusing to drop %q: not a testkit clone name", name)
+func dropDatabaseIfIdle(ctx context.Context, db *sql.DB, pattern *regexp.Regexp, name string) error {
+	if !pattern.MatchString(name) {
+		return fmt.Errorf("refusing to drop %q: not a sweepable testkit database name", name)
 	}
 	dropCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -1038,12 +1141,13 @@ func dropDatabaseIfIdle(ctx context.Context, db *sql.DB, name string) error {
 	return nil
 }
 
-// cloneCreatedAt recovers the creation time newCloneName encoded into the name.
-func cloneCreatedAt(name string) (time.Time, bool) {
-	if !cloneNamePattern.MatchString(name) {
+// sweepableCreatedAt recovers the creation time newSweepableName encoded into
+// the name.
+func sweepableCreatedAt(prefix string, pattern *regexp.Regexp, name string) (time.Time, bool) {
+	if !pattern.MatchString(name) {
 		return time.Time{}, false
 	}
-	parts := strings.Split(strings.TrimPrefix(name, ClonePrefix), "_")
+	parts := strings.Split(strings.TrimPrefix(name, prefix), "_")
 	if len(parts) != 3 {
 		return time.Time{}, false
 	}

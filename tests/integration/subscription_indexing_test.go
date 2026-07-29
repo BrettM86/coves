@@ -18,6 +18,7 @@ import (
 // TestSubscriptionIndexing_ContentVisibility tests that contentVisibility is properly indexed
 // from Jetstream events and stored in the AppView database
 func TestSubscriptionIndexing_ContentVisibility(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := testkit.DB(t)
 
@@ -238,6 +239,7 @@ func TestSubscriptionIndexing_ContentVisibility(t *testing.T) {
 
 // TestSubscriptionIndexing_DeleteOperations tests unsubscribe (DELETE) event handling
 func TestSubscriptionIndexing_DeleteOperations(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := testkit.DB(t)
 
@@ -349,6 +351,7 @@ func TestSubscriptionIndexing_DeleteOperations(t *testing.T) {
 
 // TestSubscriptionIndexing_SubscriberCount tests that subscriber counts are updated atomically
 func TestSubscriptionIndexing_SubscriberCount(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := testkit.DB(t)
 

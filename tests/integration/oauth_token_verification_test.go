@@ -25,6 +25,7 @@ import (
 // for testing purposes. Real OAuth tokens from PDS would be sealed using the
 // OAuth client's seal secret.
 func TestOAuthTokenVerification(t *testing.T) {
+	t.Parallel()
 
 	pdsURL := os.Getenv("PDS_URL")
 	if pdsURL == "" {

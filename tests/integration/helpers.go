@@ -124,6 +124,27 @@ func authenticateWithPDS(pdsURL, handle, password string) (string, string, error
 	return sessionResp.AccessJwt, sessionResp.DID, nil
 }
 
+// jetstreamReadBudget is how long the hand-rolled subscribeToJetstream* helpers
+// in this package wait, in total, for the event they are looking for.
+//
+// It is set once as an absolute read deadline for the whole subscription, and
+// its expiry is terminal. That shape is forced by gorilla/websocket: a
+// connection is CORRUPT once its read deadline expires, so every read after
+// the first timeout fails instantly. The loops used to count those failures
+// and give up after ten, which bought nothing — one real expiry plus nine
+// phantom ones in microseconds — while advertising "max 30 seconds" over a
+// budget that was really five. Worse, the copies in the two avatar files
+// retried on NON-timeout errors without counting at all, so a Jetstream that
+// hung up sent them into a tight loop straight into gorilla's
+// panic("repeated read on failed websocket connection"), which takes the whole
+// test binary with it.
+//
+// So: one deadline, and any read error ends the subscription. testkit.Firehose
+// re-dials instead, which is the right answer; these copies are deleted with
+// the rest of tests/integration in Phase 4 of docs/TEST_ARCHITECTURE.md rather
+// than being rebuilt here.
+const jetstreamReadBudget = 30 * time.Second
+
 // tidCounter is used to ensure unique TIDs even when generateTID is called rapidly.
 var tidCounter atomic.Uint64
 

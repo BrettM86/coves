@@ -1,12 +1,17 @@
 package testkit
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+
+	"github.com/lib/pq"
+	"github.com/stretchr/testify/require"
 )
 
 // Test support shared by every tier of testkit's own suite, and therefore
@@ -160,4 +165,64 @@ func swapSingletons(endpoints func() EndpointSet, admin func() (*sql.DB, error))
 		templateVerified = savedVerified
 		templateMu.Unlock()
 	}
+}
+
+// privateTemplateInUse guards the singleton rebinding below. It is a real
+// concurrency check rather than a comment because the failure it prevents —
+// two tests holding different template names at once — surfaces somewhere else
+// entirely, as another test cloning a template that has just been dropped.
+var privateTemplateInUse atomic.Bool
+
+// usePrivateTemplate points this test at a template database of its own, and
+// drops it afterwards.
+//
+// Tests that drop or corrupt the template are proving how provisioning
+// recovers, and the recovery window — between the drop and the rebuild — is
+// precisely when another test binary's testkit.DB call finds nothing to clone
+// and fails with `template database "coves_test_template" does not exist`.
+//
+// The advisory lock cannot close that window: during it the template is
+// legitimately absent rather than half-written, so a clone that waits its turn
+// still finds nothing. Under `go test -p 1` no other binary was running and
+// pointing these tests at the shared template was safe by accident. Dropping
+// -p 1 ends that, and this is the fix: the destructive tests exercise the same
+// code paths against a template nobody else clones.
+//
+// The name carries PrivateTemplatePrefix and a timestamp, so a run killed
+// before cleanup leaves something the orphan sweep will reap rather than a
+// migrated database nothing names.
+//
+// The CALLER MUST NOT BE PARALLEL: this rebinds a process singleton.
+func usePrivateTemplate(t *testing.T) {
+	t.Helper()
+	require.True(t, privateTemplateInUse.CompareAndSwap(false, true),
+		"usePrivateTemplate rebinds a process-wide singleton, so two tests cannot "+
+			"hold one at the same time — is one of them calling t.Parallel()?")
+
+	name := newSweepableName(PrivateTemplatePrefix)
+	require.NoError(t, validateTemplateName(name, Endpoints().Postgres.Database),
+		"the private template name must clear the same rail as a configured one")
+
+	singletonMu.Lock()
+	saved := templateNameOnce
+	templateNameOnce = sync.OnceValues(func() (string, error) { return name, nil })
+	singletonMu.Unlock()
+	resetTemplateVerification()
+
+	t.Cleanup(func() {
+		// Under the exclusive lock, for the same reason dropTemplate takes it.
+		if err := withAdvisoryLock(context.Background(), false,
+			func(ctx context.Context, conn *sql.Conn) error {
+				_, err := conn.ExecContext(ctx,
+					"DROP DATABASE IF EXISTS "+pq.QuoteIdentifier(name)+" WITH (FORCE)")
+				return err
+			}); err != nil {
+			t.Errorf("leaked private template %q: %v", name, err)
+		}
+		singletonMu.Lock()
+		templateNameOnce = saved
+		singletonMu.Unlock()
+		resetTemplateVerification()
+		privateTemplateInUse.Store(false)
+	})
 }

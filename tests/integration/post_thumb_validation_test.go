@@ -45,6 +45,7 @@ func createTestCommunityWithCredentials(t *testing.T, repo communities.Repositor
 
 // TestPostHandler_ThumbValidation tests strict validation of thumb field in external embeds
 func TestPostHandler_ThumbValidation(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	// Setup services
@@ -292,6 +293,7 @@ func TestPostHandler_ThumbValidation(t *testing.T) {
 // tests still pass — guarding against regression of the silent-corruption bug
 // the validation exists to prevent.
 func TestPostHandler_EmbedValidation(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	communityRepo := postgres.NewCommunityRepository(db)

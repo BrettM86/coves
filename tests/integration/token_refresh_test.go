@@ -16,6 +16,7 @@ import (
 
 // TestTokenRefresh_ExpirationDetection tests the NeedsRefresh function with various token states
 func TestTokenRefresh_ExpirationDetection(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		token         string
@@ -96,6 +97,7 @@ func TestTokenRefresh_ExpirationDetection(t *testing.T) {
 
 // TestTokenRefresh_UpdateCredentials tests the repository UpdateCredentials method
 func TestTokenRefresh_UpdateCredentials(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := testkit.DB(t)
 
@@ -157,6 +159,7 @@ func TestTokenRefresh_UpdateCredentials(t *testing.T) {
 
 // TestTokenRefresh_E2E_UpdateAfterTokenRefresh tests end-to-end token refresh during community update
 func TestTokenRefresh_E2E_UpdateAfterTokenRefresh(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := testkit.DB(t)
 

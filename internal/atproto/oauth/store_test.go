@@ -4,47 +4,20 @@ package oauth
 
 import (
 	"context"
-	"database/sql"
-	"os"
 	"testing"
+
+	"Coves/tests/testkit"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	_ "github.com/lib/pq"
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// setupTestDB creates a test database connection and runs migrations
-func setupTestDB(t *testing.T) *sql.DB {
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		dsn = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
-	}
-
-	db, err := sql.Open("postgres", dsn)
-	require.NoError(t, err, "Failed to connect to test database")
-
-	// Run migrations
-	require.NoError(t, goose.Up(db, "../../db/migrations"), "Failed to run migrations")
-
-	return db
-}
-
-// cleanupOAuth removes all test OAuth data from the database
-func cleanupOAuth(t *testing.T, db *sql.DB) {
-	_, err := db.Exec("DELETE FROM oauth_sessions WHERE did LIKE 'did:plc:test%'")
-	require.NoError(t, err, "Failed to cleanup oauth_sessions")
-
-	_, err = db.Exec("DELETE FROM oauth_requests WHERE state LIKE 'test%'")
-	require.NoError(t, err, "Failed to cleanup oauth_requests")
-}
-
 func TestPostgresOAuthStore_SaveAndGetSession(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupOAuth(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	store := NewPostgresOAuthStore(db, 0) // Use default TTL
 	ctx := context.Background()
@@ -89,9 +62,8 @@ func TestPostgresOAuthStore_SaveAndGetSession(t *testing.T) {
 }
 
 func TestPostgresOAuthStore_SaveSession_Upsert(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupOAuth(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	store := NewPostgresOAuthStore(db, 0) // Use default TTL
 	ctx := context.Background()
@@ -142,8 +114,8 @@ func TestPostgresOAuthStore_SaveSession_Upsert(t *testing.T) {
 }
 
 func TestPostgresOAuthStore_GetSession_NotFound(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	store := NewPostgresOAuthStore(db, 0) // Use default TTL
 	ctx := context.Background()
@@ -156,9 +128,8 @@ func TestPostgresOAuthStore_GetSession_NotFound(t *testing.T) {
 }
 
 func TestPostgresOAuthStore_DeleteSession(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupOAuth(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	store := NewPostgresOAuthStore(db, 0) // Use default TTL
 	ctx := context.Background()
@@ -192,8 +163,8 @@ func TestPostgresOAuthStore_DeleteSession(t *testing.T) {
 }
 
 func TestPostgresOAuthStore_DeleteSession_NotFound(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	store := NewPostgresOAuthStore(db, 0) // Use default TTL
 	ctx := context.Background()
@@ -206,9 +177,8 @@ func TestPostgresOAuthStore_DeleteSession_NotFound(t *testing.T) {
 }
 
 func TestPostgresOAuthStore_SaveAndGetAuthRequestInfo(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupOAuth(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	store := NewPostgresOAuthStore(db, 0) // Use default TTL
 	ctx := context.Background()
@@ -250,9 +220,8 @@ func TestPostgresOAuthStore_SaveAndGetAuthRequestInfo(t *testing.T) {
 }
 
 func TestPostgresOAuthStore_SaveAuthRequestInfo_NoDID(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupOAuth(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	store := NewPostgresOAuthStore(db, 0) // Use default TTL
 	ctx := context.Background()
@@ -281,8 +250,8 @@ func TestPostgresOAuthStore_SaveAuthRequestInfo_NoDID(t *testing.T) {
 }
 
 func TestPostgresOAuthStore_GetAuthRequestInfo_NotFound(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	store := NewPostgresOAuthStore(db, 0) // Use default TTL
 	ctx := context.Background()
@@ -292,9 +261,8 @@ func TestPostgresOAuthStore_GetAuthRequestInfo_NotFound(t *testing.T) {
 }
 
 func TestPostgresOAuthStore_DeleteAuthRequestInfo(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupOAuth(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	store := NewPostgresOAuthStore(db, 0) // Use default TTL
 	ctx := context.Background()
@@ -324,8 +292,8 @@ func TestPostgresOAuthStore_DeleteAuthRequestInfo(t *testing.T) {
 }
 
 func TestPostgresOAuthStore_DeleteAuthRequestInfo_NotFound(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	store := NewPostgresOAuthStore(db, 0) // Use default TTL
 	ctx := context.Background()
@@ -335,21 +303,16 @@ func TestPostgresOAuthStore_DeleteAuthRequestInfo_NotFound(t *testing.T) {
 }
 
 func TestPostgresOAuthStore_CleanupExpiredSessions(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupOAuth(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	storeInterface := NewPostgresOAuthStore(db, 0) // Use default TTL
 	store, ok := storeInterface.(*PostgresOAuthStore)
 	require.True(t, ok, "store should be *PostgresOAuthStore")
 	ctx := context.Background()
 
-	// Pre-cleanup any expired sessions (from any source) to ensure the count
-	// assertion below returns exactly 1. cleanupOAuth only handles did:plc:test%
-	// records, but CleanupExpiredSessions operates on all expired sessions.
-	_, err := store.CleanupExpiredSessions(ctx)
-	require.NoError(t, err, "Failed to cleanup pre-existing expired sessions")
-
+	// The clone starts empty, so the count assertion below sees only the
+	// sessions this test inserts.
 	did1, err := syntax.ParseDID("did:plc:testexpired1")
 	require.NoError(t, err)
 	var did2 syntax.DID
@@ -407,9 +370,8 @@ func TestPostgresOAuthStore_CleanupExpiredSessions(t *testing.T) {
 }
 
 func TestPostgresOAuthStore_CleanupExpiredAuthRequests(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupOAuth(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	storeInterface := NewPostgresOAuthStore(db, 0)
 	pgStore, ok := storeInterface.(*PostgresOAuthStore)
@@ -467,9 +429,8 @@ func TestPostgresOAuthStore_CleanupExpiredAuthRequests(t *testing.T) {
 }
 
 func TestPostgresOAuthStore_MultipleSessions(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupOAuth(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	store := NewPostgresOAuthStore(db, 0) // Use default TTL
 	ctx := context.Background()

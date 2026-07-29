@@ -18,6 +18,7 @@ import (
 
 // TestCommunityIdentifierResolution tests all formats accepted by ResolveCommunityIdentifier
 func TestCommunityIdentifierResolution(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
@@ -209,6 +210,7 @@ func TestCommunityIdentifierResolution(t *testing.T) {
 
 // TestResolveScopedIdentifier_InputValidation tests input sanitization
 func TestResolveScopedIdentifier_InputValidation(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
@@ -311,6 +313,7 @@ func TestResolveScopedIdentifier_InputValidation(t *testing.T) {
 
 // TestGetDisplayHandle tests the GetDisplayHandle method
 func TestGetDisplayHandle(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name            string
 		handle          string
@@ -379,6 +382,7 @@ func TestGetDisplayHandle(t *testing.T) {
 
 // TestIdentifierResolution_ErrorContext verifies error messages include identifier context
 func TestIdentifierResolution_ErrorContext(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
@@ -437,6 +441,7 @@ func TestIdentifierResolution_ErrorContext(t *testing.T) {
 // TestGetCommunity_IdentifierResolution tests all formats accepted by GetCommunity
 // This is distinct from ResolveCommunityIdentifier - GetCommunity returns the full Community object
 func TestGetCommunity_IdentifierResolution(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)

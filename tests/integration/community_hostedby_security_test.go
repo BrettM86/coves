@@ -17,6 +17,7 @@ import (
 
 // TestHostedByVerification_DomainMatching tests that hostedBy domain must match handle domain
 func TestHostedByVerification_DomainMatching(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
@@ -237,6 +238,7 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 // TestBidirectionalDIDVerification tests the full bidirectional verification with mock HTTP server
 // This test verifies that the DID document must claim the handle in alsoKnownAs field
 func TestBidirectionalDIDVerification(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
@@ -385,6 +387,7 @@ func TestBidirectionalDIDVerification(t *testing.T) {
 
 // TestExtractDomainFromHandle tests the domain extraction logic for various handle formats
 func TestExtractDomainFromHandle(t *testing.T) {
+	t.Parallel()
 	// This is an internal function test - we'll test it through the consumer
 	db := testkit.DB(t)
 

@@ -34,6 +34,7 @@ import (
 // 5. WITHOUT THE FIX: Callback sends sealed token, DID, session_id to attacker's deep link
 // 6. WITH THE FIX: Binding mismatch is detected, mobile cookies cleared, user gets web session
 func TestOAuth_SessionFixationAttackPrevention(t *testing.T) {
+	t.Parallel()
 	// Setup test database
 	db := testkit.DB(t)
 

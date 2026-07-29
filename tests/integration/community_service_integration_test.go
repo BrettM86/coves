@@ -29,6 +29,7 @@ import (
 // - Unit tests (direct DB writes, bypass PDS)
 // - E2E tests (full HTTP + Jetstream flow)
 func TestCommunityService_CreateWithRealPDS(t *testing.T) {
+	t.Parallel()
 	// Check if PDS is running
 	pdsURL := "http://localhost:3001"
 	healthResp, err := http.Get(pdsURL + "/xrpc/_health")
@@ -274,6 +275,7 @@ func TestCommunityService_CreateWithRealPDS(t *testing.T) {
 // - Authorization checks (only creator can update)
 // - Record rkey is always "self" for V2
 func TestCommunityService_UpdateWithRealPDS(t *testing.T) {
+	t.Parallel()
 	// Check if PDS is running
 	pdsURL := "http://localhost:3001"
 	healthResp, err := http.Get(pdsURL + "/xrpc/_health")
@@ -460,6 +462,7 @@ func TestCommunityService_UpdateWithRealPDS(t *testing.T) {
 // TestPasswordAuthentication verifies that generated passwords work for PDS authentication
 // This is CRITICAL for P0: passwords must be recoverable for session renewal
 func TestPasswordAuthentication(t *testing.T) {
+	t.Parallel()
 	// Check if PDS is running
 	pdsURL := "http://localhost:3001"
 	healthResp, err := http.Get(pdsURL + "/xrpc/_health")

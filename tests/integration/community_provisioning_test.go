@@ -16,6 +16,7 @@ import (
 // TestCommunityRepository_PasswordEncryption verifies P0 fix:
 // Password must be encrypted (not hashed) so we can recover it for session renewal
 func TestCommunityRepository_PasswordEncryption(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
@@ -135,6 +136,7 @@ func TestCommunityRepository_PasswordEncryption(t *testing.T) {
 // TestCommunityService_NameValidation verifies P1 fix:
 // Community names must respect DNS label limits (63 chars max)
 func TestCommunityService_NameValidation(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
@@ -298,6 +300,7 @@ func TestCommunityService_NameValidation(t *testing.T) {
 // TestPasswordSecurity verifies password generation security properties
 // Critical for P0: Passwords must be unpredictable and have sufficient entropy
 func TestPasswordSecurity(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
@@ -427,6 +430,7 @@ func TestPasswordSecurity(t *testing.T) {
 // TestConcurrentProvisioning verifies thread-safety during community creation
 // Critical: Prevents race conditions that could create duplicate communities
 func TestConcurrentProvisioning(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
@@ -564,9 +568,15 @@ func TestConcurrentProvisioning(t *testing.T) {
 // TestPDSNetworkFailures verifies graceful handling of PDS network issues
 // Critical: Ensures service doesn't crash or leak resources on PDS failures
 func TestPDSNetworkFailures(t *testing.T) {
+	t.Parallel()
+	// The subtests are parallel because each one waits out the same retry
+	// ladder against a dead endpoint (4 attempts, 1s+2s+4s of backoff). They
+	// share nothing — no database, no fixtures, a fresh provisioner each —
+	// so running them serially only adds their backoffs together.
 	ctx := context.Background()
 
 	t.Run("handles invalid PDS URL", func(t *testing.T) {
+		t.Parallel()
 		// Invalid URL should fail gracefully
 		invalidURLs := []string{
 			"not-a-url",
@@ -594,6 +604,7 @@ func TestPDSNetworkFailures(t *testing.T) {
 	})
 
 	t.Run("handles unreachable PDS server", func(t *testing.T) {
+		t.Parallel()
 		// Use a port that's guaranteed to be unreachable
 		unreachablePDS := "http://localhost:9999"
 		provisioner := communities.NewPDSAccountProvisioner("test.local", unreachablePDS)
@@ -613,6 +624,7 @@ func TestPDSNetworkFailures(t *testing.T) {
 	})
 
 	t.Run("handles timeout scenarios", func(t *testing.T) {
+		t.Parallel()
 		// Create a context with a very short timeout
 		timeoutCtx, cancel := context.WithTimeout(ctx, 1)
 		defer cancel()
@@ -629,6 +641,7 @@ func TestPDSNetworkFailures(t *testing.T) {
 	})
 
 	t.Run("FetchPDSDID handles invalid URLs", func(t *testing.T) {
+		t.Parallel()
 		invalidURLs := []string{
 			"not-a-url",
 			"http://",
@@ -647,6 +660,7 @@ func TestPDSNetworkFailures(t *testing.T) {
 	})
 
 	t.Run("FetchPDSDID handles unreachable server", func(t *testing.T) {
+		t.Parallel()
 		unreachablePDS := "http://localhost:9998"
 		_, err := communities.FetchPDSDID(ctx, unreachablePDS)
 
@@ -662,6 +676,7 @@ func TestPDSNetworkFailures(t *testing.T) {
 	})
 
 	t.Run("FetchPDSDID handles timeout", func(t *testing.T) {
+		t.Parallel()
 		timeoutCtx, cancel := context.WithTimeout(ctx, 1)
 		defer cancel()
 
@@ -679,6 +694,7 @@ func TestPDSNetworkFailures(t *testing.T) {
 // TestTokenValidation verifies that PDS-returned tokens meet requirements
 // Critical for P0: Tokens must be valid JWTs that can be used for authentication
 func TestTokenValidation(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)

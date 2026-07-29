@@ -1,6 +1,6 @@
 // Command testdbprepare provisions the template database that testkit.DB
-// clones, and sweeps clones left behind by processes that died before their
-// cleanup ran.
+// clones, and sweeps the clones and private templates left behind by processes
+// that died before their cleanup ran.
 //
 // It exists as a Go program rather than as SQL in a shell script for one
 // reason: the CI runner image has no psql and no goose binary, and adding them
@@ -28,18 +28,18 @@ func main() {
 	force := flag.Bool("force", false,
 		"rebuild the template even if its stamp already matches the migrations")
 	sweepAge := flag.Duration("sweep-age", time.Hour,
-		"drop idle leftover clone databases older than this (0 disables the sweep)")
+		"drop idle leftover clone and private-template databases older than this (0 disables the sweep)")
 	wait := flag.Duration("wait", 60*time.Second,
 		"how long to wait for Postgres to accept connections before giving up")
-	printParallel := flag.Bool("print-parallel", false,
-		"print only the safe `go test -parallel` value for this server, and exit")
+	printFlags := flag.Bool("print-flags", false,
+		"print only the safe `go test` concurrency flags for this server, and exit")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if *printParallel {
-		if err := reportParallelBudget(ctx, *wait); err != nil {
+	if *printFlags {
+		if err := reportConcurrencyBudget(ctx, *wait); err != nil {
 			fmt.Fprintf(os.Stderr, "test-db-prepare: %v\n", err)
 			os.Exit(1)
 		}
@@ -52,17 +52,17 @@ func main() {
 	}
 }
 
-// reportParallelBudget prints the -parallel value and nothing else, so a shell
-// can capture it with $(...).
-func reportParallelBudget(ctx context.Context, wait time.Duration) error {
+// reportConcurrencyBudget prints the concurrency flags and nothing else, so a
+// shell can splice them into a `go test` command line with $(...).
+func reportConcurrencyBudget(ctx context.Context, wait time.Duration) error {
 	if err := testkit.WaitForPostgres(ctx, wait); err != nil {
 		return err
 	}
-	budget, err := testkit.ParallelBudget(ctx)
+	budget, err := testkit.ConcurrencyBudget(ctx)
 	if err != nil {
 		return err
 	}
-	fmt.Println(budget)
+	fmt.Println(budget.Flags())
 	return nil
 }
 
@@ -80,15 +80,6 @@ func run(ctx context.Context, force bool, sweepAge, wait time.Duration) error {
 	if err != nil {
 		return err
 	}
-
-	// The shared database the not-yet-migrated tests write to directly. Not
-	// testkit's concern, but this is the only step that runs before every test
-	// binary, so it is the only place the legacy path can be prepared once
-	// rather than by whichever package happens to run first.
-	if err := testkit.MigrateSharedDatabase(ctx); err != nil {
-		return err
-	}
-	fmt.Printf("  shared:   %s migrated\n", pg.Redacted(pg.Database))
 
 	// One call, one lock acquisition. Asking whether the template is current,
 	// releasing the lock, and then acting on the answer would act on a fact
@@ -110,10 +101,10 @@ func run(ctx context.Context, force bool, sweepAge, wait time.Duration) error {
 	if sweepAge > 0 {
 		result, err := testkit.SweepOrphanClones(ctx, sweepAge)
 		if err != nil {
-			return fmt.Errorf("sweeping orphaned clones: %w", err)
+			return fmt.Errorf("sweeping orphaned testkit databases: %w", err)
 		}
 		if len(result.Dropped) > 0 {
-			fmt.Printf("  swept %d orphaned clone(s) older than %s\n", len(result.Dropped), sweepAge)
+			fmt.Printf("  swept %d orphaned database(s) older than %s\n", len(result.Dropped), sweepAge)
 			for _, name := range result.Dropped {
 				fmt.Printf("    - %s\n", name)
 			}

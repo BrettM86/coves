@@ -105,13 +105,13 @@ bash /src/scripts/test-audit.sh || true
 echo "▶ Preparing the test template database..."
 go run ./tests/testkit/cmd/testdbprepare
 
-# The connection budget, derived from the server's max_connections rather than
-# guessed: every test running under t.Parallel() holds its own clone pool.
-# Nothing uses t.Parallel() outside tests/testkit yet, so this is inert today —
-# it is wired now so that the phase enabling parallelism does not also have to
-# discover the ceiling by exhausting it.
-TEST_PARALLEL=$(bash /src/scripts/test-db-prepare.sh --print-parallel)
-echo "  ✓ connection budget allows -parallel $TEST_PARALLEL"
+# The concurrency budget, derived from the server's max_connections rather than
+# guessed: every test running under t.Parallel() holds its own clone pool, and
+# -p multiplies that by the number of test binaries running at once. Both flags
+# come from testkit.ConcurrencyBudget, which also documents why the package
+# dimension is currently 1 (the shared Jetstream, not the old shared database).
+TEST_FLAGS=$(bash /src/scripts/test-db-prepare.sh --print-flags)
+echo "  ✓ connection budget allows $TEST_FLAGS"
 echo
 
 # ---------------------------------------------------------------------------
@@ -130,15 +130,11 @@ echo
 # runs second so the pipeline contracts are graded last, against a stack the
 # earlier tier has already exercised.
 #
-# -p 1 serialises packages. The legacy tests/integration setup issues unscoped
-# DELETEs against shared tables in the test database, so packages running
-# concurrently delete each other's fixtures.
-#
 # -count=1 defeats the test result cache. The toolchain hashes inputs it knows
 # about, and it does not know about PostgreSQL, the PDS, or the firehose — so a
 # cached PASS can survive an infrastructure change that would have failed. A
 # gate must actually execute.
-echo "▶ Running the full suite (-p 1 -count=1, timeout $TEST_TIMEOUT)..."
+echo "▶ Running the full suite ($TEST_FLAGS -count=1, timeout $TEST_TIMEOUT)..."
 echo
 
 # The capture is deliberately NOT a pipeline.
@@ -179,12 +175,15 @@ trap 'kill "$progress_pid" 2>/dev/null || true' EXIT
 # reads as green. The statuses are the out-of-band evidence that the run
 # actually finished, and they are cross-checked against the report below.
 #
-# T2 is pinned to -parallel 1 rather than the computed budget: the pipeline
+# T2 is pinned to -p 1 -parallel 1 rather than the computed budget: the pipeline
 # contracts share one AppView, one PDS and one firehose cursor space, so they
 # are serial by design (docs/TEST_ARCHITECTURE.md §3.4). The budget applies to
 # the integration tier, where per-test database clones are the constraint.
+#
+# TEST_FLAGS is deliberately unquoted: it carries two flags and two values.
 set +e
-go test -json -tags integration -p 1 -parallel "$TEST_PARALLEL" -count=1 -timeout "$TEST_TIMEOUT" \
+# shellcheck disable=SC2086
+go test -json -tags integration $TEST_FLAGS -count=1 -timeout "$TEST_TIMEOUT" \
     ./cmd/... ./internal/... ./tests/... \
     >>"$RAW" 2>&1
 integration_status=$?

@@ -22,6 +22,7 @@ import (
 
 // TestPostHandler_SecurityValidation tests HTTP handler-level security checks
 func TestPostHandler_SecurityValidation(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	// Setup services
@@ -383,6 +384,7 @@ func TestPostHandler_SecurityValidation(t *testing.T) {
 
 // TestPostHandler_SpecialCharacters tests content with special characters
 func TestPostHandler_SpecialCharacters(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	// Setup services
@@ -460,6 +462,7 @@ func TestPostHandler_SpecialCharacters(t *testing.T) {
 
 // TestPostService_DIDValidationSecurity tests service-layer DID validation (defense-in-depth)
 func TestPostService_DIDValidationSecurity(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	// Setup services

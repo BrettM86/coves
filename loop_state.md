@@ -45,7 +45,7 @@ Stop the loop when every task is done, or on any blocked task.
 | 6 | Split multi-tier files by test func (manifest in commit msg); add build tags in place; retarget Makefile to tags; delete -short/testing.Short(); delete test-all | 2 ⛩ | S | done | (see git log) | PHASE 2 COMPLETE. 76 files `integration`, 3 `e2e`; 2 jetstream files split; 161 Short guards deleted (162nd was a doc comment); test-all + 4 dead targets gone. Honesty test: untagged suite green under --network none FIRST TRY (36 pkgs). make test = 11s no-Docker. Review (Codex needs-work / Opus safe-as-is): 8 fixes — GATE INTEGRITY closed (exit codes captured + mismatch rule; OOM-137-with-green-report now fails — was a silent pass since the harness was born; proved via truth table), -parallel 1 pinned on e2e (serial T2), readiness probe now hits the HOST endpoint tests dial, shared-DB migrate restored via testkit.MigrateSharedDatabase (advisory-locked, in testdbprepare), DSN redacted via url.Redacted, pure testkit files untagged (TestMain split into tagged harness_test.go + untagged harness_support_test.go), T0 socket-free (failingTransport). make ci GREEN 3399/0 skips 2m4s; audit 573 |
 | 7 | Migrate setupTestDB call sites → testkit.DB(t), batch 1 (~25 files) + delete their DELETE FROMs/cleanups | 3 | M | done | (see git log) | 29 files (aggregator_e2e..concurrent_scenarios incl. 4 hand-rolled setup clones), 115 sites → testkit.DB(t) (2 needed NO db at all — migration doubles as unused-DB detector), 19 DELETE FROMs + 1 cleanup fn deleted, diff +142/−828. Isolation PROVEN: concurrent -count=2 on a hardcoded-PK pair green; 0 leaked clones. make ci GREEN 3399/0 @142s (+18s vs baseline: ~150ms/test = FORCE-drop + 2 lock RTs — task 9 pays it back). Audit 573→561. NO order-dependency failures surfaced |
 | 8 | Migrate remaining call sites; delete all 3 setupTestDB defs + per-file cleanup fns | 3 | M | done | (see git log) | DB MIGRATION COMPLETE: 128 sites (31 files incl. live+e2e), all 4 defs + 4 cleanup fns + 18 goose pairs + 63 wipes deleted, +189/−1182. grep setupTestDB|goose in tests/ = EMPTY. e2e shared-DB hazard was HYPOTHETICAL (user_signup setupTestDB had ZERO callers; error_recovery all in-process) — SharedDB not needed. TestMain → testkit.Main(RequirePostgres, RequirePDS, RequireJetstream): make test-integration now FAILS without dev stack instead of skip-green (spec-honest, kept). FULL -shuffle=on INTEGRATION RUN GREEN — wipes were dead weight. make ci GREEN 3399/0 @2:39 (+17s ≈ 133ms/clone, consistent) |
-| 9 | Global-state audit (t.Setenv/os.Setenv/logger/http-default → testkit injection); enable t.Parallel on proven-safe; connection budgets; `-race` clean; drop -p 1 | 3 ⛩ | S | pending | | wall-clock vs task-1 baseline recorded here |
+| 9 | Global-state audit (t.Setenv/os.Setenv/logger/http-default → testkit injection); enable t.Parallel on proven-safe; connection budgets; `-race` clean; drop -p 1 | 3 ⛩ | S | done | (see git log) | PHASE 3 COMPLETE. 343 t.Parallel; audit: 0 convert / 4 sites deliberately-serial / rest safe. 9 internal straggler files migrated (goose now EXTINCT in test code; MigrateSharedDatabase deleted). THREE concurrency bugs -p 1 was masking: [A] template-destruction race (fixed: usePrivateTemplate) [B] legacy firehose 5s-behind-30s-promise, quantified (patched: jetstreamReadBudget, counter machinery deleted, non-timeout errors terminate) [C] Jetstream account/identity events BYPASS wantedCollections → parallel signup storms starve subscribers (measured 2/4 fail at -p 2; -p STAYS 1 with new documented reason). ConcurrencyBudget models both dims + nestedClonePools; -p 1 -parallel 26. Review: Codex good + Opus 3-high (binary-abort class, all fixed incl. fail-open Makefile splice PROVEN closed). make ci GREEN ×2 117/128s (clone tax repaid, beats 124s pre-clone); -race + -shuffle clean; peak 27/200 conns; 3401 tests/0 skips; audit 532 |
 | 10 | Contract-manifest CI check (WantedCollections ↔ //coves:ingestion-contract markers) + T2 skeleton (serial runner via compose runner; make test-e2e; test-e2e-dev escape hatch) | 4 ⛩ | S | pending | | build BEFORE first contract so every contract lands against it |
 | 11 | Contracts: community (community.profile ingestion + API) — strangler: behavior inventory of community_e2e_test.go (1820 LOC) → down-tier T1s → contract → delete old | 4 | S | pending | | template for tasks 12-16; sync-indexing trap per spec §3.4 |
 | 12 | Contracts: post (community.post) + post_delete + decompose post god-files | 4 | S | pending | | |
@@ -198,3 +198,26 @@ Stop the loop when every task is done, or on any blocked task.
   Cumulative clone cost at 3399 tests: ~35s over baseline (~133ms/clone) —
   task 9's parallelism must beat that. No AppView-written row is asserted
   from Go anywhere (clean T2 boundary for tasks 10-16).
+- **From task 9 (THE SHARED-RESOURCE LADDER — governs phase 4+)**: DB
+  (tasks 7-8) → template (fixed: private templates, sweepable
+  tktmpl_test_ family) → JETSTREAM STREAM (unfixed: account/identity
+  events bypass wantedCollections; signup storms visible to every
+  subscriber). -p stays 1 for the STREAM, not the DB — flip
+  packageParallelism (tests/testkit/db.go) only after phase 4 deletes
+  tests/integration's 9 serial firehose files, then fix the GOMAXPROCS
+  caveat (read in the PREPARE process, not the test process — documented
+  at the read site). Budget rule: model the WORST case one test can
+  create (nestedClonePools term); a test holding 3 clones would silently
+  re-break the ceiling — cheap contract check = grep testkit.DB( counts
+  per test func. Effective-vs-advertised timeouts are the tree smell:
+  phase-4 contracts use ONE named budget constant. Serial firehose block
+  = 25.8s of the 48.9s tier — phase 4's wall-clock prize. Dev Jetstream
+  accumulates (29MB) and replays thousands of pre-cursor events —
+  docker restart coves-dev-jetstream when firehose tests slow; testkit's
+  discard counter is the diagnostic. Local postgres-test CAN take
+  max_connections=200 from a worktree: docker-compose -p coves (project
+  name, not checkout, was task-3's trap). TestOAuthSessionHandleSync_
+  LiveJetstream is assertion-free (3 t.Logs) — phase 4 rebuilds or
+  deletes. Reviewer calibration: Opus caught all 3 binary-abort highs
+  this round (incl. fail-open Makefile splice); Codex strongest on
+  budget arithmetic — both earning their seats.

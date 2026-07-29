@@ -19,6 +19,7 @@ import (
 // TestConcurrentVoting_MultipleUsersOnSamePost tests race conditions when multiple users
 // vote on the same post simultaneously
 func TestConcurrentVoting_MultipleUsersOnSamePost(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -321,6 +322,7 @@ func TestConcurrentVoting_MultipleUsersOnSamePost(t *testing.T) {
 // TestConcurrentCommenting_MultipleUsersOnSamePost tests race conditions when multiple users
 // comment on the same post simultaneously
 func TestConcurrentCommenting_MultipleUsersOnSamePost(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -574,6 +576,7 @@ func TestConcurrentCommenting_MultipleUsersOnSamePost(t *testing.T) {
 // TestConcurrentCommunityCreation tests race conditions when multiple goroutines
 // try to create communities with the same handle
 func TestConcurrentCommunityCreation_DuplicateHandle(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -704,6 +707,7 @@ func TestConcurrentCommunityCreation_DuplicateHandle(t *testing.T) {
 // TestConcurrentSubscription tests race conditions when multiple users subscribe
 // to the same community simultaneously
 func TestConcurrentSubscription_RaceConditions(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()

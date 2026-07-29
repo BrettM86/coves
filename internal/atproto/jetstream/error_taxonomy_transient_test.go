@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
@@ -20,12 +21,11 @@ import (
 // which fail before any repository access — stay in the unit tier.
 
 func TestPostConsumer_CommunityNotFound_IsTransient(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
+	// The clone starts empty, so the community is absent by construction.
 	const ghostCommunity = "did:plc:jstaxghostcommunity"
-	// Ensure the community really is absent.
-	_, _ = db.Exec("DELETE FROM communities WHERE did = $1", ghostCommunity)
 
 	c := NewPostEventConsumer(postgres.NewPostRepository(db), postgres.NewCommunityRepository(db), newMockUserService(), db)
 	err := c.HandleEvent(context.Background(), taxonomyEvent(
@@ -44,15 +44,13 @@ func TestPostConsumer_CommunityNotFound_IsTransient(t *testing.T) {
 }
 
 func TestCommunityConsumer_SubscriptionCommunityNotFound_IsTransient(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	const (
 		ghostCommunity = "did:plc:jstaxghostsubcomm"
 		subscriber     = "did:plc:jstaxsubscriber"
 	)
-	_, _ = db.Exec("DELETE FROM community_subscriptions WHERE user_did = $1", subscriber)
-	_, _ = db.Exec("DELETE FROM communities WHERE did = $1", ghostCommunity)
 
 	c := NewCommunityEventConsumer(postgres.NewCommunityRepository(db), "did:web:test.local", true, nil)
 	err := c.HandleEvent(context.Background(), taxonomyEvent(

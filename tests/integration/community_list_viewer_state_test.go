@@ -23,6 +23,7 @@ import (
 // TestCommunityList_ViewerState tests that the list communities endpoint
 // correctly populates viewer.subscribed field for authenticated users
 func TestCommunityList_ViewerState(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)

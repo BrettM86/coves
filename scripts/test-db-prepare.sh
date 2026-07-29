@@ -34,16 +34,17 @@
 #   --force            rebuild even if the stamp matches
 #   --sweep-age 30m    change the orphan age cutoff (0 disables sweeping)
 #   --wait 90s         how long to wait for Postgres to accept connections
-#   --print-parallel   print ONLY the safe `go test -parallel` value and exit,
-#                      for $(...) capture by the Makefile and the CI runner
+#   --print-flags      print ONLY the safe `go test` concurrency flags and exit
+#                      ("-p N -parallel M"), for $(...) splicing by the Makefile
+#                      and the CI runner
 set -euo pipefail
 
 REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$REPO_ROOT"
 
-# --print-parallel is consumed by a shell substitution, so it must emit the
-# number and nothing else.
-if [[ ${1:-} != "--print-parallel" ]]; then
+# --print-flags is consumed by a shell substitution, so it must emit the flags
+# and nothing else.
+if [[ ${1:-} != "--print-flags" ]]; then
     echo "▶ Preparing the test template database"
 fi
 

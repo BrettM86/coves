@@ -16,6 +16,7 @@ import (
 
 // TestAggregatorRepository_Create tests basic aggregator creation
 func TestAggregatorRepository_Create(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewAggregatorRepository(db)
@@ -117,6 +118,7 @@ func TestAggregatorRepository_Create(t *testing.T) {
 
 // TestAggregatorRepository_IsAggregator tests the fast existence check
 func TestAggregatorRepository_IsAggregator(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewAggregatorRepository(db)
@@ -163,6 +165,7 @@ func TestAggregatorRepository_IsAggregator(t *testing.T) {
 
 // TestAggregatorAuthorization_Create tests authorization creation
 func TestAggregatorAuthorization_Create(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	aggRepo := postgres.NewAggregatorRepository(db)
@@ -317,6 +320,7 @@ func TestAggregatorAuthorization_Create(t *testing.T) {
 
 // TestAggregatorAuthorization_IsAuthorized tests fast authorization check
 func TestAggregatorAuthorization_IsAuthorized(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	aggRepo := postgres.NewAggregatorRepository(db)
@@ -450,6 +454,7 @@ func TestAggregatorAuthorization_IsAuthorized(t *testing.T) {
 
 // TestAggregatorService_PostCreationIntegration tests the full post creation flow with aggregators
 func TestAggregatorService_PostCreationIntegration(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	aggRepo := postgres.NewAggregatorRepository(db)
@@ -544,6 +549,7 @@ func TestAggregatorService_PostCreationIntegration(t *testing.T) {
 
 // TestAggregatorService_RateLimiting tests rate limit enforcement
 func TestAggregatorService_RateLimiting(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	aggRepo := postgres.NewAggregatorRepository(db)
@@ -630,6 +636,7 @@ func TestAggregatorService_RateLimiting(t *testing.T) {
 
 // TestAggregatorPostService_Integration tests the posts service integration
 func TestAggregatorPostService_Integration(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	aggRepo := postgres.NewAggregatorRepository(db)
@@ -676,6 +683,7 @@ func TestAggregatorPostService_Integration(t *testing.T) {
 
 // TestAggregatorTriggers tests database triggers for auto-updating stats
 func TestAggregatorTriggers(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	aggRepo := postgres.NewAggregatorRepository(db)
@@ -785,6 +793,7 @@ func TestAggregatorTriggers(t *testing.T) {
 
 // TestAggregatorAuthorization_DisabledAtField tests that disabledAt is properly stored and retrieved
 func TestAggregatorAuthorization_DisabledAtField(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	aggRepo := postgres.NewAggregatorRepository(db)

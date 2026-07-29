@@ -20,6 +20,7 @@ import (
 )
 
 func TestPostCreation_Basic(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	// Setup: Initialize services
@@ -280,6 +281,7 @@ func TestPostCreation_Basic(t *testing.T) {
 
 // TestPostRepository_Create tests the repository layer
 func TestPostRepository_Create(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	// Setup: Create test user and community

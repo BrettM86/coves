@@ -17,6 +17,7 @@ import (
 // TestUserBlockIndexing_CreateEvent tests that a Jetstream CREATE event for
 // social.coves.actor.block is properly indexed in the AppView.
 func TestUserBlockIndexing_CreateEvent(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := testkit.DB(t)
 
@@ -86,6 +87,7 @@ func TestUserBlockIndexing_CreateEvent(t *testing.T) {
 // TestUserBlockIndexing_DeleteEvent tests that a Jetstream DELETE event
 // properly removes a previously indexed block from the AppView.
 func TestUserBlockIndexing_DeleteEvent(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := testkit.DB(t)
 
@@ -157,6 +159,7 @@ func TestUserBlockIndexing_DeleteEvent(t *testing.T) {
 // TestUserBlockIndexing_Idempotent tests that processing the same CREATE event
 // twice results in only 1 block (idempotent via ON CONFLICT DO UPDATE).
 func TestUserBlockIndexing_Idempotent(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := testkit.DB(t)
 
@@ -209,6 +212,7 @@ func TestUserBlockIndexing_Idempotent(t *testing.T) {
 // TestUserBlockIndexing_DeleteNonExistent tests that a DELETE event for a
 // non-existent block does not error (graceful/idempotent).
 func TestUserBlockIndexing_DeleteNonExistent(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := testkit.DB(t)
 

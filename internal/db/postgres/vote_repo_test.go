@@ -4,42 +4,16 @@ package postgres
 
 import (
 	"Coves/internal/core/votes"
+	"Coves/tests/testkit"
 	"context"
 	"database/sql"
-	"os"
 	"testing"
 	"time"
 
 	_ "github.com/lib/pq"
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// setupTestDB creates a test database connection and runs migrations
-func setupTestDB(t *testing.T) *sql.DB {
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		dsn = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
-	}
-
-	db, err := sql.Open("postgres", dsn)
-	require.NoError(t, err, "Failed to connect to test database")
-
-	// Run migrations
-	require.NoError(t, goose.Up(db, "../../db/migrations"), "Failed to run migrations")
-
-	return db
-}
-
-// cleanupVotes removes all test votes and users from the database
-func cleanupVotes(t *testing.T, db *sql.DB) {
-	_, err := db.Exec("DELETE FROM votes WHERE voter_did LIKE 'did:plc:test%' OR voter_did LIKE 'did:plc:nonexistent%'")
-	require.NoError(t, err, "Failed to cleanup votes")
-
-	_, err = db.Exec("DELETE FROM users WHERE did LIKE 'did:plc:test%'")
-	require.NoError(t, err, "Failed to cleanup test users")
-}
 
 // createTestUser creates a minimal test user for foreign key constraints
 func createTestUser(t *testing.T, db *sql.DB, handle, did string) {
@@ -53,9 +27,8 @@ func createTestUser(t *testing.T, db *sql.DB, handle, did string) {
 }
 
 func TestVoteRepo_Create(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupVotes(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	repo := NewVoteRepository(db)
 	ctx := context.Background()
@@ -82,9 +55,8 @@ func TestVoteRepo_Create(t *testing.T) {
 }
 
 func TestVoteRepo_Create_Idempotent(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupVotes(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	repo := NewVoteRepository(db)
 	ctx := context.Background()
@@ -124,9 +96,8 @@ func TestVoteRepo_Create_Idempotent(t *testing.T) {
 }
 
 func TestVoteRepo_Create_VoterNotFound(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupVotes(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	repo := NewVoteRepository(db)
 	ctx := context.Background()
@@ -154,9 +125,8 @@ func TestVoteRepo_Create_VoterNotFound(t *testing.T) {
 }
 
 func TestVoteRepo_GetByURI(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupVotes(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	repo := NewVoteRepository(db)
 	ctx := context.Background()
@@ -188,8 +158,8 @@ func TestVoteRepo_GetByURI(t *testing.T) {
 }
 
 func TestVoteRepo_GetByURI_NotFound(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	repo := NewVoteRepository(db)
 	ctx := context.Background()
@@ -199,9 +169,8 @@ func TestVoteRepo_GetByURI_NotFound(t *testing.T) {
 }
 
 func TestVoteRepo_GetByVoterAndSubject(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupVotes(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	repo := NewVoteRepository(db)
 	ctx := context.Background()
@@ -234,8 +203,8 @@ func TestVoteRepo_GetByVoterAndSubject(t *testing.T) {
 }
 
 func TestVoteRepo_GetByVoterAndSubject_NotFound(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	repo := NewVoteRepository(db)
 	ctx := context.Background()
@@ -245,9 +214,8 @@ func TestVoteRepo_GetByVoterAndSubject_NotFound(t *testing.T) {
 }
 
 func TestVoteRepo_Delete(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupVotes(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	repo := NewVoteRepository(db)
 	ctx := context.Background()
@@ -284,9 +252,8 @@ func TestVoteRepo_Delete(t *testing.T) {
 }
 
 func TestVoteRepo_Delete_Idempotent(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupVotes(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	repo := NewVoteRepository(db)
 	ctx := context.Background()
@@ -317,9 +284,8 @@ func TestVoteRepo_Delete_Idempotent(t *testing.T) {
 }
 
 func TestVoteRepo_ListBySubject(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupVotes(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	repo := NewVoteRepository(db)
 	ctx := context.Background()
@@ -363,9 +329,8 @@ func TestVoteRepo_ListBySubject(t *testing.T) {
 }
 
 func TestVoteRepo_ListByVoter(t *testing.T) {
-	db := setupTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupVotes(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	repo := NewVoteRepository(db)
 	ctx := context.Background()

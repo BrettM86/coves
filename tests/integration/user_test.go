@@ -51,6 +51,7 @@ func generateTestDID(suffix string) string {
 }
 
 func TestUserCreationAndRetrieval(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	// Wire up dependencies
@@ -116,6 +117,7 @@ func TestUserCreationAndRetrieval(t *testing.T) {
 }
 
 func TestGetProfileEndpoint(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	// Wire up dependencies
@@ -215,6 +217,7 @@ func TestGetProfileEndpoint(t *testing.T) {
 
 // TestDuplicateCreation tests that duplicate DID/handle creation fails properly
 func TestDuplicateCreation(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	userRepo := postgres.NewUserRepository(db)
@@ -270,6 +273,7 @@ func TestDuplicateCreation(t *testing.T) {
 
 // TestUserRepository_GetByDIDs tests the batch user retrieval functionality
 func TestUserRepository_GetByDIDs(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	userRepo := postgres.NewUserRepository(db)
@@ -429,6 +433,7 @@ func TestUserRepository_GetByDIDs(t *testing.T) {
 
 // TestProfileStats tests that profile stats are returned correctly
 func TestProfileStats(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	// Use unique test DID to avoid conflicts with other test runs
@@ -572,6 +577,7 @@ func TestProfileStats(t *testing.T) {
 
 // TestProfileStats_CommentCount tests that comment counting works correctly
 func TestProfileStats_CommentCount(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	uniqueSuffix := time.Now().UnixNano()
@@ -662,6 +668,7 @@ func TestProfileStats_CommentCount(t *testing.T) {
 
 // TestProfileStats_CommunityCount tests that subscription counting works correctly
 func TestProfileStats_CommunityCount(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	uniqueSuffix := time.Now().UnixNano()
@@ -721,6 +728,7 @@ func TestProfileStats_CommunityCount(t *testing.T) {
 
 // TestGetProfile_NonExistentDID tests that GetProfile returns appropriate error for non-existent DID
 func TestGetProfile_NonExistentDID(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	userRepo := postgres.NewUserRepository(db)
@@ -767,6 +775,7 @@ func TestGetProfile_NonExistentDID(t *testing.T) {
 
 // TestProfileStatsEndpoint tests the HTTP endpoint returns stats correctly
 func TestProfileStatsEndpoint(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	// Wire up dependencies
@@ -859,6 +868,7 @@ func TestProfileStatsEndpoint(t *testing.T) {
 
 // TestHandleValidation tests atProto handle validation rules
 func TestHandleValidation(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	userRepo := postgres.NewUserRepository(db)
@@ -979,6 +989,7 @@ func TestHandleValidation(t *testing.T) {
 // TestAccountDeletion_Integration tests the complete account deletion flow
 // from handler → service → repository with a real database
 func TestAccountDeletion_Integration(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	uniqueSuffix := time.Now().UnixNano()

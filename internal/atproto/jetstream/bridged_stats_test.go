@@ -5,73 +5,27 @@ package jetstream
 import (
 	"context"
 	"database/sql"
-	"net/url"
-	"os"
 	"testing"
 	"time"
 
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 
 	_ "github.com/lib/pq"
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// These tests exercise the bridged-vote-stats support end-to-end against a local
-// Postgres test database (the same container the rest of the postgres package tests
-// use, port 5434 by default / TEST_DATABASE_URL). They are strictly local-only: no
-// public PLC/relay/PDS/image hosts are contacted.
+// These tests exercise the bridged-vote-stats support end-to-end against a
+// private testkit clone of the migrated template. They are strictly local-only:
+// no public PLC/relay/PDS/image hosts are contacted.
 
 // bridgeTrustForTests trusts only the bridge PDS host, so records from repos hosted
 // there may assert bridgedStats while every other repo is default-denied.
 func bridgeTrustForTests() *BridgeTrust {
 	return NewBridgeTrust([]string{bridgedTestPDS})
-}
-
-// redactedDSN strips the password from a Postgres URL so a failure message can
-// name the server it could not reach without copying the credential into the CI
-// log. The test credentials are throwaway, but a log is the wrong place to
-// practise leaking them.
-func redactedDSN(dsn string) string {
-	u, err := url.Parse(dsn)
-	if err != nil {
-		return "(unparseable DSN)"
-	}
-	return u.Redacted()
-}
-
-// setupBridgedTestDB connects to the local test database and runs migrations.
-func setupBridgedTestDB(t *testing.T) *sql.DB {
-	t.Helper()
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		dsn = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
-	}
-	db, err := sql.Open("postgres", dsn)
-	require.NoError(t, err, "Failed to connect to test database")
-	// Registered before the first thing that can fail, so the handle is closed
-	// even when Ping or the migration below calls FailNow. Callers still defer
-	// their own Close; database/sql tolerates the double close.
-	t.Cleanup(func() { _ = db.Close() })
-	// Reaching this file at all means `-tags integration` was passed, which is
-	// a request for Postgres. An absent database is a failed run, not a
-	// shrunken one.
-	require.NoError(t, db.Ping(),
-		"test database not reachable at %s; bring it up with `make test-db-reset`", redactedDSN(dsn))
-	require.NoError(t, goose.Up(db, "../../db/migrations"), "Failed to run migrations")
-	return db
-}
-
-func cleanupBridgedTestData(t *testing.T, db *sql.DB) {
-	t.Helper()
-	_, _ = db.Exec("DELETE FROM votes WHERE voter_did LIKE $1", bridgedTestPrefix+"%")
-	_, _ = db.Exec("DELETE FROM comments WHERE commenter_did LIKE $1 OR root_uri LIKE $2", bridgedTestPrefix+"%", "at://"+bridgedTestPrefix+"%")
-	_, _ = db.Exec("DELETE FROM posts WHERE community_did LIKE $1", bridgedTestPrefix+"%")
-	_, _ = db.Exec("DELETE FROM communities WHERE did LIKE $1", bridgedTestPrefix+"%")
-	_, _ = db.Exec("DELETE FROM users WHERE did LIKE $1", bridgedTestPrefix+"%")
 }
 
 // insertBridgedUser inserts a user hosted on the trusted bridge PDS.
@@ -148,10 +102,8 @@ func readPostRow(t *testing.T, db *sql.DB, uri string) (up, down, bridgedUp, bri
 }
 
 func TestPostConsumer_Create_WithBridgedStats(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupBridgedTestData(t, db)
-	cleanupBridgedTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	insertBridgedUser(t, db, bridgedTestAuthor, "brauthor.test")
 	insertBridgedCommunity(t, db, bridgedTestCommunity, "brcommunity.test", bridgedTestAuthor)
@@ -184,10 +136,8 @@ func TestPostConsumer_Create_WithBridgedStats(t *testing.T) {
 }
 
 func TestPostConsumer_CreateBeforeAuthorProfile_IndexesTrustedBridgeAuthor(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupBridgedTestData(t, db)
-	cleanupBridgedTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	// The community is already indexed, but the post author's profile event
 	// has not arrived yet. This is the cross-repo ordering BigSky permits.
@@ -223,10 +173,8 @@ func TestPostConsumer_CreateBeforeAuthorProfile_IndexesTrustedBridgeAuthor(t *te
 }
 
 func TestPostConsumer_Update_BridgedStats_NewerAsOfApplied(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupBridgedTestData(t, db)
-	cleanupBridgedTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	insertBridgedUser(t, db, bridgedTestAuthor, "brauthor.test")
 	insertBridgedCommunity(t, db, bridgedTestCommunity, "brcommunity.test", bridgedTestAuthor)
@@ -253,10 +201,8 @@ func TestPostConsumer_Update_BridgedStats_NewerAsOfApplied(t *testing.T) {
 }
 
 func TestPostConsumer_Update_StrictlyOlderIgnored_EqualApplied(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupBridgedTestData(t, db)
-	cleanupBridgedTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	insertBridgedUser(t, db, bridgedTestAuthor, "brauthor.test")
 	insertBridgedCommunity(t, db, bridgedTestCommunity, "brcommunity.test", bridgedTestAuthor)
@@ -287,10 +233,8 @@ func TestPostConsumer_Update_StrictlyOlderIgnored_EqualApplied(t *testing.T) {
 }
 
 func TestPostConsumer_Update_ReassignmentRejected(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupBridgedTestData(t, db)
-	cleanupBridgedTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	insertBridgedUser(t, db, bridgedTestAuthor, "brauthor.test")
 	insertBridgedUser(t, db, bridgedTestOther, "brother.test")
@@ -315,10 +259,8 @@ func TestPostConsumer_Update_ReassignmentRejected(t *testing.T) {
 }
 
 func TestPostConsumer_Update_SoftDeletedSkipped(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupBridgedTestData(t, db)
-	cleanupBridgedTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	insertBridgedUser(t, db, bridgedTestAuthor, "brauthor.test")
 	insertBridgedCommunity(t, db, bridgedTestCommunity, "brcommunity.test", bridgedTestAuthor)
@@ -342,10 +284,8 @@ func TestPostConsumer_Update_SoftDeletedSkipped(t *testing.T) {
 }
 
 func TestPostConsumer_Update_NonExistentSkipped(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupBridgedTestData(t, db)
-	cleanupBridgedTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	insertBridgedUser(t, db, bridgedTestAuthor, "brauthor.test")
 	insertBridgedCommunity(t, db, bridgedTestCommunity, "brcommunity.test", bridgedTestAuthor)
@@ -363,10 +303,8 @@ func TestPostConsumer_Update_NonExistentSkipped(t *testing.T) {
 }
 
 func TestPostConsumer_InclusiveScore_NativeVotesStackOnBridged(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupBridgedTestData(t, db)
-	cleanupBridgedTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	insertBridgedUser(t, db, bridgedTestAuthor, "brauthor.test")
 	insertBridgedCommunity(t, db, bridgedTestCommunity, "brcommunity.test", bridgedTestAuthor)
@@ -461,10 +399,8 @@ func setupCommentThread(t *testing.T, db *sql.DB) (postURI, postCID string) {
 }
 
 func TestCommentConsumer_Create_WithBridgedStats(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupBridgedTestData(t, db)
-	cleanupBridgedTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	postURI, postCID := setupCommentThread(t, db)
 	cc := newCommentConsumer(db)
@@ -493,10 +429,8 @@ func TestCommentConsumer_Create_WithBridgedStats(t *testing.T) {
 }
 
 func TestCommentConsumer_Update_AsOfGuard_AndInclusiveScore(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupBridgedTestData(t, db)
-	cleanupBridgedTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	postURI, postCID := setupCommentThread(t, db)
 	cc := newCommentConsumer(db)
@@ -559,10 +493,8 @@ func TestCommentConsumer_Update_AsOfGuard_AndInclusiveScore(t *testing.T) {
 // --- edited_at churn (fix 4) ---
 
 func TestPostConsumer_Update_StatsOnly_EditedAtUnchanged(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupBridgedTestData(t, db)
-	cleanupBridgedTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	insertBridgedUser(t, db, bridgedTestAuthor, "brauthor.test")
 	insertBridgedCommunity(t, db, bridgedTestCommunity, "brcommunity.test", bridgedTestAuthor)
@@ -593,10 +525,8 @@ func TestPostConsumer_Update_StatsOnly_EditedAtUnchanged(t *testing.T) {
 // --- provenance gate (fix 1a): untrusted repos cannot self-assert bridgedStats ---
 
 func TestPostConsumer_Create_UntrustedCommunity_BridgedStatsIgnored(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupBridgedTestData(t, db)
-	cleanupBridgedTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	insertBridgedUser(t, db, bridgedTestAuthor, "brauthor.test")
 	// Community hosted on a NON-bridge PDS -> provenance gate denies bridgedStats.
@@ -619,10 +549,8 @@ func TestPostConsumer_Create_UntrustedCommunity_BridgedStatsIgnored(t *testing.T
 }
 
 func TestCommentConsumer_Create_UntrustedCommenter_BridgedStatsIgnored(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupBridgedTestData(t, db)
-	cleanupBridgedTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	postURI, postCID := setupCommentThread(t, db)
 	// Override the commenter to a non-bridge PDS -> provenance gate denies bridgedStats.
@@ -646,10 +574,8 @@ func TestCommentConsumer_Create_UntrustedCommenter_BridgedStatsIgnored(t *testin
 // --- input hygiene (fix 1b): negative / over-cap aggregates are ignored whole ---
 
 func TestPostConsumer_Create_BridgedStatsHygiene(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupBridgedTestData(t, db)
-	cleanupBridgedTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	insertBridgedUser(t, db, bridgedTestAuthor, "brauthor.test")
 	insertBridgedCommunity(t, db, bridgedTestCommunity, "brcommunity.test", bridgedTestAuthor)
@@ -686,10 +612,8 @@ func TestPostConsumer_Create_BridgedStatsHygiene(t *testing.T) {
 // --- comment update skips soft-deleted rows (fix 6) ---
 
 func TestCommentConsumer_Update_SoftDeletedSkipped(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupBridgedTestData(t, db)
-	cleanupBridgedTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	postURI, postCID := setupCommentThread(t, db)
 	cc := newCommentConsumer(db)
@@ -718,10 +642,8 @@ func TestCommentConsumer_Update_SoftDeletedSkipped(t *testing.T) {
 // --- comment resurrection score invariant (fix 5) ---
 
 func TestCommentConsumer_Resurrection_ScoreIncludesSurvivingNativeVotes(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupBridgedTestData(t, db)
-	cleanupBridgedTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	postURI, postCID := setupCommentThread(t, db)
 	cc := newCommentConsumer(db)

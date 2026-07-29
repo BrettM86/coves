@@ -13,6 +13,7 @@ import (
 )
 
 func TestCommunityRepository_Create(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
@@ -119,6 +120,7 @@ func TestCommunityRepository_Create(t *testing.T) {
 }
 
 func TestCommunityRepository_GetByDID(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
@@ -172,6 +174,7 @@ func TestCommunityRepository_GetByDID(t *testing.T) {
 }
 
 func TestCommunityRepository_GetByHandle(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
@@ -213,6 +216,7 @@ func TestCommunityRepository_GetByHandle(t *testing.T) {
 }
 
 func TestCommunityRepository_Subscriptions(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
@@ -302,6 +306,7 @@ func TestCommunityRepository_Subscriptions(t *testing.T) {
 }
 
 func TestCommunityRepository_List(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)
@@ -388,6 +393,7 @@ func TestCommunityRepository_List(t *testing.T) {
 }
 
 func TestCommunityRepository_GetSubscribedCommunityDIDs(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)

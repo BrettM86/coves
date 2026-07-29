@@ -2,6 +2,17 @@
 
 package integration
 
+// SERIAL BY DESIGN — do not add t.Parallel() to this file.
+//
+// Its tests drive the Jetstream firehose through the hand-rolled
+// subscribeToJetstream* helpers below rather than testkit's cursor-gated
+// subscriber. Those helpers subscribe to one shared stream and match on the
+// first event of a collection, so a concurrent test writing the same
+// collection is delivered to them too and either steals the match or trips
+// their timeout. Per-test database clones do not isolate a shared websocket.
+//
+// docs/TEST_ARCHITECTURE.md §3.3 ("Parallelism is earned, not assumed").
+
 import (
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
@@ -300,10 +311,12 @@ func subscribeToJetstreamForCommunityEvent(
 	}
 	defer func() { _ = conn.Close() }()
 
-	// Track consecutive timeouts to detect stale connections
+	// ONE deadline for the whole subscription, not one per read: the
+	// budget is what the caller is willing to wait in total, and a
+	// per-read deadline would let a busy stream extend it indefinitely.
+	readDeadline := time.Now().Add(jetstreamReadBudget)
+
 	// The gorilla/websocket library panics after 1000 repeated reads on a failed connection
-	consecutiveTimeouts := 0
-	const maxConsecutiveTimeouts = 10
 
 	for {
 		select {
@@ -312,7 +325,7 @@ func subscribeToJetstreamForCommunityEvent(
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
-			if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			if err := conn.SetReadDeadline(readDeadline); err != nil {
 				return fmt.Errorf("failed to set read deadline: %w", err)
 			}
 
@@ -326,31 +339,25 @@ func subscribeToJetstreamForCommunityEvent(
 				default:
 				}
 				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-					return nil
+					return fmt.Errorf("Jetstream closed the subscription before the event arrived: %w", err)
 				}
-				// Handle EOF - connection was closed by server
 				if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-					return nil
+					return fmt.Errorf("Jetstream hung up before the event arrived: %w", err)
 				}
-				var netErr net.Error
-				if errors.As(err, &netErr) && netErr.Timeout() {
-					consecutiveTimeouts++
-					// If we get too many consecutive timeouts, the connection may be in a bad state
-					// Exit to avoid the gorilla/websocket panic on repeated reads to failed connections
-					if consecutiveTimeouts >= maxConsecutiveTimeouts {
-						return fmt.Errorf("connection appears stale after %d consecutive timeouts", consecutiveTimeouts)
-					}
-					continue
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					// The deadline is the whole budget, so its expiry is the answer:
+					// no matching event arrived. Reading on would be reading a
+					// connection gorilla has already marked failed.
+					return fmt.Errorf("no matching event within %s", jetstreamReadBudget)
 				}
-				// Check for connection closed errors (happens during shutdown)
+				// Still nil: this one only happens when the socket was closed
+				// underneath us during shutdown, which the done check above
+				// has already established is not a missing event.
 				if strings.Contains(err.Error(), "use of closed network connection") {
 					return nil
 				}
 				return fmt.Errorf("failed to read Jetstream message: %w", err)
 			}
-
-			// Reset timeout counter on successful read
-			consecutiveTimeouts = 0
 
 			// Check if this is the event we're looking for
 			if event.Did == targetDID && event.Kind == "commit" &&

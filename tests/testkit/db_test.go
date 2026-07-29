@@ -156,6 +156,7 @@ func TestDB_CleanupIsNotBlockedByAQueryStillRunning(t *testing.T) {
 func TestDB_ProvisionsTheTemplateWhenItIsMissing(t *testing.T) {
 	// The ad-hoc path: someone runs `go test ./internal/foo` without the
 	// Makefile having prepared anything. testkit has to notice and provision.
+	usePrivateTemplate(t)
 	dropTemplate(t)
 	resetTemplateVerification()
 	require.False(t, databaseExists(t, TemplateName()))
@@ -168,6 +169,7 @@ func TestDB_ProvisionsTheTemplateWhenItIsMissing(t *testing.T) {
 }
 
 func TestDB_RebuildsTheTemplateWhenTheMigrationsChange(t *testing.T) {
+	usePrivateTemplate(t)
 	require.NoError(t, EnsureTemplate(context.Background()))
 
 	// Stand in for "a migration was added since this template was built", and
@@ -198,6 +200,7 @@ func TestDB_RebuildsTheTemplateWhenTheMigrationsChange(t *testing.T) {
 }
 
 func TestTemplateStatus(t *testing.T) {
+	usePrivateTemplate(t)
 	_, err := ProvisionTemplate(context.Background(), false)
 	require.NoError(t, err)
 
@@ -328,6 +331,17 @@ func TestSweepOrphanClones(t *testing.T) {
 	createDatabase(t, orphan)
 	t.Cleanup(func() { _ = dropDatabase(ctx, orphan) })
 
+	// The same shape in the OTHER sweepable family: a private template left
+	// behind by a killed testkit run. This is the leak that matters most —
+	// nothing else names it, so if the sweep does not reap it, nothing ever
+	// will.
+	orphanTemplate := fmt.Sprintf("%s%s_%s_orphan",
+		PrivateTemplatePrefix,
+		strconv.FormatInt(time.Now().Add(-2*time.Hour).Unix(), 36),
+		RunPrefix())
+	createDatabase(t, orphanTemplate)
+	t.Cleanup(func() { _ = dropSweepable(ctx, orphanTemplate) })
+
 	// A clone from a run that is still going: same prefix, current timestamp.
 	// Dropping this one out from under a live test is the failure the age
 	// bound exists to prevent.
@@ -335,13 +349,34 @@ func TestSweepOrphanClones(t *testing.T) {
 	createDatabase(t, live)
 	t.Cleanup(func() { _ = dropDatabase(ctx, live) })
 
+	// And a private template from a run still going, for the same reason.
+	liveTemplate := newSweepableName(PrivateTemplatePrefix)
+	createDatabase(t, liveTemplate)
+	t.Cleanup(func() { _ = dropSweepable(ctx, liveTemplate) })
+
 	result, err := SweepOrphanClones(ctx, time.Hour)
 	require.NoError(t, err)
 
 	assert.Contains(t, result.Dropped, orphan)
+	assert.Contains(t, result.Dropped, orphanTemplate,
+		"a leaked private template is a fully migrated database nothing else names")
 	assert.NotContains(t, result.Dropped, live)
+	assert.NotContains(t, result.Dropped, liveTemplate)
 	assert.False(t, databaseExists(t, orphan))
+	assert.False(t, databaseExists(t, orphanTemplate))
 	assert.True(t, databaseExists(t, live), "a clone younger than the cutoff must survive")
+	assert.True(t, databaseExists(t, liveTemplate), "a private template younger than the cutoff must survive")
+}
+
+// dropSweepable removes either sweepable family, for test cleanup only:
+// dropDatabase deliberately refuses anything that is not a clone.
+func dropSweepable(ctx context.Context, name string) error {
+	db, err := adminDB()
+	if err != nil {
+		return err
+	}
+	_, err = db.ExecContext(ctx, "DROP DATABASE IF EXISTS "+pq.QuoteIdentifier(name)+" WITH (FORCE)")
+	return err
 }
 
 func TestSweepOrphanClones_SkipsAnOldCloneThatIsStillInUse(t *testing.T) {
@@ -433,14 +468,68 @@ func TestValidateTemplateName(t *testing.T) {
 	})
 }
 
-func TestParallelBudget(t *testing.T) {
-	budget, err := ParallelBudget(context.Background())
+// The budget exists to keep `go test` inside max_connections, so that — not a
+// range check on the numbers — is what this asserts. -p and -parallel multiply:
+// overcommitting surfaces as "sorry, too many clients already" in whichever
+// test happened to be unlucky, which reads like a bug in that test.
+func TestConcurrencyBudget_PeakFitsInsideMaxConnections(t *testing.T) {
+	ctx := context.Background()
+
+	budget, err := ConcurrencyBudget(ctx)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, budget.Packages, 1, "go test rejects -p 0")
+	require.GreaterOrEqual(t, budget.Parallel, 1, "go test rejects -parallel 0")
+
+	db, err := adminDB()
+	require.NoError(t, err)
+	var raw string
+	require.NoError(t, db.QueryRowContext(ctx, "SHOW max_connections").Scan(&raw))
+	maxConns, err := strconv.Atoi(strings.TrimSpace(raw))
 	require.NoError(t, err)
 
-	// The compose files set max_connections=200, so the budget should be
-	// comfortably above one but never unbounded.
-	assert.GreaterOrEqual(t, budget, 1)
-	assert.LessOrEqual(t, budget, 64)
+	// Every test binary holds an admin pool; every parallel test inside it
+	// holds up to nestedClonePools clone pools (a test that calls testkit.DB
+	// again inside a subtest holds two at once).
+	peak := budget.Packages * (adminPoolMaxOpen + budget.Parallel*nestedClonePools*clonePoolMaxOpen)
+	assert.LessOrEqual(t, peak, maxConns-connectionHeadroom,
+		"%s peaks at %d connections, which does not fit in max_connections=%d less %d of headroom",
+		budget.Flags(), peak, maxConns, connectionHeadroom)
+
+	assert.Equal(t,
+		fmt.Sprintf("-p %d -parallel %d", budget.Packages, budget.Parallel),
+		budget.Flags(),
+		"Flags is spliced into a go test command line by scripts/test-db-prepare.sh")
+}
+
+// A server too small for one test must SAY so. Clamping the budget up to a
+// -parallel of 1 it cannot honour would move the failure to an unrelated test,
+// as "sorry, too many clients already", which is what the budget exists to
+// prevent.
+func TestConcurrencyBudget_RefusesAServerTooSmallToRunOneTest(t *testing.T) {
+	// Just under what one package plus one test plus the headroom needs.
+	tooSmall := connectionHeadroom + adminPoolMaxOpen + nestedClonePools*clonePoolMaxOpen - 1
+
+	_, err := budgetFor(tooSmall)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot support even one test")
+	assert.Contains(t, err.Error(), "raise max_connections")
+
+	// One more connection is exactly enough, and must not error.
+	budget, err := budgetFor(tooSmall + 1)
+	require.NoError(t, err)
+	assert.Equal(t, 1, budget.Parallel, "the smallest workable server gets the smallest workable budget")
+}
+
+// The invariant across every plausible server size, not just this one: the
+// budget's own worst case must fit in the connections it was derived from.
+func TestConcurrencyBudget_NeverOvercommitsAtAnySize(t *testing.T) {
+	for _, maxConns := range []int{60, 100, 200, 500, 5000} {
+		budget, err := budgetFor(maxConns)
+		require.NoError(t, err, "max_connections=%d", maxConns)
+		peak := budget.Packages * (adminPoolMaxOpen + budget.Parallel*nestedClonePools*clonePoolMaxOpen)
+		assert.LessOrEqual(t, peak, maxConns-connectionHeadroom,
+			"at max_connections=%d, %s peaks at %d", maxConns, budget.Flags(), peak)
+	}
 }
 
 func TestDescribeLockHolders_NamesTheBlockingSession(t *testing.T) {
@@ -496,19 +585,33 @@ func TestDropDatabase_RefusesAnythingButAClone(t *testing.T) {
 	}
 }
 
-func TestCloneCreatedAt(t *testing.T) {
-	name := newCloneName()
-	created, ok := cloneCreatedAt(name)
-	require.True(t, ok, "newCloneName must produce a sweepable name: %q", name)
-	assert.WithinDuration(t, time.Now(), created, 5*time.Second)
+// Both sweepable families must be ageable by name, because that is the only
+// creation time Postgres records for them — pg_database has no such column.
+func TestSweepableCreatedAt(t *testing.T) {
+	for _, family := range sweepableFamilies {
+		name := newSweepableName(family.prefix)
+		created, ok := sweepableCreatedAt(family.prefix, family.pattern, name)
+		require.True(t, ok, "newSweepableName must produce a sweepable name: %q", name)
+		assert.WithinDuration(t, time.Now(), created, 5*time.Second)
 
-	for _, bogus := range []string{
-		"coves_dev",
-		"tkclone_notatimestamp",               // too few segments
-		"tkclone_zzz_" + RunPrefix() + "_1_2", // too many segments
-	} {
-		_, ok := cloneCreatedAt(bogus)
-		assert.False(t, ok, "%q must not be treated as a sweepable clone", bogus)
+		for _, bogus := range []string{
+			"coves_dev",
+			family.prefix + "notatimestamp",               // too few segments
+			family.prefix + "zzz_" + RunPrefix() + "_1_2", // too many segments
+		} {
+			_, ok := sweepableCreatedAt(family.prefix, family.pattern, bogus)
+			assert.False(t, ok, "%q must not be treated as sweepable", bogus)
+		}
+
+		// A name from the OTHER family must never be aged by this one, or the
+		// sweep would drop a database under the wrong rules.
+		for _, other := range sweepableFamilies {
+			if other.prefix == family.prefix {
+				continue
+			}
+			_, ok := sweepableCreatedAt(family.prefix, family.pattern, newSweepableName(other.prefix))
+			assert.False(t, ok, "%s names must not decode as %s names", other.prefix, family.prefix)
+		}
 	}
 }
 
@@ -581,7 +684,9 @@ func databaseExists(t *testing.T, name string) bool {
 
 func createDatabase(t *testing.T, name string) {
 	t.Helper()
-	require.Regexp(t, cloneNamePattern, name, "tests only create clone-shaped databases")
+	require.True(t,
+		cloneNamePattern.MatchString(name) || privateTemplateNamePattern.MatchString(name),
+		"tests only create sweepable-shaped databases, got %q", name)
 	db, err := adminDB()
 	require.NoError(t, err)
 	_, err = db.Exec("CREATE DATABASE " + pq.QuoteIdentifier(name))

@@ -21,19 +21,20 @@ import (
 
 	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestCommentWrite_CreateTopLevelComment tests creating a comment on a post via E2E flow
 func TestCommentWrite_CreateTopLevelComment(t *testing.T) {
+	t.Parallel()
 
 	db := testkit.DB(t)
 
 	// Check if PDS is running
 	pdsURL := getTestPDSURL()
 	healthResp, err := http.Get(pdsURL + "/xrpc/_health")
-	if err != nil {
-		t.Skipf("PDS not running at %s: %v", pdsURL, err)
-	}
+	require.NoError(t, err, "PDS health check at %s (TestMain's RequirePDS should have caught this)", pdsURL)
 	func() {
 		if closeErr := healthResp.Body.Close(); closeErr != nil {
 			t.Logf("Failed to close health response: %v", closeErr)
@@ -254,6 +255,7 @@ func TestCommentWrite_CreateTopLevelComment(t *testing.T) {
 
 // TestCommentWrite_CreateNestedReply tests creating a reply to another comment
 func TestCommentWrite_CreateNestedReply(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -291,9 +293,7 @@ func TestCommentWrite_CreateNestedReply(t *testing.T) {
 	testUserPassword := "test-password-123"
 
 	pdsAccessToken, userDID, err := createPDSAccount(pdsURL, testUserHandle, testUserEmail, testUserPassword)
-	if err != nil {
-		t.Skipf("PDS not available: %v", err)
-	}
+	require.NoError(t, err, "creating the test account on the PDS")
 
 	testUser := createTestUser(t, db, testUserHandle, userDID)
 
@@ -400,6 +400,7 @@ func TestCommentWrite_CreateNestedReply(t *testing.T) {
 
 // TestCommentWrite_UpdateComment tests updating an existing comment
 func TestCommentWrite_UpdateComment(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -436,9 +437,7 @@ func TestCommentWrite_UpdateComment(t *testing.T) {
 	testUserPassword := "test-password-123"
 
 	pdsAccessToken, userDID, err := createPDSAccount(pdsURL, testUserHandle, testUserEmail, testUserPassword)
-	if err != nil {
-		t.Skipf("PDS not available: %v", err)
-	}
+	require.NoError(t, err, "creating the test account on the PDS")
 
 	// Setup OAuth
 	mockStore := NewMockOAuthStore()
@@ -516,6 +515,7 @@ func TestCommentWrite_UpdateComment(t *testing.T) {
 
 // TestCommentWrite_DeleteComment tests deleting a comment
 func TestCommentWrite_DeleteComment(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -552,9 +552,7 @@ func TestCommentWrite_DeleteComment(t *testing.T) {
 	testUserPassword := "test-password-123"
 
 	pdsAccessToken, userDID, err := createPDSAccount(pdsURL, testUserHandle, testUserEmail, testUserPassword)
-	if err != nil {
-		t.Skipf("PDS not available: %v", err)
-	}
+	require.NoError(t, err, "creating the test account on the PDS")
 
 	// Setup OAuth
 	mockStore := NewMockOAuthStore()
@@ -620,6 +618,7 @@ func TestCommentWrite_DeleteComment(t *testing.T) {
 
 // TestCommentWrite_CannotUpdateOthersComment tests authorization for updates
 func TestCommentWrite_CannotUpdateOthersComment(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pdsURL := getTestPDSURL()
 
@@ -650,18 +649,14 @@ func TestCommentWrite_CannotUpdateOthersComment(t *testing.T) {
 	ownerHandle := fmt.Sprintf("own%s.local.coves.dev", ownerID)
 	ownerEmail := fmt.Sprintf("owner-%s@test.local", ownerID)
 	_, ownerDID, err := createPDSAccount(pdsURL, ownerHandle, ownerEmail, "password123")
-	if err != nil {
-		t.Skipf("PDS not available: %v", err)
-	}
+	require.NoError(t, err, "creating the test account on the PDS")
 
 	// Create second user (attacker)
 	attackerID := uniqueTestID()
 	attackerHandle := fmt.Sprintf("atk%s.local.coves.dev", attackerID)
 	attackerEmail := fmt.Sprintf("attacker-%s@test.local", attackerID)
 	attackerToken, attackerDID, err := createPDSAccount(pdsURL, attackerHandle, attackerEmail, "password123")
-	if err != nil {
-		t.Skipf("PDS not available: %v", err)
-	}
+	require.NoError(t, err, "creating the test account on the PDS")
 
 	// Setup OAuth for attacker
 	mockStore := NewMockOAuthStore()
@@ -693,6 +688,7 @@ func TestCommentWrite_CannotUpdateOthersComment(t *testing.T) {
 
 // TestCommentWrite_CannotDeleteOthersComment tests authorization for deletes
 func TestCommentWrite_CannotDeleteOthersComment(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pdsURL := getTestPDSURL()
 
@@ -723,18 +719,14 @@ func TestCommentWrite_CannotDeleteOthersComment(t *testing.T) {
 	ownerHandle := fmt.Sprintf("own%s.local.coves.dev", ownerID)
 	ownerEmail := fmt.Sprintf("owner-%s@test.local", ownerID)
 	_, ownerDID, err := createPDSAccount(pdsURL, ownerHandle, ownerEmail, "password123")
-	if err != nil {
-		t.Skipf("PDS not available: %v", err)
-	}
+	require.NoError(t, err, "creating the test account on the PDS")
 
 	// Create second user (attacker)
 	attackerID := uniqueTestID()
 	attackerHandle := fmt.Sprintf("atk%s.local.coves.dev", attackerID)
 	attackerEmail := fmt.Sprintf("attacker-%s@test.local", attackerID)
 	attackerToken, attackerDID, err := createPDSAccount(pdsURL, attackerHandle, attackerEmail, "password123")
-	if err != nil {
-		t.Skipf("PDS not available: %v", err)
-	}
+	require.NoError(t, err, "creating the test account on the PDS")
 
 	// Setup OAuth for attacker
 	mockStore := NewMockOAuthStore()
@@ -772,6 +764,7 @@ func parseTestDID(did string) (syntax.DID, error) {
 // CID validation correctly detects concurrent modifications.
 // This verifies the optimistic locking mechanism that prevents lost updates.
 func TestCommentWrite_ConcurrentModificationDetection(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -806,9 +799,7 @@ func TestCommentWrite_ConcurrentModificationDetection(t *testing.T) {
 	testUserPassword := "test-password-123"
 
 	pdsAccessToken, userDID, err := createPDSAccount(pdsURL, testUserHandle, testUserEmail, testUserPassword)
-	if err != nil {
-		t.Skipf("PDS not available: %v", err)
-	}
+	require.NoError(t, err, "creating the test account on the PDS")
 
 	// Setup OAuth
 	mockStore := NewMockOAuthStore()

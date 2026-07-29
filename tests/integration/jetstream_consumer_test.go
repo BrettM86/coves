@@ -14,6 +14,7 @@ import (
 )
 
 func TestUserIndexingFromJetstream(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	// Wire up dependencies
@@ -307,6 +308,7 @@ func TestUserIndexingFromJetstream(t *testing.T) {
 }
 
 func TestUserServiceIdempotency(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	userRepo := postgres.NewUserRepository(db)

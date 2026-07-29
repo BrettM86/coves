@@ -21,6 +21,7 @@ import (
 // blocked users' posts from community feeds when a viewer is authenticated,
 // but still shows them to unauthenticated viewers.
 func TestUserBlock_CommunityFeedFiltering(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := testkit.DB(t)
 
@@ -173,6 +174,7 @@ func TestUserBlock_CommunityFeedFiltering(t *testing.T) {
 // blocked users' posts from the discover feed when a viewer is authenticated,
 // but still shows them to unauthenticated viewers.
 func TestUserBlock_DiscoverFeedFiltering(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := testkit.DB(t)
 
@@ -297,6 +299,7 @@ func TestUserBlock_DiscoverFeedFiltering(t *testing.T) {
 // TestUserBlock_ProfileViewerState verifies that the user block repository correctly
 // returns block records, confirming that GetBlock returns a RecordURI when a block exists.
 func TestUserBlock_ProfileViewerState(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := testkit.DB(t)
 
@@ -359,6 +362,7 @@ func TestUserBlock_ProfileViewerState(t *testing.T) {
 // TestUserBlock_CommentFiltering verifies that comments from blocked users are
 // filtered out when querying with a viewerDID.
 func TestUserBlock_CommentFiltering(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := testkit.DB(t)
 
@@ -466,6 +470,7 @@ func TestUserBlock_CommentFiltering(t *testing.T) {
 // TestUserBlock_TimelineFeedFiltering verifies that user block enforcement filters
 // blocked users' posts from the authenticated user's timeline feed.
 func TestUserBlock_TimelineFeedFiltering(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	db := testkit.DB(t)
 

@@ -39,6 +39,7 @@ import (
 // - Testing ETag-based caching (304 responses)
 // - Error handling for invalid presets and missing blobs
 func TestImageProxy_E2E(t *testing.T) {
+	t.Parallel()
 	// Check if PDS is running
 	pdsURL := getTestPDSURL()
 	healthResp, err := http.Get(pdsURL + "/xrpc/_health")
@@ -369,6 +370,7 @@ func TestImageProxy_E2E(t *testing.T) {
 
 // TestImageProxy_CacheHit tests that cache hits are faster than cache misses
 func TestImageProxy_CacheHit(t *testing.T) {
+	t.Parallel()
 	// Check if PDS is running
 	pdsURL := getTestPDSURL()
 	healthResp, err := http.Get(pdsURL + "/xrpc/_health")
@@ -522,6 +524,7 @@ func createImageProxyTestServerWithCache(t *testing.T, pdsURL string, identityRe
 // TestImageProxy_MockPDS tests the image proxy with a mock PDS server
 // This allows testing image proxy behavior without a real PDS
 func TestImageProxy_MockPDS(t *testing.T) {
+	t.Parallel()
 	// Create test image
 	testImage := createTestImageForProxy(t, 100, 100, color.RGBA{R: 255, G: 128, B: 64, A: 255})
 	testCID := "bafybeimockimagetest123"
@@ -643,6 +646,7 @@ func (m *mockIdentityResolverForImageProxy) Purge(ctx context.Context, identifie
 
 // TestImageProxy_ErrorHandling tests various error conditions
 func TestImageProxy_ErrorHandling(t *testing.T) {
+	t.Parallel()
 	// Create mock identity resolver
 	mockResolver := &mockIdentityResolverForImageProxy{
 		pdsURL: "http://localhost:9999", // Non-existent server
@@ -727,6 +731,7 @@ func (m *errorMockResolver) Purge(ctx context.Context, identifier string) error 
 
 // TestImageProxy_UnsupportedFormat tests behavior with unsupported image formats
 func TestImageProxy_UnsupportedFormat(t *testing.T) {
+	t.Parallel()
 	// Create mock PDS that returns invalid image data
 	mockPDS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/xrpc/com.atproto.sync.getBlob") {
@@ -805,6 +810,7 @@ func TestImageProxy_UnsupportedFormat(t *testing.T) {
 
 // TestImageProxy_LargeImage tests behavior with large images
 func TestImageProxy_LargeImage(t *testing.T) {
+	t.Parallel()
 	// Create a large test image (1000x1000)
 	largeImage := createTestImageForProxy(t, 1000, 1000, color.RGBA{R: 200, G: 100, B: 50, A: 255})
 	testCID := "bafylargeimagecid"
@@ -892,6 +898,7 @@ func TestImageProxy_LargeImage(t *testing.T) {
 
 // TestImageProxy_ResponseJSON verifies no JSON is returned (should be plain text or image)
 func TestImageProxy_ResponseJSON(t *testing.T) {
+	t.Parallel()
 	mockResolver := &mockIdentityResolverForImageProxy{
 		pdsURL: "http://localhost:9999",
 	}

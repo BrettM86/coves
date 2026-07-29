@@ -41,6 +41,7 @@ import (
 // - Blob references in atProto records
 // - URL transformation in AppView responses
 func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
+	t.Parallel()
 	// Check if PDS is available before running E2E test
 	pdsURL := getTestPDSURL()
 	healthResp, err := http.Get(pdsURL + "/xrpc/_health")
@@ -351,6 +352,7 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 
 // TestBlobUpload_E2E_CommentWithImage tests image upload in comments
 func TestBlobUpload_E2E_CommentWithImage(t *testing.T) {
+	t.Parallel()
 	// Check if PDS is available before running E2E test
 	pdsURL := getTestPDSURL()
 	healthResp, err := http.Get(pdsURL + "/xrpc/_health")
@@ -456,6 +458,7 @@ func TestBlobUpload_E2E_CommentWithImage(t *testing.T) {
 // TestBlobUpload_PDS_MockServer tests blob upload with a mock PDS server
 // This allows testing without a live PDS instance
 func TestBlobUpload_PDS_MockServer(t *testing.T) {
+	t.Parallel()
 	// Create mock PDS server
 	mockPDS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Verify request
@@ -510,6 +513,7 @@ func TestBlobUpload_PDS_MockServer(t *testing.T) {
 
 // TestBlobUpload_Validation tests blob upload validation
 func TestBlobUpload_Validation(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	communityRepo := postgres.NewCommunityRepository(db)

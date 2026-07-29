@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"testing"
@@ -27,15 +28,11 @@ import (
 // This ensures mobile/web apps display the correct handle after a user
 // changes their handle on their PDS.
 //
-// Prerequisites:
-//   - Test database on localhost:5434
+// Run with `make test-integration`, or against an already-running dev stack:
 //
-// Run with:
-//
-//	docker-compose --profile test up -d postgres-test
-//	TEST_DATABASE_URL="postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable" \
-//	  go test -v ./tests/integration/ -run "TestOAuthSessionHandleSync"
+//	go test -tags integration ./tests/integration/ -run TestOAuthSessionHandleSync
 func TestOAuthSessionHandleSync(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -278,16 +275,14 @@ func TestOAuthSessionHandleSync(t *testing.T) {
 // TestOAuthSessionHandleSync_LiveJetstream tests the full flow with real Jetstream
 // This requires the dev infrastructure to be running.
 //
-// Prerequisites:
-//   - PDS running on localhost:3001
-//   - Jetstream running on localhost:6008
-//   - Test database on localhost:5434
+// Run with `make test-integration` (which brings the stack up), or directly
+// against a running one:
 //
-// Run with:
+//	go test -tags integration ./tests/integration/ -run TestOAuthSessionHandleSync_LiveJetstream
 //
-//	docker-compose --profile test --profile jetstream up -d
-//	TEST_DATABASE_URL="postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable" \
-//	  go test -v ./tests/integration/ -run "TestOAuthSessionHandleSync_LiveJetstream"
+// SERIAL BY DESIGN — no t.Parallel(): this is the one test in the file that
+// runs a connector against the shared live stream rather than feeding a
+// consumer in process.
 func TestOAuthSessionHandleSync_LiveJetstream(t *testing.T) {
 	// Check if Jetstream is available
 	if !isServiceAvailable("http://localhost:6008") {
@@ -319,15 +314,29 @@ func TestOAuthSessionHandleSync_LiveJetstream(t *testing.T) {
 	)
 	connector := jetstream.NewConnector("users-test", "ws://localhost:6008/subscribe", consumer)
 
-	// Start consumer in background
+	// Start consumer in background, and JOIN IT before returning.
+	//
+	// Without the join this goroutine outlives the test, and its t.Logf then
+	// panics the whole binary with "Log in goroutine after test has completed".
+	// That is not theoretical here: the clone this consumer writes to is
+	// dropped WITH (FORCE) in testkit.DB's cleanup, so Start returns a database
+	// error rather than context.Canceled, sails past the guard, and logs.
 	consumerCtx, consumerCancel := context.WithCancel(ctx)
-	defer consumerCancel()
-
-	go func() {
-		if err := connector.Start(consumerCtx); err != nil && err != context.Canceled {
-			t.Logf("Consumer stopped: %v", err)
+	consumerStopped := make(chan error, 1)
+	go func() { consumerStopped <- connector.Start(consumerCtx) }()
+	t.Cleanup(func() {
+		consumerCancel()
+		select {
+		case err := <-consumerStopped:
+			// Reported after the join, so it is the test's own goroutine
+			// logging, and only when it is not the shutdown we asked for.
+			if err != nil && !errors.Is(err, context.Canceled) {
+				t.Logf("Consumer stopped: %v", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Errorf("consumer goroutine did not stop within 10s of cancellation")
 		}
-	}()
+	})
 
 	// Give consumer time to connect
 	time.Sleep(500 * time.Millisecond)

@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/stretchr/testify/require"
 )
 
 // getPostTitleFromView extracts title from PostView.Record.
@@ -45,14 +47,13 @@ func getPostTitleFromView(t *testing.T, pv *posts.PostView) string {
 // TestGetAuthorPosts_E2E_Success tests the full author posts flow with real PDS
 // Flow: Create user on PDS → Create posts → Query via XRPC → Verify response
 func TestGetAuthorPosts_E2E_Success(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	// Check if PDS is running
 	pdsURL := getTestPDSURL()
 	healthResp, err := http.Get(pdsURL + "/xrpc/_health")
-	if err != nil {
-		t.Skipf("PDS not running at %s: %v", pdsURL, err)
-	}
+	require.NoError(t, err, "PDS health check at %s (TestMain's RequirePDS should have caught this)", pdsURL)
 	_ = healthResp.Body.Close()
 
 	ctx := context.Background()
@@ -268,6 +269,7 @@ func TestGetAuthorPosts_E2E_Success(t *testing.T) {
 
 // TestGetAuthorPosts_FilterLogic tests the different filter options
 func TestGetAuthorPosts_FilterLogic(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -402,6 +404,7 @@ func TestGetAuthorPosts_FilterLogic(t *testing.T) {
 
 // TestGetAuthorPosts_ServiceErrors tests error handling in the service layer
 func TestGetAuthorPosts_ServiceErrors(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -515,6 +518,7 @@ func TestGetAuthorPosts_ServiceErrors(t *testing.T) {
 
 // TestGetAuthorPosts_WithJetstreamIndexing tests the full flow including Jetstream indexing
 func TestGetAuthorPosts_WithJetstreamIndexing(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -540,9 +544,7 @@ func TestGetAuthorPosts_WithJetstreamIndexing(t *testing.T) {
 	testUserPassword := "test-password-123"
 
 	_, userDID, err := createPDSAccount(pdsURL, testUserHandle, testUserEmail, testUserPassword)
-	if err != nil {
-		t.Skipf("PDS not available: %v", err)
-	}
+	require.NoError(t, err, "creating the test account on the PDS")
 
 	// Index user in AppView
 	_ = createTestUser(t, db, testUserHandle, userDID)
@@ -623,6 +625,7 @@ func TestGetAuthorPosts_WithJetstreamIndexing(t *testing.T) {
 
 // TestGetAuthorPosts_CommunityFilter tests filtering posts by community
 func TestGetAuthorPosts_CommunityFilter(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()

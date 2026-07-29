@@ -153,9 +153,8 @@ test-integration: ## T1 integration tier - needs Postgres; starts postgres-test 
 		(echo "$(RED)✗ Container coves-test-postgres is not running, and 'compose up' did not start it.$(RESET)" && \
 		 echo "$(RED)  Rebuild it with 'make test-db-reset'.$(RESET)" && exit 1)
 	@echo "Waiting for test database to accept connections..."
-	@# Provisions the template database that testkit.DB clones per test, migrates
-	@# the shared database the not-yet-migrated tests use, and sweeps clones
-	@# orphaned by killed runs.
+	@# Provisions the template database that testkit.DB clones per test and
+	@# sweeps clones orphaned by killed runs.
 	@#
 	@# This is also the readiness gate, and deliberately so: it waits by opening
 	@# a real connection to POSTGRES_TEST_HOST:PORT — the same host endpoint the
@@ -170,15 +169,23 @@ test-integration: ## T1 integration tier - needs Postgres; starts postgres-test 
 	@# The tag set is additive: an `integration` build contains the untagged
 	@# unit files too, so this compiles and runs T0+T1 in one pass.
 	@#
-	@# -p 1 runs packages sequentially: the legacy tests/integration setup wipes
-	@# shared test-DB tables (unscoped DELETEs), so package-parallel runs race
-	@# and randomly kill other packages' fixtures (jetstream DB tests above all).
+	@# Both concurrency flags come from the server's max_connections, because
+	@# they multiply: -p test binaries each running -parallel tests hold that
+	@# many clone pools at once. testkit.ConcurrencyBudget does the arithmetic;
+	@# hardcoding either number is how a suite discovers its ceiling by hitting
+	@# it, as a "too many clients" failure in whichever test was unlucky.
 	@#
-	@# -parallel comes from the server's max_connections, because every test
-	@# under t.Parallel() holds its own clone pool. Inert until phase 3 enables
-	@# parallelism; wired now so the ceiling is never discovered by hitting it.
-	@go test -tags integration -p 1 -parallel $$(./scripts/test-db-prepare.sh --print-parallel) \
-		./cmd/... ./internal/... ./tests/...
+	@# Captured into a variable and checked, NOT spliced inline. A failed
+	@# $$(...) inside the go test line contributes an empty string and does not
+	@# fail the recipe, so go test would silently run at its DEFAULT -p
+	@# (GOMAXPROCS) — discarding the measured budget precisely when the thing
+	@# that measures it is broken. Fail-open on a safety limit is worse than
+	@# not having one, because it looks like it worked.
+	@set -e; \
+	FLAGS=$$(./scripts/test-db-prepare.sh --print-flags) || exit 1; \
+	[ -n "$$FLAGS" ] || { echo "$(RED)✗ test-db-prepare printed no concurrency flags$(RESET)"; exit 1; }; \
+	echo "  concurrency budget: $$FLAGS"; \
+	go test -tags integration $$FLAGS ./cmd/... ./internal/... ./tests/...
 	@echo ""
 	@echo "$(YELLOW)Note: tests/integration needs a PDS and Jetstream as well as Postgres,$(RESET)"
 	@echo "$(YELLOW)and its TestMain now says so up front — without 'make dev-up' the$(RESET)"
@@ -212,8 +219,17 @@ test-db-reset: ## Reset test database
 	@docker volume rm coves-test-postgres-data || true
 	@docker-compose -f docker-compose.dev.yml --env-file .env.dev --profile test up -d postgres-test
 	@echo "Waiting for PostgreSQL to be ready..."
+	@# Rebuilds the template testkit.DB clones. NOT `goose up` against
+	@# POSTGRES_TEST_DB: no test reads that database's schema any more — it is
+	@# only the maintenance database testkit connects to in order to CREATE and
+	@# DROP the others. Migrating it produced tables nothing queried and hid the
+	@# fact that the template, which every test actually clones, had not been
+	@# rebuilt at all.
+	@#
+	@# This also waits for the server, so the fixed sleep above is only for the
+	@# container process, not for Postgres accepting connections.
 	@sleep 3
-	@goose -dir internal/db/migrations postgres "postgresql://$(POSTGRES_TEST_USER):$(POSTGRES_TEST_PASSWORD)@localhost:$(POSTGRES_TEST_PORT)/$(POSTGRES_TEST_DB)?sslmode=disable" up || true
+	@./scripts/test-db-prepare.sh --force
 	@echo "$(GREEN)✓ Test database reset$(RESET)"
 
 test-db-prepare: ## Create or refresh the template database that testkit.DB clones per test

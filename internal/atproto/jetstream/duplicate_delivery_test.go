@@ -10,6 +10,7 @@ import (
 
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
@@ -31,15 +32,6 @@ const (
 	dupTestVoter2    = dupTestPrefix + "voter2"
 	dupTestCommenter = dupTestPrefix + "commenter"
 )
-
-func cleanupDupTestData(t *testing.T, db *sql.DB) {
-	t.Helper()
-	_, _ = db.Exec("DELETE FROM votes WHERE voter_did LIKE $1", dupTestPrefix+"%")
-	_, _ = db.Exec("DELETE FROM comments WHERE commenter_did LIKE $1 OR root_uri LIKE $2", dupTestPrefix+"%", "at://"+dupTestPrefix+"%")
-	_, _ = db.Exec("DELETE FROM posts WHERE community_did LIKE $1", dupTestPrefix+"%")
-	_, _ = db.Exec("DELETE FROM communities WHERE did LIKE $1", dupTestPrefix+"%")
-	_, _ = db.Exec("DELETE FROM users WHERE did LIKE $1", dupTestPrefix+"%")
-}
 
 // setupDupFixtures indexes a user, community and one post, returning the post URI/CID.
 func setupDupFixtures(t *testing.T, db *sql.DB) (postURI, postCID string) {
@@ -108,10 +100,8 @@ func readDupPostCounts(t *testing.T, db *sql.DB, uri string) (upvotes, downvotes
 }
 
 func TestVoteConsumer_DuplicateCreate_IncrementsExactlyOnce(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupDupTestData(t, db)
-	cleanupDupTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	postURI, postCID := setupDupFixtures(t, db)
 	vc := NewVoteEventConsumer(postgres.NewVoteRepository(db), newMockUserService(), db)
@@ -135,10 +125,8 @@ func TestVoteConsumer_DuplicateCreate_IncrementsExactlyOnce(t *testing.T) {
 }
 
 func TestVoteConsumer_DuplicateDelete_DecrementsExactlyOnce(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupDupTestData(t, db)
-	cleanupDupTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	postURI, postCID := setupDupFixtures(t, db)
 	vc := NewVoteEventConsumer(postgres.NewVoteRepository(db), newMockUserService(), db)
@@ -164,10 +152,8 @@ func TestVoteConsumer_DuplicateDelete_DecrementsExactlyOnce(t *testing.T) {
 }
 
 func TestCommentConsumer_DuplicateCreate_CountsExactlyOnce(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupDupTestData(t, db)
-	cleanupDupTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	postURI, postCID := setupDupFixtures(t, db)
 	cc := NewCommentEventConsumer(postgres.NewCommentRepository(db), db)

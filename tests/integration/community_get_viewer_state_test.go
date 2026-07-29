@@ -34,6 +34,7 @@ func (m *getViewerMockService) GetCommunity(ctx context.Context, identifier stri
 // social.coves.community.get lexicon promise ("viewer state will be
 // included if authenticated").
 func TestCommunityGet_ViewerState(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db)

@@ -20,6 +20,7 @@ import (
 // comment suggests reconciliation is not implemented. This test verifies that
 // the reconciliation logic in post_consumer.go:210-226 works correctly.
 func TestPostConsumer_CommentCountReconciliation(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()

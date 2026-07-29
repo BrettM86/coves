@@ -24,6 +24,7 @@ import (
 
 // TestCommentQuery_BasicFetch tests fetching top-level comments with default params
 func TestCommentQuery_BasicFetch(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -79,6 +80,7 @@ func TestCommentQuery_BasicFetch(t *testing.T) {
 
 // TestCommentQuery_NestedReplies tests fetching comments with nested reply structure
 func TestCommentQuery_NestedReplies(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -164,6 +166,7 @@ func TestCommentQuery_NestedReplies(t *testing.T) {
 
 // TestCommentQuery_DepthLimit tests depth limiting works correctly
 func TestCommentQuery_DepthLimit(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -243,6 +246,7 @@ func TestCommentQuery_DepthLimit(t *testing.T) {
 
 // TestCommentQuery_HotSorting tests hot sorting with Lemmy algorithm
 func TestCommentQuery_HotSorting(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -289,6 +293,7 @@ func TestCommentQuery_HotSorting(t *testing.T) {
 
 // TestCommentQuery_TopSorting tests top sorting with score-based ordering
 func TestCommentQuery_TopSorting(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -347,6 +352,7 @@ func TestCommentQuery_TopSorting(t *testing.T) {
 
 // TestCommentQuery_NewSorting tests chronological sorting
 func TestCommentQuery_NewSorting(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -381,6 +387,7 @@ func TestCommentQuery_NewSorting(t *testing.T) {
 
 // TestCommentQuery_Pagination tests cursor-based pagination
 func TestCommentQuery_Pagination(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -450,6 +457,7 @@ func TestCommentQuery_Pagination(t *testing.T) {
 
 // TestCommentQuery_EmptyThread tests fetching comments from a post with no comments
 func TestCommentQuery_EmptyThread(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -481,6 +489,7 @@ func TestCommentQuery_EmptyThread(t *testing.T) {
 
 // TestCommentQuery_DeletedComments tests that soft-deleted comments are excluded
 func TestCommentQuery_DeletedComments(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -601,6 +610,7 @@ func TestCommentQuery_DeletedComments(t *testing.T) {
 
 // TestCommentQuery_InvalidInputs tests error handling for invalid inputs
 func TestCommentQuery_InvalidInputs(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -696,6 +706,7 @@ func TestCommentQuery_InvalidInputs(t *testing.T) {
 
 // TestCommentQuery_HTTPHandler tests the HTTP handler end-to-end
 func TestCommentQuery_HTTPHandler(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -750,6 +761,7 @@ func TestCommentQuery_HTTPHandler(t *testing.T) {
 // TestCommentQuery_ParentRkeySubtree tests fetching a comment subtree via parentRkey
 // Backs the comment-permalink page and "continue this thread" for deep threads
 func TestCommentQuery_ParentRkeySubtree(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
@@ -1145,6 +1157,7 @@ func TestCommentQuery_ParentRkeySubtree(t *testing.T) {
 
 // TestCommentQuery_ParentRkeyHTTPHandler tests the real XRPC handler with parentRkey
 func TestCommentQuery_ParentRkeyHTTPHandler(t *testing.T) {
+	t.Parallel()
 	db := testkit.DB(t)
 
 	ctx := context.Background()
