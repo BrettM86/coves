@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -93,10 +95,6 @@ func TestTokenRefresh_ExpirationDetection(t *testing.T) {
 
 // TestTokenRefresh_UpdateCredentials tests the repository UpdateCredentials method
 func TestTokenRefresh_UpdateCredentials(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
-
 	ctx := context.Background()
 	db := setupTestDB(t)
 	defer func() {
@@ -163,10 +161,6 @@ func TestTokenRefresh_UpdateCredentials(t *testing.T) {
 
 // TestTokenRefresh_E2E_UpdateAfterTokenRefresh tests end-to-end token refresh during community update
 func TestTokenRefresh_E2E_UpdateAfterTokenRefresh(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping E2E test in short mode")
-	}
-
 	ctx := context.Background()
 	db := setupTestDB(t)
 	defer func() {

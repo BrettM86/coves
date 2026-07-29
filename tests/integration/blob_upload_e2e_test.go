@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -38,10 +40,6 @@ import (
 // - Blob references in atProto records
 // - URL transformation in AppView responses
 func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping blob upload E2E test in short mode")
-	}
-
 	// Check if PDS is available before running E2E test
 	pdsURL := getTestPDSURL()
 	healthResp, err := http.Get(pdsURL + "/xrpc/_health")
@@ -357,10 +355,6 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 
 // TestBlobUpload_E2E_CommentWithImage tests image upload in comments
 func TestBlobUpload_E2E_CommentWithImage(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping comment image E2E test in short mode")
-	}
-
 	// Check if PDS is available before running E2E test
 	pdsURL := getTestPDSURL()
 	healthResp, err := http.Get(pdsURL + "/xrpc/_health")

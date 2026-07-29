@@ -1,17 +1,15 @@
 #!/usr/bin/env bash
 # The hermetic merge gate. Driven by `make ci`.
 #
-# WHAT THIS DOES THAT `make test-all` DOES NOT
+# WHAT THIS DOES THAT THE PER-TIER TARGETS DO NOT
 #
 #   * Creates its own infrastructure instead of asserting that a human already
-#     started it. test-all checks `docker-compose ps | grep -q "Up"` — which
-#     passes if *any one* service is up — and then exits telling you to run
-#     `make dev-up`.
+#     started it. `make test-integration` and `make test-e2e` grade whatever the
+#     dev stack happens to be serving; this builds the stack it grades against.
 #
-#   * Tests a binary built from the current working tree. test-all tests
-#     whatever long-running `make run` started in another terminal, which may be
-#     many edits stale. A gate that grades the wrong binary is worse than no
-#     gate.
+#   * Tests a binary built from the current working tree, rather than whatever
+#     long-running `make run` started in another terminal, which may be many
+#     edits stale. A gate that grades the wrong binary is worse than no gate.
 #
 #   * Starts from empty state every run: fresh PDS, fresh PLC registry, fresh
 #     databases. No accumulated accounts, no handle collisions, no fixtures from

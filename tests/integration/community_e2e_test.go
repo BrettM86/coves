@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -42,10 +44,6 @@ import (
 // - Real Jetstream firehose subscription and event consumption
 // - Complete data flow from HTTP write to HTTP read via real infrastructure
 func TestCommunity_E2E(t *testing.T) {
-	// Skip in short mode since this requires real PDS
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
 
 	// Setup test database
 	dbURL := os.Getenv("TEST_DATABASE_URL")

@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -14,10 +16,6 @@ import (
 
 // TestCommunityBlocking_Indexing tests Jetstream indexing of block events
 func TestCommunityBlocking_Indexing(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	ctx := context.Background()
 	db := setupTestDB(t)
 	defer cleanupBlockingTestDB(t, db)
@@ -206,10 +204,6 @@ func TestCommunityBlocking_Indexing(t *testing.T) {
 
 // TestCommunityBlocking_ListBlocked tests listing blocked communities
 func TestCommunityBlocking_ListBlocked(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	ctx := context.Background()
 	db := setupTestDB(t)
 	defer cleanupBlockingTestDB(t, db)
@@ -287,10 +281,6 @@ func TestCommunityBlocking_ListBlocked(t *testing.T) {
 
 // TestCommunityBlocking_IsBlocked tests the fast block check
 func TestCommunityBlocking_IsBlocked(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	ctx := context.Background()
 	db := setupTestDB(t)
 	defer cleanupBlockingTestDB(t, db)
@@ -355,10 +345,6 @@ func TestCommunityBlocking_IsBlocked(t *testing.T) {
 
 // TestCommunityBlocking_GetBlock tests block retrieval
 func TestCommunityBlocking_GetBlock(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	ctx := context.Background()
 	db := setupTestDB(t)
 	defer cleanupBlockingTestDB(t, db)

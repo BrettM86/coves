@@ -1,3 +1,5 @@
+//go:build e2e
+
 package e2e
 
 import (
@@ -33,14 +35,11 @@ import (
 //	go run ./cmd/server &
 //	go test ./tests/e2e -run TestE2E_UserSignupToken -v
 func TestE2E_UserSignupToken(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
 	if !isAppViewAvailable(t) {
 		t.Skip("AppView not available at localhost:8081 - run 'go run ./cmd/server' first")
 	}
 	if !isPDSAvailable(t) {
-		t.Skip("PDS not available at localhost:3001 - run 'make e2e-up' first")
+		t.Skip("PDS not available at localhost:3001 - run 'make dev-up' first")
 	}
 
 	t.Run("Happy path: mint invite and sign up end-to-end", func(t *testing.T) {

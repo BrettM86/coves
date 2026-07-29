@@ -1412,7 +1412,7 @@ TEST_DATABASE_URL="postgres://test_user:test_password@localhost:5434/coves_test?
 **Unit Tests (Service Layer):**
 ```bash
 # Run all unit tests
-go test -v ./internal/core/comments/... -short
+go test -v ./internal/core/comments/...
 
 # Run with coverage report
 go test -cover ./internal/core/comments/...
@@ -1437,7 +1437,7 @@ TEST_DATABASE_URL="postgres://test_user:test_password@localhost:5434/coves_test?
   -timeout 120s
 
 # Unit tests (no database)
-go test -v ./internal/core/comments/... -short
+go test -v ./internal/core/comments/...
 ```
 
 ### Apply Migration

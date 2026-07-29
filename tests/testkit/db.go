@@ -490,6 +490,46 @@ func EnsureTemplate(ctx context.Context) error {
 	return nil
 }
 
+// MigrateSharedDatabase brings the shared test database — the one named by
+// POSTGRES_TEST_DB, which testkit otherwise uses only for administration — up
+// to the current migration set.
+//
+// Nothing testkit owns needs this. It exists for the not-yet-migrated tests,
+// which connect to that database directly and expect its tables to be there.
+// Before this, the Makefile ran `goose up` against it and `make ci` relied on
+// whichever test binary happened to call goose.Up first — an ordering
+// coincidence that a -run filter or a new package would break, and whose
+// failure mode is a wall of "relation does not exist". Doing it here means the
+// one place that prepares databases prepares all of them, for every caller.
+//
+// Delete this along with tests/integration.
+func MigrateSharedDatabase(ctx context.Context) error {
+	shared := Endpoints().Postgres.Database
+
+	// Same exclusive lock the template provisioning uses. Two concurrent
+	// preparers running goose against one database is a deadlock or a partial
+	// migration, and the lock is already the thing that serialises them.
+	return withAdvisoryLock(ctx, false, func(ctx context.Context, _ *sql.Conn) error {
+		db, err := openDatabase(shared, 1)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = db.Close() }()
+
+		// goose.NewProvider, not the package-level goose.Up, for the reason in
+		// migrateAndStamp: the package API keeps its dialect and filesystem in
+		// globals that the legacy path also writes to.
+		provider, err := goose.NewProvider(goose.DialectPostgres, db, migrations.FS)
+		if err != nil {
+			return fmt.Errorf("configuring goose for %s: %w", Endpoints().Postgres.Redacted(shared), err)
+		}
+		if _, err := provider.Up(ctx); err != nil {
+			return fmt.Errorf("migrating %s: %w", Endpoints().Postgres.Redacted(shared), err)
+		}
+		return nil
+	})
+}
+
 // ProvisionTemplate creates or rebuilds the template database and reports what
 // it did. With force, the template is rebuilt even if its stamp already matches.
 //

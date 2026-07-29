@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -36,10 +38,6 @@ import (
 // - Testing ETag-based caching (304 responses)
 // - Error handling for invalid presets and missing blobs
 func TestImageProxy_E2E(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E integration test in short mode")
-	}
-
 	// Check if PDS is running
 	pdsURL := getTestPDSURL()
 	healthResp, err := http.Get(pdsURL + "/xrpc/_health")
@@ -371,10 +369,6 @@ func TestImageProxy_E2E(t *testing.T) {
 
 // TestImageProxy_CacheHit tests that cache hits are faster than cache misses
 func TestImageProxy_CacheHit(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping cache test in short mode")
-	}
-
 	// Check if PDS is running
 	pdsURL := getTestPDSURL()
 	healthResp, err := http.Get(pdsURL + "/xrpc/_health")

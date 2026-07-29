@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -13,10 +15,6 @@ import (
 // TestBlueskyPostCrossPosting_E2E_LivePDS tests writing posts with Bluesky URLs to a real PDS
 // This catches lexicon validation errors like invalid strongRef CIDs
 func TestBlueskyPostCrossPosting_E2E_LivePDS(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping live PDS E2E test in short mode")
-	}
-
 	// Check if PDS is running
 	pdsURL := getTestPDSURL()
 	healthResp, err := http.Get(pdsURL + "/xrpc/_health")

@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -26,10 +28,6 @@ import (
 
 // TestCommentWrite_CreateTopLevelComment tests creating a comment on a post via E2E flow
 func TestCommentWrite_CreateTopLevelComment(t *testing.T) {
-	// Skip in short mode since this requires real PDS
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
 
 	// Setup test database
 	dbURL := os.Getenv("TEST_DATABASE_URL")
@@ -281,10 +279,6 @@ func TestCommentWrite_CreateTopLevelComment(t *testing.T) {
 
 // TestCommentWrite_CreateNestedReply tests creating a reply to another comment
 func TestCommentWrite_CreateNestedReply(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -432,10 +426,6 @@ func TestCommentWrite_CreateNestedReply(t *testing.T) {
 
 // TestCommentWrite_UpdateComment tests updating an existing comment
 func TestCommentWrite_UpdateComment(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -553,10 +543,6 @@ func TestCommentWrite_UpdateComment(t *testing.T) {
 
 // TestCommentWrite_DeleteComment tests deleting a comment
 func TestCommentWrite_DeleteComment(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -662,10 +648,6 @@ func TestCommentWrite_DeleteComment(t *testing.T) {
 
 // TestCommentWrite_CannotUpdateOthersComment tests authorization for updates
 func TestCommentWrite_CannotUpdateOthersComment(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -742,10 +724,6 @@ func TestCommentWrite_CannotUpdateOthersComment(t *testing.T) {
 
 // TestCommentWrite_CannotDeleteOthersComment tests authorization for deletes
 func TestCommentWrite_CannotDeleteOthersComment(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -828,10 +806,6 @@ func parseTestDID(did string) (syntax.DID, error) {
 // CID validation correctly detects concurrent modifications.
 // This verifies the optimistic locking mechanism that prevents lost updates.
 func TestCommentWrite_ConcurrentModificationDetection(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 

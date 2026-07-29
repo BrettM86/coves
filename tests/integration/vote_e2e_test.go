@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -29,10 +31,6 @@ import (
 // TestVoteE2E_CreateUpvote tests the full vote creation flow with a real local PDS
 // Flow: Client → XRPC → PDS Write → Jetstream → Consumer → AppView
 func TestVoteE2E_CreateUpvote(t *testing.T) {
-	// Skip in short mode since this requires real PDS
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
 
 	// Setup test database
 	dbURL := os.Getenv("TEST_DATABASE_URL")
@@ -291,10 +289,6 @@ func TestVoteE2E_CreateUpvote(t *testing.T) {
 
 // TestVoteE2E_ToggleSameDirection tests voting twice in same direction (toggle off)
 func TestVoteE2E_ToggleSameDirection(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -461,10 +455,6 @@ func TestVoteE2E_ToggleSameDirection(t *testing.T) {
 
 // TestVoteE2E_ToggleDifferentDirection tests changing vote direction
 func TestVoteE2E_ToggleDifferentDirection(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -687,10 +677,6 @@ func TestVoteE2E_ToggleDifferentDirection(t *testing.T) {
 
 // TestVoteE2E_DeleteVote tests explicit vote deletion
 func TestVoteE2E_DeleteVote(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -878,10 +864,6 @@ func TestVoteE2E_DeleteVote(t *testing.T) {
 
 // TestVoteE2E_JetstreamIndexing tests real Jetstream firehose consumption
 func TestVoteE2E_JetstreamIndexing(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -913,7 +895,7 @@ func TestVoteE2E_JetstreamIndexing(t *testing.T) {
 	// connects AFTER the write, so it must use a cursor from before the write
 	// to replay the event. A live-tail subscription races event propagation
 	// (PDS → relay → Jetstream) and loses whenever the pipeline is warm —
-	// this was a reliable failure under `make test-all` and a pass in
+	// this was a reliable failure in a full-suite run and a pass in
 	// isolation before the cursor was added.
 	subscribeCursorUS := time.Now().Add(-2 * time.Second).UnixMicro()
 

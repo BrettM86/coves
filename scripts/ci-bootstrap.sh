@@ -6,8 +6,8 @@
 # The AppView writes community records to the PDS as PDS_INSTANCE_HANDLE (see
 # PDSConfig.HasInstanceCredentials in internal/config). The dev stack's PDS
 # volume persists, so that account was created once — by hand, or by a
-# scripts/create-test-account.sh that is referenced by the Makefile but is no
-# longer in the tree — and has been there ever since.
+# scripts/create-test-account.sh that no longer exists in the tree — and has
+# been there ever since.
 #
 # CI starts from an empty PDS on every run, so the account has to be created
 # each time, and it has to exist before the AppView boots. That ordering is why

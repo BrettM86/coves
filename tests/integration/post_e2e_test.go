@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -323,10 +325,6 @@ func TestPostCreation_E2E_WithJetstream(t *testing.T) {
 // - Live Jetstream running at the local dev Jetstream (JETSTREAM_FEEDS default: self=ws://localhost:6008)
 // - Test database running
 func TestPostCreation_E2E_LivePDS(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping live PDS E2E test in short mode")
-	}
-
 	// Setup test database
 	dbURL := os.Getenv("TEST_DATABASE_URL")
 	if dbURL == "" {

@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -22,10 +24,6 @@ import (
 // Regression test for the bug where feeds and post views only hydrated the
 // community avatar and author cards were always bare even for fully indexed users.
 func TestAuthorProfileHydration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	t.Cleanup(func() { _ = db.Close() })
 

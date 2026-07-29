@@ -1,3 +1,5 @@
+//go:build e2e
+
 package e2e
 
 import (
@@ -21,7 +23,7 @@ import (
 // TestMain controls test setup for the e2e package.
 // Set LOG_ENABLED=false to suppress application log output during tests.
 func TestMain(m *testing.M) {
-	// Silence logs when LOG_ENABLED=false (used by make test-all)
+	// Silence logs when LOG_ENABLED=false (what .env.ci sets for the gate)
 	if os.Getenv("LOG_ENABLED") == "false" {
 		log.SetOutput(io.Discard)
 	}
@@ -47,10 +49,6 @@ func TestMain(m *testing.M) {
 //	go run ./cmd/server &  # Start AppView
 //	go test ./tests/e2e -run TestE2E_UserSignup -v
 func TestE2E_UserSignup(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	// Check if AppView is available
 	if !isAppViewAvailable(t) {
 		t.Skip("AppView not available at localhost:8081 - run 'go run ./cmd/server' first")

@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -225,10 +227,6 @@ func TestPostDeletion_JetstreamConsumer(t *testing.T) {
 
 // TestPostDeletion_Authorization tests that only the post author can delete their posts
 func TestPostDeletion_Authorization(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping authorization test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -347,10 +345,6 @@ func TestPostDeletion_Authorization(t *testing.T) {
 // TestPostDeletion_ServiceAuthorization tests the author verification logic in the service layer
 // This test requires a live PDS to fully test the authorization flow
 func TestPostDeletion_ServiceAuthorization_LivePDS(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping live PDS test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -493,10 +487,6 @@ func TestPostDeletion_ServiceAuthorization_LivePDS(t *testing.T) {
 // 5. Receive delete event from Jetstream
 // 6. Verify post is soft-deleted in AppView DB
 func TestPostE2E_DeleteWithJetstream(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	// Setup test database
 	dbURL := os.Getenv("TEST_DATABASE_URL")
 	if dbURL == "" {

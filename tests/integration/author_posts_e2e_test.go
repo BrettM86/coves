@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -46,10 +48,6 @@ func getPostTitleFromView(t *testing.T, pv *posts.PostView) string {
 // TestGetAuthorPosts_E2E_Success tests the full author posts flow with real PDS
 // Flow: Create user on PDS → Create posts → Query via XRPC → Verify response
 func TestGetAuthorPosts_E2E_Success(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	// Setup test database
 	dbURL := os.Getenv("TEST_DATABASE_URL")
 	if dbURL == "" {
@@ -291,10 +289,6 @@ func TestGetAuthorPosts_E2E_Success(t *testing.T) {
 
 // TestGetAuthorPosts_FilterLogic tests the different filter options
 func TestGetAuthorPosts_FilterLogic(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -430,10 +424,6 @@ func TestGetAuthorPosts_FilterLogic(t *testing.T) {
 
 // TestGetAuthorPosts_ServiceErrors tests error handling in the service layer
 func TestGetAuthorPosts_ServiceErrors(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -548,10 +538,6 @@ func TestGetAuthorPosts_ServiceErrors(t *testing.T) {
 
 // TestGetAuthorPosts_WithJetstreamIndexing tests the full flow including Jetstream indexing
 func TestGetAuthorPosts_WithJetstreamIndexing(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -661,10 +647,6 @@ func TestGetAuthorPosts_WithJetstreamIndexing(t *testing.T) {
 
 // TestGetAuthorPosts_CommunityFilter tests filtering posts by community
 func TestGetAuthorPosts_CommunityFilter(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 

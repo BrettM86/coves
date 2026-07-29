@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -63,10 +65,6 @@ func (m *mockAggregatorIdentityResolver) Purge(ctx context.Context, identifier s
 }
 
 func TestAggregatorRegistration_Success(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	// Setup test database
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
@@ -155,10 +153,6 @@ func TestAggregatorRegistration_Success(t *testing.T) {
 }
 
 func TestAggregatorRegistration_DomainVerificationFailed(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	// Setup test database
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
@@ -223,10 +217,6 @@ func TestAggregatorRegistration_DomainVerificationFailed(t *testing.T) {
 }
 
 func TestAggregatorRegistration_InvalidDID(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -285,10 +275,6 @@ func TestAggregatorRegistration_InvalidDID(t *testing.T) {
 }
 
 func TestAggregatorRegistration_AlreadyRegistered(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -369,10 +355,6 @@ func TestAggregatorRegistration_AlreadyRegistered(t *testing.T) {
 }
 
 func TestAggregatorRegistration_WellKnownNotAccessible(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -431,10 +413,6 @@ func TestAggregatorRegistration_WellKnownNotAccessible(t *testing.T) {
 }
 
 func TestAggregatorRegistration_WellKnownTooLarge(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -496,10 +474,6 @@ func TestAggregatorRegistration_WellKnownTooLarge(t *testing.T) {
 }
 
 func TestAggregatorRegistration_DIDResolutionFailed(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -572,10 +546,6 @@ func TestAggregatorRegistration_DIDResolutionFailed(t *testing.T) {
 }
 
 func TestAggregatorRegistration_LargeWellKnownResponse(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -662,10 +632,6 @@ func TestAggregatorRegistration_LargeWellKnownResponse(t *testing.T) {
 }
 
 func TestAggregatorRegistration_E2E_WithRealInfrastructure(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	// This test requires docker-compose infrastructure to be running:
 	// docker-compose -f docker-compose.dev.yml --profile test up postgres-test
 	//

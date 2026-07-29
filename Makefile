@@ -1,4 +1,4 @@
-.PHONY: help dev-up dev-up-otel dev-down dev-logs dev-status dev-reset test test-all test-db-prepare test-audit ci ci-clean e2e-test clean verify-stack create-test-account mobile-full-setup
+.PHONY: help dev-up dev-up-otel dev-down dev-logs dev-status dev-reset test test-integration test-e2e test-live test-db-prepare test-audit ci ci-clean clean mobile-full-setup
 
 # Default target - show help
 .DEFAULT_GOAL := help
@@ -21,7 +21,7 @@ help: ## Show this help message
 	@echo "$(CYAN)Coves Development Commands$(RESET)"
 	@echo ""
 	@awk 'BEGIN {FS = ":.*##"; printf "Usage: make $(CYAN)<target>$(RESET)\n"} \
-		/^[a-zA-Z_-]+:.*?##/ { printf "  $(CYAN)%-15s$(RESET) %s\n", $$1, $$2 } \
+		/^[a-zA-Z0-9_-]+:.*?##/ { printf "  $(CYAN)%-18s$(RESET) %s\n", $$1, $$2 } \
 		/^##@/ { printf "\n$(YELLOW)%s$(RESET)\n", substr($$0, 5) }' $(MAKEFILE_LIST)
 	@echo ""
 
@@ -120,61 +120,92 @@ db-reset: ## Reset database (delete all data and re-run migrations)
 
 ##@ Testing
 
-test: ## Run fast unit/integration tests (skips slow E2E tests)
+test: ## T0 unit tier - no Docker, no database, no network. The inner loop.
+	@# Untagged `go test` is the unit tier by construction: every test that
+	@# needs something out of process carries a build tag (integration/e2e/live)
+	@# and is therefore not in this build at all. That is what lets this target
+	@# start no containers and wait for nothing — and it is checked, not hoped
+	@# for: the tier is verified by running this selection with the network
+	@# switched off entirely.
+	@echo "$(GREEN)Running the unit tier (untagged)...$(RESET)"
+	@go test ./cmd/... ./internal/... ./tests/...
+	@echo "$(GREEN)✓ Unit tier complete$(RESET)"
+
+test-integration: ## T1 integration tier - needs Postgres; starts postgres-test itself
 	@echo "$(GREEN)Starting test database...$(RESET)"
-	@docker-compose -f docker-compose.dev.yml --env-file .env.dev --profile test up -d postgres-test
-	@echo "Waiting for test database to be ready..."
-	@sleep 3
-	@echo "$(GREEN)Running migrations on test database...$(RESET)"
-	@goose -dir internal/db/migrations postgres "postgresql://$(POSTGRES_TEST_USER):$(POSTGRES_TEST_PASSWORD)@localhost:$(POSTGRES_TEST_PORT)/$(POSTGRES_TEST_DB)?sslmode=disable" up || true
-	@# Provisions the template database that testkit.DB clones per test, and
-	@# sweeps clones orphaned by killed runs. Additive: the goose line above
-	@# still migrates the shared database the not-yet-migrated tests use.
-	@./scripts/test-db-prepare.sh
-	@echo "$(GREEN)Running fast tests (use 'make e2e-test' for E2E tests)...$(RESET)"
-	@# -p 1 runs packages sequentially: the integration suite's setup wipes
+	@# Best-effort, deliberately: `compose up` fails when the container already
+	@# exists under a different Compose project name, which is the normal case in
+	@# a git worktree (the project name comes from the directory, the container
+	@# name is pinned). An already-running database is success, not an error.
+	@#
+	@# This is not a swallowed failure, because the readiness poll below is the
+	@# actual assertion — if `up` failed AND no database is listening, that loop
+	@# exits non-zero with a message naming the fix.
+	@docker-compose -f docker-compose.dev.yml --env-file .env.dev --profile test up -d postgres-test 2>/dev/null \
+		|| echo "$(YELLOW)  compose up declined (already running under another project?) - checking readiness anyway$(RESET)"
+	@# Diagnose the two failures that are NOT "the database is still starting",
+	@# because both otherwise surface as a readiness timeout that blames the
+	@# wrong thing.
+	@docker info >/dev/null 2>&1 || \
+		(echo "$(RED)✗ Docker is not responding. Start Docker Desktop (or the daemon) and retry.$(RESET)" && exit 1)
+	@docker ps --filter name=^/coves-test-postgres$$ --filter status=running --format '{{.Names}}' \
+		| grep -q coves-test-postgres || \
+		(echo "$(RED)✗ Container coves-test-postgres is not running, and 'compose up' did not start it.$(RESET)" && \
+		 echo "$(RED)  Rebuild it with 'make test-db-reset'.$(RESET)" && exit 1)
+	@echo "Waiting for test database to accept connections..."
+	@# Provisions the template database that testkit.DB clones per test, migrates
+	@# the shared database the not-yet-migrated tests use, and sweeps clones
+	@# orphaned by killed runs.
+	@#
+	@# This is also the readiness gate, and deliberately so: it waits by opening
+	@# a real connection to POSTGRES_TEST_HOST:PORT — the same host endpoint the
+	@# tests dial. An in-container `pg_isready` would prove only that Postgres is
+	@# up on its own loopback, so a wrong or already-claimed published port would
+	@# sail through the check and then fail as a wall of "connection refused".
+	@./scripts/test-db-prepare.sh || \
+		(echo "$(RED)✗ Could not reach Postgres at localhost:$(POSTGRES_TEST_PORT) even though the container is running.$(RESET)" && \
+		 echo "$(RED)  Check POSTGRES_TEST_PORT in .env.dev against the port the container actually publishes:$(RESET)" && \
+		 echo "$(RED)    docker port coves-test-postgres$(RESET)" && exit 1)
+	@echo "$(GREEN)Running the integration tier (-tags integration)...$(RESET)"
+	@# The tag set is additive: an `integration` build contains the untagged
+	@# unit files too, so this compiles and runs T0+T1 in one pass.
+	@#
+	@# -p 1 runs packages sequentially: the legacy tests/integration setup wipes
 	@# shared test-DB tables (unscoped DELETEs), so package-parallel runs race
 	@# and randomly kill other packages' fixtures (jetstream DB tests above all).
 	@#
 	@# -parallel comes from the server's max_connections, because every test
 	@# under t.Parallel() holds its own clone pool. Inert until phase 3 enables
 	@# parallelism; wired now so the ceiling is never discovered by hitting it.
-	@go test -p 1 -parallel $$(./scripts/test-db-prepare.sh --print-parallel) \
-		./cmd/... ./internal/... ./tests/... -short -v
-	@echo "$(GREEN)✓ Tests complete$(RESET)"
+	@go test -tags integration -p 1 -parallel $$(./scripts/test-db-prepare.sh --print-parallel) \
+		./cmd/... ./internal/... ./tests/...
+	@echo ""
+	@echo "$(YELLOW)Note: the not-yet-migrated files under tests/integration also want$(RESET)"
+	@echo "$(YELLOW)a PDS and Jetstream, and they still SKIP themselves when those are$(RESET)"
+	@echo "$(YELLOW)missing — so a green run here does not mean the suite ran in full.$(RESET)"
+	@echo "$(YELLOW)Run 'make dev-up' first for the fuller local picture, and 'make ci'$(RESET)"
+	@echo "$(YELLOW)for the gate that refuses to count a skip as a pass.$(RESET)"
 
-e2e-test: ## Run automated E2E tests (requires: make dev-up + make run in another terminal)
-	@echo "$(CYAN)========================================$(RESET)"
-	@echo "$(CYAN)  E2E Test: Full User Signup Flow      $(RESET)"
-	@echo "$(CYAN)========================================$(RESET)"
+test-e2e: ## T2 pipeline tier - needs the dev stack AND a running AppView
+	@# TRANSITIONAL. docs/TEST_ARCHITECTURE.md §3.5 puts this tier inside the
+	@# hermetic stack's network namespace via the compose runner, which is the
+	@# only way to reach a stack that publishes no host ports. Building that
+	@# runner path is task 10; until then this target grades whatever the dev
+	@# stack and `make run` happen to be serving, and asserts they are at least
+	@# reachable rather than letting the tests skip themselves.
+	@echo "$(CYAN)Checking the dev stack is reachable...$(RESET)"
+	@curl -sf http://127.0.0.1:3001/xrpc/_health >/dev/null 2>&1 || \
+		(echo "$(RED)  ✗ PDS not reachable on :3001. Run 'make dev-up'.$(RESET)" && exit 1)
+	@echo "  $(GREEN)✓ PDS (:3001)$(RESET)"
+	@curl -sf http://127.0.0.1:8081/xrpc/_health >/dev/null 2>&1 || \
+		(echo "$(RED)  ✗ AppView not reachable on :8081. Run 'make run' in another terminal.$(RESET)" && exit 1)
+	@echo "  $(GREEN)✓ AppView (:8081)$(RESET)"
 	@echo ""
-	@echo "$(CYAN)Prerequisites:$(RESET)"
-	@echo "  1. Run 'make dev-up' (starts PDS + Jetstream)"
-	@echo "  2. Run 'make run' in another terminal (AppView must be running)"
-	@echo ""
-	@echo "$(GREEN)Running E2E tests...$(RESET)"
-	@go test ./tests/e2e -run TestE2E_UserSignup -v
-	@echo ""
-	@echo "$(GREEN)✓ E2E tests complete!$(RESET)"
-
-e2e-vote-test: ## Run vote E2E tests (requires: make dev-up)
-	@echo "$(CYAN)========================================$(RESET)"
-	@echo "$(CYAN)  E2E Test: Vote System                $(RESET)"
-	@echo "$(CYAN)========================================$(RESET)"
-	@echo ""
-	@echo "$(CYAN)Prerequisites:$(RESET)"
-	@echo "  1. Run 'make dev-up' (starts PDS + Jetstream + PostgreSQL)"
-	@echo "  2. Test database will be used (port 5434)"
-	@echo ""
-	@echo "$(GREEN)Running vote E2E tests...$(RESET)"
-	@echo ""
-	@echo "$(CYAN)Running simulated E2E test (fast)...$(RESET)"
-	@go test ./tests/integration -run TestVote_E2E_WithJetstream -v
-	@echo ""
-	@echo "$(CYAN)Running live PDS E2E test (requires PDS + Jetstream)...$(RESET)"
-	@go test ./tests/integration -run TestVote_E2E_LivePDS -v || echo "$(YELLOW)Live PDS test skipped (run 'make dev-up' first)$(RESET)"
-	@echo ""
-	@echo "$(GREEN)✓ Vote E2E tests complete!$(RESET)"
+	@echo "$(GREEN)Running the pipeline tier (-tags e2e)...$(RESET)"
+	@# Serial, like the same tier in scripts/ci-runner.sh: the contracts share
+	@# one AppView, one PDS and one firehose cursor space (§3.4).
+	@go test -tags e2e -p 1 -parallel 1 -count=1 ./tests/e2e/...
+	@echo "$(GREEN)✓ Pipeline tier complete$(RESET)"
 
 test-db-reset: ## Reset test database
 	@echo "$(GREEN)Resetting test database...$(RESET)"
@@ -195,54 +226,6 @@ test-audit: ## Count test-suite invariant violations (warn only; -v for file:lin
 test-db-stop: ## Stop test database
 	@docker-compose -f docker-compose.dev.yml --env-file .env.dev --profile test stop postgres-test
 	@echo "$(GREEN)✓ Test database stopped$(RESET)"
-
-test-all: ## Run ALL tests with live infrastructure (required before merge)
-	@echo ""
-	@echo "$(CYAN)═══════════════════════════════════════════════════════════════$(RESET)"
-	@echo "$(CYAN)  FULL TEST SUITE - All tests with live infrastructure         $(RESET)"
-	@echo "$(CYAN)═══════════════════════════════════════════════════════════════$(RESET)"
-	@echo ""
-	@echo "$(YELLOW)▶ Checking infrastructure...$(RESET)"
-	@echo ""
-	@# Check dev stack is running
-	@echo "  Checking dev stack (PDS, Jetstream, PLC)..."
-	@docker-compose -f docker-compose.dev.yml --env-file .env.dev ps 2>/dev/null | grep -q "Up" || \
-		(echo "$(RED)  ✗ Dev stack not running. Run 'make dev-up' first.$(RESET)" && exit 1)
-	@echo "  $(GREEN)✓ Dev stack is running$(RESET)"
-	@# Check AppView is running
-	@echo "  Checking AppView (port 8081)..."
-	@curl -sf http://127.0.0.1:8081/xrpc/_health >/dev/null 2>&1 || \
-		curl -sf http://127.0.0.1:8081/ >/dev/null 2>&1 || \
-		(echo "$(RED)  ✗ AppView not running. Run 'make run' in another terminal.$(RESET)" && exit 1)
-	@echo "  $(GREEN)✓ AppView is running$(RESET)"
-	@# Check test database
-	@echo "  Checking test database (port 5434)..."
-	@docker-compose -f docker-compose.dev.yml --env-file .env.dev ps postgres-test 2>/dev/null | grep -q "Up" || \
-		(echo "$(YELLOW)  ⚠ Test database not running, starting it...$(RESET)" && \
-		docker-compose -f docker-compose.dev.yml --env-file .env.dev --profile test up -d postgres-test && \
-		sleep 3 && \
-		goose -dir internal/db/migrations postgres "postgresql://$(POSTGRES_TEST_USER):$(POSTGRES_TEST_PASSWORD)@localhost:$(POSTGRES_TEST_PORT)/$(POSTGRES_TEST_DB)?sslmode=disable" up)
-	@echo "  $(GREEN)✓ Test database is running$(RESET)"
-	@echo ""
-	@echo "$(GREEN)▶ [1/3] Unit & Package Tests (./cmd/... ./internal/...)$(RESET)"
-	@echo "$(CYAN)───────────────────────────────────────────────────────────────$(RESET)"
-	@LOG_ENABLED=false go test ./cmd/... ./internal/... -timeout 120s
-	@echo ""
-	@echo "$(GREEN)▶ [2/3] Integration Tests (./tests/integration/...)$(RESET)"
-	@echo "$(CYAN)───────────────────────────────────────────────────────────────$(RESET)"
-	@LOG_ENABLED=false go test ./tests/integration/... -timeout 600s
-	@echo ""
-	@echo "$(GREEN)▶ [3/3] E2E Tests (./tests/e2e/...)$(RESET)"
-	@echo "$(CYAN)───────────────────────────────────────────────────────────────$(RESET)"
-	@LOG_ENABLED=false go test ./tests/e2e/... -timeout 180s
-	@echo ""
-	@echo "$(GREEN)═══════════════════════════════════════════════════════════════$(RESET)"
-	@echo "$(GREEN)  ✓ No test failures                                           $(RESET)"
-	@echo "$(YELLOW)  Note: this counts skips as passes. A test whose infrastructure$(RESET)"
-	@echo "$(YELLOW)  is missing skips itself, so a partial stack still prints this.$(RESET)"
-	@echo "$(YELLOW)  Run 'make ci' for the gate that enforces coverage.$(RESET)"
-	@echo "$(GREEN)═══════════════════════════════════════════════════════════════$(RESET)"
-	@echo ""
 
 test-live: ## Run the opt-in tests that deliberately hit the public internet (NOT part of the merge gate)
 	@echo "$(CYAN)═══════════════════════════════════════════════════════════════$(RESET)"
@@ -354,13 +337,7 @@ mobile-reset: ## Remove all Android port forwarding
 	@adb reverse --remove-all || echo "$(YELLOW)No device connected$(RESET)"
 	@echo "$(GREEN)✓ Port forwarding removed$(RESET)"
 
-verify-stack: ## Verify local development stack (PLC, PDS, configs)
-	@./scripts/verify-local-stack.sh
-
-create-test-account: ## Create a test account on local PDS for OAuth testing
-	@./scripts/create-test-account.sh
-
-mobile-full-setup: verify-stack create-test-account mobile-setup ## Full mobile setup: verify stack, create account, setup ports
+mobile-full-setup: mobile-setup ## Full mobile setup: setup ports
 	@echo ""
 	@echo "$(GREEN)═══════════════════════════════════════════════════════════$(RESET)"
 	@echo "$(GREEN)  Mobile development environment ready!                     $(RESET)"

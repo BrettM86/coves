@@ -6,9 +6,7 @@ import (
 	"time"
 
 	"Coves/internal/core/userblocks"
-	"Coves/internal/db/postgres"
 
-	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -65,30 +63,6 @@ func TestPostConsumer_MissingRequiredField_IsPermanent(t *testing.T) {
 	))
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrPermanentEvent, "record missing required fields is permanently invalid")
-}
-
-func TestPostConsumer_CommunityNotFound_IsTransient(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-
-	const ghostCommunity = "did:plc:jstaxghostcommunity"
-	// Ensure the community really is absent.
-	_, _ = db.Exec("DELETE FROM communities WHERE did = $1", ghostCommunity)
-
-	c := NewPostEventConsumer(postgres.NewPostRepository(db), postgres.NewCommunityRepository(db), newMockUserService(), db)
-	err := c.HandleEvent(context.Background(), taxonomyEvent(
-		ghostCommunity, "social.coves.community.post", "create", "p1",
-		map[string]interface{}{
-			"$type":     "social.coves.community.post",
-			"community": ghostCommunity,
-			"author":    "did:plc:someauthor",
-			"createdAt": "2026-01-01T00:00:00Z",
-		},
-	))
-	require.Error(t, err, "post for a not-yet-indexed community must fail")
-	assert.NotErrorIs(t, err, ErrPermanentEvent,
-		"community-not-found is an ORDERING failure and must stay transient so the redrive can succeed")
-	assert.Contains(t, err.Error(), "community not found")
 }
 
 func TestCommentConsumer_ValidationRejections_ArePermanent(t *testing.T) {
@@ -189,30 +163,6 @@ func TestCommunityConsumer_SubscriptionMissingSubject_IsPermanent(t *testing.T) 
 	))
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrPermanentEvent, "subscription record without subject is permanently invalid")
-}
-
-func TestCommunityConsumer_SubscriptionCommunityNotFound_IsTransient(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-
-	const (
-		ghostCommunity = "did:plc:jstaxghostsubcomm"
-		subscriber     = "did:plc:jstaxsubscriber"
-	)
-	_, _ = db.Exec("DELETE FROM community_subscriptions WHERE user_did = $1", subscriber)
-	_, _ = db.Exec("DELETE FROM communities WHERE did = $1", ghostCommunity)
-
-	c := NewCommunityEventConsumer(postgres.NewCommunityRepository(db), "did:web:test.local", true, nil)
-	err := c.HandleEvent(context.Background(), taxonomyEvent(
-		subscriber, "social.coves.community.subscription", "create", "s1",
-		map[string]interface{}{
-			"subject":   ghostCommunity,
-			"createdAt": "2026-01-01T00:00:00Z",
-		},
-	))
-	require.Error(t, err, "subscription to a not-yet-indexed community must fail")
-	assert.NotErrorIs(t, err, ErrPermanentEvent,
-		"subscription community-not-found is an ORDERING failure and must stay transient so the redrive can succeed")
 }
 
 func TestAggregatorConsumer_ValidationRejections_ArePermanent(t *testing.T) {

@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -24,10 +26,6 @@ import (
 
 // TestPostUnfurl_UnsupportedURL tests that posts with unsupported URLs still succeed
 func TestPostUnfurl_UnsupportedURL(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() {
 		if err := db.Close(); err != nil {
@@ -128,10 +126,6 @@ func TestPostUnfurl_UnsupportedURL(t *testing.T) {
 
 // TestPostUnfurl_MissingEmbedType tests posts without external embed type don't trigger unfurling
 func TestPostUnfurl_MissingEmbedType(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() {
 		if err := db.Close(); err != nil {
@@ -267,10 +261,6 @@ func TestPostUnfurl_MissingEmbedType(t *testing.T) {
 // The kagi-news trusted aggregator already supplies authoritative metadata from
 // the Kagi JSON feed, so the unfurl path for Kite URLs is intentionally disabled.
 func TestPostUnfurl_KagiKiteExcluded(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() {
 		if err := db.Close(); err != nil {
@@ -312,10 +302,6 @@ func TestPostUnfurl_KagiKiteExcluded(t *testing.T) {
 // TestPostUnfurl_E2E_WithJetstream tests the full unfurl flow with Jetstream consumer
 // This simulates: Create post → unfurl → write to PDS → Jetstream event → index in AppView
 func TestPostUnfurl_E2E_WithJetstream(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() {
 		if err := db.Close(); err != nil {

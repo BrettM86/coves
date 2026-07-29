@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -28,10 +30,6 @@ import (
 //
 // This is a TRUE E2E test - no simulated Jetstream events!
 func TestCommunityUpdateE2E_WithJetstream(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	// Setup test database
 	dbURL := os.Getenv("TEST_DATABASE_URL")
 	if dbURL == "" {

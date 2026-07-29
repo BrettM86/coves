@@ -61,17 +61,26 @@ wait_for "appview (:8081)" "http://localhost:8081/xrpc/_health" 90
 echo
 
 # ---------------------------------------------------------------------------
-# 1b. Type-check the live tier
+# 1b. Type-check every tag set
 # ---------------------------------------------------------------------------
-# tests/live is excluded from every build the gate runs, so nothing here would
-# ever notice it stopped compiling — a rename in internal/ would break it
-# silently and the breakage would surface weeks later, to whoever next ran
-# `make test-live`. Vet type-checks it without executing anything, so it needs
-# no network: the live tier stays buildable on the merge path even though it
-# never runs there.
-echo "▶ Type-checking the live tier (-tags live, not executed)..."
+# Build tags make tiers invisible to builds that did not ask for them, which
+# also makes their rot invisible: a rename in internal/ can break a tier for
+# weeks, until whoever next runs that tier discovers it. Vet type-checks each
+# selection without executing anything, so none of this needs infrastructure.
+#
+# The untagged and integration passes are belt-and-braces — the suite below
+# compiles both anyway — but they fail here with a clear message instead of
+# inside a 20-minute test run. The live pass is the load-bearing one: tests/live
+# never executes on the merge path at all.
+echo "▶ Type-checking every tag set (nothing is executed)..."
+go vet ./...
+echo "  ✓ untagged (unit tier)"
+go vet -tags integration ./...
+echo "  ✓ -tags integration"
+go vet -tags e2e ./tests/e2e/...
+echo "  ✓ -tags e2e"
 go vet -tags live ./tests/live/...
-echo "  ✓ tests/live compiles"
+echo "  ✓ -tags live"
 echo
 
 # ---------------------------------------------------------------------------
@@ -109,11 +118,21 @@ echo
 # 2. Run the suite
 # ---------------------------------------------------------------------------
 
-# -p 1 serialises packages. The integration suite's setup issues unscoped
+# The gate runs two selections, because tiers are build tags and a tag set is a
+# compilation, not a filter:
+#
+#   -tags integration ./cmd/... ./internal/... ./tests/...   T0 + T1
+#   -tags e2e         ./tests/e2e/...                        T2
+#
+# Tags are additive, so the first selection compiles the untagged unit files in
+# alongside the integration ones and covers both tiers in a single pass. T2 is a
+# separate compilation because `e2e` and `integration` are disjoint sets, and it
+# runs second so the pipeline contracts are graded last, against a stack the
+# earlier tier has already exercised.
+#
+# -p 1 serialises packages. The legacy tests/integration setup issues unscoped
 # DELETEs against shared tables in the test database, so packages running
-# concurrently delete each other's fixtures — the same reason `make test`
-# already passes -p 1. `make test-all` does not pass it for ./cmd/... and
-# ./internal/..., which is a latent race there.
+# concurrently delete each other's fixtures.
 #
 # -count=1 defeats the test result cache. The toolchain hashes inputs it knows
 # about, and it does not know about PostgreSQL, the PDS, or the firehose — so a
@@ -149,10 +168,30 @@ progress_pid=$!
 # cannot leave a stray tail holding the container open.
 trap 'kill "$progress_pid" 2>/dev/null || true' EXIT
 
+# Both runs APPEND to the same raw stream, and neither is piped, for the reason
+# above: ci-report consumes one -json stream covering every tier, and a
+# downstream reader must never be able to affect whether a run completes.
+#
+# Their exit statuses are KEPT, not discarded. ci-report is the verdict on what
+# the stream says, but it can only judge events that reached the file: if a run
+# is killed (OOM, SIGKILL, a panic that takes the harness down) the stream is
+# truncated *without* fail events, and a report built from the surviving prefix
+# reads as green. The statuses are the out-of-band evidence that the run
+# actually finished, and they are cross-checked against the report below.
+#
+# T2 is pinned to -parallel 1 rather than the computed budget: the pipeline
+# contracts share one AppView, one PDS and one firehose cursor space, so they
+# are serial by design (docs/TEST_ARCHITECTURE.md §3.4). The budget applies to
+# the integration tier, where per-test database clones are the constraint.
 set +e
-go test -json -p 1 -parallel "$TEST_PARALLEL" -count=1 -timeout "$TEST_TIMEOUT" \
+go test -json -tags integration -p 1 -parallel "$TEST_PARALLEL" -count=1 -timeout "$TEST_TIMEOUT" \
     ./cmd/... ./internal/... ./tests/... \
     >>"$RAW" 2>&1
+integration_status=$?
+go test -json -tags e2e -p 1 -parallel 1 -count=1 -timeout "$TEST_TIMEOUT" \
+    ./tests/e2e/... \
+    >>"$RAW" 2>&1
+e2e_status=$?
 set -e
 
 # Let the reader drain the tail of the file before its output is interleaved
@@ -165,15 +204,63 @@ wait "$progress_pid" 2>/dev/null || true
 # 3. Judge
 # ---------------------------------------------------------------------------
 
-# go test's own exit code is deliberately ignored: it reports a skipped suite as
-# success, which is the whole reason ci-report exists. ci-report reads the same
-# stream and applies the stricter rules.
+# ci-report is the primary verdict. `go test`'s exit code alone is not a gate:
+# it reports a suite that skipped itself into nothing as success, which is the
+# whole reason this tool exists. ci-report reads the stream and applies the
+# stricter rules.
 #
 # Built rather than `go run`, so the exit code is ci-report's own and the
 # toolchain does not print its own "exit status 1" line over the report.
 go build -o /tmp/ci-report ./cmd/ci-report
-exec /tmp/ci-report \
+set +e
+/tmp/ci-report \
     -allowlist "$ALLOWLIST" \
     -summary "$SUMMARY" \
     -allow-stale "${COVES_CI_ALLOW_STALE:-false}" \
     <"$RAW"
+report_status=$?
+set -e
+
+# ---------------------------------------------------------------------------
+# 3b. Cross-check the report against the runs that produced it
+# ---------------------------------------------------------------------------
+#
+# ci-report can only judge what reached the stream, so it is blind to a run that
+# died without writing failure events. Two rules close that hole, and both are
+# about the STREAM's integrity rather than about any individual test:
+#
+#   * status > 1 is not a test failure. `go test` exits 1 when tests fail and 2
+#     when it could not run them (bad flags, a package that would not build);
+#     a signal death (OOM killer, SIGKILL) surfaces as 128+signo. None of those
+#     are guaranteed to leave fail events behind, so they fail the gate outright
+#     regardless of what the report says.
+#
+#   * status != 0 while ci-report says ok is a contradiction. `go test` saw
+#     something wrong that the stream does not contain — the definition of a
+#     truncated capture. Trusting the report here is exactly the false-green
+#     this check exists to prevent.
+#
+# An ordinary failing test satisfies neither rule (status 1, report not ok), so
+# it is still reported by ci-report in ci-report's own words.
+gate_status=$report_status
+
+for tier_status in "integration:$integration_status" "e2e:$e2e_status"; do
+    tier=${tier_status%%:*}
+    status=${tier_status##*:}
+
+    if [ "$status" -gt 1 ]; then
+        echo
+        echo "✗ the $tier run exited $status — that is a crashed or unrunnable"
+        echo "  suite, not a test failure, and its -json stream may be truncated."
+        echo "  Failing the gate on the exit status rather than on the report."
+        gate_status=1
+    elif [ "$status" -ne 0 ] && [ "$report_status" -eq 0 ]; then
+        echo
+        echo "✗ the $tier run exited $status but the report says every test passed."
+        echo "  go test saw a failure that never reached $RAW, so the captured"
+        echo "  stream is incomplete and the report cannot be trusted."
+        gate_status=1
+    fi
+done
+
+exit "$gate_status"

@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -17,10 +19,6 @@ import (
 )
 
 func TestPostCreation_Basic(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() {
 		if err := db.Close(); err != nil {
@@ -291,10 +289,6 @@ func TestPostCreation_Basic(t *testing.T) {
 
 // TestPostRepository_Create tests the repository layer
 func TestPostRepository_Create(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() {
 		if err := db.Close(); err != nil {

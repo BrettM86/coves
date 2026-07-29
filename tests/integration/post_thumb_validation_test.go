@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -42,10 +44,6 @@ func createTestCommunityWithCredentials(t *testing.T, repo communities.Repositor
 
 // TestPostHandler_ThumbValidation tests strict validation of thumb field in external embeds
 func TestPostHandler_ThumbValidation(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() {
 		if err := db.Close(); err != nil {
@@ -307,10 +305,6 @@ func TestPostHandler_ThumbValidation(t *testing.T) {
 // tests still pass — guarding against regression of the silent-corruption bug
 // the validation exists to prevent.
 func TestPostHandler_EmbedValidation(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() {
 		if err := db.Close(); err != nil {

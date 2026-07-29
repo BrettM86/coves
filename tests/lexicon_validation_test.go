@@ -19,7 +19,7 @@ const lexiconDir = "../internal/atproto/lexicon"
 // TestMain controls test setup for the tests package.
 // Set LOG_ENABLED=false to suppress application log output during tests.
 func TestMain(m *testing.M) {
-	// Silence logs when LOG_ENABLED=false (used by make test-all)
+	// Silence logs when LOG_ENABLED=false (what .env.ci sets for the gate)
 	if os.Getenv("LOG_ENABLED") == "false" {
 		log.SetOutput(io.Discard)
 	}

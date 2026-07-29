@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -70,10 +72,6 @@ func (m *mockVoteService) GetViewerVotesForSubjects(userDID string, subjectURIs 
 
 // TestGetDiscover_ShowsAllCommunities tests discover feed shows posts from ALL communities
 func TestGetDiscover_ShowsAllCommunities(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	t.Cleanup(func() { _ = db.Close() })
 
@@ -141,10 +139,6 @@ func TestGetDiscover_ShowsAllCommunities(t *testing.T) {
 
 // TestGetDiscover_NoAuthRequired tests discover feed works without authentication
 func TestGetDiscover_NoAuthRequired(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	t.Cleanup(func() { _ = db.Close() })
 
@@ -188,10 +182,6 @@ func TestGetDiscover_NoAuthRequired(t *testing.T) {
 
 // TestGetDiscover_HotSort tests hot sorting across all communities
 func TestGetDiscover_HotSort(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	t.Cleanup(func() { _ = db.Close() })
 
@@ -245,10 +235,6 @@ func TestGetDiscover_HotSort(t *testing.T) {
 // a day-old genuinely popular post should outrank a six-hour-old post nobody
 // voted on.
 func TestGetDiscover_HotSort_LogDampedRanking(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	t.Cleanup(func() { _ = db.Close() })
 
@@ -305,10 +291,6 @@ func TestGetDiscover_HotSort_LogDampedRanking(t *testing.T) {
 // exactly once, in rank order, with no skips or duplicates. A divergence
 // between the live and cursor formulas fails this test.
 func TestGetDiscover_HotSort_PaginationCoversNegativeScores(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	t.Cleanup(func() { _ = db.Close() })
 
@@ -366,10 +348,6 @@ func TestGetDiscover_HotSort_PaginationCoversNegativeScores(t *testing.T) {
 // future-dated post ranks like a brand-new 0-vote post — it must not error
 // the query (negative POWER base) and must not outrank a post with real votes.
 func TestGetDiscover_HotSort_FutureDatedPost(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	t.Cleanup(func() { _ = db.Close() })
 
@@ -412,10 +390,6 @@ func TestGetDiscover_HotSort_FutureDatedPost(t *testing.T) {
 
 // TestGetDiscover_Pagination tests cursor-based pagination
 func TestGetDiscover_Pagination(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	t.Cleanup(func() { _ = db.Close() })
 
@@ -469,10 +443,6 @@ func TestGetDiscover_Pagination(t *testing.T) {
 
 // TestGetDiscover_LimitValidation tests limit parameter validation
 func TestGetDiscover_LimitValidation(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	t.Cleanup(func() { _ = db.Close() })
 
@@ -499,10 +469,6 @@ func TestGetDiscover_LimitValidation(t *testing.T) {
 
 // TestGetDiscover_ViewerVoteState tests that authenticated users see their vote state on posts
 func TestGetDiscover_ViewerVoteState(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	t.Cleanup(func() { _ = db.Close() })
 
@@ -587,10 +553,6 @@ func TestGetDiscover_ViewerVoteState(t *testing.T) {
 
 // TestGetDiscover_NoViewerStateWithoutAuth tests that unauthenticated users don't get viewer state
 func TestGetDiscover_NoViewerStateWithoutAuth(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	t.Cleanup(func() { _ = db.Close() })
 

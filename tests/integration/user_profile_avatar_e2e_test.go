@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -58,10 +60,6 @@ func createTestAvatarPNG(width, height int, c color.Color) []byte {
 // 3. Jetstream consumer receives and processes the event
 // 4. GetProfile returns the correct avatar URL
 func TestUserProfileAvatarE2E_UpdateWithAvatar(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	// Setup test database
 	dbURL := os.Getenv("TEST_DATABASE_URL")
 	if dbURL == "" {
@@ -356,10 +354,6 @@ func TestUserProfileAvatarE2E_UpdateWithAvatar(t *testing.T) {
 
 // TestUserProfileAvatarE2E_UpdateWithBanner tests the full flow of updating a user profile with a banner
 func TestUserProfileAvatarE2E_UpdateWithBanner(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	// Setup test database
 	dbURL := os.Getenv("TEST_DATABASE_URL")
 	if dbURL == "" {
@@ -600,10 +594,6 @@ func TestUserProfileAvatarE2E_UpdateWithBanner(t *testing.T) {
 
 // TestUserProfileAvatarE2E_UpdateDisplayNameAndBio tests updating non-blob profile fields
 func TestUserProfileAvatarE2E_UpdateDisplayNameAndBio(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	// Setup test database
 	dbURL := os.Getenv("TEST_DATABASE_URL")
 	if dbURL == "" {
@@ -804,10 +794,6 @@ func TestUserProfileAvatarE2E_UpdateDisplayNameAndBio(t *testing.T) {
 
 // TestUserProfileAvatarE2E_ReplaceAvatar tests replacing an existing avatar with a new one
 func TestUserProfileAvatarE2E_ReplaceAvatar(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	// Setup test database
 	dbURL := os.Getenv("TEST_DATABASE_URL")
 	if dbURL == "" {

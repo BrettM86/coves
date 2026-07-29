@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -23,10 +25,6 @@ import (
 // for testing purposes. Real OAuth tokens from PDS would be sealed using the
 // OAuth client's seal secret.
 func TestOAuthTokenVerification(t *testing.T) {
-	// Skip in short mode since this requires real PDS
-	if testing.Short() {
-		t.Skip("Skipping OAuth token verification test in short mode")
-	}
 
 	pdsURL := os.Getenv("PDS_URL")
 	if pdsURL == "" {

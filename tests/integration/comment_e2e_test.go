@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -28,10 +30,6 @@ import (
 // TestCommentE2E_CreateWithJetstream tests the full comment creation flow with real Jetstream
 // Flow: Client → Service → PDS Write → Jetstream Firehose → Consumer → AppView
 func TestCommentE2E_CreateWithJetstream(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	// Setup test database
 	dbURL := os.Getenv("TEST_DATABASE_URL")
 	if dbURL == "" {
@@ -244,10 +242,6 @@ func TestCommentE2E_CreateWithJetstream(t *testing.T) {
 
 // TestCommentE2E_UpdateWithJetstream tests comment update with real Jetstream indexing
 func TestCommentE2E_UpdateWithJetstream(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	// Setup test database
 	dbURL := os.Getenv("TEST_DATABASE_URL")
 	if dbURL == "" {
@@ -478,10 +472,6 @@ func TestCommentE2E_UpdateWithJetstream(t *testing.T) {
 
 // TestCommentE2E_DeleteWithJetstream tests comment deletion with real Jetstream indexing
 func TestCommentE2E_DeleteWithJetstream(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	// Setup test database
 	dbURL := os.Getenv("TEST_DATABASE_URL")
 	if dbURL == "" {
@@ -891,10 +881,6 @@ func subscribeToJetstreamForCommentDelete(
 
 // TestCommentE2E_Authorization tests that users cannot modify other users' comments
 func TestCommentE2E_Authorization(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	// Setup test database
 	dbURL := os.Getenv("TEST_DATABASE_URL")
 	if dbURL == "" {
@@ -1083,10 +1069,6 @@ func TestCommentE2E_Authorization(t *testing.T) {
 
 // TestCommentE2E_ValidationErrors tests that validation errors are properly returned
 func TestCommentE2E_ValidationErrors(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	// Setup test database
 	dbURL := os.Getenv("TEST_DATABASE_URL")
 	if dbURL == "" {

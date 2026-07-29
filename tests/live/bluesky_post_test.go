@@ -32,10 +32,6 @@ func productionPLCIdentityResolver(db *sql.DB) identity.Resolver {
 
 // TestBlueskyPostCrossPosting_URLParsing tests URL detection and parsing
 func TestBlueskyPostCrossPosting_URLParsing(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -111,10 +107,6 @@ func TestBlueskyPostCrossPosting_URLParsing(t *testing.T) {
 
 // TestBlueskyPostCrossPosting_LiveAPI tests fetching real posts from Bluesky
 func TestBlueskyPostCrossPosting_LiveAPI(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -390,10 +382,6 @@ func TestBlueskyPostCrossPosting_LiveAPI(t *testing.T) {
 
 // TestBlueskyPostCrossPosting_CircuitBreaker tests circuit breaker behavior
 func TestBlueskyPostCrossPosting_CircuitBreaker(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	// This test verifies the circuit breaker pattern works correctly.
 	// We don't actually want to trip the circuit breaker against production,
 	// so this is more of a unit-level integration test.
@@ -435,10 +423,6 @@ func TestBlueskyPostCrossPosting_CircuitBreaker(t *testing.T) {
 
 // TestBlueskyPostCrossPosting_E2E_PostCreation tests the full flow of creating a post with a Bluesky embed
 func TestBlueskyPostCrossPosting_E2E_PostCreation(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -506,10 +490,6 @@ func TestBlueskyPostCrossPosting_E2E_PostCreation(t *testing.T) {
 // TestBlueskyPostCrossPosting_EmbedConversion tests that Bluesky URLs in external embeds
 // are converted to social.coves.embed.post with proper strongRef (uri + cid)
 func TestBlueskyPostCrossPosting_EmbedConversion(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 

@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -32,10 +34,6 @@ import (
 // 5. WITHOUT THE FIX: Callback sends sealed token, DID, session_id to attacker's deep link
 // 6. WITH THE FIX: Binding mismatch is detected, mobile cookies cleared, user gets web session
 func TestOAuth_SessionFixationAttackPrevention(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping OAuth session fixation test in short mode")
-	}
-
 	// Setup test database
 	db := setupTestDB(t)
 	defer func() {

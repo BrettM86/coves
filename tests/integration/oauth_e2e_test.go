@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -31,10 +33,6 @@ import (
 // The OAuth redirect flow is handled by indigo's library and enforces OAuth 2.0 spec
 // (HTTPS required for authorization servers and redirect URIs).
 func TestOAuth_Components(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping OAuth component test in short mode")
-	}
-
 	// Setup test database
 	db := setupTestDB(t)
 	defer func() {
@@ -147,10 +145,6 @@ func testOAuthComponentsWithMockedSession(t *testing.T, ctx context.Context, _ i
 
 // TestOAuthE2E_TokenExpiration tests that expired sealed tokens are rejected
 func TestOAuthE2E_TokenExpiration(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping OAuth token expiration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -213,10 +207,6 @@ func TestOAuthE2E_TokenExpiration(t *testing.T) {
 
 // TestOAuthE2E_InvalidToken tests that invalid/tampered tokens are rejected
 func TestOAuthE2E_InvalidToken(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping OAuth invalid token test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -278,10 +268,6 @@ func TestOAuthE2E_InvalidToken(t *testing.T) {
 
 // TestOAuthE2E_SessionNotFound tests behavior when session doesn't exist in DB
 func TestOAuthE2E_SessionNotFound(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping OAuth session not found test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -314,10 +300,6 @@ func TestOAuthE2E_SessionNotFound(t *testing.T) {
 
 // TestOAuthE2E_MultipleSessionsPerUser tests that a user can have multiple active sessions
 func TestOAuthE2E_MultipleSessionsPerUser(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping OAuth multiple sessions test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -403,10 +385,6 @@ func TestOAuthE2E_MultipleSessionsPerUser(t *testing.T) {
 
 // TestOAuthE2E_AuthRequestStorage tests OAuth auth request storage and retrieval
 func TestOAuthE2E_AuthRequestStorage(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping OAuth auth request storage test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -513,10 +491,6 @@ func TestOAuthE2E_AuthRequestStorage(t *testing.T) {
 
 // TestOAuthE2E_TokenRefresh tests the refresh token flow
 func TestOAuthE2E_TokenRefresh(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping OAuth token refresh test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -769,10 +743,6 @@ func TestOAuthE2E_TokenRefresh(t *testing.T) {
 
 // TestOAuthE2E_SessionUpdate tests that refresh updates the session in database
 func TestOAuthE2E_SessionUpdate(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping OAuth session update test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -856,10 +826,6 @@ func TestOAuthE2E_SessionUpdate(t *testing.T) {
 
 // TestOAuthE2E_RefreshTokenRotation tests refresh token rotation behavior
 func TestOAuthE2E_RefreshTokenRotation(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping OAuth refresh token rotation test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 

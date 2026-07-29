@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -15,10 +17,6 @@ import (
 
 // TestCommunityIdentifierResolution tests all formats accepted by ResolveCommunityIdentifier
 func TestCommunityIdentifierResolution(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() {
 		if err := db.Close(); err != nil {
@@ -215,10 +213,6 @@ func TestCommunityIdentifierResolution(t *testing.T) {
 
 // TestResolveScopedIdentifier_InputValidation tests input sanitization
 func TestResolveScopedIdentifier_InputValidation(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() {
 		if err := db.Close(); err != nil {
@@ -394,10 +388,6 @@ func TestGetDisplayHandle(t *testing.T) {
 
 // TestIdentifierResolution_ErrorContext verifies error messages include identifier context
 func TestIdentifierResolution_ErrorContext(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() {
 		if err := db.Close(); err != nil {
@@ -461,10 +451,6 @@ func TestIdentifierResolution_ErrorContext(t *testing.T) {
 // TestGetCommunity_IdentifierResolution tests all formats accepted by GetCommunity
 // This is distinct from ResolveCommunityIdentifier - GetCommunity returns the full Community object
 func TestGetCommunity_IdentifierResolution(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() {
 		if err := db.Close(); err != nil {

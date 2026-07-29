@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -291,10 +293,6 @@ func TestOAuthSessionHandleSync(t *testing.T) {
 //	TEST_DATABASE_URL="postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable" \
 //	  go test -v ./tests/integration/ -run "TestOAuthSessionHandleSync_LiveJetstream"
 func TestOAuthSessionHandleSync_LiveJetstream(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping live Jetstream test in short mode")
-	}
-
 	// Check if Jetstream is available
 	if !isServiceAvailable("http://localhost:6008") {
 		t.Skip("Jetstream not available at localhost:6008 - run 'docker-compose --profile jetstream up -d' first")

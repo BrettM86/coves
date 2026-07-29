@@ -1,8 +1,11 @@
+//go:build integration
+
 package jetstream
 
 import (
 	"context"
 	"database/sql"
+	"net/url"
 	"os"
 	"testing"
 	"time"
@@ -22,29 +25,22 @@ import (
 // use, port 5434 by default / TEST_DATABASE_URL). They are strictly local-only: no
 // public PLC/relay/PDS/image hosts are contacted.
 
-const (
-	bridgedTestPrefix    = "did:plc:brtest"
-	bridgedTestCommunity = "did:plc:brtestcommunity"
-	bridgedTestAuthor    = "did:plc:brtestauthor"
-	bridgedTestOther     = "did:plc:brtestotherauthor"
-	bridgedTestVoter     = "did:plc:brtestvoter"
-	bridgedTestCommenter = bridgedTestPrefix + "commenter"
-
-	// bridgedTestPDS is the trusted bridge PDS host used across these tests. Test
-	// users/communities are created with this pds_url and the consumers are constructed
-	// trusting it, so the provenance gate lets their bridgedStats through. Tests that
-	// exercise the default-deny path override the repo's pds_url instead.
-	bridgedTestPDS       = "https://bridge.test"
-	bridgedTestNativePDS = "https://native.pds.test"
-
-	asOfEarly = "2026-01-01T00:00:00Z"
-	asOfLate  = "2026-06-01T00:00:00Z"
-)
-
 // bridgeTrustForTests trusts only the bridge PDS host, so records from repos hosted
 // there may assert bridgedStats while every other repo is default-denied.
 func bridgeTrustForTests() *BridgeTrust {
 	return NewBridgeTrust([]string{bridgedTestPDS})
+}
+
+// redactedDSN strips the password from a Postgres URL so a failure message can
+// name the server it could not reach without copying the credential into the CI
+// log. The test credentials are throwaway, but a log is the wrong place to
+// practise leaking them.
+func redactedDSN(dsn string) string {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return "(unparseable DSN)"
+	}
+	return u.Redacted()
 }
 
 // setupBridgedTestDB connects to the local test database and runs migrations.
@@ -56,10 +52,15 @@ func setupBridgedTestDB(t *testing.T) *sql.DB {
 	}
 	db, err := sql.Open("postgres", dsn)
 	require.NoError(t, err, "Failed to connect to test database")
-	if pingErr := db.Ping(); pingErr != nil {
-		_ = db.Close()
-		t.Skipf("test database not reachable (%v); start it with `make test-db-reset`", pingErr)
-	}
+	// Registered before the first thing that can fail, so the handle is closed
+	// even when Ping or the migration below calls FailNow. Callers still defer
+	// their own Close; database/sql tolerates the double close.
+	t.Cleanup(func() { _ = db.Close() })
+	// Reaching this file at all means `-tags integration` was passed, which is
+	// a request for Postgres. An absent database is a failed run, not a
+	// shrunken one.
+	require.NoError(t, db.Ping(),
+		"test database not reachable at %s; bring it up with `make test-db-reset`", redactedDSN(dsn))
 	require.NoError(t, goose.Up(db, "../../db/migrations"), "Failed to run migrations")
 	return db
 }
@@ -122,14 +123,6 @@ func newVoteConsumer(db *sql.DB) *VoteEventConsumer {
 	return NewVoteEventConsumer(postgres.NewVoteRepository(db), newMockUserService(), db)
 }
 
-func bridgedStatsRecord(up, down int, asOf string) map[string]interface{} {
-	return map[string]interface{}{
-		"upvotes":   up,
-		"downvotes": down,
-		"asOf":      asOf,
-	}
-}
-
 func postCommitEvent(op, rkey, cid string, record map[string]interface{}) *JetstreamEvent {
 	return &JetstreamEvent{
 		Kind: "commit",
@@ -142,21 +135,6 @@ func postCommitEvent(op, rkey, cid string, record map[string]interface{}) *Jetst
 			Record:     record,
 		},
 	}
-}
-
-func postRecord(title, content string, bridged map[string]interface{}) map[string]interface{} {
-	rec := map[string]interface{}{
-		"$type":     "social.coves.community.post",
-		"community": bridgedTestCommunity,
-		"author":    bridgedTestAuthor,
-		"title":     title,
-		"content":   content,
-		"createdAt": "2026-01-01T00:00:00Z",
-	}
-	if bridged != nil {
-		rec["bridgedStats"] = bridged
-	}
-	return rec
 }
 
 // readPostRow returns the stored native/bridged columns for assertions.
@@ -444,22 +422,6 @@ func TestPostConsumer_InclusiveScore_NativeVotesStackOnBridged(t *testing.T) {
 
 // --- Comment consumer ---
 
-func commentRecord(content, rootURI, rootCID, parentURI, parentCID string, bridged map[string]interface{}) map[string]interface{} {
-	rec := map[string]interface{}{
-		"$type":   "social.coves.community.comment",
-		"content": content,
-		"reply": map[string]interface{}{
-			"root":   map[string]interface{}{"uri": rootURI, "cid": rootCID},
-			"parent": map[string]interface{}{"uri": parentURI, "cid": parentCID},
-		},
-		"createdAt": "2026-01-02T00:00:00Z",
-	}
-	if bridged != nil {
-		rec["bridgedStats"] = bridged
-	}
-	return rec
-}
-
 func commentCommitEvent(op, rkey, cid string, record map[string]interface{}) *JetstreamEvent {
 	return &JetstreamEvent{
 		Kind: "commit",
@@ -592,30 +554,6 @@ func TestCommentConsumer_Update_AsOfGuard_AndInclusiveScore(t *testing.T) {
 	assert.Equal(t, 20, bUp5, "equal asOf with fresher counts must apply")
 	assert.Equal(t, 2, bDown5)
 	assert.Equal(t, 19, score5, "score = (1+20)-(0+2)")
-}
-
-// TestParseRecord_BridgedStats verifies the record parsers tolerate presence/absence
-// of bridgedStats without a database.
-func TestParseRecord_BridgedStats(t *testing.T) {
-	withStats, err := parsePostRecord(postRecord("t", "c", bridgedStatsRecord(7, 2, asOfEarly)))
-	require.NoError(t, err)
-	require.NotNil(t, withStats.BridgedStats)
-	assert.Equal(t, 7, withStats.BridgedStats.Upvotes)
-	assert.Equal(t, 2, withStats.BridgedStats.Downvotes)
-	assert.Equal(t, asOfEarly, withStats.BridgedStats.AsOf)
-
-	without, err := parsePostRecord(postRecord("t", "c", nil))
-	require.NoError(t, err)
-	assert.Nil(t, without.BridgedStats, "absent bridgedStats parses as nil")
-
-	cWith, err := parseCommentRecord(commentRecord("hi", "at://x/c/1", "cid", "at://x/c/1", "cid", bridgedStatsRecord(3, 1, asOfLate)))
-	require.NoError(t, err)
-	require.NotNil(t, cWith.BridgedStats)
-	assert.Equal(t, 3, cWith.BridgedStats.Upvotes)
-
-	cWithout, err := parseCommentRecord(commentRecord("hi", "at://x/c/1", "cid", "at://x/c/1", "cid", nil))
-	require.NoError(t, err)
-	assert.Nil(t, cWithout.BridgedStats)
 }
 
 // --- edited_at churn (fix 4) ---

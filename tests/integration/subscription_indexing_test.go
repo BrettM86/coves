@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -15,10 +17,6 @@ import (
 // TestSubscriptionIndexing_ContentVisibility tests that contentVisibility is properly indexed
 // from Jetstream events and stored in the AppView database
 func TestSubscriptionIndexing_ContentVisibility(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	ctx := context.Background()
 	db := setupTestDB(t)
 	defer cleanupTestDB(t, db)
@@ -240,10 +238,6 @@ func TestSubscriptionIndexing_ContentVisibility(t *testing.T) {
 
 // TestSubscriptionIndexing_DeleteOperations tests unsubscribe (DELETE) event handling
 func TestSubscriptionIndexing_DeleteOperations(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	ctx := context.Background()
 	db := setupTestDB(t)
 	defer cleanupTestDB(t, db)
@@ -356,10 +350,6 @@ func TestSubscriptionIndexing_DeleteOperations(t *testing.T) {
 
 // TestSubscriptionIndexing_SubscriberCount tests that subscriber counts are updated atomically
 func TestSubscriptionIndexing_SubscriberCount(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	ctx := context.Background()
 	db := setupTestDB(t)
 	defer cleanupTestDB(t, db)

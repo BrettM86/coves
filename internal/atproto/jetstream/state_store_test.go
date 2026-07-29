@@ -1,3 +1,5 @@
+//go:build integration
+
 package jetstream
 
 import (
@@ -24,17 +26,20 @@ func setupStateStoreTestDB(t *testing.T) *sql.DB {
 	}
 	db, err := sql.Open("postgres", dsn)
 	require.NoError(t, err, "Failed to connect to test database")
-	if pingErr := db.Ping(); pingErr != nil {
-		_ = db.Close()
-		t.Skipf("test database not reachable (%v); start it with `make test-db-reset`", pingErr)
-	}
-	require.NoError(t, goose.Up(db, "../../db/migrations"), "Failed to run migrations")
-
+	// Registered before the first thing that can fail, so the handle is closed
+	// even when Ping or the migration below calls FailNow.
 	t.Cleanup(func() {
 		_, _ = db.Exec("DELETE FROM jetstream_cursors WHERE consumer_name LIKE 'statestore-test%'")
 		_, _ = db.Exec("DELETE FROM jetstream_dead_letters WHERE consumer_name LIKE 'statestore-test%'")
 		_ = db.Close()
 	})
+	// Reaching this file at all means `-tags integration` was passed, which is
+	// a request for Postgres. An absent database is a failed run, not a
+	// shrunken one.
+	require.NoError(t, db.Ping(),
+		"test database not reachable at %s; bring it up with `make test-db-reset`", redactedDSN(dsn))
+	require.NoError(t, goose.Up(db, "../../db/migrations"), "Failed to run migrations")
+
 	return db
 }
 

@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -46,10 +48,6 @@ func createTestPNGImage(width, height int, c color.Color) []byte {
 // TestCommunityAvatarE2E_CreateWithAvatar tests creating a community with an avatar
 // Flow: CreateCommunity(avatar) → PDS uploadBlob + putRecord → Jetstream → Consumer → AppView
 func TestCommunityAvatarE2E_CreateWithAvatar(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	// Setup test database
 	dbURL := os.Getenv("TEST_DATABASE_URL")
 	if dbURL == "" {
@@ -296,10 +294,6 @@ func TestCommunityAvatarE2E_CreateWithAvatar(t *testing.T) {
 // TestCommunityAvatarE2E_UpdateWithAvatar tests updating a community's avatar
 // Flow: UpdateCommunity(avatar) → PDS uploadBlob + putRecord → Jetstream → Consumer → AppView
 func TestCommunityAvatarE2E_UpdateWithAvatar(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	// Setup test database
 	dbURL := os.Getenv("TEST_DATABASE_URL")
 	if dbURL == "" {
@@ -674,10 +668,6 @@ func TestCommunityAvatarE2E_UpdateWithAvatar(t *testing.T) {
 // TestCommunityAvatarE2E_UpdateWithBanner tests updating a community's banner
 // Flow: UpdateCommunity(banner) → PDS uploadBlob + putRecord → Jetstream → Consumer → AppView
 func TestCommunityAvatarE2E_UpdateWithBanner(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	// Setup test database
 	dbURL := os.Getenv("TEST_DATABASE_URL")
 	if dbURL == "" {

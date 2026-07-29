@@ -15,8 +15,9 @@
 //
 // Those guards are good developer ergonomics — running one package against a
 // partial stack should not drown you in failures. But they make a *gate*
-// meaningless: stop the PDS and `make test-all` still prints "ALL TESTS PASSED",
-// having silently skipped every real PDS write and every firehose round-trip.
+// meaningless: stop the PDS and a plain `go test` still prints "ok" for every
+// package, having silently skipped every real PDS write and every firehose
+// round-trip.
 //
 // So this tool inverts the default. A skip is a failure unless it appears in an
 // allowlist committed to the repository with a stated reason. The allowlist

@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -24,10 +26,6 @@ import (
 // Flow: Client -> XRPC -> PDS Write -> Verify on PDS -> Jetstream -> Consumer -> AppView
 // Then: Client -> XRPC Unblock -> PDS Delete -> Jetstream -> Consumer -> AppView removal
 func TestUserBlockE2E_BlockAndUnblock(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 
@@ -371,10 +369,6 @@ func TestUserBlockE2E_BlockAndUnblock(t *testing.T) {
 // TestUserBlockE2E_SelfBlockPrevented tests that a user cannot block themselves.
 // This validates the self-block guard in the service layer with a real PDS.
 func TestUserBlockE2E_SelfBlockPrevented(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() { _ = db.Close() }()
 

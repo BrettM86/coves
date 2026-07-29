@@ -81,6 +81,15 @@ func run(ctx context.Context, force bool, sweepAge, wait time.Duration) error {
 		return err
 	}
 
+	// The shared database the not-yet-migrated tests write to directly. Not
+	// testkit's concern, but this is the only step that runs before every test
+	// binary, so it is the only place the legacy path can be prepared once
+	// rather than by whichever package happens to run first.
+	if err := testkit.MigrateSharedDatabase(ctx); err != nil {
+		return err
+	}
+	fmt.Printf("  shared:   %s migrated\n", pg.Redacted(pg.Database))
+
 	// One call, one lock acquisition. Asking whether the template is current,
 	// releasing the lock, and then acting on the answer would act on a fact
 	// another process may have invalidated in between — and would need a

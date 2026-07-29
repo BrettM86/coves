@@ -1,3 +1,5 @@
+//go:build e2e
+
 package e2e
 
 import (
@@ -28,10 +30,6 @@ import (
 // - Malformed events
 // - Out-of-order events
 func TestE2E_ErrorRecovery(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E error recovery test in short mode")
-	}
-
 	t.Run("Jetstream reconnection after disconnect", testJetstreamReconnection)
 	t.Run("Malformed Jetstream events", testMalformedJetstreamEvents)
 	t.Run("Database connection recovery", testDatabaseConnectionRecovery)

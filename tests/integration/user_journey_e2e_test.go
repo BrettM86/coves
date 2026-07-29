@@ -1,3 +1,5 @@
+//go:build integration
+
 package integration
 
 import (
@@ -50,10 +52,6 @@ import (
 // - Multi-user interactions and data consistency
 // - Timeline aggregation and feed generation
 func TestFullUserJourney_E2E(t *testing.T) {
-	// Skip in short mode since this requires real PDS and Jetstream
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
 
 	// Setup test database
 	dbURL := os.Getenv("TEST_DATABASE_URL")

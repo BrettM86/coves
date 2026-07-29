@@ -20,10 +20,6 @@ import (
 
 // TestPostUnfurl_Streamable tests that a post with a Streamable URL gets unfurled
 func TestPostUnfurl_Streamable(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() {
 		if err := db.Close(); err != nil {
@@ -168,10 +164,6 @@ func TestPostUnfurl_Streamable(t *testing.T) {
 
 // TestPostUnfurl_YouTube tests that a post with a YouTube URL gets unfurled
 func TestPostUnfurl_YouTube(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() {
 		if err := db.Close(); err != nil {
@@ -215,10 +207,6 @@ func TestPostUnfurl_YouTube(t *testing.T) {
 
 // TestPostUnfurl_Reddit tests that a post with a Reddit URL gets unfurled
 func TestPostUnfurl_Reddit(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() {
 		if err := db.Close(); err != nil {
@@ -261,10 +249,6 @@ func TestPostUnfurl_Reddit(t *testing.T) {
 
 // TestPostUnfurl_CacheHit tests that the second post with the same URL uses cache
 func TestPostUnfurl_CacheHit(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() {
 		if err := db.Close(); err != nil {
@@ -327,10 +311,6 @@ func TestPostUnfurl_CacheHit(t *testing.T) {
 
 // TestPostUnfurl_UserProvidedMetadata tests that user-provided metadata is preserved
 func TestPostUnfurl_UserProvidedMetadata(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() {
 		if err := db.Close(); err != nil {
@@ -442,10 +422,6 @@ func TestPostUnfurl_UserProvidedMetadata(t *testing.T) {
 
 // TestPostUnfurl_OpenGraph tests that OpenGraph URLs get unfurled
 func TestPostUnfurl_OpenGraph(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() {
 		if err := db.Close(); err != nil {
@@ -497,10 +473,6 @@ func TestPostUnfurl_OpenGraph(t *testing.T) {
 
 // TestPostUnfurl_SmartRouting tests that oEmbed still works while OpenGraph handles others
 func TestPostUnfurl_SmartRouting(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() {
 		if err := db.Close(); err != nil {
@@ -557,10 +529,6 @@ func TestPostUnfurl_SmartRouting(t *testing.T) {
 
 // TestPostUnfurl_KagiKite tests that Kagi Kite URLs get unfurled with story images
 func TestPostUnfurl_KagiKite(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
 	db := setupTestDB(t)
 	defer func() {
 		if err := db.Close(); err != nil {
