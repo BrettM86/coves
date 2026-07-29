@@ -492,8 +492,3 @@ func CommunityPasswordAuthPDSClientFactory() communities.PDSClientFactory {
 func UserBlockPasswordAuthPDSClientFactory() userblocks.PDSClientFactory {
 	return passwordAuthPDSClient
 }
-
-// UserProfilePasswordAuthPDSClientFactory creates a PDSClientFactory for user profile E2E tests.
-func UserProfilePasswordAuthPDSClientFactory() func(ctx context.Context, session *oauthlib.ClientSessionData) (pds.Client, error) {
-	return passwordAuthPDSClient
-}

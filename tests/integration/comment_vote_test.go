@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestCommentVote_CreateAndUpdate tests voting on comments and vote count updates
@@ -540,7 +542,7 @@ func TestCommentVote_ViewerState(t *testing.T) {
 	})
 
 	t.Run("Unauthenticated request has no viewer state", func(t *testing.T) {
-		// Query without authentication
+		// Query without authentication.
 		// Use factory constructor with nil factory - this test only uses the read path (GetComments)
 		commentService := comments.NewCommentServiceWithPDSFactory(commentRepo, userRepo, postRepo, communityRepo, nil, nil)
 		response, err := commentService.GetComments(ctx, &comments.GetCommentsRequest{
@@ -554,11 +556,20 @@ func TestCommentVote_ViewerState(t *testing.T) {
 			t.Fatalf("Failed to get comments: %v", err)
 		}
 
-		if len(response.Comments) > 0 {
-			// Verify no viewer state
-			if response.Comments[0].Comment.Viewer != nil {
-				t.Error("Expected viewer = nil for unauthenticated request")
-			}
+		// The assertion used to be wrapped in `if len(response.Comments) > 0`,
+		// which made it vacuous whenever the thread was empty — and it was only
+		// ever non-empty because the sibling subtests above happened to run
+		// first and seed this post. A guard that turns "the thread was empty"
+		// into a silent pass hides exactly the regression it was written for, so
+		// the emptiness is now the failure.
+		require.NotEmpty(t, response.Comments,
+			"the sibling subtests seed this post's thread; an empty thread here means the "+
+				"assertion below would have checked nothing")
+		for _, node := range response.Comments {
+			require.Nilf(t, node.Comment.Viewer,
+				"comment %s carried viewer state for a caller with no identity: viewer state is "+
+					"per-actor, so serving it unauthenticated leaks one user's votes to everyone",
+				node.Comment.URI)
 		}
 	})
 }

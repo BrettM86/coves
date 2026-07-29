@@ -91,6 +91,39 @@
 // collection has no such marker and no entry in tests/ci/pending_contracts.txt.
 // The inventory is therefore generated, never curated: adding a collection to a
 // consumer breaks the build until it is proven.
+//
+// # PINNING A DEFECT INSIDE A MARKED CONTRACT
+//
+// Contracts keep finding bugs, and a bug this phase is not fixing gets PINNED:
+// an assertion of what the shipped code currently does, written so it fails
+// loudly the moment somebody fixes it. The question that comes up each time is
+// whether a pin may live inside a function carrying an ingestion marker, since
+// a marker is a claim that the collection is proven and a pin is a record that
+// something about it is broken.
+//
+// THE RULE: a pin may share a marked contract's arc, provided the contract
+// STILL PASSES once the defect is fixed — everything except the pinned step,
+// which is expected to fail and is what announces the fix. If a fix would also
+// break the surrounding proof, the pin belongs in its own unmarked test
+// function beside the contract, because the marker would otherwise be
+// advertising a proof that no longer runs.
+//
+// Both shapes are in the tree as worked examples, and the difference is
+// instructive. vote_contract_test.go pins a same-rkey update being dropped
+// INSIDE TestVoteIngestion: fixing it changes one step's expected counts and
+// leaves create, re-tap, direction change and delete proving exactly what they
+// prove today. The out-of-order defect is pinned OUTSIDE, in
+// TestVoteOutOfOrderIsLostAndSubtracts, because its whole arc is the defect —
+// there is no residual pipeline proof left if the behaviour changes, so it
+// carries no marker and claims nothing about the collection.
+//
+// Two obligations either way. Name the issue file in the assertion message, so
+// a red run says which defect got fixed rather than merely which line moved.
+// And state the wrong-but-current value with Holds, not only Await, wherever an
+// asynchronous fix — a reconciliation pass, a lazy repair on read — could
+// satisfy an eventually-check on its way to the right answer and leave the pin
+// silently passing against corrected code. A pin that cannot detect its own
+// obsolescence is worse than no pin, because it reads as coverage.
 package e2e
 
 import (

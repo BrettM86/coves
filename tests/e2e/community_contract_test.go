@@ -162,6 +162,14 @@ type communityView struct {
 	HostedBy        string `json:"hostedBy"`
 	Visibility      string `json:"visibility"`
 	SubscriberCount int    `json:"subscriberCount"`
+
+	// Avatar and Banner are HYDRATED image URLs, not the CIDs the record
+	// carries — the same shape actor.getProfile serves and for the same reason
+	// (blobs.HydrateImageURL). user_contract_test.go's opening note traces the
+	// whole blob path; the only thing these fields add is that communities take
+	// it too, through a different consumer.
+	Avatar string `json:"avatar"`
+	Banner string `json:"banner"`
 }
 
 // Community reads a community from the AppView by any identifier the endpoint
@@ -229,6 +237,17 @@ func communityProfile(c provisionedCommunity, creatorDID, displayName, descripti
 	}
 }
 
+// withCommunityImage attaches a blob reference to a community profile record.
+//
+// Separate from communityProfile rather than a parameter on it because most
+// callers want a community to hang other records on and do not care about
+// images; only the ingestion contract exercises the blob path, and it should
+// read as the extra step it is.
+func withCommunityImage(record map[string]any, field string, ref testkit.BlobRef) map[string]any {
+	record[field] = blobRefValue(ref)
+	return record
+}
+
 // TestCommunityProfileIngestion is the pipeline proof for community profiles.
 //
 // coves:ingestion-contract social.coves.community.profile
@@ -273,11 +292,33 @@ func TestCommunityProfileIngestion(t *testing.T) {
 	}
 
 	// ---- create -----------------------------------------------------------
+	// With an avatar, so the blob path is proven on the same arc rather than in
+	// a file of its own. It is the community half of what
+	// user_contract_test.go's opening note traces for actors: bytes uploaded to
+	// the repo's PDS, a reference embedded in the record, a CID extracted by the
+	// consumer, and a hydrated URL served back. The consumer is a different one
+	// (community_consumer.go, not user_consumer.go) and the serving endpoint is
+	// a different one, so neither contract covers the other.
+	// The avatar only — NO banner, on purpose. The update step below adds one,
+	// which is what exercises the nil→value transition the consumer's `if ok`
+	// guards (community_consumer.go's create and update paths) actually govern:
+	// a profile that gains a picture it did not have.
+	avatar := community.UploadBlob(t, testkit.TestPNG(64, 64), "image/png")
 	community.PutRecord(t, communityProfileCollection, "self",
-		communityProfile(community, creator.DID, created, "a community the AppView never provisioned", "public"))
+		withCommunityImage(
+			communityProfile(community, creator.DID, created, "a community the AppView never provisioned", "public"),
+			"avatar", avatar))
 
 	view := observe("the directly-written community profile to reach social.coves.community.get via the consumers",
 		func(v communityView) bool { return v.DisplayName == created })
+
+	require.Containsf(t, view.Avatar, avatar.CID(),
+		"the community's avatar URL %q does not name the CID of the blob that was uploaded (%s): "+
+			"the community consumer either failed to extract the blob ref or extracted the wrong one",
+		view.Avatar, avatar.CID())
+	require.Emptyf(t, view.Banner,
+		"the community was created with no banner and the endpoint served one anyway: %q", view.Banner)
+	requireServesImage(t, p, "community avatar", view.Avatar)
 
 	require.Equal(t, community.DID, view.DID,
 		"the AppView served a different community than the one that owns the repo")
@@ -296,8 +337,26 @@ func TestCommunityProfileIngestion(t *testing.T) {
 	// Same rkey, so this is an update commit rather than a second create — the
 	// consumer's updateCommunity path, which reads the existing row and writes
 	// the changed fields back.
+	// The avatar is replaced in the same commit: different bytes, so necessarily
+	// a different CID, so necessarily a different URL. This is what catches an
+	// avatar_cid the update path failed to refresh — the old URL keeps being
+	// served and looks entirely healthy.
+	// Two image changes in one commit, each exercising a different transition:
+	// the avatar is REPLACED (value→different value) and the banner is ADDED
+	// (nil→value, on a community that had none).
+	replacement := community.UploadBlob(t, testkit.TestPNG(48, 48), "image/png")
+	banner := community.UploadBlob(t, testkit.TestJPEG(96, 32), "image/jpeg")
+	require.NotEqual(t, avatar.CID(), replacement.CID(),
+		"the replacement image must differ from the original, or this step proves nothing")
+	require.NotEqual(t, replacement.CID(), banner.CID(),
+		"the banner must differ from the avatar, or neither assertion below can tell them apart")
+
 	community.PutRecord(t, communityProfileCollection, "self",
-		communityProfile(community, creator.DID, updated, "edited through the firehose", "unlisted"))
+		withCommunityImage(
+			withCommunityImage(
+				communityProfile(community, creator.DID, updated, "edited through the firehose", "unlisted"),
+				"avatar", replacement),
+			"banner", banner))
 
 	view = observe("the updated profile to reach social.coves.community.get",
 		func(v communityView) bool { return v.DisplayName == updated })
@@ -306,6 +365,15 @@ func TestCommunityProfileIngestion(t *testing.T) {
 	require.Equal(t, "unlisted", view.Visibility,
 		"the update path must carry every changed field, not only the display name")
 	require.Equal(t, community.DID, view.DID)
+	require.Containsf(t, view.Avatar, replacement.CID(),
+		"the update did not refresh the community's avatar: still serving %q", view.Avatar)
+	require.NotContains(t, view.Avatar, avatar.CID(),
+		"the community still names the previous avatar's CID after the update")
+	require.Containsf(t, view.Banner, banner.CID(),
+		"the banner added by the update never reached the endpoint (%q): this is the nil→value "+
+			"transition the consumer's `if ok` blob guards govern", view.Banner)
+	requireServesImage(t, p, "community avatar after replacement", view.Avatar)
+	requireServesImage(t, p, "community banner", view.Banner)
 
 	// ---- delete -----------------------------------------------------------
 	// DeleteExistingRecord rather than DeleteRecord: deleting a key that is not

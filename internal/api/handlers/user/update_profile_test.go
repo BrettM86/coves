@@ -26,6 +26,14 @@ type mockPDSClient struct {
 	putRecordError  error
 	putRecordURI    string
 	putRecordCID    string
+
+	// The arguments the handler actually passed to PutRecord. Captured because
+	// the RECORD is the wire contract with the firehose consumer that indexes
+	// it: a 200 from this handler says nothing about whether the thing written
+	// to the repo is the thing internal/atproto/jetstream can read back.
+	putRecordCollection string
+	putRecordRKey       string
+	putRecordValue      any
 }
 
 func (m *mockPDSClient) CreateRecord(_ context.Context, _ string, _ string, _ any) (string, string, error) {
@@ -44,7 +52,8 @@ func (m *mockPDSClient) GetRecord(_ context.Context, _ string, _ string) (*pds.R
 	return nil, nil
 }
 
-func (m *mockPDSClient) PutRecord(_ context.Context, _ string, _ string, _ any, _ string) (string, string, error) {
+func (m *mockPDSClient) PutRecord(_ context.Context, collection string, rkey string, record any, _ string) (string, string, error) {
+	m.putRecordCollection, m.putRecordRKey, m.putRecordValue = collection, rkey, record
 	if m.putRecordError != nil {
 		return "", "", m.putRecordError
 	}
@@ -1337,4 +1346,106 @@ func TestUpdateProfileHandler_EmptyRequestSuccess(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, "at://did:plc:test123/social.coves.actor.profile/self", resp.URI)
 	assert.Equal(t, "bafyreifake", resp.CID)
+}
+
+// TestUpdateProfileHandler_WritesTheRecordTheConsumerReadsBack asserts the SHAPE
+// of the profile record the handler puts in the user's repo — not that the
+// request succeeded, which every other test here already covers.
+//
+// # WHY THIS IS THE ASSERTION THAT WAS MISSING
+//
+// The handler's job ends at a repo write; everything a user sees afterwards
+// comes from the firehose consumer reading that record back
+// (jetstream.handleProfileUpdate → extractBlobCID → users.avatar_cid → a
+// hydrated URL on getProfile). The two sides agree on nothing but a JSON shape,
+// and neither has the other in scope: this package's tests mocked PutRecord and
+// discarded the record, and the consumer's tests build their own record
+// literals. So a handler that uploaded a blob correctly and then embedded the
+// reference under the wrong key, or flattened it to a bare CID string, produced
+// a 200 here, a valid-looking record on the PDS, and an avatar that silently
+// never appeared — with no failing test anywhere.
+//
+// tests/integration/user_profile_avatar_e2e_test.go was the only thing covering
+// it, at 1,022 lines and four hand-dialled websockets, and it covered it by
+// accident: it watched the real firehose event go past and then re-implemented
+// the consumer's extraction inside the test body. This is that claim, stated
+// directly. Its other half — that a record of this shape really does reach
+// getProfile as a working image URL — is tests/e2e/user_contract_test.go.
+func TestUpdateProfileHandler_WritesTheRecordTheConsumerReadsBack(t *testing.T) {
+	const avatarCID = "bafyavatartest"
+	const bannerCID = "bafybannertest"
+
+	mockClient := &mockPDSClient{
+		uploadBlobRef: &blobs.BlobRef{
+			Type:     "blob",
+			Ref:      map[string]string{"$link": avatarCID},
+			MimeType: "image/png",
+			Size:     1000,
+		},
+		putRecordURI: "at://did:plc:testuser123/social.coves.actor.profile/self",
+		putRecordCID: "bafyreifake",
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	body, _ := json.Marshal(UpdateProfileRequest{
+		DisplayName:    strPtr("Written Through"),
+		Bio:            strPtr("and read back by the consumer"),
+		AvatarBlob:     []byte("fake image data"),
+		AvatarMimeType: "image/png",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	const testDID = "did:plc:testuser123"
+	req = setTestOAuthSession(req, testDID, createTestOAuthSession(testDID))
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	// Where it was written. rkey "self" is not a convention the handler is free
+	// to change: the profile is a singleton record and the consumer, the
+	// backfill path and every other client all address it by that key.
+	assert.Equal(t, "social.coves.actor.profile", mockClient.putRecordCollection)
+	assert.Equal(t, "self", mockClient.putRecordRKey)
+
+	// What was written. Round-tripped through JSON rather than type-asserted,
+	// because JSON is what the PDS stores and what the consumer decodes — a
+	// field with a Go name that marshals to the wrong key would pass a
+	// type-assertion and fail in production.
+	encoded, err := json.Marshal(mockClient.putRecordValue)
+	assert.NoError(t, err)
+	var record map[string]any
+	assert.NoError(t, json.Unmarshal(encoded, &record))
+
+	assert.Equal(t, "social.coves.actor.profile", record["$type"])
+	assert.Equal(t, "Written Through", record["displayName"])
+	assert.Equal(t, "and read back by the consumer", record["description"],
+		"the bio is called `bio` on the request and `description` in the record, and the "+
+			"consumer reads `description` back into the bio column: three names for one field, "+
+			"and this is the only place all three are in scope at once")
+
+	// The blob reference, in the shape jetstream.extractBlobCID insists on:
+	// $type == "blob" and a string at ref.$link. Anything else and the consumer
+	// declines the ref — silently, because a malformed picture is not worth
+	// failing a profile event over.
+	avatar, ok := record["avatar"].(map[string]any)
+	assert.True(t, ok, "the avatar must be an object; a bare CID string is not a blob ref and "+
+		"the consumer would ignore it")
+	assert.Equal(t, "blob", avatar["$type"])
+	assert.Equal(t, "image/png", avatar["mimeType"])
+	ref, ok := avatar["ref"].(map[string]any)
+	assert.True(t, ok, "the blob ref's `ref` must be an object holding $link")
+	assert.Equal(t, avatarCID, ref["$link"],
+		"the record must name the CID the PDS returned from uploadBlob: any other value points "+
+			"at bytes that do not exist and the image URL 502s")
+
+	// A field the request did not set must be absent, not present and empty.
+	// The consumer treats an ABSENT key as "leave it alone" and an empty string
+	// as "clear it" (handleProfileUpdate builds a nil pointer for the former),
+	// so an empty banner emitted here would wipe a banner the user still has.
+	_, hasBanner := record["banner"]
+	assert.False(t, hasBanner,
+		"a request that did not touch the banner emitted a banner key: the consumer reads an "+
+			"empty value as an instruction to clear the stored one")
+	assert.NotContains(t, record, bannerCID)
 }

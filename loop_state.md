@@ -50,8 +50,8 @@ Stop the loop when every task is done, or on any blocked task.
 | 11 | Contracts: community (community.profile ingestion + API) — strangler: behavior inventory of community_e2e_test.go (1820 LOC) → down-tier T1s → contract → delete old | 4 | S | done | (see git log) | TEMPLATE PROVEN. 22-behavior inventory; 2,168 LOC deleted, +14 net tests; 2/9 serial firehose files gone. Ingestion contract SELF-REGISTERS the community's PDS repo (stronger than arming — no sync write exists; consumer has NO must-know-first gate, verified). FOUND+FILED prod defect: unverifiable handles → handle.invalid UNIQUE squat → federated communities silently dropped; second symptom pds_url permanently empty → BridgeTrust denies bridged votes (issue extended). STANDING TIER LIMIT (spec §3.4b amended): sealed sessions mint only in browser OAuth — T2 covers auth boundary + reads; authenticated writes proven at T1; test-only mint = phase-5 pre-work. Review: Codex 1 high (update-handler boundary died — restored w/ 8 tests) + Opus audit 17/20 equal-or-stronger, 3 gaps all closed. make ci GREEN ×2 3496/0 @2:12 |
 | 12 | Contracts: post (community.post) + post_delete + decompose post god-files | 4 | S | done | (see git log) | post_e2e (662) + post_delete (841) deleted, net −1402 w/ more coverage; serial firehose files 7→5. TWO MORE PROD DEFECTS FILED (tally 4): p1 deleted posts served in full by getComments to anon callers forever (repo missing deleted_at filter); p3 DeletePost idempotency branch unreachable (PDS 400 ≠ ErrNotFound — pinned w/ loud require.Errorf). Spoof negative REWRITTEN intra-repo after Opus traced indigo parallel scheduler (cross-repo FIFO doesn't exist; 5s hold was the real bound; relay would break silently) — mutation-tested. Consumer gates pinned: author-not-found=transient+replay-accepted. Journey flake (2/6 gates, note-[C] starvation) mitigated: 60s/75s ordered waits + starvation-vs-dead tally; real fix task 16. make ci GREEN 3496/0 @2:21 |
 | 13 | Contracts: comment (community.comment) + comment god-files (1821+1443+1229+999 LOC) | 4 | S | done | (see git log) | comment_e2e (1120) deleted; 4,263 LOC of T1-shaped satellites KEPT deliberately (right call — §3.4 rule 3 breadth). JOURNEY PULLED FORWARD from task 16: worker bisected its own deletion breaking the journey deterministically (serial tests were accidental SPACERS vs the note-[C] storm) → rebuilt as the §3.4 rule-5 saga in tests/e2e (3 actors, 3 repos, 4 read paths; old file was 2-real-of-11-steps, SQL-insert fallbacks, fakecid). Serial firehose files 5→3; ONE subscriber helper left tree-wide (vote_e2e — task 14 kills it). Comment consumer has NO must-exist gates (measured); comments live in AUTHOR repo; delete = placeholder. getComments capped 20/min → withReadCadence(2.5s) + FreshReadQuota + Holds@1s. Defect #5 filed (malformed URI → 500). Reviews: kill-list EMPTY. make ci GREEN ×2 3532/0 @~2:45; e2e 56/0/0; audit 473 |
-| 14 | Contracts: vote (feed.vote) + user (actor.profile incl. avatar blob path) + subscription (community.subscription) | 4 | S | in-progress | | vote re-tap idempotency invariant |
-| 15 | Contracts: blocks (actor.block + community.block) + aggregators (aggregator.service + aggregator.authorization) | 4 | S | pending | | collections revision-1 inventory MISSED — see spec §3.4a |
+| 14 | Contracts: vote (feed.vote) + user (actor.profile incl. avatar blob path) + subscription (community.subscription) | 4 | S | review | | THE LAST HAND-ROLLED SUBSCRIBER IS DEAD (tree-wide dialer count = 1, and it is production connector.go). 5 files / 3,908 LOC deleted; 3 contracts + community-avatar step added; 5 T1/T0 files gained. TWO DEFECTS FILED (tally 7), both spike-confirmed: #6 vote-before-subject is lost AND its later delete SUBTRACTS a real vote (unbounded downward drift, floored at 0); #7 same-rkey putRecord vote flip silently ignored (consumer handles create/delete only) — third-party/federated clients only, our own client does delete+create. Both PINNED, not asserted-as-intended. make ci GREEN x2 3547/0 @3:55; e2e 68/0/0 x2 kept-stack; audit 473->403. REVIEW BATCH (6 items) applied: item-6 verdict CODEX RIGHT (fake's two slices could not express ordering and the comment claimed they did — unified op log, mutation-proven); vacuous Hold dropped, p1 pin hardened with a second Holds + issue names in both pins; GetBinary added to testkit (Get accepts any 2xx and discards the body — a 204 passed the must-200 claim); community banner + nil->value transition + blob write-forward test, which FOUND the create/update indexing asymmetry. Post-review: make ci GREEN 3549/0 @4:06; e2e 68/0/0 |
+| 15 | Contracts: blocks (actor.block + community.block) + aggregators (aggregator.service + aggregator.authorization) | 4 | S | in-progress | | collections revision-1 inventory MISSED — see spec §3.4a |
 | 16 | Reliability suite (§3.4c: cursor resume, replay-once, rev-gate no-resurrection via Holds, dead-letter, 2-feed overlap) + user_journey rebuild + rm -rf tests/integration | 4 ⛩ | F | pending | | FULL PANEL on the whole Phase-4 output |
 | 17 | Unit-coverage debt A: communities, votes, identity (repo tests for their repos too) | 5 | S | pending | | behavior matrices at T0, repo seams at T1 |
 | 18 | Unit-coverage debt B: routes, timeline, discover, communityFeeds + remaining untested repos | 5 | S | pending | | |
@@ -299,3 +299,90 @@ Stop the loop when every task is done, or on any blocked task.
   serial files re-packs the schedule — prefer deleting the fragile
   subscriber over re-spacing (proven). Saga leaves ~1 dead letter/run
   too (hijack) — task 16 dead-letter accounting.
+- **From task 14 (for task 15-16)**: THE SUBSCRIBER ERA IS OVER — no test in
+  the tree dials a websocket; `test-audit.sh`'s dialer count of 1 is
+  production `connector.go` and will never reach 0 (task 20 must exempt it,
+  not chase it). SPIKE FINDINGS worth not re-deriving: vote re-tap has THREE
+  distinct paths keyed on three different things (same-rkey update = dropped
+  by HandleEvent's switch; duplicate delivery = rev gate + ON CONFLICT(uri),
+  reachable only from task 16's reliability suite; new-rkey re-tap = the
+  (voter_did, subject_uri) stale-vote cleanup — this last one is what a real
+  client produces, because votes.voteService always deletes and re-creates
+  under a fresh TID). Deleting an already-superseded vote does NOT
+  double-decrement. AVATAR OBSERVABLE: getProfile/community.get serve a
+  HYDRATED URL, never the CID — `{proxy}/img/{preset}/plain/{did}/{cid}` with
+  IMAGE_PROXY_ENABLED=true in .env.ci, the PDS' com.atproto.sync.getBlob URL
+  without it. Assert `Contains(url, cid)`, which holds in both modes; pinning
+  either shape makes the contract a test of one config value. A bogus CID on
+  that path is a 502, so `AppView.Get(path, nil)` is a real end-to-end blob
+  assertion. actor.profile DELETE clears the fields and keeps the row
+  (getProfile still 200s) — the OPPOSITE of community.profile, which hard-
+  deletes and 404s; the two look alike from outside and getting it backwards
+  costs a debugging session. Profile updates are PARTIAL: an absent key means
+  "leave alone", not "clear", so a record is not a snapshot. SUBSCRIPTIONS
+  have two observables that drift apart on purpose — community.get's
+  subscriberCount is a STORED COLUMN, actor.getProfile's stats.communityCount
+  is a live COUNT(*); assert both, it is the cheapest detector for a missed
+  increment. Duplicate subscribe under a NEW rkey re-points record_uri and
+  does NOT increment (ON CONFLICT keys on (user_did, community_did), decided
+  by `xmax = 0`). Subscription FAN-OUT is unreachable at T2: getTimeline is
+  the only endpoint that joins posts to subscriptions and it is RequireAuth;
+  getDiscover explicitly does not filter, communityFeed filters by community,
+  community.list?subscribed=true 401s. Documented in the contract, T1 covers
+  it (timeline_test.go), Phase-5 mint unlocks it. DEAD LETTERS for task 16's
+  accounting: an unknown-community subscribe and an invalid-direction vote
+  each leave ONE retired dead letter (permanent → redrive budget exhausted at
+  birth); neither is in a contract, deliberately — direction validation is
+  already at T1 (error_taxonomy_test.go:113) and was not worth a per-run DLQ
+  row. Steady state after a full tier run is communities/posts/comments = 1
+  each, users/aggregators/votes = 0. SCOPE JUDGMENTS: comment_vote_test.go
+  KEPT as T1 (task-13 rule-3 breadth — it holds the ONLY real-SQL coverage of
+  GetVoteStateForComments; its one vacuous `if len(...)>0` subtest was
+  de-vacuumed); community_avatar_e2e_test.go handled HERE not task 15 (its
+  create-path DB assertions were a §3.4 false-pass — CreateCommunity writes
+  Postgres synchronously — and splitting the file three ways across tasks
+  would have left the coverage in limbo). COST: the e2e tier went 65s → 131s;
+  TestVoteIngestion alone is 29s, of which 25s is five Holds windows, and
+  every one of them is load-bearing (a "did not double" claim cannot be made
+  by an eventually-check). make ci 2:45 → 3:55, all of it here.
+- **From task 14's review (rules tasks 15-16 inherit)**: PIN PLACEMENT is now a
+  written rule in tests/e2e/contracts_test.go's package doc, not a per-task
+  judgment — a pin MAY sit inside a marked contract provided the contract still
+  passes once the defect is fixed (vote's same-rkey pin qualifies; the
+  out-of-order one does not and lives in its own unmarked function). Two
+  obligations either way: name the ISSUE FILE in the assertion message so a red
+  run says which defect got fixed, and pin the wrong-but-current value with
+  HOLDS as well as Await — an Await-only pin is satisfied by an ASYNCHRONOUS
+  fix (reconciliation pass, lazy repair) on its way to the right answer and
+  then passes forever against corrected code. NORMALIZATION HAZARD, worth a
+  standing check: two production comments asserted the opposite of what the p1
+  pin proves ("the Jetstream consumer handles orphaned votes correctly",
+  "zero rows is OK") — a pin whose subject is documented as correct behaviour
+  will be "cleaned up" by the next reader, so replacing those comments with
+  KNOWN DEFECT notes naming the issue file is part of filing, not optional
+  polish. TESTKIT: XRPCClient.Get asserts only 2xx and DISCARDS the body, so it
+  cannot support a "this URL serves an image" claim (a 204 passes) — use
+  GetBinary, which returns status + content-type + bounded body; the image
+  assertions want 200 AND non-empty AND image/*, and deliberately do NOT
+  compare bytes because the proxy re-encodes per preset. FOUND WHILE FIXING:
+  the communities test harness passed a nil blobService, invisible until a test
+  uploaded an image (the service fails closed, "blob service not configured");
+  it is now the real one, as cmd/server wires it. And CreateCommunity writes
+  the AppView row SYNCHRONOUSLY while UpdateCommunity does NOT — asserted
+  explicitly in service_provisioning_test.go, because if update ever starts
+  indexing synchronously the community contract's update step silently becomes
+  a false pass.
+- **From task 14 (for tasks 15-16, 20)**: MARKER-PIN RULE in
+  contracts_test.go doc: pins may live inside marked contracts iff the
+  contract passes once fixed; pins carry issue IDs + "IF THIS FAILED the
+  defect is FIXED" in assertion strings; production comments adjacent to
+  pinned defects carry KNOWN DEFECT notes (normalization hazard).
+  CreateCommunity indexes synchronously, UpdateCommunity does NOT (by
+  design — it's what makes the update step honest pipeline proof; a
+  tripwire T1 asserts the asymmetry). requireServesImage = host-check +
+  200 + non-empty + image/* via GetBinary (any-2xx Get was a false-200).
+  Dead-letter steady state after full tier: communities/posts/comments=1
+  each, users/aggregators/votes=0 (task 16 accounting). e2e tier 131s,
+  gate ~4:00 — watch at task 15 but §3.1 budget fine. Task 20: audit
+  dialer count floor is 1 (production connector.go:318 — exempt, don't
+  chase). oauth UpdateHandleByDID + expires_at now covered (first time).

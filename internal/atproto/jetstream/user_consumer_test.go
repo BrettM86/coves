@@ -7,6 +7,9 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // mockUserService is a test double for users.UserService
@@ -843,5 +846,120 @@ func TestExtractBlobCID(t *testing.T) {
 		if cid != "" {
 			t.Errorf("Expected empty CID for non-map ref, got '%s'", cid)
 		}
+	})
+}
+
+// fakeSessionHandleUpdater records the OAuth-session fan-out the identity path
+// triggers, and can fail on demand.
+type fakeSessionHandleUpdater struct {
+	calls []struct{ did, handle string }
+	err   error
+}
+
+func (f *fakeSessionHandleUpdater) UpdateHandleByDID(_ context.Context, did, newHandle string) (int64, error) {
+	f.calls = append(f.calls, struct{ did, handle string }{did, newHandle})
+	if f.err != nil {
+		return 0, f.err
+	}
+	return int64(len(f.calls)), nil
+}
+
+// TestUserConsumer_IdentityEvent_SyncsSessionHandles covers the consumer's half
+// of the handle-rename fan-out: that an identity event for a known user whose
+// handle really changed reaches SessionHandleUpdater, and that nothing else
+// does.
+//
+// The store's half — which sessions the fan-out touches — is
+// TestPostgresOAuthStore_UpdateHandleByDID in internal/atproto/oauth. Together
+// they replace tests/integration/oauth_session_handle_sync_test.go, which
+// proved both against real Postgres in 370 lines and paid for a live websocket
+// dial and a vacuous three-t.Log "E2E" test function to do it.
+//
+// Kept as a unit test rather than folded into the store's: the interesting
+// cases here are the ones where the updater must NOT be called, and those are
+// invisible when the collaborator is real.
+func TestUserConsumer_IdentityEvent_SyncsSessionHandles(t *testing.T) {
+	const did = "did:plc:identitysyncuser"
+
+	identityEvent := func(handle string) *JetstreamEvent {
+		return &JetstreamEvent{Kind: "identity", Did: did, Identity: &IdentityEvent{Did: did, Handle: handle}}
+	}
+
+	newConsumer := func(currentHandle string) (*UserEventConsumer, *fakeSessionHandleUpdater, *mockUserService) {
+		service := newMockUserService()
+		service.users[did] = &users.User{DID: did, Handle: currentHandle}
+		updater := &fakeSessionHandleUpdater{}
+		return NewUserEventConsumer(service, &mockIdentityResolverForUser{},
+			WithSessionHandleUpdater(updater)), updater, service
+	}
+
+	t.Run("a real rename fans out to the sessions", func(t *testing.T) {
+		consumer, updater, _ := newConsumer("old.example.com")
+
+		require.NoError(t, consumer.HandleEvent(context.Background(), identityEvent("new.example.com")))
+
+		require.Len(t, updater.calls, 1,
+			"a handle change must reach the OAuth sessions, or every device the user is signed "+
+				"in on keeps showing the old handle until its session expires")
+		assert.Equal(t, did, updater.calls[0].did)
+		assert.Equal(t, "new.example.com", updater.calls[0].handle,
+			"the sessions must be given the NEW handle, not the one they already hold")
+	})
+
+	t.Run("an unchanged handle does not touch the sessions", func(t *testing.T) {
+		// Identity events are re-emitted for reasons other than renames (a
+		// rotation key change, a PDS migration), and they arrive on an
+		// unfiltered stream. Writing every session row on each of them would be
+		// a steady stream of pointless UPDATEs against a hot table.
+		consumer, updater, _ := newConsumer("same.example.com")
+
+		require.NoError(t, consumer.HandleEvent(context.Background(), identityEvent("same.example.com")))
+		assert.Empty(t, updater.calls)
+	})
+
+	t.Run("an unknown user does not touch the sessions", func(t *testing.T) {
+		// The consumer indexes only identities it has seen ("this prevents us
+		// from indexing millions of Bluesky users we don't care about"), and the
+		// session store cannot hold a session for one of them anyway.
+		service := newMockUserService()
+		updater := &fakeSessionHandleUpdater{}
+		consumer := NewUserEventConsumer(service, &mockIdentityResolverForUser{},
+			WithSessionHandleUpdater(updater))
+
+		require.NoError(t, consumer.HandleEvent(context.Background(),
+			&JetstreamEvent{Kind: "identity", Did: "did:plc:strangernobodyknows",
+				Identity: &IdentityEvent{Did: "did:plc:strangernobodyknows", Handle: "stranger.example.com"}}))
+		assert.Empty(t, updater.calls)
+	})
+
+	t.Run("a failed fan-out is logged, not returned", func(t *testing.T) {
+		// PINS A DELIBERATE SILENT FAILURE, which is worth doing precisely
+		// because silent failures are usually bugs and this one is a choice.
+		//
+		// The users row has already been updated and the identity cache already
+		// purged by the time the fan-out runs. Returning the error here would
+		// dead-letter the event and, on redrive, re-run those two steps for a
+		// rename that has already been applied — to fix a stale string in a
+		// session row that expires on its own. The cost of the failure is a user
+		// seeing their old handle in one client; the cost of treating it as
+		// fatal is a consumer that stops.
+		consumer, updater, _ := newConsumer("old.example.com")
+		updater.err = errors.New("the session store is unreachable")
+
+		require.NoError(t, consumer.HandleEvent(context.Background(), identityEvent("new.example.com")),
+			"a session-store failure must not fail the identity event: the handle change itself "+
+				"has already been applied and a redrive would only repeat it")
+		require.Len(t, updater.calls, 1, "the fan-out was attempted")
+	})
+
+	t.Run("a consumer with no updater configured does not panic", func(t *testing.T) {
+		// The option is optional, and a nil interface value dereferenced here
+		// would take down the whole users consumer on the first rename anybody
+		// performed.
+		service := newMockUserService()
+		service.users[did] = &users.User{DID: did, Handle: "old.example.com"}
+		consumer := NewUserEventConsumer(service, &mockIdentityResolverForUser{})
+
+		require.NoError(t, consumer.HandleEvent(context.Background(), identityEvent("new.example.com")))
 	})
 }

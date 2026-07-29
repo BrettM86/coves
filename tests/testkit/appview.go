@@ -333,6 +333,81 @@ func (c *XRPCClient) Get(ctx context.Context, path string, out any) error {
 	return c.do(req, path, out)
 }
 
+// BinaryResponse is a non-JSON response: what was served, and enough about it
+// to assert the service really served content rather than merely not failing.
+type BinaryResponse struct {
+	Status      int
+	ContentType string
+	Body        []byte
+}
+
+// GetBinary fetches a plain path and returns the raw response.
+//
+// # WHY THIS EXISTS ALONGSIDE Get
+//
+// Get answers only "did this 2xx", and discards the body. That is the right
+// shape for a health probe and the WRONG shape for asserting that an image URL
+// serves an image: a 204 with no body satisfies "did not fail" while serving
+// nothing at all, and so does a 200 whose body is an empty byte slice or an
+// HTML error page the upstream returned with the wrong status. An image path is
+// exactly where those distinctions matter, because the failure being guarded
+// against — a proxy that cannot reach the blob store — is upstream of the
+// status code the proxy chooses to report.
+//
+// So this returns the three facts a caller needs to make the real claim
+// (status, content type, bytes) rather than folding them into a bool. The body
+// is bounded: a test asserting an image is non-empty does not need to buffer an
+// arbitrarily large one, and an unbounded read here would make a runaway
+// response a hang instead of a failure.
+//
+// Unlike Get, a non-2xx is returned as a StatusError, so callers keep the
+// familiar testkit.IsStatus handling.
+func (c *XRPCClient) GetBinary(ctx context.Context, path string) (BinaryResponse, error) {
+	if !strings.HasPrefix(path, "/") {
+		return BinaryResponse{}, fmt.Errorf("testkit: path %q must start with \"/\"", path)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
+	if err != nil {
+		return BinaryResponse{}, fmt.Errorf("%s: building request: %w", path, err)
+	}
+	for name, values := range c.Headers {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
+	if c.Bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Bearer)
+	}
+	// Deliberately NOT "application/json": this path serves bytes, and a server
+	// content-negotiating on the header would be handed the wrong answer.
+	req.Header.Set("Accept", "*/*")
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return BinaryResponse{}, fmt.Errorf("%s: %w", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return BinaryResponse{}, newStatusError(path, resp)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBinaryBody))
+	if err != nil {
+		return BinaryResponse{}, fmt.Errorf("%s: reading %d response: %w", path, resp.StatusCode, err)
+	}
+	return BinaryResponse{
+		Status:      resp.StatusCode,
+		ContentType: resp.Header.Get("Content-Type"),
+		Body:        body,
+	}, nil
+}
+
+// maxBinaryBody bounds how much of a binary response GetBinary buffers. Test
+// fixtures are a few hundred bytes; this is generous enough that a truncation
+// means something is wrong, and small enough that a runaway response fails
+// rather than exhausts memory.
+const maxBinaryBody = 8 << 20
+
 // Health calls the service's _health endpoint.
 //
 // It asserts only that the service answered 2xx. Both the AppView and the PDS

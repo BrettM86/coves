@@ -19,17 +19,6 @@
 # Task 20 empties this file and flips cmd/contract-manifest to
 # -allow-pending=false, after which "has a contract" is the only passing state.
 
-social.coves.feed.vote               # task 14: vote ingestion contract (the re-tap idempotency invariant lives here)
-#
-# social.coves.actor.profile carries a trap worth restating where task 14 will
-# read it: users.maybeBackfillProfile fetches the profile record straight from
-# the PDS in a detached goroutine at signup, so the FIRST profile a contract
-# writes can reach the AppView without touching the firehose. Backfill only
-# touches a completely empty profile, so the contract must make the row
-# non-empty first and assert on a SECOND update. TestPipelineSmoke shows the
-# shape; see the RECONCILIATION PATHS hazard in tests/e2e/contracts_test.go.
-social.coves.actor.profile           # task 14: user ingestion contract, including the avatar blob path; MUST assert a second update on a non-empty profile (backfill false-pass)
-social.coves.community.subscription  # task 14: subscription ingestion contract
 social.coves.actor.block             # task 15: user-block ingestion contract
 social.coves.community.block         # task 15: community-block ingestion contract
 social.coves.aggregator.service      # task 15: aggregator service-record ingestion contract

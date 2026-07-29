@@ -490,3 +490,119 @@ func TestPostgresOAuthStore_MultipleSessions(t *testing.T) {
 	_, err = store.GetSession(ctx, did, "mobile_app")
 	assert.NoError(t, err)
 }
+
+// TestPostgresOAuthStore_UpdateHandleByDID covers the fan-out that keeps signed-in
+// sessions honest when a user renames themselves.
+//
+// # WHY IT MATTERS AND WHY IT HAD NO TEST
+//
+// A handle is mutable. When one changes, the identity event reaches the user
+// consumer, which updates the users row and then calls this method so that
+// every device the person is signed in on stops showing the old name. Nothing
+// else revisits a session row, so a session missed here shows the stale handle
+// until it expires — days, on the default TTL.
+//
+// UpdateHandleByDID had zero direct coverage before this. What coverage existed
+// was tests/integration/oauth_session_handle_sync_test.go, which drove the
+// consumer and then read the column back with raw SQL; it is deleted with this
+// commit, having also carried a websocket-dialling second test function whose
+// entire body was three t.Logs. The two behaviours worth keeping from it are
+// this test (the store's fan-out) and the consumer's call into it
+// (TestUserConsumer_IdentityEvent_SyncsSessionHandles, in
+// internal/atproto/jetstream).
+//
+// The three properties are all about SCOPE, because a fan-out's failure modes
+// are all "too many" or "too few": every live session for this DID, no session
+// belonging to anyone else, and — the clause nothing tested and the one a
+// refactor would most easily drop — no EXPIRED session, which the query
+// excludes with `expires_at > NOW()`.
+func TestPostgresOAuthStore_UpdateHandleByDID(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+
+	// The concrete type, because UpdateHandleByDID is ours rather than part of
+	// indigo's ClientAuthStore interface: it exists for the identity-event path
+	// and is reached through jetstream.SessionHandleUpdater, not through the
+	// OAuth machinery.
+	store := NewPostgresOAuthStore(db, 0).(*PostgresOAuthStore)
+	ctx := context.Background()
+
+	renamed, err := syntax.ParseDID("did:plc:handlesyncrenamed")
+	require.NoError(t, err)
+	bystander, err := syntax.ParseDID("did:plc:handlesyncbystandr")
+	require.NoError(t, err)
+
+	session := func(did syntax.DID, id string) oauth.ClientSessionData {
+		return oauth.ClientSessionData{
+			AccountDID:              did,
+			SessionID:               id,
+			HostURL:                 "https://pds.example.com",
+			AuthServerURL:           "https://auth.example.com",
+			Scopes:                  []string{"atproto"},
+			AccessToken:             "at_" + id,
+			RefreshToken:            "rt_" + id,
+			DPoPPrivateKeyMultibase: "z6MkpTHR8VNsBxYAAWHut2Geadd9jSwuBV8xRoAnwWsdvktH",
+		}
+	}
+
+	// Three live sessions for the renamed account — a browser, a phone and a
+	// tablet is the ordinary case, and "all of them" is the whole point.
+	for _, id := range []string{"browser", "phone", "tablet"} {
+		require.NoError(t, store.SaveSession(ctx, session(renamed, id)))
+	}
+	// One that has already lapsed. SaveSession always writes a future expiry, so
+	// it is backdated directly: the store has no API for creating an expired
+	// session, and this clause is only observable against one.
+	require.NoError(t, store.SaveSession(ctx, session(renamed, "lapsed")))
+	_, err = db.ExecContext(ctx,
+		`UPDATE oauth_sessions SET expires_at = NOW() - INTERVAL '1 hour' WHERE did = $1 AND session_id = $2`,
+		renamed.String(), "lapsed")
+	require.NoError(t, err)
+
+	// And somebody else, signed in throughout.
+	require.NoError(t, store.SaveSession(ctx, session(bystander, "browser")))
+
+	const newHandle = "renamed.example.com"
+	updated, err := store.UpdateHandleByDID(ctx, renamed.String(), newHandle)
+	require.NoError(t, err)
+	assert.EqualValues(t, 3, updated,
+		"every LIVE session for the renamed DID must be updated, and only those: three live, "+
+			"one lapsed, one belonging to somebody else")
+
+	handleOf := func(did syntax.DID, sessionID string) string {
+		t.Helper()
+		var handle string
+		require.NoError(t, db.QueryRowContext(ctx,
+			`SELECT handle FROM oauth_sessions WHERE did = $1 AND session_id = $2`,
+			did.String(), sessionID).Scan(&handle))
+		return handle
+	}
+
+	for _, id := range []string{"browser", "phone", "tablet"} {
+		assert.Equalf(t, newHandle, handleOf(renamed, id),
+			"the %s session still shows the old handle: a device signed in at rename time keeps "+
+				"displaying the previous name until its session expires", id)
+	}
+	assert.NotEqual(t, newHandle, handleOf(renamed, "lapsed"),
+		"an expired session was rewritten. Harmless today, but the query's expires_at clause is "+
+			"what keeps this statement's cost proportional to a user's LIVE sessions rather than "+
+			"to every session they have ever held")
+	assert.NotEqual(t, newHandle, handleOf(bystander, "browser"),
+		"another account's session took the renamed account's handle, which is a session-integrity "+
+			"failure and not merely a cosmetic one")
+}
+
+func TestPostgresOAuthStore_UpdateHandleByDID_NoSessions(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+
+	// A rename for someone who is not signed in anywhere. This is the common
+	// case in production — most identity events are for accounts with no
+	// session here at all — so it must be a cheap zero rather than an error the
+	// consumer has to decide how to treat.
+	store := NewPostgresOAuthStore(db, 0).(*PostgresOAuthStore)
+	updated, err := store.UpdateHandleByDID(
+		context.Background(), "did:plc:handlesyncnosession", "nobody.example.com")
+	require.NoError(t, err)
+	assert.EqualValues(t, 0, updated)
+}
