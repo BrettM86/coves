@@ -1,7 +1,9 @@
 # Coves Test Architecture
 
 **Status: PROPOSED — this document is the spec for the test-suite refactor on branch `worktree-test-refactor`.**
-It replaces `TESTING_SUMMARY.md` and `docs/E2E_TESTING.md`, both of which describe a system that no longer exists (wrong ports, references to files that were never written, no mention of the real gate `make ci`). Delete both when Phase 6 lands.
+Revision 2: incorporates an external design review (OpenAI Codex, `gpt-5.6-sol`, 2026-07-28) which surfaced several structural blind spots — most importantly that the original black-box E2E design could pass with a dead firehose for synchronously-indexed domains (§3.4), that per-package `TestMain`s race on template-DB creation (§3.3), and that the phase ordering broke its own green-boundary invariant (§4).
+
+This document replaces `TESTING_SUMMARY.md` and `docs/E2E_TESTING.md`, both of which describe a system that no longer exists (wrong ports, references to files that were never written, no mention of the real gate `make ci`). Delete both when Phase 6 lands.
 
 ---
 
@@ -17,13 +19,13 @@ We work agentically. The test suite is the thing that lets an agent (or a human)
 
 ## 2. Where we are (July 2026 survey)
 
-The full survey lives in the PR description for this branch; the load-bearing facts:
+The full survey lives in the PR description for this branch. Counts below are approximate and were sampled at spec-writing time; the migration's real accounting is the violation audit script (§3.6), not this prose. The load-bearing facts:
 
-- **~84k LOC of tests** (41k in `tests/integration` alone), **zero** `t.Parallel()`, **zero** `require.Eventually`, **zero** build tags. The only tier selector is `-short`, which silently skips ~161 guarded sites — `make test` runs almost none of the integration suite while printing green.
+- **~84k LOC of tests** (41k in `tests/integration` alone), essentially no `t.Parallel()`, essentially no `require.Eventually`, **zero** build tags. The only tier selector is `-short`, which silently skips ~161 guarded sites — `make test` runs almost none of the integration suite while printing green.
 - **Taxonomy is inverted.** `tests/e2e/` contains two pure unit tests of the rate limiter (`httptest.NewRecorder`, no infra); `tests/integration/` contains the most end-to-end test in the repo (`user_journey_e2e_test.go`). 15 files named `*_e2e_test.go` live in `tests/integration`. Directory, filename, and function name each imply a different tier and none binds to what the test does.
-- **Global mutable DB state.** `setupTestDB` (3 divergent copies) is called 222 times across 50 files; each call re-runs migrations and issues 6 unscoped `DELETE FROM`s against the one shared database on :5434. This is why `-p 1` is mandatory and parallelism is impossible. 109 more ad-hoc `DELETE FROM`s live inside test bodies.
-- **~700 LOC of copy-pasted firehose plumbing.** 10 near-identical `subscribeToJetstream*` functions differing only in consumer type. The one correct anti-flake primitive — capture the Jetstream cursor *before* the PDS write, then subscribe from that cursor (`jetstreamCursorNow`/`withJetstreamCursor`, `helpers.go:152-177`) — is used at 1 of 29 dial sites. The other 28 paper over the subscribe-after-write race with `time.Sleep(500ms)` (22 sites of exactly that constant).
-- **The consumer wiring is never tested.** Every "E2E" test instantiates its *own* consumer and feeds it events; `cmd/server`'s actual consumer wiring runs in production only. The single test that goes through a live AppView (`tests/e2e/user_signup_test.go`) exercises a path that bypasses Jetstream.
+- **Global mutable DB state.** `setupTestDB` (divergent copies) is called 222 times across 50 files; each call re-runs migrations and issues 6 unscoped `DELETE FROM`s against the one shared database on :5434. This is why `-p 1` is mandatory and parallelism is impossible. 109 more ad-hoc `DELETE FROM`s live inside test bodies.
+- **~700 LOC of copy-pasted firehose plumbing.** 10 near-identical `subscribeToJetstream*` functions differing only in consumer type. The one correct anti-flake primitive — capture the Jetstream cursor *before* the PDS write, then subscribe from that cursor (`jetstreamCursorNow`/`withJetstreamCursor`, `helpers.go:152-177`) — is used at 1 of 29 dial sites. The other 28 paper over the subscribe-after-write race with `time.Sleep(500ms)`.
+- **The consumer wiring is never tested.** Every "E2E" test instantiates its *own* consumer and feeds it events; `cmd/server`'s actual consumer wiring runs in production only. Worse (external-review catch): several domains index **synchronously** on the client path — signup writes users directly, community creation persists to the AppView DB in the same request (`internal/core/communities/service.go`, "the Jetstream consumer will eventually index … but we must store now") — so "write via endpoint, read via endpoint" passes even with the firehose dead. Proving the pipeline requires writes the AppView did *not* see (§3.4).
 - **Coverage is inverted relative to risk.** `internal/core/communities` (7 src files), `internal/core/votes` (6), `internal/atproto/identity` (7), `internal/api/routes` (17), `timeline`, `discover`, `communityFeeds`: **zero unit tests** — verified only through the slowest, most-skipped tier. `internal/db/postgres`: 16 repos, 3 test files.
 - **The good news:** the hermetic CI harness (`make ci` → `scripts/ci.sh` → `docker-compose.ci.yml` → `scripts/ci-runner.sh` → `cmd/ci-report` + `tests/ci/allowed_skips.txt`) is the highest-quality artifact in the tree: hermetic stack, skip-inversion, staleness enforcement, mandatory skip reasons. The refactor builds *on* it, not around it.
 
@@ -35,14 +37,15 @@ The full survey lives in the PR description for this branch; the load-bearing fa
 |---|---|---|---|---|---|
 | **T0 Unit** | *(none)* | in-package (`internal/…`, `cmd/…`) | nothing out-of-process | < 60 s total | yes, default |
 | **T1 Integration** | `//go:build integration` | in-package, next to the code it tests | Postgres only | < 3 min total | yes (see 3.3) |
-| **T2 Pipeline (E2E)** | `//go:build e2e` | `tests/e2e/` | full hermetic stack incl. running AppView | < 10 min total | per-domain |
+| **T2 Pipeline (E2E)** | `//go:build e2e` | `tests/e2e/` | full hermetic stack incl. running AppView | < 10 min total | **no — serial** (see 3.4) |
 | **T3 Live** | `//go:build live` | `tests/live/` | public internet (Bluesky API, unfurl targets, real PLC) | opt-in only | — |
 
 Rules that give the tiers teeth:
 
 - **Build tags are the only tier mechanism.** `-short`/`testing.Short()` is deleted everywhere. You cannot accidentally run (or accidentally *not* run) a tier.
-- **Missing infrastructure is a FAILURE, not a skip.** If you invoked `-tags integration`, you asked for Postgres; if it's not there, `t.Fatal`. All 34 copy-pasted "PDS not running → t.Skipf" preambles are deleted. The harness (3.3) does one connectivity check in `TestMain` and fails fast with a message that says exactly which `make` target brings the stack up.
-- **`t.Skip` is banned in test bodies.** The only legitimate skips are environmental gates owned by the harness, and every one must appear in `tests/ci/allowed_skips.txt` with a reason or `ci-report` fails the run. The 6 "DEBT — never run" entries in the current allowlist get deleted or implemented in Phase 2 — not carried forward.
+- **Tags classify files, so files must be single-tier.** Several current files mix tiers in one file (`identity_resolution_test.go`: DB cache tests + live-PLC tests; `bluesky_post_test.go`: pure URL parsing + live Bluesky API + DB; `post_unfurl_test.go`: local fixtures + third-party targets). These get **split by test function** during Phase 2, tracked in a migration manifest — tagging them in place is not possible and pretending otherwise was a hole in revision 1.
+- **Missing infrastructure is a FAILURE, not a skip.** If you invoked `-tags integration`, you asked for Postgres; if it's not there, `t.Fatal`. All 34 copy-pasted "PDS not running → t.Skipf" preambles are deleted. The harness (3.3) does one connectivity check per package setup and fails fast with a message that says exactly which `make` target brings the stack up. The same applies to T3: an explicitly-invoked `make test-live` with missing config **fails**, it does not skip — skips are for the merge gate, and `live` is never on the merge path.
+- **`t.Skip` is banned in test bodies.** The only legitimate skips are environmental gates owned by the harness, and every one must appear in `tests/ci/allowed_skips.txt` with a reason or `ci-report` fails the run. The 6 "DEBT — never run" entries in the current allowlist get deleted or implemented in Phase 2 — not carried forward. The 8 allowlisted "defs-only lexicon" subtest skips are fixed at the source in Phase 2: the validator stops *generating* subtests for defs-only lexicon files instead of generating-then-skipping them.
 - **`tests/integration/` and `tests/unit/` are dissolved** by the end of the migration. Repo/service/consumer tests move next to the code they test (T1); pipeline sagas become T2 contracts; the two rate-limiter "e2e" files become T0 tests in `internal/api/middleware`.
 
 ### 3.2 What each tier is *for*
@@ -55,92 +58,104 @@ Rules that give the tiers teeth:
 
 Feed/timeline/discover sorting-and-cursor tests (today's `feed_test.go`, `timeline_test.go`, `discover_test.go`, `comment_query_test.go` — DB-fixture-driven, no PDS) are T1 repo/service tests and move accordingly.
 
-**T2 — the pipeline contract.** See 3.4. One black-box happy-path-plus-key-invariants contract per record type, through the *running* AppView. Narrow and deep, not broad.
+**T2 — the pipeline contracts.** See 3.4. Narrow and deep, not broad: ingestion proof per consumed collection, API contracts per client-facing write surface, plus a small pipeline-reliability suite.
 
 **T3 — reality checks.** Live Bluesky handle resolution, real unfurl targets (YouTube/Reddit/Streamable/Kagi), real PLC. Valuable (real data catches what fixtures don't) but never on the merge path. Run nightly/pre-release via `make test-live`; failures notify, don't block.
 
 ### 3.3 One harness: `tests/testkit`
 
-A single package imported by all tiers. Everything below already exists in embryonic form somewhere in the tree — the harness is mostly consolidation, and it kills the current 3×`setupTestDB` + 10×`subscribeToJetstream*` + 5×image-fixture + 4×PDS-client-factory duplication.
+A single package imported by all tiers. Everything below already exists in embryonic form somewhere in the tree — the harness is mostly consolidation, and it kills the current 3×`setupTestDB` + 10×`subscribeToJetstream*` + 5×image-fixture + 4×PDS-client-factory duplication (the four drifted `*PasswordAuthPDSClientFactory` adapters, both `createPDSAccount` definitions, and the hand-rolled XRPC clients all collapse into `pds.go`).
 
 ```
 tests/testkit/
-  testkit.go      // TestMain helper: env, log silencing, infra fail-fast probe
+  testkit.go      // package setup helper: env, log silencing, infra fail-fast probe
   db.go           // Postgres isolation (below)
   pds.go          // account/session/record helpers (absorbs helpers.go:84-277)
-  firehose.go     // cursor-gated subscribe, ONE generic implementation
+  firehose.go     // cursor-gated subscribe, ONE generic implementation (T1/T3 debugging aid)
   wait.go         // the only wait primitives allowed in tests
-  fixtures.go     // uniqueTestID, community/post/comment/user builders, PNG/JPEG bytes
+  fixtures.go     // UniqueID, PNG/JPEG bytes, generic record builders
   appview.go      // T2 only: XRPC client against the running AppView
 ```
 
-**DB isolation — template-clone-per-test.** `TestMain` (via `testkit.Main`) migrates a template database once (`coves_test_template`). `testkit.DB(t)` executes `CREATE DATABASE … TEMPLATE coves_test_template` with a unique name, returns the pool, and `t.Cleanup` drops it. Cost is ~100–200 ms per test on local NVMe — trivially bought back by what it unlocks:
+**Dependency direction (hard rule, prevents import cycles).** `testkit` imports **no** `internal/core/*` domain package — only infra-level packages (`jetstream` event types, DB driver, migrations). This matters because T1 tests are *in-package*: if `testkit` imported `internal/core/communities`, then `communities`' own test file importing `testkit` would be an import cycle. Domain-specific builders that need domain types live either in the domain's own `_test.go` files or in small leaf `<domain>test` packages — never in the shared kit.
 
-- `t.Parallel()` becomes the default at T0/T1; `-p 1` is deleted from every target.
-- All 222 `setupTestDB` call sites, all 6-way `DELETE FROM` wipes, all 109 in-body `DELETE`s, and every per-file `cleanup*` function are deleted. Tests cannot see each other by construction, so ordering dependencies die at the root instead of being policed by convention.
-- Tests that only read can share `testkit.SharedDB(t)` (template-backed, read-only assertion) if per-test clones ever become the bottleneck; don't build this until measured.
+**DB isolation — template-clone-per-test, harness-provisioned.** Template creation/migration does **not** live in per-package `TestMain`s: `go test ./...` runs each package as a separate binary, several in parallel, and N processes racing to create-and-migrate `coves_test_template` is a built-in flake. Instead:
 
-**Firehose — one generic subscriber, cursor-gated by construction.** The 10 copies differ only in consumer type and collection filter:
+- The **Make/CI harness** provisions the template once before `go test` runs (`make test-integration` and `ci-runner.sh` both call the same `scripts/test-db-prepare.sh`: create template if absent, run migrations, stamp it with a hash of the migrations dir; re-provision on hash mismatch).
+- As a belt-and-suspenders for direct `go test -tags integration ./internal/foo` invocations, `testkit`'s package-setup path takes a **Postgres advisory lock** around a verify-or-provision of the template, so ad-hoc runs are safe too.
+- `testkit.DB(t)` executes `CREATE DATABASE … TEMPLATE coves_test_template` with a sanitized unique name, returns the pool, and `t.Cleanup` force-drops it (`WITH (FORCE)`, so leaked connections can't wedge teardown). Panic-orphaned clones are swept by `test-db-prepare.sh` on the next run (name prefix + age).
+- **Connection budgets are explicit.** Cloned-per-test pools multiply fast: pool size defaults to 2–3 per test DB, `-parallel` is capped by a computed budget (`max_connections` ÷ pool size, with headroom for the AppView), and the CI Postgres sets `max_connections` accordingly. This is configured once in testkit + compose, not per test.
 
-```go
-// Capture cursor FIRST, then write, then Await — the subscribe-after-write
-// race (helpers.go:152-166) is impossible to reintroduce through this API
-// because NewFirehose is the only exported way to get a subscription.
-fh := testkit.NewFirehose(t, testkit.Collections("social.coves.community.post"))
-uri := writePost(t, pds)                       // real PDS write
-ev := fh.Await(t, testkit.MatchURI(uri))       // replays from pre-write cursor; deadline built in
-```
+Cost is ~100–200 ms per test on local NVMe — trivially bought back: all 222 `setupTestDB` call sites, all unscoped `DELETE FROM` wipes, and every per-file `cleanup*` function are deleted; tests cannot see each other by construction.
 
-Internally it keeps the `maxConsecutiveTimeouts` guard and read-deadline handling from the existing copies (the gorilla/websocket panic guard, per `project_firehose_e2e_test_gotchas`), written exactly once. Consumers are *not* threaded through it — T1 consumer tests call `HandleEvent` directly with synthetic events; T2 tests don't touch websockets at all (the real AppView consumes; tests poll the read side).
+**Parallelism is earned, not assumed.** DB isolation removes the *biggest* blocker to `t.Parallel()`, not every blocker: the tree also has ~100 sites of process-global mutation (`t.Setenv` — which Go itself rejects under `t.Parallel()` — plus `os.Setenv`, logger and default-HTTP-client fiddling). Phase 3 therefore audits and classifies these first (inject env/clock/client via testkit instead of mutating globals), enables `t.Parallel()` only on proven-safe tests, and runs the race detector as part of the phase's exit criteria. `-p 1` is deleted at the end of that phase, not the start.
 
-**Waiting — two primitives, everything else is banned:**
+**Firehose helper — T1/T3 scope only.** One generic, cursor-gated subscriber replaces the 10 copies (capture cursor *before* the write, replay from it — the subscribe-after-write race becomes unrepresentable through this API; the gorilla/websocket `maxConsecutiveTimeouts` guard is written exactly once). But note its narrow role: **T2 contracts never dial websockets** — the AppView's own consumers do the consuming (3.4). The helper exists for T1-adjacent consumer plumbing tests and debugging, not as the E2E mechanism.
+
+**Waiting — three primitives, everything else is banned:**
 
 ```go
-testkit.WaitFor(t, 30*time.Second, func() (bool, error) { … })   // poll, 100ms interval
-fh.Await(t, match)                                               // firehose delivery
+testkit.WaitFor(t, timeout, probe)   // eventually-true; poll at 100ms
+testkit.Holds(t, window, probe)      // stays-true: deletes STAY deleted, counts STAY stable
+                                     //   (an eventually-check cannot catch resurrection-by-replay)
+fh.Await(t, match)                   // firehose delivery (T1/debugging scope, see above)
 ```
 
-`time.Sleep` in `*_test.go` fails CI via a lint gate (Phase 1). All 35 sleeps, 39 hand-rolled `select`/`time.After` blocks, and 56 bare retry loops migrate to these.
+Probes return `(done bool, err error)` where a non-nil `err` is **terminal** — a 401 or 500 from a serving endpoint fails immediately with that response attached, instead of being retried into an opaque timeout (agents debugging a timeout with no context is exactly the failure mode this tier exists to avoid). On timeout, `WaitFor` reports the last observation, and in T2 additionally snapshots the AppView's consumer-health endpoint (cursor positions, dead-letter counts) into the failure message.
 
-**Identity — `testkit.UniqueID(t)`** is the only handle/ID generator (base36, atomic counter, ≤18-char PDS-safe — per `feedback_test_handle_length`). The surviving `time.Now().Unix()` handle-collision sites (`user_signup_test.go:69,110,153`, `community_e2e_test.go:177,380` — one inside a loop, guaranteeing same-second collisions) are migrated in Phase 1.
+`time.Sleep` in `*_test.go` fails CI via the lint gate. All sleeps, hand-rolled `select`/`time.After` blocks, and bare retry loops migrate to these.
 
-**Assertions — testify everywhere.** 36 of 57 integration files currently use bare `t.Errorf`. New/touched code uses `require` (fail fast) / `assert` (accumulate); no new bare `t.Errorf`.
+**Identity — `testkit.UniqueID(t)`** is the only handle/ID generator: a per-run random prefix (seeded once per process) + atomic counter, ≤18-char PDS-safe (per the PDS local-label cap). The counter-only design of revision 1 was insufficient: counters reset across processes and local PDS state persists across runs, so two `make test-e2e` invocations in the same second could collide. The surviving `time.Now().Unix()` handle-collision sites (`user_signup_test.go:69,110,153`, `community_e2e_test.go:177,380` — one inside a loop) are migrated in Phase 1. Hermetic-stack runs get fresh PDS volumes; for kept stacks (`COVES_CI_KEEP_STACK`) accumulation is accepted and documented — the run-scoped prefix makes it harmless.
+
+**Assertions — testify everywhere.** New/touched code uses `require` (fail fast) / `assert` (accumulate); no new bare `t.Errorf`.
 
 ### 3.4 The E2E methodology: pipeline contracts
 
-This is the core opinionation and the reason the tier exists. **Every lexicon record type the AppView indexes gets exactly one pipeline contract test**, and that test is *black-box*:
+This is the core opinionation and the reason the tier exists. The external review exposed a fatal flaw in revision 1's "write via endpoint, poll via endpoint" shape: **several domains index synchronously on the client path** (signup writes users directly; community creation persists to the AppView DB in the same request), so a black-box client-path test passes with the firehose completely dead. The tier is therefore split into three explicit contract classes:
+
+**(a) Ingestion contracts — the pipeline proof. One per consumed collection, mandatory.**
 
 ```
-XRPC/HTTP write endpoint (or direct PDS write for federation-path records)
-  → PDS (real)
-  → firehose → Jetstream (real)
-  → THE APPVIEW'S OWN CONSUMERS (the cmd/server wiring, running as a container)
+Record written DIRECTLY to the PDS (bypassing the AppView entirely)
+  → PDS commits → firehose → Jetstream
+  → THE APPVIEW'S OWN CONSUMERS (cmd/server wiring, running as a container)
   → Postgres
   → XRPC serving endpoint, polled with WaitFor until the record appears
+  → destructive steps additionally verified with Holds (deletes STAY deleted)
 ```
 
-The rules:
+Because the AppView never saw the write, firehose delivery is the *only* way the data can appear — a dead consumer cannot false-pass. Shape: create → visible; update → visible; delete → gone *and stays gone*. This is honest **direct-PDS-path** testing, not federation (the record still lives on the one PDS the stack fronts) — true federation-path testing needs a second, independently-addressed PDS and a relay in the hermetic stack, which is Phase 5 scope, and the spec stops calling single-PDS direct writes "federation".
 
-1. **The test never instantiates a consumer and never dials a websocket.** Today's "Strategy B" (test-built consumer fed by a hand-rolled subscriber) tests a consumer object nobody deploys, and leaves `cmd/server/consumers.go` — the code that actually runs in prod — permanently unexercised. At T2 the AppView container does the consuming, exactly as in production, and the test observes via the serving endpoint. This deletes the entire `subscribeToJetstream*` family from the E2E tier.
-2. **One contract per record type, shaped as create → read → update → read → delete → gone**, plus the record's *distinct* pipeline invariants (e.g. votes: idempotent re-tap; comments: thread placement; communities: `hostedBy` security). Steps within a contract are sequential *by design* — eventual consistency is a pipeline, and that's what's under test. That is the only tier where sequential subtests are legitimate.
-3. **Behavioral breadth is out of scope.** "Does `sort=alphabetical` work" (17 of `community_e2e_test.go`'s 20 subtests) is a T1 service/repo test. If a T2 contract fails, the answer to "which layer broke?" should be "the pipeline," not one of 20 endpoint behaviors. This is how `community_e2e_test.go` (1,820 LOC) and `user_journey_e2e_test.go` (1,001 LOC) get decomposed rather than moved.
-4. **Two entry flavors, both required over time:** *client-path* (through the AppView's write endpoints, as the mobile app does) and *federation-path* (record written directly to a PDS the AppView doesn't front, arriving purely via firehose — this is what makes us honest about being an atProto AppView and not a monolith). Start with client-path; add federation-path contracts as Phase 5.
-5. **One cross-domain saga survives**: `user_journey` (signup → community → post → comment → vote → timeline), rebuilt on testkit, as the single "does the whole product hold together" smoke test. Everything else is per-record-type.
+**The contract inventory is generated, not hand-curated.** Revision 1's hand-written list was already wrong (it missed `social.coves.actor.block` and `social.coves.community.block`, and collapsed `aggregator.service`/`aggregator.authorization` — two distinct record types). The source of truth is `jetstream.WantedCollections` (the map in `internal/atproto/jetstream/feeds.go`): a CI check walks every consumed collection and fails if any lacks a `//coves:ingestion-contract <collection>` marker in `tests/e2e/`, or if a marker points at a collection no longer consumed. Adding a collection to a consumer without a contract breaks the build — mechanically, not by review vigilance.
 
-Contract inventory (target: one file each, ~150–300 LOC, in `tests/e2e/`):
-`user`, `community`, `post`, `comment`, `vote`, `subscription`, `userblock`, `community_avatar`/`profile_avatar` (blob path), `aggregator`, plus `journey`. That's ~10 files replacing 15 misnamed `*_e2e_test.go` files and 48 scattered `Test*E2E*` funcs.
+**(b) API contracts — the client-facing surface. One per write endpoint family.**
+
+Client-path through the AppView's XRPC write endpoints, exactly as the mobile app calls them, asserting the *response* and the *synchronous* effects (session issued, record URI returned, synchronously-indexed rows present, blob accepted). These verify what third-party clients experience — including precisely the synchronous-indexing behavior that makes them unsuitable as pipeline proof. Avatars/blob uploads are covered here as steps of the `user` and `community` API contracts (they are blob-path cases of those record types, not record types of their own).
+
+**(c) Pipeline-reliability suite — the failure modes CRUD never touches.**
+
+The production ingestion path has machinery that steady-state contracts cannot exercise: persisted cursors, reconnect-and-replay, rev-gating (stale events must not resurrect or regress records), duplicate delivery, dead-letter capture, multi-feed consumers. One small suite covers it end-to-end: restart the AppView mid-stream and verify cursor resume; write during a Jetstream outage and verify replay indexes exactly once; deliver a stale rev after a delete and verify no resurrection (`Holds`); poison a record and verify dead-letter capture + consumer health reporting. CI's single self-feed topology differs from prod's multi-feed setup, so this suite also runs one overlapping two-feed configuration to exercise the rev-gating overlap path.
+
+Rules that hold across all three classes:
+
+1. **T2 tests never instantiate consumers and never dial websockets.** The AppView container consumes, exactly as deployed; tests observe via serving endpoints (plus the consumer-health endpoint for reliability assertions). This deletes the entire `subscribeToJetstream*` family from the E2E tier and finally exercises `cmd/server`'s wiring.
+2. **T2 runs serially.** All contracts share one AppView, one `coves_dev` DB, one PDS, one PLC, one cursor stream — template-cloning isolates T1, not this tier. ~10–15 serial contracts fit the 10-minute budget; if it ever grows past that, the answer is stack-sharding, not interleaving writers into a shared eventually-consistent namespace. All identities are run-scoped via `UniqueID`.
+3. **Behavioral breadth is out of scope.** "Does `sort=alphabetical` work" (17 of `community_e2e_test.go`'s 20 subtests) is a T1 service/repo test. If a T2 contract fails, the answer to "which layer broke?" should be "the pipeline," not one of 20 endpoint behaviors. This is how the 1,820-LOC and 1,001-LOC god-files get decomposed rather than moved.
+4. **Sequential steps within a contract are legitimate here and only here** — eventual consistency is a pipeline, and the pipeline is what's under test.
+5. **One cross-domain saga survives**: `user_journey` (signup → community → post → comment → vote → timeline), rebuilt on testkit, as the single "does the whole product hold together" smoke test.
 
 ### 3.5 Command surface
 
 ```
 make test              # T0. No Docker. The inner loop. <60s.
-make test-integration  # T1. Starts postgres-test if needed. Parallel, no -p 1.
-make test-e2e          # T2. Requires the ci stack (or dev stack) up; fails fast if not.
-make test-live         # T3. Opt-in, hits the internet.
+make test-integration  # T1. Provisions template DB, starts postgres-test if needed. Parallel.
+make test-e2e          # T2. Runs INSIDE the hermetic stack via the compose runner (see below).
+make test-live         # T3. Opt-in, hits the internet. Missing config = failure, not skip.
 make ci                # THE GATE: hermetic stack, T0+T1+T2, ci-report skip inversion.
 ```
 
-- `make ci` stays exactly what it is today (build from tree → staged compose up → bootstrap → run → `ci-report`), except the runner invokes tiers by tag instead of one giant `-p 1` sweep: T0+T1 with `-tags integration` in parallel, then T2 with `-tags e2e` against the composed AppView. Expected effect: wall-clock drops even as coverage rises, because 200+ integration tests stop being serialized.
+- **`make test-e2e` runs through the compose runner, not from the host.** The hermetic stack publishes no host ports (by design, see 3.7), so a host-run `go test -tags e2e` cannot reach it; revision 1's "requires the ci stack or dev stack up" was incoherent. The target brings up the stack (or reuses a `COVES_CI_KEEP_STACK` one) and executes the e2e binary inside the runner's network namespace — the same path `make ci` uses, so there is exactly one way T2 executes. Debugging against the long-lived dev stack stays possible via an explicitly-named `make test-e2e-dev` escape hatch.
+- `make ci` stays exactly what it is today (build from tree → staged compose up → bootstrap → run → `ci-report`), except the runner invokes tiers by tag: T0+T1 with `-tags integration` in parallel, then T2 with `-tags e2e` serially against the composed AppView.
 - `make test-all` is deleted. It is a slower `make ci` with weaker guarantees (any-one-service-up counts as "infra ready", skips count as passes, `./internal/...` runs without `-p 1` — a live race today). One gate, not two.
 - Silent-failure fixes ride along: `goose up || true` in `make test` loses the `|| true`; `sleep 3` becomes `pg_isready` polling; dead targets (`create-test-account`, `verify-stack` — scripts that don't exist) are removed.
 
@@ -149,39 +164,43 @@ make ci                # THE GATE: hermetic stack, T0+T1+T2, ci-report skip inve
 The suite got here by drift, so the invariants get mechanical guards, all inside `make ci`:
 
 1. `ci-report` (exists): skip ⇒ failure unless allowlisted-with-reason; stale allowlist entries fail.
-2. Lint gate (new, trivial grep/vet step in `ci-runner.sh`): fail on `time.Sleep(` in `*_test.go`, `t.Skip` outside `testkit`, `testing.Short()` anywhere, `websocket.DefaultDialer` outside `testkit/firehose.go`, and hardcoded `localhost:` ports outside `testkit` (all endpoints come from env with defaults defined once in testkit).
-3. `go vet ./...` with each tag set — tagged files that don't compile are otherwise invisible.
+2. **Contract manifest check** (new, Phase 4): every collection in `jetstream.WantedCollections` has a live ingestion-contract marker in `tests/e2e/`, and no marker is stale (3.4a).
+3. **Violation audit script** (`scripts/test-audit.sh`, new in Phase 1): counts `time.Sleep` in tests, `t.Skip` outside testkit, `testing.Short()`, `websocket.DefaultDialer` outside `testkit/firehose.go`, hardcoded endpoint literals outside testkit, and public atProto hostnames outside `tests/live/`. It is both the lint gate (warn during migration → hard-fail at Phase 6) and the migration's progress meter — every count must be assigned to a phase and reach zero, so "the final lint flip will pass" is tracked continuously instead of hoped for. These greps are **tripwires, not proof** — they catch drift cheaply and are bypassable by construction (concatenation, IP literals); the *guarantee* is layer 3 of 3.7.
+4. `go vet ./...` with each tag set — tagged files that don't compile are otherwise invisible.
 
 ### 3.7 Network isolation: never the public network
 
 Three layers, from convention to physics:
 
 1. **All endpoints come from testkit, all defaults point at the Docker stack.** `testkit.Endpoints()` reads `PDS_URL`, `PLC_DIRECTORY_URL`, `JETSTREAM_URL`, `APPVIEW_URL`, `POSTGRES_TEST_*` once, defaulting to the compose-stack addresses. No other test code constructs a base URL. (This also retires the 3 leftover `localhost:2583` references — a stale upstream-PDS default from a different topology.)
-2. **Lint gate**: any occurrence of public atProto hostnames (`plc.directory`, `bsky.network`, `bsky.social`, `bsky.app`, `public.api.bsky.app`, …) in a `*_test.go` or testkit file outside `tests/live/` fails CI. Today `bluesky_post_test.go` (33 skips) and `post_unfurl_test.go`'s third-party targets violate this — they move to T3 in Phase 2.
-3. **Egress-blocked CI network (strongest)**: the hermetic stack in `docker-compose.ci.yml` gets `internal: true` networking (plus whatever the PLC/PDS containers need internally), so an accidental call to the public network fails loudly at connect time instead of silently succeeding against real infrastructure. Added in Phase 0 while getting the gate green. The `~`-conditional third-party unfurl tests currently tolerated by the allowlist move to T3, which is the only tier that runs with egress.
+2. **Lint tripwire** (3.6.3): public atProto hostnames in test/testkit code outside `tests/live/` fail CI. Scope-aware, not a blanket ban — hostname literals in *fixture data* (e.g. validating production config parsing) are fine and get an explicit exemption comment; the tripwire targets endpoint construction.
+3. **Egress-blocked CI network (the actual guarantee)**: the hermetic stack's networks become `internal: true`, so an accidental public call — however constructed — fails at connect time instead of silently resolving against real infrastructure. Two prerequisites discovered in review, both handled in Phase 0 *after* the public-network tests are moved out (see ordering in §4): (a) the runner image downloads Go modules at runtime, so a cold cache + no egress = broken build — `test-db-prepare`/`ci.sh` populate the module cache volume *before* attaching the runner to the internal network (and `make ci-clean` notes that the next run re-populates); (b) a cold-cache, egress-blocked `make ci` run is an explicit Phase 0 acceptance check, not an assumption.
 
 The env-gated real-handle tests (`TEST_REAL_HANDLES=1`) hit the real PLC by design — they become T3 `live` tests, where that is explicit and opt-in rather than an env var buried in a conditional.
 
 ## 4. Migration plan
 
-Each phase lands as its own commit(s) on `worktree-test-refactor`, and **`make ci` must be green at every phase boundary**. Phases are sized to be a focused agent session each.
+Each phase lands as its own commit(s) on `worktree-test-refactor`, and **`make ci` must be green at every phase boundary**. Phases are sized to be a focused agent session each, except Phase 4 (multi-session, per-domain). LOC figures are rough deltas (added − deleted).
 
-- **Phase 0 — Make the gate real.** *(~100–300 LOC touched, net ~0)* `make ci` green in this worktree (baseline commit `aa57ccc` imported the harness incl. `docker-compose.ci.yml`). Flip the stack's networks to egress-blocked (3.7). Record the run's timing + allowlist as the baseline. *Exit: green hermetic run with no public egress, timings captured.*
-- **Phase 1 — testkit.** *(~2,500 LOC, net +2,500: ~1,500 harness + ~800 harness tests + lint gate)* Build `tests/testkit` (db/pds/firehose/wait/fixtures/appview — absorbing the 4 drifted `*PasswordAuthPDSClientFactory` adapters, both `createPDSAccount`s, and the hand-rolled XRPC clients into one `pds.go`), add the lint gate (initially warning-only), fix the 5 surviving handle-collision sites. No mass migration yet — testkit ships with its own unit tests. *Exit: testkit exists, tested, lint gate wired.*
-- **Phase 2 — Kill the lies.** *(~1,800 LOC touched, net −800)* Delete the 6 never-run debt tests (allowlist section 4). Move the 2 rate-limiter "e2e" files to `internal/api/middleware` as T0. Move `tests/unit/community_service_test.go` content toward `internal/core/communities`. Move the public-network tests (`bluesky_post_test.go`, live-target unfurl tests, `TEST_REAL_HANDLES` tests) to `tests/live/` as T3. Delete `-short` guards; introduce build tags on existing files *in place* (tag ≠ move; moves come later). Retarget Makefile to tags. *Exit: tiers are mechanically selectable; `make test` is honest; no public-network code outside `tests/live/`.*
-- **Phase 3 — DB isolation.** *(~4,000 LOC touched, net −1,800)* Migrate `setupTestDB`'s 222 call sites to `testkit.DB(t)` (mechanical, high-volume — good fan-out work), delete all unscoped `DELETE FROM`s and per-file cleanups, enable `t.Parallel()`, drop `-p 1`. *Exit: suite passes with parallelism on; wall-clock recorded vs Phase 0.*
-- **Phase 4 — Pipeline contracts.** *(~20,000+ LOC touched, net −8,000 to −12,000 — the only multi-session phase; split per domain: post, comment, community, vote, user, blobs, …)* Build the ~10 T2 contracts on testkit + the running AppView, decomposing the god-files: each old saga's endpoint-behavior subtests move down to T1 next to their service/repo — rewritten onto testkit, not copy-pasted; pipeline steps become the contract. Delete the 10 `subscribeToJetstream*` copies and the 22×500ms sleeps as their callers migrate. `tests/integration/` shrinks toward empty and is removed. *Exit: `tests/e2e` = contracts + journey; `tests/integration` gone.*
-- **Phase 5 — Coverage debt + federation path.** *(~8,000 LOC, net +7,000, additive)* Unit tests for the zero-coverage core packages (communities, votes, identity, routes, timeline, discover, communityFeeds — in that order); repo tests for the 13 untested repos; federation-path variants of the highest-value contracts (post, comment, vote — cf. the known vote-federation gap). *Exit: no zero-test package in `internal/core`; federation contracts for the big three.*
-- **Phase 6 — Docs.** *(~600 LOC touched, net −400)* This doc moves from PROPOSED to CANONICAL; `TESTING_SUMMARY.md` + `docs/E2E_TESTING.md` deleted; CLAUDE.md testing section points here; lint gate flips from warn to fail.
+**Green-at-boundary is necessary but not sufficient for the destructive phases.** A green run proves the surviving tests pass, not that coverage survived. Phases 2 and 4 therefore follow a **strangler rule**: before an old test file is deleted, its distinct *behaviors* (not its LOC) are inventoried in the phase's migration manifest and mapped to their new home (T0/T1 test or T2 contract), and the mapping is reviewed in the PR. The net-LOC reduction below is an *expectation*, not a target — an agent optimizing for deletion is exactly the failure mode the manifest exists to catch.
 
-Aggregate expectation: the suite lands around **~78k LOC (from ~84k) with materially more coverage** — duplication currently dwarfs the gaps, so the refactor is net-negative even while filling seven zero-coverage packages.
+- **Phase 0 — Make the gate real.** *(~200–500 LOC touched, net ~0)* Order matters here (revision 1 had it backwards): **(1)** get `make ci` green as imported (baseline commit `aa57ccc`); **(2)** relocate the public-network test files (`bluesky_post_test.go`, live-target unfurl tests, `TEST_REAL_HANDLES` identity tests) to `tests/live/` with the `live` tag — move-only, no rewrite; **(3)** flip the stack networks to `internal: true` with module-cache pre-population (3.7.3); **(4)** prove a cold-cache egress-blocked run is green and record timing + allowlist as the baseline. *Exit: green hermetic run with no public egress from a cold cache; timings captured.*
+- **Phase 1 — testkit + audit script.** *(net +2,500: ~1,500 harness + ~800 harness tests + audit script)* Build `tests/testkit` (db/pds/firehose/wait/fixtures/appview) with the dependency-direction rule; `scripts/test-db-prepare.sh` (template provisioning + advisory-lock fallback + orphan sweep); `scripts/test-audit.sh` wired into CI as warnings with every count assigned to a phase; fix the 5 surviving handle-collision sites. No mass migration yet — testkit ships with its own tests. *Exit: testkit exists and is tested; audit baseline recorded with per-phase burn-down.*
+- **Phase 2 — Kill the lies, split the mixed files, tag everything.** *(net −800)* Delete the 6 never-run debt tests. Fix the lexicon validator to not generate defs-only subtests (retiring those 8 allowlist entries). Move the 2 rate-limiter "e2e" files to `internal/api/middleware` as T0; fold `tests/unit/community_service_test.go` toward `internal/core/communities`. **Split multi-tier files by test function** (manifest-tracked) so every file is single-tier, then add build tags in place; retarget the Makefile to tags and delete `-short`. *Exit: tiers mechanically selectable; `make test` honest; every file single-tier; allowlist ≤ ~5 entries.*
+- **Phase 3 — DB isolation, then parallelism.** *(net −1,800)* Migrate `setupTestDB`'s 222 call sites to `testkit.DB(t)`; delete all unscoped `DELETE FROM`s and per-file cleanups. Then the global-state pass: audit `t.Setenv`/`os.Setenv`/logger/http-default mutation sites, convert to testkit injection, enable `t.Parallel()` on proven-safe tests, set the connection budgets (3.3), run `-race` clean. Drop `-p 1` last. *Exit: parallel suite green under `-race`; wall-clock vs Phase 0 recorded.*
+- **Phase 4 — Pipeline contracts.** *(net −8,000 to −12,000 — multi-session, one domain at a time: post, comment, community, vote, user, blocks, aggregators…)* Per domain, strangler-style: inventory the old files' behaviors → add the missing T0/T1 tests they imply → build the ingestion contract (3.4a) and API contract (3.4b) on testkit → run old + new together → delete the old file after reviewed parity. Build the reliability suite (3.4c) and the contract-manifest CI check. Delete the 10 `subscribeToJetstream*` copies as their callers migrate. `tests/integration/` ends empty and is removed. *Exit: every consumed collection has an ingestion contract (CI-enforced); reliability suite green; `tests/integration` gone.*
+- **Phase 5 — Coverage debt + real federation topology.** *(net +7,500, additive)* Unit tests for the zero-coverage core packages (communities, votes, identity, routes, timeline, discover, communityFeeds — in that order); repo tests for the 13 untested repos. Then the topology work revision 1 hand-waved: add a **second PDS** (own hostname, storage, PLC registration) and a hermetic **relay** to the CI stack, and promote the highest-value ingestion contracts (post, comment, vote — cf. the known vote-federation gap) to true federation-path: record written to the *non-fronted* PDS, discovered and indexed purely via the firehose, remote identity resolution and blob fetching asserted explicitly. *Exit: no zero-test package in `internal/core`; federation contracts for the big three running against the two-PDS topology.*
+- **Phase 6 — Enforcement flip + docs.** *(net −400)* Audit-script counts must be zero; flip it from warn to fail. This doc moves from PROPOSED to CANONICAL; `TESTING_SUMMARY.md` + `docs/E2E_TESTING.md` deleted; CLAUDE.md testing section points here.
 
-Definition of done, measurable: 0 `time.Sleep` in tests · 0 `t.Skip` outside testkit · 0 `testing.Short()` · allowlist ≤ ~5 entries, all `~`-conditional or opt-in-internet · 0 packages in `internal/core` without tests · `-p 1` gone · `make test` < 60 s · `make ci` green and ≤ Phase-0 wall-clock despite added coverage.
+Aggregate expectation: the suite lands around **~78k LOC (from ~84k) with materially more coverage** — duplication currently dwarfs the gaps, so the refactor is net-negative even while filling seven zero-coverage packages. Measured done-criteria (via `test-audit.sh`, not prose): 0 `time.Sleep` in tests · 0 `t.Skip` outside testkit · 0 `testing.Short()` · allowlist ≤ ~5 entries, all `~`-conditional · 0 packages in `internal/core` without tests · `-p 1` gone · every consumed collection contract-covered · `make test` < 60 s · `make ci` green at ≤ Phase-0 wall-clock.
 
 ## 5. Decisions & rationale (short form)
 
-- **Build tags over directories-as-tiers**: the current tree proves naming conventions don't survive contact with velocity. Tags are compile-time, greppable, and un-forgettable (you can't run a tier by accident).
+- **Build tags over directories-as-tiers**: the current tree proves naming conventions don't survive contact with velocity. Tags are compile-time, greppable, and un-forgettable — with the corollary (learned in review) that files must be split to single-tier first, because tags classify files, not tests.
 - **T1 colocated with code, not in `tests/`**: repo tests next to repos get maintained when the repo changes; a 41k-LOC `tests/integration` catch-all demonstrably doesn't. `tests/` keeps only what is genuinely cross-cutting: e2e contracts, live tests, testkit, ci config.
-- **Template-clone-per-test over shared-DB-with-cleanup**: cleanup-discipline is exactly what failed (331 DELETE statements). Isolation by construction is the only version that survives agents writing tests at speed.
+- **Template-clone-per-test over shared-DB-with-cleanup**: cleanup-discipline is exactly what failed (331 DELETE statements). Isolation by construction is the only version that survives agents writing tests at speed — provisioned by the harness, not racing `TestMain`s.
+- **Direct-PDS ingestion contracts over client-path-only E2E**: synchronous indexing on the client path means endpoint-in/endpoint-out tests can't prove the pipeline. Bypassing the AppView on the write side makes firehose delivery the only possible explanation for a passing read — un-fakeable by construction.
+- **Serial T2 over parallel**: one shared AppView/PDS/DB namespace makes interleaved eventually-consistent writers a flake factory. Ten serial contracts inside a 10-minute budget is the boring, correct call.
 - **Black-box T2 over test-instantiated consumers**: tests the wiring that actually ships, deletes the largest duplication cluster, and makes the E2E tier readable as product documentation.
 - **Skips-as-failures stays and expands**: `cmd/ci-report` is the best idea already in the tree. The refactor makes the allowlist *shrink* to near-zero rather than institutionalizing it.
+- **Generated contract manifest over reviewed inventory**: the hand-written inventory was wrong on day one (missed two collections). Deriving it from `WantedCollections` makes "every collection is pipeline-tested" a build invariant instead of a review habit.
