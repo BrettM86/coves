@@ -992,6 +992,78 @@ func TestUpdateComment_EmptyContent(t *testing.T) {
 	}
 }
 
+// Content that is only whitespace is empty content.
+//
+// Both write paths TrimSpace before the emptiness check, so "   \t\n  " must be
+// refused exactly as "" is. It is worth its own test rather than an extra row
+// in the empty-content ones because the failure mode is silent and specific: an
+// emptiness check written against the RAW field instead of the trimmed one
+// passes every ""-only test, and then signs a record whose content renders as a
+// blank comment nobody can delete-by-editing.
+//
+// Table-driven over both paths and over the whitespace shapes a client actually
+// produces — a stray space, a line the user only pressed return on, and the
+// non-breaking space a mobile keyboard inserts.
+func TestWriteComment_WhitespaceOnlyContentIsEmpty(t *testing.T) {
+	whitespace := map[string]string{
+		"spaces":            "   ",
+		"tabs and newlines": "\t\n\r\n ",
+		"single newline":    "\n",
+		// U+00A0. The one case that is not obvious: it is what an iOS keyboard
+		// inserts after certain autocorrections, so it reaches the service from
+		// real clients, and it is invisible in a diff. It trims because
+		// unicode.IsSpace covers it — which is a property of the stdlib the
+		// service depends on without saying so, and this is where that
+		// dependency is checked.
+		"non-breaking space":       "\u00a0",
+		"non-breaking space mixed": " \u00a0\t\u00a0 ",
+	}
+
+	newService := func() Service {
+		mockClient := newMockPDSClient("did:plc:test123")
+		factory := &mockPDSClientFactory{client: mockClient}
+		return NewCommentServiceWithPDSFactory(
+			newMockCommentRepo(), newMockUserRepo(), newMockPostRepo(), newMockCommunityRepo(),
+			nil, factory.create,
+		)
+	}
+
+	for name, content := range whitespace {
+		t.Run("create/"+name, func(t *testing.T) {
+			req := CreateCommentRequest{
+				Reply: ReplyRef{
+					Root: StrongRef{
+						URI: "at://did:plc:author/social.coves.community.post/root123",
+						CID: "bafyroot",
+					},
+					Parent: StrongRef{
+						URI: "at://did:plc:author/social.coves.community.post/root123",
+						CID: "bafyroot",
+					},
+				},
+				Content: content,
+			}
+
+			_, err := newService().CreateComment(context.Background(), createTestSession("did:plc:test123"), req)
+			if !errors.Is(err, ErrContentEmpty) {
+				t.Errorf("CreateComment(%q) error = %v, want ErrContentEmpty", content, err)
+			}
+		})
+
+		t.Run("update/"+name, func(t *testing.T) {
+			req := UpdateCommentRequest{
+				URI:     "at://did:plc:test123/social.coves.community.comment/test123",
+				Content: content,
+			}
+
+			_, err := newService().UpdateComment(context.Background(), createTestSession("did:plc:test123"), req)
+			if !errors.Is(err, ErrContentEmpty) {
+				t.Errorf("UpdateComment(%q) error = %v, want ErrContentEmpty", content, err)
+			}
+		})
+	}
+}
+
 func TestUpdateComment_ContentTooLong(t *testing.T) {
 	// Setup
 	ctx := context.Background()

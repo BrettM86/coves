@@ -176,6 +176,70 @@ const contractHoldWindow = 5 * time.Second
 // that a polling storm is happening at all. Neither trade is worth it.
 const contractPollInterval = 250 * time.Millisecond
 
+// contractHoldPollInterval is how often a Holds re-asks. It is deliberately
+// four times slower than contractPollInterval, and the reason is arithmetic the
+// comment above does not cover.
+//
+// contractPollInterval reasons about WaitFor, where a green run costs one or
+// two polls because the wait ends the moment the probe succeeds. Holds is the
+// opposite: it has no early exit — proving something STAYED true means watching
+// the whole window — so it pays its full cost on every PASSING run. At 250ms
+// that is 20 requests per Holds, and a contract with two of them spends 40 of
+// its 100-request minute before its first assertion. That was affordable while
+// contracts were shallow and stopped being affordable at the comment domain,
+// whose setup alone stands up an account, a community and two posts, each with
+// its own wait; the first draft of TestCommentIngestion exhausted its bucket
+// mid-Holds and reported a rate limit where the pipeline was in fact healthy.
+//
+//	5s window ÷ 1s  =  5 requests per Holds, against 20
+//
+// Five samples is not a weaker assertion than twenty, because of WHAT a Holds
+// in this tier watches: a record resurrected by a replayed create, a delete
+// undone, a count inflated by a duplicate. Every one of those is a durable row
+// change — once it happens it is still there on the next poll, and on the one
+// after that. Sampling frequency would matter for a transient blip, and no
+// contract here guards against one. What bounds the assertion is the WINDOW,
+// which is unchanged at contractHoldWindow: the tier still watches for the same
+// five seconds, it just stops asking four times a second.
+const contractHoldPollInterval = time.Second
+
+// withReadCadence slows a wait to a poll rate that fits inside a 20-per-minute
+// endpoint's budget, for the ONE endpoint in the product that has one.
+//
+// # THE TIER HAS TWO RATE LIMITERS, NOT ONE
+//
+// Everything reachable here is bounded by the global 100/minute-per-IP limiter,
+// and contractPollInterval's arithmetic is written against that. But
+// social.coves.community.comment.getComments carries a second, much tighter cap
+// of its own — commentQueryRateLimit, 20 per minute (cmd/server/routes.go) —
+// because a nested tree query fans out across the whole comment tree.
+//
+// At the default 250ms, poll 21 of a single wait lands about five seconds in.
+// So a delivery that is slow but perfectly healthy — a loaded machine, a
+// consumer working through a backlog — would collect a 429 five seconds into a
+// forty-five second budget and fail as though the endpoint were broken, having
+// never spent the budget it was given. The failure would be indistinguishable
+// from a real fault and would arrive most often on exactly the slow runs where
+// the budget matters.
+//
+//	45s budget ÷ 2.5s  =  18 polls  for a wait that runs its FULL length
+//
+// which fits under 20 with room for the reads a contract makes outside its
+// waits. WaitFor probes before it sleeps, so a healthy delivery still costs one
+// poll and the slower cadence costs nothing; what it buys is that an unhealthy
+// one reports the timeout it actually is.
+//
+// Apply it to waits that poll getComments, and ONLY those: every other endpoint
+// sits under the global limiter alone, where 250ms is both affordable and worth
+// paying for the tighter failure detection.
+func withReadCadence() testkit.WaitOption {
+	return testkit.WithPollInterval(contractCappedReadInterval)
+}
+
+// contractCappedReadInterval is the poll rate withReadCadence installs. See
+// there for why it is this number and not the default.
+const contractCappedReadInterval = 2500 * time.Millisecond
+
 // pipeline is the fixture every contract starts from: the stack's PDS, for
 // writes the AppView cannot see, and the AppView, for the observations that can
 // only be explained by the firehose having delivered them.
@@ -209,6 +273,64 @@ func newPipeline(t *testing.T) *pipeline {
 	}
 }
 
+// FreshReadQuota re-points this contract's AppView client at a NEW rate-limit
+// bucket, for arcs that legitimately need more requests than one bucket allows.
+//
+// # WHEN THIS IS THE RIGHT ANSWER, WHICH IS RARELY
+//
+// The package doc explains the per-contract bucket: it exists so that contracts
+// do not steal each other's quota. This is the escape hatch for the other case
+// — a SINGLE contract whose honest arc costs more requests than the endpoint it
+// observes will serve — and the comment domain is why it exists.
+//
+// social.coves.community.comment.getComments is not bounded by the global
+// 100/minute limiter that everything else in this tier meets. It has a
+// dedicated, far tighter one: commentQueryRateLimit = 20 per minute
+// (cmd/server/routes.go), because a nested tree query fans out across the whole
+// comment tree and is the most expensive read the AppView serves. It is the only
+// route in the product with its own cap.
+//
+// Twenty is generous for a human reading threads and nowhere near enough for an
+// ingestion contract, which must watch that one endpoint through create, reply,
+// update and delete, plus two Holds windows — the arc costs upward of twenty
+// reads no matter how it is written, and it is the thread endpoint or nothing,
+// because no other endpoint shows reply placement or serves a deleted comment's
+// placeholder at all (actor.getComments omits deleted comments entirely).
+//
+// # WHY THIS IS LEGITIMATE AND NOT QUOTA LAUNDERING
+//
+// The rate limiter is not under test in an ingestion contract, and taking a
+// fresh bucket at a phase boundary is exactly what a second reader arriving at
+// the thread would do — the tier already synthesises a client IP per contract,
+// and this synthesises one more. What it must NOT be used for is making an
+// assertion about rate limiting pass, or papering over a contract that polls
+// wastefully; the poll intervals exist to keep the cost honest in the first
+// place, and a contract reaching for this more than a couple of times is
+// describing a tier problem rather than solving one.
+//
+// reason is recorded in the client IP's label, so an exhausted bucket in a
+// failure message can be traced to the phase that spent it.
+//
+// It REBUILDS the AppView client rather than mutating one, so anything else
+// carried on that client has to be carried across deliberately. Today that is
+// the bearer token, preserved below; a future option added to NewAppView must
+// be added here too, or a contract will silently lose it half-way through and
+// fail somewhere that looks unrelated to the rotation.
+func (p *pipeline) FreshReadQuota(t *testing.T, reason string) {
+	t.Helper()
+	// Read before the rebuild. Nothing in the tier authenticates a T2 client
+	// today (§3.4b — no sealed session can be minted), so this is empty in
+	// every current caller; it is preserved anyway because the day that
+	// changes, a dropped credential turns into a 401 in a contract that never
+	// mentions auth.
+	bearer := p.AppView.Bearer
+
+	p.clientIP = testkit.SyntheticClientIP(t.Name() + "/" + reason)
+	p.AppView = testkit.NewAppView(t,
+		testkit.WithAppViewClientIP(p.clientIP),
+		testkit.WithAppViewBearer(bearer))
+}
+
 // Await waits for probe to become true within contractBudget, attaching the
 // AppView's consumer health to the failure if it does not.
 //
@@ -216,12 +338,16 @@ func newPipeline(t *testing.T) *pipeline {
 // and one it cannot: "the record never appeared" and "the consumer that indexes
 // it has been disconnected for four minutes with 12 dead letters" are the same
 // failure, and only the second one names a next step.
-func (p *pipeline) Await(t *testing.T, description string, probe testkit.Probe) {
+// Trailing options are applied AFTER the defaults, so a caller can override
+// one — withReadCadence being the reason the parameter exists.
+func (p *pipeline) Await(t *testing.T, description string, probe testkit.Probe, opts ...testkit.WaitOption) {
 	t.Helper()
 	testkit.WaitFor(t, contractBudget, p.explainRateLimit(probe),
-		testkit.WithPollInterval(contractPollInterval),
-		testkit.WithDescription("%s", description),
-		testkit.WithConsumerHealth(p.AppView))
+		append([]testkit.WaitOption{
+			testkit.WithPollInterval(contractPollInterval),
+			testkit.WithDescription("%s", description),
+			testkit.WithConsumerHealth(p.AppView),
+		}, opts...)...)
 }
 
 // explainRateLimit rewrites a 429 into a sentence about this tier's own
@@ -238,11 +364,15 @@ func (p *pipeline) explainRateLimit(probe testkit.Probe) testkit.Probe {
 		done, err := probe()
 		if err != nil && testkit.IsStatus(err, http.StatusTooManyRequests) {
 			return false, fmt.Errorf(
-				"the AppView rate limited this contract's own polling (bucket %s, %s per poll): "+
-					"the wait had already run long enough to spend a 100-request minute, so the "+
-					"pipeline was not going to deliver — treat this as the timeout it is, and look "+
-					"at the consumer health below rather than at the endpoint: %w",
-				p.clientIP, contractPollInterval, err)
+				"the AppView rate limited this contract's polling (bucket %s, %s per poll while waiting "+
+					"and %s while holding). Which limiter it was decides what to do: the GLOBAL one is "+
+					"100/minute and means the wait had already run long enough that the pipeline was not "+
+					"going to deliver — treat it as the timeout it is and read the consumer health below. "+
+					"But social.coves.community.comment.getComments carries its OWN cap of 20/minute "+
+					"(commentQueryRateLimit, cmd/server/routes.go), which a healthy contract can reach "+
+					"simply by observing a long arc — if that is the endpoint being polled here, see "+
+					"pipeline.FreshReadQuota: %w",
+				p.clientIP, contractPollInterval, contractHoldPollInterval, err)
 		}
 		return done, err
 	}
@@ -256,7 +386,7 @@ func (p *pipeline) explainRateLimit(probe testkit.Probe) testkit.Probe {
 func (p *pipeline) Holds(t *testing.T, description string, probe testkit.Probe) {
 	t.Helper()
 	testkit.Holds(t, contractHoldWindow, p.explainRateLimit(probe),
-		testkit.WithPollInterval(contractPollInterval),
+		testkit.WithPollInterval(contractHoldPollInterval),
 		testkit.WithDescription("%s", description),
 		testkit.WithConsumerHealth(p.AppView))
 }

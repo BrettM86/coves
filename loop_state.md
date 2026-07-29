@@ -49,8 +49,8 @@ Stop the loop when every task is done, or on any blocked task.
 | 10 | Contract-manifest CI check (WantedCollections ↔ //coves:ingestion-contract markers) + T2 skeleton (serial runner via compose runner; make test-e2e; test-e2e-dev escape hatch) | 4 ⛩ | S | done | (see git log) | THE PIPELINE WORKS: TestPipelineSmoke green in hermetic stack (direct PDS write → Jetstream → container consumers → getProfile, 0.95s de-raced). cmd/contract-manifest (38 tests, MatchFile-based, pending_contracts.txt ratchet w/ task ownership, AST forbidden-imports in marker files); T2 skeleton (newPipeline, contractBudget=45s, per-contract synthetic IPv6 vs the ONE-BUCKET rate limiter — A/B proven 60+40=100); make test-e2e via compose runner 48s cold (lib/ci-stack.sh + runner-ready.sh factored); zero-skip T2 enforcement. Census: 10 collections = task mapping exact. Review: Codex needs-work + Opus 3-high → 8 fixes (manifest bypasses had live probes; smoke de-raced vs profile-backfill reconciliation path). make ci GREEN ×2 ~2:00, 3448/0 |
 | 11 | Contracts: community (community.profile ingestion + API) — strangler: behavior inventory of community_e2e_test.go (1820 LOC) → down-tier T1s → contract → delete old | 4 | S | done | (see git log) | TEMPLATE PROVEN. 22-behavior inventory; 2,168 LOC deleted, +14 net tests; 2/9 serial firehose files gone. Ingestion contract SELF-REGISTERS the community's PDS repo (stronger than arming — no sync write exists; consumer has NO must-know-first gate, verified). FOUND+FILED prod defect: unverifiable handles → handle.invalid UNIQUE squat → federated communities silently dropped; second symptom pds_url permanently empty → BridgeTrust denies bridged votes (issue extended). STANDING TIER LIMIT (spec §3.4b amended): sealed sessions mint only in browser OAuth — T2 covers auth boundary + reads; authenticated writes proven at T1; test-only mint = phase-5 pre-work. Review: Codex 1 high (update-handler boundary died — restored w/ 8 tests) + Opus audit 17/20 equal-or-stronger, 3 gaps all closed. make ci GREEN ×2 3496/0 @2:12 |
 | 12 | Contracts: post (community.post) + post_delete + decompose post god-files | 4 | S | done | (see git log) | post_e2e (662) + post_delete (841) deleted, net −1402 w/ more coverage; serial firehose files 7→5. TWO MORE PROD DEFECTS FILED (tally 4): p1 deleted posts served in full by getComments to anon callers forever (repo missing deleted_at filter); p3 DeletePost idempotency branch unreachable (PDS 400 ≠ ErrNotFound — pinned w/ loud require.Errorf). Spoof negative REWRITTEN intra-repo after Opus traced indigo parallel scheduler (cross-repo FIFO doesn't exist; 5s hold was the real bound; relay would break silently) — mutation-tested. Consumer gates pinned: author-not-found=transient+replay-accepted. Journey flake (2/6 gates, note-[C] starvation) mitigated: 60s/75s ordered waits + starvation-vs-dead tally; real fix task 16. make ci GREEN 3496/0 @2:21 |
-| 13 | Contracts: comment (community.comment) + comment god-files (1821+1443+1229+999 LOC) | 4 | S | in-progress | | biggest decomposition |
-| 14 | Contracts: vote (feed.vote) + user (actor.profile incl. avatar blob path) + subscription (community.subscription) | 4 | S | pending | | vote re-tap idempotency invariant |
+| 13 | Contracts: comment (community.comment) + comment god-files (1821+1443+1229+999 LOC) | 4 | S | done | (see git log) | comment_e2e (1120) deleted; 4,263 LOC of T1-shaped satellites KEPT deliberately (right call — §3.4 rule 3 breadth). JOURNEY PULLED FORWARD from task 16: worker bisected its own deletion breaking the journey deterministically (serial tests were accidental SPACERS vs the note-[C] storm) → rebuilt as the §3.4 rule-5 saga in tests/e2e (3 actors, 3 repos, 4 read paths; old file was 2-real-of-11-steps, SQL-insert fallbacks, fakecid). Serial firehose files 5→3; ONE subscriber helper left tree-wide (vote_e2e — task 14 kills it). Comment consumer has NO must-exist gates (measured); comments live in AUTHOR repo; delete = placeholder. getComments capped 20/min → withReadCadence(2.5s) + FreshReadQuota + Holds@1s. Defect #5 filed (malformed URI → 500). Reviews: kill-list EMPTY. make ci GREEN ×2 3532/0 @~2:45; e2e 56/0/0; audit 473 |
+| 14 | Contracts: vote (feed.vote) + user (actor.profile incl. avatar blob path) + subscription (community.subscription) | 4 | S | in-progress | | vote re-tap idempotency invariant |
 | 15 | Contracts: blocks (actor.block + community.block) + aggregators (aggregator.service + aggregator.authorization) | 4 | S | pending | | collections revision-1 inventory MISSED — see spec §3.4a |
 | 16 | Reliability suite (§3.4c: cursor resume, replay-once, rev-gate no-resurrection via Holds, dead-letter, 2-feed overlap) + user_journey rebuild + rm -rf tests/integration | 4 ⛩ | F | pending | | FULL PANEL on the whole Phase-4 output |
 | 17 | Unit-coverage debt A: communities, votes, identity (repo tests for their repos too) | 5 | S | pending | | behavior matrices at T0, repo seams at T1 |
@@ -281,3 +281,21 @@ Stop the loop when every task is done, or on any blocked task.
   before A/B tests. Serial firehose files remaining: 5 (comment_e2e,
   community_avatar_e2e, user_journey_e2e, user_profile_avatar_e2e,
   vote_e2e).
+- **From task 13 (for tasks 14-15)**: getComments is capped 20/min per IP
+  (only per-route cap) — use withReadCadence(2.5s) on getComments waits
+  (costs ~2.5s per healthy wait; ramped interval is the future fix if the
+  tier budget ever tightens), FreshReadQuota at phase boundaries (it
+  REBUILDS the client — carries bearer now, but any future NewAppView
+  option must be carried too). VOTE-CONSUMER HAZARD for task 14 (Opus
+  audit): no must-exist gate AND no reconciliation — an out-of-order
+  vote's count UPDATE matches 0 rows and only LOGS; vote-before-post
+  across repos = count lost forever; production cross-repo ordering is
+  not guaranteed → spike it, likely defect #6 to file. Task 15 inherits
+  the orphaned blockedPost serving assertions (blocked:true,
+  blockedBy:"author", nils). Subscription fan-out composition = task 14's
+  contract; personalised getTimeline unreachable at T2 until Phase-5 mint
+  (T1 coverage exists in timeline_test.go). voteCollection/voteRecord()
+  helpers live in journey_test.go — reuse, don't redeclare. Deleting
+  serial files re-packs the schedule — prefer deleting the fragile
+  subscriber over re-spacing (proven). Saga leaves ~1 dead letter/run
+  too (hijack) — task 16 dead-letter accounting.
