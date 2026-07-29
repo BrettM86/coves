@@ -13,7 +13,9 @@ FROM golang:1.25-alpine
 #   whose upstream image ships no HTTP client and therefore cannot healthcheck
 #   itself (docker-compose.dev.yml disables its healthcheck outright).
 # bash: scripts/ci-runner.sh uses non-POSIX constructs.
-# ca-certificates: the allowlisted opt-in tests that reach real hosts.
+# ca-certificates: HTTPS to the Go module proxy. The suite itself reaches no
+#   public host — the stack's network is `internal: true` — but scripts/ci.sh
+#   runs this same image outside that network to populate the module cache.
 # grep: GNU grep, for --line-buffered, which the BusyBox build does not support.
 #   Only the cosmetic progress display needs it, but silently losing progress
 #   output is the kind of papercut that gets rediscovered every few months.

@@ -195,32 +195,9 @@ func TestUserCreationAndRetrieval(t *testing.T) {
 		}
 	})
 
-	// Test 4: Resolve handle to DID (using real handle)
-	t.Run("Resolve Handle to DID", func(t *testing.T) {
-		// bretton.dev is a real handle registered on the PRODUCTION PLC directory,
-		// so this subtest needs its own resolver pinned there. The suite-wide
-		// resolver above uses identity.DefaultConfig(), which follows
-		// PLC_DIRECTORY_URL to the local PLC - correct for every other test, but
-		// it 404s on handles that only exist upstream.
-		//
-		// READ-ONLY: ResolveHandleToDID performs HTTP GET lookups only. It never
-		// registers or mutates anything on the production directory.
-		productionPLCConfig := identity.DefaultConfig()
-		productionPLCConfig.PLCURL = "https://plc.directory"
-		productionResolver := identity.NewResolver(db, productionPLCConfig)
-		productionUserService := users.NewUserService(userRepo, productionResolver, "http://localhost:3001", nil, "")
-
-		did, err := productionUserService.ResolveHandleToDID(ctx, "bretton.dev")
-		if err != nil {
-			t.Fatalf("Failed to resolve handle bretton.dev: %v", err)
-		}
-
-		if did == "" {
-			t.Error("Expected non-empty DID")
-		}
-
-		t.Logf("✅ Resolved bretton.dev → %s", did)
-	})
+	// Resolving a real handle against the production PLC directory lives in
+	// tests/live/user_resolution_test.go: it needs the public internet, which
+	// the hermetic stack deliberately has no route to.
 }
 
 func TestGetProfileEndpoint(t *testing.T) {
@@ -307,8 +284,16 @@ func TestGetProfileEndpoint(t *testing.T) {
 	})
 
 	// Test 4: User not found
+	//
+	// A DID rather than a handle. Showing that an unregistered *handle* does not
+	// exist means asking public DNS and the production PLC directory, and the
+	// hermetic stack has no route to either — the handler then answers 500,
+	// deliberately (see routes/user.go: a DNS outage must not be reported to the
+	// caller as "no such user"). A syntactically valid DID skips resolution
+	// entirely and exercises the path this test is actually about: an actor that
+	// is not in the index is a 404.
 	t.Run("User Not Found", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getProfile?actor=nonexistent.test", nil)
+		req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getProfile?actor=did:plc:notindexed404", nil)
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 

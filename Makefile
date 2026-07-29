@@ -229,6 +229,19 @@ test-all: ## Run ALL tests with live infrastructure (required before merge)
 	@echo "$(GREEN)═══════════════════════════════════════════════════════════════$(RESET)"
 	@echo ""
 
+test-live: ## Run the opt-in tests that deliberately hit the public internet (NOT part of the merge gate)
+	@echo "$(CYAN)═══════════════════════════════════════════════════════════════$(RESET)"
+	@echo "$(CYAN)  LIVE TIER - real Bluesky, real PLC, real third-party unfurls  $(RESET)"
+	@echo "$(CYAN)═══════════════════════════════════════════════════════════════$(RESET)"
+	@echo ""
+	@echo "$(YELLOW)These reach the public internet by design, so they can fail for$(RESET)"
+	@echo "$(YELLOW)reasons that have nothing to do with your change. 'make ci' is$(RESET)"
+	@echo "$(YELLOW)the merge gate; this is a reality check you run deliberately.$(RESET)"
+	@echo ""
+	@echo "$(CYAN)Requires: the test database on port 5434 ('make dev-up').$(RESET)"
+	@echo ""
+	@go test -tags live -count=1 -timeout 600s ./tests/live/... -v
+
 ci: ## Hermetic merge gate - builds its own stack from scratch, runs everything, enforces the skip allowlist
 	@./scripts/ci.sh
 
@@ -236,6 +249,8 @@ ci-clean: ## Remove the CI Go module/build cache volumes (forces a fully cold ne
 	@echo "$(YELLOW)Removing CI cache volumes...$(RESET)"
 	@docker volume rm coves-ci-go-mod-cache coves-ci-go-build-cache 2>/dev/null || true
 	@echo "$(GREEN)✓ CI caches removed - the next 'make ci' will be cold$(RESET)"
+	@echo "$(YELLOW)  It re-downloads every module before the stack starts (the$(RESET)"
+	@echo "$(YELLOW)  stack's network is egress-blocked), so expect a slow run.$(RESET)"
 
 ##@ Code Quality
 

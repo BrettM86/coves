@@ -21,7 +21,7 @@ var loadedEnvVars = []string{
 	"PDS_URL", "PDS_INSTANCE_HANDLE", "PDS_INSTANCE_PASSWORD", "PDS_ADMIN_PASSWORD",
 	"JETSTREAM_FEEDS",
 	"CURSOR_SECRET",
-	"TURNSTILE_SITE_KEY", "TURNSTILE_SECRET_KEY",
+	"TURNSTILE_SITE_KEY", "TURNSTILE_SECRET_KEY", "TURNSTILE_SITEVERIFY_URL",
 }
 
 // ClearEnvForTest blanks every environment variable Load reads, restoring them

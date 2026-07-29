@@ -137,18 +137,47 @@ compose build
 ok "images built"
 
 # ---------------------------------------------------------------------------
+# Module cache (the only stage with network access)
+# ---------------------------------------------------------------------------
+# The stack's network is `internal: true` (see docker-compose.ci.yml), so once
+# it is up nothing in it can reach the internet — including the Go toolchain,
+# which downloads modules at test time rather than at image-build time. On a
+# cold cache that would leave the runner unable to compile anything.
+#
+# So the modules are fetched here, in a throwaway container on Docker's default
+# bridge, writing into the same external volume the runner mounts. Deliberately
+# `docker run` and not `compose run`: every service in the compose file is
+# pinned to the egress-blocked namespace, which is the whole point.
+#
+# A warm cache makes this a no-op costing a second or two. A failure here is
+# fatal — continuing would produce a confusing "cannot find module" failure
+# inside the suite instead of "the network was down before we started".
+step "Populating the Go module cache (needs network; the stack itself has none)"
+if ! docker run --rm \
+    -v "$REPO_ROOT:/src" -w /src \
+    -v coves-ci-go-mod-cache:/go/pkg/mod \
+    -v coves-ci-go-build-cache:/go-build-cache \
+    --entrypoint go \
+    "$PROJECT-runner" mod download; then
+    fail "could not download Go modules — check network access and go.sum"
+    fail "if the network is fine, the cache volume may be corrupt: run 'make ci-clean' and retry"
+    exit 1
+fi
+ok "module cache populated"
+
+# ---------------------------------------------------------------------------
 # Bring up infrastructure
 # ---------------------------------------------------------------------------
 # Staged deliberately: the AppView is NOT started here. It authenticates to the
 # PDS as PDS_INSTANCE_HANDLE, and in a fresh PDS that account does not exist
 # yet, so it has to be created between these two stages.
-step "Starting infrastructure (Postgres ×3, PLC, PDS)"
+step "Starting infrastructure (Postgres ×3, PLC, PDS, Turnstile stub)"
 # Jetstream is deliberately absent from this --wait list. `up --wait` fails
 # outright — "has no healthcheck configured" — for any service it is asked to
 # wait on that cannot report health, and the Jetstream image ships no HTTP
 # client to probe itself with (docker-compose.dev.yml disables its healthcheck
 # for the same reason).
-compose up -d --wait netns postgres postgres-test postgres-plc plc-directory pds
+compose up -d --wait netns postgres postgres-test postgres-plc plc-directory pds turnstile-stub
 ok "infrastructure healthy"
 
 # Started only after the PDS is healthy, since it connects straight to the PDS

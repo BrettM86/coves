@@ -53,9 +53,25 @@ wait_for "jetstream (metrics :6009)" "http://localhost:6009/metrics" 90
 # over its own loopback — while the runner could reach nothing. Failing here,
 # loudly, beats a suite that skips every infrastructure test.
 wait_for "pds (:3001)" "http://localhost:3001/xrpc/_health" 60
-wait_for "plc directory (:3002)" "http://localhost:3002/" 60
+# /_health rather than /, which redirects to the hosted web UI on the public
+# internet — unreachable from this egress-blocked network by design.
+wait_for "plc directory (:3002)" "http://localhost:3002/_health" 60
 wait_for "appview (:8081)" "http://localhost:8081/xrpc/_health" 90
 
+echo
+
+# ---------------------------------------------------------------------------
+# 1b. Type-check the live tier
+# ---------------------------------------------------------------------------
+# tests/live is excluded from every build the gate runs, so nothing here would
+# ever notice it stopped compiling — a rename in internal/ would break it
+# silently and the breakage would surface weeks later, to whoever next ran
+# `make test-live`. Vet type-checks it without executing anything, so it needs
+# no network: the live tier stays buildable on the merge path even though it
+# never runs there.
+echo "▶ Type-checking the live tier (-tags live, not executed)..."
+go vet -tags live ./tests/live/...
+echo "  ✓ tests/live compiles"
 echo
 
 # ---------------------------------------------------------------------------

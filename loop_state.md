@@ -37,8 +37,8 @@ Stop the loop when every task is done, or on any blocked task.
 
 | # | Task | Phase | R | Status | Commit | Notes |
 |---|------|-------|---|--------|--------|-------|
-| 1 | Gate green as imported: run `make ci`, fix what surfaces, record baseline timing + allowlist | 0 ⛩ | S | in-progress | | unknown failures likely; may split |
-| 2 | Move public-network tests to tests/live/ (+`live` tag, move-only); flip compose nets `internal: true` + module-cache pre-pull; cold-cache egress-blocked `make ci` green | 0 ⛩ | S | pending | | order per spec §3.7/§4 |
+| 1 | Gate green as imported: run `make ci`, fix what surfaces, record baseline timing + allowlist | 0 ⛩ | S | done | (no diff) | GREEN FIRST RUN: 3307 tests, 3288 pass, 0 fail, 19 skips (all allowlisted, 21 entries → 2 unused are ~conditional), 2.2 min WARM caches. No fixes → no review stream |
+| 2 | Move public-network tests to tests/live/ (+`live` tag, move-only); flip compose nets `internal: true` + module-cache pre-pull; cold-cache egress-blocked `make ci` green | 0 ⛩ | S | done | (see git log) | COLD egress-blocked GREEN 2:21; warm 1:57. 16 funcs → tests/live (4 files + helpers). Egress block found 4 runtime deps, not 1: Turnstile URL hardcoded (→ WithSiteverifyURL, dev-gated env), PLC healthcheck redirected to public web (→ /_health), 3 blueskypost tests dialed public.api.bsky.app (→ blueskyAPI seam), DNS-dependent 404 test (→ DID). Review: Codex "good" + Opus "safe as-is"; 9 fixes applied (unfurl E2E de-mocked via httptest OG, gate vets -tags live, non-dev override warns, prod default pinned, stub 127.0.0.1-only, GOPROXY=off, 404/500 handler tests, golden 200 parse, live cache purge+method asserts). 3281 tests / 14 allowlisted skips |
 | 3 | testkit core: db.go (template-clone, advisory lock), wait.go (WaitFor/Holds, terminal errs), fixtures.go (UniqueID run-prefix), scripts/test-db-prepare.sh, scripts/test-audit.sh (warn mode) + testkit's own tests | 1 | S | pending | | dependency rule: testkit imports NO internal/core/* |
 | 4 | testkit pds.go (absorb 4 factories, createPDSAccount×2, XRPC clients), firehose.go (generic cursor-gated), appview.go; fix 5 handle-collision sites | 1 ⛩ | S | pending | | then FULL PANEL review of tests/testkit (incl. pragma:security — PDS creds) |
 | 5 | Kill the lies: delete 6 debt tests; lexicon validator stops generating defs-only subtests (retire 8 allowlist entries); move 2 ratelimit files to internal/api/middleware (T0); fold tests/unit into internal/core/communities | 2 | M | pending | | |
@@ -84,5 +84,24 @@ Stop the loop when every task is done, or on any blocked task.
 - **ci-bootstrap.sh** exists because the instance account on a kept PDS
   volume was created by hand years ago; fresh stacks create it via
   createAccount and prove createSession. Don't "simplify" it away.
-- **Baseline (task 1 fills in)**: make ci wall-clock: ___; tests: ___;
-  allowlist entries: 21.
+- **Baseline (task 1, 2026-07-29)**: make ci wall-clock 2.2 min (WARM
+  caches/images); 3307 tests / 3288 pass / 19 allowlisted skips; allowlist
+  21 entries. **Post-task-2**: COLD egress-blocked 2:21, warm 1:57; 3281
+  tests / 14 allowlisted skips; allowlist 14 entries (8 lexicon defs-only +
+  6 debt — task 5 kills the 6, lexicon fix kills the 8).
+- **From task 2**: egress block is a DETECTOR — expect it to keep surfacing
+  hidden network deps in later phases (found 4 on day one; no grep catches a
+  healthcheck redirect or SERVFAIL-vs-NXDOMAIN). Egress failures are FAST
+  (DNS ~0s), so fallback-tolerant tests silently take their fallback path,
+  never hang/skip. Turnstile: stub at 127.0.0.1:3003, env honored only when
+  IS_DEV_ENV=true, non-dev override logs a warning. blueskypost has an
+  unexported test seam blueskyAPI{baseURL,allowPrivateHost}; prod default
+  pinned by TestService_DefaultAPITarget — keep it pinned. GOPROXY=off in
+  the runner SERVICE env only (prefetch runs same image outside the stack
+  and needs the proxy). tests/live still carries testing.Short() guards +
+  network-tolerant skips (_CacheHit/_KagiKite) — task 6 sweeps them; an
+  oEmbed-endpoint-map unit test in internal/core/unfurl is a small task-6
+  add-on (E2E now goes through the OpenGraph path instead). ci-runner has
+  stage 1b `go vet -tags live` so the live tier can't rot invisibly.
+- **Docker flake**: containerd "failed to prepare extraction snapshot" can
+  appear once on build; retry clears it — don't chase it as a regression.

@@ -3,6 +3,8 @@ package blueskypost
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -37,6 +39,28 @@ func (m *mockRepository) Set(ctx context.Context, atURI string, result *BlueskyP
 	}
 	m.storage[atURI] = result
 	return nil
+}
+
+// newStubbedService returns a service whose Bluesky API calls go to an
+// httptest server instead of public.api.bsky.app. Without it these tests hit
+// the live Bluesky API — which made them fail the moment CI blocked egress,
+// and meant they were asserting Bluesky's uptime rather than our caching and
+// circuit-breaker behaviour.
+func newStubbedService(t *testing.T, repo Repository, handler http.HandlerFunc) *service {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	svc := NewService(repo, &mockIdentityResolver{}).(*service)
+	svc.api = blueskyAPI{baseURL: server.URL, allowPrivateHost: true}
+	return svc
+}
+
+// respondPostNotFound is what the Bluesky API returns for a post that does not
+// exist: a 404, which the fetcher maps to an "unavailable" result rather than
+// an error.
+func respondPostNotFound(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusNotFound)
 }
 
 func TestService_IsBlueskyURL(t *testing.T) {
@@ -161,19 +185,14 @@ func TestService_ResolvePost_CacheHit(t *testing.T) {
 }
 
 func TestService_ResolvePost_CacheMiss(t *testing.T) {
-	// This test would require mocking the HTTP client or using a test server
-	// For now, we'll test that cache miss is handled properly by testing
-	// the flow up to the point where fetching would occur
-
 	repo := newMockRepository()
-	resolver := &mockIdentityResolver{}
-	svc := NewService(repo, resolver)
+	svc := newStubbedService(t, repo, respondPostNotFound)
 	ctx := context.Background()
 
 	atURI := "at://did:plc:notincache/app.bsky.feed.post/xyz789"
 
-	// Cache miss should trigger a fetch from the API
-	// Since this is a fake DID, the API will return 404 which maps to unavailable
+	// Cache miss should trigger a fetch from the API, whose 404 for an unknown
+	// post maps to unavailable rather than to an error.
 	result, err := svc.ResolvePost(ctx, atURI)
 	// The request should succeed (404 is not an error, it's unavailable)
 	if err != nil {
@@ -190,8 +209,7 @@ func TestService_ResolvePost_CacheMiss(t *testing.T) {
 func TestService_ResolvePost_CacheError(t *testing.T) {
 	repo := newMockRepository()
 	repo.getErr = errors.New("database connection failed")
-	resolver := &mockIdentityResolver{}
-	svc := NewService(repo, resolver)
+	svc := newStubbedService(t, repo, respondPostNotFound)
 	ctx := context.Background()
 
 	atURI := "at://did:plc:alice123/app.bsky.feed.post/abc123"
@@ -239,21 +257,20 @@ func TestService_ResolvePost_SetCacheError(t *testing.T) {
 	// Test that cache set errors don't fail the request
 	repo := newMockRepository()
 	repo.setErr = errors.New("cache write failed")
-	resolver := &mockIdentityResolver{}
-	svc := NewService(repo, resolver)
+	svc := newStubbedService(t, repo, respondPostNotFound)
 	ctx := context.Background()
 
 	atURI := "at://did:plc:alice123/app.bsky.feed.post/abc123"
 
-	// This will fail at fetch, but we're testing that cache set errors
-	// are handled gracefully
-	_, err := svc.ResolvePost(ctx, atURI)
+	result, err := svc.ResolvePost(ctx, atURI)
 
-	// Error should be from fetch, not from cache set
-	// In a real test with mocked HTTP, we'd verify the cache set error
-	// was logged but didn't fail the request
-	if err != nil && contains(err.Error(), "cache write failed") {
-		t.Error("Cache set errors should not fail the request")
+	// The cache write fails, and the request still succeeds: caching is
+	// best-effort, so its failure is logged rather than surfaced.
+	if err != nil {
+		t.Errorf("Cache set errors should not fail the request, got: %v", err)
+	}
+	if result == nil {
+		t.Fatal("Expected a result despite the cache write failing")
 	}
 }
 
@@ -301,10 +318,108 @@ func TestService_DefaultOptions(t *testing.T) {
 	}
 }
 
+// TestService_DefaultAPITarget pins the production default. The api field
+// exists so tests can redirect the fetcher at a loopback server with the SSRF
+// guard off; if a future option or refactor let either of those leak into the
+// default, the service would be willing to fetch posts from an
+// attacker-nominated host. That is worth a test of its own rather than a
+// comment.
+func TestService_DefaultAPITarget(t *testing.T) {
+	svc := NewService(newMockRepository(), &mockIdentityResolver{}).(*service)
+
+	if svc.api.baseURL != blueskyAPIBaseURL {
+		t.Errorf("api.baseURL = %q, want the public Bluesky AppView %q", svc.api.baseURL, blueskyAPIBaseURL)
+	}
+	if svc.api.allowPrivateHost {
+		t.Error("api.allowPrivateHost must be false by default: the SSRF guard is not optional in production")
+	}
+}
+
+// TestService_ResolvePost_ParsesAPIResponse covers the happy path end to end —
+// a 200 from the Bluesky API through blueskyAPIResponse decoding and into the
+// cache. Every other stubbed test here answers 404, so without this one the
+// response parsing has no merge-path coverage at all: it was previously only
+// exercised by the live-tier tests.
+func TestService_ResolvePost_ParsesAPIResponse(t *testing.T) {
+	const goldenResponse = `{
+	  "posts": [
+	    {
+	      "uri": "at://did:plc:alice123/app.bsky.feed.post/abc123",
+	      "cid": "bafyreigoldencid",
+	      "author": {
+	        "did": "did:plc:alice123",
+	        "handle": "alice.bsky.social",
+	        "displayName": "Alice",
+	        "avatar": "https://cdn.bsky.app/img/avatar/alice.jpg"
+	      },
+	      "record": {
+	        "text": "hello from the golden fixture",
+	        "createdAt": "2026-07-01T12:00:00Z"
+	      },
+	      "replyCount": 3,
+	      "repostCount": 5,
+	      "likeCount": 7,
+	      "indexedAt": "2026-07-01T12:00:05Z"
+	    }
+	  ]
+	}`
+
+	repo := newMockRepository()
+	var requestedURI string
+	svc := newStubbedService(t, repo, func(w http.ResponseWriter, r *http.Request) {
+		requestedURI = r.URL.Query().Get("uris")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(goldenResponse))
+	})
+
+	atURI := "at://did:plc:alice123/app.bsky.feed.post/abc123"
+	result, err := svc.ResolvePost(context.Background(), atURI)
+	if err != nil {
+		t.Fatalf("ResolvePost() unexpected error: %v", err)
+	}
+
+	if requestedURI != atURI {
+		t.Errorf("fetcher requested uris=%q, want %q", requestedURI, atURI)
+	}
+	if result.Unavailable {
+		t.Error("A 200 with a post must not be marked unavailable")
+	}
+	if result.URI != atURI {
+		t.Errorf("URI = %q, want %q", result.URI, atURI)
+	}
+	if result.CID != "bafyreigoldencid" {
+		t.Errorf("CID = %q, want bafyreigoldencid", result.CID)
+	}
+	if result.Text != "hello from the golden fixture" {
+		t.Errorf("Text = %q, want the record text", result.Text)
+	}
+	if result.Author == nil {
+		t.Fatal("Author must be populated from the response")
+	}
+	if result.Author.Handle != "alice.bsky.social" {
+		t.Errorf("Author.Handle = %q, want alice.bsky.social", result.Author.Handle)
+	}
+	if result.LikeCount != 7 || result.RepostCount != 5 || result.ReplyCount != 3 {
+		t.Errorf("engagement counts = like %d/repost %d/reply %d, want 7/5/3",
+			result.LikeCount, result.RepostCount, result.ReplyCount)
+	}
+	if result.CreatedAt.IsZero() {
+		t.Error("CreatedAt should be parsed from record.createdAt")
+	}
+
+	// A successful fetch is cached, which is what makes the second read a hit.
+	cached, cacheErr := repo.Get(context.Background(), atURI)
+	if cacheErr != nil {
+		t.Fatalf("result should have been cached, got: %v", cacheErr)
+	}
+	if cached.CID != "bafyreigoldencid" {
+		t.Errorf("cached CID = %q, want bafyreigoldencid", cached.CID)
+	}
+}
+
 func TestService_ResolvePost_ContextCancellation(t *testing.T) {
 	repo := newMockRepository()
-	resolver := &mockIdentityResolver{}
-	svc := NewService(repo, resolver)
+	svc := newStubbedService(t, repo, respondPostNotFound)
 
 	// Create a context that's already cancelled
 	ctx, cancel := context.WithCancel(context.Background())

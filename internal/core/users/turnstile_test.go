@@ -30,6 +30,26 @@ func newTestTurnstile(t *testing.T, handler http.HandlerFunc) (*cloudflareTurnst
 	return v, server
 }
 
+func TestNewCloudflareTurnstile_SiteverifyURL(t *testing.T) {
+	t.Run("defaults to Cloudflare", func(t *testing.T) {
+		v := NewCloudflareTurnstile("s").(*cloudflareTurnstile)
+		assert.Equal(t, defaultTurnstileSiteverifyURL, v.siteverifyURL)
+	})
+
+	t.Run("override redirects verification", func(t *testing.T) {
+		v := NewCloudflareTurnstile("s", WithSiteverifyURL("http://localhost:3003/stub")).(*cloudflareTurnstile)
+		assert.Equal(t, "http://localhost:3003/stub", v.siteverifyURL)
+	})
+
+	// The override is plumbed from an env var that is empty in every
+	// non-dev deployment, so empty must mean "leave Cloudflare alone"
+	// rather than "verify against the empty URL".
+	t.Run("empty override keeps the default", func(t *testing.T) {
+		v := NewCloudflareTurnstile("s", WithSiteverifyURL("")).(*cloudflareTurnstile)
+		assert.Equal(t, defaultTurnstileSiteverifyURL, v.siteverifyURL)
+	})
+}
+
 func TestTurnstile_Verify_Success(t *testing.T) {
 	var capturedBody string
 	v, _ := newTestTurnstile(t, func(w http.ResponseWriter, r *http.Request) {

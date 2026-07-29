@@ -146,7 +146,11 @@ services:
       LOG_DESTINATION: "1"
       NODE_ENV: development
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3002/"]
+      # /_health, not /: the PLC server redirects / to https://web.plc.directory
+      # (its hosted web UI) and wget follows redirects, so probing / made this
+      # healthcheck depend on public DNS resolving. It passed only because the
+      # stack still had egress; with `internal: true` it fails on "bad address".
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3002/_health"]
       interval: 3s
       timeout: 5s
       retries: 30
@@ -212,6 +216,60 @@ services:
       pds:
         condition: service_healthy
 
+  # Stands in for Cloudflare's Turnstile siteverify endpoint.
+  #
+  # The AppView verifies captcha tokens server-side during the signup handshake
+  # (tests/e2e/user_signup_token_test.go exercises it). That call went to
+  # challenges.cloudflare.com, which the egress block makes unreachable — and
+  # which a merge gate should not depend on regardless: a Cloudflare outage
+  # would fail everyone's builds. .env.ci points TURNSTILE_SITEVERIFY_URL here
+  # instead; internal/config only honours that variable when IS_DEV_ENV is true,
+  # so production always talks to the real endpoint.
+  #
+  # nginx rather than the alpine image the netns service already pulls: Alpine's
+  # BusyBox build ships no httpd applet, and installing one would need network
+  # access at container start, which is exactly what this stack does not have.
+  # Pinned by digest like everything else here. sha256:65645c7b… resolved
+  # 2026-07-29 from nginx:1.27-alpine.
+  turnstile-stub:
+    image: nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    network_mode: "service:netns"
+    init: true
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        cat >/etc/nginx/conf.d/default.conf <<'CONF'
+        server {
+            # Loopback IPv4 only, and .env.ci dials 127.0.0.1 rather than
+            # "localhost" to match. Binding both families instead would make
+            # the stub fail to start on a host with IPv6 disabled, and dialling
+            # "localhost" against an IPv4-only listener resolves to ::1 first —
+            # a connection refused for wget, a retry delay for Go. Naming the
+            # address on both ends removes the resolution order from the picture.
+            listen 127.0.0.1:3003;
+            # Any path, any method: the AppView only cares that siteverify
+            # answers success, which is what Cloudflare's always-pass test
+            # secret does upstream.
+            location / {
+                default_type application/json;
+                return 200 '{"success":true}';
+            }
+        }
+        CONF
+        exec nginx -g 'daemon off;'
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -O- --post-data=probe http://127.0.0.1:3003/turnstile/v0/siteverify | grep -q '"success":true'
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    depends_on:
+      netns:
+        condition: service_healthy
+
   # ---------------------------------------------------------------------------
   # The system under test
   # ---------------------------------------------------------------------------
@@ -252,6 +310,8 @@ services:
         condition: service_healthy
       plc-directory:
         condition: service_healthy
+      turnstile-stub:
+        condition: service_healthy
 
   # ---------------------------------------------------------------------------
   # Test runner
@@ -260,9 +320,21 @@ services:
   runner:
     build:
       context: ./docker/ci-runner
+    # Tagged explicitly (this is what Compose would name it anyway) so
+    # scripts/ci.sh can `docker run` this exact image for the module-cache
+    # prefetch, which has to happen on a network that still has egress and
+    # therefore cannot go through `compose run`.
+    image: ${COVES_CI_PROJECT:-coves-ci}-runner
     network_mode: "service:netns"
     env_file:
       - .env.ci
+    environment:
+      # Set here rather than in the image, so scripts/ci.sh's prefetch — which
+      # runs this same image outside the stack, with network — is unaffected.
+      # Inside the egress-blocked stack the cache is the only source of modules,
+      # so a gap in it should say "module lookup disabled by GOPROXY=off"
+      # instead of surfacing as a DNS failure that reads like broken networking.
+      GOPROXY: "off"
     volumes:
       # The checkout. Read-write because the Go toolchain and goose both expect
       # a normal working tree; scripts/ci.sh asserts afterwards that the run
@@ -288,6 +360,18 @@ networks:
   # (and the dev stack's coves-dev-network) cannot collide.
   ci:
     driver: bridge
+    # THE EGRESS BLOCK. `internal: true` gives this network no gateway to the
+    # outside, so nothing in the stack can reach the public internet at runtime:
+    # a test that accidentally resolves a real handle against plc.directory, or
+    # unfurls a real URL, fails at connect time instead of silently passing
+    # against infrastructure we do not control. Greps for public hostnames catch
+    # drift cheaply; this is the part that actually guarantees it.
+    #
+    # What this does NOT affect: image builds and pulls, which go through the
+    # Docker daemon's own network. What it DOES affect: `go test` downloading
+    # modules, which is why scripts/ci.sh populates the module cache in a
+    # separate, network-enabled stage before the stack comes up.
+    internal: true
 
 volumes:
   # State volumes are unnamed, so Compose scopes them to the project and

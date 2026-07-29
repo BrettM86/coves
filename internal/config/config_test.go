@@ -530,6 +530,43 @@ func TestLoad_IdentityPLCResolution(t *testing.T) {
 	})
 }
 
+func TestLoad_TurnstileSiteverifyURL(t *testing.T) {
+	// The hermetic CI stack is egress-blocked, so its AppView verifies captcha
+	// tokens against an in-stack stub instead of challenges.cloudflare.com.
+	t.Run("dev honours the override", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("IS_DEV_ENV", "true")
+		t.Setenv("TURNSTILE_SECRET_KEY", "1x0000000000000000000000000000000AA")
+		t.Setenv("TURNSTILE_SITEVERIFY_URL", "http://localhost:3003/cgi-bin/siteverify")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() returned error: %v", err)
+		}
+		if cfg.Signup.TurnstileSiteverifyURL != "http://localhost:3003/cgi-bin/siteverify" {
+			t.Errorf("TurnstileSiteverifyURL = %q, want the stub endpoint", cfg.Signup.TurnstileSiteverifyURL)
+		}
+	})
+
+	// Production must always verify against Cloudflare itself: an endpoint that
+	// answers success to everything is a captcha bypass, so this must not be
+	// settable outside dev.
+	t.Run("production ignores the override", func(t *testing.T) {
+		clearEnv(t)
+		prodEnv(t)
+		t.Setenv("TURNSTILE_SECRET_KEY", "real-secret")
+		t.Setenv("TURNSTILE_SITEVERIFY_URL", "https://attacker.example/always-success")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() returned error: %v", err)
+		}
+		if cfg.Signup.TurnstileSiteverifyURL != "" {
+			t.Errorf("TurnstileSiteverifyURL = %q, want empty outside dev", cfg.Signup.TurnstileSiteverifyURL)
+		}
+	})
+}
+
 func TestLoad_MalformedValuesAreRejected(t *testing.T) {
 	tests := []struct {
 		key   string
