@@ -849,6 +849,52 @@ func TestExtractBlobCID(t *testing.T) {
 	})
 }
 
+// TestUserConsumer_BlockEventsTheConsumerDeclinesToIndex covers the two block
+// paths that write nothing and must still succeed.
+//
+// Both are invisible to the indexing tests in user_consumer_block_test.go,
+// which assert on rows: "no row" is also what a broken consumer produces. Here
+// the repository panics if it is touched at all, so a regression that started
+// indexing these would fail loudly instead of quietly.
+func TestUserConsumer_BlockEventsTheConsumerDeclinesToIndex(t *testing.T) {
+	blockEvent := func(operation string) *JetstreamEvent {
+		return &JetstreamEvent{
+			Did: "did:plc:blockdecliner", Kind: "commit", TimeUS: time.Now().UnixMicro(),
+			Commit: &CommitEvent{
+				Operation: operation, Collection: CovesActorBlockCollection,
+				RKey: "d1", CID: "bafydecline",
+				Record: map[string]interface{}{
+					"$type":     CovesActorBlockCollection,
+					"subject":   "did:plc:blockdeclined",
+					"createdAt": "2026-01-01T00:00:00Z",
+				},
+			},
+		}
+	}
+
+	t.Run("no block repository configured", func(t *testing.T) {
+		// WithUserBlockRepo is optional, and an AppView built without it (a
+		// deployment that does not index blocks, or a wiring mistake) must drop
+		// block events rather than nil-panic the whole users consumer on the
+		// first block anybody performs.
+		consumer := NewUserEventConsumer(newMockUserService(), &mockIdentityResolverForUser{})
+
+		require.NoError(t, consumer.HandleEvent(context.Background(), blockEvent("create")))
+	})
+
+	t.Run("an update operation is ignored", func(t *testing.T) {
+		// Block records have no mutable fields, so no client should ever emit
+		// one — but a federated repo can put whatever it likes on the wire.
+		// Treating an update as a create would let a remote repo rewrite an
+		// existing block's subject; treating it as an error would dead-letter
+		// junk that will never become valid.
+		consumer := NewUserEventConsumer(newMockUserService(), &mockIdentityResolverForUser{},
+			WithUserBlockRepo(failingUserBlockRepoStub{}))
+
+		require.NoError(t, consumer.HandleEvent(context.Background(), blockEvent("update")))
+	})
+}
+
 // fakeSessionHandleUpdater records the OAuth-session fan-out the identity path
 // triggers, and can fail on demand.
 type fakeSessionHandleUpdater struct {

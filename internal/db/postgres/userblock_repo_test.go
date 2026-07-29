@@ -1,6 +1,6 @@
 //go:build integration
 
-package integration
+package postgres
 
 import (
 	"Coves/internal/core/userblocks"
@@ -9,9 +9,19 @@ import (
 	"fmt"
 	"testing"
 	"time"
-
-	postgresRepo "Coves/internal/db/postgres"
 )
+
+// The user-block repository against real SQL.
+//
+// Moved verbatim from tests/integration/userblock_repo_test.go, which was
+// already a repository test in everything but location: it built
+// NewUserBlockRepository over a database clone and exercised the six queries in
+// userblock_repo.go. Living next to the SQL it tests means a change to the
+// upsert or to the ORDER BY breaks in the same package it was made.
+//
+// The consumer that feeds these rows is
+// internal/atproto/jetstream/user_consumer_block_test.go; the filtering they
+// drive is feed_repo_block_test.go and its three siblings here.
 
 // TestUserBlockRepo_BlockUser tests creating user blocks
 func TestUserBlockRepo_BlockUser(t *testing.T) {
@@ -19,7 +29,7 @@ func TestUserBlockRepo_BlockUser(t *testing.T) {
 	ctx := context.Background()
 	db := testkit.DB(t)
 
-	repo := postgresRepo.NewUserBlockRepository(db)
+	repo := NewUserBlockRepository(db)
 
 	t.Run("creates block successfully", func(t *testing.T) {
 		// Save expected values independently — BlockUser mutates the input pointer,
@@ -123,7 +133,7 @@ func TestUserBlockRepo_UnblockUser(t *testing.T) {
 	ctx := context.Background()
 	db := testkit.DB(t)
 
-	repo := postgresRepo.NewUserBlockRepository(db)
+	repo := NewUserBlockRepository(db)
 
 	t.Run("removes existing block", func(t *testing.T) {
 		blockerDID := "did:plc:test-unblocker-1"
@@ -169,7 +179,7 @@ func TestUserBlockRepo_GetBlock(t *testing.T) {
 	ctx := context.Background()
 	db := testkit.DB(t)
 
-	repo := postgresRepo.NewUserBlockRepository(db)
+	repo := NewUserBlockRepository(db)
 
 	blockerDID := "did:plc:test-getblock-blocker"
 	blockedDID := "did:plc:test-getblock-blocked"
@@ -210,6 +220,17 @@ func TestUserBlockRepo_GetBlock(t *testing.T) {
 			t.Errorf("Expected RecordURI=%s, got %s", recordURI, retrieved.RecordURI)
 		}
 	})
+
+	// The block is one-directional: A blocking B must not make B a blocker of A.
+	// The profile's viewer.blocking hydration reads exactly this pair in exactly
+	// this order, so a repository that answered symmetrically would silently
+	// tell B they had blocked A.
+	t.Run("the reverse direction has no block", func(t *testing.T) {
+		_, err := repo.GetBlock(ctx, blockedDID, blockerDID)
+		if !userblocks.IsNotFound(err) {
+			t.Errorf("Expected ErrBlockNotFound for the reverse direction, got: %v", err)
+		}
+	})
 }
 
 // TestUserBlockRepo_GetBlockByURI tests block retrieval by record URI
@@ -218,7 +239,7 @@ func TestUserBlockRepo_GetBlockByURI(t *testing.T) {
 	ctx := context.Background()
 	db := testkit.DB(t)
 
-	repo := postgresRepo.NewUserBlockRepository(db)
+	repo := NewUserBlockRepository(db)
 
 	t.Run("retrieves block by record_uri", func(t *testing.T) {
 		recordURI := "at://did:plc:test-uri-blocker/social.coves.actor.block/uri1"
@@ -264,7 +285,7 @@ func TestUserBlockRepo_ListBlockedUsers(t *testing.T) {
 	ctx := context.Background()
 	db := testkit.DB(t)
 
-	repo := postgresRepo.NewUserBlockRepository(db)
+	repo := NewUserBlockRepository(db)
 
 	blockerDID := "did:plc:test-list-blocker"
 
@@ -360,7 +381,7 @@ func TestUserBlockRepo_IsBlocked(t *testing.T) {
 	ctx := context.Background()
 	db := testkit.DB(t)
 
-	repo := postgresRepo.NewUserBlockRepository(db)
+	repo := NewUserBlockRepository(db)
 
 	t.Run("returns false when not blocked", func(t *testing.T) {
 		isBlocked, err := repo.IsBlocked(ctx, "did:plc:test-isblocked-a", "did:plc:test-isblocked-b")
@@ -436,7 +457,7 @@ func TestUserBlockRepo_AreBlocked(t *testing.T) {
 	ctx := context.Background()
 	db := testkit.DB(t)
 
-	repo := postgresRepo.NewUserBlockRepository(db)
+	repo := NewUserBlockRepository(db)
 
 	blockerDID := "did:plc:test-areblocked-blocker"
 
@@ -483,7 +504,7 @@ func TestUserBlockRepo_AreBlocked(t *testing.T) {
 		}
 	})
 
-	t.Run("empty input returns empty map without hitting DB", func(t *testing.T) {
+	t.Run("empty input returns an empty map", func(t *testing.T) {
 		result, err := repo.AreBlocked(ctx, blockerDID, []string{})
 		if err != nil {
 			t.Fatalf("AreBlocked with empty input failed: %v", err)
@@ -502,7 +523,7 @@ func TestUserBlockRepo_UnblockByRecordURI(t *testing.T) {
 	ctx := context.Background()
 	db := testkit.DB(t)
 
-	repo := postgresRepo.NewUserBlockRepository(db)
+	repo := NewUserBlockRepository(db)
 
 	blockerDID := "did:plc:test-uri-unblock-blocker"
 	blockedDID := "did:plc:test-uri-unblock-blocked"

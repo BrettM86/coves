@@ -51,8 +51,8 @@ Stop the loop when every task is done, or on any blocked task.
 | 12 | Contracts: post (community.post) + post_delete + decompose post god-files | 4 | S | done | (see git log) | post_e2e (662) + post_delete (841) deleted, net −1402 w/ more coverage; serial firehose files 7→5. TWO MORE PROD DEFECTS FILED (tally 4): p1 deleted posts served in full by getComments to anon callers forever (repo missing deleted_at filter); p3 DeletePost idempotency branch unreachable (PDS 400 ≠ ErrNotFound — pinned w/ loud require.Errorf). Spoof negative REWRITTEN intra-repo after Opus traced indigo parallel scheduler (cross-repo FIFO doesn't exist; 5s hold was the real bound; relay would break silently) — mutation-tested. Consumer gates pinned: author-not-found=transient+replay-accepted. Journey flake (2/6 gates, note-[C] starvation) mitigated: 60s/75s ordered waits + starvation-vs-dead tally; real fix task 16. make ci GREEN 3496/0 @2:21 |
 | 13 | Contracts: comment (community.comment) + comment god-files (1821+1443+1229+999 LOC) | 4 | S | done | (see git log) | comment_e2e (1120) deleted; 4,263 LOC of T1-shaped satellites KEPT deliberately (right call — §3.4 rule 3 breadth). JOURNEY PULLED FORWARD from task 16: worker bisected its own deletion breaking the journey deterministically (serial tests were accidental SPACERS vs the note-[C] storm) → rebuilt as the §3.4 rule-5 saga in tests/e2e (3 actors, 3 repos, 4 read paths; old file was 2-real-of-11-steps, SQL-insert fallbacks, fakecid). Serial firehose files 5→3; ONE subscriber helper left tree-wide (vote_e2e — task 14 kills it). Comment consumer has NO must-exist gates (measured); comments live in AUTHOR repo; delete = placeholder. getComments capped 20/min → withReadCadence(2.5s) + FreshReadQuota + Holds@1s. Defect #5 filed (malformed URI → 500). Reviews: kill-list EMPTY. make ci GREEN ×2 3532/0 @~2:45; e2e 56/0/0; audit 473 |
 | 14 | Contracts: vote (feed.vote) + user (actor.profile incl. avatar blob path) + subscription (community.subscription) | 4 | S | review | | THE LAST HAND-ROLLED SUBSCRIBER IS DEAD (tree-wide dialer count = 1, and it is production connector.go). 5 files / 3,908 LOC deleted; 3 contracts + community-avatar step added; 5 T1/T0 files gained. TWO DEFECTS FILED (tally 7), both spike-confirmed: #6 vote-before-subject is lost AND its later delete SUBTRACTS a real vote (unbounded downward drift, floored at 0); #7 same-rkey putRecord vote flip silently ignored (consumer handles create/delete only) — third-party/federated clients only, our own client does delete+create. Both PINNED, not asserted-as-intended. make ci GREEN x2 3547/0 @3:55; e2e 68/0/0 x2 kept-stack; audit 473->403. REVIEW BATCH (6 items) applied: item-6 verdict CODEX RIGHT (fake's two slices could not express ordering and the comment claimed they did — unified op log, mutation-proven); vacuous Hold dropped, p1 pin hardened with a second Holds + issue names in both pins; GetBinary added to testkit (Get accepts any 2xx and discards the body — a 204 passed the must-200 claim); community banner + nil->value transition + blob write-forward test, which FOUND the create/update indexing asymmetry. Post-review: make ci GREEN 3549/0 @4:06; e2e 68/0/0 |
-| 15 | Contracts: blocks (actor.block + community.block) + aggregators (aggregator.service + aggregator.authorization) | 4 | S | in-progress | | collections revision-1 inventory MISSED — see spec §3.4a |
-| 16 | Reliability suite (§3.4c: cursor resume, replay-once, rev-gate no-resurrection via Holds, dead-letter, 2-feed overlap) + user_journey rebuild + rm -rf tests/integration | 4 ⛩ | F | pending | | FULL PANEL on the whole Phase-4 output |
+| 15 | Contracts: blocks (actor.block + community.block) + aggregators (aggregator.service + aggregator.authorization) | 4 | S | done | (see git log) | ALL 10 COLLECTIONS CONTRACTED — pending_contracts.txt EMPTY (task 16 flips -allow-pending=false; task 20 verifies). 10 files deleted (5,848 LOC), ~4,575 re-homed. Blocks have NO anonymous observable (all enforcement viewer-scoped) → consumer-health MEASUREMENT WINDOWS (snapshot counters → block → same-repo visible bound → re-read; malformed → dead-letter delta==1; mutation-tested both ways; redriver PROVEN inert at code level — never touches connector counters). TWO MORE DEFECTS (tally 9): p2 community.block indexed-but-NEVER-ENFORCED (no query joins it, no route lists it — decorative, but federates); p3 aggregator quota write best-effort = free posts. Enforcement is ONE-directional viewer-side (product question for Bretton, not filed). Reviews: kill-list 6 small (worst MED-LOW restored: aggregator HTTP path w/ marker-header mutation-check; register→users row — found a T0 fixture that could NEVER pass the real service). make ci GREEN 3544/0 @4:08; e2e 78/0/0 @161s; audit 380 |
+| 16 | Reliability suite (§3.4c: cursor resume, replay-once, rev-gate no-resurrection via Holds, dead-letter+REDRIVE recovery, 2-feed overlap) + relocate/dissolve tests/integration (38 files) + flip -allow-pending=false | 4 ⛩ | F | in-progress | | journey DONE in task 13; FULL PANEL on the whole Phase-4 output |
 | 17 | Unit-coverage debt A: communities, votes, identity (repo tests for their repos too) | 5 | S | pending | | behavior matrices at T0, repo seams at T1 |
 | 18 | Unit-coverage debt B: routes, timeline, discover, communityFeeds + remaining untested repos | 5 | S | pending | | |
 | 19 | Federation topology: 2nd PDS + hermetic relay in compose; promote post/comment/vote contracts to true federation-path | 5 ⛩ | S | pending | | vote-federation gap is the known prize |
@@ -386,3 +386,26 @@ Stop the loop when every task is done, or on any blocked task.
   gate ~4:00 — watch at task 15 but §3.1 budget fine. Task 20: audit
   dialer count floor is 1 (production connector.go:318 — exempt, don't
   chase). oauth UpdateHandleByDID + expires_at now covered (first time).
+- **From task 15 (for tasks 16-18, 20)**: DEAD-LETTER BASELINE (fresh
+  stack, one full tier run, measured): users 1, communities 1, posts 1,
+  comments 1, aggregators 2 (one TRANSIENT attempts=0 — the orphan
+  authorization, redriven every 5min, retires at 10 ≈ 50min, PROVEN inert
+  to all windows: redriver calls handlers directly, connector counters
+  untouched), votes 0. Task 14's older communities=1 note superseded.
+  RELIABILITY-SUITE MATERIAL: authorization-before-aggregator recovery
+  (declare the aggregator → redrive lands it — the best transient-redrive
+  test in the tree; 5-min tick needs harness thought). PHASE-5 PRE-WORK
+  LIST: (1) sealed-session test mint, (2) service-JWT helper
+  (getServiceAuth vs INSTANCE_DID — unlocks dual-auth boundary incl.
+  valid-JWT-from-non-aggregator refused; needs INSTANCE_DID in .env.ci).
+  PRODUCT QUESTIONS for Bretton: block enforcement is one-directional
+  viewer-side (Bluesky-style mutual invisibility unimplemented — intent?);
+  community.block entirely unenforced (defect filed). CARRY LIST for the
+  tests/integration dissolution: community_identifier_resolution_test.go
+  :163-206 holds the ONLY malformed scoped-identifier tests (noted in
+  pending_contracts.txt header too). Known flake vector (documented in
+  requireRejected): reconnect within 5s cursor-rewind double-counts a
+  permanent dead letter (ON CONFLICT dedup vs unconditional counter).
+  Aggregators = the only identity with NO must-know-first gate.
+  Reserved-TLD rule: .invalid never resolves ANYWHERE (RFC 2606) — the
+  mechanism for unverifiable-domain fixtures, not the egress block.

@@ -220,15 +220,50 @@ func TestUserConsumer_ValidationRejections_ArePermanent(t *testing.T) {
 		require.NoError(t, err)
 	})
 
-	t.Run("user block with invalid blocked DID", func(t *testing.T) {
+	// Every structural rejection on the block path. The blocker DID and the
+	// subject both arrive from an untrusted repo, and a block row keyed on
+	// something that is not a DID would be a row no lookup can ever match — so
+	// these are rejected before the repository, which is what the panicking stub
+	// below proves.
+	t.Run("user block validation rejections", func(t *testing.T) {
 		blockConsumer := NewUserEventConsumer(newMockUserService(), &mockIdentityResolverForUser{},
 			WithUserBlockRepo(failingUserBlockRepoStub{}))
-		err := blockConsumer.HandleEvent(ctx, taxonomyEvent(
-			"did:plc:blocker", CovesActorBlockCollection, "create", "b1",
-			map[string]interface{}{"subject": "not-a-did", "createdAt": "2026-01-01T00:00:00Z"},
-		))
-		require.Error(t, err)
-		assert.ErrorIs(t, err, ErrPermanentEvent)
+
+		validRecord := map[string]interface{}{
+			"subject": "did:plc:blocked", "createdAt": "2026-01-01T00:00:00Z",
+		}
+
+		for _, tc := range []struct {
+			name       string
+			blockerDID string
+			operation  string
+			rkey       string
+			record     map[string]interface{}
+		}{
+			{name: "create with no record data", blockerDID: "did:plc:blocker",
+				operation: "create", rkey: "b1", record: nil},
+			{name: "record without a subject", blockerDID: "did:plc:blocker",
+				operation: "create", rkey: "b1",
+				record: map[string]interface{}{"createdAt": "2026-01-01T00:00:00Z"}},
+			{name: "invalid blocked DID", blockerDID: "did:plc:blocker",
+				operation: "create", rkey: "b1",
+				record: map[string]interface{}{"subject": "not-a-did", "createdAt": "2026-01-01T00:00:00Z"}},
+			{name: "invalid blocker DID", blockerDID: "not-a-did",
+				operation: "create", rkey: "b1", record: validRecord},
+			// Without an rkey the consumer cannot build the record's AT-URI, and
+			// the URI is the only key the unblock path has to find the row by.
+			{name: "create with no rkey", blockerDID: "did:plc:blocker",
+				operation: "create", rkey: "", record: validRecord},
+			{name: "delete with no rkey", blockerDID: "did:plc:blocker",
+				operation: "delete", rkey: "", record: nil},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				err := blockConsumer.HandleEvent(ctx, taxonomyEvent(
+					tc.blockerDID, CovesActorBlockCollection, tc.operation, tc.rkey, tc.record))
+				require.Error(t, err)
+				assert.ErrorIs(t, err, ErrPermanentEvent)
+			})
+		}
 	})
 }
 

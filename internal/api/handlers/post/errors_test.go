@@ -10,6 +10,7 @@ import (
 
 	"Coves/internal/api/xrpc"
 	"Coves/internal/atproto/pds"
+	"Coves/internal/core/aggregators"
 	"Coves/internal/core/posts"
 )
 
@@ -123,6 +124,34 @@ func TestPostErrorCodes(t *testing.T) {
 		t.Run(tt.wantCode, func(t *testing.T) {
 			rec := httptest.NewRecorder()
 			handleServiceError(rec, fmt.Errorf("service: %w", tt.err))
+			assertXRPCError(t, rec, tt.wantStatus, tt.wantCode)
+		})
+	}
+}
+
+// The other domain whose errors reach this mapper. An aggregator's refusal
+// comes out of posts.CreatePost wrapped in its own sentence — `fmt.Errorf(
+// "aggregator not authorized: %w", err)` (service.go step 5) — and the rules
+// that catch it are predicates over the aggregators package's sentinels rather
+// than over anything in posts.
+//
+// Both codes are load-bearing for a machine client: 403 says stop asking, 429
+// says ask later. A mapper that knew only the posts package would answer 500 to
+// each, and a well-behaved aggregator would retry a permanent refusal forever.
+func TestAggregatorErrorCodes(t *testing.T) {
+	tests := []struct {
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{aggregators.ErrNotAuthorized, http.StatusForbidden, "NotAuthorized"},
+		{aggregators.ErrRateLimitExceeded, http.StatusTooManyRequests, "RateLimitExceeded"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.wantCode, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handleServiceError(rec, fmt.Errorf("aggregator not authorized: %w", tt.err))
 			assertXRPCError(t, rec, tt.wantStatus, tt.wantCode)
 		})
 	}

@@ -374,10 +374,14 @@ func TestActorProfileAPIContract(t *testing.T) {
 	defer cancel()
 
 	t.Run("the write endpoint refuses an unauthenticated client", func(t *testing.T) {
-		// social.coves.actor.updateProfile is the only actor NSID behind
-		// RequireAuth. signup is deliberately NOT here: it is public by design
-		// (there is no session yet), and it has its own contract in
-		// user_signup_test.go.
+		// The only actor NSID behind RequireAuth that belongs to the PROFILE
+		// endpoints. signup is deliberately not here: it is public by design
+		// (there is no session yet) and has its own contract in
+		// user_signup_test.go. The other three guarded actor NSIDs —
+		// blockUser, unblockUser, getBlockedUsers — are asserted together in
+		// TestActorBlockIngestion, next to the collection whose privacy they
+		// enforce, because listing a route file's NSIDs in one place is what
+		// makes that list's completeness checkable.
 		err := p.AppView.Procedure(ctx, "social.coves.actor.updateProfile",
 			map[string]any{"displayName": "nope"}, nil)
 		require.Truef(t, testkit.IsStatus(err, http.StatusUnauthorized),

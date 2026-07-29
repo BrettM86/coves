@@ -108,6 +108,12 @@ type BlockedAuthor struct {
 // blockedBy is always "author" today: community blocks are not enforced on any read path
 // yet, and moderator removals already surface as notFoundPost (soft-deleted rows are
 // absent from the repo fetch).
+//
+// KNOWN DEFECT, not a design choice: community blocks are indexed and then read by nobody
+// (issue 2026-07-29-community-blocks-indexed-but-never-enforced). When that is fixed this
+// is the second place it surfaces — the union member already has room for a "community"
+// value — so do not "tidy" this comment into a claim that author is the only case there
+// can be.
 type BlockedPost struct {
 	URI       string         `json:"uri"`
 	Blocked   bool           `json:"blocked"` // Always true (const per lexicon); discriminates the union on the wire

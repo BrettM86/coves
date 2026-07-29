@@ -4,6 +4,7 @@ package posts_test
 
 import (
 	"context"
+	"database/sql"
 
 	"testing"
 
@@ -64,11 +65,19 @@ const (
 
 // postFixture is the post service wired the way cmd/server wires it, over a
 // real community that owns a real PDS repository.
+//
+// db and communityService are the provisioned halves of that wiring, kept so a
+// neighbouring test can build a differently-wired post service over the SAME
+// community rather than provision a second one — see
+// service_aggregator_test.go, which needs the aggregator collaborator this
+// fixture deliberately leaves nil.
 type postFixture struct {
-	service   posts.Service
-	pds       *testkit.PDS
-	community *communities.Community
-	author    *testkit.Account
+	service          posts.Service
+	pds              *testkit.PDS
+	db               *sql.DB
+	communityService communities.Service
+	community        *communities.Community
+	author           *testkit.Account
 }
 
 // newPostFixture provisions a community on the test PDS and returns the post
@@ -117,9 +126,11 @@ func newPostFixture(t *testing.T) *postFixture {
 		service: posts.NewPostService(
 			postgres.NewPostRepository(db), communityService,
 			nil, nil, nil, nil, pdsServer.URL()),
-		pds:       pdsServer,
-		community: community,
-		author:    author,
+		pds:              pdsServer,
+		db:               db,
+		communityService: communityService,
+		community:        community,
+		author:           author,
 	}
 }
 
