@@ -4,8 +4,10 @@
 # WHAT THIS DOES THAT THE PER-TIER TARGETS DO NOT
 #
 #   * Creates its own infrastructure instead of asserting that a human already
-#     started it. `make test-integration` and `make test-e2e` grade whatever the
-#     dev stack happens to be serving; this builds the stack it grades against.
+#     started it. `make test-integration` grades whatever the dev stack happens
+#     to be serving; this builds the stack it grades against. (`make test-e2e`
+#     now shares this script's bring-up — see scripts/lib/ci-stack.sh — so the
+#     pipeline tier runs the same way in both.)
 #
 #   * Tests a binary built from the current working tree, rather than whatever
 #     long-running `make run` started in another terminal, which may be many
@@ -31,89 +33,28 @@
 #   COVES_CI_ALLOW_STALE  true to downgrade stale-allowlist entries to warnings
 set -euo pipefail
 
-REPO_ROOT=$(git rev-parse --show-toplevel)
-cd "$REPO_ROOT"
-
-COMPOSE_FILE=docker-compose.ci.yml
-PROJECT=${COVES_CI_PROJECT:-coves-ci}
-OUT_DIR="$REPO_ROOT/.ci-out"
-
-# Named so the volumes match docker-compose.ci.yml's external declarations.
-CACHE_VOLUMES=(coves-ci-go-mod-cache coves-ci-go-build-cache)
-
-CYAN='\033[36m'
-GREEN='\033[32m'
-YELLOW='\033[33m'
-RED='\033[31m'
-RESET='\033[0m'
-
-step() { printf "\n${CYAN}▶ %s${RESET}\n" "$1"; }
-ok() { printf "${GREEN}  ✓ %s${RESET}\n" "$1"; }
-warn() { printf "${YELLOW}  ⚠ %s${RESET}\n" "$1"; }
-fail() { printf "${RED}  ✗ %s${RESET}\n" "$1" >&2; }
-
-compose() { docker compose -f "$COMPOSE_FILE" -p "$PROJECT" "$@"; }
-
-# ---------------------------------------------------------------------------
-# Architecture
-# ---------------------------------------------------------------------------
-# The Dockerfile defaults GOARCH to amd64 for the production deploy target.
-# Building that under emulation on an arm64 machine makes every run
-# substantially slower, so CI builds natively. Derived from uname rather than
-# `go env` so this needs no Go toolchain on the host — Docker is the only
-# prerequisite.
-case "$(uname -m)" in
-arm64 | aarch64) COVES_CI_GOARCH=arm64 ;;
-x86_64 | amd64) COVES_CI_GOARCH=amd64 ;;
-*)
-    fail "unsupported host architecture $(uname -m); set COVES_CI_GOARCH manually"
-    exit 1
-    ;;
-esac
-export COVES_CI_GOARCH
+# Sets REPO_ROOT, cds to it, and defines compose/step/ok/warn/fail plus the
+# stack_* bring-up used identically by scripts/test-e2e.sh.
+# shellcheck source=scripts/lib/ci-stack.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/ci-stack.sh"
 
 # ---------------------------------------------------------------------------
 # Teardown
 # ---------------------------------------------------------------------------
 # Registered before anything is created, so an interrupt or an early failure
-# still cleans up. `down -v` removes this project's state volumes; the Go caches
-# are declared external in the compose file precisely so they survive this.
+# still cleans up.
 teardown() {
     local exit_code=$?
     if [[ ${COVES_CI_KEEP_STACK:-0} == 1 ]]; then
-        printf "\n${YELLOW}Stack left running (COVES_CI_KEEP_STACK=1).${RESET}\n"
-        printf "  Inspect:  docker compose -f %s -p %s ps\n" "$COMPOSE_FILE" "$PROJECT"
-        printf "  Logs:     docker compose -f %s -p %s logs appview\n" "$COMPOSE_FILE" "$PROJECT"
-        printf "  Tear down: docker compose -f %s -p %s down -v --remove-orphans\n" "$COMPOSE_FILE" "$PROJECT"
+        stack_keep_notice
         return $exit_code
     fi
-    step "Tearing down the CI stack..."
-    compose down -v --remove-orphans --timeout 10 >/dev/null 2>&1 || true
-    ok "removed containers, network, and state volumes (Go caches kept)"
+    stack_teardown
     return $exit_code
 }
 trap teardown EXIT
 
-# ---------------------------------------------------------------------------
-# Preflight
-# ---------------------------------------------------------------------------
-step "Preflight"
-
-if ! docker info >/dev/null 2>&1; then
-    fail "the Docker daemon is not reachable — start Docker and retry"
-    exit 1
-fi
-ok "docker daemon reachable"
-
-for volume in "${CACHE_VOLUMES[@]}"; do
-    if ! docker volume inspect "$volume" >/dev/null 2>&1; then
-        docker volume create "$volume" >/dev/null
-        ok "created cache volume $volume"
-    fi
-done
-ok "go module and build caches present"
-
-mkdir -p "$OUT_DIR"
+stack_preflight
 
 # Snapshot the working tree so the post-run check can compare against how the
 # tree started, not against HEAD. Comparing against HEAD would flag every
@@ -121,80 +62,10 @@ mkdir -p "$OUT_DIR"
 # about whether the *run* modified anything.
 TREE_BEFORE=$(git status --porcelain --untracked-files=all | sort)
 
-# A stack left behind by an interrupted previous run would otherwise be reused
-# with its state intact, which is the one thing this gate must never do.
-step "Discarding any previous CI stack"
-compose down -v --remove-orphans --timeout 10 >/dev/null 2>&1 || true
-ok "clean slate"
-
-# ---------------------------------------------------------------------------
-# Build
-# ---------------------------------------------------------------------------
-step "Building images (AppView from the current working tree)"
-compose build
-ok "images built"
-
-# ---------------------------------------------------------------------------
-# Module cache (the only stage with network access)
-# ---------------------------------------------------------------------------
-# The stack's network is `internal: true` (see docker-compose.ci.yml), so once
-# it is up nothing in it can reach the internet — including the Go toolchain,
-# which downloads modules at test time rather than at image-build time. On a
-# cold cache that would leave the runner unable to compile anything.
-#
-# So the modules are fetched here, in a throwaway container on Docker's default
-# bridge, writing into the same external volume the runner mounts. Deliberately
-# `docker run` and not `compose run`: every service in the compose file is
-# pinned to the egress-blocked namespace, which is the whole point.
-#
-# A warm cache makes this a no-op costing a second or two. A failure here is
-# fatal — continuing would produce a confusing "cannot find module" failure
-# inside the suite instead of "the network was down before we started".
-step "Populating the Go module cache (needs network; the stack itself has none)"
-if ! docker run --rm \
-    -v "$REPO_ROOT:/src" -w /src \
-    -v coves-ci-go-mod-cache:/go/pkg/mod \
-    -v coves-ci-go-build-cache:/go-build-cache \
-    --entrypoint go \
-    "$PROJECT-runner" mod download; then
-    fail "could not download Go modules — check network access and go.sum"
-    fail "if the network is fine, the cache volume may be corrupt: run 'make ci-clean' and retry"
-    exit 1
-fi
-ok "module cache populated"
-
-# ---------------------------------------------------------------------------
-# Bring up infrastructure
-# ---------------------------------------------------------------------------
-# Staged deliberately: the AppView is NOT started here. It authenticates to the
-# PDS as PDS_INSTANCE_HANDLE, and in a fresh PDS that account does not exist
-# yet, so it has to be created between these two stages.
-step "Starting infrastructure (Postgres ×3, PLC, PDS, Turnstile stub)"
-# Jetstream is deliberately absent from this --wait list. `up --wait` fails
-# outright — "has no healthcheck configured" — for any service it is asked to
-# wait on that cannot report health, and the Jetstream image ships no HTTP
-# client to probe itself with (docker-compose.dev.yml disables its healthcheck
-# for the same reason).
-compose up -d --wait netns postgres postgres-test postgres-plc plc-directory pds turnstile-stub
-ok "infrastructure healthy"
-
-# Started only after the PDS is healthy, since it connects straight to the PDS
-# firehose. Readiness is then gated on its metrics endpoint from inside the
-# namespace — see scripts/ci-runner.sh.
-step "Starting Jetstream"
-compose up -d jetstream
-ok "jetstream started (readiness gated by the runner)"
-
-step "Seeding the PDS"
-# --no-deps so this does not drag the AppView up before its account exists.
-compose run --rm --no-deps --entrypoint bash runner /src/scripts/ci-bootstrap.sh
-
 # ---------------------------------------------------------------------------
 # Bring up the system under test
 # ---------------------------------------------------------------------------
-step "Starting the AppView"
-compose up -d --wait appview
-ok "appview healthy on :8081"
+stack_up
 
 # ---------------------------------------------------------------------------
 # Run the suite
@@ -258,6 +129,8 @@ if [[ $GATE_STATUS -ne 0 ]]; then
     printf "  Service logs:             .ci-out/appview.log, pds.log, jetstream.log\n"
     printf "\n  To investigate against a live stack:\n"
     printf "    COVES_CI_KEEP_STACK=1 make ci\n"
+    printf "  ...then iterate on the pipeline tier alone against that same stack:\n"
+    printf "    COVES_CI_REBUILD=1 make test-e2e\n"
 fi
 printf "\n"
 

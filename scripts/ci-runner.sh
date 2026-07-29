@@ -17,51 +17,35 @@ TEST_TIMEOUT=${COVES_CI_TEST_TIMEOUT:-1800s}
 
 mkdir -p "$OUT_DIR"
 
-# ---------------------------------------------------------------------------
-# 1. Readiness
-# ---------------------------------------------------------------------------
-
-# wait_for polls a URL until it answers, then returns. Compose's `--wait`
-# already gated the services that can healthcheck themselves; this covers the
-# one that cannot, and doubles as a check that the shared namespace is wired the
-# way the rest of this design assumes.
-wait_for() {
-    local name=$1 url=$2 attempts=${3:-60}
-    local i
-    for ((i = 1; i <= attempts; i++)); do
-        if curl -fsS --max-time 3 "$url" >/dev/null 2>&1; then
-            echo "  ✓ $name"
-            return 0
-        fi
-        sleep 1
-    done
-    echo "  ✗ $name did not become ready at $url after ${attempts}s" >&2
-    return 1
-}
-
-echo "▶ Verifying the stack is reachable from the runner..."
-
-# Jetstream ships no HTTP client, so it cannot healthcheck itself and
-# docker-compose.ci.yml disables its healthcheck (as the dev compose does). Its
-# metrics endpoint is the readiness signal, and it must come up *after* the PDS
-# firehose is accepting connections, which is precisely the ordering that would
-# otherwise race.
-wait_for "jetstream (metrics :6009)" "http://localhost:6009/metrics" 90
-
-# These are redundant with Compose healthchecks by design. If the namespace were
-# misconfigured, the healthchecks would still pass — each service probing itself
-# over its own loopback — while the runner could reach nothing. Failing here,
-# loudly, beats a suite that skips every infrastructure test.
-wait_for "pds (:3001)" "http://localhost:3001/xrpc/_health" 60
-# /_health rather than /, which redirects to the hosted web UI on the public
-# internet — unreachable from this egress-blocked network by design.
-wait_for "plc directory (:3002)" "http://localhost:3002/_health" 60
-wait_for "appview (:8081)" "http://localhost:8081/xrpc/_health" 90
-
-echo
+# Shared with scripts/e2e-runner.sh (`make test-e2e`), so the pipeline tier
+# starts against an identically-gated stack whichever entry point launched it,
+# and so the tier's go test invocation is written down exactly once.
+# shellcheck source=scripts/lib/runner-ready.sh
+source /src/scripts/lib/runner-ready.sh
 
 # ---------------------------------------------------------------------------
-# 1b. Type-check every tag set
+# 1a. Contract manifest (hard gate)
+# ---------------------------------------------------------------------------
+# docs/TEST_ARCHITECTURE.md §3.6.2. Every collection any Jetstream consumer
+# ingests must have an ingestion contract in tests/e2e, or an entry in
+# tests/ci/pending_contracts.txt naming the task that owes it one — and an entry
+# that has gained a contract fails as stale, exactly like ci-report's allowlist.
+#
+# FIRST, and not `|| true`. It reads the consumer table and the test sources and
+# needs no infrastructure at all, so making it wait behind the readiness gate
+# below would spend ninety seconds on Jetstream before reporting a fault that
+# was knowable at second zero. A collection added to a consumer with no proof
+# that the AppView indexes it is the specific regression this tier exists to
+# prevent.
+check_contract_manifest
+
+# ---------------------------------------------------------------------------
+# 1b. Readiness
+# ---------------------------------------------------------------------------
+wait_for_stack
+
+# ---------------------------------------------------------------------------
+# 1c. Type-check every tag set
 # ---------------------------------------------------------------------------
 # Build tags make tiers invisible to builds that did not ask for them, which
 # also makes their rot invisible: a rename in internal/ can break a tier for
@@ -84,7 +68,7 @@ echo "  ✓ -tags live"
 echo
 
 # ---------------------------------------------------------------------------
-# 1c. Violation audit (advisory)
+# 1d. Violation audit (advisory)
 # ---------------------------------------------------------------------------
 # docs/TEST_ARCHITECTURE.md §3.6.3. The suite is mid-migration and every count
 # below is scheduled against a phase, so this reports and never judges — the
@@ -93,7 +77,7 @@ echo
 bash /src/scripts/test-audit.sh || true
 
 # ---------------------------------------------------------------------------
-# 1d. Test template database
+# 1e. Test template database
 # ---------------------------------------------------------------------------
 # Provisions the migrated template that testkit.DB clones per test. Done here,
 # once, rather than inside the test binaries: `go test` runs packages as
@@ -175,10 +159,12 @@ trap 'kill "$progress_pid" 2>/dev/null || true' EXIT
 # reads as green. The statuses are the out-of-band evidence that the run
 # actually finished, and they are cross-checked against the report below.
 #
-# T2 is pinned to -p 1 -parallel 1 rather than the computed budget: the pipeline
-# contracts share one AppView, one PDS and one firehose cursor space, so they
-# are serial by design (docs/TEST_ARCHITECTURE.md §3.4). The budget applies to
-# the integration tier, where per-test database clones are the constraint.
+# T2 goes through run_pipeline_tier (scripts/lib/runner-ready.sh) rather than
+# spelling its own go test line: `make test-e2e` runs the identical invocation
+# from the identical function, so the gate cannot grade the tier differently
+# from the loop a contract was written in. Its serial flags and the reason for
+# them live at that definition. The computed budget applies to the integration
+# tier, where per-test database clones are the constraint.
 #
 # TEST_FLAGS is deliberately unquoted: it carries two flags and two values.
 set +e
@@ -187,9 +173,7 @@ go test -json -tags integration $TEST_FLAGS -count=1 -timeout "$TEST_TIMEOUT" \
     ./cmd/... ./internal/... ./tests/... \
     >>"$RAW" 2>&1
 integration_status=$?
-go test -json -tags e2e -p 1 -parallel 1 -count=1 -timeout "$TEST_TIMEOUT" \
-    ./tests/e2e/... \
-    >>"$RAW" 2>&1
+run_pipeline_tier -json >>"$RAW" 2>&1
 e2e_status=$?
 set -e
 

@@ -207,6 +207,11 @@ type XRPCClient struct {
 	BaseURL string
 	// Bearer, when set, is sent as the Authorization header.
 	Bearer string
+	// Headers are sent on every request, before Accept and Authorization (so
+	// those two always win). This is how a test controls what the service sees
+	// about the caller rather than about the call — X-Real-IP above all, which
+	// is what the AppView's rate limiter buckets by.
+	Headers http.Header
 	// HTTP is the transport. Never nil for a client built by NewXRPCClient.
 	HTTP *http.Client
 }
@@ -219,14 +224,39 @@ func NewXRPCClient(baseURL string) *XRPCClient {
 	}
 }
 
+// clone returns an independent copy, deep enough that a caller cannot reach
+// through it into the original's headers.
+//
+// A plain struct copy would share the Headers map, so setting a header on one
+// identity's client would silently set it on every other client derived from
+// the same root — the exact aliasing the copy exists to prevent.
+func (c *XRPCClient) clone() *XRPCClient {
+	copied := *c
+	if c.Headers != nil {
+		copied.Headers = c.Headers.Clone()
+	}
+	return &copied
+}
+
 // WithBearer returns a copy of the client authenticated as the holder of token.
 //
 // A copy, not a mutation: a test that holds one client per identity must not be
 // able to change what another identity's client sends.
 func (c *XRPCClient) WithBearer(token string) *XRPCClient {
-	clone := *c
-	clone.Bearer = token
-	return &clone
+	copied := c.clone()
+	copied.Bearer = token
+	return copied
+}
+
+// WithHeader returns a copy of the client that sends one extra header on every
+// request.
+func (c *XRPCClient) WithHeader(name, value string) *XRPCClient {
+	copied := c.clone()
+	if copied.Headers == nil {
+		copied.Headers = make(http.Header)
+	}
+	copied.Headers.Set(name, value)
+	return copied
 }
 
 // URL renders the absolute URL of an XRPC method on this service.
@@ -315,6 +345,11 @@ func (c *XRPCClient) Health(ctx context.Context) error {
 }
 
 func (c *XRPCClient) do(req *http.Request, nsid string, out any) error {
+	for name, values := range c.Headers {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
 	if c.Bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+c.Bearer)
 	}
@@ -386,8 +421,9 @@ type AppView struct {
 }
 
 type appViewConfig struct {
-	baseURL string
-	bearer  string
+	baseURL  string
+	bearer   string
+	clientIP string
 }
 
 // AppViewOption customises NewAppView.
@@ -408,6 +444,23 @@ func WithAppViewURL(baseURL string) AppViewOption {
 	return func(c *appViewConfig) { c.baseURL = trimURL(baseURL) }
 }
 
+// WithAppViewClientIP makes every request claim to come from ip, via X-Real-IP.
+//
+// THIS IS A RATE-LIMIT CONCERN, NOT A SPOOFING TRICK. The AppView rate limits
+// globally by client IP (cmd/server/routes.go: 100 requests per minute), and it
+// reads that IP from X-Real-IP first — the header its reverse proxy sets. Every
+// test in the hermetic stack shares one network namespace, so without this
+// header every request from every test arrives from 127.0.0.1 and lands in ONE
+// bucket. A pipeline test that polls a serving endpoint is a request generator,
+// so tests would start starving each other of quota and failing with 429s that
+// look like an application defect.
+//
+// Pair it with SyntheticClientIP, which mints an address unique to this run and
+// to a caller-chosen label.
+func WithAppViewClientIP(ip string) AppViewOption {
+	return func(c *appViewConfig) { c.clientIP = ip }
+}
+
 // NewAppView returns a client for the AppView the test stack is running.
 func NewAppView(t TestingT, opts ...AppViewOption) *AppView {
 	t.Helper()
@@ -417,11 +470,18 @@ func NewAppView(t TestingT, opts ...AppViewOption) *AppView {
 	}
 	client := NewXRPCClient(cfg.baseURL)
 	client.Bearer = cfg.bearer
+	if cfg.clientIP != "" {
+		client = client.WithHeader("X-Real-IP", cfg.clientIP)
+	}
 	return &AppView{XRPCClient: client}
 }
 
 // As returns a copy of the client authenticated as the holder of token, so one
 // test can hold a client per identity.
+//
+// The client IP carries over: the two identities are the same test, and giving
+// them separate rate-limit buckets would hide exactly the quota a contract is
+// spending.
 func (a *AppView) As(token string) *AppView {
 	return &AppView{XRPCClient: a.WithBearer(token)}
 }

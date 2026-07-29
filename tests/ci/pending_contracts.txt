@@ -1,0 +1,39 @@
+# Collections the AppView ingests that do NOT have a pipeline contract yet.
+#
+# docs/TEST_ARCHITECTURE.md §3.4a requires one ingestion contract per consumed
+# collection: a record written straight to the PDS, indexed by the AppView's own
+# consumers, observed on a serving endpoint. cmd/contract-manifest enforces it
+# against internal/atproto/jetstream's consumer table, and this file is the
+# phase-4 burn-down that keeps the check meaningful while the contracts are
+# still being written — one domain per task, tasks 11-15.
+#
+# Format, one entry per line:
+#
+#   <collection>  # task <N>: why it is not contracted yet
+#
+# The task number is mandatory. A deferral nobody owns is how a burn-down
+# becomes a permanent list, and this file has exactly one legal direction of
+# travel: entries leave it. Adding a contract for a collection listed here makes
+# the entry STALE and fails the check — delete the line in the same commit.
+#
+# Task 20 empties this file and flips cmd/contract-manifest to
+# -allow-pending=false, after which "has a contract" is the only passing state.
+
+social.coves.community.profile       # task 11: community ingestion contract, strangling community_e2e_test.go
+social.coves.community.post          # task 12: post ingestion contract, with the post god-file decomposition
+social.coves.community.comment       # task 13: comment ingestion contract, with the comment god-file decomposition
+social.coves.feed.vote               # task 14: vote ingestion contract (the re-tap idempotency invariant lives here)
+#
+# social.coves.actor.profile carries a trap worth restating where task 14 will
+# read it: users.maybeBackfillProfile fetches the profile record straight from
+# the PDS in a detached goroutine at signup, so the FIRST profile a contract
+# writes can reach the AppView without touching the firehose. Backfill only
+# touches a completely empty profile, so the contract must make the row
+# non-empty first and assert on a SECOND update. TestPipelineSmoke shows the
+# shape; see the RECONCILIATION PATHS hazard in tests/e2e/contracts_test.go.
+social.coves.actor.profile           # task 14: user ingestion contract, including the avatar blob path; MUST assert a second update on a non-empty profile (backfill false-pass)
+social.coves.community.subscription  # task 14: subscription ingestion contract
+social.coves.actor.block             # task 15: user-block ingestion contract
+social.coves.community.block         # task 15: community-block ingestion contract
+social.coves.aggregator.service      # task 15: aggregator service-record ingestion contract
+social.coves.aggregator.authorization # task 15: aggregator authorization ingestion contract

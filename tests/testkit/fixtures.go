@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"hash/fnv"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -132,6 +133,43 @@ func UniqueIDWithPrefix(t TestingT, prefix string) string {
 		clean = clean[:max(budget, 0)]
 	}
 	return clean + suffix
+}
+
+// SyntheticClientIP returns an address in 2001:db8::/32 — the documentation
+// range reserved by RFC 3849, so it can never route anywhere — that is unique
+// to this process and to label.
+//
+// It exists because rate-limit buckets are keyed by client IP and live in the
+// server process, which makes them a SHARED RESOURCE in two directions the
+// suite gets wrong by default:
+//
+//   - Across tests. Every service in the hermetic stack shares one network
+//     namespace, so without a header every request arrives from 127.0.0.1 and
+//     one bucket serves the entire suite. Tests then consume each other's quota
+//     and fail with 429s that read like an application defect.
+//   - Across runs. The buckets outlive a `go test` invocation, so against a
+//     kept stack (COVES_CI_KEEP_STACK) a second run inherits the first run's
+//     spent quota.
+//
+// Both are fixed by keying on RunPrefix, the suite's per-process random
+// identity, together with the label. 64 bits of FNV-1a spread over four
+// hextets: enough that a collision between two runs on the same kept stack is
+// not a thing anyone needs to think about. An earlier version of this idea
+// compressed a hash into ONE octet of an IPv4 documentation range, which
+// collides after a couple of hundred runs — and a collision here is a
+// 429 in an unrelated test, which is the worst kind of flake to chase.
+//
+// Pass it to WithAppViewClientIP. label distinguishes callers that must not
+// share a bucket: a test that deliberately exhausts its quota must not sit in
+// the same bucket as one that needs quota to work.
+func SyntheticClientIP(label string) string {
+	hash := fnv.New64a()
+	// RunPrefix and label are length-delimited rather than concatenated, so
+	// ("ab", "c") and ("a", "bc") cannot hash to the same bucket.
+	_, _ = fmt.Fprintf(hash, "%s\x00%s", RunPrefix(), label)
+	sum := hash.Sum64()
+	return fmt.Sprintf("2001:db8:%04x:%04x:%04x:%04x::1",
+		(sum>>48)&0xffff, (sum>>32)&0xffff, (sum>>16)&0xffff, sum&0xffff)
 }
 
 // sanitizeLabel reduces an arbitrary string to lowercase alphanumerics and

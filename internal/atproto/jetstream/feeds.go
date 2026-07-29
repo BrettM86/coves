@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -87,6 +88,32 @@ func WantedCollections(consumer string) ([]string, error) {
 		return nil, fmt.Errorf("unknown Jetstream consumer %q: no wantedCollections defined (an unfiltered URL would subscribe to the whole firehose)", consumer)
 	}
 	return append([]string(nil), collections...), nil
+}
+
+// ConsumedCollections returns every record collection the AppView indexes,
+// mapped to the consumers that index it (sorted, deduplicated).
+//
+// This is the generated contract inventory of docs/TEST_ARCHITECTURE.md §3.4a.
+// cmd/contract-manifest walks it and fails the build when a consumed collection
+// has no pipeline contract in tests/e2e — so "every collection the AppView
+// ingests is proven end to end" is a compile-time-ish invariant rather than a
+// review habit. Reading the same map the subscribe URLs are built from is the
+// whole point: a hand-maintained second list was wrong the day it was written
+// (it missed both block collections and collapsed the two aggregator types).
+//
+// The map is rebuilt per call and its slices are copies, so a caller cannot
+// reach back into the consumer topology.
+func ConsumedCollections() map[string][]string {
+	byCollection := make(map[string][]string)
+	for consumer, collections := range consumerWantedCollections {
+		for _, collection := range collections {
+			byCollection[collection] = append(byCollection[collection], consumer)
+		}
+	}
+	for collection := range byCollection {
+		sort.Strings(byCollection[collection])
+	}
+	return byCollection
 }
 
 // ParseFeeds parses a JETSTREAM_FEEDS value into an ordered feed list.

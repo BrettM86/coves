@@ -108,3 +108,51 @@ func TestWantedCollections_ReturnsACopy(t *testing.T) {
 	assert.Equal(t, "social.coves.community.post", second[0],
 		"WantedCollections must return a copy; callers must not be able to mutate the canonical table")
 }
+
+func TestConsumedCollections_MatchesEveryConsumersFilters(t *testing.T) {
+	consumed := ConsumedCollections()
+
+	// Derived from the same table the subscribe URLs are, so the two can never
+	// disagree: every collection any consumer wants is present, attributed to
+	// that consumer.
+	for _, consumer := range []string{
+		ConsumerUsers, ConsumerCommunities, ConsumerPosts,
+		ConsumerAggregators, ConsumerVotes, ConsumerComments,
+	} {
+		collections, err := WantedCollections(consumer)
+		require.NoError(t, err)
+		for _, collection := range collections {
+			assert.Contains(t, consumed[collection], consumer,
+				"collection %s is filtered for by consumer %s but the contract inventory does not say so",
+				collection, consumer)
+		}
+	}
+
+	total := 0
+	for _, consumers := range consumed {
+		total += len(consumers)
+		assert.NotEmpty(t, consumers, "a collection in the inventory with no consumer is a bug in ConsumedCollections")
+	}
+	assert.Equal(t, total, countFilteredCollections(),
+		"the inventory must account for every (consumer, collection) pair and no more")
+}
+
+func countFilteredCollections() int {
+	n := 0
+	for _, collections := range consumerWantedCollections {
+		n += len(collections)
+	}
+	return n
+}
+
+func TestConsumedCollections_ReturnsACopy(t *testing.T) {
+	first := ConsumedCollections()
+	require.NotEmpty(t, first["social.coves.community.post"])
+	first["social.coves.community.post"][0] = "mutated"
+	delete(first, "social.coves.feed.vote")
+
+	second := ConsumedCollections()
+	assert.Equal(t, []string{ConsumerPosts}, second["social.coves.community.post"])
+	assert.Equal(t, []string{ConsumerVotes}, second["social.coves.feed.vote"],
+		"the contract inventory must not be mutable through a returned map")
+}

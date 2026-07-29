@@ -1,4 +1,4 @@
-.PHONY: help dev-up dev-up-otel dev-down dev-logs dev-status dev-reset test test-integration test-e2e test-live test-db-prepare test-audit ci ci-clean clean mobile-full-setup
+.PHONY: help dev-up dev-up-otel dev-down dev-logs dev-status dev-reset test test-integration test-e2e test-e2e-dev test-live test-db-prepare test-audit ci ci-clean clean mobile-full-setup
 
 # Default target - show help
 .DEFAULT_GOAL := help
@@ -192,26 +192,51 @@ test-integration: ## T1 integration tier - needs Postgres; starts postgres-test 
 	@echo "$(YELLOW)package fails once, naming the address it could not reach, instead of$(RESET)"
 	@echo "$(YELLOW)skipping test by test and reporting green. 'make ci' remains the gate.$(RESET)"
 
-test-e2e: ## T2 pipeline tier - needs the dev stack AND a running AppView
-	@# TRANSITIONAL. docs/TEST_ARCHITECTURE.md §3.5 puts this tier inside the
-	@# hermetic stack's network namespace via the compose runner, which is the
-	@# only way to reach a stack that publishes no host ports. Building that
-	@# runner path is task 10; until then this target grades whatever the dev
-	@# stack and `make run` happen to be serving, and asserts they are at least
-	@# reachable rather than letting the tests skip themselves.
+test-e2e: ## T2 pipeline tier - brings up the hermetic stack and runs inside it
+	@# docs/TEST_ARCHITECTURE.md §3.5. The hermetic stack publishes no host
+	@# ports, so a host-run `go test -tags e2e` cannot reach it; this brings the
+	@# stack up (or reuses a COVES_CI_KEEP_STACK one) and runs the tier inside
+	@# the runner's network namespace — the same path `make ci` takes, so there
+	@# is exactly one way T2 executes.
+	@#
+	@# Needs no dev stack and conflicts with none: it builds its own AppView
+	@# from the working tree and publishes nothing.
+	@./scripts/test-e2e.sh
+
+test-e2e-dev: ## T2 against the long-lived DEV stack (debugging only - not how CI runs it)
+	@# THE ESCAPE HATCH, and named so nobody reaches for it by accident.
+	@#
+	@# It grades whatever `make dev-up` and `make run` happen to be serving,
+	@# which is the failure mode 'make test-e2e' exists to remove: an AppView
+	@# many edits stale, a PDS full of accounts from last week, a Jetstream
+	@# replaying a month of backlog. A green run here proves less than a green
+	@# 'make test-e2e', and a red one may be about your stack rather than your
+	@# code.
+	@#
+	@# What it buys is a live stack you can attach a debugger to, inspect with
+	@# psql, and leave running between edits. That is worth having, explicitly.
+	@echo "$(YELLOW)DEBUGGING TARGET: grading the dev stack, not a hermetic one.$(RESET)"
+	@echo "$(YELLOW)'make test-e2e' is the real pipeline tier; 'make ci' is the gate.$(RESET)"
+	@echo ""
 	@echo "$(CYAN)Checking the dev stack is reachable...$(RESET)"
 	@curl -sf http://127.0.0.1:3001/xrpc/_health >/dev/null 2>&1 || \
 		(echo "$(RED)  ✗ PDS not reachable on :3001. Run 'make dev-up'.$(RESET)" && exit 1)
 	@echo "  $(GREEN)✓ PDS (:3001)$(RESET)"
+	@curl -sf http://127.0.0.1:6009/metrics >/dev/null 2>&1 || \
+		(echo "$(RED)  ✗ Jetstream not reachable on :6009. Run 'make dev-up'.$(RESET)" && exit 1)
+	@echo "  $(GREEN)✓ Jetstream (:6008, metrics :6009)$(RESET)"
 	@curl -sf http://127.0.0.1:8081/xrpc/_health >/dev/null 2>&1 || \
 		(echo "$(RED)  ✗ AppView not reachable on :8081. Run 'make run' in another terminal.$(RESET)" && exit 1)
 	@echo "  $(GREEN)✓ AppView (:8081)$(RESET)"
 	@echo ""
-	@echo "$(GREEN)Running the pipeline tier (-tags e2e)...$(RESET)"
-	@# Serial, like the same tier in scripts/ci-runner.sh: the contracts share
-	@# one AppView, one PDS and one firehose cursor space (§3.4).
-	@go test -tags e2e -p 1 -parallel 1 -count=1 ./tests/e2e/...
-	@echo "$(GREEN)✓ Pipeline tier complete$(RESET)"
+	@echo "$(CYAN)Contract manifest:$(RESET)"
+	@go run ./cmd/contract-manifest
+	@echo "$(GREEN)Running the pipeline tier against the dev stack (-tags e2e)...$(RESET)"
+	@# run_pipeline_tier is the ONE definition of how T2 is invoked — the gate,
+	@# 'make test-e2e' and this hatch all call it, so the flags cannot drift
+	@# apart. Sourced here rather than copied for exactly that reason.
+	@bash -c 'source ./scripts/lib/runner-ready.sh && run_pipeline_tier'
+	@echo "$(GREEN)✓ Pipeline tier complete (against the dev stack)$(RESET)"
 
 test-db-reset: ## Reset test database
 	@echo "$(GREEN)Resetting test database...$(RESET)"

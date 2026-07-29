@@ -46,7 +46,7 @@ Stop the loop when every task is done, or on any blocked task.
 | 7 | Migrate setupTestDB call sites → testkit.DB(t), batch 1 (~25 files) + delete their DELETE FROMs/cleanups | 3 | M | done | (see git log) | 29 files (aggregator_e2e..concurrent_scenarios incl. 4 hand-rolled setup clones), 115 sites → testkit.DB(t) (2 needed NO db at all — migration doubles as unused-DB detector), 19 DELETE FROMs + 1 cleanup fn deleted, diff +142/−828. Isolation PROVEN: concurrent -count=2 on a hardcoded-PK pair green; 0 leaked clones. make ci GREEN 3399/0 @142s (+18s vs baseline: ~150ms/test = FORCE-drop + 2 lock RTs — task 9 pays it back). Audit 573→561. NO order-dependency failures surfaced |
 | 8 | Migrate remaining call sites; delete all 3 setupTestDB defs + per-file cleanup fns | 3 | M | done | (see git log) | DB MIGRATION COMPLETE: 128 sites (31 files incl. live+e2e), all 4 defs + 4 cleanup fns + 18 goose pairs + 63 wipes deleted, +189/−1182. grep setupTestDB|goose in tests/ = EMPTY. e2e shared-DB hazard was HYPOTHETICAL (user_signup setupTestDB had ZERO callers; error_recovery all in-process) — SharedDB not needed. TestMain → testkit.Main(RequirePostgres, RequirePDS, RequireJetstream): make test-integration now FAILS without dev stack instead of skip-green (spec-honest, kept). FULL -shuffle=on INTEGRATION RUN GREEN — wipes were dead weight. make ci GREEN 3399/0 @2:39 (+17s ≈ 133ms/clone, consistent) |
 | 9 | Global-state audit (t.Setenv/os.Setenv/logger/http-default → testkit injection); enable t.Parallel on proven-safe; connection budgets; `-race` clean; drop -p 1 | 3 ⛩ | S | done | (see git log) | PHASE 3 COMPLETE. 343 t.Parallel; audit: 0 convert / 4 sites deliberately-serial / rest safe. 9 internal straggler files migrated (goose now EXTINCT in test code; MigrateSharedDatabase deleted). THREE concurrency bugs -p 1 was masking: [A] template-destruction race (fixed: usePrivateTemplate) [B] legacy firehose 5s-behind-30s-promise, quantified (patched: jetstreamReadBudget, counter machinery deleted, non-timeout errors terminate) [C] Jetstream account/identity events BYPASS wantedCollections → parallel signup storms starve subscribers (measured 2/4 fail at -p 2; -p STAYS 1 with new documented reason). ConcurrencyBudget models both dims + nestedClonePools; -p 1 -parallel 26. Review: Codex good + Opus 3-high (binary-abort class, all fixed incl. fail-open Makefile splice PROVEN closed). make ci GREEN ×2 117/128s (clone tax repaid, beats 124s pre-clone); -race + -shuffle clean; peak 27/200 conns; 3401 tests/0 skips; audit 532 |
-| 10 | Contract-manifest CI check (WantedCollections ↔ //coves:ingestion-contract markers) + T2 skeleton (serial runner via compose runner; make test-e2e; test-e2e-dev escape hatch) | 4 ⛩ | S | pending | | build BEFORE first contract so every contract lands against it |
+| 10 | Contract-manifest CI check (WantedCollections ↔ //coves:ingestion-contract markers) + T2 skeleton (serial runner via compose runner; make test-e2e; test-e2e-dev escape hatch) | 4 ⛩ | S | done | (see git log) | THE PIPELINE WORKS: TestPipelineSmoke green in hermetic stack (direct PDS write → Jetstream → container consumers → getProfile, 0.95s de-raced). cmd/contract-manifest (38 tests, MatchFile-based, pending_contracts.txt ratchet w/ task ownership, AST forbidden-imports in marker files); T2 skeleton (newPipeline, contractBudget=45s, per-contract synthetic IPv6 vs the ONE-BUCKET rate limiter — A/B proven 60+40=100); make test-e2e via compose runner 48s cold (lib/ci-stack.sh + runner-ready.sh factored); zero-skip T2 enforcement. Census: 10 collections = task mapping exact. Review: Codex needs-work + Opus 3-high → 8 fixes (manifest bypasses had live probes; smoke de-raced vs profile-backfill reconciliation path). make ci GREEN ×2 ~2:00, 3448/0 |
 | 11 | Contracts: community (community.profile ingestion + API) — strangler: behavior inventory of community_e2e_test.go (1820 LOC) → down-tier T1s → contract → delete old | 4 | S | pending | | template for tasks 12-16; sync-indexing trap per spec §3.4 |
 | 12 | Contracts: post (community.post) + post_delete + decompose post god-files | 4 | S | pending | | |
 | 13 | Contracts: comment (community.comment) + comment god-files (1821+1443+1229+999 LOC) | 4 | S | pending | | biggest decomposition |
@@ -221,3 +221,26 @@ Stop the loop when every task is done, or on any blocked task.
   deletes. Reviewer calibration: Opus caught all 3 binary-abort highs
   this round (incl. fail-open Makefile splice); Codex strongest on
   budget arithmetic — both earning their seats.
+- **From task 10 (CONTRACT RULES for tasks 11-15 — read before writing any
+  contract)**: (1) identities enter the index ONLY via actor.signup (users
+  consumer refuses never-seen DIDs by design) — pipeline proof is always
+  the record written AFTER signup; (2) RECONCILIATION PATHS are
+  sync-indexing's subtler sibling: profile backfill fetches from the PDS
+  when the row is EMPTY — falsify a reconciliation's precondition (arm
+  then prove with a SECOND write) before asserting; actor.profile's
+  contract MUST assert a second update (pending_contracts.txt carries
+  it); (3) rate limiter is ONE bucket per client IP across the shared
+  netns and OUTLIVES runs on kept stacks — newPipeline assigns
+  per-contract synthetic IPv6 (SyntheticClientIP), poll at
+  contractPollInterval=250ms, 429s are rewritten to name the tier's own
+  polling; (4) contracts must be RE-RUNNABLE on kept stacks (in-process
+  limiter/cache state survives); (5) T2 zero-skip is enforced by
+  e2e-runner; markers only count in files that build under -tags e2e
+  (MatchFile) and may not import websocket/jetstream or call testkit.DB;
+  (6) -count=N never exercises RunPrefix-keyed code (process-scoped) —
+  assert structure, not substrings. FLAKE LEDGER:
+  TestVoteE2E_JetstreamIndexing (legacy subscribeToJetstreamForVote copy)
+  flaked 1/6 gate runs post-jetstreamReadBudget — known-flaky legacy;
+  task 14 DELETES it with the vote contract, do not port or re-diagnose.
+  COVES_CI_REBUILD=1 refreshes a kept stack's AppView (also resets
+  limiter buckets).

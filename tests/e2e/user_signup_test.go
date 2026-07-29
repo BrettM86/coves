@@ -6,26 +6,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
-	"log"
 	"net/http"
-	"os"
 	"testing"
 	"time"
 
 	"Coves/tests/testkit"
 )
-
-// TestMain controls test setup for the e2e package.
-// Set LOG_ENABLED=false to suppress application log output during tests.
-func TestMain(m *testing.M) {
-	// Silence logs when LOG_ENABLED=false (what .env.ci sets for the gate)
-	if os.Getenv("LOG_ENABLED") == "false" {
-		log.SetOutput(io.Discard)
-	}
-
-	os.Exit(m.Run())
-}
 
 // TestE2E_UserSignup tests the full user signup flow:
 // Third-party client → social.coves.actor.signup XRPC → PDS account creation + AppView indexing

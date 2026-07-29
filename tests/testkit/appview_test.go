@@ -544,3 +544,55 @@ func TestWithConsumerHealth_SurvivesAnUnreachableAppView(t *testing.T) {
 	// must not fail differently.
 	assert.Contains(t, ft.message(), "consumer health unavailable")
 }
+
+func TestAppView_ClientIPIsSentOnEveryRequest(t *testing.T) {
+	// The AppView rate limits by client IP and reads X-Real-IP first. Every
+	// service in the hermetic stack shares one network namespace, so without
+	// this header every test in the pipeline tier spends from one bucket.
+	stub := newStubService(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{})
+	})
+	ip := SyntheticClientIP("contract/example")
+	appview := NewAppView(t, WithAppViewURL(stub.URL), WithAppViewClientIP(ip))
+
+	require.NoError(t, appview.Query(context.Background(), "m", nil, nil))
+	assert.Equal(t, ip, stub.lastHeaders.Load().Get("X-Real-IP"))
+
+	require.NoError(t, appview.Procedure(context.Background(), "m", map[string]string{"a": "b"}, nil))
+	assert.Equal(t, ip, stub.lastHeaders.Load().Get("X-Real-IP"),
+		"a procedure is a request too; a half-labelled client splits its own bucket")
+
+	require.NoError(t, appview.Get(context.Background(), "/health/consumers", nil))
+	assert.Equal(t, ip, stub.lastHeaders.Load().Get("X-Real-IP"),
+		"the plain-path helper must carry it as well — consumer-health polling is requests")
+}
+
+func TestAppView_ClientIPSurvivesAuthentication(t *testing.T) {
+	// As() clones the client. A shallow copy would keep the SAME header map, so
+	// the two identities would alias — and a later WithHeader on one would
+	// silently rewrite the other's. Both must carry the IP, independently.
+	stub := newStubService(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{})
+	})
+	ip := SyntheticClientIP("contract/authenticated")
+	appview := NewAppView(t, WithAppViewURL(stub.URL), WithAppViewClientIP(ip))
+
+	alice := appview.As("alice-token")
+	require.NoError(t, alice.Query(context.Background(), "m", nil, nil))
+	assert.Equal(t, ip, stub.lastHeaders.Load().Get("X-Real-IP"))
+	assert.Equal(t, "Bearer alice-token", stub.lastHeaders.Load().Get("Authorization"))
+}
+
+func TestXRPCClient_WithHeaderDoesNotMutateTheOriginal(t *testing.T) {
+	stub := newStubService(t, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{})
+	})
+	base := NewXRPCClient(stub.URL).WithHeader("X-Real-IP", "2001:db8::1")
+	other := base.WithHeader("X-Real-IP", "2001:db8::2")
+
+	require.NoError(t, base.Query(context.Background(), "m", nil, nil))
+	assert.Equal(t, "2001:db8::1", stub.lastHeaders.Load().Get("X-Real-IP"),
+		"deriving a second client must not reach back into the first one's headers")
+	require.NoError(t, other.Query(context.Background(), "m", nil, nil))
+	assert.Equal(t, "2001:db8::2", stub.lastHeaders.Load().Get("X-Real-IP"))
+}

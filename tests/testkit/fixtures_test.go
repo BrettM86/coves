@@ -2,8 +2,12 @@ package testkit
 
 import (
 	"bytes"
+	"fmt"
+	"hash/fnv"
 	"image"
 	"image/color"
+	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -185,4 +189,62 @@ func TestTestImages_AreNotDegenerate(t *testing.T) {
 func TestTestImages_RejectNonPositiveDimensions(t *testing.T) {
 	assert.Panics(t, func() { TestPNG(0, 10) })
 	assert.Panics(t, func() { TestJPEG(10, -1) })
+}
+
+func TestSyntheticClientIP_IsAValidDocumentationAddress(t *testing.T) {
+	ip := net.ParseIP(SyntheticClientIP("contract/post"))
+	require.NotNil(t, ip, "the value goes into X-Real-IP; it must be a real address")
+	assert.Nil(t, ip.To4(), "IPv6, so the 64 hash bits fit without being compressed into an octet")
+
+	// 2001:db8::/32 is RFC 3849's documentation range: reserved, unroutable,
+	// and therefore incapable of being mistaken for a real client.
+	_, documentation, err := net.ParseCIDR("2001:db8::/32")
+	require.NoError(t, err)
+	assert.True(t, documentation.Contains(ip), "got %s, which is outside 2001:db8::/32", ip)
+}
+
+func TestSyntheticClientIP_IsStablePerLabelAndDistinctBetweenLabels(t *testing.T) {
+	assert.Equal(t, SyntheticClientIP("a"), SyntheticClientIP("a"),
+		"a caller must land in the same bucket every time, or its own quota is unpredictable")
+	assert.NotEqual(t, SyntheticClientIP("a"), SyntheticClientIP("b"),
+		"two labels sharing a bucket is the collision this exists to prevent")
+
+	// Length-delimited rather than concatenated: without the delimiter these
+	// two would hash identically and share a rate-limit bucket.
+	assert.NotEqual(t, SyntheticClientIP("ab"), SyntheticClientIP("a")+"b")
+	seen := make(map[string]string, 256)
+	for i := range 256 {
+		label := "contract/" + strconv.Itoa(i)
+		ip := SyntheticClientIP(label)
+		if previous, clash := seen[ip]; clash {
+			t.Fatalf("%s and %s hash to the same bucket (%s)", previous, label, ip)
+		}
+		seen[ip] = label
+	}
+}
+
+func TestSyntheticClientIP_CarriesTheRunPrefix(t *testing.T) {
+	// The run-scoping is what makes a kept stack re-runnable: the AppView's
+	// rate-limit buckets outlive the test binary, so a second run must not
+	// inherit the first run's spent quota.
+	// %016x, not %x: the address zero-pads every hextet, so an unpadded hash
+	// whose top nibble happens to be zero would not appear in it — a test that
+	// fails one run in sixteen for a reason that has nothing to do with the code.
+	hashed := func(prefix, label string) string {
+		h := fnv.New64a()
+		_, _ = fmt.Fprintf(h, "%s\x00%s", prefix, label)
+		return fmt.Sprintf("%016x", h.Sum64())
+	}
+	assert.NotEqual(t, hashed(RunPrefix(), "x"), hashed("other-run", "x"),
+		"a different run must produce a different bucket for the same label")
+
+	// Exact rather than a substring match: the four hextets after the 2001:db8
+	// prefix ARE the 64-bit hash, so this pins the derivation itself. A
+	// "contains the first few hex digits" check passed or failed depending on
+	// whether that run's hash happened to start with a zero nibble.
+	groups := strings.Split(strings.TrimSuffix(SyntheticClientIP("x"), "::1"), ":")
+	require.Len(t, groups, 6, "expected 2001:db8 plus four hash hextets")
+	assert.Equal(t, []string{"2001", "db8"}, groups[:2])
+	assert.Equal(t, hashed(RunPrefix(), "x"), strings.Join(groups[2:], ""),
+		"the address must actually be derived from RunPrefix, not merely documented as such")
 }

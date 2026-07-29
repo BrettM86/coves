@@ -8,11 +8,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"Coves/tests/testkit"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -100,10 +101,11 @@ func TestE2E_UserSignupToken(t *testing.T) {
 	t.Run("Per-route rate limit: 6 hits in <60s → 6th is 429", func(t *testing.T) {
 		// Per-route limit is the bot gate. If this test stops asserting,
 		// regressions to that gate go undetected.
-		// Use a unique X-Real-IP per test run so quota isn't shared with the
-		// other subtests above. pid stays stable within a test run but
-		// differs across go test invocations, avoiding bucket collisions.
-		spoofedIP := fmt.Sprintf("198.51.100.%d", (os.Getpid()%200)+10)
+		//
+		// Its own bucket, distinct from the minting calls above and fresh for
+		// this run: exhausting a bucket is what this subtest is FOR, so it must
+		// not be one anything else depends on.
+		spoofedIP := spoofedClientIP("rate-limit-probe")
 
 		payload, _ := json.Marshal(map[string]string{
 			"turnstileToken": "any",
@@ -143,6 +145,32 @@ func uniqueAccount(prefix string) (handle, email string) {
 		fmt.Sprintf("%s-%s@test.com", prefix, suffix)
 }
 
+// spoofedClientIP returns the rate-limit bucket for one of this file's two
+// distinct purposes.
+//
+// The signup-token route is rate limited per client IP at 5/min, and the
+// limiter's buckets live in the AppView process — so they OUTLIVE a test run.
+// Against a stack that persists (COVES_CI_KEEP_STACK, and therefore every
+// re-run of `make test-e2e`) the subtests below would inherit the previous
+// run's quota and fail with 429s that say nothing about the code. Giving each
+// run its own source address makes the tier re-runnable, which is the whole
+// point of keeping a stack up.
+//
+// The purpose label separates the minting calls from the rate-limit probe,
+// which deliberately exhausts its bucket: sharing one would make the subtests
+// order-dependent, passing only because the probe happens to run last.
+//
+// Both come from testkit.SyntheticClientIP, the one primitive the tier uses for
+// this — 64 hash bits over an IPv6 documentation range. Two earlier versions of
+// this helper were wrong in the same direction and are worth not repeating: one
+// keyed on os.Getpid(), which is not per-run at all inside a container that
+// starts the same process tree every time, and one folded the hash into a
+// single IPv4 octet, which starts colliding after a couple of hundred runs
+// against a kept stack.
+func spoofedClientIP(purpose string) string {
+	return testkit.SyntheticClientIP("signup-token/" + purpose)
+}
+
 // requestSignupToken calls /xrpc/social.coves.actor.requestSignupToken and returns
 // the minted invite code.
 func requestSignupToken(turnstileToken string) (string, error) {
@@ -153,11 +181,16 @@ func requestSignupToken(turnstileToken string) (string, error) {
 		return "", fmt.Errorf("marshal: %w", err)
 	}
 
-	resp, err := http.Post(
+	req, err := http.NewRequest(http.MethodPost,
 		"http://localhost:8081/xrpc/social.coves.actor.requestSignupToken",
-		"application/json",
-		bytes.NewReader(body),
-	)
+		bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Real-IP", spoofedClientIP("minting"))
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("POST: %w", err)
 	}
