@@ -1,15 +1,20 @@
 package tests
 
 import (
+	"encoding/json"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
 	lexicon "github.com/bluesky-social/indigo/atproto/lexicon"
 )
+
+// lexiconDir holds every schema the AppView publishes, one JSON file per NSID.
+const lexiconDir = "../internal/atproto/lexicon"
 
 // TestMain controls test setup for the tests package.
 // Set LOG_ENABLED=false to suppress application log output during tests.
@@ -22,56 +27,148 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func TestLexiconSchemaValidation(t *testing.T) {
-	// Create a new catalog
-	catalog := lexicon.NewBaseCatalog()
+// lexiconFile is one schema file on disk, already parsed far enough to know
+// whether it declares a primary type. A lexicon's primary type lives under the
+// "main" key of its defs map; a file without one carries only shared
+// definitions that other schemas reference by fragment.
+type lexiconFile struct {
+	schemaID string
+	path     string
+	defNames []string
+	hasMain  bool
+}
 
-	// Load all schemas from the lexicon directory
-	schemaPath := "../internal/atproto/lexicon"
-	if err := catalog.LoadDirectory(schemaPath); err != nil {
-		t.Fatalf("Failed to load lexicon schemas: %v", err)
-	}
+// collectLexiconFiles reads every lexicon JSON under lexiconDir and derives its
+// schema ID from the path, e.g.
+// ../internal/atproto/lexicon/social/coves/actor/profile.json
+// -> social.coves.actor.profile.
+func collectLexiconFiles(t *testing.T) []lexiconFile {
+	t.Helper()
 
-	// Walk through the directory and find all lexicon files
-	var lexiconFiles []string
-	err := filepath.Walk(schemaPath, func(path string, info os.FileInfo, err error) error {
+	var files []lexiconFile
+	err := filepath.Walk(lexiconDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		if strings.HasSuffix(path, ".json") && !info.IsDir() {
-			lexiconFiles = append(lexiconFiles, path)
+		if info.IsDir() || !strings.HasSuffix(path, ".json") {
+			return nil
 		}
+
+		relPath, err := filepath.Rel(lexiconDir, path)
+		if err != nil {
+			return err
+		}
+		schemaID := strings.ReplaceAll(strings.TrimSuffix(relPath, ".json"), string(filepath.Separator), ".")
+
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var doc struct {
+			Defs map[string]json.RawMessage `json:"defs"`
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Errorf("%s is not valid lexicon JSON: %v", schemaID, err)
+			return nil
+		}
+
+		defNames := make([]string, 0, len(doc.Defs))
+		for name := range doc.Defs {
+			if name != "main" {
+				defNames = append(defNames, name)
+			}
+		}
+		sort.Strings(defNames)
+
+		_, hasMain := doc.Defs["main"]
+		files = append(files, lexiconFile{
+			schemaID: schemaID,
+			path:     path,
+			defNames: defNames,
+			hasMain:  hasMain,
+		})
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("Failed to walk directory: %v", err)
+		t.Fatalf("Failed to walk %s: %v", lexiconDir, err)
+	}
+	if len(files) == 0 {
+		t.Fatalf("No lexicon files found under %s", lexiconDir)
+	}
+	return files
+}
+
+func TestLexiconSchemaValidation(t *testing.T) {
+	catalog := lexicon.NewBaseCatalog()
+	if err := catalog.LoadDirectory(lexiconDir); err != nil {
+		t.Fatalf("Failed to load lexicon schemas: %v", err)
 	}
 
-	t.Logf("Found %d lexicon files to validate", len(lexiconFiles))
-
-	// Extract schema IDs from file paths and test resolution
-	for _, filePath := range lexiconFiles {
-		// Convert file path to schema ID
-		// e.g., ../internal/atproto/lexicon/social/coves/actor/profile.json -> social.coves.actor.profile
-		relPath, err := filepath.Rel(schemaPath, filePath)
-		if err != nil {
-			t.Fatalf("Failed to get relative path for %s: %v", filePath, err)
+	// Only files that declare a primary type are resolvable by NSID alone.
+	// Definition-only files are covered by TestLexiconDefinitionOnlySchemas,
+	// which resolves each of their definitions by fragment.
+	var validated int
+	for _, f := range collectLexiconFiles(t) {
+		if !f.hasMain {
+			continue
 		}
-		relPath = strings.TrimSuffix(relPath, ".json")
-		schemaID := strings.ReplaceAll(relPath, string(filepath.Separator), ".")
-
-		t.Run(schemaID, func(t *testing.T) {
-			// Skip validation for definition-only files (*.defs) - they don't need a "main" section
-			// These files only contain shared type definitions referenced by other schemas
-			if strings.HasSuffix(schemaID, ".defs") {
-				t.Skip("Skipping defs-only file (no main section required)")
-			}
-
-			if _, resolveErr := catalog.Resolve(schemaID); resolveErr != nil {
-				t.Errorf("Failed to resolve schema %s: %v", schemaID, resolveErr)
+		validated++
+		t.Run(f.schemaID, func(t *testing.T) {
+			if _, err := catalog.Resolve(f.schemaID); err != nil {
+				t.Errorf("Failed to resolve schema %s: %v", f.schemaID, err)
 			}
 		})
 	}
+
+	if validated == 0 {
+		t.Fatalf("No lexicon files under %s declare a primary type", lexiconDir)
+	}
+	t.Logf("Resolved %d lexicon schemas with a primary type", validated)
+}
+
+// TestLexiconDefinitionOnlySchemas covers the files TestLexiconSchemaValidation
+// has nothing to resolve by NSID: those carrying only shared definitions. Each
+// definition must still resolve by its fragment reference, and the *.defs
+// naming must match what the file actually contains — otherwise a schema could
+// lose its primary type and quietly drop out of the suite above.
+func TestLexiconDefinitionOnlySchemas(t *testing.T) {
+	catalog := lexicon.NewBaseCatalog()
+	if err := catalog.LoadDirectory(lexiconDir); err != nil {
+		t.Fatalf("Failed to load lexicon schemas: %v", err)
+	}
+
+	var definitionOnly, resolved int
+	for _, f := range collectLexiconFiles(t) {
+		namedAsDefs := strings.HasSuffix(f.schemaID, ".defs")
+		switch {
+		case f.hasMain && namedAsDefs:
+			t.Errorf("%s is named as a definition-only lexicon but declares a primary type (%s)", f.schemaID, f.path)
+		case !f.hasMain && !namedAsDefs:
+			t.Errorf("%s declares no primary type; a definition-only lexicon must be named *.defs (%s)", f.schemaID, f.path)
+		}
+		if f.hasMain {
+			continue
+		}
+
+		definitionOnly++
+		if len(f.defNames) == 0 {
+			t.Errorf("%s has neither a primary type nor any definitions", f.schemaID)
+			continue
+		}
+		for _, name := range f.defNames {
+			ref := f.schemaID + "#" + name
+			if _, err := catalog.Resolve(ref); err != nil {
+				t.Errorf("Failed to resolve definition %s: %v", ref, err)
+				continue
+			}
+			resolved++
+		}
+	}
+
+	if definitionOnly == 0 {
+		t.Fatalf("No definition-only lexicons found under %s", lexiconDir)
+	}
+	t.Logf("Resolved %d definitions across %d definition-only lexicons", resolved, definitionOnly)
 }
 
 func TestLexiconCrossReferences(t *testing.T) {

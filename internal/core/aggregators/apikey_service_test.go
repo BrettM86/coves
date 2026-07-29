@@ -950,23 +950,6 @@ func TestAPIKeyService_RefreshTokensIfNeeded_TokensStillValid(t *testing.T) {
 	// more complex mocking, but the absence of error is the key indicator
 }
 
-func TestAPIKeyService_RefreshTokensIfNeeded_WithinBuffer(t *testing.T) {
-	// Token expires in 4 minutes - within the 5 minute buffer, so needs refresh
-	// This test verifies that when tokens are within the buffer, the service
-	// attempts to refresh them.
-	//
-	// Note: Full integration testing of token refresh requires a real OAuth app.
-	// This test is intentionally skipped as it would require extensive mocking
-	// of the indigo OAuth library internals.
-	t.Skip("RefreshTokensIfNeeded requires fully configured OAuth app - covered by integration tests")
-}
-
-func TestAPIKeyService_RefreshTokensIfNeeded_ExpiredNilTokens(t *testing.T) {
-	// When OAuthTokenExpiresAt is nil, tokens need refresh
-	// This should also attempt to refresh (and fail with nil OAuth app)
-	t.Skip("RefreshTokensIfNeeded requires fully configured OAuth app - covered by integration tests")
-}
-
 // =============================================================================
 // GetAccessToken Tests
 // =============================================================================

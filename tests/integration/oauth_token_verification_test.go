@@ -156,13 +156,4 @@ func TestOAuthTokenVerification(t *testing.T) {
 
 		t.Logf("✅ All invalid token types correctly rejected")
 	})
-
-	t.Run("Session expiration handling", func(t *testing.T) {
-		// OAuth session expiration is handled at the database level
-		// See TestOAuthE2E_TokenExpiration in oauth_e2e_test.go for full expiration testing
-		t.Log("ℹ️  Session expiration testing is covered in oauth_e2e_test.go")
-		t.Log("   OAuth sessions expire based on database timestamps and are cleaned up periodically")
-		t.Log("   This is different from JWT expiration which was timestamp-based in the token itself")
-		t.Skip("Session expiration is tested in oauth_e2e_test.go - see TestOAuthE2E_TokenExpiration")
-	})
 }

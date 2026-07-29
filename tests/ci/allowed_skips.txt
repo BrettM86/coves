@@ -28,61 +28,31 @@
 #     builds its own infrastructure; if a test cannot find it, that is a bug in
 #     the stack, not an exemption.
 #
-# Derived from a full hermetic run on 2026-07-29, the first with the CI network
-# egress-blocked: 3272 tests, 3258 passed, 0 failed, 14 skipped — every one of
-# them listed below.
+# THIS FILE IS DELIBERATELY EMPTY. Every test on the merge path runs.
 #
-# The count dropped from 3295 because the tests that reach the public internet
-# moved to tests/live/ behind the `live` build tag, and blocking egress then
-# exposed four more places that were quietly depending on it (three
-# blueskypost "unit" tests calling public.api.bsky.app, one handle resolved
-# against production PLC, one 404 assertion that needed public DNS to say
-# NXDOMAIN, and the PLC healthcheck following a redirect to web.plc.directory).
-
-# The public-internet entries this file used to carry are gone: those tests now
-# live in tests/live/ behind the `live` build tag, so the merge-path build does
-# not compile them at all. An exemption that says "this test never runs here" is
-# strictly worse than not building the test here — the tag makes the tier
-# explicit and `make test-live` is where it gets exercised.
+# It stayed a file rather than becoming a deleted file because the gate still
+# reads it, and because an empty exemption list is the only version of this
+# list worth defending: the next entry has to be argued for on its own merits
+# instead of inheriting the legitimacy of the ones above it.
 #
-# =============================================================================
-# 1. Structural skips in the data-driven lexicon suite (8)
-# =============================================================================
-# TestLexiconSchemaValidation generates a subtest per lexicon file and skips the
-# defs-only ones, which legitimately have no "main" section to validate. Listed
-# individually rather than as TestLexiconSchemaValidation/* on purpose: a
-# wildcard would also swallow a real lexicon that started skipping, which is
-# exactly the signal this file exists to preserve. Adding a defs file means
-# adding a line here — a deliberate, reviewable act.
-Coves/tests TestLexiconSchemaValidation/com.atproto.label.defs             # defs-only lexicon: no main section to validate
-Coves/tests TestLexiconSchemaValidation/social.coves.actor.defs            # defs-only lexicon: no main section to validate
-Coves/tests TestLexiconSchemaValidation/social.coves.aggregator.defs       # defs-only lexicon: no main section to validate
-Coves/tests TestLexiconSchemaValidation/social.coves.community.comment.defs # defs-only lexicon: no main section to validate
-Coves/tests TestLexiconSchemaValidation/social.coves.community.defs        # defs-only lexicon: no main section to validate
-Coves/tests TestLexiconSchemaValidation/social.coves.community.post.defs   # defs-only lexicon: no main section to validate
-Coves/tests TestLexiconSchemaValidation/social.coves.feed.defs             # defs-only lexicon: no main section to validate
-Coves/tests TestLexiconSchemaValidation/social.coves.moderation.defs       # defs-only lexicon: no main section to validate
-
-# The three conditional unfurl entries that lived here are gone for the same
-# reason: TestPostUnfurl_CacheHit, _KagiKite and _Streamable fetched real
-# third-party URLs, so they moved to tests/live/. Nothing on the merge path
-# depends on a stranger's uptime any more, which is why this file no longer
-# needs the "~" conditional form at all.
+# How it got here, so the same shapes are recognisable next time:
 #
-# =============================================================================
-# 2. Tests that never run, and should be deleted or implemented (6)
-# =============================================================================
-# TECHNICAL DEBT, not exemptions. Every one of these skips unconditionally, so
-# each is a test that has never once verified anything — a green checkmark
-# standing in for coverage that does not exist. They are listed so the gate can
-# pass today, and so the debt is visible in a reviewed file rather than buried
-# in 355 skip sites.
+#   * Public-internet tests (11 entries) moved to tests/live/ behind the `live`
+#     build tag. The merge-path build does not compile them at all. An exemption
+#     that says "this test never runs here" is strictly worse than not building
+#     the test here — the tag makes the tier explicit, and `make test-live` is
+#     where it gets exercised.
+#   * Defs-only lexicon subtests (8 entries) were fixed at the generator.
+#     TestLexiconSchemaValidation used to create a subtest per lexicon file and
+#     then skip the ones with no primary type; it now partitions the files
+#     first, and TestLexiconDefinitionOnlySchemas resolves every definition in
+#     the defs-only ones by fragment. Generating a test in order to skip it is
+#     not coverage, it is a subtest-shaped hole.
+#   * Never-run debt tests (6 entries) were deleted. Each had skipped
+#     unconditionally since the day it was written, so none had ever verified
+#     anything. CLAUDE.md's "no stubs, no placeholder code" rule reaches test
+#     files too.
 #
-# Each wants a decision: implement it, or delete it. CLAUDE.md's "no stubs, no
-# placeholder code" rule says a permanently-skipped test should not survive.
-Coves/internal/atproto/oauth TestParseSessionToken                                   # DEBT: tests parseSessionToken, which no longer exists (sealed tokens replaced it) — delete
-Coves/internal/core/aggregators TestAPIKeyService_RefreshTokensIfNeeded_ExpiredNilTokens # DEBT: "requires fully configured OAuth app"; asserts nothing — implement against the CI stack or delete
-Coves/internal/core/aggregators TestAPIKeyService_RefreshTokensIfNeeded_WithinBuffer     # DEBT: same as above
-Coves/tests/integration TestAggregator_E2E_LivePDS                                   # DEBT: "not yet implemented" — the CI stack now provides the live PDS it wanted
-Coves/tests/integration TestOAuthTokenVerification/Session_expiration_handling       # DEBT: defers to TestOAuthE2E_TokenExpiration; an empty subtest that reads as coverage
-Coves/tests/unit TestCommunityService_PDSTimeouts/read_operations_get_10s_timeout     # DEBT: "verified in code review" is not a test — implement or delete
+# Derived from a full hermetic run on 2026-07-29 with CI network egress
+# blocked. If you are about to add the first line back, read the RULES above
+# and make sure the answer is not "fix the test instead".

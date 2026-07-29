@@ -173,14 +173,6 @@ func TestHandleMobileLogin(t *testing.T) {
 	})
 }
 
-// TestParseSessionToken tests that we no longer use parseSessionToken
-// (removed in favor of sealed tokens)
-func TestParseSessionToken(t *testing.T) {
-	// This test is deprecated - we now use sealed tokens instead of plain "did:sessionID" format
-	// See TestSealAndUnsealSessionData for the new approach
-	t.Skip("parseSessionToken removed - we now use sealed tokens for security")
-}
-
 // TestIsMobileRedirectURI tests mobile redirect URI validation with EXACT URI matching
 // Per atproto spec, custom schemes must match client_id hostname in reverse-domain order
 func TestIsMobileRedirectURI(t *testing.T) {

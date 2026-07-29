@@ -12,18 +12,15 @@ import (
 	"Coves/internal/db/postgres"
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	_ "github.com/lib/pq"
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -842,61 +839,4 @@ func TestAggregator_E2E_WithJetstream(t *testing.T) {
 	t.Log("  ✓ Security: Unauthorized posts rejected")
 	t.Log("  ✓ Idempotent indexing handles duplicates")
 	t.Log("  ✓ Authorization disable prevents posting")
-}
-
-// TestAggregator_E2E_LivePDS tests the COMPLETE end-to-end flow with a live PDS
-// This would require:
-// - Live PDS running at PDS_URL
-// - Live Jetstream running at the local dev Jetstream (ws://localhost:6008; configured via JETSTREAM_FEEDS)
-// - Ability to provision aggregator accounts on PDS
-// - Real WebSocket connection to Jetstream firehose
-//
-// NOTE: This is a placeholder for future implementation
-// For now, use TestAggregator_E2E_WithJetstream for integration testing
-func TestAggregator_E2E_LivePDS(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping live PDS E2E test in short mode")
-	}
-
-	// Setup test database
-	dbURL := os.Getenv("TEST_DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
-	}
-
-	db, err := sql.Open("postgres", dbURL)
-	require.NoError(t, err, "Failed to connect to test database")
-	defer func() {
-		if closeErr := db.Close(); closeErr != nil {
-			t.Logf("Failed to close database: %v", closeErr)
-		}
-	}()
-
-	// Run migrations
-	require.NoError(t, goose.SetDialect("postgres"))
-	require.NoError(t, goose.Up(db, "../../internal/db/migrations"))
-
-	// Check if PDS is running
-	pdsURL := os.Getenv("PDS_URL")
-	if pdsURL == "" {
-		pdsURL = "http://localhost:3001"
-	}
-
-	healthResp, err := http.Get(pdsURL + "/xrpc/_health")
-	if err != nil {
-		t.Skipf("PDS not running at %s: %v", pdsURL, err)
-	}
-	_ = healthResp.Body.Close()
-
-	t.Skip("Live PDS E2E test not yet implemented - use TestAggregator_E2E_WithJetstream")
-
-	// TODO: Implement live PDS E2E test
-	// 1. Provision aggregator account on real PDS
-	// 2. Write service declaration to aggregator's repository
-	// 3. Subscribe to real Jetstream and wait for event
-	// 4. Verify indexing in AppView
-	// 5. Provision community and authorize aggregator
-	// 6. Create real post via XRPC
-	// 7. Wait for Jetstream post event
-	// 8. Verify complete flow
 }
