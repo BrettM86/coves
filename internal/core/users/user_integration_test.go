@@ -24,6 +24,16 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// testPDSURL is the PDS these tests attribute their users to: the default
+// users.NewUserService is constructed with, and the PDSURL every user record
+// created here carries.
+//
+// It comes from testkit rather than a literal so a relocated stack moves the
+// tests with it (docs/TEST_ARCHITECTURE.md §3.7, layer 1).
+func testPDSURL() string {
+	return testkit.Endpoints().PDS.BaseURL
+}
+
 // testUserRouteOptions returns route options with a dummy PDS client factory.
 // Use this for tests that register user routes but don't actually call updateProfile.
 func testUserRouteOptions() *routes.UserRouteOptions {
@@ -41,7 +51,7 @@ func TestUserCreationAndRetrieval(t *testing.T) {
 	// Wire up dependencies
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
+	userService := users.NewUserService(userRepo, resolver, testPDSURL(), nil, "")
 
 	ctx := context.Background()
 
@@ -50,7 +60,7 @@ func TestUserCreationAndRetrieval(t *testing.T) {
 		req := users.CreateUserRequest{
 			DID:    "did:plc:test123456",
 			Handle: "alice.test",
-			PDSURL: "http://localhost:3001",
+			PDSURL: testPDSURL(),
 		}
 
 		user, err := userService.CreateUser(ctx, req)
@@ -107,14 +117,14 @@ func TestGetProfileEndpoint(t *testing.T) {
 	// Wire up dependencies
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
+	userService := users.NewUserService(userRepo, resolver, testPDSURL(), nil, "")
 
 	// Create test user directly in service
 	ctx := context.Background()
 	_, err := userService.CreateUser(ctx, users.CreateUserRequest{
 		DID:    "did:plc:endpoint123",
 		Handle: "bob.test",
-		PDSURL: "http://localhost:3001",
+		PDSURL: testPDSURL(),
 	})
 	if err != nil {
 		t.Fatalf("Failed to create test user: %v", err)
@@ -206,14 +216,14 @@ func TestDuplicateCreation(t *testing.T) {
 
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
+	userService := users.NewUserService(userRepo, resolver, testPDSURL(), nil, "")
 	ctx := context.Background()
 
 	// Create first user
 	_, err := userService.CreateUser(ctx, users.CreateUserRequest{
 		DID:    "did:plc:duplicate123",
 		Handle: "duplicate.test",
-		PDSURL: "http://localhost:3001",
+		PDSURL: testPDSURL(),
 	})
 	if err != nil {
 		t.Fatalf("Failed to create first user: %v", err)
@@ -224,7 +234,7 @@ func TestDuplicateCreation(t *testing.T) {
 		user, err := userService.CreateUser(ctx, users.CreateUserRequest{
 			DID:    "did:plc:duplicate123",
 			Handle: "different.test", // Different handle, same DID
-			PDSURL: "http://localhost:3001",
+			PDSURL: testPDSURL(),
 		})
 		// Should return existing user, not error
 		if err != nil {
@@ -242,7 +252,7 @@ func TestDuplicateCreation(t *testing.T) {
 		_, err := userService.CreateUser(ctx, users.CreateUserRequest{
 			DID:    "did:plc:different456",
 			Handle: "duplicate.test",
-			PDSURL: "http://localhost:3001",
+			PDSURL: testPDSURL(),
 		})
 
 		if err == nil {
@@ -427,7 +437,7 @@ func TestProfileStats(t *testing.T) {
 	// Wire up dependencies
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
+	userService := users.NewUserService(userRepo, resolver, testPDSURL(), nil, "")
 
 	ctx := context.Background()
 
@@ -435,7 +445,7 @@ func TestProfileStats(t *testing.T) {
 	_, err := userService.CreateUser(ctx, users.CreateUserRequest{
 		DID:    testDID,
 		Handle: fmt.Sprintf("statsuser%d.test", uniqueSuffix),
-		PDSURL: "http://localhost:3001",
+		PDSURL: testPDSURL(),
 	})
 	if err != nil {
 		t.Fatalf("Failed to create test user: %v", err)
@@ -569,7 +579,7 @@ func TestProfileStats_CommentCount(t *testing.T) {
 
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
+	userService := users.NewUserService(userRepo, resolver, testPDSURL(), nil, "")
 
 	ctx := context.Background()
 
@@ -577,7 +587,7 @@ func TestProfileStats_CommentCount(t *testing.T) {
 	_, err := userService.CreateUser(ctx, users.CreateUserRequest{
 		DID:    testDID,
 		Handle: fmt.Sprintf("commentuser%d.test", uniqueSuffix),
-		PDSURL: "http://localhost:3001",
+		PDSURL: testPDSURL(),
 	})
 	if err != nil {
 		t.Fatalf("Failed to create test user: %v", err)
@@ -660,7 +670,7 @@ func TestProfileStats_CommunityCount(t *testing.T) {
 
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
+	userService := users.NewUserService(userRepo, resolver, testPDSURL(), nil, "")
 
 	ctx := context.Background()
 
@@ -668,7 +678,7 @@ func TestProfileStats_CommunityCount(t *testing.T) {
 	_, err := userService.CreateUser(ctx, users.CreateUserRequest{
 		DID:    testDID,
 		Handle: fmt.Sprintf("subuser%d.test", uniqueSuffix),
-		PDSURL: "http://localhost:3001",
+		PDSURL: testPDSURL(),
 	})
 	if err != nil {
 		t.Fatalf("Failed to create test user: %v", err)
@@ -717,7 +727,7 @@ func TestGetProfile_NonExistentDID(t *testing.T) {
 
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
+	userService := users.NewUserService(userRepo, resolver, testPDSURL(), nil, "")
 
 	ctx := context.Background()
 
@@ -765,7 +775,7 @@ func TestProfileStatsEndpoint(t *testing.T) {
 	// Wire up dependencies
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
+	userService := users.NewUserService(userRepo, resolver, testPDSURL(), nil, "")
 
 	// Create test user
 	testDID := "did:plc:endpointstats123"
@@ -773,7 +783,7 @@ func TestProfileStatsEndpoint(t *testing.T) {
 	_, err := userService.CreateUser(ctx, users.CreateUserRequest{
 		DID:    testDID,
 		Handle: "endpointstats.test",
-		PDSURL: "http://localhost:3001",
+		PDSURL: testPDSURL(),
 	})
 	if err != nil {
 		t.Fatalf("Failed to create test user: %v", err)
@@ -857,7 +867,7 @@ func TestHandleValidation(t *testing.T) {
 
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
+	userService := users.NewUserService(userRepo, resolver, testPDSURL(), nil, "")
 	ctx := context.Background()
 
 	testCases := []struct {
@@ -872,21 +882,21 @@ func TestHandleValidation(t *testing.T) {
 			name:        "Valid handle with hyphen",
 			did:         "did:plc:valid1",
 			handle:      "alice-bob.test",
-			pdsURL:      "http://localhost:3001",
+			pdsURL:      testPDSURL(),
 			shouldError: false,
 		},
 		{
 			name:        "Valid handle with dots",
 			did:         "did:plc:valid2",
 			handle:      "alice.bob.test",
-			pdsURL:      "http://localhost:3001",
+			pdsURL:      testPDSURL(),
 			shouldError: false,
 		},
 		{
 			name:        "Invalid: no dot (not domain-like)",
 			did:         "did:plc:invalid8",
 			handle:      "alice",
-			pdsURL:      "http://localhost:3001",
+			pdsURL:      testPDSURL(),
 			shouldError: true,
 			errorMsg:    "invalid handle",
 		},
@@ -894,14 +904,14 @@ func TestHandleValidation(t *testing.T) {
 			name:        "Valid: consecutive hyphens (allowed per atProto spec)",
 			did:         "did:plc:valid3",
 			handle:      "alice--bob.test",
-			pdsURL:      "http://localhost:3001",
+			pdsURL:      testPDSURL(),
 			shouldError: false,
 		},
 		{
 			name:        "Invalid: starts with hyphen",
 			did:         "did:plc:invalid2",
 			handle:      "-alice.test",
-			pdsURL:      "http://localhost:3001",
+			pdsURL:      testPDSURL(),
 			shouldError: true,
 			errorMsg:    "invalid handle",
 		},
@@ -909,7 +919,7 @@ func TestHandleValidation(t *testing.T) {
 			name:        "Invalid: ends with hyphen",
 			did:         "did:plc:invalid3",
 			handle:      "alice-.test",
-			pdsURL:      "http://localhost:3001",
+			pdsURL:      testPDSURL(),
 			shouldError: true,
 			errorMsg:    "invalid handle",
 		},
@@ -917,7 +927,7 @@ func TestHandleValidation(t *testing.T) {
 			name:        "Invalid: special characters",
 			did:         "did:plc:invalid4",
 			handle:      "alice!bob.test",
-			pdsURL:      "http://localhost:3001",
+			pdsURL:      testPDSURL(),
 			shouldError: true,
 			errorMsg:    "invalid handle",
 		},
@@ -925,7 +935,7 @@ func TestHandleValidation(t *testing.T) {
 			name:        "Invalid: spaces",
 			did:         "did:plc:invalid5",
 			handle:      "alice bob.test",
-			pdsURL:      "http://localhost:3001",
+			pdsURL:      testPDSURL(),
 			shouldError: true,
 			errorMsg:    "invalid handle",
 		},
@@ -933,7 +943,7 @@ func TestHandleValidation(t *testing.T) {
 			name:        "Invalid: too long",
 			did:         "did:plc:invalid6",
 			handle:      strings.Repeat("a", 254) + ".test",
-			pdsURL:      "http://localhost:3001",
+			pdsURL:      testPDSURL(),
 			shouldError: true,
 			errorMsg:    "invalid handle",
 		},
@@ -941,7 +951,7 @@ func TestHandleValidation(t *testing.T) {
 			name:        "Invalid: missing DID prefix",
 			did:         "plc:invalid7",
 			handle:      "valid.test",
-			pdsURL:      "http://localhost:3001",
+			pdsURL:      testPDSURL(),
 			shouldError: true,
 			errorMsg:    "must start with 'did:'",
 		},
@@ -983,7 +993,7 @@ func TestAccountDeletion_Integration(t *testing.T) {
 	// Wire up dependencies
 	userRepo := postgres.NewUserRepository(db)
 	resolver := identity.NewResolver(db, identity.DefaultConfig())
-	userService := users.NewUserService(userRepo, resolver, "http://localhost:3001", nil, "")
+	userService := users.NewUserService(userRepo, resolver, testPDSURL(), nil, "")
 
 	ctx := context.Background()
 
@@ -991,7 +1001,7 @@ func TestAccountDeletion_Integration(t *testing.T) {
 	_, err := userService.CreateUser(ctx, users.CreateUserRequest{
 		DID:    testDID,
 		Handle: testHandle,
-		PDSURL: "http://localhost:3001",
+		PDSURL: testPDSURL(),
 	})
 	if err != nil {
 		t.Fatalf("Failed to create test user: %v", err)

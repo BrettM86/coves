@@ -10,6 +10,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Loopback redirect URIs the mobile allowlist must REJECT.
+//
+// These are fixture inputs to a pure string check (isAllowedRedirectURI /
+// BuildAllowedRedirectURIs) and to the assertions about its answers. Nothing
+// here is ever dialled, and none of them is a test-stack address on purpose:
+// :5173 is Vite's dev server and :3000 a generic dev front end, which is
+// exactly what a developer would reach for and exactly what the allowlist
+// exists to refuse. Naming them is the test; reading them from testkit would
+// make the assertion tautological.
+const (
+	viteDevRedirectURI      = "http://localhost:5173/callback" // coves:allow-host-literal: rejected-URI fixture for the mobile redirect allowlist, never dialled
+	loopbackHostRedirectURI = "http://localhost:3000/callback" // coves:allow-host-literal: rejected-URI fixture for the mobile redirect allowlist, never dialled
+	loopbackIPRedirectURI   = "http://127.0.0.1:3000/callback" // coves:allow-host-literal: rejected-URI fixture for the mobile redirect allowlist, never dialled
+)
+
 // TestExtractScheme tests the scheme extraction function
 func TestExtractScheme(t *testing.T) {
 	tests := []struct {
@@ -352,7 +367,7 @@ func TestBuildAllowedRedirectURIs(t *testing.T) {
 
 		// Should reject URIs not in the list
 		assert.False(t, allowed["http://evil.com/callback"], "should reject evil.com")
-		assert.False(t, allowed["http://localhost:5173/callback"], "should reject localhost")
+		assert.False(t, allowed[viteDevRedirectURI], "should reject localhost")
 		assert.False(t, allowed["evil://steal"], "should reject evil scheme")
 	})
 
@@ -417,8 +432,8 @@ func TestOAuthHandler_isAllowedRedirectURI(t *testing.T) {
 
 		// These URIs should be rejected
 		rejectedURIs := []string{
-			"http://localhost:5173/callback",  // Localhost (use Vite proxy instead)
-			"http://localhost:3000/callback",  // Localhost
+			viteDevRedirectURI,                // Localhost (use Vite proxy instead)
+			loopbackHostRedirectURI,           // Localhost
 			"http://evil.com/callback",        // Evil domain
 			"https://example.com/oauth",       // Random HTTPS
 			"https://coves.social/wrong/path", // Right domain, wrong path
@@ -458,7 +473,7 @@ func TestHandleMobileLogin_MobileURIs(t *testing.T) {
 		handler := createTestOAuthHandler(t)
 
 		req := httptest.NewRequest(http.MethodGet,
-			"/oauth/mobile/login?handle=test.user&redirect_uri=http://localhost:5173/callback", nil)
+			"/oauth/mobile/login?handle=test.user&redirect_uri="+viteDevRedirectURI, nil)
 		rec := httptest.NewRecorder()
 
 		handler.HandleMobileLogin(rec, req)
@@ -497,9 +512,9 @@ func TestMobileURIs_OnlyMobileAllowed(t *testing.T) {
 			"mobile Universal Link should work")
 
 		// Localhost URIs should NOT work (use Vite proxy for dev)
-		assert.False(t, handler.isAllowedRedirectURI("http://localhost:5173/callback"),
+		assert.False(t, handler.isAllowedRedirectURI(viteDevRedirectURI),
 			"localhost should be rejected")
-		assert.False(t, handler.isAllowedRedirectURI("http://127.0.0.1:3000/callback"),
+		assert.False(t, handler.isAllowedRedirectURI(loopbackIPRedirectURI),
 			"127.0.0.1 should be rejected")
 	})
 }

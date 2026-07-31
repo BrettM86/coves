@@ -6,6 +6,24 @@ import (
 	"time"
 )
 
+// rewindLastFailure moves a provider's recorded failure timestamp further into
+// the past, which is exactly what the passage of time does to it.
+//
+// The open window is a deadline the breaker derives from that timestamp
+// (`time.Since(lastFailure) > openDuration`), so a test crosses it by moving
+// the timestamp instead of waiting the window out: the same production branch
+// runs, deterministically and for free.
+func rewindLastFailure(t *testing.T, cb *circuitBreaker, provider string, d time.Duration) {
+	t.Helper()
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	last, ok := cb.lastFailure[provider]
+	if !ok {
+		t.Fatalf("provider %q has no recorded failure to rewind", provider)
+	}
+	cb.lastFailure[provider] = last.Add(-d)
+}
+
 func TestCircuitBreaker_Basic(t *testing.T) {
 	t.Parallel()
 	cb := newCircuitBreaker()
@@ -73,7 +91,6 @@ func TestCircuitBreaker_RecoveryAfterSuccess(t *testing.T) {
 func TestCircuitBreaker_HalfOpenTransition(t *testing.T) {
 	t.Parallel()
 	cb := newCircuitBreaker()
-	cb.openDuration = 100 * time.Millisecond // Short duration for testing
 	provider := "half-open-provider"
 
 	// Open the circuit
@@ -87,8 +104,9 @@ func TestCircuitBreaker_HalfOpenTransition(t *testing.T) {
 		t.Error("Expected circuit to be open")
 	}
 
-	// Wait for open duration
-	time.Sleep(150 * time.Millisecond)
+	// Put the open duration behind us. The real five-minute window is used
+	// here, since nothing waits it out.
+	rewindLastFailure(t, cb, provider, cb.openDuration+time.Second)
 
 	// Should transition to half-open and allow one attempt
 	canAttempt, err := cb.canAttempt(provider)

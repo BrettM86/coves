@@ -16,13 +16,25 @@ import (
 	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 
+// testSessionPDSHostURL is the PDS the mock OAuth sessions in this package
+// claim to come from.
+//
+// Every handler test here drives a mock community service, so the session is
+// carried as far as the authorisation check and no further: nothing in this
+// package resolves the host, opens a connection to it, or asserts on it. It is
+// a plausible-looking field value, not an endpoint, which is why it is a
+// literal instead of testkit.Endpoints() — these tests need no stack at all,
+// and taking a dependency on one to fill in an unused field would be a lie
+// about what they require.
+const testSessionPDSHostURL = "http://localhost:3001" // coves:allow-host-literal: inert HostURL field on a mock OAuth session; no handler test in this package dials it
+
 // createTestOAuthSession creates a mock OAuth session for testing
 func createTestOAuthSession(did string) *oauth.ClientSessionData {
 	parsedDID, _ := syntax.ParseDID(did)
 	return &oauth.ClientSessionData{
 		AccountDID:  parsedDID,
 		SessionID:   "test-session",
-		HostURL:     "http://localhost:3001",
+		HostURL:     testSessionPDSHostURL,
 		AccessToken: "test-access-token",
 	}
 }

@@ -60,22 +60,23 @@ func TestSealSession_ExpirationValidation(t *testing.T) {
 
 	did := "did:plc:abc123"
 	sessionID := "session-xyz"
-	ttl := 2 * time.Second // Short TTL (must be >= 1 second due to Unix timestamp granularity)
 
-	// Seal the session
-	token, err := client.SealSession(did, sessionID, ttl)
+	// A token inside its TTL unseals.
+	live, err := client.SealSession(did, sessionID, 1*time.Hour)
 	require.NoError(t, err)
 
-	// Should work immediately
-	session, err := client.UnsealSession(token)
+	session, err := client.UnsealSession(live)
 	require.NoError(t, err)
 	assert.Equal(t, did, session.DID)
 
-	// Wait well past expiration
-	time.Sleep(2500 * time.Millisecond)
+	// Expiry is stamped at seal time as now+ttl and compared against the wall
+	// clock at unseal, so a negative TTL produces exactly the state a real
+	// token reaches by ageing — without spending 2.5s of wall clock reaching
+	// it. Both paths run the same `ExpiresAt <= now` branch in UnsealSession.
+	expired, err := client.SealSession(did, sessionID, -1*time.Second)
+	require.NoError(t, err)
 
-	// Should fail after expiration
-	session, err = client.UnsealSession(token)
+	session, err = client.UnsealSession(expired)
 	assert.Error(t, err)
 	assert.Nil(t, session)
 	assert.Contains(t, err.Error(), "token expired")

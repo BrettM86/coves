@@ -8,11 +8,81 @@ import (
 	"Coves/tests/testkit"
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+)
+
+// egressNote is appended to every failure that means "we could not reach a
+// third party". It exists because that failure looks identical to a regression
+// until you know which side of the wire broke.
+//
+// The live tier is the only tier allowed public egress, and it is the only tier
+// that REQUIRES it: `make ci` runs the hermetic stack with its network declared
+// `internal: true`, so nothing tagged `live` can even be executed from in there.
+// If you are reading this message, you invoked `make test-live` yourself, from a
+// shell that is supposed to be able to reach the open internet.
+const egressNote = "The live tier requires public internet egress — plc.directory for handle\n" +
+	"resolution and public.api.bsky.app for post content. It is never run on the\n" +
+	"merge path: `make ci` blocks egress by design (docker-compose.ci.yml declares\n" +
+	"its network internal: true), so this test cannot have been run from inside the\n" +
+	"CI stack. Confirm this machine's connectivity before reading the failure as a\n" +
+	"regression in Coves."
+
+// pinnedPost is a real post on somebody else's account, used as a fixture.
+//
+// Pinning third-party content is a deliberate trade: these posts are the only
+// way to check that the resolver copes with the shapes Bluesky actually emits,
+// and the price is that their authors can delete them. When that happens the
+// tier goes red and names the fixture — which is the correct outcome. A live
+// tier that reports green because the thing it checks has vanished is exactly
+// what this suite spent six phases removing.
+type pinnedPost struct {
+	// varName is the Go identifier below, so a failure can say what to edit.
+	varName string
+	// url is the bsky.app permalink a user would paste into Coves.
+	url string
+	// handle is url's author, asserted against the API's answer.
+	handle string
+	// shape describes what this fixture is FOR, so a replacement can be chosen
+	// that still exercises the same code path.
+	shape string
+}
+
+var (
+	pinnedPlainPost = pinnedPost{
+		varName: "pinnedPlainPost",
+		url:     "https://bsky.app/profile/ianboudreau.com/post/3makab2jnwk2p",
+		handle:  "ianboudreau.com",
+		shape:   "a plain text post with no embed",
+	}
+	pinnedQuotePost = pinnedPost{
+		varName: "pinnedQuotePost",
+		url:     "https://bsky.app/profile/tedunderwood.com/post/3malohcd2vc2d",
+		handle:  "tedunderwood.com",
+		shape:   "a post quoting another post (app.bsky.embed.record)",
+	}
+	pinnedLinkPost = pinnedPost{
+		varName: "pinnedLinkPost",
+		url:     "https://bsky.app/profile/davidpfau.com/post/3malg2athns2d",
+		handle:  "davidpfau.com",
+		shape:   "a post with an external link card (app.bsky.embed.external)",
+	}
+	pinnedImagePost = pinnedPost{
+		varName: "pinnedImagePost",
+		url:     "https://bsky.app/profile/brennan.computer/post/3mallehc6hk2s",
+		handle:  "brennan.computer",
+		shape:   "a post whose only embed is an image (app.bsky.embed.images)",
+	}
+	pinnedQuoteWithImagePost = pinnedPost{
+		varName: "pinnedQuoteWithImagePost",
+		url:     "https://bsky.app/profile/lauraknelson.bsky.social/post/3malueymbis25",
+		handle:  "lauraknelson.bsky.social",
+		shape:   "a quote post that also carries an image (app.bsky.embed.recordWithMedia)",
+	}
 )
 
 // productionPLCIdentityResolver creates an identity resolver that uses the production
@@ -31,19 +101,91 @@ func productionPLCIdentityResolver(db *sql.DB) identity.Resolver {
 	return identity.NewResolver(db, config)
 }
 
-// TestBlueskyPostCrossPosting_URLParsing tests URL detection and parsing
-func TestBlueskyPostCrossPosting_URLParsing(t *testing.T) {
-	db := testkit.DB(t)
-
-	// Use production PLC resolver for real Bluesky handles (READ-ONLY)
-	identityResolver := productionPLCIdentityResolver(db)
-
-	// Setup Bluesky post service
-	repo := blueskypost.NewRepository(db)
-	service := blueskypost.NewService(repo, identityResolver,
+// liveBlueskyService builds the service under test against the production PLC
+// directory and the public Bluesky AppView API.
+func liveBlueskyService(t *testing.T, db *sql.DB) blueskypost.Service {
+	t.Helper()
+	return blueskypost.NewService(
+		blueskypost.NewRepository(db),
+		productionPLCIdentityResolver(db),
 		blueskypost.WithTimeout(30*time.Second),
 		blueskypost.WithCacheTTL(1*time.Hour),
 	)
+}
+
+// resolveLiveBlueskyURL turns a bsky.app permalink into an AT-URI, failing the
+// test if the handle inside it cannot be resolved against the production PLC
+// directory.
+//
+// The failure is deliberate. Handle resolution is a network round trip, and the
+// only reasons it fails are "no egress" and "the account is gone" — neither of
+// which the live tier may report as a pass.
+func resolveLiveBlueskyURL(t *testing.T, ctx context.Context, service blueskypost.Service, p pinnedPost) string {
+	t.Helper()
+
+	atURI, err := service.ParseBlueskyURL(ctx, p.url)
+	if err != nil {
+		t.Fatalf("could not resolve the handle %q in %s (%s): %v\n\n%s\n\n"+
+			"If %s has simply changed or deleted their handle, update %s at the top\n"+
+			"of this file with another account hosting %s.",
+			p.handle, p.url, p.varName, err, egressNote, p.handle, p.varName, p.shape)
+	}
+	return atURI
+}
+
+// fetchLiveBlueskyPost resolves a pinned fixture all the way to post content,
+// failing on an unreachable API and, separately, on a post that upstream no
+// longer serves.
+//
+// The two failures read differently on purpose: one says "your network is
+// broken", the other says "this fixture is stale, replace it here". Both are
+// red, because the assertion the caller is about to make has not been checked.
+func fetchLiveBlueskyPost(t *testing.T, ctx context.Context, service blueskypost.Service, p pinnedPost) *blueskypost.BlueskyPostResult {
+	t.Helper()
+
+	atURI := resolveLiveBlueskyURL(t, ctx, service, p)
+
+	result, err := service.ResolvePost(ctx, atURI)
+	if err != nil {
+		t.Fatalf("could not fetch %s (%s) from the Bluesky API: %v\n\n%s",
+			atURI, p.varName, err, egressNote)
+	}
+	require.NotNil(t, result, "ResolvePost returned neither a post nor an error for %s", atURI)
+
+	if result.Unavailable {
+		t.Fatalf("the pinned post %s (%s) is no longer retrievable: %s\n\n"+
+			"This is an upstream fact, not a Coves regression: the author deleted the\n"+
+			"post, locked the account, or blocked the fetcher. Find a live replacement\n"+
+			"that is %s, update %s at the top of this file, and re-run. Do not turn this\n"+
+			"back into a skip — a live tier that goes green when its subject has\n"+
+			"disappeared is checking nothing.",
+			p.url, p.varName, result.Message, p.shape, p.varName)
+	}
+
+	assert.Equal(t, p.handle, result.Author.Handle,
+		"%s resolved to a different author than the URL claims", p.varName)
+
+	return result
+}
+
+// staleShapeMessage explains a fixture that still resolves but no longer has the
+// structure it was chosen for — a quote whose target was deleted, a link card
+// stripped by its author. Same remedy as an outright deletion: repin, here.
+func staleShapeMessage(p pinnedPost, what string) string {
+	return strings.Join([]string{
+		p.url + " (" + p.varName + ") resolved, but " + what + ".",
+		"",
+		"That fixture is pinned specifically as " + p.shape + ", so this is either a",
+		"regression in the extraction code or an upstream edit to somebody else's",
+		"post. Check the post in a browser: if the shape is gone, pick a replacement",
+		"with the same shape and update " + p.varName + " at the top of this file.",
+	}, "\n")
+}
+
+// TestBlueskyPostCrossPosting_URLParsing tests URL detection and parsing
+func TestBlueskyPostCrossPosting_URLParsing(t *testing.T) {
+	db := testkit.DB(t)
+	service := liveBlueskyService(t, db)
 
 	ctx := context.Background()
 
@@ -88,15 +230,7 @@ func TestBlueskyPostCrossPosting_URLParsing(t *testing.T) {
 	})
 
 	t.Run("Parse URL with handle (requires resolution)", func(t *testing.T) {
-		// Use a real Bluesky post URL
-		url := "https://bsky.app/profile/ianboudreau.com/post/3makab2jnwk2p"
-
-		atURI, err := service.ParseBlueskyURL(ctx, url)
-		if err != nil {
-			t.Logf("Handle resolution failed (may be network issue): %v", err)
-			t.Skip("Skipping - handle resolution requires network access")
-			return
-		}
+		atURI := resolveLiveBlueskyURL(t, ctx, service, pinnedPlainPost)
 
 		// Should have resolved to a DID
 		assert.Contains(t, atURI, "at://did:")
@@ -108,51 +242,19 @@ func TestBlueskyPostCrossPosting_URLParsing(t *testing.T) {
 // TestBlueskyPostCrossPosting_LiveAPI tests fetching real posts from Bluesky
 func TestBlueskyPostCrossPosting_LiveAPI(t *testing.T) {
 	db := testkit.DB(t)
-
-	// Use production PLC resolver for real Bluesky handles (READ-ONLY)
-	identityResolver := productionPLCIdentityResolver(db)
-
-	repo := blueskypost.NewRepository(db)
-	service := blueskypost.NewService(repo, identityResolver,
-		blueskypost.WithTimeout(30*time.Second),
-		blueskypost.WithCacheTTL(1*time.Hour),
-	)
+	service := liveBlueskyService(t, db)
 
 	ctx := context.Background()
 
 	t.Run("Fetch regular Bluesky post", func(t *testing.T) {
-		// Regular post from ianboudreau.com
-		bskyURL := "https://bsky.app/profile/ianboudreau.com/post/3makab2jnwk2p"
-
-		// First parse the URL to get the AT-URI
-		atURI, err := service.ParseBlueskyURL(ctx, bskyURL)
-		if err != nil {
-			t.Skipf("Handle resolution failed: %v", err)
-			return
-		}
-
-		result, err := service.ResolvePost(ctx, atURI)
-		if err != nil {
-			t.Logf("API fetch failed (may be network issue): %v", err)
-			t.Skip("Skipping - Bluesky API requires network access")
-			return
-		}
-
-		require.NotNil(t, result)
-
-		if result.Unavailable {
-			t.Logf("Post marked as unavailable (may have been deleted): %s", result.Message)
-			t.Skip("Skipping - post is unavailable")
-			return
-		}
+		result := fetchLiveBlueskyPost(t, ctx, service, pinnedPlainPost)
 
 		// Validate response structure
 		assert.NotEmpty(t, result.URI, "Should have URI")
 		assert.NotEmpty(t, result.CID, "Should have CID")
 		assert.NotEmpty(t, result.Text, "Should have text content")
-		assert.NotNil(t, result.Author, "Should have author")
+		require.NotNil(t, result.Author, "Should have author")
 		assert.NotEmpty(t, result.Author.DID, "Author should have DID")
-		assert.Equal(t, "ianboudreau.com", result.Author.Handle, "Should be from ianboudreau.com")
 
 		t.Logf("✓ Successfully fetched regular Bluesky post:")
 		t.Logf("  URI: %s", result.URI)
@@ -162,117 +264,47 @@ func TestBlueskyPostCrossPosting_LiveAPI(t *testing.T) {
 	})
 
 	t.Run("Fetch post with quote repost", func(t *testing.T) {
-		// Post with quote RT from tedunderwood.com
-		bskyURL := "https://bsky.app/profile/tedunderwood.com/post/3malohcd2vc2d"
+		result := fetchLiveBlueskyPost(t, ctx, service, pinnedQuotePost)
 
-		atURI, err := service.ParseBlueskyURL(ctx, bskyURL)
-		if err != nil {
-			t.Skipf("Handle resolution failed: %v", err)
-			return
-		}
-
-		result, err := service.ResolvePost(ctx, atURI)
-		if err != nil {
-			t.Skipf("API fetch failed: %v", err)
-			return
-		}
-
-		require.NotNil(t, result)
-		if result.Unavailable {
-			t.Skipf("Post unavailable: %s", result.Message)
-			return
-		}
-
-		assert.Equal(t, "tedunderwood.com", result.Author.Handle)
-
-		// This post should have a quoted post
-		if result.QuotedPost != nil {
-			t.Logf("✓ Found quoted post")
-			// Note: Quoted post text/author may be empty if the quote is a different type
-			// (e.g., recordWithMedia where the record is nested differently)
-			if result.QuotedPost.Author != nil && result.QuotedPost.Author.Handle != "" {
-				t.Logf("  Quoted author: @%s", result.QuotedPost.Author.Handle)
-			}
-			if result.QuotedPost.Text != "" {
-				t.Logf("  Quoted text: %.60s...", result.QuotedPost.Text)
-			}
-		} else {
-			t.Log("Note: Quoted post not found (may have been deleted or structure changed)")
-		}
+		// The fixture is pinned BECAUSE it quotes another post; if the quote is
+		// gone the extraction path is untested and the fixture needs replacing.
+		require.NotNil(t, result.QuotedPost, staleShapeMessage(pinnedQuotePost, "no quoted post was extracted"))
 
 		t.Logf("✓ Successfully fetched post with quote:")
 		t.Logf("  Author: @%s", result.Author.Handle)
 		t.Logf("  Text: %.80s...", result.Text)
+		// The quoted post's own text/author can legitimately be empty — a
+		// recordWithMedia nests the record one level deeper, and a deleted
+		// quote target resolves to a tombstone. Presence is the contract here.
+		if result.QuotedPost.Author != nil && result.QuotedPost.Author.Handle != "" {
+			t.Logf("  Quoted author: @%s", result.QuotedPost.Author.Handle)
+		}
+		if result.QuotedPost.Text != "" {
+			t.Logf("  Quoted text: %.60s...", result.QuotedPost.Text)
+		}
 	})
 
 	t.Run("Fetch post with link embed", func(t *testing.T) {
-		// Post with link unfurl from davidpfau.com
-		bskyURL := "https://bsky.app/profile/davidpfau.com/post/3malg2athns2d"
+		result := fetchLiveBlueskyPost(t, ctx, service, pinnedLinkPost)
 
-		atURI, err := service.ParseBlueskyURL(ctx, bskyURL)
-		if err != nil {
-			t.Skipf("Handle resolution failed: %v", err)
-			return
-		}
-
-		result, err := service.ResolvePost(ctx, atURI)
-		if err != nil {
-			t.Skipf("API fetch failed: %v", err)
-			return
-		}
-
-		require.NotNil(t, result)
-		if result.Unavailable {
-			t.Skipf("Post unavailable: %s", result.Message)
-			return
-		}
-
-		assert.Equal(t, "davidpfau.com", result.Author.Handle)
 		assert.NotEmpty(t, result.Text)
 
-		// Verify external embed is extracted
-		if result.Embed != nil {
-			assert.NotEmpty(t, result.Embed.URI, "External embed should have URI")
-			t.Logf("  External embed URI: %s", result.Embed.URI)
-			if result.Embed.Title != "" {
-				t.Logf("  External embed title: %s", result.Embed.Title)
-			}
-			if result.Embed.Thumb != "" {
-				t.Logf("  External embed thumb: %s", result.Embed.Thumb)
-			}
-		} else {
-			t.Log("  Note: No external embed found (post may have been modified)")
-		}
+		// Verify the external embed is extracted — the reason this fixture is
+		// pinned rather than reusing the plain post.
+		require.NotNil(t, result.Embed, staleShapeMessage(pinnedLinkPost, "no external embed was extracted"))
+		assert.NotEmpty(t, result.Embed.URI, "External embed should have URI")
 
 		t.Logf("✓ Successfully fetched post with link embed:")
 		t.Logf("  Author: @%s", result.Author.Handle)
 		t.Logf("  Text: %.80s...", result.Text)
+		t.Logf("  External embed URI: %s", result.Embed.URI)
+		t.Logf("  External embed title: %s", result.Embed.Title)
+		t.Logf("  External embed thumb: %s", result.Embed.Thumb)
 		t.Logf("  Has media: %v", result.HasMedia)
 	})
 
 	t.Run("Fetch image-only post", func(t *testing.T) {
-		// Post with just an image from brennan.computer
-		bskyURL := "https://bsky.app/profile/brennan.computer/post/3mallehc6hk2s"
-
-		atURI, err := service.ParseBlueskyURL(ctx, bskyURL)
-		if err != nil {
-			t.Skipf("Handle resolution failed: %v", err)
-			return
-		}
-
-		result, err := service.ResolvePost(ctx, atURI)
-		if err != nil {
-			t.Skipf("API fetch failed: %v", err)
-			return
-		}
-
-		require.NotNil(t, result)
-		if result.Unavailable {
-			t.Skipf("Post unavailable: %s", result.Message)
-			return
-		}
-
-		assert.Equal(t, "brennan.computer", result.Author.Handle)
+		result := fetchLiveBlueskyPost(t, ctx, service, pinnedImagePost)
 
 		// This post should have media (image)
 		assert.True(t, result.HasMedia, "Image post should have HasMedia=true")
@@ -285,60 +317,28 @@ func TestBlueskyPostCrossPosting_LiveAPI(t *testing.T) {
 	})
 
 	t.Run("Fetch quote RT with image", func(t *testing.T) {
-		// Quote RT with an image from lauraknelson.bsky.social
-		bskyURL := "https://bsky.app/profile/lauraknelson.bsky.social/post/3malueymbis25"
+		result := fetchLiveBlueskyPost(t, ctx, service, pinnedQuoteWithImagePost)
 
-		atURI, err := service.ParseBlueskyURL(ctx, bskyURL)
-		if err != nil {
-			t.Skipf("Handle resolution failed: %v", err)
-			return
-		}
+		// recordWithMedia carries both halves; both must survive extraction, or
+		// the fixture no longer exercises the path it was pinned for.
+		require.NotNil(t, result.QuotedPost, staleShapeMessage(pinnedQuoteWithImagePost, "no quoted post was extracted"))
+		assert.True(t, result.HasMedia, "Quote RT with an image should have HasMedia=true")
+		assert.Greater(t, result.MediaCount, 0, "Quote RT with an image should have MediaCount > 0")
 
-		result, err := service.ResolvePost(ctx, atURI)
-		if err != nil {
-			t.Skipf("API fetch failed: %v", err)
-			return
-		}
-
-		require.NotNil(t, result)
-		if result.Unavailable {
-			t.Skipf("Post unavailable: %s", result.Message)
-			return
-		}
-
-		assert.Equal(t, "lauraknelson.bsky.social", result.Author.Handle)
-
-		// This post should have media (image in quote RT)
-		// Note: We're testing detection, not rendering (Phase 1)
 		t.Logf("✓ Successfully fetched quote RT with image:")
 		t.Logf("  Author: @%s", result.Author.Handle)
 		t.Logf("  Text: %.80s", result.Text)
 		t.Logf("  Has media: %v (count: %d)", result.HasMedia, result.MediaCount)
-		if result.QuotedPost != nil {
-			t.Logf("  Has quoted post: yes")
-			if result.QuotedPost.HasMedia {
-				t.Logf("  Quoted post has media: %d items", result.QuotedPost.MediaCount)
-			}
-		}
+		t.Logf("  Quoted post has media: %v (count: %d)", result.QuotedPost.HasMedia, result.QuotedPost.MediaCount)
 	})
 
 	t.Run("Cache hit on second fetch", func(t *testing.T) {
-		// Use the regular post we just fetched
-		bskyURL := "https://bsky.app/profile/ianboudreau.com/post/3makab2jnwk2p"
-		atURI, err := service.ParseBlueskyURL(ctx, bskyURL)
-		if err != nil {
-			t.Skip("Skipping - handle resolution failed")
-			return
-		}
+		// Reuse the plain fixture: the first fetch may already be cached from
+		// the subtest above, which is fine — what is asserted is that a second
+		// fetch is served locally and returns the same content.
+		result1 := fetchLiveBlueskyPost(t, ctx, service, pinnedPlainPost)
+		atURI := result1.URI
 
-		// First fetch (may hit cache from previous test or fetch from API)
-		result1, err := service.ResolvePost(ctx, atURI)
-		if err != nil {
-			t.Skip("Skipping - first fetch failed")
-			return
-		}
-
-		// Second fetch should hit cache
 		start := time.Now()
 		result2, err := service.ResolvePost(ctx, atURI)
 		elapsed := time.Since(start)
@@ -376,105 +376,33 @@ func TestBlueskyPostCrossPosting_LiveAPI(t *testing.T) {
 	})
 }
 
-// TestBlueskyPostCrossPosting_CircuitBreaker tests circuit breaker behavior
-func TestBlueskyPostCrossPosting_CircuitBreaker(t *testing.T) {
-	// This test verifies the circuit breaker pattern works correctly.
-	// We don't actually want to trip the circuit breaker against production,
-	// so this is more of a unit-level integration test.
-
-	db := testkit.DB(t)
-
-	// Use production PLC resolver for real Bluesky handles (READ-ONLY)
-	identityResolver := productionPLCIdentityResolver(db)
-
-	repo := blueskypost.NewRepository(db)
-	service := blueskypost.NewService(repo, identityResolver,
-		blueskypost.WithTimeout(30*time.Second),
-		blueskypost.WithCacheTTL(1*time.Hour),
-	)
-
-	ctx := context.Background()
-
-	t.Run("Service recovers after successful request", func(t *testing.T) {
-		// Make a valid request to ensure the circuit is closed
-		bskyURL := "https://bsky.app/profile/ianboudreau.com/post/3makab2jnwk2p"
-		atURI, err := service.ParseBlueskyURL(ctx, bskyURL)
-		if err != nil {
-			t.Skip("Skipping - handle resolution failed")
-			return
-		}
-
-		result, err := service.ResolvePost(ctx, atURI)
-		if err != nil {
-			t.Skip("Skipping - API not available")
-			return
-		}
-
-		// Should succeed
-		assert.NotNil(t, result)
-		t.Log("✓ Circuit breaker allows requests when API is healthy")
-	})
-}
-
 // TestBlueskyPostCrossPosting_E2E_PostCreation tests the full flow of creating a post with a Bluesky embed
 func TestBlueskyPostCrossPosting_E2E_PostCreation(t *testing.T) {
 	db := testkit.DB(t)
+	service := liveBlueskyService(t, db)
 
 	ctx := context.Background()
 
-	// Use production PLC resolver for real Bluesky handles (READ-ONLY)
-	identityResolver := productionPLCIdentityResolver(db)
-
-	repo := blueskypost.NewRepository(db)
-	service := blueskypost.NewService(repo, identityResolver,
-		blueskypost.WithTimeout(30*time.Second),
-		blueskypost.WithCacheTTL(1*time.Hour),
-	)
-
 	t.Run("Full URL to resolved embed flow", func(t *testing.T) {
 		// Simulate user pasting a bsky.app URL (quote post with embedded content)
-		bskyURL := "https://bsky.app/profile/tedunderwood.com/post/3malohcd2vc2d"
 
 		// Step 1: Detect it's a Bluesky URL
-		if !service.IsBlueskyURL(bskyURL) {
-			t.Fatal("Should detect valid bsky.app URL")
-		}
+		require.True(t, service.IsBlueskyURL(pinnedQuotePost.url), "Should detect valid bsky.app URL")
 
-		// Step 2: Parse to AT-URI
-		atURI, err := service.ParseBlueskyURL(ctx, bskyURL)
-		if err != nil {
-			t.Skipf("Handle resolution failed (network issue): %v", err)
-			return
-		}
-		t.Logf("Parsed URL to AT-URI: %s", atURI)
-
-		// Step 3: Resolve the post
-		result, err := service.ResolvePost(ctx, atURI)
-		if err != nil {
-			t.Skipf("Post resolution failed (network issue): %v", err)
-			return
-		}
-
-		if result.Unavailable {
-			t.Skipf("Post unavailable: %s", result.Message)
-			return
-		}
+		// Steps 2 and 3: parse to an AT-URI and resolve the post
+		result := fetchLiveBlueskyPost(t, ctx, service, pinnedQuotePost)
 
 		// Verify the resolved embed has all required fields
 		assert.NotEmpty(t, result.URI)
 		assert.NotEmpty(t, result.CID)
 		assert.NotEmpty(t, result.Text)
-		assert.NotNil(t, result.Author)
-		assert.Equal(t, "tedunderwood.com", result.Author.Handle)
+		require.NotNil(t, result.Author)
 
 		t.Logf("✓ E2E flow complete:")
-		t.Logf("  Input URL: %s", bskyURL)
-		t.Logf("  AT-URI: %s", atURI)
+		t.Logf("  Input URL: %s", pinnedQuotePost.url)
+		t.Logf("  AT-URI: %s", result.URI)
 		t.Logf("  Author: @%s", result.Author.Handle)
 		t.Logf("  Text: %.80s...", result.Text)
-		if result.QuotedPost != nil {
-			t.Logf("  Quoted: @%s - %.60s...", result.QuotedPost.Author.Handle, result.QuotedPost.Text)
-		}
 	})
 }
 
@@ -482,42 +410,16 @@ func TestBlueskyPostCrossPosting_E2E_PostCreation(t *testing.T) {
 // are converted to social.coves.embed.post with proper strongRef (uri + cid)
 func TestBlueskyPostCrossPosting_EmbedConversion(t *testing.T) {
 	db := testkit.DB(t)
-
-	// Use production PLC resolver for real Bluesky handles (READ-ONLY)
-	identityResolver := productionPLCIdentityResolver(db)
-
-	// Setup Bluesky post service
-	repo := blueskypost.NewRepository(db)
-	blueskyService := blueskypost.NewService(repo, identityResolver,
-		blueskypost.WithTimeout(30*time.Second),
-		blueskypost.WithCacheTTL(1*time.Hour),
-	)
+	blueskyService := liveBlueskyService(t, db)
 
 	ctx := context.Background()
 
 	t.Run("Convert Bluesky URL to post embed with strongRef", func(t *testing.T) {
-		// Use a real Bluesky post URL
-		bskyURL := "https://bsky.app/profile/ianboudreau.com/post/3makab2jnwk2p"
-
 		// 1. Verify URL is detected as Bluesky
-		require.True(t, blueskyService.IsBlueskyURL(bskyURL), "Should detect as Bluesky URL")
+		require.True(t, blueskyService.IsBlueskyURL(pinnedPlainPost.url), "Should detect as Bluesky URL")
 
-		// 2. Parse URL to AT-URI
-		atURI, err := blueskyService.ParseBlueskyURL(ctx, bskyURL)
-		if err != nil {
-			t.Skipf("Handle resolution failed (network issue): %v", err)
-		}
-		t.Logf("Parsed AT-URI: %s", atURI)
-
-		// 3. Resolve the post to get CID
-		result, err := blueskyService.ResolvePost(ctx, atURI)
-		if err != nil {
-			t.Skipf("Post resolution failed (network issue): %v", err)
-		}
-
-		if result.Unavailable {
-			t.Skipf("Post unavailable: %s", result.Message)
-		}
+		// 2 and 3. Parse to an AT-URI and resolve the post to get its CID
+		result := fetchLiveBlueskyPost(t, ctx, blueskyService, pinnedPlainPost)
 
 		// 4. Verify we have all fields needed for strongRef
 		require.NotEmpty(t, result.URI, "Should have AT-URI")
@@ -525,7 +427,7 @@ func TestBlueskyPostCrossPosting_EmbedConversion(t *testing.T) {
 
 		// 5. Verify the CID is a valid format (starts with 'baf')
 		assert.True(t, len(result.CID) > 10, "CID should be a valid length")
-		assert.True(t, result.CID[:3] == "baf", "CID should start with 'baf' (CIDv1)")
+		assert.True(t, strings.HasPrefix(result.CID, "baf"), "CID should start with 'baf' (CIDv1)")
 
 		// 6. Simulate the conversion that would happen in tryConvertBlueskyURLToPostEmbed
 		convertedEmbed := map[string]interface{}{

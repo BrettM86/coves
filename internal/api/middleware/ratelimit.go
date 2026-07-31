@@ -12,8 +12,13 @@ import (
 // RateLimiter is a simple in-memory token-bucket-style limiter keyed by client IP.
 // For multi-replica deploys, swap in a Redis-backed implementation.
 type RateLimiter struct {
-	clients  map[string]*clientLimit
-	stop     chan struct{}
+	clients map[string]*clientLimit
+	stop    chan struct{}
+	// now reads the wall clock. Production always gets time.Now; the seam
+	// exists because a rate-limit window is a deadline, and a test that waits
+	// out a real one is slow at best and flaky at worst. See
+	// newRateLimiterWithClock.
+	now      func() time.Time
 	requests int
 	window   time.Duration
 	name     string // used in security-event logs to distinguish global vs per-route
@@ -35,9 +40,22 @@ func NewRateLimiter(requests int, window time.Duration) *RateLimiter {
 // NewNamedRateLimiter creates a rate limiter that tags its 429 logs with name.
 // Pass something route-distinct like "signupToken" or "global".
 func NewNamedRateLimiter(name string, requests int, window time.Duration) *RateLimiter {
+	return newRateLimiterWithClock(name, requests, window, func() time.Time {
+		return time.Now().UTC()
+	})
+}
+
+// newRateLimiterWithClock is NewNamedRateLimiter with the clock supplied.
+// Test-only: the exported constructors are the production entry points and
+// always pass time.Now.
+//
+// now must be safe for concurrent use — allow() calls it on the request path
+// and the cleanup goroutine calls it on its own schedule.
+func newRateLimiterWithClock(name string, requests int, window time.Duration, now func() time.Time) *RateLimiter {
 	rl := &RateLimiter{
 		clients:  make(map[string]*clientLimit),
 		stop:     make(chan struct{}),
+		now:      now,
 		requests: requests,
 		window:   window,
 		name:     name,
@@ -84,7 +102,7 @@ func (rl *RateLimiter) allow(clientID string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
-	now := time.Now().UTC()
+	now := rl.now()
 
 	client, exists := rl.clients[clientID]
 	if !exists {
@@ -128,7 +146,7 @@ func (rl *RateLimiter) cleanup() {
 			return
 		case <-ticker.C:
 			rl.mu.Lock()
-			now := time.Now().UTC()
+			now := rl.now()
 			for clientID, client := range rl.clients {
 				if now.After(client.resetTime) {
 					delete(rl.clients, clientID)

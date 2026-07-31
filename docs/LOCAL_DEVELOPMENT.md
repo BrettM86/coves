@@ -15,19 +15,16 @@ Complete guide for setting up and running the Coves atProto development environm
 ## Quick Start
 
 ```bash
-# 1. Start the PostgreSQL database
-make dev-db-up
-
-# 2. Start the PDS
+# 1. Start the stack (PostgreSQL + PDS + Jetstream + PLC Directory)
 make dev-up
 
-# 3. View logs
+# 2. View logs
 make dev-logs
 
-# 4. Check status
+# 3. Check status
 make dev-status
 
-# 5. When done
+# 4. When done
 make dev-down
 ```
 
@@ -96,8 +93,8 @@ Your Production PDS (:3000) ← Runs independently
 The PostgreSQL database must be running first:
 
 ```bash
-# Start the database
-make dev-db-up
+# Start the stack; PostgreSQL comes up with it
+make dev-up
 
 # Verify it's running
 make dev-status
@@ -181,21 +178,41 @@ make dev-reset         # Nuclear option - remove all data and volumes
 ### Database Commands
 
 ```bash
-make dev-db-up         # Start PostgreSQL database
-make dev-db-down       # Stop PostgreSQL database
-make dev-db-reset      # Reset database (delete all data)
-make db-shell          # Open psql shell to the database
+make db-shell          # Open psql shell to the development database
+make db-migrate        # Run migrations against the development database
+make db-migrate-down   # Roll back the last migration
+make db-reset          # Reset the database (delete all data, re-run migrations)
 ```
+
+**Creating a migration.** Migrations are [goose](https://github.com/pressly/goose)
+files in [internal/db/migrations/](../internal/db/migrations/), embedded into the
+binary:
+
+```bash
+goose -dir internal/db/migrations create migration_name sql
+# → internal/db/migrations/YYYYMMDDHHMMSS_migration_name.sql
+```
+
+- Write both `Up` and `Down`, and verify the rollback works
+- Keep migrations atomic — one logical change each
+- Never modify a migration that has already been applied; add a new one
+- Test against the test database (`make test-db-reset`) before the dev one
 
 ### Testing Commands
 
 ```bash
-make test              # Run all tests (starts test DB, runs migrations, executes tests)
+make test              # T0 unit tier - no Docker, no database, no network
+make test-integration  # T1 - needs Postgres; starts postgres-test itself
+make test-e2e          # T2 pipeline tier - brings up the hermetic stack and runs inside it
+make test-live         # T3 - opt-in, deliberately hits the public internet
+make ci                # The merge gate: hermetic stack, T0+T1+T2, egress-blocked
+
 make test-db-reset     # Reset test database (clean slate)
 make test-db-stop      # Stop test database
 ```
 
-**See [TESTING_SUMMARY.md](../TESTING_SUMMARY.md) for complete testing documentation.**
+**See [TEST_ARCHITECTURE.md](TEST_ARCHITECTURE.md) for the canonical description of
+the tiers, the gates, and how to write a test in each one.**
 
 ### Workflow Commands
 
@@ -306,11 +323,11 @@ kill -9 <PID>
 **Solution:**
 
 ```bash
-# Ensure database is running
-make dev-db-up
+# Ensure the stack (and its database) is running
+make dev-up
 
 # Check database logs
-cd internal/db/local_dev_db_compose && docker-compose logs
+docker-compose -f docker-compose.dev.yml --env-file .env.dev logs postgres
 
 # Verify connection manually
 PGPASSWORD=dev_password psql -h localhost -p 5433 -U dev_user -d coves_dev
@@ -359,13 +376,10 @@ curl -i -N -H "Connection: Upgrade" -H "Upgrade: websocket" \
 ```bash
 # Manually clean everything
 docker-compose -f docker-compose.dev.yml down -v
-cd internal/db/local_dev_db_compose && docker-compose down -v
 docker volume prune -f
 docker network prune -f
 
 # Then start fresh
-make dev-db-up
-sleep 2
 make dev-up
 ```
 
@@ -436,12 +450,13 @@ LOG_LEVEL=debug
 1. **Build the Firehose Subscriber** - Create the AppView component that subscribes to the relay
 2. **Define Custom Lexicons** - Create Coves-specific schemas in `internal/atproto/lexicon/social/coves/`
 3. **Implement XRPC Handlers** - Build the API endpoints for Coves features
-4. **Create Integration Tests** - Use Testcontainers to test the full stack
+4. **Cover it at the right tier** - see [TEST_ARCHITECTURE.md](TEST_ARCHITECTURE.md)
 
 ## Additional Resources
 
 - [ATPROTO_GUIDE.md](../ATPROTO_GUIDE.md) - Comprehensive atProto implementation guide
 - [PROJECT_STRUCTURE.md](../PROJECT_STRUCTURE.md) - Project organization
+- [TEST_ARCHITECTURE.md](TEST_ARCHITECTURE.md) - The test suite: tiers, targets, gates
 
 ## Getting Help
 

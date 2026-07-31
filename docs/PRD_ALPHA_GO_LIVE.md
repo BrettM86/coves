@@ -127,7 +127,7 @@ This document tracks the remaining work required to launch Coves alpha with real
 - **Security Model**: Matches Bluesky (DNS/HTTPS authority + bidirectional binding)
 - **Performance**: Bounded LRU cache (1000 entries), rate limiting (10 req/s), 24h TTL
 - **Impact**: AppView indexing and federation trust (not community creation API)
-- **Tests**: `tests/integration/community_hostedby_security_test.go`
+- **Tests**: `internal/atproto/jetstream/community_hostedby_verification_test.go`
 
 **Actual Effort**: 3 hours (implementation + testing)
 **Risk**: ✅ Low (complete and tested)
@@ -335,7 +335,7 @@ This document tracks the remaining work required to launch Coves alpha with real
 - [x] Graceful fallback for CI/CD environments
 
 **Actual Time**: ~3 hours (agent-implemented)
-**Test Location**: `tests/integration/user_journey_e2e_test.go`
+**Test Location**: `tests/e2e/journey_test.go` (`TestUserJourney`)
 
 #### 2. Blob Upload E2E Test ✅ COMPLETE
 **What**: Test image upload and display in posts
@@ -352,7 +352,7 @@ This document tracks the remaining work required to launch Coves alpha with real
 - [x] Actual JPEG format testing (not just PNG with different MIME types)
 
 **Actual Time**: ~2-3 hours (agent-implemented)
-**Test Location**: `tests/integration/blob_upload_e2e_test.go`
+**Test Location**: `internal/core/blobs/blob_upload_integration_test.go`, plus the avatar blob steps of `tests/e2e/user_contract_test.go`
 
 #### 3. Multi-Community Timeline Test ✅ COMPLETE
 **What**: Test timeline feed with multiple community subscriptions
@@ -368,7 +368,7 @@ This document tracks the remaining work required to launch Coves alpha with real
 - [x] Verify record schema compliance across communities
 
 **Actual Time**: ~2 hours
-**Test Location**: `/tests/integration/timeline_test.go::TestGetTimeline_MultiCommunity_E2E`
+**Test Location**: `internal/core/timeline/timeline_feed_test.go::TestGetTimeline_MultiCommunity`
 
 #### 4. Concurrent User Scenarios ✅ COMPLETE
 **What**: Test system behavior with simultaneous users
@@ -384,7 +384,7 @@ This document tracks the remaining work required to launch Coves alpha with real
 - [x] Concurrent subscribe/unsubscribe (20 users)
 
 **Actual Time**: ~3 hours (agent-implemented) + 1 hour (race condition verification added)
-**Test Location**: `tests/integration/concurrent_scenarios_test.go`
+**Test Location**: `internal/db/postgres/concurrent_writes_test.go`
 **Finding**: NO RACE CONDITIONS DETECTED - all tests pass with full database verification
 
 #### 5. Rate Limiting Tests ✅ COMPLETE

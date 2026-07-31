@@ -24,9 +24,9 @@ import (
 // resulting record from the PDS, and hand-fed a synthetic event to a consumer.
 // Two of the three now have better homes — handler behaviour is
 // internal/api/handlers/community's subscribe_test.go and block_test.go, and
-// consumer behaviour is tests/integration's subscription_indexing_test.go and
-// community_blocking_test.go, both of which cover more cases than the deleted
-// file did. What was left, and is here, is the write-forward itself: the record
+// consumer behaviour is internal/atproto/jetstream's community_consumer_test.go
+// and community_consumer_block_test.go, both of which cover more cases than the
+// deleted file did. What was left, and is here, is the write-forward itself: the record
 // the service puts in the user's repo.
 //
 // # WHY THE COLLECTION NAME IS THE POINT

@@ -58,9 +58,9 @@ import (
 // communityFeed.getCommunity filters by community and never by subscriber, and
 // community.list's ?subscribed=true filter 401s without a session.
 //
-// So the fan-out is covered at T1 (tests/integration/timeline_test.go, against
-// the repo's own join) and becomes reachable here when the Phase-5 test-only
-// session mint lands. It is named here rather than quietly omitted, because
+// So the fan-out is covered at T1 (internal/core/timeline/timeline_feed_test.go,
+// against the repo's own join) and becomes reachable here when the Phase-5
+// test-only session mint lands. It is named here rather than quietly omitted, because
 // "the subscription contract covers the timeline" would otherwise stay true in
 // everyone's memory and false in the code — the same note journey_test.go makes
 // about the step it had to substitute.

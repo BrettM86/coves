@@ -9,6 +9,8 @@ import (
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
 	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -205,6 +207,15 @@ func updateStatusRequest(t *testing.T, router http.Handler, token string, sugges
 // Returns the router, the OAuthMiddleware (for adding users), and a cleanup function.
 func setupSuggestionTestRouter(t *testing.T, adminDIDs []string) (http.Handler, *fixtures.OAuthMiddleware) {
 	t.Helper()
+	router, auth, _ := setupSuggestionTestRouterWithDB(t, adminDIDs)
+	return router, auth
+}
+
+// setupSuggestionTestRouterWithDB additionally hands back the isolated database
+// behind the router, for the one test that has to reach past the HTTP surface
+// and age a row's created_at.
+func setupSuggestionTestRouterWithDB(t *testing.T, adminDIDs []string) (http.Handler, *fixtures.OAuthMiddleware, *sql.DB) {
+	t.Helper()
 
 	db := testkit.DB(t)
 
@@ -219,7 +230,31 @@ func setupSuggestionTestRouter(t *testing.T, adminDIDs []string) (http.Handler, 
 	r := chi.NewRouter()
 	routes.RegisterCommunitySuggestionRoutes(r, service, e2eAuth.OAuthAuthMiddleware, adminDIDs)
 
-	return r, e2eAuth
+	return r, e2eAuth, db
+}
+
+// backdateSuggestion moves a suggestion's created_at into the past.
+//
+// The "new" sort is `ORDER BY created_at DESC` with no tiebreak, so two rows
+// stamped inside the same clock tick may come back in either order. Backdating
+// makes the gap a fact about the data rather than a bet on how long a write
+// takes — which is what a sleep between the two writes was.
+func backdateSuggestion(t *testing.T, db *sql.DB, suggestionID int64, by time.Duration) {
+	t.Helper()
+
+	res, err := db.ExecContext(context.Background(),
+		`UPDATE community_suggestions SET created_at = created_at - make_interval(secs => $1) WHERE id = $2`,
+		by.Seconds(), suggestionID)
+	if err != nil {
+		t.Fatalf("Failed to backdate suggestion %d: %v", suggestionID, err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		t.Fatalf("Failed to read rows affected backdating suggestion %d: %v", suggestionID, err)
+	}
+	if affected != 1 {
+		t.Fatalf("Backdating suggestion %d touched %d rows, want 1", suggestionID, affected)
+	}
 }
 
 // TestCommunitySuggestionE2E is the comprehensive E2E integration test for the
@@ -445,13 +480,15 @@ func TestCommunitySuggestionE2E(t *testing.T) {
 	// Test: List Suggestions - Sort by New
 	// =====================================================================
 	t.Run("List suggestions - sort by new", func(t *testing.T) {
-		listRouter, listAuth := setupSuggestionTestRouter(t, []string{adminDID})
+		listRouter, listAuth, listDB := setupSuggestionTestRouterWithDB(t, []string{adminDID})
 		listUserToken := listAuth.AddUser(userDID)
 
-		// Create two suggestions with a small delay to ensure different timestamps
-		_ = mustCreateTestSuggestion(t, listRouter, listUserToken,
+		// Two suggestions an hour apart. The gap is applied to the row rather
+		// than waited out between the writes, so the ordering under test is
+		// decided by the data and not by how fast the first request returned.
+		s1 := mustCreateTestSuggestion(t, listRouter, listUserToken,
 			"Older Community", "Created first")
-		time.Sleep(10 * time.Millisecond)
+		backdateSuggestion(t, listDB, s1.ID, time.Hour)
 		s2 := mustCreateTestSuggestion(t, listRouter, listUserToken,
 			"Newer Community", "Created second")
 

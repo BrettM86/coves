@@ -55,7 +55,7 @@ func TestPostRecord_LinkCarryingPostsAreAcceptedByTheRepo(t *testing.T) {
 			"community": communityDID,
 			"author":    author.DID,
 			"title":     "Post with Bluesky Link",
-			"content":   "Check out this Bluesky post: https://bsky.app/profile/jay.bsky.team/post/3l7bsovn5rz2n",
+			"content":   "Check out this Bluesky post: https://bsky.app/profile/jay.bsky.team/post/3l7bsovn5rz2n", // coves:allow-public-host: the URL is post body TEXT written to the local test PDS — the whole point is that it survives the commit as text and is not resolved.
 			"createdAt": time.Now().UTC().Format(time.RFC3339),
 		}
 

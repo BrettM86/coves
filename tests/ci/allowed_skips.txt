@@ -3,7 +3,7 @@
 # `make ci` treats a skipped test as a FAILURE unless it is listed here. That
 # inversion is the point: `go test` counts a skip as "not a failure", so without
 # this file a suite that quietly stops running looks identical to a suite that
-# passes. Stop the PDS and `make test-all` still prints its success banner.
+# passes. Stop the PDS and a bare `go test` still prints its success banner.
 #
 # FORMAT
 #

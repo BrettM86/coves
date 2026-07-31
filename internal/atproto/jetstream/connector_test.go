@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"Coves/tests/testkit"
 )
 
 // --- Test doubles ---
@@ -340,16 +342,15 @@ func testEventJSON(t *testing.T, timeUS int64) []byte {
 	return data
 }
 
+// waitFor adapts the harness primitive to the (description, condition) shape
+// these twenty call sites use. The poll interval is tightened from the harness
+// default because this package's fixtures are deliberately fast — a 20ms
+// reconnect delay is not worth observing at 100ms granularity.
 func waitFor(t *testing.T, timeout time.Duration, description string, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if condition() {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for: %s", description)
+	testkit.WaitFor(t, timeout, func() (bool, error) { return condition(), nil },
+		testkit.WithDescription("%s", description),
+		testkit.WithPollInterval(5*time.Millisecond))
 }
 
 // fastConnectorOptions keeps test runtimes low.

@@ -159,7 +159,7 @@ func WaitFor(t TestingT, timeout time.Duration, probe Probe, opts ...WaitOption)
 		}
 		// Clamped, so the final sleep lands exactly on the deadline rather than
 		// past it.
-		time.Sleep(min(cfg.interval, remaining))
+		time.Sleep(min(cfg.interval, remaining)) // coves:allow-sleep: the poll interval itself — this is the primitive every other wait in the suite defers to
 	}
 }
 
@@ -212,6 +212,6 @@ func Holds(t TestingT, window time.Duration, probe Probe, opts ...WaitOption) {
 		}
 		// Clamped: a window shorter than one poll interval is still observed
 		// end to end, with a probe at 0 and a probe at the window's close.
-		time.Sleep(min(cfg.interval, remaining))
+		time.Sleep(min(cfg.interval, remaining)) // coves:allow-sleep: the poll interval itself — this is the primitive every other wait in the suite defers to
 	}
 }

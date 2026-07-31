@@ -413,7 +413,7 @@ func TestPostIngestion(t *testing.T) {
 // OAuth callback mints a session RequireAuth accepts. For posts specifically that
 // half is internal/core/posts/service_writeforward_test.go (the record the
 // service puts in the community's repo, and who may delete it) plus
-// tests/integration/post_handler_test.go (handler validation). What this adds is
+// internal/api/handlers/post (handler validation). What this adds is
 // the part neither can see — that the shipped binary really routes these NSIDs,
 // really guards them, and really serves an indexed post back.
 func TestPostAPIContract(t *testing.T) {

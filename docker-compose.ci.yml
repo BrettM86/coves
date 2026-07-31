@@ -530,7 +530,7 @@ services:
   # ---------------------------------------------------------------------------
 
   # Built from the working tree every run. This is the difference that matters
-  # most versus `make test-all`, which tests whatever binary a long-running
+  # most versus `make test-e2e-dev`, which tests whatever binary a long-running
   # `make run` started in another terminal — potentially several edits stale.
   appview:
     build:

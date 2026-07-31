@@ -688,7 +688,7 @@ log.Println("  - Updating: Post comment counts and comment reply counts atomical
 
 ### Test Suite
 
-**File:** `tests/integration/comment_consumer_test.go`
+**File:** `internal/core/comments/comment_consumer_test.go`
 
 **Test Coverage:** 6 test suites, 18 test cases, **100% passing**
 
@@ -1384,28 +1384,25 @@ The implementation provides a solid foundation for building rich threaded discus
 
 ### Run Tests
 
+The comment tests below are T1: they carry `//go:build integration` and need
+Postgres, which `make test-integration` starts. All of them live in
+`internal/core/comments`, next to the code they test.
+
 **Phase 1 - Indexing Tests:**
 ```bash
-TEST_DATABASE_URL="postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable" \
-  go test -v ./tests/integration/comment_consumer_test.go \
-              ./tests/integration/user_test.go \
-              ./tests/integration/helpers.go \
+go test -tags integration -v ./internal/core/comments/... \
   -run "TestCommentConsumer" -timeout 60s
 ```
 
 **Phase 2A - Query API Tests:**
 ```bash
-TEST_DATABASE_URL="postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable" \
-  go test -v ./tests/integration/comment_query_test.go \
-              ./tests/integration/user_test.go \
-              ./tests/integration/helpers.go \
+go test -tags integration -v ./internal/core/comments/... \
   -run "TestCommentQuery" -timeout 120s
 ```
 
 **Phase 2B - Voting Tests:**
 ```bash
-TEST_DATABASE_URL="postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable" \
-  go test -v ./tests/integration/ \
+go test -tags integration -v ./internal/core/comments/... \
   -run "TestCommentVote" -timeout 60s
 ```
 
@@ -1429,14 +1426,10 @@ go test -v ./internal/core/comments/... -run TestValidateGetCommentsRequest
 
 **All Comment Tests (Integration + Unit):**
 ```bash
-# Integration tests (requires database)
-TEST_DATABASE_URL="postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable" \
-  go test -v ./tests/integration/comment_*.go \
-              ./tests/integration/user_test.go \
-              ./tests/integration/helpers.go \
-  -timeout 120s
+# T1 integration tests (requires database)
+go test -tags integration -v ./internal/core/comments/... -timeout 120s
 
-# Unit tests (no database)
+# T0 unit tests (no database)
 go test -v ./internal/core/comments/...
 ```
 

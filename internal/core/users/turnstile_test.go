@@ -55,9 +55,14 @@ func TestNewCloudflareTurnstile_SiteverifyURL(t *testing.T) {
 		assert.Equal(t, defaultTurnstileSiteverifyURL, v.siteverifyURL)
 	})
 
+	// The value is opaque to the option: this subtest proves WithSiteverifyURL
+	// stores what it is given, so the string is the fixture AND the expected
+	// output. No request is made, and nothing listens on this address.
+	const stubSiteverifyURL = "http://localhost:3003/stub" // coves:allow-host-literal: opaque fixture for the option setter; asserted on, never dialled
+
 	t.Run("override redirects verification", func(t *testing.T) {
-		v := NewCloudflareTurnstile("s", WithSiteverifyURL("http://localhost:3003/stub")).(*cloudflareTurnstile)
-		assert.Equal(t, "http://localhost:3003/stub", v.siteverifyURL)
+		v := NewCloudflareTurnstile("s", WithSiteverifyURL(stubSiteverifyURL)).(*cloudflareTurnstile)
+		assert.Equal(t, stubSiteverifyURL, v.siteverifyURL)
 	})
 
 	// The override is plumbed from an env var that is empty in every

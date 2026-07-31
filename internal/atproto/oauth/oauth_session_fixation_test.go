@@ -63,7 +63,7 @@ func TestOAuth_SessionFixationAttackPrevention(t *testing.T) {
 		testSession := oauthlib.ClientSessionData{
 			AccountDID:  parsedDID,
 			SessionID:   sessionID,
-			HostURL:     "http://localhost:3001",
+			HostURL:     testPDSURL(),
 			AccessToken: "test-access-token",
 			Scopes:      []string{"atproto"},
 		}
@@ -75,7 +75,7 @@ func TestOAuth_SessionFixationAttackPrevention(t *testing.T) {
 		// Step 2: Attacker planted a mobile_redirect_uri cookie (without binding)
 		// This simulates the cookie being planted earlier by attacker
 		attackerRedirectURI := "evil://steal"
-		req := httptest.NewRequest("GET", "/oauth/callback?code=test&state=test&iss=http://localhost:3001", nil)
+		req := httptest.NewRequest("GET", "/oauth/callback?code=test&state=test&iss="+testPDSURL(), nil)
 
 		// Plant the attacker's cookie (URL escaped as it would be in real scenario)
 		req.AddCookie(&http.Cookie{
@@ -118,7 +118,7 @@ func TestOAuth_SessionFixationAttackPrevention(t *testing.T) {
 		testSession := oauthlib.ClientSessionData{
 			AccountDID:  parsedDID,
 			SessionID:   sessionID,
-			HostURL:     "http://localhost:3001",
+			HostURL:     testPDSURL(),
 			AccessToken: "mobile-access-token",
 			Scopes:      []string{"atproto"},
 		}
@@ -131,7 +131,7 @@ func TestOAuth_SessionFixationAttackPrevention(t *testing.T) {
 		// Use Universal Link URI that's in the allowlist
 		legitRedirectURI := "https://coves.social/app/oauth/callback"
 		csrfToken := "valid-csrf-token-for-mobile"
-		req := httptest.NewRequest("GET", "/oauth/callback?code=test&state=test&iss=http://localhost:3001", nil)
+		req := httptest.NewRequest("GET", "/oauth/callback?code=test&state=test&iss="+testPDSURL(), nil)
 
 		// Add mobile redirect URI cookie
 		req.AddCookie(&http.Cookie{
@@ -179,7 +179,7 @@ func TestOAuth_SessionFixationAttackPrevention(t *testing.T) {
 		testSession := oauthlib.ClientSessionData{
 			AccountDID:  parsedDID,
 			SessionID:   sessionID,
-			HostURL:     "http://localhost:3001",
+			HostURL:     testPDSURL(),
 			AccessToken: "binding-test-token",
 			Scopes:      []string{"atproto"},
 		}
@@ -190,7 +190,7 @@ func TestOAuth_SessionFixationAttackPrevention(t *testing.T) {
 		// Attacker tries to plant evil redirect with a binding from different URI
 		attackerRedirectURI := "evil://steal"
 		attackerCSRF := "attacker-csrf-token"
-		req := httptest.NewRequest("GET", "/oauth/callback?code=test&state=test&iss=http://localhost:3001", nil)
+		req := httptest.NewRequest("GET", "/oauth/callback?code=test&state=test&iss="+testPDSURL(), nil)
 
 		req.AddCookie(&http.Cookie{
 			Name:  "mobile_redirect_uri",
@@ -235,7 +235,7 @@ func TestOAuth_SessionFixationAttackPrevention(t *testing.T) {
 		testSession := oauthlib.ClientSessionData{
 			AccountDID:  parsedDID,
 			SessionID:   sessionID,
-			HostURL:     "http://localhost:3001",
+			HostURL:     testPDSURL(),
 			AccessToken: "csrf-test-token",
 			Scopes:      []string{"atproto"},
 		}
@@ -259,7 +259,7 @@ func TestOAuth_SessionFixationAttackPrevention(t *testing.T) {
 		// But attacker managed to change the CSRF cookie
 		attackerCSRF := "attacker-replaced-csrf"
 
-		req := httptest.NewRequest("GET", "/oauth/callback?code=test&state=test&iss=http://localhost:3001", nil)
+		req := httptest.NewRequest("GET", "/oauth/callback?code=test&state=test&iss="+testPDSURL(), nil)
 
 		req.AddCookie(&http.Cookie{
 			Name:  "mobile_redirect_uri",

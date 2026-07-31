@@ -20,9 +20,9 @@ import (
 
 // What creating a community actually produces on the PDS.
 //
-// tests/integration/community_service_integration_test.go already covers the
-// service's own view of provisioning — the returned DID, handle, record URI and
-// the credentials landing encrypted in Postgres. What it does NOT check, and
+// service_credentials_test.go, next to this file, already covers the service's
+// own view of provisioning — the returned DID, handle, record URI and the
+// credentials landing encrypted in Postgres. What it does NOT check, and
 // what tests/integration/community_e2e_test.go's deleted queryPDSAccount step
 // did, is the binding on the OTHER side: that the handle the service reports is
 // a handle the PDS will actually resolve, to this community's DID.

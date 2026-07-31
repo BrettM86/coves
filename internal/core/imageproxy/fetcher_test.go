@@ -56,12 +56,20 @@ func TestPDSFetcher_Fetch_NotFound(t *testing.T) {
 }
 
 func TestPDSFetcher_Fetch_Timeout(t *testing.T) {
+	// A PDS that never answers. Blocking is strictly better than sleeping
+	// here: the handler ends the instant the client gives up, so the test
+	// costs exactly the 50ms timeout it asserts on and there is no margin to
+	// guess at. release is the backstop for a cancellation that never reaches
+	// the server — without it, Close would wait on the request forever.
+	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Sleep longer than the timeout
-		time.Sleep(200 * time.Millisecond)
-		w.WriteHeader(http.StatusOK)
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
 	}))
 	defer server.Close()
+	defer close(release)
 
 	// Use a very short timeout
 	fetcher := NewPDSFetcher(50*time.Millisecond, 10)
@@ -77,20 +85,29 @@ func TestPDSFetcher_Fetch_NetworkError(t *testing.T) {
 	fetcher := NewPDSFetcher(5*time.Second, 10)
 	ctx := context.Background()
 
-	// Use an invalid URL that will cause a network error
-	_, err := fetcher.Fetch(ctx, "http://localhost:99999", "did:plc:test123", "bafyreicid123")
+	// Port 99999 is outside the valid range, so this is a malformed address
+	// rather than an endpoint: the dialer rejects it before any packet leaves
+	// the process, which is exactly the "the PDS URL is unusable" path under
+	// test.
+	_, err := fetcher.Fetch(ctx, "http://localhost:99999", "did:plc:test123", "bafyreicid123") // coves:allow-host-literal: invalid port, rejected by the dialer — never a reachable endpoint
 	if !errors.Is(err, ErrPDSFetchFailed) {
 		t.Errorf("expected ErrPDSFetchFailed, got: %v", err)
 	}
 }
 
 func TestPDSFetcher_Fetch_ContextCancellation(t *testing.T) {
+	// The server must not be what ends this call — the already-cancelled
+	// context is. So it never answers, and if a request somehow reaches it the
+	// handler blocks instead of racing the cancellation with a sleep.
+	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Sleep to allow context cancellation
-		time.Sleep(100 * time.Millisecond)
-		w.WriteHeader(http.StatusOK)
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
 	}))
 	defer server.Close()
+	defer close(release)
 
 	fetcher := NewPDSFetcher(5*time.Second, 10)
 	ctx, cancel := context.WithCancel(context.Background())

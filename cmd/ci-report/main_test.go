@@ -71,7 +71,11 @@ func TestGateOutcomes(t *testing.T) {
 			name: "an unapproved skip fails the gate",
 			stream: []string{
 				"pkg/a|TestOne|pass",
-				"pkg/a|TestPDS|skip|    blob_test.go:49: PDS not running at http://localhost:3001",
+				// A verbatim skip message from the era this gate exists to end.
+				// It is input text for the parser, not an address: ci-report
+				// never dials anything, and blunting the sample would make the
+				// fixture less like the output it has to survive.
+				"pkg/a|TestPDS|skip|    blob_test.go:49: PDS not running at http://localhost:3001", // coves:allow-host-literal: quoted skip message parsed as text; ci-report opens no connections
 			},
 			allowlist:     "# nothing tolerated\n",
 			wantCode:      1,

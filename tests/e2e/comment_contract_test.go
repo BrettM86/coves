@@ -62,8 +62,8 @@ import (
 // oversize content, missing or malformed reply refs, threading reassignment),
 // and the ordering hazard that makes must-exist gates transient does not arise.
 // Those payload rejections are pinned at T1 in
-// tests/integration/comment_consumer_test.go, cheaply and exhaustively; this
-// contract proves the one that is only observable end to end.
+// internal/core/comments/comment_consumer_test.go, cheaply and exhaustively;
+// this contract proves the one that is only observable end to end.
 //
 // The counts DO reconcile across arrival order — a reply that beats its parent
 // into the index has the parent's reply_count fixed up when the parent lands
@@ -632,8 +632,8 @@ func TestCommentIngestion(t *testing.T) {
 // but the browser OAuth callback mints a session RequireAuth accepts. For
 // comments that half is internal/core/comments/comment_write_service_test.go
 // (validation, ownership and the record the service writes, against a mock PDS),
-// tests/integration/comment_write_test.go (the same against a REAL PDS, including
-// the CID-swap conflict), and internal/api/handlers/comments (handler mapping and
+// internal/core/comments/comment_write_test.go (the same against a REAL PDS,
+// including the CID-swap conflict), and internal/api/handlers/comments (mapping and
 // parameter validation). What this adds is the part none of them can see — that
 // the shipped binary really routes these NSIDs, really guards them, and really
 // serves an indexed thread back.

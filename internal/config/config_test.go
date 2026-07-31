@@ -1,5 +1,12 @@
 package config
 
+// This file tests Load(), which reads environment variables and returns a
+// struct. It resolves nothing and dials nothing, so every URL below is either
+// an input string or an expected output string.
+//
+// coves:allow-host-literal-file: the dev defaults ARE localhost:3001/3002/3003/6008, and the production guard's whole job is to reject localhost — sourcing either from testkit would assert the parser against itself and delete the test's meaning.
+// coves:allow-public-host-file: the production defaults this parser must produce name plc.directory and the public Bluesky Jetstream; an assertion on any other value would be asserting a deployment we do not ship.
+
 import (
 	"bytes"
 	"encoding/base64"

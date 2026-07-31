@@ -210,7 +210,7 @@ func createListTestOAuthSession(did string) *oauth.ClientSessionData {
 	return &oauth.ClientSessionData{
 		AccountDID:  parsedDID,
 		SessionID:   "test-session",
-		HostURL:     "http://localhost:3001",
+		HostURL:     testSessionPDSHostURL,
 		AccessToken: "test-access-token",
 	}
 }

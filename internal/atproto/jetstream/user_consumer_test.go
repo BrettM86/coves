@@ -12,6 +12,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// bskySocialPDS is the pds_url carried by the already-indexed users these
+// tests hand to the consumer. It is a RECORD FIELD, not an endpoint: the
+// consumer compares it (bridge trust) and re-indexes it, and the only two
+// collaborators here are a mock user service and a mock resolver, so nothing
+// in this file can reach it. A user whose PDS is Bluesky is the realistic
+// shape for a profile arriving over the firehose, which is why it is not
+// invented.
+const bskySocialPDS = "https://bsky.social" // coves:allow-public-host: fixture pds_url on mock user records; no HTTP client exists in this test.
+
 // mockUserService is a test double for users.UserService
 type mockUserService struct {
 	users         map[string]*users.User
@@ -234,7 +243,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		mockService.users["did:plc:testuser"] = &users.User{
 			DID:    "did:plc:testuser",
 			Handle: "testuser.bsky.social",
-			PDSURL: "https://bsky.social",
+			PDSURL: bskySocialPDS,
 		}
 		mockResolver := &mockIdentityResolverForUser{}
 		consumer := NewUserEventConsumer(mockService, mockResolver)
@@ -276,7 +285,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		mockService.users["did:plc:testuser"] = &users.User{
 			DID:    "did:plc:testuser",
 			Handle: "testuser.bsky.social",
-			PDSURL: "https://bsky.social",
+			PDSURL: bskySocialPDS,
 		}
 		mockResolver := &mockIdentityResolverForUser{}
 		consumer := NewUserEventConsumer(mockService, mockResolver)
@@ -318,7 +327,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		mockService.users["did:plc:testuser"] = &users.User{
 			DID:    "did:plc:testuser",
 			Handle: "testuser.bsky.social",
-			PDSURL: "https://bsky.social",
+			PDSURL: bskySocialPDS,
 		}
 		mockResolver := &mockIdentityResolverForUser{}
 		consumer := NewUserEventConsumer(mockService, mockResolver)
@@ -365,7 +374,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		mockService.users["did:plc:testuser"] = &users.User{
 			DID:    "did:plc:testuser",
 			Handle: "testuser.bsky.social",
-			PDSURL: "https://bsky.social",
+			PDSURL: bskySocialPDS,
 		}
 		mockResolver := &mockIdentityResolverForUser{}
 		consumer := NewUserEventConsumer(mockService, mockResolver)
@@ -412,7 +421,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		mockService.users["did:plc:testuser"] = &users.User{
 			DID:    "did:plc:testuser",
 			Handle: "testuser.bsky.social",
-			PDSURL: "https://bsky.social",
+			PDSURL: bskySocialPDS,
 		}
 		mockResolver := &mockIdentityResolverForUser{}
 		consumer := NewUserEventConsumer(mockService, mockResolver)
@@ -476,7 +485,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		mockService.users["did:plc:testuser"] = &users.User{
 			DID:         "did:plc:testuser",
 			Handle:      "testuser.bsky.social",
-			PDSURL:      "https://bsky.social",
+			PDSURL:      bskySocialPDS,
 			DisplayName: "Existing Name",
 			Bio:         "Existing Bio",
 			AvatarCID:   "existingavatar",
@@ -528,7 +537,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		mockService.users["did:plc:testuser"] = &users.User{
 			DID:         "did:plc:testuser",
 			Handle:      "testuser.bsky.social",
-			PDSURL:      "https://bsky.social",
+			PDSURL:      bskySocialPDS,
 			DisplayName: "Old Name",
 		}
 		mockResolver := &mockIdentityResolverForUser{}
@@ -627,7 +636,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		mockService.users["did:plc:testuser"] = &users.User{
 			DID:    "did:plc:testuser",
 			Handle: "testuser.bsky.social",
-			PDSURL: "https://bsky.social",
+			PDSURL: bskySocialPDS,
 		}
 		mockResolver := &mockIdentityResolverForUser{}
 		consumer := NewUserEventConsumer(mockService, mockResolver)
@@ -658,7 +667,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		mockService.users["did:plc:testuser"] = &users.User{
 			DID:    "did:plc:testuser",
 			Handle: "testuser.bsky.social",
-			PDSURL: "https://bsky.social",
+			PDSURL: bskySocialPDS,
 		}
 		mockResolver := &mockIdentityResolverForUser{}
 		consumer := NewUserEventConsumer(mockService, mockResolver)
@@ -714,7 +723,7 @@ func TestUserConsumer_PropagatesUpdateProfileError(t *testing.T) {
 		mockService.users["did:plc:testuser"] = &users.User{
 			DID:    "did:plc:testuser",
 			Handle: "testuser.bsky.social",
-			PDSURL: "https://bsky.social",
+			PDSURL: bskySocialPDS,
 		}
 		mockService.updateError = errors.New("database write error")
 		mockResolver := &mockIdentityResolverForUser{}

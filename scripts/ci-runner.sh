@@ -68,13 +68,18 @@ echo "  ✓ -tags live"
 echo
 
 # ---------------------------------------------------------------------------
-# 1d. Violation audit (advisory)
+# 1d. Violation audit (hard gate)
 # ---------------------------------------------------------------------------
-# docs/TEST_ARCHITECTURE.md §3.6.3. The suite is mid-migration and every count
-# below is scheduled against a phase, so this reports and never judges — the
-# `|| true` is belt-and-braces on top of the script's own exit 0. It becomes the
-# hard lint gate in the final phase, when the counts are zero.
-bash /src/scripts/test-audit.sh || true
+# docs/TEST_ARCHITECTURE.md §3.6.3. This reported and never judged through
+# phases 0-5, while every count was scheduled against a phase; phase 6 drove
+# them to their floor and flipped it. The `|| true` that used to sit here is
+# gone, and so is the script's own `exit 0` — a new sleep, skip, endpoint
+# literal or public hostname fails the gate here, before anything is executed.
+#
+# Cheap and infrastructure-free, so it runs alongside the type-check rather than
+# after the suite: a violation is knowable at second zero and there is no reason
+# to learn about it twenty minutes later.
+bash /src/scripts/test-audit.sh
 
 # ---------------------------------------------------------------------------
 # 1e. Test template database

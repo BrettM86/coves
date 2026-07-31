@@ -7,6 +7,26 @@ import (
 	"time"
 )
 
+// rewindLastFailure moves a provider's recorded failure timestamp further into
+// the past, which is precisely what the passage of time does to it.
+//
+// The open window is a deadline the breaker computes from that timestamp
+// (`time.Since(lastFailure) > openDuration`), so a test crosses the deadline by
+// moving the timestamp rather than by outliving it: the same production branch
+// runs, with no wall clock spent and no margin to tune. It also lets these
+// tests keep the real five-minute openDuration instead of shrinking it to
+// something a sleep can afford.
+func rewindLastFailure(t *testing.T, cb *circuitBreaker, provider string, d time.Duration) {
+	t.Helper()
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+	last, ok := cb.lastFailure[provider]
+	if !ok {
+		t.Fatalf("provider %q has no recorded failure to rewind", provider)
+	}
+	cb.lastFailure[provider] = last.Add(-d)
+}
+
 func TestCircuitBreaker_InitialState(t *testing.T) {
 	cb := newCircuitBreaker()
 
@@ -62,8 +82,6 @@ func TestCircuitBreaker_StaysClosedBelowThreshold(t *testing.T) {
 
 func TestCircuitBreaker_TransitionsToHalfOpenAfterTimeout(t *testing.T) {
 	cb := newCircuitBreaker()
-	// Set a very short open duration for testing
-	cb.openDuration = 10 * time.Millisecond
 	provider := "test-provider"
 	testErr := errors.New("test error")
 
@@ -78,8 +96,8 @@ func TestCircuitBreaker_TransitionsToHalfOpenAfterTimeout(t *testing.T) {
 		t.Fatal("Circuit should be open after threshold failures")
 	}
 
-	// Wait for the open duration to pass
-	time.Sleep(cb.openDuration + 5*time.Millisecond)
+	// Put the open duration behind us.
+	rewindLastFailure(t, cb, provider, cb.openDuration+time.Second)
 
 	// Circuit should transition to half-open and allow attempt
 	canAttempt, err = cb.canAttempt(provider)
@@ -93,7 +111,6 @@ func TestCircuitBreaker_TransitionsToHalfOpenAfterTimeout(t *testing.T) {
 
 func TestCircuitBreaker_ClosesOnSuccessAfterHalfOpen(t *testing.T) {
 	cb := newCircuitBreaker()
-	cb.openDuration = 10 * time.Millisecond
 	provider := "test-provider"
 	testErr := errors.New("test error")
 
@@ -102,8 +119,8 @@ func TestCircuitBreaker_ClosesOnSuccessAfterHalfOpen(t *testing.T) {
 		cb.recordFailure(provider, testErr)
 	}
 
-	// Wait for half-open
-	time.Sleep(cb.openDuration + 5*time.Millisecond)
+	// Age the failure past the open window, so the next attempt is half-open.
+	rewindLastFailure(t, cb, provider, cb.openDuration+time.Second)
 
 	// Verify we can attempt
 	canAttempt, _ := cb.canAttempt(provider)
@@ -267,7 +284,6 @@ func TestCircuitBreaker_MultipleProvidersThreadSafety(t *testing.T) {
 
 func TestCircuitBreaker_StateTransitions(t *testing.T) {
 	cb := newCircuitBreaker()
-	cb.openDuration = 10 * time.Millisecond
 	provider := "test-provider"
 	testErr := errors.New("test error")
 
@@ -289,9 +305,9 @@ func TestCircuitBreaker_StateTransitions(t *testing.T) {
 	}
 	cb.mu.RUnlock()
 
-	// Wait for half-open transition
-	time.Sleep(cb.openDuration + 5*time.Millisecond)
-	_, _ = cb.canAttempt(provider) // Trigger state check
+	// Age past the open window, then trigger the state check.
+	rewindLastFailure(t, cb, provider, cb.openDuration+time.Second)
+	_, _ = cb.canAttempt(provider)
 
 	cb.mu.RLock()
 	state := cb.getState(provider)
@@ -337,7 +353,6 @@ func TestCircuitBreaker_ErrorMessage(t *testing.T) {
 
 func TestCircuitBreaker_HalfOpenFailureReopens(t *testing.T) {
 	cb := newCircuitBreaker()
-	cb.openDuration = 10 * time.Millisecond
 	provider := "test-provider"
 	testErr := errors.New("test error")
 
@@ -346,8 +361,8 @@ func TestCircuitBreaker_HalfOpenFailureReopens(t *testing.T) {
 		cb.recordFailure(provider, testErr)
 	}
 
-	// Wait for half-open
-	time.Sleep(cb.openDuration + 5*time.Millisecond)
+	// Age past the open window and take the half-open transition.
+	rewindLastFailure(t, cb, provider, cb.openDuration+time.Second)
 	_, _ = cb.canAttempt(provider)
 
 	// Record another failure in half-open state
@@ -394,15 +409,15 @@ func TestCircuitBreaker_CustomThresholdAndDuration(t *testing.T) {
 		t.Error("Circuit should be open after 5 failures")
 	}
 
-	// Should not transition to half-open before 20ms
-	time.Sleep(10 * time.Millisecond)
+	// Half of the custom 20ms window has passed: still open.
+	rewindLastFailure(t, cb, provider, 10*time.Millisecond)
 	canAttempt, _ = cb.canAttempt(provider)
 	if canAttempt {
 		t.Error("Circuit should still be open before timeout")
 	}
 
-	// Should transition after 20ms
-	time.Sleep(15 * time.Millisecond)
+	// 25ms total, past the custom window: half-open.
+	rewindLastFailure(t, cb, provider, 15*time.Millisecond)
 	canAttempt, _ = cb.canAttempt(provider)
 	if !canAttempt {
 		t.Error("Circuit should be half-open after timeout")

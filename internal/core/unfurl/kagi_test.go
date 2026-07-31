@@ -141,11 +141,22 @@ func TestFetchKagiKite_HTTPError(t *testing.T) {
 
 func TestFetchKagiKite_Timeout(t *testing.T) {
 	t.Parallel()
+
+	// The server never answers. Blocking beats sleeping here: the handler ends
+	// the moment the client gives up, so the test costs only the 100ms timeout
+	// it is actually asserting on, and there is no "is two seconds long enough"
+	// margin to get wrong. release is the backstop for the case where the
+	// client's cancellation never reaches the server — without it, Close would
+	// block on the in-flight request forever.
+	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(2 * time.Second)
-		w.WriteHeader(http.StatusOK)
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
 	}))
 	defer server.Close()
+	defer close(release)
 
 	ctx := context.Background()
 

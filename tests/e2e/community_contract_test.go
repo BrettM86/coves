@@ -113,7 +113,7 @@ import (
 // mismatched domains rejected, non-did:web hostedBy rejected, bidirectional
 // alsoKnownAs required — is covered where it can be covered honestly: at T1,
 // against a local TLS server that serves the DID document
-// (tests/integration/community_hostedby_security_test.go). The hostedBy
+// (internal/atproto/jetstream/community_hostedby_verification_test.go). The hostedBy
 // assertion below is about FIELD TRANSPORT, that the value in the record is the
 // value the endpoint serves, and nothing more.
 const (
@@ -421,8 +421,9 @@ func TestCommunityProfileIngestion(t *testing.T) {
 // consent pages from Go (fragile against a PDS the project does not own), or
 // give the AppView a test-only session-minting path (a production change, with
 // the obvious care about how it is gated). The integration tier sidesteps it by
-// constructing the session in-process — tests/integration/oauth_e2e_test.go
-// calls store.SaveSession then client.SealSession — which T2 cannot do without
+// constructing the session in-process — internal/atproto/oauth's
+// oauth_integration_test.go calls store.SaveSession then client.SealSession —
+// which T2 cannot do without
 // writing to the AppView's own database, the one thing the package doc forbids.
 //
 // So the authenticated half of every write endpoint family (create, update,

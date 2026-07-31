@@ -128,8 +128,16 @@ func (m *mockPDSClient) DID() string {
 	return "did:plc:mock"
 }
 
+// mockHostURL is the PDS address the mock client and the fake session report.
+//
+// Nothing here connects to it: the service under test is built with
+// NewServiceWithPDSFactory and a factory that hands back mockPDSClient, so
+// every record write is a method call on a struct in this file. The value only
+// has to be a well-formed host URL for the session to look real.
+const mockHostURL = "http://localhost:3001" // coves:allow-host-literal: value reported by a mock pds.Client and a fake OAuth session; no client is constructed from it.
+
 func (m *mockPDSClient) HostURL() string {
-	return "http://localhost:3001"
+	return mockHostURL
 }
 
 // --- Helper to create a test session ---
@@ -139,7 +147,7 @@ func testSession(did string) *oauth.ClientSessionData {
 	return &oauth.ClientSessionData{
 		AccountDID:  parsedDID,
 		AccessToken: "test-token",
-		HostURL:     "http://localhost:3001",
+		HostURL:     mockHostURL,
 	}
 }
 

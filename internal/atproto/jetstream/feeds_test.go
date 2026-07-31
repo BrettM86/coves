@@ -1,5 +1,7 @@
 package jetstream
 
+// coves:allow-public-host-file: this file tests the JETSTREAM_FEEDS spec parser, and the spec production actually runs names the public Bluesky Jetstream — asserting on any other string would test a topology we do not deploy. ParseFeeds and SubscribeURL are pure string functions: nothing here opens a socket.
+
 import (
 	"testing"
 
@@ -16,10 +18,10 @@ func TestParseFeeds_TwoFeeds_OrderPreserved(t *testing.T) {
 }
 
 func TestParseFeeds_SingleFeedWithWhitespaceAndTrailingSemicolon(t *testing.T) {
-	feeds, err := ParseFeeds(" self = ws://localhost:6008 ; ")
+	feeds, err := ParseFeeds(" self = ws://localhost:6008 ; ") // coves:allow-host-literal: spec text under test; the padding around the URL is the point, so it stays inline.
 	require.NoError(t, err)
 	require.Len(t, feeds, 1)
-	assert.Equal(t, Feed{Key: "self", BaseURL: "ws://localhost:6008"}, feeds[0])
+	assert.Equal(t, Feed{Key: "self", BaseURL: "ws://localhost:6008"}, feeds[0]) // coves:allow-host-literal: the trimmed form the parser must produce from the padded input above.
 }
 
 func TestParseFeeds_Rejections(t *testing.T) {

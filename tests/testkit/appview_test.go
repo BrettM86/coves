@@ -362,11 +362,16 @@ func TestAppView_AsIsIndependentPerIdentity(t *testing.T) {
 	assert.Empty(t, appview.Bearer, "the original client stays anonymous")
 }
 
+// A service becomes healthy after answering 503 a few times, and the wait has
+// to keep asking. The delay is counted in PROBES, not slept: flipping a flag
+// from a timer goroutine would make the claim "it polled" depend on the
+// scheduler beating the poll interval, which is the guess this package exists
+// to delete from the rest of the suite.
 func TestAppView_WaitHealthy(t *testing.T) {
-	var healthy atomic.Bool
+	var probes atomic.Int32
 	stub := newStubService(t, func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/xrpc/_health", r.URL.Path)
-		if !healthy.Load() {
+		if probes.Add(1) < 3 {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
@@ -374,11 +379,9 @@ func TestAppView_WaitHealthy(t *testing.T) {
 	})
 	appview := NewAppView(t, WithAppViewURL(stub.URL))
 
-	go func() {
-		time.Sleep(150 * time.Millisecond)
-		healthy.Store(true)
-	}()
 	appview.WaitHealthy(t, 5*time.Second)
+	assert.Equal(t, int32(3), probes.Load(),
+		"WaitHealthy must poll past a 503 rather than accepting the first answer")
 }
 
 func TestAppView_WaitHealthyReportsTheLastFailure(t *testing.T) {

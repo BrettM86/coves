@@ -81,7 +81,7 @@ func testOAuthComponentsWithMockedSession(t *testing.T, ctx context.Context, _ i
 	testSession := oauthlib.ClientSessionData{
 		AccountDID:  parsedDID,
 		SessionID:   fmt.Sprintf("localhost-test-%d", time.Now().UnixNano()),
-		HostURL:     "http://localhost:3001",
+		HostURL:     testPDSURL(),
 		AccessToken: "mocked-access-token",
 		Scopes:      []string{"atproto"},
 	}
@@ -155,7 +155,7 @@ func TestOAuthE2E_TokenExpiration(t *testing.T) {
 	testSession := oauthlib.ClientSessionData{
 		AccountDID:  did,
 		SessionID:   "expired-session",
-		HostURL:     "http://localhost:3001",
+		HostURL:     testPDSURL(),
 		AccessToken: "expired-token",
 		Scopes:      []string{"atproto"},
 	}
@@ -298,21 +298,21 @@ func TestOAuthE2E_MultipleSessionsPerUser(t *testing.T) {
 		{
 			AccountDID:  did,
 			SessionID:   "session-1-web",
-			HostURL:     "http://localhost:3001",
+			HostURL:     testPDSURL(),
 			AccessToken: "token-1",
 			Scopes:      []string{"atproto"},
 		},
 		{
 			AccountDID:  did,
 			SessionID:   "session-2-mobile",
-			HostURL:     "http://localhost:3001",
+			HostURL:     testPDSURL(),
 			AccessToken: "token-2",
 			Scopes:      []string{"atproto"},
 		},
 		{
 			AccountDID:  did,
 			SessionID:   "session-3-tablet",
-			HostURL:     "http://localhost:3001",
+			HostURL:     testPDSURL(),
 			AccessToken: "token-3",
 			Scopes:      []string{"atproto"},
 		},
@@ -380,10 +380,10 @@ func TestOAuthE2E_AuthRequestStorage(t *testing.T) {
 		PKCEVerifier:                 "test-pkce-verifier",
 		DPoPPrivateKeyMultibase:      "test-dpop-key",
 		DPoPAuthServerNonce:          "test-nonce",
-		AuthServerURL:                "http://localhost:3001",
-		RequestURI:                   "http://localhost:3001/authorize",
-		AuthServerTokenEndpoint:      "http://localhost:3001/oauth/token",
-		AuthServerRevocationEndpoint: "http://localhost:3001/oauth/revoke",
+		AuthServerURL:                testPDSURL(),
+		RequestURI:                   testPDSURL() + "/authorize",
+		AuthServerTokenEndpoint:      testPDSURL() + "/oauth/token",
+		AuthServerRevocationEndpoint: testPDSURL() + "/oauth/revoke",
 		Scopes:                       []string{"atproto"},
 	}
 
@@ -427,7 +427,7 @@ func TestOAuthE2E_AuthRequestStorage(t *testing.T) {
 	oldAuthRequest := oauthlib.AuthRequestData{
 		State:         oldState,
 		PKCEVerifier:  "old-verifier",
-		AuthServerURL: "http://localhost:3001",
+		AuthServerURL: testPDSURL(),
 		Scopes:        []string{"atproto"},
 	}
 
@@ -482,10 +482,10 @@ func TestOAuthE2E_TokenRefresh(t *testing.T) {
 	initialSession := oauthlib.ClientSessionData{
 		AccountDID:                   did,
 		SessionID:                    "refresh-session-1",
-		HostURL:                      "http://localhost:3001",
-		AuthServerURL:                "http://localhost:3001",
-		AuthServerTokenEndpoint:      "http://localhost:3001/oauth/token",
-		AuthServerRevocationEndpoint: "http://localhost:3001/oauth/revoke",
+		HostURL:                      testPDSURL(),
+		AuthServerURL:                testPDSURL(),
+		AuthServerTokenEndpoint:      testPDSURL() + "/oauth/token",
+		AuthServerRevocationEndpoint: testPDSURL() + "/oauth/revoke",
 		AccessToken:                  "initial-access-token",
 		RefreshToken:                 "initial-refresh-token",
 		DPoPPrivateKeyMultibase:      "test-dpop-key",
@@ -727,9 +727,9 @@ func TestOAuthE2E_SessionUpdate(t *testing.T) {
 	originalSession := oauthlib.ClientSessionData{
 		AccountDID:              did,
 		SessionID:               "update-session-1",
-		HostURL:                 "http://localhost:3001",
-		AuthServerURL:           "http://localhost:3001",
-		AuthServerTokenEndpoint: "http://localhost:3001/oauth/token",
+		HostURL:                 testPDSURL(),
+		AuthServerURL:           testPDSURL(),
+		AuthServerTokenEndpoint: testPDSURL() + "/oauth/token",
 		AccessToken:             "original-access-token",
 		RefreshToken:            "original-refresh-token",
 		DPoPPrivateKeyMultibase: "original-dpop-key",
@@ -814,13 +814,19 @@ func TestOAuthE2E_RefreshTokenRotation(t *testing.T) {
 		{"access-token-v3", "refresh-token-v3"},
 	}
 
+	// Each rotation must land as a distinct write, so its row carries a strictly
+	// later updated_at than the one before. That is the observable the loop's
+	// old `time.Sleep(10 * time.Millisecond)` was guessing at — the sleep was
+	// commented "ensure timestamp differences" and then nothing checked one.
+	var previousUpdate time.Time
+
 	for i, tokenPair := range tokens {
 		session := oauthlib.ClientSessionData{
 			AccountDID:              did,
 			SessionID:               sessionID,
-			HostURL:                 "http://localhost:3001",
-			AuthServerURL:           "http://localhost:3001",
-			AuthServerTokenEndpoint: "http://localhost:3001/oauth/token",
+			HostURL:                 testPDSURL(),
+			AuthServerURL:           testPDSURL(),
+			AuthServerTokenEndpoint: testPDSURL() + "/oauth/token",
 			AccessToken:             tokenPair.access,
 			RefreshToken:            tokenPair.refresh,
 			Scopes:                  []string{"atproto"},
@@ -839,8 +845,17 @@ func TestOAuthE2E_RefreshTokenRotation(t *testing.T) {
 		assert.Equal(t, tokenPair.refresh, retrieved.RefreshToken,
 			"Refresh token should match iteration %d", i+1)
 
-		// Small delay to ensure timestamp differences
-		time.Sleep(10 * time.Millisecond)
+		var thisUpdate time.Time
+		testkit.WaitFor(t, 5*time.Second, func() (bool, error) {
+			if err := db.QueryRowContext(ctx,
+				"SELECT updated_at FROM oauth_sessions WHERE did = $1 AND session_id = $2",
+				did.String(), sessionID).Scan(&thisUpdate); err != nil {
+				return false, err
+			}
+			return thisUpdate.After(previousUpdate), nil
+		}, testkit.WithDescription(
+			"rotation %d to advance oauth_sessions.updated_at past %s", i+1, previousUpdate))
+		previousUpdate = thisUpdate
 	}
 
 	t.Logf("✅ Refresh token rotation verified through %d cycles", len(tokens))

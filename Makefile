@@ -120,13 +120,17 @@ db-reset: ## Reset database (delete all data and re-run migrations)
 
 ##@ Testing
 
-test: ## T0 unit tier - no Docker, no database, no network. The inner loop.
+test: ## T0 unit tier - no Docker, no database, no public network. The inner loop.
 	@# Untagged `go test` is the unit tier by construction: every test that
 	@# needs something out of process carries a build tag (integration/e2e/live)
 	@# and is therefore not in this build at all. That is what lets this target
 	@# start no containers and wait for nothing — and it is checked, not hoped
 	@# for: the tier is verified by running this selection with the network
 	@# switched off entirely.
+	@#
+	@# "No network" means nothing out of process: in-process httptest servers on
+	@# loopback are used freely here, and they are why `--network none` is the
+	@# honest check rather than an unreachable ideal.
 	@echo "$(GREEN)Running the unit tier (untagged)...$(RESET)"
 	@go test ./cmd/... ./internal/... ./tests/...
 	@echo "$(GREEN)✓ Unit tier complete$(RESET)"
@@ -281,7 +285,7 @@ test-db-reset: ## Reset test database
 test-db-prepare: ## Create or refresh the template database that testkit.DB clones per test
 	@./scripts/test-db-prepare.sh
 
-test-audit: ## Count test-suite invariant violations (warn only; -v for file:line)
+test-audit: ## Test-suite invariant audit - hard gate, any violation fails (-v for file:line)
 	@./scripts/test-audit.sh
 
 test-db-stop: ## Stop test database

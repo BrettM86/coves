@@ -432,7 +432,7 @@ func TestVoteOutOfOrderIsLostAndSubtracts(t *testing.T) {
 // social.coves.community.post.get. Viewer state (did I vote, and which way) is
 // the part a client asks about by identity, and it is behind OptionalAuth with
 // no credential this tier can mint (§3.4b) — covered at T1 instead, in
-// tests/integration/comment_vote_test.go for comments and
+// internal/core/comments/comment_vote_test.go for comments and
 // internal/db/postgres/vote_repo_test.go for posts.
 //
 // So what is left, and what nothing else can see, is the auth boundary of the

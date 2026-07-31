@@ -1,5 +1,7 @@
 package blueskypost
 
+// coves:allow-public-host-file: this file IS the bsky.app URL parser's test — every hostname in it is a parser INPUT or an expected reject, matched against a regex and never dialled, and per-line markers on ~19 table rows would bury the table they annotate.
+
 import (
 	"Coves/internal/atproto/identity"
 	"context"

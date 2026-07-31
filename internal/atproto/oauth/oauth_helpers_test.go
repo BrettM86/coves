@@ -8,16 +8,31 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
-	"strings"
 	"testing"
 
 	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/stretchr/testify/require"
 )
 
-// SetupOAuthTestClient creates an OAuth client configured for testing with a PDS
-// When PDS_URL starts with https://, production mode is used (DevMode=false)
-// Otherwise, dev mode is used for localhost testing
+// testPDSURL is the PDS this package's OAuth sessions belong to: the address a
+// ClientSessionData records as its HostURL and the issuer a callback carries.
+//
+// It comes from testkit rather than a literal so a relocated stack moves the
+// tests with it (docs/TEST_ARCHITECTURE.md §3.7, layer 1).
+func testPDSURL() string {
+	return testkit.Endpoints().PDS.BaseURL
+}
+
+// SetupOAuthTestClient creates an OAuth client configured for testing against
+// the test stack's PDS.
+//
+// The client is ALWAYS in dev mode. There used to be a second branch here that
+// switched to production mode and the public plc.directory whenever PDS_URL
+// began with "https://", and no run could ever select it: the stack's PDS is a
+// local HTTP service in both the dev and the hermetic CI compose files, and
+// CI's network is egress-blocked (docs/TEST_ARCHITECTURE.md §3.7, layer 3), so
+// a run that somehow did select it would fail at connect time rather than
+// "resolve DIDs read-only" as its comment claimed. It is deleted, not exempted.
 func SetupOAuthTestClient(t *testing.T, store oauthlib.ClientAuthStore) *oauth.OAuthClient {
 	t.Helper()
 
@@ -26,37 +41,19 @@ func SetupOAuthTestClient(t *testing.T, store oauthlib.ClientAuthStore) *oauth.O
 	_, err := rand.Read(sealSecret)
 	require.NoError(t, err, "Failed to generate seal secret")
 
-	sealSecretB64 := base64.StdEncoding.EncodeToString(sealSecret)
+	endpoints := testkit.Endpoints()
 
-	// Detect if we're testing against a production (HTTPS) PDS
-	pdsURL := testkit.Endpoints().PDS.BaseURL
-	isProductionPDS := strings.HasPrefix(pdsURL, "https://")
-
-	// Configure based on PDS type
-	var config *oauth.OAuthConfig
-	if isProductionPDS {
-		// Production mode: HTTPS PDS, use real PLC directory
-		config = &oauth.OAuthConfig{
-			PublicURL:       "http://localhost:3000", // Test server callback URL
-			SealSecret:      sealSecretB64,           // For sealing mobile tokens
-			Scopes:          []string{"atproto"},
-			DevMode:         false,                   // Production mode for HTTPS PDS
-			AllowPrivateIPs: false,                   // No private IPs in production mode
-			PLCURL:          "https://plc.directory", // READ-ONLY: resolving DIDs that already exist on the production directory
-		}
-		t.Logf("🌐 OAuth client configured for production PDS: %s", pdsURL)
-	} else {
-		// Dev mode: localhost PDS with HTTP
-		config = &oauth.OAuthConfig{
-			PublicURL:       "http://localhost:3000", // Match the callback URL expected by PDS
-			SealSecret:      sealSecretB64,           // For sealing mobile tokens
-			Scopes:          []string{"atproto"},
-			DevMode:         true,                            // Enable dev mode for localhost testing
-			AllowPrivateIPs: true,                            // Allow private IPs for local testing
-			PLCURL:          testkit.Endpoints().PLC.BaseURL, // Use local PLC directory for DID resolution
-		}
-		t.Logf("🔧 OAuth client configured for local PDS: %s", pdsURL)
+	config := &oauth.OAuthConfig{
+		// PublicURL is the OAuth client's OWN public address — Coves, not the
+		// PDS — which is what the callback URL and client_id are built from.
+		PublicURL:       endpoints.AppView.BaseURL,
+		SealSecret:      base64.StdEncoding.EncodeToString(sealSecret), // For sealing mobile tokens
+		Scopes:          []string{"atproto"},
+		DevMode:         true,                  // Loopback client: the stack's PDS speaks HTTP
+		AllowPrivateIPs: true,                  // Allow private IPs for local testing
+		PLCURL:          endpoints.PLC.BaseURL, // Local PLC directory for DID resolution
 	}
+	t.Logf("🔧 OAuth client configured for local PDS: %s", endpoints.PDS.BaseURL)
 
 	client, err := oauth.NewOAuthClient(config, store)
 	require.NoError(t, err, "Failed to create OAuth client")

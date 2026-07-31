@@ -3,11 +3,18 @@ package blueskypost
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 )
+
+// alicePostURL is the one bsky.app permalink these tests parse. IsBlueskyURL
+// and ParseBlueskyURL are regex-and-split over the string — no request is made
+// to derive the AT-URI — and every test here that does issue a request goes
+// through newStubbedService, which points the fetcher at an httptest server.
+const alicePostURL = "https://bsky.app/profile/alice.bsky.social/post/abc123" // coves:allow-public-host: parser input; the only host this file dials is the local stub server.
 
 // mockRepository implements Repository for testing
 type mockRepository struct {
@@ -75,7 +82,7 @@ func TestService_IsBlueskyURL(t *testing.T) {
 	}{
 		{
 			name:     "valid bsky.app URL",
-			url:      "https://bsky.app/profile/alice.bsky.social/post/abc123",
+			url:      alicePostURL,
 			expected: true,
 		},
 		{
@@ -113,7 +120,7 @@ func TestService_ParseBlueskyURL(t *testing.T) {
 	}{
 		{
 			name:        "valid URL",
-			url:         "https://bsky.app/profile/alice.bsky.social/post/abc123",
+			url:         alicePostURL,
 			expectedURI: "at://did:plc:alice123/app.bsky.feed.post/abc123",
 			wantErr:     false,
 		},
@@ -341,7 +348,11 @@ func TestService_DefaultAPITarget(t *testing.T) {
 // response parsing has no merge-path coverage at all: it was previously only
 // exercised by the live-tier tests.
 func TestService_ResolvePost_ParsesAPIResponse(t *testing.T) {
-	const goldenResponse = `{
+	// The avatar is spliced in rather than written inline because it is the one
+	// public hostname in the fixture, and a JSON line cannot carry a Go comment
+	// saying so.
+	const goldenAvatar = "https://cdn.bsky.app/img/avatar/alice.jpg" // coves:allow-public-host: a field in a canned API response body; decoded by the stub handler's client, never fetched.
+	goldenResponse := fmt.Sprintf(`{
 	  "posts": [
 	    {
 	      "uri": "at://did:plc:alice123/app.bsky.feed.post/abc123",
@@ -350,7 +361,7 @@ func TestService_ResolvePost_ParsesAPIResponse(t *testing.T) {
 	        "did": "did:plc:alice123",
 	        "handle": "alice.bsky.social",
 	        "displayName": "Alice",
-	        "avatar": "https://cdn.bsky.app/img/avatar/alice.jpg"
+	        "avatar": %q
 	      },
 	      "record": {
 	        "text": "hello from the golden fixture",
@@ -362,7 +373,7 @@ func TestService_ResolvePost_ParsesAPIResponse(t *testing.T) {
 	      "indexedAt": "2026-07-01T12:00:05Z"
 	    }
 	  ]
-	}`
+	}`, goldenAvatar)
 
 	repo := newMockRepository()
 	var requestedURI string
@@ -611,7 +622,7 @@ func TestService_IntegrationFlow(t *testing.T) {
 	ctx := context.Background()
 
 	// Step 1: Check URL
-	url := "https://bsky.app/profile/alice.bsky.social/post/abc123"
+	url := alicePostURL
 	if !svc.IsBlueskyURL(url) {
 		t.Fatalf("IsBlueskyURL(%q) should return true", url)
 	}

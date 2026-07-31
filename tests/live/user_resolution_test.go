@@ -30,7 +30,7 @@ func TestResolveHandleToDID_RealHandle(t *testing.T) {
 	productionPLCConfig := identity.DefaultConfig()
 	productionPLCConfig.PLCURL = "https://plc.directory"
 	productionResolver := identity.NewResolver(db, productionPLCConfig)
-	productionUserService := users.NewUserService(userRepo, productionResolver, "http://localhost:3001", nil, "")
+	productionUserService := users.NewUserService(userRepo, productionResolver, testkit.Endpoints().PDS.BaseURL, nil, "")
 
 	did, err := productionUserService.ResolveHandleToDID(ctx, "bretton.dev")
 	if err != nil {

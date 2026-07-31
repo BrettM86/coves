@@ -22,7 +22,7 @@ func createTestUser(t *testing.T, db *sql.DB, handle, did string) {
 		VALUES ($1, $2, $3, NOW())
 		ON CONFLICT (did) DO NOTHING
 	`
-	_, err := db.Exec(query, did, handle, "https://bsky.social")
+	_, err := db.Exec(query, did, handle, testkit.Endpoints().PDS.BaseURL)
 	require.NoError(t, err, "Failed to create test user")
 }
 

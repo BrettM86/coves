@@ -28,6 +28,16 @@ func newHTTPTestLimiter(t *testing.T, requests int, window time.Duration) *RateL
 	return rl
 }
 
+// newHTTPTestLimiterWithClock is newHTTPTestLimiter for the window-expiry
+// tests, which drive time themselves rather than waiting for it. testClock is
+// defined in ratelimit_test.go.
+func newHTTPTestLimiterWithClock(t *testing.T, requests int, window time.Duration, clock *testClock) *RateLimiter {
+	t.Helper()
+	rl := newRateLimiterWithClock("default", requests, window, clock.Now)
+	t.Cleanup(rl.Stop)
+	return rl
+}
+
 // okHandler is the terminal handler for these tests: it proves the request
 // reached past the limiter.
 func okHandler() http.Handler {
@@ -255,11 +265,13 @@ func TestRateLimiter_HTTP_NoRateLimitHeaders(t *testing.T) {
 }
 
 // TestRateLimiter_HTTP_WindowReset covers budget recovery once a window
-// expires. The limiter reads time.Now directly, so these waits are real; they
-// are kept to a few hundred milliseconds.
+// expires. The limiter's clock is injected here, so the window boundary is
+// crossed by advancing time rather than by waiting for it: no wall clock is
+// spent and there is no margin to tune.
 func TestRateLimiter_HTTP_WindowReset(t *testing.T) {
 	t.Run("budget returns after the window expires", func(t *testing.T) {
-		handler := newHTTPTestLimiter(t, 2, 100*time.Millisecond).Middleware(okHandler())
+		clock := newTestClock()
+		handler := newHTTPTestLimiterWithClock(t, 2, 1*time.Minute, clock).Middleware(okHandler())
 		clientIP := "192.168.1.130:12345"
 
 		for i := 0; i < 2; i++ {
@@ -276,7 +288,7 @@ func TestRateLimiter_HTTP_WindowReset(t *testing.T) {
 		handler.ServeHTTP(rr, req)
 		assert.Equal(t, http.StatusTooManyRequests, rr.Code)
 
-		time.Sleep(150 * time.Millisecond)
+		clock.Advance(1*time.Minute + time.Second)
 
 		req = httptest.NewRequest("GET", "/test", nil)
 		req.RemoteAddr = clientIP
@@ -290,7 +302,8 @@ func TestRateLimiter_HTTP_WindowReset(t *testing.T) {
 		// is set when the bucket opens and is never pushed back by later
 		// requests. Three requests spread over 100ms of a 200ms window still
 		// exhaust the budget, and the budget returns on the original schedule.
-		handler := newHTTPTestLimiter(t, 3, 200*time.Millisecond).Middleware(okHandler())
+		clock := newTestClock()
+		handler := newHTTPTestLimiterWithClock(t, 3, 200*time.Millisecond, clock).Middleware(okHandler())
 		clientIP := "192.168.1.131:12345"
 
 		for i := 0; i < 3; i++ {
@@ -299,7 +312,7 @@ func TestRateLimiter_HTTP_WindowReset(t *testing.T) {
 			rr := httptest.NewRecorder()
 			handler.ServeHTTP(rr, req)
 			assert.Equal(t, http.StatusOK, rr.Code, "Request %d should succeed", i+1)
-			time.Sleep(50 * time.Millisecond)
+			clock.Advance(50 * time.Millisecond)
 		}
 
 		req := httptest.NewRequest("GET", "/test", nil)
@@ -308,7 +321,11 @@ func TestRateLimiter_HTTP_WindowReset(t *testing.T) {
 		handler.ServeHTTP(rr, req)
 		assert.Equal(t, http.StatusTooManyRequests, rr.Code, "4th request should be blocked")
 
-		time.Sleep(100 * time.Millisecond)
+		// 150ms into the window when the 4th request was rejected; another
+		// 100ms puts the clock at 250ms, past the 200ms reset the FIRST request
+		// set. If later requests had pushed the reset back, this would still be
+		// inside the window and still be a 429.
+		clock.Advance(100 * time.Millisecond)
 
 		req = httptest.NewRequest("GET", "/test", nil)
 		req.RemoteAddr = clientIP
