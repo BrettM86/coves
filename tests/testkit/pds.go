@@ -129,6 +129,41 @@ func NewPDS(t TestingT, opts ...PDSOption) *PDS {
 	return &PDS{Endpoint: resolved, Anon: NewXRPCClient(resolved.BaseURL)}
 }
 
+// NewFederatedPDS returns a handle on the SECOND PDS — the host the AppView
+// does not front.
+//
+// A named constructor rather than `NewPDS(WithPDSURL(...), WithPDSHandleDomain(...))`
+// at each call site, for two reasons. The pairing is not optional: pds2 issues
+// handles under its own domain, and an account created there with a pds1 handle
+// is rejected by the PDS with "InvalidHandle", which reads like a bug in the
+// handle generator. And the name is what makes a contract legible — `remote :=
+// testkit.NewFederatedPDS(t)` says which side of the federation boundary the
+// next twenty lines are on, which a URL override does not.
+//
+// Fails the test if PDS2_URL is unset rather than falling back to the local
+// PDS: a "federation" contract silently writing to the PDS the AppView fronts
+// would pass while proving nothing, which is the exact false-green §3.4a
+// exists to prevent.
+func NewFederatedPDS(t TestingT, opts ...PDSOption) *PDS {
+	t.Helper()
+	endpoint := Endpoints().PDS2
+	if endpoint.BaseURL == "" {
+		t.Fatalf("no federated PDS configured (PDS2_URL is unset): the two-PDS topology " +
+			"lives in docker-compose.ci.yml, so this test must run inside the hermetic stack")
+		return nil
+	}
+	if endpoint.BaseURL == Endpoints().PDS.BaseURL {
+		t.Fatalf("PDS2_URL (%s) is the same host as PDS_URL: a federation contract needs a "+
+			"PDS the AppView does not front, and pointing both at one host would let it pass "+
+			"while proving nothing", endpoint.BaseURL)
+		return nil
+	}
+	return NewPDS(t, append([]PDSOption{
+		WithPDSURL(endpoint.BaseURL),
+		WithPDSHandleDomain(endpoint.HandleDomain),
+	}, opts...)...)
+}
+
 // URL is the PDS' base URL.
 func (p *PDS) URL() string { return p.Endpoint.BaseURL }
 

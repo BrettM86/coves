@@ -182,6 +182,16 @@ import (
 func TestMain(m *testing.M) {
 	os.Exit(testkit.Main(m,
 		testkit.RequirePDS,
+		// The federated PDS, for the same attribution reason as the rest of
+		// this list: a stack whose pds2 is down should say so once, up front,
+		// rather than have five contracts time out separately.
+		//
+		// It is the one CONDITIONAL requirement here — it passes when no
+		// federated PDS is configured at all, because that is the dev stack,
+		// where `make test-e2e-dev` excludes the federation contracts by name
+		// instead. RequireFederatedPDS' own doc has the full argument for why
+		// that loses nothing.
+		testkit.RequireFederatedPDS,
 		testkit.RequireAppView,
 		testkit.RequireJetstream,
 		requireSingleFeedTopology,

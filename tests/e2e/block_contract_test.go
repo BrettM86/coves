@@ -175,12 +175,25 @@ type consumerCounters struct {
 // looking at anything.
 func (p *pipeline) counters(t *testing.T, consumer string) consumerCounters {
 	t.Helper()
+	total, err := p.countersOrErr(consumer)
+	require.NoError(t, err, "reading /health/consumers, which these contracts observe through")
+	return total
+}
 
+// countersOrErr is counters for a caller that has no *testing.T to fail: a wait
+// probe, which turns the error into its own failure (testkit.WaitFor treats a
+// probe error as fatal) with the wait's description attached.
+//
+// The unmatched-name case is an error here rather than a require, and stays
+// just as fatal for exactly the reason the require gives.
+func (p *pipeline) countersOrErr(consumer string) (consumerCounters, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), contractBudget)
 	defer cancel()
 
 	report, err := p.AppView.ConsumerHealth(ctx)
-	require.NoError(t, err, "reading /health/consumers, which these contracts observe through")
+	if err != nil {
+		return consumerCounters{}, err
+	}
 
 	var total consumerCounters
 	for _, c := range report.Consumers {
@@ -192,11 +205,13 @@ func (p *pipeline) counters(t *testing.T, consumer string) consumerCounters {
 		total.DeadLettered += c.EventsDeadLettered
 		total.Connectors++
 	}
-	require.NotZerof(t, total.Connectors,
-		"no connector on /health/consumers is named %q or %q@<feed> — the AppView's consumer "+
-			"naming changed, and every delta this contract measures would silently read zero. "+
-			"Health document was:\n%s", consumer, consumer, report)
-	return total
+	if total.Connectors == 0 {
+		return consumerCounters{}, fmt.Errorf(
+			"no connector on /health/consumers is named %q or %q@<feed> — the AppView's consumer "+
+				"naming changed, and every delta this contract measures would silently read zero. "+
+				"Health document was:\n%s", consumer, consumer, report)
+	}
+	return total, nil
 }
 
 // blockDelivery is one measured window: a block commit, bounded by a later

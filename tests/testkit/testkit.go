@@ -163,8 +163,18 @@ type JetstreamEndpoint struct {
 // so endpoint literals in tests are counted as violations by
 // scripts/test-audit.sh.
 type EndpointSet struct {
-	Postgres  PostgresEndpoint
-	PDS       PDSEndpoint
+	Postgres PostgresEndpoint
+	PDS      PDSEndpoint
+	// PDS2 is the FEDERATED PDS: a second, independently addressed host that
+	// the AppView holds no credentials for and has no configuration naming.
+	// See docker-compose.ci.yml's header and
+	// tests/e2e/federation_contract_test.go.
+	//
+	// Present in the hermetic CI stack only. Its BaseURL is empty when
+	// PDS2_URL is unset — a dev stack has no second PDS — and
+	// RequireFederatedPDS turns that into a named failure rather than a
+	// connection refused against a default nobody configured.
+	PDS2      PDSEndpoint
 	PLC       ServiceEndpoint
 	Jetstream JetstreamEndpoint
 	AppView   ServiceEndpoint
@@ -197,6 +207,17 @@ func loadEndpoints() EndpointSet {
 			BaseURL:      trimURL(envOr("PDS_URL", "http://localhost:3001")),
 			HandleDomain: firstHandleDomain(os.Getenv("PDS_SERVICE_HANDLE_DOMAINS")),
 		},
+		PDS2: PDSEndpoint{
+			// Deliberately NOT defaulted to an address. Every other endpoint
+			// here defaults to the stack's coordinates because every other
+			// service exists in both the dev and the CI stack; pds2 exists
+			// only in CI. A default would make a dev-stack run dial a port
+			// nothing is listening on and report a connection error, instead
+			// of RequireFederatedPDS saying which stack the tier needs.
+			BaseURL: trimURL(os.Getenv("PDS2_URL")),
+			HandleDomain: firstHandleDomainOr(
+				os.Getenv("PDS2_SERVICE_HANDLE_DOMAINS"), "pds2.test"),
+		},
 		PLC: ServiceEndpoint{
 			BaseURL: trimURL(envOr("PLC_DIRECTORY_URL", "http://localhost:3002")),
 		},
@@ -225,10 +246,18 @@ func loadEndpoints() EndpointSet {
 // domain cannot leave the generator behind: handles would be rejected at the
 // PDS with an error nobody would think to trace back to a test helper.
 func firstHandleDomain(configured string) string {
+	return firstHandleDomainOr(configured, "local.coves.dev")
+}
+
+// firstHandleDomainOr is firstHandleDomain with the fallback named by the
+// caller, because the two PDSes issue handles under different domains and a
+// shared default would silently hand pds2 accounts pds1 handles — which the
+// PDS rejects with "InvalidHandle", a long way from the cause.
+func firstHandleDomainOr(configured, fallback string) string {
 	first, _, _ := strings.Cut(configured, ",")
 	first = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(first), "."))
 	if first == "" {
-		return "local.coves.dev"
+		return fallback
 	}
 	return first
 }
@@ -309,6 +338,37 @@ func RequirePDS() error { return probeHTTP("PDS", Endpoints().PDS.BaseURL) }
 
 // RequireAppView fails the package unless the AppView answers.
 func RequireAppView() error { return probeHTTP("AppView", Endpoints().AppView.BaseURL) }
+
+// RequireFederatedPDS fails the package unless the SECOND PDS answers — when
+// the stack is configured to have one.
+//
+// Separate from RequirePDS because it is a separate claim about the stack, and
+// because the failure it guards against is a different one: a pds2 that is
+// configured but not answering should be said once, up front, rather than
+// arrive as five federation contracts timing out separately.
+//
+// AN UNSET PDS2_URL IS NOT A FAILURE HERE, which is the one judgement in this
+// function. pds2 exists only in the hermetic CI stack
+// (docker-compose.ci.yml); a dev stack has no second PDS and never will, and
+// `make test-e2e-dev` — the escape hatch that grades one — excludes the
+// federation contracts at SELECTION rather than skipping them. Failing the
+// whole package there would take the other 28 contracts down with a
+// requirement none of them have.
+//
+// Nothing is lost by the leniency, because two other things already close the
+// hole a floor would close. NewFederatedPDS fatals, naming PDS2_URL and the
+// stack to run in, if a federation contract is ever reached without a
+// federated PDS to talk to — so a mis-selected run cannot pass quietly. And
+// the hermetic stack's own readiness gate (scripts/lib/runner-ready.sh) probes
+// pds2 and the relay directly, before any test runs, so a CI stack missing
+// either never gets as far as this function.
+func RequireFederatedPDS() error {
+	endpoint := Endpoints().PDS2
+	if endpoint.BaseURL == "" {
+		return nil
+	}
+	return probeHTTP("federated PDS", endpoint.BaseURL)
+}
 
 // RequireJetstream fails the package unless a subscription can be opened.
 //

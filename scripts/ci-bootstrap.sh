@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
-# Seeds the CI stack's PDS with the account the AppView authenticates as.
+# Seeds the CI stack: registers both PDSes with the relay, then creates the
+# account the AppView authenticates as.
 #
-# WHY THIS STEP EXISTS
+# Both halves must happen after the infrastructure is healthy and before the
+# AppView boots, which is why they share a stage in scripts/lib/ci-stack.sh
+# rather than being two `compose run` invocations.
+#
+# WHY THE PDS ACCOUNT STEP EXISTS
 #
 # The AppView writes community records to the PDS as PDS_INSTANCE_HANDLE (see
 # PDSConfig.HasInstanceCredentials in internal/config). The dev stack's PDS
@@ -18,10 +23,65 @@
 set -euo pipefail
 
 PDS_URL=${PDS_URL:-http://localhost:3001}
+PDS2_URL=${PDS2_URL:-http://localhost:3011}
+RELAY_URL=${RELAY_URL:-http://localhost:2470}
+RELAY_ADMIN_KEY=${RELAY_ADMIN_KEY:-ci-relay-admin-key}
 HANDLE=${PDS_INSTANCE_HANDLE:?PDS_INSTANCE_HANDLE must be set (see .env.ci)}
 PASSWORD=${PDS_INSTANCE_PASSWORD:?PDS_INSTANCE_PASSWORD must be set (see .env.ci)}
 EMAIL=${COVES_CI_INSTANCE_EMAIL:-instance@local.coves.dev}
 
+# ---------------------------------------------------------------------------
+# The relay: raise the crawl limit, then announce both PDSes
+# ---------------------------------------------------------------------------
+# A FRESH BigSky refuses every non-admin requestCrawl. Its slurper config
+# starts with new_pds_per_day_limit = 0 and that limiter is checked BEFORE the
+# trusted-domain list, so there is no configuration-only way around it: the
+# admin API has to raise it first. The failure without this step is a 401 from
+# requestCrawl, which reads like an auth problem with the announcement rather
+# than a limit on the relay.
+echo "▶ Raising the relay's new-host-per-day limit..."
+limit_code=$(
+    curl -sS -o /tmp/setPerDayLimit.out -w '%{http_code}' \
+        -X POST "$RELAY_URL/admin/subs/setPerDayLimit?limit=1000" \
+        -H "Authorization: Bearer $RELAY_ADMIN_KEY"
+)
+if [[ $limit_code != 200 ]]; then
+    echo "  ✗ relay refused the admin limit change (HTTP $limit_code): $(cat /tmp/setPerDayLimit.out)" >&2
+    exit 1
+fi
+echo "  ✓ per-day host limit raised"
+
+# requestCrawl is how a PDS tells a relay it exists. The relay validates the
+# hostname by calling back into that host's com.atproto.server.describeServer
+# (over http, because of --crawl-insecure-ws) and only then subscribes to its
+# firehose. A hostname MAY carry a port — BigSky keeps `u.Host` verbatim and
+# special-cases a `localhost:` prefix back to http when it later resolves DID
+# documents — which is what makes the shared-namespace topology work at all.
+#
+# Idempotent: re-announcing a host the relay already has is a no-op, so a
+# COVES_CI_KEEP_STACK re-run needs no special case.
+announce_host() {
+    local label=$1 hostport=$2 code
+    echo "▶ Announcing $label ($hostport) to the relay..."
+    code=$(
+        curl -sS -o /tmp/requestCrawl.out -w '%{http_code}' \
+            -X POST "$RELAY_URL/xrpc/com.atproto.sync.requestCrawl" \
+            -H 'Content-Type: application/json' \
+            -d "{\"hostname\":\"$hostport\"}"
+    )
+    if [[ $code != 200 ]]; then
+        echo "  ✗ relay refused to crawl $hostport (HTTP $code): $(cat /tmp/requestCrawl.out)" >&2
+        exit 1
+    fi
+    echo "  ✓ crawling $hostport"
+}
+
+announce_host "the AppView's PDS" "${PDS_URL#http://}"
+announce_host "the federated PDS" "${PDS2_URL#http://}"
+
+# ---------------------------------------------------------------------------
+# The instance account
+# ---------------------------------------------------------------------------
 echo "▶ Creating the instance PDS account ($HANDLE)..."
 
 # The PDS runs with PDS_INVITE_REQUIRED=false, so no invite code is needed.

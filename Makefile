@@ -234,6 +234,9 @@ test-e2e-dev: ## T2 against the long-lived DEV stack (debugging only - not how C
 	@echo "$(GREEN)Running the pipeline tier against the dev stack (-tags e2e)...$(RESET)"
 	@echo "$(YELLOW)  minus the reliability suite: it stops, starts and reconfigures the AppView$(RESET)"
 	@echo "$(YELLOW)  CONTAINER, and this hatch grades a host-run 'make run' process instead.$(RESET)"
+	@echo "$(YELLOW)  minus the federation contracts: they need the SECOND PDS and the relay,$(RESET)"
+	@echo "$(YELLOW)  which exist only in the hermetic stack (docker-compose.ci.yml). The dev$(RESET)"
+	@echo "$(YELLOW)  stack has one PDS and Jetstream wired straight to it.$(RESET)"
 	@# run_pipeline_tier is the ONE definition of how T2 is invoked — the gate,
 	@# 'make test-e2e' and this hatch all call it, so the flags cannot drift
 	@# apart. Sourced here rather than copied for exactly that reason.
@@ -244,8 +247,17 @@ test-e2e-dev: ## T2 against the long-lived DEV stack (debugging only - not how C
 	@# indistinguishable from a broken pipeline. Excluding by name at the
 	@# selection level keeps that rule intact: these tests do not run here, and
 	@# they do not report anything either.
-	@bash -c 'source ./scripts/lib/runner-ready.sh && run_pipeline_tier -skip "^TestReliability"'
-	@echo "$(GREEN)✓ Pipeline tier complete (against the dev stack, without the reliability suite)$(RESET)"
+	@#
+	@# "Federat" catches every contract in tests/e2e/federation_contract_test.go
+	@# (TestPostFederationIngestion, TestCommentFederationIngestion,
+	@# TestVoteFederationIngestion, TestFederationRemoteBlobFetch,
+	@# TestFederatedIdentityIsNotIndexed) by the substring their names share,
+	@# rather than by a list that would go stale the first time one is added.
+	@# A federation contract named without it is not a silent pass either:
+	@# testkit.NewFederatedPDS fatals on the spot, naming PDS2_URL and this
+	@# hatch.
+	@bash -c 'source ./scripts/lib/runner-ready.sh && run_pipeline_tier -skip "^TestReliability|Federat"'
+	@echo "$(GREEN)✓ Pipeline tier complete (against the dev stack; no reliability suite, no federation contracts)$(RESET)"
 
 test-db-reset: ## Reset test database
 	@echo "$(GREEN)Resetting test database...$(RESET)"

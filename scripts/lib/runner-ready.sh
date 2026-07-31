@@ -43,12 +43,71 @@ wait_for_stack() {
     wait_for "jetstream (metrics :6009)" "http://localhost:6009/metrics" 90
 
     wait_for "pds (:3001)" "http://localhost:3001/xrpc/_health" 60
+    wait_for "pds2 (:3011)" "http://localhost:3011/xrpc/_health" 60
+    wait_for "relay (:2470)" "http://localhost:2470/xrpc/_health" 90
     # /_health rather than /, which redirects to the hosted web UI on the public
     # internet — unreachable from this egress-blocked network by design.
     wait_for "plc directory (:3002)" "http://localhost:3002/_health" 60
     wait_for "appview (:8081)" "http://localhost:8081/xrpc/_health" 90
 
+    wait_for_relay_crawling
+
     echo
+}
+
+# wait_for_relay_crawling gates the suite on the relay having a LIVE upstream
+# connection to both PDSes.
+#
+# A healthy relay proves nothing about this. `/xrpc/_health` answers as soon as
+# the process is serving, and the crawl announcements (scripts/ci-bootstrap.sh)
+# only queue a subscription — the relay dials each PDS afterwards, and on a
+# cold, emulated start that takes a moment. A suite that began in that window
+# would write records to a PDS nobody was listening to, and every contract
+# would fail on a timeout that named the AppView.
+#
+# /admin/subs/getUpstreamConns is the relay's own answer to "who am I connected
+# to right now": the slurper's active host list, not its configured one. So a
+# host that was announced but whose dial failed does NOT appear here, which is
+# exactly the distinction worth gating on.
+#
+# The failure NAMES THE HOST THAT IS MISSING rather than dumping the list of
+# hosts that are present, because those are opposite instructions: "pds2 is not
+# being crawled" sends whoever is reading to pds2's bootstrap announcement and
+# its logs, while a raw connection list leaves them to work out which of two
+# similar-looking addresses is the absent one.
+wait_for_relay_crawling() {
+    local admin_key=${RELAY_ADMIN_KEY:-ci-relay-admin-key}
+    local i conns host missing
+    for ((i = 1; i <= 60; i++)); do
+        conns=$(curl -fsS --max-time 3 \
+            -H "Authorization: Bearer $admin_key" \
+            "http://localhost:2470/admin/subs/getUpstreamConns" 2>/dev/null || true)
+        missing=""
+        for host in localhost:3001 localhost:3011; do
+            [[ $conns == *"\"$host\""* ]] || missing+="${missing:+, }$(relay_host_label "$host")"
+        done
+        if [[ -z $missing ]]; then
+            echo "  ✓ relay crawling both PDSes"
+            return 0
+        fi
+        sleep 1
+    done
+    echo "  ✗ after 60s the relay is still not crawling: $missing" >&2
+    echo "    Every ingestion contract depends on this: the relay is the only path from" >&2
+    echo "    either PDS to Jetstream. Check that host's own health, the relay's logs, and" >&2
+    echo "    whether scripts/ci-bootstrap.sh's requestCrawl announcement for it succeeded." >&2
+    echo "    The relay's live upstream list was: ${conns:-<no response>}" >&2
+    return 1
+}
+
+# relay_host_label turns a crawl target into something a reader can act on: the
+# ports differ by two characters and the roles do not.
+relay_host_label() {
+    case $1 in
+        localhost:3001) echo "the AppView's PDS ($1)" ;;
+        localhost:3011) echo "the federated PDS, pds2 ($1)" ;;
+        *) echo "$1" ;;
+    esac
 }
 
 # check_contract_manifest enforces docs/TEST_ARCHITECTURE.md §3.6.2: every

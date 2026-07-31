@@ -97,10 +97,8 @@ stack_control_stop
 
 if [[ $TIER_STATUS -ne 0 ]]; then
     step "Capturing diagnostics"
-    compose logs --no-color --tail 400 appview >"$OUT_DIR/appview.log" 2>&1 || true
-    compose logs --no-color --tail 200 pds >"$OUT_DIR/pds.log" 2>&1 || true
-    compose logs --no-color --tail 200 jetstream >"$OUT_DIR/jetstream.log" 2>&1 || true
-    ok "wrote appview.log, pds.log, jetstream.log to .ci-out/"
+    stack_capture_logs
+    ok "wrote $(stack_captured_logs) to .ci-out/"
 fi
 
 printf "\n"
@@ -109,7 +107,7 @@ if [[ $TIER_STATUS -eq 0 ]]; then
     printf "\n  'make ci' is still the merge gate — this ran T2 only.\n"
 else
     printf "${RED}  ✗ PIPELINE TIER FAILED${RESET}\n"
-    printf "\n  Service logs: .ci-out/appview.log, pds.log, jetstream.log\n"
+    printf "\n  Service logs (.ci-out/): %s\n" "$(stack_captured_logs)"
     printf "  Keep the stack up to poke at it:  COVES_CI_KEEP_STACK=1 make test-e2e\n"
     printf "  Then, after an edit:              COVES_CI_REBUILD=1 make test-e2e\n"
 fi

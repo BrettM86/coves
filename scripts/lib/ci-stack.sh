@@ -45,6 +45,10 @@ OUT_DIR="$REPO_ROOT/.ci-out"
 # Named so the volumes match docker-compose.ci.yml's external declarations.
 CACHE_VOLUMES=(coves-ci-go-mod-cache coves-ci-go-build-cache)
 
+# The services whose logs are captured when a run fails: every hop of the
+# ingest path, in the order events travel it. See stack_capture_logs.
+CAPTURED_SERVICES=(appview pds pds2 relay jetstream postgres-relay)
+
 CYAN='\033[36m'
 GREEN='\033[32m'
 YELLOW='\033[33m'
@@ -260,29 +264,75 @@ stack_start() {
     # Staged deliberately: the AppView is NOT started with the rest. It
     # authenticates to the PDS as PDS_INSTANCE_HANDLE, and in a fresh PDS that
     # account does not exist yet, so it has to be created in between.
-    step "Starting infrastructure (Postgres ×3, PLC, PDS, Turnstile stub)"
+    step "Starting infrastructure (Postgres ×4, PLC, PDS ×2, relay, Turnstile stub)"
     # Jetstream is deliberately absent from this --wait list. `up --wait` fails
     # outright — "has no healthcheck configured" — for any service it is asked
     # to wait on that cannot report health, and the Jetstream image ships no
     # HTTP client to probe itself with (docker-compose.dev.yml disables its
     # healthcheck for the same reason).
-    compose up -d --wait netns postgres postgres-test postgres-plc plc-directory pds turnstile-stub
+    #
+    # The relay IS on the list, and waiting for it here rather than letting
+    # Jetstream's depends_on handle it is what makes the next step possible:
+    # the crawl announcement is an HTTP call against a relay that has to be
+    # serving already.
+    compose up -d --wait \
+        netns postgres postgres-test postgres-plc postgres-relay \
+        plc-directory pds pds2 relay turnstile-stub
     ok "infrastructure healthy"
 
-    # Started only after the PDS is healthy, since it connects straight to the
-    # PDS firehose. Readiness is then gated on its metrics endpoint from inside
-    # the namespace — see scripts/lib/runner-ready.sh.
+    # Started only after the relay is healthy, since it consumes the relay's
+    # merged firehose rather than a PDS' directly (see docker-compose.ci.yml's
+    # header). Readiness is then gated on its metrics endpoint from inside the
+    # namespace — see scripts/lib/runner-ready.sh.
     step "Starting Jetstream"
     compose up -d jetstream
     ok "jetstream started (readiness gated by the runner)"
 
-    step "Seeding the PDS"
+    step "Seeding the stack (relay crawl announcements, instance PDS account)"
     # --no-deps so this does not drag the AppView up before its account exists.
     compose run --rm --no-deps --entrypoint bash runner /src/scripts/ci-bootstrap.sh
 
     step "Starting the AppView"
     compose up -d --wait appview
     ok "appview healthy on :8081"
+}
+
+# stack_capture_logs writes the logs of every service in the ingest path to
+# .ci-out/, and echoes the filenames it wrote.
+#
+# WHICH SERVICES, AND WHY IT IS NO LONGER THREE
+#
+# It used to be appview, pds and jetstream, which was the whole path when
+# Jetstream read the PDS directly. The federation topology put three more
+# services INSIDE that path — pds2, the relay, and the relay's Postgres — and a
+# fault in any of them reddens contracts that mention none of them: a relay that
+# stopped crawling pds2 looks exactly like a consumer that stopped indexing.
+# Capturing them costs nothing on a green run, because this only runs on
+# failure, and re-running a whole gate to collect a log nobody thought to keep
+# costs several minutes.
+#
+# Every capture is `|| true`: a service that never started has no logs, and a
+# diagnostics step must not be the thing that fails the diagnosis.
+stack_capture_logs() {
+    local service tail_lines
+    for service in "${CAPTURED_SERVICES[@]}"; do
+        # The AppView's own log is the one that usually answers the question, so
+        # it gets the deeper tail.
+        tail_lines=200
+        [[ $service == appview ]] && tail_lines=400
+        compose logs --no-color --tail "$tail_lines" "$service" \
+            >"$OUT_DIR/$service.log" 2>&1 || true
+    done
+}
+
+# stack_captured_logs is that same list as a printable string, so a message
+# pointing at the artifacts cannot name a file nobody wrote.
+stack_captured_logs() {
+    local service names=""
+    for service in "${CAPTURED_SERVICES[@]}"; do
+        names+="${names:+, }$service.log"
+    done
+    echo "$names"
 }
 
 # stack_up is the whole bring-up: the sequence both callers need, in one call.

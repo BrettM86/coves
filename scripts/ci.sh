@@ -93,10 +93,8 @@ stack_control_stop
 # COVES_CI_KEEP_STACK=1.
 if [[ $GATE_STATUS -ne 0 ]]; then
     step "Capturing diagnostics"
-    compose logs --no-color --tail 400 appview >"$OUT_DIR/appview.log" 2>&1 || true
-    compose logs --no-color --tail 200 pds >"$OUT_DIR/pds.log" 2>&1 || true
-    compose logs --no-color --tail 200 jetstream >"$OUT_DIR/jetstream.log" 2>&1 || true
-    ok "wrote appview.log, pds.log, jetstream.log to .ci-out/"
+    stack_capture_logs
+    ok "wrote $(stack_captured_logs) to .ci-out/"
 fi
 
 # ---------------------------------------------------------------------------
@@ -134,7 +132,7 @@ fi
 printf "\n  Machine-readable summary: .ci-out/summary.json\n"
 printf "  Raw go test -json stream: .ci-out/gotest.json\n"
 if [[ $GATE_STATUS -ne 0 ]]; then
-    printf "  Service logs:             .ci-out/appview.log, pds.log, jetstream.log\n"
+    printf "  Service logs (.ci-out/):  %s\n" "$(stack_captured_logs)"
     printf "\n  To investigate against a live stack:\n"
     printf "    COVES_CI_KEEP_STACK=1 make ci\n"
     printf "  ...then iterate on the pipeline tier alone against that same stack:\n"

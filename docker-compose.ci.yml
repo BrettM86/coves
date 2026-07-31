@@ -16,7 +16,9 @@
 #   * Services address each other as localhost:<port> — no peer DNS names. Each
 #     service therefore listens on the port the rest of the stack expects,
 #     matching the dev stack's published ports (PDS 3001, PLC 3002, AppView
-#     8081, Postgres 5435/5434/5436).
+#     8081, Postgres 5435/5434/5436). The federation topology adds three more
+#     that the dev stack has no equivalent of: PDS2 3011, relay 2470 (metrics
+#     2471), relay Postgres 5437.
 #
 #   * The test suite needs no changes. Endpoints come from testkit.Endpoints(),
 #     which defaults to "localhost:3001" / "localhost:5434" / "localhost:8081"
@@ -37,8 +39,59 @@
 # Images are pinned by digest or SHA tag so that an upstream push can never turn
 # this gate red on its own.
 #
-# Usage: driven by scripts/ci.sh, which stages startup so the instance PDS
-# account exists before the AppView boots. Not intended for direct `up`.
+# THE FEDERATION TOPOLOGY (docs/TEST_ARCHITECTURE.md §4, Phase 5)
+# ---------------------------------------------------------------
+# There are TWO PDSes here, and the ingest path runs through a real relay:
+#
+#   pds  (:3001) ─┐
+#                 ├─► relay/BigSky (:2470) ─► jetstream (:6008) ─► appview
+#   pds2 (:3011) ─┘
+#
+# pds2 exists so that "federation" means what the word means. §3.4a's ingestion
+# contracts write straight to the PDS to bypass the AppView's synchronous
+# indexing, but until now that record still lived on the ONE PDS the AppView
+# fronts, holds credentials for, and can read directly. A record on pds2 is one
+# the AppView has no session on and no configured address for: the only way it
+# can appear on a serving endpoint is the firehose, and the only way its blobs
+# can be fetched is by resolving its DID against the PLC and following the
+# service endpoint in the DID document.
+#
+# WHY JETSTREAM READS THE RELAY RATHER THAN A SECOND JETSTREAM READING PDS2
+#
+# Both shapes get pds2's events to the AppView. The alternative — a second
+# Jetstream on pds2 and a second entry in JETSTREAM_FEEDS — is a smaller change
+# to this file, and it was rejected for four reasons:
+#
+#   1. It makes multi-feed the permanent CI baseline. Consumer names are
+#      feed-qualified (jetstream.FeedConsumerName), so every consumer would
+#      exist twice, and the pipeline tier's consumer-health arithmetic — the
+#      block contracts' measurement windows, the reliability suite's
+#      dead-letter deltas, requireSingleFeedTopology's poisoned-stack guard —
+#      is written against exactly one row per consumer.
+#   2. It leaves the relay decorative. §4 asks for a hermetic relay; a relay
+#      nothing consumes proves nothing about relay semantics.
+#   3. Production ingests through a relay (docs/PRD_ALPHA_GO_LIVE.md; the
+#      tidepool self-hosted relay + Jetstream pair). Jetstream wired straight
+#      to a PDS, which is what this stack did before, is a topology that ships
+#      nowhere — so the gate was grading a pipeline shape production does not
+#      run.
+#   4. It puts real relay semantics under EVERY contract, not just the
+#      federated ones: per-commit signature verification against the local PLC,
+#      DID-document-driven host association, and per-repo (never cross-repo)
+#      ordering. That last one is why the tier's negative bounds are intra-repo
+#      — a relay merging two PDS streams makes cross-repo ordering luck, and
+#      now the stack demonstrates it rather than the comments merely asserting
+#      it.
+#
+# The cost is accepted deliberately: the relay is in the path of every contract,
+# so a relay fault reddens the whole tier rather than one contract. That is the
+# same bet the stack already makes on Jetstream, and scripts/lib/runner-ready.sh
+# gates the suite on the relay actively crawling both hosts so the failure names
+# itself.
+#
+# Usage: driven by scripts/ci.sh, which stages startup so the relay is crawling
+# both PDSes and the instance PDS account exists before the AppView boots. Not
+# intended for direct `up`.
 
 services:
   # Owns the network namespace every other service joins. Does nothing else;
@@ -197,12 +250,207 @@ services:
       plc-directory:
         condition: service_healthy
 
+  # The SECOND PDS: the one the AppView does not front.
+  #
+  # Same image and same PLC as `pds`, and that sharing is the point — both
+  # PDSes mint did:plc identities in the one local registry, so the AppView
+  # resolving a pds2-hosted DID follows exactly the production path (PLC
+  # lookup → service endpoint in the DID document) rather than a test hook.
+  #
+  # WHAT MAKES IT A DIFFERENT HOST
+  #
+  #   * Its own port. @atproto/pds derives its public URL from PDS_HOSTNAME,
+  #     special-casing localhost to `http://localhost:${PDS_PORT}` (any other
+  #     hostname becomes https://, which nothing here can serve). So both
+  #     PDSes keep PDS_HOSTNAME=localhost and are distinguished by port — the
+  #     DID documents they write carry http://localhost:3001 and
+  #     http://localhost:3011 respectively, which is what every consumer, the
+  #     image proxy, and the relay key their host association on.
+  #   * Its own volume, so its repos and blobs are physically elsewhere. A blob
+  #     fetched from pds2 cannot be served by pds1 by accident.
+  #   * Its own handle domain, `.pds2.test`. `.test` is RFC 6761 reserved and
+  #     can never resolve on the public internet — the same reasoning behind
+  #     the `.invalid` fixtures elsewhere in the suite. It also keeps a pds2
+  #     handle from ever being mistaken for a pds1 handle in a failure message.
+  #   * Its own PLC rotation key. Nothing enforces uniqueness, but two hosts
+  #     sharing a rotation key would mean either could rewrite the other's
+  #     identities, which is not the topology being modelled.
+  pds2:
+    image: ghcr.io/bluesky-social/pds@sha256:1fa8bbceabb65d8e1710749b1ea92c1c20a7489ca38da4a0a5f64c0c10a70c29
+    network_mode: "service:netns"
+    environment:
+      PDS_HOSTNAME: localhost
+      PDS_PORT: 3011
+      PDS_DATA_DIRECTORY: /pds
+      PDS_BLOBSTORE_DISK_LOCATION: /pds/blocks
+      PDS_DID_PLC_URL: http://localhost:3002
+      PDS_JWT_SECRET: local-dev-jwt-secret-pds2-change-in-production
+      PDS_ADMIN_PASSWORD: admin
+      PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX: 6d1f2b8e0c47a95d3e8f1a26b74c0d59e83f2a17c46b9d05e72f8a31c6b40d97
+      PDS_SERVICE_HANDLE_DOMAINS: .pds2.test
+      PDS_DEV_MODE: "true"
+      PDS_INVITE_REQUIRED: "false"
+      NODE_ENV: development
+      LOG_ENABLED: "false"
+      LOG_LEVEL: warn
+    volumes:
+      - pds2-data:/pds
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3011/xrpc/_health"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+    depends_on:
+      plc-directory:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # The relay
+  # ---------------------------------------------------------------------------
+
+  # BigSky's state. Two databases in one server: the relay keeps its host/repo
+  # metadata in `bgs` and its carstore shard index in `carstore`, and it will
+  # not share one. The second is created by an init script on first boot.
+  postgres-relay:
+    image: postgres:15
+    network_mode: "service:netns"
+    command: ["-p", "5437"]
+    environment:
+      POSTGRES_DB: bgs
+      POSTGRES_USER: relay_user
+      POSTGRES_PASSWORD: relay_password
+    volumes:
+      - postgres-relay-data:/var/lib/postgresql/data
+      - ./docker/relay/init-carstore.sql:/docker-entrypoint-initdb.d/init-carstore.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -p 5437 -U relay_user -d bgs"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    depends_on:
+      netns:
+        condition: service_healthy
+
+  # The relay: a real indigo BigSky, crawling both PDSes and serving the merged
+  # firehose that Jetstream consumes. See this file's header for why it is in
+  # the ingest path rather than beside it.
+  #
+  # Every flag and variable below was verified against this image's own --help
+  # output; the ones that LOOK like they should exist and do not are the
+  # expensive part, so they are named here:
+  #
+  #   * --crawl-insecure-ws has NO environment binding. It must be a command
+  #     argument, and the image's entrypoint is `dumb-init --`, so the command
+  #     has to restate the binary. Without it the relay dials wss:// to the
+  #     PDSes and validates requestCrawl hostnames over https, neither of which
+  #     exists in this stack.
+  #   * BGS_PORT and LOG_LEVEL are ignored. The listen address is --api-listen
+  #     (default :2470, which is what the rest of the stack expects) and the log
+  #     knob is BSKYLOG_LOG_LEVEL.
+  #   * ATP_PLC_HOST defaults to the PUBLIC https://plc.directory. On an
+  #     egress-blocked network that is not a security hole so much as a total
+  #     failure to resolve anything, since every identity here is minted in the
+  #     local PLC.
+  #   * RESOLVE_ADDRESS defaults to the PUBLIC 1.1.1.1:53. Pointed at Docker's
+  #     embedded resolver instead. This is defence in depth on a path
+  #     HANDLE_RESOLVER_HOSTS already removes (below), not the thing that makes
+  #     the stack hermetic — `internal: true` is.
+  #   * HANDLE_RESOLVER_HOSTS switches BigSky from the DNS-TXT handle resolver
+  #     to its trial-host resolver, which GETs http://<trial-host>/.well-known/
+  #     atproto-did with the HANDLE in the Host header — exactly what a PDS
+  #     serves for the handles it hosts. Both PDSes are listed so each one's
+  #     handles verify. Without it the relay would fall back to DNS for names
+  #     that cannot resolve; that failure is NON-fatal in BigSky (the repo is
+  #     kept and the handle marked invalid) but it costs a resolver timeout per
+  #     new repo, and a hermetic stack should have no code path that queries
+  #     DNS at all.
+  #
+  #     EXPECTED NOISE, so nobody chases it: the resolver walks the trial hosts
+  #     IN ORDER and logs a WARN for each non-200 before moving on. A pds2
+  #     handle therefore always produces one
+  #     `got non-200 status code while resolving handle ... statusCode=404`
+  #     from localhost:3001 — the host that correctly does not have it — and
+  #     then succeeds on localhost:3011. Verified against the pinned image's
+  #     handles.go: the warning is the loop continuing, not the resolution
+  #     failing.
+  #
+  # Note what this does NOT fix: the relay verifying a handle says nothing about
+  # the AppView's own identity resolver, which is indigo's BaseDirectory and has
+  # no trial-host mode. See tests/e2e/federation_contract_test.go for what that
+  # means for federated identities.
+  relay:
+    image: ghcr.io/bluesky-social/indigo:bigsky-0a2d4173e6e89e49b448f6bb0a6e1ab58d12b385
+    # No arm64 manifest upstream; Apple Silicon runs this under emulation.
+    platform: linux/amd64
+    network_mode: "service:netns"
+    command: ["/bigsky", "--crawl-insecure-ws"]
+    # For the same reason Jetstream has it, one hop upstream: the relay is now
+    # the only path from either PDS to the AppView, and a relay that exits
+    # mid-run leaves Jetstream crash-looping against a dead websocket and every
+    # consumer starved. Its state — the crawl registrations, the carstore, the
+    # persister cursor — is in postgres-relay and the relay-data volume, so a
+    # revived process reconnects to both PDSes and resumes rather than starting
+    # a stack that looks up but has forgotten what it was crawling.
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://relay_user:relay_password@localhost:5437/bgs?sslmode=disable
+      CARSTORE_DATABASE_URL: postgresql://relay_user:relay_password@localhost:5437/carstore?sslmode=disable
+      DATA_DIR: /data
+      ATP_PLC_HOST: http://localhost:3002
+      RESOLVE_ADDRESS: 127.0.0.11:53
+      HANDLE_RESOLVER_HOSTS: localhost:3001,localhost:3011
+      RELAY_ADMIN_KEY: ci-relay-admin-key
+      # Default is 100 repos per host. A kept stack accumulates accounts across
+      # runs (the PDS volumes only get wiped on teardown), and a relay silently
+      # refusing repo 101 would look exactly like a broken firehose.
+      RELAY_DEFAULT_REPO_LIMIT: "10000"
+      # The disk persister gives downstream consumers real cursor replay with a
+      # TTL, instead of the DB persister's unbounded table.
+      RELAY_PERSISTER_DIR: /data/persister
+      # Defaults are 40 + 40 against postgres-relay's default max_connections of
+      # 100. Two PDSes and one subscriber need nothing like that, and leaving
+      # the defaults would put this one server closest to its ceiling of the
+      # four in the stack.
+      MAX_METADB_CONNECTIONS: "10"
+      MAX_CARSTORE_CONNECTIONS: "10"
+      BSKYLOG_LOG_LEVEL: warn
+    volumes:
+      - relay-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:2470/xrpc/_health"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+      # Emulated on arm64 hosts, and it migrates two databases on first boot.
+      start_period: 20s
+    depends_on:
+      postgres-relay:
+        condition: service_healthy
+      plc-directory:
+        condition: service_healthy
+      pds:
+        condition: service_healthy
+      pds2:
+        condition: service_healthy
+
   # Same SHA tag the dev stack pins.
   jetstream:
     image: ghcr.io/bluesky-social/jetstream:sha-306e463693365e21a5ffd3ec051a5a7920000214
     network_mode: "service:netns"
+    # Jetstream EXITS when its upstream websocket dies — measured on this stack
+    # by stopping the relay, which left a stopped Jetstream behind and every
+    # consumer silently starved. That did not matter while the upstream was the
+    # PDS, which nothing in a run ever stops; it matters now that the upstream
+    # is the relay. Docker revives it and it resumes from the cursor persisted
+    # in its volume, which is the same policy production runs and the same one
+    # tidepool's relay-fronted stack settled on.
+    restart: unless-stopped
     environment:
-      JETSTREAM_WS_URL: ws://localhost:3001/xrpc/com.atproto.sync.subscribeRepos
+      # The RELAY's firehose, not a PDS'. This is the whole federation
+      # topology in one line: it is what carries pds2's events to the AppView
+      # without adding a second feed, and it is the shape production runs. See
+      # this file's header.
+      JETSTREAM_WS_URL: ws://localhost:2470/xrpc/com.atproto.sync.subscribeRepos
       JETSTREAM_LISTEN_ADDR: ":6008"
       JETSTREAM_METRICS_LISTEN_ADDR: ":6009"
       JETSTREAM_DATA_DIR: /data
@@ -220,7 +468,7 @@ services:
     healthcheck:
       disable: true
     depends_on:
-      pds:
+      relay:
         condition: service_healthy
 
   # Stands in for Cloudflare's Turnstile siteverify endpoint.
@@ -315,6 +563,13 @@ services:
         condition: service_healthy
       pds:
         condition: service_healthy
+      # Not because the AppView connects to pds2 at boot — it has no
+      # credentials there and never will — but because it resolves DIDs to it
+      # on demand (identity resolution, image-proxy blob fetches). A pds2 that
+      # is still starting turns those into 502s in a contract that has nothing
+      # to say about startup ordering.
+      pds2:
+        condition: service_healthy
       plc-directory:
         condition: service_healthy
       turnstile-stub:
@@ -403,6 +658,13 @@ volumes:
   postgres-test-data:
   postgres-plc-data:
   pds-data:
+  pds2-data:
+  postgres-relay-data:
+  # The relay's carstore and its event persister. Scoped to the project like
+  # every other state volume, so a torn-down run leaves no crawl history: the
+  # next run re-announces both PDSes from scratch (scripts/ci-bootstrap.sh) and
+  # the relay re-reads each repo from seq 0.
+  relay-data:
   jetstream-data:
 
   # The Go caches are deliberately the exception: external, so the teardown that
