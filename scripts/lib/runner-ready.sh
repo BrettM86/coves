@@ -60,7 +60,16 @@ wait_for_stack() {
 # get it from one place, and so it fails in the same log as the tier it governs.
 check_contract_manifest() {
     echo "▶ Checking the pipeline contract manifest (docs/TEST_ARCHITECTURE.md §3.4a)..."
-    go run ./cmd/contract-manifest
+    # -allow-pending=false is the phase-4 ratchet, flipped by task 16 now that
+    # every consumed collection has a contract and tests/ci/pending_contracts.txt
+    # is empty. Until the flip, a collection could be added to a consumer and
+    # deferred by writing a line in that file; now the line itself fails the
+    # gate, so the only way to add a collection is to prove it.
+    #
+    # Passed here rather than changed as the tool's default so that the gate is
+    # the thing that judges: an ad-hoc run still reports contracted/pending/
+    # missing without an opinion about the burn-down.
+    go run ./cmd/contract-manifest -allow-pending=false
 }
 
 # run_pipeline_tier executes T2, and is the ONLY place its go test invocation is

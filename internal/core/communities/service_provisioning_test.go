@@ -9,6 +9,7 @@ import (
 	"Coves/internal/db/postgres"
 	"Coves/tests/testkit"
 	"context"
+	"database/sql"
 	"net/url"
 	"strings"
 	"testing"
@@ -62,8 +63,26 @@ const (
 // what lets a test assert on what an avatar becomes.
 func newCommunityService(t *testing.T) (communities.Service, communities.Repository, *testkit.PDS) {
 	t.Helper()
+	service, repo, pdsServer, _ := newCommunityServiceWithDatabase(t)
+	return service, repo, pdsServer
+}
 
-	repo := postgres.NewCommunityRepository(testkit.DB(t))
+// newCommunityServiceWithDatabase is the same wiring, handing back the database
+// as well.
+//
+// It exists because testkit.DB clones a fresh database on every call, so a test
+// that has to look at a stored row with its own SQL — service_credentials_test.go
+// reads the encrypted credential columns the repository never exposes — cannot
+// simply ask for the database a second time. It would get an empty one, and the
+// query would return no rows rather than the wrong ones, which is the kind of
+// pass nobody investigates.
+func newCommunityServiceWithDatabase(t *testing.T) (
+	communities.Service, communities.Repository, *testkit.PDS, *sql.DB,
+) {
+	t.Helper()
+
+	db := testkit.DB(t)
+	repo := postgres.NewCommunityRepository(db)
 	pdsServer := testkit.NewPDS(t)
 	service := communities.NewCommunityServiceWithPDSFactory(
 		repo,
@@ -74,7 +93,7 @@ func newCommunityService(t *testing.T) (communities.Service, communities.Reposit
 		testkit.PasswordAuthFactory(pds.NewFromAccessToken),
 		blobs.NewBlobService(pdsServer.URL()),
 	)
-	return service, repo, pdsServer
+	return service, repo, pdsServer, db
 }
 
 func TestService_CreateProvisionsAResolvableAccount(t *testing.T) {

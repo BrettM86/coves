@@ -20,19 +20,23 @@
 # travel: entries leave it. Adding a contract for a collection listed here makes
 # the entry STALE and fails the check — delete the line in the same commit.
 #
-# TASK 16 flips cmd/contract-manifest to -allow-pending=false, now that the list
-# is empty: after that, a new consumed collection fails the build immediately
-# instead of being deferrable, and this file stops being a valid escape hatch.
-# Task 20 VERIFIES the flag stayed flipped and this file stayed empty — it is
-# part of the phase-6 enforcement sweep, not the flip itself.
+# THE FLIP IS DONE. Task 16 passed -allow-pending=false at both entry points
+# (check_contract_manifest in scripts/lib/runner-ready.sh, which `make ci` and
+# `make test-e2e` share), so a newly consumed collection now fails the build
+# immediately instead of being deferrable, and a line in this file fails the
+# gate rather than buying time. Proven both ways before it was called done: a
+# pending entry for a contracted collection fails as STALE, and a genuinely
+# uncontracted collection passes under -allow-pending=true and fails under
+# -allow-pending=false. Task 20 re-verifies that the flag is still on that call
+# site and that this list is still empty, as part of the phase-6 sweep.
 #
-# NOTE FOR TASK 16, WHICH DELETES tests/integration: there is no per-file carry
-# list anywhere, and at least one file's coverage exists nowhere else.
-# tests/integration/community_identifier_resolution_test.go (lines 163, 170,
-# 176, 206) holds the only tests of the four malformed scoped-identifier forms —
-# "!name" with no @, "!name@wrong.instance", "!@instance", and a bare name with
-# no dots. Task 15 deleted block_handle_resolution_test.go, whose versions of
-# those cases were false passes (no session, so the handler 401'd before
-# resolution ran), on the strength of that file still existing. Relocate them
-# into internal/core/communities before `rm -rf tests/integration`, or the
-# coverage goes with it silently.
+# THE CARRY LIST IS DISCHARGED. tests/integration no longer exists; the four
+# malformed scoped-identifier cases it uniquely held — "!name" with no @,
+# "!name@wrong.instance", "!@instance", and a bare name with no dots — now live
+# in internal/core/communities/service_identifier_resolution_test.go. They are
+# recorded here rather than deleted outright because of how nearly they were
+# lost: task 15 removed block_handle_resolution_test.go, whose copies of these
+# cases were false passes (no session, so the handler answered 401 before
+# resolution ever ran), on the strength of the tests/integration file still
+# existing. If a future change makes these four look redundant, check that the
+# thing making them redundant actually reaches the resolver.

@@ -40,6 +40,7 @@ fi
 
 teardown() {
     local exit_code=$?
+    stack_control_stop
     if [[ $REUSED_STACK == 1 ]]; then
         printf "\n${CYAN}Reused an existing stack; leaving it as it was found.${RESET}\n"
         return $exit_code
@@ -79,11 +80,20 @@ fi
 # ---------------------------------------------------------------------------
 # Run the tier
 # ---------------------------------------------------------------------------
+# The reliability scenarios (§3.4c) stop, start and reconfigure the AppView
+# container. Tests run inside the stack and cannot do that, so the host listens
+# for their requests for as long as the tier runs — see stack_control_start in
+# lib/ci-stack.sh. Started even for a REUSED stack: the channel belongs to the
+# run, not to the stack.
+stack_control_start
+
 step "Running the pipeline tier inside the stack"
 set +e
 compose run --rm --entrypoint bash runner /src/scripts/e2e-runner.sh
 TIER_STATUS=$?
 set -e
+
+stack_control_stop
 
 if [[ $TIER_STATUS -ne 0 ]]; then
     step "Capturing diagnostics"

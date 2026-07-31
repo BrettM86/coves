@@ -187,10 +187,10 @@ test-integration: ## T1 integration tier - needs Postgres; starts postgres-test 
 	echo "  concurrency budget: $$FLAGS"; \
 	go test -tags integration $$FLAGS ./cmd/... ./internal/... ./tests/...
 	@echo ""
-	@echo "$(YELLOW)Note: tests/integration needs a PDS and Jetstream as well as Postgres,$(RESET)"
-	@echo "$(YELLOW)and its TestMain now says so up front — without 'make dev-up' the$(RESET)"
-	@echo "$(YELLOW)package fails once, naming the address it could not reach, instead of$(RESET)"
-	@echo "$(YELLOW)skipping test by test and reporting green. 'make ci' remains the gate.$(RESET)"
+	@echo "$(YELLOW)Note: some packages need a PDS as well as Postgres, and each one's$(RESET)"
+	@echo "$(YELLOW)TestMain says so up front — without 'make dev-up' the package fails$(RESET)"
+	@echo "$(YELLOW)once, naming the address it could not reach, instead of skipping test$(RESET)"
+	@echo "$(YELLOW)by test and reporting green. 'make ci' remains the gate.$(RESET)"
 
 test-e2e: ## T2 pipeline tier - brings up the hermetic stack and runs inside it
 	@# docs/TEST_ARCHITECTURE.md §3.5. The hermetic stack publishes no host
@@ -232,11 +232,20 @@ test-e2e-dev: ## T2 against the long-lived DEV stack (debugging only - not how C
 	@echo "$(CYAN)Contract manifest:$(RESET)"
 	@go run ./cmd/contract-manifest
 	@echo "$(GREEN)Running the pipeline tier against the dev stack (-tags e2e)...$(RESET)"
+	@echo "$(YELLOW)  minus the reliability suite: it stops, starts and reconfigures the AppView$(RESET)"
+	@echo "$(YELLOW)  CONTAINER, and this hatch grades a host-run 'make run' process instead.$(RESET)"
 	@# run_pipeline_tier is the ONE definition of how T2 is invoked — the gate,
 	@# 'make test-e2e' and this hatch all call it, so the flags cannot drift
 	@# apart. Sourced here rather than copied for exactly that reason.
-	@bash -c 'source ./scripts/lib/runner-ready.sh && run_pipeline_tier'
-	@echo "$(GREEN)✓ Pipeline tier complete (against the dev stack)$(RESET)"
+	@#
+	@# -skip, not a t.Skip: skipping is banned in test bodies (§3.1) and the
+	@# pipeline tier fails outright on a SKIP event (scripts/e2e-runner.sh),
+	@# both for the same reason — a contract that opts out of proving itself is
+	@# indistinguishable from a broken pipeline. Excluding by name at the
+	@# selection level keeps that rule intact: these tests do not run here, and
+	@# they do not report anything either.
+	@bash -c 'source ./scripts/lib/runner-ready.sh && run_pipeline_tier -skip "^TestReliability"'
+	@echo "$(GREEN)✓ Pipeline tier complete (against the dev stack, without the reliability suite)$(RESET)"
 
 test-db-reset: ## Reset test database
 	@echo "$(GREEN)Resetting test database...$(RESET)"

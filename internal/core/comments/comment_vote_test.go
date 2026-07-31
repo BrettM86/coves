@@ -1,0 +1,595 @@
+//go:build integration
+
+// Votes cast on comments: the counters the vote consumer maintains on a comment
+// row, and the per-viewer vote state a comment thread is served with.
+//
+// This is the one place either is proved against real SQL. The counter half
+// (upvote_count, downvote_count, score) is maintained by the vote consumer
+// inside the same transaction as the vote row, so no fake can stand in for it.
+// The viewer half runs GetComments with a ViewerDID, which resolves the
+// caller's own votes across a whole page of comments in one query — the batch
+// lookup that a per-comment fake would never exercise.
+//
+// It lives beside the comments domain rather than beside votes because what is
+// asserted is the state of a COMMENT: the vote record is the input, the comment
+// row and its viewer state are the output under test.
+//
+// Both halves are driven by feeding synthetic Jetstream events to the comment
+// and vote consumers, which is how those rows are written in production; see
+// comment_consumer_test.go for why the consumer is fed directly rather than
+// over a websocket.
+
+package comments_test
+
+import (
+	"Coves/internal/atproto/jetstream"
+	"Coves/internal/core/comments"
+	"Coves/internal/core/users"
+	"Coves/internal/db/postgres"
+	"Coves/tests/fixtures"
+	"Coves/tests/testkit"
+	"context"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+)
+
+// TestCommentVote_CreateAndUpdate tests voting on comments and vote count updates
+func TestCommentVote_CreateAndUpdate(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+
+	ctx := context.Background()
+	commentRepo := postgres.NewCommentRepository(db)
+	voteRepo := postgres.NewVoteRepository(db)
+	userRepo := postgres.NewUserRepository(db)
+	userService := users.NewUserService(userRepo, nil, testkit.Endpoints().PDS.BaseURL, nil, "")
+
+	voteConsumer := jetstream.NewVoteEventConsumer(voteRepo, userService, db)
+	commentConsumer := jetstream.NewCommentEventConsumer(commentRepo, db)
+
+	// Use fixed timestamp to prevent flaky tests
+	fixedTime := time.Date(2025, 11, 6, 12, 0, 0, 0, time.UTC)
+
+	// Setup test data
+	testUser := fixtures.User(t, db, "voter.test", "did:plc:voter123")
+	testCommunity, err := fixtures.Community(ctx, db, "testcommunity", "owner.test")
+	if err != nil {
+		t.Fatalf("Failed to create test community: %v", err)
+	}
+	testPostURI := fixtures.Post(t, db, testCommunity, testUser.DID, "Test Post", 0, fixedTime)
+
+	t.Run("Upvote on comment increments count", func(t *testing.T) {
+		// Create a comment
+		commentRKey := testkit.TID()
+		commentURI := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, commentRKey)
+		commentCID := "bafycomment123"
+
+		commentEvent := &jetstream.JetstreamEvent{
+			Did:  testUser.DID,
+			Kind: "commit",
+			Commit: &jetstream.CommitEvent{
+				Rev:        "test-rev",
+				Operation:  "create",
+				Collection: "social.coves.community.comment",
+				RKey:       commentRKey,
+				CID:        commentCID,
+				Record: map[string]interface{}{
+					"$type":   "social.coves.community.comment",
+					"content": "Comment to vote on",
+					"reply": map[string]interface{}{
+						"root": map[string]interface{}{
+							"uri": testPostURI,
+							"cid": "bafypost",
+						},
+						"parent": map[string]interface{}{
+							"uri": testPostURI,
+							"cid": "bafypost",
+						},
+					},
+					"createdAt": fixedTime.Format(time.RFC3339),
+				},
+			},
+		}
+
+		if err := commentConsumer.HandleEvent(ctx, commentEvent); err != nil {
+			t.Fatalf("Failed to create comment: %v", err)
+		}
+
+		// Verify initial counts
+		comment, err := commentRepo.GetByURI(ctx, commentURI)
+		if err != nil {
+			t.Fatalf("Failed to get comment: %v", err)
+		}
+		if comment.UpvoteCount != 0 {
+			t.Errorf("Expected initial upvote_count = 0, got %d", comment.UpvoteCount)
+		}
+
+		// Create upvote on comment
+		voteRKey := testkit.TID()
+		voteURI := fmt.Sprintf("at://%s/social.coves.feed.vote/%s", testUser.DID, voteRKey)
+
+		voteEvent := &jetstream.JetstreamEvent{
+			Did:  testUser.DID,
+			Kind: "commit",
+			Commit: &jetstream.CommitEvent{
+				Rev:        "test-rev",
+				Operation:  "create",
+				Collection: "social.coves.feed.vote",
+				RKey:       voteRKey,
+				CID:        "bafyvote123",
+				Record: map[string]interface{}{
+					"$type": "social.coves.feed.vote",
+					"subject": map[string]interface{}{
+						"uri": commentURI,
+						"cid": commentCID,
+					},
+					"direction": "up",
+					"createdAt": fixedTime.Format(time.RFC3339),
+				},
+			},
+		}
+
+		if err := voteConsumer.HandleEvent(ctx, voteEvent); err != nil {
+			t.Fatalf("Failed to create vote: %v", err)
+		}
+
+		// Verify vote was indexed
+		vote, err := voteRepo.GetByURI(ctx, voteURI)
+		if err != nil {
+			t.Fatalf("Failed to get vote: %v", err)
+		}
+		if vote.SubjectURI != commentURI {
+			t.Errorf("Expected vote subject_uri = %s, got %s", commentURI, vote.SubjectURI)
+		}
+		if vote.Direction != "up" {
+			t.Errorf("Expected vote direction = 'up', got %s", vote.Direction)
+		}
+
+		// Verify comment counts updated
+		updatedComment, err := commentRepo.GetByURI(ctx, commentURI)
+		if err != nil {
+			t.Fatalf("Failed to get updated comment: %v", err)
+		}
+		if updatedComment.UpvoteCount != 1 {
+			t.Errorf("Expected upvote_count = 1, got %d", updatedComment.UpvoteCount)
+		}
+		if updatedComment.Score != 1 {
+			t.Errorf("Expected score = 1, got %d", updatedComment.Score)
+		}
+	})
+
+	t.Run("Downvote on comment increments downvote count", func(t *testing.T) {
+		// Create a comment
+		commentRKey := testkit.TID()
+		commentURI := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, commentRKey)
+		commentCID := "bafycomment456"
+
+		commentEvent := &jetstream.JetstreamEvent{
+			Did:  testUser.DID,
+			Kind: "commit",
+			Commit: &jetstream.CommitEvent{
+				Rev:        "test-rev",
+				Operation:  "create",
+				Collection: "social.coves.community.comment",
+				RKey:       commentRKey,
+				CID:        commentCID,
+				Record: map[string]interface{}{
+					"$type":   "social.coves.community.comment",
+					"content": "Comment to downvote",
+					"reply": map[string]interface{}{
+						"root": map[string]interface{}{
+							"uri": testPostURI,
+							"cid": "bafypost",
+						},
+						"parent": map[string]interface{}{
+							"uri": testPostURI,
+							"cid": "bafypost",
+						},
+					},
+					"createdAt": fixedTime.Format(time.RFC3339),
+				},
+			},
+		}
+
+		if err := commentConsumer.HandleEvent(ctx, commentEvent); err != nil {
+			t.Fatalf("Failed to create comment: %v", err)
+		}
+
+		// Create downvote
+		voteRKey := testkit.TID()
+
+		voteEvent := &jetstream.JetstreamEvent{
+			Did:  testUser.DID,
+			Kind: "commit",
+			Commit: &jetstream.CommitEvent{
+				Rev:        "test-rev",
+				Operation:  "create",
+				Collection: "social.coves.feed.vote",
+				RKey:       voteRKey,
+				CID:        "bafyvote456",
+				Record: map[string]interface{}{
+					"$type": "social.coves.feed.vote",
+					"subject": map[string]interface{}{
+						"uri": commentURI,
+						"cid": commentCID,
+					},
+					"direction": "down",
+					"createdAt": fixedTime.Format(time.RFC3339),
+				},
+			},
+		}
+
+		if err := voteConsumer.HandleEvent(ctx, voteEvent); err != nil {
+			t.Fatalf("Failed to create downvote: %v", err)
+		}
+
+		// Verify comment counts
+		updatedComment, err := commentRepo.GetByURI(ctx, commentURI)
+		if err != nil {
+			t.Fatalf("Failed to get updated comment: %v", err)
+		}
+		if updatedComment.DownvoteCount != 1 {
+			t.Errorf("Expected downvote_count = 1, got %d", updatedComment.DownvoteCount)
+		}
+		if updatedComment.Score != -1 {
+			t.Errorf("Expected score = -1, got %d", updatedComment.Score)
+		}
+	})
+
+	t.Run("Delete vote decrements comment counts", func(t *testing.T) {
+		// Create comment
+		commentRKey := testkit.TID()
+		commentURI := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, commentRKey)
+		commentCID := "bafycomment789"
+
+		commentEvent := &jetstream.JetstreamEvent{
+			Did:  testUser.DID,
+			Kind: "commit",
+			Commit: &jetstream.CommitEvent{
+				Rev:        "test-rev",
+				Operation:  "create",
+				Collection: "social.coves.community.comment",
+				RKey:       commentRKey,
+				CID:        commentCID,
+				Record: map[string]interface{}{
+					"$type":   "social.coves.community.comment",
+					"content": "Comment for vote deletion test",
+					"reply": map[string]interface{}{
+						"root": map[string]interface{}{
+							"uri": testPostURI,
+							"cid": "bafypost",
+						},
+						"parent": map[string]interface{}{
+							"uri": testPostURI,
+							"cid": "bafypost",
+						},
+					},
+					"createdAt": fixedTime.Format(time.RFC3339),
+				},
+			},
+		}
+
+		if err := commentConsumer.HandleEvent(ctx, commentEvent); err != nil {
+			t.Fatalf("Failed to create comment: %v", err)
+		}
+
+		// Create vote
+		voteRKey := testkit.TID()
+
+		createVoteEvent := &jetstream.JetstreamEvent{
+			Did:  testUser.DID,
+			Kind: "commit",
+			Commit: &jetstream.CommitEvent{
+				Rev:        "test-rev",
+				Operation:  "create",
+				Collection: "social.coves.feed.vote",
+				RKey:       voteRKey,
+				CID:        "bafyvote789",
+				Record: map[string]interface{}{
+					"$type": "social.coves.feed.vote",
+					"subject": map[string]interface{}{
+						"uri": commentURI,
+						"cid": commentCID,
+					},
+					"direction": "up",
+					"createdAt": fixedTime.Format(time.RFC3339),
+				},
+			},
+		}
+
+		if err := voteConsumer.HandleEvent(ctx, createVoteEvent); err != nil {
+			t.Fatalf("Failed to create vote: %v", err)
+		}
+
+		// Verify vote exists
+		commentAfterVote, _ := commentRepo.GetByURI(ctx, commentURI)
+		if commentAfterVote.UpvoteCount != 1 {
+			t.Fatalf("Expected upvote_count = 1 before delete, got %d", commentAfterVote.UpvoteCount)
+		}
+
+		// Delete vote. The rev must be LATER than the create's: revs are the
+		// repo's monotonic commit IDs, and the rev gate treats an equal rev as
+		// the same event replayed (a no-op by design).
+		deleteVoteEvent := &jetstream.JetstreamEvent{
+			Did:  testUser.DID,
+			Kind: "commit",
+			Commit: &jetstream.CommitEvent{
+				Rev:        "test-rev-2",
+				Operation:  "delete",
+				Collection: "social.coves.feed.vote",
+				RKey:       voteRKey,
+			},
+		}
+
+		if err := voteConsumer.HandleEvent(ctx, deleteVoteEvent); err != nil {
+			t.Fatalf("Failed to delete vote: %v", err)
+		}
+
+		// Verify counts decremented
+		commentAfterDelete, err := commentRepo.GetByURI(ctx, commentURI)
+		if err != nil {
+			t.Fatalf("Failed to get comment after vote delete: %v", err)
+		}
+		if commentAfterDelete.UpvoteCount != 0 {
+			t.Errorf("Expected upvote_count = 0 after delete, got %d", commentAfterDelete.UpvoteCount)
+		}
+		if commentAfterDelete.Score != 0 {
+			t.Errorf("Expected score = 0 after delete, got %d", commentAfterDelete.Score)
+		}
+	})
+}
+
+// TestCommentVote_ViewerState tests viewer vote state in comment query responses
+func TestCommentVote_ViewerState(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+
+	ctx := context.Background()
+	commentRepo := postgres.NewCommentRepository(db)
+	voteRepo := postgres.NewVoteRepository(db)
+	postRepo := postgres.NewPostRepository(db)
+	userRepo := postgres.NewUserRepository(db)
+	communityRepo := postgres.NewCommunityRepository(db)
+	userService := users.NewUserService(userRepo, nil, testkit.Endpoints().PDS.BaseURL, nil, "")
+
+	voteConsumer := jetstream.NewVoteEventConsumer(voteRepo, userService, db)
+	commentConsumer := jetstream.NewCommentEventConsumer(commentRepo, db)
+
+	// Use fixed timestamp to prevent flaky tests
+	fixedTime := time.Date(2025, 11, 6, 12, 0, 0, 0, time.UTC)
+
+	// Setup test data
+	testUser := fixtures.User(t, db, "viewer.test", "did:plc:viewer123")
+	testCommunity, err := fixtures.Community(ctx, db, "testcommunity", "owner.test")
+	if err != nil {
+		t.Fatalf("Failed to create test community: %v", err)
+	}
+	testPostURI := fixtures.Post(t, db, testCommunity, testUser.DID, "Test Post", 0, fixedTime)
+
+	t.Run("Viewer with vote sees vote state", func(t *testing.T) {
+		// Create comment
+		commentRKey := testkit.TID()
+		commentURI := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, commentRKey)
+		commentCID := "bafycomment111"
+
+		commentEvent := &jetstream.JetstreamEvent{
+			Did:  testUser.DID,
+			Kind: "commit",
+			Commit: &jetstream.CommitEvent{
+				Rev:        "test-rev",
+				Operation:  "create",
+				Collection: "social.coves.community.comment",
+				RKey:       commentRKey,
+				CID:        commentCID,
+				Record: map[string]interface{}{
+					"$type":   "social.coves.community.comment",
+					"content": "Comment with viewer vote",
+					"reply": map[string]interface{}{
+						"root": map[string]interface{}{
+							"uri": testPostURI,
+							"cid": "bafypost",
+						},
+						"parent": map[string]interface{}{
+							"uri": testPostURI,
+							"cid": "bafypost",
+						},
+					},
+					"createdAt": fixedTime.Format(time.RFC3339),
+				},
+			},
+		}
+
+		if err := commentConsumer.HandleEvent(ctx, commentEvent); err != nil {
+			t.Fatalf("Failed to create comment: %v", err)
+		}
+
+		// Create vote
+		voteRKey := testkit.TID()
+		voteURI := fmt.Sprintf("at://%s/social.coves.feed.vote/%s", testUser.DID, voteRKey)
+
+		voteEvent := &jetstream.JetstreamEvent{
+			Did:  testUser.DID,
+			Kind: "commit",
+			Commit: &jetstream.CommitEvent{
+				Rev:        "test-rev",
+				Operation:  "create",
+				Collection: "social.coves.feed.vote",
+				RKey:       voteRKey,
+				CID:        "bafyvote111",
+				Record: map[string]interface{}{
+					"$type": "social.coves.feed.vote",
+					"subject": map[string]interface{}{
+						"uri": commentURI,
+						"cid": commentCID,
+					},
+					"direction": "up",
+					"createdAt": fixedTime.Format(time.RFC3339),
+				},
+			},
+		}
+
+		if err := voteConsumer.HandleEvent(ctx, voteEvent); err != nil {
+			t.Fatalf("Failed to create vote: %v", err)
+		}
+
+		// Query comments with viewer authentication
+		// Use factory constructor with nil factory - this test only uses the read path (GetComments)
+		commentService := comments.NewCommentServiceWithPDSFactory(commentRepo, userRepo, postRepo, communityRepo, nil, nil)
+		response, err := commentService.GetComments(ctx, &comments.GetCommentsRequest{
+			PostURI:   testPostURI,
+			Sort:      "new",
+			Depth:     10,
+			Limit:     100,
+			ViewerDID: &testUser.DID,
+		})
+		if err != nil {
+			t.Fatalf("Failed to get comments: %v", err)
+		}
+
+		if len(response.Comments) == 0 {
+			t.Fatal("Expected at least one comment in response")
+		}
+
+		// Find our comment
+		var foundComment *comments.CommentView
+		for _, threadView := range response.Comments {
+			if threadView.Comment.URI == commentURI {
+				foundComment = threadView.Comment
+				break
+			}
+		}
+
+		if foundComment == nil {
+			t.Fatal("Expected to find test comment in response")
+		}
+
+		// Verify viewer state
+		if foundComment.Viewer == nil {
+			t.Fatal("Expected viewer state for authenticated request")
+		}
+		if foundComment.Viewer.Vote == nil {
+			t.Error("Expected viewer.vote to be populated")
+		} else if *foundComment.Viewer.Vote != "up" {
+			t.Errorf("Expected viewer.vote = 'up', got %s", *foundComment.Viewer.Vote)
+		}
+		if foundComment.Viewer.VoteURI == nil {
+			t.Error("Expected viewer.voteUri to be populated")
+		} else if *foundComment.Viewer.VoteURI != voteURI {
+			t.Errorf("Expected viewer.voteUri = %s, got %s", voteURI, *foundComment.Viewer.VoteURI)
+		}
+	})
+
+	t.Run("Viewer without vote sees empty state", func(t *testing.T) {
+		// Create comment (no vote)
+		commentRKey := testkit.TID()
+		commentURI := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, commentRKey)
+
+		commentEvent := &jetstream.JetstreamEvent{
+			Did:  testUser.DID,
+			Kind: "commit",
+			Commit: &jetstream.CommitEvent{
+				Rev:        "test-rev",
+				Operation:  "create",
+				Collection: "social.coves.community.comment",
+				RKey:       commentRKey,
+				CID:        "bafycomment222",
+				Record: map[string]interface{}{
+					"$type":   "social.coves.community.comment",
+					"content": "Comment without viewer vote",
+					"reply": map[string]interface{}{
+						"root": map[string]interface{}{
+							"uri": testPostURI,
+							"cid": "bafypost",
+						},
+						"parent": map[string]interface{}{
+							"uri": testPostURI,
+							"cid": "bafypost",
+						},
+					},
+					"createdAt": fixedTime.Format(time.RFC3339),
+				},
+			},
+		}
+
+		if err := commentConsumer.HandleEvent(ctx, commentEvent); err != nil {
+			t.Fatalf("Failed to create comment: %v", err)
+		}
+
+		// Query with authentication but no vote
+		// Use factory constructor with nil factory - this test only uses the read path (GetComments)
+		commentService := comments.NewCommentServiceWithPDSFactory(commentRepo, userRepo, postRepo, communityRepo, nil, nil)
+		response, err := commentService.GetComments(ctx, &comments.GetCommentsRequest{
+			PostURI:   testPostURI,
+			Sort:      "new",
+			Depth:     10,
+			Limit:     100,
+			ViewerDID: &testUser.DID,
+		})
+		if err != nil {
+			t.Fatalf("Failed to get comments: %v", err)
+		}
+
+		if len(response.Comments) == 0 {
+			t.Fatal("Expected at least one comment in response")
+		}
+
+		// Find our comment
+		var foundComment *comments.CommentView
+		for _, threadView := range response.Comments {
+			if threadView.Comment.URI == commentURI {
+				foundComment = threadView.Comment
+				break
+			}
+		}
+
+		if foundComment == nil {
+			t.Fatal("Expected to find test comment in response")
+		}
+
+		// Verify viewer state exists but no vote
+		if foundComment.Viewer == nil {
+			t.Fatal("Expected viewer state for authenticated request")
+		}
+		if foundComment.Viewer.Vote != nil {
+			t.Errorf("Expected viewer.vote = nil (no vote), got %v", *foundComment.Viewer.Vote)
+		}
+		if foundComment.Viewer.VoteURI != nil {
+			t.Errorf("Expected viewer.voteUri = nil (no vote), got %v", *foundComment.Viewer.VoteURI)
+		}
+	})
+
+	t.Run("Unauthenticated request has no viewer state", func(t *testing.T) {
+		// Query without authentication.
+		// Use factory constructor with nil factory - this test only uses the read path (GetComments)
+		commentService := comments.NewCommentServiceWithPDSFactory(commentRepo, userRepo, postRepo, communityRepo, nil, nil)
+		response, err := commentService.GetComments(ctx, &comments.GetCommentsRequest{
+			PostURI:   testPostURI,
+			Sort:      "new",
+			Depth:     10,
+			Limit:     100,
+			ViewerDID: nil, // No authentication
+		})
+		if err != nil {
+			t.Fatalf("Failed to get comments: %v", err)
+		}
+
+		// The assertion used to be wrapped in `if len(response.Comments) > 0`,
+		// which made it vacuous whenever the thread was empty — and it was only
+		// ever non-empty because the sibling subtests above happened to run
+		// first and seed this post. A guard that turns "the thread was empty"
+		// into a silent pass hides exactly the regression it was written for, so
+		// the emptiness is now the failure.
+		require.NotEmpty(t, response.Comments,
+			"the sibling subtests seed this post's thread; an empty thread here means the "+
+				"assertion below would have checked nothing")
+		for _, node := range response.Comments {
+			require.Nilf(t, node.Comment.Viewer,
+				"comment %s carried viewer state for a caller with no identity: viewer state is "+
+					"per-actor, so serving it unauthenticated leaks one user's votes to everyone",
+				node.Comment.URI)
+		}
+	})
+}

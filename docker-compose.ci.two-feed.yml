@@ -1,0 +1,63 @@
+# Overlay: the AppView consuming TWO overlapping Jetstream feeds.
+#
+# Applied to docker-compose.ci.yml for exactly one scenario — the pipeline
+# tier's TestReliabilityOverlappingFeedsDoNotDoubleIndex — and removed again
+# immediately afterwards. It is never part of a normal `make ci` stack.
+#
+# WHY THIS EXISTS AS A FILE RATHER THAN AN ENVIRONMENT VARIABLE
+#
+# The AppView's feed topology comes from JETSTREAM_FEEDS in .env.ci, and
+# Compose's `environment:` always wins over `env_file:`. So an interpolated
+# `JETSTREAM_FEEDS: ${SOMETHING:-<default>}` in the base file would silently
+# become the real source of truth for every run, with .env.ci's line dead and
+# nobody the wiser. Keeping the override in a separate file that is only ever
+# passed for one scenario leaves the base stack — the one the gate grades —
+# reading its topology from exactly one place.
+#
+# It also means the control channel that applies this (scripts/lib/ci-stack.sh)
+# carries no arguments at all: the container asks for "the two-feed AppView" by
+# name, and the host decides what that is.
+#
+# WHY BOTH KEYS ARE NEW, AND WHY THAT IS THE WHOLE POINT
+#
+# Neither key is the base stack's (.env.ci uses `self`) and neither is
+# jetstream.PrimaryFeedKey ("bsky"). That is load-bearing, not tidiness.
+#
+# jetstream.FeedConsumerName derives a connector's name — and therefore its
+# persisted-cursor row — from the feed key. Reusing `self` here would hand one
+# of the two connectors the cursor the base topology has been writing all run,
+# so it would resume from that cursor MINUS the five-second rewind and replay
+# history while its partner live-tailed. The scenario's central claim is that
+# BOTH connectors handled the new vote; a connector replaying history satisfies
+# an events-processed delta without ever having seen that vote, so the overlap
+# would go unproven while the test passed. An earlier version of this file used
+# `self` + `self2` and had exactly that hole.
+#
+# With two brand-new keys neither connector has a cursor row, so both live-tail
+# from the moment they connect (connector.go's dialURL omits the cursor
+# parameter entirely when it is zero) and every event either of them counts
+# after the scenario's baseline snapshot arrived live. The test asserts the
+# connector NAMES it expects for precisely this reason — see
+# twoFeedConnectorNames in tests/e2e/reliability_test.go, which fails loudly if
+# these keys ever drift back toward the base stack's.
+#
+# The `self` connector does not run during the window. When the single-feed
+# configuration is restored it resumes from its own untouched cursor and replays
+# what it missed, which the rev gate and the consumers' upserts make a no-op.
+#
+# WHAT THE TOPOLOGY IS AND WHY IT IS SAFE
+#
+# Two feed keys pointing at the SAME Jetstream, so every commit is delivered
+# twice — once per connector. That is the shape production runs (bsky + self,
+# both carrying our own PDS' repos) reduced to the one property worth testing
+# hermetically: overlap. The scenario waits for both connectors to report
+# connected before it writes anything, because a live-tailing connector cannot
+# see an event committed before it dialled.
+#
+# cmd/server refuses to boot multi-feed unless every consumer is rev-gated
+# (consumers.go's FAIL CLOSED block), so this file is also a standing check that
+# the gate's own wiring still satisfies that rule.
+services:
+  appview:
+    environment:
+      JETSTREAM_FEEDS: "overlap-a=ws://localhost:6008;overlap-b=ws://localhost:6008"

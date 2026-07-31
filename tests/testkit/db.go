@@ -667,12 +667,13 @@ func migrateAndStamp(ctx context.Context, template, hash string) error {
 	}
 	defer func() { _ = db.Close() }()
 
-	// goose.NewProvider rather than the package-level goose.Up: the package
-	// API keeps the dialect and base filesystem in global variables, and the
-	// legacy tests/integration path still calls goose.Up with a relative
-	// directory. Two callers with different notions of where migrations live,
-	// sharing one global, is a bug waiting for the first test binary that does
-	// both.
+	// goose.NewProvider rather than the package-level goose.Up: the package API
+	// keeps the dialect and base filesystem in global variables. No test calls
+	// goose.Up any more — phase 3 made testkit the only path to a database — but
+	// the provider form is what keeps that true by construction rather than by
+	// convention, because two callers with different notions of where migrations
+	// live, sharing one global, is a bug waiting for the first test binary that
+	// does both.
 	provider, err := goose.NewProvider(goose.DialectPostgres, db, migrations.FS)
 	if err != nil {
 		return fmt.Errorf("configuring goose for template %q: %w", template, err)
@@ -728,24 +729,34 @@ const connectionHeadroom = 40
 // how that total is split between the dimensions.
 //
 // It is 1, and the reason is NOT the one that used to be written on `-p 1` in
-// the Makefile and the CI runner. That reason — tests/integration wiping shared
-// tables — is gone: every test owns a private clone and packages cannot corrupt
-// each other's data any more.
+// the Makefile and the CI runner. That reason — a shared database being wiped
+// out from under other packages — is gone: every test owns a private clone and
+// packages cannot corrupt each other's data any more.
 //
 // The reason now is the ONE resource that stayed shared, and that no amount of
 // database isolation can partition: the Jetstream firehose. Running two test
-// binaries at once means tests/testkit's firehose tests subscribe while
-// tests/integration is creating PDS accounts 25 at a time — and Jetstream's
+// binaries at once means testkit's firehose tests subscribe while another
+// package is creating PDS accounts 25 at a time — and Jetstream's
 // wantedCollections filter does not apply to account/identity events, so those
 // tests get a stream that is almost entirely other tests' account churn and
 // time out waiting for their own commit. Measured, not assumed: on a dev stack
 // with an accumulated Jetstream store, the full tagged run failed 2 of 4 times
 // at -p 2 and 0 of 4 times at -p 1, with the same -parallel.
 //
-// So the budget goes to within-package parallelism, which is where this tree's
-// wall clock lives anyway — tests/integration alone is most of it. Raise this
-// when Phase 4 of docs/TEST_ARCHITECTURE.md deletes tests/integration and its
-// ten hand-rolled subscribers, leaving testkit the only firehose consumer.
+// So the budget goes to within-package parallelism instead.
+//
+// AN EARLIER VERSION OF THIS COMMENT SAID TO RAISE THIS once phase 4 deleted
+// tests/integration, "leaving testkit the only firehose consumer". Phase 4 has
+// now done that, and the trigger was wrong: dissolving that directory relocated
+// its account-creating tests into internal/… packages, it did not stop them
+// creating accounts. testkit is indeed the only firehose SUBSCRIBER, but the
+// contention was never with other subscribers — it is with account churn from
+// whatever else is running, and there is exactly as much of that as before.
+//
+// The real precondition is upstream and still unmet: account and identity
+// events bypass wantedCollections, so a subscriber cannot filter out other
+// tests' signups. Until that is fixed, raising this needs the measurement
+// repeating, not a directory disappearing.
 const packageParallelism = 1
 
 // maxParallelPerPackage keeps a very large max_connections from producing a
@@ -758,7 +769,8 @@ const maxParallelPerPackage = 64
 //
 // One is the norm, but a test that calls testkit.DB and then calls it again in
 // a subtest holds two pools at once — the outer clone outlives the inner one.
-// TestPasswordSecurity in tests/integration does exactly that today. Budgeting
+// TestPasswordSecurity, now in internal/core/communities, does exactly that.
+// Budgeting
 // one pool per slot made the model understate the true peak, so the formula
 // could hand out a -parallel whose worst case sat above the ceiling it had just
 // computed.

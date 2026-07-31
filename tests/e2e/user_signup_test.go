@@ -8,113 +8,85 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
-	"time"
 
 	"Coves/tests/testkit"
 )
 
-// TestE2E_UserSignup tests the full user signup flow:
-// Third-party client → social.coves.actor.signup XRPC → PDS account creation + AppView indexing
+// TestE2E_UserSignup is the API contract (§3.4b) for social.coves.actor.signup:
+// the one write surface a client reaches before it has any credentials at all.
 //
-// This tests the same code path that a third-party client or UI would use.
-// Users are indexed directly by the signup endpoint (not via Jetstream).
-// Jetstream is only used for handle changes on existing users.
+// # WHY IT IS AN API CONTRACT AND NOT A PIPELINE PROOF
 //
-// Prerequisites:
-//   - AppView running on localhost:8081
-//   - PDS running on localhost:3001
-//   - Jetstream running on localhost:6008 (for handle change events, not required for signup)
+// Signup indexes SYNCHRONOUSLY. The endpoint creates the account on the PDS and
+// writes the user row itself, in the same request, so every assertion below
+// would hold with the firehose completely dead — which is exactly the trap
+// §3.4 was written around. Nothing here may be read as evidence that ingestion
+// works. The pipeline proof for this domain is TestActorProfileIngestion, and
+// the standing rule the whole tier depends on is that a DID enters the index
+// ONLY through this endpoint: every ingestion contract signs an account up here
+// first, which is what makes this surface worth its own contract.
 //
-// Run with:
+// # WHY IT SPEAKS RAW HTTP
 //
-//	make e2e-up  # Start infrastructure
-//	go run ./cmd/server &  # Start AppView
-//	go test ./tests/e2e -run TestE2E_UserSignup -v
+// Deliberately, and it is the one file in the tier that should. The claim is
+// about what a THIRD-PARTY client experiences — a client that has no Go, no
+// testkit and no session, only the wire format. Routing it through the shared
+// XRPC client would test the client's marshalling as much as the endpoint's.
+// The URLs still come from testkit.Endpoints(), because §3.7 forbids a test
+// constructing a base address no matter how it then dials it.
 func TestE2E_UserSignup(t *testing.T) {
-	// Check if AppView is available
-	if !isAppViewAvailable(t) {
-		t.Skip("AppView not available at localhost:8081 - run 'go run ./cmd/server' first")
-	}
+	// No availability probes and no skips. TestMain's Require floor already
+	// proved the AppView, the PDS and Jetstream are reachable and failed the
+	// whole package with the address it could not reach if they were not
+	// (§3.1: asking for -tags e2e IS asking for the stack). The three skip
+	// calls that used to stand here could only ever turn a broken stack into a
+	// silent pass.
 
-	// Check if PDS is available
-	if !isPDSAvailable(t) {
-		t.Skip("PDS not available at localhost:3001 - run 'make e2e-up' first")
-	}
-
-	// Check if Jetstream is available (needed for full E2E infrastructure)
-	if !isJetstreamAvailable(t) {
-		t.Skip("Jetstream not available at localhost:6008 - run 'make e2e-up' first")
-	}
-
-	// Test 1: Create account on PDS
 	t.Run("Create account on PDS and verify indexing", func(t *testing.T) {
-		label := testkit.UniqueIDWithPrefix(t, "alice")
-		handle := label + ".local.coves.dev"
-		email := label + "@test.com"
+		handle, email := signupAccount(t, "alice")
 
 		t.Logf("Creating account: %s", handle)
-
-		// Create account via AppView signup endpoint (what UI would call)
 		did, err := createPDSAccount(t, handle, email, "test1234")
 		if err != nil {
 			t.Fatalf("Failed to create PDS account: %v", err)
 		}
-
 		t.Logf("Account created with DID: %s", did)
 
-		// Verify user was indexed via AppView API (signup indexes immediately)
-		t.Log("Verifying user via AppView API...")
-		var userDID, userHandle string
-		deadline := time.Now().Add(10 * time.Second)
-		for time.Now().Before(deadline) {
-			userDID, userHandle, err = getProfileViaAPI(did)
-			if err == nil {
-				break // Successfully found!
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
-		if err != nil {
-			t.Fatalf("User not found in AppView after 10s: %v", err)
-		}
+		userDID, userHandle := awaitProfile(t, did)
 
 		if userHandle != handle {
 			t.Errorf("Expected handle %s, got %s", handle, userHandle)
 		}
-
 		if userDID != did {
 			t.Errorf("Expected DID %s, got %s", did, userDID)
 		}
-
-		t.Logf("✅ User successfully indexed: %s → %s", handle, did)
 	})
 
-	// Test 2: Idempotency (verify same user from multiple API calls)
-	t.Run("Idempotent indexing on duplicate events", func(t *testing.T) {
-		label := testkit.UniqueIDWithPrefix(t, "bob")
-		handle := label + ".local.coves.dev"
-		email := label + "@test.com"
+	// Named for what it does, after a rename: it used to be called "Idempotent
+	// indexing on duplicate events" and it delivers no duplicate event. Two GETs
+	// prove the read is stable and the signup produced ONE addressable actor,
+	// which is worth having — a signup that wrote two rows shows up here as a
+	// lookup that starts matching two — but it is not the consumer's
+	// duplicate-delivery guarantee and must not be read as covering it.
+	//
+	// Real duplicate delivery is unreachable from this surface: signup is an
+	// endpoint, and calling it twice with the same handle is refused by the PDS
+	// long before any consumer sees anything. The guarantee is proven where the
+	// duplicate can actually be constructed — at T1 in
+	// internal/core/users/user_identity_consumer_test.go, which delivers one
+	// event twice and asserts the row after each — and, for the delivery
+	// mechanism that produces duplicates in production, by
+	// TestReliabilityRewindReplaysExactlyOnce in reliability_test.go.
+	t.Run("Signup produces exactly one addressable actor", func(t *testing.T) {
+		handle, email := signupAccount(t, "bob")
 
-		// Create account via AppView signup endpoint
 		did, err := createPDSAccount(t, handle, email, "test1234")
 		if err != nil {
 			t.Fatalf("Failed to create PDS account: %v", err)
 		}
 
-		// Wait for indexing via AppView API
-		var userDID1 string
-		deadline := time.Now().Add(10 * time.Second)
-		for time.Now().Before(deadline) {
-			userDID1, _, err = getProfileViaAPI(did)
-			if err == nil {
-				break
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
-		if err != nil {
-			t.Fatalf("User not found after 10s: %v", err)
-		}
+		userDID1, _ := awaitProfile(t, did)
 
-		// Query again - should get same user
 		userDID2, _, err := getProfileViaAPI(did)
 		if err != nil {
 			t.Fatalf("Failed to get user on second query: %v", err)
@@ -123,53 +95,71 @@ func TestE2E_UserSignup(t *testing.T) {
 		if userDID1 != userDID2 {
 			t.Errorf("Got different DIDs on repeated queries: %s vs %s", userDID1, userDID2)
 		}
-
-		t.Logf("✅ Idempotency verified: repeated queries return same user")
 	})
 
-	// Test 3: Multiple users
-	t.Run("Index multiple users concurrently", func(t *testing.T) {
+	t.Run("Index multiple users", func(t *testing.T) {
+		// Sequential, despite the name this subtest used to carry: the accounts
+		// are created one after another and the endpoint is what is under test,
+		// not the AppView's concurrency. The 500ms "small delay between
+		// creations" that used to sit in this loop was doing nothing — signup is
+		// synchronous, so there is nothing to wait for between two of them.
 		const numUsers = 3
 		dids := make([]string, numUsers)
-		handles := make([]string, numUsers)
 
 		for i := 0; i < numUsers; i++ {
-			label := testkit.UniqueIDWithPrefix(t, fmt.Sprintf("user%d", i))
-			handle := label + ".local.coves.dev"
-			email := label + "@test.com"
-
+			handle, email := signupAccount(t, fmt.Sprintf("user%d", i))
 			did, err := createPDSAccount(t, handle, email, "test1234")
 			if err != nil {
 				t.Fatalf("Failed to create account %d: %v", i, err)
 			}
 			dids[i] = did
-			handles[i] = handle
-			t.Logf("Created user %d: %s", i, did)
-
-			// Small delay between creations
-			time.Sleep(500 * time.Millisecond)
 		}
 
-		// Verify all indexed via AppView API (with retry for each user)
-		t.Log("Waiting for all users to be indexed...")
 		for i, did := range dids {
-			var userHandle string
-			var err error
-			deadline := time.Now().Add(15 * time.Second)
-			for time.Now().Before(deadline) {
-				_, userHandle, err = getProfileViaAPI(did)
-				if err == nil {
-					break
-				}
-				time.Sleep(500 * time.Millisecond)
-			}
-			if err != nil {
-				t.Errorf("User %d not found after 15s: %v", i, err)
-				continue
-			}
-			t.Logf("✅ User %d indexed: %s", i, userHandle)
+			_, userHandle := awaitProfile(t, did)
+			t.Logf("user %d indexed: %s", i, userHandle)
 		}
 	})
+}
+
+// signupAccount mints a handle and email for a signup this tier is about to
+// perform.
+//
+// The local label comes from testkit — run-prefixed and inside the PDS'
+// 18-character cap — and the handle domain comes from the stack rather than a
+// literal, so this works against whatever domain the PDS is configured to
+// serve. Both matter for the same reason: the PDS keeps accounts between runs,
+// so a handle that is not unique per run is a "Handle already taken" failure on
+// the second invocation.
+func signupAccount(t *testing.T, prefix string) (handle, email string) {
+	t.Helper()
+	label := testkit.UniqueIDWithPrefix(t, prefix)
+	return testkit.Endpoints().PDS.Handle(label), label + "@test.com"
+}
+
+// awaitProfile waits for social.coves.actor.getProfile to serve the DID that was
+// just signed up, and returns what it served.
+//
+// Signup indexes synchronously, so in practice this returns on the first probe.
+// It is a wait rather than a bare read because the endpoint is HTTP and the
+// process is shared: a 502 while the AppView is momentarily busy is not the
+// answer to the question being asked. It is emphatically NOT a wait for the
+// firehose — see this file's doc comment.
+func awaitProfile(t *testing.T, did string) (userDID, userHandle string) {
+	t.Helper()
+
+	testkit.WaitFor(t, contractBudget, func() (bool, error) {
+		var err error
+		userDID, userHandle, err = getProfileViaAPI(did)
+		if err != nil {
+			return false, nil
+		}
+		return true, nil
+	},
+		testkit.WithPollInterval(contractPollInterval),
+		testkit.WithDescription("social.coves.actor.getProfile to serve the freshly signed-up %s", did))
+
+	return userDID, userHandle
 }
 
 // generateInviteCode generates a single-use invite code via PDS admin API
@@ -185,7 +175,7 @@ func generateInviteCode(t *testing.T) (string, error) {
 
 	req, err := http.NewRequest(
 		"POST",
-		"http://localhost:3001/xrpc/com.atproto.server.createInviteCode",
+		testkit.Endpoints().PDS.BaseURL+"/xrpc/com.atproto.server.createInviteCode",
 		bytes.NewBuffer(jsonData),
 	)
 	if err != nil {
@@ -245,7 +235,7 @@ func createPDSAccount(t *testing.T, handle, email, password string) (string, err
 	}
 
 	resp, err := http.Post(
-		"http://localhost:8081/xrpc/social.coves.actor.signup",
+		testkit.Endpoints().AppView.BaseURL+"/xrpc/social.coves.actor.signup",
 		"application/json",
 		bytes.NewBuffer(jsonData),
 	)
@@ -278,43 +268,10 @@ func createPDSAccount(t *testing.T, handle, email, password string) (string, err
 	return result.DID, nil
 }
 
-// isPDSAvailable checks if PDS is running
-func isPDSAvailable(t *testing.T) bool {
-	resp, err := http.Get("http://localhost:3001/xrpc/_health")
-	if err != nil {
-		t.Logf("PDS not available: %v", err)
-		return false
-	}
-	defer func() { _ = resp.Body.Close() }()
-	return resp.StatusCode == http.StatusOK
-}
-
-// isJetstreamAvailable checks if Jetstream is running
-func isJetstreamAvailable(t *testing.T) bool {
-	// Use 127.0.0.1 instead of localhost to force IPv4
-	resp, err := http.Get("http://127.0.0.1:6009/metrics")
-	if err != nil {
-		t.Logf("Jetstream not available: %v", err)
-		return false
-	}
-	defer func() { _ = resp.Body.Close() }()
-	return resp.StatusCode == http.StatusOK
-}
-
-// isAppViewAvailable checks if AppView is running
-func isAppViewAvailable(t *testing.T) bool {
-	resp, err := http.Get("http://localhost:8081/health")
-	if err != nil {
-		t.Logf("AppView not available: %v", err)
-		return false
-	}
-	defer func() { _ = resp.Body.Close() }()
-	return resp.StatusCode == http.StatusOK
-}
-
 // getProfileViaAPI queries the AppView API to get a user profile by DID
 func getProfileViaAPI(did string) (string, string, error) {
-	resp, err := http.Get(fmt.Sprintf("http://localhost:8081/xrpc/social.coves.actor.getProfile?actor=%s", did))
+	resp, err := http.Get(fmt.Sprintf("%s/xrpc/social.coves.actor.getProfile?actor=%s",
+		testkit.Endpoints().AppView.BaseURL, did))
 	if err != nil {
 		return "", "", fmt.Errorf("failed to call getProfile: %w", err)
 	}

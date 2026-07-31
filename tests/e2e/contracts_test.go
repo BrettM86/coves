@@ -29,11 +29,35 @@
 //     is a missing endpoint or a missing T1 test — report it, do not reach into
 //     the database.
 //
-// Two files still in this package predate the tier and break these rules
-// (error_recovery_test.go instantiates consumers in-process and clones the test
-// database; user_signup_test.go hand-rolls its HTTP). Task 16 rebuilds or
-// deletes them. Until then they set this package's infrastructure floor — see
-// TestMain — and they are not a precedent.
+// Both files that used to break these rules have been dealt with, and neither
+// is an outstanding debt any more.
+//
+// user_signup_test.go and user_signup_token_test.go were rebuilt rather than
+// deleted: they are the API contract (§3.4b) for social.coves.actor.signup and
+// its Turnstile-gated invite handshake, which no other test covers and which
+// every ingestion contract depends on, since a DID enters the index only
+// through that endpoint. Their infra-probe skips are gone (the floor above is
+// the check), their hand-rolled poll loops are testkit waits, and their
+// endpoints come from testkit.Endpoints(). They still speak raw HTTP, and that
+// is now a deliberate, documented choice rather than a leftover: the claim
+// those files make is about what a third-party client with no Go and no session
+// receives on the wire, so routing them through the shared XRPC client would
+// test its marshalling as much as the endpoint. Read their own doc comments
+// before treating them as a template — the rest of the tier should use the
+// client.
+//
+// error_recovery_test.go was the other, and it is gone. It broke two of the
+// three rules at once — it instantiated consumers in-process and fed them
+// synthetic events, and it opened testkit.DB clones to assert on the result —
+// so every one of its assertions would have passed with the shipped pipeline
+// completely dead. Its content did not survive as a T2 test because none of it
+// was one: the properties it gestured at are now proven either against the real
+// container pipeline in reliability_test.go (cursor resume, replay-exactly-once
+// across a reconnect) or at T1 where the code is
+// (internal/atproto/jetstream/connector_test.go for the dial-retry loop,
+// internal/core/users/user_identity_consumer_test.go and
+// internal/atproto/jetstream/error_taxonomy_test.go for malformed, duplicate
+// and out-of-order identity events). The rest asserted nothing.
 //
 // # HAZARD: RECONCILIATION PATHS (sync indexing's subtler sibling)
 //
@@ -132,6 +156,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -145,16 +171,121 @@ import (
 // it could not reach — instead of every contract timing out separately and
 // blaming a different feature.
 //
-// RequirePostgres is owed to the two legacy files described in the package doc,
-// not to the contracts: a contract observes through endpoints and never opens a
-// database. It comes out when task 16 does.
+// Postgres is deliberately NOT on this list, and that absence is load-bearing
+// rather than an omission. A contract observes through serving endpoints and
+// never opens a database (rule 3 in the package doc), so a package that could
+// not reach Postgres would still be able to run every test in it. Requiring it
+// was a debt owed to error_recovery_test.go, which asserted against testkit.DB
+// clones the AppView never writes to; that file is gone, and re-adding the
+// floor here would mean a test somewhere in this package has started reaching
+// into the database again.
 func TestMain(m *testing.M) {
 	os.Exit(testkit.Main(m,
-		testkit.RequirePostgres,
 		testkit.RequirePDS,
 		testkit.RequireAppView,
 		testkit.RequireJetstream,
+		requireSingleFeedTopology,
 	))
+}
+
+// requireSingleFeedTopology refuses to run the tier against an AppView left in
+// the reliability suite's two-feed configuration.
+//
+// # THE FAILURE THIS CATCHES
+//
+// TestReliabilityOverlappingFeedsDoNotDoubleIndex reconfigures the AppView and
+// restores it through t.Cleanup. Cleanups do not run when the process dies
+// without unwinding — a panic in a non-test goroutine, the -timeout watchdog,
+// a killed container — and what that leaves behind is a perfectly HEALTHY
+// AppView consuming two overlapping feeds. Nothing about it looks broken:
+// stack_is_up reuses it happily on the next COVES_CI_KEEP_STACK run.
+//
+// Every consumer then processes each event twice. The rev gate keeps the ROWS
+// correct, which is exactly what makes this poisonous rather than obvious: the
+// contracts that assert row state still pass, while every contract measuring a
+// consumer-health DELTA — the block contracts' measurement windows, this
+// suite's own dead-letter arithmetic — silently sees two where it demands one,
+// and fails somewhere far from the cause.
+//
+// So the tier states its precondition once, up front, in the same place it
+// states which services it needs. Checking here rather than in the reliability
+// suite is deliberate: the suite is not the victim, everything downstream of it
+// is, and a stack can arrive in this state from a run that never reached the
+// suite at all.
+//
+// It reports rather than repairs. Recreating the AppView under a developer who
+// is mid-investigation on a kept stack would destroy the evidence, and the
+// reconcile is one documented command.
+func requireSingleFeedTopology() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	probe := &probeT{}
+	appview := testkit.NewAppView(probe)
+	if probe.failure != "" {
+		return fmt.Errorf("building an AppView client to check the feed topology: %s", probe.failure)
+	}
+
+	report, err := appview.ConsumerHealth(ctx)
+	if err != nil {
+		return fmt.Errorf("reading /health/consumers to check the feed topology: %w", err)
+	}
+
+	feedsByConsumer := make(map[string][]string)
+	for _, state := range report.Consumers {
+		base, feed, hasFeed := strings.Cut(state.Name, "@")
+		if !hasFeed {
+			feed = "(primary)"
+		}
+		feedsByConsumer[base] = append(feedsByConsumer[base], feed)
+	}
+
+	for consumer, feeds := range feedsByConsumer {
+		if len(feeds) > 1 {
+			sort.Strings(feeds)
+			return fmt.Errorf(
+				"the AppView is consuming %d feeds (%q is connected to %s), but this tier requires the\n"+
+					"  single-feed topology .env.ci configures. A reliability scenario reconfigures the\n"+
+					"  AppView and restores it in a cleanup; a run that died without unwinding leaves the\n"+
+					"  two-feed AppView behind, and it is healthy enough to be reused. Every consumer-health\n"+
+					"  delta this tier measures would then be doubled.\n\n"+
+					"  Reconcile:  docker compose -f docker-compose.ci.yml -p %s up -d --force-recreate appview\n"+
+					"  Or discard: make ci-clean",
+				len(feeds), consumer, strings.Join(feeds, ", "), ciProjectName())
+		}
+	}
+	return nil
+}
+
+// probeT is a testkit.TestingT for use where there is no *testing.T: inside a
+// TestMain requirement, which runs before the test framework exists.
+//
+// testkit's constructors report misconfiguration through Fatalf, whose contract
+// on a real T is "stop this test". There is no test to stop here, and a
+// Requirement's contract is to RETURN its complaint so testkit.Main can print
+// it with the others. So Fatalf records instead, and the caller checks.
+type probeT struct{ failure string }
+
+func (p *probeT) Helper()                           {}
+func (p *probeT) Cleanup(func())                    {}
+func (p *probeT) Name() string                      { return "TestMain/requireSingleFeedTopology" }
+func (p *probeT) Logf(string, ...any)               {}
+func (p *probeT) Errorf(format string, args ...any) { p.record(format, args...) }
+func (p *probeT) Fatalf(format string, args ...any) { p.record(format, args...) }
+func (p *probeT) record(format string, args ...any) {
+	if p.failure == "" {
+		p.failure = fmt.Sprintf(format, args...)
+	}
+}
+
+// ciProjectName mirrors scripts/lib/ci-stack.sh's default so the reconcile
+// command above is copy-pasteable in the common case and correct in the
+// uncommon one.
+func ciProjectName() string {
+	if project := os.Getenv("COVES_CI_PROJECT"); project != "" {
+		return project
+	}
+	return "coves-ci"
 }
 
 // contractBudget is how long a contract waits for the pipeline to deliver, and

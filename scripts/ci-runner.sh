@@ -84,8 +84,10 @@ bash /src/scripts/test-audit.sh || true
 # separate processes and N of them racing to create the same database is a
 # built-in flake.
 #
-# This ADDS a database. The legacy path — tests/integration running goose
-# against the shared coves_test database — is untouched and still works.
+# This ADDS a database. It used to sit alongside a legacy path — the old
+# tests/integration package running goose against the shared coves_test
+# database — which phase 4 deleted; the template is now the only way a test
+# gets a schema.
 echo "▶ Preparing the test template database..."
 go run ./tests/testkit/cmd/testdbprepare
 

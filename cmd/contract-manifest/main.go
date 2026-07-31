@@ -37,14 +37,23 @@
 //	            ratchets: a pending collection that gains a contract makes its
 //	            pending entry STALE, which fails — exactly like ci-report's
 //	            stale-allowlist rule. Entries can only leave the file.
+//	            SPENT as of task 16: the file is empty and both entry points
+//	            pass -allow-pending=false (scripts/lib/runner-ready.sh), so a
+//	            new line in it now fails the gate rather than deferring the
+//	            contract. The state is kept because the flag is what turns it
+//	            off, and a flag with no state behind it is not a ratchet.
 //	missing     neither. This fails the gate.
 //
 // Markers naming a collection nothing consumes fail too, in both directions: a
 // stale marker is a contract testing a pipeline that no longer exists, and a
 // stale pending entry is a promise to write one.
 //
-// Phase 6 (task 20) empties pending_contracts.txt and flips -allow-pending to
-// false, at which point "contracted" is the only passing state.
+// The flag's DEFAULT is still true, so an ad-hoc `go run ./cmd/contract-manifest`
+// reports the three states rather than judging the burn-down. The gate is where
+// the judgement belongs and where the flip lives: check_contract_manifest in
+// scripts/lib/runner-ready.sh passes -allow-pending=false, so both `make ci`
+// and `make test-e2e` accept only "contracted". Task 20 verifies that call site
+// still carries the flag as part of the phase-6 enforcement sweep.
 package main
 
 import (

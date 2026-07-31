@@ -224,8 +224,12 @@ type jetstreamTestServer struct {
 	server   *httptest.Server
 	holdOpen bool
 	mu       sync.Mutex
-	cursors  []string // cursor param per connection ("" if absent)
+	cursors  []string // cursor param per ACCEPTED connection ("" if absent)
 	messages [][]byte
+	// refuseFirst dials are answered with an HTTP error instead of a
+	// WebSocket upgrade, standing in for a Jetstream that is not up yet.
+	refuseFirst int
+	refused     int
 }
 
 func newJetstreamTestServer(t *testing.T, messages [][]byte) *jetstreamTestServer {
@@ -240,12 +244,31 @@ func newClosingJetstreamTestServer(t *testing.T, messages [][]byte) *jetstreamTe
 	return newJetstreamTestServerWithHold(t, messages, false)
 }
 
+// newRefusingJetstreamTestServer answers the first refuseFirst dials with an
+// HTTP error — no WebSocket upgrade, so the client's dial itself fails — and
+// serves normally from then on. It stands in for a Jetstream that has not
+// finished booting, which is what a connector meets on a cold stack.
+func newRefusingJetstreamTestServer(t *testing.T, messages [][]byte, refuseFirst int) *jetstreamTestServer {
+	t.Helper()
+	ts := newJetstreamTestServerWithHold(t, messages, true)
+	ts.mu.Lock()
+	ts.refuseFirst = refuseFirst
+	ts.mu.Unlock()
+	return ts
+}
+
 func newJetstreamTestServerWithHold(t *testing.T, messages [][]byte, holdOpen bool) *jetstreamTestServer {
 	t.Helper()
 	ts := &jetstreamTestServer{messages: messages, holdOpen: holdOpen}
 	upgrader := websocket.Upgrader{}
 	ts.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ts.mu.Lock()
+		if ts.refused < ts.refuseFirst {
+			ts.refused++
+			ts.mu.Unlock()
+			http.Error(w, "jetstream is not accepting connections", http.StatusServiceUnavailable)
+			return
+		}
 		ts.cursors = append(ts.cursors, r.URL.Query().Get("cursor"))
 		ts.mu.Unlock()
 
@@ -288,6 +311,12 @@ func (ts *jetstreamTestServer) cursorForConnection(i int) string {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	return ts.cursors[i]
+}
+
+func (ts *jetstreamTestServer) refusedCount() int {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	return ts.refused
 }
 
 // --- Helpers ---
@@ -670,6 +699,60 @@ func TestConnector_PermanentFailureSkipsRetriesAndExhaustsRedrive(t *testing.T) 
 	}
 	if len(retryable) != 0 {
 		t.Errorf("expected redriver to skip exhausted permanent dead letter, got %d retryable rows", len(retryable))
+	}
+}
+
+// TestConnector_RetriesAfterFailedDial covers Start's dial-failure branch: a
+// connect() error is recorded, slept on and dialled again, and the ONLY thing
+// that ends the loop is context cancellation (connector.go's Start).
+//
+// Nothing else in this file reaches that branch. Both reconnect tests —
+// ReconnectDialsWithAdvancedCursor and DeadLetterWriteFailureDoesNotAdvanceCursor
+// — reconnect after a connection that SUCCEEDED and was then torn down, so a
+// connector that returned on a failed dial would still pass them. What it would
+// break is every AppView that starts before its Jetstream does: the consumer
+// exits at boot, /health/consumers reports it disconnected forever, and no
+// record is ever indexed again without a restart.
+//
+// It lives here, in the untagged unit build, because the retry loop is in this
+// package and needs no infrastructure. It replaces the "Consumer retries on
+// connection failure" subtest of the deleted tests/e2e/error_recovery_test.go,
+// which pointed a connector at ws://invalid:9999 for three wall-clock seconds
+// and then t.Logf'd whichever error came back — an assertion-free test that
+// could not fail, in a tier whose rules forbid instantiating a consumer at all.
+func TestConnector_RetriesAfterFailedDial(t *testing.T) {
+	const refusals = 2
+	server := newRefusingJetstreamTestServer(t, [][]byte{testEventJSON(t, 21_000)}, refusals)
+	handler := newFakeEventHandler()
+
+	connector := NewConnector("test-consumer", server.wsURL(), handler,
+		fastConnectorOptions(WithCursorStore(newFakeCursorStore()), WithDeadLetterWriter(newFakeDeadLetterQueue()))...)
+	startConnector(t, connector)
+
+	waitFor(t, 2*time.Second, "every refused dial to be retried", func() bool {
+		return server.refusedCount() == refusals
+	})
+	// The recovery, and the half that a give-up-on-first-error connector fails:
+	// the endpoint came back and the event was consumed with no intervention.
+	waitFor(t, 2*time.Second, "the event to be delivered once the endpoint accepted a dial", func() bool {
+		return handler.handledCount() == 1
+	})
+
+	if got := server.connectionCount(); got != 1 {
+		t.Errorf("expected exactly 1 accepted connection after %d refusals, got %d", refusals, got)
+	}
+
+	status := connector.Status()
+	if !status.Connected {
+		t.Error("the connector must report itself connected once a dial succeeded")
+	}
+	// lastError is never cleared, so this is deterministic once the refusals
+	// above have been observed. It matters because a dial failure has no other
+	// observable: /health/consumers is where an operator sees WHY a consumer
+	// that is retrying has not connected yet.
+	if status.LastError == "" {
+		t.Error("a refused dial must be recorded as the connector's last error, or a connector " +
+			"stuck retrying an unreachable endpoint reports no reason at all")
 	}
 }
 

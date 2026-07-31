@@ -18,12 +18,12 @@
 #     matching the dev stack's published ports (PDS 3001, PLC 3002, AppView
 #     8081, Postgres 5435/5434/5436).
 #
-#   * The test suite needs no changes. tests/e2e/*.go hardcodes
-#     "http://localhost:8081" and "localhost:3001" with no env indirection, and
-#     tests/integration falls back to "localhost:3001" / "localhost:5434" when
-#     PDS_URL / TEST_DATABASE_URL are unset. In this namespace those literals
-#     resolve to the CI stack — so the fallback that would silently hit your dev
-#     PDS from the host is correct here instead of dangerous.
+#   * The test suite needs no changes. Endpoints come from testkit.Endpoints(),
+#     which defaults to "localhost:3001" / "localhost:5434" / "localhost:8081"
+#     when PDS_URL / POSTGRES_TEST_* / APPVIEW_URL are unset. In this namespace
+#     those defaults resolve to the CI stack — so the fallback that would
+#     silently hit your dev PDS from the host is correct here instead of
+#     dangerous.
 #
 #   * Cross-service URLs stay coherent. The PDS fetches the AppView's OAuth
 #     client metadata at APPVIEW_PUBLIC_URL (http://127.0.0.1:8081); with
@@ -82,9 +82,10 @@ services:
       netns:
         condition: service_healthy
 
-  # Test database, read directly by tests/integration. Those tests run their own
-  # migrations via goose.Up(db, "../../internal/db/migrations"), so this needs no
-  # migration step either — only to exist and be empty.
+  # Test database. The integration tier reaches it only through testkit, which
+  # migrates a template once and hands each test a clone, so this needs no
+  # migration step of its own — only to exist and be empty. (It predates that:
+  # the old tests/integration package ran goose against it directly.)
   postgres-test:
     image: postgres:15
     network_mode: "service:netns"
@@ -341,6 +342,19 @@ services:
       # so a gap in it should say "module lookup disabled by GOPROXY=off"
       # instead of surfacing as a DNS failure that reads like broken networking.
       GOPROXY: "off"
+      # Where the pipeline tier's reliability scenarios ask the HOST to restart
+      # or reconfigure the AppView, which nothing inside this network namespace
+      # can do for itself. The directory is inside the bind-mounted checkout
+      # (and gitignored); scripts/lib/ci-stack.sh serves it while a suite runs.
+      # Set here rather than defaulted in Go alone so the coupling between the
+      # container's view (/src) and the host's (.ci-out) is visible from the
+      # compose file that creates it.
+      #
+      # Suffixed with the project name, and the default MUST stay in step with
+      # ci-stack.sh's own default: two stacks from one checkout (which is what
+      # COVES_CI_PROJECT is for) sharing one channel would let either run's
+      # watcher answer the other's requests and restart the wrong AppView.
+      COVES_STACK_CONTROL_DIR: /src/.ci-out/stack-control-${COVES_CI_PROJECT:-coves-ci}
     volumes:
       # The checkout. Read-write because the Go toolchain and goose both expect
       # a normal working tree; scripts/ci.sh asserts afterwards that the run

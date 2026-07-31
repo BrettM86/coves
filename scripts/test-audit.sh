@@ -20,9 +20,9 @@
 # (docker-compose.ci.yml, `internal: true`).
 #
 # SCOPE. "test code" means every *_test.go file under cmd/, internal/ and
-# tests/, plus every .go file under tests/ — the shared helpers in
-# tests/integration are test code too, and some of the worst offenders live
-# there rather than in files ending _test.go.
+# tests/, plus every .go file under tests/ — shared helpers that do not end in
+# _test.go (tests/testkit, tests/fixtures) are test code too, and historically
+# some of the worst offenders lived in exactly those files.
 #
 # Whole-line comments are not counted. This tree explains itself at length, and
 # a comment that mentions localhost:5434 while describing the stack is not a

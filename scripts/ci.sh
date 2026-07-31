@@ -45,6 +45,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/ci-stack.sh"
 # still cleans up.
 teardown() {
     local exit_code=$?
+    stack_control_stop
     if [[ ${COVES_CI_KEEP_STACK:-0} == 1 ]]; then
         stack_keep_notice
         return $exit_code
@@ -70,11 +71,18 @@ stack_up
 # ---------------------------------------------------------------------------
 # Run the suite
 # ---------------------------------------------------------------------------
+# The pipeline tier's reliability suite restarts and reconfigures the AppView,
+# which only the host can do — see stack_control_start in lib/ci-stack.sh. It
+# serves for exactly as long as the suite runs, and the EXIT trap stops it.
+stack_control_start
+
 step "Running the suite"
 set +e
 compose run --rm runner
 GATE_STATUS=$?
 set -e
+
+stack_control_stop
 
 # ---------------------------------------------------------------------------
 # Diagnostics on failure
