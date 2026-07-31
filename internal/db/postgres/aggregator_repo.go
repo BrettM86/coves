@@ -123,6 +123,13 @@ func (r *postgresAggregatorRepo) GetAggregator(ctx context.Context, did string) 
 }
 
 // GetAggregatorsByDIDs retrieves multiple aggregators by DIDs in a single query (avoids N+1)
+//
+// KNOWN DEFECT (issue 2026-07-31-repo-minor-pins-batch.md, item 6; cosmetic, but it is one function
+// answering the same question two ways):
+// an empty request short-circuits to a non-nil empty slice, while a request that matches
+// nothing falls through the scan loop and returns nil. The two emptinesses marshal as []
+// and null respectively. ListAggregators (below) has the nil half of the same problem.
+// (see TestAggregatorRepo_GetAggregatorsByDIDs, TestAggregatorRepo_ListAggregators)
 func (r *postgresAggregatorRepo) GetAggregatorsByDIDs(ctx context.Context, dids []string) ([]*aggregators.Aggregator, error) {
 	if len(dids) == 0 {
 		return []*aggregators.Aggregator{}, nil
@@ -512,6 +519,13 @@ func (r *postgresAggregatorRepo) GetAuthorizationByURI(ctx context.Context, reco
 }
 
 // UpdateAuthorization updates an existing authorization
+//
+// KNOWN DEFECT (issue 2026-07-31-update-authorization-rejects-rows-create-accepted.md): created_by is written through nullString here but verbatim in
+// CreateAuthorization, and the column is NOT NULL. An authorization with an empty
+// CreatedBy therefore inserts happily and can then never be updated — the update dies on
+// a raw not-null violation that the handler can only map to a 500, rather than on a
+// validation error. Write it verbatim here too, or reject it before the SQL.
+// (see TestAggregatorRepo_UpdateAuthorization)
 func (r *postgresAggregatorRepo) UpdateAuthorization(ctx context.Context, auth *aggregators.Authorization) error {
 	query := `
 		UPDATE aggregator_authorizations SET
@@ -951,6 +965,11 @@ func (r *postgresAggregatorRepo) UpdateAPIKeyLastUsed(ctx context.Context, did s
 
 // RevokeAPIKey marks an API key as revoked (sets api_key_revoked_at)
 // After revocation, the aggregator must complete OAuth flow again to get a new key
+//
+// KNOWN DEFECT (issue 2026-07-31-revoke-api-key-rewrites-revocation-timestamp.md): a repeated revocation overwrites api_key_revoked_at with a fresh NOW(),
+// losing the record of when the credential was actually withdrawn. The WHERE clause needs
+// `AND api_key_revoked_at IS NULL` for the timestamp to mean what the audit trail reads it
+// as. (see TestAggregatorRepo_RevokeAPIKey)
 func (r *postgresAggregatorRepo) RevokeAPIKey(ctx context.Context, did string) error {
 	query := `
 		UPDATE aggregators SET
@@ -1168,6 +1187,17 @@ func (r *postgresAggregatorRepo) GetCredentialsByAPIKeyHash(ctx context.Context,
 // ListAggregatorsNeedingTokenRefresh returns aggregators with active API keys
 // whose OAuth tokens expire within the given buffer period.
 // Used by background job to proactively refresh tokens before they expire.
+//
+// KNOWN DEFECT (issue 2026-07-31-token-refresh-window-nanoseconds-as-seconds.md): the expiry window is a billion times wider than the caller asks for, so
+// this returns every aggregator with an active key and any recorded expiry. expiryBuffer
+// is a time.Duration, which database/sql passes to the driver as its int64 NANOSECOND
+// count; `NOW() + $1` then makes Postgres coerce that bare integer to an interval measured
+// in SECONDS. cmd/server passes time.Hour, which arrives as 3.6e12 seconds (~114,000
+// years). The hourly job therefore decrypts every stored access token, refresh token and
+// DPoP private key in the table on every cycle before RefreshTokensIfNeeded discards
+// almost all of them in its own Go-side expiry check. Binding
+// make_interval(secs => $1) with the buffer in seconds would fix it.
+// (see TestAggregatorRepo_ListAggregatorsNeedingTokenRefresh)
 func (r *postgresAggregatorRepo) ListAggregatorsNeedingTokenRefresh(ctx context.Context, expiryBuffer time.Duration) ([]*aggregators.AggregatorCredentials, error) {
 	query := `
 		SELECT

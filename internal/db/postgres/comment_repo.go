@@ -189,6 +189,14 @@ func (r *postgresCommentRepo) GetByURI(ctx context.Context, uri string) (*commen
 // Called by Jetstream consumer after comment is deleted from PDS
 // Idempotent: Returns success if comment already deleted
 // Deprecated: Use SoftDeleteWithReason for new code to preserve thread structure
+//
+// KNOWN DEFECT (issue 2026-07-31-repo-minor-pins-batch.md, item 1): this sets deleted_at and blanks nothing,
+// while every thread-shaped
+// read below deliberately serves rows with deleted_at set. A comment removed through
+// here keeps serving its full text, facets and embed to anonymous callers forever.
+// No production caller remains (the consumer uses SoftDeleteWithReasonTx), but the
+// method is still on the exported Repository interface.
+// (see TestCommentRepo_DeleteLeavesTheTextReadable)
 func (r *postgresCommentRepo) Delete(ctx context.Context, uri string) error {
 	query := `
 		UPDATE comments
@@ -553,6 +561,12 @@ func (r *postgresCommentRepo) ListByCommenterWithCursor(ctx context.Context, req
 // The caller (ListByCommenterWithCursor) must ensure parameters are ordered as:
 // $1=commenterDID, $2=limit+1, $3=createdAt, $4=uri, then community DID if present.
 // If you modify the parameter order in the caller, you must update the filter here.
+//
+// KNOWN DEFECT (issue 2026-07-31-repo-minor-pins-batch.md, item 3): unlike parseCommentCursor below, none of
+// these failures is wrapped in
+// comments.ErrInvalidCursor, so a malformed cursor reaches
+// actor/get_comments.go:handleCommentServiceError unclassifiable and answers 500
+// instead of 400. (see TestCommentRepo_CommenterCursorErrorsAreNotClassifiable)
 func (r *postgresCommentRepo) parseCommenterCursor(cursor *string) (string, []interface{}, error) {
 	if cursor == nil || *cursor == "" {
 		return "", nil, nil
@@ -759,6 +773,16 @@ func (r *postgresCommentRepo) buildCommentSortClause(sort, timeframe string) (st
 		orderBy = `c.created_at DESC, c.uri DESC`
 	default:
 		// Default to hot
+		//
+		// KNOWN DEFECT (issue 2026-07-31-comment-repo-unrecognised-sort-trio.md):
+		// ListByParentWithHotRank only COMPUTES hot_rank when sort == "hot" exactly, so under
+		// any other unrecognised value this leading key is NULL for every row and the ordering
+		// collapses to score DESC — i.e. "top". ListByParentsBatch's own default arm does
+		// compute the rank, so the two halves of one thread view disagree.
+		// REACHABILITY: masked today — comment_service.go:1327-1333 rejects any sort outside
+		// {hot, top, new} before the repository is reached. Adding a fourth sort to that
+		// allow-list without updating both arms here makes it live.
+		// (see TestCommentRepo_UnknownSortRanksLikeTopNotLikeHot)
 		orderBy = `hot_rank DESC, c.score DESC, c.created_at DESC, c.uri DESC`
 	}
 
@@ -899,10 +923,38 @@ func (r *postgresCommentRepo) parseCommentCursor(cursor *string, sort string) (s
 		return filter, []interface{}{hotRank, score, createdAt, uri, uri}, nil
 
 	default:
+		// KNOWN DEFECT (issue 2026-07-31-comment-repo-unrecognised-sort-trio.md): an
+		// unrecognised sort discards the cursor with no error, while buildCommentSortClause
+		// happily produces an ORDER BY for the same value. Page two is therefore page one,
+		// forever.
+		// REACHABILITY: masked today — comment_service.go:1327-1333 rejects any sort outside
+		// {hot, top, new} before the repository is reached. Adding a fourth sort to that
+		// allow-list without updating both arms here makes it live.
+		// (see TestCommentRepo_UnknownSortCursorIsSilentlyDiscarded and
+		// TestCommentRepo_UnknownSortCursorRepeatsPageOne)
 		return "", nil, nil
 	}
 }
 
+// KNOWN DEFECT (issue 2026-07-31-hot-comment-cursor-truncated-to-six-decimals.md): the
+// %f verb below writes the hot rank to six decimal places, and that loses rows two ways.
+//
+// TOTAL LOSS, on old threads. The rank is
+// log10(greatest(2, score+2)) / (age_hours+2)^1.8. At score 0 it crosses 1e-6 at ~46 days
+// and rounds to "0.000000" at ~68 days; at higher scores the second crossing runs
+// ~120 days (score 5) to ~194 days (score 100). Once the cursor reads "0.000000" the
+// filter above asks for a rank strictly below zero, no row qualifies, and pagination
+// returns page one and then stops, silently. (Not "within a week" — at seven days the
+// rank is ~2.9e-5, about 29x above the floor.)
+//
+// PARTIAL LOSS, at ANY age. %f rounds to nearest, so the stored boundary is usually not
+// the boundary row's true rank. When it rounds DOWN, every row whose true rank lies in
+// [rounded, true) is excluded by the strict `<` even though it belongs on the next page
+// — silently dropped from the thread at any age, not just old ones. When it rounds UP,
+// rows in [true, rounded) are served a second time (the `c.uri != $7` guard excludes
+// only the boundary row itself).
+// (see TestCommentRepo_HotCursorLosesEveryRowAfterPageOne)
+//
 // buildCommentCursor creates pagination cursor from last comment
 func (r *postgresCommentRepo) buildCommentCursor(comment *comments.Comment, sort string, hotRank float64) string {
 	var cursorStr string
@@ -1085,6 +1137,11 @@ func (r *postgresCommentRepo) GetByURIsBatch(ctx context.Context, uris []string)
 		}
 
 		comment.Langs = langs
+		// KNOWN DEFECT (issue 2026-07-31-repo-minor-pins-batch.md, item 2): author_handle is scanned and then dropped
+		// — GetByRootAndRkey and
+		// ListByParentsBatch both assign it to comment.CommenterHandle here. Callers of this
+		// method get the empty string and the LEFT JOIN is paid for nothing.
+		// (see TestCommentRepo_GetByURIsBatchDropsTheAuthorHandle)
 		result[comment.URI] = &comment
 	}
 

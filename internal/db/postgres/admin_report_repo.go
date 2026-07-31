@@ -24,6 +24,12 @@ func NewAdminReportRepository(db *sql.DB) adminreports.Repository {
 
 // Create inserts a new admin report into the database
 // Returns the created report with ID and CreatedAt populated
+//
+// KNOWN DEFECT (issue 2026-07-31-repo-minor-pins-batch.md, item 7): the branch below that
+// maps a "valid_target_type" violation to ErrInvalidTargetType is dead code — migration
+// 028 declares no such constraint and target_type is bare TEXT. Masked today because
+// adminreports.NewReport derives the value from the reported URI rather than taking it
+// from the client. (see TestAdminReportRepo_TargetTypeIsUnconstrained)
 func (r *postgresAdminReportRepo) Create(ctx context.Context, report *adminreports.Report) error {
 	query := `
 		INSERT INTO admin_reports (
@@ -119,6 +125,12 @@ func (r *postgresAdminReportRepo) ListByStatus(ctx context.Context, status strin
 
 // UpdateStatus updates a report's status and resolution details
 // Sets resolved_by, resolution_notes, and resolved_at when resolving or dismissing
+//
+// KNOWN DEFECT (issue 2026-07-31-admin-report-reopen-keeps-stale-resolution.md): the non-terminal branch
+// touches status alone, so resolved_by, resolution_notes and resolved_at SURVIVE a move
+// back to "open". The row then reads as an open report resolved by someone at a specific
+// time, and any time-to-resolution metric counts it as closed.
+// (see TestAdminReportRepo_ReopeningKeepsTheStaleResolution)
 func (r *postgresAdminReportRepo) UpdateStatus(ctx context.Context, id int64, status, resolvedBy, notes string) error {
 	var query string
 	var args []interface{}

@@ -113,6 +113,14 @@ func (r *postgresPostRepo) Create(ctx context.Context, post *posts.Post) error {
 
 // GetByURI retrieves a post by its AT-URI
 // Used for E2E test verification and future GET endpoint
+//
+// KNOWN DEFECT (issue 2026-07-29-deleted-posts-still-served-by-getcomments.md): this is the one post read path with no
+// `deleted_at IS NULL` predicate, so
+// it serves a soft-deleted post in full — title, body, facets and all. It is not a dead
+// path: comments.GetComments calls it to build the thread's post header and never inspects
+// DeletedAt, so social.coves.community.comment.getComments still returns the whole of a
+// withdrawn post to an anonymous caller. Same shape as the comment-thread hole found in
+// task 12, one table over. (see TestPostRepo_SoftDelete)
 func (r *postgresPostRepo) GetByURI(ctx context.Context, uri string) (*posts.Post, error) {
 	query := `
 		SELECT

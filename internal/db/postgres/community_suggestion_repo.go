@@ -24,6 +24,12 @@ func NewCommunitySuggestionRepository(db *sql.DB) communitysuggestions.Repositor
 
 // Create inserts a new community suggestion into the database
 // Returns the suggestion with ID, CreatedAt, and UpdatedAt populated
+// KNOWN DEFECT (issue 2026-07-31-suggestion-check-constraints-weaker-than-go.md): the title_not_empty and
+// description_not_empty CHECK constraints this maps are WEAKER than the Go validation
+// they back. Postgres' one-argument TRIM strips the SPACE character only, while the
+// service uses strings.TrimSpace — so a title of "\t\n\r" passes the constraint and
+// lands on the board as a blank, votable row.
+// (see TestSuggestionRepo_BlankTitleOfTabsSlipsPastTheConstraint)
 func (r *postgresCommunitySuggestionRepo) Create(ctx context.Context, suggestion *communitysuggestions.CommunitySuggestion) error {
 	query := `
 		INSERT INTO community_suggestions (
@@ -218,6 +224,19 @@ func (r *postgresCommunitySuggestionRepo) UpdateStatus(ctx context.Context, id i
 // UpsertVote inserts or updates a vote for a suggestion and atomically updates the vote count
 // Returns the delta applied to the suggestion's vote count
 // Uses a transaction to ensure consistency between the vote and the denormalized count
+// KNOWN DEFECT (issue 2026-07-31-suggestion-vote-error-misclassification-and-lock-order.md), two of them:
+//
+//  1. No SQLSTATE 23503 mapping. Voting on a suggestion that does not exist escapes as a
+//     bare pq error, so IsNotFound is false and the handler answers 500 — where
+//     AtomicVote, one function away, answers 404.
+//  2. valid_vote_value is mapped on the INSERT branch only, so an out-of-range value from
+//     a repeat voter takes the UPDATE branch and is wrapped generically. The same
+//     malformed request is a 400 for a first-time voter and a 500 for a repeat one.
+//
+// Also note this method locks vote-row-then-suggestion-row while AtomicVote locks them
+// the other way round; mixing the two on one suggestion can deadlock. Not reachable
+// today (Service.Vote uses AtomicVote exclusively) — see the issue.
+// (see TestSuggestionRepo_UpsertVoteMisclassifiesTwoFailures)
 func (r *postgresCommunitySuggestionRepo) UpsertVote(ctx context.Context, suggestionID int64, voterDID string, value int) (int, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -356,6 +375,11 @@ func (r *postgresCommunitySuggestionRepo) DeleteVote(ctx context.Context, sugges
 // If no existing vote: creates the vote
 // If existing vote in same direction: removes the vote (toggle off)
 // If existing vote in opposite direction: flips the vote
+// KNOWN DEFECT (issue 2026-07-31-suggestion-vote-error-misclassification-and-lock-order.md): valid_vote_value is
+// mapped on the INSERT branch only, so an out-of-range value from a voter who has already
+// voted takes the flip branch and is wrapped generically — a 500 where a first-time
+// voter gets a 400.
+// (see TestSuggestionRepo_AtomicVoteFlipToAnInvalidValueIsMisclassified)
 func (r *postgresCommunitySuggestionRepo) AtomicVote(ctx context.Context, suggestionID int64, voterDID string, value int) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
