@@ -53,8 +53,8 @@ Stop the loop when every task is done, or on any blocked task.
 | 14 | Contracts: vote (feed.vote) + user (actor.profile incl. avatar blob path) + subscription (community.subscription) | 4 | S | review | | THE LAST HAND-ROLLED SUBSCRIBER IS DEAD (tree-wide dialer count = 1, and it is production connector.go). 5 files / 3,908 LOC deleted; 3 contracts + community-avatar step added; 5 T1/T0 files gained. TWO DEFECTS FILED (tally 7), both spike-confirmed: #6 vote-before-subject is lost AND its later delete SUBTRACTS a real vote (unbounded downward drift, floored at 0); #7 same-rkey putRecord vote flip silently ignored (consumer handles create/delete only) — third-party/federated clients only, our own client does delete+create. Both PINNED, not asserted-as-intended. make ci GREEN x2 3547/0 @3:55; e2e 68/0/0 x2 kept-stack; audit 473->403. REVIEW BATCH (6 items) applied: item-6 verdict CODEX RIGHT (fake's two slices could not express ordering and the comment claimed they did — unified op log, mutation-proven); vacuous Hold dropped, p1 pin hardened with a second Holds + issue names in both pins; GetBinary added to testkit (Get accepts any 2xx and discards the body — a 204 passed the must-200 claim); community banner + nil->value transition + blob write-forward test, which FOUND the create/update indexing asymmetry. Post-review: make ci GREEN 3549/0 @4:06; e2e 68/0/0 |
 | 15 | Contracts: blocks (actor.block + community.block) + aggregators (aggregator.service + aggregator.authorization) | 4 | S | done | (see git log) | ALL 10 COLLECTIONS CONTRACTED — pending_contracts.txt EMPTY (task 16 flips -allow-pending=false; task 20 verifies). 10 files deleted (5,848 LOC), ~4,575 re-homed. Blocks have NO anonymous observable (all enforcement viewer-scoped) → consumer-health MEASUREMENT WINDOWS (snapshot counters → block → same-repo visible bound → re-read; malformed → dead-letter delta==1; mutation-tested both ways; redriver PROVEN inert at code level — never touches connector counters). TWO MORE DEFECTS (tally 9): p2 community.block indexed-but-NEVER-ENFORCED (no query joins it, no route lists it — decorative, but federates); p3 aggregator quota write best-effort = free posts. Enforcement is ONE-directional viewer-side (product question for Bretton, not filed). Reviews: kill-list 6 small (worst MED-LOW restored: aggregator HTTP path w/ marker-header mutation-check; register→users row — found a T0 fixture that could NEVER pass the real service). make ci GREEN 3544/0 @4:08; e2e 78/0/0 @161s; audit 380 |
 | 16 | Reliability suite (§3.4c) + dissolve tests/integration (38 files) + flip -allow-pending=false | 4 ⛩ | F | done | (see git log) | PHASE 4 COMPLETE. tests/integration REMOVED (38/38: 20 relocated, 18 deleted-with-citations; carry list discharged+strengthened). Reliability suite: 5/5 scenarios prove production properties — cursor resume, replay-once (rows not counters), DLQ-staged no-resurrection (sharpest design in the file), redrive recovery via BOOT-TIME pass (no knob — production path), two-feed overlap on FRESH overlap-a/b keys w/ connector-NAME assertions. Harness = file-based control channel (5 argless verbs, no docker.sock, project-scoped + pidfile, absent from prod image); requireSingleFeedTopology TestMain guard vs poisoned kept stacks. Ratchet flipped + probed BOTH ways. error_recovery deleted (vacuity proven), user_signup rebuilt (429 assertion made EXACT — Codex right/inventory auditor wrong, calibration 3-1). Defect #10 FILED (hostedBy DID verification untestable; fix = WithCommunityHTTPClient option). 3 agent deaths on this task (2 API, 1 self-deadlocked watcher — pgrep matches itself; sentinel files instead). make ci GREEN (mine + worker): 3497/0 @5:18; e2e 63/0/0 ×2; audit 235; net −1,984 LOC |
-| 17 | Unit-coverage debt A: communities, votes, identity (repo tests for their repos too) | 5 | S | pending | | behavior matrices at T0, repo seams at T1 |
-| 18 | Unit-coverage debt B: routes, timeline, discover, communityFeeds + remaining untested repos | 5 | S | pending | | |
+| 17 | Unit-coverage debt A: communities, votes, identity (repo tests for their repos too) | 5 | S | done | (see git log) | +375 tests for +3s gate. Coverage (tagged): communities 64→79.6%, votes 33→95.7%, identity 58.5→95.8%, postgres 40→47.4%. TWO MORE DEFECTS (tally 12), mutation-proven: p2 vote-cache expiry REVIVAL (deadline dropped, map kept, SetVote extends → stale map republished for full TTL → vote attempt reported as WITHDRAWAL); p3 Search count-vs-page mismatch (ILIKE count vs trgm-filtered page). Also pinned the July-23 vote-cache-desync backlog issue end-to-end (finally has a test). Recording-fake discipline: reviews found 19 kills / 0 vacuous in 20 mutation samples. Polish batch caught a REAL DATA RACE in a test fake (-race-only). pagination×block-filter gap CLOSED (property holds, now asserted). make ci GREEN 3872/0 @5:21; audit 235 |
+| 18 | Unit-coverage debt B: routes, timeline, discover, communityFeeds + remaining untested repos | 5 | S | in-progress | | |
 | 19 | Federation topology: 2nd PDS + hermetic relay in compose; promote post/comment/vote contracts to true federation-path | 5 ⛩ | S | pending | | vote-federation gap is the known prize |
 | 20 | Enforcement flip: audit counts → 0, warn → fail; docs (spec → CANONICAL, delete TESTING_SUMMARY.md + docs/E2E_TESTING.md, CLAUDE.md pointer) | 6 ⛩ | M | pending | | |
 
@@ -427,3 +427,23 @@ Stop the loop when every task is done, or on any blocked task.
   watcher stdout interleaves ci-report output (cosmetic). Defect tally
   10. tests/fixtures import rule is CONVENTION not compiler-forced
   (restate honestly at task 20).
+- **From tasks 16-17 (ops + patterns)**: NEVER resume a presumed-dead
+  worker AND spawn a replacement into the same worktree — task 16 ran
+  both concurrently (competing make ci kills, mutual mystery-hardening;
+  outcome converged by luck + care). If resuming, don't replace; if
+  replacing, don't resume. Audit exemption syntax:
+  `// coves:allow-public-host: <reason>` per line. Recording-fake rule:
+  assert on RECORDED CALLS, never on a fake's returns of seeded data
+  (the old mockCommunityRepo disease). validationOutcome-style
+  panic-recovery is a vacuity vector — fail-fast constructor args
+  (bad scheme → net/url error at 11µs) beat recover(). Test fakes with
+  parallel subtests need guarded logs (-race-only failure class).
+  Community counter mutators are silent no-ops on absent rows (pinned,
+  same shape as vote defect #6, one table over). SetImageProxyConfig is
+  a process-global one-shot — one non-parallel test owns it; the fix if
+  it ever races is a config param on the view fns. communities T0
+  ceiling: CreateCommunity can't get past validation without a real
+  provisioner (fail-fast provisioner pattern documented in
+  service_validation_test.go). moderation CHECK constraints:
+  action ∈ delist/quarantine/remove; moderation_type ∈
+  moderator/sortition.

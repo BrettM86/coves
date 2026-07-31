@@ -181,6 +181,14 @@ func (s *voteService) CreateVote(ctx context.Context, session *oauth.ClientSessi
 		}
 
 		// Different direction - delete old vote first, then create new one
+		//
+		// KNOWN DEFECT — unlike the toggle-off branch above, this delete is NOT
+		// followed by a cache removal; the cache is only corrected after the
+		// create below succeeds. A create that fails in between leaves the cache
+		// naming a record the PDS no longer has, and the user's next tap is
+		// answered from it as a withdrawal. See
+		// ~/Code/claude-skills/issues/2026-07-23-vote-cache-desync-direction-switch.md,
+		// pinned by TestCreateVote_FailedDirectionChangeStrandsTheCache.
 		if err := pdsClient.DeleteRecord(ctx, voteCollection, existing.RKey); err != nil {
 			s.logger.Error("failed to delete existing vote on PDS",
 				"error", err,

@@ -3,6 +3,7 @@ package votes_test
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"testing"
 
@@ -70,9 +71,31 @@ type fakePDS struct {
 	// the comment claims.
 	ops []voteOp
 
-	// createErr and deleteErr let a test drive the failure branches.
+	// createErr, deleteErr and listErr let a test drive the failure branches.
 	createErr error
 	deleteErr error
+	listErr   error
+
+	// pageSize splits ListRecords into pages of this many records when it is
+	// positive. Both the cache's populate loop and the service's pagination
+	// fallback keep asking for the next page until the PDS stops returning a
+	// cursor, and a fake that only ever answers one page cannot tell a
+	// correctly-paginating reader from one that reads the first hundred votes
+	// and gives up. Zero keeps the original single-page behaviour, which the
+	// tests that are not about pagination rely on to catch a stray cursor.
+	pageSize int
+
+	// listCalls counts ListRecords round trips, which is how the cache's whole
+	// reason for existing is asserted: a second vote by the same user must not
+	// walk the repo again.
+	listCalls int
+
+	// rawRecords are listed alongside records but never went through
+	// CreateRecord, so their values can be any shape at all. A vote repo is
+	// user-writable and a third-party client may put anything in it; the
+	// readers have to survive that, and a fake that can only produce records
+	// the service itself wrote cannot ask them to. Single-page only.
+	rawRecords []pds.RecordEntry
 }
 
 // voteOp is one write against the fake repo.
@@ -128,10 +151,35 @@ func (f *fakePDS) DeleteRecord(_ context.Context, collection, rkey string) error
 }
 
 func (f *fakePDS) ListRecords(_ context.Context, collection string, _ int, cursor string) (*pds.ListRecordsResponse, error) {
+	f.listCalls++
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	require.Equal(f.t, "social.coves.feed.vote", collection)
-	require.Empty(f.t, cursor, "the fake repo is a single page; a cursor means the service is paginating past the end")
+
+	// rkeys are TIDs, so sorting them puts the repo in the order a real PDS
+	// lists it, and makes the page boundaries stable.
+	rkeys := make([]string, 0, len(f.records))
+	for rkey := range f.records {
+		rkeys = append(rkeys, rkey)
+	}
+	sort.Strings(rkeys)
+
+	from := 0
+	if cursor != "" {
+		require.Positivef(f.t, f.pageSize,
+			"the fake repo is a single page; the cursor %q means the caller is paginating past the end", cursor)
+		from = sort.SearchStrings(rkeys, cursor)
+		require.Lessf(f.t, from, len(rkeys), "the caller resumed from cursor %q, which names no record", cursor)
+	}
+	to := len(rkeys)
+	if f.pageSize > 0 && from+f.pageSize < to {
+		to = from + f.pageSize
+	}
+
 	out := &pds.ListRecordsResponse{}
-	for rkey, rec := range f.records {
+	for _, rkey := range rkeys[from:to] {
+		rec := f.records[rkey]
 		out.Records = append(out.Records, pds.RecordEntry{
 			URI: "at://" + f.did + "/" + collection + "/" + rkey,
 			CID: "bafycid" + rkey,
@@ -142,6 +190,13 @@ func (f *fakePDS) ListRecords(_ context.Context, collection string, _ int, curso
 				"createdAt": rec.CreatedAt,
 			},
 		})
+	}
+	if to < len(rkeys) {
+		out.Cursor = rkeys[to]
+	}
+	if len(f.rawRecords) > 0 {
+		require.Zerof(f.t, f.pageSize, "rawRecords is single-page only; paginating them is not modelled")
+		out.Records = append(out.Records, f.rawRecords...)
 	}
 	return out, nil
 }

@@ -502,6 +502,13 @@ func (r *postgresCommunityRepo) Search(ctx context.Context, req communities.Sear
 	whereClause := "WHERE " + strings.Join(whereClauses, " AND ")
 
 	// Get total count
+	//
+	// KNOWN DEFECT — this counts every ILIKE match, while the result query below
+	// additionally requires similarity > 0.2. The total can therefore exceed
+	// everything the page query will ever return, and a client paginating
+	// against it walks into empty pages it cannot distinguish from a boundary.
+	// See ~/Code/claude-skills/issues/2026-07-30-community-search-total-counts-excluded-rows.md,
+	// pinned by TestCommunityRepo_SearchTotalCountsRowsTheResultsExclude.
 	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM communities %s", whereClause)
 	var totalCount int
 	err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&totalCount)
