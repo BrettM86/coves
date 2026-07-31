@@ -16,7 +16,11 @@ ALL work happens in that worktree — every worker agent must cd there first.
    - `S` (substantive): Codex `gpt-5.6-sol` via `codex exec --sandbox read-only`
      on the iteration diff (per-run mktemp dir, last `===BEGIN_JSON===` pair)
      + one Opus general-purpose reviewer with a focused brief. Parent
-     arbitrates findings; worker (or parent) applies accepted fixes.
+     arbitrates findings; a FRESH fixer agent (not the original worker)
+     applies the accepted batch — per-user directive 2026-07-31, every
+     stage of an iteration gets a fresh subagent so context stays fresh
+     (implement / review / fix are three different agents; fix briefs must
+     be self-contained: file:line, failure scenario, suggested fix).
    - `M` (mechanical): no model review. Gates only.
    - `F` (full panel): /second-opinion style — Claude specialty briefs +
      Codex, plus pragma:security when credentials/auth surface changed.
