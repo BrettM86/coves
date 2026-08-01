@@ -1,3 +1,5 @@
+//go:build integration
+
 package jetstream
 
 import (
@@ -8,6 +10,7 @@ import (
 
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
@@ -29,15 +32,6 @@ const (
 	dupTestVoter2    = dupTestPrefix + "voter2"
 	dupTestCommenter = dupTestPrefix + "commenter"
 )
-
-func cleanupDupTestData(t *testing.T, db *sql.DB) {
-	t.Helper()
-	_, _ = db.Exec("DELETE FROM votes WHERE voter_did LIKE $1", dupTestPrefix+"%")
-	_, _ = db.Exec("DELETE FROM comments WHERE commenter_did LIKE $1 OR root_uri LIKE $2", dupTestPrefix+"%", "at://"+dupTestPrefix+"%")
-	_, _ = db.Exec("DELETE FROM posts WHERE community_did LIKE $1", dupTestPrefix+"%")
-	_, _ = db.Exec("DELETE FROM communities WHERE did LIKE $1", dupTestPrefix+"%")
-	_, _ = db.Exec("DELETE FROM users WHERE did LIKE $1", dupTestPrefix+"%")
-}
 
 // setupDupFixtures indexes a user, community and one post, returning the post URI/CID.
 func setupDupFixtures(t *testing.T, db *sql.DB) (postURI, postCID string) {
@@ -106,10 +100,8 @@ func readDupPostCounts(t *testing.T, db *sql.DB, uri string) (upvotes, downvotes
 }
 
 func TestVoteConsumer_DuplicateCreate_IncrementsExactlyOnce(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupDupTestData(t, db)
-	cleanupDupTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	postURI, postCID := setupDupFixtures(t, db)
 	vc := NewVoteEventConsumer(postgres.NewVoteRepository(db), newMockUserService(), db)
@@ -133,10 +125,8 @@ func TestVoteConsumer_DuplicateCreate_IncrementsExactlyOnce(t *testing.T) {
 }
 
 func TestVoteConsumer_DuplicateDelete_DecrementsExactlyOnce(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupDupTestData(t, db)
-	cleanupDupTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	postURI, postCID := setupDupFixtures(t, db)
 	vc := NewVoteEventConsumer(postgres.NewVoteRepository(db), newMockUserService(), db)
@@ -162,10 +152,8 @@ func TestVoteConsumer_DuplicateDelete_DecrementsExactlyOnce(t *testing.T) {
 }
 
 func TestCommentConsumer_DuplicateCreate_CountsExactlyOnce(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupDupTestData(t, db)
-	cleanupDupTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	postURI, postCID := setupDupFixtures(t, db)
 	cc := NewCommentEventConsumer(postgres.NewCommentRepository(db), db)
@@ -204,4 +192,91 @@ func TestCommentConsumer_DuplicateCreate_CountsExactlyOnce(t *testing.T) {
 		`SELECT COUNT(*) FROM comments WHERE commenter_did=$1`, dupTestCommenter,
 	).Scan(&commentRows))
 	assert.Equal(t, 1, commentRows, "exactly one comment row indexed")
+}
+
+// The aggregator consumer's two collections, delivered twice each.
+//
+// Neither is a counter the consumer increments, which is why this is worth
+// asserting rather than assuming: the numbers at risk here belong to database
+// TRIGGERS (migrations/012's update_aggregator_communities_count), and the
+// upserts that carry a duplicate through are the same statements that could
+// overwrite them. `aggregators` is keyed by DID and `aggregator_authorizations`
+// by (aggregator_did, community_did), so a replayed commit re-runs an UPDATE
+// over a row whose trigger-maintained columns are not in the statement — and
+// the day one of them is added to the SET list, a redelivered declaration
+// starts zeroing the stats a community's authorization put there.
+func TestAggregatorConsumer_DuplicateDelivery_LeavesTheTriggerStatsAlone(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+
+	const (
+		dupTestAggregator = dupTestPrefix + "aggregator"
+		dupAuthRKey       = "dupauth1"
+	)
+
+	insertBridgedUser(t, db, dupTestAuthor, "dupauthor.test")
+	insertBridgedCommunity(t, db, dupTestCommunity, "dupcommunity.test", dupTestAuthor)
+
+	ac := NewAggregatorEventConsumer(postgres.NewAggregatorRepository(db))
+	ctx := context.Background()
+
+	declaration := &JetstreamEvent{
+		Kind:   "commit",
+		Did:    dupTestAggregator,
+		TimeUS: time.Now().UnixMicro(),
+		Commit: &CommitEvent{
+			Operation:  "create",
+			Collection: "social.coves.aggregator.service",
+			RKey:       "self",
+			CID:        "bafdupagg1",
+			Record: map[string]interface{}{
+				"$type":       "social.coves.aggregator.service",
+				"did":         dupTestAggregator,
+				"displayName": "duplicated aggregator",
+				"createdAt":   "2026-03-01T00:00:00Z",
+			},
+		},
+	}
+	authorization := &JetstreamEvent{
+		Kind:   "commit",
+		Did:    dupTestCommunity,
+		TimeUS: time.Now().UnixMicro(),
+		Commit: &CommitEvent{
+			Operation:  "create",
+			Collection: "social.coves.aggregator.authorization",
+			RKey:       dupAuthRKey,
+			CID:        "bafdupauth1",
+			Record: map[string]interface{}{
+				"$type":         "social.coves.aggregator.authorization",
+				"aggregatorDid": dupTestAggregator,
+				"communityDid":  dupTestCommunity,
+				"createdBy":     dupTestAuthor,
+				"enabled":       true,
+				"createdAt":     "2026-03-01T00:00:00Z",
+			},
+		},
+	}
+
+	// Declaration first, because the authorization has a foreign key onto it.
+	require.NoError(t, ac.HandleEvent(ctx, declaration))
+	require.NoError(t, ac.HandleEvent(ctx, authorization))
+
+	// Both commits again, in the same order a cursor rewind would replay them.
+	require.NoError(t, ac.HandleEvent(ctx, declaration))
+	require.NoError(t, ac.HandleEvent(ctx, authorization))
+
+	var aggregatorRows, authorizationRows, communitiesUsing int
+	require.NoError(t, db.QueryRow(
+		`SELECT COUNT(*) FROM aggregators WHERE did=$1`, dupTestAggregator).Scan(&aggregatorRows))
+	require.NoError(t, db.QueryRow(
+		`SELECT COUNT(*) FROM aggregator_authorizations WHERE aggregator_did=$1`,
+		dupTestAggregator).Scan(&authorizationRows))
+	require.NoError(t, db.QueryRow(
+		`SELECT communities_using FROM aggregators WHERE did=$1`, dupTestAggregator).Scan(&communitiesUsing))
+
+	assert.Equal(t, 1, aggregatorRows, "a redelivered service declaration must upsert, not insert again")
+	assert.Equal(t, 1, authorizationRows, "a redelivered authorization must upsert, not insert again")
+	assert.Equal(t, 1, communitiesUsing,
+		"the trigger-maintained count must survive the replay: it is what "+
+			"social.coves.aggregator.getServices?detailed=true serves as stats.communitiesUsing")
 }

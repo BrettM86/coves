@@ -19,6 +19,8 @@ Coves/
 │   ├── backfill-profiles/      # One-off maintenance: backfill actor profiles
 │   ├── reindex-votes/          # One-off maintenance: rebuild vote counts
 │   ├── tools/                  # generate-oauth-key
+│   ├── ci-report/              # CI gate: a skip is a failure unless allowlisted
+│   ├── contract-manifest/      # CI gate: every consumed collection has an e2e contract
 │   ├── validate-lexicon/       # Lexicon schema validation
 │   └── validate-live/          # Validation against a live instance
 │
@@ -46,10 +48,26 @@ Coves/
 │
 ├── static/                     # Static web assets
 ├── scripts/                    # Development and deployment scripts
-├── tests/                      # Integration and e2e tests (require live infra)
+├── tests/                      # Only the cross-cutting tiers (see "Tests" below)
+│   ├── testkit/                # The shared harness every tier imports
+│   ├── e2e/                    # T2 pipeline contracts (//go:build e2e)
+│   ├── live/                   # T3 opt-in tests against the public internet
+│   ├── fixtures/               # Shared record/blob builders
+│   ├── ci/                     # Skip allowlist and contract-manifest inputs
+│   └── lexicon-test-data/      # Example records for lexicon validation
 ├── docs/                       # Additional documentation
 └── aggregators/                # Aggregator bot examples
 ```
+
+## Tests
+
+Tiers are selected by build tag, never by directory or filename. T0 unit tests
+(no tag) and T1 integration tests (`//go:build integration`) live **in-package**,
+next to the code they test, so `internal/…` and `cmd/…` hold the bulk of the
+suite. `tests/` keeps only what is genuinely cross-cutting.
+
+`docs/TEST_ARCHITECTURE.md` is the canonical reference for the tiers, the make
+targets, and the gates `make ci` enforces.
 
 ## Server startup
 

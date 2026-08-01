@@ -11,9 +11,11 @@
 // internal/api/routes/web.go), so the working directory still matters for
 // those; this removes one such dependency, not all of them.
 //
-// Tests under tests/integration still read these files from disk by relative
-// path, which is fine: they run with the repository checked out and goose's
-// base filesystem is only overridden by the server binary.
+// Test code reaches these migrations through this embedded filesystem too —
+// tests/testkit's template provisioning hands it to goose.NewProvider — so the
+// working directory no longer matters on that path either. The relative-path
+// readers this note used to warn about lived in tests/integration, which phase
+// 4 deleted.
 package migrations
 
 import "embed"

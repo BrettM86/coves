@@ -20,7 +20,17 @@ COPY . .
 # Build the binary
 # CGO_ENABLED=0 for static binary (no libc dependency)
 # -ldflags="-s -w" strips debug info for smaller binary
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+#
+# GOARCH and BUILD_TAGS default to the production values, so an unparameterised
+# `docker build` still cross-compiles for the amd64 deploy target exactly as
+# before. docker-compose.ci.yml overrides both: CI needs the host's native
+# architecture (an emulated amd64 binary on an arm64 dev machine makes every
+# test run drastically slower) and -tags dev, which is what `make run` uses and
+# what the localhost OAuth resolvers live behind.
+ARG GOARCH=amd64
+ARG BUILD_TAGS=""
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${GOARCH} go build \
+    -tags "${BUILD_TAGS}" \
     -ldflags="-s -w" \
     -o /build/coves-server \
     ./cmd/server

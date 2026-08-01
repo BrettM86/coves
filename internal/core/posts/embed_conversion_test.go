@@ -11,6 +11,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// blueskyPostURL builds the permalink that goes in an external embed's `uri`
+// field. It exists so the one public hostname in this file is written once,
+// where it can be explained, instead of nine times in nine table rows.
+//
+// The string is inert here. Every test below drives tryConvertBlueskyURLToPostEmbed
+// with a mockBlueskyService whose IsBlueskyURL, ParseBlueskyURL and ResolvePost
+// all ignore their argument and return canned values — the URL is never parsed
+// and certainly never fetched. The handles vary only to name the scenario the
+// mock is configured for.
+func blueskyPostURL(handle, rkey string) string {
+	const bskyAppOrigin = "https://bsky.app" // coves:allow-public-host: fixture origin for embed `uri` fields; the Bluesky service is mocked, so nothing resolves or dials it.
+	return bskyAppOrigin + "/profile/" + handle + "/post/" + rkey
+}
+
 // mockBlueskyService implements blueskypost.Service for testing
 type mockBlueskyService struct {
 	isBlueskyURLResult bool
@@ -41,7 +55,7 @@ func TestTryConvertBlueskyURLToPostEmbed(t *testing.T) {
 		}
 
 		external := map[string]interface{}{
-			"uri": "https://bsky.app/profile/test.bsky.social/post/abc123",
+			"uri": blueskyPostURL("test.bsky.social", "abc123"),
 		}
 		postRecord := &PostRecord{}
 
@@ -137,7 +151,7 @@ func TestTryConvertBlueskyURLToPostEmbed(t *testing.T) {
 		}
 
 		external := map[string]interface{}{
-			"uri": "https://bsky.app/profile/nonexistent.bsky.social/post/abc123",
+			"uri": blueskyPostURL("nonexistent.bsky.social", "abc123"),
 		}
 		postRecord := &PostRecord{}
 
@@ -158,7 +172,7 @@ func TestTryConvertBlueskyURLToPostEmbed(t *testing.T) {
 		}
 
 		external := map[string]interface{}{
-			"uri": "https://bsky.app/profile/test.bsky.social/post/abc123",
+			"uri": blueskyPostURL("test.bsky.social", "abc123"),
 		}
 		postRecord := &PostRecord{}
 
@@ -182,7 +196,7 @@ func TestTryConvertBlueskyURLToPostEmbed(t *testing.T) {
 		}
 
 		external := map[string]interface{}{
-			"uri": "https://bsky.app/profile/deleted.bsky.social/post/deleted123",
+			"uri": blueskyPostURL("deleted.bsky.social", "deleted123"),
 		}
 		postRecord := &PostRecord{}
 
@@ -204,7 +218,7 @@ func TestTryConvertBlueskyURLToPostEmbed(t *testing.T) {
 		}
 
 		external := map[string]interface{}{
-			"uri": "https://bsky.app/profile/test.bsky.social/post/abc123",
+			"uri": blueskyPostURL("test.bsky.social", "abc123"),
 		}
 		postRecord := &PostRecord{}
 
@@ -225,7 +239,7 @@ func TestTryConvertBlueskyURLToPostEmbed(t *testing.T) {
 		}
 
 		external := map[string]interface{}{
-			"uri": "https://bsky.app/profile/test.bsky.social/post/abc123",
+			"uri": blueskyPostURL("test.bsky.social", "abc123"),
 		}
 		postRecord := &PostRecord{}
 
@@ -249,7 +263,7 @@ func TestTryConvertBlueskyURLToPostEmbed(t *testing.T) {
 		}
 
 		external := map[string]interface{}{
-			"uri": "https://bsky.app/profile/test.bsky.social/post/abc123",
+			"uri": blueskyPostURL("test.bsky.social", "abc123"),
 		}
 		postRecord := &PostRecord{}
 
@@ -273,7 +287,7 @@ func TestTryConvertBlueskyURLToPostEmbed(t *testing.T) {
 		}
 
 		external := map[string]interface{}{
-			"uri": "https://bsky.app/profile/test.bsky.social/post/abc123",
+			"uri": blueskyPostURL("test.bsky.social", "abc123"),
 		}
 		postRecord := &PostRecord{}
 
@@ -302,7 +316,7 @@ func TestTryConvertBlueskyURLToPostEmbed(t *testing.T) {
 		}
 
 		external := map[string]interface{}{
-			"uri": "https://bsky.app/profile/test.bsky.social/post/xyz789",
+			"uri": blueskyPostURL("test.bsky.social", "xyz789"),
 		}
 		postRecord := &PostRecord{}
 

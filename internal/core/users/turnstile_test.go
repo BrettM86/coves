@@ -17,6 +17,25 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// failingTransport fails every request with a deterministic transport error,
+// standing in for an unreachable siteverify host.
+//
+// The alternative — pointing the client at 127.0.0.1:0 and letting the dial
+// fail — makes a unit test's result depend on the machine's network stack, and
+// costs whatever the client's timeout is. This costs nothing and cannot be
+// affected by the sandbox the test happens to run in.
+type failingTransport struct{ err error }
+
+func (f failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, f.err
+}
+
+// unreachableClient returns an http.Client whose every request fails in the
+// transport, without opening a socket.
+func unreachableClient() *http.Client {
+	return &http.Client{Transport: failingTransport{err: errors.New("dial tcp: simulated connection refused")}}
+}
+
 func newTestTurnstile(t *testing.T, handler http.HandlerFunc) (*cloudflareTurnstile, *httptest.Server) {
 	t.Helper()
 	server := httptest.NewServer(handler)
@@ -28,6 +47,31 @@ func newTestTurnstile(t *testing.T, handler http.HandlerFunc) (*cloudflareTurnst
 		httpClient:    &http.Client{Timeout: 2 * time.Second},
 	}
 	return v, server
+}
+
+func TestNewCloudflareTurnstile_SiteverifyURL(t *testing.T) {
+	t.Run("defaults to Cloudflare", func(t *testing.T) {
+		v := NewCloudflareTurnstile("s").(*cloudflareTurnstile)
+		assert.Equal(t, defaultTurnstileSiteverifyURL, v.siteverifyURL)
+	})
+
+	// The value is opaque to the option: this subtest proves WithSiteverifyURL
+	// stores what it is given, so the string is the fixture AND the expected
+	// output. No request is made, and nothing listens on this address.
+	const stubSiteverifyURL = "http://localhost:3003/stub" // coves:allow-host-literal: opaque fixture for the option setter; asserted on, never dialled
+
+	t.Run("override redirects verification", func(t *testing.T) {
+		v := NewCloudflareTurnstile("s", WithSiteverifyURL(stubSiteverifyURL)).(*cloudflareTurnstile)
+		assert.Equal(t, stubSiteverifyURL, v.siteverifyURL)
+	})
+
+	// The override is plumbed from an env var that is empty in every
+	// non-dev deployment, so empty must mean "leave Cloudflare alone"
+	// rather than "verify against the empty URL".
+	t.Run("empty override keeps the default", func(t *testing.T) {
+		v := NewCloudflareTurnstile("s", WithSiteverifyURL("")).(*cloudflareTurnstile)
+		assert.Equal(t, defaultTurnstileSiteverifyURL, v.siteverifyURL)
+	})
 }
 
 func TestTurnstile_Verify_Success(t *testing.T) {
@@ -120,8 +164,8 @@ func TestTurnstile_Verify_DecodeErrorIsUnavailable(t *testing.T) {
 func TestTurnstile_Verify_UnreachableIsUnavailable(t *testing.T) {
 	v := &cloudflareTurnstile{
 		secret:        "test",
-		siteverifyURL: "http://127.0.0.1:0", // guaranteed unreachable
-		httpClient:    &http.Client{Timeout: 500 * time.Millisecond},
+		siteverifyURL: "http://siteverify.invalid",
+		httpClient:    unreachableClient(),
 	}
 
 	err := v.Verify(context.Background(), "tok", "")
@@ -296,8 +340,8 @@ func TestTurnstile_Verify_TransportFailureLogsClientIPNotToken(t *testing.T) {
 
 	v := &cloudflareTurnstile{
 		secret:        "s",
-		siteverifyURL: "http://127.0.0.1:0",
-		httpClient:    &http.Client{Timeout: 200 * time.Millisecond},
+		siteverifyURL: "http://siteverify.invalid",
+		httpClient:    unreachableClient(),
 	}
 	_ = v.Verify(context.Background(), tokenSentinel, ipSentinel)
 

@@ -1,5 +1,12 @@
 package config
 
+// This file tests Load(), which reads environment variables and returns a
+// struct. It resolves nothing and dials nothing, so every URL below is either
+// an input string or an expected output string.
+//
+// coves:allow-host-literal-file: the dev defaults ARE localhost:3001/3002/3003/6008, and the production guard's whole job is to reject localhost — sourcing either from testkit would assert the parser against itself and delete the test's meaning.
+// coves:allow-public-host-file: the production defaults this parser must produce name plc.directory and the public Bluesky Jetstream; an assertion on any other value would be asserting a deployment we do not ship.
+
 import (
 	"bytes"
 	"encoding/base64"
@@ -526,6 +533,43 @@ func TestLoad_IdentityPLCResolution(t *testing.T) {
 		}
 		if cfg.Identity.PLCURL != "https://plc.directory" {
 			t.Errorf("PLCURL = %q, want the primary directory", cfg.Identity.PLCURL)
+		}
+	})
+}
+
+func TestLoad_TurnstileSiteverifyURL(t *testing.T) {
+	// The hermetic CI stack is egress-blocked, so its AppView verifies captcha
+	// tokens against an in-stack stub instead of challenges.cloudflare.com.
+	t.Run("dev honours the override", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("IS_DEV_ENV", "true")
+		t.Setenv("TURNSTILE_SECRET_KEY", "1x0000000000000000000000000000000AA")
+		t.Setenv("TURNSTILE_SITEVERIFY_URL", "http://localhost:3003/cgi-bin/siteverify")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() returned error: %v", err)
+		}
+		if cfg.Signup.TurnstileSiteverifyURL != "http://localhost:3003/cgi-bin/siteverify" {
+			t.Errorf("TurnstileSiteverifyURL = %q, want the stub endpoint", cfg.Signup.TurnstileSiteverifyURL)
+		}
+	})
+
+	// Production must always verify against Cloudflare itself: an endpoint that
+	// answers success to everything is a captcha bypass, so this must not be
+	// settable outside dev.
+	t.Run("production ignores the override", func(t *testing.T) {
+		clearEnv(t)
+		prodEnv(t)
+		t.Setenv("TURNSTILE_SECRET_KEY", "real-secret")
+		t.Setenv("TURNSTILE_SITEVERIFY_URL", "https://attacker.example/always-success")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() returned error: %v", err)
+		}
+		if cfg.Signup.TurnstileSiteverifyURL != "" {
+			t.Errorf("TurnstileSiteverifyURL = %q, want empty outside dev", cfg.Signup.TurnstileSiteverifyURL)
 		}
 	})
 }

@@ -1,0 +1,42 @@
+# Collections the AppView ingests that do NOT have a pipeline contract yet.
+#
+# THIS FILE IS EMPTY AND MUST STAY THAT WAY. Task 15 retired the last four
+# entries; every collection in internal/atproto/jetstream's consumer table now
+# has a //coves:ingestion-contract marker in tests/e2e.
+#
+# docs/TEST_ARCHITECTURE.md §3.4a requires one ingestion contract per consumed
+# collection: a record written straight to the PDS, indexed by the AppView's own
+# consumers, observed on a serving endpoint. cmd/contract-manifest enforces it
+# against that consumer table, and this file was the phase-4 burn-down that kept
+# the check meaningful while the contracts were still being written — one domain
+# per task, tasks 11-15.
+#
+# Format, one entry per line:
+#
+#   <collection>  # task <N>: why it is not contracted yet
+#
+# The task number is mandatory. A deferral nobody owns is how a burn-down
+# becomes a permanent list, and this file has exactly one legal direction of
+# travel: entries leave it. Adding a contract for a collection listed here makes
+# the entry STALE and fails the check — delete the line in the same commit.
+#
+# THE FLIP IS DONE. Task 16 passed -allow-pending=false at both entry points
+# (check_contract_manifest in scripts/lib/runner-ready.sh, which `make ci` and
+# `make test-e2e` share), so a newly consumed collection now fails the build
+# immediately instead of being deferrable, and a line in this file fails the
+# gate rather than buying time. Proven both ways before it was called done: a
+# pending entry for a contracted collection fails as STALE, and a genuinely
+# uncontracted collection passes under -allow-pending=true and fails under
+# -allow-pending=false. Task 20 re-verifies that the flag is still on that call
+# site and that this list is still empty, as part of the phase-6 sweep.
+#
+# THE CARRY LIST IS DISCHARGED. tests/integration no longer exists; the four
+# malformed scoped-identifier cases it uniquely held — "!name" with no @,
+# "!name@wrong.instance", "!@instance", and a bare name with no dots — now live
+# in internal/core/communities/service_identifier_resolution_test.go. They are
+# recorded here rather than deleted outright because of how nearly they were
+# lost: task 15 removed block_handle_resolution_test.go, whose copies of these
+# cases were false passes (no session, so the handler answered 401 before
+# resolution ever ran), on the strength of the tests/integration file still
+# existing. If a future change makes these four look redundant, check that the
+# thing making them redundant actually reaches the resolver.

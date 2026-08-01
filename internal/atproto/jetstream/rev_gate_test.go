@@ -1,3 +1,5 @@
+//go:build integration
+
 package jetstream
 
 import (
@@ -8,6 +10,7 @@ import (
 
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
@@ -37,19 +40,6 @@ const (
 	revB = "3lrevtestaa2b"
 	revC = "3lrevtestaa2c"
 )
-
-func cleanupRevTestData(t *testing.T, db *sql.DB) {
-	t.Helper()
-	// Gate rows persist across runs BY DESIGN (they are tombstones); tests
-	// must clear their own or a re-run would reject its fixture creates.
-	_, _ = db.Exec("DELETE FROM jetstream_record_revs WHERE record_uri LIKE $1", "at://"+revTestPrefix+"%")
-	_, _ = db.Exec("DELETE FROM votes WHERE voter_did LIKE $1", revTestPrefix+"%")
-	_, _ = db.Exec("DELETE FROM comments WHERE commenter_did LIKE $1 OR root_uri LIKE $2", revTestPrefix+"%", "at://"+revTestPrefix+"%")
-	_, _ = db.Exec("DELETE FROM posts WHERE community_did LIKE $1", revTestPrefix+"%")
-	_, _ = db.Exec("DELETE FROM community_subscriptions WHERE user_did LIKE $1", revTestPrefix+"%")
-	_, _ = db.Exec("DELETE FROM communities WHERE did LIKE $1", revTestPrefix+"%")
-	_, _ = db.Exec("DELETE FROM users WHERE did LIKE $1", revTestPrefix+"%")
-}
 
 // revCommitEvent builds a commit event carrying a rev, the one field the
 // duplicate-delivery helpers omit.
@@ -112,10 +102,8 @@ func revCommentRecord(content, rootURI, rootCID, parentURI, parentCID string) ma
 }
 
 func TestRevGate_AdvanceAndStalenessSemantics(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupRevTestData(t, db)
-	cleanupRevTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	ctx := context.Background()
 	uri := "at://" + revTestPrefix + "gate/social.coves.feed.vote/g1"
@@ -170,10 +158,8 @@ func TestRevGate_AdvanceAndStalenessSemantics(t *testing.T) {
 // NEWER time_us. Without the gate, the resurrection branch restores the
 // deleted comment permanently.
 func TestCommentConsumer_StaleCreateReplayAfterDelete_DoesNotResurrect(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupRevTestData(t, db)
-	cleanupRevTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	_, postURI, postCID := setupRevFixtures(t, db)
 	cc := NewCommentEventConsumer(postgres.NewCommentRepository(db), db)
@@ -210,10 +196,8 @@ func TestCommentConsumer_StaleCreateReplayAfterDelete_DoesNotResurrect(t *testin
 // still pass the gate and resurrect the row — proving the gate rejects only
 // stale copies, not the legitimate atProto recreate-same-rkey flow.
 func TestCommentConsumer_GenuineRecreateSameRKey_StillResurrects(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupRevTestData(t, db)
-	cleanupRevTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	_, postURI, postCID := setupRevFixtures(t, db)
 	cc := NewCommentEventConsumer(postgres.NewCommentRepository(db), db)
@@ -243,10 +227,8 @@ func TestCommentConsumer_GenuineRecreateSameRKey_StillResurrects(t *testing.T) {
 // time_us. The time-based recency guard passes it; only the rev gate rejects
 // it. Without the gate the content regresses until the next organic edit.
 func TestPostConsumer_StaleUpdateReplay_DoesNotClobberContent(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupRevTestData(t, db)
-	cleanupRevTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	pc, postURI, _ := setupRevFixtures(t, db)
 	ctx := context.Background()
@@ -278,10 +260,8 @@ func TestPostConsumer_StaleUpdateReplay_DoesNotClobberContent(t *testing.T) {
 
 // Same interleaving for comments.
 func TestCommentConsumer_StaleUpdateReplay_DoesNotClobberContent(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupRevTestData(t, db)
-	cleanupRevTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	_, postURI, postCID := setupRevFixtures(t, db)
 	cc := NewCommentEventConsumer(postgres.NewCommentRepository(db), db)
@@ -316,10 +296,8 @@ func TestCommentConsumer_StaleUpdateReplay_DoesNotClobberContent(t *testing.T) {
 // lagging feed replays the vote's create. Without the gate the vote row is
 // re-indexed and the count re-incremented, permanently.
 func TestVoteConsumer_StaleCreateReplayAfterDelete_NoPhantomVote(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupRevTestData(t, db)
-	cleanupRevTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	_, postURI, postCID := setupRevFixtures(t, db)
 	vc := NewVoteEventConsumer(postgres.NewVoteRepository(db), newMockUserService(), db)
@@ -356,10 +334,8 @@ func TestVoteConsumer_StaleCreateReplayAfterDelete_NoPhantomVote(t *testing.T) {
 // rev, so the create's late copy cannot index a vote whose record no longer
 // exists on the PDS.
 func TestVoteConsumer_DeleteBeforeCreate_TombstoneRejectsLateCreate(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupRevTestData(t, db)
-	cleanupRevTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	_, postURI, postCID := setupRevFixtures(t, db)
 	vc := NewVoteEventConsumer(postgres.NewVoteRepository(db), newMockUserService(), db)
@@ -394,10 +370,8 @@ func TestVoteConsumer_DeleteBeforeCreate_TombstoneRejectsLateCreate(t *testing.T
 // record's rev, so the create's late copy cannot index a post whose record no
 // longer exists on the PDS.
 func TestPostConsumer_DeleteBeforeCreate_TombstoneRejectsLateCreate(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupRevTestData(t, db)
-	cleanupRevTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	pc, _, _ := setupRevFixtures(t, db)
 	ctx := context.Background()
@@ -431,10 +405,8 @@ func TestPostConsumer_DeleteBeforeCreate_TombstoneRejectsLateCreate(t *testing.T
 // fast feed, then the lagging feed replays the original create with an older
 // rev but a NEWER time_us. The tombstoned delete rev must keep the post dead.
 func TestPostConsumer_StaleCreateReplayAfterDelete_DoesNotResurrect(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupRevTestData(t, db)
-	cleanupRevTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	// setupRevFixtures indexes revpost1 with revA / CID bafrevpost1.
 	pc, postURI, _ := setupRevFixtures(t, db)
@@ -471,12 +443,9 @@ func TestPostConsumer_StaleCreateReplayAfterDelete_DoesNotResurrect(t *testing.T
 // cross-feed profile replay that the wall-clock recency guard cannot: the
 // replay carries an OLDER rev but a NEWER time_us.
 func TestUserConsumer_StaleProfileUpdateReplay_DoesNotRegressProfile(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupRevTestData(t, db)
-	cleanupRevTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
-	// The did shares revTestPrefix so cleanupRevTestData clears the gate row.
 	const did = revTestPrefix + "profileuser"
 	profileURI := "at://" + did + "/social.coves.actor.profile/self"
 
@@ -512,10 +481,8 @@ func TestUserConsumer_StaleProfileUpdateReplay_DoesNotRegressProfile(t *testing.
 // only the gate's surviving row can reject the stale subscribe replay — this
 // is the case a per-table rev column could never cover.
 func TestCommunityConsumer_StaleSubscribeReplayAfterUnsubscribe_DoesNotResubscribe(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupRevTestData(t, db)
-	cleanupRevTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	insertBridgedUser(t, db, revTestVoter, "revsubscriber.test")
 	insertBridgedUser(t, db, revTestAuthor, "revauthor.test")

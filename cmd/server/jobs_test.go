@@ -2,26 +2,14 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
-)
 
-// waitFor polls until cond holds or the deadline passes. Ticker-driven jobs
-// are inherently timing-dependent, so tests poll rather than sleep a fixed
-// amount and hope.
-func waitFor(t *testing.T, timeout time.Duration, cond func() bool) bool {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return true
-		}
-		time.Sleep(time.Millisecond)
-	}
-	return cond()
-}
+	"Coves/tests/testkit"
+)
 
 // The reason recovery lives per cycle rather than around the whole goroutine:
 // a job that dies on its first panic takes aggregator token refresh with it,
@@ -40,9 +28,12 @@ func TestRunTicker_SurvivesAPanickingCycle(t *testing.T) {
 		}
 	})
 
-	if !waitFor(t, 5*time.Second, func() bool { return cycles.Load() >= 3 }) {
-		t.Fatalf("job ran %d cycles after a panic; it should have kept going", cycles.Load())
-	}
+	testkit.WaitFor(t, 5*time.Second, func() (bool, error) {
+		return cycles.Load() >= 3, nil
+	}, testkit.WithDescription("the panicky job to keep cycling after its first cycle panicked"),
+		testkit.WithDiagnostics(func() string {
+			return fmt.Sprintf("cycles completed: %d", cycles.Load())
+		}))
 
 	cancel()
 	wg.Wait()
@@ -58,9 +49,9 @@ func TestRunTicker_StopsOnContextCancel(t *testing.T) {
 		cycles.Add(1)
 	})
 
-	if !waitFor(t, 5*time.Second, func() bool { return cycles.Load() >= 2 }) {
-		t.Fatal("job never ran")
-	}
+	testkit.WaitFor(t, 5*time.Second, func() (bool, error) {
+		return cycles.Load() >= 2, nil
+	}, testkit.WithDescription("the counter job to run at least two cycles"))
 
 	cancel()
 
@@ -77,12 +68,17 @@ func TestRunTicker_StopsOnContextCancel(t *testing.T) {
 		t.Fatal("job did not exit after context cancellation")
 	}
 
-	// No further cycles once the WaitGroup has been released.
+	// No further cycles once the WaitGroup has been released. This is a
+	// stays-true claim, and the window is worth several hundred ticks of the
+	// 1ms interval — a job that ignored cancellation would be caught on the
+	// first poll after the window opens.
 	settled := cycles.Load()
-	time.Sleep(20 * time.Millisecond)
-	if got := cycles.Load(); got != settled {
-		t.Errorf("job ran %d more cycles after exiting", got-settled)
-	}
+	testkit.Holds(t, 200*time.Millisecond, func() (bool, error) {
+		return cycles.Load() == settled, nil
+	}, testkit.WithDescription("the cycle count to stay at %d after the job exited", settled),
+		testkit.WithDiagnostics(func() string {
+			return fmt.Sprintf("cycles now: %d", cycles.Load())
+		}))
 }
 
 // Work receives a live, deadline-bounded context derived from the job's own,

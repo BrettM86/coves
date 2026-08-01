@@ -7,7 +7,19 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// bskySocialPDS is the pds_url carried by the already-indexed users these
+// tests hand to the consumer. It is a RECORD FIELD, not an endpoint: the
+// consumer compares it (bridge trust) and re-indexes it, and the only two
+// collaborators here are a mock user service and a mock resolver, so nothing
+// in this file can reach it. A user whose PDS is Bluesky is the realistic
+// shape for a profile arriving over the firehose, which is why it is not
+// invented.
+const bskySocialPDS = "https://bsky.social" // coves:allow-public-host: fixture pds_url on mock user records; no HTTP client exists in this test.
 
 // mockUserService is a test double for users.UserService
 type mockUserService struct {
@@ -231,7 +243,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		mockService.users["did:plc:testuser"] = &users.User{
 			DID:    "did:plc:testuser",
 			Handle: "testuser.bsky.social",
-			PDSURL: "https://bsky.social",
+			PDSURL: bskySocialPDS,
 		}
 		mockResolver := &mockIdentityResolverForUser{}
 		consumer := NewUserEventConsumer(mockService, mockResolver)
@@ -273,7 +285,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		mockService.users["did:plc:testuser"] = &users.User{
 			DID:    "did:plc:testuser",
 			Handle: "testuser.bsky.social",
-			PDSURL: "https://bsky.social",
+			PDSURL: bskySocialPDS,
 		}
 		mockResolver := &mockIdentityResolverForUser{}
 		consumer := NewUserEventConsumer(mockService, mockResolver)
@@ -315,7 +327,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		mockService.users["did:plc:testuser"] = &users.User{
 			DID:    "did:plc:testuser",
 			Handle: "testuser.bsky.social",
-			PDSURL: "https://bsky.social",
+			PDSURL: bskySocialPDS,
 		}
 		mockResolver := &mockIdentityResolverForUser{}
 		consumer := NewUserEventConsumer(mockService, mockResolver)
@@ -362,7 +374,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		mockService.users["did:plc:testuser"] = &users.User{
 			DID:    "did:plc:testuser",
 			Handle: "testuser.bsky.social",
-			PDSURL: "https://bsky.social",
+			PDSURL: bskySocialPDS,
 		}
 		mockResolver := &mockIdentityResolverForUser{}
 		consumer := NewUserEventConsumer(mockService, mockResolver)
@@ -409,7 +421,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		mockService.users["did:plc:testuser"] = &users.User{
 			DID:    "did:plc:testuser",
 			Handle: "testuser.bsky.social",
-			PDSURL: "https://bsky.social",
+			PDSURL: bskySocialPDS,
 		}
 		mockResolver := &mockIdentityResolverForUser{}
 		consumer := NewUserEventConsumer(mockService, mockResolver)
@@ -473,7 +485,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		mockService.users["did:plc:testuser"] = &users.User{
 			DID:         "did:plc:testuser",
 			Handle:      "testuser.bsky.social",
-			PDSURL:      "https://bsky.social",
+			PDSURL:      bskySocialPDS,
 			DisplayName: "Existing Name",
 			Bio:         "Existing Bio",
 			AvatarCID:   "existingavatar",
@@ -525,7 +537,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		mockService.users["did:plc:testuser"] = &users.User{
 			DID:         "did:plc:testuser",
 			Handle:      "testuser.bsky.social",
-			PDSURL:      "https://bsky.social",
+			PDSURL:      bskySocialPDS,
 			DisplayName: "Old Name",
 		}
 		mockResolver := &mockIdentityResolverForUser{}
@@ -624,7 +636,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		mockService.users["did:plc:testuser"] = &users.User{
 			DID:    "did:plc:testuser",
 			Handle: "testuser.bsky.social",
-			PDSURL: "https://bsky.social",
+			PDSURL: bskySocialPDS,
 		}
 		mockResolver := &mockIdentityResolverForUser{}
 		consumer := NewUserEventConsumer(mockService, mockResolver)
@@ -655,7 +667,7 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		mockService.users["did:plc:testuser"] = &users.User{
 			DID:    "did:plc:testuser",
 			Handle: "testuser.bsky.social",
-			PDSURL: "https://bsky.social",
+			PDSURL: bskySocialPDS,
 		}
 		mockResolver := &mockIdentityResolverForUser{}
 		consumer := NewUserEventConsumer(mockService, mockResolver)
@@ -711,7 +723,7 @@ func TestUserConsumer_PropagatesUpdateProfileError(t *testing.T) {
 		mockService.users["did:plc:testuser"] = &users.User{
 			DID:    "did:plc:testuser",
 			Handle: "testuser.bsky.social",
-			PDSURL: "https://bsky.social",
+			PDSURL: bskySocialPDS,
 		}
 		mockService.updateError = errors.New("database write error")
 		mockResolver := &mockIdentityResolverForUser{}
@@ -843,5 +855,166 @@ func TestExtractBlobCID(t *testing.T) {
 		if cid != "" {
 			t.Errorf("Expected empty CID for non-map ref, got '%s'", cid)
 		}
+	})
+}
+
+// TestUserConsumer_BlockEventsTheConsumerDeclinesToIndex covers the two block
+// paths that write nothing and must still succeed.
+//
+// Both are invisible to the indexing tests in user_consumer_block_test.go,
+// which assert on rows: "no row" is also what a broken consumer produces. Here
+// the repository panics if it is touched at all, so a regression that started
+// indexing these would fail loudly instead of quietly.
+func TestUserConsumer_BlockEventsTheConsumerDeclinesToIndex(t *testing.T) {
+	blockEvent := func(operation string) *JetstreamEvent {
+		return &JetstreamEvent{
+			Did: "did:plc:blockdecliner", Kind: "commit", TimeUS: time.Now().UnixMicro(),
+			Commit: &CommitEvent{
+				Operation: operation, Collection: CovesActorBlockCollection,
+				RKey: "d1", CID: "bafydecline",
+				Record: map[string]interface{}{
+					"$type":     CovesActorBlockCollection,
+					"subject":   "did:plc:blockdeclined",
+					"createdAt": "2026-01-01T00:00:00Z",
+				},
+			},
+		}
+	}
+
+	t.Run("no block repository configured", func(t *testing.T) {
+		// WithUserBlockRepo is optional, and an AppView built without it (a
+		// deployment that does not index blocks, or a wiring mistake) must drop
+		// block events rather than nil-panic the whole users consumer on the
+		// first block anybody performs.
+		consumer := NewUserEventConsumer(newMockUserService(), &mockIdentityResolverForUser{})
+
+		require.NoError(t, consumer.HandleEvent(context.Background(), blockEvent("create")))
+	})
+
+	t.Run("an update operation is ignored", func(t *testing.T) {
+		// Block records have no mutable fields, so no client should ever emit
+		// one — but a federated repo can put whatever it likes on the wire.
+		// Treating an update as a create would let a remote repo rewrite an
+		// existing block's subject; treating it as an error would dead-letter
+		// junk that will never become valid.
+		consumer := NewUserEventConsumer(newMockUserService(), &mockIdentityResolverForUser{},
+			WithUserBlockRepo(failingUserBlockRepoStub{}))
+
+		require.NoError(t, consumer.HandleEvent(context.Background(), blockEvent("update")))
+	})
+}
+
+// fakeSessionHandleUpdater records the OAuth-session fan-out the identity path
+// triggers, and can fail on demand.
+type fakeSessionHandleUpdater struct {
+	calls []struct{ did, handle string }
+	err   error
+}
+
+func (f *fakeSessionHandleUpdater) UpdateHandleByDID(_ context.Context, did, newHandle string) (int64, error) {
+	f.calls = append(f.calls, struct{ did, handle string }{did, newHandle})
+	if f.err != nil {
+		return 0, f.err
+	}
+	return int64(len(f.calls)), nil
+}
+
+// TestUserConsumer_IdentityEvent_SyncsSessionHandles covers the consumer's half
+// of the handle-rename fan-out: that an identity event for a known user whose
+// handle really changed reaches SessionHandleUpdater, and that nothing else
+// does.
+//
+// The store's half — which sessions the fan-out touches — is
+// TestPostgresOAuthStore_UpdateHandleByDID in internal/atproto/oauth. Together
+// they replace tests/integration/oauth_session_handle_sync_test.go, which
+// proved both against real Postgres in 370 lines and paid for a live websocket
+// dial and a vacuous three-t.Log "E2E" test function to do it.
+//
+// Kept as a unit test rather than folded into the store's: the interesting
+// cases here are the ones where the updater must NOT be called, and those are
+// invisible when the collaborator is real.
+func TestUserConsumer_IdentityEvent_SyncsSessionHandles(t *testing.T) {
+	const did = "did:plc:identitysyncuser"
+
+	identityEvent := func(handle string) *JetstreamEvent {
+		return &JetstreamEvent{Kind: "identity", Did: did, Identity: &IdentityEvent{Did: did, Handle: handle}}
+	}
+
+	newConsumer := func(currentHandle string) (*UserEventConsumer, *fakeSessionHandleUpdater, *mockUserService) {
+		service := newMockUserService()
+		service.users[did] = &users.User{DID: did, Handle: currentHandle}
+		updater := &fakeSessionHandleUpdater{}
+		return NewUserEventConsumer(service, &mockIdentityResolverForUser{},
+			WithSessionHandleUpdater(updater)), updater, service
+	}
+
+	t.Run("a real rename fans out to the sessions", func(t *testing.T) {
+		consumer, updater, _ := newConsumer("old.example.com")
+
+		require.NoError(t, consumer.HandleEvent(context.Background(), identityEvent("new.example.com")))
+
+		require.Len(t, updater.calls, 1,
+			"a handle change must reach the OAuth sessions, or every device the user is signed "+
+				"in on keeps showing the old handle until its session expires")
+		assert.Equal(t, did, updater.calls[0].did)
+		assert.Equal(t, "new.example.com", updater.calls[0].handle,
+			"the sessions must be given the NEW handle, not the one they already hold")
+	})
+
+	t.Run("an unchanged handle does not touch the sessions", func(t *testing.T) {
+		// Identity events are re-emitted for reasons other than renames (a
+		// rotation key change, a PDS migration), and they arrive on an
+		// unfiltered stream. Writing every session row on each of them would be
+		// a steady stream of pointless UPDATEs against a hot table.
+		consumer, updater, _ := newConsumer("same.example.com")
+
+		require.NoError(t, consumer.HandleEvent(context.Background(), identityEvent("same.example.com")))
+		assert.Empty(t, updater.calls)
+	})
+
+	t.Run("an unknown user does not touch the sessions", func(t *testing.T) {
+		// The consumer indexes only identities it has seen ("this prevents us
+		// from indexing millions of Bluesky users we don't care about"), and the
+		// session store cannot hold a session for one of them anyway.
+		service := newMockUserService()
+		updater := &fakeSessionHandleUpdater{}
+		consumer := NewUserEventConsumer(service, &mockIdentityResolverForUser{},
+			WithSessionHandleUpdater(updater))
+
+		require.NoError(t, consumer.HandleEvent(context.Background(),
+			&JetstreamEvent{Kind: "identity", Did: "did:plc:strangernobodyknows",
+				Identity: &IdentityEvent{Did: "did:plc:strangernobodyknows", Handle: "stranger.example.com"}}))
+		assert.Empty(t, updater.calls)
+	})
+
+	t.Run("a failed fan-out is logged, not returned", func(t *testing.T) {
+		// PINS A DELIBERATE SILENT FAILURE, which is worth doing precisely
+		// because silent failures are usually bugs and this one is a choice.
+		//
+		// The users row has already been updated and the identity cache already
+		// purged by the time the fan-out runs. Returning the error here would
+		// dead-letter the event and, on redrive, re-run those two steps for a
+		// rename that has already been applied — to fix a stale string in a
+		// session row that expires on its own. The cost of the failure is a user
+		// seeing their old handle in one client; the cost of treating it as
+		// fatal is a consumer that stops.
+		consumer, updater, _ := newConsumer("old.example.com")
+		updater.err = errors.New("the session store is unreachable")
+
+		require.NoError(t, consumer.HandleEvent(context.Background(), identityEvent("new.example.com")),
+			"a session-store failure must not fail the identity event: the handle change itself "+
+				"has already been applied and a redrive would only repeat it")
+		require.Len(t, updater.calls, 1, "the fan-out was attempted")
+	})
+
+	t.Run("a consumer with no updater configured does not panic", func(t *testing.T) {
+		// The option is optional, and a nil interface value dereferenced here
+		// would take down the whole users consumer on the first rename anybody
+		// performed.
+		service := newMockUserService()
+		service.users[did] = &users.User{DID: did, Handle: "old.example.com"}
+		consumer := NewUserEventConsumer(service, &mockIdentityResolverForUser{})
+
+		require.NoError(t, consumer.HandleEvent(context.Background(), identityEvent("new.example.com")))
 	})
 }

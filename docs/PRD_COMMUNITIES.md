@@ -157,7 +157,7 @@ Hosted By:   did:web:coves.social (instance manages credentials)
     - Consumer: [internal/atproto/jetstream/community_consumer.go](internal/atproto/jetstream/community_consumer.go)
     - Connector: [internal/atproto/jetstream/community_jetstream_connector.go](internal/atproto/jetstream/community_jetstream_connector.go)
     - Migration: [internal/db/migrations/008_add_content_visibility_to_subscriptions.sql](internal/db/migrations/008_add_content_visibility_to_subscriptions.sql)
-    - Tests: [tests/integration/subscription_indexing_test.go](tests/integration/subscription_indexing_test.go)
+    - Tests: [internal/atproto/jetstream/community_consumer_test.go](internal/atproto/jetstream/community_consumer_test.go), [tests/e2e/subscription_contract_test.go](tests/e2e/subscription_contract_test.go)
 
 ### Critical Security (High Priority)
 - [x] **OAuth Authentication:** ✅ COMPLETE - User access tokens flow end-to-end

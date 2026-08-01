@@ -1,3 +1,5 @@
+//go:build integration
+
 package jetstream
 
 import (
@@ -8,6 +10,7 @@ import (
 
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"Coves/tests/testkit"
 
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
@@ -29,14 +32,6 @@ const (
 	recencyTestAuthor    = recencyTestPrefix + "author"
 	recencyTestCommenter = recencyTestPrefix + "commenter"
 )
-
-func cleanupRecencyTestData(t *testing.T, db *sql.DB) {
-	t.Helper()
-	_, _ = db.Exec("DELETE FROM comments WHERE commenter_did LIKE $1 OR root_uri LIKE $2", recencyTestPrefix+"%", "at://"+recencyTestPrefix+"%")
-	_, _ = db.Exec("DELETE FROM posts WHERE community_did LIKE $1", recencyTestPrefix+"%")
-	_, _ = db.Exec("DELETE FROM communities WHERE did LIKE $1", recencyTestPrefix+"%")
-	_, _ = db.Exec("DELETE FROM users WHERE did LIKE $1", recencyTestPrefix+"%")
-}
 
 // recencyPostEvent builds a post commit event with an explicit Jetstream time_us.
 func recencyPostEvent(op, rkey, cid, title, content string, timeUS int64) *JetstreamEvent {
@@ -105,10 +100,8 @@ func setupRecencyFixtures(t *testing.T, db *sql.DB) *PostEventConsumer {
 }
 
 func TestPostConsumer_StaleRedrivenUpdate_CannotRevertNewerContent(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupRecencyTestData(t, db)
-	cleanupRecencyTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	pc := setupRecencyFixtures(t, db)
 	ctx := context.Background()
@@ -157,10 +150,8 @@ func TestPostConsumer_StaleRedrivenUpdate_CannotRevertNewerContent(t *testing.T)
 }
 
 func TestCommentConsumer_StaleRedrivenUpdate_CannotRevertNewerContent(t *testing.T) {
-	db := setupBridgedTestDB(t)
-	defer func() { _ = db.Close() }()
-	defer cleanupRecencyTestData(t, db)
-	cleanupRecencyTestData(t, db)
+	t.Parallel()
+	db := testkit.DB(t)
 
 	pc := setupRecencyFixtures(t, db)
 	cc := NewCommentEventConsumer(postgres.NewCommentRepository(db), db)
@@ -207,6 +198,7 @@ func TestCommentConsumer_StaleRedrivenUpdate_CannotRevertNewerContent(t *testing
 // guard on user profile events: an event older than the user row's last
 // successful write (users.updated_at) is skipped as success.
 func TestUserConsumer_StaleRedrivenProfileUpdate_Skipped(t *testing.T) {
+	t.Parallel()
 	mockService := newMockUserService()
 	lastWrite := time.Now()
 	mockService.users["did:plc:rcyprofile"] = &users.User{

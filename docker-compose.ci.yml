@@ -1,0 +1,682 @@
+# Coves hermetic CI stack — the infrastructure behind `make ci`.
+#
+# WHY THIS IS A SEPARATE FILE, NOT AN OVERRIDE OF docker-compose.dev.yml
+# ---------------------------------------------------------------------
+# The dev compose pins `container_name`, an explicit `name:` on every volume,
+# and `name: coves-dev-network`. All three defeat Compose's project scoping, so
+# running the dev stack under a second project name would still collide on
+# container names and still share the dev volumes. Isolation has to be built in
+# from the start rather than layered on.
+#
+# THE SHARED NETWORK NAMESPACE
+# ----------------------------
+# Every service here runs with `network_mode: "service:netns"`, so the whole
+# stack shares one network namespace. Consequences, all of them intentional:
+#
+#   * Services address each other as localhost:<port> — no peer DNS names. Each
+#     service therefore listens on the port the rest of the stack expects,
+#     matching the dev stack's published ports (PDS 3001, PLC 3002, AppView
+#     8081, Postgres 5435/5434/5436). The federation topology adds three more
+#     that the dev stack has no equivalent of: PDS2 3011, relay 2470 (metrics
+#     2471), relay Postgres 5437.
+#
+#   * The test suite needs no changes. Endpoints come from testkit.Endpoints(),
+#     which defaults to "localhost:3001" / "localhost:5434" / "localhost:8081"
+#     when PDS_URL / POSTGRES_TEST_* / APPVIEW_URL are unset. In this namespace
+#     those defaults resolve to the CI stack — so the fallback that would
+#     silently hit your dev PDS from the host is correct here instead of
+#     dangerous.
+#
+#   * Cross-service URLs stay coherent. The PDS fetches the AppView's OAuth
+#     client metadata at APPVIEW_PUBLIC_URL (http://127.0.0.1:8081); with
+#     per-service namespaces that loopback address points at nothing inside the
+#     PDS container, which would break OAuth E2E. One namespace fixes the whole
+#     class of problem rather than each instance of it.
+#
+#   * NOTHING is published to the host. `make ci` therefore runs concurrently
+#     with `make dev-up` and cannot touch it in either direction.
+#
+# Images are pinned by digest or SHA tag so that an upstream push can never turn
+# this gate red on its own.
+#
+# THE FEDERATION TOPOLOGY (docs/TEST_ARCHITECTURE.md §4, Phase 5)
+# ---------------------------------------------------------------
+# There are TWO PDSes here, and the ingest path runs through a real relay:
+#
+#   pds  (:3001) ─┐
+#                 ├─► relay/BigSky (:2470) ─► jetstream (:6008) ─► appview
+#   pds2 (:3011) ─┘
+#
+# pds2 exists so that "federation" means what the word means. §3.4a's ingestion
+# contracts write straight to the PDS to bypass the AppView's synchronous
+# indexing, but until now that record still lived on the ONE PDS the AppView
+# fronts, holds credentials for, and can read directly. A record on pds2 is one
+# the AppView has no session on and no configured address for: the only way it
+# can appear on a serving endpoint is the firehose, and the only way its blobs
+# can be fetched is by resolving its DID against the PLC and following the
+# service endpoint in the DID document.
+#
+# WHY JETSTREAM READS THE RELAY RATHER THAN A SECOND JETSTREAM READING PDS2
+#
+# Both shapes get pds2's events to the AppView. The alternative — a second
+# Jetstream on pds2 and a second entry in JETSTREAM_FEEDS — is a smaller change
+# to this file, and it was rejected for four reasons:
+#
+#   1. It makes multi-feed the permanent CI baseline. Consumer names are
+#      feed-qualified (jetstream.FeedConsumerName), so every consumer would
+#      exist twice, and the pipeline tier's consumer-health arithmetic — the
+#      block contracts' measurement windows, the reliability suite's
+#      dead-letter deltas, requireSingleFeedTopology's poisoned-stack guard —
+#      is written against exactly one row per consumer.
+#   2. It leaves the relay decorative. §4 asks for a hermetic relay; a relay
+#      nothing consumes proves nothing about relay semantics.
+#   3. Production ingests through a relay (docs/PRD_ALPHA_GO_LIVE.md; the
+#      tidepool self-hosted relay + Jetstream pair). Jetstream wired straight
+#      to a PDS, which is what this stack did before, is a topology that ships
+#      nowhere — so the gate was grading a pipeline shape production does not
+#      run.
+#   4. It puts real relay semantics under EVERY contract, not just the
+#      federated ones: per-commit signature verification against the local PLC,
+#      DID-document-driven host association, and per-repo (never cross-repo)
+#      ordering. That last one is why the tier's negative bounds are intra-repo
+#      — a relay merging two PDS streams makes cross-repo ordering luck, and
+#      now the stack demonstrates it rather than the comments merely asserting
+#      it.
+#
+# The cost is accepted deliberately: the relay is in the path of every contract,
+# so a relay fault reddens the whole tier rather than one contract. That is the
+# same bet the stack already makes on Jetstream, and scripts/lib/runner-ready.sh
+# gates the suite on the relay actively crawling both hosts so the failure names
+# itself.
+#
+# Usage: driven by scripts/ci.sh, which stages startup so the relay is crawling
+# both PDSes and the instance PDS account exists before the AppView boots. Not
+# intended for direct `up`.
+
+services:
+  # Owns the network namespace every other service joins. Does nothing else;
+  # it exists because a namespace needs a container to belong to and no real
+  # service should be load-bearing for the others' networking.
+  netns:
+    image: alpine:3.19
+    command: ["sleep", "infinity"]
+    init: true
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 2s
+      timeout: 2s
+      retries: 3
+    networks:
+      - ci
+
+  # ---------------------------------------------------------------------------
+  # Databases
+  # ---------------------------------------------------------------------------
+
+  # AppView database. Migrated by the server itself at boot
+  # (cmd/server/database.go uses the embedded migration FS), so CI runs no
+  # external migration step for it.
+  postgres:
+    image: postgres:15
+    network_mode: "service:netns"
+    command: ["-p", "5435"]
+    environment:
+      POSTGRES_DB: coves_dev
+      POSTGRES_USER: dev_user
+      POSTGRES_PASSWORD: dev_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -p 5435 -U dev_user -d coves_dev"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    depends_on:
+      netns:
+        condition: service_healthy
+
+  # Test database. The integration tier reaches it only through testkit, which
+  # migrates a template once and hands each test a clone, so this needs no
+  # migration step of its own — only to exist and be empty. (It predates that:
+  # the old tests/integration package ran goose against it directly.)
+  postgres-test:
+    image: postgres:15
+    network_mode: "service:netns"
+    # max_connections is raised from the default 100 because tests/testkit
+    # clones a database per test and each clone opens its own small pool. The
+    # ceiling on `go test -parallel` is derived from this number
+    # (testkit.ConcurrencyBudget), so the two move together instead of the suite
+    # discovering the limit as "sorry, too many clients already" in whichever
+    # test happened to be unlucky.
+    command: ["-p", "5434", "-c", "max_connections=200"]
+    environment:
+      POSTGRES_DB: coves_test
+      POSTGRES_USER: test_user
+      POSTGRES_PASSWORD: test_password
+    volumes:
+      - postgres-test-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -p 5434 -U test_user -d coves_test"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    depends_on:
+      netns:
+        condition: service_healthy
+
+  postgres-plc:
+    image: postgres:15
+    network_mode: "service:netns"
+    command: ["-p", "5436"]
+    environment:
+      POSTGRES_DB: plc_dev
+      POSTGRES_USER: plc_user
+      POSTGRES_PASSWORD: plc_password
+    volumes:
+      - postgres-plc-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -p 5436 -U plc_user -d plc_dev"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    depends_on:
+      netns:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # atProto infrastructure
+  # ---------------------------------------------------------------------------
+
+  # Local PLC directory, so CI registers DIDs against its own registry and never
+  # touches plc.directory. Pre-baked (see docker/plc/Dockerfile) because the dev
+  # stack's approach — git clone plus yarn install at container start — costs
+  # minutes against the wiped volumes CI uses.
+  plc-directory:
+    build:
+      context: ./docker/plc
+    network_mode: "service:netns"
+    environment:
+      # Overrides the image default of 3000: in a shared namespace this must be
+      # the port the rest of the stack looks for PLC on.
+      PORT: 3002
+      DATABASE_URL: postgresql://plc_user:plc_password@localhost:5436/plc_dev?sslmode=disable
+      DEBUG_MODE: "1"
+      LOG_ENABLED: "true"
+      LOG_LEVEL: warn
+      LOG_DESTINATION: "1"
+      NODE_ENV: development
+    healthcheck:
+      # /_health, not /: the PLC server redirects / to https://web.plc.directory
+      # (its hosted web UI) and wget follows redirects, so probing / made this
+      # healthcheck depend on public DNS resolving. It passed only because the
+      # stack still had egress; with `internal: true` it fails on "bad address".
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3002/_health"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+    depends_on:
+      postgres-plc:
+        condition: service_healthy
+
+  # Pinned by digest rather than the dev stack's :latest tag.
+  # sha256:1fa8bbce… resolved 2026-07-28 from ghcr.io/bluesky-social/pds:latest.
+  pds:
+    image: ghcr.io/bluesky-social/pds@sha256:1fa8bbceabb65d8e1710749b1ea92c1c20a7489ca38da4a0a5f64c0c10a70c29
+    network_mode: "service:netns"
+    environment:
+      PDS_HOSTNAME: localhost
+      PDS_PORT: 3001
+      PDS_DATA_DIRECTORY: /pds
+      PDS_BLOBSTORE_DISK_LOCATION: /pds/blocks
+      # Loopback, not the dev stack's http://plc-directory:3000 — see header.
+      PDS_DID_PLC_URL: http://localhost:3002
+      PDS_JWT_SECRET: local-dev-jwt-secret-change-in-production
+      PDS_ADMIN_PASSWORD: admin
+      PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX: af514fb84c4356241deed29feb392d1ee359f99c05a7b8f7bff2e5f2614f64b2
+      PDS_SERVICE_HANDLE_DOMAINS: .local.coves.dev,.coves.social
+      PDS_DEV_MODE: "true"
+      PDS_INVITE_REQUIRED: "false"
+      NODE_ENV: development
+      LOG_ENABLED: "false"
+      LOG_LEVEL: warn
+    volumes:
+      - pds-data:/pds
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3001/xrpc/_health"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+    depends_on:
+      plc-directory:
+        condition: service_healthy
+
+  # The SECOND PDS: the one the AppView does not front.
+  #
+  # Same image and same PLC as `pds`, and that sharing is the point — both
+  # PDSes mint did:plc identities in the one local registry, so the AppView
+  # resolving a pds2-hosted DID follows exactly the production path (PLC
+  # lookup → service endpoint in the DID document) rather than a test hook.
+  #
+  # WHAT MAKES IT A DIFFERENT HOST
+  #
+  #   * Its own port. @atproto/pds derives its public URL from PDS_HOSTNAME,
+  #     special-casing localhost to `http://localhost:${PDS_PORT}` (any other
+  #     hostname becomes https://, which nothing here can serve). So both
+  #     PDSes keep PDS_HOSTNAME=localhost and are distinguished by port — the
+  #     DID documents they write carry http://localhost:3001 and
+  #     http://localhost:3011 respectively, which is what every consumer, the
+  #     image proxy, and the relay key their host association on.
+  #   * Its own volume, so its repos and blobs are physically elsewhere. A blob
+  #     fetched from pds2 cannot be served by pds1 by accident.
+  #   * Its own handle domain, `.pds2.test`. `.test` is RFC 6761 reserved and
+  #     can never resolve on the public internet — the same reasoning behind
+  #     the `.invalid` fixtures elsewhere in the suite. It also keeps a pds2
+  #     handle from ever being mistaken for a pds1 handle in a failure message.
+  #   * Its own PLC rotation key. Nothing enforces uniqueness, but two hosts
+  #     sharing a rotation key would mean either could rewrite the other's
+  #     identities, which is not the topology being modelled.
+  pds2:
+    image: ghcr.io/bluesky-social/pds@sha256:1fa8bbceabb65d8e1710749b1ea92c1c20a7489ca38da4a0a5f64c0c10a70c29
+    network_mode: "service:netns"
+    environment:
+      PDS_HOSTNAME: localhost
+      PDS_PORT: 3011
+      PDS_DATA_DIRECTORY: /pds
+      PDS_BLOBSTORE_DISK_LOCATION: /pds/blocks
+      PDS_DID_PLC_URL: http://localhost:3002
+      PDS_JWT_SECRET: local-dev-jwt-secret-pds2-change-in-production
+      PDS_ADMIN_PASSWORD: admin
+      PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX: 6d1f2b8e0c47a95d3e8f1a26b74c0d59e83f2a17c46b9d05e72f8a31c6b40d97
+      PDS_SERVICE_HANDLE_DOMAINS: .pds2.test
+      PDS_DEV_MODE: "true"
+      PDS_INVITE_REQUIRED: "false"
+      NODE_ENV: development
+      LOG_ENABLED: "false"
+      LOG_LEVEL: warn
+    volumes:
+      - pds2-data:/pds
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3011/xrpc/_health"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+    depends_on:
+      plc-directory:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # The relay
+  # ---------------------------------------------------------------------------
+
+  # BigSky's state. Two databases in one server: the relay keeps its host/repo
+  # metadata in `bgs` and its carstore shard index in `carstore`, and it will
+  # not share one. The second is created by an init script on first boot.
+  postgres-relay:
+    image: postgres:15
+    network_mode: "service:netns"
+    command: ["-p", "5437"]
+    environment:
+      POSTGRES_DB: bgs
+      POSTGRES_USER: relay_user
+      POSTGRES_PASSWORD: relay_password
+    volumes:
+      - postgres-relay-data:/var/lib/postgresql/data
+      - ./docker/relay/init-carstore.sql:/docker-entrypoint-initdb.d/init-carstore.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -p 5437 -U relay_user -d bgs"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    depends_on:
+      netns:
+        condition: service_healthy
+
+  # The relay: a real indigo BigSky, crawling both PDSes and serving the merged
+  # firehose that Jetstream consumes. See this file's header for why it is in
+  # the ingest path rather than beside it.
+  #
+  # Every flag and variable below was verified against this image's own --help
+  # output; the ones that LOOK like they should exist and do not are the
+  # expensive part, so they are named here:
+  #
+  #   * --crawl-insecure-ws has NO environment binding. It must be a command
+  #     argument, and the image's entrypoint is `dumb-init --`, so the command
+  #     has to restate the binary. Without it the relay dials wss:// to the
+  #     PDSes and validates requestCrawl hostnames over https, neither of which
+  #     exists in this stack.
+  #   * BGS_PORT and LOG_LEVEL are ignored. The listen address is --api-listen
+  #     (default :2470, which is what the rest of the stack expects) and the log
+  #     knob is BSKYLOG_LOG_LEVEL.
+  #   * ATP_PLC_HOST defaults to the PUBLIC https://plc.directory. On an
+  #     egress-blocked network that is not a security hole so much as a total
+  #     failure to resolve anything, since every identity here is minted in the
+  #     local PLC.
+  #   * RESOLVE_ADDRESS defaults to the PUBLIC 1.1.1.1:53. Pointed at Docker's
+  #     embedded resolver instead. This is defence in depth on a path
+  #     HANDLE_RESOLVER_HOSTS already removes (below), not the thing that makes
+  #     the stack hermetic — `internal: true` is.
+  #   * HANDLE_RESOLVER_HOSTS switches BigSky from the DNS-TXT handle resolver
+  #     to its trial-host resolver, which GETs http://<trial-host>/.well-known/
+  #     atproto-did with the HANDLE in the Host header — exactly what a PDS
+  #     serves for the handles it hosts. Both PDSes are listed so each one's
+  #     handles verify. Without it the relay would fall back to DNS for names
+  #     that cannot resolve; that failure is NON-fatal in BigSky (the repo is
+  #     kept and the handle marked invalid) but it costs a resolver timeout per
+  #     new repo, and a hermetic stack should have no code path that queries
+  #     DNS at all.
+  #
+  #     EXPECTED NOISE, so nobody chases it: the resolver walks the trial hosts
+  #     IN ORDER and logs a WARN for each non-200 before moving on. A pds2
+  #     handle therefore always produces one
+  #     `got non-200 status code while resolving handle ... statusCode=404`
+  #     from localhost:3001 — the host that correctly does not have it — and
+  #     then succeeds on localhost:3011. Verified against the pinned image's
+  #     handles.go: the warning is the loop continuing, not the resolution
+  #     failing.
+  #
+  # Note what this does NOT fix: the relay verifying a handle says nothing about
+  # the AppView's own identity resolver, which is indigo's BaseDirectory and has
+  # no trial-host mode. See tests/e2e/federation_contract_test.go for what that
+  # means for federated identities.
+  relay:
+    image: ghcr.io/bluesky-social/indigo:bigsky-0a2d4173e6e89e49b448f6bb0a6e1ab58d12b385
+    # No arm64 manifest upstream; Apple Silicon runs this under emulation.
+    platform: linux/amd64
+    network_mode: "service:netns"
+    command: ["/bigsky", "--crawl-insecure-ws"]
+    # For the same reason Jetstream has it, one hop upstream: the relay is now
+    # the only path from either PDS to the AppView, and a relay that exits
+    # mid-run leaves Jetstream crash-looping against a dead websocket and every
+    # consumer starved. Its state — the crawl registrations, the carstore, the
+    # persister cursor — is in postgres-relay and the relay-data volume, so a
+    # revived process reconnects to both PDSes and resumes rather than starting
+    # a stack that looks up but has forgotten what it was crawling.
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://relay_user:relay_password@localhost:5437/bgs?sslmode=disable
+      CARSTORE_DATABASE_URL: postgresql://relay_user:relay_password@localhost:5437/carstore?sslmode=disable
+      DATA_DIR: /data
+      ATP_PLC_HOST: http://localhost:3002
+      RESOLVE_ADDRESS: 127.0.0.11:53
+      HANDLE_RESOLVER_HOSTS: localhost:3001,localhost:3011
+      RELAY_ADMIN_KEY: ci-relay-admin-key
+      # Default is 100 repos per host. A kept stack accumulates accounts across
+      # runs (the PDS volumes only get wiped on teardown), and a relay silently
+      # refusing repo 101 would look exactly like a broken firehose.
+      RELAY_DEFAULT_REPO_LIMIT: "10000"
+      # The disk persister gives downstream consumers real cursor replay with a
+      # TTL, instead of the DB persister's unbounded table.
+      RELAY_PERSISTER_DIR: /data/persister
+      # Defaults are 40 + 40 against postgres-relay's default max_connections of
+      # 100. Two PDSes and one subscriber need nothing like that, and leaving
+      # the defaults would put this one server closest to its ceiling of the
+      # four in the stack.
+      MAX_METADB_CONNECTIONS: "10"
+      MAX_CARSTORE_CONNECTIONS: "10"
+      BSKYLOG_LOG_LEVEL: warn
+    volumes:
+      - relay-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:2470/xrpc/_health"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+      # Emulated on arm64 hosts, and it migrates two databases on first boot.
+      start_period: 20s
+    depends_on:
+      postgres-relay:
+        condition: service_healthy
+      plc-directory:
+        condition: service_healthy
+      pds:
+        condition: service_healthy
+      pds2:
+        condition: service_healthy
+
+  # Same SHA tag the dev stack pins.
+  jetstream:
+    image: ghcr.io/bluesky-social/jetstream:sha-306e463693365e21a5ffd3ec051a5a7920000214
+    network_mode: "service:netns"
+    # Jetstream EXITS when its upstream websocket dies — measured on this stack
+    # by stopping the relay, which left a stopped Jetstream behind and every
+    # consumer silently starved. That did not matter while the upstream was the
+    # PDS, which nothing in a run ever stops; it matters now that the upstream
+    # is the relay. Docker revives it and it resumes from the cursor persisted
+    # in its volume, which is the same policy production runs and the same one
+    # tidepool's relay-fronted stack settled on.
+    restart: unless-stopped
+    environment:
+      # The RELAY's firehose, not a PDS'. This is the whole federation
+      # topology in one line: it is what carries pds2's events to the AppView
+      # without adding a second feed, and it is the shape production runs. See
+      # this file's header.
+      JETSTREAM_WS_URL: ws://localhost:2470/xrpc/com.atproto.sync.subscribeRepos
+      JETSTREAM_LISTEN_ADDR: ":6008"
+      JETSTREAM_METRICS_LISTEN_ADDR: ":6009"
+      JETSTREAM_DATA_DIR: /data
+      JETSTREAM_EVENT_TTL: 24h
+      JETSTREAM_LIVENESS_TTL: 24h
+      JETSTREAM_WORKER_COUNT: 10
+      JETSTREAM_MAX_QUEUE_SIZE: 1000
+      LOG_LEVEL: warn
+    volumes:
+      - jetstream-data:/data
+    # The upstream image ships no HTTP client, so it cannot probe itself — the
+    # dev compose disables its healthcheck for the same reason. Readiness is
+    # gated externally instead, by curling :6009/metrics from the runner (which
+    # shares this namespace). See scripts/ci-runner.sh.
+    healthcheck:
+      disable: true
+    depends_on:
+      relay:
+        condition: service_healthy
+
+  # Stands in for Cloudflare's Turnstile siteverify endpoint.
+  #
+  # The AppView verifies captcha tokens server-side during the signup handshake
+  # (tests/e2e/user_signup_token_test.go exercises it). That call went to
+  # challenges.cloudflare.com, which the egress block makes unreachable — and
+  # which a merge gate should not depend on regardless: a Cloudflare outage
+  # would fail everyone's builds. .env.ci points TURNSTILE_SITEVERIFY_URL here
+  # instead; internal/config only honours that variable when IS_DEV_ENV is true,
+  # so production always talks to the real endpoint.
+  #
+  # nginx rather than the alpine image the netns service already pulls: Alpine's
+  # BusyBox build ships no httpd applet, and installing one would need network
+  # access at container start, which is exactly what this stack does not have.
+  # Pinned by digest like everything else here. sha256:65645c7b… resolved
+  # 2026-07-29 from nginx:1.27-alpine.
+  turnstile-stub:
+    image: nginx@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
+    network_mode: "service:netns"
+    init: true
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        cat >/etc/nginx/conf.d/default.conf <<'CONF'
+        server {
+            # Loopback IPv4 only, and .env.ci dials 127.0.0.1 rather than
+            # "localhost" to match. Binding both families instead would make
+            # the stub fail to start on a host with IPv6 disabled, and dialling
+            # "localhost" against an IPv4-only listener resolves to ::1 first —
+            # a connection refused for wget, a retry delay for Go. Naming the
+            # address on both ends removes the resolution order from the picture.
+            listen 127.0.0.1:3003;
+            # Any path, any method: the AppView only cares that siteverify
+            # answers success, which is what Cloudflare's always-pass test
+            # secret does upstream.
+            location / {
+                default_type application/json;
+                return 200 '{"success":true}';
+            }
+        }
+        CONF
+        exec nginx -g 'daemon off;'
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -O- --post-data=probe http://127.0.0.1:3003/turnstile/v0/siteverify | grep -q '"success":true'
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    depends_on:
+      netns:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # The system under test
+  # ---------------------------------------------------------------------------
+
+  # Built from the working tree every run. This is the difference that matters
+  # most versus `make test-e2e-dev`, which tests whatever binary a long-running
+  # `make run` started in another terminal — potentially several edits stale.
+  appview:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Native architecture. The Dockerfile defaults to amd64 for the prod
+        # deploy target; building amd64 under emulation on an arm64 dev machine
+        # would slow every CI run down substantially. Set by scripts/ci.sh.
+        GOARCH: ${COVES_CI_GOARCH:?must be set by scripts/ci.sh}
+        # What `make run` uses: the localhost OAuth resolvers live behind it.
+        BUILD_TAGS: dev
+    network_mode: "service:netns"
+    env_file:
+      - .env.ci
+    environment:
+      # .env.ci silences logs so the go test -json stream stays readable. The
+      # AppView is exempt: when an E2E test fails, these logs are the only
+      # record of what the server actually did.
+      LOG_ENABLED: "true"
+      LOG_LEVEL: info
+    healthcheck:
+      # Overrides the image's own HEALTHCHECK, which probes port 8080.
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8081/xrpc/_health"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+    depends_on:
+      postgres:
+        condition: service_healthy
+      pds:
+        condition: service_healthy
+      # Not because the AppView connects to pds2 at boot — it has no
+      # credentials there and never will — but because it resolves DIDs to it
+      # on demand (identity resolution, image-proxy blob fetches). A pds2 that
+      # is still starting turns those into 502s in a contract that has nothing
+      # to say about startup ordering.
+      pds2:
+        condition: service_healthy
+      plc-directory:
+        condition: service_healthy
+      turnstile-stub:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Test runner
+  # ---------------------------------------------------------------------------
+
+  runner:
+    build:
+      context: ./docker/ci-runner
+    # Tagged explicitly (this is what Compose would name it anyway) so
+    # scripts/ci.sh can `docker run` this exact image for the module-cache
+    # prefetch, which has to happen on a network that still has egress and
+    # therefore cannot go through `compose run`.
+    image: ${COVES_CI_PROJECT:-coves-ci}-runner
+    network_mode: "service:netns"
+    env_file:
+      - .env.ci
+    environment:
+      # Set here rather than in the image, so scripts/ci.sh's prefetch — which
+      # runs this same image outside the stack, with network — is unaffected.
+      # Inside the egress-blocked stack the cache is the only source of modules,
+      # so a gap in it should say "module lookup disabled by GOPROXY=off"
+      # instead of surfacing as a DNS failure that reads like broken networking.
+      GOPROXY: "off"
+      # Where the pipeline tier's reliability scenarios ask the HOST to restart
+      # or reconfigure the AppView, which nothing inside this network namespace
+      # can do for itself. The directory is inside the bind-mounted checkout
+      # (and gitignored); scripts/lib/ci-stack.sh serves it while a suite runs.
+      # Set here rather than defaulted in Go alone so the coupling between the
+      # container's view (/src) and the host's (.ci-out) is visible from the
+      # compose file that creates it.
+      #
+      # Suffixed with the project name, and the default MUST stay in step with
+      # ci-stack.sh's own default: two stacks from one checkout (which is what
+      # COVES_CI_PROJECT is for) sharing one channel would let either run's
+      # watcher answer the other's requests and restart the wrong AppView.
+      COVES_STACK_CONTROL_DIR: /src/.ci-out/stack-control-${COVES_CI_PROJECT:-coves-ci}
+    volumes:
+      # The checkout. Read-write because the Go toolchain and goose both expect
+      # a normal working tree; scripts/ci.sh asserts afterwards that the run
+      # left it clean, so a test that writes into the repo is caught rather
+      # than tolerated.
+      - .:/src
+      # Module and build caches persist across runs — this is what makes a warm
+      # `make ci` fast. Discarded by `make ci-clean`.
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/go-build-cache
+    depends_on:
+      postgres:
+        condition: service_healthy
+      postgres-test:
+        condition: service_healthy
+      appview:
+        condition: service_healthy
+      jetstream:
+        condition: service_started
+
+networks:
+  # Unnamed on purpose: Compose scopes it to the project, so concurrent stacks
+  # (and the dev stack's coves-dev-network) cannot collide.
+  ci:
+    driver: bridge
+    # THE EGRESS BLOCK. `internal: true` gives this network no gateway to the
+    # outside, so nothing in the stack can reach the public internet at runtime:
+    # a test that accidentally resolves a real handle against plc.directory, or
+    # unfurls a real URL, fails at connect time instead of silently passing
+    # against infrastructure we do not control. Greps for public hostnames catch
+    # drift cheaply; this is the part that actually guarantees it.
+    #
+    # What this does NOT affect: image builds and pulls, which go through the
+    # Docker daemon's own network. What it DOES affect: `go test` downloading
+    # modules, which is why scripts/ci.sh populates the module cache in a
+    # separate, network-enabled stage before the stack comes up.
+    internal: true
+
+volumes:
+  # State volumes are unnamed, so Compose scopes them to the project and
+  # `docker compose -p <project> down -v` removes exactly this run's state and
+  # nothing else. Every run therefore starts from an empty PDS, an empty PLC
+  # registry, and empty databases — no accumulated accounts, no handle
+  # collisions, no fixtures left behind by a previous run.
+  postgres-data:
+  postgres-test-data:
+  postgres-plc-data:
+  pds-data:
+  pds2-data:
+  postgres-relay-data:
+  # The relay's carstore and its event persister. Scoped to the project like
+  # every other state volume, so a torn-down run leaves no crawl history: the
+  # next run re-announces both PDSes from scratch (scripts/ci-bootstrap.sh) and
+  # the relay re-reads each repo from seq 0.
+  relay-data:
+  jetstream-data:
+
+  # The Go caches are deliberately the exception: external, so the teardown that
+  # wipes state cannot wipe them. This is what separates "every run starts from
+  # clean state" (required for trustworthiness) from "every run recompiles the
+  # world" (which would make the gate too slow to run often, and a gate nobody
+  # runs is worth nothing).
+  #
+  # scripts/ci.sh creates them if absent; `make ci-clean` removes them.
+  go-mod-cache:
+    external: true
+    name: coves-ci-go-mod-cache
+  go-build-cache:
+    external: true
+    name: coves-ci-go-build-cache

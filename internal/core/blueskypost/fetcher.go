@@ -15,6 +15,23 @@ import (
 // blueskyAPIBaseURL is the public Bluesky API endpoint
 const blueskyAPIBaseURL = "https://public.api.bsky.app"
 
+// blueskyAPI says where the fetcher sends requests. Production always uses the
+// public AppView with the SSRF guard on; the field exists so this package's own
+// tests can point at an httptest server, which necessarily listens on loopback
+// and would otherwise be rejected by that guard. Before this existed, three
+// "unit" tests reached public.api.bsky.app for real and passed only while
+// Bluesky was up and reachable.
+type blueskyAPI struct {
+	baseURL string
+	// allowPrivateHost disables the SSRF protection that blocks private and
+	// loopback addresses. Never set outside tests.
+	allowPrivateHost bool
+}
+
+func defaultBlueskyAPI() blueskyAPI {
+	return blueskyAPI{baseURL: blueskyAPIBaseURL}
+}
+
 // blueskyAPIResponse represents the response from app.bsky.feed.getPosts
 type blueskyAPIResponse struct {
 	Posts []blueskyAPIPost `json:"posts"`
@@ -141,13 +158,13 @@ type blueskyAPIRecordValue struct {
 }
 
 // fetchBlueskyPost fetches a Bluesky post from the public API
-func fetchBlueskyPost(ctx context.Context, atURI string, timeout time.Duration) (*BlueskyPostResult, error) {
+func fetchBlueskyPost(ctx context.Context, atURI string, timeout time.Duration, api blueskyAPI) (*BlueskyPostResult, error) {
 	// Create SSRF-safe HTTP client
-	client := oauth.NewSSRFSafeHTTPClient(false) // Don't allow private IPs
+	client := oauth.NewSSRFSafeHTTPClient(api.allowPrivateHost)
 	client.Timeout = timeout
 
 	// Construct API URL
-	apiURL := fmt.Sprintf("%s/xrpc/app.bsky.feed.getPosts?uris=%s", blueskyAPIBaseURL, url.QueryEscape(atURI))
+	apiURL := fmt.Sprintf("%s/xrpc/app.bsky.feed.getPosts?uris=%s", api.baseURL, url.QueryEscape(atURI))
 
 	// Create HTTP request
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)

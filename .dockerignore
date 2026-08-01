@@ -1,0 +1,33 @@
+# Keep the Docker build context to what the build actually needs.
+#
+# .git matters most. In a git worktree it is a *file* pointing at an absolute
+# host path that does not exist inside the build container, and Go's default
+# -buildvcs=auto tries to read VCS metadata when building a main package — which
+# can fail the build outright. Excluding it also drops the largest thing in the
+# context by far.
+.git
+.gitignore
+
+# Per-run and local state, never an input to a build.
+.ci-out/
+cache/
+.claude/
+.beads/
+
+# Build outputs, including the ones the Makefile drops at the repo root.
+server
+main
+validate-lexicon
+integration.test
+*.test
+
+# Secrets that must never enter an image layer. .env.dev and .env.ci are
+# localhost-only and tracked, but the build has no use for either.
+.env
+.env.prod
+.env.dev
+.env.ci
+
+# Editor and OS noise.
+.DS_Store
+*.swp

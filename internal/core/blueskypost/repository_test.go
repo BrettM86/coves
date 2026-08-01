@@ -31,8 +31,11 @@ func TestValidateATURI(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "http URL instead of AT-URI",
-			atURI:   "https://bsky.app/profile/user.bsky.social/post/abc123",
+			name: "http URL instead of AT-URI",
+			// The case exists BECAUSE this string is a plausible thing to pass
+			// where an AT-URI belongs; validateATURI does a prefix check on it
+			// and returns an error.
+			atURI:   "https://bsky.app/profile/user.bsky.social/post/abc123", // coves:allow-public-host: rejection input for a string validator.
 			wantErr: true,
 		},
 	}

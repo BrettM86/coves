@@ -40,17 +40,39 @@ type cloudflareTurnstile struct {
 	httpClient    *http.Client
 }
 
+// TurnstileOption customises a verifier built by NewCloudflareTurnstile.
+type TurnstileOption func(*cloudflareTurnstile)
+
+// WithSiteverifyURL points the verifier at a siteverify endpoint other than
+// Cloudflare's. It exists for the hermetic CI stack, whose Docker network is
+// `internal: true` and therefore cannot reach challenges.cloudflare.com: the
+// stack runs a stub that answers success, so the signup handshake stays under
+// test without the merge gate depending on a third party being up. Production
+// must never set it — internal/config only reads the env var that reaches here
+// when IS_DEV_ENV is true. An empty url is ignored.
+func WithSiteverifyURL(url string) TurnstileOption {
+	return func(c *cloudflareTurnstile) {
+		if url != "" {
+			c.siteverifyURL = url
+		}
+	}
+}
+
 // NewCloudflareTurnstile returns a verifier bound to the given secret.
 // secret == "" produces a verifier whose Verify always returns ErrSignupTokenDisabled
 // (the empty-secret check lives in Verify so misuse surfaces as the right ops
 // signal rather than a silent dead object). Callers should normally guard at
 // construction (see userService); this is the defense-in-depth path.
-func NewCloudflareTurnstile(secret string) TurnstileVerifier {
-	return &cloudflareTurnstile{
+func NewCloudflareTurnstile(secret string, opts ...TurnstileOption) TurnstileVerifier {
+	c := &cloudflareTurnstile{
 		secret:        secret,
 		siteverifyURL: defaultTurnstileSiteverifyURL,
 		httpClient:    &http.Client{Timeout: turnstileHTTPTimeout},
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 type turnstileResponse struct {

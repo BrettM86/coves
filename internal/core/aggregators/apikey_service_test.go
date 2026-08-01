@@ -5,11 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
+
+	"Coves/tests/testkit"
 )
 
 // ptrTime returns a pointer to a time.Time (current time)
@@ -950,23 +953,6 @@ func TestAPIKeyService_RefreshTokensIfNeeded_TokensStillValid(t *testing.T) {
 	// more complex mocking, but the absence of error is the key indicator
 }
 
-func TestAPIKeyService_RefreshTokensIfNeeded_WithinBuffer(t *testing.T) {
-	// Token expires in 4 minutes - within the 5 minute buffer, so needs refresh
-	// This test verifies that when tokens are within the buffer, the service
-	// attempts to refresh them.
-	//
-	// Note: Full integration testing of token refresh requires a real OAuth app.
-	// This test is intentionally skipped as it would require extensive mocking
-	// of the indigo OAuth library internals.
-	t.Skip("RefreshTokensIfNeeded requires fully configured OAuth app - covered by integration tests")
-}
-
-func TestAPIKeyService_RefreshTokensIfNeeded_ExpiredNilTokens(t *testing.T) {
-	// When OAuthTokenExpiresAt is nil, tokens need refresh
-	// This should also attempt to refresh (and fail with nil OAuth app)
-	t.Skip("RefreshTokensIfNeeded requires fully configured OAuth app - covered by integration tests")
-}
-
 // =============================================================================
 // GetAccessToken Tests
 // =============================================================================
@@ -1141,13 +1127,15 @@ func TestAPIKeyService_FailedLastUsedUpdates_IncrementsOnError(t *testing.T) {
 		t.Fatal("timeout waiting for async UpdateAPIKeyLastUsed call")
 	}
 
-	// Give a moment for the counter to be incremented
-	time.Sleep(10 * time.Millisecond)
-
-	// Counter should now be 1
-	if got := service.GetFailedLastUsedUpdates(); got != 1 {
-		t.Errorf("GetFailedLastUsedUpdates() after failure = %d, want 1", got)
-	}
+	// The mock signals from a defer, so it is reached BEFORE the goroutine that
+	// called it has looked at the returned error — the counter increment is
+	// still in flight at this point. Wait for the increment itself.
+	testkit.WaitFor(t, 5*time.Second, func() (bool, error) {
+		return service.GetFailedLastUsedUpdates() == 1, nil
+	}, testkit.WithDescription("the failed-last_used counter to record the database error"),
+		testkit.WithDiagnostics(func() string {
+			return fmt.Sprintf("counter: %d", service.GetFailedLastUsedUpdates())
+		}))
 }
 
 // =============================================================================

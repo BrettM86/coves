@@ -1,3 +1,5 @@
+//go:build e2e
+
 package e2e
 
 import (
@@ -6,45 +8,38 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"strconv"
 	"strings"
 	"testing"
-	"time"
+
+	"Coves/tests/testkit"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// TestE2E_UserSignupToken exercises the Turnstile-gated signup handshake
-// (POST /xrpc/social.coves.actor.requestSignupToken) against a running dev stack.
-// It uses Cloudflare's published "always-pass" site+secret keys, so no real
-// captcha challenge is required.
+// TestE2E_UserSignupToken is the API contract (§3.4b) for the Turnstile-gated
+// half of signup: POST /xrpc/social.coves.actor.requestSignupToken, which mints
+// the single-use PDS invite that social.coves.actor.signup then spends.
 //
-// Prerequisites (same as TestE2E_UserSignup):
-//   - AppView running on localhost:8081 (with TURNSTILE_SECRET_KEY set to
-//     Cloudflare's always-pass secret 1x000…AA — this is the default in .env.dev)
-//   - PDS running on localhost:3001 with PDS_INVITE_REQUIRED=true and
-//     PDS_ADMIN_PASSWORD=admin
+// Like its sibling in user_signup_test.go this is a CLIENT-SURFACE contract and
+// proves nothing about ingestion — read that file's doc comment for why the
+// distinction matters here in particular.
 //
-// Run with:
+// The stack answers the captcha with a stub bound to 127.0.0.1 rather than
+// calling Cloudflare (there is no egress from the CI network at all, §3.7), so
+// any token string passes verification. What is under test is the handshake and
+// its gates, not the captcha vendor.
 //
-//	make e2e-up
-//	go run ./cmd/server &
-//	go test ./tests/e2e -run TestE2E_UserSignupToken -v
+// The bot gate is the reason this file exists and the reason it is at T2: the
+// per-route rate limit lives in the running AppView's middleware chain, so only
+// a request to the real router can show that the route still has it.
 func TestE2E_UserSignupToken(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-	if !isAppViewAvailable(t) {
-		t.Skip("AppView not available at localhost:8081 - run 'go run ./cmd/server' first")
-	}
-	if !isPDSAvailable(t) {
-		t.Skip("PDS not available at localhost:3001 - run 'make e2e-up' first")
-	}
+	// No availability probes and no skips: TestMain's Require floor proved the
+	// stack before this package ran a single test (§3.1). The two skip calls
+	// that stood here could only convert a broken stack into a green run.
 
 	t.Run("Happy path: mint invite and sign up end-to-end", func(t *testing.T) {
-		handle, email := uniqueAccount("a")
+		handle, email := signupAccount(t, "a")
 
 		code, err := requestSignupToken("any-turnstile-value")
 		if err != nil {
@@ -67,7 +62,7 @@ func TestE2E_UserSignupToken(t *testing.T) {
 	})
 
 	t.Run("Invite is single-use: replay returns 400", func(t *testing.T) {
-		handle, email := uniqueAccount("b")
+		handle, email := signupAccount(t, "b")
 
 		code, err := requestSignupToken("any")
 		if err != nil {
@@ -79,7 +74,7 @@ func TestE2E_UserSignupToken(t *testing.T) {
 		}
 
 		// Second attempt with the same code must fail.
-		handle2, email2 := uniqueAccount("br")
+		handle2, email2 := signupAccount(t, "br")
 		if _, err := signupWithInvite(handle2, email2, "test1234", code); err == nil {
 			t.Fatalf("expected second signup with same invite to fail, but it succeeded")
 		}
@@ -101,10 +96,11 @@ func TestE2E_UserSignupToken(t *testing.T) {
 	t.Run("Per-route rate limit: 6 hits in <60s → 6th is 429", func(t *testing.T) {
 		// Per-route limit is the bot gate. If this test stops asserting,
 		// regressions to that gate go undetected.
-		// Use a unique X-Real-IP per test run so quota isn't shared with the
-		// other subtests above. pid stays stable within a test run but
-		// differs across go test invocations, avoiding bucket collisions.
-		spoofedIP := fmt.Sprintf("198.51.100.%d", (os.Getpid()%200)+10)
+		//
+		// Its own bucket, distinct from the minting calls above and fresh for
+		// this run: exhausting a bucket is what this subtest is FOR, so it must
+		// not be one anything else depends on.
+		spoofedIP := spoofedClientIP("rate-limit-probe")
 
 		payload, _ := json.Marshal(map[string]string{
 			"turnstileToken": "any",
@@ -113,7 +109,7 @@ func TestE2E_UserSignupToken(t *testing.T) {
 		var statuses []int
 		for i := 0; i < 7; i++ {
 			req, err := http.NewRequest(http.MethodPost,
-				"http://localhost:8081/xrpc/social.coves.actor.requestSignupToken",
+				testkit.Endpoints().AppView.BaseURL+"/xrpc/social.coves.actor.requestSignupToken",
 				bytes.NewReader(payload))
 			require.NoError(t, err)
 			req.Header.Set("Content-Type", "application/json")
@@ -126,22 +122,56 @@ func TestE2E_UserSignupToken(t *testing.T) {
 			t.Logf("request %d (ip=%s) → %d", i+1, spoofedIP, resp.StatusCode)
 		}
 
-		// The per-route limiter is configured at 5/min. The 6th hit should be
-		// the first 429. Hard assertion; no skip.
-		require.Contains(t, statuses, http.StatusTooManyRequests,
-			"expected at least one 429 in first 7 requests; per-route bot gate may be missing")
+		// EXACTLY where the limit falls, not merely that it falls somewhere.
+		//
+		// This assertion used to be require.Contains(statuses, 429) — "at least
+		// one of the seven was refused" — under a name promising the sixth. That
+		// passes with a limiter set to 1/min, which would lock every real user
+		// out on their second attempt, and it passes with one set to 6/min, which
+		// is a weaker gate than intended. The bucket is this run's own
+		// (spoofedClientIP above), so the boundary is deterministic and there is
+		// no reason to assert anything vaguer.
+		require.Len(t, statuses, 7, "the loop must have made seven attempts")
+		for i, status := range statuses[:5] {
+			require.NotEqualf(t, http.StatusTooManyRequests, status,
+				"request %d of the first five was refused: the per-route limit is configured at 5/min "+
+					"and this bucket is unique to this run, so nothing should have been spent before it. "+
+					"A limiter set below 5 locks real users out early", i+1)
+		}
+		require.Equalf(t, http.StatusTooManyRequests, statuses[5],
+			"the SIXTH request must be the first refusal (per-route limit 5/min). Got %d. Above 5/min the "+
+				"bot gate is weaker than intended; a 429 earlier than this would have failed the loop above",
+			statuses[5])
+		require.Equalf(t, http.StatusTooManyRequests, statuses[6],
+			"the seventh request must still be refused inside the same window — a limiter that lets the "+
+				"next request through is not holding the window open. Got %d", statuses[6])
 	})
 }
 
-// uniqueAccount builds a handle/email pair unique across runs while staying
-// under the PDS handle-length limit (the chosen name / local label must be
-// <= 18 chars). base36(UnixNano) is ~12 chars and monotonic, so we keep the
-// prefix short (<= 2 chars): "<prefix>-<suffix>.local.coves.dev". Real users
-// pick their own short handles; this constraint only bites synthetic tests.
-func uniqueAccount(prefix string) (handle, email string) {
-	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
-	return fmt.Sprintf("%s-%s.local.coves.dev", prefix, suffix),
-		fmt.Sprintf("%s-%s@test.com", prefix, suffix)
+// spoofedClientIP returns the rate-limit bucket for one of this file's two
+// distinct purposes.
+//
+// The signup-token route is rate limited per client IP at 5/min, and the
+// limiter's buckets live in the AppView process — so they OUTLIVE a test run.
+// Against a stack that persists (COVES_CI_KEEP_STACK, and therefore every
+// re-run of `make test-e2e`) the subtests below would inherit the previous
+// run's quota and fail with 429s that say nothing about the code. Giving each
+// run its own source address makes the tier re-runnable, which is the whole
+// point of keeping a stack up.
+//
+// The purpose label separates the minting calls from the rate-limit probe,
+// which deliberately exhausts its bucket: sharing one would make the subtests
+// order-dependent, passing only because the probe happens to run last.
+//
+// Both come from testkit.SyntheticClientIP, the one primitive the tier uses for
+// this — 64 hash bits over an IPv6 documentation range. Two earlier versions of
+// this helper were wrong in the same direction and are worth not repeating: one
+// keyed on os.Getpid(), which is not per-run at all inside a container that
+// starts the same process tree every time, and one folded the hash into a
+// single IPv4 octet, which starts colliding after a couple of hundred runs
+// against a kept stack.
+func spoofedClientIP(purpose string) string {
+	return testkit.SyntheticClientIP("signup-token/" + purpose)
 }
 
 // requestSignupToken calls /xrpc/social.coves.actor.requestSignupToken and returns
@@ -154,11 +184,16 @@ func requestSignupToken(turnstileToken string) (string, error) {
 		return "", fmt.Errorf("marshal: %w", err)
 	}
 
-	resp, err := http.Post(
-		"http://localhost:8081/xrpc/social.coves.actor.requestSignupToken",
-		"application/json",
-		bytes.NewReader(body),
-	)
+	req, err := http.NewRequest(http.MethodPost,
+		testkit.Endpoints().AppView.BaseURL+"/xrpc/social.coves.actor.requestSignupToken",
+		bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Real-IP", spoofedClientIP("minting"))
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("POST: %w", err)
 	}
@@ -203,7 +238,7 @@ func signupWithInvite(handle, email, password, inviteCode string) (string, error
 	}
 
 	resp, err := http.Post(
-		"http://localhost:8081/xrpc/social.coves.actor.signup",
+		testkit.Endpoints().AppView.BaseURL+"/xrpc/social.coves.actor.signup",
 		"application/json",
 		bytes.NewReader(body),
 	)

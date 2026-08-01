@@ -1,0 +1,11 @@
+-- BigSky keeps its relay metadata (hosts, repos, cursors) and its carstore
+-- shard index in two SEPARATE databases, named by DATABASE_URL and
+-- CARSTORE_DATABASE_URL. It creates neither: pointed at a database that does
+-- not exist, it fails at startup with a connection error that reads like the
+-- Postgres server is down.
+--
+-- The Postgres image creates only POSTGRES_DB (bgs). This runs from
+-- /docker-entrypoint-initdb.d on FIRST BOOT of an empty data volume — which is
+-- every `make ci` run, since the volume is project-scoped and removed by
+-- teardown — and creates the second one.
+CREATE DATABASE carstore OWNER relay_user;

@@ -254,7 +254,10 @@ func (a *application) buildRepositories() {
 func (a *application) buildServices(ctx context.Context) error {
 	var turnstileVerifier users.TurnstileVerifier
 	if a.cfg.Signup.TurnstileSecretKey != "" {
-		turnstileVerifier = users.NewCloudflareTurnstile(a.cfg.Signup.TurnstileSecretKey)
+		turnstileVerifier = users.NewCloudflareTurnstile(
+			a.cfg.Signup.TurnstileSecretKey,
+			users.WithSiteverifyURL(a.cfg.Signup.TurnstileSiteverifyURL),
+		)
 	}
 
 	// Profile backfill covers users indexed without profile data — typically

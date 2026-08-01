@@ -1,64 +1,20 @@
+//go:build integration
+
 package postgres
 
 import (
 	"Coves/internal/core/users"
+	"Coves/tests/testkit"
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
 	_ "github.com/lib/pq"
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// setupUserTestDB creates a test database connection and runs migrations
-func setupUserTestDB(t *testing.T) *sql.DB {
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		dsn = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
-	}
-
-	db, err := sql.Open("postgres", dsn)
-	require.NoError(t, err, "Failed to connect to test database")
-
-	// Run migrations
-	require.NoError(t, goose.Up(db, "../../db/migrations"), "Failed to run migrations")
-
-	return db
-}
-
-// cleanupUserData removes all test data related to users
-func cleanupUserData(t *testing.T, db *sql.DB, did string) {
-	// Clean up in reverse order of foreign key dependencies
-	_, err := db.Exec("DELETE FROM votes WHERE voter_did = $1", did)
-	require.NoError(t, err)
-
-	_, err = db.Exec("DELETE FROM comments WHERE commenter_did = $1", did)
-	require.NoError(t, err)
-
-	_, err = db.Exec("DELETE FROM community_blocks WHERE user_did = $1", did)
-	require.NoError(t, err)
-
-	_, err = db.Exec("DELETE FROM community_memberships WHERE user_did = $1", did)
-	require.NoError(t, err)
-
-	_, err = db.Exec("DELETE FROM community_subscriptions WHERE user_did = $1", did)
-	require.NoError(t, err)
-
-	_, err = db.Exec("DELETE FROM oauth_requests WHERE did = $1", did)
-	require.NoError(t, err)
-
-	_, err = db.Exec("DELETE FROM oauth_sessions WHERE did = $1", did)
-	require.NoError(t, err)
-
-	// Posts are deleted by CASCADE when user is deleted
-	_, err = db.Exec("DELETE FROM users WHERE did = $1", did)
-	require.NoError(t, err)
-}
 
 // createTestCommunity creates a minimal test community for foreign key constraints
 func createTestCommunity(t *testing.T, db *sql.DB, did, handle, ownerDID string) {
@@ -72,18 +28,12 @@ func createTestCommunity(t *testing.T, db *sql.DB, did, handle, ownerDID string)
 }
 
 func TestUserRepo_Delete_Success(t *testing.T) {
-	db := setupUserTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	testDID := "did:plc:testdeleteuser123"
 	testHandle := "testdeleteuser123.test"
 	communityDID := "did:plc:testdeletecommunity"
-
-	defer cleanupUserData(t, db, testDID)
-	defer func() {
-		// Cleanup community
-		_, _ = db.Exec("DELETE FROM communities WHERE did = $1", communityDID)
-	}()
 
 	repo := NewUserRepository(db)
 	ctx := context.Background()
@@ -179,8 +129,8 @@ func TestUserRepo_Delete_Success(t *testing.T) {
 }
 
 func TestUserRepo_Delete_NonExistentUser(t *testing.T) {
-	db := setupUserTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	repo := NewUserRepository(db)
 	ctx := context.Background()
@@ -191,8 +141,8 @@ func TestUserRepo_Delete_NonExistentUser(t *testing.T) {
 }
 
 func TestUserRepo_Delete_InvalidDID(t *testing.T) {
-	db := setupUserTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	repo := NewUserRepository(db)
 	ctx := context.Background()
@@ -204,13 +154,11 @@ func TestUserRepo_Delete_InvalidDID(t *testing.T) {
 }
 
 func TestUserRepo_Delete_Idempotent(t *testing.T) {
-	db := setupUserTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	testDID := "did:plc:testdeletetwice"
 	testHandle := "testdeletetwice.test"
-
-	defer cleanupUserData(t, db, testDID)
 
 	repo := NewUserRepository(db)
 	ctx := context.Background()
@@ -234,19 +182,12 @@ func TestUserRepo_Delete_Idempotent(t *testing.T) {
 }
 
 func TestUserRepo_Delete_WithPosts_CascadeDeletes(t *testing.T) {
-	db := setupUserTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	testDID := "did:plc:testdeletewithposts"
 	testHandle := "testdeletewithposts.test"
 	communityDID := "did:plc:testpostcommunity"
-
-	defer cleanupUserData(t, db, testDID)
-	defer func() {
-		// Cleanup posts and community
-		_, _ = db.Exec("DELETE FROM posts WHERE author_did = $1", testDID)
-		_, _ = db.Exec("DELETE FROM communities WHERE did = $1", communityDID)
-	}()
 
 	repo := NewUserRepository(db)
 	ctx := context.Background()
@@ -291,17 +232,15 @@ func TestUserRepo_Delete_WithPosts_CascadeDeletes(t *testing.T) {
 }
 
 func TestUserRepo_Delete_TransactionRollback(t *testing.T) {
+	t.Parallel()
 	// This test verifies that if any part of the deletion fails,
 	// the entire transaction is rolled back and no partial deletions occur.
 	// We can't easily simulate a failure in the middle of the transaction,
 	// but we verify that the function properly handles the transaction.
-	db := setupUserTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	testDID := "did:plc:testtransaction"
 	testHandle := "testtransaction.test"
-
-	defer cleanupUserData(t, db, testDID)
 
 	repo := NewUserRepository(db)
 	ctx := context.Background()
@@ -329,13 +268,11 @@ func TestUserRepo_Delete_TransactionRollback(t *testing.T) {
 }
 
 func TestUserRepo_Create(t *testing.T) {
-	db := setupUserTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	testDID := "did:plc:testcreateuser"
 	testHandle := "testcreateuser.test"
-
-	defer cleanupUserData(t, db, testDID)
 
 	repo := NewUserRepository(db)
 	ctx := context.Background()
@@ -354,13 +291,11 @@ func TestUserRepo_Create(t *testing.T) {
 }
 
 func TestUserRepo_Create_DuplicateDID(t *testing.T) {
-	db := setupUserTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	testDID := "did:plc:testduplicatedid"
 	testHandle := "testduplicatedid.test"
-
-	defer cleanupUserData(t, db, testDID)
 
 	repo := NewUserRepository(db)
 	ctx := context.Background()
@@ -388,13 +323,11 @@ func TestUserRepo_Create_DuplicateDID(t *testing.T) {
 }
 
 func TestUserRepo_GetByDID(t *testing.T) {
-	db := setupUserTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	testDID := "did:plc:testgetbydid"
 	testHandle := "testgetbydid.test"
-
-	defer cleanupUserData(t, db, testDID)
 
 	repo := NewUserRepository(db)
 	ctx := context.Background()
@@ -416,8 +349,8 @@ func TestUserRepo_GetByDID(t *testing.T) {
 }
 
 func TestUserRepo_GetByDID_NotFound(t *testing.T) {
-	db := setupUserTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	repo := NewUserRepository(db)
 	ctx := context.Background()
@@ -427,13 +360,11 @@ func TestUserRepo_GetByDID_NotFound(t *testing.T) {
 }
 
 func TestUserRepo_GetByHandle(t *testing.T) {
-	db := setupUserTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	testDID := "did:plc:testgetbyhandle"
 	testHandle := "testgetbyhandle.test"
-
-	defer cleanupUserData(t, db, testDID)
 
 	repo := NewUserRepository(db)
 	ctx := context.Background()
@@ -455,14 +386,12 @@ func TestUserRepo_GetByHandle(t *testing.T) {
 }
 
 func TestUserRepo_UpdateHandle(t *testing.T) {
-	db := setupUserTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	testDID := "did:plc:testupdatehandle"
 	oldHandle := "testupdatehandle.test"
 	newHandle := "newhandle.test"
-
-	defer cleanupUserData(t, db, testDID)
 
 	repo := NewUserRepository(db)
 	ctx := context.Background()
@@ -488,17 +417,12 @@ func TestUserRepo_UpdateHandle(t *testing.T) {
 }
 
 func TestUserRepo_GetProfileStats(t *testing.T) {
-	db := setupUserTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	testDID := "did:plc:testprofilestats"
 	testHandle := "testprofilestats.test"
 	communityDID := "did:plc:teststatscommunity"
-
-	defer cleanupUserData(t, db, testDID)
-	defer func() {
-		_, _ = db.Exec("DELETE FROM communities WHERE did = $1", communityDID)
-	}()
 
 	repo := NewUserRepository(db)
 	ctx := context.Background()
@@ -554,13 +478,11 @@ func TestUserRepo_GetProfileStats(t *testing.T) {
 }
 
 func TestUserRepo_Delete_WithOAuthRequests(t *testing.T) {
-	db := setupUserTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	testDID := "did:plc:testoauthrequests"
 	testHandle := "testoauthrequests.test"
-
-	defer cleanupUserData(t, db, testDID)
 
 	repo := NewUserRepository(db)
 	ctx := context.Background()
@@ -593,17 +515,12 @@ func TestUserRepo_Delete_WithOAuthRequests(t *testing.T) {
 }
 
 func TestUserRepo_Delete_WithCommunityBlocks(t *testing.T) {
-	db := setupUserTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	testDID := "did:plc:testcommunityblocks"
 	testHandle := "testcommunityblocks.test"
 	communityDID := "did:plc:testblockcommunity"
-
-	defer cleanupUserData(t, db, testDID)
-	defer func() {
-		_, _ = db.Exec("DELETE FROM communities WHERE did = $1", communityDID)
-	}()
 
 	repo := NewUserRepository(db)
 	ctx := context.Background()
@@ -639,23 +556,14 @@ func TestUserRepo_Delete_WithCommunityBlocks(t *testing.T) {
 }
 
 func TestUserRepo_Delete_TimingPerformance(t *testing.T) {
+	t.Parallel()
 	// This test ensures deletion completes in a reasonable time
 	// even with multiple related records
-	db := setupUserTestDB(t)
-	defer func() { _ = db.Close() }()
+	db := testkit.DB(t)
 
 	testDID := "did:plc:testperformance"
 	testHandle := "testperformance.test"
 	communityDID := "did:plc:testperfcommunity"
-
-	// Clean up any leftover data from previous test runs
-	cleanupUserData(t, db, testDID)
-	_, _ = db.Exec("DELETE FROM communities WHERE did = $1", communityDID)
-
-	defer cleanupUserData(t, db, testDID)
-	defer func() {
-		_, _ = db.Exec("DELETE FROM communities WHERE did = $1", communityDID)
-	}()
 
 	repo := NewUserRepository(db)
 	ctx := context.Background()
@@ -691,13 +599,17 @@ func TestUserRepo_Delete_TimingPerformance(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	// Time the deletion
+	// No wall-clock assertion. This test now runs alongside dozens of parallel
+	// peers competing for the same Postgres, so elapsed time here measures the
+	// machine's load, not the query — and the failure it would produce is a
+	// flake that reads like a performance regression. What the test proves is
+	// that a cascade delete over this much related data completes correctly;
+	// the duration is logged for a human, not asserted.
 	start := time.Now()
 	err = repo.Delete(ctx, testDID)
 	elapsed := time.Since(start)
 
 	assert.NoError(t, err)
-	assert.Less(t, elapsed, 5*time.Second, "Deletion should complete in under 5 seconds")
 
 	t.Logf("Deletion of user with %d comments and %d votes took %v", 10, 10, elapsed)
 }
@@ -712,13 +624,11 @@ func stringPtr(s string) *string {
 }
 
 func TestUserRepo_UpdateProfile(t *testing.T) {
-	db := setupUserTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	testDID := "did:plc:testupdateprofile"
 	testHandle := "testupdateprofile.test"
-
-	defer cleanupUserData(t, db, testDID)
 
 	repo := NewUserRepository(db)
 	ctx := context.Background()
@@ -758,13 +668,11 @@ func TestUserRepo_UpdateProfile(t *testing.T) {
 }
 
 func TestUserRepo_UpdateProfile_PartialUpdate(t *testing.T) {
-	db := setupUserTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	testDID := "did:plc:testpartialupdate"
 	testHandle := "testpartialupdate.test"
-
-	defer cleanupUserData(t, db, testDID)
 
 	repo := NewUserRepository(db)
 	ctx := context.Background()
@@ -807,13 +715,11 @@ func TestUserRepo_UpdateProfile_PartialUpdate(t *testing.T) {
 }
 
 func TestUserRepo_UpdateProfile_ReturnsUpdatedUser(t *testing.T) {
-	db := setupUserTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	testDID := "did:plc:testreturnsupdated"
 	testHandle := "testreturnsupdated.test"
-
-	defer cleanupUserData(t, db, testDID)
 
 	repo := NewUserRepository(db)
 	ctx := context.Background()
@@ -849,8 +755,8 @@ func TestUserRepo_UpdateProfile_ReturnsUpdatedUser(t *testing.T) {
 }
 
 func TestUserRepo_UpdateProfile_UserNotFound(t *testing.T) {
-	db := setupUserTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	repo := NewUserRepository(db)
 	ctx := context.Background()
@@ -865,13 +771,11 @@ func TestUserRepo_UpdateProfile_UserNotFound(t *testing.T) {
 }
 
 func TestUserRepo_UpdateProfile_ClearFields(t *testing.T) {
-	db := setupUserTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	testDID := "did:plc:testclearfields"
 	testHandle := "testclearfields.test"
-
-	defer cleanupUserData(t, db, testDID)
 
 	repo := NewUserRepository(db)
 	ctx := context.Background()
@@ -914,13 +818,11 @@ func TestUserRepo_UpdateProfile_ClearFields(t *testing.T) {
 }
 
 func TestUserRepo_GetByDID_ReturnsNewFields(t *testing.T) {
-	db := setupUserTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	testDID := "did:plc:testgetbydidnewfields"
 	testHandle := "testgetbydidnewfields.test"
-
-	defer cleanupUserData(t, db, testDID)
 
 	repo := NewUserRepository(db)
 	ctx := context.Background()
@@ -963,13 +865,11 @@ func TestUserRepo_GetByDID_ReturnsNewFields(t *testing.T) {
 }
 
 func TestUserRepo_GetByHandle_ReturnsNewFields(t *testing.T) {
-	db := setupUserTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	testDID := "did:plc:testgetbyhandlenewfields"
 	testHandle := "testgetbyhandlenewfields.test"
-
-	defer cleanupUserData(t, db, testDID)
 
 	repo := NewUserRepository(db)
 	ctx := context.Background()
@@ -1012,8 +912,8 @@ func TestUserRepo_GetByHandle_ReturnsNewFields(t *testing.T) {
 }
 
 func TestUpdateProfile_InvalidDID(t *testing.T) {
-	db := setupUserTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	repo := NewUserRepository(db)
 	ctx := context.Background()
@@ -1030,16 +930,13 @@ func TestUpdateProfile_InvalidDID(t *testing.T) {
 }
 
 func TestUserRepo_GetByDIDs_ReturnsNewFields(t *testing.T) {
-	db := setupUserTestDB(t)
-	defer func() { _ = db.Close() }()
+	t.Parallel()
+	db := testkit.DB(t)
 
 	testDID1 := "did:plc:testgetbydidsbatch1"
 	testHandle1 := "testgetbydidsbatch1.test"
 	testDID2 := "did:plc:testgetbydidsbatch2"
 	testHandle2 := "testgetbydidsbatch2.test"
-
-	defer cleanupUserData(t, db, testDID1)
-	defer cleanupUserData(t, db, testDID2)
 
 	repo := NewUserRepository(db)
 	ctx := context.Background()

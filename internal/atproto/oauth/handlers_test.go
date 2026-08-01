@@ -173,14 +173,6 @@ func TestHandleMobileLogin(t *testing.T) {
 	})
 }
 
-// TestParseSessionToken tests that we no longer use parseSessionToken
-// (removed in favor of sealed tokens)
-func TestParseSessionToken(t *testing.T) {
-	// This test is deprecated - we now use sealed tokens instead of plain "did:sessionID" format
-	// See TestSealAndUnsealSessionData for the new approach
-	t.Skip("parseSessionToken removed - we now use sealed tokens for security")
-}
-
 // TestIsMobileRedirectURI tests mobile redirect URI validation with EXACT URI matching
 // Per atproto spec, custom schemes must match client_id hostname in reverse-domain order
 func TestIsMobileRedirectURI(t *testing.T) {
@@ -448,7 +440,11 @@ func TestOAuthEndpointsNoConflict(t *testing.T) {
 // TestConfidentialClientWithDevMode verifies confidential client works in dev mode
 func TestConfidentialClientWithDevMode(t *testing.T) {
 	config := &OAuthConfig{
-		PublicURL:       "http://127.0.0.1:8081",
+		// The loopback address a dev-mode client derives its client_id and
+		// callback URL from. This test asserts on the SHAPE of what the client
+		// builds out of it (confidential, private_key_jwt, "http://" client_id)
+		// and never dials it, so the address is the fixture, not an endpoint.
+		PublicURL:       "http://127.0.0.1:8081", // coves:allow-host-literal: dev-mode loopback PublicURL fixture; the client_id is asserted on, the address is never dialled
 		Scopes:          []string{"atproto"},
 		PLCURL:          testPLCURL,
 		DevMode:         true, // Dev mode enabled

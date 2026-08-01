@@ -1,5 +1,7 @@
 package jetstream
 
+// coves:allow-public-host-file: this file tests the JETSTREAM_FEEDS spec parser, and the spec production actually runs names the public Bluesky Jetstream — asserting on any other string would test a topology we do not deploy. ParseFeeds and SubscribeURL are pure string functions: nothing here opens a socket.
+
 import (
 	"testing"
 
@@ -16,10 +18,10 @@ func TestParseFeeds_TwoFeeds_OrderPreserved(t *testing.T) {
 }
 
 func TestParseFeeds_SingleFeedWithWhitespaceAndTrailingSemicolon(t *testing.T) {
-	feeds, err := ParseFeeds(" self = ws://localhost:6008 ; ")
+	feeds, err := ParseFeeds(" self = ws://localhost:6008 ; ") // coves:allow-host-literal: spec text under test; the padding around the URL is the point, so it stays inline.
 	require.NoError(t, err)
 	require.Len(t, feeds, 1)
-	assert.Equal(t, Feed{Key: "self", BaseURL: "ws://localhost:6008"}, feeds[0])
+	assert.Equal(t, Feed{Key: "self", BaseURL: "ws://localhost:6008"}, feeds[0]) // coves:allow-host-literal: the trimmed form the parser must produce from the padded input above.
 }
 
 func TestParseFeeds_Rejections(t *testing.T) {
@@ -107,4 +109,52 @@ func TestWantedCollections_ReturnsACopy(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "social.coves.community.post", second[0],
 		"WantedCollections must return a copy; callers must not be able to mutate the canonical table")
+}
+
+func TestConsumedCollections_MatchesEveryConsumersFilters(t *testing.T) {
+	consumed := ConsumedCollections()
+
+	// Derived from the same table the subscribe URLs are, so the two can never
+	// disagree: every collection any consumer wants is present, attributed to
+	// that consumer.
+	for _, consumer := range []string{
+		ConsumerUsers, ConsumerCommunities, ConsumerPosts,
+		ConsumerAggregators, ConsumerVotes, ConsumerComments,
+	} {
+		collections, err := WantedCollections(consumer)
+		require.NoError(t, err)
+		for _, collection := range collections {
+			assert.Contains(t, consumed[collection], consumer,
+				"collection %s is filtered for by consumer %s but the contract inventory does not say so",
+				collection, consumer)
+		}
+	}
+
+	total := 0
+	for _, consumers := range consumed {
+		total += len(consumers)
+		assert.NotEmpty(t, consumers, "a collection in the inventory with no consumer is a bug in ConsumedCollections")
+	}
+	assert.Equal(t, total, countFilteredCollections(),
+		"the inventory must account for every (consumer, collection) pair and no more")
+}
+
+func countFilteredCollections() int {
+	n := 0
+	for _, collections := range consumerWantedCollections {
+		n += len(collections)
+	}
+	return n
+}
+
+func TestConsumedCollections_ReturnsACopy(t *testing.T) {
+	first := ConsumedCollections()
+	require.NotEmpty(t, first["social.coves.community.post"])
+	first["social.coves.community.post"][0] = "mutated"
+	delete(first, "social.coves.feed.vote")
+
+	second := ConsumedCollections()
+	assert.Equal(t, []string{ConsumerPosts}, second["social.coves.community.post"])
+	assert.Equal(t, []string{ConsumerVotes}, second["social.coves.feed.vote"],
+		"the contract inventory must not be mutable through a returned map")
 }

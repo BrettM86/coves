@@ -434,7 +434,7 @@ Total: 8 test cases, 12 sub-tests
 - ✅ Security (cursor injection, SQL injection attempts)
 - ✅ Edge cases (empty feeds, zero/negative limits)
 
-**Location:** `tests/integration/feed_test.go`
+**Location:** `internal/db/postgres/community_feed_test.go`
 
 ---
 

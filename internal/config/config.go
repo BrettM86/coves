@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 	"time"
@@ -268,6 +269,13 @@ type SignupConfig struct {
 
 	// TurnstileSecretKey verifies captcha tokens server-side.
 	TurnstileSecretKey string
+
+	// TurnstileSiteverifyURL replaces Cloudflare's siteverify endpoint. Read
+	// from TURNSTILE_SITEVERIFY_URL and honoured ONLY when IS_DEV_ENV is true,
+	// so a stray env var can never redirect production's captcha check at an
+	// endpoint that answers "success" to everything. The hermetic CI stack sets
+	// it because its Docker network is egress-blocked; empty everywhere else.
+	TurnstileSiteverifyURL string
 }
 
 // TokenEndpointEnabled reports whether the signup-token endpoint can operate.
@@ -317,6 +325,17 @@ func Load() (*Config, error) {
 	cfg.Signup = SignupConfig{
 		TurnstileSiteKey:   lookup("TURNSTILE_SITE_KEY"),
 		TurnstileSecretKey: lookup("TURNSTILE_SECRET_KEY"),
+	}
+	if isDevEnv {
+		cfg.Signup.TurnstileSiteverifyURL = lookup("TURNSTILE_SITEVERIFY_URL")
+	} else if override := lookup("TURNSTILE_SITEVERIFY_URL"); override != "" {
+		// Dropping it silently would let an operator believe captcha
+		// verification is pointed somewhere it is not. The value is still
+		// ignored — that is the fail-closed behaviour — but they hear about it.
+		slog.Warn("TURNSTILE_SITEVERIFY_URL ignored in non-dev env; captcha verification uses Cloudflare",
+			slog.String("ignored_value", override),
+			slog.String("siteverify_url", "https://challenges.cloudflare.com/turnstile/v0/siteverify"),
+		)
 	}
 
 	cfg.CursorSecret = stringVar("CURSOR_SECRET", devCursorSecret)

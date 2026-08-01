@@ -3,9 +3,12 @@ package imageproxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
+
+	"Coves/tests/testkit"
 )
 
 // MockCache implements Cache for testing
@@ -220,13 +223,14 @@ func TestImageProxyService_GetImage_CacheMiss(t *testing.T) {
 		t.Errorf("expected processor to be called once, got %d calls", processor.Calls())
 	}
 
-	// Wait a bit for async cache write
-	time.Sleep(50 * time.Millisecond)
-
-	// Verify cache was written
-	if cache.SetCalls() < 1 {
-		t.Errorf("expected cache to be written, got %d set calls", cache.SetCalls())
-	}
+	// The cache write happens on its own goroutine, so wait for the write
+	// itself rather than for a duration guessed to contain it.
+	testkit.WaitFor(t, 5*time.Second, func() (bool, error) {
+		return cache.SetCalls() >= 1, nil
+	}, testkit.WithDescription("the asynchronous cache write to land"),
+		testkit.WithDiagnostics(func() string {
+			return fmt.Sprintf("cache Set calls: %d", cache.SetCalls())
+		}))
 
 	// Verify the correct data was cached
 	setData, found := cache.GetSetData("avatar", "did:plc:test123", "bafyreicid123")
@@ -312,13 +316,13 @@ func TestImageProxyService_GetImage_CacheWriteIsAsync(t *testing.T) {
 		t.Logf("warning: GetImage took %v, expected faster response", elapsed)
 	}
 
-	// Wait for async cache write to complete
-	time.Sleep(100 * time.Millisecond)
-
-	// Now verify cache was written
-	if cache.SetCalls() < 1 {
-		t.Errorf("expected cache to be written asynchronously, got %d set calls", cache.SetCalls())
-	}
+	// The write still has to happen — asynchronous must not mean dropped.
+	testkit.WaitFor(t, 5*time.Second, func() (bool, error) {
+		return cache.SetCalls() >= 1, nil
+	}, testkit.WithDescription("the cache write to complete after GetImage returned"),
+		testkit.WithDiagnostics(func() string {
+			return fmt.Sprintf("cache Set calls: %d", cache.SetCalls())
+		}))
 }
 
 func TestImageProxyService_GetImage_EmptyPreset(t *testing.T) {

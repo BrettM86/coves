@@ -1,0 +1,58 @@
+# Skips the CI gate tolerates.
+#
+# `make ci` treats a skipped test as a FAILURE unless it is listed here. That
+# inversion is the point: `go test` counts a skip as "not a failure", so without
+# this file a suite that quietly stops running looks identical to a suite that
+# passes. Stop the PDS and a bare `go test` still prints its success banner.
+#
+# FORMAT
+#
+#   <import-path> <TestName>    # why this skip is acceptable
+#   ~<import-path> <TestName>   # ...and this one may or may not skip
+#
+# The reason is mandatory — cmd/ci-report rejects an entry without one. A
+# TestName may end in "/*" to cover a test and all of its subtests.
+#
+# A leading "~" marks the entry CONDITIONAL: the test may skip on one run and
+# run on the next, so its absence is not treated as staleness. Reserve it for
+# skips that depend on something outside our control. Deterministic skips must
+# NOT carry it, so that the day one stops skipping, the gate says so.
+#
+# RULES
+#
+#   * Adding an entry is a coverage decision. It belongs in a diff, with a
+#     reason a reviewer can weigh — not in a green checkmark nobody reads.
+#   * A stale non-conditional entry (listed, but did not skip) fails the gate.
+#     Either the test now runs — delete the line — or it no longer exists.
+#   * "The infrastructure was not available" is NOT a valid reason. The gate
+#     builds its own infrastructure; if a test cannot find it, that is a bug in
+#     the stack, not an exemption.
+#
+# THIS FILE IS DELIBERATELY EMPTY. Every test on the merge path runs.
+#
+# It stayed a file rather than becoming a deleted file because the gate still
+# reads it, and because an empty exemption list is the only version of this
+# list worth defending: the next entry has to be argued for on its own merits
+# instead of inheriting the legitimacy of the ones above it.
+#
+# How it got here, so the same shapes are recognisable next time:
+#
+#   * Public-internet tests (11 entries) moved to tests/live/ behind the `live`
+#     build tag. The merge-path build does not compile them at all. An exemption
+#     that says "this test never runs here" is strictly worse than not building
+#     the test here — the tag makes the tier explicit, and `make test-live` is
+#     where it gets exercised.
+#   * Defs-only lexicon subtests (8 entries) were fixed at the generator.
+#     TestLexiconSchemaValidation used to create a subtest per lexicon file and
+#     then skip the ones with no primary type; it now partitions the files
+#     first, and TestLexiconDefinitionOnlySchemas resolves every definition in
+#     the defs-only ones by fragment. Generating a test in order to skip it is
+#     not coverage, it is a subtest-shaped hole.
+#   * Never-run debt tests (6 entries) were deleted. Each had skipped
+#     unconditionally since the day it was written, so none had ever verified
+#     anything. CLAUDE.md's "no stubs, no placeholder code" rule reaches test
+#     files too.
+#
+# Derived from a full hermetic run on 2026-07-29 with CI network egress
+# blocked. If you are about to add the first line back, read the RULES above
+# and make sure the answer is not "fix the test instead".

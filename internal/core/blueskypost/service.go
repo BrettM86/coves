@@ -28,6 +28,7 @@ type service struct {
 	circuitBreaker   *circuitBreaker
 	timeout          time.Duration
 	maxCacheTTL      time.Duration // maximum TTL (used as fallback if age unknown)
+	api              blueskyAPI
 }
 
 // NewService creates a new Bluesky post service
@@ -45,6 +46,7 @@ func NewService(repo Repository, identityResolver identity.Resolver, opts ...Ser
 		timeout:          10 * time.Second,
 		maxCacheTTL:      ttlOldPost, // max TTL for fallback; actual TTL is age-based
 		circuitBreaker:   newCircuitBreaker(),
+		api:              defaultBlueskyAPI(),
 	}
 
 	for _, opt := range opts {
@@ -141,7 +143,7 @@ func (s *service) ResolvePost(ctx context.Context, atURI string) (*BlueskyPostRe
 
 	// 3. Fetch from Bluesky API
 	log.Printf("[BLUESKY] Cache miss for %s, fetching from API...", atURI)
-	result, err := fetchBlueskyPost(ctx, atURI, s.timeout)
+	result, err := fetchBlueskyPost(ctx, atURI, s.timeout, s.api)
 	if err != nil {
 		s.circuitBreaker.recordFailure(provider, err)
 		return nil, fmt.Errorf("failed to fetch Bluesky post: %w", err)

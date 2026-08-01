@@ -99,7 +99,14 @@ func (c *VoteCache) SetVote(userDID, subjectURI string, vote *CachedVote) {
 
 	c.votes[userDID][subjectURI] = vote
 
-	// Always extend expiry on vote action - active users keep their cache fresh
+	// KNOWN DEFECT — this line reads as "active users keep their cache fresh"
+	// and does the opposite when the user's deadline has already lapsed.
+	// Expiry never drops c.votes[userDID], so extending the deadline
+	// unconditionally republishes an arbitrarily old map as current for another
+	// full TTL. Reachable when a cache populate fails transiently and the
+	// service's pagination fallback succeeds behind it. See
+	// ~/Code/claude-skills/issues/2026-07-30-vote-cache-expiry-revived-by-next-vote.md,
+	// pinned by TestVoteCacheStaleMapSurvivesExpiryAndIsRevivedByTheNextVote.
 	c.expiry[userDID] = time.Now().Add(c.ttl)
 
 	c.logger.Debug("vote cached",
@@ -116,7 +123,10 @@ func (c *VoteCache) RemoveVote(userDID, subjectURI string) {
 	if c.votes[userDID] != nil {
 		delete(c.votes[userDID], subjectURI)
 
-		// Extend expiry on vote action - active users keep their cache fresh
+		// KNOWN DEFECT — same revival hazard as SetVote above: a lapsed user's
+		// stale map is republished as fresh. Note also that the guard tests
+		// c.votes, which expiry does not clear, so this branch is taken for a
+		// user whose cache lapsed long ago.
 		c.expiry[userDID] = time.Now().Add(c.ttl)
 
 		c.logger.Debug("vote removed from cache",

@@ -1057,14 +1057,24 @@ func TestRequestSignupToken_PDSAdminReturnsEmptyCode(t *testing.T) {
 	assert.Contains(t, mintErr.Body(), "empty code")
 }
 
+// withPDSAdminClient replaces the client the service uses for PDS admin calls.
+// Unexported and test-only: it exists so the transport-failure path can be
+// exercised deterministically, not as a production knob.
+func withPDSAdminClient(c *http.Client) UserServiceOption {
+	return func(s *userService) { s.pdsAdminClient = c }
+}
+
 // Transport failure (PDS unreachable) must wrap ErrPDSAdminUnavailable so the
 // handler maps to 503, not a bare 500.
 func TestRequestSignupToken_PDSAdminTransportFailure(t *testing.T) {
 	mockRepo := new(MockUserRepository)
 	turnstile := &mockTurnstile{}
 
-	// 127.0.0.1:0 → guaranteed unreachable. http.Client.Do returns a transport error.
-	service := NewUserService(mockRepo, nil, "http://127.0.0.1:0", turnstile, "admin-pw")
+	// The admin call fails in the transport, without a socket: see
+	// failingTransport in turnstile_test.go for why this is injected rather than
+	// dialled at an unreachable address.
+	service := NewUserService(mockRepo, nil, "http://pds.invalid", turnstile, "admin-pw",
+		withPDSAdminClient(unreachableClient()))
 
 	_, err := service.RequestSignupToken(context.Background(), RequestSignupTokenRequest{
 		TurnstileToken: "tok",

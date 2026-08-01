@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -208,7 +210,7 @@ func createListTestOAuthSession(did string) *oauth.ClientSessionData {
 	return &oauth.ClientSessionData{
 		AccountDID:  parsedDID,
 		SessionID:   "test-session",
-		HostURL:     "http://localhost:3001",
+		HostURL:     testSessionPDSHostURL,
 		AccessToken: "test-access-token",
 	}
 }
@@ -472,5 +474,202 @@ func TestListHandler_MethodNotAllowed(t *testing.T) {
 
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("Expected status 405, got %d", w.Code)
+	}
+}
+
+// The list handler's query surface: which sorts and filters it accepts, what it
+// refuses, and the response envelope.
+//
+// These came down a tier from tests/integration/community_e2e_test.go, whose
+// "List with sort=…" subtests spent a real PDS, a real Jetstream and a
+// provisioned community each to assert that a sort parameter produced HTTP 200
+// (docs/TEST_ARCHITECTURE.md §3.4 rule 3: behavioural breadth is a T1/T0
+// concern). Down here every case is covered instead of four of them, the
+// parameter's onward journey into the service request is visible, and the
+// ORDERING those sorts actually produce is asserted where it is implemented —
+// internal/db/postgres's community repository, against real SQL.
+
+// listedBy runs one list request and returns the service request it produced
+// alongside the recorder, so a test can assert on both halves of the handler's
+// job: what it forwarded, and what it answered.
+func listedBy(t *testing.T, query string) (communities.ListCommunitiesRequest, *httptest.ResponseRecorder) {
+	t.Helper()
+
+	var forwarded communities.ListCommunitiesRequest
+	handler := NewListHandler(&listTestService{
+		listFunc: func(_ context.Context, req communities.ListCommunitiesRequest) ([]*communities.Community, error) {
+			forwarded = req
+			return []*communities.Community{}, nil
+		},
+	}, &listTestRepo{})
+
+	w := httptest.NewRecorder()
+	handler.HandleList(w, httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.community.list?"+query, nil))
+	return forwarded, w
+}
+
+func TestListHandler_SortParameter(t *testing.T) {
+	t.Parallel()
+
+	for _, sort := range []string{"popular", "active", "new", "alphabetical"} {
+		t.Run(sort, func(t *testing.T) {
+			t.Parallel()
+			forwarded, w := listedBy(t, "sort="+sort)
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200 for sort=%s, got %d: %s", sort, w.Code, w.Body.String())
+			}
+			if forwarded.Sort != sort {
+				t.Errorf("expected the handler to forward sort=%q, forwarded %q", sort, forwarded.Sort)
+			}
+		})
+	}
+}
+
+func TestListHandler_SortDefaultsToPopular(t *testing.T) {
+	t.Parallel()
+
+	// The default is applied in the handler rather than left empty for the
+	// repository to interpret, so an omitted sort and sort=popular must produce
+	// the identical service request.
+	forwarded, w := listedBy(t, "limit=10")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if forwarded.Sort != "popular" {
+		t.Errorf("expected an absent sort to default to popular, got %q", forwarded.Sort)
+	}
+}
+
+func TestListHandler_InvalidSortIsRejected(t *testing.T) {
+	t.Parallel()
+
+	// KNOWN INCONSISTENCY, asserted as it is rather than as it should be: this
+	// rejection is http.Error, so the body is plain text and carries no XRPC
+	// error name — unlike the limit and cursor rejections a few lines above it
+	// in the same handler. A client matching on the error name sees nothing to
+	// match. Changing it is a client-visible API change and belongs in its own
+	// commit; pinning it here means that commit cannot happen by accident.
+	forwarded, w := listedBy(t, "sort=trending")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an unknown sort, got %d: %s", w.Code, w.Body.String())
+	}
+	if forwarded.Sort != "" {
+		t.Error("the handler queried the service with an invalid sort instead of rejecting the request")
+	}
+	if body := w.Body.String(); !strings.Contains(body, "popular, active, new, or alphabetical") {
+		t.Errorf("the rejection should name the accepted sorts, got %q", body)
+	}
+}
+
+func TestListHandler_VisibilityFilter(t *testing.T) {
+	t.Parallel()
+
+	for _, visibility := range []string{"public", "unlisted", "private"} {
+		t.Run(visibility, func(t *testing.T) {
+			t.Parallel()
+			forwarded, w := listedBy(t, "visibility="+visibility)
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200 for visibility=%s, got %d: %s", visibility, w.Code, w.Body.String())
+			}
+			if forwarded.Visibility != visibility {
+				t.Errorf("expected the handler to forward visibility=%q, forwarded %q", visibility, forwarded.Visibility)
+			}
+		})
+	}
+
+	t.Run("absent", func(t *testing.T) {
+		t.Parallel()
+		// No default: an empty visibility is what tells the repository not to
+		// filter at all, so substituting "public" here would silently hide
+		// unlisted communities from every unfiltered listing.
+		forwarded, _ := listedBy(t, "limit=10")
+		if forwarded.Visibility != "" {
+			t.Errorf("expected an absent visibility to stay empty, got %q", forwarded.Visibility)
+		}
+	})
+
+	t.Run("invalid", func(t *testing.T) {
+		t.Parallel()
+		forwarded, w := listedBy(t, "visibility=secret")
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for an unknown visibility, got %d: %s", w.Code, w.Body.String())
+		}
+		if forwarded.Visibility != "" {
+			t.Error("the handler queried the service with an invalid visibility instead of rejecting the request")
+		}
+	})
+}
+
+func TestListHandler_ResponseEnvelope(t *testing.T) {
+	t.Parallel()
+
+	// The cursor is the pagination contract: offset-based, and present only when
+	// the page was full. A cursor returned on a short page would make a client
+	// page forever.
+	tests := []struct {
+		name           string
+		query          string
+		returned       int
+		expectedCursor string
+	}{
+		{name: "a short page ends the listing", query: "limit=10", returned: 3, expectedCursor: ""},
+		{name: "a full page offers the next offset", query: "limit=3", returned: 3, expectedCursor: "3"},
+		{name: "a full page continues from the cursor", query: "limit=3&cursor=6", returned: 3, expectedCursor: "9"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			results := make([]*communities.Community, tc.returned)
+			for i := range results {
+				results[i] = &communities.Community{
+					DID:             "did:plc:listed" + strconv.Itoa(i),
+					Handle:          "c-listed" + strconv.Itoa(i) + ".coves.social",
+					Name:            "listed" + strconv.Itoa(i),
+					Visibility:      "public",
+					PDSPassword:     "hunter2",
+					PDSAccessToken:  "access-jwt",
+					PDSRefreshToken: "refresh-jwt",
+				}
+			}
+
+			handler := NewListHandler(&listTestService{
+				listFunc: func(_ context.Context, _ communities.ListCommunitiesRequest) ([]*communities.Community, error) {
+					return results, nil
+				},
+			}, &listTestRepo{})
+
+			w := httptest.NewRecorder()
+			handler.HandleList(w, httptest.NewRequest(http.MethodGet,
+				"/xrpc/social.coves.community.list?"+tc.query, nil))
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+			}
+
+			var response struct {
+				Communities []communities.CommunityView `json:"communities"`
+				Cursor      *string                     `json:"cursor"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+				t.Fatalf("decoding the list response: %v (body %q)", err, w.Body.String())
+			}
+			if len(response.Communities) != tc.returned {
+				t.Errorf("expected %d communities, got %d", tc.returned, len(response.Communities))
+			}
+			// Always present, even when empty: a client that reads a missing key
+			// as "no more pages" and an empty string as "page 0" would loop.
+			if response.Cursor == nil {
+				t.Fatalf("the response omitted the cursor key entirely: %s", w.Body.String())
+			}
+			if *response.Cursor != tc.expectedCursor {
+				t.Errorf("expected cursor %q, got %q", tc.expectedCursor, *response.Cursor)
+			}
+			if strings.Contains(w.Body.String(), "hunter2") ||
+				strings.Contains(w.Body.String(), "-jwt") {
+				t.Error("a community's PDS credentials reached a client through the list view")
+			}
+		})
 	}
 }

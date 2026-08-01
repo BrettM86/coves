@@ -7,12 +7,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testPDSBaseURL is the base URL the transforms under test concatenate onto.
+//
+// It is data, not an endpoint. TransformBlobRefsToURLs and transformThumbToURL
+// take the PDS base off the record (CommunityRef.PDSURL) or as a parameter and
+// build a getBlob path from it; there is no HTTP client in this file and
+// nothing here is dialled. Reading the base from testkit.Endpoints() — the
+// same place the serving code reads it — would make the expected strings
+// tautological, so it is written down once here instead, which also keeps the
+// assertions focused on the part the function actually builds: the path and
+// its query.
+const testPDSBaseURL = "http://localhost:3001" // coves:allow-host-literal: expected-output fixture for a pure string transform; never dialled
+
 func TestTransformBlobRefsToURLs(t *testing.T) {
 	t.Run("transforms external embed thumb from blob to URL", func(t *testing.T) {
 		post := &PostView{
 			Community: &CommunityRef{
 				DID:    "did:plc:testcommunity",
-				PDSURL: "http://localhost:3001",
+				PDSURL: testPDSBaseURL,
 			},
 			Embed: map[string]interface{}{
 				"$type": "social.coves.embed.external",
@@ -44,7 +56,7 @@ func TestTransformBlobRefsToURLs(t *testing.T) {
 		thumbURL, ok := external["thumb"].(string)
 		require.True(t, ok, "thumb should be a string URL")
 		assert.Equal(t,
-			"http://localhost:3001/xrpc/com.atproto.sync.getBlob?did=did:plc:testcommunity&cid=bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm",
+			testPDSBaseURL+"/xrpc/com.atproto.sync.getBlob?did=did:plc:testcommunity&cid=bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm",
 			thumbURL)
 	})
 
@@ -52,7 +64,7 @@ func TestTransformBlobRefsToURLs(t *testing.T) {
 		post := &PostView{
 			Community: &CommunityRef{
 				DID:    "did:plc:testcommunity",
-				PDSURL: "http://localhost:3001",
+				PDSURL: testPDSBaseURL,
 			},
 			Embed: map[string]interface{}{
 				"$type": "social.coves.embed.external",
@@ -74,11 +86,11 @@ func TestTransformBlobRefsToURLs(t *testing.T) {
 	})
 
 	t.Run("handles already-transformed URL thumb", func(t *testing.T) {
-		expectedURL := "http://localhost:3001/xrpc/com.atproto.sync.getBlob?did=did:plc:test&cid=bafytest"
+		expectedURL := testPDSBaseURL + "/xrpc/com.atproto.sync.getBlob?did=did:plc:test&cid=bafytest"
 		post := &PostView{
 			Community: &CommunityRef{
 				DID:    "did:plc:testcommunity",
-				PDSURL: "http://localhost:3001",
+				PDSURL: testPDSBaseURL,
 			},
 			Embed: map[string]interface{}{
 				"$type": "social.coves.embed.external",
@@ -104,7 +116,7 @@ func TestTransformBlobRefsToURLs(t *testing.T) {
 		post := &PostView{
 			Community: &CommunityRef{
 				DID:    "did:plc:testcommunity",
-				PDSURL: "http://localhost:3001",
+				PDSURL: testPDSBaseURL,
 			},
 			Embed: nil,
 		}
@@ -184,7 +196,7 @@ func TestTransformBlobRefsToURLs(t *testing.T) {
 		post := &PostView{
 			Community: &CommunityRef{
 				DID:    "did:plc:testcommunity",
-				PDSURL: "http://localhost:3001",
+				PDSURL: testPDSBaseURL,
 			},
 			Embed: map[string]interface{}{
 				"$type": "social.coves.embed.external",
@@ -213,7 +225,7 @@ func TestTransformBlobRefsToURLs(t *testing.T) {
 		post := &PostView{
 			Community: &CommunityRef{
 				DID:    "did:plc:testcommunity",
-				PDSURL: "http://localhost:3001",
+				PDSURL: testPDSBaseURL,
 			},
 			Embed: map[string]interface{}{
 				"$type": "social.coves.embed.images",
@@ -256,23 +268,23 @@ func TestTransformThumbToURL(t *testing.T) {
 			},
 		}
 
-		transformThumbToURL(external, "did:plc:test", "http://localhost:3001")
+		transformThumbToURL(external, "did:plc:test", testPDSBaseURL)
 
 		thumbURL, ok := external["thumb"].(string)
 		require.True(t, ok, "thumb should be a string URL")
 		assert.Equal(t,
-			"http://localhost:3001/xrpc/com.atproto.sync.getBlob?did=did:plc:test&cid=bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm",
+			testPDSBaseURL+"/xrpc/com.atproto.sync.getBlob?did=did:plc:test&cid=bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm",
 			thumbURL)
 	})
 
 	t.Run("does not transform if thumb is already string", func(t *testing.T) {
-		expectedURL := "http://localhost:3001/xrpc/com.atproto.sync.getBlob?did=did:plc:test&cid=bafytest"
+		expectedURL := testPDSBaseURL + "/xrpc/com.atproto.sync.getBlob?did=did:plc:test&cid=bafytest"
 		external := map[string]interface{}{
 			"uri":   "https://example.com",
 			"thumb": expectedURL,
 		}
 
-		transformThumbToURL(external, "did:plc:test", "http://localhost:3001")
+		transformThumbToURL(external, "did:plc:test", testPDSBaseURL)
 
 		thumbURL, ok := external["thumb"].(string)
 		require.True(t, ok, "thumb should still be a string")
@@ -284,7 +296,7 @@ func TestTransformThumbToURL(t *testing.T) {
 			"uri": "https://example.com",
 		}
 
-		transformThumbToURL(external, "did:plc:test", "http://localhost:3001")
+		transformThumbToURL(external, "did:plc:test", testPDSBaseURL)
 
 		_, hasThumb := external["thumb"]
 		assert.False(t, hasThumb, "thumb should not be added")
@@ -301,7 +313,7 @@ func TestTransformThumbToURL(t *testing.T) {
 			},
 		}
 
-		transformThumbToURL(external, "did:plc:test", "http://localhost:3001")
+		transformThumbToURL(external, "did:plc:test", testPDSBaseURL)
 
 		// Verify thumb is unchanged
 		thumb, ok := external["thumb"].(map[string]interface{})

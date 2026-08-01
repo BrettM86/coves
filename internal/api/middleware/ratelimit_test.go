@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -10,11 +11,36 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"Coves/tests/testkit"
 )
 
 // allow() is the load-bearing primitive — every per-route rate limit and the
 // global limit go through it. These tests pin the contract directly so we don't
 // rely on flaky end-to-end timing.
+
+// testClock is a hand-advanced clock for the limiter's injected now(). Window
+// expiry is a deadline the limiter itself computed, so a test can cross it by
+// moving the clock instead of waiting for it — deterministic and free.
+//
+// Concurrency-safe by construction: the limiter's cleanup goroutine reads the
+// clock on its own schedule while the test writes it, so the timestamp lives in
+// an atomic rather than a plain field.
+type testClock struct {
+	nanos atomic.Int64
+}
+
+func newTestClock() *testClock {
+	c := &testClock{}
+	// An arbitrary fixed instant. Nothing depends on its value, only on the
+	// deltas the test applies, but a fixed start keeps failures reproducible.
+	c.nanos.Store(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).UnixNano())
+	return c
+}
+
+func (c *testClock) Now() time.Time { return time.Unix(0, c.nanos.Load()).UTC() }
+
+func (c *testClock) Advance(d time.Duration) { c.nanos.Add(int64(d)) }
 
 func TestRateLimiter_Allow_UnderLimit(t *testing.T) {
 	rl := NewNamedRateLimiter("test", 3, time.Minute)
@@ -51,14 +77,17 @@ func TestRateLimiter_Allow_PerClientIsolation(t *testing.T) {
 }
 
 func TestRateLimiter_Allow_WindowResets(t *testing.T) {
-	// Tiny window so the test runs fast.
-	rl := NewNamedRateLimiter("test", 1, 50*time.Millisecond)
+	// The clock is injected, so the window boundary is crossed by moving time
+	// rather than by outlasting it. That also lets the window be the realistic
+	// minute production configures instead of an artificially tiny one.
+	clock := newTestClock()
+	rl := newRateLimiterWithClock("test", 1, time.Minute, clock.Now)
 	t.Cleanup(rl.Stop)
 
 	require.True(t, rl.allow("ip-a"))
 	require.False(t, rl.allow("ip-a"))
 
-	time.Sleep(80 * time.Millisecond)
+	clock.Advance(time.Minute + time.Second)
 
 	assert.True(t, rl.allow("ip-a"), "window expired — budget should reset")
 }
@@ -175,17 +204,26 @@ func TestRateLimiter_TreatsClientWithVaryingProxyChainAsSameBucket(t *testing.T)
 }
 
 func TestRateLimiter_Cleanup_RemovesExpiredEntries(t *testing.T) {
-	// Tiny window: cleanup ticker also fires every `window`, so sleeping past
-	// 2× the window guarantees at least one tick has cleared expired entries.
-	rl := NewNamedRateLimiter("test", 1, 50*time.Millisecond)
+	// Eviction is work a background goroutine does, so this waits for the
+	// eviction itself rather than for a duration guessed to contain it. The
+	// clock makes the entry expired the instant it is advanced, so the very
+	// next cleanup tick must remove it; the window doubles as the ticker
+	// interval, so a small one keeps that tick close.
+	clock := newTestClock()
+	rl := newRateLimiterWithClock("test", 1, 20*time.Millisecond, clock.Now)
 	t.Cleanup(rl.Stop)
 
 	require.True(t, rl.allow("ip-a"))
 	require.Equal(t, 1, rl.clientCount(), "entry should be tracked immediately")
 
-	time.Sleep(150 * time.Millisecond)
+	clock.Advance(time.Minute)
 
-	assert.Equal(t, 0, rl.clientCount(), "cleanup goroutine must evict expired entries")
+	testkit.WaitFor(t, 5*time.Second, func() (bool, error) {
+		return rl.clientCount() == 0, nil
+	}, testkit.WithDescription("the cleanup goroutine to evict the expired bucket"),
+		testkit.WithDiagnostics(func() string {
+			return fmt.Sprintf("tracked clients: %d", rl.clientCount())
+		}))
 }
 
 func TestRateLimiter_AllowIsConcurrencySafe(t *testing.T) {

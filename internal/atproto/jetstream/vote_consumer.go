@@ -480,7 +480,26 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 		return false, fmt.Errorf("failed to check update result: %w", err)
 	}
 
-	// If subject doesn't exist or is deleted, that's OK (vote still indexed)
+	// KNOWN DEFECT — zero rows here is NOT OK, which is what this comment used
+	// to say. See
+	// ~/Code/claude-skills/issues/2026-07-29-vote-before-subject-lost-then-subtracts.md.
+	//
+	// Two distinct cases reach this branch and only one of them is benign:
+	//
+	//   - the subject was DELETED. Nothing to count; the vote row is harmless.
+	//   - the subject has NOT BEEN INDEXED YET. A vote and its subject always
+	//     live in different repos and Jetstream parallelises across repos, so
+	//     this is ordinary, not exotic. The vote is then counted by nobody,
+	//     forever — the post consumer INSERTs fresh zeroed counters when the
+	//     subject finally arrives and never consults this table. And because the
+	//     row below is live, deleteVote will later decrement the subject for it,
+	//     subtracting a vote it never added.
+	//
+	// The fix is a must-exist gate on the subject returning a TRANSIENT error
+	// (as post_consumer.go and createSubscription already do) so the redrive
+	// succeeds once the subject lands. Pinned meanwhile by
+	// TestVoteOutOfOrderIsLostAndSubtracts (tests/e2e/vote_contract_test.go),
+	// which fails when this is fixed.
 	if rowsAffected == 0 {
 		log.Printf("Warning: Vote subject not found or deleted: %s (vote indexed anyway)", vote.SubjectURI)
 	}

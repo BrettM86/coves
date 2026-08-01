@@ -6,7 +6,26 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"Coves/tests/testkit"
 )
+
+// entryIsGone reports whether a cache file has been removed from disk. It is
+// the probe the cleanup-job tests wait on, and it deliberately does not go
+// through DiskCache.Get: a hit touches the entry's mtime, which is the very
+// value the TTL sweep is judging, so polling through Get would keep the entry
+// alive forever.
+func entryIsGone(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return true, nil
+	}
+	if err != nil {
+		// Anything other than "not there" is a broken probe, not a delay.
+		return false, err
+	}
+	return false, nil
+}
 
 // mustNewDiskCache is a test helper that creates a DiskCache or fails the test
 // Uses 0 for TTL (disabled) by default for backward compatibility
@@ -562,10 +581,18 @@ func TestDiskCache_StartCleanupJob(t *testing.T) {
 	cancel := cache.StartCleanupJob(50 * time.Millisecond)
 	defer cancel()
 
-	// Wait for at least one cleanup cycle
-	time.Sleep(100 * time.Millisecond)
+	// The eviction is work the background goroutine does, so wait for the
+	// eviction rather than for a duration guessed to contain a cycle.
+	//
+	// The probe stats the file instead of calling Get: a cache hit TOUCHES the
+	// entry's mtime, and mtime is what the TTL sweep reads. Polling through Get
+	// would keep resetting the age of the very entry it is waiting to see
+	// expire, and the wait would never finish.
+	testkit.WaitFor(t, 10*time.Second, func() (bool, error) {
+		return entryIsGone(expiredPath)
+	}, testkit.WithDescription("the background cleanup job to evict the expired entry"))
 
-	// Expired file should be gone
+	// And it is gone through the cache API too, not merely off the disk.
 	if _, found, _ := cache.Get("avatar", "did:plc:expired", "cid_expired"); found {
 		t.Error("Expired entry should have been cleaned up by background job")
 	}
@@ -586,13 +613,33 @@ func TestDiskCache_StartCleanupJob_ZeroInterval(t *testing.T) {
 
 func TestDiskCache_StartCleanupJob_GracefulShutdown(t *testing.T) {
 	tmpDir := t.TempDir()
-	cache := mustNewDiskCache(t, tmpDir, 1)
+	// 1-day TTL, so the entry seeded below is expirable and the job's first
+	// cycle has something observable to do.
+	cache, err := NewDiskCache(tmpDir, 1, 1)
+	if err != nil {
+		t.Fatalf("NewDiskCache failed: %v", err)
+	}
+
+	data := make([]byte, 100)
+	if err := cache.Set("avatar", "did:plc:expired", "cid_expired", data); err != nil {
+		t.Fatalf("Set failed: %v", err)
+	}
+	expiredPath := cache.cachePath("avatar", "did:plc:expired", "cid_expired")
+	oldTime := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(expiredPath, oldTime, oldTime); err != nil {
+		t.Fatalf("Chtimes failed: %v", err)
+	}
 
 	// Start cleanup job
 	cancel := cache.StartCleanupJob(10 * time.Millisecond)
 
-	// Let it run briefly
-	time.Sleep(30 * time.Millisecond)
+	// Cancelling a job that never started running would prove nothing, so wait
+	// until a cycle has demonstrably run — the expired entry disappearing is
+	// that evidence — and only then shut it down mid-flight. See the note in
+	// TestDiskCache_StartCleanupJob for why the probe stats rather than Gets.
+	testkit.WaitFor(t, 10*time.Second, func() (bool, error) {
+		return entryIsGone(expiredPath)
+	}, testkit.WithDescription("the cleanup job to complete a cycle before it is cancelled"))
 
 	// Cancel should not hang or panic
 	done := make(chan struct{})

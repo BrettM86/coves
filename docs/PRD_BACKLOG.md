@@ -276,12 +276,13 @@ if err != nil {
 3. ✅ **Phase 3 (Beta):** Fix block endpoints - COMPLETE (2025-11-16)
    - Updated block/unblock handlers to use `ResolveCommunityIdentifier()`
    - Accepts handles (`@gaming.community.coves.social`), DIDs, and scoped format (`!gaming@coves.social`)
-   - Added comprehensive tests: [block_handle_resolution_test.go](../tests/integration/block_handle_resolution_test.go)
+   - Added comprehensive tests: [service_identifier_resolution_test.go](../internal/core/communities/service_identifier_resolution_test.go)
    - All 7 test cases passing
 
 **Files Modified (Phase 3 - Block Endpoints):**
 - `internal/api/handlers/community/block.go` - Added `ResolveCommunityIdentifier()` calls
-- `tests/integration/block_handle_resolution_test.go` - Comprehensive test coverage
+- `internal/core/communities/service_identifier_resolution_test.go` - Comprehensive test coverage
+- `internal/api/handlers/community/block_test.go` - Block/unblock endpoints at the HTTP boundary
 
 **Existing Infrastructure:**
 ✅ `ResolveCommunityIdentifier()` already implemented at [service.go:852](../internal/core/communities/service.go#L852)
@@ -353,7 +354,7 @@ if err != nil {
 **Files Created:**
 - [internal/core/communities/token_utils.go](../internal/core/communities/token_utils.go) - JWT parsing utilities
 - [internal/core/communities/token_refresh.go](../internal/core/communities/token_refresh.go) - Refresh and re-auth logic
-- [tests/integration/token_refresh_test.go](../tests/integration/token_refresh_test.go) - Integration tests
+- [internal/core/communities/token_expiration_test.go](../internal/core/communities/token_expiration_test.go), [service_credentials_test.go](../internal/core/communities/service_credentials_test.go) - Integration tests
 
 **Files Modified:**
 - [internal/core/communities/service.go](../internal/core/communities/service.go) - Added `ensureFreshToken` + concurrency control
@@ -389,7 +390,7 @@ if err != nil {
 - Consumer: [community_consumer.go](../internal/atproto/jetstream/community_consumer.go) ✅ Extracts and indexes
 - Repository: [community_repo_subscriptions.go](../internal/db/postgres/community_repo_subscriptions.go) ✅ All queries updated
 - Migration: [008_add_content_visibility_to_subscriptions.sql](../internal/db/migrations/008_add_content_visibility_to_subscriptions.sql) ✅ Schema changes
-- Tests: [subscription_indexing_test.go](../tests/integration/subscription_indexing_test.go) ✅ Comprehensive coverage
+- Tests: [community_consumer_test.go](../internal/atproto/jetstream/community_consumer_test.go) ✅ Comprehensive coverage
 
 **Documentation:** See [IMPLEMENTATION_SUBSCRIPTION_INDEXING.md](../docs/IMPLEMENTATION_SUBSCRIPTION_INDEXING.md) for full details
 
@@ -427,7 +428,7 @@ When comments arrive before their parent post is indexed (common with cross-repo
 **Solution Implemented:**
 - ✅ Post consumer reconciliation logic WAS already implemented at [post_consumer.go:210-226](../internal/atproto/jetstream/post_consumer.go#L210-L226)
 - ✅ Reconciliation query counts pre-existing comments when indexing new posts
-- ✅ Comprehensive test suite added: [post_consumer_test.go](../tests/integration/post_consumer_test.go)
+- ✅ Comprehensive test suite added: [consumer_comment_count_test.go](../internal/core/posts/consumer_comment_count_test.go)
   - Single comment before post
   - Multiple comments before post
   - Mixed before/after ordering
@@ -452,7 +453,7 @@ _, reconcileErr := tx.ExecContext(ctx, reconcileQuery, post.URI, postID)
 
 **Files Modified:**
 - `internal/atproto/jetstream/comment_consumer.go` - Updated documentation
-- `tests/integration/post_consumer_test.go` - Added comprehensive test coverage
+- `internal/core/posts/consumer_comment_count_test.go` - Added comprehensive test coverage
 
 **Impact:** ✅ Post comment counters are now accurate regardless of Jetstream event ordering
 
@@ -709,7 +710,7 @@ Document: did:plc choice, pgcrypto encryption, Jetstream vs firehose, write-forw
 **Files Created:**
 - [internal/core/communities/token_utils.go](../internal/core/communities/token_utils.go)
 - [internal/core/communities/token_refresh.go](../internal/core/communities/token_refresh.go)
-- [tests/integration/token_refresh_test.go](../tests/integration/token_refresh_test.go)
+- [internal/core/communities/token_expiration_test.go](../internal/core/communities/token_expiration_test.go)
 
 **Files Modified:**
 - [internal/core/communities/service.go](../internal/core/communities/service.go) - Added `ensureFreshToken` method
@@ -737,7 +738,7 @@ Document: did:plc choice, pgcrypto encryption, Jetstream vs firehose, write-forw
 - [internal/atproto/auth/jwt.go](../internal/atproto/auth/jwt.go) - JWT parsing with atProto compatibility
 - [internal/api/middleware/auth.go](../internal/api/middleware/auth.go) - Auth middleware
 - [internal/api/handlers/community/](../internal/api/handlers/community/) - All handlers updated
-- [tests/integration/community_e2e_test.go](../tests/integration/community_e2e_test.go) - OAuth E2E tests
+- [internal/atproto/oauth/oauth_integration_test.go](../internal/atproto/oauth/oauth_integration_test.go) - OAuth session tests; [tests/e2e/community_contract_test.go](../tests/e2e/community_contract_test.go) - community pipeline contract
 
 **Related:** Also implemented `hostedByDID` auto-population for security (see P1 item above)
 

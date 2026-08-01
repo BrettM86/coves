@@ -118,9 +118,23 @@ func (s *voteService) CreateVote(ctx context.Context, session *oauth.ClientSessi
 	}
 
 	// Note: We intentionally don't validate subject existence here.
-	// The vote record goes to the user's PDS regardless. The Jetstream consumer
-	// handles orphaned votes correctly by only updating counts for non-deleted subjects.
-	// This avoids race conditions and eventual consistency issues.
+	// The vote record goes to the user's PDS regardless, which avoids race
+	// conditions and eventual consistency issues on the write path.
+	//
+	// KNOWN DEFECT — the consumer does NOT handle the resulting orphan
+	// correctly, and this comment used to claim it did. See
+	// ~/Code/claude-skills/issues/2026-07-29-vote-before-subject-lost-then-subtracts.md:
+	// a vote indexed before its subject is never counted (the count UPDATE
+	// matches zero rows and is only logged, and nothing recomputes afterwards),
+	// and worse, withdrawing that orphan later DECREMENTS the subject —
+	// subtracting a vote it never added and taking a different voter's with it.
+	// Pinned end-to-end by TestVoteOutOfOrderIsLostAndSubtracts
+	// (tests/e2e/vote_contract_test.go).
+	//
+	// Leaving this write path as-is is still probably right; the fix belongs in
+	// the consumer (a must-exist gate returning a TRANSIENT error, matching
+	// post_consumer.go and createSubscription, so the redrive succeeds once the
+	// subject lands).
 
 	// Check for existing vote using cache with PDS fallback
 	// First check populates cache from PDS, subsequent checks are O(1) lookups
@@ -167,6 +181,14 @@ func (s *voteService) CreateVote(ctx context.Context, session *oauth.ClientSessi
 		}
 
 		// Different direction - delete old vote first, then create new one
+		//
+		// KNOWN DEFECT — unlike the toggle-off branch above, this delete is NOT
+		// followed by a cache removal; the cache is only corrected after the
+		// create below succeeds. A create that fails in between leaves the cache
+		// naming a record the PDS no longer has, and the user's next tap is
+		// answered from it as a withdrawal. See
+		// ~/Code/claude-skills/issues/2026-07-23-vote-cache-desync-direction-switch.md,
+		// pinned by TestCreateVote_FailedDirectionChangeStrandsTheCache.
 		if err := pdsClient.DeleteRecord(ctx, voteCollection, existing.RKey); err != nil {
 			s.logger.Error("failed to delete existing vote on PDS",
 				"error", err,

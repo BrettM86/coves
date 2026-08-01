@@ -156,28 +156,31 @@ Both repositories include:
 - `internal/atproto/lexicon/social/coves/feed/getTimeline.json` - Updated with sort/timeframe
 - `internal/atproto/lexicon/social/coves/feed/getDiscover.json` - New lexicon
 
-### Integration Tests
+### Tests
 
-- `tests/integration/timeline_test.go` - 6 test scenarios (400+ lines)
-  - Basic feed (subscription filtering)
-  - Hot sorting
-  - Pagination
-  - Empty when no subscriptions
-  - Unauthorized access
-  - Limit validation
+Tests live next to the code they cover, not in a `tests/` catch-all — see
+`docs/TEST_ARCHITECTURE.md` for the tier rules. The feed tests are:
 
-- `tests/integration/discover_test.go` - 5 test scenarios (270+ lines)
-  - Shows all communities
-  - No auth required
-  - Hot sorting
-  - Pagination
-  - Limit validation
+- `internal/core/timeline/timeline_feed_test.go` - T1 (`//go:build integration`),
+  handler-through-Postgres feed behaviour
+- `internal/core/timeline/service_test.go` - T0, service validation and response shaping
+- `internal/core/discover/discover_feed_test.go` - T1, the same for the public feed,
+  including hot-sort ranking edge cases and viewer vote state
+- `internal/core/discover/service_test.go` - T0
+- `internal/core/timeline/harness_test.go`, `internal/core/discover/harness_test.go` -
+  each package's `TestMain`, declaring its Postgres requirement
+- `internal/db/postgres/timeline_repo_block_test.go`,
+  `internal/db/postgres/discover_repo_block_test.go`,
+  `internal/db/postgres/feed_repo_block_test.go` - T1 repo-level block filtering
+
+Scenario-by-scenario coverage is listed under [Testing](#testing) below.
 
 ### Test Helpers
 
-- `tests/integration/helpers.go` - Added shared test helpers:
-  - `createFeedTestCommunity()` - Create test communities
-  - `createTestPost()` - Create test posts with custom scores/timestamps
+Shared fixtures come from the `tests/fixtures` package — `fixtures.User()` and
+`fixtures.Community()` replace the old `createFeedTestCommunity()`. Databases come
+from `testkit.DB(t)`, which clones a migrated template per test, and identities from
+`testkit.UniqueID(t)`.
 
 ## Files Modified
 
@@ -330,38 +333,48 @@ score = upvotes / (age_in_hours + 2)^1.5
 
 ### Test Coverage
 
-**Timeline Tests:** `tests/integration/timeline_test.go`
+**Timeline Tests:** `internal/core/timeline/timeline_feed_test.go`
 1. ✅ Basic feed - Shows posts from subscribed communities only
 2. ✅ Hot sorting - Time-decay ranking across communities
 3. ✅ Pagination - Cursor-based, no overlap
 4. ✅ Empty feed - When user has no subscriptions
 5. ✅ Unauthorized - Returns 401 without auth
 6. ✅ Limit validation - Rejects limit > 50
+7. ✅ Multi-community - An unsubscribed community stays excluded under all three sorts
 
-**Discover Tests:** `tests/integration/discover_test.go`
+**Discover Tests:** `internal/core/discover/discover_feed_test.go`
 1. ✅ Shows all communities - No subscription filter
 2. ✅ No auth required - Works without JWT
 3. ✅ Hot sorting - Time-decay across all posts
-4. ✅ Pagination - Cursor-based
-5. ✅ Limit validation - Rejects limit > 50
+4. ✅ Hot sorting, log damping - A high-vote bridged post must not bury fresh organic ones
+5. ✅ Hot sorting, negative scores - The cursor formula matches the live ORDER BY across the sign boundary
+6. ✅ Hot sorting, future-dated post - `GREATEST(age, 0)` holds against a hostile or skewed `created_at`
+7. ✅ Pagination - Cursor-based
+8. ✅ Limit validation - Rejects limit > 50
+9. ✅ Viewer vote state - Authenticated callers see their own votes
+10. ✅ No viewer state without auth - Anonymous callers see none
+
+Service-layer validation and response shaping are T0 (no database):
+`internal/core/timeline/service_test.go` and `internal/core/discover/service_test.go`.
 
 ### Running Tests
 
+These are T1 integration tests: they carry `//go:build integration` and need
+Postgres. `make test-integration` starts the test database and runs the whole
+tier; to narrow it to the feeds:
+
 ```bash
-# Reset test database (clean slate)
+# Reset the test database (clean slate)
 make test-db-reset
 
 # Run timeline tests
-TEST_DATABASE_URL="postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable" \
-  go test -v ./tests/integration/timeline_test.go ./tests/integration/user_test.go ./tests/integration/helpers.go -timeout 60s
+go test -tags integration -v ./internal/core/timeline/... -timeout 60s
 
 # Run discover tests
-TEST_DATABASE_URL="postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable" \
-  go test -v ./tests/integration/discover_test.go ./tests/integration/user_test.go ./tests/integration/helpers.go -timeout 60s
+go test -tags integration -v ./internal/core/discover/... -timeout 60s
 
-# Run all integration tests
-TEST_DATABASE_URL="postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable" \
-  go test ./tests/integration/... -v -timeout 180s
+# Run the whole T1 tier
+make test-integration
 ```
 
 All tests passing ✅
@@ -778,6 +791,6 @@ All feeds support:
 For implementation details, see the source code:
 - Timeline: `internal/core/timeline/`, `internal/db/postgres/timeline_repo.go`
 - Discover: `internal/core/discover/`, `internal/db/postgres/discover_repo.go`
-- Tests: `tests/integration/timeline_test.go`, `tests/integration/discover_test.go`
+- Tests: `internal/core/timeline/timeline_feed_test.go`, `internal/core/discover/discover_feed_test.go`
 
 For architecture decisions, see this document's "Architecture Decisions" section.

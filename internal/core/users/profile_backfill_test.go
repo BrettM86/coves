@@ -14,10 +14,16 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+
+	"Coves/tests/testkit"
 )
 
-// backfillSettle is how long the skip-path tests wait before asserting that no
-// backfill fetch happened — long enough to catch a regressed async fetch.
+// backfillSettle is the window over which the skip-path tests hold their
+// "no backfill fetch happened" claim. These are negative assertions about an
+// asynchronous path, so they are checked continuously across the window rather
+// than once at the end of it: a regressed goroutine that fires late still gets
+// caught, and one that fires early is reported the moment it does instead of
+// being indistinguishable from one that fired late.
 const backfillSettle = 100 * time.Millisecond
 
 // waitForBackfill waits for the async backfill goroutine to hit the fake PDS
@@ -358,9 +364,14 @@ func TestIndexUser_SkipsBackfillWhenProfilePopulated(t *testing.T) {
 	require.NoError(t, err)
 
 	// The emptiness check is synchronous (no goroutine spawns for populated
-	// profiles), but settle briefly so a regressed async fetch would be caught.
-	time.Sleep(backfillSettle)
-	assert.Equal(t, int64(0), atomic.LoadInt64(&hits))
+	// profiles); hold the claim across a window so a regressed async fetch is
+	// caught whenever in it the fetch lands.
+	testkit.Holds(t, backfillSettle, func() (bool, error) {
+		return atomic.LoadInt64(&hits) == 0, nil
+	}, testkit.WithDescription("the PDS to stay untouched for a user that already has profile data"))
+
+	// Cumulative over the whole window above: a write at any point in it is
+	// still on the mock's call list now.
 	mockRepo.AssertNotCalled(t, "UpdateProfile", mock.Anything, mock.Anything, mock.Anything)
 }
 
@@ -385,10 +396,11 @@ func TestIndexUser_BackfillDisabledByDefault(t *testing.T) {
 	err := service.IndexUser(context.Background(), testDID, "nobackfill.test", srv.URL)
 	require.NoError(t, err)
 
-	// Backfill disabled → no goroutine spawns; settle briefly to catch a
-	// regressed async fetch before asserting.
-	time.Sleep(backfillSettle)
-	assert.Equal(t, int64(0), atomic.LoadInt64(&hits))
+	// Backfill disabled → no goroutine spawns; hold the claim across a window
+	// so a regressed async fetch is caught wherever in it it lands.
+	testkit.Holds(t, backfillSettle, func() (bool, error) {
+		return atomic.LoadInt64(&hits) == 0, nil
+	}, testkit.WithDescription("the PDS to stay untouched when backfill was never enabled"))
 }
 
 // TestIndexUser_BackfillFailureDoesNotFailIndexing verifies backfill is best-effort:
@@ -416,9 +428,16 @@ func TestIndexUser_BackfillFailureDoesNotFailIndexing(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return atomic.LoadInt64(&hits) == 1
 	}, 5*time.Second, 10*time.Millisecond, "backfill goroutine never fetched from the PDS")
-	// Settle so the goroutine's post-fetch path (which must bail on the error)
-	// has finished before asserting no write happened.
-	time.Sleep(backfillSettle)
+
+	// The fetch failed, so the goroutine must bail: exactly one attempt, and
+	// nothing after it. Held across a window rather than sampled once, which is
+	// what catches a retry loop.
+	testkit.Holds(t, backfillSettle, func() (bool, error) {
+		return atomic.LoadInt64(&hits) == 1, nil
+	}, testkit.WithDescription("the failed backfill to stay at a single attempt"))
+
+	// Cumulative over that window: a write at any point in it would be on the
+	// mock's call list now.
 	mockRepo.AssertNotCalled(t, "UpdateProfile", mock.Anything, mock.Anything, mock.Anything)
 }
 

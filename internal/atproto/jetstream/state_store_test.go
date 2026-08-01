@@ -1,45 +1,25 @@
+//go:build integration
+
 package jetstream
 
 import (
 	"context"
-	"database/sql"
-	"os"
 	"testing"
 
+	"Coves/tests/testkit"
+
 	_ "github.com/lib/pq"
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// These tests exercise PostgresStateStore against the local test database
-// (same container as the rest of the package's DB tests, port 5434 by
-// default / TEST_DATABASE_URL).
-
-func setupStateStoreTestDB(t *testing.T) *sql.DB {
-	t.Helper()
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		dsn = "postgres://test_user:test_password@localhost:5434/coves_test?sslmode=disable"
-	}
-	db, err := sql.Open("postgres", dsn)
-	require.NoError(t, err, "Failed to connect to test database")
-	if pingErr := db.Ping(); pingErr != nil {
-		_ = db.Close()
-		t.Skipf("test database not reachable (%v); start it with `make test-db-reset`", pingErr)
-	}
-	require.NoError(t, goose.Up(db, "../../db/migrations"), "Failed to run migrations")
-
-	t.Cleanup(func() {
-		_, _ = db.Exec("DELETE FROM jetstream_cursors WHERE consumer_name LIKE 'statestore-test%'")
-		_, _ = db.Exec("DELETE FROM jetstream_dead_letters WHERE consumer_name LIKE 'statestore-test%'")
-		_ = db.Close()
-	})
-	return db
-}
+// These tests exercise PostgresStateStore against a private testkit clone of
+// the migrated template, so each test starts from an empty schema and nothing
+// it writes is visible to any other test.
 
 func TestPostgresStateStore_CursorLifecycle(t *testing.T) {
-	db := setupStateStoreTestDB(t)
+	t.Parallel()
+	db := testkit.DB(t)
 	store := NewPostgresStateStore(db)
 	ctx := context.Background()
 	const consumer = "statestore-test-cursor"
@@ -69,7 +49,8 @@ func TestPostgresStateStore_CursorLifecycle(t *testing.T) {
 }
 
 func TestPostgresStateStore_DeadLetterLifecycle(t *testing.T) {
-	db := setupStateStoreTestDB(t)
+	t.Parallel()
+	db := testkit.DB(t)
 	store := NewPostgresStateStore(db)
 	ctx := context.Background()
 	const consumer = "statestore-test-dlq"
@@ -119,7 +100,8 @@ func TestPostgresStateStore_DeadLetterLifecycle(t *testing.T) {
 // otherwise the failed dead-letter write tears down the connection without
 // advancing the cursor and the consumer replays the same frame forever.
 func TestPostgresStateStore_DeadLetterBinaryPayload(t *testing.T) {
-	db := setupStateStoreTestDB(t)
+	t.Parallel()
+	db := testkit.DB(t)
 	store := NewPostgresStateStore(db)
 	ctx := context.Background()
 	const consumer = "statestore-test-binary"
@@ -138,7 +120,8 @@ func TestPostgresStateStore_DeadLetterBinaryPayload(t *testing.T) {
 // that never advances the cursor) must not insert a fresh row — and a fresh
 // redrive budget — on every reconnect.
 func TestPostgresStateStore_DeadLetterDedup(t *testing.T) {
-	db := setupStateStoreTestDB(t)
+	t.Parallel()
+	db := testkit.DB(t)
 	store := NewPostgresStateStore(db)
 	ctx := context.Background()
 	const consumer = "statestore-test-dedup"
@@ -158,7 +141,8 @@ func TestPostgresStateStore_DeadLetterDedup(t *testing.T) {
 // Permanent failures are inserted with their redrive budget already
 // exhausted so the redriver never touches them.
 func TestPostgresStateStore_PermanentDeadLetterInsertedExhausted(t *testing.T) {
-	db := setupStateStoreTestDB(t)
+	t.Parallel()
+	db := testkit.DB(t)
 	store := NewPostgresStateStore(db)
 	ctx := context.Background()
 	const consumer = "statestore-test-permanent"
@@ -177,7 +161,8 @@ func TestPostgresStateStore_PermanentDeadLetterInsertedExhausted(t *testing.T) {
 // RetireDeadLetter exhausts a row in one step (used for unparseable payloads
 // discovered during redrive) while keeping it for forensics.
 func TestPostgresStateStore_RetireDeadLetter(t *testing.T) {
-	db := setupStateStoreTestDB(t)
+	t.Parallel()
+	db := testkit.DB(t)
 	store := NewPostgresStateStore(db)
 	ctx := context.Background()
 	const consumer = "statestore-test-retire"
