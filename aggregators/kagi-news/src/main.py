@@ -337,53 +337,75 @@ class Aggregator:
         """
         Find the JSON cluster that corresponds to an XML feed entry.
 
-        Empirically, JSON.cluster_number = XML.cluster_number + 1. We take that
-        offset as the fast path and verify by title equality; if either fails,
-        we fall back to a title scan so an indexing change at Kagi doesn't
-        silently break joins.
+        The normalized title is the join key: it is the only value Kagi carries
+        identically in both feeds. A cluster number parsed out of entry.link is
+        only ever an optimization, never a requirement -- Kagi has changed that
+        URL shape before (on 2026-07-30 a slug was appended and the number
+        gained a date prefix), and a hard dependency on it takes down every
+        feed at once.
+
+        Empirically, when the link does end in a bare number,
+        JSON.cluster_number = XML.cluster_number + 1. We take that offset as the
+        fast path and verify it by title equality, so a stale or misread offset
+        can never resolve to the wrong cluster.
 
         Behavior:
         - Fast-path hit (offset cluster exists AND title matches): returns silently.
-        - Title-scan fallback (exactly one cluster with the same title): WARN
-          "JSON join offset mismatch ... found by title scan instead"; returns it.
+        - Title-scan fallback (exactly one cluster with the same title): returns it.
+          Logs WARN "JSON join offset mismatch ..." only when a cluster number was
+          parsed and its offset missed, since that signals a Kagi indexing change;
+          when no number was parsable this is the ordinary path and logs DEBUG.
         - Ambiguous title (multiple clusters share the title): WARN
           "Ambiguous title match ..."; returns None.
-        - No match (offset miss AND zero title hits): WARN
+        - No match (zero title hits): WARN
           "No matching JSON cluster for XML entry ..."; returns None.
         - Bad entry.link (missing or non-string): WARN
-          "entry.link missing or not a string ..."; returns None.
-        - Unparseable trailing segment in entry.link: WARN
-          "Could not parse cluster_number from ..."; returns None.
+          "entry.link missing or not a string ..."; falls through to the title scan.
+        - Unparseable trailing segment in entry.link: DEBUG; falls through to the
+          title scan.
         """
-        # Kagi URL pattern: https://kite.kagi.com/<uuid>/<category>/<cluster_number>
+        # Kagi URL patterns seen in the wild:
+        #   .../<uuid>/<category>/<cluster_number>          (pre 2026-07-30)
+        #   .../<category>/<YYYYMMDD><n><cluster_number>/<slug>   (current)
+        # Only the first yields a directly usable number, so the parse is
+        # best-effort and `xml_cn` stays None whenever it does not apply.
+        xml_cn: Optional[int] = None
         link = getattr(entry, 'link', None)
         if not isinstance(link, str) or not link:
             logger.warning(
-                f"Could not parse cluster_number: entry.link missing or not a string "
-                f"(got {link!r}); skipping"
+                f"entry.link missing or not a string (got {link!r}); "
+                f"falling back to title match"
             )
-            return None
-        try:
-            xml_cn = int(urlparse(link).path.rstrip('/').rsplit('/', 1)[-1])
-        except ValueError:
-            logger.warning(f"Could not parse cluster_number from {link!r}; skipping")
-            return None
+        else:
+            try:
+                xml_cn = int(urlparse(link).path.rstrip('/').rsplit('/', 1)[-1])
+            except ValueError:
+                logger.debug(
+                    f"No trailing cluster_number in {link!r}; using title match"
+                )
 
         entry_title_norm = Aggregator._normalize_title(getattr(entry, 'title', ''))
 
-        cluster = clusters.get(xml_cn + 1)
-        if cluster is not None and Aggregator._normalize_title(cluster.get("title", "")) == entry_title_norm:
-            return cluster
+        if xml_cn is not None:
+            cluster = clusters.get(xml_cn + 1)
+            if cluster is not None and Aggregator._normalize_title(cluster.get("title", "")) == entry_title_norm:
+                return cluster
 
         matches = [
             c for c in clusters.values()
             if Aggregator._normalize_title(c.get("title", "")) == entry_title_norm
         ]
         if len(matches) == 1:
-            logger.warning(
-                f"JSON join offset mismatch for cluster_number={xml_cn} "
-                f"(found by title scan instead); Kagi indexing may have changed"
-            )
+            if xml_cn is not None:
+                logger.warning(
+                    f"JSON join offset mismatch for cluster_number={xml_cn} "
+                    f"(found by title scan instead); Kagi indexing may have changed"
+                )
+            else:
+                logger.debug(
+                    f"Resolved {getattr(entry, 'title', '')!r} by title scan "
+                    f"(no cluster_number in link)"
+                )
             return matches[0]
 
         if len(matches) > 1:

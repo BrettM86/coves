@@ -1063,10 +1063,89 @@ class TestAggregator:
             )
             assert not any("Ambiguous title match" in r.message for r in caplog.records)
 
-    def test_unparseable_link_trailing_segment(
+    def test_slug_terminated_link_resolves_by_title(
         self, mock_config, sample_story, tmp_path, caplog
     ):
-        """Non-integer trailing segment in entry.link -> None with a parse-failure warning."""
+        """
+        Regression: the current Kagi URL shape ends in a slug, not a number.
+
+        On 2026-07-30 Kagi moved from `.../<category>/<cluster_number>` to
+        `.../<category>/<YYYYMMDD><n><cluster_number>/<slug>`. The old parser
+        raised on int(<slug>) and skipped every entry, which silently zeroed
+        out all four feeds for two days. The title scan must carry the join.
+        """
+        state_file = tmp_path / "state.json"
+        mock_client = Mock()
+        mock_client.create_post.return_value = "at://did:plc:test/social.coves.post/abc123"
+
+        feed = MagicMock()
+        feed.bozo = 0
+        feed.entries = [
+            MagicMock(
+                title="Low Danube forces shutdown of Hungary nuclear plant",
+                link="https://kite.kagi.com/science/2026073115/low-danube-forces-shutdown-of-hungary-nuclear-plant",
+                guid="https://kite.kagi.com/science/2026073115/low-danube-forces-shutdown-of-hungary-nuclear-plant",
+                published_parsed=(2026, 7, 31, 12, 0, 0, 0, 212, 0),
+                tags=[MagicMock(term="Science")],
+            )
+        ]
+
+        # Real shape: the URL segment is 2026073115 but the JSON cluster is 5.
+        clusters = {
+            5: {
+                "cluster_number": 5,
+                "title": "Low Danube forces shutdown of Hungary nuclear plant",
+                "short_summary": "resolved by title",
+            }
+        }
+
+        with patch('src.main.ConfigLoader') as MockConfigLoader, \
+             patch('src.main.RSSFetcher') as MockRSSFetcher, \
+             patch('src.main.JSONFetcher') as MockJSONFetcher, \
+             patch('src.main.KagiJSONParser') as MockJSONParser, \
+             patch('src.main.RichTextFormatter') as MockFormatter:
+
+            mock_loader = Mock()
+            mock_loader.load.return_value = mock_config
+            MockConfigLoader.return_value = mock_loader
+
+            mock_fetcher = Mock()
+            mock_fetcher.fetch_feed.return_value = feed
+            MockRSSFetcher.return_value = mock_fetcher
+
+            mock_json_fetcher = Mock()
+            mock_json_fetcher.fetch_clusters.return_value = clusters
+            MockJSONFetcher.return_value = mock_json_fetcher
+
+            mock_parser = Mock()
+            mock_parser.parse_to_story.return_value = sample_story
+            MockJSONParser.return_value = mock_parser
+
+            mock_formatter = Mock()
+            mock_formatter.format_full.return_value = {"content": "x", "facets": []}
+            MockFormatter.return_value = mock_formatter
+
+            import logging
+            with caplog.at_level(logging.WARNING):
+                Aggregator(
+                    config_path=Path("config.yaml"),
+                    state_file=state_file,
+                    coves_client=mock_client,
+                ).run()
+
+            # Resolved and posted (mock_config has 2 feeds, 1 entry each).
+            assert mock_parser.parse_to_story.call_count == 2
+            assert mock_client.create_post.call_count == 2
+            # A slug-terminated link is now the norm, not an anomaly: no WARN noise.
+            assert not any(
+                "Could not parse cluster_number" in r.message for r in caplog.records
+            )
+            assert not any("offset mismatch" in r.message for r in caplog.records)
+
+    def test_unparseable_link_and_no_title_match_skips(
+        self, mock_config, sample_story, tmp_path, caplog
+    ):
+        """Unparseable link AND no title match -> skipped, reported as a join miss."""
         state_file = tmp_path / "state.json"
         mock_client = Mock()
         mock_client.create_post.return_value = "at://did:plc:test/social.coves.post/abc123"
@@ -1120,7 +1199,7 @@ class TestAggregator:
             assert mock_parser.parse_to_story.call_count == 0
             assert mock_client.create_post.call_count == 0
             assert any(
-                "Could not parse cluster_number from" in r.message
+                "No matching JSON cluster for XML entry" in r.message
                 for r in caplog.records
             )
 
