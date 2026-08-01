@@ -284,6 +284,29 @@ class TestKagiJSONParser:
         with pytest.raises(TypeError, match="perspectives"):
             parser.parse_to_story(json_cluster=cluster, **rss_meta)
 
+    def test_null_perspective_entry_is_skipped_not_fatal(self, parser, rss_meta, caplog):
+        """
+        Kagi emits `perspectives: [null, {...}]` on some clusters (10 of 48 live
+        clusters on 2026-08-01). That raised AttributeError out of the parser and
+        cost the entire story; one missing viewpoint must not do that.
+        """
+        import logging
+
+        cluster = {
+            "perspectives": [
+                None,
+                {"text": "Apple: Apple said it will appeal."},
+            ]
+        }
+        with caplog.at_level(logging.WARNING):
+            story = parser.parse_to_story(json_cluster=cluster, **rss_meta)
+
+        assert [p.actor for p in story.perspectives] == ["Apple"]
+        assert [p.description for p in story.perspectives] == ["Apple said it will appeal."]
+        assert any(
+            "expected dict in 'perspectives'" in r.message for r in caplog.records
+        )
+
     def test_articles_string_instead_of_list_raises(self, parser, rss_meta):
         cluster = {"articles": "not-a-list"}
         with pytest.raises(TypeError, match="articles"):

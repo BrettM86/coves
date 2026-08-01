@@ -146,6 +146,16 @@ class KagiJSONParser:
     def _extract_perspectives(self, cluster: dict) -> List[Perspective]:
         results = []
         for p in self._expect_list(cluster, "perspectives"):
+            # Kagi emits a null entry inside `perspectives` on some clusters
+            # (10 of 48 live clusters on 2026-08-01). Skip it rather than let an
+            # AttributeError escape and cost the whole story -- one missing
+            # viewpoint is not worth losing the post over.
+            if not isinstance(p, dict):
+                logger.warning(
+                    f"Kagi JSON type drift: expected dict in 'perspectives', got "
+                    f"{type(p).__name__}; skipping perspective"
+                )
+                continue
             text = self._expect_str(p, "text").strip()
             if not text:
                 continue
