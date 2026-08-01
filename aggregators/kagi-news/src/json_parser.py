@@ -14,6 +14,20 @@ from src.models import KagiStory, Perspective, Quote, Source
 logger = logging.getLogger(__name__)
 
 
+# Kagi emits `https:/host/path` -- one slash -- for a minority of articles.
+# A hierarchical scheme without `//` parses as an *opaque* URI, so it survives
+# uri_sanitizer untouched and publishes as an unclickable string. These are the
+# same records whose `domain` comes back empty, because Kagi's own extractor
+# choked on the malformed URL too. Observed on 2026-08-01 across all four live
+# feeds: 15 of 1768 articles, every one of them bluewin.ch.
+_MALFORMED_SCHEME_RE = re.compile(r'^(https?):/(?!/)', re.IGNORECASE)
+
+
+def _repair_scheme_separator(url: str) -> str:
+    """Restore the `//` in a scheme-relative-looking `https:/host` URL."""
+    return _MALFORMED_SCHEME_RE.sub(r'\1://', url, count=1)
+
+
 class KagiJSONParser:
     """Parses Kagi News JSON clusters into structured KagiStory objects."""
 
@@ -165,7 +179,7 @@ class KagiJSONParser:
     def _extract_sources(self, cluster: dict) -> List[Source]:
         results = []
         for i, a in enumerate(self._expect_list(cluster, "articles")):
-            url = a.get("link") or ""
+            url = _repair_scheme_separator(a.get("link") or "")
             title = a.get("title") or ""
             domain = a.get("domain") or ""
             if not url:
@@ -178,10 +192,24 @@ class KagiJSONParser:
                     f"Kagi article at index {i} is missing 'title'; per-domain citation "
                     f"indexing would be misaligned"
                 )
+            # An empty `domain` is carried rather than rejected. citations.build_index
+            # buckets *per domain*, so an unknown-domain article increments only the
+            # "" bucket and cannot shift the numbering of any real outlet -- alignment
+            # is destroyed by *dropping* an article, not by keeping one we can't label.
+            # Kagi built its own `[domain#N]` markers from this same empty value, so no
+            # marker can point here anyway: CITE_RE requires at least one character
+            # before the '#', so the "" bucket is unreachable by construction. The
+            # article stays in place, correctly positioned and simply uncitable.
+            #
+            # Deriving the domain from the URL is deliberately NOT done: Kagi uses the
+            # registrable domain, not the URL host. On 2026-08-01, 127 of 1753 articles
+            # disagreed (english.elpais.com -> elpais.com, news.sky.com -> sky.com), so
+            # a derived value would invent a bucket key the markers never use.
             if not domain:
-                raise ValueError(
-                    f"Kagi article at index {i} is missing 'domain'; per-domain citation "
-                    f"indexing would be misaligned"
+                logger.debug(
+                    "Kagi article at index %d has no 'domain' (%s); keeping it in "
+                    "place as an uncitable source",
+                    i, url[:60]
                 )
             results.append(Source(title=title, url=url, domain=domain))
         return results

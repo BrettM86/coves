@@ -279,8 +279,12 @@ class Aggregator:
             try:
                 rich_text = self.richtext_formatter.format_full(story)
 
+                # `domain` is optional in social.coves.embed.external#source, so
+                # omit it when Kagi left it blank rather than publishing an empty
+                # string -- absent reads as "unknown", "" asserts a domain that
+                # renders as a blank attribution chip.
                 sources = [
-                    {"uri": s.url, "title": s.title, "domain": s.domain}
+                    {"uri": s.url, "title": s.title, **({"domain": s.domain} if s.domain else {})}
                     for s in story.sources
                 ] if story.sources else None
 

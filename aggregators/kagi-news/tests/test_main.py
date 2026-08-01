@@ -4,6 +4,7 @@ Tests for Main Orchestration Script.
 Tests the complete flow: fetch → parse → format → dedupe → post → update state.
 """
 import pytest
+from dataclasses import replace
 from pathlib import Path
 from datetime import datetime
 from unittest.mock import Mock, MagicMock, patch, call
@@ -580,6 +581,66 @@ class TestAggregator:
             assert call_kwargs["sources"][0]["uri"] == "https://example.com/1"
             assert call_kwargs["sources"][0]["title"] == "Source 1"
             assert call_kwargs["sources"][0]["domain"] == "example.com"
+
+    def test_empty_domain_is_omitted_from_the_submitted_source(
+        self, mock_config, mock_rss_feed, mock_json_clusters, sample_story, tmp_path
+    ):
+        """
+        `domain` is optional in social.coves.embed.external#source. When Kagi left
+        it blank the key is omitted rather than sent as "" -- absent reads as
+        "unknown", an empty string asserts a domain and renders as a blank chip.
+        """
+        from src.models import Source
+
+        state_file = tmp_path / "state.json"
+        mock_client = Mock()
+        mock_client.create_post.return_value = "at://did:plc:test/social.coves.post/abc123"
+
+        story = replace(sample_story, sources=[
+            Source(title="Known", url="https://reuters.com/1", domain="reuters.com"),
+            Source(title="Unlabelled", url="https://www.bluewin.ch/x", domain=""),
+        ])
+
+        with patch('src.main.ConfigLoader') as MockConfigLoader, \
+             patch('src.main.RSSFetcher') as MockRSSFetcher, \
+             patch('src.main.JSONFetcher') as MockJSONFetcher, \
+             patch('src.main.KagiJSONParser') as MockJSONParser, \
+             patch('src.main.RichTextFormatter') as MockFormatter:
+
+            mock_loader = Mock()
+            mock_loader.load.return_value = mock_config
+            MockConfigLoader.return_value = mock_loader
+
+            mock_fetcher = Mock()
+            mock_fetcher.fetch_feed.return_value = MagicMock(
+                bozo=0, entries=[mock_rss_feed.entries[0]]
+            )
+            MockRSSFetcher.return_value = mock_fetcher
+
+            mock_json_fetcher = Mock()
+            mock_json_fetcher.fetch_clusters.return_value = mock_json_clusters
+            MockJSONFetcher.return_value = mock_json_fetcher
+
+            mock_parser = Mock()
+            mock_parser.parse_to_story.return_value = story
+            MockJSONParser.return_value = mock_parser
+
+            mock_formatter = Mock()
+            mock_formatter.format_full.return_value = {"content": "x", "facets": []}
+            MockFormatter.return_value = mock_formatter
+
+            Aggregator(
+                config_path=Path("config.yaml"),
+                state_file=state_file,
+                coves_client=mock_client,
+            ).run()
+
+            sources = mock_client.create_external_embed.call_args.kwargs["sources"]
+
+            # The unlabelled article is still submitted, and still in position.
+            assert [s["title"] for s in sources] == ["Known", "Unlabelled"]
+            assert sources[0]["domain"] == "reuters.com"
+            assert "domain" not in sources[1]
 
     def test_create_post_without_sources(self, mock_config, mock_rss_feed, mock_json_clusters, tmp_path):
         """Test that posts without sources don't include sources in embed."""

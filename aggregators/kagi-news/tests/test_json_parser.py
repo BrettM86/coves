@@ -176,14 +176,91 @@ class TestKagiJSONParser:
         with pytest.raises(ValueError, match="title"):
             parser.parse_to_story(json_cluster=cluster, **rss_meta)
 
-    def test_article_without_domain_raises(self, parser, rss_meta):
+    def test_article_without_domain_is_kept_in_place(self, parser, rss_meta):
+        """
+        Kagi leaves `domain` empty when its own URL parse fails (observed only on
+        bluewin.ch, whose links arrive malformed). Rejecting the article cost the
+        entire post; keeping it is what preserves citation alignment, because
+        build_index counts per domain and the "" bucket is unreachable from any
+        `[domain#N]` marker.
+        """
         cluster = {
             "articles": [
-                {"title": "ok", "link": "https://z.example", "domain": ""},
+                {"title": "a", "link": "https://reuters.com/1", "domain": "reuters.com"},
+                {"title": "b", "link": "https://z.example/2", "domain": ""},
+                {"title": "c", "link": "https://reuters.com/3", "domain": "reuters.com"},
             ]
         }
-        with pytest.raises(ValueError, match="domain"):
-            parser.parse_to_story(json_cluster=cluster, **rss_meta)
+        story = parser.parse_to_story(json_cluster=cluster, **rss_meta)
+
+        assert [s.domain for s in story.sources] == ["reuters.com", "", "reuters.com"]
+        assert [s.title for s in story.sources] == ["a", "b", "c"]
+
+    def test_empty_domain_does_not_shift_other_domains_numbering(self, parser, rss_meta):
+        """The whole point: an unlabelled article must not renumber a real outlet."""
+        from src.citations import build_index
+
+        cluster = {
+            "articles": [
+                {"title": "a", "link": "https://reuters.com/1", "domain": "reuters.com"},
+                {"title": "b", "link": "https://z.example/2", "domain": ""},
+                {"title": "c", "link": "https://reuters.com/3", "domain": "reuters.com"},
+            ]
+        }
+        story = parser.parse_to_story(json_cluster=cluster, **rss_meta)
+        index = build_index(story.sources)
+
+        # [reuters.com#2] still resolves to the *second* reuters article, not the third.
+        assert index[("reuters.com", 1)] == "https://reuters.com/1"
+        assert index[("reuters.com", 2)] == "https://reuters.com/3"
+
+    def test_article_still_raises_without_link_or_title(self, parser, rss_meta):
+        """Tolerating an empty domain must not weaken the structural guards."""
+        with pytest.raises(ValueError, match="link"):
+            parser.parse_to_story(
+                json_cluster={"articles": [{"title": "ok", "link": "", "domain": "z.com"}]},
+                **rss_meta,
+            )
+        with pytest.raises(ValueError, match="title"):
+            parser.parse_to_story(
+                json_cluster={"articles": [{"title": "", "link": "https://z.com", "domain": "z.com"}]},
+                **rss_meta,
+            )
+
+    def test_malformed_scheme_separator_is_repaired(self, parser, rss_meta):
+        """
+        Kagi emits `https:/host/path` with a single slash. That parses as an opaque
+        URI, survives uri_sanitizer untouched, and publishes as an unclickable
+        string, so it is repaired at the Kagi boundary.
+        """
+        cluster = {
+            "articles": [
+                {"title": "a", "link": "https:/www.bluewin.ch/fr/infos/x", "domain": ""},
+                {"title": "b", "link": "http:/example.com/y", "domain": "example.com"},
+                {"title": "c", "link": "https://intact.com/z", "domain": "intact.com"},
+            ]
+        }
+        story = parser.parse_to_story(json_cluster=cluster, **rss_meta)
+
+        assert [s.url for s in story.sources] == [
+            "https://www.bluewin.ch/fr/infos/x",
+            "http://example.com/y",
+            "https://intact.com/z",
+        ]
+
+    def test_repair_does_not_touch_paths_containing_the_pattern(self, parser, rss_meta):
+        """Only the leading scheme is repaired -- never a `https:/` inside a query."""
+        cluster = {
+            "articles": [
+                {
+                    "title": "a",
+                    "link": "https://example.com/r?to=https:/other.com/p",
+                    "domain": "example.com",
+                },
+            ]
+        }
+        story = parser.parse_to_story(json_cluster=cluster, **rss_meta)
+        assert story.sources[0].url == "https://example.com/r?to=https:/other.com/p"
 
     def test_all_fields_absent_produces_empty_story(self, parser, rss_meta):
         story = parser.parse_to_story(json_cluster={}, **rss_meta)
