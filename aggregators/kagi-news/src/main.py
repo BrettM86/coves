@@ -234,14 +234,22 @@ class Aggregator:
                 )
                 continue
 
-        # Tripwire: 0-resolved with non-empty entries means TITLE-format drift
-        # (or wholesale removal of overlap with JSON titles). Renumberings alone
-        # are absorbed by the title-scan fallback in `_resolve_json_cluster`,
-        # which only warns. Continue the run across other feeds.
-        if len(feed.entries) > 0 and resolved_count == 0:
+        # Tripwire: 0-resolved means TITLE-format drift (or wholesale removal of
+        # overlap with JSON titles). Renumberings alone are absorbed by the
+        # title-scan fallback in `_resolve_json_cluster`, which only warns.
+        # Continue the run across other feeds.
+        #
+        # Only entries that actually reached resolution can be evidence of drift.
+        # An already-posted entry `continue`s above without ever calling
+        # `_resolve_json_cluster`, so counting it here made the tripwire fire
+        # whenever a feed was fully published -- the steady state between new
+        # stories, i.e. most runs. That reduced the one alarm that detects a Kagi
+        # format change to routine noise, indistinguishable from a healthy run.
+        attempted = len(feed.entries) - skipped_guid
+        if attempted > 0 and resolved_count == 0:
             logger.error(
-                f"Feed '{feed_config.name}' resolved 0 of {len(feed.entries)} entries "
-                f"to JSON clusters; Kagi JSON title-format may have changed "
+                f"Feed '{feed_config.name}' resolved 0 of {attempted} unposted "
+                f"entries to JSON clusters; Kagi JSON title-format may have changed "
                 f"(or no XML/JSON overlap)"
             )
 

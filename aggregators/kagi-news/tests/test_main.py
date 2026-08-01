@@ -1424,11 +1424,127 @@ class TestAggregator:
             # ERROR log emitted naming the feed and entry count
             error_records = [r for r in caplog.records if r.levelno == logging.ERROR]
             assert any(
-                "resolved 0 of 2 entries" in r.message and "World News" in r.message
+                "resolved 0 of 2 unposted entries" in r.message and "World News" in r.message
                 for r in error_records
             )
             # And no posts went out
             assert mock_client.create_post.call_count == 0
+
+    def test_fully_published_feed_does_not_trip_the_drift_alarm(
+        self, mock_config, mock_rss_feed, mock_json_clusters, sample_story, tmp_path, caplog
+    ):
+        """
+        Once every entry is already posted, nothing reaches _resolve_json_cluster,
+        so resolved_count is legitimately 0. Counting already-posted entries as
+        evidence of drift made this fire on the steady state -- most runs -- which
+        reduced the one alarm that detects a Kagi format change to routine noise.
+        """
+        import logging
+
+        state_file = tmp_path / "state.json"
+        mock_client = Mock()
+        mock_client.create_post.return_value = "at://did:plc:test/social.coves.post/abc123"
+
+        def build():
+            mock_loader = Mock()
+            mock_loader.load.return_value = mock_config
+            MockConfigLoader.return_value = mock_loader
+
+            mock_fetcher = Mock()
+            mock_fetcher.fetch_feed.return_value = mock_rss_feed
+            MockRSSFetcher.return_value = mock_fetcher
+
+            mock_json_fetcher = Mock()
+            mock_json_fetcher.fetch_clusters.return_value = mock_json_clusters
+            MockJSONFetcher.return_value = mock_json_fetcher
+
+            mock_parser = Mock()
+            mock_parser.parse_to_story.return_value = sample_story
+            MockJSONParser.return_value = mock_parser
+
+            mock_formatter = Mock()
+            mock_formatter.format_full.return_value = {"content": "x", "facets": []}
+            MockFormatter.return_value = mock_formatter
+
+            return Aggregator(
+                config_path=Path("config.yaml"),
+                state_file=state_file,
+                coves_client=mock_client,
+            )
+
+        with patch('src.main.ConfigLoader') as MockConfigLoader, \
+             patch('src.main.RSSFetcher') as MockRSSFetcher, \
+             patch('src.main.JSONFetcher') as MockJSONFetcher, \
+             patch('src.main.KagiJSONParser') as MockJSONParser, \
+             patch('src.main.RichTextFormatter') as MockFormatter:
+
+            # First run publishes everything.
+            build().run()
+            assert mock_client.create_post.call_count > 0
+
+            # Second run: every entry is now an exact GUID dupe.
+            mock_client.create_post.reset_mock()
+            with caplog.at_level(logging.ERROR):
+                build().run()
+
+            assert mock_client.create_post.call_count == 0
+            assert not any(
+                "resolved 0 of" in r.message
+                for r in caplog.records if r.levelno == logging.ERROR
+            ), "steady state must not be reported as Kagi format drift"
+
+    def test_drift_alarm_still_fires_when_only_some_entries_are_published(
+        self, mock_config, mock_rss_feed, sample_story, tmp_path, caplog
+    ):
+        """
+        The narrowed condition must not blunt the alarm: if even one unposted
+        entry reaches resolution and fails, that is still drift worth shouting about.
+        """
+        import logging
+
+        state_file = tmp_path / "state.json"
+        mock_client = Mock()
+        mock_client.create_post.return_value = "at://did:plc:test/social.coves.post/abc123"
+
+        with patch('src.main.ConfigLoader') as MockConfigLoader, \
+             patch('src.main.RSSFetcher') as MockRSSFetcher, \
+             patch('src.main.JSONFetcher') as MockJSONFetcher, \
+             patch('src.main.KagiJSONParser') as MockJSONParser, \
+             patch('src.main.RichTextFormatter') as MockFormatter:
+
+            mock_loader = Mock()
+            mock_loader.load.return_value = mock_config
+            MockConfigLoader.return_value = mock_loader
+
+            mock_fetcher = Mock()
+            mock_fetcher.fetch_feed.return_value = mock_rss_feed
+            MockRSSFetcher.return_value = mock_fetcher
+
+            mock_json_fetcher = Mock()
+            mock_json_fetcher.fetch_clusters.return_value = {}  # nothing resolves
+            MockJSONFetcher.return_value = mock_json_fetcher
+
+            MockJSONParser.return_value = Mock()
+            MockFormatter.return_value = Mock()
+
+            aggregator = Aggregator(
+                config_path=Path("config.yaml"),
+                state_file=state_file,
+                coves_client=mock_client,
+            )
+            # Pre-mark the first of the two entries as already posted.
+            first_guid = mock_rss_feed.entries[0].guid
+            for feed in mock_config.feeds:
+                aggregator.state_manager.mark_posted(feed.url, first_guid, "at://x")
+
+            with caplog.at_level(logging.ERROR):
+                aggregator.run()
+
+            # 2 entries, 1 already posted -> 1 attempted, 0 resolved -> still fires.
+            assert any(
+                "resolved 0 of 1 unposted entries" in r.message
+                for r in caplog.records if r.levelno == logging.ERROR
+            )
 
     def test_non_xml_url_raises_value_error(self, mock_config, tmp_path, caplog):
         """A feed URL that doesn't end with .xml triggers ValueError, surfaced in the run log."""
