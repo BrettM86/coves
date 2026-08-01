@@ -41,7 +41,7 @@ func HydrateImageProxyURL(proxyBaseURL, preset, did, cid string) string {
 // ImageURLConfig holds configuration for image URL generation.
 type ImageURLConfig struct {
 	ProxyEnabled bool   // Whether the image proxy is enabled
-	ProxyBaseURL string // Base URL for the image proxy (e.g., "https://coves.social")
+	ProxyBaseURL string // Base URL for the image proxy (e.g., "https://img.coves.social")
 	CDNURL       string // Optional CDN override URL
 }
 
@@ -70,10 +70,19 @@ func HydrateImageURL(config ImageURLConfig, pdsURL, did, cid, preset string) str
 	// Generate proxy URL
 	proxyURL := HydrateImageProxyURL(baseURL, preset, did, cid)
 
-	// If proxy URL generation failed (e.g., empty preset or base URL), fall back to direct URL
-	// Log this as it indicates a configuration problem when proxy is enabled
+	// Proxy URL construction failed. did and cid were already checked above and
+	// an empty base URL yields a *relative* proxy URL rather than "", so the
+	// only way to land here is an empty preset — a caller bug, not bad data.
+	//
+	// This returns "" rather than falling back to a direct blob URL. While the
+	// proxy is enabled, emitting a com.atproto.sync.getBlob URL is media routed
+	// around the CDN that scans it — precisely the state config.mediaProblems
+	// refuses to boot into — so it must not be reachable by quietly degrading
+	// at render time. Callers already treat "" as "no URL": embeds keeps the
+	// record shape, and avatar/banner fields are omitted. The failure surfaces
+	// as a missing image instead of as a silent hole in the choke point.
 	if proxyURL == "" {
-		slog.Warn("[IMAGE-PROXY] proxy URL generation failed, falling back to direct PDS URL",
+		slog.Warn("[IMAGE-PROXY] proxy URL generation failed; omitting the image rather than serving it unproxied",
 			"proxy_enabled", config.ProxyEnabled,
 			"proxy_base_url", config.ProxyBaseURL,
 			"cdn_url", config.CDNURL,
@@ -81,7 +90,7 @@ func HydrateImageURL(config ImageURLConfig, pdsURL, did, cid, preset string) str
 			"did", did,
 			"cid", cid,
 		)
-		return HydrateBlobURL(pdsURL, did, cid)
+		return ""
 	}
 
 	return proxyURL

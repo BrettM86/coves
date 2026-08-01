@@ -661,3 +661,115 @@ func TestHandler_HandleImage_InvalidCID(t *testing.T) {
 		})
 	}
 }
+
+// This route sits behind a CDN and advertises a one-year immutable lifetime on
+// success, which is correct for content-addressed blobs. Inheriting anything
+// cacheable on an error would pin a transient failure — a PDS timeout, a DID
+// that had not propagated yet — at the edge long after the image became
+// fetchable. Every error path must therefore say no-store.
+func TestHandler_HandleImage_ErrorsAreNeverCacheable(t *testing.T) {
+	tests := []struct {
+		name       string
+		params     map[string]string
+		service    *mockService
+		resolver   *mockIdentityResolver
+		wantStatus int
+	}{
+		{
+			name:       "invalid preset",
+			params:     map[string]string{"preset": "nope", "did": validTestDID, "cid": validTestCID},
+			service:    &mockService{},
+			resolver:   &mockIdentityResolver{},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "invalid DID",
+			params:     map[string]string{"preset": "avatar", "did": "not-a-did", "cid": validTestCID},
+			service:    &mockService{},
+			resolver:   &mockIdentityResolver{},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:    "DID resolution failure",
+			params:  map[string]string{"preset": "avatar", "did": validTestDID, "cid": validTestCID},
+			service: &mockService{},
+			resolver: &mockIdentityResolver{
+				resolveDIDFunc: func(ctx context.Context, did string) (*identity.DIDDocument, error) {
+					return nil, errors.New("transient PLC failure")
+				},
+			},
+			wantStatus: http.StatusBadGateway,
+		},
+		{
+			name:   "blob not found",
+			params: map[string]string{"preset": "avatar", "did": validTestDID, "cid": validTestCID},
+			service: &mockService{
+				getImageFunc: func(ctx context.Context, preset, did, cid, pdsURL string) ([]byte, error) {
+					return nil, imageproxy.ErrPDSNotFound
+				},
+			},
+			resolver:   resolverForPDS("https://pds.example.com"),
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:   "PDS timeout",
+			params: map[string]string{"preset": "avatar", "did": validTestDID, "cid": validTestCID},
+			service: &mockService{
+				getImageFunc: func(ctx context.Context, preset, did, cid, pdsURL string) ([]byte, error) {
+					return nil, imageproxy.ErrPDSTimeout
+				},
+			},
+			resolver:   resolverForPDS("https://pds.example.com"),
+			wantStatus: http.StatusGatewayTimeout,
+		},
+		{
+			name:   "processing failure",
+			params: map[string]string{"preset": "avatar", "did": validTestDID, "cid": validTestCID},
+			service: &mockService{
+				getImageFunc: func(ctx context.Context, preset, did, cid, pdsURL string) ([]byte, error) {
+					return nil, imageproxy.ErrProcessingFailed
+				},
+			},
+			resolver:   resolverForPDS("https://pds.example.com"),
+			wantStatus: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := NewHandler(tt.service, tt.resolver)
+
+			path := "/img/" + tt.params["preset"] + "/plain/" + tt.params["did"] + "/" + tt.params["cid"]
+			w := httptest.NewRecorder()
+			handler.HandleImage(w, createTestRequest(http.MethodGet, path, tt.params))
+
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d. Body: %s", w.Code, tt.wantStatus, w.Body.String())
+			}
+			if got := w.Header().Get("Cache-Control"); got != "no-store" {
+				t.Errorf("Cache-Control = %q, want %q so the CDN cannot cache this failure",
+					got, "no-store")
+			}
+		})
+	}
+}
+
+// resolverForPDS returns a resolver whose DID document advertises pdsURL as the
+// repo's PDS, so a test can reach the service call rather than stopping at
+// resolution.
+func resolverForPDS(pdsURL string) *mockIdentityResolver {
+	return &mockIdentityResolver{
+		resolveDIDFunc: func(ctx context.Context, did string) (*identity.DIDDocument, error) {
+			return &identity.DIDDocument{
+				DID: did,
+				Service: []identity.Service{
+					{
+						ID:              "#atproto_pds",
+						Type:            "AtprotoPersonalDataServer",
+						ServiceEndpoint: pdsURL,
+					},
+				},
+			}, nil
+		},
+	}
+}

@@ -176,8 +176,15 @@ func handleServiceError(w http.ResponseWriter, err error) {
 // writeErrorResponse writes a plain text error response.
 // For the image proxy, we use simple text responses rather than JSON
 // since the expected response is binary image data.
+//
+// Errors are explicitly uncacheable. Success responses advertise a one-year
+// immutable lifetime, which is correct for content-addressed blobs but
+// catastrophic for a failure: this route sits behind a CDN, and a transient
+// PDS timeout or a DID that had not yet propagated would otherwise be pinned
+// at the edge for a year, long after the image became fetchable.
 func writeErrorResponse(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	if _, err := w.Write([]byte(message)); err != nil {
 		slog.Warn("[IMAGE-PROXY] failed to write error response",

@@ -5,320 +5,200 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"Coves/internal/core/blobs"
 )
 
-// testPDSBaseURL is the base URL the transforms under test concatenate onto.
-//
-// It is data, not an endpoint. TransformBlobRefsToURLs and transformThumbToURL
-// take the PDS base off the record (CommunityRef.PDSURL) or as a parameter and
-// build a getBlob path from it; there is no HTTP client in this file and
-// nothing here is dialled. Reading the base from testkit.Endpoints() — the
-// same place the serving code reads it — would make the expected strings
-// tautological, so it is written down once here instead, which also keeps the
-// assertions focused on the part the function actually builds: the path and
-// its query.
-const testPDSBaseURL = "http://localhost:3001" // coves:allow-host-literal: expected-output fixture for a pure string transform; never dialled
+const (
+	embedCommunityDID = "did:plc:testcommunity"
+	embedCommunityPDS = "http://localhost:3001" // coves:allow-host-literal: expected-output fixture for a pure string transform; never dialled
+	embedBlobCID      = "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"
+)
+
+// withImageProxy enables the process-wide image proxy for one test. The
+// projection itself is covered in internal/core/embeds; these cases are about
+// what the posts layer contributes — that the community owns the blobs, and
+// that a post with nothing to project survives untouched.
+func withImageProxy(t *testing.T) {
+	t.Helper()
+	blobs.ResetImageURLConfigForTesting()
+	blobs.SetImageURLConfig(blobs.ImageURLConfig{
+		ProxyEnabled: true,
+		ProxyBaseURL: "https://img.coves.social",
+	})
+	t.Cleanup(blobs.ResetImageURLConfigForTesting)
+}
+
+func testBlobRef() map[string]interface{} {
+	return map[string]interface{}{
+		"$type":    "blob",
+		"ref":      map[string]interface{}{"$link": embedBlobCID},
+		"mimeType": "image/jpeg",
+		"size":     52813,
+	}
+}
+
+func externalEmbedPost() *PostView {
+	return &PostView{
+		Community: &CommunityRef{DID: embedCommunityDID, PDSURL: embedCommunityPDS},
+		Embed: map[string]interface{}{
+			"$type": "social.coves.embed.external",
+			"external": map[string]interface{}{
+				"uri":   "https://example.com",
+				"thumb": testBlobRef(),
+			},
+		},
+	}
+}
 
 func TestTransformBlobRefsToURLs(t *testing.T) {
-	t.Run("transforms external embed thumb from blob to URL", func(t *testing.T) {
-		post := &PostView{
-			Community: &CommunityRef{
-				DID:    "did:plc:testcommunity",
-				PDSURL: testPDSBaseURL,
-			},
-			Embed: map[string]interface{}{
-				"$type": "social.coves.embed.external",
-				"external": map[string]interface{}{
-					"uri": "https://example.com",
-					"thumb": map[string]interface{}{
-						"$type": "blob",
-						"ref": map[string]interface{}{
-							"$link": "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm",
-						},
-						"mimeType": "image/jpeg",
-						"size":     52813,
-					},
-				},
-			},
-		}
+	t.Run("an external thumb is served from the image proxy under the community DID", func(t *testing.T) {
+		withImageProxy(t)
 
+		post := externalEmbedPost()
 		TransformBlobRefsToURLs(post)
 
-		// Verify embed is still a map
-		embedMap, ok := post.Embed.(map[string]interface{})
-		require.True(t, ok, "embed should still be a map")
-
-		// Verify external is still a map
-		external, ok := embedMap["external"].(map[string]interface{})
-		require.True(t, ok, "external should be a map")
-
-		// Verify thumb is now a URL string
-		thumbURL, ok := external["thumb"].(string)
-		require.True(t, ok, "thumb should be a string URL")
-		assert.Equal(t,
-			testPDSBaseURL+"/xrpc/com.atproto.sync.getBlob?did=did:plc:testcommunity&cid=bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm",
-			thumbURL)
-	})
-
-	t.Run("handles missing thumb gracefully", func(t *testing.T) {
-		post := &PostView{
-			Community: &CommunityRef{
-				DID:    "did:plc:testcommunity",
-				PDSURL: testPDSBaseURL,
-			},
-			Embed: map[string]interface{}{
-				"$type": "social.coves.embed.external",
-				"external": map[string]interface{}{
-					"uri": "https://example.com",
-					// No thumb field
-				},
-			},
-		}
-
-		// Should not panic
-		TransformBlobRefsToURLs(post)
-
-		// Verify external is unchanged
 		embedMap := post.Embed.(map[string]interface{})
+		assert.Equal(t, "social.coves.embed.external#view", embedMap["$type"])
+
 		external := embedMap["external"].(map[string]interface{})
-		_, hasThumb := external["thumb"]
-		assert.False(t, hasThumb, "thumb should not be added")
+		// The AppView signs community posts into the community's repo and
+		// uploads their blobs there, so the community DID owns the blob no
+		// matter who authored the post.
+		assert.Equal(t,
+			"https://img.coves.social/img/embed_thumbnail/plain/"+embedCommunityDID+"/"+embedBlobCID,
+			external["thumb"])
 	})
 
-	t.Run("handles already-transformed URL thumb", func(t *testing.T) {
-		expectedURL := testPDSBaseURL + "/xrpc/com.atproto.sync.getBlob?did=did:plc:test&cid=bafytest"
+	t.Run("image embeds are hydrated, not skipped", func(t *testing.T) {
+		withImageProxy(t)
+
 		post := &PostView{
-			Community: &CommunityRef{
-				DID:    "did:plc:testcommunity",
-				PDSURL: testPDSBaseURL,
+			Community: &CommunityRef{DID: embedCommunityDID, PDSURL: embedCommunityPDS},
+			Embed: map[string]interface{}{
+				"$type": "social.coves.embed.images",
+				"images": []interface{}{
+					map[string]interface{}{"image": testBlobRef(), "alt": "a cat"},
+				},
 			},
+		}
+
+		TransformBlobRefsToURLs(post)
+
+		embedMap := post.Embed.(map[string]interface{})
+		assert.Equal(t, "social.coves.embed.images#view", embedMap["$type"])
+
+		image := embedMap["images"].([]interface{})[0].(map[string]interface{})
+		assert.Equal(t,
+			"https://img.coves.social/img/content_preview/plain/"+embedCommunityDID+"/"+embedBlobCID,
+			image["thumb"])
+		assert.Equal(t,
+			"https://img.coves.social/img/content_full/plain/"+embedCommunityDID+"/"+embedBlobCID,
+			image["fullsize"])
+		assert.Equal(t, "a cat", image["alt"])
+	})
+
+	t.Run("no image URL the AppView emits addresses a PDS blob endpoint", func(t *testing.T) {
+		withImageProxy(t)
+
+		post := externalEmbedPost()
+		TransformBlobRefsToURLs(post)
+
+		external := post.Embed.(map[string]interface{})["external"].(map[string]interface{})
+		// The whole point of the proxy: a getBlob URL here would be media
+		// served around the CDN that scans it.
+		assert.NotContains(t, external["thumb"], "com.atproto.sync.getBlob")
+	})
+
+	t.Run("an already-hydrated thumb is left alone", func(t *testing.T) {
+		withImageProxy(t)
+
+		hydrated := "https://img.coves.social/img/embed_thumbnail/plain/did:plc:test/bafytest"
+		post := &PostView{
+			Community: &CommunityRef{DID: embedCommunityDID, PDSURL: embedCommunityPDS},
 			Embed: map[string]interface{}{
 				"$type": "social.coves.embed.external",
 				"external": map[string]interface{}{
 					"uri":   "https://example.com",
-					"thumb": expectedURL, // Already a URL string
+					"thumb": hydrated,
 				},
 			},
 		}
 
-		// Should not error or change the URL
 		TransformBlobRefsToURLs(post)
 
-		// Verify thumb is unchanged
-		embedMap := post.Embed.(map[string]interface{})
-		external := embedMap["external"].(map[string]interface{})
-		thumbURL, ok := external["thumb"].(string)
-		require.True(t, ok, "thumb should still be a string")
-		assert.Equal(t, expectedURL, thumbURL, "thumb URL should be unchanged")
+		external := post.Embed.(map[string]interface{})["external"].(map[string]interface{})
+		assert.Equal(t, hydrated, external["thumb"])
 	})
 
-	t.Run("handles missing embed", func(t *testing.T) {
-		post := &PostView{
-			Community: &CommunityRef{
-				DID:    "did:plc:testcommunity",
-				PDSURL: testPDSBaseURL,
-			},
-			Embed: nil,
-		}
+	t.Run("a post with no community is left untouched", func(t *testing.T) {
+		withImageProxy(t)
 
-		// Should not panic
+		post := externalEmbedPost()
+		post.Community = nil
+
 		TransformBlobRefsToURLs(post)
 
-		// Verify embed is still nil
-		assert.Nil(t, post.Embed, "embed should remain nil")
-	})
-
-	t.Run("handles nil post", func(t *testing.T) {
-		// Should not panic
-		TransformBlobRefsToURLs(nil)
-	})
-
-	t.Run("handles missing community", func(t *testing.T) {
-		post := &PostView{
-			Community: nil,
-			Embed: map[string]interface{}{
-				"$type": "social.coves.embed.external",
-				"external": map[string]interface{}{
-					"uri": "https://example.com",
-					"thumb": map[string]interface{}{
-						"$type": "blob",
-						"ref": map[string]interface{}{
-							"$link": "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm",
-						},
-					},
-				},
-			},
-		}
-
-		// Should not panic or transform
-		TransformBlobRefsToURLs(post)
-
-		// Verify thumb is unchanged (still a blob)
-		embedMap := post.Embed.(map[string]interface{})
-		external := embedMap["external"].(map[string]interface{})
+		external := post.Embed.(map[string]interface{})["external"].(map[string]interface{})
 		thumb, ok := external["thumb"].(map[string]interface{})
-		require.True(t, ok, "thumb should still be a map (blob ref)")
-		assert.Equal(t, "blob", thumb["$type"], "blob type should be unchanged")
+		require.True(t, ok, "with no owning repo there is no URL to build, so the blob must survive")
+		assert.Equal(t, "blob", thumb["$type"])
 	})
 
-	t.Run("handles missing PDS URL", func(t *testing.T) {
-		post := &PostView{
-			Community: &CommunityRef{
-				DID:    "did:plc:testcommunity",
-				PDSURL: "", // Empty PDS URL
-			},
-			Embed: map[string]interface{}{
-				"$type": "social.coves.embed.external",
-				"external": map[string]interface{}{
-					"uri": "https://example.com",
-					"thumb": map[string]interface{}{
-						"$type": "blob",
-						"ref": map[string]interface{}{
-							"$link": "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm",
-						},
-					},
-				},
-			},
-		}
+	t.Run("the proxy resolves the DID itself, so a missing PDS URL is not fatal", func(t *testing.T) {
+		withImageProxy(t)
 
-		// Should not panic or transform
+		post := externalEmbedPost()
+		post.Community.PDSURL = ""
+
 		TransformBlobRefsToURLs(post)
 
-		// Verify thumb is unchanged (still a blob)
-		embedMap := post.Embed.(map[string]interface{})
-		external := embedMap["external"].(map[string]interface{})
-		thumb, ok := external["thumb"].(map[string]interface{})
-		require.True(t, ok, "thumb should still be a map (blob ref)")
-		assert.Equal(t, "blob", thumb["$type"], "blob type should be unchanged")
+		external := post.Embed.(map[string]interface{})["external"].(map[string]interface{})
+		assert.Equal(t,
+			"https://img.coves.social/img/embed_thumbnail/plain/"+embedCommunityDID+"/"+embedBlobCID,
+			external["thumb"],
+			"the PDS URL is only needed for the proxy-disabled fallback")
 	})
 
-	t.Run("handles malformed blob ref gracefully", func(t *testing.T) {
+	t.Run("nil inputs do not panic", func(t *testing.T) {
+		withImageProxy(t)
+
+		assert.NotPanics(t, func() { TransformBlobRefsToURLs(nil) })
+
 		post := &PostView{
-			Community: &CommunityRef{
-				DID:    "did:plc:testcommunity",
-				PDSURL: testPDSBaseURL,
-			},
-			Embed: map[string]interface{}{
-				"$type": "social.coves.embed.external",
-				"external": map[string]interface{}{
-					"uri": "https://example.com",
-					"thumb": map[string]interface{}{
-						"$type": "blob",
-						"ref":   "invalid-ref-format", // Should be a map with $link
-					},
-				},
-			},
+			Community: &CommunityRef{DID: embedCommunityDID, PDSURL: embedCommunityPDS},
+			Embed:     nil,
 		}
-
-		// Should not panic
 		TransformBlobRefsToURLs(post)
-
-		// Verify thumb is unchanged (malformed blob)
-		embedMap := post.Embed.(map[string]interface{})
-		external := embedMap["external"].(map[string]interface{})
-		thumb, ok := external["thumb"].(map[string]interface{})
-		require.True(t, ok, "thumb should still be a map")
-		assert.Equal(t, "invalid-ref-format", thumb["ref"], "malformed ref should be unchanged")
+		assert.Nil(t, post.Embed)
 	})
 
-	t.Run("ignores non-external embed types", func(t *testing.T) {
+	t.Run("an embed that is not an object is left untouched", func(t *testing.T) {
+		withImageProxy(t)
+
 		post := &PostView{
-			Community: &CommunityRef{
-				DID:    "did:plc:testcommunity",
-				PDSURL: testPDSBaseURL,
-			},
-			Embed: map[string]interface{}{
-				"$type": "social.coves.embed.images",
-				"images": []interface{}{
-					map[string]interface{}{
-						"image": map[string]interface{}{
-							"$type": "blob",
-							"ref": map[string]interface{}{
-								"$link": "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm",
-							},
-						},
-					},
-				},
-			},
+			Community: &CommunityRef{DID: embedCommunityDID, PDSURL: embedCommunityPDS},
+			Embed:     "not-an-object",
 		}
 
-		// Should not transform non-external embeds
 		TransformBlobRefsToURLs(post)
 
-		// Verify images embed is unchanged
-		embedMap := post.Embed.(map[string]interface{})
-		images := embedMap["images"].([]interface{})
-		imageObj := images[0].(map[string]interface{})
-		imageBlob := imageObj["image"].(map[string]interface{})
-		assert.Equal(t, "blob", imageBlob["$type"], "image blob should be unchanged")
+		assert.Equal(t, "not-an-object", post.Embed)
 	})
 }
 
-func TestTransformThumbToURL(t *testing.T) {
-	t.Run("transforms valid blob ref to URL", func(t *testing.T) {
-		external := map[string]interface{}{
-			"uri": "https://example.com",
-			"thumb": map[string]interface{}{
-				"$type": "blob",
-				"ref": map[string]interface{}{
-					"$link": "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm",
-				},
-				"mimeType": "image/jpeg",
-				"size":     52813,
-			},
-		}
+func TestTransformBlobRefsToURLs_ProxyDisabled(t *testing.T) {
+	// The self-hosted opt-out (ALLOW_UNPROXIED_MEDIA): URLs address the
+	// community's PDS directly.
+	blobs.ResetImageURLConfigForTesting()
+	blobs.SetImageURLConfig(blobs.ImageURLConfig{ProxyEnabled: false})
+	t.Cleanup(blobs.ResetImageURLConfigForTesting)
 
-		transformThumbToURL(external, "did:plc:test", testPDSBaseURL)
+	post := externalEmbedPost()
+	TransformBlobRefsToURLs(post)
 
-		thumbURL, ok := external["thumb"].(string)
-		require.True(t, ok, "thumb should be a string URL")
-		assert.Equal(t,
-			testPDSBaseURL+"/xrpc/com.atproto.sync.getBlob?did=did:plc:test&cid=bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm",
-			thumbURL)
-	})
-
-	t.Run("does not transform if thumb is already string", func(t *testing.T) {
-		expectedURL := testPDSBaseURL + "/xrpc/com.atproto.sync.getBlob?did=did:plc:test&cid=bafytest"
-		external := map[string]interface{}{
-			"uri":   "https://example.com",
-			"thumb": expectedURL,
-		}
-
-		transformThumbToURL(external, "did:plc:test", testPDSBaseURL)
-
-		thumbURL, ok := external["thumb"].(string)
-		require.True(t, ok, "thumb should still be a string")
-		assert.Equal(t, expectedURL, thumbURL, "thumb should be unchanged")
-	})
-
-	t.Run("does not transform if thumb is missing", func(t *testing.T) {
-		external := map[string]interface{}{
-			"uri": "https://example.com",
-		}
-
-		transformThumbToURL(external, "did:plc:test", testPDSBaseURL)
-
-		_, hasThumb := external["thumb"]
-		assert.False(t, hasThumb, "thumb should not be added")
-	})
-
-	t.Run("does not transform if CID is empty", func(t *testing.T) {
-		external := map[string]interface{}{
-			"uri": "https://example.com",
-			"thumb": map[string]interface{}{
-				"$type": "blob",
-				"ref": map[string]interface{}{
-					"$link": "", // Empty CID
-				},
-			},
-		}
-
-		transformThumbToURL(external, "did:plc:test", testPDSBaseURL)
-
-		// Verify thumb is unchanged
-		thumb, ok := external["thumb"].(map[string]interface{})
-		require.True(t, ok, "thumb should still be a map")
-		ref := thumb["ref"].(map[string]interface{})
-		assert.Equal(t, "", ref["$link"], "empty CID should be unchanged")
-	})
+	external := post.Embed.(map[string]interface{})["external"].(map[string]interface{})
+	assert.Equal(t,
+		blobs.HydrateBlobURL(embedCommunityPDS, embedCommunityDID, embedBlobCID),
+		external["thumb"])
 }

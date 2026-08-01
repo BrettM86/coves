@@ -428,22 +428,22 @@ func (a *application) authenticateInstanceWithPDS(ctx context.Context) {
 	slog.Info("instance authenticated with PDS", "instance_did", a.cfg.Instance.DID)
 }
 
-// buildImageProxy sets up the optional resizing image proxy and publishes the
-// URL-generation settings the communities package uses to render avatars.
+// buildImageProxy sets up the resizing image proxy and publishes the settings
+// every view builder uses to render media URLs.
 //
 // The URL config is published on every success path — including when the proxy
-// is disabled — because communities needs to know whether to emit proxy URLs or
-// direct blob URLs.
+// is disabled — because the view builders need to know whether to emit proxy
+// URLs or direct blob URLs. In production, config.Validate has already refused
+// the disabled path unless the operator opted into it explicitly.
 func (a *application) buildImageProxy() error {
-	cfg := imageproxy.ConfigFromEnv()
+	cfg := a.cfg.Media.ImageProxy
 
-	// Published on every path, including the disabled one: communities needs
-	// to know whether to render proxy URLs or direct blob URLs. Set explicitly
-	// at each exit rather than via defer — defer is for cleanup, and using it
-	// for control flow hides that this is the function's main effect when the
-	// proxy is off.
+	// Published on every path, including the disabled one. Set explicitly at
+	// each exit rather than via defer — defer is for cleanup, and using it for
+	// control flow hides that this is the function's main effect when the proxy
+	// is off.
 	publishURLConfig := func() {
-		communities.SetImageProxyConfig(blobs.ImageURLConfig{
+		blobs.SetImageURLConfig(blobs.ImageURLConfig{
 			ProxyEnabled: cfg.Enabled,
 			ProxyBaseURL: cfg.BaseURL,
 			CDNURL:       cfg.CDNURL,
@@ -452,7 +452,18 @@ func (a *application) buildImageProxy() error {
 
 	if !cfg.Enabled {
 		publishURLConfig()
-		slog.Info("image proxy disabled; blob URLs will be served directly")
+		// Warn, not Info. With the proxy off, every image URL this server hands
+		// a client addresses a PDS blob endpoint directly — media served around
+		// whatever CDN is scanning it, and blocked by the shipped CSP. Nothing
+		// downstream logs that: URL generation succeeds, the embeds projection
+		// succeeds, and the responses look entirely normal. This line is the
+		// only signal that a whole deployment is in that state, so it needs to
+		// be findable in the logs rather than buried at Info alongside routine
+		// startup chatter. Production additionally refuses to boot here unless
+		// the operator set ALLOW_UNPROXIED_MEDIA (see config.mediaProblems).
+		slog.Warn("[IMAGE-PROXY] disabled: image URLs will address PDS blob endpoints directly",
+			"consequence", "media bypasses any scanning CDN and is blocked by the default Content-Security-Policy",
+		)
 		return nil
 	}
 

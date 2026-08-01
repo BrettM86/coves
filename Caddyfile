@@ -81,6 +81,23 @@ coves.social {
         file_server
     }
 
+    # /img/* belongs to the media hostname, and only to the media hostname.
+    #
+    # The AppView registers the image-proxy route on its router with no Host
+    # check, so without this block the catch-all below would serve the exact
+    # same bytes from coves.social — which is DNS-only, not orange-clouded, and
+    # therefore never crosses the scanning edge. That would reduce the whole
+    # choke point to a convention about which URL the AppView happens to emit,
+    # which is not an enforcement boundary: anyone wanting to pull media past
+    # the scanner would just swap the hostname.
+    #
+    # Redirect rather than 404 so an old or hand-built apex URL still resolves,
+    # but resolves through the scanned origin. 301 because the mapping is
+    # permanent and worth caching in the client.
+    handle /img/* {
+        redir https://img.coves.social{uri} permanent
+    }
+
     # Proxy all requests to AppView
     handle {
         reverse_proxy appview:8080 {
@@ -128,9 +145,80 @@ coves.social {
     # can't carry nonces) silently downgrades the frontend's script-src
     # hardening. Flagged in the July 2026 frontend security review.
     @csp_default not path /m/turnstile.html
-    header @csp_default Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://*.bsky.network wss://*.bsky.network; base-uri 'self'; object-src 'none'; frame-ancestors 'none'"
+    # img-src covers the media hostname every image URL the AppView emits now
+    # points at. media-src is separate and must name the PDS hosts directly:
+    # the image proxy transcodes stills and cannot stream, so
+    # social.coves.embed.video#view deliberately serves video from the hosting
+    # PDS (the accepted gap in docs/PRD_CSAM_SCANNING.md workstream 5). Without
+    # this directive video falls back to default-src 'self' and is blocked.
+    #
+    # The listed hosts are our own PDS plus tdpl.io, the bridge PDS that hosts
+    # blobs for bridged Lemmy communities. Both are reachable; both are needed.
+    #
+    # Known limitation, deliberately not papered over: projectVideo builds the
+    # video URL from whatever PDS owns the record, so video on a community
+    # hosted by any *other* peer in the network is blocked by this directive.
+    # A fixed host list cannot express "any PDS in the network", and widening it
+    # to a wildcard would defeat the point of having one. The failure is
+    # fail-closed and browser-side only (blocked in console, no server signal).
+    # It closes when video gets a streaming passthrough on img.coves.social,
+    # which is also what closes the workstream-5 scanning gap.
+    header @csp_default Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://img.coves.social; media-src 'self' https://pds.coves.me https://coves.me https://tdpl.io; connect-src 'self' https://*.bsky.network wss://*.bsky.network; base-uri 'self'; object-src 'none'; frame-ancestors 'none'"
 
     # Enable compression
+    encode gzip zstd
+}
+
+# Media hostname. Every image the AppView hands a client — post and comment
+# embeds, link-card thumbnails, avatars, banners — is addressed here, on a
+# hostname that carries nothing else.
+#
+# The isolation is the point: this is the ONLY record in the stack meant to be
+# orange-clouded (proxied) at Cloudflare, which is what lets an upstream scanner
+# see the media we serve. Everything else must stay DNS-only — the PDS serves
+# the atproto sync surface (firehose WebSockets, relay traffic), and tdpl.io
+# cannot be proxied at all because its on-demand handle certs need DNS pointing
+# straight at this origin. Because only /img/* exists here, the blast radius of
+# any CDN feature enabled on this zone is exactly the image proxy.
+#
+# TLS is issued via the existing Cloudflare DNS-01 token, which works behind the
+# orange cloud (no Origin CA cert needed). Set the zone to Full (strict).
+img.coves.social {
+    tls {
+        dns cloudflare {env.CLOUDFLARE_API_TOKEN}
+    }
+
+    handle /img/* {
+        reverse_proxy appview:8080 {
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    # Nothing else is served from this hostname. Keeping it a media-only origin
+    # means a cache rule scoped to img.coves.social/* can never accidentally
+    # cache an API response.
+    handle {
+        respond "Not Found" 404
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        # Images are loaded cross-origin by coves.social and the mobile app.
+        Access-Control-Allow-Origin "*"
+        -Server
+    }
+
+    log {
+        output stdout
+        format json
+    }
+
+    # Images are already compressed; this only benefits the plain-text error
+    # bodies the proxy returns, which are explicitly no-store.
     encode gzip zstd
 }
 

@@ -33,6 +33,7 @@ func prodEnv(t *testing.T) {
 	t.Setenv("INSTANCE_DID", "did:web:coves.social")
 	t.Setenv("APPVIEW_PUBLIC_URL", "https://coves.social")
 	t.Setenv("PDS_URL", "https://pds.coves.social")
+	t.Setenv("IMAGE_PROXY_BASE_URL", "https://img.coves.social")
 }
 
 // clearEnv delegates to the exported helper so there is exactly one list of
@@ -1008,4 +1009,202 @@ func TestLoad_TrimsWhitespace(t *testing.T) {
 	if cfg.IsDevEnv {
 		t.Error("IsDevEnv should parse \" false \" as false")
 	}
+}
+
+// The image proxy is the single hostname all Coves media is served from, which
+// is what lets an upstream CDN scan it. Disabling it does not break rendering —
+// URL generation quietly falls back to direct PDS blob URLs — so a production
+// deployment can serve unscanned media past its own CSP while looking healthy.
+// Validate refuses to start rather than allow that by omission.
+func TestLoad_ProductionRequiresTheImageProxy(t *testing.T) {
+	clearEnv(t)
+	prodEnv(t)
+	t.Setenv("IMAGE_PROXY_ENABLED", "false")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() succeeded in production with the image proxy disabled")
+	}
+	if !strings.Contains(err.Error(), "IMAGE_PROXY_ENABLED") {
+		t.Errorf("error = %q, want it to name IMAGE_PROXY_ENABLED", err.Error())
+	}
+	// The message has to point at the way out, or an operator's only recourse
+	// is reading the source.
+	if !strings.Contains(err.Error(), "ALLOW_UNPROXIED_MEDIA") {
+		t.Errorf("error = %q, want it to name the ALLOW_UNPROXIED_MEDIA opt-out", err.Error())
+	}
+}
+
+// Self-hosters who are not fronting media with a scanning CDN opt out
+// explicitly instead of patching the source.
+func TestLoad_UnproxiedMediaIsAllowedWhenAcknowledged(t *testing.T) {
+	clearEnv(t)
+	prodEnv(t)
+	t.Setenv("IMAGE_PROXY_ENABLED", "false")
+	t.Setenv("ALLOW_UNPROXIED_MEDIA", "true")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error for an acknowledged unproxied-media config: %v", err)
+	}
+	if cfg.Media.ImageProxy.Enabled {
+		t.Error("Media.ImageProxy.Enabled should be false")
+	}
+	if !cfg.Media.AllowUnproxiedMedia {
+		t.Error("Media.AllowUnproxiedMedia should be true")
+	}
+}
+
+// An enabled proxy with no base URL emits relative URLs ("/img/..."). Those
+// resolve for a browser on the AppView origin and for nothing else — the mobile
+// app receives them verbatim.
+func TestLoad_ProductionRejectsUnusableImageProxyBaseURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		env      map[string]string
+		wantText string
+	}{
+		{
+			name:     "no base URL at all",
+			env:      map[string]string{"IMAGE_PROXY_BASE_URL": ""},
+			wantText: "IMAGE_PROXY_BASE_URL",
+		},
+		{
+			name:     "the dev localhost default left in place",
+			env:      map[string]string{"IMAGE_PROXY_BASE_URL": "http://localhost:8080"},
+			wantText: "localhost",
+		},
+		{
+			name: "a CDN override pointing at loopback",
+			env: map[string]string{
+				"IMAGE_PROXY_BASE_URL": "https://img.coves.social",
+				"IMAGE_PROXY_CDN_URL":  "http://127.0.0.1:8080",
+			},
+			wantText: "IMAGE_PROXY_CDN_URL",
+		},
+		{
+			// url.Parse accepts this as a bare *path*: no scheme, no host, and
+			// Hostname() == "", which sits in none of the checks above. It then
+			// produces "img.coves.social/img/..." — a relative URL, exactly the
+			// thing mediaProblems exists to reject, since a non-browser client
+			// has no origin to resolve it against.
+			name:     "a base URL with no scheme",
+			env:      map[string]string{"IMAGE_PROXY_BASE_URL": "img.coves.social"},
+			wantText: "absolute http(s) URL",
+		},
+		{
+			name: "a CDN override with no scheme",
+			env: map[string]string{
+				"IMAGE_PROXY_BASE_URL": "https://img.coves.social",
+				"IMAGE_PROXY_CDN_URL":  "cdn.coves.social",
+			},
+			wantText: "IMAGE_PROXY_CDN_URL",
+		},
+		{
+			name:     "a base URL with a non-http scheme",
+			env:      map[string]string{"IMAGE_PROXY_BASE_URL": "ftp://img.coves.social"},
+			wantText: "absolute http(s) URL",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearEnv(t)
+			prodEnv(t)
+			for name, value := range tt.env {
+				t.Setenv(name, value)
+			}
+
+			_, err := Load()
+			if err == nil {
+				t.Fatal("Load() succeeded with an unusable image proxy base URL")
+			}
+			if !strings.Contains(err.Error(), tt.wantText) {
+				t.Errorf("error = %q, want it to mention %q", err.Error(), tt.wantText)
+			}
+		})
+	}
+}
+
+// The CDN override takes precedence over the base URL, so a valid one is
+// enough on its own.
+func TestLoad_ImageProxyCDNURLSatisfiesTheBaseURLRequirement(t *testing.T) {
+	clearEnv(t)
+	prodEnv(t)
+	t.Setenv("IMAGE_PROXY_BASE_URL", "")
+	t.Setenv("IMAGE_PROXY_CDN_URL", "https://cdn.coves.social")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	if cfg.Media.ImageProxy.CDNURL != "https://cdn.coves.social" {
+		t.Errorf("Media.ImageProxy.CDNURL = %q, want the CDN override",
+			cfg.Media.ImageProxy.CDNURL)
+	}
+}
+
+// Dev runs on localhost with relative image URLs and must stay unencumbered by
+// the production rule.
+func TestLoad_DevIgnoresTheImageProxyInvariant(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("IS_DEV_ENV", "true")
+	t.Setenv("IMAGE_PROXY_ENABLED", "false")
+
+	if _, err := Load(); err != nil {
+		t.Fatalf("Load() returned error in dev with the image proxy disabled: %v", err)
+	}
+}
+
+// IMAGE_PROXY_ENABLED gates a security invariant, so it must parse as strictly
+// as every other boolean. imageproxy.ConfigFromEnv compares against the literal
+// strings "true"/"1", which silently reads TRUE, yes, or a value with a
+// trailing space — all common in hand-edited .env files — as *disabled*.
+func TestLoad_ImageProxyEnabledParsesStrictly(t *testing.T) {
+	t.Run("case-insensitive and padded values are honoured, not silently false", func(t *testing.T) {
+		for _, value := range []string{"TRUE", "True", " true ", "1"} {
+			t.Run(value, func(t *testing.T) {
+				clearEnv(t)
+				prodEnv(t)
+				t.Setenv("IMAGE_PROXY_ENABLED", value)
+
+				cfg, err := Load()
+				if err != nil {
+					t.Fatalf("Load() rejected IMAGE_PROXY_ENABLED=%q: %v", value, err)
+				}
+				if !cfg.Media.ImageProxy.Enabled {
+					t.Errorf("IMAGE_PROXY_ENABLED=%q parsed as disabled", value)
+				}
+			})
+		}
+	})
+
+	t.Run("an unparseable value is an error, not a silent disable", func(t *testing.T) {
+		clearEnv(t)
+		prodEnv(t)
+		t.Setenv("IMAGE_PROXY_ENABLED", "yes")
+
+		_, err := Load()
+		if err == nil {
+			t.Fatal("Load() accepted IMAGE_PROXY_ENABLED=yes")
+		}
+		if !strings.Contains(err.Error(), "IMAGE_PROXY_ENABLED") {
+			t.Errorf("error = %q, want it to name IMAGE_PROXY_ENABLED", err.Error())
+		}
+	})
+
+	t.Run("false still disables", func(t *testing.T) {
+		clearEnv(t)
+		prodEnv(t)
+		t.Setenv("IMAGE_PROXY_ENABLED", "FALSE")
+		t.Setenv("ALLOW_UNPROXIED_MEDIA", "true")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() returned error: %v", err)
+		}
+		if cfg.Media.ImageProxy.Enabled {
+			t.Error("IMAGE_PROXY_ENABLED=FALSE should disable the proxy")
+		}
+	})
 }

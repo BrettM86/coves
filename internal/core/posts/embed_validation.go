@@ -3,6 +3,7 @@ package posts
 import (
 	"fmt"
 
+	"Coves/internal/core/embeds"
 	"Coves/internal/validation"
 )
 
@@ -11,14 +12,20 @@ import (
 // union refs declared in the post.create lexicon — a ref added there must be
 // added here too, or it will be rejected at the API boundary as unknown.
 //
+// The names come from internal/core/embeds, which is the package that reads
+// these same discriminators when projecting a stored embed into its view. Two
+// independent spellings of one lexicon contract can drift, and the failure —
+// the validator accepting a type the projector then ignores — is silent.
+//
 // The get endpoint projects embeds through a separate, output-only "#view"
-// union (e.g. social.coves.embed.record#view); those view types are never
-// valid on create input and are correctly rejected here as unknown.
+// union (social.coves.embed.images#view and the sibling video, external and
+// post projections); those view types are never valid on create input and are
+// correctly rejected here as unknown.
 const (
-	embedTypeImages   = "social.coves.embed.images"
-	embedTypeVideo    = "social.coves.embed.video"
-	embedTypeExternal = "social.coves.embed.external"
-	embedTypePost     = "social.coves.embed.post"
+	embedTypeImages   = embeds.TypeImages
+	embedTypeVideo    = embeds.TypeVideo
+	embedTypeExternal = embeds.TypeExternal
+	embedTypePost     = embeds.TypePost
 )
 
 // maxEmbedSources mirrors the maxLength on the sources array in

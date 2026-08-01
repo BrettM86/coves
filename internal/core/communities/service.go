@@ -1108,11 +1108,32 @@ func (s *communityService) ResolveCommunityIdentifier(ctx context.Context, ident
 
 	// 4. Canonical handle: name.community.instance.com (Bluesky standard)
 	if strings.Contains(identifier, ".") {
-		community, err := s.repo.GetByHandle(ctx, strings.ToLower(identifier))
-		if err != nil {
-			return "", fmt.Errorf("community not found for handle %s: %w", identifier, err)
+		handle := strings.ToLower(identifier)
+
+		community, err := s.repo.GetByHandle(ctx, handle)
+		if err == nil {
+			return community.DID, nil
 		}
-		return community.DID, nil
+		if !IsNotFound(err) {
+			return "", fmt.Errorf("failed to look up community handle %s: %w", identifier, err)
+		}
+
+		// Communities provisioned on this instance store a "c-" prefixed handle
+		// (c-gardening.coves.social) that namespaces community actors apart from
+		// user actors. Clients display and link to the prefix-free form, so retry
+		// the prefixed handle before giving up. Bridged communities are stored
+		// without the prefix and resolve on the first lookup above.
+		if !strings.HasPrefix(handle, communityHandlePrefix) {
+			community, prefixedErr := s.repo.GetByHandle(ctx, communityHandlePrefix+handle)
+			if prefixedErr == nil {
+				return community.DID, nil
+			}
+			if !IsNotFound(prefixedErr) {
+				return "", fmt.Errorf("failed to look up community handle %s: %w", communityHandlePrefix+handle, prefixedErr)
+			}
+		}
+
+		return "", fmt.Errorf("community not found for handle %s: %w", identifier, err)
 	}
 
 	return "", NewValidationError("identifier", "must be a DID, handle, or scoped identifier (!name@instance)")

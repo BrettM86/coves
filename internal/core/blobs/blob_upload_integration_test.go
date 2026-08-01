@@ -71,6 +71,15 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 	// Create test community with PDS credentials
 	community := createTestCommunityWithBlobCredentials(t, communityRepo, "blobtest")
 
+	// Serve URLs the way production does: through the image proxy on the media
+	// hostname. The URL config is process-wide, so it is restored afterwards.
+	blobs.ResetImageURLConfigForTesting()
+	blobs.SetImageURLConfig(blobs.ImageURLConfig{
+		ProxyEnabled: true,
+		ProxyBaseURL: "https://img.coves.social",
+	})
+	t.Cleanup(blobs.ResetImageURLConfigForTesting)
+
 	t.Run("Post with single embedded image", func(t *testing.T) {
 		// STEP 1: Create a test image blob (1x1 PNG)
 		imageData := createTestPNG(t, 1, 1, color.RGBA{R: 255, G: 0, B: 0, A: 255})
@@ -183,12 +192,32 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 		// Transform blob refs to URLs (this happens in feed handlers)
 		posts.TransformBlobRefsToURLs(postView)
 
-		// NOTE: TransformBlobRefsToURLs only transforms external embed thumbs,
-		// not image embeds. For image embeds, clients fetch blobs using:
-		// GET /xrpc/com.atproto.sync.getBlob?did={did}&cid={cid}
-		// The blob reference is preserved in the embed for clients to construct URLs
+		// Image embeds are hydrated server-side into fetchable image-proxy URLs.
+		// Clients no longer build blob URLs themselves: every image Coves serves
+		// has to travel through the proxy, which is the one hostname a scanning
+		// CDN can see.
+		transformedEmbed := postView.Embed.(map[string]interface{})
+		assert.Equal(t, "social.coves.embed.images#view", transformedEmbed["$type"],
+			"served image embeds declare the view type")
 
-		t.Logf("✓ Blob references preserved for client-side URL construction")
+		transformedImages := transformedEmbed["images"].([]interface{})
+		require.Len(t, transformedImages, 1)
+		transformedImage := transformedImages[0].(map[string]interface{})
+
+		thumb, hasThumb := transformedImage["thumb"].(string)
+		fullsize, hasFullsize := transformedImage["fullsize"].(string)
+		require.True(t, hasThumb, "image should carry a thumb URL")
+		require.True(t, hasFullsize, "image should carry a fullsize URL")
+
+		uploadedCID := blobRef.Ref["$link"]
+		assert.Contains(t, thumb, "/img/content_preview/plain/"+community.DID+"/"+uploadedCID)
+		assert.Contains(t, fullsize, "/img/content_full/plain/"+community.DID+"/"+uploadedCID)
+		assert.NotContains(t, thumb, "com.atproto.sync.getBlob",
+			"a direct PDS blob URL here would bypass the scanning CDN")
+		assert.Equal(t, "Test image", transformedImage["alt"], "alt text survives hydration")
+		assert.NotContains(t, transformedImage, "image", "the blob is replaced by the URLs")
+
+		t.Logf("✓ Image embed hydrated to proxy URLs: thumb=%s fullsize=%s", thumb, fullsize)
 	})
 
 	t.Run("Post with multiple images", func(t *testing.T) {
@@ -330,20 +359,19 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 
 		posts.TransformBlobRefsToURLs(postView)
 
-		// After transformation, thumb should be a URL string
+		// After transformation, thumb should be a proxy URL string
 		transformedEmbed := postView.Embed.(map[string]interface{})
+		assert.Equal(t, "social.coves.embed.external#view", transformedEmbed["$type"])
+
 		transformedExternal := transformedEmbed["external"].(map[string]interface{})
 		thumbURL, isString := transformedExternal["thumb"].(string)
+		require.True(t, isString, "Thumb should be hydrated into a URL string")
 
-		// NOTE: TransformBlobRefsToURLs may keep it as a blob ref if transformation
-		// conditions aren't met. Check the actual implementation behavior.
-		if isString {
-			assert.Contains(t, thumbURL, "/xrpc/com.atproto.sync.getBlob", "Thumb should be blob URL")
-			assert.Contains(t, thumbURL, fmt.Sprintf("did=%s", community.DID), "URL should contain DID")
-			t.Logf("✓ Thumbnail transformed to URL: %s", thumbURL)
-		} else {
-			t.Logf("✓ Thumbnail preserved as blob ref (transformation skipped)")
-		}
+		assert.Contains(t, thumbURL, "/img/embed_thumbnail/plain/"+community.DID+"/",
+			"Thumb should be an image proxy URL owned by the community repo")
+		assert.NotContains(t, thumbURL, "com.atproto.sync.getBlob",
+			"a direct PDS blob URL here would bypass the scanning CDN")
+		t.Logf("✓ Thumbnail transformed to URL: %s", thumbURL)
 	})
 }
 

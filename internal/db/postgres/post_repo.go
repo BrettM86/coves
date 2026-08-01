@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"Coves/internal/core/blobs"
-	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
 
 	"github.com/lib/pq"
@@ -429,7 +428,7 @@ func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, er
 	if authorDisplayName.Valid && authorDisplayName.String != "" {
 		authorView.DisplayName = &authorDisplayName.String
 	}
-	if avatarURL := blobs.HydrateImageURL(communities.GetImageProxyConfig(), authorPDSURL.String, authorView.DID, authorAvatar.String, "avatar_small"); avatarURL != "" {
+	if avatarURL := blobs.HydrateImageURL(blobs.GetImageURLConfig(), authorPDSURL.String, authorView.DID, authorAvatar.String, "avatar_small"); avatarURL != "" {
 		authorView.Avatar = &avatarURL
 	}
 	postView.Author = &authorView
@@ -439,7 +438,7 @@ func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, er
 		communityRef.Handle = communityHandle.String
 	}
 	// Hydrate avatar CID to URL using image proxy config (avatar_small preset for post views)
-	if avatarURL := blobs.HydrateImageURL(communities.GetImageProxyConfig(), communityPDSURL.String, communityRef.DID, communityAvatar.String, "avatar_small"); avatarURL != "" {
+	if avatarURL := blobs.HydrateImageURL(blobs.GetImageURLConfig(), communityPDSURL.String, communityRef.DID, communityAvatar.String, "avatar_small"); avatarURL != "" {
 		communityRef.Avatar = &avatarURL
 	}
 	if communityPDSURL.Valid {
@@ -505,8 +504,25 @@ func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, er
 	if facetArray != nil {
 		record["facets"] = facetArray
 	}
-	if postView.Embed != nil {
-		record["embed"] = postView.Embed
+	// Decode the stored embed a second time rather than aliasing postView.Embed.
+	// The lexicon calls `record` the post record verbatim, and the handlers
+	// hydrate postView.Embed in place into its #view shape (blob refs become
+	// image-proxy URLs) — sharing one map would silently rewrite the record too,
+	// leaving it claiming a record $type while carrying view-shaped fields.
+	if embed.Valid {
+		var recordEmbed interface{}
+		if err := json.Unmarshal([]byte(embed.String), &recordEmbed); err != nil {
+			// The same bytes decoded successfully a few lines above, so reaching
+			// here means something stranger than malformed input. Logged rather
+			// than dropped silently: the alternative is a post whose record is
+			// missing its embed with nothing anywhere recording why.
+			slog.Warn("failed to parse embed JSON for record",
+				"post_uri", postView.URI,
+				"error", err,
+			)
+		} else {
+			record["embed"] = recordEmbed
+		}
 	}
 	if labelsJSON.Valid {
 		// Labels are stored as JSONB containing full com.atproto.label.defs#selfLabels structure
