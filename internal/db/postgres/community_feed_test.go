@@ -4,6 +4,7 @@ package postgres_test
 
 import (
 	"Coves/internal/api/handlers/communityFeed"
+	"Coves/internal/core/blobs"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/communityFeeds"
 	"Coves/internal/core/posts"
@@ -595,18 +596,37 @@ func TestGetCommunityFeed_HotCursorTimeDrift(t *testing.T) {
 
 // TestGetCommunityFeed_BlobURLTransformation covers the rewrite the AppView
 // applies on the way out: an embed's thumbnail is stored as the blob ref the
-// author's PDS returned, and is served as a getBlob URL a client can fetch
-// directly.
+// author's PDS returned, and is served — with the image proxy configured, which
+// production requires — as a proxy URL on the media hostname rather than a
+// direct PDS getBlob URL.
 //
-// Two things are pinned. The URL is built from the COMMUNITY's DID and PDS URL,
-// because that is the repository the blob lives in — pointing it at the author
-// would 404. And the embed's $type changes to the "#view" variant, because the
-// served shape no longer matches the record schema and the postView union in
-// social/coves/community/post/defs.json requires the view type on the wire.
+// Three things are pinned. The URL is built from the COMMUNITY's DID, because
+// that is the repository the blob lives in — pointing it at the author would
+// 404. The embed's $type changes to the "#view" variant, because the served
+// shape no longer matches the record schema and the postView union in
+// social/coves/community/post/defs.json requires the view type on the wire. And
+// the verbatim record still carries its blob ref, not the hydrated URL: scanPostView
+// decodes the stored embed a second time rather than aliasing the view's map,
+// and this is the only test that pins that against the feed path (see
+// post_repo.go).
+//
+// This test is deliberately NOT parallel. It sets the process-wide image-URL
+// config that scanPostView reads, so it must run in the serial phase — Go runs
+// every non-parallel test to completion before any t.Parallel test resumes, so
+// the config is set and restored inside a window no parallel sibling overlaps.
+// Do not add t.Parallel here without moving the config off a global.
 func TestGetCommunityFeed_BlobURLTransformation(t *testing.T) {
-	t.Parallel()
 	db := testkit.DB(t)
 	handler := newCommunityFeedHandler(db)
+
+	// Serve URLs the way production does: through the image proxy on the media
+	// hostname. The config is process-wide, so it is restored afterwards.
+	blobs.ResetImageURLConfigForTesting()
+	blobs.SetImageURLConfig(blobs.ImageURLConfig{
+		ProxyEnabled: true,
+		ProxyBaseURL: "https://img.coves.social",
+	})
+	t.Cleanup(blobs.ResetImageURLConfigForTesting)
 
 	ctx := context.Background()
 	testID := testkit.UniqueID(t)
@@ -662,7 +682,30 @@ func TestGetCommunityFeed_BlobURLTransformation(t *testing.T) {
 	thumbURL, ok := external["thumb"].(string)
 	require.True(t, ok, "Thumb should be a string URL after transformation")
 
-	expectedURL := fmt.Sprintf("%s/xrpc/com.atproto.sync.getBlob?did=%s&cid=%s",
-		testkit.Endpoints().PDS.BaseURL, communityDID, thumbCID)
-	assert.Equal(t, expectedURL, thumbURL, "Thumb URL should match expected format")
+	// With the image proxy configured, the thumb addresses the media hostname,
+	// never the PDS. A getBlob URL escaping into a feed response is media served
+	// around the CDN that scans it.
+	expectedURL := fmt.Sprintf("https://img.coves.social/img/embed_thumbnail/plain/%s/%s",
+		communityDID, thumbCID)
+	assert.Equal(t, expectedURL, thumbURL, "Thumb URL should be an image proxy URL")
+	assert.NotContains(t, thumbURL, "com.atproto.sync.getBlob",
+		"the AppView must not hand clients a direct PDS blob URL")
+
+	// The lexicon calls `record` the post record verbatim, and hydration mutates
+	// the embed in place. scanPostView therefore decodes the stored embed a
+	// second time instead of aliasing the view's map — if it ever goes back to
+	// sharing one map, the projection above would rewrite the record too and the
+	// record would claim a record $type while carrying view-shaped fields.
+	record, ok := feedPost.Post.Record.(map[string]interface{})
+	require.True(t, ok, "Record should be a map")
+
+	recordEmbed, ok := record["embed"].(map[string]interface{})
+	require.True(t, ok, "the verbatim record must still carry its embed")
+	assert.Equal(t, "social.coves.embed.external", recordEmbed["$type"],
+		"the record embed must keep the record $type, not the hydrated #view type")
+
+	recordExternal, ok := recordEmbed["external"].(map[string]interface{})
+	require.True(t, ok, "record embed external should be a map")
+	assert.IsType(t, map[string]interface{}{}, recordExternal["thumb"],
+		"the record's thumb must still be a blob reference, not the hydrated URL string")
 }

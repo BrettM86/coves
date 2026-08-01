@@ -4,52 +4,16 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"sync"
 	"time"
 
 	"Coves/internal/core/blobs"
 )
 
-// imageProxyConfigOnce ensures thread-safe initialization of the image proxy config.
-var imageProxyConfigOnce sync.Once
-
-// imageProxyConfig holds the immutable configuration after initialization.
-// Access only through GetImageProxyConfig().
-var imageProxyConfig = blobs.ImageURLConfig{
-	ProxyEnabled: false, // Default to disabled until configured
-}
-
-// imageProxyConfigInitialized tracks whether SetImageProxyConfig has been called.
-var imageProxyConfigInitialized bool
-
-// SetImageProxyConfig initializes the image proxy configuration.
-// This should be called once during server startup. Subsequent calls are no-ops
-// and will log a warning. This design ensures thread-safety and prevents
-// accidental config changes during runtime.
-func SetImageProxyConfig(config blobs.ImageURLConfig) {
-	imageProxyConfigOnce.Do(func() {
-		imageProxyConfig = config
-		imageProxyConfigInitialized = true
-	})
-	// Log warning if called multiple times (indicates a programming error)
-	if imageProxyConfigInitialized && config != imageProxyConfig {
-		log.Printf("WARN: SetImageProxyConfig called multiple times with different config (ignored)")
-	}
-}
-
-// GetImageProxyConfig returns the current image proxy configuration.
-// Thread-safe for concurrent access.
-func GetImageProxyConfig() blobs.ImageURLConfig {
-	return imageProxyConfig
-}
-
-// ResetImageProxyConfigForTesting resets the config state for testing purposes.
-// This should ONLY be used in tests, never in production code.
-func ResetImageProxyConfigForTesting() {
-	imageProxyConfigOnce = sync.Once{}
-	imageProxyConfig = blobs.ImageURLConfig{ProxyEnabled: false}
-	imageProxyConfigInitialized = false
-}
+// communityHandlePrefix namespaces community actor handles apart from user
+// actor handles on the PDS: a community named "gardening" on coves.social is
+// provisioned as c-gardening.coves.social. Communities bridged in from other
+// platforms keep their source handle and carry no prefix.
+const communityHandlePrefix = "c-"
 
 // Community represents a Coves community indexed from the firehose
 // Communities are federated, instance-scoped forums built on atProto
@@ -298,7 +262,7 @@ func (c *Community) ToCommunityView() *CommunityView {
 		Name:            c.Name,
 		DisplayName:     c.DisplayName,
 		DisplayHandle:   c.GetDisplayHandle(),
-		Avatar:          blobs.HydrateImageURL(GetImageProxyConfig(), c.PDSURL, c.DID, c.AvatarCID, "avatar_small"),
+		Avatar:          blobs.HydrateImageURL(blobs.GetImageURLConfig(), c.PDSURL, c.DID, c.AvatarCID, "avatar_small"),
 		Visibility:      c.Visibility,
 		SubscriberCount: c.SubscriberCount,
 		MemberCount:     c.MemberCount,
@@ -319,8 +283,8 @@ func (c *Community) ToCommunityViewDetailed() *CommunityViewDetailed {
 		DisplayName:            c.DisplayName,
 		DisplayHandle:          c.GetDisplayHandle(),
 		Description:            c.Description,
-		Avatar:                 blobs.HydrateImageURL(GetImageProxyConfig(), c.PDSURL, c.DID, c.AvatarCID, "avatar"),
-		Banner:                 blobs.HydrateImageURL(GetImageProxyConfig(), c.PDSURL, c.DID, c.BannerCID, "banner"),
+		Avatar:                 blobs.HydrateImageURL(blobs.GetImageURLConfig(), c.PDSURL, c.DID, c.AvatarCID, "avatar"),
+		Banner:                 blobs.HydrateImageURL(blobs.GetImageURLConfig(), c.PDSURL, c.DID, c.BannerCID, "banner"),
 		CreatedByDID:           c.CreatedByDID,
 		HostedByDID:            c.HostedByDID,
 		Visibility:             c.Visibility,

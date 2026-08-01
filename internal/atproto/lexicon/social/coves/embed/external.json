@@ -165,7 +165,7 @@
         "thumb": {
           "type": "string",
           "format": "uri",
-          "description": "URL of the thumbnail image, served via the hosting PDS blob endpoint"
+          "description": "URL of the thumbnail image, served via the AppView's image proxy"
         },
         "domain": {
           "type": "string",
@@ -194,7 +194,7 @@
           "description": "Preview images for image gallery providers",
           "items": {
             "type": "ref",
-            "ref": "social.coves.embed.images#image"
+            "ref": "social.coves.embed.images#viewImage"
           }
         },
         "totalCount": {

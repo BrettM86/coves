@@ -22,6 +22,17 @@ var loadedEnvVars = []string{
 	"JETSTREAM_FEEDS",
 	"CURSOR_SECRET",
 	"TURNSTILE_SITE_KEY", "TURNSTILE_SECRET_KEY", "TURNSTILE_SITEVERIFY_URL",
+	// The IMAGE_PROXY_* set is read by imageproxy.ConfigFromEnv rather than by
+	// this package — except IMAGE_PROXY_ENABLED, which Load re-reads through
+	// boolVar because it gates a security invariant. Either way this list is a
+	// hand-maintained mirror with no compile-time link to the parsing. A
+	// variable added there and not here leaks between tests silently — keep the
+	// two in sync, or move the parsing here.
+	"IMAGE_PROXY_ENABLED", "IMAGE_PROXY_BASE_URL", "IMAGE_PROXY_CDN_URL",
+	"IMAGE_PROXY_CACHE_PATH", "IMAGE_PROXY_CACHE_MAX_GB", "IMAGE_PROXY_CACHE_TTL_DAYS",
+	"IMAGE_PROXY_CLEANUP_INTERVAL_MINUTES", "IMAGE_PROXY_FETCH_TIMEOUT_SECONDS",
+	"IMAGE_PROXY_MAX_SOURCE_SIZE_MB",
+	"ALLOW_UNPROXIED_MEDIA",
 }
 
 // ClearEnvForTest blanks every environment variable Load reads, restoring them

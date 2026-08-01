@@ -39,7 +39,9 @@
           "description": "Embedded content from the post record. Untransformed embeds keep their record types; when the AppView rewrites blob references to URLs or resolves quoted posts, it serves the corresponding #view type.",
           "refs": [
             "social.coves.embed.images",
+            "social.coves.embed.images#view",
             "social.coves.embed.video",
+            "social.coves.embed.video#view",
             "social.coves.embed.external",
             "social.coves.embed.external#view",
             "social.coves.embed.post",

@@ -124,13 +124,24 @@ services:
       # be accepted. Example: https://tdpl.io
       TRUSTED_BRIDGE_PDS_HOSTS: ${TRUSTED_BRIDGE_PDS_HOSTS:-}
 
-      # Image proxy configuration (on-the-fly resizing with disk cache)
+      # Image proxy configuration (on-the-fly resizing with disk cache).
+      # The base URL is the hostname every Coves image URL is built from; it is
+      # the media hostname, not the AppView apex, because only that hostname is
+      # CDN-proxied for scanning. See docs/PRD_CSAM_SCANNING.md.
       IMAGE_PROXY_ENABLED: ${IMAGE_PROXY_ENABLED:-true}
-      IMAGE_PROXY_BASE_URL: ${IMAGE_PROXY_BASE_URL:-https://coves.social}
+      IMAGE_PROXY_BASE_URL: ${IMAGE_PROXY_BASE_URL:-https://img.coves.social}
+      # Optional override that wins over the base URL. Passed through explicitly:
+      # a variable only present in .env is invisible to the container, so setting
+      # it there without this line silently has no effect.
+      IMAGE_PROXY_CDN_URL: ${IMAGE_PROXY_CDN_URL:-}
       IMAGE_PROXY_CACHE_PATH: /var/cache/coves/images
       IMAGE_PROXY_CACHE_MAX_GB: ${IMAGE_PROXY_CACHE_MAX_GB:-10}
       IMAGE_PROXY_FETCH_TIMEOUT_SECONDS: ${IMAGE_PROXY_FETCH_TIMEOUT_SECONDS:-30}
       IMAGE_PROXY_MAX_SOURCE_SIZE_MB: ${IMAGE_PROXY_MAX_SOURCE_SIZE_MB:-10}
+      # Acknowledges serving media straight from PDS blob endpoints. Only
+      # consulted when IMAGE_PROXY_ENABLED=false, where it is required for the
+      # server to start.
+      ALLOW_UNPROXIED_MEDIA: ${ALLOW_UNPROXIED_MEDIA:-false}
 
       # OpenTelemetry Observability (optional - disabled by default)
       OTEL_ENABLED: ${OTEL_ENABLED:-false}

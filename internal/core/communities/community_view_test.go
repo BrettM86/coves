@@ -234,8 +234,9 @@ func TestGetDisplayHandle(t *testing.T) {
 // The preset each view asks for is unobservable with the image proxy disabled:
 // blobs.HydrateImageURL ignores the preset entirely and returns the PDS blob URL
 // for all three. Turning the proxy on is the only way to see the difference, and
-// the switch is a package-level variable behind a sync.Once — process-global,
-// with no injection seam. So this test owns that global for its duration.
+// the switch is a package-level variable in blobs behind a write-once latch —
+// process-global, with no injection seam. So this test owns that global for its
+// duration.
 //
 // It is safe here for a reason that is worth writing down rather than assuming:
 // Go runs every non-parallel top-level test to completion before resuming any
@@ -246,14 +247,14 @@ func TestGetDisplayHandle(t *testing.T) {
 // hydrating an image URL, this test and that one will race, and the fix is a
 // config seam on the view functions rather than a mutex here.
 func TestCommunityViews_ImageProxyPresets(t *testing.T) {
-	communities.ResetImageProxyConfigForTesting()
-	t.Cleanup(communities.ResetImageProxyConfigForTesting)
+	blobs.ResetImageURLConfigForTesting()
+	t.Cleanup(blobs.ResetImageURLConfigForTesting)
 
-	communities.SetImageProxyConfig(blobs.ImageURLConfig{
+	blobs.SetImageURLConfig(blobs.ImageURLConfig{
 		ProxyEnabled: true,
 		ProxyBaseURL: "https://images.invalid",
 	})
-	require.True(t, communities.GetImageProxyConfig().ProxyEnabled,
+	require.True(t, blobs.GetImageURLConfig().ProxyEnabled,
 		"the config did not take; every assertion below would silently fall back to the direct PDS URL "+
 			"and pass for the wrong reason")
 
@@ -277,27 +278,4 @@ func TestCommunityViews_ImageProxyPresets(t *testing.T) {
 		"with the proxy enabled the URL must point at the proxy, not at the PDS: serving PDS blob "+
 			"URLs directly is what the proxy exists to stop")
 	assert.NotContains(t, list.Avatar, community.PDSURL)
-}
-
-// TestSetImageProxyConfig_IsWriteOnce pins the one-shot semantics, which are
-// what make GetImageProxyConfig safe to read without a lock from every request.
-func TestSetImageProxyConfig_IsWriteOnce(t *testing.T) {
-	communities.ResetImageProxyConfigForTesting()
-	t.Cleanup(communities.ResetImageProxyConfigForTesting)
-
-	assert.False(t, communities.GetImageProxyConfig().ProxyEnabled,
-		"the default must be proxy-disabled: a server that never configures the proxy has to serve "+
-			"working PDS URLs rather than URLs pointing at an empty host")
-
-	first := blobs.ImageURLConfig{ProxyEnabled: true, ProxyBaseURL: "https://first.invalid"}
-	communities.SetImageProxyConfig(first)
-	assert.Equal(t, first, communities.GetImageProxyConfig())
-
-	// A second call is a programming error — the value is read without
-	// synchronisation everywhere — so it is ignored rather than applied.
-	communities.SetImageProxyConfig(blobs.ImageURLConfig{
-		ProxyEnabled: true, ProxyBaseURL: "https://second.invalid"})
-	assert.Equal(t, first, communities.GetImageProxyConfig(),
-		"a second configuration was applied. Every reader holds the value unlocked, so a mutating "+
-			"setter is a data race in production, not just a surprise")
 }

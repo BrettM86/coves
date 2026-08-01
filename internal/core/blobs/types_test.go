@@ -234,23 +234,25 @@ func TestHydrateImageURL_CDNOverride(t *testing.T) {
 	}
 }
 
-func TestHydrateImageURL_EmptyPresetUsesDirectURL(t *testing.T) {
+func TestHydrateImageURL_EmptyPresetReturnsEmptyRatherThanUnproxiedURL(t *testing.T) {
+	// An empty preset is the one way proxy URL construction can fail once did
+	// and cid are known non-empty, and it means a caller bug rather than bad
+	// data.
+	//
+	// The function must NOT degrade to a direct com.atproto.sync.getBlob URL
+	// here. While the proxy is enabled, that would be media routed around the
+	// CDN that scans it — the state config.mediaProblems refuses to boot into —
+	// reintroduced quietly at render time. Callers treat "" as "no URL", so the
+	// failure shows up as a missing image instead of a hole in the choke point.
 	config := ImageURLConfig{
 		ProxyEnabled: true,
-		ProxyBaseURL: "https://coves.social",
+		ProxyBaseURL: "https://img.coves.social",
 	}
-	pdsURL := "https://pds.example.com"
-	did := "did:plc:abc123"
-	cid := "bafyreiabc123"
-	preset := "" // empty preset
 
-	result := HydrateImageURL(config, pdsURL, did, cid, preset)
+	result := HydrateImageURL(config, "https://pds.example.com", "did:plc:abc123", "bafyreiabc123", "")
 
-	// With empty preset, proxy URL will return empty, so fall back to direct URL
-	// This tests the behavior when preset is not specified
-	expected := HydrateBlobURL(pdsURL, did, cid)
-	if result != expected {
-		t.Errorf("HydrateImageURL with empty preset = %q, want %q", result, expected)
+	if result != "" {
+		t.Errorf("HydrateImageURL with empty preset = %q, want \"\" (must not fall back to an unproxied URL)", result)
 	}
 }
 

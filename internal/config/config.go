@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"Coves/internal/core/imageproxy"
 )
 
 // devCursorSecret is the placeholder HMAC key used for pagination cursors when
@@ -36,8 +38,17 @@ func isPlaceholder(value string) bool {
 	return strings.HasPrefix(value, placeholderPrefix)
 }
 
-// requirePublicHost rejects a URL that is empty or points at the loopback
-// interface, which in production means the dev default was never replaced.
+// requirePublicHost rejects a URL that is empty, not absolute, or points at the
+// loopback interface, which in production means the dev default was never
+// replaced.
+//
+// Absoluteness is checked explicitly because url.Parse accepts almost anything:
+// "img.coves.social" parses without error as a bare *path* — no scheme, no
+// host — and Hostname() then returns "", which is not in the loopback list and
+// so used to slip through. Every URL this guards is handed to clients verbatim,
+// and a URL with no origin is one the mobile app cannot resolve at all, so an
+// absolute http(s) URL is the actual requirement rather than merely a
+// well-formed string.
 func requirePublicHost(name, rawURL string) error {
 	if rawURL == "" {
 		return fmt.Errorf("%s is required in production", name)
@@ -46,7 +57,15 @@ func requirePublicHost(name, rawURL string) error {
 	if err != nil {
 		return fmt.Errorf("%s is not a valid URL: %w", name, err)
 	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("%s must be an absolute http(s) URL in production (got %q); "+
+			"a value with no scheme is parsed as a relative path and reaches clients "+
+			"as a URL they cannot resolve", name, rawURL)
+	}
 	host := parsed.Hostname()
+	if host == "" {
+		return fmt.Errorf("%s must include a hostname in production (got %q)", name, rawURL)
+	}
 	if host == "localhost" || host == "127.0.0.1" || host == "::1" {
 		return fmt.Errorf("%s must not point at localhost in production (got %q); "+
 			"the loopback default is dev-only and leaves this unreachable to clients",
@@ -85,6 +104,7 @@ type Config struct {
 	PDS       PDSConfig
 	Jetstream JetstreamConfig
 	Signup    SignupConfig
+	Media     MediaConfig
 
 	// CursorSecret is the HMAC key that signs pagination cursors, preventing
 	// clients from forging or tampering with them.
@@ -278,6 +298,34 @@ type SignupConfig struct {
 	TurnstileSiteverifyURL string
 }
 
+// MediaConfig holds how user media is served to clients.
+type MediaConfig struct {
+	// ImageProxy configures the resizing proxy at /img/{preset}/plain/{did}/{cid}.
+	// It is parsed here rather than at the point of use so Validate can enforce
+	// the production invariant below before anything starts.
+	ImageProxy imageproxy.Config
+
+	// AllowUnproxiedMedia acknowledges, for a production deployment, that
+	// media will be served straight from PDS blob endpoints.
+	//
+	// coves.social routes media through the image proxy on a single CDN-fronted
+	// hostname because that is the only surface an upstream CSAM scanner can
+	// see; with the proxy off, the AppView emits com.atproto.sync.getBlob URLs
+	// that bypass it entirely (and violate the site CSP). Validate therefore
+	// refuses to start a production server with the proxy disabled, and this
+	// flag is the deliberate opt-out — a self-hoster who is not fronting media
+	// with a scanning CDN sets ALLOW_UNPROXIED_MEDIA=true rather than patching
+	// the source. The point is that no one arrives there by forgetting a
+	// variable.
+	//
+	// Taking the opt-out is not complete on its own: the shipped Caddyfile
+	// pins img-src to the media hostname, so a deployment serving direct PDS
+	// URLs must widen that CSP or its own web client will block every image.
+	// Validate says so in the startup error rather than leaving it to be
+	// discovered in a browser console.
+	AllowUnproxiedMedia bool
+}
+
 // TokenEndpointEnabled reports whether the signup-token endpoint can operate.
 // It needs both the captcha secret and (from PDSConfig) an admin password to
 // mint invite codes, so the caller passes the latter in.
@@ -336,6 +384,35 @@ func Load() (*Config, error) {
 			slog.String("ignored_value", override),
 			slog.String("siteverify_url", "https://challenges.cloudflare.com/turnstile/v0/siteverify"),
 		)
+	}
+
+	allowUnproxiedMedia, err := boolVar("ALLOW_UNPROXIED_MEDIA", false)
+	if err != nil {
+		return nil, err
+	}
+
+	imageProxy := imageproxy.ConfigFromEnv()
+	// IMAGE_PROXY_ENABLED gates a security invariant, so it is re-read through
+	// boolVar rather than left to ConfigFromEnv's `v == "true" || v == "1"`.
+	// That comparison is case-sensitive and untrimmed, so left alone
+	// IMAGE_PROXY_ENABLED=TRUE — or a trailing space in a .env file — would mean
+	// *disabled*: in production a refused boot whose message says the proxy is
+	// off while the operator's .env plainly says it is on, and in dev every
+	// image URL silently dropping back to a direct PDS blob URL. Reading it here
+	// is what makes those spellings work.
+	//
+	// The other eight IMAGE_PROXY_* variables are still parsed by ConfigFromEnv
+	// on the raw os.Getenv path, so they keep its looser behavior (untrimmed
+	// strings, unparseable numerics warning and falling back to defaults).
+	imageProxyEnabled, err := boolVar("IMAGE_PROXY_ENABLED", imageProxy.Enabled)
+	if err != nil {
+		return nil, err
+	}
+	imageProxy.Enabled = imageProxyEnabled
+
+	cfg.Media = MediaConfig{
+		ImageProxy:          imageProxy,
+		AllowUnproxiedMedia: allowUnproxiedMedia,
 	}
 
 	cfg.CursorSecret = stringVar("CURSOR_SECRET", devCursorSecret)
@@ -660,10 +737,75 @@ func (c *Config) Validate() error {
 		if err := requirePublicHost("PDS_URL", c.PDS.URL); err != nil {
 			problems = append(problems, err.Error())
 		}
+
+		problems = append(problems, c.mediaProblems()...)
 	}
 
 	if len(problems) == 0 {
 		return nil
 	}
 	return errors.New("invalid configuration:\n  - " + strings.Join(problems, "\n  - "))
+}
+
+// mediaProblems enforces the production media-serving invariant: every image
+// URL the AppView hands a client must point at the image proxy.
+//
+// The proxy is the choke point that makes upstream CSAM scanning possible —
+// one hostname, CDN-fronted, through which all media flows. Disabling it does
+// not break anything visibly; URL generation quietly falls back to direct
+// com.atproto.sync.getBlob URLs and images keep rendering, so the failure mode
+// is a production deployment that looks healthy while serving unscanned media
+// past its own CSP. That is worth refusing to start over.
+//
+// Only called for non-dev configurations. Operators who genuinely intend to
+// serve media straight from PDS blob endpoints set ALLOW_UNPROXIED_MEDIA=true.
+func (c *Config) mediaProblems() []string {
+	var problems []string
+
+	if !c.Media.ImageProxy.Enabled {
+		if !c.Media.AllowUnproxiedMedia {
+			problems = append(problems, "IMAGE_PROXY_ENABLED must be true in production: "+
+				"with the proxy off the AppView emits direct PDS com.atproto.sync.getBlob URLs, "+
+				"which bypass the CDN that scans served media and are blocked by the site CSP. "+
+				"To serve media directly on purpose (self-hosting without a scanning CDN), "+
+				"set ALLOW_UNPROXIED_MEDIA=true — and widen the Caddyfile img-src, which the "+
+				"shipped policy pins to the media hostname")
+		} else {
+			// Not a problem — the operator asked for this — but the CSP half of
+			// it is easy to miss, and the symptom (every image blocked, only in
+			// the browser console) points nowhere near this setting.
+			slog.Warn("[MEDIA] serving unproxied media: image URLs will address PDS blob endpoints directly",
+				"reason", "ALLOW_UNPROXIED_MEDIA=true",
+				"action_required", "widen the Caddyfile Content-Security-Policy img-src to cover your PDS hosts, "+
+					"or the web client will block every image",
+			)
+		}
+		return problems
+	}
+
+	// With the proxy on, a relative URL ("/img/...") is what an empty base URL
+	// produces. That resolves correctly for a browser on the AppView origin and
+	// not at all for the mobile app or any other cross-origin consumer, both of
+	// which receive these URLs verbatim.
+	baseURL := c.Media.ImageProxy.CDNURL
+	name := "IMAGE_PROXY_CDN_URL"
+	if baseURL == "" {
+		baseURL = c.Media.ImageProxy.BaseURL
+		name = "IMAGE_PROXY_BASE_URL"
+	}
+	if baseURL == "" {
+		problems = append(problems, "IMAGE_PROXY_BASE_URL (or IMAGE_PROXY_CDN_URL) is required "+
+			"in production: without one the AppView emits relative image URLs, which "+
+			"non-browser clients cannot resolve")
+		return problems
+	}
+	if err := requirePublicHost(name, baseURL); err != nil {
+		problems = append(problems, err.Error())
+	}
+
+	if err := c.Media.ImageProxy.Validate(); err != nil {
+		problems = append(problems, "image proxy configuration: "+err.Error())
+	}
+
+	return problems
 }

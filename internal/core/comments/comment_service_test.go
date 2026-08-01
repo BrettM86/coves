@@ -1,6 +1,7 @@
 package comments
 
 import (
+	"Coves/internal/core/blobs"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
@@ -2435,4 +2436,94 @@ func TestValidateGetActorCommentsRequest_BoundsEnforcement(t *testing.T) {
 			assert.Equal(t, tt.expectedLimit, req.Limit)
 		})
 	}
+}
+
+// Comment records live in the author's own repository — unlike posts, which the
+// AppView signs into the community's repo — so the author's DID owns every blob
+// in a comment embed.
+func TestBuildCommentView_HydratesImageEmbedFromTheAuthorRepo(t *testing.T) {
+	blobs.ResetImageURLConfigForTesting()
+	blobs.SetImageURLConfig(blobs.ImageURLConfig{
+		ProxyEnabled: true,
+		ProxyBaseURL: "https://img.coves.social",
+	})
+	t.Cleanup(blobs.ResetImageURLConfigForTesting)
+
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	const (
+		commenterDID = "did:plc:commenter123"
+		imageCID     = "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"
+	)
+
+	postURI := "at://did:plc:post123/app.bsky.feed.post/test"
+	embedJSON := `{"$type":"social.coves.embed.images","images":[{"alt":"a cat","image":{"$type":"blob","ref":{"$link":"` + imageCID + `"},"mimeType":"image/jpeg","size":1234}}]}`
+
+	comment := createTestComment("at://"+commenterDID+"/comment/1", commenterDID, "commenter.test", postURI, postURI, 0)
+	comment.Embed = &embedJSON
+
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
+
+	usersByDID := map[string]*users.User{
+		commenterDID: {DID: commenterDID, Handle: "commenter.test", PDSURL: "https://pds.example.com"},
+	}
+	result := service.buildCommentView(comment, nil, nil, usersByDID)
+
+	embedMap, ok := result.Embed.(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "social.coves.embed.images#view", embedMap["$type"])
+
+	images := embedMap["images"].([]interface{})
+	require.Len(t, images, 1)
+	image := images[0].(map[string]interface{})
+
+	assert.Equal(t,
+		"https://img.coves.social/img/content_preview/plain/"+commenterDID+"/"+imageCID,
+		image["thumb"])
+	assert.Equal(t,
+		"https://img.coves.social/img/content_full/plain/"+commenterDID+"/"+imageCID,
+		image["fullsize"])
+	assert.Equal(t, "a cat", image["alt"])
+	assert.NotContains(t, image, "image", "the blob is replaced by the URLs")
+}
+
+// The image proxy resolves the DID to a PDS itself, so an author who is not yet
+// indexed still gets proxy URLs rather than an unhydrated blob.
+func TestBuildCommentView_HydratesEmbedForAnUnindexedAuthor(t *testing.T) {
+	blobs.ResetImageURLConfigForTesting()
+	blobs.SetImageURLConfig(blobs.ImageURLConfig{
+		ProxyEnabled: true,
+		ProxyBaseURL: "https://img.coves.social",
+	})
+	t.Cleanup(blobs.ResetImageURLConfigForTesting)
+
+	commentRepo := newMockCommentRepo()
+	userRepo := newMockUserRepo()
+	postRepo := newMockPostRepo()
+	communityRepo := newMockCommunityRepo()
+
+	const (
+		commenterDID = "did:plc:commenter123"
+		imageCID     = "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"
+	)
+
+	postURI := "at://did:plc:post123/app.bsky.feed.post/test"
+	embedJSON := `{"$type":"social.coves.embed.images","images":[{"image":{"$type":"blob","ref":{"$link":"` + imageCID + `"}}}]}`
+
+	comment := createTestComment("at://"+commenterDID+"/comment/1", commenterDID, "commenter.test", postURI, postURI, 0)
+	comment.Embed = &embedJSON
+
+	service := NewCommentService(commentRepo, userRepo, postRepo, communityRepo, nil, nil, nil).(*commentService)
+
+	// No entry in usersByDID: the author has not been indexed, so no PDS URL.
+	result := service.buildCommentView(comment, nil, nil, make(map[string]*users.User))
+
+	embedMap := result.Embed.(map[string]interface{})
+	image := embedMap["images"].([]interface{})[0].(map[string]interface{})
+	assert.Equal(t,
+		"https://img.coves.social/img/content_preview/plain/"+commenterDID+"/"+imageCID,
+		image["thumb"])
 }

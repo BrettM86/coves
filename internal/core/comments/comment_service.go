@@ -3,6 +3,7 @@ package comments
 import (
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/communities"
+	"Coves/internal/core/embeds"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/richtext"
 	"Coves/internal/core/users"
@@ -11,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"strings"
 	"time"
 
@@ -433,7 +433,7 @@ func hydrateAuthorProfile(view *posts.AuthorView, user *users.User) {
 		displayName := user.DisplayName
 		view.DisplayName = &displayName
 	}
-	if avatarURL := blobs.HydrateImageURL(communities.GetImageProxyConfig(), user.PDSURL, user.DID, user.AvatarCID, "avatar_small"); avatarURL != "" {
+	if avatarURL := blobs.HydrateImageURL(blobs.GetImageURLConfig(), user.PDSURL, user.DID, user.AvatarCID, "avatar_small"); avatarURL != "" {
 		view.Avatar = &avatarURL
 	}
 }
@@ -518,8 +518,23 @@ func (s *commentService) buildCommentView(
 	// The record field is required by social.coves.community.comment.defs#commentView
 	commentRecord := s.buildCommentRecord(comment)
 
-	// Deserialize embed from JSONB
-	// Parse embed from database JSON string to populate embed field
+	// Deserialize embed from JSONB and project it into its #view shape.
+	//
+	// Unlike posts — which the AppView signs into the community's repo — comment
+	// records live in the author's own repository, so the author's DID and PDS
+	// own every blob the embed references.
+	//
+	// The PDS URL is best-effort: an author who is not indexed yet leaves it
+	// empty. While the proxy is on that is harmless for the images embeds
+	// comments can carry, because the proxy resolves the DID itself; under
+	// ALLOW_UNPROXIED_MEDIA it is what leaves the embed unprojected. Any embed
+	// that cannot be fully projected keeps its blob references and logs; see
+	// internal/core/embeds.
+	//
+	// HydrateCommentView, not HydrateView: comments declare a narrower embed
+	// union than posts, and the firehose applies no embed validation, so a
+	// federated comment carrying a post-only embed type must not be stamped
+	// with a #view type the comment union does not declare.
 	var embed interface{}
 	if comment.Embed != nil && *comment.Embed != "" {
 		var embedMap map[string]interface{}
@@ -527,6 +542,11 @@ func (s *commentService) buildCommentView(
 			// Log error but don't fail request - embed is optional
 			slog.Warn("failed to unmarshal embed for comment", "comment_uri", comment.URI, "error", err)
 		} else {
+			var authorPDSURL string
+			if user, found := usersByDID[comment.CommenterDID]; found && user != nil {
+				authorPDSURL = user.PDSURL
+			}
+			embeds.HydrateCommentView(embedMap, comment.CommenterDID, authorPDSURL)
 			embed = embedMap
 		}
 	}
@@ -1057,25 +1077,16 @@ func (s *commentService) buildPostView(ctx context.Context, post *posts.Post, vi
 		communityName = community.Handle
 	}
 
-	// Build avatar URL from CID if available
-	// Avatar is stored as blob in community's repository
-	// Format: https://{pds}/xrpc/com.atproto.sync.getBlob?did={community_did}&cid={avatar_cid}
+	// Build the community avatar URL through the shared helper, which routes it
+	// to the image proxy (avatar_small, matching post and feed community
+	// avatars). Hand-rolling a getBlob URL here served this one avatar around
+	// the proxy — the one place all media has to converge for scanning — and its
+	// HTTPS-only guard silently dropped the avatar in dev, where the PDS is
+	// plain HTTP.
 	var avatarURL *string
-	if community.AvatarCID != "" && community.PDSURL != "" {
-		// Validate HTTPS for security (prevent mixed content warnings, MitM attacks)
-		if !strings.HasPrefix(community.PDSURL, "https://") {
-			slog.Warn("skipping non-HTTPS PDS URL for community", "community_did", community.DID)
-		} else if !strings.HasPrefix(community.AvatarCID, "baf") {
-			// Validate CID format (IPFS CIDs start with "baf" for CIDv1 base32)
-			slog.Warn("invalid CID format for community avatar", "community_did", community.DID, "avatar_cid", community.AvatarCID)
-		} else {
-			// Use proper URL escaping to prevent injection attacks
-			avatarURLString := fmt.Sprintf("%s/xrpc/com.atproto.sync.getBlob?did=%s&cid=%s",
-				strings.TrimSuffix(community.PDSURL, "/"),
-				url.QueryEscape(community.DID),
-				url.QueryEscape(community.AvatarCID))
-			avatarURL = &avatarURLString
-		}
+	if hydrated := blobs.HydrateImageURL(blobs.GetImageURLConfig(),
+		community.PDSURL, community.DID, community.AvatarCID, "avatar_small"); hydrated != "" {
+		avatarURL = &hydrated
 	}
 
 	communityRef := &posts.CommunityRef{

@@ -47,10 +47,12 @@
         },
         "embed": {
           "type": "union",
-          "description": "Embedded content from the comment record (images or quoted post). The AppView may transform blob references into fetchable URLs and enrich quoted posts with a resolved view.",
+          "description": "Embedded content from the comment record (images or quoted post). The AppView transforms blob references into fetchable image URLs and enriches quoted posts with a resolved view, so a served embed carries a #view type.",
           "refs": [
             "social.coves.embed.images",
-            "social.coves.embed.post"
+            "social.coves.embed.images#view",
+            "social.coves.embed.post",
+            "social.coves.embed.post#view"
           ]
         },
         "createdAt": {
