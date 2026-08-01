@@ -12,6 +12,14 @@ from src.uri_sanitizer import sanitize_uri
 logger = logging.getLogger(__name__)
 
 
+# `social.coves.embed.external` caps `sources` at maxLength 50. The AppView
+# rejects an over-long list wholesale with a 400, costing the entire post, and
+# Kagi clusters routinely carry 60-75 articles. Trim to fit instead: Kagi orders
+# `articles` by relevance, so the leading entries are the ones worth keeping.
+# Keep in sync with the lexicon.
+MAX_EMBED_SOURCES = 50
+
+
 class CovesAPIError(Exception):
     """Base exception for Coves API errors."""
 
@@ -230,6 +238,16 @@ class CovesClient:
                 # warning to explain the missing attribution.
                 log = logger.error if not sanitized_sources else logger.warning
                 log("Dropped %d of %d megathread sources", dropped, len(sources))
+            if len(sanitized_sources) > MAX_EMBED_SOURCES:
+                # Attribution-only truncation: inline `[domain#N]` citations
+                # resolve against KagiStory.sources (see citations.build_index),
+                # which is untouched, so trimming the embed list cannot
+                # misalign or break a single citation link in the body.
+                logger.info(
+                    "Trimming megathread sources %d -> %d to fit the lexicon maximum",
+                    len(sanitized_sources), MAX_EMBED_SOURCES
+                )
+                sanitized_sources = sanitized_sources[:MAX_EMBED_SOURCES]
             if sanitized_sources:
                 external["sources"] = sanitized_sources
 

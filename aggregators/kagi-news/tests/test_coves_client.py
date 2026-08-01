@@ -13,6 +13,7 @@ from src.coves_client import (
     CovesForbiddenError,
     CovesNotFoundError,
     CovesRateLimitError,
+    MAX_EMBED_SOURCES,
 )
 
 
@@ -265,6 +266,68 @@ class TestCreateExternalEmbed:
         )
 
         assert embed["external"]["sources"][0]["extra_field"] == "should be preserved"
+
+
+class TestCreateExternalEmbedCapsSources:
+    """
+    `social.coves.embed.external` caps `sources` at 50. Kagi world-news clusters
+    routinely carry 59-75 articles, and the AppView rejects the whole post with
+    a 400 ("too many sources: 69 (max 50)"), so the bridge must trim to fit.
+    """
+
+    @pytest.fixture
+    def client(self):
+        return CovesClient(api_url="http://localhost:8081", api_key=VALID_TEST_API_KEY)
+
+    def _sources(self, count):
+        return [
+            {"uri": f"https://example.com/{i}", "title": f"T{i}", "domain": "example.com"}
+            for i in range(count)
+        ]
+
+    def test_over_limit_is_trimmed_to_fifty(self, client):
+        embed = client.create_external_embed(
+            uri="https://kagi.com/news/daily", title="T", description="D",
+            sources=self._sources(75),
+        )
+        assert len(embed["external"]["sources"]) == MAX_EMBED_SOURCES
+
+    def test_trim_keeps_the_leading_entries_in_order(self, client):
+        """Kagi orders articles by relevance -- keep the front, not an arbitrary slice."""
+        embed = client.create_external_embed(
+            uri="https://kagi.com/news/daily", title="T", description="D",
+            sources=self._sources(75),
+        )
+        titles = [s["title"] for s in embed["external"]["sources"]]
+        assert titles == [f"T{i}" for i in range(MAX_EMBED_SOURCES)]
+
+    def test_exactly_at_limit_is_untouched(self, client):
+        embed = client.create_external_embed(
+            uri="https://kagi.com/news/daily", title="T", description="D",
+            sources=self._sources(MAX_EMBED_SOURCES),
+        )
+        assert len(embed["external"]["sources"]) == MAX_EMBED_SOURCES
+
+    def test_under_limit_is_untouched(self, client):
+        embed = client.create_external_embed(
+            uri="https://kagi.com/news/daily", title="T", description="D",
+            sources=self._sources(3),
+        )
+        assert len(embed["external"]["sources"]) == 3
+
+    def test_trim_counts_survivors_not_submissions(self, client):
+        """
+        The cap applies after unusable URIs are dropped, so a batch that only
+        exceeds 50 before sanitizing still submits every valid source it has.
+        """
+        sources = self._sources(52)
+        for i in (0, 1, 2):
+            sources[i]["uri"] = "not a url"
+        embed = client.create_external_embed(
+            uri="https://kagi.com/news/daily", title="T", description="D",
+            sources=sources,
+        )
+        assert len(embed["external"]["sources"]) == 49
 
 
 class TestCreateExternalEmbedSanitizesURIs:
