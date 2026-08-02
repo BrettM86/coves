@@ -1,6 +1,7 @@
 package communities
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -14,6 +15,39 @@ import (
 // provisioned as c-gardening.coves.social. Communities bridged in from other
 // platforms keep their source handle and carry no prefix.
 const communityHandlePrefix = "c-"
+
+// LookupByHandle fetches a community by handle, retrying with the
+// communityHandlePrefix when the bare handle misses.
+//
+// Communities provisioned on this instance are stored prefixed
+// (c-gardening.coves.social) while clients display and link to the prefix-free
+// form, so a bare handle must fall back to the prefixed row. Communities
+// bridged in from other platforms are stored unprefixed and resolve on the
+// first lookup, never reaching the retry.
+//
+// Errors other than "not found" propagate untouched: a database outage must
+// not masquerade as a missing community, and must not trigger a second query.
+func LookupByHandle(ctx context.Context, repo Repository, handle string) (*Community, error) {
+	handle = strings.ToLower(handle)
+
+	community, err := repo.GetByHandle(ctx, handle)
+	if err == nil {
+		return community, nil
+	}
+	if !IsNotFound(err) || strings.HasPrefix(handle, communityHandlePrefix) {
+		return nil, err
+	}
+
+	prefixed, prefixedErr := repo.GetByHandle(ctx, communityHandlePrefix+handle)
+	if prefixedErr != nil {
+		if IsNotFound(prefixedErr) {
+			// Report the miss against the handle the caller actually asked for.
+			return nil, err
+		}
+		return nil, prefixedErr
+	}
+	return prefixed, nil
+}
 
 // Community represents a Coves community indexed from the firehose
 // Communities are federated, instance-scoped forums built on atProto

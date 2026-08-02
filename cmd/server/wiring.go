@@ -271,6 +271,7 @@ func (a *application) buildServices(ctx context.Context) error {
 		turnstileVerifier,
 		a.cfg.PDS.AdminPassword,
 		users.WithProfileBackfill(&http.Client{Timeout: profileBackfillTimeout}),
+		users.WithInstanceDomain(a.cfg.Instance.Domain),
 	)
 
 	// The OAuth handler indexes users into the AppView after login, so it

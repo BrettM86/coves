@@ -58,6 +58,11 @@ type userService struct {
 	identityResolver identity.Resolver
 	defaultPDS       string // Default PDS URL for this Coves instance (used when creating new local users via registration API)
 
+	// instanceDomain is this instance's handle domain (e.g. coves.social), used
+	// to reserve the "c-" community namespace against local registrations.
+	// Empty disables the check. See validateLocalHandleNamespace.
+	instanceDomain string
+
 	// turnstile verifies Cloudflare Turnstile tokens during the signup-token
 	// handshake. nil → RequestSignupToken returns ErrSignupTokenDisabled (503).
 	turnstile TurnstileVerifier
@@ -94,6 +99,46 @@ func WithProfileBackfill(client *http.Client) UserServiceOption {
 		}
 		s.profileBackfillClient = client
 	}
+}
+
+// WithInstanceDomain supplies this instance's handle domain (e.g. coves.social)
+// so local registrations can be held out of the reserved community namespace.
+// Empty (the default) disables the reservation check.
+func WithInstanceDomain(domain string) UserServiceOption {
+	return func(s *userService) {
+		s.instanceDomain = strings.ToLower(strings.TrimSpace(domain))
+	}
+}
+
+// communityHandlePrefix mirrors the communities package's reserved prefix.
+// Duplicated rather than imported to keep users from depending on communities;
+// the two must stay in sync.
+const communityHandlePrefix = "c-"
+
+// validateLocalHandleNamespace rejects handles that squat the community
+// namespace on THIS instance. Community actors are provisioned as
+// c-{name}.{instanceDomain}, so a user holding c-gardening.coves.social could
+// either block provisioning of the "gardening" community or hold the handle the
+// AppView treats as that community's identity.
+//
+// Scoped deliberately to our own domain: a remote user legitimately named
+// c-foo.example.com is in someone else's namespace and must still index fine.
+func (s *userService) validateLocalHandleNamespace(handle string) error {
+	if s.instanceDomain == "" {
+		return nil
+	}
+	handle = strings.ToLower(strings.TrimSpace(handle))
+	if !strings.HasSuffix(handle, "."+s.instanceDomain) {
+		return nil
+	}
+	firstLabel, _, _ := strings.Cut(handle, ".")
+	if strings.HasPrefix(firstLabel, communityHandlePrefix) {
+		return &InvalidHandleError{
+			Handle: handle,
+			Reason: `handles starting with "c-" are reserved for communities on this instance`,
+		}
+	}
+	return nil
 }
 
 // NewUserService creates a new user service.
@@ -192,6 +237,9 @@ func (s *userService) UpdateHandle(ctx context.Context, did, newHandle string) (
 
 	// Validate new handle format
 	if err := validateHandle(newHandle); err != nil {
+		return nil, err
+	}
+	if err := s.validateLocalHandleNamespace(newHandle); err != nil {
 		return nil, err
 	}
 
@@ -610,6 +658,12 @@ func (s *userService) validateRegisterRequest(req RegisterAccountRequest) error 
 
 	// Validate handle format
 	if err := validateHandle(req.Handle); err != nil {
+		return err
+	}
+	// Registration creates an actor on THIS instance, so it must not squat the
+	// community namespace. Deliberately not applied to user indexing, which
+	// ingests remote actors whose namespaces are not ours to police.
+	if err := s.validateLocalHandleNamespace(req.Handle); err != nil {
 		return err
 	}
 

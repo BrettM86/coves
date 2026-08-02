@@ -370,10 +370,14 @@ func (s *communityService) GetCommunity(ctx context.Context, identifier string) 
 	// 3. At-identifier format: @handle (strip @ prefix)
 	identifier = strings.TrimPrefix(identifier, "@")
 
-	// 4. Canonical handle format: c-name.domain
+	// 4. Canonical handle format: c-name.domain (also accepts the prefix-free
+	// form clients display and link to)
 	if strings.Contains(identifier, ".") {
-		community, err := s.repo.GetByHandle(ctx, strings.ToLower(identifier))
+		community, err := LookupByHandle(ctx, s.repo, identifier)
 		if err != nil {
+			if !IsNotFound(err) {
+				return nil, fmt.Errorf("failed to look up community %q: %w", originalIdentifier, err)
+			}
 			return nil, fmt.Errorf("community not found for identifier %q: %w", originalIdentifier, err)
 		}
 		return community, nil
@@ -1108,31 +1112,13 @@ func (s *communityService) ResolveCommunityIdentifier(ctx context.Context, ident
 
 	// 4. Canonical handle: name.community.instance.com (Bluesky standard)
 	if strings.Contains(identifier, ".") {
-		handle := strings.ToLower(identifier)
-
-		community, err := s.repo.GetByHandle(ctx, handle)
+		community, err := LookupByHandle(ctx, s.repo, identifier)
 		if err == nil {
 			return community.DID, nil
 		}
 		if !IsNotFound(err) {
 			return "", fmt.Errorf("failed to look up community handle %s: %w", identifier, err)
 		}
-
-		// Communities provisioned on this instance store a "c-" prefixed handle
-		// (c-gardening.coves.social) that namespaces community actors apart from
-		// user actors. Clients display and link to the prefix-free form, so retry
-		// the prefixed handle before giving up. Bridged communities are stored
-		// without the prefix and resolve on the first lookup above.
-		if !strings.HasPrefix(handle, communityHandlePrefix) {
-			community, prefixedErr := s.repo.GetByHandle(ctx, communityHandlePrefix+handle)
-			if prefixedErr == nil {
-				return community.DID, nil
-			}
-			if !IsNotFound(prefixedErr) {
-				return "", fmt.Errorf("failed to look up community handle %s: %w", communityHandlePrefix+handle, prefixedErr)
-			}
-		}
-
 		return "", fmt.Errorf("community not found for handle %s: %w", identifier, err)
 	}
 
@@ -1246,6 +1232,16 @@ func (s *communityService) validateCreateRequest(req CreateCommunityRequest) err
 	nameRegex := regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
 	if !nameRegex.MatchString(req.Name) {
 		return NewValidationError("name", "must contain only alphanumeric characters and hyphens")
+	}
+
+	// The "c-" prefix is reserved: it is what namespaces community actors apart
+	// from user actors, and clients strip exactly one leading "c-" to derive the
+	// handle they display and link to. A name like "c-sharp" would provision
+	// c-c-sharp.coves.social, which strips back to c-sharp.coves.social — the
+	// stored handle of the *different* community named "sharp". Reserving the
+	// prefix keeps that derivation unambiguous in both directions.
+	if strings.HasPrefix(strings.ToLower(req.Name), communityHandlePrefix) {
+		return NewValidationError("name", `must not start with "c-" (reserved prefix for community handles)`)
 	}
 
 	if req.Description != "" && len(req.Description) > 3000 {

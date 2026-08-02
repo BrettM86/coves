@@ -1181,8 +1181,9 @@ func (s *commentService) GetActorComments(ctx context.Context, req *GetActorComm
 		if strings.HasPrefix(req.Community, "did:") {
 			communityDID = &req.Community
 		} else {
-			// It's a handle - resolve to DID via community repository
-			community, err := s.communityRepo.GetByHandle(ctx, req.Community)
+			// It's a handle - resolve to DID via community repository.
+			// LookupByHandle also accepts the prefix-free form clients display.
+			community, err := communities.LookupByHandle(ctx, s.communityRepo, req.Community)
 			if err != nil {
 				// If community not found, return empty results rather than error
 				// This matches behavior of other endpoints
