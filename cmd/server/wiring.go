@@ -22,11 +22,13 @@ import (
 	"Coves/internal/core/userblocks"
 	"Coves/internal/core/users"
 	"Coves/internal/core/votes"
+	"Coves/internal/notify/telegram"
 	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -342,7 +344,12 @@ func (a *application) buildServices(ctx context.Context) error {
 		a.oauthClient, a.oauthStore, nil,
 	)
 	a.userBlockService = userblocks.NewService(a.userBlockRepo, nil, a.oauthClient, a.oauthStore, nil)
-	a.adminReportService = adminreports.NewService(postgresRepo.NewAdminReportRepository(a.db))
+	adminReportOptions, err := adminReportAlertOptions()
+	if err != nil {
+		return err
+	}
+	a.adminReportService = adminreports.NewService(
+		postgresRepo.NewAdminReportRepository(a.db), adminReportOptions...)
 	a.communitySuggestionService = communitysuggestions.NewService(
 		postgresRepo.NewCommunitySuggestionRepository(a.db))
 
@@ -355,6 +362,60 @@ func (a *application) buildServices(ctx context.Context) error {
 
 	slog.Info("domain services initialized")
 	return nil
+}
+
+// adminReportAlertOptions builds the operator-alert wiring for admin reports.
+//
+// Alerting is opt-in (TELEGRAM_ALERTS_ENABLED): most operators running their
+// own Coves instance will not want it, and a deployment must not need a
+// Telegram account to boot. When it is switched on, however, a misconfiguration
+// fails startup rather than degrading to "no alerts" — a silent alerter is
+// indistinguishable from a quiet week, which is the fault this exists to fix.
+func adminReportAlertOptions() ([]adminreports.ServiceOption, error) {
+	cfg, err := telegram.ConfigFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("telegram alerts: %w", err)
+	}
+
+	if !cfg.Enabled {
+		if cfg.CredentialsPresentWhileDisabled {
+			// Almost certainly a half-finished setup rather than a deliberate
+			// opt-out. Not fatal — disabling a noisy channel in a hurry is
+			// legitimate — but it must not pass as quietly as a real opt-out.
+			slog.Warn("Telegram credentials are configured but TELEGRAM_ALERTS_ENABLED is not true; "+
+				"reports will be stored and NOBODY will be notified",
+				"fix", "set TELEGRAM_ALERTS_ENABLED=true")
+		} else {
+			slog.Info("admin report alerts disabled; reports are stored but nobody is notified",
+				"enable_with", "TELEGRAM_ALERTS_ENABLED=true")
+		}
+		return nil, nil
+	}
+
+	reasons, err := adminreports.ParseAlertReasons(cfg.AlertReasons)
+	if err != nil {
+		return nil, fmt.Errorf("TELEGRAM_ALERT_REASONS: %w", err)
+	}
+
+	client, err := telegram.NewClient(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("telegram alerts: %w", err)
+	}
+
+	// Log which reasons alert, never the token or chat ID.
+	alerting := "all reasons"
+	if len(reasons) > 0 {
+		names := make([]string, 0, len(reasons))
+		for _, reason := range reasons {
+			names = append(names, string(reason))
+		}
+		alerting = strings.Join(names, ",")
+	}
+	slog.Info("admin report alerts enabled", "channel", "telegram", "reasons", alerting)
+
+	return []adminreports.ServiceOption{
+		adminreports.WithNotifier(adminreports.NewMessageNotifier(client, reasons)),
+	}, nil
 }
 
 // buildDualAuth wires the middleware that accepts all three credential types:

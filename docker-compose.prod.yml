@@ -160,6 +160,19 @@ services:
       TURNSTILE_SITE_KEY: ${TURNSTILE_SITE_KEY}
       TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY}
       PDS_ADMIN_PASSWORD: ${PDS_ADMIN_PASSWORD}
+
+      # Telegram operator alerts for user-filed admin reports (optional).
+      # Off by default: reports are stored either way, but with alerting off
+      # nothing tells anyone a report exists — a CSAM report then sits in
+      # admin_reports unread. Enabling with an incomplete config FAILS STARTUP
+      # rather than degrading to silence.
+      # TELEGRAM_ALERT_REASONS is a comma-separated subset of
+      # csam,doxing,harassment,spam,illegal,other; empty alerts on all of them.
+      TELEGRAM_ALERTS_ENABLED: ${TELEGRAM_ALERTS_ENABLED:-false}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      TELEGRAM_ALERT_REASONS: ${TELEGRAM_ALERT_REASONS:-}
+      TELEGRAM_TIMEOUT_SECONDS: ${TELEGRAM_TIMEOUT_SECONDS:-5}
     volumes:
       # Image proxy cache (persistent across container restarts)
       - imageproxy-cache:/var/cache/coves/images
