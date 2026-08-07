@@ -1,0 +1,40 @@
+{
+  "$type": "social.coves.community.postv2",
+  "community": "did:plc:programming123",
+  "title": "Gallery: my home lab rack",
+  "content": "Two photos of the finished rack build.",
+  "embed": {
+    "$type": "social.coves.embed.images",
+    "images": [
+      {
+        "image": {
+          "$type": "blob",
+          "ref": {
+            "$link": "bafkreibme22gw2h7y2h7tg2fhqotaqjucnbc24deqo72b6mkl2egezxhvy"
+          },
+          "mimeType": "image/jpeg",
+          "size": 214390
+        },
+        "alt": "A 12U server rack with cables neatly routed",
+        "aspectRatio": {
+          "width": 4,
+          "height": 3
+        }
+      },
+      {
+        "image": {
+          "$type": "blob",
+          "ref": {
+            "$link": "bafkreih6kvpkpwzi6vlk7cx6xoauvterrn3fqp75lwvj6saow4dbotcm2q"
+          },
+          "mimeType": "image/png",
+          "size": 98231
+        },
+        "alt": "Close-up of the patch panel labeling"
+      }
+    ]
+  },
+  "tags": ["homelab"],
+  "langs": ["en"],
+  "createdAt": "2026-07-22T10:00:00Z"
+}

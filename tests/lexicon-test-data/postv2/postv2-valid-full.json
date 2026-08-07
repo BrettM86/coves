@@ -3,6 +3,20 @@
   "community": "did:plc:programming123",
   "title": "Bridged megathread: the full optional surface",
   "content": "Every optional field on postv2 is populated here so a ref that stops resolving fails this fixture.",
+  "facets": [
+    {
+      "index": {
+        "byteStart": 0,
+        "byteEnd": 20
+      },
+      "features": [
+        {
+          "$type": "social.coves.richtext.facet#heading",
+          "level": 2
+        }
+      ]
+    }
+  ],
   "embed": {
     "$type": "social.coves.embed.external",
     "external": {

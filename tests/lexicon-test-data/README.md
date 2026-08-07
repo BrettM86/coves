@@ -19,18 +19,30 @@ Test files follow a specific naming pattern to distinguish between valid and inv
 
 ```
 lexicon-test-data/
+├── acceptance/
+│   ├── acceptance-valid.json           # Valid community acceptance
+│   └── acceptance-invalid-missing-subject.json  # Missing required field
 ├── actor/
 │   ├── profile-valid.json              # Valid actor profile
 │   └── profile-invalid-missing-handle.json  # Missing required field
 ├── community/
 │   └── profile-valid.json              # Valid community profile
+├── feed/
+│   └── vote-valid.json                 # Valid feed vote record
 ├── interaction/
-│   └── vote-valid.json                 # Valid vote record
+│   └── comment-valid-text.json         # Valid comment record
 ├── moderation/
 │   └── ban-valid.json                  # Valid ban record
-└── post/
-    ├── post-valid-text.json            # Valid text post
-    └── post-invalid-enum-type.json     # Invalid postType value
+├── post/
+│   ├── post-valid-text.json            # Valid text post (deprecated family)
+│   └── post-invalid-missing-community.json  # Missing required field
+├── postv2/
+│   ├── postv2-valid-text.json          # Valid authorless post
+│   ├── postv2-valid-embed-images.json  # Valid post with an images embed
+│   └── postv2-invalid-community-not-a-did.json  # Malformed community DID
+└── removal/
+    ├── removal-valid.json              # Valid community removal
+    └── removal-invalid-missing-code.json  # Missing required field
 ```
 
 ## Running Tests

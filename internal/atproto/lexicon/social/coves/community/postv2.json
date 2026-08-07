@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "record",
-      "description": "A post authored by a user, living in the author's repository. Successor to the deprecated social.coves.community.post: authorship is derived from the repository the record lives in, so there is no in-record author field. A post claiming a community is not visible in it until the community writes a social.coves.community.acceptance for it - community surfaces render from acceptance records only.",
+      "description": "A post authored by a user, living in the author's repository. Successor to the deprecated social.coves.community.post: authorship is derived from the repository the record lives in, so there is no in-record author field. A post claiming a community is not visible in it until the community writes a social.coves.community.acceptance for it - community surfaces render from acceptance records only. Repo placement attributes authorship as vouched for by a verifying relay or a direct DID-resolved PDS fetch; firehose events themselves carry no commit-signature proof.",
       "key": "tid",
       "record": {
         "type": "object",
@@ -13,7 +13,7 @@
           "community": {
             "type": "string",
             "format": "did",
-            "description": "DID of the community this was submitted to. Immutable across updates: consumers MUST ignore an update event that changes it, since retargeting a post means writing a new post record."
+            "description": "DID of the community this was submitted to. Immutable across updates: consumers MUST ignore the entire update event that changes it - discard the whole event, not merely retain the old community value - since retargeting a post means writing a new post record."
           },
           "title": {
             "type": "string",
