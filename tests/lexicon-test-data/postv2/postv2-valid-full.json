@@ -1,0 +1,45 @@
+{
+  "$type": "social.coves.community.postv2",
+  "community": "did:plc:programming123",
+  "title": "Bridged megathread: the full optional surface",
+  "content": "Every optional field on postv2 is populated here so a ref that stops resolving fails this fixture.",
+  "embed": {
+    "$type": "social.coves.embed.external",
+    "external": {
+      "uri": "https://example.com/articles/error-handling",
+      "title": "Error handling in Go",
+      "description": "A long-form article about wrapping errors.",
+      "domain": "example.com",
+      "embedType": "article"
+    }
+  },
+  "crosspostOf": {
+    "uri": "at://did:plc:programming123/social.coves.community.postv2/3k7a3dmb5bk2c",
+    "cid": "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"
+  },
+  "crosspostChain": [
+    {
+      "uri": "at://did:plc:originalcommunity1/social.coves.community.postv2/3k7a3dmb5bk2a",
+      "cid": "bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua"
+    },
+    {
+      "uri": "at://did:plc:programming123/social.coves.community.postv2/3k7a3dmb5bk2c",
+      "cid": "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"
+    }
+  ],
+  "labels": {
+    "values": [
+      {
+        "val": "spoiler"
+      }
+    ]
+  },
+  "tags": ["golang", "bridged"],
+  "langs": ["en"],
+  "bridgedStats": {
+    "upvotes": 412,
+    "downvotes": 17,
+    "asOf": "2026-07-22T09:55:00Z"
+  },
+  "createdAt": "2026-07-22T10:00:00Z"
+}

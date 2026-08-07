@@ -1,0 +1,27 @@
+{
+  "lexicon": 1,
+  "id": "social.coves.community.acceptance",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "A community's attestation that it accepts a post. Written only by the community's key holder, automatically once admission checks pass - machine attestation, not human approval. The community is implicit in the repository this record lives in. The record key is deterministic: the subject post's AT-URI with \"at://\" stripped and \"/\" replaced by \":\", so a post has exactly one acceptance per community and concurrent writers converge instead of allocating duplicates.",
+      "key": "any",
+      "record": {
+        "type": "object",
+        "required": ["subject", "createdAt"],
+        "properties": {
+          "subject": {
+            "type": "ref",
+            "ref": "com.atproto.repo.strongRef",
+            "description": "Strong reference to the accepted post, pinning the exact accepted version. If the author edits the post the CID no longer matches and the post is pending re-acceptance; clients and AppViews MUST NOT auto-render the new CID under the old acceptance."
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "datetime",
+            "description": "Timestamp when the post was accepted"
+          }
+        }
+      }
+    }
+  }
+}

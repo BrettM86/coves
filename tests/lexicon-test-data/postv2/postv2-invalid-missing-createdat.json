@@ -1,0 +1,8 @@
+{
+  "$type": "social.coves.community.postv2",
+  "community": "did:plc:programming123",
+  "title": "Test Post",
+  "content": "This post is missing the required createdAt field",
+  "tags": ["test"],
+  "langs": ["en"]
+}

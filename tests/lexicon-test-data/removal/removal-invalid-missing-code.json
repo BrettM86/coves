@@ -1,0 +1,9 @@
+{
+  "$type": "social.coves.community.removal",
+  "subject": {
+    "uri": "at://did:plc:programming123/social.coves.community.postv2/3k7a3dmb5bk2c",
+    "cid": "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"
+  },
+  "reason": "A removal without a machine-readable code cannot be acted on downstream.",
+  "createdAt": "2026-07-22T10:20:00Z"
+}

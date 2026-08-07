@@ -216,6 +216,9 @@ func extractAllSchemaIDs(schemaPath string) []string {
 
 			// Only include record schemas (not procedures)
 			if strings.Contains(schemaID, ".record") ||
+				strings.Contains(schemaID, ".postv2") ||
+				strings.Contains(schemaID, ".acceptance") ||
+				strings.Contains(schemaID, ".removal") ||
 				strings.Contains(schemaID, ".profile") ||
 				strings.Contains(schemaID, ".rules") ||
 				strings.Contains(schemaID, ".wiki") ||
