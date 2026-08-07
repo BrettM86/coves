@@ -1,0 +1,11 @@
+{
+  "$type": "social.coves.community.acceptance",
+  "subject": {
+    "uri": "at://did:plc:programming123/social.coves.community.postv2/3k7a3dmb5bk2c",
+    "cid": "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"
+  },
+  "createdAt": "2026-07-22T10:05:00Z",
+  "futureExtension": {
+    "note": "open schema"
+  }
+}

@@ -15,7 +15,10 @@ of breaking `social.coves.community.post` in place (§3.0/§3.1); lexicon
 details audited against the atProto Lexicon spec, record-key spec, and the
 draft Lexicon style guide (bluesky-social/atproto discussion #4245) — open
 value sets confirmed, deterministic rkeys specified per the record-key spec's
-"(transformed) AT URI" pattern.**
+"(transformed) AT URI" pattern.
+Rev 2.2 (2026-08-07): rkey derivation switched from readable URI transform to
+SHA-256/base32 digest (review catch: transform non-total over legal DID
+space).**
 
 **Supersedes** the write-path architecture in `docs/federation-prd.md`: that
 document solves cross-instance posting by service-auth-forwarding the write to
@@ -170,13 +173,17 @@ As specced in rev 1 (strongRef `subject` + `createdAt`, community implicit in
 the repo), with two hardening changes from review:
 
 - **Record key: deterministic, not TID.** `key` is `any`, and the rkey is the
-  subject post's AT-URI transformed into rkey-safe form (strip `at://`,
-  replace `/` with `:` — e.g.
-  `did:plc:abc…:social.coves.community.postv2:3jzfcijpj2z2a`; well under the
-  512-char rkey limit, and human-greppable). The record-key spec explicitly
-  blesses `any` for exactly this — "de-duplication and known-URI lookups"
-  via "a (transformed) AT URI" — and Bluesky's `threadgate` (rkey must equal
-  the subject post's rkey) is precedent for subject-derived keys. One post →
+  unpadded lowercase base32 encoding of the SHA-256 digest of the canonical
+  subject AT-URI — a fixed 52 characters, always within the 512-byte rkey
+  limit and always drawn from the rkey-safe charset. Why a digest instead of
+  a readable URI transform: external review caught that DIDs may legally run
+  up to 2048 bytes and may contain percent-escapes, so the readable transform
+  (strip `at://`, swap `/` for `:`) is non-total over the legal DID space —
+  a fixed-size digest is total and still deterministic. The record-key spec
+  explicitly blesses `any` for exactly this — "de-duplication and known-URI
+  lookups" via "a (transformed) AT URI" — and Bluesky's `threadgate` (rkey
+  must equal the subject post's rkey) is precedent for subject-derived keys.
+  One post →
   one acceptance rkey per community, forever. This makes the three
   independent acceptance writers (sync fast path §4.3, firehose engine §5.6,
   notify §7) **idempotent by construction** — concurrent attempts converge on

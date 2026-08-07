@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/bluesky-social/indigo/atproto/atdata"
 	lexicon "github.com/bluesky-social/indigo/atproto/lexicon"
 )
 
@@ -57,7 +58,10 @@ func main() {
 	// Validate test data unless schemas-only flag is set
 	if !*schemasOnly {
 		fmt.Printf("\n📋 Validating test data from: %s\n", *testDataPath)
-		allSchemas := extractAllSchemaIDs(*schemaPath)
+		allSchemas, err := extractAllSchemaIDs(*schemaPath)
+		if err != nil {
+			log.Fatalf("Failed to extract schema IDs: %v", err)
+		}
 		if err := validateTestData(&catalog, *testDataPath, *verbose, *strict, allSchemas); err != nil {
 			log.Fatalf("Test data validation failed: %v", err)
 		}
@@ -189,8 +193,11 @@ func loadSchemasWithDebug(catalog *lexicon.BaseCatalog, schemaPath string, verbo
 	return catalog.LoadDirectory(schemaPath)
 }
 
-// extractAllSchemaIDs walks the schema directory and returns all schema IDs
-func extractAllSchemaIDs(schemaPath string) []string {
+// extractAllSchemaIDs walks the schema directory and returns the schema IDs of
+// all record lexicons — schemas whose defs["main"].type is "record". Queries,
+// procedures, and defs-only files are excluded because they never appear as a
+// record $type in test data.
+func extractAllSchemaIDs(schemaPath string) ([]string, error) {
 	var schemaIDs []string
 
 	if err := filepath.Walk(schemaPath, func(path string, info os.FileInfo, err error) error {
@@ -205,6 +212,25 @@ func extractAllSchemaIDs(schemaPath string) []string {
 
 		// Only process .json files
 		if !info.IsDir() && filepath.Ext(path) == ".json" {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return fmt.Errorf("failed to read schema file %s: %w", path, err)
+			}
+
+			var schema struct {
+				Defs map[string]struct {
+					Type string `json:"type"`
+				} `json:"defs"`
+			}
+			if err := json.Unmarshal(data, &schema); err != nil {
+				return fmt.Errorf("failed to parse schema file %s: %w", path, err)
+			}
+
+			// Only include record schemas (not queries, procedures, or defs-only files)
+			if schema.Defs["main"].Type != "record" {
+				return nil
+			}
+
 			// Convert file path to schema ID
 			relPath, err := filepath.Rel(schemaPath, path)
 			if err != nil {
@@ -213,33 +239,23 @@ func extractAllSchemaIDs(schemaPath string) []string {
 			schemaID := filepath.ToSlash(relPath)
 			schemaID = schemaID[:len(schemaID)-5] // Remove .json extension
 			schemaID = strings.ReplaceAll(schemaID, "/", ".")
-
-			// Only include record schemas (not procedures)
-			if strings.Contains(schemaID, ".record") ||
-				strings.Contains(schemaID, ".profile") ||
-				strings.Contains(schemaID, ".rules") ||
-				strings.Contains(schemaID, ".wiki") ||
-				strings.Contains(schemaID, ".subscription") ||
-				strings.Contains(schemaID, ".membership") ||
-				strings.Contains(schemaID, ".vote") ||
-				strings.Contains(schemaID, ".tag") ||
-				strings.Contains(schemaID, ".comment") ||
-				strings.Contains(schemaID, ".share") ||
-				strings.Contains(schemaID, ".tribunalVote") ||
-				strings.Contains(schemaID, ".ruleProposal") ||
-				strings.Contains(schemaID, ".ban") {
-				schemaIDs = append(schemaIDs, schemaID)
-			}
+			schemaIDs = append(schemaIDs, schemaID)
 		}
 		return nil
 	}); err != nil {
-		log.Printf("Warning: failed to walk schema directory: %v", err)
+		return nil, fmt.Errorf("failed to walk schema directory: %w", err)
 	}
 
-	return schemaIDs
+	return schemaIDs, nil
 }
 
-// validateTestData validates test JSON data files against their corresponding schemas
+// validateTestData validates test JSON data files against their corresponding schemas.
+//
+// NOTE: tests/lexicon_fixtures_test.go is the second consumer of the fixture
+// conventions applied here — the "-invalid-" filename marker, the
+// UseNumber-then-narrow decoding (see convertNumbers), and the default
+// AllowLenientDatetime validation mode. If any of these change, update both
+// harnesses together, or the two will silently diverge in what they accept.
 func validateTestData(catalog *lexicon.BaseCatalog, testDataPath string, verbose, strict bool, allSchemas []string) error {
 	// Check if test data directory exists
 	if _, err := os.Stat(testDataPath); os.IsNotExist(err) {
@@ -301,6 +317,17 @@ func validateTestData(catalog *lexicon.BaseCatalog, testDataPath string, verbose
 
 			// Convert json.Number values to appropriate types
 			recordData = convertNumbers(recordData).(map[string]interface{})
+
+			// Convert blob-shaped objects to atdata.Blob: indigo's SchemaBlob
+			// validation type-asserts on atdata.Blob, so a blob left as a plain
+			// decoded map always fails with "expected a blob". Mirrors
+			// convertBlobs in tests/lexicon_fixtures_test.go (harness parity).
+			converted, blobErr := convertBlobs(recordData)
+			if blobErr != nil {
+				validationErrors = append(validationErrors, fmt.Sprintf("Failed to convert blobs in %s: %v", path, blobErr))
+				return nil
+			}
+			recordData = converted.(map[string]interface{})
 
 			// Extract $type field
 			recordType, ok := recordData["$type"].(string)
@@ -474,6 +501,47 @@ func validateCrossReferences(catalog *lexicon.BaseCatalog, verbose bool) error {
 	}
 
 	return nil
+}
+
+// convertBlobs recursively replaces blob-shaped objects ($type == "blob") with
+// atdata.Blob values, which indigo's SchemaBlob validation type-asserts on.
+// Mirrors convertBlobs in tests/lexicon_fixtures_test.go (harness parity).
+func convertBlobs(v interface{}) (interface{}, error) {
+	switch vv := v.(type) {
+	case map[string]interface{}:
+		if vv["$type"] == "blob" {
+			raw, err := json.Marshal(vv)
+			if err != nil {
+				return nil, fmt.Errorf("re-encoding blob: %w", err)
+			}
+			var blob atdata.Blob
+			if err := json.Unmarshal(raw, &blob); err != nil {
+				return nil, fmt.Errorf("parsing blob: %w", err)
+			}
+			return blob, nil
+		}
+		result := make(map[string]interface{}, len(vv))
+		for k, val := range vv {
+			converted, err := convertBlobs(val)
+			if err != nil {
+				return nil, err
+			}
+			result[k] = converted
+		}
+		return result, nil
+	case []interface{}:
+		result := make([]interface{}, len(vv))
+		for i, val := range vv {
+			converted, err := convertBlobs(val)
+			if err != nil {
+				return nil, err
+			}
+			result[i] = converted
+		}
+		return result, nil
+	default:
+		return v, nil
+	}
 }
 
 // convertNumbers recursively converts json.Number values to int64 or float64
