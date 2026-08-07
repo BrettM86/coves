@@ -18,7 +18,14 @@ value sets confirmed, deterministic rkeys specified per the record-key spec's
 "(transformed) AT URI" pattern.
 Rev 2.2 (2026-08-07): rkey derivation switched from readable URI transform to
 SHA-256/base32 digest (review catch: transform non-total over legal DID
-space).**
+space).
+Rev 2.3 (2026-08-07): §5.2 watermark became a composite (rev, op-rank) tuple
+CAS — task-2 plan review caught that a plain rev watermark with removal-wins
+special-casing silently dropped moderator restores (the restore commit is
+symmetric to the removal commit and indistinguishable from ordinary events on
+the wire); restore is now defined as any community acceptance winning the
+tuple CAS over a removal. Stale/terminal skips are outcome values, not
+errors (033 precedent — sentinels would dead-letter healthy skips).**
 
 **Supersedes** the write-path architecture in `docs/federation-prd.md`: that
 document solves cross-instance posting by service-auth-forwarding the write to
@@ -326,13 +333,37 @@ so the existing per-record rev gate cannot order their combined effect: a
 redriven stale acceptance could resurrect a removed post; a delayed acceptance
 delete could flip `removed` back to `pending`.
 
-Fix: admission state transitions are gated by a **subject-scoped watermark** —
-`last_community_rev` on the admissions row (§6.1). Any event from the
-community's repo about subject S applies only if its commit rev is newer than
-the row's watermark; within a single rev (the atomic delete-acceptance +
-create-removal commit, §3.3/§5.5), **removal wins**. Author-repo events (post
-create/update/delete) keep the existing per-record rev gate. All handlers
-remain idempotent upserts; replay is a no-op.
+Fix: admission state transitions are gated by a **subject-scoped composite
+watermark** — `(last_community_rev, last_community_op_rank)` on the admissions
+row (§6.1), where `rank(delete) = 0 < rank(put) = 1`. Every community-repo
+event about subject S applies through ONE rule: a strictly-greater tuple
+comparison (revs are base32-sortable TIDs, so lexicographic comparison is
+commit order — same semantics as migration 033's per-record gate). This
+single rule yields, order-independently within each atomic commit:
+
+- **removal wins** inside the removal commit `{acceptance-delete@(R,0),
+  removal-create@(R,1)}` — whichever applies second either lands (put ranks
+  above delete) or is skipped as not-greater;
+- **restore wins** inside the restore commit `{removal-delete@(R2,0),
+  acceptance-create@(R2,1)}` — which also means there is NO distinct
+  "restore" operation at the event level: a community-authored acceptance at
+  a strictly newer watermark than the removal IS the moderator restore, by
+  construction (only the community's key holder can write acceptances);
+- **exact-duplicate idempotency** — an equal tuple is a replay (multi-feed
+  overlap, DLQ redrive) and is a no-op, never re-stamping decision
+  timestamps.
+
+A skipped-stale or skipped-terminal event is the system WORKING (033
+precedent): repositories report it as an outcome value, never as an error —
+an error return would route healthy skips into the dead-letter queue.
+Author-repo events (post create/update/delete) keep the existing per-record
+rev gate and NEVER advance the community watermark (nor does the AppView-local
+`rejected` decision — a local decision must not suppress a genuine community
+event). ApplyAcceptance compares the pinned CID against the indexed post CID
+(§5.4): match → accepted; mismatch → `pending_reacceptance` with the
+acceptance fields still persisted, so an acceptance arriving before its
+subject's edit event converges when the post event lands (no livelock). All
+handlers are single-statement CAS upserts; replay is a no-op.
 
 ### 5.3 Post events (author repos)
 
@@ -392,9 +423,15 @@ remain idempotent upserts; replay is a no-op.
   aggregates to a separate author-owned stats record so content CIDs stop
   churning at all.)
 - **Removal is terminal across author edits.** `removed` is exited only by an
-  explicit moderator restore (atomic: delete removal + write fresh
-  acceptance). An author edit while removed updates audit metadata only —
-  otherwise editing would launder a removed post back through auto-acceptance.
+  explicit moderator restore (atomic commit: delete removal + write fresh
+  acceptance — which reaches consumers as ordinary events winning the §5.2
+  tuple CAS; there is no distinct restore operation on the wire). Terminality
+  is scoped precisely: `removed` is terminal against AUTHOR-repo events and
+  against community events at or below the removal's watermark; a
+  community-repo acceptance at a strictly greater watermark is the restore.
+  An author edit while removed updates audit metadata only (`evaluated_cid`,
+  `updated_at` — never status or decision fields) — otherwise editing would
+  launder a removed post back through auto-acceptance.
 - Bridge-trust re-keying: the `BridgeTrust` gate currently trusts *community*
   repos' PDS provenance for `bridgedStats`; it re-keys to the **author**
   (bridge account) repo's PDS.
@@ -433,7 +470,9 @@ New table `community_post_admissions`:
 - `redrivable BOOLEAN NOT NULL DEFAULT true` — policy rejections are
   `false` (terminal; not retried by DLQ redrive); transient evaluation
   failures stay `true`
-- `last_community_rev TEXT` — the §5.2 subject-scoped watermark
+- `last_community_rev TEXT COLLATE "C"` + `last_community_op_rank SMALLINT` —
+  the §5.2 subject-scoped composite watermark (033 pins `COLLATE "C"` for
+  rev comparison; same rule here)
 - Partial index on `status = 'accepted'` for feed queries
 
 `posts` changes: drop the `users` FK + CASCADE (§5.3), drop the in-record
