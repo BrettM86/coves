@@ -13,7 +13,7 @@ Stop when every task is done, or on any `blocked:` row.
 
 | # | Task | Phase | Status | Merge commit | Notes |
 |---|------|-------|--------|--------------|-------|
-| 1 | Lexicons: postv2 + acceptance + removal, deprecation note, fixtures, T0 validation | A | pending | | |
+| 1 | Lexicons: postv2 + acceptance + removal, deprecation note, fixtures, T0 validation | A | done | 4574151 | make ci 4640/0. 10-stream review; codex HIGH: rkey transform non-total → digest scheme (PRD rev 2.2) |
 | 2 | Migration 034: community_post_admissions + posts FK drop; admissions repo + T1 transition/watermark matrix | A | pending | | |
 | 3 | admitPost extraction + NEW policy (bans, rate limits, dedupe) wired into existing write path | A | pending | | |
 | 4 | Acceptance engine: deterministic rkey, swap-safe acceptance writer, atomic applyWrites removal, repin/terminality rules | B | pending | | |
@@ -23,6 +23,28 @@ Stop when every task is done, or on any `blocked:` row.
 | 8 | Cutover: re-materialization script (ledger, verify-before-delete, hermetic test), old-path removal, docs, tracker cleanup; panel on whole branch; /merge-to-main | D | pending | | prod script run is MANUAL, outside loop |
 
 ## Cross-iteration notes
+
+- (2026-08-07, task 1) **rkey design changed under review**: acceptance/removal
+  rkeys are SHA-256 → unpadded lowercase base32 digests of the subject AT-URI
+  (PRD rev 2.2) — the readable transform broke on >512-byte / percent-escaped
+  DIDs. TASK 4 MUST implement the digest helper with long-DID and
+  percent-escape test vectors.
+- (task 1) Fixture harness parity: fixtures containing blobs need
+  atdata.Blob conversion before ValidateRecord (both harnesses now do this —
+  convertBlobs in tests/lexicon_fixtures_test.go and cmd/validate-lexicon).
+- (task 1) validate-lexicon's coverage report is now honest (parses
+  defs.main.type): 4 pre-existing record types have zero fixtures
+  (actor.block, community.block, aggregator.authorization,
+  aggregator.service) — pre-existing gap, not this loop's scope.
+- (task 1) One transient unreproducible `make test` FAIL observed after the
+  fix batch (no package captured; cold-cache ×2 green; make ci 4640/0
+  green). Watch for recurrence — if seen again, capture the package and
+  /file-issue.
+- (harness) pr-review-toolkit agents unregistered this session →
+  /second-opinion runs general-purpose stand-ins with specialty briefs
+  (worked well). Named TDD agents spawn in mailbox mode — gate on their
+  idle notification, and commit RED's work at the RED gate so GREEN
+  tampering is mechanically diffable (mtime check used in task 1).
 
 - (2026-08-07) Loop scaffolded. Owner decisions locked in PRD rev 2.1:
   new NSID `social.coves.community.postv2` (not feed.post — hierarchy kept
