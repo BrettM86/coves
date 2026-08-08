@@ -27,6 +27,27 @@ var (
 	// ErrPayloadTooLarge indicates the request payload exceeds PDS limits (HTTP 413).
 	ErrPayloadTooLarge = errors.New("payload too large")
 
+	// ErrSwapConflict indicates an optimistic-concurrency guard lost: the
+	// swapRecord CID or the swapCommit CID the request named is not the one the
+	// repo is at, so another writer got there first.
+	//
+	// It is NOT ErrConflict, and the difference is not cosmetic. A PDS answers
+	// a failed swap with HTTP 400 and `"error": "InvalidSwap"` — verified
+	// against a live PDS, not inferred from the lexicon, which documents 409 —
+	// so the status code alone maps it onto ErrBadRequest, indistinguishable
+	// from a malformed record. A lost race is the one 400 that must be RETRIED
+	// (re-read, re-shape, write again) rather than reported, so it needs its
+	// own sentinel.
+	ErrSwapConflict = errors.New("swap conflict")
+
+	// ErrServerError indicates the PDS failed to process a well-formed request
+	// (HTTP 5xx). It is separated from the generic wrap because it is the one
+	// remote failure class that is worth retrying unchanged: applyWrites
+	// answers a delete of a missing record, or a create of an existing one,
+	// with a 500, and a caller that cannot tell that from a transport failure
+	// cannot decide whether to re-read and re-shape its batch.
+	ErrServerError = errors.New("server error")
+
 	// ErrSessionExpired indicates a stored OAuth session could not be resumed:
 	// the refresh token expired, the session was revoked on the PDS, or the
 	// DPoP key no longer matches. Unlike ErrUnauthorized this is detected

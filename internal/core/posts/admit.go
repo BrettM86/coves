@@ -469,6 +469,27 @@ type admissionDeps struct {
 // A non-nil error means the decision could NOT be made — a lookup failed — and
 // is distinct from a refusal, which is a decision.
 func admitPost(ctx context.Context, deps admissionDeps, req AdmissionRequest) (AdmissionDecision, error) {
+	decision, err := evaluateAdmissionPolicy(ctx, deps, req)
+	if err != nil || !decision.Admitted() {
+		return decision, err
+	}
+	return reserveSubmission(ctx, deps, req, decision.Community)
+}
+
+// evaluateAdmissionPolicy is admitPost's steps 0-4: everything that decides
+// whether this author may post to this community AT ALL, and nothing that
+// reserves a slot for the attempt.
+//
+// THE SPLIT EXISTS FOR THE ACCEPTANCE ENGINE. §5.6's engine decides about a post
+// that ALREADY EXISTS — often one it has decided about before, arriving again
+// from an overlapping feed or a redrive — so it needs the policy and must not
+// have the reservation. Running the ledger insert there would charge an author's
+// quota for a firehose redelivery and then refuse the redecision as a duplicate
+// of the submission it is redeciding.
+//
+// On an admission it returns the resolved community and NOTHING else, so a
+// caller that goes on to reserve does so explicitly.
+func evaluateAdmissionPolicy(ctx context.Context, deps admissionDeps, req AdmissionRequest) (AdmissionDecision, error) {
 	// 0. The actor class must be one this decision knows. It gates everything
 	// below — including the trusted skip of visibility, ban and authorization —
 	// so an unknown value must fail CLOSED before any lookup runs. Falling
@@ -550,6 +571,17 @@ func admitPost(ctx context.Context, deps admissionDeps, req AdmissionRequest) (A
 		}
 	}
 
+	return AdmissionDecision{Community: community}, nil
+}
+
+// reserveSubmission is admitPost's steps 5-6: the dedupe insert and the
+// rolling-window quota, both of which exist only for a NEW submission.
+//
+// They are one function rather than two because step 6 counts the row step 5
+// inserted — the reservation is on the ledger before the quota is measured, so
+// the limit is reached when the count EXCEEDS it — and every path out that is
+// not an admission has to hand the slot back.
+func reserveSubmission(ctx context.Context, deps admissionDeps, req AdmissionRequest, community *communities.Community) (AdmissionDecision, error) {
 	// 5. Dedupe, for every actor class. The INSERT is the check: a unique
 	// violation means an identical submission is already on the ledger for this
 	// window. It runs ahead of the quota so that a client retrying after a lost

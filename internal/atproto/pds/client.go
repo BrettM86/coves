@@ -98,6 +98,57 @@ func wrapAPIError(err error, operation string) error {
 	// Check if it's an APIError from atclient
 	var apiErr *atclient.APIError
 	if errors.As(err, &apiErr) {
+		// THE NAME CHECKS RUN FIRST, BEFORE EVERY STATUS BRANCH — including the
+		// 5xx one. The name says what happened; the status only says how the
+		// server framed it, and PDS implementations and the proxies in front of
+		// them disagree on the framing. A lost swap comes back from a live PDS
+		// as HTTP 400 with "error": "InvalidSwap", not the 409 the lexicon
+		// documents; a 500 carrying InvalidSwap is STILL a lost swap, and a
+		// caller that saw only ErrServerError would resend the same shape
+		// instead of re-reading — the exact behaviour the sentinel exists to
+		// prevent.
+		//
+		// A 409 InvalidSwap — what the lexicon says, and what some
+		// implementation may yet send — is BOTH sentinels at once, so callers
+		// written against either one behave correctly whichever status arrives.
+		if apiErr.Name == "InvalidSwap" {
+			if apiErr.StatusCode == 409 {
+				return fmt.Errorf("%s: %w: %w: %s", operation, ErrConflict, ErrSwapConflict, apiErr.Message)
+			}
+			return fmt.Errorf("%s: %w: %s", operation, ErrSwapConflict, apiErr.Message)
+		}
+
+		// "No such record" is the other name that outranks its status. The
+		// reference PDS answers getRecord for a missing record with HTTP 400 and
+		// "error": "RecordNotFound" (internal/core/users/profile_backfill.go
+		// documents the same observation), so the status alone calls an absent
+		// record a malformed request. A writer that shapes create-vs-update from
+		// a pre-read cannot tell those apart, and every caller already testing
+		// errors.Is(err, ErrNotFound) after a GetRecord is silently never true.
+		//
+		// THE NAME IS THE ONLY THING TRUSTED HERE — never the message. The
+		// reference PDS also spells some misses as InvalidRequest with "could
+		// not locate record" in the MESSAGE (the getProfile shape;
+		// internal/core/users/profile_backfill.go matches it deliberately, at
+		// its own call site, against that one operation). That spelling is NOT
+		// mapped at this layer: a transport-wide substring match would turn any
+		// error that merely mentions those words into ErrNotFound for every
+		// caller of every method. Our PDS answers the record operations this
+		// client wraps with the RecordNotFound name — pinned by the idempotent
+		// re-delete in service_writeforward_test.go, which fails if that ever
+		// stops being true.
+		if apiErr.Name == "RecordNotFound" || apiErr.Name == "NotFound" {
+			return fmt.Errorf("%s: %w: %s", operation, ErrNotFound, apiErr.Message)
+		}
+
+		// A 5xx is its own class, not the generic wrap. applyWrites answers a
+		// delete of a missing record — and a create of an existing one — with a
+		// 500, and a state-shaped writer meeting that has to know its pre-read
+		// went stale so it can re-shape the batch.
+		if apiErr.StatusCode >= 500 {
+			return fmt.Errorf("%s: %w: %s", operation, ErrServerError, apiErr.Message)
+		}
+
 		switch apiErr.StatusCode {
 		case 400:
 			return fmt.Errorf("%s: %w: %s", operation, ErrBadRequest, apiErr.Message)

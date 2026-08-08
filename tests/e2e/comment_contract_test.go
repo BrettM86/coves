@@ -273,13 +273,23 @@ func indexedPost(t *testing.T, p *pipeline, community provisionedCommunity, auth
 		postRecord(community.DID, authorDID, title, "a post to hang comments on"))
 	uri := postURI(community.DID, rkey)
 
+	// 600ms, not the default 250ms: this wait legitimately runs LONG. Under a
+	// full-suite `make ci` the posts consumer is draining every parallel
+	// contract's records at once, and this parent-post index was measured at
+	// 23.97s on a QUIET stack — right at the ~25s cliff where 250ms polling
+	// exhausts the global 100/minute bucket and the wait dies as a 429 with
+	// 20 seconds of budget still unspent (observed 5 consecutive CI runs,
+	// 2026-08-08). At 600ms the full 45s contractBudget fits inside the
+	// bucket (75 polls < 100), so the wait fails on the budget or not at all —
+	// which is what contractPollInterval's own doc says a 429 here should
+	// mean. Discovery latency on a healthy fast run costs ~350ms extra.
 	p.Await(t, "the post these comments hang off to be indexed", func() (bool, error) {
 		view, err := p.Post(context.Background(), uri)
 		if err != nil {
 			return false, err
 		}
 		return !view.NotFound, nil
-	})
+	}, testkit.WithPollInterval(600*time.Millisecond))
 	return strongRef{URI: uri, CID: record.CID}
 }
 

@@ -93,6 +93,48 @@ func TestResolve(t *testing.T) {
 			wantMatch:  true,
 		},
 		{
+			// A lost swap arrives from a live PDS as HTTP 400, so without its
+			// own rule it would be indistinguishable from a malformed request —
+			// or worse, fall to 500. It must answer 409: a retryable conflict.
+			name:       "pds swap conflict is 409 not 400",
+			err:        pds.ErrSwapConflict,
+			wantStatus: http.StatusConflict,
+			wantCode:   "Conflict",
+			wantMatch:  true,
+		},
+		{
+			name:       "pds swap conflict wrapped with %w",
+			err:        fmt.Errorf("applyWrites: %w: CID mismatch", pds.ErrSwapConflict),
+			wantStatus: http.StatusConflict,
+			wantCode:   "Conflict",
+			wantMatch:  true,
+		},
+		{
+			// A 409 InvalidSwap wraps ErrConflict and ErrSwapConflict at once;
+			// both mean 409 Conflict, whichever rule wins.
+			name:       "pds 409 swap wraps both conflict sentinels",
+			err:        fmt.Errorf("applyWrites: %w: %w: stale", pds.ErrConflict, pds.ErrSwapConflict),
+			wantStatus: http.StatusConflict,
+			wantCode:   "Conflict",
+			wantMatch:  true,
+		},
+		{
+			// A PDS 5xx is a classified upstream failure: 502, not the
+			// content-free 500 reserved for errors nothing recognized.
+			name:       "pds server error is 502 upstream failure",
+			err:        pds.ErrServerError,
+			wantStatus: http.StatusBadGateway,
+			wantCode:   "UpstreamFailure",
+			wantMatch:  true,
+		},
+		{
+			name:       "pds server error wrapped with %w",
+			err:        fmt.Errorf("applyWrites: %w: Internal Server Error", pds.ErrServerError),
+			wantStatus: http.StatusBadGateway,
+			wantCode:   "UpstreamFailure",
+			wantMatch:  true,
+		},
+		{
 			name:       "shared typed validation error",
 			err:        coreerrors.NewValidationError("handle", "is required"),
 			wantStatus: http.StatusBadRequest,
