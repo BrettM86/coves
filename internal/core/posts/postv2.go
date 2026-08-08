@@ -2,9 +2,13 @@ package posts
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"strconv"
 	"time"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
+	"github.com/bluesky-social/indigo/atproto/syntax"
 
 	"Coves/internal/atproto/pds"
 )
@@ -63,6 +67,19 @@ type BridgedStats struct {
 // lexicon calls it immutable: retargeting a post means writing a NEW post
 // record, so an update that changes it is discarded entire by consumers.
 type PostV2Record struct {
+	// OriginalAuthor, FederatedFrom and Location are the bridge/federation
+	// surfaces a client may send alongside a post. They are `unknown` in the
+	// lexicon and `interface{}` here for the same reason: no bridge has fixed
+	// their shape yet, and declaring one now would be inventing a contract the
+	// first real bridge would contradict.
+	//
+	// They are carried on the record — rather than dropped as CreatePostRequest
+	// surfaces nothing reads — because UpdatePost round-trips the standing
+	// record through this struct: a field absent here is a field an edit erases
+	// from a post the first time its author fixes a typo.
+	OriginalAuthor interface{}            `json:"originalAuthor,omitempty"`
+	FederatedFrom  interface{}            `json:"federatedFrom,omitempty"`
+	Location       interface{}            `json:"location,omitempty"`
 	Title          *string                `json:"title,omitempty"`
 	Content        *string                `json:"content,omitempty"`
 	Embed          map[string]interface{} `json:"embed,omitempty"`
@@ -114,12 +131,47 @@ type PostV2Record struct {
 // actually submitted, and the clock ID carries further digest bits so two
 // submissions landing on the same microsecond still differ.
 func SubmissionRkey(communityDID, fingerprint string, bucket int64, dedupeWindow time.Duration) string {
-	// RED STUB (task 6): the contract is pinned in submission_rkey_test.go.
-	// It answers the empty string rather than panicking so the reds read as
-	// failed assertions naming the expected key, not as a stack trace.
-	_, _, _, _ = communityDID, fingerprint, bucket, dedupeWindow
-	return ""
+	digest := sha256.Sum256([]byte(
+		communityDID + submissionRkeyDelimiter +
+			fingerprint + submissionRkeyDelimiter +
+			strconv.FormatInt(bucket, 10)))
+
+	// THE TIMESTAMP IS THE BUCKET'S START PLUS A DIGEST-DRAWN OFFSET INSIDE IT,
+	// so the derived time never leaves the window the submission actually
+	// landed in. Taking the offset modulo the window is what bounds it: 64 bits
+	// of digest used raw would name a moment in some arbitrary century, and the
+	// rkey's timestamp is not decoration — repo listings and feeds order by it.
+	windowMicros := int64(dedupeWindow / time.Microsecond)
+	var micros int64
+	if windowMicros > 0 {
+		offset := binary.BigEndian.Uint64(digest[0:8]) % uint64(windowMicros)
+		micros = bucket*windowMicros + int64(offset)
+	}
+	// A non-positive window collapses to the epoch rather than dividing by
+	// zero, the same answer dedupeBucket gives the same misconfiguration.
+	// config.Validate refuses to start a process with one, so this is a wiring
+	// bug being kept off the write path, not a supported mode.
+
+	// The clock ID carries FURTHER digest bits, so two submissions whose
+	// offsets collide on one microsecond still differ. NewTID masks it to the
+	// 10 bits a TID has room for; masking here too keeps this function's
+	// arithmetic the whole story.
+	clockID := uint(binary.BigEndian.Uint16(digest[8:10])) & 0x3FF
+
+	// syntax.NewTID rather than a hand-rolled base32 encoding: the postv2
+	// lexicon declares `key: tid`, and the one encoder guaranteed to agree with
+	// every ParseTID in the network is the one ParseTID ships beside.
+	return syntax.NewTID(micros, clockID).String()
 }
+
+// submissionRkeyDelimiter separates the three parts of the rkey material.
+//
+// A newline, because neither a DID nor a hex fingerprint may contain one. With
+// no delimiter at all — or one drawn from a charset the inputs share — a
+// community DID ending in the delimiter and a fingerprint beginning with it
+// would hash to the same bytes as some other pair, and one author's rkey could
+// be forged from another submission's.
+const submissionRkeyDelimiter = "\n"
 
 // AuthorRepo is one author's PDS repository, narrowed to what the write path
 // does with it.

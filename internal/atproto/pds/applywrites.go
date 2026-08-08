@@ -332,17 +332,23 @@ func (c *client) CreateRecordWithCommit(ctx context.Context, collection, rkey st
 
 // recordCommit validates a single-record write's response and shapes it.
 //
-// A 200 carrying no uri/cid, or no commit rev, is a malformed body from the PDS
-// or something in front of it. It is reported rather than returned as a
-// zero-valued success, because the two things missing here are precisely the two
-// the caller is about to persist: the record it will reference, and the
-// revision it will order by.
+// A 200 carrying no uri/cid is a malformed body from the PDS or something in
+// front of it. It is reported rather than returned as a zero-valued success,
+// because what is missing is precisely what the caller is about to persist: the
+// record it will reference.
+//
+// A 200 carrying uri and cid but NO COMMIT is a different thing, and it gets
+// its own sentinel: the PDS accepted a write of bytes identical to what already
+// stood there and committed nothing. Callers that need the revision to order by
+// must still treat that as a failure — there is no rev to stamp — but a guarded
+// CREATE wants to hear it, because "the record already exists and is identical"
+// is the answer a retry after a lost response is owed. See ErrNoCommit.
 func recordCommit(operation, collection, uri, cid string, commit *commitResponse) (*RecordCommit, error) {
 	if uri == "" || cid == "" {
 		return nil, fmt.Errorf("%s: PDS returned success without uri/cid (collection %s)", operation, collection)
 	}
 	if commit == nil || commit.Rev == "" {
-		return nil, fmt.Errorf("%s: PDS returned success without a commit rev (collection %s)", operation, collection)
+		return nil, fmt.Errorf("%s: %w (collection %s, uri %s)", operation, ErrNoCommit, collection, uri)
 	}
 
 	return &RecordCommit{

@@ -40,6 +40,25 @@ var (
 	// own sentinel.
 	ErrSwapConflict = errors.New("swap conflict")
 
+	// ErrNoCommit indicates a single-record write that the PDS accepted without
+	// producing a commit: the record it was asked to write was byte-identical
+	// to the one already standing at that key, so there was nothing to commit.
+	//
+	// VERIFIED AGAINST A LIVE PDS: putRecord answers a no-op write with HTTP
+	// 200 carrying uri and cid but NO `commit` object, and it does so BEFORE
+	// the swapRecord guard is evaluated — a create-only put (swapRecord null)
+	// of an identical record is a 200 no-op, while the same put of DIFFERENT
+	// bytes is InvalidSwap.
+	//
+	// It is an error rather than a zero-valued success because the commit rev
+	// is exactly what most callers are about to persist as an ordering
+	// watermark, and a fabricated one is worse than a failure. It is its OWN
+	// sentinel rather than a generic malformed-body report because for a
+	// GUARDED CREATE it is not a failure at all: it means the record already
+	// exists and is identical, which is precisely what a retry after a lost
+	// response should be told.
+	ErrNoCommit = errors.New("write produced no commit")
+
 	// ErrServerError indicates the PDS failed to process a well-formed request
 	// (HTTP 5xx). It is separated from the generic wrap because it is the one
 	// remote failure class that is worth retrying unchanged: applyWrites

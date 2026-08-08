@@ -85,6 +85,7 @@ func RegisterPostRoutes(
 
 	// Initialize handlers
 	createHandler := post.NewCreateHandler(service)
+	updateHandler := post.NewUpdateHandler(service)
 	deleteHandler := post.NewDeleteHandler(service)
 	getHandler := post.NewGetHandler(service, voteService, blueskyService)
 
@@ -92,6 +93,11 @@ func RegisterPostRoutes(
 	// social.coves.community.post.create - create a new post in a community
 	// Supports both OAuth (users) and service JWT (aggregators) authentication
 	r.With(authMiddleware.RequireAuth).Post("/xrpc/social.coves.community.post.create", createHandler.HandleCreate)
+
+	// social.coves.community.post.update - edit a post in place
+	// Only the post's author can edit it, and only postv2 records (which live
+	// in the author's own repo) are editable at all.
+	r.With(authMiddleware.RequireAuth).Post("/xrpc/social.coves.community.post.update", updateHandler.HandleUpdate)
 
 	// social.coves.community.post.delete - delete a post from a community
 	// Only post authors can delete their own posts
@@ -131,6 +137,5 @@ func RegisterPostRoutes(
 		Get("/xrpc/social.coves.community.post.getStatus", statusHandler.HandleGetStatus)
 
 	// Future endpoints (Beta):
-	// r.With(authMiddleware.RequireAuth).Post("/xrpc/social.coves.community.post.update", updateHandler.HandleUpdate)
 	// r.Get("/xrpc/social.coves.community.post.list", listHandler.HandleList)
 }

@@ -164,10 +164,49 @@ func NewAcceptanceEngine(
 // out wrapped so the caller can tell it from a genuine acceptance failure, which
 // leaves the post pending too but is worth alerting on.
 //
-// RED STUB (task 6): pinned by service_writeflip_test.go.
+// THE DECIDER IS NOT CONSULTED, and that is a correctness requirement rather
+// than a saving. CreatePost has already run the very same policy — admitPost —
+// over this submission, and the production decider works from the AppView's
+// INDEX of the post, which on this path does not exist yet: the record was
+// committed moments ago and its firehose copy has not arrived. A fast path that
+// re-decided would therefore refuse every post it was handed, for the reason
+// that it could not find it.
 func (e *AcceptanceEngine) AcceptSubmission(ctx context.Context, communityDID, postURI, postCID string) (EngineOutcome, error) {
-	_, _, _, _ = ctx, communityDID, postURI, postCID
-	return EngineDeferred, nil
+	if postCID == "" {
+		// An acceptance's subject is a strongRef, and a strongRef without a CID
+		// pins nothing — which is the one guarantee an acceptance exists to make.
+		return EngineDeferred, fmt.Errorf("accepting %s in %s: no content CID was supplied", postURI, communityDID)
+	}
+
+	row, err := e.admissions.Get(ctx, communityDID, postURI)
+	if err != nil {
+		return EngineDeferred, fmt.Errorf("reading the admission of %s in %s: %w", postURI, communityDID, err)
+	}
+	if row == nil {
+		// The caller seeds the row before asking, so its absence is a caller bug
+		// rather than delivery skew, and inventing one here would let this path
+		// accept a post no author-repo observation was ever recorded for.
+		return EngineDeferred, fmt.Errorf("reading the admission of %s in %s: %w", postURI, communityDID, ErrNotFound)
+	}
+
+	// THE ROW MUST STILL BE OWED A DECISION. Anything else — accepted, rejected,
+	// removed, pending_reacceptance — means something has already happened to
+	// this subject that this pass knows nothing about, and re-deciding a settled
+	// row is how a removal gets laundered back into a feed.
+	if row.Status != AdmissionStatusPending {
+		return EngineDeferred, nil
+	}
+
+	// AND IT MUST STILL HOLD THE VERSION THE CALLER WROTE. Between the write and
+	// this call the firehose may already have delivered an EDIT, and an
+	// acceptance pinning the version the author has replaced is an acceptance of
+	// content nobody is reading. The engine's ordinary pass will settle whatever
+	// stands instead.
+	if row.EvaluatedCID == nil || *row.EvaluatedCID != postCID {
+		return EngineDeferred, nil
+	}
+
+	return e.accept(ctx, communityDID, postURI, postCID)
 }
 
 // ProcessAdmission settles one (community, post) subject.
