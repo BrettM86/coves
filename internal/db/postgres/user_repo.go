@@ -21,14 +21,44 @@ func NewUserRepository(db *sql.DB) users.UserRepository {
 	return &postgresUserRepo{db: db}
 }
 
-// Create inserts a new user into the users table
+// Create inserts a new user into the users table.
+//
+// It also clears any migration-036 erasure marker for the DID, in the same
+// transaction, because registering IS the marker's exit. A DID that comes back
+// — the same person signing up again, or an account restored after a mistaken
+// deletion — must index normally, and a marker left standing would have the
+// ingestion gate silently drop every post the returning account writes. Both
+// service paths funnel through here (IndexUser via CreateUser, and
+// RegisterAccount), which is why the clear lives at the repository statement
+// rather than in either of them.
 func (r *postgresUserRepo) Create(ctx context.Context, user *users.User) (*users.User, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start transaction creating user did=%s: %w", user.DID, err)
+	}
+	defer func() {
+		if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
+			slog.Error("failed to rollback user create transaction",
+				slog.String("did", user.DID),
+				slog.String("error", err.Error()),
+			)
+		}
+	}()
+
+	// Ordered before the insert so that a failing insert — a duplicate DID or a
+	// taken handle — rolls the clear back with it. Clearing a marker for an
+	// account that did not actually re-register would silently re-open
+	// ingestion for content the AppView was asked to forget.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM deleted_accounts WHERE did = $1`, user.DID); err != nil {
+		return nil, fmt.Errorf("failed to clear deletion marker for did=%s: %w", user.DID, err)
+	}
+
 	query := `
 		INSERT INTO users (did, handle, pds_url)
 		VALUES ($1, $2, $3)
 		RETURNING did, handle, pds_url, created_at, updated_at`
 
-	err := r.db.QueryRowContext(ctx, query, user.DID, user.Handle, user.PDSURL).
+	err = tx.QueryRowContext(ctx, query, user.DID, user.Handle, user.PDSURL).
 		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		// Check for unique constraint violations
@@ -41,6 +71,10 @@ func (r *postgresUserRepo) Create(ctx context.Context, user *users.User) (*users
 			}
 		}
 		return nil, fmt.Errorf("failed to create user: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit user create transaction for did=%s: %w", user.DID, err)
 	}
 
 	return user, nil
@@ -250,6 +284,30 @@ func (r *postgresUserRepo) Delete(ctx context.Context, did string) error {
 			)
 		}
 	}()
+
+	// 0. Record the erasure marker (migration 036).
+	//
+	// It goes FIRST and inside this transaction, both deliberately. Inside,
+	// because a marker that survived a rolled-back deletion would name an
+	// account that still exists — and the ingestion gate reads this table, so
+	// that account's future posts would be dropped forever with no row
+	// anywhere explaining it. First, because every statement below erases
+	// content, and the marker is what stops the firehose putting it back: a
+	// redriven post event or a replayed acceptance for this DID arrives long
+	// after the sweep, and without a marker the consumer cannot tell an erased
+	// account from a federated author it has simply never indexed (§5.3).
+	//
+	// deleted_rev is left NULL: an AppView-initiated deletion is a local
+	// administrative act, not a repo commit, so there is no revision to record
+	// and inventing one would put a fabricated watermark where real
+	// comparisons happen. A re-delete refreshes the timestamp rather than
+	// erroring, so the sweep stays idempotent.
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO deleted_accounts (did, deleted_at) VALUES ($1, NOW())
+		ON CONFLICT (did) DO UPDATE SET deleted_at = NOW()
+	`, did); err != nil {
+		return fmt.Errorf("failed to record deletion marker for did=%s: %w", did, err)
+	}
 
 	// Delete in correct order to avoid foreign key violations
 	// Tables without FK constraints on user_did are deleted first

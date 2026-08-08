@@ -97,11 +97,19 @@ type application struct {
 	commentRepo    comments.Repository
 	userBlockRepo  userblocks.Repository
 	aggregatorRepo aggregators.Repository
+	// admissionRepo is shared by the ingestion consumer, which WRITES the
+	// per-(community, post) decisions, and the status query, which reads them.
+	admissionRepo posts.AdmissionRepository
 
 	// Domain services
-	userService                users.UserService
-	communityService           communities.Service
-	postService                posts.Service
+	userService      users.UserService
+	communityService communities.Service
+	postService      posts.Service
+	// postStatusService answers post.getStatus. Separate from postService
+	// because a status query needs the admissions store and nothing else, and
+	// widening the write-path interface to reach it would make every test
+	// double of posts.Service carry a method it has no opinion about.
+	postStatusService          posts.StatusService
 	voteService                votes.Service
 	commentService             comments.Service
 	userBlockService           userblocks.Service
@@ -251,6 +259,7 @@ func (a *application) buildRepositories() {
 	a.commentRepo = postgresRepo.NewCommentRepository(a.db)
 	a.userBlockRepo = postgresRepo.NewUserBlockRepository(a.db)
 	a.aggregatorRepo = postgresRepo.NewAggregatorRepository(a.db)
+	a.admissionRepo = postgresRepo.NewAdmissionRepository(a.db)
 }
 
 func (a *application) buildServices(ctx context.Context) error {
@@ -347,6 +356,12 @@ func (a *application) buildServices(ctx context.Context) error {
 			Now: time.Now,
 		}),
 	)
+
+	// getStatus is how an author on another server learns what happened to
+	// their post. It is the ONLY way a rejection is reachable — a submission
+	// refused before it was ever accepted writes no community record, so there
+	// is nothing on the firehose to read.
+	a.postStatusService = posts.NewStatusService(a.admissionRepo)
 
 	// Subject existence is deliberately not validated: the vote is written to
 	// the user's own PDS regardless, and the Jetstream consumer only updates

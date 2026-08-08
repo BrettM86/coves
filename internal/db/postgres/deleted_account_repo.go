@@ -3,9 +3,8 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"fmt"
 )
-
-// RED STUB (task 5, cycle 1). Signatures only; the query is GREEN's.
 
 // DeletedAccountRepository reads the migration-036 erasure markers.
 //
@@ -31,5 +30,11 @@ func NewDeletedAccountRepository(db *sql.DB) *DeletedAccountRepository {
 // re-index the content a deletion erased, which is the exact outcome the marker
 // table exists to prevent.
 func (r *DeletedAccountRepository) IsAccountDeleted(ctx context.Context, did string) (bool, error) {
-	return false, nil
+	var deleted bool
+	if err := r.db.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM deleted_accounts WHERE did = $1)`, did,
+	).Scan(&deleted); err != nil {
+		return false, fmt.Errorf("checking whether %s was erased: %w", did, err)
+	}
+	return deleted, nil
 }

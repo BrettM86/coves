@@ -73,7 +73,8 @@ func registerXRPCRoutes(r chi.Router, app *application) {
 	// Posts accept dual auth so aggregator bots can publish with a service
 	// JWT or API key rather than a user's OAuth session.
 	routes.RegisterPostRoutes(r, app.postService, app.voteService, app.blueskyService,
-		app.dualAuth, app.authMiddleware)
+		app.dualAuth, app.authMiddleware,
+		routes.WithPostStatusService(app.postStatusService))
 
 	routes.RegisterVoteRoutes(r, app.voteService, app.authMiddleware)
 	routes.RegisterUserBlockRoutes(r, app.userBlockService, app.authMiddleware)

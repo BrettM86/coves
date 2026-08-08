@@ -2,12 +2,9 @@ package posts
 
 import (
 	"context"
+	"strings"
 	"time"
 )
-
-// RED STUB (task 5, cycle 1). Signatures only — every method returns zero
-// values so the tests that describe this surface compile and fail on their
-// assertions rather than on a missing symbol. The implementation is GREEN's.
 
 // The read side of an admission decision: social.coves.community.post.getStatus
 // (docs/PRD_AUTHOR_OWNED_POSTS.md §3.4).
@@ -78,6 +75,45 @@ func NewStatusService(admissions AdmissionRepository) StatusService {
 	return &statusService{admissions: admissions}
 }
 
+// GetStatus reads one community's decision about one post.
+//
+// Both halves of the subject are required rather than defaulted, because a
+// post genuinely carries independent decisions from several communities (§2)
+// and answering about whichever row was found first would report one
+// community's verdict as though it were another's.
 func (s *statusService) GetStatus(ctx context.Context, req GetStatusRequest) (*PostStatus, error) {
-	return nil, nil
+	if strings.TrimSpace(req.PostURI) == "" {
+		return nil, NewValidationError("post", "post URI is required")
+	}
+	if strings.TrimSpace(req.CommunityDID) == "" {
+		return nil, NewValidationError("community", "community DID is required")
+	}
+
+	admission, err := s.admissions.Get(ctx, req.CommunityDID, req.PostURI)
+	if err != nil {
+		// ErrNotFound travels out unchanged: a subject the community has never
+		// been offered is a genuine 404, not a status to invent. Reporting it
+		// as `pending` would promise the author that somebody is going to
+		// decide.
+		return nil, err
+	}
+
+	status := &PostStatus{
+		Status: admission.Status,
+		// The live acceptance record, and only while one stands. The repository
+		// clears these columns on removal and never sets them on a rejection,
+		// so this is the acceptance a caller can actually go and read.
+		AcceptanceURI: admission.AcceptanceURI,
+	}
+
+	// The decision fields are gated on the status rather than copied blind.
+	// They describe a REFUSAL, and the two statuses above are the only ones a
+	// refusal produces; surfacing a code beside `pending` would tell an author
+	// their post was refused while it is still waiting.
+	if admission.Status == AdmissionStatusRejected || admission.Status == AdmissionStatusRemoved {
+		status.DecisionCode = admission.DecisionCode
+		status.DecisionAt = admission.DecisionAt
+	}
+
+	return status, nil
 }

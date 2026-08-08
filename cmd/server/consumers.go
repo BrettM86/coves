@@ -2,6 +2,7 @@ package main
 
 import (
 	"Coves/internal/atproto/jetstream"
+	postgresRepo "Coves/internal/db/postgres"
 	"context"
 	"errors"
 	"fmt"
@@ -160,12 +161,30 @@ func (a *application) registerFeedConsumers() []feedConsumer {
 			a.identityResolver, jetstream.WithCommunityRevGate(a.revGate)),
 	})
 
-	// Posts created in community repositories.
+	// Posts, in both shapes, plus the community records that decide about
+	// them: the deprecated community-repo post, the author-repo postv2, and
+	// the acceptance/removal pair. One consumer, because they write the same
+	// admission row and an acceptance is meaningless without the post it pins.
+	//
+	// The direct fetcher is what makes acceptance-before-post converge without
+	// full relay coverage (PRD §5.4). It dials a PDS named by a DID document
+	// anyone can publish, so its SSRF guard stays on in production and the
+	// stood-down constructor is reachable only under IS_DEV_ENV — where the
+	// hermetic stack's PDS is a private address the guard would otherwise
+	// refuse.
+	postFetcher := jetstream.NewDirectPostFetcher(a.identityResolver)
+	if a.cfg.IsDevEnv {
+		slog.Warn("direct post fetch has SSRF protection DISABLED (IS_DEV_ENV); this must never be set in production")
+		postFetcher = jetstream.NewDevDirectPostFetcher(a.identityResolver)
+	}
 	consumers = append(consumers, feedConsumer{
 		name: jetstream.ConsumerPosts,
 		handler: jetstream.NewPostEventConsumer(a.postRepo, a.communityRepo, a.userService, a.db,
 			jetstream.WithPostBridgeTrust(a.bridgeTrust),
-			jetstream.WithPostIdentityResolver(a.identityResolver)),
+			jetstream.WithPostIdentityResolver(a.identityResolver),
+			jetstream.WithAdmissions(a.admissionRepo),
+			jetstream.WithDeletedAccounts(postgresRepo.NewDeletedAccountRepository(a.db)),
+			jetstream.WithPostRecordFetcher(postFetcher)),
 	})
 
 	// Aggregators: service declarations and authorization records, following
