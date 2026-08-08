@@ -156,10 +156,21 @@ func (r *postgresAdmissionRepo) UpsertPending(ctx context.Context, cmd posts.Ups
 			END,
 			updated_at = NOW()
 		WHERE community_post_admissions.evaluated_cid IS DISTINCT FROM excluded.evaluated_cid
+		  -- A SEED MAY FILL THE COLUMN IN, NEVER CHANGE IT. $4 is false for a
+		  -- firehose observation, which is always the newest thing the AppView
+		  -- has seen and may advance the row freely. It is true for the write
+		  -- path's seed of a record it just committed, which may be carrying
+		  -- content the firehose has ALREADY superseded — the CIDs differ
+		  -- because the row is newer, and writing it would move the AppView's
+		  -- belief about the post backwards in time. Combined with the
+		  -- distinctness guard above, a seed meeting its own CID writes nothing
+		  -- (including updated_at) and a seed meeting a different one writes
+		  -- nothing at all. See posts.UpsertPendingCommand.IsSeed.
+		  AND (NOT $4::boolean OR community_post_admissions.evaluated_cid IS NULL)
 		RETURNING ` + admissionColumns
 
 	return r.compareAndSwap(ctx, "UpsertPending", cmd.CommunityDID, cmd.PostURI, upsertPendingOutcome, rowRequired,
-		query, cmd.CommunityDID, cmd.PostURI, cmd.EvaluatedCID)
+		query, cmd.CommunityDID, cmd.PostURI, cmd.EvaluatedCID, cmd.IsSeed)
 }
 
 // ApplyAcceptance applies a community acceptance record write under the §5.2

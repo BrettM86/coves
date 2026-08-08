@@ -719,8 +719,13 @@ func dedupeBucket(now time.Time, window time.Duration) int64 {
 // CreatePostRequest can populate exists on both — so the fingerprint identifies
 // the same posts either way, and keeping this shape keeps every dedupe row
 // already on the ledger valid across the deploy that flips the write path.
-// Moving it onto PostV2Record is a task-6 cycle-2 obligation: it is a pure type
-// change here, and the T0 tests that pin this signature have to move with it.
+// Moving it onto PostV2Record is a TASK 8 change, not an outstanding cycle-2
+// one, and the milestone is chosen rather than deferred. Retyping repartitions
+// every live post_submissions row: an author mid-retry when the binary rolls
+// would miss their own reservation and be admitted as a second post, which is
+// the exact duplicate the deterministic rkey exists to close. Task 8
+// re-materializes these records anyway, so it is the one moment the change
+// costs nothing.
 func submissionFingerprint(record PostRecord, thumbnailURL *string) string {
 	// The record is taken by value, so clearing fields here cannot affect the
 	// record the caller goes on to write.

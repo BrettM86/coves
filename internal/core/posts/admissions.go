@@ -190,6 +190,29 @@ type UpsertPendingCommand struct {
 	CommunityDID string
 	PostURI      string
 	EvaluatedCID string
+
+	// IsSeed marks the WRITE PATH's own seed of a post it has just written,
+	// rather than an observation decoded off the firehose. It narrows the guard:
+	// a seed may create the row or re-affirm the CID already there, and may
+	// never overwrite a different one.
+	//
+	// THE DEFAULT GUARD IS RIGHT FOR EVENTS AND WRONG FOR A SEED, and the
+	// difference is which direction time runs. A firehose observation is always
+	// the newest thing the AppView has seen about the record, so "the CID
+	// differs, therefore it is newer" holds. A seed carries the CID the write
+	// path committed a moment ago, and the firehose is live in that moment: it
+	// can already have delivered the create AND a subsequent edit. Then the CIDs
+	// differ because the row is NEWER, and writing it would move the AppView's
+	// belief about the post backwards.
+	//
+	// What that costs is not a stale column. AcceptSubmission's guard is "the
+	// row is pending and still holds the CID I am accepting", so a rewound row
+	// makes that guard pass against superseded content: the community publishes
+	// an acceptance pinning a version the author has already replaced, and the
+	// author is told "accepted" for content this AppView never evaluated. That
+	// is the outcome §5.5 exists to prevent, reached with nobody being wrong
+	// about anything.
+	IsSeed bool
 }
 
 // ApplyAcceptanceCommand applies a community acceptance record write.

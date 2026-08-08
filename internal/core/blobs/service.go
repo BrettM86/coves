@@ -9,6 +9,8 @@ import (
 	"log"
 	"net/http"
 	"time"
+
+	covesoauth "Coves/internal/atproto/oauth"
 )
 
 // BlobOwner represents any entity that can own blobs on a PDS.
@@ -66,6 +68,13 @@ type blobService struct {
 	// so an env read would make the guarded branch untestable in parallel and
 	// force the whole package serial.
 	allowPrivateHosts bool
+
+	// fetchClient is the SSRF-guarded client every remote image fetch goes
+	// through. Built ONCE at construction, because the guard's whole property is
+	// that it resolves the host and dials only the address it vetted — a client
+	// assembled per call would be the same code with a per-call chance of being
+	// assembled wrongly.
+	fetchClient *http.Client
 }
 
 // BlobServiceOption configures optional blob service behaviour.
@@ -89,6 +98,19 @@ func NewBlobService(pdsURL string, opts ...BlobServiceOption) Service {
 	for _, opt := range opts {
 		opt(s)
 	}
+
+	// The SSRF-safe transport of internal/atproto/oauth, which blueskypost's
+	// attacker-influenced fetch already uses: it resolves the host, refuses
+	// private, loopback and link-local addresses, and then dials only the
+	// address it vetted — closing the check-then-dial window a naive guard
+	// leaves open.
+	//
+	// Its own 15s ceiling is raised back to the 30s this fetch has always
+	// allowed: thumbnails come from CDNs that are slow rather than hostile, and
+	// tightening an unrelated timeout while fixing an SSRF hole would be a
+	// second change wearing the first one's clothes.
+	s.fetchClient = covesoauth.NewSSRFSafeHTTPClient(s.allowPrivateHosts)
+	s.fetchClient.Timeout = 30 * time.Second
 	return s
 }
 
@@ -116,12 +138,7 @@ func (s *blobService) FetchImageForURL(ctx context.Context, imageURL string) ([]
 		return nil, "", fmt.Errorf("image URL cannot be empty")
 	}
 
-	// Create HTTP client with timeout (30s to handle slow CDNs and large images)
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	// Fetch image from URL
+	// Fetch image from URL through the SSRF-guarded client (see NewBlobService).
 	req, err := http.NewRequestWithContext(ctx, "GET", imageURL, nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create request for image URL: %w", err)
@@ -130,7 +147,7 @@ func (s *blobService) FetchImageForURL(ctx context.Context, imageURL string) ([]
 	// Set User-Agent to avoid being blocked by CDNs that filter bot traffic
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; CovesBot/1.0; +https://coves.social)")
 
-	resp, err := client.Do(req)
+	resp, err := s.fetchClient.Do(req)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to fetch image from URL: %w", err)
 	}
@@ -159,16 +176,22 @@ func (s *blobService) FetchImageForURL(ctx context.Context, imageURL string) ([]
 		return nil, "", fmt.Errorf("unsupported MIME type: %s (allowed: image/jpeg, image/png, image/webp)", mimeType)
 	}
 
-	// Read image data
-	data, err := io.ReadAll(resp.Body)
+	// READ THE CAP, do not measure it afterwards.
+	//
+	// `len(data) > maxSize` after an io.ReadAll is a correct test of a slice
+	// that is already in memory, which is the same as having no cap at all for
+	// the failure a cap exists to prevent: an origin advertising image/png and
+	// streaming without a Content-Length gets the whole body buffered, and the
+	// limit is only where the result is thrown away. A LimitReader of max+1 lets
+	// at most one byte past the cap enter memory, and that byte is what
+	// separates "exactly at the limit" from "over it".
+	const maxSize = 6291456 // 6MB
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxSize+1))
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to read image data: %w", err)
 	}
-
-	// Validate size (6MB = 6291456 bytes)
-	const maxSize = 6291456
 	if len(data) > maxSize {
-		return nil, "", fmt.Errorf("image size %d bytes exceeds maximum of %d bytes (6MB)", len(data), maxSize)
+		return nil, "", fmt.Errorf("image size exceeds maximum of %d bytes (6MB)", maxSize)
 	}
 
 	return data, mimeType, nil

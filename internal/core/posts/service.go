@@ -93,19 +93,25 @@ func NewPostService(
 //  4. Admission: one decision over community existence, visibility, ban,
 //     aggregator authorization, dedupe and the per-author quota (admitPost)
 //  5. Open the AUTHOR's repository under the author's own credentials
-//  6. Ensure the community has fresh PDS credentials — a step with no consumer
-//     left on this path; see the note at the call site
-//  7. Build the postv2 record
-//  8. Validate and enhance external embeds (thumb validation, unfurl, blobs)
-//  9. Create-only write at the deterministic rkey
-//  10. If aggregator: record post for rate limiting
-//  11. Seed the admission row and, for a community we host, settle it
-//  12. Return URI/CID/status (AppView indexes asynchronously via Jetstream)
+//  6. Build the postv2 record
+//  7. Enhance external embeds (unfurl, and the thumbnail blob into the
+//     author's own storage)
+//  8. Create-only write at the deterministic rkey
+//  9. If aggregator: record post for rate limiting
+//  10. Seed the admission row and, for a community we host, settle it
+//  11. Return URI/CID/status (AppView indexes asynchronously via Jetstream)
+
+// THE COMMUNITY'S OWN CREDENTIALS ARE NOT ON THIS PATH AT ALL, and that is the
+// point of the flip rather than an oversight. Both writes that used them — the
+// post record and its thumbnail blob — are the AUTHOR's now. A refresh step
+// retained here would fail for every community indexed from someone else's
+// firehose, since those carry no stored tokens, and so would refuse exactly the
+// remote-community submissions §4.2 step 5 exists to accept.
 //
 // Admission runs BEFORE the credentials, the blob uploads and the PDS write,
 // so a refused submission costs a few lookups rather than an upload — and,
 // more to the point, leaves no record in a community that refused it. Every
-// failure AFTER admission (steps 5-9) must release the ledger reservation the
+// failure AFTER admission (steps 5-8) must release the ledger reservation the
 // admission took, or the failure costs the author a quota slot and refuses
 // their retry as a duplicate.
 //
@@ -205,8 +211,7 @@ func (s *postService) CreatePost(ctx context.Context, session *oauth.ClientSessi
 		return nil, refusalError(decision)
 	}
 
-	community := decision.Community
-	communityDID := community.DID
+	communityDID := decision.Community.DID
 
 	// From here on the submission holds a ledger row. Every path that fails
 	// before the record exists has to give it back, or a transient failure
@@ -218,49 +223,24 @@ func (s *postService) CreatePost(ctx context.Context, session *oauth.ClientSessi
 		}
 	}
 
-	// 5. Open the AUTHOR's repository, which is where the record goes now.
-	//
-	// AHEAD OF THE COMMUNITY'S CREDENTIALS, because this is the credential the
-	// post cannot be written without: a community whose token will not refresh
-	// costs a link preview, while an author we cannot authenticate as has no
-	// post at all. Ordering it second would report a community-side outage for
-	// a signed-out user.
+	// 5. Open the AUTHOR's repository, which is where the record goes now — and
+	// the only credential this path needs at all.
 	authorRepo, err := s.openAuthorRepo(ctx, req.AuthorDID, session)
 	if err != nil {
 		releaseOnFailure()
 		return nil, err
 	}
 
-	// 6. Ensure community has fresh PDS credentials (token refresh if needed).
-	//
-	// THIS STEP NOW HAS NO CONSUMER ON THIS PATH, and it should go. It existed
-	// for the two writes that used the community's token — the post record and
-	// its thumbnail blob — and both have moved to the author's repository. The
-	// refreshed community is not read again below; only communityDID is, and
-	// that was captured before the call.
-	//
-	// It survives because service_admission_test.go's token-refresh case still
-	// requires a failed refresh to fail the submission, and that test is not
-	// mine to retire. Removing it is a four-line deletion the moment it is.
-	// Leaving it is not free: a community whose stored refresh token has rotted
-	// currently blocks its authors from posting for no reason any longer
-	// present in the code.
-	community, err = s.communityService.EnsureFreshToken(ctx, community)
-	if err != nil {
-		releaseOnFailure()
-		return nil, fmt.Errorf("failed to refresh community credentials: %w", err)
-	}
-
-	// 7. Build post record for PDS
+	// 6. Build post record for PDS
 	postRecord := postRecordFor(req, communityDID, time.Now().UTC().Format(time.RFC3339))
 
-	// 8. Validate and enhance external embeds
+	// 7. Enhance external embeds
 	if err := s.enhanceExternalEmbed(ctx, &postRecord, req, authorRepo, actor == ActorTrustedAggregator); err != nil {
 		releaseOnFailure()
 		return nil, err
 	}
 
-	// 9. Write to the author's PDS repository.
+	// 8. Write to the author's PDS repository.
 	//
 	// A failure here is the case the reservation was designed around: the row
 	// went in before the write precisely so two concurrent identical submissions
@@ -269,26 +249,33 @@ func (s *postService) CreatePost(ctx context.Context, session *oauth.ClientSessi
 	// PDS hiccup would consume a quota slot AND refuse the retry as a duplicate,
 	// turning a transient outage into a per-author lockout that outlives it.
 	rkey := SubmissionRkey(communityDID, fingerprint, decision.DedupeBucket, s.admission.Limits.DedupeWindow)
-	uri, cid, err := createAuthorRecord(ctx, authorRepo, rkey, postV2From(postRecord))
+	uri, cid, converged, err := createAuthorRecord(ctx, authorRepo, rkey, postV2From(postRecord))
 	if err != nil {
 		releaseOnFailure()
 		return nil, fmt.Errorf("failed to write post to PDS: %w", err)
 	}
 
-	// 10. Record aggregator post for rate limiting (non-Kagi aggregators only)
+	// 9. Record aggregator post for rate limiting (non-Kagi aggregators only)
 	// Kagi is exempted from rate limiting via env var (temporary)
-	if isOtherAggregator && s.aggregatorService != nil {
+	//
+	// A CONVERGED RETRY IS NOT A NEW POST AND MUST NOT BE BILLED AS ONE. The
+	// write above found the aggregator's own record already standing and handed
+	// back its URI; metering that again would charge the quota a second time for
+	// one post, so an aggregator whose responses are being lost would be rate
+	// limited for posts it never made — and the retry that finally got through
+	// would be the one refused.
+	if isOtherAggregator && !converged && s.aggregatorService != nil {
 		if recordErr := s.aggregatorService.RecordAggregatorPost(ctx, req.AuthorDID, communityDID, uri, cid); recordErr != nil {
 			// Log but don't fail - post was already created successfully
 			log.Printf("[POST-CREATE] Warning: failed to record aggregator post for rate limiting: %v", recordErr)
 		}
 	}
 
-	// 11. Seed the admission row and, for a community this AppView hosts,
+	// 10. Seed the admission row and, for a community this AppView hosts,
 	// settle it before answering.
 	status := s.settleSubmission(ctx, communityDID, uri, cid)
 
-	// 12. Return response (AppView will index via Jetstream consumer)
+	// 11. Return response (AppView will index via Jetstream consumer)
 	log.Printf("[POST-CREATE] Author: %s (trustedKagi=%v, otherAggregator=%v), Community: %s, URI: %s, Status: %s",
 		req.AuthorDID, isTrustedAggregator, isOtherAggregator, communityDID, uri, status)
 
@@ -344,10 +331,13 @@ func (s *postService) openAuthorRepo(ctx context.Context, authorDID string, sess
 // dangles every strongRef built from the first response, and the second commit
 // reaches every consumer as an EDIT, which drops an already-accepted post out
 // of the community it was accepted into.
-func createAuthorRecord(ctx context.Context, repo AuthorRepo, rkey string, record PostV2Record) (uri, cid string, err error) {
+//
+// converged reports that no new record was written — the caller is looking at a
+// post that already existed.
+func createAuthorRecord(ctx context.Context, repo AuthorRepo, rkey string, record PostV2Record) (uri, cid string, converged bool, err error) {
 	commit, err := repo.PutRecordWithCommit(ctx, PostV2Collection, rkey, record, "")
 	if err == nil {
-		return commit.URI, commit.CID, nil
+		return commit.URI, commit.CID, false, nil
 	}
 
 	// TWO ANSWERS MEAN "IT IS ALREADY THERE", because the PDS orders its checks
@@ -357,7 +347,7 @@ func createAuthorRecord(ctx context.Context, repo AuthorRepo, rkey string, recor
 	// meeting its own first attempt, and both are answered the same way — by
 	// reporting the record that stands.
 	if !errors.Is(err, pds.ErrSwapConflict) && !errors.Is(err, pds.ErrNoCommit) {
-		return "", "", err
+		return "", "", false, err
 	}
 
 	standing, readErr := repo.GetRecord(ctx, PostV2Collection, rkey)
@@ -366,9 +356,9 @@ func createAuthorRecord(ctx context.Context, repo AuthorRepo, rkey string, recor
 		// cannot name it. Reporting the read failure rather than the conflict
 		// keeps the cause the operator needs; the caller's retry converges on
 		// the same key and will find it.
-		return "", "", fmt.Errorf("the post already exists at %s but could not be read back: %w", rkey, readErr)
+		return "", "", false, fmt.Errorf("the post already exists at %s but could not be read back: %w", rkey, readErr)
 	}
-	return standing.URI, standing.CID, nil
+	return standing.URI, standing.CID, true, nil
 }
 
 // settleSubmission seeds the admission row for the post just written and, for a
@@ -396,6 +386,11 @@ func (s *postService) settleSubmission(ctx context.Context, communityDID, postUR
 		CommunityDID: communityDID,
 		PostURI:      postURI,
 		EvaluatedCID: postCID,
+		// A SEED, not an observation: it may create the row or re-affirm its own
+		// CID, and may never overwrite content the firehose has already recorded.
+		// The firehose is live in the window between the commit above and this
+		// call, so the row may already hold a LATER version — see IsSeed.
+		IsSeed: true,
 	})
 	if err != nil {
 		log.Printf("[POST-CREATE] Warning: failed to seed the admission of %s in %s: %v",
@@ -513,12 +508,41 @@ func (s *postService) UpdatePost(ctx context.Context, session *oauth.ClientSessi
 
 	applyPostV2Edit(&record, req)
 
+	// VALIDATED AFTER THE MERGE AND BEFORE THE PUT, and both halves of that are
+	// load-bearing. After the merge, because a facet's byte range is meaningful
+	// only against the content the record will actually hold — an edit sending
+	// facets and no content is checked against the standing content, and one
+	// sending shorter content and no facets re-checks the standing facets
+	// against it. Before the put, because a check that ran afterwards would
+	// return exactly this error over a record already signed and on the wire.
+	if err := validatePostContent(postContent{
+		Title:   record.Title,
+		Content: record.Content,
+		Facets:  record.Facets,
+		Labels:  record.Labels,
+		Embed:   record.Embed,
+	}); err != nil {
+		return nil, err
+	}
+
 	// The swap guard is the CID that was just read. An edit landing between the
 	// two is ErrConcurrentModification: the edit was composed against content
 	// that no longer stands, and re-applying it would erase a change its author
 	// never saw. Retrying is the client's decision, not the server's.
 	commit, err := repo.PutRecordWithCommit(ctx, PostV2Collection, rkey, record, standing.CID)
 	if err != nil {
+		// A PUT OF IDENTICAL BYTES IS A SUCCESS, not a failure. The PDS answers
+		// a no-op write with a 200 carrying no commit (pds.ErrNoCommit, verified
+		// against a live PDS on the create path), and three ordinary things
+		// produce one: a client retrying after a lost response, a UI that saves
+		// on blur whether or not anything changed, and an author who opens the
+		// editor and saves without typing. In every case the record already
+		// holds precisely what the client asked for — which is what it means for
+		// the request to have succeeded — so the standing CID is the answer.
+		if errors.Is(err, pds.ErrNoCommit) {
+			log.Printf("[POST-UPDATE] No-op edit (the record already holds this content): %s", req.URI)
+			return &UpdatePostResponse{URI: req.URI, CID: standing.CID}, nil
+		}
 		if errors.Is(err, pds.ErrSwapConflict) {
 			return nil, fmt.Errorf("editing %s: %w", req.URI, ErrConcurrentModification)
 		}
@@ -595,8 +619,10 @@ func applyPostV2Edit(record *PostV2Record, req UpdatePostRequest) {
 // (postV2From). Two things are typed against it that a postv2 record cannot
 // carry today: the fingerprint, whose stability across the flip keeps the
 // ledger's live dedupe rows valid, and the embed-enhancement pipeline, which is
-// unchanged content work. Retyping both is a task-6 cycle-2 obligation, not a
-// behavioural one — the bytes that reach the PDS are postV2From's.
+// unchanged content work. Retyping both belongs to TASK 8, which re-materializes
+// these records and is therefore the one moment a fingerprint repartition is
+// free — see submissionFingerprint. Nothing behavioural rides on it: the bytes
+// that reach the PDS are postV2From's.
 func postRecordFor(req CreatePostRequest, community, createdAt string) PostRecord {
 	return PostRecord{
 		Type:           postCollection,
@@ -780,35 +806,80 @@ func (s *postService) uploadThumbnail(ctx context.Context, authorRepo AuthorRepo
 
 // validateCreateRequest validates basic input requirements
 func (s *postService) validateCreateRequest(req *CreatePostRequest) error {
-	// Global content limits (from lexicon)
-	const (
-		maxContentLength  = 100000 // 100k characters - matches social.coves.community.post lexicon
-		maxTitleLength    = 3000   // 3k bytes
-		maxTitleGraphemes = 300    // 300 graphemes (simplified check)
-	)
-
-	// Validate community required
+	// The two fields only a SUBMISSION has. They are deliberately not in
+	// validatePostContent: an edit carries neither — the community is immutable
+	// by lexicon and the author is the repository — so a validator that demanded
+	// them would refuse every legitimate edit.
 	if req.Community == "" {
 		return NewValidationError("community", "community is required")
 	}
-
-	// Validate author DID set by handler
 	if req.AuthorDID == "" {
 		return NewValidationError("authorDid", "authorDid must be set from authenticated user")
 	}
 
-	// Validate content length
-	if req.Content != nil && len(*req.Content) > maxContentLength {
+	return validatePostContent(postContent{
+		Title:   req.Title,
+		Content: req.Content,
+		Facets:  req.Facets,
+		Labels:  req.Labels,
+		Embed:   req.Embed,
+	})
+}
+
+// postContent is the mutable surface of a post — everything an edit may change
+// and a create may set, and nothing that identifies WHICH post it is.
+type postContent struct {
+	Title   *string
+	Content *string
+	Facets  []interface{}
+	Labels  *SelfLabels
+	Embed   map[string]interface{}
+}
+
+// validatePostContent is the definition of a well-formed Coves post, and it is
+// SHARED by the create and the edit path rather than duplicated across them.
+//
+// # THE APP LAYER IS THE ONLY GATE THERE IS
+//
+// Every write goes out as putRecord with `validate: false`, because the Coves
+// lexicons are ones no PDS has been taught. That is deliberate and correct, and
+// it has a consequence worth stating plainly: the PDS will sign and publish
+// literally any JSON handed to it. There is no second opinion downstream, so
+// whatever this function refuses IS the definition of a well-formed post — and a
+// path that skipped it would be a hole straight through all of it, signed by the
+// author's own key and published to the firehose as a valid record.
+//
+// # WHY SHARED AND NOT COPIED
+//
+// Two copies drift, and the copy that drifts is the one nobody is looking at.
+// An edit path with its own slightly-different rules is how a client comes to be
+// able to post cleanly and then edit into a record no validation would ever have
+// allowed.
+//
+// # THE ARGUMENT IS THE MERGED RECORD
+//
+// Callers pass what the record WILL hold, not what the request happened to
+// carry. It matters for facets, whose byte ranges are meaningful only against
+// the content they annotate: an edit sending new facets and no content must be
+// checked against the STANDING content, and one sending shorter content and no
+// facets must re-check the STANDING facets against it. Either omission signs a
+// record whose annotations slice outside its own text, which is a renderer crash
+// on somebody else's client.
+func validatePostContent(post postContent) error {
+	// Global content limits (from lexicon)
+	const (
+		maxContentLength = 100000 // 100k characters - matches the postv2 lexicon
+		maxTitleLength   = 3000   // 3k bytes
+	)
+
+	if post.Content != nil && len(*post.Content) > maxContentLength {
 		return NewValidationError("content",
 			fmt.Sprintf("content too long (max %d characters)", maxContentLength))
 	}
 
-	// Validate title length
-	if req.Title != nil {
-		if len(*req.Title) > maxTitleLength {
-			return NewValidationError("title",
-				fmt.Sprintf("title too long (max %d bytes)", maxTitleLength))
-		}
+	if post.Title != nil && len(*post.Title) > maxTitleLength {
+		return NewValidationError("title",
+			fmt.Sprintf("title too long (max %d bytes)", maxTitleLength))
 		// Simplified grapheme check (actual implementation would need unicode library)
 		// For Alpha, byte length check is sufficient
 	}
@@ -817,21 +888,21 @@ func (s *postService) validateCreateRequest(req *CreatePostRequest) error {
 	// Catches out-of-range byte slices at the API boundary instead of
 	// persisting a record whose annotations slice outside the content.
 	contentByteLen := 0
-	if req.Content != nil {
-		contentByteLen = len(*req.Content)
+	if post.Content != nil {
+		contentByteLen = len(*post.Content)
 	}
-	if err := richtext.ValidateFacets(req.Facets, contentByteLen); err != nil {
+	if err := richtext.ValidateFacets(post.Facets, contentByteLen); err != nil {
 		return NewValidationError("facets", err.Error())
 	}
 
 	// Validate content labels are from known values
-	if req.Labels != nil {
+	if post.Labels != nil {
 		validLabels := map[string]bool{
 			"nsfw":     true,
 			"spoiler":  true,
 			"violence": true,
 		}
-		for _, label := range req.Labels.Values {
+		for _, label := range post.Labels.Values {
 			if !validLabels[label.Val] {
 				return NewValidationError("labels",
 					fmt.Sprintf("unknown content label: %s (valid: nsfw, spoiler, violence)", label.Val))
@@ -842,18 +913,14 @@ func (s *postService) validateCreateRequest(req *CreatePostRequest) error {
 	// Validate the embed (if provided) matches a known lexicon union member.
 	// Catches malformed embeds at the API boundary instead of silently
 	// persisting an unrenderable record to the PDS.
-	if err := validateEmbed(req.Embed); err != nil {
+	if err := validateEmbed(post.Embed); err != nil {
 		return err
 	}
 
 	// And the external embed's thumbnail, which validateEmbed deliberately does
 	// not look at: it checks the union's SHAPE, and the thumb is a blob whose
 	// parts a client gets wrong in four distinct ways worth naming separately.
-	if err := validateExternalThumb(req.Embed); err != nil {
-		return err
-	}
-
-	return nil
+	return validateExternalThumb(post.Embed)
 }
 
 // validateExternalThumb enforces that a social.coves.embed.external carries a

@@ -298,7 +298,19 @@ func (a *application) buildServices(ctx context.Context) error {
 	a.oauthHandler = oauth.NewOAuthHandler(a.oauthClient, a.oauthStore,
 		oauth.WithUserIndexer(a.userService))
 
-	blobService := blobs.NewBlobService(a.cfg.PDS.URL)
+	// The remote-fetch SSRF guard is ON in production and off only in dev, where
+	// the PDS, the PLC and every fixture origin live on loopback — exactly what
+	// the guard refuses. Derived from config ONCE, here, rather than read inside
+	// the fetch: an environment read at the call site would make the guarded
+	// branch untestable alongside t.Parallel and hide the most consequential
+	// input to a security decision from the place that makes it.
+	blobOptions := []blobs.BlobServiceOption{}
+	if a.cfg.IsDevEnv {
+		slog.Warn("dev mode: the blob fetch SSRF guard is disabled; " +
+			"remote image URLs may resolve to private addresses")
+		blobOptions = append(blobOptions, blobs.WithPrivateHostsAllowed())
+	}
+	blobService := blobs.NewBlobService(a.cfg.PDS.URL, blobOptions...)
 
 	// V2.0: the PDS generates and manages community DIDs and keys entirely;
 	// Coves performs no cryptography of its own here.
