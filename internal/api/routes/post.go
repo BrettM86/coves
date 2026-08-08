@@ -14,11 +14,15 @@ import (
 // getStatusRateLimit is social.coves.community.post.getStatus' per-client
 // budget, per minute.
 //
-// Sixty is chosen against the endpoint's own UX rather than copied from a
-// neighbour: §7 has a client poll for the accepted transition, and a poll a
-// second for a minute is comfortably inside this while a script enumerating a
-// community's rejected posts is not.
-const getStatusRateLimit = 60
+// Chosen against the endpoint's own UX rather than copied from a neighbour:
+// §7 has a client poll for the accepted transition, so the budget must sit
+// ABOVE any polling rate the product itself prescribes — an earlier 60 was
+// below the T2 tier's own 600ms cadence (100/minute) and cut off the
+// endpoint's documented use case mid-wait (caught at the task-5 merge gate:
+// a legitimate wait died at poll 61). 120 keeps a poll-a-second client
+// comfortable for two full minutes while a script enumerating a community's
+// rejected posts still hits a rate an operator notices.
+const getStatusRateLimit = 120
 
 // PostRouteOption supplies a collaborator that only some of the post routes
 // need.

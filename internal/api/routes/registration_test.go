@@ -200,7 +200,7 @@ var declaredRoutes = []declaredRoute{
 	// stranger can ask about any post URI they can name. The budget is what
 	// bounds enumeration of a community's rejected posts to something an
 	// operator would notice.
-	{http.MethodGet, "/xrpc/social.coves.community.post.getStatus", authNone, 60, false},
+	{http.MethodGet, "/xrpc/social.coves.community.post.getStatus", authNone, 120, false},
 
 	// RegisterVoteRoutes — social.coves.feed.vote.*
 	{http.MethodPost, "/xrpc/social.coves.feed.vote.create", authRequired, 0, false},
