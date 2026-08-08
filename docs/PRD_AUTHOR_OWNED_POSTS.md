@@ -39,6 +39,17 @@ explicitly deferred to Beta.
 Rev 2.6 (2026-08-08): task-3 second-opinion — fingerprint normalized to
 resolved-DID scope, release decoupled from request context, admission wiring
 fail-loud, ActorClass fail-closed.
+Rev 2.8 (2026-08-08): task-7 read-path inventory — the visibility predicate
+is a shared query-builder JOIN (not a SQL view: feeds carry a computed
+hot_rank column + a cursor subquery reading posts directly, and author-self-
+view is viewer-DID-parameterized). Per-row join key (a.community_did =
+p.community_did AND a.post_uri = p.uri) so cross-community feeds resolve each
+post against ITS community's decision (fork case). INNER→LEFT users join
+(unknown-author visibility) pairs mandatorily with scanPostView null-handling
+(handle COALESCE to author_did, PDSURL, blobOwnerOf). getComments is a
+separate path (raw GetByURI, no view, actively serves soft-deleted — own
+cycle). Community post_count has NO incrementer — consumer/admission-driven,
+not a read predicate. Post text search does not exist (negative guard only).
 Rev 2.7 (2026-08-08): task-5 plan review — post.getStatus pulled forward into
 task 5 as the T2 observation surface (unauthenticated; mild disclosure of
 rejected-post status accepted, owner-flagged); hosted-community detection =

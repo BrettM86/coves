@@ -236,9 +236,18 @@ func (r *postgresUserRepo) GetProfileStats(ctx context.Context, did string) (*us
 	// Reputation represents historical contributions, while membership_count
 	// reflects current active community access. A banned user keeps their
 	// earned reputation but loses the membership count.
+	// post_count counts VISIBLE posts only: a profile advertising posts no reader
+	// can reach is a side channel onto non-accepted content (PRD §6.2). A post
+	// with a decision counts only once its own community accepted it; a row with
+	// no admission (legacy, bridged, or an as-yet-unjudged postv2) counts as
+	// before. This is the public count — the anonymous accepted-or-undecided rule,
+	// with no author self-view branch — matching visiblePostsJoin.
 	query := `
 		SELECT
-			(SELECT COUNT(*) FROM posts WHERE author_did = $1 AND deleted_at IS NULL) as post_count,
+			(SELECT COUNT(*) FROM posts p
+				LEFT JOIN community_post_admissions a ON a.community_did = p.community_did AND a.post_uri = p.uri
+				WHERE p.author_did = $1 AND p.deleted_at IS NULL
+					AND (a.status = 'accepted' OR a.status IS NULL)) as post_count,
 			(SELECT COUNT(*) FROM comments WHERE commenter_did = $1 AND deleted_at IS NULL) as comment_count,
 			(SELECT COUNT(*) FROM community_subscriptions WHERE user_did = $1) as community_count,
 			(SELECT COUNT(*) FROM community_memberships WHERE user_did = $1 AND is_banned = false) as membership_count,

@@ -169,14 +169,29 @@ type BlockedPost struct {
 	Author    *BlockedAuthor `json:"author,omitempty"`
 }
 
+// RemovedPost is a union member of the social.coves.community.post.get output,
+// emitted when a found post has been REMOVED by its own community. It mirrors
+// notFoundPost (uri + a const discriminator) and additionally carries the removal
+// `code`, so a client can render "removed by moderators: rule-violation" rather
+// than the blank permalink a notFoundPost would produce. A removed post is a
+// tombstone the author is owed the reason for, not a post that never existed.
+// Matches social.coves.community.post.defs#removedPost.
+type RemovedPost struct {
+	URI     string `json:"uri"`
+	Removed bool   `json:"removed"` // Always true (const per lexicon); discriminates the union on the wire
+	Code    string `json:"code,omitempty"`
+}
+
 // PostResult is one ordered element of a GetPosts response. Exactly one of Post,
-// Blocked, or NotFound is set: Post when the post was found and visible to the viewer,
-// Blocked when the viewer has blocked the author, NotFound when the URI could not be
-// resolved. Construct results via the result helpers so the const discriminators
-// (notFound/blocked == true) cannot be left unset.
+// Blocked, Removed, or NotFound is set: Post when the post was found and visible
+// to the viewer, Blocked when the viewer has blocked the author, Removed when the
+// post's own community removed it, NotFound when the URI could not be resolved.
+// Construct results via the result helpers so the const discriminators
+// (notFound/blocked/removed == true) cannot be left unset.
 type PostResult struct {
 	Post     *PostView
 	Blocked  *BlockedPost
+	Removed  *RemovedPost
 	NotFound *NotFoundPost
 }
 
@@ -188,6 +203,12 @@ func foundResult(view *PostView) *PostResult {
 // notFoundResult builds a notFoundPost union member with its const discriminator set.
 func notFoundResult(uri string) *PostResult {
 	return &PostResult{NotFound: &NotFoundPost{URI: uri, NotFound: true}}
+}
+
+// removedResult builds a removedPost union member with its const discriminator set,
+// carrying the community's removal code so the client can explain the takedown.
+func removedResult(uri, code string) *PostResult {
+	return &PostResult{Removed: &RemovedPost{URI: uri, Removed: true, Code: code}}
 }
 
 // blockedByAuthorResult builds a blockedPost union member (blockedBy "author") with its
@@ -225,6 +246,10 @@ func (r *PostResult) Member() (interface{}, bool) {
 	}
 	if r.Blocked != nil {
 		member = r.Blocked
+		count++
+	}
+	if r.Removed != nil {
+		member = r.Removed
 		count++
 	}
 	if r.NotFound != nil {
@@ -271,10 +296,19 @@ type PostView struct {
 	RKey          string        `json:"rkey"`
 	CID           string        `json:"cid"`
 	URI           string        `json:"uri"`
-	UpvoteCount   int           `json:"-"`
-	DownvoteCount int           `json:"-"`
-	Score         int           `json:"-"`
-	CommentCount  int           `json:"-"`
+
+	// Status and AcceptanceURI are the per-community admission context (PRD §6.2),
+	// populated from the visibility join. Both are additive-optional: a public
+	// postView carries status "accepted" (and the acceptance URI), while an
+	// author's own non-accepted post carries "pending"/"removed"/etc.; a
+	// legacy/bridged row that holds no admission omits them entirely.
+	Status        string `json:"status,omitempty"`
+	AcceptanceURI string `json:"acceptanceUri,omitempty"`
+
+	UpvoteCount   int `json:"-"`
+	DownvoteCount int `json:"-"`
+	Score         int `json:"-"`
+	CommentCount  int `json:"-"`
 }
 
 // AuthorView represents author information in post views
