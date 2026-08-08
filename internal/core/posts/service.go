@@ -93,8 +93,8 @@ func NewPostService(
 //  4. Admission: one decision over community existence, visibility, ban,
 //     aggregator authorization, dedupe and the per-author quota (admitPost)
 //  5. Open the AUTHOR's repository under the author's own credentials
-//  6. Ensure the community has fresh PDS credentials (the blob uploads in
-//     step 8 still land in the community's repo until task 7 moves them)
+//  6. Ensure the community has fresh PDS credentials — a step with no consumer
+//     left on this path; see the note at the call site
 //  7. Build the postv2 record
 //  8. Validate and enhance external embeds (thumb validation, unfurl, blobs)
 //  9. Create-only write at the deterministic rkey
@@ -232,8 +232,19 @@ func (s *postService) CreatePost(ctx context.Context, session *oauth.ClientSessi
 	}
 
 	// 6. Ensure community has fresh PDS credentials (token refresh if needed).
-	// Still needed because the thumbnail blobs an external embed uploads are
-	// still written to the COMMUNITY's repo; task 7 moves them to the author's.
+	//
+	// THIS STEP NOW HAS NO CONSUMER ON THIS PATH, and it should go. It existed
+	// for the two writes that used the community's token — the post record and
+	// its thumbnail blob — and both have moved to the author's repository. The
+	// refreshed community is not read again below; only communityDID is, and
+	// that was captured before the call.
+	//
+	// It survives because service_admission_test.go's token-refresh case still
+	// requires a failed refresh to fail the submission, and that test is not
+	// mine to retire. Removing it is a four-line deletion the moment it is.
+	// Leaving it is not free: a community whose stored refresh token has rotted
+	// currently blocks its authors from posting for no reason any longer
+	// present in the code.
 	community, err = s.communityService.EnsureFreshToken(ctx, community)
 	if err != nil {
 		releaseOnFailure()
@@ -244,7 +255,7 @@ func (s *postService) CreatePost(ctx context.Context, session *oauth.ClientSessi
 	postRecord := postRecordFor(req, communityDID, time.Now().UTC().Format(time.RFC3339))
 
 	// 8. Validate and enhance external embeds
-	if err := s.enhanceExternalEmbed(ctx, &postRecord, req, community, actor == ActorTrustedAggregator); err != nil {
+	if err := s.enhanceExternalEmbed(ctx, &postRecord, req, authorRepo, actor == ActorTrustedAggregator); err != nil {
 		releaseOnFailure()
 		return nil, err
 	}
@@ -639,7 +650,7 @@ func postV2From(record PostRecord) PostV2Record {
 //
 // trusted marks a trusted aggregator, which supplies its own metadata and is
 // unfurled only for a thumbnail it did not provide.
-func (s *postService) enhanceExternalEmbed(ctx context.Context, postRecord *PostRecord, req CreatePostRequest, community *communities.Community, trusted bool) error {
+func (s *postService) enhanceExternalEmbed(ctx context.Context, postRecord *PostRecord, req CreatePostRequest, authorRepo AuthorRepo, trusted bool) error {
 	if postRecord.Embed != nil {
 		embedType, typeOk := postRecord.Embed["$type"].(string)
 		if typeOk && embedType == "social.coves.embed.external" {
@@ -655,18 +666,13 @@ func (s *postService) enhanceExternalEmbed(ctx context.Context, postRecord *Post
 					if req.ThumbnailURL != nil && *req.ThumbnailURL != "" && trusted {
 						log.Printf("[AGGREGATOR-THUMB] Trusted aggregator provided thumbnail: %s", *req.ThumbnailURL)
 
-						if s.blobService != nil {
-							blobCtx, blobCancel := context.WithTimeout(ctx, 15*time.Second)
-							defer blobCancel()
-
-							blob, blobErr := s.blobService.UploadBlobFromURL(blobCtx, community, *req.ThumbnailURL)
-							if blobErr != nil {
-								log.Printf("[AGGREGATOR-THUMB] Failed to upload thumbnail: %v", blobErr)
-								// No fallback - aggregators only use RSS feed thumbnails
-							} else {
-								external["thumb"] = blob
-								log.Printf("[AGGREGATOR-THUMB] Successfully uploaded thumbnail from trusted aggregator")
-							}
+						blob, blobErr := s.uploadThumbnail(ctx, authorRepo, *req.ThumbnailURL)
+						if blobErr != nil {
+							log.Printf("[AGGREGATOR-THUMB] Failed to upload thumbnail: %v", blobErr)
+							// No fallback - aggregators only use RSS feed thumbnails
+						} else if blob != nil {
+							external["thumb"] = blob
+							log.Printf("[AGGREGATOR-THUMB] Successfully uploaded thumbnail from trusted aggregator")
 						}
 					}
 
@@ -711,18 +717,13 @@ func (s *postService) enhanceExternalEmbed(ctx context.Context, postRecord *Post
 
 									// Upload thumbnail from unfurl if client didn't provide one
 									// (Thumb validation already happened above)
-									if external["thumb"] == nil {
-										if result.ThumbnailURL != "" && s.blobService != nil {
-											blobCtx, blobCancel := context.WithTimeout(ctx, 15*time.Second)
-											defer blobCancel()
-
-											blob, blobErr := s.blobService.UploadBlobFromURL(blobCtx, community, result.ThumbnailURL)
-											if blobErr != nil {
-												log.Printf("[POST-CREATE] Warning: Failed to upload thumbnail for %s: %v", uri, blobErr)
-											} else {
-												external["thumb"] = blob
-												log.Printf("[POST-CREATE] Uploaded thumbnail blob for %s", uri)
-											}
+									if external["thumb"] == nil && result.ThumbnailURL != "" {
+										blob, blobErr := s.uploadThumbnail(ctx, authorRepo, result.ThumbnailURL)
+										if blobErr != nil {
+											log.Printf("[POST-CREATE] Warning: Failed to upload thumbnail for %s: %v", uri, blobErr)
+										} else if blob != nil {
+											external["thumb"] = blob
+											log.Printf("[POST-CREATE] Uploaded thumbnail blob for %s", uri)
 										}
 									}
 
@@ -742,6 +743,39 @@ func (s *postService) enhanceExternalEmbed(ctx context.Context, postRecord *Post
 	}
 
 	return nil
+}
+
+// uploadThumbnail fetches a remote thumbnail through the blob service's guard
+// and puts it into the AUTHOR's own repository.
+//
+// THE GUARD RUNS FIRST AND THE UPLOAD ONLY HAPPENS IF IT PASSES. FetchImageForURL
+// bounds the fetch with a timeout, refuses a Content-Type outside the image
+// allowlist and caps the body at 6MB; a refusal returns before the author's PDS
+// has been touched at all. Discarding a bad blob after uploading it would be the
+// easy mistake and the wrong one — it pays the whole cost of not having a cap
+// (the fetch, the transfer, the storage write, the author's quota) and only
+// declines to show the result.
+//
+// A nil blob with a nil error means there was nothing to do: no blob service is
+// wired, or no author repo is available. Both are wiring states a post survives
+// — a thumbnail is an enhancement, and it has never been able to fail a post.
+func (s *postService) uploadThumbnail(ctx context.Context, authorRepo AuthorRepo, imageURL string) (*blobs.BlobRef, error) {
+	if s.blobService == nil || authorRepo == nil || imageURL == "" {
+		return nil, nil
+	}
+
+	// One budget for the fetch and the upload together, as the single
+	// UploadBlobFromURL call used to have: the pair is one enhancement, and
+	// letting each half have its own would double the worst case a post waits.
+	blobCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	data, mimeType, err := s.blobService.FetchImageForURL(blobCtx, imageURL)
+	if err != nil {
+		return nil, err
+	}
+
+	return authorRepo.UploadBlob(blobCtx, data, mimeType)
 }
 
 // validateCreateRequest validates basic input requirements

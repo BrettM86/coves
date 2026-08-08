@@ -14,17 +14,16 @@ import (
 // the #view shape served to clients, replacing blob references with fetchable
 // image-proxy URLs. It modifies the Embed field in place.
 //
-// Post embeds resolve against the community's repository: the AppView signs
-// community post records into the community's PDS and uploads their blobs
-// there, so the community DID owns every blob in the embed regardless of who
-// authored the post.
+// WHICH REPOSITORY THE BLOBS LIVE IN DEPENDS ON THE RECORD (see blobOwnerOf).
+// One table holds both kinds of post and one read path serves them, so the
+// owner is chosen per view rather than assumed.
 //
 // Must run before the response is written. A post whose embed still carries
 // blob references forces the client to build its own blob URLs, which routes
 // media around the image proxy and therefore around CSAM scanning — see
 // internal/core/embeds.
 func TransformBlobRefsToURLs(postView *PostView) {
-	if postView == nil || postView.Embed == nil || postView.Community == nil {
+	if postView == nil || postView.Embed == nil {
 		return
 	}
 
@@ -33,7 +32,48 @@ func TransformBlobRefsToURLs(postView *PostView) {
 		return
 	}
 
-	embeds.HydrateView(embedMap, postView.Community.DID, postView.Community.PDSURL)
+	ownerDID, ownerPDSURL, ok := blobOwnerOf(postView)
+	if !ok {
+		return
+	}
+
+	embeds.HydrateView(embedMap, ownerDID, ownerPDSURL)
+}
+
+// blobOwnerOf reports the repository a post's blobs live in, and false when
+// there is no answer.
+//
+// A postv2 record lives in its AUTHOR's repo (§3.1) and its media was uploaded
+// under the author's own session, so the author owns it. A deprecated
+// social.coves.community.post record was signed into the COMMUNITY's repo by the
+// AppView, with its blobs uploaded there, so the community owns it — and every
+// such record standing in production today still resolves that way, until task 8
+// re-materializes them.
+//
+// THE COLLECTION IN THE URI IS THE ONLY HONEST SIGNAL. It says which repository
+// the record is in, which is exactly the question being asked. Getting this
+// wrong does not crash: it builds a perfectly well-formed URL naming a repo that
+// has never held the blob, which is a broken image for every reader and looks
+// from the server side like everything worked.
+//
+// IT FAILS CLOSED. A postv2 view with no author is left unprojected rather than
+// falling back to the community — the fallback is the tempting repair and the
+// worse one, because it produces a confident URL under a DID that has never held
+// the blob, where an unprojected blob ref is visibly wrong to the client. A view
+// with no URI at all is not a production shape, and degrades to the community:
+// that is what every record predating the flip resolves to.
+func blobOwnerOf(postView *PostView) (did, pdsURL string, ok bool) {
+	if CollectionOfPostURI(postView.URI) == PostV2Collection {
+		if postView.Author == nil || postView.Author.DID == "" {
+			return "", "", false
+		}
+		return postView.Author.DID, postView.Author.PDSURL, true
+	}
+
+	if postView.Community == nil {
+		return "", "", false
+	}
+	return postView.Community.DID, postView.Community.PDSURL, true
 }
 
 // TransformPostEmbeds enriches post embeds with resolved Bluesky post data

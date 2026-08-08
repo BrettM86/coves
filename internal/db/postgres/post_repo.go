@@ -436,6 +436,12 @@ func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, er
 	if avatarURL := blobs.HydrateImageURL(blobs.GetImageURLConfig(), authorPDSURL.String, authorView.DID, authorAvatar.String, "avatar_small"); avatarURL != "" {
 		authorView.Avatar = &avatarURL
 	}
+	// CARRIED, not just used for the avatar above. A postv2 post's media lives
+	// in the AUTHOR's repository, so the blob transform needs to know which
+	// server holds it; this column has always been selected and always dropped
+	// here, which would leave every author-owned post's images addressed to an
+	// empty host.
+	authorView.PDSURL = authorPDSURL.String
 	postView.Author = &authorView
 
 	// Build community ref

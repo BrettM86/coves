@@ -28,6 +28,26 @@ type Service interface {
 
 	// UploadBlob uploads binary data to the owner's PDS
 	UploadBlob(ctx context.Context, owner BlobOwner, data []byte, mimeType string) (*BlobRef, error)
+
+	// FetchImageForURL is UploadBlobFromURL's FIRST half on its own: fetch the
+	// remote image under a timeout, refuse a Content-Type outside the image
+	// allowlist, and cap the body at 6MB. It touches no PDS.
+	//
+	// IT IS SPLIT OUT BECAUSE THE UPLOADER CHANGED, NOT THE GUARD. A post's
+	// media now goes into the AUTHOR's repository, under the author's own OAuth
+	// session — which is DPoP-signed, so it cannot travel through this
+	// package's BlobOwner (a bearer token and a URL). The caller therefore does
+	// the upload itself, through the author's PDS client, and this is what it
+	// calls first so that the choke point is reached by both paths rather than
+	// reimplemented beside one of them.
+	//
+	// The guard is the reason the split is a split and not a copy. The URL
+	// being fetched is attacker-influenced twice over — a client picks the page
+	// that gets unfurled, and the page picks the thumbnail — so a second
+	// implementation that drifted would turn a link preview into an unbounded
+	// fetch performed by the AppView with a user's credentials into that user's
+	// own storage quota.
+	FetchImageForURL(ctx context.Context, imageURL string) (data []byte, mimeType string, err error)
 }
 
 type blobService struct {
@@ -48,9 +68,21 @@ func NewBlobService(pdsURL string) Service {
 // 3. Validate MIME type (image/jpeg, image/png, image/webp)
 // 4. Call UploadBlob to upload to PDS
 func (s *blobService) UploadBlobFromURL(ctx context.Context, owner BlobOwner, imageURL string) (*BlobRef, error) {
+	data, mimeType, err := s.FetchImageForURL(ctx, imageURL)
+	if err != nil {
+		return nil, err
+	}
+
+	// Upload to PDS
+	return s.UploadBlob(ctx, owner, data, mimeType)
+}
+
+// FetchImageForURL fetches and validates a remote image without uploading it.
+// See Service.FetchImageForURL for why this half stands on its own.
+func (s *blobService) FetchImageForURL(ctx context.Context, imageURL string) ([]byte, string, error) {
 	// Input validation
 	if imageURL == "" {
-		return nil, fmt.Errorf("image URL cannot be empty")
+		return nil, "", fmt.Errorf("image URL cannot be empty")
 	}
 
 	// Create HTTP client with timeout (30s to handle slow CDNs and large images)
@@ -61,7 +93,7 @@ func (s *blobService) UploadBlobFromURL(ctx context.Context, owner BlobOwner, im
 	// Fetch image from URL
 	req, err := http.NewRequestWithContext(ctx, "GET", imageURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request for image URL: %w", err)
+		return nil, "", fmt.Errorf("failed to create request for image URL: %w", err)
 	}
 
 	// Set User-Agent to avoid being blocked by CDNs that filter bot traffic
@@ -69,7 +101,7 @@ func (s *blobService) UploadBlobFromURL(ctx context.Context, owner BlobOwner, im
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch image from URL: %w", err)
+		return nil, "", fmt.Errorf("failed to fetch image from URL: %w", err)
 	}
 	defer func() {
 		if closeErr := resp.Body.Close(); closeErr != nil {
@@ -79,13 +111,13 @@ func (s *blobService) UploadBlobFromURL(ctx context.Context, owner BlobOwner, im
 
 	// Check HTTP status
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to fetch image: HTTP %d", resp.StatusCode)
+		return nil, "", fmt.Errorf("failed to fetch image: HTTP %d", resp.StatusCode)
 	}
 
 	// Get MIME type from Content-Type header
 	mimeType := resp.Header.Get("Content-Type")
 	if mimeType == "" {
-		return nil, fmt.Errorf("image URL response missing Content-Type header")
+		return nil, "", fmt.Errorf("image URL response missing Content-Type header")
 	}
 
 	// Normalize MIME type (e.g., image/jpg → image/jpeg)
@@ -93,23 +125,22 @@ func (s *blobService) UploadBlobFromURL(ctx context.Context, owner BlobOwner, im
 
 	// Validate MIME type before reading data
 	if !isValidMimeType(mimeType) {
-		return nil, fmt.Errorf("unsupported MIME type: %s (allowed: image/jpeg, image/png, image/webp)", mimeType)
+		return nil, "", fmt.Errorf("unsupported MIME type: %s (allowed: image/jpeg, image/png, image/webp)", mimeType)
 	}
 
 	// Read image data
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read image data: %w", err)
+		return nil, "", fmt.Errorf("failed to read image data: %w", err)
 	}
 
 	// Validate size (6MB = 6291456 bytes)
 	const maxSize = 6291456
 	if len(data) > maxSize {
-		return nil, fmt.Errorf("image size %d bytes exceeds maximum of %d bytes (6MB)", len(data), maxSize)
+		return nil, "", fmt.Errorf("image size %d bytes exceeds maximum of %d bytes (6MB)", len(data), maxSize)
 	}
 
-	// Upload to PDS
-	return s.UploadBlob(ctx, owner, data, mimeType)
+	return data, mimeType, nil
 }
 
 // UploadBlob uploads binary data to the owner's PDS

@@ -11,6 +11,7 @@ import (
 	"github.com/bluesky-social/indigo/atproto/syntax"
 
 	"Coves/internal/atproto/pds"
+	"Coves/internal/core/blobs"
 )
 
 // The author-repo half of the write path (docs/PRD_AUTHOR_OWNED_POSTS.md §3.1,
@@ -196,6 +197,22 @@ type AuthorRepo interface {
 
 	// DeleteRecord removes a record from the author's repo.
 	DeleteRecord(ctx context.Context, collection, rkey string) error
+
+	// UploadBlob puts a post's media into the author's own storage.
+	//
+	// THE BLOB HAS TO TRAVEL WITH THE RECORD. A blob ref names a CID and not a
+	// repository, so a reader resolves it against the repo it believes owns the
+	// record — the author's. A thumbnail left in the community's storage
+	// therefore produces a record that looks identical to a correct one and
+	// resolves for nobody, is garbage-collectable by a repo that references it
+	// nowhere, and is not the author's to release when they delete the post.
+	//
+	// It is on THIS interface rather than reached through blobs.Service because
+	// an author authenticates with a DPoP-signed OAuth session, and that cannot
+	// be expressed as the bearer token blobs.BlobOwner carries. The fetch and
+	// the size/MIME guard still come from blobs.Service.FetchImageForURL — only
+	// the upload leg moved.
+	UploadBlob(ctx context.Context, data []byte, mimeType string) (*blobs.BlobRef, error)
 
 	// DID is the repo being written — the author's own identity, which is the
 	// authority half of every post URI this path produces.
