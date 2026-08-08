@@ -51,6 +51,26 @@ import (
 // to build. What IS true today is asserted; what task 7 owes is named where it
 // would otherwise look like a gap.
 //
+// # THE POSITIVE FETCH ARC IS STRUCTURALLY T1-ONLY
+//
+// §5.4's direct fetch converges an acceptance whose subject the AppView has
+// never indexed. That precondition cannot be staged in this tier, and the reason
+// is the tier working as designed rather than a gap in it: every PDS write here
+// reaches the AppView through Jetstream, so a postv2 record written to set up
+// the arc IS delivered, and by the time the acceptance is written the subject is
+// indexed — which is the ORDINARY path, not the fetch. Suppressing that delivery
+// would mean either not writing the record (nothing to fetch) or reconfiguring
+// the stack's consumers (rule 2 of this package: never instantiate a consumer).
+//
+// So what this file proves about acceptance-before-post is the NEGATIVE, which
+// is stageable and is asserted below: an acceptance naming a post that exists
+// nowhere admits nothing and keeps admitting nothing. The positive — fetch,
+// recompute the CID from the repo's own blocks, index, accept — is proven at T1
+// against a real repo on the test PDS, in
+// internal/atproto/jetstream/direct_fetch_verification_test.go (the component)
+// and acceptance_consumer_test.go (the consumer wiring). That split is
+// deliberate and permanent; do not read the absence here as missing coverage.
+//
 // # THE rkey IS COMPUTED HERE RATHER THAN IMPORTED
 //
 // An acceptance's record key is the unpadded lowercase base32 encoding of the

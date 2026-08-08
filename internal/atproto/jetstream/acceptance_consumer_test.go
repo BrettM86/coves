@@ -286,18 +286,26 @@ func TestRemovalConsumer_PreemptiveRemovalCreatesTheRow(t *testing.T) {
 // §5.4 direct fetch: acceptance before post
 // ---------------------------------------------------------------------------
 
-// fakeAuthorPDS is an httptest server answering com.atproto.repo.getRecord for
+// fakeAuthorPDS is an httptest server answering com.atproto.sync.getRecord for
 // the author's postv2 record, standing in for the PDS a DID document points at.
 //
 // It asserts the request shape as it serves, because the fetch is the one place
-// the AppView reads a record without the firehose: a getRecord aimed at the
-// wrong repo or collection would return someone else's record, and the CID check
-// downstream would happily verify it.
+// the AppView reads a record without the firehose: a fetch aimed at the wrong
+// repo or collection would return someone else's record, and the verification
+// downstream would happily confirm it.
+//
+// sync.getRecord, and its parameter is `did` rather than `repo`. Both changed
+// together and neither is cosmetic: repo.getRecord answers with a JSON envelope
+// whose `cid` is a claim by the server being interrogated, while sync.getRecord
+// answers with the repo's own blocks, which is what makes the CID something the
+// AppView can RECOMPUTE instead of read off a label. A helper still asserting
+// the old endpoint would keep passing against a fetcher that had regressed to
+// trusting the envelope.
 func fakeAuthorPDS(t *testing.T, expectRepo string, handler http.HandlerFunc) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/xrpc/com.atproto.repo.getRecord", r.URL.Path)
-		assert.Equal(t, expectRepo, r.URL.Query().Get("repo"))
+		assert.Equal(t, "/xrpc/com.atproto.sync.getRecord", r.URL.Path)
+		assert.Equal(t, expectRepo, r.URL.Query().Get("did"))
 		assert.Equal(t, PostV2Collection, r.URL.Query().Get("collection"))
 		handler(w, r)
 	}))
@@ -331,41 +339,92 @@ func newFetcherAt(t *testing.T, authorDID, pdsURL string) *DirectPostFetcher {
 	return fetcher
 }
 
+// realRepoFixture is the acceptance consumer pointed at a REAL author repo on
+// the test PDS.
+//
+// The three arcs below all turn on what the fetch VERIFIES, and verification is
+// recomputation from the repo's own blocks (§5.4) — so a hand-served response
+// cannot exercise them at all: it would either be rejected as malformed, which
+// proves nothing about the CID, or require this file to fabricate a CAR and
+// thereby encode its own guesses about how the verification walks one.
+//
+// The DirectFetch trio in direct_fetch_verification_test.go proves the
+// COMPONENT. These prove the WIRING: that the consumer reaches for it on an
+// unindexed subject, and that what it does with each answer — index and accept,
+// or refuse permanently — is what the admission row ends up saying.
+type realRepoFixture struct {
+	accFixture
+
+	pds    *testkit.PDS
+	author *testkit.Account
+}
+
+func newRealRepoFixture(t *testing.T, db *sql.DB) *realRepoFixture {
+	t.Helper()
+
+	pdsServer := testkit.NewPDS(t)
+	author := pdsServer.CreateAccount(t, testkit.WithHandlePrefix("rr"))
+
+	insertBridgedUser(t, db, accAuthor, "realowner.test")
+	insertBridgedCommunity(t, db, accCommunity, "realcommunity.test", accAuthor)
+
+	admissions := postgres.NewAdmissionRepository(db)
+	consumer := NewPostEventConsumer(
+		postgres.NewPostRepository(db), postgres.NewCommunityRepository(db),
+		newMockUserService(), db,
+		WithAdmissions(admissions),
+		WithDeletedAccounts(postgres.NewDeletedAccountRepository(db)),
+		WithPostRecordFetcher(NewDevDirectPostFetcher(pinnedResolver(author.DID, pdsServer.URL()))),
+	)
+
+	return &realRepoFixture{
+		accFixture: accFixture{consumer: consumer, admissions: admissions, db: db},
+		pds:        pdsServer,
+		author:     author,
+	}
+}
+
+// publish writes a real postv2 record into the author's repo and returns it, so
+// the CID an acceptance pins is one the PDS minted from bytes it stored.
+func (f *realRepoFixture) publish(t *testing.T, communityDID, title string) testkit.Record {
+	t.Helper()
+	return f.author.CreateRecord(t, PostV2Collection, map[string]any{
+		"$type":     PostV2Collection,
+		"community": communityDID,
+		"title":     title,
+		"content":   "a body only the repo can vouch for",
+		"createdAt": time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
 func TestAcceptanceConsumer_UnindexedPost_IsFetchedDirectlyAndAccepted(t *testing.T) {
 	t.Parallel()
 
 	db := testkit.DB(t)
 	ctx := context.Background()
-	base := time.Now().UnixMicro()
+	f := newRealRepoFixture(t, db)
 
-	const cid = "bafyreiaccfetched"
-	rkey := "accfetch"
-	uri := accPostURI(rkey)
+	// The post exists in its author's repo and the AppView has never seen it —
+	// no create event arrived, and none ever will if the relay does not crawl
+	// that PDS. This is the case §5.4 says redrive cannot solve: bounded retries
+	// cannot manufacture an event nobody is going to send. Without the fetch,
+	// convergence is a bet on full relay coverage.
+	record := f.publish(t, accCommunity, "never delivered by any relay")
 
-	srv := fakeAuthorPDS(t, accAuthor, func(w http.ResponseWriter, r *http.Request) {
-		serveRecord(t, w, uri, cid, pv2Record(accCommunity, "fetched straight from the PDS", "body"))
-	})
-	defer srv.Close()
+	require.NoError(t, f.consumer.HandleEvent(ctx,
+		acceptanceEvent(accCommunity, record.URI, record.CID, testkit.TID(), time.Now().UnixMicro())))
 
-	f := newAccFixture(t, db, WithPostRecordFetcher(newFetcherAt(t, accAuthor, srv.URL)))
-
-	// The post was NEVER indexed — no create event ever arrived, and none ever
-	// will if the relay does not crawl the author's PDS. This is the case §5.4
-	// says redrive cannot solve: retries cannot manufacture an event nobody is
-	// going to send. Without the fetch, convergence requires full relay
-	// coverage, which is a bet rather than a guarantee.
-	require.NoError(t, f.consumer.HandleEvent(ctx, acceptanceEvent(accCommunity, uri, cid, testkit.TID(), base)))
-
-	authorDID, communityDID, storedCID, _, _ := readPV2Post(t, db, uri)
-	assert.Equal(t, accAuthor, authorDID, "the fetched post is attributed to the repo it was read from")
+	authorDID, communityDID, storedCID, _, _ := readPV2Post(t, db, record.URI)
+	assert.Equal(t, f.author.DID, authorDID, "the fetched post is attributed to the repo it was read from")
 	assert.Equal(t, accCommunity, communityDID)
-	assert.Equal(t, cid, storedCID)
+	assert.Equal(t, record.CID, storedCID, "the indexed CID must be the one the repo minted")
 
-	admission, err := f.admissions.Get(ctx, accCommunity, uri)
+	admission, err := f.admissions.Get(ctx, accCommunity, record.URI)
 	require.NoError(t, err)
 	require.NotNil(t, admission)
 	assert.Equal(t, posts.AdmissionStatusAccepted, admission.Status,
-		"the fetch exists so the acceptance can be APPLIED; indexing the post and leaving the decision pending would solve half the problem and leave the post invisible")
+		"the fetch exists so the acceptance can be APPLIED; indexing the post and leaving the decision pending would "+
+			"solve half the problem and leave the post invisible")
 }
 
 func TestAcceptanceConsumer_FetchedCIDMismatch_IsPermanentlyRefused(t *testing.T) {
@@ -373,30 +432,27 @@ func TestAcceptanceConsumer_FetchedCIDMismatch_IsPermanentlyRefused(t *testing.T
 
 	db := testkit.DB(t)
 	ctx := context.Background()
-	base := time.Now().UnixMicro()
+	f := newRealRepoFixture(t, db)
 
-	rkey := "accmismatch"
-	uri := accPostURI(rkey)
+	subject := f.publish(t, accCommunity, "the post the acceptance is about")
+	other := f.publish(t, accCommunity, "a different post in the same repo")
+	require.NotEqual(t, subject.CID, other.CID, "fixture: the two records must have distinct CIDs")
 
-	srv := fakeAuthorPDS(t, accAuthor, func(w http.ResponseWriter, r *http.Request) {
-		// The PDS serves the CURRENT version. The acceptance pins an older one.
-		serveRecord(t, w, uri, "bafyreiaccnowcurrent", pv2Record(accCommunity, "the version now at that rkey", "body"))
-	})
-	defer srv.Close()
+	// BOTH CIDs ARE REAL, and that is what makes this the sharp version. The
+	// acceptance names one record and pins another's CID — a perfectly
+	// well-formed strongRef that simply does not describe its subject. Nothing
+	// about the response is malformed, so the refusal can only come from the
+	// verification actually comparing what it recomputed against what was
+	// pinned.
+	err := f.consumer.HandleEvent(ctx,
+		acceptanceEvent(accCommunity, subject.URI, other.CID, testkit.TID(), time.Now().UnixMicro()))
 
-	f := newAccFixture(t, db, WithPostRecordFetcher(newFetcherAt(t, accAuthor, srv.URL)))
-
-	err := f.consumer.HandleEvent(ctx, acceptanceEvent(accCommunity, uri, "bafyreiaccpinnedold", testkit.TID(), base))
-
-	// The CID check is what makes the fetch trustworthy at all. Without it the
-	// AppView indexes whatever the author's PDS chooses to serve under that
-	// rkey — the author (or whoever holds their keys) picks the content, and the
-	// community's signed acceptance is made to cover it retroactively.
-	require.Error(t, err, "a fetched record whose CID is not the one the acceptance pinned must never be indexed under that acceptance")
+	require.Error(t, err, "an acceptance pinning a CID the subject does not have must never be applied")
 	assert.ErrorIs(t, err, ErrPermanentEvent,
-		"the pinned version is gone from the repo and no retry brings it back; the connector must dead-letter this with its redrive budget already spent rather than re-fetching the same mismatch ten times")
+		"the pinned version is not what that URI holds, and no retry changes which bytes are in the repo; re-fetching "+
+			"the same mismatch ten times is pure noise")
 
-	assert.Zero(t, countRows(t, db, `SELECT count(*) FROM posts WHERE uri = $1`, uri),
+	assert.Zero(t, countRows(t, db, `SELECT count(*) FROM posts WHERE uri = $1`, subject.URI),
 		"the unverified record must not be indexed")
 }
 
@@ -405,32 +461,27 @@ func TestAcceptanceConsumer_FetchedRecordNamingAnotherCommunity_IsPermanentlyRef
 
 	db := testkit.DB(t)
 	ctx := context.Background()
-	base := time.Now().UnixMicro()
+	f := newRealRepoFixture(t, db)
 
-	const cid = "bafyreiaccwrongcommunity"
-	rkey := "accwrongcomm"
-	uri := accPostURI(rkey)
+	const elsewhere = accPrefix + "othercommunity"
+	insertBridgedCommunity(t, db, elsewhere, "otherrealcommunity.test", accAuthor)
 
-	srv := fakeAuthorPDS(t, accAuthor, func(w http.ResponseWriter, r *http.Request) {
-		// The record was submitted to a DIFFERENT community.
-		serveRecord(t, w, uri, cid, pv2Record("did:plc:accsomewhereelse", "submitted elsewhere", "body"))
-	})
-	defer srv.Close()
+	// A genuine record, correctly signed, whose community field names someone
+	// else. The CID verifies; the CLAIM does not. Cross-community acceptance is
+	// the privileged fork/import flow and §10.2 is explicit that it is
+	// deliberately not built — until it is, a community accepting a post that
+	// names another is a community pulling someone else's content into its feed
+	// on its own say-so.
+	record := f.publish(t, elsewhere, "submitted to a different community")
 
-	f := newAccFixture(t, db, WithPostRecordFetcher(newFetcherAt(t, accAuthor, srv.URL)))
+	err := f.consumer.HandleEvent(ctx,
+		acceptanceEvent(accCommunity, record.URI, record.CID, testkit.TID(), time.Now().UnixMicro()))
 
-	err := f.consumer.HandleEvent(ctx, acceptanceEvent(accCommunity, uri, cid, testkit.TID(), base))
-
-	// Cross-community acceptance is the privileged fork/import flow, and §10.2
-	// is explicit that it is deliberately NOT built: the data model supports it,
-	// the flow that exercises it is future scope. Until it exists, a community
-	// accepting a post that names someone else is a community pulling another
-	// community's content into its feed on its own say-so.
-	require.Error(t, err, "a community may not accept a post whose record names a different community — the fork/import flow is deliberately not built (§10.2)")
+	require.Error(t, err, "a community may not accept a post whose record names a different community")
 	assert.ErrorIs(t, err, ErrPermanentEvent,
-		"the record's community field is immutable across updates (§3.1), so this can never become valid; retrying it is pure noise")
+		"the record's community field is immutable across updates (§3.1), so this can never become valid")
 
-	assert.Zero(t, countRows(t, db, `SELECT count(*) FROM posts WHERE uri = $1`, uri),
+	assert.Zero(t, countRows(t, db, `SELECT count(*) FROM posts WHERE uri = $1`, record.URI),
 		"the refused record must not be indexed")
 }
 

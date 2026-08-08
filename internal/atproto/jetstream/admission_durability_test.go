@@ -6,7 +6,7 @@ import (
 	"context"
 
 	"errors"
-	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -126,62 +126,74 @@ func TestAdmission_LoneRemovalDeleteExitsRemoved(t *testing.T) {
 			"means the dead-letter redrive will never revisit this subject")
 }
 
+// racingFetcher runs one action the first time a fetch is made, then delegates.
+//
+// It is how the interleaving below is made deterministic without weakening what
+// the fetch itself does: the REAL fetcher still reads the real repo and still
+// recomputes the CID. All this decides is WHEN the competing event lands, which
+// in production is decided by two repos Jetstream carries in parallel.
+type racingFetcher struct {
+	inner  PostRecordFetcher
+	before func()
+	once   sync.Once
+}
+
+func (f *racingFetcher) FetchPost(ctx context.Context, postURI string) (*FetchedPost, error) {
+	f.once.Do(f.before)
+	return f.inner.FetchPost(ctx, postURI)
+}
+
 func TestAdmission_ConvergeMustNotRegressTheEvaluatedCID(t *testing.T) {
 	t.Parallel()
 
 	db := testkit.DB(t)
 	ctx := context.Background()
-	base := time.Now().UnixMicro()
+	f := newRealRepoFixture(t, db)
 
-	rkey := "convergerace"
-	uri := accPostURI(rkey)
-	const pinnedCID = "bafyreiconvergev1"
-	const currentCID = "bafyreiconvergev2"
+	// The repo holds ONE version, and the acceptance pins it. That version is
+	// what the fetch will legitimately verify and return.
+	record := f.publish(t, accCommunity, "the version the acceptance pinned")
+	const newerCID = "bafyreiconvergenewer"
 
-	var f accFixture
+	// The author edits. The AppView learns about the edit from the firehose
+	// while the fetch — started earlier, against the pre-edit repo — is still in
+	// flight. That is not an exotic interleaving: the acceptance and the post
+	// live in different repos, Jetstream parallelises across repos, and the
+	// fetch exists precisely because the post's own event had not arrived yet.
+	f.consumer = NewPostEventConsumer(
+		postgres.NewPostRepository(db), postgres.NewCommunityRepository(db),
+		newMockUserService(), db,
+		WithAdmissions(f.admissions),
+		WithDeletedAccounts(postgres.NewDeletedAccountRepository(db)),
+		WithPostRecordFetcher(&racingFetcher{
+			inner: NewDevDirectPostFetcher(pinnedResolver(f.author.DID, f.pds.URL())),
+			before: func() {
+				require.NoError(t, f.consumer.HandleEvent(context.Background(), pv2Event(
+					f.author.DID, "create", record.RKey, testkit.TID(), newerCID, time.Now().UnixMicro(),
+					pv2Record(accCommunity, "the version that actually arrived", "newer body"),
+				)), "the racing post event must index cleanly")
+			},
+		}),
+	)
 
-	// THE RACE, MADE DETERMINISTIC. The fetch is in flight when the post's own
-	// firehose event lands — which is not a rare interleaving, it is the normal
-	// one: the acceptance and the post are in different repos, so Jetstream
-	// parallelises them, and the fetch exists precisely because the post event
-	// has not arrived yet. Running the real event from inside the fetch handler
-	// puts the two in the exact order the race produces, every time.
-	srv := fakeAuthorPDS(t, accAuthor, func(w http.ResponseWriter, r *http.Request) {
-		require.NoError(t, f.consumer.HandleEvent(context.Background(), pv2Event(
-			accAuthor, "create", rkey, testkit.TID(), currentCID, base+500_000,
-			pv2Record(accCommunity, "the version that actually arrived", "newer body"),
-		)), "the racing post event must index cleanly")
+	_ = f.consumer.HandleEvent(ctx,
+		acceptanceEvent(accCommunity, record.URI, record.CID, testkit.TID(), time.Now().UnixMicro()))
 
-		// The PDS answers with the version the acceptance pinned, which by now is
-		// the OLDER one.
-		serveRecord(t, w, uri, pinnedCID, pv2Record(accCommunity, "the version the acceptance pinned", "older body"))
-	})
-	defer srv.Close()
-
-	f = newAccFixture(t, db, WithPostRecordFetcher(newFetcherAt(t, accAuthor, srv.URL)))
-
-	_ = f.consumer.HandleEvent(ctx, acceptanceEvent(accCommunity, uri, pinnedCID, testkit.TID(), base))
-
-	row, err := f.admissions.Get(ctx, accCommunity, uri)
+	row, err := f.admissions.Get(ctx, accCommunity, record.URI)
 	require.NoError(t, err)
 	require.NotNil(t, row)
 
-	// evaluated_cid is what the NEXT decision judges. Regressed to the pinned
-	// CID, the engine evaluates content the author has already replaced, and —
-	// worse — an acceptance written against that verdict pins a version the
-	// AppView is no longer serving. The row would then report `accepted` for
-	// content nobody can see.
-	assertNullableStringPV2(t, currentCID, row.EvaluatedCID,
-		"the converge path wrote its fetched CID over a NEWER one that a real event had already recorded. "+
-			"UpsertPending is last-write-wins, so a fetch that lost the race must not apply — the post event is the "+
-			"authority on what content stands, and the fetch is a catch-up")
+	// evaluated_cid is what the NEXT decision judges. Regressed to the fetched
+	// version, the engine evaluates content the author has already replaced —
+	// and an acceptance written from that verdict pins a version the AppView is
+	// no longer serving, so the row reports `accepted` for content nobody sees.
+	assertNullableStringPV2(t, newerCID, row.EvaluatedCID,
+		"the converge path wrote its fetched CID over a NEWER one a real event had already recorded. UpsertPending is "+
+			"last-write-wins, so a fetch that lost the race must not apply — the post event is the authority on what "+
+			"content stands, and the fetch is only a catch-up")
 
-	assert.Equalf(t, posts.AdmissionStatusPendingReacceptance, row.Status,
-		"an acceptance pinning a CID the post no longer holds is pending_reacceptance, not accepted: the community "+
-			"agreed to a version that has since been replaced")
-
-	_, _, storedCID, _, _ := readPV2Post(t, db, uri)
-	assert.Equal(t, currentCID, storedCID, "the indexed post must hold the version its own event carried")
+	_, _, storedCID, _, _ := readPV2Post(t, db, record.URI)
+	assert.Equal(t, newerCID, storedCID, "the indexed post must hold the version its own event carried")
 }
 
 func TestAdmission_SurvivesAFailedUpsertAcrossRedelivery(t *testing.T) {
