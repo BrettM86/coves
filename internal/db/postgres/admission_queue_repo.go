@@ -99,5 +99,28 @@ func (r *postgresAdmissionRepo) ListPendingSubjects(ctx context.Context, limit i
 func (r *postgresAdmissionRepo) CountRecentAdmissions(
 	ctx context.Context, communityDID, authorDID string, since time.Time,
 ) (int, error) {
-	return 0, nil
+	// starts_with on the authority segment, the same shape userRepo.Delete uses
+	// to sweep an author's admissions. The trailing "/" matters: without it
+	// did:plc:abc would also match did:plc:abcdef, and one author would consume
+	// another's quota.
+	//
+	// accepted and pending together, and NOTHING else. §8 is explicit that a
+	// refusal consumes no quota — counting rejected or removed rows would let an
+	// author past their limit extend their own lockout every time they tried
+	// again. pending_reacceptance counts too: the post is admitted and visible
+	// history, merely awaiting a re-decision on an edit.
+	const query = `
+		SELECT count(*)
+		FROM community_post_admissions
+		WHERE community_did = $1
+		  AND starts_with(post_uri, 'at://' || $2 || '/')
+		  AND status IN ('accepted', 'pending', 'pending_reacceptance')
+		  AND created_at >= $3
+	`
+
+	var count int
+	if err := r.db.QueryRowContext(ctx, query, communityDID, authorDID, since).Scan(&count); err != nil {
+		return 0, fmt.Errorf("counting recent admissions for %s in %s: %w", authorDID, communityDID, err)
+	}
+	return count, nil
 }

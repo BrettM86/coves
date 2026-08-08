@@ -29,9 +29,24 @@ func NewDeletedAccountRepository(db *sql.DB) *DeletedAccountRepository {
 // is indistinguishable from a healthy answer — a database blip would silently
 // re-index the content a deletion erased, which is the exact outcome the marker
 // table exists to prevent.
+func (r *postgresUserRepo) IsAccountDeleted(ctx context.Context, did string) (bool, error) {
+	return accountIsErased(ctx, r.db, did)
+}
+
+// IsAccountDeleted implements the same lookup for the standalone repository.
 func (r *DeletedAccountRepository) IsAccountDeleted(ctx context.Context, did string) (bool, error) {
+	return accountIsErased(ctx, r.db, did)
+}
+
+// accountIsErased is the single statement behind both lookups above.
+//
+// It is one function because the two callers are the two halves of the same
+// guard — the ingestion consumer refusing an erased author's events, and the
+// user service refusing to re-index them — and a second spelling would be a
+// second chance for one of them to drift into failing open.
+func accountIsErased(ctx context.Context, db *sql.DB, did string) (bool, error) {
 	var deleted bool
-	if err := r.db.QueryRowContext(ctx,
+	if err := db.QueryRowContext(ctx,
 		`SELECT EXISTS (SELECT 1 FROM deleted_accounts WHERE did = $1)`, did,
 	).Scan(&deleted); err != nil {
 		return false, fmt.Errorf("checking whether %s was erased: %w", did, err)

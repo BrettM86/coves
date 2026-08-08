@@ -26,15 +26,21 @@ import (
 // one place that decides they should fire at all.
 //
 // THERE IS NO LEASE, AND THAT IS DELIBERATE. Nothing stops two passes — the
-// fast path, a firehose redelivery, a notify — from processing the same
-// subject at the same moment, and no lock or per-subject claim is taken.
+// queue driver, a firehose redelivery, and (once task 6 lands it) the
+// synchronous fast path — from processing the same subject at the same moment,
+// and no lock or per-subject claim is taken. Only the first two exist today;
+// the fast path is named because the safety argument has to hold when it
+// arrives, not because it is calling now.
 // Safety comes from the layers instead: deterministic rkeys make the racers
 // aim at the same record; every put and batch is swap-guarded, so a loser is
 // told rather than clobbering; a loser that re-reads and finds the winner
 // wrote its exact target converges as a skip; and the repository's watermark
 // CAS makes the row's state advance monotonically no matter which pass
-// stamps first. Serializing the passes properly (a per-community queue) is
-// task 5's job; until then concurrent passes are expected and harmless.
+// stamps first. Serializing the passes properly is QueueDriver's job (queue.go):
+// one goroutine walks one ordered list, grouped by community, so no two subjects
+// of a community are ever in flight together. The layered safety above still
+// matters, because the driver is not the only caller — the synchronous fast
+// path and the firehose consumer both reach the engine too.
 
 // EngineOutcome reports what one pass over one subject DID.
 //
@@ -62,11 +68,14 @@ const (
 	// EngineRepinned means a standing acceptance moved onto new content with no
 	// re-decision — the bridgedStats exception of §5.5.
 	//
-	// NOT PRODUCED BY ANY PATH YET. ProcessAdmission runs full re-admission on
-	// every edit; the repin path — classifyRecordDiff choosing the exception,
-	// the bridge-trust gate approving the author, RepinAcceptance moving the
-	// record — is task 5's consumer wiring. The outcome is declared now so
-	// that path lands against a named contract instead of minting one.
+	// NOT PRODUCED BY ANY PATH YET, and deliberately still deferred.
+	// ProcessAdmission runs full re-admission on every edit; the repin path —
+	// classifyRecordDiff choosing the exception, the bridge-trust gate
+	// approving the author, RepinAcceptance moving the record — needs an
+	// old-record snapshot the consumer does not keep, so wiring it is a
+	// recorded decision rather than an oversight (see loop_state.md). The
+	// outcome is declared so that path lands against a named contract instead
+	// of minting one.
 	EngineRepinned EngineOutcome = "repinned"
 
 	// EngineDeferred means the subject is still owed a decision and nothing

@@ -2,6 +2,7 @@ package posts
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -12,9 +13,9 @@ import (
 // and on what (docs/PRD_AUTHOR_OWNED_POSTS.md §5.6, §8).
 //
 // The engine settles one subject. Nothing until now decided which subjects, in
-// what order, or how often — the fast path and the firehose consumer both push
-// work at it, and neither can see a subject that was left pending because a
-// credential expired or a lookup blipped. This is the pull side: a periodic pass
+// what order, or how often — the firehose consumer pushes work at it today, and
+// task 6's synchronous fast path will push more, and neither can see a subject
+// that was left pending because a credential expired or a lookup blipped. This is the pull side: a periodic pass
 // over the undecided backlog that eventually reaches every stranded row.
 //
 // # IT IS A SINGLE GOROUTINE, AND THAT IS THE PER-COMMUNITY SERIALIZATION
@@ -218,7 +219,7 @@ func (d *QueueDriver) RunPass(ctx context.Context) (PassReport, error) {
 	startedAt := d.now()
 	report := PassReport{StartedAt: startedAt}
 
-	subjects, err := d.subjects.ListPendingSubjects(ctx, d.batchSize)
+	subjects, err := d.subjects.ListPendingSubjects(ctx, d.fetchSize())
 	if err != nil {
 		// The one failure a pass has nothing to do about. Every other outcome
 		// below is per-subject and counted; this one means there is no work
@@ -228,6 +229,12 @@ func (d *QueueDriver) RunPass(ctx context.Context) (PassReport, error) {
 	report.Listed = len(subjects)
 
 	for _, subject := range groupByCommunity(subjects) {
+		// THE BATCH IS FILLED WITH WORK, not with rows. Skipping a backed-off
+		// subject must not consume a slot, or a stuck prefix would spend the
+		// whole pass on subjects it never touched — see fetchSize.
+		if report.Processed >= d.batchSize {
+			break
+		}
 		if d.heldBack(subject, startedAt) {
 			continue
 		}
@@ -249,6 +256,17 @@ func (d *QueueDriver) RunPass(ctx context.Context) (PassReport, error) {
 		// community's PDS returns errors, not deferrals, so exempting failures
 		// would leave the loudest case as the one thing nothing paced.
 		switch {
+		case errors.Is(err, ErrSubjectGone):
+			// NOT A FAILURE, and counting it as one would make an ordinary race
+			// look like an outage. The backlog query excludes tombstoned and
+			// unindexed posts, but a post can be deleted between the listing and
+			// the decision — so this is the queue meeting a subject that stopped
+			// existing while it worked, which is exactly what the exclusion is
+			// for and needs no operator's attention. It is counted as deferred
+			// and backed off like any other "nothing to do yet"; the next pass
+			// will not list it at all.
+			report.Deferred++
+			d.deferSubject(subject, startedAt)
 		case err != nil:
 			report.Failed++
 			log.Printf("[ACCEPTANCE-QUEUE] Warning: %s in %s could not be settled: %v",
@@ -263,8 +281,79 @@ func (d *QueueDriver) RunPass(ctx context.Context) (PassReport, error) {
 		}
 	}
 
+	d.pruneDeferrals(subjects)
 	d.record(subjects, report, startedAt)
 	return report, nil
+}
+
+// queueOverFetchFactor bounds how far past a backed-off prefix one pass may
+// reach: a pass never asks the query for more than batchSize × this.
+//
+// FOUR, and the number is a trade rather than a preference. The backlog is
+// ordered oldest-first, so the subjects most likely to be stuck are exactly the
+// ones at the front of it — a community whose credentials expired weeks ago sits
+// there forever. Without over-fetching, a pass asks for LIMIT rows, gets LIMIT
+// stuck ones, skips them all for backoff and does nothing; every pass, while a
+// healthy post two rows behind is never decided. Over-fetching without a bound
+// would instead let one pass drag the entire backlog into memory to find one
+// live subject. Four buys three batches of headroom against a query whose cost
+// grows with it, and a prefix deeper than that drains as backoffs expire.
+const queueOverFetchFactor = 4
+
+// fetchSize is how many rows to ask for so the pass can still fill its batch
+// after skipping the subjects it already knows are held back.
+//
+// It asks for the batch plus exactly the number of deferrals currently held —
+// the measured size of the prefix that may be skipped — rather than always
+// over-fetching. A driver with nothing backed off has nothing to skip, so it
+// asks for precisely what it will use.
+func (d *QueueDriver) fetchSize() int {
+	held := d.deferredCount()
+	size := d.batchSize + held
+	if ceiling := d.batchSize * queueOverFetchFactor; size > ceiling {
+		size = ceiling
+	}
+	return size
+}
+
+func (d *QueueDriver) deferredCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.deferrals)
+}
+
+// pruneDeferrals forgets the backoffs of subjects that are no longer listed.
+//
+// A deferral outlives its subject otherwise. The row gets settled by somebody
+// else — the synchronous fast path, a firehose acceptance, a moderator's
+// removal — and simply stops being listed, without ever telling the driver. The
+// map is keyed by subject and swept by nothing, so on a busy instance it is an
+// unbounded leak held for the life of the process.
+//
+// It is also wrong on RE-ENTRY, which is the part a leak metric would not show:
+// a subject that leaves the backlog and comes back — an edit reopening an
+// accepted post — would arrive carrying a stale backoff it did nothing to earn,
+// and wait out a delay that was about a completely different decision.
+//
+// Pruning against the LISTING rather than against what the pass processed is
+// deliberate: a subject skipped for backoff is still in the backlog, and
+// forgetting it would defeat the backoff on the very next pass.
+func (d *QueueDriver) pruneDeferrals(listed []PendingSubject) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if len(d.deferrals) == 0 {
+		return
+	}
+	stillListed := make(map[subjectKey]bool, len(listed))
+	for _, subject := range listed {
+		stillListed[keyOf(subject)] = true
+	}
+	for key := range d.deferrals {
+		if !stillListed[key] {
+			delete(d.deferrals, key)
+		}
+	}
 }
 
 // Snapshot returns the driver's health surface as of the last completed pass.
@@ -321,6 +410,7 @@ func (d *QueueDriver) record(subjects []PendingSubject, report PassReport, at ti
 		PendingBacklog:   report.Listed,
 		LastPassDeferred: report.Deferred,
 		LastPassFailed:   report.Failed,
+		DeferredSubjects: len(d.deferrals),
 	}
 	// Taken as a MINIMUM rather than as subjects[0], even though the query
 	// orders by age. The oldest entry's age is the queue's only early warning,

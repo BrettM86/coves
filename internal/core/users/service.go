@@ -455,6 +455,37 @@ func (s *userService) mintInviteCode(ctx context.Context) (string, error) {
 // best-effort — this heals users whose profile firehose event was never delivered
 // without ever blocking or failing the IndexUser call itself.
 func (s *userService) IndexUser(ctx context.Context, did, handle, pdsURL string) error {
+	// THE ERASURE GATE, and IndexUser is where it belongs because this is the
+	// FIREHOSE's door into the users table. A DID appearing in a profile or
+	// identity event means only that some repo somewhere emitted a record — a
+	// bridge, a replay, an overlapping feed — and any of those can arrive months
+	// after the account was erased. Letting it through would make the erasure
+	// undone by exactly the replays the marker exists to defend against, and
+	// undone silently: the users row reappears, repo.Create clears the marker on
+	// its way past, and the next replayed post indexes normally.
+	//
+	// The marker's only exit is a genuine re-registration, which reaches the
+	// repository's insert directly rather than through here.
+	//
+	// A LOOKUP FAILURE REFUSES. "I could not read the marker table" and "there
+	// is no marker" must never be the same answer, because the second one
+	// indexes.
+	if lookup, ok := s.userRepo.(ErasureLookup); ok {
+		erased, err := lookup.IsAccountDeleted(ctx, did)
+		if err != nil {
+			return fmt.Errorf("checking the erasure marker for %s before indexing: %w", did, err)
+		}
+		if erased {
+			// Nil, not an error. Every caller is a firehose consumer, and the
+			// connector dead-letters what a handler returns — so refusing with
+			// an error would turn each erased account into a permanent stream of
+			// redriving profile events. This is not a failure; it is an event
+			// with nothing to do.
+			log.Printf("INFO: not indexing %s from the firehose: the account was erased (migration 036 marker)", did)
+			return nil
+		}
+	}
+
 	// Try to create the user (idempotent - CreateUser returns existing user if DID exists)
 	user, err := s.CreateUser(ctx, CreateUserRequest{
 		DID:    did,

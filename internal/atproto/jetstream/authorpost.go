@@ -1,6 +1,7 @@
 package jetstream
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"Coves/internal/atproto/identity"
@@ -19,6 +21,9 @@ import (
 	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
+
+	"github.com/bluesky-social/indigo/atproto/atdata"
+	"github.com/bluesky-social/indigo/repo"
 )
 
 // Ingesting author-owned posts and the community records that decide about
@@ -91,7 +96,7 @@ func WithPostRecordFetcher(fetcher PostRecordFetcher) PostEventConsumerOption {
 // AcceptanceDeleter withdraws a community's acceptance of a post. Satisfied by
 // posts.CommunityRecordWriter.
 //
-// RED STUB (task 5, cycle 2). Narrowed to one method because that is all the
+// Narrowed to one method because that is all the
 // tombstone path needs: the consumer must never write an acceptance, a removal
 // or a repin — those are the ENGINE's verdicts, and a consumer holding the full
 // writer is one edit away from making one.
@@ -157,7 +162,22 @@ type DirectPostFetcher struct {
 	// a request forger pointed at whatever is reachable from the AppView's
 	// network, driven by any stranger who writes an acceptance record.
 	allowPrivateHosts bool
+
+	// client is the guarded HTTP client, built once. See httpClient.
+	clientOnce sync.Once
+	client     *http.Client
 }
+
+// fetchTimeout bounds ONE direct fetch, inside the client's own 15-second
+// ceiling.
+//
+// The two are not redundant. The client's timeout is a backstop for a
+// connection that hangs; this one is a policy about how long the posts lane may
+// wait on a stranger's PDS. The lane is single-threaded and now carries four
+// collections, so every second spent here is a second nothing else is indexed —
+// and the destination is chosen by whoever wrote the acceptance. Five seconds
+// is generous for a repo read and cheap to lose.
+const fetchTimeout = 5 * time.Second
 
 // maxFetchedRecordBytes bounds how much of a PDS getRecord response is read.
 //
@@ -191,11 +211,24 @@ func NewDevDirectPostFetcher(resolver identity.Resolver) *DirectPostFetcher {
 	return &DirectPostFetcher{resolver: resolver, allowPrivateHosts: true}
 }
 
-// httpClient builds the guarded client for one fetch. Declared here so the
-// guard is derived from allowPrivateHosts at call time rather than baked into a
-// client at construction, where a test seam could not reach it.
+// httpClient returns the guarded client, building it once on first use.
+//
+// ONE CLIENT, not one per fetch. A fresh http.Client means a fresh
+// http.Transport, and a fresh transport means an empty connection pool: every
+// fetch would pay a new TCP handshake and a new TLS handshake against a PDS
+// this consumer may be about to fetch from a hundred more times, and the
+// discarded transports leak idle connections until their finalizers run. The
+// guard is a property of the transport rather than of the moment, so nothing
+// about correctness needed it rebuilt.
+//
+// It is built lazily rather than in the constructor so that a fetcher which is
+// wired but never used — the common case on an instance hosting no communities
+// — costs nothing.
 func (f *DirectPostFetcher) httpClient() *http.Client {
-	return oauth.NewSSRFSafeHTTPClient(f.allowPrivateHosts)
+	f.clientOnce.Do(func() {
+		f.client = oauth.NewSSRFSafeHTTPClient(f.allowPrivateHosts)
+	})
+	return f.client
 }
 
 // FetchPost implements PostRecordFetcher.
@@ -220,11 +253,29 @@ func (f *DirectPostFetcher) FetchPost(ctx context.Context, postURI string) (*Fet
 		return nil, fmt.Errorf("resolving the repo of %s: no PDS endpoint in the DID document", postURI)
 	}
 
-	endpoint := strings.TrimSuffix(resolved.PDSURL, "/") + "/xrpc/com.atproto.repo.getRecord?repo=" +
+	// com.atproto.sync.getRecord, NOT repo.getRecord, and the difference is the
+	// whole trustworthiness of this path.
+	//
+	// repo.getRecord answers with JSON — {"uri":…, "cid":…, "value":{…}} — whose
+	// `cid` is a CLAIM BY THE SERVER. That server is the author's PDS: named by
+	// a DID document, reached because a stranger wrote an acceptance naming this
+	// subject. Comparing the pinned CID against that field asks the attacker
+	// whether the attacker is lying, and the consequence is the worst one this
+	// design has — the AppView indexes whatever `value` holds under a
+	// community's SIGNED acceptance of a CID that content does not have. The
+	// community attested to one thing and every reader is shown another.
+	//
+	// sync.getRecord answers with a CAR: the repo's own blocks. The CID is then
+	// RECOMPUTED from the bytes rather than read off a label, and no server can
+	// lie about the hash of what it just sent.
+	endpoint := strings.TrimSuffix(resolved.PDSURL, "/") + "/xrpc/com.atproto.sync.getRecord?did=" +
 		url.QueryEscape(repoDID) + "&collection=" + url.QueryEscape(collection) +
 		"&rkey=" + url.QueryEscape(rkey)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	fetchCtx, cancel := context.WithTimeout(ctx, fetchTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("building the getRecord request for %s: %w", postURI, err)
 	}
@@ -284,25 +335,46 @@ func (f *DirectPostFetcher) FetchPost(ctx context.Context, postURI string) (*Fet
 			postURI, resp.StatusCode, strconv.Quote(detail))
 	}
 
-	var parsed struct {
-		URI   string                 `json:"uri"`
-		CID   string                 `json:"cid"`
-		Value map[string]interface{} `json:"value"`
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, fmt.Errorf("parsing the getRecord response for %s: %w", postURI, err)
-	}
-	if parsed.Value == nil {
-		return nil, fmt.Errorf("the getRecord response for %s carried no record value", postURI)
-	}
-	if parsed.CID == "" {
-		// Without a CID there is nothing to verify the pinned reference
-		// against, and an unverified record is exactly what the fetch must
-		// never index.
-		return nil, fmt.Errorf("the getRecord response for %s carried no CID", postURI)
+	// The CAR carries the record's block plus the blocks proving it belongs to
+	// the repo. Reading it can fail on a hostile or broken server, which is a
+	// refusal like any other — a response that is not a CAR is not evidence.
+	stored, err := repo.ReadRepoFromCar(ctx, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("reading the CAR for %s: %w", postURI, err)
 	}
 
-	return &FetchedPost{URI: postURI, CID: parsed.CID, Record: parsed.Value}, nil
+	claimedCID, recordBytes, err := stored.GetRecordBytes(ctx, collection+"/"+rkey)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s out of the fetched CAR: %w", postURI, err)
+	}
+	if recordBytes == nil || len(*recordBytes) == 0 {
+		return nil, fmt.Errorf("the CAR for %s carried no record bytes", postURI)
+	}
+
+	// THE RECOMPUTATION, which is the entire point of taking a CAR at all. The
+	// CID that came out of the repo structure is still something the server
+	// assembled; hashing the record's own bytes under that CID's codec and
+	// multihash is what turns it into a fact. A server that substituted content
+	// produces a digest that does not match, whatever it labelled the block.
+	computedCID, err := claimedCID.Prefix().Sum(*recordBytes)
+	if err != nil {
+		return nil, fmt.Errorf("recomputing the CID of %s: %w", postURI, err)
+	}
+	if !computedCID.Equals(claimedCID) {
+		return nil, fmt.Errorf("%w: the CAR for %s labels a block %s whose bytes hash to %s",
+			ErrPermanentEvent, postURI, claimedCID, computedCID)
+	}
+
+	record, err := atdata.UnmarshalCBOR(*recordBytes)
+	if err != nil {
+		return nil, fmt.Errorf("decoding the record block of %s: %w", postURI, err)
+	}
+
+	// The CID reported back is the COMPUTED one. The caller compares it against
+	// what the acceptance pinned, and handing back the label instead would put
+	// the server's claim back into the comparison the recomputation just removed
+	// it from.
+	return &FetchedPost{URI: postURI, CID: computedCID.String(), Record: record}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -424,14 +496,28 @@ func (c *PostEventConsumer) tombstoneAuthorPost(ctx context.Context, authorDID s
 	if err != nil {
 		return err
 	}
-	if !applied || !indexed {
-		// A gate skip means this deletion was already applied — the sweep ran
-		// with it — so re-sweeping would put one authenticated PDS round trip
-		// behind every redelivery of every tombstone on the network.
+	if !indexed {
 		return nil
 	}
 
-	c.withdrawAcceptance(ctx, stored.communityDID, uri)
+	// THE WITHDRAWAL IS RECONSIDERED ON EVERY DELIVERY, unlike the tombstone.
+	// The gate exists to make the local soft-delete happen once; the withdrawal
+	// is a write into a REMOTE repo that can fail on its own, and it is
+	// idempotent — DeleteAcceptance reports "nothing to withdraw" as a skip.
+	//
+	// Tying it to the gate is what stranded it: a PDS briefly unreachable on the
+	// first delivery meant the acceptance stayed standing, pointing at a record
+	// nobody can fetch, permanently — because every redelivery was rejected by
+	// the gate before the sweep was reconsidered, and nothing else revisits it.
+	// The community's CAR, the thing its portability argument rests on, would
+	// keep citing content the author withdrew.
+	//
+	// The guard is the POST's state rather than this event's: sweep when the row
+	// is tombstoned, which is true on the delivery that applied it and on every
+	// one after.
+	if applied || stored.deletedAt != nil {
+		c.withdrawAcceptance(ctx, stored.communityDID, uri)
+	}
 	return nil
 }
 
@@ -547,6 +633,37 @@ func (c *PostEventConsumer) upsertAuthorPost(ctx context.Context, authorDID stri
 
 	uri := recordURI(authorDID, PostV2Collection, commit.RKey)
 
+	stored, found, err := c.loadStoredPost(ctx, uri)
+	if err != nil {
+		return err
+	}
+
+	// IMMUTABILITY (§3.1) IS CHECKED FIRST, BEFORE THE COMMUNITY IS LOOKED UP,
+	// and the order is load-bearing rather than tidy.
+	//
+	// An update that changes `community` invalidates the WHOLE event — not
+	// merely the community field, because applying the content while keeping the
+	// old community would leave the first community's admission holding a CID it
+	// never evaluated, publishing content nobody judged under a standing
+	// acceptance. Retargeting a post means writing a new record.
+	//
+	// Two rules meet when the retarget names a community nobody has indexed, and
+	// only one of them can go first. The unknown-community branch below is
+	// TRANSIENT — correctly, since a community's own profile event may simply
+	// not have arrived — so checking it first would turn an illegal retarget
+	// into a retryable failure that can NEVER succeed: it dead-letters, redrives
+	// ten times, blocks ~4.2s inline on each delivery, and is still an illegal
+	// retarget once that community exists. An author could mint that load at
+	// will by editing one field.
+	//
+	// A skip, not an error: an invalid record from a stranger's repo is not an
+	// infrastructure failure.
+	if found && stored.communityDID != record.Community {
+		log.Printf("🚨 SECURITY: ignoring the whole %s update for %s - community is immutable (stored %s, incoming %s)",
+			PostV2Collection, uri, stored.communityDID, record.Community)
+		return nil
+	}
+
 	// The community must be one this AppView has indexed, or there is no
 	// subject to open an admission against.
 	//
@@ -561,26 +678,6 @@ func (c *PostEventConsumer) upsertAuthorPost(ctx context.Context, authorDID stri
 			return fmt.Errorf("community not found: %s - cannot index post before community", record.Community)
 		}
 		return fmt.Errorf("%w: failed to verify community %s exists: %v", errValidationInfra, record.Community, err)
-	}
-
-	stored, found, err := c.loadStoredPost(ctx, uri)
-	if err != nil {
-		return err
-	}
-
-	// IMMUTABILITY (§3.1): an update that changes `community` invalidates the
-	// WHOLE event. Not merely the community field — applying the content while
-	// keeping the old community would leave the first community's admission
-	// holding a CID it never evaluated, publishing content nobody judged under
-	// a standing acceptance. Retargeting a post means writing a new record.
-	//
-	// A skip, not an error: an invalid record from a stranger's repo is not an
-	// infrastructure failure, and dead-lettering it would retry a record that
-	// can never become valid.
-	if found && stored.communityDID != record.Community {
-		log.Printf("🚨 SECURITY: ignoring the whole %s update for %s - community is immutable (stored %s, incoming %s)",
-			PostV2Collection, uri, stored.communityDID, record.Community)
-		return nil
 	}
 
 	// Provenance for bridgedStats is keyed on the AUTHOR's PDS now, because the
@@ -622,12 +719,22 @@ func (c *PostEventConsumer) upsertAuthorPost(ctx context.Context, authorDID stri
 		}
 	}
 
-	if !applied {
-		// The rev gate or the recency guard refused this event: a newer state is
-		// already indexed. Opening or refreshing an admission from it would move
-		// evaluated_cid BACKWARDS onto content the row no longer holds, which is
-		// how an accepted post gets flipped to pending_reacceptance by a
-		// duplicate delivery.
+	// THE GATE GUARDS THE POST ROW, NOT THE ADMISSION. The two writes have
+	// opposite idempotence: inserting the post must happen exactly once, while
+	// UpsertPending is content-addressed and writes nothing when the row already
+	// holds this CID. Gating them together is what orphaned admissions — a
+	// failed upsert leaves the post indexed, the gate advanced, and every
+	// redelivery skipped, so the row is never created and the post is invisible
+	// in its community forever with nothing left to retry.
+	//
+	// A REPLAY IS SAFE, A STALE COPY IS NOT, and the stored rev is what tells
+	// them apart. An equal rev is this same commit arriving again — the upsert
+	// re-runs harmlessly and repairs the orphan. A strictly greater stored rev
+	// means a NEWER event already applied, and re-running the upsert from this
+	// older one would drag evaluated_cid backwards onto content the row no
+	// longer holds, flipping an accepted post to pending_reacceptance on a
+	// duplicate delivery.
+	if !applied && !c.revIsCurrent(ctx, uri, commit.Rev) {
 		return nil
 	}
 
@@ -659,6 +766,31 @@ func (c *PostEventConsumer) upsertAuthorPost(ctx context.Context, authorDID stri
 
 	log.Printf("✓ Indexed author post: %s (author: %s, community: %s)", uri, authorDID, record.Community)
 	return nil
+}
+
+// revIsCurrent reports whether the gate's stored rev for this record is exactly
+// the one this event carries — i.e. whether the event is the newest the AppView
+// has seen rather than an older copy.
+//
+// It exists so a rev-gated SKIP can still be distinguished into its two very
+// different causes. A redelivery of the newest commit is safe to act on again;
+// a stale cross-feed copy of an older one is not. Anything unreadable answers
+// false, which declines to act — the conservative direction, since acting on a
+// stale event corrupts state while declining merely waits for the next
+// delivery.
+func (c *PostEventConsumer) revIsCurrent(ctx context.Context, uri, rev string) bool {
+	if rev == "" {
+		// A rev-less event bypasses the gate entirely, so there is no stored rev
+		// to be current with. Only synthetic events reach this.
+		return true
+	}
+	var stored string
+	if err := c.db.QueryRowContext(ctx,
+		`SELECT rev FROM jetstream_record_revs WHERE record_uri = $1`, uri,
+	).Scan(&stored); err != nil {
+		return false
+	}
+	return stored == rev
 }
 
 // hydrateAuthorOpportunistically indexes a minimal profile for an author this
@@ -916,10 +1048,28 @@ func (c *PostEventConsumer) applyAcceptance(
 	subjectCollection string,
 	watermark posts.CommunityWatermark,
 ) error {
-	indexedCommunity, indexed, err := c.indexedPostCommunity(ctx, decision.Subject.URI)
+	stored, indexed, err := c.loadStoredPost(ctx, decision.Subject.URI)
 	if err != nil {
 		return err
 	}
+
+	// A TOMBSTONED SUBJECT IS NOT ACCEPTABLE, and the arrival is legitimate
+	// rather than hostile: the community decided before it saw the tombstone,
+	// and the two events are in different repos with no ordering between them.
+	// Applying it would have getStatus report `accepted` for content no read
+	// path will ever serve — and the host-side sweep already ran with the
+	// tombstone and will not run again, so the community's repo would keep an
+	// acceptance citing a record nobody can fetch.
+	//
+	// A SKIP, not a refusal. Returning an error would dead-letter an event that
+	// is replayed constantly and would be refused identically every time.
+	if indexed && stored.deletedAt != nil {
+		log.Printf("INFO: not applying the acceptance of %s in %s: its author deleted the post",
+			decision.Subject.URI, communityDID)
+		return nil
+	}
+
+	indexedCommunity := stored.communityDID
 	switch {
 	case !indexed:
 		if err := c.convergeOnAcceptedSubject(ctx, communityDID, decision, subjectCollection); err != nil {
@@ -1033,7 +1183,7 @@ func (c *PostEventConsumer) convergeOnAcceptedSubject(
 	// event time to stamp: an empty rev bypasses the gate (which is correct — a
 	// later real event for this record still wins on its own rev) and the
 	// watermark falls back to wall clock.
-	if _, err := c.insertAuthorPost(ctx, authorPostInsert{
+	applied, err := c.insertAuthorPost(ctx, authorPostInsert{
 		uri:       decision.Subject.URI,
 		authorDID: authorDID,
 		record:    record,
@@ -1043,19 +1193,38 @@ func (c *PostEventConsumer) convergeOnAcceptedSubject(
 		},
 		facets: facetsJSON, embed: embedJSON, labels: labelsJSON,
 		bridgedUpvotes: up, bridgedDownvotes: down, bridgedAsOf: asOf,
-	}); err != nil {
+	})
+	if err != nil {
 		return err
 	}
 
-	// The pending admission comes with it. ApplyAcceptance would create a row
-	// on its own, but one with no evaluated content: recording what was indexed
-	// is what lets the next author edit be recognised as an edit.
-	if _, err := c.admissions.UpsertPending(ctx, posts.UpsertPendingCommand{
-		CommunityDID: communityDID,
-		PostURI:      decision.Subject.URI,
-		EvaluatedCID: fetched.CID,
-	}); err != nil {
-		return fmt.Errorf("recording the pending admission for fetched post %s: %w", decision.Subject.URI, err)
+	// THE FETCH IS A CATCH-UP, NOT AN AUTHORITY, and applied=false is how it
+	// learns it lost the race. The acceptance and the post live in different
+	// repos, so Jetstream parallelises them and the post's own event can land
+	// while this fetch is in flight — which is not a rare interleaving but the
+	// normal one, since the fetch exists precisely because the event had not
+	// arrived. The insert then conflicts and writes nothing.
+	//
+	// UpsertPending is last-write-wins, so running it anyway would stamp the
+	// FETCHED CID over the newer one the real event just recorded. evaluated_cid
+	// is what the next decision judges, so the engine would evaluate content the
+	// author has already replaced, and an acceptance written from that verdict
+	// would pin a version the AppView is no longer serving.
+	//
+	// Skipping it costs nothing: ApplyAcceptance below classifies against
+	// whatever evaluated_cid the row actually holds, which is exactly the
+	// comparison that turns a stale pin into pending_reacceptance.
+	if applied {
+		// The pending admission comes with it. ApplyAcceptance would create a row
+		// on its own, but one with no evaluated content: recording what was indexed
+		// is what lets the next author edit be recognised as an edit.
+		if _, err := c.admissions.UpsertPending(ctx, posts.UpsertPendingCommand{
+			CommunityDID: communityDID,
+			PostURI:      decision.Subject.URI,
+			EvaluatedCID: fetched.CID,
+		}); err != nil {
+			return fmt.Errorf("recording the pending admission for fetched post %s: %w", decision.Subject.URI, err)
+		}
 	}
 
 	c.hydrateAuthorOpportunistically(ctx, authorDID)
@@ -1111,48 +1280,121 @@ func (c *PostEventConsumer) applyRemoval(
 // (§5.3), is the one delete that arrives unpaired — and it is the one this
 // lookup resolves.
 func (c *PostEventConsumer) applyCommunityDecisionDelete(ctx context.Context, communityDID string, commit *CommitEvent) error {
-	if commit.Collection != posts.AcceptanceCollection {
-		log.Printf("INFO: %s deletion in %s carries no subject and is superseded by its paired write; skipping",
-			commit.Collection, communityDID)
-		return nil
-	}
-
-	var postURI string
-	err := c.db.QueryRowContext(ctx,
-		`SELECT post_uri FROM community_post_admissions
-		 WHERE community_did = $1 AND acceptance_rkey = $2`,
-		communityDID, commit.RKey,
-	).Scan(&postURI)
-	if errors.Is(err, sql.ErrNoRows) {
-		// No acceptance of that rkey stands here — the removal half of the same
-		// commit already cleared it, or this AppView never saw the acceptance.
-		// Either way there is nothing to withdraw.
-		log.Printf("INFO: acceptance deletion %s/%s matches no standing acceptance; nothing to withdraw",
-			communityDID, commit.RKey)
-		return nil
-	}
+	postURI, found, err := c.subjectOfDeletedRecord(ctx, communityDID, commit)
 	if err != nil {
-		return fmt.Errorf("resolving the subject of acceptance deletion %s/%s: %w", communityDID, commit.RKey, err)
+		return err
+	}
+	if !found {
+		// Nothing here matches that record key: the paired write of the same
+		// commit already superseded it, or this AppView never saw the record
+		// being deleted. Either way there is nothing to withdraw.
+		log.Printf("INFO: %s deletion %s/%s matches no standing record; nothing to withdraw",
+			commit.Collection, communityDID, commit.RKey)
+		return nil
 	}
 
-	result, err := c.admissions.ApplyAcceptanceDelete(ctx, posts.CommunityDeleteCommand{
+	cmd := posts.CommunityDeleteCommand{
 		CommunityDID: communityDID,
 		PostURI:      postURI,
 		Watermark:    posts.CommunityWatermark{Rev: commit.Rev},
-	})
-	if err != nil {
-		return fmt.Errorf("withdrawing the acceptance of %s in %s: %w", postURI, communityDID, err)
 	}
-	logAdmissionOutcome(posts.AcceptanceCollection+"#delete", communityDID, postURI, result.Outcome)
+
+	var result posts.AdmissionResult
+	if commit.Collection == posts.RemovalCollection {
+		result, err = c.admissions.ApplyRemovalDelete(ctx, cmd)
+	} else {
+		result, err = c.admissions.ApplyAcceptanceDelete(ctx, cmd)
+	}
+	if err != nil {
+		return fmt.Errorf("withdrawing the %s of %s in %s: %w", commit.Collection, postURI, communityDID, err)
+	}
+	logAdmissionOutcome(commit.Collection+"#delete", communityDID, postURI, result.Outcome)
 	return nil
+}
+
+// subjectOfDeletedRecord recovers which post a deleted acceptance or removal was
+// about.
+//
+// A delete event carries NO record, and the rkey is a SHA-256 digest of the
+// subject URI (§3.2), which is one-way — so the subject can only come from state
+// the AppView already holds. The two collections need different lookups because
+// only one of them has a column:
+//
+//   - An ACCEPTANCE stores its rkey on the admission row, so the reverse lookup
+//     is an exact match.
+//   - A REMOVAL stores none, so its subject is found by recomputing the digest
+//     over the rows that could be its subject. The candidate set is bounded to
+//     this community's `removed` rows — moderation-sized, and served by the
+//     (community_did, status, created_at) index migration 034 already carries.
+//
+// WHY THE REMOVAL CASE CANNOT STAY A NO-OP, which is what it was. The paired
+// commits do converge without it: a removal commit is {acceptance-delete,
+// removal-put} and a restore is {removal-delete, acceptance-put}, and in both
+// the put carries the subject in-record and outranks its delete under the §5.2
+// tuple. But a moderator can also simply WITHDRAW a removal — deleting the
+// record and writing nothing — and that commit carries only this event. Ignored,
+// the post stays `removed` forever while the community's own repo no longer says
+// so: the signed record and the AppView disagree, and only the AppView is
+// consulted when the post is served.
+func (c *PostEventConsumer) subjectOfDeletedRecord(
+	ctx context.Context, communityDID string, commit *CommitEvent,
+) (string, bool, error) {
+	if commit.Collection == posts.AcceptanceCollection {
+		var postURI string
+		err := c.db.QueryRowContext(ctx,
+			`SELECT post_uri FROM community_post_admissions
+			 WHERE community_did = $1 AND acceptance_rkey = $2`,
+			communityDID, commit.RKey,
+		).Scan(&postURI)
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", false, nil
+		}
+		if err != nil {
+			return "", false, fmt.Errorf("resolving the subject of acceptance deletion %s/%s: %w",
+				communityDID, commit.RKey, err)
+		}
+		return postURI, true, nil
+	}
+
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT post_uri FROM community_post_admissions
+		 WHERE community_did = $1 AND status = 'removed'`, communityDID)
+	if err != nil {
+		return "", false, fmt.Errorf("resolving the subject of removal deletion %s/%s: %w",
+			communityDID, commit.RKey, err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var postURI string
+		if err := rows.Scan(&postURI); err != nil {
+			return "", false, fmt.Errorf("scanning a removed subject of %s: %w", communityDID, err)
+		}
+		if posts.SubjectRkey(postURI) == commit.RKey {
+			return postURI, true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", false, fmt.Errorf("reading the removed subjects of %s: %w", communityDID, err)
+	}
+	return "", false, nil
 }
 
 // logAdmissionOutcome records what a community event DID, including the skips.
 //
 // A skip is the ordering gate working — a multi-feed duplicate, a dead-letter
-// redrive, an event superseded by its own commit's other half — so it is logged
-// rather than returned as an error, which would bury healthy skips in the
-// dead-letter queue among genuine failures.
+// redrive, an event superseded by its own commit's other half, or this
+// AppView's own write coming back to it — so it is logged rather than returned
+// as an error, which would bury healthy skips in the dead-letter queue among
+// genuine failures.
+//
+// THE LAST OF THOSE IS THE COMMON ONE ON A HOSTING INSTANCE and is easy to
+// misread in the logs. When this AppView hosts the community, the engine writes
+// the acceptance into the repo and stamps the row optimistically; the firehose
+// then delivers that same commit back, and the watermark CAS answers
+// skipped_stale because the row already carries that exact rev. Nothing is
+// wrong — the write landed twice by design, once locally and once as its own
+// echo — and the engine's own doc calls that echo a success.
 func logAdmissionOutcome(collection, communityDID, postURI string, outcome posts.AdmissionOutcome) {
 	if outcome == posts.AdmissionApplied {
 		log.Printf("✓ Applied %s for %s in %s", collection, postURI, communityDID)

@@ -30,12 +30,14 @@ type PostEventConsumer struct {
 	// passes bridgeTrust.
 	identityResolver identity.Resolver
 
-	// RED STUB fields (task 5, cycle 1) — the collaborators author-owned post
-	// ingestion needs. Declared here so the options in authorpost.go compile;
-	// nothing reads them yet. See docs/PRD_AUTHOR_OWNED_POSTS.md §5.3-§5.6.
+	// The collaborators author-owned post ingestion needs
+	// (docs/PRD_AUTHOR_OWNED_POSTS.md §5.3-§5.6). All four are read by the
+	// handlers in authorpost.go, and a nil one disables a capability rather
+	// than degrading it — see each field.
 	//
 	// admissions holds the per-(community, post) decision state. nil means the
-	// consumer is running in its pre-034 shape and records no admissions.
+	// consumer is running in its pre-034 shape and ignores all three
+	// author-owned collections rather than indexing them undecided.
 	admissions posts.AdmissionRepository
 	// deletedAccounts gates events from erased accounts. nil means no gate.
 	deletedAccounts DeletedAccountLookup

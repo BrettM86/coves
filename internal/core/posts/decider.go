@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 	"time"
@@ -29,9 +28,11 @@ import (
 //   - THE ACTOR CLASS. A misclassification is a privilege decision. Trusted
 //     aggregators skip visibility, ban and authorization entirely, so guessing
 //     UPWARD on a failed lookup would hand the widest privileges in the system
-//     to whoever made the lookup fail. Every uncertain path therefore falls to
-//     the STRICTER class, matching CreatePost's existing behaviour (service.go
-//     step 3 treats a failed IsAggregator lookup as an ordinary user).
+//     to whoever made the lookup fail. But guessing DOWNWARD is not free here
+//     either, which is where this path parts company with CreatePost: a lookup
+//     that could not be made is reported as UNDECIDED rather than resolved to
+//     the stricter class, because this decision gets written into the admission
+//     row with redrivable = false. See classify for the full asymmetry.
 //
 // It reuses evaluateAdmissionPolicy rather than admitPost, and that is the split
 // task 3 built for: admitPost RESERVES a ledger slot, and the engine is not a
@@ -187,7 +188,12 @@ func (d *AdmissionEngineDecider) DecideAdmission(ctx context.Context, communityD
 			postURI, communityDID, ErrSubjectGone))
 	}
 
-	return evaluateAdmissionPolicy(ctx, admissionDeps{
+	actor, err := d.classify(ctx, post.AuthorDID)
+	if err != nil {
+		return undecided(fmt.Errorf("deciding %s for %s: %w", postURI, communityDID, err))
+	}
+
+	decision, err := evaluateAdmissionPolicy(ctx, admissionDeps{
 		communities: d.deps.Communities,
 		bans:        d.deps.Policy.Bans,
 		aggregators: d.deps.Authorizer,
@@ -195,7 +201,7 @@ func (d *AdmissionEngineDecider) DecideAdmission(ctx context.Context, communityD
 		limits:      d.deps.Policy.Limits,
 		now:         d.deps.Policy.Now,
 	}, AdmissionRequest{
-		Actor:     d.classify(ctx, post.AuthorDID),
+		Actor:     actor,
 		AuthorDID: post.AuthorDID,
 		// The community DID, which resolves to itself. The engine's input is an
 		// admission row, and its key is already the resolved DID — there is no
@@ -209,42 +215,106 @@ func (d *AdmissionEngineDecider) DecideAdmission(ctx context.Context, communityD
 		// redeciding.
 		Fingerprint: "",
 	})
+	if err != nil || !decision.Admitted() {
+		return decision, err
+	}
+
+	return d.applyQuota(ctx, communityDID, post.AuthorDID, actor, decision)
 }
 
-// classify decides what class of actor the author is.
+// applyQuota is the firehose path's §8 submission limit, and the last thing
+// between an admitted decision and the engine writing an acceptance.
 //
-// EVERY UNCERTAIN PATH FALLS TO ActorUser, the stricter class. A trusted
-// aggregator skips visibility, ban and authorization entirely, so resolving a
-// failed lookup UPWARD would hand the widest privileges in the system to
-// whoever managed to make the lookup fail. Guessing downward costs an
-// aggregator some refused posts until the lookup recovers — and CreatePost
-// already made exactly this choice (service.go step 3), so the engine agreeing
-// with it is also what keeps the write path and the ingestion path from
-// disagreeing about who someone is.
-func (d *AdmissionEngineDecider) classify(ctx context.Context, authorDID string) ActorClass {
+// IT COUNTS ADMISSION ROWS, NOT LEDGER ROWS, and that substitution is the whole
+// reason it exists separately from admitPost's step 6. post_submissions is
+// written by CreatePost, so a post that arrived over the firehose from an author
+// on another server has no ledger row and never will — counting it would hold
+// LOCAL users to the limit while exempting precisely the remote ones §8 is
+// about. Anyone can write unlimited postv2 records naming any community, and the
+// admission layer is what absorbs that.
+//
+// THE LIMIT IS THE SAME NUMBER the write path uses, taken from the same config,
+// so an author is held to one quota rather than to two that drift.
+//
+// ACTOR CLASSES ARE TREATED EXACTLY AS admitPost TREATS THEM: only ActorUser is
+// metered. A registered aggregator is already governed by its own hourly quota
+// inside ValidateAggregatorPost, and applying this as well would silently halve
+// an authorized aggregator's throughput; a trusted one has never had a
+// submission limit, and inventing one here would stop the bridge dead at a
+// number nobody chose.
+func (d *AdmissionEngineDecider) applyQuota(
+	ctx context.Context, communityDID, authorDID string, actor ActorClass, decision AdmissionDecision,
+) (AdmissionDecision, error) {
+	if actor != ActorUser || d.deps.Admissions == nil {
+		return decision, nil
+	}
+	limits := d.deps.Policy.Limits
+	if limits.MaxPerAuthorPerCommunity <= 0 || limits.Window <= 0 {
+		return decision, nil
+	}
+
+	since := d.deps.Policy.Now().Add(-limits.Window)
+	count, err := d.deps.Admissions.CountRecentAdmissions(ctx, communityDID, authorDID, since)
+	if err != nil {
+		// UNDECIDED, never a refusal. The engine persists a refusal code and
+		// marks it non-redrivable, so a count that could not be taken must not
+		// become a permanent rate-limit verdict on somebody's post.
+		return undecided(fmt.Errorf("counting recent admissions for %s in %s: %w", authorDID, communityDID, err))
+	}
+
+	// EXCEEDS, not reaches. The subject being decided already has its own
+	// admission row — the consumer opens it before the engine ever runs — so it
+	// is inside this count, exactly as admitPost's reservation is inside its
+	// own. Comparing with >= would refuse the author's very first post.
+	if count > limits.MaxPerAuthorPerCommunity {
+		return AdmissionDecision{Code: DecisionRateLimitExceeded}, nil
+	}
+	return decision, nil
+}
+
+// classify decides what class of actor the author is, or reports that it could
+// not.
+//
+// A FAILED LOOKUP IS UNDECIDED HERE, AND A DOWNGRADE ON THE WRITE PATH. The two
+// answers are deliberate opposites, and the difference is what each caller does
+// with the result afterwards. CreatePost is talking to a live client: a
+// downgrade to ActorUser applies the strict checks, costs an aggregator a few
+// posts until the table recovers, and hands back something the caller can
+// retry. Nothing is written down.
+//
+// The engine writes its verdict INTO the admission row, and a policy refusal is
+// stamped redrivable = false — terminal, never revisited by the redrive pass.
+// The same downgrade there does not cost a retry; it permanently marks a post
+// refused for a reason that was never true, because a table was briefly
+// unreachable, and nothing in the system would ever look at it again.
+//
+// So the rule this encodes is: A DECISION THAT PERSISTS MAY ONLY BE MADE FROM
+// AN ANSWER THAT WAS ACTUALLY OBTAINED. Guessing upward is never available
+// either — a trusted aggregator skips visibility, ban and authorization
+// entirely, so resolving uncertainty in that direction would hand the widest
+// privileges in the system to whoever could make a lookup fail.
+func (d *AdmissionEngineDecider) classify(ctx context.Context, authorDID string) (ActorClass, error) {
 	// The trusted set is checked FIRST, which is both the cheaper path and the
 	// only one that costs nothing: it is an in-memory set resolved at
 	// construction, so a trusted actor never pays for a database lookup to
 	// learn what the process already knew.
 	if d.deps.TrustedAggregatorDIDs[authorDID] {
-		return ActorTrustedAggregator
+		return ActorTrustedAggregator, nil
 	}
 
 	// With no aggregator collaborators wired — a deployment with no aggregator
-	// support at all — nobody can be classified as one, which is the strict
-	// answer rather than a degraded one.
+	// support at all — nobody can be classified as one. That is a CONFIGURED
+	// fact rather than a failed lookup, so it answers rather than defers.
 	if d.deps.Aggregators == nil || d.deps.Authorizer == nil {
-		return ActorUser
+		return ActorUser, nil
 	}
 
 	registered, err := d.deps.Aggregators.IsAggregator(ctx, authorDID)
 	if err != nil {
-		log.Printf("[ADMISSION-DECIDER] Warning: classifying %s fell back to the user class, IsAggregator failed: %v",
-			authorDID, err)
-		return ActorUser
+		return "", fmt.Errorf("classifying %s: %w", authorDID, err)
 	}
 	if registered {
-		return ActorRegisteredAggregator
+		return ActorRegisteredAggregator, nil
 	}
-	return ActorUser
+	return ActorUser, nil
 }

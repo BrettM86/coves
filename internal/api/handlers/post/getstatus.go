@@ -7,6 +7,30 @@ import (
 	"time"
 
 	"Coves/internal/core/posts"
+
+	"github.com/bluesky-social/indigo/atproto/syntax"
+)
+
+// The identifier bounds this endpoint accepts, DERIVED from the specs rather
+// than picked, because both directions of getting it wrong are silent.
+//
+// A postv2 URI is AUTHORITY-SCOPED — the author's DID is inside it — and a DID
+// may legally run to 2048 bytes, the same fact that killed the readable rkey
+// transform in PRD rev 2.2. A cap sized for the old community-repo URIs would
+// refuse exactly the authors with long DIDs, on the one endpoint that can tell
+// them why their post is not visible, and nothing else in the system would show
+// a symptom: their posts index fine and every other endpoint serves them.
+//
+// So the URI bound is the sum of its legal parts rather than a round number:
+// "at://" + a 2048-byte authority + "/" + a 317-byte NSID + "/" + a 512-byte
+// record key. It is a pre-parse DoS bound only — ParseATURI below is what
+// decides whether the thing is actually a URI.
+const (
+	maxAuthorityLength   = 2048 // DID Core's ceiling
+	maxNSIDLength        = 317  // atProto NSID grammar
+	maxRecordKeyLength   = 512  // atProto record-key grammar
+	maxPostURILength     = len("at://") + maxAuthorityLength + 1 + maxNSIDLength + 1 + maxRecordKeyLength
+	maxCommunityIDLength = maxAuthorityLength
 )
 
 // GetStatusHandler serves social.coves.community.post.getStatus: one
@@ -53,12 +77,29 @@ func (h *GetStatusHandler) HandleGetStatus(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "InvalidRequest", "community parameter is required")
 		return
 	}
-	if len(postURI) > maxURILength {
+	// THE CAP IS SIZED TO THE SPEC, NOT TO THE OLD URIs. A DID may legally run
+	// to 2048 bytes — the same fact that killed the readable rkey transform in
+	// PRD rev 2.2 — and an author-owned post URI is authority-scoped, so the
+	// author's DID is INSIDE the URI this endpoint takes. A cap sized for the
+	// old community-repo URIs would silently make long-DID authors unqueryable
+	// and nothing else would notice: their posts index fine and every other
+	// endpoint serves them.
+	if len(postURI) > maxPostURILength {
 		writeError(w, http.StatusBadRequest, "InvalidRequest", "post URI exceeds maximum length")
 		return
 	}
-	if len(communityDID) > maxURILength {
+	if len(communityDID) > maxCommunityIDLength {
 		writeError(w, http.StatusBadRequest, "InvalidRequest", "community DID exceeds maximum length")
+		return
+	}
+
+	// Raising the cap must not become "accept anything long". The URI is PARSED,
+	// so a non-at:// string comes back as the client bug it is rather than as a
+	// silent not-found — which would tell a client with a typo that its post
+	// does not exist.
+	if _, err := syntax.ParseATURI(postURI); err != nil {
+		writeError(w, http.StatusBadRequest, "InvalidRequest",
+			"post must be a valid AT-URI")
 		return
 	}
 
@@ -96,6 +137,13 @@ func (h *GetStatusHandler) HandleGetStatus(w http.ResponseWriter, r *http.Reques
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	// NO-STORE, and not as a nicety. This endpoint exists to be POLLED for a
+	// transition (§7), so a cached answer is the endpoint failing at its only
+	// job: the client keeps being handed `pending` after the post was accepted
+	// and stops asking. It is also unauthenticated and reports a moderation
+	// decision, so an intermediary holding a copy is a disclosure surface that
+	// outlives the request that created it.
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(responseBytes); err != nil {
 		log.Printf("ERROR: Failed to write getStatus response: %v", err)

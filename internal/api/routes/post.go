@@ -6,9 +6,19 @@ import (
 	"Coves/internal/core/blueskypost"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/votes"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 )
+
+// getStatusRateLimit is social.coves.community.post.getStatus' per-client
+// budget, per minute.
+//
+// Sixty is chosen against the endpoint's own UX rather than copied from a
+// neighbour: §7 has a client poll for the accepted transition, and a poll a
+// second for a minute is comfortably inside this while a script enumerating a
+// community's rejected posts is not.
+const getStatusRateLimit = 60
 
 // PostRouteOption supplies a collaborator that only some of the post routes
 // need.
@@ -26,11 +36,23 @@ type postRouteConfig struct {
 
 // WithPostStatusService supplies the service behind
 // social.coves.community.post.getStatus. The route is registered either way, so
-// that the HTTP surface does not silently change shape with the wiring; without
-// this option the handler has no service to call.
+// that the HTTP surface does not silently change shape with the wiring.
 func WithPostStatusService(service posts.StatusService) PostRouteOption {
 	return func(c *postRouteConfig) { c.statusService = service }
 }
+
+// NOT GUARDED AT REGISTRATION, unlike oauthMiddleware above, and the asymmetry
+// is forced rather than chosen. The review asked for a fail-fast panic on a
+// missing status service, matching that neighbour — but the routes table builds
+// the whole router with every service nil and no options at all
+// (registration_test.go's theRouter), so a panic there would fail every
+// surface-declaration test rather than the one wiring bug it is aimed at.
+// Scoping it to a supplied-but-nil option would guard a shape nobody writes.
+//
+// The exposure is small and named here so it is not mistaken for an oversight:
+// cmd/server always supplies the option, and a build that did not would serve
+// 500s from getStatus alone. Closing it properly needs the routes table to pass
+// the option, which is a test-side change.
 
 // RegisterPostRoutes registers post-related XRPC endpoints on the router
 // Implements social.coves.community.post.* lexicon endpoints
@@ -87,8 +109,18 @@ func RegisterPostRoutes(
 	// be harmless but pointless — the answer does not vary by viewer — while
 	// RequireAuth would make the cross-server case unanswerable, which is the
 	// asymmetry internal/api/routes/registration_test.go declares.
+	//
+	// It also carries its OWN limiter, tighter than the global 100/minute, and
+	// it is the only unauthenticated route in the product that does. Two facts
+	// make the exception worth it: §7's client UX is to POLL this until a post
+	// flips to accepted, so the honest traffic shape is repeated requests from
+	// one caller; and because it takes no auth, an unauthenticated stranger can
+	// ask about any post URI they can name. The budget is what bounds
+	// enumeration of a community's rejected posts to a rate an operator notices.
 	statusHandler := post.NewGetStatusHandler(cfg.statusService)
-	r.Get("/xrpc/social.coves.community.post.getStatus", statusHandler.HandleGetStatus)
+	statusRateLimiter := middleware.NewRateLimiter(getStatusRateLimit, time.Minute)
+	r.With(statusRateLimiter.Middleware).
+		Get("/xrpc/social.coves.community.post.getStatus", statusHandler.HandleGetStatus)
 
 	// Future endpoints (Beta):
 	// r.With(authMiddleware.RequireAuth).Post("/xrpc/social.coves.community.post.update", updateHandler.HandleUpdate)
