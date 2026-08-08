@@ -740,6 +740,34 @@ relaunders a removed post, so the sequence is fixed:
    states so a crash after checkpoint retries only the delete.
 5. **Truncate + firehose re-index `posts`** (§5.1). The tool writes repo records
    + ledger only; the consumer re-indexes the fresh postv2/acceptance.
+
+   > **BLOCKING — UNRESOLVED (found 2026-08-08, task-8 re-review).** Re-index
+   > alone leaves **every comment and every vote on every migrated post
+   > orphaned.** Comments pin `reply.root`/`reply.parent` and votes pin
+   > `subject` as `strongRef` — URI *and* CID — and re-materialization changes
+   > both halves of a post's identity (authority community→author, collection
+   > `post`→`postv2`, new rkey, new CID). Those refs live in **user repos**, so
+   > the AppView cannot rewrite them, and `comment_consumer` deliberately
+   > REFUSES an update that changes `root`/`parent` (thread-hijack guard), so
+   > they cannot be repaired in place. After a fully *successful* run, every
+   > migrated post renders with **0 comments and 0 score** — the "post husks
+   > with no comments and no scores" outcome §1.3 opens by naming as the
+   > problem this design exists to solve. The consumers log
+   > `Root post not found` / `Vote subject not found` and continue, so nothing
+   > fails loudly.
+   >
+   > Three options, all needing a decision BEFORE the prod run:
+   > (a) an AppView-side remap that rewrites `comments.root_uri/root_cid`,
+   > `comments.parent_uri/parent_cid` and `votes.subject_uri/subject_cid` from
+   > the ledger, with the re-index reading through it — the repo records stay
+   > stale but the product works;
+   > (b) re-materialize comments and votes too (cascades: comment URIs change,
+   > so nested `parent` refs chase them);
+   > (c) accept the loss explicitly and say so in the release notes.
+   >
+   > The ledger holds everything a remap needs (`old_uri`, `new_uri`,
+   > `new_cid`) — **but only for `done` rows, so the mapping must be captured
+   > before anyone truncates.** Do not run step 5 until this is settled.
 6. **POST-DRAIN FOLLOW-UP (separate branch, gated on
    `SELECT count(*) FROM posts WHERE split_part(uri,'/',4)='social.coves.community.post'`
    = 0 AND fallbacks = 0):** only then remove the legacy surfaces —
