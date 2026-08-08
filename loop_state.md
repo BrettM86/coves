@@ -19,7 +19,7 @@ Stop when every task is done, or on any `blocked:` row.
 | 4 | Acceptance engine: deterministic rkey, swap-safe acceptance writer, atomic applyWrites removal, repin/terminality rules | B | done | e00d97a | make ci 4944/0. Probe-driven plan review killed 4 assumptions pre-code. 2 production bugs fixed as side effects. Gate saga: 2 latent test defects fixed + Docker restart (150d uptime) |
 | 5 | Ingestion: postv2/acceptance/removal consumers, watermark gating, direct-fetch convergence, WantedCollections + 3 e2e contracts | B | done | 0caeda4 | make ci 5047/0. PRD → rev 2.7. getStatus pulled forward; migration 036; queue driver + decider + factory; 6 production defects fixed as by-catch; CAR-recomputed CID verification |
 | 6 | Write path flip: author-repo postv2 via session, author-PDS blobs, sync fast-path accept, post.delete flip, post.update NEW | C | done | 2c66287 | make ci 5120/0. pragma:security FIRED — bypass CLEAN. Seed-rewind (published false acceptance) + UpdatePost validation bypass + dead token step + SSRF fixed. DEPLOY GATE: not ahead of task 7 |
-| 7 | Read path: centralized visibility predicate, full surface inventory, #removedPost, getStatus, alternate-endpoint invisibility T2s | C | pending | | |
+| 7 | Read path: centralized visibility predicate, full surface inventory, #removedPost, getStatus, alternate-endpoint invisibility T2s | C | done | 4780d36 | make ci 5157/0. PRD → rev 2.8. SECURITY SIGN-OFF: 6+7 deploy-safe. 2 live leaks caught+fixed (removed-legacy via getComments; accepted-CID edit window). Deploy gate CLEARED |
 | 8 | Cutover: re-materialization script (ledger, verify-before-delete, hermetic test), old-path removal, docs, tracker cleanup; panel on whole branch; /merge-to-main | D | pending | | prod script run is MANUAL, outside loop |
 
 ## Cross-iteration notes
@@ -176,6 +176,24 @@ Stop when every task is done, or on any `blocked:` row.
   addresses (internal wikis / same-network services); IS_DEV_ENV is the only
   escape hatch — a narrower per-host allowance is a deliberate config-design
   task if self-hosters need it (backlog, owner decision).
+- (2026-08-08, task 7 → TASK 8 OBLIGATIONS): community.post_count STORED
+  column incrementer is unwired — countAcceptedPostsForCommunity is the
+  accepted-only source of truth the task-8 consumer follow-up must converge
+  the column onto (increment on →accepted, decrement on accepted→removed/
+  rejected); no leak meanwhile (display queries exclude non-accepted).
+  applyRemoval has NO collection guard (a legacy post can carry a removed
+  admission row — intended, moderators can remove legacy posts; the read
+  path now honors it). The deprecated community.post collection + its
+  consumer + blobOwnerOf community-fallback + the fingerprint retype all
+  drain/retire in task 8. Author-self-view on post.get deferred (GetViewsByURIs
+  stays 2-arg; author reaches own via actor.getPosts+getStatus) — reconsider
+  if the interface change earns its keep.
+- (2026-08-08, CONDUCTOR DISCIPLINE, slipped TWICE in task 7): commit GREEN's
+  gate-passed work BEFORE dispatching the next phase or running make ci — an
+  agent reporting "ci passed" is NOT a commit (ci.sh snapshots the working
+  tree; the commit is separate). Both times recovered (nothing lost — the
+  tree held it), but the every-gate rule means COMMIT AT THE GATE, then
+  proceed.
 - (harness, multi-agent stacks): ONE coves-ci compose-project runner at a
   time — a conductor ci run and an agent test-e2e run collided (force-
   recreate mid-run → phantom dead-letter floods + starved lanes). The
