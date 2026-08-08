@@ -294,7 +294,28 @@ func (r *postgresUserRepo) Delete(ctx context.Context, did string) error {
 		return fmt.Errorf("failed to delete votes for did=%s: %w", did, err)
 	}
 
-	// 9. Delete user (FK CASCADE deletes posts)
+	// 9. Delete the admission rows for this author's posts.
+	//
+	// Author-owned post URIs live in the author's own repo — at://<did>/... —
+	// so a prefix match on the DID reaches every subject, INCLUDING admissions
+	// whose post is not indexed here: an acceptance can arrive before the post
+	// it is about, which is exactly why community_post_admissions deliberately
+	// carries no foreign key to posts (migration 034). A subquery against
+	// posts would miss those rows, and nothing but this statement removes
+	// them — left behind, they would be admissions about a deleted account.
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM community_post_admissions
+		WHERE starts_with(post_uri, 'at://' || $1 || '/')
+	`, did); err != nil {
+		return fmt.Errorf("failed to delete community_post_admissions for did=%s: %w", did, err)
+	}
+
+	// 10. Delete posts (explicit DELETE - fk_author CASCADE removed in migration 034)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM posts WHERE author_did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete posts for did=%s: %w", did, err)
+	}
+
+	// 11. Delete user
 	result, err := tx.ExecContext(ctx, `DELETE FROM users WHERE did = $1`, did)
 	if err != nil {
 		return fmt.Errorf("failed to delete user did=%s: %w", did, err)

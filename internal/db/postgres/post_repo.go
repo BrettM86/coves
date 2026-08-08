@@ -94,14 +94,13 @@ func (r *postgresPostRepo) Create(ctx context.Context, post *posts.Post) error {
 			return fmt.Errorf("post already indexed: %s", post.URI)
 		}
 
-		// Check for foreign key violations
-		if strings.Contains(err.Error(), "violates foreign key constraint") {
-			if strings.Contains(err.Error(), "fk_author") {
-				return fmt.Errorf("author DID not found: %s", post.AuthorDID)
-			}
-			if strings.Contains(err.Error(), "fk_community") {
-				return fmt.Errorf("community DID not found: %s", post.CommunityDID)
-			}
+		// Check for a foreign key violation. fk_community is the only FK left
+		// on posts: migration 034 dropped fk_author (author-owned posts — a
+		// federated author may have no users row, and that must not block
+		// indexing).
+		if strings.Contains(err.Error(), "violates foreign key constraint") &&
+			strings.Contains(err.Error(), "fk_community") {
+			return fmt.Errorf("community DID not found: %s", post.CommunityDID)
 		}
 
 		return fmt.Errorf("failed to insert post: %w", err)
