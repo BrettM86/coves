@@ -3,6 +3,7 @@ package posts
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -212,9 +213,6 @@ type Rematerializer struct {
 	Acceptances CommunityRecordWriter
 }
 
-// errRematerializeNotImplemented is the RED sentinel every stub body returns.
-var errRematerializeNotImplemented = errors.New("rematerialize: not implemented (RED stub)")
-
 // RematerializeRkey is the postv2 record key the tool writes a legacy record at.
 //
 // IT IS A PURE, STABLE FUNCTION OF THE OLD RECORD'S URI — the single
@@ -225,17 +223,173 @@ var errRematerializeNotImplemented = errors.New("rematerialize: not implemented 
 // re-run would draw a different key and duplicate the post.
 //
 // The scheme is the SubjectRkey digest scheme applied to the OLD URI: a total,
-// collision-free (SHA-256) function that the write path already trusts.
-func RematerializeRkey(legacyPostURI string) string { return "" }
+// collision-free (SHA-256) function that the write path already trusts. It is
+// SubjectRkey verbatim, not a re-derivation, so the tool and the write path
+// cannot come to disagree about what key a subject hashes to.
+func RematerializeRkey(legacyPostURI string) string { return SubjectRkey(legacyPostURI) }
 
 // Run discovers every legacy record and drives each to a terminal state,
 // returning the census.
+//
+// A per-record error FAILS THE RUN rather than being logged and skipped: the
+// safety properties are all ordering ones, and continuing past a record the tool
+// could not verify would let the operator read a "done"-heavy census as
+// permission to run the irreversible legacy-removal step while a record sits
+// half-migrated. A no-creds fallback is NOT such an error — it is an expected
+// terminal outcome the census counts — so it lets the run continue while still
+// holding Complete false.
 func (r *Rematerializer) Run(ctx context.Context) (RematerializeReport, error) {
-	return RematerializeReport{}, errRematerializeNotImplemented
+	legacies, err := r.Source.ListLegacyPosts(ctx)
+	if err != nil {
+		return RematerializeReport{}, fmt.Errorf("enumerating legacy posts: %w", err)
+	}
+
+	for _, legacy := range legacies {
+		if _, err := r.RematerializeOne(ctx, legacy); err != nil {
+			return RematerializeReport{}, fmt.Errorf("re-materializing %s: %w", legacy.URI, err)
+		}
+	}
+
+	byState, err := r.Ledger.CountByState(ctx)
+	if err != nil {
+		return RematerializeReport{}, fmt.Errorf("taking the census: %w", err)
+	}
+
+	report := RematerializeReport{ByState: byState}
+	for state, n := range byState {
+		report.Discovered += n
+		if state == RematerializeDone {
+			report.Done += n
+		}
+		if IsFallback(state) {
+			report.Fallbacks += n
+		}
+	}
+	// The gate on the separate, irreversible legacy-removal follow-up (§11 step
+	// 6): a surviving fallback is a post still living only as a legacy record, so
+	// the run must not tell the operator the migration is finished.
+	report.Complete = report.Fallbacks == 0
+
+	return report, nil
 }
 
 // RematerializeOne drives a single legacy record from wherever its ledger row
 // stands to a terminal state, and returns the state it reached.
+//
+// The steps are guarded on the ledger state each moves FROM, so a resumed run
+// re-enters at exactly the step its predecessor stopped before and re-does none
+// of the completed ones. The load-bearing ordering is VERIFY BEFORE DELETE: the
+// old record is deleted only after the postv2 and its acceptance are confirmed to
+// pin the same CID, and the migrated checkpoint is persisted BEFORE the delete so
+// a crash there retries only the delete.
 func (r *Rematerializer) RematerializeOne(ctx context.Context, legacy LegacyPost) (RematerializeState, error) {
-	return "", errRematerializeNotImplemented
+	row, err := r.Ledger.Discover(ctx, legacy.URI, legacy.AuthorDID)
+	if err != nil {
+		return "", err
+	}
+
+	// A row already in a terminal fallback state is left exactly as it stands: the
+	// credential census reached its verdict on a prior pass, and re-opening it
+	// would be the one thing §11 step 3 forbids — a second chance to forge.
+	if IsFallback(row.State) {
+		return row.State, nil
+	}
+
+	// Step 1 — postv2_written. Write the author-owned postv2 at the deterministic
+	// rkey. createAuthorRecord is create-only and converges by read, so a resume
+	// that re-enters here (it will not, but the guard is honest) would find its own
+	// first attempt rather than mint a second post.
+	if row.State == RematerializeDiscovered {
+		repo, err := r.AuthorRepos(ctx, legacy.AuthorDID, nil)
+		if err != nil {
+			// NO CREDENTIALS IS A TERMINAL FALLBACK, NEVER A FORGERY. An author whose
+			// repo cannot be restored is left as legacy — the postv2 is not written and
+			// the old record survives — because re-authoring under any other identity
+			// reintroduces the §2 impersonation the whole flip removes.
+			if errors.Is(err, ErrNoAuthorCredentials) {
+				reason := fmt.Sprintf("author %s has no restorable repo credentials: %v", legacy.AuthorDID, err)
+				if markErr := r.Ledger.MarkFallback(ctx, legacy.URI, RematerializeFallbackLeftLegacy, reason); markErr != nil {
+					return row.State, markErr
+				}
+				return RematerializeFallbackLeftLegacy, nil
+			}
+			return row.State, fmt.Errorf("opening the author repo of %s: %w", legacy.AuthorDID, err)
+		}
+
+		rkey := RematerializeRkey(legacy.URI)
+		newURI, newCID, _, err := createAuthorRecord(ctx, repo, rkey, postV2From(legacy.Record))
+		if err != nil {
+			return row.State, fmt.Errorf("writing the postv2 for %s: %w", legacy.URI, err)
+		}
+
+		if err := r.Ledger.RecordPostV2Written(ctx, legacy.URI, newURI, newCID, rkey); err != nil {
+			return row.State, err
+		}
+		row.State = RematerializePostV2Written
+		row.NewURI, row.NewCID, row.NewRkey = newURI, newCID, rkey
+	}
+
+	// Step 2 — verified. Write the community's acceptance DIRECT (never through the
+	// engine — see the type's doc) pinning the NEW postv2 CID, then RE-READ the
+	// postv2 and confirm it still pins that CID. Verification reads the standing
+	// record rather than trusting the write's returned CID, so a concurrent edit
+	// landing in the write→verify window is caught here — before anything is
+	// deleted.
+	if row.State == RematerializePostV2Written {
+		if _, err := r.Acceptances.WriteAcceptance(ctx, CommunityWriteCommand{
+			CommunityDID: legacy.CommunityDID,
+			PostURI:      row.NewURI,
+			PostCID:      row.NewCID,
+		}); err != nil {
+			return row.State, fmt.Errorf("writing the acceptance for %s: %w", row.NewURI, err)
+		}
+
+		repo, err := r.AuthorRepos(ctx, legacy.AuthorDID, nil)
+		if err != nil {
+			return row.State, fmt.Errorf("re-opening the author repo of %s to verify: %w", legacy.AuthorDID, err)
+		}
+		standing, err := repo.GetRecord(ctx, PostV2Collection, row.NewRkey)
+		if err != nil {
+			return row.State, fmt.Errorf("verifying the postv2 for %s: %w", row.NewURI, err)
+		}
+		if standing.CID != row.NewCID {
+			// VERIFY BEFORE DELETE fails closed: the acceptance now pins a CID the
+			// postv2 no longer carries, so deleting the old record would destroy the
+			// only copy of a post whose new attestation points at content that no
+			// longer stands. No checkpoint, no delete — the row stays at
+			// postv2_written for a later pass to re-verify.
+			return row.State, fmt.Errorf(
+				"verifying the postv2 for %s: the standing record pins %s but the acceptance pinned %s (a concurrent edit landed mid-verify)",
+				row.NewURI, standing.CID, row.NewCID)
+		}
+
+		if err := r.Ledger.MarkVerified(ctx, legacy.URI); err != nil {
+			return row.State, err
+		}
+		row.State = RematerializeVerified
+	}
+
+	// Step 3 — migrated. The checkpoint BEFORE the delete: postv2 and acceptance
+	// verified, old record still present. Persisting it as its own state is what
+	// lets a crash on the delete retry ONLY the delete.
+	if row.State == RematerializeVerified {
+		if err := r.Ledger.MarkMigrated(ctx, legacy.URI); err != nil {
+			return row.State, err
+		}
+		row.State = RematerializeMigrated
+	}
+
+	// Step 4 — done. Delete the old community.post; a delete of an already-gone
+	// record is success (the source's contract), so a resumed delete is idempotent.
+	if row.State == RematerializeMigrated {
+		if err := r.Source.DeleteLegacyPost(ctx, legacy); err != nil {
+			return row.State, fmt.Errorf("deleting the old record %s: %w", legacy.URI, err)
+		}
+		if err := r.Ledger.MarkDone(ctx, legacy.URI); err != nil {
+			return row.State, err
+		}
+		row.State = RematerializeDone
+	}
+
+	return row.State, nil
 }
