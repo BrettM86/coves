@@ -42,6 +42,9 @@ type PostEventConsumer struct {
 	// postFetcher resolves an acceptance whose subject was never indexed. nil
 	// means the dead-letter queue is the only convergence mechanism.
 	postFetcher PostRecordFetcher
+	// acceptanceCleanup withdraws a hosted community's acceptance when the
+	// author tombstones the post. nil means no sweep runs.
+	acceptanceCleanup AcceptanceDeleter
 }
 
 // PostEventConsumerOption configures optional PostEventConsumer behaviour.

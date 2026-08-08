@@ -83,6 +83,28 @@ func WithPostRecordFetcher(fetcher PostRecordFetcher) PostEventConsumerOption {
 	return func(c *PostEventConsumer) { c.postFetcher = fetcher }
 }
 
+// AcceptanceDeleter withdraws a community's acceptance of a post. Satisfied by
+// posts.CommunityRecordWriter.
+//
+// RED STUB (task 5, cycle 2). Narrowed to one method because that is all the
+// tombstone path needs: the consumer must never write an acceptance, a removal
+// or a repin — those are the ENGINE's verdicts, and a consumer holding the full
+// writer is one edit away from making one.
+type AcceptanceDeleter interface {
+	DeleteAcceptance(ctx context.Context, cmd posts.CommunityAcceptanceDeleteCommand) (posts.CommunityWriteResult, error)
+}
+
+// WithAcceptanceCleanup installs the host-side sweep that withdraws a
+// community's acceptance when the AUTHOR deletes their post (§5.3).
+//
+// Only the HOST can do this — the acceptance lives in the community's repo and
+// needs its keys — so the sweep is silently a no-op for every community this
+// AppView does not host, and that is the common case on any instance that is
+// not the community's home. nil disables it entirely.
+func WithAcceptanceCleanup(deleter AcceptanceDeleter) PostEventConsumerOption {
+	return func(c *PostEventConsumer) { c.acceptanceCleanup = deleter }
+}
+
 // ---------------------------------------------------------------------------
 // §5.4 direct fetch
 // ---------------------------------------------------------------------------

@@ -340,6 +340,45 @@ type AdmissionRepository interface {
 	// one is an error rather than a silent reset to the first page, which would
 	// make a moderator re-review what they had already cleared.
 	ListByStatusForCommunity(ctx context.Context, communityDID string, status AdmissionStatus, limit int, cursor *string) ([]*Admission, *string, error)
+
+	// ListPendingSubjects returns the work the acceptance engine still owes a
+	// decision on, ACROSS communities, oldest first and bounded by limit.
+	//
+	// It is a different question from ListByStatusForCommunity, which serves a
+	// moderator looking at one community. This serves the engine's driver, which
+	// has no community in hand — it is asking "what is undecided anywhere that I
+	// can actually decide", and the two halves of that qualification are why this
+	// is a query rather than a filter over the other one:
+	//
+	//   - ONLY COMMUNITIES THIS APPVIEW HOSTS. Hosting means holding the
+	//     community's PDS credentials, because writing the acceptance is the
+	//     whole point and a community whose keys we do not have can never be
+	//     satisfied. Every pass would re-list it, hand it to the engine, and
+	//     collect the same credential failure forever.
+	//   - ONLY SUBJECTS WHOSE POST STILL STANDS. An admission whose post row is
+	//     tombstoned or absent must not be handed to the engine: accepting a
+	//     deleted post writes an acceptance for content that no longer exists,
+	//     and the tombstone sweep would then delete it again — a resurrection
+	//     loop between two components each behaving correctly on its own.
+	//
+	// Both exclusions are also enforced by the decider (a driver is a queue, not
+	// a security boundary), but doing it here is what keeps the queue's DEPTH an
+	// honest signal: a backlog full of subjects nothing can ever settle looks
+	// identical, from the outside, to an engine that has stopped working.
+	ListPendingSubjects(ctx context.Context, limit int) ([]PendingSubject, error)
+}
+
+// PendingSubject is one (community, post) pair the engine still owes a decision.
+//
+// It carries CreatedAt because the driver's health surface reports the age of
+// the oldest undecided subject, and that number is the queue's only early
+// warning: a backlog that is merely BIG is a busy instance, while a backlog
+// whose oldest entry keeps getting older is an engine that has stopped settling
+// anything. The ordering the query already applies makes carrying it free.
+type PendingSubject struct {
+	CommunityDID string
+	PostURI      string
+	CreatedAt    time.Time
 }
 
 // DecisionCode is the reason a post was refused or removed — the value stored

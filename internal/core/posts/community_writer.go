@@ -173,6 +173,42 @@ type CommunityRecordWriter interface {
 	// meaning "when this community accepted this post" rather than being
 	// restamped every time a bridge refreshes its vote counts.
 	RepinAcceptance(ctx context.Context, cmd CommunityWriteCommand) (CommunityWriteResult, error)
+
+	// DeleteAcceptance withdraws this community's acceptance WITHOUT writing a
+	// removal, which is the one shape the other four cannot express.
+	//
+	// It exists for the author's own deletion (§5.3): the author tombstones
+	// their post, and the community's acceptance now points at a record that no
+	// longer exists. Leaving it standing means the community's repo — the
+	// curated index its whole portability argument rests on — permanently cites
+	// content nobody can fetch, and any peer replaying that CAR would show a
+	// post the author withdrew.
+	//
+	// IT IS NOT A REMOVAL, and conflating the two would be a factual error the
+	// firehose carries forever. A removal record is a MODERATION act, signed by
+	// the community, carrying a reason code, portable and auditable. An author
+	// deleting their own post is not the community judging anything, and
+	// publishing a removal for it would put a moderation event in the public
+	// record that never happened.
+	//
+	// Deleting a record that is not there is a no-op reported as a skip, not an
+	// error: the sweep is idempotent by necessity — every tombstone event may be
+	// redelivered, and the acceptance may already have been withdrawn by an
+	// earlier pass.
+	DeleteAcceptance(ctx context.Context, cmd CommunityAcceptanceDeleteCommand) (CommunityWriteResult, error)
+}
+
+// CommunityAcceptanceDeleteCommand withdraws an acceptance.
+//
+// It carries no CID, deliberately. Every other command pins one because it is
+// making a claim about a specific version; this one is undoing a claim, and the
+// subject it is undoing it for is identified by URI — the same URI the
+// deterministic rkey is derived from. A CID here would suggest the delete is
+// conditional on a version, which it is not: the post is gone, whatever version
+// the acceptance happened to pin.
+type CommunityAcceptanceDeleteCommand struct {
+	CommunityDID string
+	PostURI      string
 }
 
 // communityRecordWriter is the production writer over real repos.
@@ -315,6 +351,11 @@ func (w *communityRecordWriter) WriteAcceptance(ctx context.Context, cmd Communi
 
 func (w *communityRecordWriter) RepinAcceptance(ctx context.Context, cmd CommunityWriteCommand) (CommunityWriteResult, error) {
 	return w.pinAcceptance(ctx, cmd, acceptanceMustExist)
+}
+
+// DeleteAcceptance is a RED STUB (task 5, cycle 2); the body is GREEN's.
+func (w *communityRecordWriter) DeleteAcceptance(ctx context.Context, cmd CommunityAcceptanceDeleteCommand) (CommunityWriteResult, error) {
+	return CommunityWriteResult{}, nil
 }
 
 // pinAcceptance makes an acceptance of cmd.PostCID stand at the subject's rkey.

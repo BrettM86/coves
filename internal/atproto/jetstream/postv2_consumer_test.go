@@ -5,6 +5,7 @@ package jetstream
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -459,9 +460,184 @@ func TestPostV2Consumer_Delete_TombstonesTheRow(t *testing.T) {
 		"a soft delete must not blank the content")
 
 	// The host-side half — the community observing the tombstone and deleting
-	// its acceptance (§5.3) — is task 5b's scope and deliberately not asserted
-	// here. What matters at this point is that the tombstone exists for that
-	// sweep to find.
+	// its acceptance (§5.3) — is asserted separately below, since it only runs
+	// on the instance that HOSTS the community.
+}
+
+// recordingAcceptanceDeleter is the host-side sweep, observed rather than
+// performed.
+//
+// A fake here and not a real community repo, deliberately: what the CONSUMER
+// owes is that it asks for the right subject, exactly once, and only when it
+// should. Whether the ask reaches the PDS correctly — the shaped delete, the
+// skip on a missing record, the committed rev — is the writer's own contract
+// and is proven against a real PDS in
+// internal/core/posts/acceptance_delete_test.go. Wiring a credentialed
+// community in here would re-prove that and make this test unable to say
+// anything about the case that matters most: the sweep NOT firing.
+type recordingAcceptanceDeleter struct {
+	calls []posts.CommunityAcceptanceDeleteCommand
+	err   error
+}
+
+func (d *recordingAcceptanceDeleter) DeleteAcceptance(
+	_ context.Context, cmd posts.CommunityAcceptanceDeleteCommand,
+) (posts.CommunityWriteResult, error) {
+	d.calls = append(d.calls, cmd)
+	if d.err != nil {
+		return posts.CommunityWriteResult{}, d.err
+	}
+	return posts.CommunityWriteResult{Rev: testkit.TID()}, nil
+}
+
+func TestPostV2Consumer_Delete_WithdrawsTheHostedCommunitysAcceptance(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	ctx := context.Background()
+
+	sweep := &recordingAcceptanceDeleter{}
+	f := newPV2Fixture(t, db)
+	f.consumer = NewPostEventConsumer(
+		postgres.NewPostRepository(db),
+		postgres.NewCommunityRepository(db),
+		f.users,
+		db,
+		WithAdmissions(f.admissions),
+		WithDeletedAccounts(postgres.NewDeletedAccountRepository(db)),
+		WithAcceptanceCleanup(sweep),
+	)
+
+	rkey := "pv2sweep"
+	uri := pv2URI(pv2Author, rkey)
+	base := time.Now().UnixMicro()
+	revs := increasingTIDs(t, 2)
+
+	const cid = "bafyreipv2sweep"
+	require.NoError(t, f.consumer.HandleEvent(ctx, pv2Event(
+		pv2Author, "create", rkey, revs[0], cid, base,
+		pv2Record(pv2Community, "accepted, then withdrawn by its author", "body"),
+	)))
+
+	acceptanceRkey := testkit.TID()
+	accepted, err := f.admissions.ApplyAcceptance(ctx, posts.ApplyAcceptanceCommand{
+		CommunityDID:   pv2Community,
+		PostURI:        uri,
+		AcceptanceURI:  "at://" + pv2Community + "/social.coves.community.acceptance/" + acceptanceRkey,
+		AcceptanceRkey: acceptanceRkey,
+		PinnedCID:      cid,
+		Watermark:      posts.CommunityWatermark{Rev: testkit.TID()},
+	})
+	require.NoError(t, err)
+	require.Equal(t, posts.AdmissionApplied, accepted.Outcome, "fixture: an acceptance must stand for the sweep to withdraw")
+
+	require.NoError(t, f.consumer.HandleEvent(ctx, pv2Event(
+		pv2Author, "delete", rkey, revs[1], "", base+1_000_000, nil,
+	)))
+
+	// The acceptance points at a record nobody can fetch now. The community repo
+	// is the curated index the whole portability argument rests on, so leaving
+	// it standing means the CAR permanently cites content the author withdrew,
+	// and a peer replaying it shows a post that no longer exists.
+	require.Lenf(t, sweep.calls, 1,
+		"the tombstone must trigger exactly one acceptance withdrawal; got %d", len(sweep.calls))
+	assert.Equal(t, pv2Community, sweep.calls[0].CommunityDID)
+	assert.Equal(t, uri, sweep.calls[0].PostURI,
+		"the sweep must name the tombstoned post; the acceptance rkey is derived from this URI, so a wrong subject deletes a different post's acceptance")
+}
+
+func TestPostV2Consumer_Delete_DoesNotSweepWhenNoAcceptanceStands(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	ctx := context.Background()
+
+	sweep := &recordingAcceptanceDeleter{}
+	f := newPV2Fixture(t, db)
+	f.consumer = NewPostEventConsumer(
+		postgres.NewPostRepository(db),
+		postgres.NewCommunityRepository(db),
+		f.users,
+		db,
+		WithAdmissions(f.admissions),
+		WithDeletedAccounts(postgres.NewDeletedAccountRepository(db)),
+		WithAcceptanceCleanup(sweep),
+	)
+
+	rkey := "pv2nosweep"
+	base := time.Now().UnixMicro()
+	revs := increasingTIDs(t, 2)
+
+	// Indexed and pending: the community never accepted it, so there is nothing
+	// in its repo to withdraw. This is the COMMON case — most posts a community
+	// sees were never accepted by it — and a sweep that fired anyway would put
+	// one pointless authenticated PDS round trip behind every delete event on
+	// the network.
+	require.NoError(t, f.consumer.HandleEvent(ctx, pv2Event(
+		pv2Author, "create", rkey, revs[0], "bafyreipv2nosweep", base,
+		pv2Record(pv2Community, "never accepted", "body"),
+	)))
+	require.NoError(t, f.consumer.HandleEvent(ctx, pv2Event(
+		pv2Author, "delete", rkey, revs[1], "", base+1_000_000, nil,
+	)))
+
+	assert.Emptyf(t, sweep.calls,
+		"the sweep fired for a post that was never accepted (%d calls): the admission row is the AppView's own record of whether an acceptance stands, "+
+			"and consulting it is what keeps this from being a PDS round trip per delete event", len(sweep.calls))
+}
+
+func TestPostV2Consumer_Delete_SurvivesAFailedSweep(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	ctx := context.Background()
+
+	sweep := &recordingAcceptanceDeleter{err: errors.New("the community's PDS is unreachable")}
+	f := newPV2Fixture(t, db)
+	f.consumer = NewPostEventConsumer(
+		postgres.NewPostRepository(db),
+		postgres.NewCommunityRepository(db),
+		f.users,
+		db,
+		WithAdmissions(f.admissions),
+		WithDeletedAccounts(postgres.NewDeletedAccountRepository(db)),
+		WithAcceptanceCleanup(sweep),
+	)
+
+	rkey := "pv2sweepfail"
+	uri := pv2URI(pv2Author, rkey)
+	base := time.Now().UnixMicro()
+	revs := increasingTIDs(t, 2)
+
+	const cid = "bafyreipv2sweepfail"
+	require.NoError(t, f.consumer.HandleEvent(ctx, pv2Event(
+		pv2Author, "create", rkey, revs[0], cid, base,
+		pv2Record(pv2Community, "the sweep will fail", "body"),
+	)))
+	acceptanceRkey := testkit.TID()
+	_, err := f.admissions.ApplyAcceptance(ctx, posts.ApplyAcceptanceCommand{
+		CommunityDID:   pv2Community,
+		PostURI:        uri,
+		AcceptanceURI:  "at://" + pv2Community + "/social.coves.community.acceptance/" + acceptanceRkey,
+		AcceptanceRkey: acceptanceRkey,
+		PinnedCID:      cid,
+		Watermark:      posts.CommunityWatermark{Rev: testkit.TID()},
+	})
+	require.NoError(t, err)
+
+	deleteErr := f.consumer.HandleEvent(ctx, pv2Event(
+		pv2Author, "delete", rkey, revs[1], "", base+1_000_000, nil,
+	))
+
+	// THE TOMBSTONE IS THE LOCAL TRUTH AND MUST LAND REGARDLESS. The author
+	// asked for their post to be gone; a community PDS that cannot be reached
+	// must not keep this AppView serving it. The acceptance withdrawal is
+	// best-effort cleanup of a REMOTE repo, and the engine's own passes revisit
+	// it — so the only question here is whether a failed sweep can hold the
+	// deletion hostage.
+	_, _, _, _, deletedAt := readPV2Post(t, db, uri)
+	require.NotNilf(t, deletedAt,
+		"the post was not tombstoned because the acceptance sweep failed: an unreachable community PDS would keep this AppView serving content its author deleted (sweep error: %v)", deleteErr)
 }
 
 // assertNullableStringPV2 asserts a nullable column holds exactly want.

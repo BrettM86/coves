@@ -2,6 +2,7 @@ package main
 
 import (
 	"Coves/internal/atproto/jetstream"
+	"Coves/internal/core/posts"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -34,6 +35,42 @@ type consumerHealthResponse struct {
 	// would look healthier the sicker the database gets.
 	DeadLetterBacklogUnknown bool             `json:"deadLetterBacklogUnknown,omitempty"`
 	Consumers                []consumerHealth `json:"consumers"`
+
+	// AcceptanceQueue reports the acceptance engine's driver, and is omitted
+	// entirely on a deployment that runs no driver (one hosting no communities
+	// has nothing to accept). Omitted rather than zeroed: an all-zero queue and
+	// an absent one mean different things, and only one of them is worth waking
+	// somebody for.
+	AcceptanceQueue *acceptanceQueueHealth `json:"acceptanceQueue,omitempty"`
+}
+
+// acceptanceQueueHealth is the acceptance driver's entry in the response.
+//
+// The two age fields answer the two questions an operator has, and neither can
+// be derived from the backlog size alone. A big backlog on a busy instance is
+// healthy; a backlog whose OLDEST entry keeps getting older is an engine that
+// has stopped settling anything. And a driver that has died produces no error
+// and no log — it simply stops — so lastPassAt is the only signal that the pass
+// is still happening at all.
+type acceptanceQueueHealth struct {
+	PendingBacklog int `json:"pendingBacklog"`
+	// OldestPendingAgeSeconds is omitted when the backlog is empty: there is no
+	// oldest entry, and reporting 0 would read as "something arrived just now".
+	OldestPendingAgeSeconds *int64 `json:"oldestPendingAgeSeconds,omitempty"`
+	// LastPassAt is omitted until the first pass completes, distinguishing "the
+	// driver has never run" from "the driver ran and found nothing".
+	LastPassAt       *time.Time `json:"lastPassAt,omitempty"`
+	LastPassDeferred int        `json:"lastPassDeferred"`
+	LastPassFailed   int        `json:"lastPassFailed"`
+}
+
+// buildAcceptanceQueueHealth renders one driver snapshot.
+//
+// RED STUB (task 5, cycle 2). A separate pure function rather than another
+// parameter on buildConsumerHealthResponse: the two have no shared logic, and
+// widening that signature would touch every existing call site to say nothing.
+func buildAcceptanceQueueHealth(snapshot posts.QueueSnapshot, now time.Time) acceptanceQueueHealth {
+	return acceptanceQueueHealth{}
 }
 
 // buildConsumerHealthResponse is the pure decision core of /health/consumers,
