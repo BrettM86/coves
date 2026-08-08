@@ -1142,7 +1142,10 @@ func TestAccountDeletion_Integration(t *testing.T) {
 			t.Errorf("Expected 0 users after deletion, got %d", count)
 		}
 
-		// Check posts deleted (via FK CASCADE)
+		// Check posts deleted. Migration 034 dropped fk_author's ON DELETE
+		// CASCADE (PRD_AUTHOR_OWNED_POSTS §5.3); Delete removes them explicitly
+		// now, and this assertion is what holds the replacement to the same
+		// promise.
 		err = db.QueryRow(`SELECT COUNT(*) FROM posts WHERE author_did = $1`, testDID).Scan(&count)
 		if err != nil {
 			t.Fatalf("Error checking posts: %v", err)

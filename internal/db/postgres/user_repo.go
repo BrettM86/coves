@@ -294,7 +294,27 @@ func (r *postgresUserRepo) Delete(ctx context.Context, did string) error {
 		return fmt.Errorf("failed to delete votes for did=%s: %w", did, err)
 	}
 
-	// 9. Delete user (FK CASCADE deletes posts)
+	// 9. Delete the admission rows for this author's posts.
+	//
+	// This runs BEFORE the posts themselves because it reads them to find its
+	// subjects. community_post_admissions deliberately carries no foreign key
+	// to posts (migration 034: an acceptance can arrive before the post it is
+	// about, and an FK would turn that ordinary ordering artefact into an
+	// insert failure), so nothing but this statement removes the rows — left
+	// behind, they would be admissions for posts that no longer exist.
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM community_post_admissions
+		WHERE post_uri IN (SELECT uri FROM posts WHERE author_did = $1)
+	`, did); err != nil {
+		return fmt.Errorf("failed to delete community_post_admissions for did=%s: %w", did, err)
+	}
+
+	// 10. Delete posts (explicit DELETE - fk_author CASCADE removed in migration 034)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM posts WHERE author_did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete posts for did=%s: %w", did, err)
+	}
+
+	// 11. Delete user
 	result, err := tx.ExecContext(ctx, `DELETE FROM users WHERE did = $1`, did)
 	if err != nil {
 		return fmt.Errorf("failed to delete user did=%s: %w", did, err)

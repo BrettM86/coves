@@ -29,12 +29,14 @@ import (
 //     about immutability rather than an oversight, and it is worth having on
 //     the record, because it means the second delivery of an EDITED post is
 //     discarded rather than applied.
-//   - The two foreign keys are the only thing catching a post whose author or
-//     community the AppView has not indexed yet — an ordinary occurrence on a
-//     cold start, where records arrive in repository order rather than in
-//     dependency order. The repository translates each violation by name, and a
-//     translation that matched the wrong constraint would send the consumer
-//     backfilling the wrong record.
+//   - ONE foreign key is left, and it catches a post whose community the AppView
+//     has not indexed yet — an ordinary occurrence on a cold start, where
+//     records arrive in repository order rather than in dependency order. The
+//     repository translates the violation by constraint name. The AUTHOR key
+//     used to do the same and is deliberately gone (migration 034, PRD
+//     §5.3): under author-owned posts an author's profile may live on a PDS
+//     this AppView will never index, so an unknown author is a normal state
+//     rather than an ordering artefact. See the subtest below.
 //   - SoftDelete is where "deleted" is defined. It sets one column, and what
 //     that column means is decided entirely by which read paths filter on it.
 //     Two of the three do. The third is pinned below.
@@ -219,46 +221,69 @@ func TestPostRepo_Create(t *testing.T) {
 		assert.Equal(t, "bafypost-"+rkey, stored.CID)
 	})
 
-	// On a cold start the consumer replays repositories in whatever order the
-	// relay hands them over, so a post routinely arrives before its author's
-	// profile or its community's declaration. The two FK translations are how
-	// the consumer knows WHICH record to go and fetch.
-	t.Run("names the author it could not find", func(t *testing.T) {
+	// THIS INVARIANT WAS DELIBERATELY INVERTED. Until migration 034 this subtest
+	// asserted the opposite — that Create ERRORS with "author DID not found" —
+	// and that was correct while posts.author_did carried a hard FK to users.
+	//
+	// Author-owned posts abolished it (PRD_AUTHOR_OWNED_POSTS §5.3). A post
+	// record now lives in its AUTHOR's repo, and open federated posting means
+	// the author may be someone this AppView has no users row for and may never
+	// get one: the users consumer default-denies identities from untrusted
+	// hosts, so treating an unknown author as a write failure made a federated
+	// author's post permanently unindexable. Migration 034 drops fk_author (and
+	// its ON DELETE CASCADE, so a profile row going away can no longer erase
+	// indexed posts). The author reference is soft now; profiles are hydrated
+	// opportunistically afterwards, and a post whose author is still a bare DID
+	// is a normal indexed row rather than a dead letter.
+	t.Run("indexes a post whose author is not yet known", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
 		repo := NewPostRepository(db)
 		_, communityDID := postAuthorAndCommunity(t, db)
 
-		orphanAuthor := "did:plc:unindexed" + testkit.UniqueID(t)
-		post := postRecord(orphanAuthor, communityDID, "orphanauthor"+testkit.UniqueID(t))
+		unknownAuthor := "did:plc:unindexed" + testkit.UniqueID(t)
+		post := postRecord(unknownAuthor, communityDID, "unknownauthor"+testkit.UniqueID(t))
 
-		err := repo.Create(ctx, post)
-		require.Error(t, err)
-		assert.ErrorContains(t, err, "author DID not found")
-		assert.ErrorContains(t, err, orphanAuthor,
-			"the DID has to be in the message: it is the only thing telling the consumer whose "+
-				"profile to backfill")
+		require.NoError(t, repo.Create(ctx, post),
+			"an author with no users row must index: under author-owned posts that is a federated "+
+				"author, not an ordering artefact waiting on a backfill")
 
-		_, err = repo.GetByURI(ctx, post.URI)
-		assert.ErrorIs(t, err, posts.ErrNotFound, "the rejected post must not be half-indexed")
+		stored, err := repo.GetByURI(ctx, post.URI)
+		require.NoError(t, err, "the post must be readable back, not half-written")
+		assert.Equal(t, unknownAuthor, stored.AuthorDID,
+			"the author DID is carried on the row itself; it is the only identity the AppView has "+
+				"until the profile is hydrated")
+
+		var indexedAuthors int
+		require.NoError(t, db.QueryRowContext(ctx,
+			`SELECT count(*) FROM users WHERE did = $1`, unknownAuthor).Scan(&indexedAuthors))
+		assert.Zero(t, indexedAuthors,
+			"IF THIS FAILED, something started bootstrapping a users row as a side effect of indexing "+
+				"a post. That would make this test pass for the wrong reason — the point is that the "+
+				"post indexes with NO author row at all")
 	})
 
+	// The community FK is still real, and is still the thing that catches a post
+	// arriving before its community's declaration on a cold start.
 	t.Run("names the community it could not find", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
 		repo := NewPostRepository(db)
-		authorDID, _ := postAuthorAndCommunity(t, db)
-
+		// The author is unknown TOO, which is the case that matters now that
+		// fk_author is gone: the community must still be the record the
+		// consumer is sent to fetch, and an unknown author must contribute
+		// nothing to the diagnosis.
+		unknownAuthor := "did:plc:unindexed" + testkit.UniqueID(t)
 		orphanCommunity := "did:plc:unindexedcomm" + testkit.UniqueID(t)
-		post := postRecord(authorDID, orphanCommunity, "orphancomm"+testkit.UniqueID(t))
+		post := postRecord(unknownAuthor, orphanCommunity, "orphancomm"+testkit.UniqueID(t))
 
 		err := repo.Create(ctx, post)
 		require.Error(t, err)
 		assert.ErrorContains(t, err, "community DID not found")
 		assert.ErrorContains(t, err, orphanCommunity)
 		assert.NotContains(t, err.Error(), "author DID not found",
-			"the two foreign keys are distinguished by constraint name; matching the wrong one would "+
-				"send the consumer backfilling a user when a community is missing")
+			"IF THIS FAILED, the author FK came back: matching it would send the consumer backfilling "+
+				"a user when the missing record is a community")
 	})
 
 	// embed, content_facets and content_labels are JSONB columns, not text. A

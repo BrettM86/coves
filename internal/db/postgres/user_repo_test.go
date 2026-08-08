@@ -204,7 +204,12 @@ func TestUserRepo_Delete_WithPosts_CascadeDeletes(t *testing.T) {
 	// Create test community (needed for post FK)
 	createTestCommunity(t, db, communityDID, "c.testpostcommunity", testDID)
 
-	// Create post (has FK constraint with CASCADE delete)
+	// Create post. Deletion used to reach this row through fk_author's ON DELETE
+	// CASCADE; migration 034 dropped that FK (PRD_AUTHOR_OWNED_POSTS §5.3, so a
+	// federated author's post can be indexed at all), and Delete now removes
+	// posts with an explicit statement instead. The assertion below is unchanged
+	// on purpose: deleting a user must still take their posts with it, whichever
+	// mechanism does it.
 	_, err = db.Exec(`
 		INSERT INTO posts (uri, cid, rkey, author_did, community_did, title, created_at)
 		VALUES ($1, 'bafypost', 'postkey', $2, $3, 'Test Post', NOW())
@@ -225,10 +230,10 @@ func TestUserRepo_Delete_WithPosts_CascadeDeletes(t *testing.T) {
 	_, err = repo.GetByDID(ctx, testDID)
 	assert.ErrorIs(t, err, users.ErrUserNotFound)
 
-	// Verify posts are cascade deleted (FK ON DELETE CASCADE)
+	// Verify the posts went with the user (explicit DELETE since migration 034)
 	err = db.QueryRow("SELECT COUNT(*) FROM posts WHERE author_did = $1", testDID).Scan(&postCount)
 	require.NoError(t, err)
-	assert.Equal(t, 0, postCount, "Posts should be cascade deleted with user")
+	assert.Equal(t, 0, postCount, "Deleting a user must still delete their posts")
 }
 
 func TestUserRepo_Delete_TransactionRollback(t *testing.T) {

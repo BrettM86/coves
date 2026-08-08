@@ -190,6 +190,43 @@ type ApplyRemovalCommand struct {
 	Watermark    CommunityWatermark
 }
 
+// RepinAcceptanceCommand moves a standing acceptance onto a new content CID
+// without re-deciding anything.
+//
+// It exists for the bridgedStats exception of §5.5. Bridges refresh their
+// records frequently and specifically to update origin-platform vote counts, so
+// every refresh changes the record's CID while changing nothing a moderator
+// would judge. Routing those through the ordinary edit path would strobe
+// accepted bridge posts out of feeds and spam the community's repo with
+// re-acceptance commits. A repin is the community's acceptance record being
+// updated in place — same rkey, new pinned CID — so it carries a watermark like
+// any other community event, but no status transition.
+//
+// The caller is responsible for having established that the diff touches ONLY
+// bridgedStats and that the author passes the bridge-trust gate. Any diff
+// touching title, content, facets, embed, labels, tags or community requires
+// full re-admission and must not come through here.
+type RepinAcceptanceCommand struct {
+	CommunityDID string
+	PostURI      string
+	PinnedCID    string
+	Watermark    CommunityWatermark
+}
+
+// RecordRejectionCommand records an AppView-LOCAL rejection.
+//
+// Redrivable is the caller's classification of WHY: a policy rejection is
+// terminal and must not be retried by the dead-letter redrive pass, while a
+// transient evaluation failure has to stay retryable. Getting it backwards
+// either retries a decision that will never change or abandons one that would
+// have succeeded on the next attempt.
+type RecordRejectionCommand struct {
+	CommunityDID string
+	PostURI      string
+	DecisionCode string
+	Redrivable   bool
+}
+
 // CommunityDeleteCommand applies the deletion of a community record about this
 // subject — an acceptance or a removal. Which record was deleted is expressed by
 // the method called, not by a field, because the two deletions mean opposite
@@ -227,7 +264,35 @@ type AdmissionRepository interface {
 	// ApplyRemovalDelete applies the deletion of the removal record.
 	ApplyRemovalDelete(ctx context.Context, cmd CommunityDeleteCommand) (AdmissionResult, error)
 
+	// RepinAcceptedCID moves a standing acceptance onto new content without a
+	// status transition — the §5.5 bridgedStats exception.
+	RepinAcceptedCID(ctx context.Context, cmd RepinAcceptanceCommand) (AdmissionResult, error)
+
+	// RecordRejection records the AppView's own decision not to admit a post.
+	// It is not a community-repo record, so it must NOT advance the community
+	// watermark: a local decision that could outrank a genuine community event
+	// would suppress the very acceptance that overrules it.
+	RecordRejection(ctx context.Context, cmd RecordRejectionCommand) (AdmissionResult, error)
+
 	// Get returns the admission row for one subject, or ErrNotFound if the
 	// community has never seen the post.
 	Get(ctx context.Context, communityDID, postURI string) (*Admission, error)
+
+	// GetByPostURIs returns every community's decision about each of the given
+	// posts, keyed by post URI. Posts with no admission row anywhere are absent
+	// from the map rather than present-and-empty.
+	//
+	// The map is per-URI rather than flat because one post genuinely has several
+	// decisions: an author may submit the same post to several communities, and
+	// the author's own view of it has to show each community's answer separately.
+	GetByPostURIs(ctx context.Context, postURIs []string) (map[string][]*Admission, error)
+
+	// ListByStatusForCommunity pages one community's admissions in a single
+	// status — the moderation queue. Order is oldest first, matching the
+	// (community_did, status, created_at) index.
+	//
+	// The cursor is opaque and must be treated as such by callers; a malformed
+	// one is an error rather than a silent reset to the first page, which would
+	// make a moderator re-review what they had already cleared.
+	ListByStatusForCommunity(ctx context.Context, communityDID string, status AdmissionStatus, limit int, cursor *string) ([]*Admission, *string, error)
 }
