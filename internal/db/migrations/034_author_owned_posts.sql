@@ -109,6 +109,14 @@ CREATE TABLE community_post_admissions (
     -- subject would be skipped forever, silently.
     CONSTRAINT chk_admission_watermark_complete CHECK (
         (last_community_rev IS NULL) = (last_community_op_rank IS NULL)
+    ),
+
+    -- The rank vocabulary is exactly {0 = delete, 1 = put} (§5.2). SMALLINT
+    -- admits 32766 other values, every one of which would outrank every
+    -- genuine put and freeze its subject forever — closed here, where every
+    -- writer meets it, rather than by repository convention.
+    CONSTRAINT chk_admission_op_rank CHECK (
+        last_community_op_rank IN (0, 1)
     )
 );
 

@@ -318,7 +318,10 @@ func TestMigration034_DownRestoresTheAuthorForeignKeyUnvalidated(t *testing.T) {
 	require.NoError(t, err,
 		"with fk_author dropped, a federated author's post must index even though no users row exists for them")
 
-	assert.EqualValues(t, 34, testkit.MigrateDownOne(t, db),
+	// The expected-version parameter is the tripwire: when migration 035 lands,
+	// this call fails with the remedy in its message instead of silently
+	// rolling back 035's Down and leaving 034's untested.
+	assert.EqualValues(t, 34, testkit.MigrateDownOne(t, db, 34),
 		"this test asserts on 034's Down section; rolling back a different migration would prove nothing about it")
 
 	var surviving int
@@ -487,4 +490,47 @@ func normalizePredicate(predicate string) string {
 	predicate = strings.ReplaceAll(predicate, "(", "")
 	predicate = strings.ReplaceAll(predicate, ")", "")
 	return strings.ReplaceAll(predicate, " ", "")
+}
+
+func TestAdmissionsTable_OpRankCheck(t *testing.T) {
+	t.Parallel()
+
+	// The op-rank vocabulary is exactly {0 = delete, 1 = put} (§5.2). The rank
+	// is half of the ordering tuple, and SMALLINT admits 32766 values that
+	// would silently outrank every genuine put forever — a CHECK is the only
+	// place that can close the vocabulary where every writer meets it.
+	db := testkit.DB(t)
+	ctx := context.Background()
+	requireTableExists(t, db, admissionsTable)
+
+	t.Run("the constraint exists in the catalog", func(t *testing.T) {
+		var matched string
+		for name, definition := range checkConstraintDefinitions(t, db, admissionsTable) {
+			if strings.Contains(definition, "last_community_op_rank") &&
+				strings.Contains(definition, "0") && strings.Contains(definition, "1") {
+				matched = name
+			}
+		}
+		assert.NotEmpty(t, matched,
+			"no CHECK constraint restricts last_community_op_rank to (0, 1); a rank outside the vocabulary would outrank every genuine event")
+	})
+
+	t.Run("the constraint is enforced", func(t *testing.T) {
+		insertWithRank := func(t *testing.T, rank int16) error {
+			t.Helper()
+			subject := newAdmissionSubject(t, db)
+			_, err := db.ExecContext(ctx, fmt.Sprintf(`
+				INSERT INTO %s (community_did, post_uri, status, last_community_rev, last_community_op_rank, created_at, updated_at)
+				VALUES ($1, $2, 'pending', $3, $4, NOW(), NOW())
+			`, admissionsTable), subject.CommunityDID, subject.PostURI, testkit.TID(), rank)
+			return err
+		}
+
+		assert.NoError(t, insertWithRank(t, 0), "rank 0 (delete) is in the vocabulary")
+		assert.NoError(t, insertWithRank(t, 1), "rank 1 (put) is in the vocabulary")
+		assert.Error(t, insertWithRank(t, 2),
+			"a rank outside {0, 1} would compare greater than every genuine put and freeze the subject forever")
+		assert.Error(t, insertWithRank(t, -1),
+			"a negative rank is equally outside the §5.2 vocabulary")
+	})
 }

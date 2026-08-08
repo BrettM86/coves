@@ -2,6 +2,7 @@ package posts
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -89,13 +90,31 @@ const (
 	CommunityOpPut CommunityOpRank = 1
 )
 
+// ErrInvalidWatermark reports a community event carrying a watermark that can
+// never have come off the wire — today, an empty Rev. It is a genuine error
+// rather than a skip outcome: skips are the ordering gate WORKING, while an
+// empty rev means the event was decoded wrong upstream, and stamping it would
+// write a fabricated clock value onto the row. Routing it to the dead-letter
+// queue is exactly right.
+var ErrInvalidWatermark = errors.New("invalid community watermark")
+
 // CommunityWatermark is the subject-scoped composite ordering key of §5.2:
 // the repo revision of the last APPLIED community event about this (community,
 // post) pair, plus that event's rank within its commit.
 //
 // Rev is a base32-sortable atProto TID, so lexicographic comparison of Rev IS
 // commit order within one repo — the same property migration 033's per-record
-// gate relies on, which is why the column carries COLLATE "C".
+// gate relies on, which is why the column carries COLLATE "C". Rev MUST be
+// non-empty: every Jetstream commit carries one, so an empty rev is an
+// upstream decoding bug, and repositories refuse it with a genuine error
+// wrapping ErrInvalidWatermark rather than stamping a clock value that never
+// existed.
+//
+// On a COMMAND, only Rev is consumed: OpRank is derived by the repository from
+// the operation itself (a put ranks 1, a delete ranks 0), because the rank IS
+// the operation's kind and letting a caller assert otherwise would let one
+// mislabeled event reorder a commit. On a RESULT (Admission.LastCommunityEvent)
+// both halves are meaningful — they report the tuple actually stored.
 //
 // The per-record gate cannot do this job: acceptance and removal are DIFFERENT
 // record URIs describing the SAME subject, so ordering them requires a key
@@ -149,11 +168,13 @@ type Admission struct {
 // nothing, and making it fetch that separately would reintroduce the read-then-
 // write race the single-statement CAS exists to avoid.
 //
-// Admission is nil in exactly one case: a mutation that may not CREATE a row
-// met a subject that has none. Only RepinAcceptedCID can be in that position —
-// every other mutation inserts when the subject is absent — and there is
-// genuinely no row to describe, so the outcome is skipped_terminal and the
-// caller has nothing to reconcile.
+// Admission is nil in exactly one case: RepinAcceptedCID meeting a subject
+// that has no row. The five event mutations insert when the subject is absent,
+// so they always have a row to report; RecordRejection, the other mutation
+// that may not create one, treats an absent subject as an ERROR rather than a
+// result (the engine rejects rows it read from its own queue). That leaves the
+// repin, where there is genuinely no row to describe: the outcome is
+// skipped_terminal and the caller has nothing to reconcile.
 type AdmissionResult struct {
 	Outcome   AdmissionOutcome
 	Admission *Admission
@@ -221,6 +242,13 @@ type RepinAcceptanceCommand struct {
 
 // RecordRejectionCommand records an AppView-LOCAL rejection.
 //
+// JudgedCID is the exact content CID the decision judged, and it is part of
+// the guard: a rejection lands only on a `pending` row still holding this CID.
+// The engine reads a pending row, evaluates its content, and writes the
+// verdict — if the author edited in between, the verdict judged content the
+// row no longer holds and must not land on the new content (§5.5: new content
+// is judged fresh, and re-acceptance failure is a removal, not a rejection).
+//
 // Redrivable is the caller's classification of WHY: a policy rejection is
 // terminal and must not be retried by the dead-letter redrive pass, while a
 // transient evaluation failure has to stay retryable. Getting it backwards
@@ -230,6 +258,7 @@ type RecordRejectionCommand struct {
 	CommunityDID string
 	PostURI      string
 	DecisionCode string
+	JudgedCID    string
 	Redrivable   bool
 }
 
@@ -271,13 +300,23 @@ type AdmissionRepository interface {
 	ApplyRemovalDelete(ctx context.Context, cmd CommunityDeleteCommand) (AdmissionResult, error)
 
 	// RepinAcceptedCID moves a standing acceptance onto new content without a
-	// status transition — the §5.5 bridgedStats exception.
+	// status transition — the §5.5 bridgedStats exception. It applies only to a
+	// row that is `accepted` NOW: any other status (or an absent row) refuses
+	// with skipped_terminal, because a repin re-decides nothing and so has no
+	// business changing what a non-accepted row would need decided.
 	RepinAcceptedCID(ctx context.Context, cmd RepinAcceptanceCommand) (AdmissionResult, error)
 
 	// RecordRejection records the AppView's own decision not to admit a post.
 	// It is not a community-repo record, so it must NOT advance the community
 	// watermark: a local decision that could outrank a genuine community event
 	// would suppress the very acceptance that overrules it.
+	//
+	// It lands only on a `pending` row still holding cmd.JudgedCID — rejection's
+	// one legal source state (§5.5: re-acceptance failure is a removal, and a
+	// rejection overwriting an accepted row would suppress a live acceptance).
+	// Any other standing row refuses it with a skip outcome; a subject with NO
+	// row is an ERROR, because the engine rejects rows it read from its own
+	// queue and their absence is a caller bug, not delivery skew.
 	RecordRejection(ctx context.Context, cmd RecordRejectionCommand) (AdmissionResult, error)
 
 	// Get returns the admission row for one subject, or ErrNotFound if the

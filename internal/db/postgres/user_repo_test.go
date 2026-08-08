@@ -236,6 +236,96 @@ func TestUserRepo_Delete_WithPosts_CascadeDeletes(t *testing.T) {
 	assert.Equal(t, 0, postCount, "Deleting a user must still delete their posts")
 }
 
+// seedAdmissionRow inserts a community_post_admissions row directly via SQL.
+// The admissions repo lives in this package, but Delete's sweep has to be
+// provable against a row whose subject post is NOT indexed (an acceptance that
+// arrived before its post — a design-blessed state, which is exactly why
+// migration 034 gave the table no FK to posts), and no repo write path can be
+// asked to manufacture that mid-test.
+func seedAdmissionRow(t *testing.T, db *sql.DB, communityDID, postURI, status string) {
+	t.Helper()
+	_, err := db.Exec(`
+		INSERT INTO community_post_admissions (community_did, post_uri, status)
+		VALUES ($1, $2, $3)
+	`, communityDID, postURI, status)
+	require.NoError(t, err, "Failed to seed admission row for %s", postURI)
+}
+
+func TestUserRepo_Delete_SweepsAdmissionsForUnindexedPosts(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+
+	id := testkit.UniqueID(t)
+	testDID := "did:plc:admsweep" + id
+	otherAuthorDID := "did:plc:admkeep" + id
+	communityDID := "did:plc:admsweepcomm" + id
+
+	repo := NewUserRepository(db)
+	ctx := context.Background()
+
+	// Create test user
+	user := &users.User{
+		DID:    testDID,
+		Handle: "admsweep" + id + ".test",
+		PDSURL: "https://test.pds",
+	}
+	_, err := repo.Create(ctx, user)
+	require.NoError(t, err)
+
+	createTestCommunity(t, db, communityDID, "c.admsweep"+id, testDID)
+
+	// (a) An INDEXED post of the author, with an admission row about it.
+	indexedURI := "at://" + testDID + "/social.coves.community.postv2/indexed" + id
+	_, err = db.Exec(`
+		INSERT INTO posts (uri, cid, rkey, author_did, community_did, title, created_at)
+		VALUES ($1, 'bafyadmindexed', $2, $3, $4, 'Indexed Post', NOW())
+	`, indexedURI, "indexed"+id, testDID, communityDID)
+	require.NoError(t, err)
+	seedAdmissionRow(t, db, communityDID, indexedURI, "pending")
+
+	// (b) An UNINDEXED subject of the same author: the acceptance arrived
+	// before the post, so there is no posts row for this URI at all. The
+	// author's DID still lives inside post_uri — that is all the sweep has
+	// to go on.
+	unindexedURI := "at://" + testDID + "/social.coves.community.postv2/unindexed" + id
+	seedAdmissionRow(t, db, communityDID, unindexedURI, "pending")
+
+	// Control: another author's admission in the same community must survive
+	// the deletion untouched.
+	otherAuthorURI := "at://" + otherAuthorDID + "/social.coves.community.postv2/keep" + id
+	seedAdmissionRow(t, db, communityDID, otherAuthorURI, "pending")
+
+	// Delete the user
+	err = repo.Delete(ctx, testDID)
+	require.NoError(t, err)
+
+	// Verify user is deleted
+	_, err = repo.GetByDID(ctx, testDID)
+	assert.ErrorIs(t, err, users.ErrUserNotFound)
+
+	// Verify the posts went with the user
+	var count int
+	err = db.QueryRow("SELECT COUNT(*) FROM posts WHERE author_did = $1", testDID).Scan(&count)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "Deleting a user must still delete their posts")
+
+	// BOTH admission rows about the deleted author's posts must be gone
+	err = db.QueryRow("SELECT COUNT(*) FROM community_post_admissions WHERE post_uri = $1", indexedURI).Scan(&count)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "Admission for the author's INDEXED post must be deleted")
+
+	err = db.QueryRow("SELECT COUNT(*) FROM community_post_admissions WHERE post_uri = $1", unindexedURI).Scan(&count)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count,
+		"Admission for the author's UNINDEXED post must be deleted too: acceptance-before-post "+
+			"is an ordinary state, and a sweep that reads posts to find its subjects misses it")
+
+	// Another author's admission must NOT be swept
+	err = db.QueryRow("SELECT COUNT(*) FROM community_post_admissions WHERE post_uri = $1", otherAuthorURI).Scan(&count)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count, "Another author's admission row must survive the deletion")
+}
+
 func TestUserRepo_Delete_TransactionRollback(t *testing.T) {
 	t.Parallel()
 	// This test verifies that if any part of the deletion fails,

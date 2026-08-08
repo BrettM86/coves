@@ -1034,6 +1034,23 @@ func TestAccountDeletion_Integration(t *testing.T) {
 			}
 		}
 
+		// Admissions: one about an indexed post, one whose subject post was
+		// never indexed (acceptance-before-post is an ordinary state, and the
+		// table deliberately has no FK to posts — migration 034 — so nothing
+		// but account deletion's own sweep can remove these rows)
+		for _, postURI := range []string{
+			fmt.Sprintf("at://%s/social.coves.post/delete1", testDID),
+			fmt.Sprintf("at://%s/social.coves.community.postv2/neverindexed%d", testDID, uniqueSuffix),
+		} {
+			_, err = db.Exec(`
+				INSERT INTO community_post_admissions (community_did, post_uri, status)
+				VALUES ($1, $2, 'pending')
+			`, testCommunityDID, postURI)
+			if err != nil {
+				t.Fatalf("Failed to insert admission for %s: %v", postURI, err)
+			}
+		}
+
 		// Community subscription
 		_, err = db.Exec(`
 			INSERT INTO community_subscriptions (user_did, community_did, subscribed_at)
@@ -1096,6 +1113,13 @@ func TestAccountDeletion_Integration(t *testing.T) {
 			t.Fatalf("Expected 3 posts, got %d (err: %v)", count, err)
 		}
 
+		// Check admissions exist (community_did is this test's own community,
+		// so the count is mechanism-independent)
+		err = db.QueryRow(`SELECT COUNT(*) FROM community_post_admissions WHERE community_did = $1`, testCommunityDID).Scan(&count)
+		if err != nil || count != 2 {
+			t.Fatalf("Expected 2 admissions, got %d (err: %v)", count, err)
+		}
+
 		// Check subscription exists
 		err = db.QueryRow(`SELECT COUNT(*) FROM community_subscriptions WHERE user_did = $1`, testDID).Scan(&count)
 		if err != nil || count != 1 {
@@ -1152,6 +1176,17 @@ func TestAccountDeletion_Integration(t *testing.T) {
 		}
 		if count != 0 {
 			t.Errorf("Expected 0 posts after deletion, got %d", count)
+		}
+
+		// Check admissions deleted — BOTH of them, including the row whose
+		// subject post was never indexed. That row's only tie to the deleted
+		// account is the DID inside its post_uri.
+		err = db.QueryRow(`SELECT COUNT(*) FROM community_post_admissions WHERE community_did = $1`, testCommunityDID).Scan(&count)
+		if err != nil {
+			t.Fatalf("Error checking admissions: %v", err)
+		}
+		if count != 0 {
+			t.Errorf("Expected 0 admissions after deletion, got %d (an unindexed subject's admission survived the sweep?)", count)
 		}
 
 		// Check subscription deleted

@@ -168,3 +168,197 @@ func TestAdmissionRepo_ConcurrentCommunityEventsConverge(t *testing.T) {
 		"eight goroutines raced for the INSERT branch; the primary key has to be what arbitrates that, "+
 			"not a SELECT that decided the row was absent")
 }
+
+func TestAdmissionRepo_SameTupleDuplicateAppliesExactlyOnce(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	repo := NewAdmissionRepository(db)
+	ctx := context.Background()
+
+	// The multi-feed overlap case in its purest form: two consumers deliver the
+	// SAME event — identical tuple, identical payload — simultaneously, to a
+	// subject with no row yet. Exactly one delivery may apply; the other must be
+	// the equal-tuple replay, and the row must not betray that it happened twice.
+	subject := newAdmissionSubject(t, db)
+	rev := testkit.TID()
+	const duplicates = 2
+
+	results := make([]posts.AdmissionResult, duplicates)
+	failures := make([]error, duplicates)
+
+	var waitGroup sync.WaitGroup
+	waitGroup.Add(duplicates)
+	for i := 0; i < duplicates; i++ {
+		go func(i int) {
+			defer waitGroup.Done()
+			results[i], failures[i] = repo.ApplyRemoval(ctx, posts.ApplyRemovalCommand{
+				CommunityDID: subject.CommunityDID,
+				PostURI:      subject.PostURI,
+				DecisionCode: "duplicate_delivery",
+				Watermark:    posts.CommunityWatermark{Rev: rev, OpRank: posts.CommunityOpPut},
+			})
+		}(i)
+	}
+	waitGroup.Wait()
+
+	applied, skipped := 0, 0
+	for i := 0; i < duplicates; i++ {
+		require.NoErrorf(t, failures[i], "delivery %d: a duplicate is the system working, never an error", i)
+		switch results[i].Outcome {
+		case posts.AdmissionApplied:
+			applied++
+		case posts.AdmissionSkippedStale:
+			skipped++
+		default:
+			assert.Failf(t, "unexpected duplicate outcome", "delivery %d returned %q", i, results[i].Outcome)
+		}
+	}
+	assert.Equal(t, 1, applied, "exactly one of two identical deliveries may apply")
+	assert.Equal(t, 1, skipped, "the other must be refused as the equal-tuple replay it is")
+
+	final, err := repo.Get(ctx, subject.CommunityDID, subject.PostURI)
+	require.NoError(t, err)
+	for i := 0; i < duplicates; i++ {
+		if results[i].Outcome == posts.AdmissionApplied {
+			assert.Equal(t, results[i].Admission, final,
+				"the row must be byte-stable: the refused duplicate re-stamped nothing, updated_at included")
+		} else {
+			assert.Equal(t, results[i].Admission, final,
+				"the refused delivery must have been shown the applied row — the same row the guard was evaluated against")
+		}
+	}
+
+	var rowCount int
+	require.NoError(t, db.QueryRowContext(ctx, `
+		SELECT count(*) FROM community_post_admissions WHERE community_did = $1 AND post_uri = $2
+	`, subject.CommunityDID, subject.PostURI).Scan(&rowCount))
+	assert.Equal(t, 1, rowCount, "two goroutines raced the INSERT branch; the primary key arbitrates, one row results")
+}
+
+func TestAdmissionRepo_AuthorEditsRacingCommunityEvents(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	repo := NewAdmissionRepository(db)
+	ctx := context.Background()
+
+	// Production's actual mix: the author edits (fast path AND firehose carry
+	// the same events) while the community's decisions stream in from
+	// overlapping feeds. Author events carry no watermark, so they slot into
+	// the community-event race at arbitrary points — and whatever interleaving
+	// the scheduler picks, the highest community tuple is a removal and removal
+	// is terminal against author events, so the final STATUS is not negotiable.
+	subject := newAdmissionSubject(t, db)
+
+	const communityEventCount = 6
+	const authorEditCount = 4
+	const finalDecisionCode = "highest_tuple_removal"
+
+	revs := increasingRevs(t, communityEventCount)
+
+	type racedEvent struct {
+		describe string
+		isAuthor bool
+		apply    func() (posts.AdmissionResult, error)
+	}
+
+	var events []racedEvent
+	for i, rev := range revs {
+		rev := rev
+		switch {
+		case i == communityEventCount-1:
+			events = append(events, racedEvent{"removal (highest tuple)", false, func() (posts.AdmissionResult, error) {
+				return repo.ApplyRemoval(ctx, posts.ApplyRemovalCommand{
+					CommunityDID: subject.CommunityDID,
+					PostURI:      subject.PostURI,
+					DecisionCode: finalDecisionCode,
+					Watermark:    posts.CommunityWatermark{Rev: rev, OpRank: posts.CommunityOpPut},
+				})
+			}})
+		case i%2 == 0:
+			events = append(events, racedEvent{"acceptance", false, func() (posts.AdmissionResult, error) {
+				acceptanceURI, acceptanceRkey := acceptanceRecord(t, subject.CommunityDID)
+				return repo.ApplyAcceptance(ctx, posts.ApplyAcceptanceCommand{
+					CommunityDID:   subject.CommunityDID,
+					PostURI:        subject.PostURI,
+					AcceptanceURI:  acceptanceURI,
+					AcceptanceRkey: acceptanceRkey,
+					PinnedCID:      contentCID(t, "race"),
+					Watermark:      posts.CommunityWatermark{Rev: rev, OpRank: posts.CommunityOpPut},
+				})
+			}})
+		default:
+			events = append(events, racedEvent{"acceptance deletion", false, func() (posts.AdmissionResult, error) {
+				return repo.ApplyAcceptanceDelete(ctx, posts.CommunityDeleteCommand{
+					CommunityDID: subject.CommunityDID,
+					PostURI:      subject.PostURI,
+					Watermark:    posts.CommunityWatermark{Rev: rev, OpRank: posts.CommunityOpDelete},
+				})
+			}})
+		}
+	}
+	for i := 0; i < authorEditCount; i++ {
+		cid := contentCID(t, "edit")
+		events = append(events, racedEvent{"author edit", true, func() (posts.AdmissionResult, error) {
+			return repo.UpsertPending(ctx, posts.UpsertPendingCommand{
+				CommunityDID: subject.CommunityDID,
+				PostURI:      subject.PostURI,
+				EvaluatedCID: cid,
+			})
+		}})
+	}
+
+	shuffled := make([]int, len(events))
+	for i := range shuffled {
+		shuffled[i] = i
+	}
+	rand.New(rand.NewSource(20260807)).Shuffle(len(shuffled), func(i, j int) {
+		shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+	})
+
+	outcomes := make([]posts.AdmissionOutcome, len(events))
+	failures := make([]error, len(events))
+
+	var waitGroup sync.WaitGroup
+	waitGroup.Add(len(events))
+	for _, index := range shuffled {
+		go func(index int) {
+			defer waitGroup.Done()
+			result, err := events[index].apply()
+			outcomes[index], failures[index] = result.Outcome, err
+		}(index)
+	}
+	waitGroup.Wait()
+
+	for i, err := range failures {
+		require.NoErrorf(t, err, "%s (event %d): contention is not an error condition", events[i].describe, i)
+		switch outcomes[i] {
+		case posts.AdmissionApplied, posts.AdmissionSkippedStale:
+		case posts.AdmissionSkippedTerminal:
+			assert.Truef(t, events[i].isAuthor,
+				"%s (event %d): only an author event may be refused as terminal here — every community tuple is distinct",
+				events[i].describe, i)
+		default:
+			assert.Failf(t, "unexpected outcome under contention", "%s (event %d) returned %q",
+				events[i].describe, i, outcomes[i])
+		}
+	}
+
+	final, err := repo.Get(ctx, subject.CommunityDID, subject.PostURI)
+	require.NoError(t, err)
+
+	assert.Equal(t, posts.AdmissionStatusRemoved, final.Status,
+		"the highest community tuple is a removal and removal is terminal against author events, whatever the interleaving")
+	assertNullableString(t, finalDecisionCode, final.DecisionCode, "decision_code")
+	assertWatermark(t, revs[communityEventCount-1], posts.CommunityOpPut, final.LastCommunityEvent)
+	assert.Nil(t, final.AcceptanceURI, "the winning removal must have cleared the acceptance columns")
+	assert.Nil(t, final.AcceptanceRkey)
+	assert.Nil(t, final.AcceptedCID)
+
+	var rowCount int
+	require.NoError(t, db.QueryRowContext(ctx, `
+		SELECT count(*) FROM community_post_admissions WHERE community_did = $1 AND post_uri = $2
+	`, subject.CommunityDID, subject.PostURI).Scan(&rowCount))
+	assert.Equal(t, 1, rowCount, "however the race lands, there is exactly one row per subject")
+}

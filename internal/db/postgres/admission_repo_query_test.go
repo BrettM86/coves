@@ -6,12 +6,13 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+	"time"
 
 	"Coves/internal/core/posts"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
 
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -241,4 +242,118 @@ func TestAdmissionRepo_ListByStatusForCommunity(t *testing.T) {
 		_, _, err := repo.ListByStatusForCommunity(ctx, queueCommunity, posts.AdmissionStatusPending, 2, &garbage)
 		assert.ErrorIs(t, err, posts.ErrInvalidCursor)
 	})
+}
+
+// seedPendingAdmissionsAt inserts n pending admission rows for one community in
+// a single statement, all sharing exactly the given created_at.
+//
+// Direct SQL on purpose, twice over: the repo API stamps created_at with NOW()
+// per statement, so it cannot manufacture an exact timestamp tie on demand, and
+// one multi-row statement is what makes seeding a page-maximum's worth of rows
+// cheap enough for the clamp test below.
+func seedPendingAdmissionsAt(t *testing.T, db *sql.DB, communityDID string, n int, createdAt time.Time) []string {
+	t.Helper()
+
+	uris := make([]string, n)
+	for i := range uris {
+		uris[i] = authorOwnedPostURI(t)
+	}
+
+	_, err := db.ExecContext(context.Background(), `
+		INSERT INTO community_post_admissions (community_did, post_uri, status, evaluated_cid, created_at, updated_at)
+		SELECT $1, uri, 'pending', 'bafyreiseeded', $3, $3
+		FROM unnest($2::text[]) AS uri
+	`, communityDID, pq.Array(uris), createdAt)
+	require.NoErrorf(t, err, "seeding %d pending admissions at %s", n, createdAt)
+
+	return uris
+}
+
+func TestAdmissionRepo_ListByStatusForCommunityLimitClamps(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	repo := NewAdmissionRepository(db)
+	ctx := context.Background()
+
+	// The clamp values are pinned as literals, deliberately: asserting against
+	// the repo's constants would stay green if someone changed the constants to
+	// something unbounded, which is the exact regression this test exists to
+	// catch. 50 is admissionQueuePageSize, 200 is admissionQueuePageMaximum.
+	const (
+		defaultPageSize = 50
+		maximumPageSize = 200
+	)
+
+	// One row more than the maximum, so both clamps are observable as a page
+	// size rather than inferable from internals: an unclamped limit would
+	// return all 201 rows.
+	queueCommunity := seedCommunities(t, db, 1)[0]
+	seedPendingAdmissionsAt(t, db, queueCommunity, maximumPageSize+1, time.Now().UTC())
+
+	t.Run("limit zero means the default page, not an empty or unbounded one", func(t *testing.T) {
+		page, cursor, err := repo.ListByStatusForCommunity(ctx, queueCommunity, posts.AdmissionStatusPending, 0, nil)
+		require.NoError(t, err)
+		assert.Len(t, page, defaultPageSize,
+			"limit 0 is a caller expressing no preference; it must get the default page size, not the whole queue and not nothing")
+		assert.NotNil(t, cursor, "the queue holds more than a default page, so the page must offer a cursor")
+	})
+
+	t.Run("a limit above the maximum is clamped to the maximum", func(t *testing.T) {
+		page, cursor, err := repo.ListByStatusForCommunity(ctx, queueCommunity, posts.AdmissionStatusPending, 100000, nil)
+		require.NoError(t, err)
+		assert.Len(t, page, maximumPageSize,
+			"an oversized limit must be clamped: an unbounded listing is a table scan a moderator's browser cannot render")
+		assert.NotNil(t, cursor, "the row past the maximum proves the clamp; the cursor must point at it")
+	})
+}
+
+func TestAdmissionRepo_ListByStatusForCommunityCreatedAtTieBreak(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	repo := NewAdmissionRepository(db)
+	ctx := context.Background()
+
+	// Two rows sharing created_at to the microsecond — what rows written in one
+	// transaction genuinely look like — so the (created_at, post_uri) keyset's
+	// tie-break column is load-bearing: a cursor on created_at alone could not
+	// separate them and would either repeat the pair or skip its second half.
+	queueCommunity := seedCommunities(t, db, 1)[0]
+	sharedCreatedAt := time.Now().UTC().Truncate(time.Microsecond)
+	tiedURIs := seedPendingAdmissionsAt(t, db, queueCommunity, 2, sharedCreatedAt)
+
+	full, cursor, err := repo.ListByStatusForCommunity(ctx, queueCommunity, posts.AdmissionStatusPending, 10, nil)
+	require.NoError(t, err)
+	require.Len(t, full, 2)
+	assert.Nil(t, cursor)
+
+	// The order within a tie is deterministic — post_uri ascending, per the
+	// ORDER BY the keyset mirrors — not whatever the storage layer felt like.
+	wantFirst, wantSecond := tiedURIs[0], tiedURIs[1]
+	if wantSecond < wantFirst {
+		wantFirst, wantSecond = wantSecond, wantFirst
+	}
+	assert.Equal(t, wantFirst, full[0].PostURI, "equal created_at must order by post_uri ascending")
+	assert.Equal(t, wantSecond, full[1].PostURI, "equal created_at must order by post_uri ascending")
+
+	// Page size one forces the cursor to land exactly ON the tie: the second
+	// page's keyset carries the shared created_at and must advance past the
+	// first row without skipping the second or repeating the first.
+	var paged []*posts.Admission
+	var pageCursor *string
+	for page := 0; page < 4; page++ {
+		batch, next, err := repo.ListByStatusForCommunity(ctx, queueCommunity, posts.AdmissionStatusPending, 1, pageCursor)
+		require.NoErrorf(t, err, "page %d", page)
+
+		paged = append(paged, batch...)
+		pageCursor = next
+		if pageCursor == nil {
+			break
+		}
+	}
+	require.Nil(t, pageCursor, "paging across the tie did not terminate")
+	assert.Equal(t, full, paged,
+		"paging across an exact created_at tie must reconstruct the unpaged listing — a duplicate means the "+
+			"cursor re-delivered the tied row, a missing row means it skipped the tie's second half")
 }

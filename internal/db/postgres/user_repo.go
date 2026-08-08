@@ -296,15 +296,16 @@ func (r *postgresUserRepo) Delete(ctx context.Context, did string) error {
 
 	// 9. Delete the admission rows for this author's posts.
 	//
-	// This runs BEFORE the posts themselves because it reads them to find its
-	// subjects. community_post_admissions deliberately carries no foreign key
-	// to posts (migration 034: an acceptance can arrive before the post it is
-	// about, and an FK would turn that ordinary ordering artefact into an
-	// insert failure), so nothing but this statement removes the rows — left
-	// behind, they would be admissions for posts that no longer exist.
+	// Author-owned post URIs live in the author's own repo — at://<did>/... —
+	// so a prefix match on the DID reaches every subject, INCLUDING admissions
+	// whose post is not indexed here: an acceptance can arrive before the post
+	// it is about, which is exactly why community_post_admissions deliberately
+	// carries no foreign key to posts (migration 034). A subquery against
+	// posts would miss those rows, and nothing but this statement removes
+	// them — left behind, they would be admissions about a deleted account.
 	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM community_post_admissions
-		WHERE post_uri IN (SELECT uri FROM posts WHERE author_did = $1)
+		WHERE starts_with(post_uri, 'at://' || $1 || '/')
 	`, did); err != nil {
 		return fmt.Errorf("failed to delete community_post_admissions for did=%s: %w", did, err)
 	}

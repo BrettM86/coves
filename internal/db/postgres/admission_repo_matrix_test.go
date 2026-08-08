@@ -72,6 +72,7 @@ func rejectedSubject(t *testing.T, db *sql.DB, repo posts.AdmissionRepository, c
 		CommunityDID: subject.CommunityDID,
 		PostURI:      subject.PostURI,
 		DecisionCode: decisionCode,
+		JudgedCID:    cid,
 		Redrivable:   redrivable,
 	})
 	require.NoError(t, err, "seeding the rejection")
@@ -554,7 +555,8 @@ func TestAdmissionRepo_RecordRejection(t *testing.T) {
 			// A subject that HAS a watermark, so "does not touch it" is
 			// observable rather than vacuous: accepted, then the acceptance is
 			// withdrawn, and the engine re-runs admitPost on what is left.
-			subject := acceptedSubject(t, db, repo, contentCID(t, "judged"), revs[0])
+			judgedCID := contentCID(t, "judged")
+			subject := acceptedSubject(t, db, repo, judgedCID, revs[0])
 			_, err := repo.ApplyAcceptanceDelete(ctx, posts.CommunityDeleteCommand{
 				CommunityDID: subject.CommunityDID,
 				PostURI:      subject.PostURI,
@@ -570,6 +572,7 @@ func TestAdmissionRepo_RecordRejection(t *testing.T) {
 				CommunityDID: subject.CommunityDID,
 				PostURI:      subject.PostURI,
 				DecisionCode: "banned_author",
+				JudgedCID:    judgedCID,
 				Redrivable:   redrivable,
 			})
 			require.NoError(t, err)
@@ -588,4 +591,735 @@ func TestAdmissionRepo_RecordRejection(t *testing.T) {
 				"the rejection judges the content already recorded; it does not change what was judged")
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// RecordRejection as a full CAS (review finding 1)
+// ---------------------------------------------------------------------------
+
+func TestAdmissionRepo_RecordRejectionCAS(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	repo := NewAdmissionRepository(db)
+	ctx := context.Background()
+
+	const decisionCode = "rule_violation"
+
+	t.Run("a rejection cannot land on an accepted row", func(t *testing.T) {
+		// Rejection's ONLY legal source state is pending (§5.5: re-acceptance
+		// failure is a removal, not a rejection). A rejection overwriting an
+		// accepted row would suppress a live community acceptance with a local
+		// decision — the exact inversion of authority RecordRejection's
+		// no-watermark rule exists to prevent.
+		cid := contentCID(t, "live")
+		subject := acceptedSubject(t, db, repo, cid, testkit.TID())
+
+		before, err := repo.Get(ctx, subject.CommunityDID, subject.PostURI)
+		require.NoError(t, err)
+
+		result, err := repo.RecordRejection(ctx, posts.RecordRejectionCommand{
+			CommunityDID: subject.CommunityDID,
+			PostURI:      subject.PostURI,
+			DecisionCode: decisionCode,
+			JudgedCID:    cid,
+			Redrivable:   false,
+		})
+		require.NoError(t, err, "a refused rejection is an outcome, not an error")
+		assert.Equal(t, posts.AdmissionSkippedTerminal, result.Outcome,
+			"an accepted row refuses a rejection by its state, not by ordering")
+
+		after, err := repo.Get(ctx, subject.CommunityDID, subject.PostURI)
+		require.NoError(t, err)
+		assert.Equal(t, before, after,
+			"a refused rejection must leave the accepted row byte-identical, updated_at included")
+	})
+
+	t.Run("a rejection cannot land on a row awaiting re-acceptance", func(t *testing.T) {
+		// pending_reacceptance still carries a live acceptance record; §5.5
+		// says re-acceptance failure is expressed as a REMOVAL. A rejection
+		// here would strand the acceptance columns under a local decision.
+		subject := acceptedSubject(t, db, repo, contentCID(t, "orig"), testkit.TID())
+		editedCID := contentCID(t, "edited")
+		_, err := repo.UpsertPending(ctx, posts.UpsertPendingCommand{
+			CommunityDID: subject.CommunityDID,
+			PostURI:      subject.PostURI,
+			EvaluatedCID: editedCID,
+		})
+		require.NoError(t, err)
+
+		before, err := repo.Get(ctx, subject.CommunityDID, subject.PostURI)
+		require.NoError(t, err)
+		require.Equal(t, posts.AdmissionStatusPendingReacceptance, before.Status)
+
+		result, err := repo.RecordRejection(ctx, posts.RecordRejectionCommand{
+			CommunityDID: subject.CommunityDID,
+			PostURI:      subject.PostURI,
+			DecisionCode: decisionCode,
+			JudgedCID:    editedCID,
+			Redrivable:   false,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, posts.AdmissionSkippedTerminal, result.Outcome)
+
+		after, err := repo.Get(ctx, subject.CommunityDID, subject.PostURI)
+		require.NoError(t, err)
+		assert.Equal(t, before, after, "the refused rejection must not disturb the standing acceptance")
+	})
+
+	t.Run("a rejection judging a CID the row no longer holds is refused", func(t *testing.T) {
+		// The engine read the row, judged its content, and wrote the verdict —
+		// but the author edited in between. The verdict judged content that no
+		// longer exists and must not land on the new content.
+		subject := newAdmissionSubject(t, db)
+		judgedCID := contentCID(t, "judged")
+		editedCID := contentCID(t, "edited")
+
+		_, err := repo.UpsertPending(ctx, posts.UpsertPendingCommand{
+			CommunityDID: subject.CommunityDID,
+			PostURI:      subject.PostURI,
+			EvaluatedCID: editedCID,
+		})
+		require.NoError(t, err)
+
+		before, err := repo.Get(ctx, subject.CommunityDID, subject.PostURI)
+		require.NoError(t, err)
+
+		result, err := repo.RecordRejection(ctx, posts.RecordRejectionCommand{
+			CommunityDID: subject.CommunityDID,
+			PostURI:      subject.PostURI,
+			DecisionCode: decisionCode,
+			JudgedCID:    judgedCID,
+			Redrivable:   false,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, posts.AdmissionSkippedStale, result.Outcome,
+			"a verdict for content the row does not hold is stale, and the new content awaits its own judgment")
+
+		after, err := repo.Get(ctx, subject.CommunityDID, subject.PostURI)
+		require.NoError(t, err)
+		assert.Equal(t, posts.AdmissionStatusPending, after.Status,
+			"the row stays pending: the edited content has never been judged")
+		assert.Equal(t, before, after, "the refused rejection must leave the row byte-identical")
+	})
+
+	t.Run("a re-delivered rejection is a byte-identical no-op", func(t *testing.T) {
+		cid := contentCID(t, "judged")
+		subject := rejectedSubject(t, db, repo, cid, decisionCode, false)
+
+		before, err := repo.Get(ctx, subject.CommunityDID, subject.PostURI)
+		require.NoError(t, err)
+
+		result, err := repo.RecordRejection(ctx, posts.RecordRejectionCommand{
+			CommunityDID: subject.CommunityDID,
+			PostURI:      subject.PostURI,
+			DecisionCode: decisionCode,
+			JudgedCID:    cid,
+			Redrivable:   false,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, posts.AdmissionSkippedStale, result.Outcome,
+			"an exact duplicate of the decision already recorded is a replay")
+
+		after, err := repo.Get(ctx, subject.CommunityDID, subject.PostURI)
+		require.NoError(t, err)
+		assert.Equal(t, before, after,
+			"the duplicate must not re-stamp decision_at or updated_at — deep-equal, not merely same status")
+	})
+
+	t.Run("a rejection and an author edit converge in either order", func(t *testing.T) {
+		// Whichever of the two lands first, the end state must be the same:
+		// pending on the edited content, never `rejected` carrying the edited
+		// CID — the rejection judged the OLD content only.
+		judgedCID := contentCID(t, "judged")
+		editedCID := contentCID(t, "edited")
+
+		assertConverged := func(t *testing.T, subject admissionSubject) {
+			t.Helper()
+			final, err := repo.Get(ctx, subject.CommunityDID, subject.PostURI)
+			require.NoError(t, err)
+			assert.Equal(t, posts.AdmissionStatusPending, final.Status)
+			assertNullableString(t, editedCID, final.EvaluatedCID, "evaluated_cid")
+			assert.Nil(t, final.DecisionCode, "no decision may survive against content it never judged")
+			assert.Nil(t, final.DecisionAt)
+			assert.True(t, final.Redrivable, "the edited content must be evaluable")
+		}
+
+		t.Run("edit first, then the stale rejection", func(t *testing.T) {
+			subject := newAdmissionSubject(t, db)
+			_, err := repo.UpsertPending(ctx, posts.UpsertPendingCommand{
+				CommunityDID: subject.CommunityDID, PostURI: subject.PostURI, EvaluatedCID: judgedCID,
+			})
+			require.NoError(t, err)
+			_, err = repo.UpsertPending(ctx, posts.UpsertPendingCommand{
+				CommunityDID: subject.CommunityDID, PostURI: subject.PostURI, EvaluatedCID: editedCID,
+			})
+			require.NoError(t, err)
+
+			result, err := repo.RecordRejection(ctx, posts.RecordRejectionCommand{
+				CommunityDID: subject.CommunityDID, PostURI: subject.PostURI,
+				DecisionCode: decisionCode, JudgedCID: judgedCID, Redrivable: false,
+			})
+			require.NoError(t, err)
+			assert.Equal(t, posts.AdmissionSkippedStale, result.Outcome)
+			assertConverged(t, subject)
+		})
+
+		t.Run("rejection first, then the edit reopens it", func(t *testing.T) {
+			subject := rejectedSubject(t, db, repo, judgedCID, decisionCode, false)
+
+			result, err := repo.UpsertPending(ctx, posts.UpsertPendingCommand{
+				CommunityDID: subject.CommunityDID, PostURI: subject.PostURI, EvaluatedCID: editedCID,
+			})
+			require.NoError(t, err)
+			assert.Equal(t, posts.AdmissionApplied, result.Outcome)
+			assertConverged(t, subject)
+		})
+	})
+}
+
+func TestAdmissionRepo_RecordRejectionOnAnUnseenSubjectIsAnError(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	repo := NewAdmissionRepository(db)
+
+	// The engine rejects rows it read from its own queue. A subject with no row
+	// cannot have been read from anything, so its absence is a caller bug — a
+	// genuine error for the dead-letter queue, not delivery skew to skip over.
+	subject := newAdmissionSubject(t, db)
+
+	_, err := repo.RecordRejection(context.Background(), posts.RecordRejectionCommand{
+		CommunityDID: subject.CommunityDID,
+		PostURI:      subject.PostURI,
+		DecisionCode: "rule_violation",
+		JudgedCID:    contentCID(t, "unseen"),
+		Redrivable:   false,
+	})
+	require.Error(t, err, "rejecting a subject the AppView has never recorded must be an error")
+	assert.ErrorIs(t, err, posts.ErrNotFound)
+
+	_, getErr := repo.Get(context.Background(), subject.CommunityDID, subject.PostURI)
+	assert.ErrorIs(t, getErr, posts.ErrNotFound, "the failed rejection must not have manufactured a row")
+}
+
+// ---------------------------------------------------------------------------
+// OpRank is derived from the operation, never taken from the caller (finding 4)
+// ---------------------------------------------------------------------------
+
+func TestAdmissionRepo_OpRankIsDerivedFromTheOperation(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	repo := NewAdmissionRepository(db)
+	ctx := context.Background()
+
+	// Every command below carries the WRONG rank on purpose. The rank IS the
+	// operation's kind — rank(delete)=0 < rank(put)=1 — so it is derived inside
+	// each method; a caller that could assert otherwise could reorder a commit
+	// with one mislabeled event. The row's stored watermark is the proof.
+
+	t.Run("ApplyAcceptance stamps a put rank", func(t *testing.T) {
+		subject := newAdmissionSubject(t, db)
+		rev := testkit.TID()
+		acceptanceURI, acceptanceRkey := acceptanceRecord(t, subject.CommunityDID)
+		result, err := repo.ApplyAcceptance(ctx, posts.ApplyAcceptanceCommand{
+			CommunityDID: subject.CommunityDID, PostURI: subject.PostURI,
+			AcceptanceURI: acceptanceURI, AcceptanceRkey: acceptanceRkey,
+			PinnedCID: contentCID(t, "rank"),
+			Watermark: posts.CommunityWatermark{Rev: rev, OpRank: posts.CommunityOpDelete},
+		})
+		require.NoError(t, err)
+		require.Equal(t, posts.AdmissionApplied, result.Outcome)
+		assertWatermark(t, rev, posts.CommunityOpPut, result.Admission.LastCommunityEvent)
+	})
+
+	t.Run("ApplyAcceptanceDelete stamps a delete rank", func(t *testing.T) {
+		subject := newAdmissionSubject(t, db)
+		rev := testkit.TID()
+		result, err := repo.ApplyAcceptanceDelete(ctx, posts.CommunityDeleteCommand{
+			CommunityDID: subject.CommunityDID, PostURI: subject.PostURI,
+			Watermark: posts.CommunityWatermark{Rev: rev, OpRank: posts.CommunityOpPut},
+		})
+		require.NoError(t, err)
+		require.Equal(t, posts.AdmissionApplied, result.Outcome)
+		assertWatermark(t, rev, posts.CommunityOpDelete, result.Admission.LastCommunityEvent)
+	})
+
+	t.Run("ApplyRemoval stamps a put rank", func(t *testing.T) {
+		subject := newAdmissionSubject(t, db)
+		rev := testkit.TID()
+		result, err := repo.ApplyRemoval(ctx, posts.ApplyRemovalCommand{
+			CommunityDID: subject.CommunityDID, PostURI: subject.PostURI,
+			DecisionCode: "rule_violation",
+			Watermark:    posts.CommunityWatermark{Rev: rev, OpRank: posts.CommunityOpDelete},
+		})
+		require.NoError(t, err)
+		require.Equal(t, posts.AdmissionApplied, result.Outcome)
+		assertWatermark(t, rev, posts.CommunityOpPut, result.Admission.LastCommunityEvent)
+	})
+
+	t.Run("ApplyRemovalDelete stamps a delete rank", func(t *testing.T) {
+		subject := newAdmissionSubject(t, db)
+		rev := testkit.TID()
+		result, err := repo.ApplyRemovalDelete(ctx, posts.CommunityDeleteCommand{
+			CommunityDID: subject.CommunityDID, PostURI: subject.PostURI,
+			Watermark: posts.CommunityWatermark{Rev: rev, OpRank: posts.CommunityOpPut},
+		})
+		require.NoError(t, err)
+		require.Equal(t, posts.AdmissionApplied, result.Outcome)
+		assertWatermark(t, rev, posts.CommunityOpDelete, result.Admission.LastCommunityEvent)
+	})
+
+	t.Run("RepinAcceptedCID stamps a put rank", func(t *testing.T) {
+		revs := increasingRevs(t, 2)
+		subject := acceptedSubject(t, db, repo, contentCID(t, "bridged"), revs[0])
+		result, err := repo.RepinAcceptedCID(ctx, posts.RepinAcceptanceCommand{
+			CommunityDID: subject.CommunityDID, PostURI: subject.PostURI,
+			PinnedCID: contentCID(t, "restats"),
+			Watermark: posts.CommunityWatermark{Rev: revs[1], OpRank: posts.CommunityOpDelete},
+		})
+		require.NoError(t, err)
+		require.Equal(t, posts.AdmissionApplied, result.Outcome)
+		assertWatermark(t, revs[1], posts.CommunityOpPut, result.Admission.LastCommunityEvent)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Restore-vs-absent convergence for ApplyAcceptance (finding 2)
+// ---------------------------------------------------------------------------
+
+func TestAdmissionRepo_AcceptanceOntoANullEvaluatedTombstoneLandsAccepted(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	repo := NewAdmissionRepository(db)
+	ctx := context.Background()
+
+	// A restore commit's removal-delete half arriving at an ABSENT subject
+	// inserts a tombstone with NO evaluated content. The acceptance half must
+	// still converge on accepted: the pinned CID is the only content identifier
+	// anyone has, exactly as on the acceptance-first insert path — NULL
+	// evaluated_cid means "nothing recorded yet", not "content that mismatches".
+	subject := newAdmissionSubject(t, db)
+	revs := increasingRevs(t, 2)
+
+	tombstone, err := repo.ApplyRemovalDelete(ctx, posts.CommunityDeleteCommand{
+		CommunityDID: subject.CommunityDID,
+		PostURI:      subject.PostURI,
+		Watermark:    posts.CommunityWatermark{Rev: revs[0], OpRank: posts.CommunityOpDelete},
+	})
+	require.NoError(t, err)
+	require.Equal(t, posts.AdmissionApplied, tombstone.Outcome)
+	require.Nil(t, tombstone.Admission.EvaluatedCID, "the arrangement needs a NULL-evaluated tombstone")
+
+	pinnedCID := contentCID(t, "restored")
+	acceptanceURI, acceptanceRkey := acceptanceRecord(t, subject.CommunityDID)
+	result, err := repo.ApplyAcceptance(ctx, posts.ApplyAcceptanceCommand{
+		CommunityDID:   subject.CommunityDID,
+		PostURI:        subject.PostURI,
+		AcceptanceURI:  acceptanceURI,
+		AcceptanceRkey: acceptanceRkey,
+		PinnedCID:      pinnedCID,
+		Watermark:      posts.CommunityWatermark{Rev: revs[1], OpRank: posts.CommunityOpPut},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, posts.AdmissionApplied, result.Outcome)
+
+	require.NotNil(t, result.Admission)
+	assert.Equal(t, posts.AdmissionStatusAccepted, result.Admission.Status,
+		"an acceptance meeting a row with NO recorded content must land accepted, not pending_reacceptance")
+	assertNullableString(t, pinnedCID, result.Admission.AcceptedCID, "accepted_cid")
+	assertNullableString(t, pinnedCID, result.Admission.EvaluatedCID,
+		"evaluated_cid: the pinned CID is the only content identifier available, same as the insert path records")
+}
+
+func TestAdmissionRepo_RestoreCommitConvergesOnAnAbsentRow(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	repo := NewAdmissionRepository(db)
+	ctx := context.Background()
+
+	// The restore commit {removal-delete@(R,0), acceptance@(R,1)} delivered to
+	// a subject this AppView holds NO row for — a relay coverage gap swallowed
+	// the whole earlier history. Both delivery orders must leave the same row.
+	rev := testkit.TID()
+
+	deliver := func(t *testing.T, subject admissionSubject, pinnedCID string, acceptanceFirst bool) *posts.Admission {
+		t.Helper()
+		acceptanceURI, acceptanceRkey := acceptanceRecord(t, subject.CommunityDID)
+		acceptance := func() {
+			result, err := repo.ApplyAcceptance(ctx, posts.ApplyAcceptanceCommand{
+				CommunityDID: subject.CommunityDID, PostURI: subject.PostURI,
+				AcceptanceURI: acceptanceURI, AcceptanceRkey: acceptanceRkey,
+				PinnedCID: pinnedCID,
+				Watermark: posts.CommunityWatermark{Rev: rev, OpRank: posts.CommunityOpPut},
+			})
+			require.NoError(t, err)
+			require.NotNil(t, result.Admission)
+		}
+		removalDelete := func() {
+			_, err := repo.ApplyRemovalDelete(ctx, posts.CommunityDeleteCommand{
+				CommunityDID: subject.CommunityDID, PostURI: subject.PostURI,
+				Watermark: posts.CommunityWatermark{Rev: rev, OpRank: posts.CommunityOpDelete},
+			})
+			require.NoError(t, err)
+		}
+		if acceptanceFirst {
+			acceptance()
+			removalDelete()
+		} else {
+			removalDelete()
+			acceptance()
+		}
+		final, err := repo.Get(ctx, subject.CommunityDID, subject.PostURI)
+		require.NoError(t, err)
+		return final
+	}
+
+	assertRestored := func(t *testing.T, got *posts.Admission, pinnedCID string) {
+		t.Helper()
+		assert.Equal(t, posts.AdmissionStatusAccepted, got.Status)
+		assertNullableString(t, pinnedCID, got.AcceptedCID, "accepted_cid")
+		assertNullableString(t, pinnedCID, got.EvaluatedCID, "evaluated_cid")
+		assertWatermark(t, rev, posts.CommunityOpPut, got.LastCommunityEvent)
+		assert.Nil(t, got.DecisionCode)
+		assert.Nil(t, got.DecisionAt)
+		assert.True(t, got.Redrivable)
+	}
+
+	t.Run("removal-delete first", func(t *testing.T) {
+		subject := newAdmissionSubject(t, db)
+		pinnedCID := contentCID(t, "convA")
+		assertRestored(t, deliver(t, subject, pinnedCID, false), pinnedCID)
+	})
+
+	t.Run("acceptance first", func(t *testing.T) {
+		subject := newAdmissionSubject(t, db)
+		pinnedCID := contentCID(t, "convB")
+		assertRestored(t, deliver(t, subject, pinnedCID, true), pinnedCID)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// RepinAcceptedCID applies to accepted rows ONLY (finding 3)
+// ---------------------------------------------------------------------------
+
+func TestAdmissionRepo_RepinRefusalMatrix(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	repo := NewAdmissionRepository(db)
+	ctx := context.Background()
+
+	const decisionCode = "rule_violation"
+
+	repin := func(t *testing.T, subject admissionSubject, rev string) (posts.AdmissionResult, error) {
+		t.Helper()
+		return repo.RepinAcceptedCID(ctx, posts.RepinAcceptanceCommand{
+			CommunityDID: subject.CommunityDID,
+			PostURI:      subject.PostURI,
+			PinnedCID:    contentCID(t, "repin"),
+			Watermark:    posts.CommunityWatermark{Rev: rev, OpRank: posts.CommunityOpPut},
+		})
+	}
+
+	t.Run("an accepted row applies", func(t *testing.T) {
+		revs := increasingRevs(t, 2)
+		subject := acceptedSubject(t, db, repo, contentCID(t, "bridged"), revs[0])
+		result, err := repin(t, subject, revs[1])
+		require.NoError(t, err)
+		assert.Equal(t, posts.AdmissionApplied, result.Outcome)
+		require.NotNil(t, result.Admission)
+		assert.Equal(t, posts.AdmissionStatusAccepted, result.Admission.Status)
+	})
+
+	// Every other status refuses by STATE — a repin re-decides nothing, so it
+	// has no business at a row that would need a decision — and the refusal
+	// must leave the row byte-identical.
+	for _, refusal := range []struct {
+		name    string
+		arrange func(t *testing.T) admissionSubject
+	}{
+		{
+			name: "a pending row refuses",
+			arrange: func(t *testing.T) admissionSubject {
+				subject := newAdmissionSubject(t, db)
+				_, err := repo.UpsertPending(ctx, posts.UpsertPendingCommand{
+					CommunityDID: subject.CommunityDID, PostURI: subject.PostURI,
+					EvaluatedCID: contentCID(t, "pending"),
+				})
+				require.NoError(t, err)
+				return subject
+			},
+		},
+		{
+			name: "a row awaiting re-acceptance refuses",
+			arrange: func(t *testing.T) admissionSubject {
+				// The dangerous one: the row still CARRIES an acceptance URI, so
+				// a guard on the acceptance columns alone would let the repin
+				// through — writing a fresh accepted_cid under a status that
+				// says the acceptance does not cover the current content.
+				subject := acceptedSubject(t, db, repo, contentCID(t, "orig"), testkit.TID())
+				_, err := repo.UpsertPending(ctx, posts.UpsertPendingCommand{
+					CommunityDID: subject.CommunityDID, PostURI: subject.PostURI,
+					EvaluatedCID: contentCID(t, "edited"),
+				})
+				require.NoError(t, err)
+				return subject
+			},
+		},
+		{
+			name: "a rejected row refuses",
+			arrange: func(t *testing.T) admissionSubject {
+				return rejectedSubject(t, db, repo, contentCID(t, "judged"), decisionCode, false)
+			},
+		},
+		{
+			name: "a removed row refuses",
+			arrange: func(t *testing.T) admissionSubject {
+				revs := increasingRevs(t, 2)
+				return removedSubject(t, db, repo, contentCID(t, "removed"), revs[0], revs[1], decisionCode)
+			},
+		},
+	} {
+		t.Run(refusal.name, func(t *testing.T) {
+			subject := refusal.arrange(t)
+			before, err := repo.Get(ctx, subject.CommunityDID, subject.PostURI)
+			require.NoError(t, err)
+
+			result, err := repin(t, subject, testkit.TID())
+			require.NoError(t, err, "a refused repin is an outcome, not an error")
+			assert.Equal(t, posts.AdmissionSkippedTerminal, result.Outcome,
+				"the row's state refuses the repin regardless of ordering")
+			require.NotNil(t, result.Admission)
+
+			after, err := repo.Get(ctx, subject.CommunityDID, subject.PostURI)
+			require.NoError(t, err)
+			assert.Equal(t, before, after, "a refused repin must leave the row byte-identical")
+			assert.Equal(t, after, result.Admission, "the refused caller must be shown the row that refused it")
+		})
+	}
+
+	t.Run("an absent subject refuses with no row to describe", func(t *testing.T) {
+		subject := newAdmissionSubject(t, db)
+		result, err := repin(t, subject, testkit.TID())
+		require.NoError(t, err)
+		assert.Equal(t, posts.AdmissionSkippedTerminal, result.Outcome)
+		assert.Nil(t, result.Admission,
+			"the documented nil-Admission shape: a repin may never CREATE a row, and there is genuinely nothing to report")
+	})
+}
+
+// ---------------------------------------------------------------------------
+// ApplyRemovalDelete standalone, and acceptance-delete against removed (finding 5)
+// ---------------------------------------------------------------------------
+
+func TestAdmissionRepo_StandaloneRemovalDeleteReopensEvaluation(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	repo := NewAdmissionRepository(db)
+	ctx := context.Background()
+
+	// A removal withdrawn with NO accompanying acceptance: the subject returns
+	// to pending with the decision gone — including redrivable, which a
+	// pre-removal terminal rejection may have left false. A pending row that
+	// the redrive pass refuses to evaluate is a post nobody will ever judge.
+	cid := contentCID(t, "judged")
+	subject := rejectedSubject(t, db, repo, cid, "spam", false)
+
+	revs := increasingRevs(t, 2)
+	removed, err := repo.ApplyRemoval(ctx, posts.ApplyRemovalCommand{
+		CommunityDID: subject.CommunityDID,
+		PostURI:      subject.PostURI,
+		DecisionCode: "rule_violation",
+		Watermark:    posts.CommunityWatermark{Rev: revs[0], OpRank: posts.CommunityOpPut},
+	})
+	require.NoError(t, err)
+	require.Equal(t, posts.AdmissionApplied, removed.Outcome)
+	require.False(t, removed.Admission.Redrivable,
+		"the arrangement needs the terminal rejection's redrivable=false to survive into the removal")
+
+	result, err := repo.ApplyRemovalDelete(ctx, posts.CommunityDeleteCommand{
+		CommunityDID: subject.CommunityDID,
+		PostURI:      subject.PostURI,
+		Watermark:    posts.CommunityWatermark{Rev: revs[1], OpRank: posts.CommunityOpDelete},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, posts.AdmissionApplied, result.Outcome)
+
+	require.NotNil(t, result.Admission)
+	assert.Equal(t, posts.AdmissionStatusPending, result.Admission.Status,
+		"an un-removed post with no accompanying acceptance returns to pending")
+	assert.Nil(t, result.Admission.DecisionCode, "a row no longer removed must not keep the code a reader would render")
+	assert.Nil(t, result.Admission.DecisionAt)
+	assert.True(t, result.Admission.Redrivable,
+		"reopened evaluation must be redrivable: the standing decision is gone, so nothing justifies refusing to evaluate")
+	assertNullableString(t, cid, result.Admission.EvaluatedCID, "evaluated_cid: the recorded content survives the un-remove")
+	assertWatermark(t, revs[1], posts.CommunityOpDelete, result.Admission.LastCommunityEvent)
+}
+
+func TestAdmissionRepo_AcceptanceDeleteAtARemovedRowAdvancesTheWatermarkOnly(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	repo := NewAdmissionRepository(db)
+	ctx := context.Background()
+
+	// A later community commit deletes an acceptance while the row is removed —
+	// e.g. cleanup of a stale acceptance record after the removal. Deleting an
+	// acceptance cannot un-remove a post, but the event WAS seen, and the
+	// watermark must say so or a replay of the superseded acceptance would apply.
+	revs := increasingRevs(t, 3)
+	subject := removedSubject(t, db, repo, contentCID(t, "removed"), revs[0], revs[1], "rule_violation")
+
+	before, err := repo.Get(ctx, subject.CommunityDID, subject.PostURI)
+	require.NoError(t, err)
+
+	result, err := repo.ApplyAcceptanceDelete(ctx, posts.CommunityDeleteCommand{
+		CommunityDID: subject.CommunityDID,
+		PostURI:      subject.PostURI,
+		Watermark:    posts.CommunityWatermark{Rev: revs[2], OpRank: posts.CommunityOpDelete},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, posts.AdmissionApplied, result.Outcome)
+
+	require.NotNil(t, result.Admission)
+	assert.Equal(t, posts.AdmissionStatusRemoved, result.Admission.Status,
+		"deleting an acceptance withdraws it; it cannot un-remove a post")
+	assert.Equal(t, before.DecisionCode, result.Admission.DecisionCode, "the moderator's code must survive")
+	assert.Equal(t, before.DecisionAt, result.Admission.DecisionAt)
+	assertWatermark(t, revs[2], posts.CommunityOpDelete, result.Admission.LastCommunityEvent)
+}
+
+// ---------------------------------------------------------------------------
+// Hardening (finding 7)
+// ---------------------------------------------------------------------------
+
+func TestAdmissionRepo_EmptyWatermarkRevIsAnError(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	repo := NewAdmissionRepository(db)
+	ctx := context.Background()
+
+	// Every Jetstream commit carries a rev, so an empty one is an upstream
+	// decoding bug — a genuine error for the dead-letter queue, never a skip.
+	// Stamping it would write a clock value that never existed onto the row.
+	subject := newAdmissionSubject(t, db)
+	empty := posts.CommunityWatermark{Rev: "", OpRank: posts.CommunityOpPut}
+
+	acceptanceURI, acceptanceRkey := acceptanceRecord(t, subject.CommunityDID)
+	for name, call := range map[string]func() (posts.AdmissionResult, error){
+		"ApplyAcceptance": func() (posts.AdmissionResult, error) {
+			return repo.ApplyAcceptance(ctx, posts.ApplyAcceptanceCommand{
+				CommunityDID: subject.CommunityDID, PostURI: subject.PostURI,
+				AcceptanceURI: acceptanceURI, AcceptanceRkey: acceptanceRkey,
+				PinnedCID: contentCID(t, "empty"), Watermark: empty,
+			})
+		},
+		"ApplyAcceptanceDelete": func() (posts.AdmissionResult, error) {
+			return repo.ApplyAcceptanceDelete(ctx, posts.CommunityDeleteCommand{
+				CommunityDID: subject.CommunityDID, PostURI: subject.PostURI, Watermark: empty,
+			})
+		},
+		"ApplyRemoval": func() (posts.AdmissionResult, error) {
+			return repo.ApplyRemoval(ctx, posts.ApplyRemovalCommand{
+				CommunityDID: subject.CommunityDID, PostURI: subject.PostURI,
+				DecisionCode: "rule_violation", Watermark: empty,
+			})
+		},
+		"ApplyRemovalDelete": func() (posts.AdmissionResult, error) {
+			return repo.ApplyRemovalDelete(ctx, posts.CommunityDeleteCommand{
+				CommunityDID: subject.CommunityDID, PostURI: subject.PostURI, Watermark: empty,
+			})
+		},
+		"RepinAcceptedCID": func() (posts.AdmissionResult, error) {
+			return repo.RepinAcceptedCID(ctx, posts.RepinAcceptanceCommand{
+				CommunityDID: subject.CommunityDID, PostURI: subject.PostURI,
+				PinnedCID: contentCID(t, "empty"), Watermark: empty,
+			})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := call()
+			require.Error(t, err, "an empty rev must be refused before it reaches the row")
+			assert.ErrorIs(t, err, posts.ErrInvalidWatermark)
+		})
+	}
+
+	_, err := repo.Get(ctx, subject.CommunityDID, subject.PostURI)
+	assert.ErrorIs(t, err, posts.ErrNotFound, "no refused call may have written a row")
+}
+
+func TestAdmissionRepo_UpsertPendingSameCIDOnARemovedRowIsAStaleNoOp(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	repo := NewAdmissionRepository(db)
+	ctx := context.Background()
+
+	// Re-delivery of the exact content a removed row already records: nothing
+	// is written — not even audit columns — so the honest label is the
+	// duplicate-delivery one, skipped_stale, exactly as for an accepted row
+	// meeting its own content again. skipped_terminal is reserved for the case
+	// where the observation DID record new content and only the removal kept
+	// the decision standing.
+	cid := contentCID(t, "removedsame")
+	revs := increasingRevs(t, 2)
+	subject := removedSubject(t, db, repo, cid, revs[0], revs[1], "rule_violation")
+
+	before, err := repo.Get(ctx, subject.CommunityDID, subject.PostURI)
+	require.NoError(t, err)
+
+	result, err := repo.UpsertPending(ctx, posts.UpsertPendingCommand{
+		CommunityDID: subject.CommunityDID,
+		PostURI:      subject.PostURI,
+		EvaluatedCID: cid,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, posts.AdmissionSkippedStale, result.Outcome,
+		"the row already holds exactly this content; the delivery is a duplicate, not a refused transition")
+
+	after, err := repo.Get(ctx, subject.CommunityDID, subject.PostURI)
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "a duplicate must leave the removed row byte-identical, updated_at included")
+}
+
+func TestAdmissionRepo_AcceptanceUpdateFreezesCreatedAt(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	repo := NewAdmissionRepository(db)
+	ctx := context.Background()
+
+	// created_at is when the SUBJECT entered the system — the moderation
+	// queue's keyset orders by it. An applied acceptance updating it would
+	// silently reorder the queue under every moderator paging through it.
+	subject := newAdmissionSubject(t, db)
+	cid := contentCID(t, "frozen")
+
+	seeded, err := repo.UpsertPending(ctx, posts.UpsertPendingCommand{
+		CommunityDID: subject.CommunityDID,
+		PostURI:      subject.PostURI,
+		EvaluatedCID: cid,
+	})
+	require.NoError(t, err)
+
+	acceptanceURI, acceptanceRkey := acceptanceRecord(t, subject.CommunityDID)
+	result, err := repo.ApplyAcceptance(ctx, posts.ApplyAcceptanceCommand{
+		CommunityDID:   subject.CommunityDID,
+		PostURI:        subject.PostURI,
+		AcceptanceURI:  acceptanceURI,
+		AcceptanceRkey: acceptanceRkey,
+		PinnedCID:      cid,
+		Watermark:      posts.CommunityWatermark{Rev: testkit.TID(), OpRank: posts.CommunityOpPut},
+	})
+	require.NoError(t, err)
+	require.Equal(t, posts.AdmissionApplied, result.Outcome, "the freeze only means anything on an APPLIED update")
+
+	assert.Equal(t, seeded.Admission.CreatedAt, result.Admission.CreatedAt,
+		"an applied acceptance must not move created_at: it is the row's queue position, not an audit column")
 }

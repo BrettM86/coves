@@ -42,7 +42,6 @@ import (
 type admissionSubject struct {
 	CommunityDID string
 	PostURI      string
-	AuthorDID    string
 }
 
 // newAdmissionSubject seeds a real community and a real post row, then returns
@@ -65,7 +64,7 @@ func newAdmissionSubject(t *testing.T, db *sql.DB) admissionSubject {
 	authorDID := fixtures.DID(testkit.UniqueID(t))
 	postURI := fixtures.Post(t, db, communityDID, authorDID, "a post seeking admission", 0, time.Now())
 
-	return admissionSubject{CommunityDID: communityDID, PostURI: postURI, AuthorDID: authorDID}
+	return admissionSubject{CommunityDID: communityDID, PostURI: postURI}
 }
 
 // increasingRevs returns n real atProto TIDs whose lexicographic order is their

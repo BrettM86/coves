@@ -3,6 +3,7 @@ package testkit
 import (
 	"context"
 	"database/sql"
+	"strings"
 
 	"Coves/internal/db/migrations"
 
@@ -26,21 +27,44 @@ import (
 // a private, per-test database that is dropped when the test ends. Pointing
 // them at a shared database would migrate it out from under every other test,
 // and pointing them at the TEMPLATE would corrupt the thing clones are made
-// from — which is why neither function accepts a database name.
+// from — which is why neither function accepts a database name, and why both
+// refuse outright any database whose name does not carry ClonePrefix.
 
-// MigrateDownOne rolls this test's database back by exactly one migration and
+// MigrateDownOne rolls this test's database back by exactly one migration —
+// after proving that the schema is currently AT expectedCurrentVersion — and
 // returns the version it undid.
 //
-// The returned version is what lets a caller prove it rolled back the migration
-// it meant to: a test that asserts on "the Down of 034" and silently gets 035's
-// instead is testing nothing, and nothing else in the harness would notice.
-func MigrateDownOne(t TestingT, db *sql.DB) int64 {
+// The precondition is the point. A rollback test written against "the Down of
+// 034" keeps passing after migration 035 lands, silently asserting on 035's
+// Down instead — the strongest wrong answer a green test can give, because
+// 034's Down (the thing the test exists to prove non-destructive) stops being
+// run at all. Failing loudly here turns "a future migration landed" into a
+// named remedy at the call site instead of a quietly retargeted assertion.
+// The returned version is the same proof after the fact: the caller can pin
+// which migration's Down actually ran.
+func MigrateDownOne(t TestingT, db *sql.DB, expectedCurrentVersion int64) int64 {
 	t.Helper()
 
+	requireClone(t, db, "MigrateDownOne")
 	provider := migrationProvider(t, db)
 	if provider == nil {
 		return 0
 	}
+
+	current, err := provider.GetDBVersion(context.Background())
+	if err != nil {
+		t.Fatalf("testkit.MigrateDownOne: reading the current migration version: %v", err)
+		return 0
+	}
+	if current != expectedCurrentVersion {
+		t.Fatalf("testkit.MigrateDownOne: the database is at migration %d, not %d — a migration has landed on top of the one this test rolls back. "+
+			"Rolling back now would exercise %d's Down section and silently stop testing the one the assertions are about. "+
+			"Remedy: update the call site to the new current version and re-check what that migration's Down preserves, "+
+			"or roll back through the newer migrations explicitly, one asserted step at a time.",
+			current, expectedCurrentVersion, current)
+		return 0
+	}
+
 	result, err := provider.Down(context.Background())
 	if err != nil {
 		t.Fatalf("testkit.MigrateDownOne: rolling back one migration: %v", err)
@@ -61,12 +85,34 @@ func MigrateDownOne(t TestingT, db *sql.DB) int64 {
 func MigrateUp(t TestingT, db *sql.DB) {
 	t.Helper()
 
+	requireClone(t, db, "MigrateUp")
 	provider := migrationProvider(t, db)
 	if provider == nil {
 		return
 	}
 	if _, err := provider.Up(context.Background()); err != nil {
 		t.Fatalf("testkit.MigrateUp: applying pending migrations: %v", err)
+	}
+}
+
+// requireClone refuses to run migrations against anything but a per-test
+// clone. The *sql.DB handed in is supposed to be the one DB(t) returned, but
+// nothing in the type system says so — a handle to the template or to a shared
+// dev database satisfies the signature just as well, and migrating THOSE
+// corrupts every other test (or the developer's data) instead of one clone.
+// current_database() is authoritative for where this pool actually points, and
+// the clone prefix is the same rail every destructive statement in db.go rides.
+func requireClone(t TestingT, db *sql.DB, operation string) {
+	t.Helper()
+
+	var name string
+	if err := db.QueryRow(`SELECT current_database()`).Scan(&name); err != nil {
+		t.Fatalf("testkit.%s: identifying the connected database: %v", operation, err)
+		return
+	}
+	if !strings.HasPrefix(name, ClonePrefix) {
+		t.Fatalf("testkit.%s: refusing to migrate %q: only per-test clones (prefix %q, from testkit.DB) may be rolled forwards and backwards — anything else is the template or shared state",
+			operation, name, ClonePrefix)
 	}
 }
 

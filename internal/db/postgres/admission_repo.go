@@ -18,17 +18,27 @@ import (
 // PostgreSQL storage for per-(community, post) admission decisions
 // (docs/PRD_AUTHOR_OWNED_POSTS.md §5.2, §5.5, §6.1; migration 034).
 //
-// THE SHAPE EVERY MUTATION TAKES. All five are one INSERT ... ON CONFLICT DO
-// UPDATE ... WHERE <guard>, and the guard is the whole decision: Postgres
-// evaluates it against the conflicting row while holding that row's lock, so
-// two consumers draining overlapping Jetstream feeds cannot interleave a read
-// and a write. There is no SELECT-then-decide anywhere in this file, which is
-// what makes a duplicate delivery a genuine no-op rather than a re-stamped
-// decision timestamp.
+// THE SHAPE EVERY MUTATION TAKES. All seven are single-statement compare-and-
+// swaps whose guard is the whole decision. Five — the author-repo observation
+// and the four community events — are one INSERT ... ON CONFLICT DO UPDATE ...
+// WHERE <guard>, because each may legitimately meet an absent subject and must
+// create the row that records the event was seen. The other two are guarded
+// UPDATEs, because each must NEVER create a row: a repin moves an acceptance
+// that stands, and a rejection lands on the pending row the engine read from
+// its own queue. Either way, Postgres evaluates the guard against the current
+// row inside the writing statement, so two consumers draining overlapping
+// Jetstream feeds cannot interleave a read and a write. There is no
+// SELECT-then-decide anywhere in this file, which is what makes a duplicate
+// delivery — RecordRejection's included — a genuine no-op rather than a
+// re-stamped decision timestamp.
 //
 // updated_at is set ONLY inside the guarded SET clause. A refused event must
 // leave the row byte-identical — the moderation audit trail would otherwise
 // become a function of how many feeds happened to carry the event.
+//
+// INVARIANT: redrivable is false only while the decision that set it stands;
+// every transition that reopens evaluation (new content reopening a rejection,
+// a removal withdrawn with nothing in its place) resets it to true.
 //
 // WHAT A REFUSAL RETURNS. A skip is an outcome, never an error (migration 033's
 // precedent, restated in §5.2): stale cross-feed copies, dead-letter redrives
@@ -38,10 +48,12 @@ import (
 // notify or re-emit needs it and fetching it separately would reintroduce the
 // race the CAS exists to close.
 //
-// The classifying SELECT that follows a refused upsert runs in the SAME
-// transaction, so it reads the row under the lock the failed ON CONFLICT DO
-// UPDATE already took: the row reported back is exactly the row the guard
-// refused, not whatever a concurrent consumer left a moment later.
+// The classifying SELECT that follows a refused mutation runs in the SAME
+// transaction and takes the row lock itself (FOR UPDATE). The lock has to be
+// explicit: a refused ON CONFLICT DO UPDATE holds the conflicting row's lock
+// already, but a guarded UPDATE that matched nothing holds no lock at all, and
+// without one the row reported back could be whatever a concurrent consumer
+// left a moment after the guard refused rather than the row it refused.
 
 type postgresAdmissionRepo struct {
 	db *sql.DB
@@ -109,6 +121,10 @@ func (r *postgresAdmissionRepo) UpsertPending(ctx context.Context, cmd posts.Ups
 	// function of the incoming CID, so a re-delivery carrying the CID already
 	// recorded cannot change any column — and must therefore write none,
 	// including updated_at.
+	// Removal terminality needs no arm of its own: a removed row matches none
+	// of the transitions below, so it keeps its status through the ELSE — the
+	// matrix tests "an edit while removed records the content and nothing else"
+	// and "same CID on a removed row" pin exactly that.
 	query := `
 		INSERT INTO community_post_admissions (
 			community_did, post_uri, status, evaluated_cid, created_at, updated_at
@@ -116,8 +132,6 @@ func (r *postgresAdmissionRepo) UpsertPending(ctx context.Context, cmd posts.Ups
 		ON CONFLICT (community_did, post_uri) DO UPDATE SET
 			evaluated_cid = excluded.evaluated_cid,
 			status = CASE
-				WHEN community_post_admissions.status = 'removed'
-					THEN community_post_admissions.status
 				WHEN community_post_admissions.status = 'rejected'
 					THEN 'pending'
 				WHEN community_post_admissions.status = 'accepted'
@@ -144,7 +158,7 @@ func (r *postgresAdmissionRepo) UpsertPending(ctx context.Context, cmd posts.Ups
 		WHERE community_post_admissions.evaluated_cid IS DISTINCT FROM excluded.evaluated_cid
 		RETURNING ` + admissionColumns
 
-	return r.compareAndSwap(ctx, "UpsertPending", cmd.CommunityDID, cmd.PostURI, nonCommunityEventOutcome,
+	return r.compareAndSwap(ctx, "UpsertPending", cmd.CommunityDID, cmd.PostURI, upsertPendingOutcome, rowRequired,
 		query, cmd.CommunityDID, cmd.PostURI, cmd.EvaluatedCID)
 }
 
@@ -165,11 +179,21 @@ func (r *postgresAdmissionRepo) UpsertPending(ctx context.Context, cmd posts.Ups
 // arrives after the fresh acceptance, that deletion is refused as not-greater,
 // so the acceptance is the only event left that can clear the removal.
 func (r *postgresAdmissionRepo) ApplyAcceptance(ctx context.Context, cmd posts.ApplyAcceptanceCommand) (posts.AdmissionResult, error) {
-	// On a subject this AppView has no row for, the acceptance is the first
-	// thing known about it, and the CID the community pinned is the only
-	// content identifier available — so it is recorded as evaluated. A post
-	// event that later lands a different CID moves the row to
-	// pending_reacceptance through the ordinary path.
+	if err := validateWatermark("ApplyAcceptance", cmd.CommunityDID, cmd.PostURI, cmd.Watermark); err != nil {
+		return posts.AdmissionResult{}, err
+	}
+
+	// On a subject this AppView holds NO CONTENT for, the CID the community
+	// pinned is the only content identifier available — so it is recorded as
+	// evaluated and the row lands accepted. That covers two shapes of row: the
+	// absent subject (INSERT path) and the NULL-evaluated tombstone a restore
+	// commit's removal-delete half leaves when IT met the absent subject first
+	// (conflict path, hence the COALESCE — NULL evaluated_cid means "nothing
+	// recorded yet", never "content that mismatches", and treating it as a
+	// mismatch would make the two delivery orders of {removal-delete,
+	// acceptance} converge on different statuses). A post event that later
+	// lands a different CID moves the row to pending_reacceptance through the
+	// ordinary path.
 	query := `
 		INSERT INTO community_post_admissions (
 			community_did, post_uri, status,
@@ -178,10 +202,11 @@ func (r *postgresAdmissionRepo) ApplyAcceptance(ctx context.Context, cmd posts.A
 		) VALUES ($1, $2, 'accepted', $3, $4, $5, $5, $6, $7, NOW(), NOW())
 		ON CONFLICT (community_did, post_uri) DO UPDATE SET
 			status = CASE
-				WHEN community_post_admissions.evaluated_cid IS NOT DISTINCT FROM excluded.accepted_cid
+				WHEN COALESCE(community_post_admissions.evaluated_cid, excluded.accepted_cid) = excluded.accepted_cid
 					THEN 'accepted'
 				ELSE 'pending_reacceptance'
 			END,
+			evaluated_cid = COALESCE(community_post_admissions.evaluated_cid, excluded.accepted_cid),
 			acceptance_uri = excluded.acceptance_uri,
 			acceptance_rkey = excluded.acceptance_rkey,
 			accepted_cid = excluded.accepted_cid,
@@ -192,10 +217,10 @@ func (r *postgresAdmissionRepo) ApplyAcceptance(ctx context.Context, cmd posts.A
 			updated_at = NOW()` + communityWatermarkGuard + `
 		RETURNING ` + admissionColumns
 
-	return r.compareAndSwap(ctx, "ApplyAcceptance", cmd.CommunityDID, cmd.PostURI, communityEventOutcome,
+	return r.compareAndSwap(ctx, "ApplyAcceptance", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired,
 		query, cmd.CommunityDID, cmd.PostURI,
 		cmd.AcceptanceURI, cmd.AcceptanceRkey, cmd.PinnedCID,
-		cmd.Watermark.Rev, int16(cmd.Watermark.OpRank))
+		cmd.Watermark.Rev, int16(posts.CommunityOpPut))
 }
 
 // ApplyAcceptanceDelete applies the deletion of the acceptance record.
@@ -207,6 +232,10 @@ func (r *postgresAdmissionRepo) ApplyAcceptance(ctx context.Context, cmd posts.A
 // columns clear, which is the point: the row must record that this event was
 // seen, or the stale acceptance-create it superseded would apply on redelivery.
 func (r *postgresAdmissionRepo) ApplyAcceptanceDelete(ctx context.Context, cmd posts.CommunityDeleteCommand) (posts.AdmissionResult, error) {
+	if err := validateWatermark("ApplyAcceptanceDelete", cmd.CommunityDID, cmd.PostURI, cmd.Watermark); err != nil {
+		return posts.AdmissionResult{}, err
+	}
+
 	// A deletion for a subject with no row still inserts one: it is a
 	// tombstone, and without it the acceptance-create this deletion supersedes
 	// would apply the next time a feed replays it.
@@ -229,8 +258,8 @@ func (r *postgresAdmissionRepo) ApplyAcceptanceDelete(ctx context.Context, cmd p
 			updated_at = NOW()` + communityWatermarkGuard + `
 		RETURNING ` + admissionColumns
 
-	return r.compareAndSwap(ctx, "ApplyAcceptanceDelete", cmd.CommunityDID, cmd.PostURI, communityEventOutcome,
-		query, cmd.CommunityDID, cmd.PostURI, cmd.Watermark.Rev, int16(cmd.Watermark.OpRank))
+	return r.compareAndSwap(ctx, "ApplyAcceptanceDelete", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired,
+		query, cmd.CommunityDID, cmd.PostURI, cmd.Watermark.Rev, int16(posts.CommunityOpDelete))
 }
 
 // ApplyRemoval applies a community removal record write under the §5.2
@@ -245,6 +274,10 @@ func (r *postgresAdmissionRepo) ApplyAcceptanceDelete(ctx context.Context, cmd p
 // A removal with no prior acceptance is valid and indexes normally —
 // communities may remove pre-emptively — so the absent-row case inserts.
 func (r *postgresAdmissionRepo) ApplyRemoval(ctx context.Context, cmd posts.ApplyRemovalCommand) (posts.AdmissionResult, error) {
+	if err := validateWatermark("ApplyRemoval", cmd.CommunityDID, cmd.PostURI, cmd.Watermark); err != nil {
+		return posts.AdmissionResult{}, err
+	}
+
 	query := `
 		INSERT INTO community_post_admissions (
 			community_did, post_uri, status, decision_code, decision_at,
@@ -262,19 +295,26 @@ func (r *postgresAdmissionRepo) ApplyRemoval(ctx context.Context, cmd posts.Appl
 			updated_at = NOW()` + communityWatermarkGuard + `
 		RETURNING ` + admissionColumns
 
-	return r.compareAndSwap(ctx, "ApplyRemoval", cmd.CommunityDID, cmd.PostURI, communityEventOutcome,
+	return r.compareAndSwap(ctx, "ApplyRemoval", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired,
 		query, cmd.CommunityDID, cmd.PostURI, cmd.DecisionCode,
-		cmd.Watermark.Rev, int16(cmd.Watermark.OpRank))
+		cmd.Watermark.Rev, int16(posts.CommunityOpPut))
 }
 
 // ApplyRemovalDelete applies the deletion of the removal record.
 //
 // Withdrawing a removal returns the subject to pending and drops the decision
 // with it — a row that is no longer removed must not keep the code a reader
-// would render. It does not restore any acceptance: the moderator's restore
-// commit carries a FRESH acceptance alongside this deletion, and that
-// acceptance is what makes the post visible again.
+// would render. Redrivable resets to true with it: the standing decision is
+// what justified refusing to re-evaluate, and a pre-removal terminal rejection
+// leaving redrivable=false behind would make the reopened pending row a post
+// the redrive pass never judges. It does not restore any acceptance: the
+// moderator's restore commit carries a FRESH acceptance alongside this
+// deletion, and that acceptance is what makes the post visible again.
 func (r *postgresAdmissionRepo) ApplyRemovalDelete(ctx context.Context, cmd posts.CommunityDeleteCommand) (posts.AdmissionResult, error) {
+	if err := validateWatermark("ApplyRemovalDelete", cmd.CommunityDID, cmd.PostURI, cmd.Watermark); err != nil {
+		return posts.AdmissionResult{}, err
+	}
+
 	query := `
 		INSERT INTO community_post_admissions (
 			community_did, post_uri, status,
@@ -293,13 +333,17 @@ func (r *postgresAdmissionRepo) ApplyRemovalDelete(ctx context.Context, cmd post
 				WHEN community_post_admissions.status = 'removed' THEN NULL
 				ELSE community_post_admissions.decision_at
 			END,
+			redrivable = CASE
+				WHEN community_post_admissions.status = 'removed' THEN true
+				ELSE community_post_admissions.redrivable
+			END,
 			last_community_rev = excluded.last_community_rev,
 			last_community_op_rank = excluded.last_community_op_rank,
 			updated_at = NOW()` + communityWatermarkGuard + `
 		RETURNING ` + admissionColumns
 
-	return r.compareAndSwap(ctx, "ApplyRemovalDelete", cmd.CommunityDID, cmd.PostURI, communityEventOutcome,
-		query, cmd.CommunityDID, cmd.PostURI, cmd.Watermark.Rev, int16(cmd.Watermark.OpRank))
+	return r.compareAndSwap(ctx, "ApplyRemovalDelete", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired,
+		query, cmd.CommunityDID, cmd.PostURI, cmd.Watermark.Rev, int16(posts.CommunityOpDelete))
 }
 
 // RepinAcceptedCID moves a standing acceptance onto new content without
@@ -316,16 +360,25 @@ func (r *postgresAdmissionRepo) ApplyRemovalDelete(ctx context.Context, cmd post
 //
 // The caller establishes that the diff touches only bridgedStats and that the
 // author passes the bridge-trust gate. What this enforces is narrower and
-// structural: a repin updates an acceptance that STANDS. Without that
-// precondition a repin arriving at a removed post — whose removal cleared the
-// acceptance — would write a fresh accepted_cid onto it, which is exactly the
-// live-acceptance-on-a-removed-post state the removal path takes care to
-// prevent.
+// structural: a repin updates an acceptance that STANDS on a row that is
+// `accepted` NOW. Both halves of that guard earn their place. Without the
+// acceptance-columns check, a repin arriving at a removed post — whose removal
+// cleared the acceptance — would write a fresh accepted_cid onto it, which is
+// exactly the live-acceptance-on-a-removed-post state the removal path takes
+// care to prevent. Without the status check, a repin arriving at
+// pending_reacceptance — which still CARRIES the acceptance columns — would
+// move both CIDs under a status that says the acceptance does not cover the
+// current content, silently converting an author's real edit into a
+// stats-only refresh.
 //
 // It is an UPDATE rather than an upsert for the same reason: a repin must never
 // be able to CREATE an admission. Manufacturing an accepted row from a bridge's
 // refresh would be an auto-admission the community never wrote.
 func (r *postgresAdmissionRepo) RepinAcceptedCID(ctx context.Context, cmd posts.RepinAcceptanceCommand) (posts.AdmissionResult, error) {
+	if err := validateWatermark("RepinAcceptedCID", cmd.CommunityDID, cmd.PostURI, cmd.Watermark); err != nil {
+		return posts.AdmissionResult{}, err
+	}
+
 	query := `
 		UPDATE community_post_admissions SET
 			accepted_cid = $3,
@@ -335,14 +388,15 @@ func (r *postgresAdmissionRepo) RepinAcceptedCID(ctx context.Context, cmd posts.
 			updated_at = NOW()
 		WHERE community_did = $1
 		  AND post_uri = $2
+		  AND status = 'accepted'
 		  AND acceptance_uri IS NOT NULL
 		  AND (last_community_rev IS NULL
 		       OR (last_community_rev, last_community_op_rank) < ($4::text COLLATE "C", $5::smallint))
 		RETURNING ` + admissionColumns
 
-	return r.compareAndSwap(ctx, "RepinAcceptedCID", cmd.CommunityDID, cmd.PostURI, repinOutcome,
+	return r.compareAndSwap(ctx, "RepinAcceptedCID", cmd.CommunityDID, cmd.PostURI, repinOutcome, rowOptional,
 		query, cmd.CommunityDID, cmd.PostURI, cmd.PinnedCID,
-		cmd.Watermark.Rev, int16(cmd.Watermark.OpRank))
+		cmd.Watermark.Rev, int16(posts.CommunityOpPut))
 }
 
 // RecordRejection records the AppView's OWN decision not to admit a post.
@@ -354,29 +408,39 @@ func (r *postgresAdmissionRepo) RepinAcceptedCID(ctx context.Context, cmd posts.
 // evaluated_cid either — the rejection judges the content already recorded, it
 // does not change what was judged.
 //
+// The guard is the engine's read made safe: rejection's ONLY legal source
+// state is `pending` (§5.5 — re-acceptance failure is expressed as a removal,
+// and a rejection landing on accepted or pending_reacceptance would suppress a
+// live community acceptance with a local decision), and the row must still
+// hold the exact CID the verdict judged, or an author's edit slipped in
+// between the engine's read and its write and the verdict is about content
+// that no longer exists. A replay of the decision already recorded meets
+// status = 'rejected' and is refused without touching a byte — no re-stamped
+// decision_at, however many feeds redrive it.
+//
+// It is an UPDATE, never an insert: the engine rejects rows it read from its
+// own queue, so a subject with NO row is a caller bug that must surface as an
+// error, not a decision to be recorded against nothing.
+//
 // Redrivable is the caller's classification of WHY, stored verbatim: a policy
 // rejection is terminal and must not be retried by the dead-letter pass, while
 // a transient evaluation failure has to stay retryable.
 func (r *postgresAdmissionRepo) RecordRejection(ctx context.Context, cmd posts.RecordRejectionCommand) (posts.AdmissionResult, error) {
-	// Guarded against `removed` because a removal is the moderator's decision
-	// and a rejection is ours. Overwriting decision_code there would replace
-	// what a reader renders as #removedPost with a code the community never
-	// issued.
 	query := `
-		INSERT INTO community_post_admissions (
-			community_did, post_uri, status, decision_code, decision_at, redrivable, created_at, updated_at
-		) VALUES ($1, $2, 'rejected', $3, NOW(), $4, NOW(), NOW())
-		ON CONFLICT (community_did, post_uri) DO UPDATE SET
+		UPDATE community_post_admissions SET
 			status = 'rejected',
-			decision_code = excluded.decision_code,
-			decision_at = excluded.decision_at,
-			redrivable = excluded.redrivable,
+			decision_code = $3,
+			decision_at = NOW(),
+			redrivable = $4,
 			updated_at = NOW()
-		WHERE community_post_admissions.status <> 'removed'
+		WHERE community_did = $1
+		  AND post_uri = $2
+		  AND status = 'pending'
+		  AND evaluated_cid IS NOT DISTINCT FROM $5
 		RETURNING ` + admissionColumns
 
-	return r.compareAndSwap(ctx, "RecordRejection", cmd.CommunityDID, cmd.PostURI, nonCommunityEventOutcome,
-		query, cmd.CommunityDID, cmd.PostURI, cmd.DecisionCode, cmd.Redrivable)
+	return r.compareAndSwap(ctx, "RecordRejection", cmd.CommunityDID, cmd.PostURI, rejectionOutcome, rowRequired,
+		query, cmd.CommunityDID, cmd.PostURI, cmd.DecisionCode, cmd.Redrivable, cmd.JudgedCID)
 }
 
 // GetByPostURIs returns every community's decision about each of the given
@@ -616,50 +680,95 @@ func communityEventOutcome(wrote bool, _ *posts.Admission) posts.AdmissionOutcom
 	return posts.AdmissionSkippedStale
 }
 
-// nonCommunityEventOutcome classifies the two mutations that carry no
-// watermark — the author-repo content observation and the AppView's own
-// rejection — where a write and an applied transition are not the same thing.
+// upsertPendingOutcome classifies the author-repo content observation, where a
+// write and an applied transition are not the same thing.
 //
-// Both are refused by the same thing: removal is terminal against everything
-// except a community event that outranks it. UpsertPending still records the
-// content a removed row now holds, so it WRITES while the transition it asked
-// for was refused; that is skipped_terminal, audit columns notwithstanding.
-// Anything else that wrote applied, and anything that did not write met a row
-// already holding what it carried.
-func nonCommunityEventOutcome(wrote bool, current *posts.Admission) posts.AdmissionOutcome {
+// A delivery that wrote NOTHING met a row already holding exactly this content
+// — a multi-feed duplicate — and that is skipped_stale whatever the row's
+// status, a removed row included: nothing was recorded, so nothing was
+// refused. A delivery that wrote but met `removed` recorded audit columns
+// while the transition it asked for was refused by removal terminality
+// (§5.5); that is skipped_terminal. Anything else that wrote applied.
+func upsertPendingOutcome(wrote bool, current *posts.Admission) posts.AdmissionOutcome {
+	if !wrote {
+		return posts.AdmissionSkippedStale
+	}
 	if current.Status == posts.AdmissionStatusRemoved {
 		return posts.AdmissionSkippedTerminal
 	}
+	return posts.AdmissionApplied
+}
+
+// rejectionOutcome classifies the AppView's own rejection, whose guard refuses
+// in two honestly different ways. A row still `pending` refused because it no
+// longer holds the judged CID — the verdict is about content that has been
+// edited away, which is ordering skew: skipped_stale. A row already `rejected`
+// met a replay of the decision it records: skipped_stale too. Any other status
+// (accepted, pending_reacceptance, removed) refuses by STATE — a community
+// decision or a standing acceptance outranks a local verdict regardless of
+// when it arrives: skipped_terminal.
+func rejectionOutcome(wrote bool, current *posts.Admission) posts.AdmissionOutcome {
 	if wrote {
 		return posts.AdmissionApplied
 	}
-	return posts.AdmissionSkippedStale
+	switch current.Status {
+	case posts.AdmissionStatusPending, posts.AdmissionStatusRejected:
+		return posts.AdmissionSkippedStale
+	default:
+		return posts.AdmissionSkippedTerminal
+	}
 }
 
 // repinOutcome classifies a bridge repin, whose guard has two halves and so two
-// ways to refuse. No standing acceptance to move is the row's state refusing
-// the transition regardless of ordering; anything else is the watermark.
+// ways to refuse. A row that is not `accepted` with its acceptance standing is
+// the row's state refusing the transition regardless of ordering; anything
+// else is the watermark.
 func repinOutcome(wrote bool, current *posts.Admission) posts.AdmissionOutcome {
 	if wrote {
 		return posts.AdmissionApplied
 	}
-	if current.AcceptanceURI == nil {
+	if current.Status != posts.AdmissionStatusAccepted || current.AcceptanceURI == nil {
 		return posts.AdmissionSkippedTerminal
 	}
 	return posts.AdmissionSkippedStale
 }
 
-// compareAndSwap runs one guarded upsert and reports the row it left behind.
+// validateWatermark refuses a community event whose watermark cannot have come
+// off the wire. Every Jetstream commit carries a rev, so an empty one is an
+// upstream decoding bug — a genuine error bound for the dead-letter queue, not
+// a skip — and stamping it would write a clock value that never existed onto
+// the row (see posts.ErrInvalidWatermark).
+func validateWatermark(operation, communityDID, postURI string, watermark posts.CommunityWatermark) error {
+	if watermark.Rev == "" {
+		return fmt.Errorf("%s for %s in %s: %w: empty rev", operation, postURI, communityDID, posts.ErrInvalidWatermark)
+	}
+	return nil
+}
+
+// rowExpectation states whether a mutation may legitimately find NO row when
+// its guard refuses. The upserts insert on an absent subject, so for them a
+// missing row after a refusal is impossible and reads as corruption; the
+// UPDATE-shaped mutations differ, and only the repin treats absence as an
+// ordinary state (see compareAndSwap).
+const (
+	rowRequired = false
+	rowOptional = true
+)
+
+// compareAndSwap runs one guarded mutation and reports the row it left behind.
 //
 // The transaction exists for the refusal path. A guard that fails returns no
-// rows, so the current state has to be read — and reading it in the same
-// transaction means reading it under the row lock the failed ON CONFLICT DO
-// UPDATE already holds, which is what makes the returned row provably the row
-// the guard was evaluated against.
+// rows, so the current state has to be read — and the classifying read locks
+// the row (FOR UPDATE) in the same transaction, which is what makes the
+// returned row provably the row the guard was evaluated against. A refused ON
+// CONFLICT DO UPDATE already holds the conflicting row's lock, but a guarded
+// UPDATE that matched nothing holds none, and without the explicit lock a
+// concurrent consumer could rewrite the row between the refusal and the read.
 func (r *postgresAdmissionRepo) compareAndSwap(
 	ctx context.Context,
 	operation, communityDID, postURI string,
 	classify admissionOutcome,
+	mayLackRow bool,
 	query string,
 	args ...interface{},
 ) (posts.AdmissionResult, error) {
@@ -687,18 +796,25 @@ func (r *postgresAdmissionRepo) compareAndSwap(
 		admission, err = scanAdmission(tx.QueryRowContext(ctx,
 			`SELECT `+admissionColumns+`
 			 FROM community_post_admissions
-			 WHERE community_did = $1 AND post_uri = $2`,
+			 WHERE community_did = $1 AND post_uri = $2
+			 FOR UPDATE`,
 			communityDID, postURI))
 		if errors.Is(err, sql.ErrNoRows) {
-			// Only the UPDATE-shaped mutations reach this. The upserts insert
-			// when the subject is absent, so their guard can refuse nothing but
-			// an existing row; a repin, which must never create an admission,
-			// simply has no row to move. That is a state the row refuses by not
-			// existing, and it is not an error — the ordering skew that
-			// delivers a community event early delivers a bridge refresh early
-			// too, and routing it to the dead-letter queue would bury it among
-			// genuine failures.
-			return posts.AdmissionResult{Outcome: posts.AdmissionSkippedTerminal}, nil
+			// Only the UPDATE-shaped mutations can reach this — the upserts
+			// insert when the subject is absent, so their guard can refuse
+			// nothing but an existing row. Whether absence is a state or a bug
+			// is per-operation. A repin, which must never create an admission,
+			// simply has no acceptance to move: the ordering skew that delivers
+			// a community event early delivers a bridge refresh early too, so
+			// that is an outcome. A rejection, by contrast, is the engine
+			// writing a verdict for a row it read from its own queue; no row
+			// means the caller judged nothing, and burying that as a skip
+			// would hide a genuine bug from the dead-letter queue.
+			if mayLackRow {
+				return posts.AdmissionResult{Outcome: posts.AdmissionSkippedTerminal}, nil
+			}
+			return posts.AdmissionResult{}, fmt.Errorf(
+				"%s for %s in %s: no admission row to decide against: %w", operation, postURI, communityDID, posts.ErrNotFound)
 		}
 	}
 	if err != nil {

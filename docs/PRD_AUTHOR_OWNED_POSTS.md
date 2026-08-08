@@ -25,7 +25,10 @@ special-casing silently dropped moderator restores (the restore commit is
 symmetric to the removal commit and indistinguishable from ordinary events on
 the wire); restore is now defined as any community acceptance winning the
 tuple CAS over a removal. Stale/terminal skips are outcome values, not
-errors (033 precedent — sentinels would dead-letter healthy skips).**
+errors (033 precedent — sentinels would dead-letter healthy skips).
+Rev 2.4 (2026-08-08): rejection narrowed to pending-only CAS with judged CID;
+op-rank derived repo-side; NULL-evaluated acceptance treated as pin-trusting
+(task-2 second-opinion catches).**
 
 **Supersedes** the write-path architecture in `docs/federation-prd.md`: that
 document solves cross-instance posting by service-auth-forwarding the write to
@@ -443,7 +446,11 @@ for communities this AppView hosts (from the fast path, the firehose consumer,
 or notify). It runs `admitPost` — the extracted §4.1 checks plus the new
 ban/rate-limit policy — then writes/updates the acceptance, or (rejection)
 records the decision in the admissions table, or (re-acceptance failure /
-moderation) performs the atomic acceptance-delete + removal. It is the only
+moderation) performs the atomic acceptance-delete + removal. Rejection is a
+pending-only CAS carrying the judged CID: a rejection evaluated against
+content the row no longer holds refuses rather than applies, and accepted or
+removed rows are never rejected — a failed re-acceptance is a removal per
+§5.5, not a rejection. It is the only
 writer of community-repo records in the post system, and every write is
 idempotent via deterministic rkeys + swap semantics.
 
@@ -470,9 +477,12 @@ New table `community_post_admissions`:
 - `redrivable BOOLEAN NOT NULL DEFAULT true` — policy rejections are
   `false` (terminal; not retried by DLQ redrive); transient evaluation
   failures stay `true`
-- `last_community_rev TEXT COLLATE "C"` + `last_community_op_rank SMALLINT` —
-  the §5.2 subject-scoped composite watermark (033 pins `COLLATE "C"` for
-  rev comparison; same rule here)
+- `last_community_rev TEXT COLLATE "C"` + `last_community_op_rank SMALLINT`
+  with a `CHECK` restricting the op-rank to `0 | 1` — the §5.2 subject-scoped
+  composite watermark (033 pins `COLLATE "C"` for rev comparison; same rule
+  here). The op-rank is derived repo-side from the event's operation
+  (delete = 0, put = 1) and is never caller-supplied: an out-of-range rank
+  would corrupt the tuple comparison silently
 - Partial index on `status = 'accepted'` for feed queries
 
 `posts` changes: drop the `users` FK + CASCADE (§5.3), drop the in-record
