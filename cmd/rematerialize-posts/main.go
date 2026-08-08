@@ -351,6 +351,7 @@ func oauthScopes() []string {
 	return []string{
 		"atproto",
 		"blob:*/*",
+		"repo:social.coves.community.postv2?action=create&action=update&action=delete",
 		"repo:social.coves.community.post?action=create&action=update&action=delete",
 		"repo:social.coves.community.comment?action=create&action=update&action=delete",
 		"repo:social.coves.community.profile?action=create&action=update&action=delete",
