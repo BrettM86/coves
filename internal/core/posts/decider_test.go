@@ -250,28 +250,70 @@ func TestDecider_ClassifiesARegisteredAggregator(t *testing.T) {
 	assert.Zero(t, h.bans.calls, "an aggregator is not held to member bans")
 }
 
-func TestDecider_FallsToTheStricterClassWhenTheLookupFails(t *testing.T) {
+func TestDecider_EngineDefersWhenTheClassificationLookupFails(t *testing.T) {
 	t.Parallel()
 
-	// The classification lookup is down. There are two ways to be wrong here and
-	// only one of them is survivable: guessing "aggregator" skips the ban and
-	// visibility checks, so a database blip would become a window in which every
-	// banned author's posts are accepted. Guessing "user" costs an aggregator
-	// some refused posts until the lookup recovers. CreatePost already chose the
-	// second (service.go step 3), and the engine must not disagree with the write
-	// path about who someone is.
+	// THE ENGINE AND THE WRITE PATH ANSWER THIS DIFFERENTLY, ON PURPOSE, and the
+	// reason is what each does with the answer afterwards.
+	//
+	// CreatePost is talking to a live client. A failed IsAggregator lookup there
+	// downgrades the caller to ActorUser (service.go step 3): the strict checks
+	// apply, an aggregator loses a few posts until the table comes back, and the
+	// client is told something it can retry. Nothing is written down.
+	//
+	// The engine writes the verdict INTO THE ADMISSION ROW, and a policy refusal
+	// is stamped redrivable = false — terminal, never revisited by the redrive
+	// pass. So the same downgrade here does not cost an aggregator a retry; it
+	// permanently marks their post refused for a reason that was never true,
+	// because a table was briefly unreachable. Nothing in the system would ever
+	// look at it again.
+	//
+	// That asymmetry is the whole rule: a decision that PERSISTS may only be made
+	// from an answer that was actually obtained.
 	h := newDeciderHarness()
 	h.aggregators.err = errors.New("aggregators table unreachable")
 	h.bans.membership = banned()
 
 	decision, err := h.decide(t)
 
-	require.NoError(t, err, "a failed CLASSIFICATION is not a failed decision: the stricter class is a safe answer, not an outage")
-	assert.Falsef(t, decision.Admitted(),
-		"a failed IsAggregator lookup must fall to ActorUser, and this author is banned — an admission here means the failure was resolved upward into aggregator privileges: %+v", decision)
+	require.Error(t, err,
+		"a classification that could not be made must be reported as undecided; the engine has no safe way to guess when its guess is written down permanently")
+	assert.False(t, decision.Admitted(), "an undecided answer is not an admission")
+	assert.Emptyf(t, decision.Code,
+		"the decider minted %q from a failed lookup. The engine persists codes and sets redrivable = false on policy refusals, "+
+			"so this would leave a permanent, unretryable refusal on a post whose author may not be banned at all", decision.Code)
+}
+
+func TestDecider_TheWritePathStillFallsToTheStricterClass(t *testing.T) {
+	t.Parallel()
+
+	// THE OTHER HALF, and it has to stay pinned or the fix above has an obvious
+	// wrong generalisation available: making a failed lookup undecided
+	// EVERYWHERE. On the write path that would turn a brief aggregators-table
+	// blip into a 500 for every caller, where today they are simply held to the
+	// ordinary user's rules — which is the strict direction and costs nothing.
+	//
+	// This asserts the composition rather than re-deriving the classification:
+	// ActorUser is what service.go step 3 downgrades to, and what must follow
+	// from it is that the checks a user is held to actually run and actually
+	// answer. A refusal reaching a live client is retryable; that is precisely
+	// what makes the guess safe there and unsafe in the engine.
+	h := newAdmitHarness()
+	h.bans.membership = banned()
+
+	decision, err := evaluateAdmissionPolicy(context.Background(), h.deps(), AdmissionRequest{
+		Actor:       ActorUser,
+		AuthorDID:   admitAuthorDID,
+		Community:   admitCommunityHandle,
+		Fingerprint: "downgraded-classification",
+	})
+
+	require.NoError(t, err)
+	assert.False(t, decision.Admitted(),
+		"the stricter class must actually apply the checks it implies, or the downgrade is a downgrade in name only")
 	assert.Equal(t, DecisionAuthorBanned, decision.Code,
-		"falling to the user class means the ban check runs and answers")
-	assert.Positive(t, h.bans.calls, "the stricter class must actually apply the checks it implies")
+		"falling to ActorUser means the ban check runs and answers — that is what makes it the SAFE guess for a caller who can retry")
+	assert.Positive(t, h.bans.calls, "the ban lookup must have been consulted")
 }
 
 func TestDecider_IsUndecidedWhenThePolicyCannotBeEvaluated(t *testing.T) {

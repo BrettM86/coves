@@ -192,7 +192,15 @@ var declaredRoutes = []declaredRoute{
 	// 2.7: anyone who can name a post URI learns its status in a community.
 	// Adding OptionalAuth here would be harmless; adding RequireAuth would make
 	// the cross-server case unanswerable, which is why it is declared.
-	{http.MethodGet, "/xrpc/social.coves.community.post.getStatus", authNone, 0, false},
+	// getStatus carries its OWN limiter, tighter than the global 100/minute,
+	// and it is the only unauthenticated route in the product that does. Two
+	// things make it worth the exception: §7's client UX is to POLL it until a
+	// post flips to accepted, so the honest traffic shape is repeated requests
+	// from one caller; and because it takes no auth, an unauthenticated
+	// stranger can ask about any post URI they can name. The budget is what
+	// bounds enumeration of a community's rejected posts to something an
+	// operator would notice.
+	{http.MethodGet, "/xrpc/social.coves.community.post.getStatus", authNone, 60, false},
 
 	// RegisterVoteRoutes — social.coves.feed.vote.*
 	{http.MethodPost, "/xrpc/social.coves.feed.vote.create", authRequired, 0, false},

@@ -270,6 +270,11 @@ func (a *fakeAdmissions) ListPendingSubjects(_ context.Context, _ int) ([]Pendin
 	return nil, nil
 }
 
+func (a *fakeAdmissions) CountRecentAdmissions(_ context.Context, _, _ string, _ time.Time) (int, error) {
+	a.rec.record("CountRecentAdmissions")
+	return 0, nil
+}
+
 // ---------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------

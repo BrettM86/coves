@@ -366,6 +366,22 @@ type AdmissionRepository interface {
 	// honest signal: a backlog full of subjects nothing can ever settle looks
 	// identical, from the outside, to an engine that has stopped working.
 	ListPendingSubjects(ctx context.Context, limit int) ([]PendingSubject, error)
+
+	// CountRecentAdmissions counts how many posts this author has had ADMITTED
+	// to this community since a point in time — accepted and still-pending rows
+	// together.
+	//
+	// It is the firehose path's quota substrate, and it has to be a different
+	// one from the write path's. post_submissions (migration 035) is written by
+	// CreatePost, so it only ever sees submissions this AppView handled; a post
+	// that arrived over the firehose from an author on another server has no
+	// ledger row and never will. Counting the ledger would therefore apply the
+	// quota to local users and exempt precisely the remote ones §8 is about.
+	//
+	// Rejected and removed rows are excluded deliberately: §8 is explicit that a
+	// refusal consumes no quota, and counting them would let an author extend
+	// their own lockout by continuing to post.
+	CountRecentAdmissions(ctx context.Context, communityDID, authorDID string, since time.Time) (int, error)
 }
 
 // PendingSubject is one (community, post) pair the engine still owes a decision.

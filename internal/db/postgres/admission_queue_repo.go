@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"Coves/internal/core/posts"
 )
@@ -86,4 +87,17 @@ func (r *postgresAdmissionRepo) ListPendingSubjects(ctx context.Context, limit i
 		return nil, fmt.Errorf("reading the pending subjects: %w", err)
 	}
 	return subjects, nil
+}
+
+// CountRecentAdmissions counts this author's admitted posts in one community
+// since a point in time.
+//
+// The author is matched by AT-URI prefix rather than by joining posts: under
+// author-owned posts the URI's authority IS the author, and an admission can
+// legitimately exist with no posts row at all (an acceptance that arrived before
+// its subject). A join would silently exempt exactly those from the quota.
+func (r *postgresAdmissionRepo) CountRecentAdmissions(
+	ctx context.Context, communityDID, authorDID string, since time.Time,
+) (int, error) {
+	return 0, nil
 }

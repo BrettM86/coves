@@ -100,6 +100,16 @@ type QueueSnapshot struct {
 
 	LastPassDeferred int
 	LastPassFailed   int
+
+	// DeferredSubjects is how many subjects are currently holding a backoff.
+	//
+	// Exposed because it is the only external view of a map that would
+	// otherwise grow for the life of the process: entries are keyed by subject
+	// and a subject settled by somebody else — the fast path, a firehose
+	// acceptance, a moderator — stops being listed without ever telling the
+	// driver to forget it. A number that climbs while the backlog does not is
+	// the leak, visible.
+	DeferredSubjects int
 }
 
 // QueueDriverOption configures the driver.

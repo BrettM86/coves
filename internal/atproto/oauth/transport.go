@@ -11,6 +11,18 @@ import (
 type ssrfSafeTransport struct {
 	base         *http.Transport
 	allowPrivate bool // For dev/testing only
+
+	// lookupIP resolves a hostname. A field so a test can drive the
+	// check-then-dial window that the guard has to close; nil means net.LookupIP.
+	lookupIP func(host string) ([]net.IP, error)
+}
+
+// resolveHost is the transport's one name lookup per request.
+func (t *ssrfSafeTransport) resolveHost(host string) ([]net.IP, error) {
+	if t.lookupIP != nil {
+		return t.lookupIP(host)
+	}
+	return net.LookupIP(host)
 }
 
 // isPrivateIP checks if an IP is in a private/reserved range
@@ -54,7 +66,7 @@ func (t *ssrfSafeTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	host := req.URL.Hostname()
 
 	// Resolve hostname to IP
-	ips, err := net.LookupIP(host)
+	ips, err := t.resolveHost(host)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve host: %w", err)
 	}

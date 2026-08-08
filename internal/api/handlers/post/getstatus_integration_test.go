@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -430,4 +431,102 @@ func TestGetStatus_ScopesTheAnswerToTheNamedCommunity(t *testing.T) {
 	assert.Equal(t, "removed", removed["status"],
 		"the same post is accepted in one community and removed in another; an answer that ignored the community parameter would report one of them everywhere")
 	assert.Equal(t, string(posts.DecisionOffTopic), removed["decisionCode"])
+}
+
+func TestGetStatus_AcceptsALegalLongDID(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	ctx := context.Background()
+	stack := newStatusStack(db)
+
+	// A DID may legally run to 2048 bytes (the same fact that killed the
+	// readable-rkey transform in PRD rev 2.2 and forced the SHA-256 digest). An
+	// author-owned post URI is authority-scoped, so the author's DID is INSIDE
+	// the URI this endpoint takes — which means a length cap sized for the old
+	// community-repo URIs silently makes long-DID authors unqueryable, and only
+	// them. Nothing else in the system would notice: their posts index fine and
+	// every other endpoint serves them.
+	name := testkit.UniqueIDWithPrefix(t, "longdid")
+	communityDID, err := fixtures.Community(ctx, db, name, "owner"+name)
+	require.NoError(t, err)
+
+	longDID := "did:web:" + strings.Repeat("a", 2048-len("did:web:"))
+	require.Len(t, longDID, 2048, "fixture: the DID must be exactly at the legal ceiling")
+
+	rkey := testkit.TID()
+	postURI := "at://" + longDID + "/social.coves.community.postv2/" + rkey
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO posts (uri, cid, rkey, author_did, community_did, title, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, NOW())
+	`, postURI, "bafyreilongdid", rkey, longDID, communityDID, "a post by an author with a very long DID")
+	require.NoError(t, err)
+
+	_, err = stack.admissions.UpsertPending(ctx, posts.UpsertPendingCommand{
+		CommunityDID: communityDID,
+		PostURI:      postURI,
+		EvaluatedCID: "bafyreilongdid",
+	})
+	require.NoError(t, err)
+
+	body := decodeStatus(t, getStatus(t, stack.handler, postURI, communityDID))
+	assert.Equal(t, "pending", body["status"],
+		"a legal 2048-byte DID must be queryable; a cap below the spec's ceiling excludes real authors from the only "+
+			"endpoint that can tell them why their post is not visible")
+}
+
+func TestGetStatus_RefusesAMalformedURI(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	stack := newStatusStack(db)
+	subject := newStatusSubject(t, db)
+
+	// Raising the cap must not become "accept anything long". The URI is parsed
+	// — a handle-authority URI resolves to whoever holds the handle next, and a
+	// non-at:// string is a client bug that has to come back as one rather than
+	// as a silent not-found.
+	for _, malformed := range []string{
+		"not-an-at-uri",
+		"at://",
+		"https://example.com/post",
+		"at://" + strings.Repeat("b", 4096) + "/social.coves.community.postv2/x",
+	} {
+		rec := httptest.NewRecorder()
+		target := "/xrpc/social.coves.community.post.getStatus?post=" +
+			url.QueryEscape(malformed) + "&community=" + url.QueryEscape(subject.CommunityDID)
+		stack.handler.HandleGetStatus(rec, httptest.NewRequest(http.MethodGet, target, nil))
+
+		assert.Equalf(t, http.StatusBadRequest, rec.Code,
+			"the URI %.40q must be refused as malformed, not answered; a 404 here tells a client with a bug that its post "+
+				"does not exist (body: %s)", malformed, rec.Body.String())
+	}
+}
+
+func TestGetStatus_IsNotCacheable(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	ctx := context.Background()
+	stack := newStatusStack(db)
+	subject := newStatusSubject(t, db)
+
+	_, err := stack.admissions.UpsertPending(ctx, posts.UpsertPendingCommand{
+		CommunityDID: subject.CommunityDID,
+		PostURI:      subject.PostURI,
+		EvaluatedCID: "bafyreicacheable",
+	})
+	require.NoError(t, err)
+
+	rec := getStatus(t, stack.handler, subject.PostURI, subject.CommunityDID)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	// This endpoint exists to be POLLED for a transition (§7), so a cached
+	// answer is not a stale nicety — it is the endpoint failing at its only job:
+	// the client keeps being handed `pending` after the post was accepted and
+	// stops polling. It is also unauthenticated and reports a moderation
+	// decision, so an intermediary holding a copy is a disclosure surface that
+	// outlives the request.
+	assert.Equalf(t, "no-store", rec.Header().Get("Cache-Control"),
+		"getStatus must answer Cache-Control: no-store; got %q", rec.Header().Get("Cache-Control"))
 }

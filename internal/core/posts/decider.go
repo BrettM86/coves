@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 )
 
 // The production AdmissionDecider: the adapter that turns "decide about this
@@ -75,6 +76,11 @@ type PostLookup interface {
 	GetByURI(ctx context.Context, uri string) (*Post, error)
 }
 
+// AdmissionCounter is the narrow slice of AdmissionRepository the quota needs.
+type AdmissionCounter interface {
+	CountRecentAdmissions(ctx context.Context, communityDID, authorDID string, since time.Time) (int, error)
+}
+
 // AggregatorLookup reports whether a DID is a registered aggregator. Satisfied
 // by aggregators.Service.
 type AggregatorLookup interface {
@@ -104,7 +110,15 @@ type DeciderDeps struct {
 	Aggregators AggregatorLookup
 
 	// Policy is the ban lookup, ledger, limits and clock admitPost already uses.
+	// Its Limits govern the firehose quota below as well, so a local author and
+	// a remote one are held to the same number.
 	Policy AdmissionPolicy
+
+	// Admissions counts an author's recent admitted posts in a community — the
+	// firehose path's quota substrate (§8). nil disables the quota, which is
+	// the right default for a deployment that hosts no communities and therefore
+	// decides nothing.
+	Admissions AdmissionCounter
 
 	// TrustedAggregatorDIDs is the set from TRUSTED_AGGREGATOR_DIDS, resolved
 	// ONCE at construction rather than read per decision.

@@ -3,6 +3,7 @@ package posts
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -331,4 +332,105 @@ func TestQueueDriver_SnapshotReportsTheBacklogAndTheLastPass(t *testing.T) {
 	assert.Equal(t, clock.at, *snapshot.LastPassAt)
 	assert.Equal(t, 1, snapshot.LastPassDeferred)
 	assert.Zero(t, snapshot.LastPassFailed)
+}
+
+func TestQueueDriver_OverFetchesPastBackedOffSubjects(t *testing.T) {
+	t.Parallel()
+
+	// BATCH-PREFIX STARVATION. The backlog is ordered oldest-first, so the
+	// subjects most likely to be stuck — a community whose credentials expired
+	// weeks ago, a post whose content never decoded — are exactly the ones that
+	// sit at the front of it forever. Ask for LIMIT rows, get LIMIT stuck ones,
+	// skip all of them for backoff, and the pass does nothing. Every pass. The
+	// queue is not empty and the driver is not broken; it simply never sees past
+	// its own prefix, and a healthy post behind them is never decided.
+	//
+	// The fix stays in the DRIVER: over-fetch and keep skipping until the batch
+	// is filled. Pushing the backoff into the query would mean persisting
+	// retry-not-before, and the backoff is deliberately a disposable in-memory
+	// hint that a restart may forget (see QueueDriver.deferrals).
+	clock := newQueueClock()
+
+	const batch = 3
+	stuck := make([]PendingSubject, batch)
+	for i := range stuck {
+		stuck[i] = subject("did:plc:qstuck", fmt.Sprintf("stuck%d", i))
+	}
+	young := subject("did:plc:qyoung", "young")
+
+	subjects := &fakeSubjects{batches: [][]PendingSubject{append(append([]PendingSubject{}, stuck...), young)}}
+	engine := newFakeEngine()
+	for _, s := range stuck {
+		engine.outcomes[s.PostURI] = EngineDeferred
+	}
+
+	driver := NewQueueDriver(subjects, engine, clock.now(),
+		WithQueueBatchSize(batch), WithQueueBackoff(time.Minute, 10*time.Minute))
+	ctx := context.Background()
+
+	// Pass one settles nothing and backs the whole prefix off.
+	first, err := driver.RunPass(ctx)
+	require.NoError(t, err)
+	require.Equal(t, batch, first.Deferred, "fixture: the whole prefix must defer")
+
+	// Pass two, inside the backoff window. Every stuck subject is held back, so
+	// a driver that asked for exactly LIMIT rows would process nothing at all.
+	clock.advance(time.Second)
+	second, err := driver.RunPass(ctx)
+	require.NoError(t, err)
+
+	assert.Contains(t, engine.uris(), young.PostURI,
+		"the young subject was never reached: the pass asked for exactly the batch size, got a prefix of backed-off "+
+			"subjects, and skipped all of them — so a stuck community at the head of the backlog starves everything behind it forever")
+	assert.Equalf(t, 1, second.Processed,
+		"the pass must fill its batch past the held-back prefix, processing the young subject and nothing else; got %d processed", second.Processed)
+
+	require.GreaterOrEqual(t, len(subjects.limits), 2)
+	assert.Greaterf(t, subjects.limits[len(subjects.limits)-1], batch,
+		"the query must be asked for MORE than the batch size (limits seen: %v). The driver cannot skip past what it "+
+			"never fetched, and the over-fetch factor is what bounds how deep a stuck prefix it can see past", subjects.limits)
+}
+
+func TestQueueDriver_PrunesDeferralsForSubjectsThatLeaveTheBacklog(t *testing.T) {
+	t.Parallel()
+
+	// A deferral outlives its subject. The row is settled by somebody else — the
+	// synchronous fast path, a firehose acceptance, a moderator's removal — and
+	// it stops being listed, but its entry stays in the map forever. On a busy
+	// instance that map is then an unbounded leak keyed by every subject the
+	// driver ever deferred, held for the lifetime of the process.
+	//
+	// It is also wrong on re-entry: a subject that leaves the backlog and comes
+	// back (an edit reopening an accepted post) arrives carrying a stale backoff
+	// it did nothing to earn, and waits out a delay that was about a completely
+	// different decision.
+	clock := newQueueClock()
+	leaving := subject("did:plc:qleave", "leaving")
+	staying := subject("did:plc:qstay", "staying")
+
+	subjects := &fakeSubjects{batches: [][]PendingSubject{
+		{leaving, staying},
+		// Second pass: `leaving` was settled elsewhere and is gone from the
+		// backlog. `staying` is still owed a decision.
+		{staying},
+	}}
+	engine := newFakeEngine()
+	engine.outcomes[leaving.PostURI] = EngineDeferred
+	engine.outcomes[staying.PostURI] = EngineDeferred
+
+	driver := NewQueueDriver(subjects, engine, clock.now(), WithQueueBackoff(time.Minute, 10*time.Minute))
+	ctx := context.Background()
+
+	_, err := driver.RunPass(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 2, driver.Snapshot().DeferredSubjects, "fixture: both subjects must be holding a deferral")
+
+	clock.advance(time.Second)
+	_, err = driver.RunPass(ctx)
+	require.NoError(t, err)
+
+	assert.Equalf(t, 1, driver.Snapshot().DeferredSubjects,
+		"the deferral for a subject that has left the backlog was kept. The map is keyed by subject and never swept, so "+
+			"it grows for the life of the process — and a subject that comes back (an edit reopening an accepted post) "+
+			"inherits a stale backoff it did nothing to earn")
 }
