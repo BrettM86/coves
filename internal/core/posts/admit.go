@@ -106,6 +106,16 @@ type AdmissionDecision struct {
 	// follows fails — see SubmissionLedger.
 	Reservation *SubmissionReservation
 
+	// DedupeBucket is the window index the reservation was taken in, reported
+	// so the caller derives the post's record key from THE SAME bucket the
+	// ledger deduped against (SubmissionRkey).
+	//
+	// Reading the clock a second time at the call site would work almost
+	// always and fail exactly at a bucket boundary — the retry that crossed it
+	// would aim at a different rkey than the ledger scoped it to, which is the
+	// one case the deterministic key exists for.
+	DedupeBucket int64
+
 	// Cause carries the underlying error behind a refusal, when there is one,
 	// so the caller can wrap it and keep it matchable.
 	//
@@ -587,11 +597,12 @@ func reserveSubmission(ctx context.Context, deps admissionDeps, req AdmissionReq
 	// window. It runs ahead of the quota so that a client retrying after a lost
 	// response is told its post already exists rather than told to slow down.
 	now := deps.now()
+	bucket := dedupeBucket(now, deps.limits.DedupeWindow)
 	reservation, err := deps.ledger.Reserve(ctx, ReserveSubmissionCommand{
 		AuthorDID:    req.AuthorDID,
 		CommunityDID: community.DID,
 		Fingerprint:  req.Fingerprint,
-		DedupeBucket: dedupeBucket(now, deps.limits.DedupeWindow),
+		DedupeBucket: bucket,
 	})
 	if err != nil {
 		if errors.Is(err, ErrDuplicateSubmission) {
@@ -618,7 +629,7 @@ func reserveSubmission(ctx context.Context, deps admissionDeps, req AdmissionReq
 		}
 	}
 
-	return AdmissionDecision{Community: community, Reservation: &reservation}, nil
+	return AdmissionDecision{Community: community, Reservation: &reservation, DedupeBucket: bucket}, nil
 }
 
 // undecided reports that the decision could NOT be made.
@@ -702,6 +713,19 @@ func dedupeBucket(now time.Time, window time.Duration) int64 {
 // and it changes what readers ultimately see. Two submissions differing only
 // in their thumbnail are different posts, and excluding it would refuse the
 // second as a repeat of the first.
+//
+// IT STILL HASHES THE DEPRECATED PostRecord SHAPE, not the postv2 record that
+// is actually written. The two describe the same submission — every field a
+// CreatePostRequest can populate exists on both — so the fingerprint identifies
+// the same posts either way, and keeping this shape keeps every dedupe row
+// already on the ledger valid across the deploy that flips the write path.
+// Moving it onto PostV2Record is a TASK 8 change, not an outstanding cycle-2
+// one, and the milestone is chosen rather than deferred. Retyping repartitions
+// every live post_submissions row: an author mid-retry when the binary rolls
+// would miss their own reservation and be admitted as a second post, which is
+// the exact duplicate the deterministic rkey exists to close. Task 8
+// re-materializes these records anyway, so it is the one moment the change
+// costs nothing.
 func submissionFingerprint(record PostRecord, thumbnailURL *string) string {
 	// The record is taken by value, so clearing fields here cannot affect the
 	// record the caller goes on to write.

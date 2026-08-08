@@ -13,6 +13,7 @@ import (
 	"Coves/internal/core/aggregators"
 	"Coves/internal/core/posts"
 
+	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -76,13 +77,17 @@ type stubPostService struct {
 	calls    int
 }
 
-func (s *stubPostService) CreatePost(_ context.Context, req posts.CreatePostRequest) (*posts.CreatePostResponse, error) {
+func (s *stubPostService) CreatePost(_ context.Context, _ *oauth.ClientSessionData, req posts.CreatePostRequest) (*posts.CreatePostResponse, error) {
 	s.calls++
 	s.received = req
 	if s.err != nil {
 		return nil, s.err
 	}
 	return s.response, nil
+}
+
+func (s *stubPostService) UpdatePost(_ context.Context, _ *oauth.ClientSessionData, _ posts.UpdatePostRequest) (*posts.UpdatePostResponse, error) {
+	return nil, nil
 }
 
 // serviceJWTPrincipal is the auth middleware DualAuthMiddleware becomes once a

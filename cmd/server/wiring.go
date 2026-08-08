@@ -298,7 +298,19 @@ func (a *application) buildServices(ctx context.Context) error {
 	a.oauthHandler = oauth.NewOAuthHandler(a.oauthClient, a.oauthStore,
 		oauth.WithUserIndexer(a.userService))
 
-	blobService := blobs.NewBlobService(a.cfg.PDS.URL)
+	// The remote-fetch SSRF guard is ON in production and off only in dev, where
+	// the PDS, the PLC and every fixture origin live on loopback — exactly what
+	// the guard refuses. Derived from config ONCE, here, rather than read inside
+	// the fetch: an environment read at the call site would make the guarded
+	// branch untestable alongside t.Parallel and hide the most consequential
+	// input to a security decision from the place that makes it.
+	blobOptions := []blobs.BlobServiceOption{}
+	if a.cfg.IsDevEnv {
+		slog.Warn("dev mode: the blob fetch SSRF guard is disabled; " +
+			"remote image URLs may resolve to private addresses")
+		blobOptions = append(blobOptions, blobs.WithPrivateHostsAllowed())
+	}
+	blobService := blobs.NewBlobService(a.cfg.PDS.URL, blobOptions...)
 
 	// V2.0: the PDS generates and manages community DIDs and keys entirely;
 	// Coves performs no cryptography of its own here.
@@ -349,10 +361,22 @@ func (a *application) buildServices(ctx context.Context) error {
 	// existed, so this is not an optional enrichment — it is the enforcement.
 	// The limits come from config, which refuses to start the process with a
 	// non-positive one rather than letting an omission read as "unlimited".
+	//
+	// The engine is built FIRST because the write path now holds it: §4.2 step
+	// 4 has CreatePost settle a local community's admission before it answers,
+	// so the author gets the community's decision with their post rather than
+	// waiting for their own write to come back around the firehose.
+	acceptanceEngine := a.buildAcceptanceEngine()
+
 	a.postService = posts.NewPostService(
 		a.postRepo, a.communityService, a.aggregatorService, blobService,
 		unfurlService, a.blueskyService, a.cfg.PDS.URL,
 		posts.WithBlockChecker(a.userBlockRepo),
+		// The AUTHOR's own credentials: a browser session when there is one,
+		// and an aggregator's stored tokens when there is not (§4.2 step 3).
+		posts.WithAuthorRepoFactory(
+			posts.NewAuthorRepoFactory(a.oauthClient.ClientApp, aggregators.DefaultSessionID)),
+		posts.WithSyncAcceptance(a.admissionRepo, acceptanceEngine),
 		posts.WithAdmissionPolicy(posts.AdmissionPolicy{
 			Ledger: postgresRepo.NewSubmissionLedger(a.db),
 			Bans:   a.communityService,
@@ -370,8 +394,6 @@ func (a *application) buildServices(ctx context.Context) error {
 	// refused before it was ever accepted writes no community record, so there
 	// is nothing on the firehose to read.
 	a.postStatusService = posts.NewStatusService(a.admissionRepo)
-
-	a.buildAcceptanceEngine()
 
 	// Subject existence is deliberately not validated: the vote is written to
 	// the user's own PDS regardless, and the Jetstream consumer only updates
@@ -415,7 +437,7 @@ func (a *application) buildServices(ctx context.Context) error {
 // STORED CREDENTIALS rather than on communities.hosted_by_did, which is copied
 // out of a community's own profile record and can therefore be claimed by any
 // repo on the network.
-func (a *application) buildAcceptanceEngine() {
+func (a *application) buildAcceptanceEngine() *posts.AcceptanceEngine {
 	repoFactory := posts.NewCommunityRepoFactory(a.communityService)
 	a.communityWriter = posts.NewCommunityRecordWriter(repoFactory, time.Now)
 
@@ -452,11 +474,18 @@ func (a *application) buildAcceptanceEngine() {
 	if a.cfg.Submissions.AcceptanceQueueInterval <= 0 {
 		slog.Warn("acceptance queue driver disabled (ACCEPTANCE_QUEUE_INTERVAL=0); " +
 			"posts left undecided by the fast path and the firehose will not be revisited")
-		return
+		return engine
 	}
 
 	a.acceptanceQueue = posts.NewQueueDriver(a.admissionRepo, engine, time.Now,
 		posts.WithQueueBatchSize(a.cfg.Submissions.AcceptanceQueueBatchSize))
+
+	// RETURNED, NOT ONLY STORED IN THE DRIVER. The write path's fast path and
+	// the queue driver settle the same subjects through the same engine on
+	// purpose: the deterministic rkeys and swap guards make concurrent passes
+	// converge, and a second engine instance would just be a second set of the
+	// same collaborators.
+	return engine
 }
 
 // adminReportAlertOptions builds the operator-alert wiring for admin reports.

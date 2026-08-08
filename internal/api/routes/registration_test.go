@@ -175,11 +175,18 @@ var declaredRoutes = []declaredRoute{
 	{http.MethodPost, "/xrpc/social.coves.community.unblockCommunity", authRequired, 0, false},
 
 	// RegisterPostRoutes — social.coves.community.post.*
-	// The two writes take DualAuthMiddleware in production (OAuth users OR
+	// The three writes take DualAuthMiddleware in production (OAuth users OR
 	// aggregator service JWTs); the guard is RequireAuth either way, which is
 	// what this table can see. Which principals that RequireAuth accepts is
 	// post_aggregator_test.go's subject.
 	{http.MethodPost, "/xrpc/social.coves.community.post.create", authRequired, 0, false},
+	// update arrived with the write-path flip (PRD §4.2): a post lives in its
+	// author's repo now, so editing one is a write this AppView can actually
+	// perform. It is declared exactly like create beside it — the same guard,
+	// no limiter of its own — because it is the same kind of write by the same
+	// principals, and an edit that was cheaper to call than the post it edits
+	// would be the obvious way to spend a quota the create path meters.
+	{http.MethodPost, "/xrpc/social.coves.community.post.update", authRequired, 0, false},
 	{http.MethodPost, "/xrpc/social.coves.community.post.delete", authRequired, 0, false},
 	{http.MethodGet, "/xrpc/social.coves.community.post.get", authOptional, 0, false},
 	// getStatus takes no auth at all, unlike post.get beside it, and the

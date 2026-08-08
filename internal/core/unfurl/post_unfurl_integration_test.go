@@ -108,14 +108,17 @@ func TestPostUnfurl_UnsupportedURL(t *testing.T) {
 	}
 
 	authCtx := middleware.SetTestUserDID(ctx, testUserDID)
-	_, err = postService.CreatePost(authCtx, createReq)
+	_, err = postService.CreatePost(authCtx, nil, createReq)
 
-	// Should still fail at token refresh (expected)
-	require.Error(t, err, "Expected error at token refresh")
-	assert.Contains(t, err.Error(), "failed to refresh community credentials")
+	// Should still fail at the author-repo write (expected): the service is
+	// wired with no author-repo factory, so it has nothing to sign the record
+	// with. Before task 6 the same role was played by the community's unusable
+	// token, which the write path no longer touches.
+	require.Error(t, err, "Expected error opening the author's repository")
+	assert.ErrorIs(t, err, posts.ErrNoAuthorCredentials)
 
 	// The point is that it didn't fail earlier due to unsupported URL
-	t.Log("✓ Post creation with unsupported URL proceeded to PDS write stage")
+	t.Log("✓ Post creation with unsupported URL proceeded to the author-repo write stage")
 }
 
 // TestPostUnfurl_MissingEmbedType tests posts without external embed type don't trigger unfurling
@@ -197,11 +200,11 @@ func TestPostUnfurl_MissingEmbedType(t *testing.T) {
 		}
 
 		authCtx := middleware.SetTestUserDID(ctx, testUserDID)
-		_, err := postService.CreatePost(authCtx, createReq)
+		_, err := postService.CreatePost(authCtx, nil, createReq)
 
-		// Should fail at token refresh (expected)
+		// Should fail at the author-repo write (expected); see above.
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to refresh community credentials")
+		assert.ErrorIs(t, err, posts.ErrNoAuthorCredentials)
 
 		t.Log("✓ Post without embed succeeded (no unfurl attempted)")
 	})
@@ -230,11 +233,11 @@ func TestPostUnfurl_MissingEmbedType(t *testing.T) {
 		}
 
 		authCtx := middleware.SetTestUserDID(ctx, testUserDID)
-		_, err := postService.CreatePost(authCtx, createReq)
+		_, err := postService.CreatePost(authCtx, nil, createReq)
 
-		// Should fail at token refresh (expected)
+		// Should fail at the author-repo write (expected); see above.
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to refresh community credentials")
+		assert.ErrorIs(t, err, posts.ErrNoAuthorCredentials)
 
 		t.Log("✓ Post with images embed succeeded (no unfurl attempted)")
 	})

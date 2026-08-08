@@ -72,12 +72,6 @@
                 "maxLength": 640,
                 "maxGraphemes": 64
               }
-            },
-            "editNote": {
-              "type": "string",
-              "maxLength": 3000,
-              "maxGraphemes": 300,
-              "description": "Optional note explaining the edit"
             }
           }
         }

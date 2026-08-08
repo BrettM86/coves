@@ -20,7 +20,11 @@ type mockGetPostService struct {
 	getPostsFunc func(ctx context.Context, req posts.GetPostsRequest) ([]*posts.PostResult, error)
 }
 
-func (m *mockGetPostService) CreatePost(ctx context.Context, req posts.CreatePostRequest) (*posts.CreatePostResponse, error) {
+func (m *mockGetPostService) CreatePost(ctx context.Context, session *oauthlib.ClientSessionData, req posts.CreatePostRequest) (*posts.CreatePostResponse, error) {
+	return nil, nil
+}
+
+func (m *mockGetPostService) UpdatePost(context.Context, *oauthlib.ClientSessionData, posts.UpdatePostRequest) (*posts.UpdatePostResponse, error) {
 	return nil, nil
 }
 

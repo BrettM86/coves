@@ -53,6 +53,31 @@ var (
 	// already has, and collapsing them would let a refused post be reported as
 	// successfully indexed.
 	ErrDuplicateSubmission = errors.New("an identical submission from this author to this community was refused as a repeat")
+
+	// ErrNoAuthorCredentials is returned when the AppView cannot open the
+	// AUTHOR's repository because it holds nothing to authenticate as them
+	// with: no OAuth session on the request and no stored session to resume
+	// (an aggregator whose tokens were never granted, or were revoked).
+	//
+	// IT IS ITS OWN SENTINEL RATHER THAN A GENERIC FAILURE because the two
+	// audiences need opposite things from it. A human's missing session is
+	// "sign in again" — a 401 the client can act on. An aggregator's revoked
+	// tokens are an operator problem: the service is running, correctly
+	// configured and completely unable to post, and a 500 saying "failed to
+	// write post to PDS" would have that diagnosed as a PDS outage. Posts used
+	// to be written with the COMMUNITY's credentials, so this class of failure
+	// did not exist before the write path flipped to the author's repo.
+	ErrNoAuthorCredentials = errors.New("no credentials to write to the author's repository")
+
+	// ErrConcurrentModification is returned when an update's swap guard fires:
+	// the record changed between the read that shaped the edit and the write
+	// that would have applied it.
+	//
+	// The API boundary maps it to 409. Retrying is the client's decision, not
+	// the server's, because the edit was composed against content that no
+	// longer stands — silently re-reading and re-applying would let a second
+	// device's edit be overwritten by a first device that never saw it.
+	ErrConcurrentModification = errors.New("the post was modified concurrently")
 )
 
 // ValidationError is the shared validation error type. It is aliased rather
