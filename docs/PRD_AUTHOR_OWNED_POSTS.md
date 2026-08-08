@@ -757,3 +757,43 @@ already excludes non-accepted; no leak). Neither blocks the merge.
 
 **Merge hygiene:** never run `go mod tidy` (upgrades transitives into a broken
 go-log; go-car is pinned indirect — `make ci` uses `mod download`, safe).
+
+---
+
+## 12. Post-loop backlog (folded from the build-loop tracker, 2026-08-08)
+
+The 8-task build loop is complete and merged. Durable follow-ups that outlived
+the loop's throwaway tracker (file as issues; none blocks the current feature):
+
+- **Legacy drain follow-up (§11, gated):** remove the deprecated
+  `social.coves.community.post` consumer/WantedCollections/read surfaces only
+  after the prod re-materialization run confirms zero remaining records AND
+  zero fallbacks. The read-side collection-aware branches, `blobOwnerOf`
+  community fallback, `legacyPostCollection`, and `applyRemoval`'s absent
+  collection guard retire together in that branch.
+- **Fingerprint retype to `PostV2Record`:** deploy-sequenced to the
+  writers-stopped maintenance window (`TRUNCATE post_submissions` alongside) —
+  a live retype strands in-flight dedupe reservations. Ripples through
+  `enhanceExternalEmbed`/`postV2From`.
+- **`community.post_count` incrementer:** wire onto
+  `countAcceptedPostsForCommunity` (increment on →accepted, decrement on
+  accepted→removed/rejected in the admission consumer). Cosmetic — display
+  already excludes non-accepted; no leak.
+- **Orphan `community_post_admissions` sweep on community deletion.**
+- **Ingestion-lane abuse hardening:** per-source-DID token bucket on the
+  shared posts consumer (remaining ~4.2s transient-retry stall on
+  unknown-community events); handle-squatting is now loud (dead-letter) but not
+  closed (a DID can still front-run a community's desired handle).
+- **Harness:** `-race` full-suite run exhausts Postgres connections — batch it
+  if a race tier ever joins `make ci`; the reliability suite recreates the
+  appview container late, so `.ci-out/appview.log` loses the early-run window
+  (capture continuously). Never `go mod tidy` (breaks a go-log transitive;
+  go-car is pinned indirect).
+- **Deferred product/UX:** author-self-view on `post.get` (needs a viewer-aware
+  `GetViewsByURIs`; author reaches own posts via `actor.getPosts` + `getStatus`
+  today); self-hoster SSRF allowance for private-address unfurl targets
+  (`IS_DEV_ENV` is the only current escape hatch).
+
+**Open product question for the owner:** comments bypass admission entirely — a
+banned author can still comment (PRD open question #2). Decide whether bans
+should gate comments before Beta.
