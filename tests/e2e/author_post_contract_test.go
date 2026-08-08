@@ -148,8 +148,15 @@ func awaitStatus(t *testing.T, p *pipeline, postURI, communityDID, want, descrip
 	var observed postStatusView
 	p.Await(t, description, func() (bool, error) {
 		view, err := p.PostStatus(context.Background(), postURI, communityDID)
-		if pending, wrapped := testkit.PendingIfNotFound(err); wrapped != nil || pending {
-			return false, wrapped
+		// NOT testkit.PendingIfNotFound: it is for probes where a successful read
+		// IS the answer, so its nil case reports DONE — which here would end the
+		// wait before the status was compared. This wait needs the opposite: a
+		// successful read is where the question starts.
+		if err != nil {
+			if testkit.IsNotFound(err) {
+				return false, nil
+			}
+			return false, err
 		}
 		observed = view
 		return view.Status == want, nil

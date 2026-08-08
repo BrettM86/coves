@@ -115,9 +115,9 @@ func (e *fakeEngine) communityOrder() []string {
 // queueClock is a mutable instant the driver reads through Clock.
 type queueClock struct{ at time.Time }
 
-func (c *queueClock) now() Clock                   { return func() time.Time { return c.at } }
-func (c *queueClock) advance(d time.Duration)      { c.at = c.at.Add(d) }
-func newQueueClock() *queueClock                   { return &queueClock{at: time.Date(2026, 8, 8, 9, 0, 0, 0, time.UTC)} }
+func (c *queueClock) now() Clock              { return func() time.Time { return c.at } }
+func (c *queueClock) advance(d time.Duration) { c.at = c.at.Add(d) }
+func newQueueClock() *queueClock              { return &queueClock{at: time.Date(2026, 8, 8, 9, 0, 0, 0, time.UTC)} }
 func subject(community, rkey string) PendingSubject {
 	return PendingSubject{
 		CommunityDID: community,
