@@ -195,10 +195,29 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 		return nil, fmt.Errorf("generated atProto handle is invalid: %w", validateErr)
 	}
 
-	// Build community profile record
+	// Build community profile record.
+	//
+	// THE HANDLE IS IN THE RECORD, and its absence used to be a pipeline
+	// outage. This record is the ONLY thing that tells an AppView a community
+	// exists — the community consumer indexes repos it has never seen, and
+	// communities have no signup step — so a record without a handle leaves the
+	// consumer to resolve one from the DID document. On an egress-blocked stack
+	// that resolution cannot reach the PLC directory and yields the reserved
+	// "handle.invalid". communities.handle is UNIQUE, so the first community
+	// indexed that way takes the placeholder and every later one collides with
+	// it; the community is dropped, and every post, comment and vote naming it
+	// dead-letters as "community not found", four layers from the cause.
+	//
+	// This is NOT a departure from atProto's "handles are mutable, resolve them
+	// from DIDs" guidance. That guidance is about trusting a STRANGER's
+	// self-reported handle. This AppView provisioned the account and asked the
+	// PDS for exactly this handle, so writing it states a fact this process
+	// already holds. Consumers still resolve for federated communities, where
+	// resolution is the only option there is.
 	profile := map[string]interface{}{
 		"$type":      "social.coves.community.profile",
 		"name":       req.Name, // Short name for !mentions (e.g., "gaming")
+		"handle":     pdsAccount.Handle,
 		"visibility": req.Visibility,
 		"hostedBy":   s.instanceDID, // V2: Instance hosts, community owns
 		"createdBy":  req.CreatedByDID,

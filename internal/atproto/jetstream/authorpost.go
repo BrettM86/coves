@@ -251,6 +251,33 @@ func (f *DirectPostFetcher) FetchPost(ctx context.Context, postURI string) (*Fet
 		if len(detail) > maxFetchErrorDetailBytes {
 			detail = detail[:maxFetchErrorDetailBytes]
 		}
+		// THE CLASSIFICATION IS THE EXPENSIVE PART OF THIS FUNCTION. The
+		// connector reads the returned error's shape: ErrPermanentEvent is
+		// dead-lettered with its redrive budget already spent, and anything
+		// else costs three inline retries (~4.2s of a blocked lane that also
+		// carries posts) plus ten redrives. So a non-200 has to be sorted, not
+		// merely reported.
+		//
+		// A GENUINE XRPC RecordNotFound is a definite fact about the repo: the
+		// PDS was reached, understood the question, and answered that the
+		// record is not there. Nothing a retry does changes it — and left
+		// transient, any community can mint unlimited lane-blocking by writing
+		// acceptances for URIs nobody ever wrote.
+		//
+		// A BARE 404 is the opposite, and the distinction is not pedantry:
+		// with no XRPC envelope the request most likely never reached a PDS at
+		// all — a stale pds_url pointing at a reverse proxy or a generic web
+		// server, both of which 404 everything. Reading that as proof the
+		// record does not exist would permanently discard a real post over a
+		// misconfigured hostname. Everything else, 5xx included, is the PDS
+		// having a bad time and is transient by definition.
+		//
+		// users.FetchProfileRecord draws exactly this line for exactly this
+		// reason; the predicates are shared with it rather than re-derived.
+		if users.IsRecordNotFoundResponse(resp.StatusCode, body) {
+			return nil, fmt.Errorf("%w: the PDS serving %s answered getRecord with status %d: %s",
+				ErrPermanentEvent, postURI, resp.StatusCode, strconv.Quote(detail))
+		}
 		// Quoted so control characters and ANSI escapes from a hostile PDS
 		// cannot corrupt log output.
 		return nil, fmt.Errorf("the PDS serving %s answered getRecord with status %d: %s",
