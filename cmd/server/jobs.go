@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"Coves/internal/core/posts"
 )
 
 const (
@@ -128,6 +130,57 @@ func startOAuthCleanupJob(ctx context.Context, wg *sync.WaitGroup, cleaner expir
 // exercised without a database.
 type expiringTokenRefresher interface {
 	RefreshExpiringTokens(ctx context.Context, expiryBuffer time.Duration) (int, []error)
+}
+
+// acceptanceQueuePass is one walk of the acceptance engine's backlog.
+// Declared as an interface so this job body is testable without an engine, a
+// PDS or a database behind it.
+type acceptanceQueuePass interface {
+	RunPass(ctx context.Context) (posts.PassReport, error)
+}
+
+// startAcceptanceQueueJob walks the undecided admission backlog on an interval.
+//
+// It is the PULL half of admission (docs/PRD_AUTHOR_OWNED_POSTS.md §5.6). The
+// synchronous write path and the firehose consumer both push work at the
+// engine, and neither can see a subject that was left undecided because a
+// credential expired or a lookup blipped — this pass is the only thing that
+// eventually reaches those, so a deployment where it stops running is one where
+// posts quietly stay invisible.
+//
+// Nothing here fails the process: a pass that could not read the backlog is
+// logged and the next tick tries again, because the reason a backlog is
+// unreadable is almost always the database being briefly unavailable, which the
+// rest of the AppView is already reporting.
+func startAcceptanceQueueJob(ctx context.Context, wg *sync.WaitGroup, queue acceptanceQueuePass, interval time.Duration) {
+	if queue == nil || interval <= 0 {
+		return
+	}
+
+	runTicker(ctx, wg, "acceptance-queue", interval, func(ctx context.Context) {
+		report, err := queue.RunPass(ctx)
+		if err != nil {
+			if !errors.Is(err, context.Canceled) {
+				slog.Error("acceptance queue pass failed", "error", err)
+			}
+			return
+		}
+
+		// Deferrals and failures are reported apart because they mean opposite
+		// things to whoever is deciding whether to page: a pass that defers
+		// everything is usually credentials and will clear, while a pass that
+		// FAILS everything is a bug. A quiet pass logs nothing, which is the
+		// common case on an instance that hosts no communities.
+		if report.Processed > 0 || report.Failed > 0 {
+			slog.Info("acceptance queue pass completed",
+				"listed", report.Listed,
+				"processed", report.Processed,
+				"settled", report.Settled,
+				"deferred", report.Deferred,
+				"failed", report.Failed,
+			)
+		}
+	})
 }
 
 // startAggregatorTokenRefreshJob proactively refreshes aggregator OAuth tokens

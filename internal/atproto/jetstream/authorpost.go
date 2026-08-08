@@ -47,7 +47,12 @@ import (
 // under the same name would have it index authors as communities. A new NSID
 // makes a stale consumer ignore the records entirely, which is the correct
 // failure mode.
-const PostV2Collection = "social.coves.community.postv2"
+//
+// It is an alias for the domain's constant rather than a second spelling of the
+// string: the read path resolves post URIs against the same name, and two
+// literals would let the indexer and the reader drift into disagreeing about
+// what a post record is called.
+const PostV2Collection = posts.PostV2Collection
 
 // DeletedAccountLookup reports whether a DID names an account this AppView was
 // asked to erase (migration 036, PRD rev 2.7).
@@ -362,9 +367,106 @@ func (c *PostEventConsumer) handleAuthorPostEvent(ctx context.Context, event *Je
 	case "create", "update":
 		return c.upsertAuthorPost(ctx, authorDID, commit, event.TimeUS)
 	case "delete":
-		return c.tombstoneRecord(ctx, recordURI(authorDID, PostV2Collection, commit.RKey), commit.Rev)
+		return c.tombstoneAuthorPost(ctx, authorDID, commit)
 	}
 	return nil
+}
+
+// tombstoneAuthorPost soft-deletes the author's post and then withdraws any
+// acceptance a community this AppView HOSTS still holds for it (§5.3).
+//
+// THE ORDER IS THE CONTRACT. The tombstone is the local truth and lands first:
+// the author asked for their post to be gone, and a community PDS that cannot
+// be reached must not keep this AppView serving it. The withdrawal is
+// best-effort cleanup of a REMOTE repo, and it is deliberately not allowed to
+// hold the deletion hostage.
+func (c *PostEventConsumer) tombstoneAuthorPost(ctx context.Context, authorDID string, commit *CommitEvent) error {
+	uri := recordURI(authorDID, PostV2Collection, commit.RKey)
+
+	// Read before the tombstone, because the community is what says WHOSE
+	// acceptance to withdraw and a delete event carries no record to read it
+	// from. The soft delete leaves the row in place, so this could equally run
+	// afterwards; doing it first keeps the sweep off the path when the post was
+	// never indexed here at all.
+	stored, indexed, err := c.loadStoredPost(ctx, uri)
+	if err != nil {
+		return err
+	}
+
+	applied, err := c.tombstoneRecordIfRevWins(ctx, uri, commit.Rev)
+	if err != nil {
+		return err
+	}
+	if !applied || !indexed {
+		// A gate skip means this deletion was already applied — the sweep ran
+		// with it — so re-sweeping would put one authenticated PDS round trip
+		// behind every redelivery of every tombstone on the network.
+		return nil
+	}
+
+	c.withdrawAcceptance(ctx, stored.communityDID, uri)
+	return nil
+}
+
+// withdrawAcceptance asks the community's host to delete its acceptance of a
+// post whose author has just deleted it.
+//
+// It is a NO-OP unless three things are true, and each exclusion removes a
+// large class of pointless work:
+//
+//   - a sweep is wired at all (nil on any build without the community writer);
+//   - THIS AppView holds the community's credentials — the acceptance lives in
+//     the community's repo and needs its keys, so on any instance that is not
+//     the community's home this is silently not our job, which is the common
+//     case;
+//   - an acceptance actually stands, per the AppView's own admission row.
+//     Consulting it is what keeps this from being a PDS round trip per delete
+//     event, since most posts a community sees it never accepted.
+//
+// A failure is LOGGED AND SWALLOWED. Returning it would dead-letter an event
+// whose local half already committed, and the redrive would then be rejected by
+// the rev gate — so the retry could never reach this code again anyway. The
+// standing acceptance is left pointing at a deleted record until something
+// revisits it, which nothing currently does: that gap is real, bounded to
+// hosted communities, and named here rather than hidden.
+func (c *PostEventConsumer) withdrawAcceptance(ctx context.Context, communityDID, postURI string) {
+	if c.acceptanceCleanup == nil || communityDID == "" {
+		return
+	}
+
+	admission, err := c.admissions.Get(ctx, communityDID, postURI)
+	if err != nil {
+		if !errors.Is(err, posts.ErrNotFound) {
+			log.Printf("[ACCEPTANCE-SWEEP] Warning: could not read the admission of %s in %s: %v",
+				postURI, communityDID, err)
+		}
+		return
+	}
+	// The URI, not the status. `accepted` and `pending_reacceptance` both have a
+	// live acceptance record standing in the community's repo — the second
+	// merely pins content the author has since edited — and both must be
+	// withdrawn when the subject itself is deleted.
+	if admission == nil || admission.AcceptanceURI == nil {
+		return
+	}
+
+	result, err := c.acceptanceCleanup.DeleteAcceptance(ctx, posts.CommunityAcceptanceDeleteCommand{
+		CommunityDID: communityDID,
+		PostURI:      postURI,
+	})
+	switch {
+	case errors.Is(err, posts.ErrCommunityNotHosted):
+		// Not this instance's community. Expected, and not worth a warning:
+		// every AppView sees the deletions of every community it indexes.
+		log.Printf("debug: not withdrawing the acceptance of %s — %s is hosted elsewhere", postURI, communityDID)
+	case err != nil:
+		log.Printf("[ACCEPTANCE-SWEEP] Warning: could not withdraw the acceptance of %s in %s; "+
+			"the record now cites a deleted post: %v", postURI, communityDID, err)
+	case result.Skipped:
+		log.Printf("debug: no acceptance of %s stood in %s to withdraw", postURI, communityDID)
+	default:
+		log.Printf("✓ Withdrew the acceptance of deleted post %s in %s", postURI, communityDID)
+	}
 }
 
 // canRecordAdmissions reports whether this consumer has somewhere to put a

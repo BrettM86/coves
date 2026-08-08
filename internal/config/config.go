@@ -355,6 +355,31 @@ type SubmissionsConfig struct {
 	// repeat. It is separate from Window because the two answer different
 	// questions: one bounds volume, the other catches retries.
 	DedupeWindow time.Duration
+
+	// AcceptanceQueueInterval is how often the acceptance engine's driver walks
+	// the undecided backlog (docs/PRD_AUTHOR_OWNED_POSTS.md §5.6).
+	//
+	// It is the PULL side of admission. The synchronous fast path and the
+	// firehose consumer both push work at the engine, and neither can see a
+	// subject that was left undecided because a credential expired or a lookup
+	// blipped — this pass is what eventually reaches those, so its cadence is
+	// the worst-case delay before a stranded post becomes visible.
+	//
+	// Zero DISABLES the driver, which is a supported deployment rather than a
+	// misconfiguration: an AppView that hosts no communities can accept nothing
+	// and has no backlog to walk. It is the one submission setting Validate does
+	// not require to be positive, for exactly that reason.
+	AcceptanceQueueInterval time.Duration
+
+	// AcceptanceQueueBatchSize bounds how many subjects one pass lists. The
+	// backlog table grows with every submission the instance has ever seen, so
+	// an unbounded pass would hold a transaction open across all of it and then
+	// try to settle it inside a single cycle.
+	//
+	// Unlike the quotas above it is not validated, because it cannot fail open:
+	// the backlog query substitutes its own page size for a non-positive value
+	// and clamps an over-large one, so a bound exists whatever is set here.
+	AcceptanceQueueBatchSize int
 }
 
 // TokenEndpointEnabled reports whether the signup-token endpoint can operate.
@@ -641,6 +666,19 @@ const (
 	defaultMaxSubmissionsPerCommunity = 10
 	defaultSubmissionWindow           = time.Hour
 	defaultSubmissionDedupeWindow     = time.Hour
+
+	// defaultAcceptanceQueueInterval is the backlog pass's cadence. A minute is
+	// the compromise the two failure modes point at from opposite directions:
+	// the pass is the only thing that reaches a subject nothing else will
+	// retry, so a long interval is a long wait for an author whose post got
+	// stuck, while a short one repeatedly scans a backlog that is usually empty.
+	defaultAcceptanceQueueInterval = time.Minute
+
+	// defaultAcceptanceQueueBatch is how many subjects one pass takes. Small
+	// enough that a pass fits comfortably inside its own interval even when
+	// every subject needs a PDS round trip, since the backlog is drained across
+	// passes rather than in one.
+	defaultAcceptanceQueueBatch = 50
 )
 
 func (c *Config) loadSubmissions() error {
@@ -657,10 +695,21 @@ func (c *Config) loadSubmissions() error {
 		return err
 	}
 
+	queueInterval, err := durationVar("ACCEPTANCE_QUEUE_INTERVAL", defaultAcceptanceQueueInterval)
+	if err != nil {
+		return err
+	}
+	queueBatch, err := intVar("ACCEPTANCE_QUEUE_BATCH_SIZE", defaultAcceptanceQueueBatch)
+	if err != nil {
+		return err
+	}
+
 	c.Submissions = SubmissionsConfig{
 		MaxPerAuthorPerCommunity: maxPerCommunity,
 		Window:                   window,
 		DedupeWindow:             dedupeWindow,
+		AcceptanceQueueInterval:  queueInterval,
+		AcceptanceQueueBatchSize: queueBatch,
 	}
 	return nil
 }
@@ -771,6 +820,21 @@ func (c *Config) Validate() error {
 				"it scopes the ledger's uniqueness bucket, and without a width every repost collides with the original forever",
 			c.Submissions.DedupeWindow))
 	}
+	// The interval is checked for being NEGATIVE rather than non-positive,
+	// unlike the three above: zero is the documented way to disable the driver
+	// on an instance that hosts no communities, while a negative one is a
+	// time.Ticker panic waiting for the first boot after a typo.
+	if c.Submissions.AcceptanceQueueInterval < 0 {
+		problems = append(problems, fmt.Sprintf(
+			"ACCEPTANCE_QUEUE_INTERVAL cannot be negative (got %s); use 0 to disable the acceptance queue driver",
+			c.Submissions.AcceptanceQueueInterval))
+	}
+	// The batch size is deliberately NOT validated, unlike every quota above.
+	// The quotas fail open when unset — an absent limit is no limit — so an
+	// omission there has to stop the boot. A batch size does not: the backlog
+	// query substitutes its own page for a non-positive limit and clamps an
+	// over-large one, so the bound exists whatever this value is, and the worst
+	// an omission costs is a different page size.
 
 	if !c.IsDevEnv {
 		switch {

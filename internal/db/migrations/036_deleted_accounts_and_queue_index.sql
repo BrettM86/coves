@@ -56,5 +56,35 @@ COMMENT ON TABLE deleted_accounts IS 'Erasure markers: DIDs deleted on purpose, 
 COMMENT ON COLUMN deleted_accounts.deleted_at IS 'When the deletion happened; read by retention and audit, never by the ingestion gate itself';
 COMMENT ON COLUMN deleted_accounts.deleted_rev IS 'Repo revision the erasure was observed at, when one is known; NULL for AppView-initiated deletions';
 
+-- The acceptance engine's backlog scan (PRD_AUTHOR_OWNED_POSTS.md §5.6).
+--
+-- It rides along in this migration rather than getting one of its own because
+-- both halves are the same task's enablers, and an index is not worth a
+-- version of its own on a table one migration away.
+--
+-- WHY THE EXISTING INDEX CANNOT SERVE IT. Migration 034's
+-- (community_did, status, created_at) index leads with the community, which is
+-- exactly right for a moderator paging ONE community's queue and useless for
+-- the driver's question — "what is undecided ANYWHERE" — which has no community
+-- in hand and would scan every community's rows through it.
+--
+-- WHY PARTIAL. The undecided rows are a small and roughly constant slice of a
+-- table that grows with every submission the instance has ever seen: a settled
+-- admission stays forever, and pending ones drain. Restricting the index to the
+-- two undecided statuses keeps it proportional to the BACKLOG rather than to
+-- history, so a pass that runs on a timer does not get more expensive every day
+-- the instance stays up.
+--
+-- Nothing FAILS without this index, which is precisely the danger: the query
+-- keeps returning correct answers and quietly costs more every week, and the
+-- symptom arrives as general database pressure with nothing pointing here.
+CREATE INDEX idx_admissions_pending_queue
+    ON community_post_admissions (created_at)
+    WHERE status IN ('pending', 'pending_reacceptance');
+
+COMMENT ON INDEX idx_admissions_pending_queue IS 'CRITICAL: the acceptance engine cross-community backlog scan, oldest first (PRD_AUTHOR_OWNED_POSTS 5.6)';
+
 -- +goose Down
+DROP INDEX IF EXISTS idx_admissions_pending_queue;
+
 DROP TABLE IF EXISTS deleted_accounts;

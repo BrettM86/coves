@@ -184,7 +184,13 @@ func (a *application) registerFeedConsumers() []feedConsumer {
 			jetstream.WithPostIdentityResolver(a.identityResolver),
 			jetstream.WithAdmissions(a.admissionRepo),
 			jetstream.WithDeletedAccounts(postgresRepo.NewDeletedAccountRepository(a.db)),
-			jetstream.WithPostRecordFetcher(postFetcher)),
+			jetstream.WithPostRecordFetcher(postFetcher),
+			// The host-side half of an author's own deletion (§5.3): when the
+			// author tombstones a post this instance's community accepted, the
+			// acceptance in that community's repo is withdrawn. It refuses
+			// itself for every community this AppView does not host, which on
+			// most instances is all of them.
+			jetstream.WithAcceptanceCleanup(a.communityWriter)),
 	})
 
 	// Aggregators: service declarations and authorization records, following

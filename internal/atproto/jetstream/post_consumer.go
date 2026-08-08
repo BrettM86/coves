@@ -247,17 +247,26 @@ func (c *PostEventConsumer) createPost(ctx context.Context, repoDID string, comm
 // Soft-deletes the post in AppView database by setting deleted_at timestamp
 func (c *PostEventConsumer) deletePost(ctx context.Context, repoDID string, commit *CommitEvent) error {
 	// Format: at://community_did/social.coves.community.post/rkey
-	return c.tombstoneRecord(ctx, fmt.Sprintf("at://%s/social.coves.community.post/%s", repoDID, commit.RKey), commit.Rev)
+	_, err := c.tombstoneRecordIfRevWins(ctx,
+		fmt.Sprintf("at://%s/social.coves.community.post/%s", repoDID, commit.RKey), commit.Rev)
+	return err
 }
 
-// tombstoneRecord soft-deletes the post at uri under the rev gate.
+// tombstoneRecordIfRevWins soft-deletes the post at uri under the rev gate, and
+// reports whether the deletion APPLIED.
 //
 // SOFT, never hard, whichever repo the record lived in: the row is the rev
 // gate's tombstone, the comment thread's parent, and what moderation still
 // reads. It is shared by the community-repo and author-repo delete paths
 // because a deletion is the one operation where the two are identical — the
 // URI already says whose repo it was.
-func (c *PostEventConsumer) tombstoneRecord(ctx context.Context, uri, rev string) error {
+//
+// The applied flag exists for the author-repo path's acceptance sweep, which
+// must fire once per deletion rather than once per DELIVERY of it: the
+// connector rewinds its cursor after every reconnect, so a tombstone that
+// re-swept on each redelivery would put an authenticated PDS round trip behind
+// every replayed event.
+func (c *PostEventConsumer) tombstoneRecordIfRevWins(ctx context.Context, uri, rev string) (bool, error) {
 	// REV GATE + soft delete in one transaction (the repo's SoftDelete is not
 	// transaction-aware, and the delete's rev must be recorded atomically with
 	// the tombstone: it is what rejects a stale cross-feed copy of the CREATE
@@ -266,7 +275,7 @@ func (c *PostEventConsumer) tombstoneRecord(ctx context.Context, uri, rev string
 	// record is rejected too.
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
+		return false, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer func() {
 		if rollbackErr := tx.Rollback(); rollbackErr != nil && rollbackErr != sql.ErrTxDone {
@@ -276,11 +285,11 @@ func (c *PostEventConsumer) tombstoneRecord(ctx context.Context, uri, rev string
 
 	won, err := tryAdvanceRecordRev(ctx, tx, uri, rev)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !won {
 		logSkippedStaleRev(ConsumerPosts, "delete", uri, rev)
-		return nil
+		return false, nil
 	}
 
 	// Same statement as postRepo.SoftDelete, inlined for transactionality.
@@ -288,15 +297,15 @@ func (c *PostEventConsumer) tombstoneRecord(ctx context.Context, uri, rev string
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE posts SET deleted_at = NOW() WHERE uri = $1 AND deleted_at IS NULL`, uri,
 	); err != nil {
-		return fmt.Errorf("failed to soft delete post: %w", err)
+		return false, fmt.Errorf("failed to soft delete post: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit post delete transaction: %w", err)
+		return false, fmt.Errorf("failed to commit post delete transaction: %w", err)
 	}
 
 	log.Printf("✓ Deleted post: %s", uri)
-	return nil
+	return true, nil
 }
 
 // updatePost handles post record update events from Jetstream.
