@@ -145,6 +145,31 @@ func NewAcceptanceEngine(
 	}
 }
 
+// AcceptSubmission settles a post the write path has JUST written, without
+// waiting for the firehose copy of it to arrive — §4.2 step 4's local-community
+// fast path.
+//
+// IT IS NOT ProcessAdmission WITH A SHORTCUT. The difference is postCID, and it
+// is a guard rather than a convenience: the caller has just committed a specific
+// version of the record and is asking this engine to accept THAT version. The
+// row it reads must be pending and must still hold that exact evaluated CID, or
+// the pass defers — because between the write and this call the firehose may
+// already have delivered an EDIT, and an acceptance pinning the version the
+// author has replaced is an acceptance of content nobody is reading.
+//
+// A COMMUNITY THIS APPVIEW DOES NOT HOST IS NOT AN ERROR TO ESCALATE. The
+// factory answers ErrCommunityNotHosted, and the write path's correct response
+// is to leave the post pending and tell the author so — the community will
+// decide for itself when the post reaches it (§4.2 step 5). The sentinel travels
+// out wrapped so the caller can tell it from a genuine acceptance failure, which
+// leaves the post pending too but is worth alerting on.
+//
+// RED STUB (task 6): pinned by service_writeflip_test.go.
+func (e *AcceptanceEngine) AcceptSubmission(ctx context.Context, communityDID, postURI, postCID string) (EngineOutcome, error) {
+	_, _, _, _ = ctx, communityDID, postURI, postCID
+	return EngineDeferred, nil
+}
+
 // ProcessAdmission settles one (community, post) subject.
 //
 // ROUTING IS KEYED ON THE ROW'S STATUS AND THE DECISION TOGETHER, because the

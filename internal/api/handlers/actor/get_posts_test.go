@@ -30,7 +30,11 @@ func (m *mockPostService) GetAuthorPosts(ctx context.Context, req posts.GetAutho
 	}, nil
 }
 
-func (m *mockPostService) CreatePost(ctx context.Context, req posts.CreatePostRequest) (*posts.CreatePostResponse, error) {
+func (m *mockPostService) CreatePost(ctx context.Context, session *oauthlib.ClientSessionData, req posts.CreatePostRequest) (*posts.CreatePostResponse, error) {
+	return nil, nil
+}
+
+func (m *mockPostService) UpdatePost(context.Context, *oauthlib.ClientSessionData, posts.UpdatePostRequest) (*posts.UpdatePostResponse, error) {
 	return nil, nil
 }
 

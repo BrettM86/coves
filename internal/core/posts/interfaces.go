@@ -13,10 +13,38 @@ import (
 // Service defines the business logic interface for posts
 // Coordinates between Repository, community service, and PDS
 type Service interface {
-	// CreatePost creates a new post in a community
-	// Flow: Validate -> Fetch community -> Ensure fresh token -> Write to PDS -> Return URI/CID
-	// AppView indexing happens asynchronously via Jetstream consumer
-	CreatePost(ctx context.Context, req CreatePostRequest) (*CreatePostResponse, error)
+	// CreatePost writes a new post into the AUTHOR's repository and, when this
+	// AppView hosts the community, settles the community's admission
+	// synchronously (docs/PRD_AUTHOR_OWNED_POSTS.md §4.2).
+	//
+	// Flow: Validate -> Admission -> Write postv2 to the author's repo at the
+	// deterministic rkey -> seed the admission row -> local fast-path acceptance
+	// -> return URI/CID/status. AppView indexing still happens asynchronously
+	// via the Jetstream consumer; the fast path only means the community's
+	// answer does not wait for it.
+	//
+	// THE SESSION IS THE AUTHOR'S OWN, and it is an argument rather than a
+	// context value because it is the credential the record gets signed under.
+	// It may be nil for a non-interactive author — an aggregator posting on its
+	// stored tokens — in which case the service resolves those and answers
+	// ErrNoAuthorCredentials if there are none.
+	CreatePost(ctx context.Context, session *oauth.ClientSessionData, req CreatePostRequest) (*CreatePostResponse, error)
+
+	// UpdatePost edits an existing post in place, in the author's repository.
+	//
+	// The record's community and createdAt are PRESERVED from the standing
+	// record rather than taken from the request: the first is immutable by
+	// lexicon, and the second is what every feed orders by, so re-stamping it
+	// would jump an edited post back to the top of every sort.
+	//
+	// The edit is guarded by the standing record's CID, so an edit racing
+	// another edit is ErrConcurrentModification rather than a silent overwrite.
+	// The community's ADMISSION LEDGER is untouched: an edit is not a
+	// submission, so it consumes no quota and cannot be refused as a duplicate
+	// of the post it is editing. Whether the edited content is still acceptable
+	// is the acceptance engine's question, asked when the edit reaches the
+	// firehose (§5.5).
+	UpdatePost(ctx context.Context, session *oauth.ClientSessionData, req UpdatePostRequest) (*UpdatePostResponse, error)
 
 	// GetAuthorPosts retrieves posts authored by a specific user for their profile page
 	// Supports filtering by post type (with/without replies, media only) and community
@@ -33,13 +61,20 @@ type Service interface {
 	// returned as BlockedPost markers instead of full views (matching feed/timeline).
 	GetPosts(ctx context.Context, req GetPostsRequest) ([]*PostResult, error)
 
-	// DeletePost deletes a post from the community's PDS repository
-	// SECURITY: Only the post author can delete their own posts
-	// Flow: Validate URI -> Fetch community -> Verify author -> Delete from PDS
+	// DeletePost removes a post record from the repository that holds it.
+	// SECURITY: Only the post author can delete their own posts.
+	//
+	// BOTH post collections are supported, and they authorize differently
+	// because they live in different repos. A postv2 URI names the AUTHOR's
+	// repo, so authorization is the URI's authority against the session DID —
+	// a local check, decided before anything is fetched. A deprecated
+	// community.post URI names the COMMUNITY's repo, where the delete goes out
+	// on the community's credentials, so the record's `author` field has to be
+	// read back and compared. The second path exists until task 8's
+	// re-materialization retires the collection.
 	DeletePost(ctx context.Context, session *oauth.ClientSessionData, req DeletePostRequest) error
 
 	// Future methods (Beta):
-	// UpdatePost(ctx context.Context, req UpdatePostRequest) (*Post, error)
 	// ListCommunityPosts(ctx context.Context, communityDID string, limit, offset int) ([]*Post, error)
 }
 

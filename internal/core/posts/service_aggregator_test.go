@@ -49,6 +49,7 @@ type aggregatorFixture struct {
 	base          *postFixture
 	service       posts.Service
 	index         aggregators.Repository
+	aggregator    *testkit.Account
 	aggregatorDID string
 
 	// The authorization's AT-URI, reused on every re-index so that flipping
@@ -60,9 +61,12 @@ type aggregatorFixture struct {
 // newAggregatorFixture declares an aggregator, has the fixture's community
 // authorize it, and points a post service at both.
 //
-// The aggregator gets no PDS account: a post lives in the COMMUNITY's repo and
-// names its author in a field, so an aggregator needs an identity the AppView
-// has indexed, not a repository of its own.
+// THE AGGREGATOR NOW NEEDS A REPOSITORY OF ITS OWN. It used to need only an
+// identity the AppView had indexed, because a post lived in the COMMUNITY's repo
+// and named its author in a field. Under §4.2 step 3 an aggregator writes into
+// its own repo like any other author — through its stored OAuth tokens
+// (migration 025) in production, through a registered PDS account here — so the
+// fixture provisions one and registers it with the author-repo factory.
 func newAggregatorFixture(t *testing.T) *aggregatorFixture {
 	t.Helper()
 
@@ -70,7 +74,9 @@ func newAggregatorFixture(t *testing.T) *aggregatorFixture {
 	ctx := context.Background()
 
 	index := postgres.NewAggregatorRepository(base.db)
-	aggregatorDID := "did:plc:" + testkit.UniqueID(t)
+	aggregatorAccount := base.authorRepos.register(
+		base.pds.CreateAccount(t, testkit.WithHandlePrefix("ag")))
+	aggregatorDID := aggregatorAccount.DID
 	require.NoError(t, index.CreateAggregator(ctx, &aggregators.Aggregator{
 		DID:         aggregatorDID,
 		DisplayName: "RSS Feed Aggregator",
@@ -86,10 +92,12 @@ func newAggregatorFixture(t *testing.T) *aggregatorFixture {
 			postgres.NewPostRepository(base.db), base.communityService,
 			aggregators.NewAggregatorService(index, base.communityService),
 			nil, nil, nil, base.pds.URL(),
-			// The aggregator's OWN hourly quota is the subject here; the §8
-			// per-author policy is opted out of explicitly.
-			posts.WithAdmissionPolicy(posts.NewAllowAllAdmissionPolicyForTests())),
+			append(base.writePathOptions(),
+				// The aggregator's OWN hourly quota is the subject here; the §8
+				// per-author policy is opted out of explicitly.
+				posts.WithAdmissionPolicy(posts.NewAllowAllAdmissionPolicyForTests()))...),
 		index:         index,
+		aggregator:    aggregatorAccount,
 		aggregatorDID: aggregatorDID,
 		authorizationURI: "at://" + base.community.DID +
 			"/social.coves.aggregator.authorization/" + testkit.UniqueID(t),
@@ -131,6 +139,8 @@ func (f *aggregatorFixture) createPost(t *testing.T, title string) (*posts.Creat
 	content := "syndicated from a feed"
 	return f.service.CreatePost(
 		middleware.SetTestUserDID(context.Background(), f.aggregatorDID),
+		nil, // an aggregator authenticates by API key: there is no browser session, and
+		//    the service resolves its stored tokens instead (§4.2 step 3).
 		posts.CreatePostRequest{
 			Community: f.base.community.DID,
 			Title:     &title,
@@ -156,13 +166,16 @@ func TestService_AuthorizedAggregatorPostsAndIsBilledForIt(t *testing.T) {
 	resp, err := f.createPost(t, "Breaking news from an RSS feed")
 	require.NoError(t, err)
 
-	// The record lands in the community's repo like any other post, with the
-	// aggregator named as its author. Read back from the PDS rather than from
-	// the response, because the response is the service quoting itself.
-	record := f.base.communityAccount(t).GetRecord(t, postCollection, rkeyOf(t, resp.URI))
+	// The record lands in the AGGREGATOR's own repo like any other author's post,
+	// naming the community it was submitted to. Read back from the PDS rather
+	// than from the response, because the response is the service quoting itself.
+	assert.Equal(t, "at://"+f.aggregatorDID+"/"+posts.PostV2Collection+"/"+rkeyOf(t, resp.URI), resp.URI,
+		"an aggregator's post belongs to the aggregator's repo, not to the community's")
+
+	record := f.aggregator.GetRecord(t, posts.PostV2Collection, rkeyOf(t, resp.URI))
 	assert.Equal(t, f.base.community.DID, record.Value["community"])
-	assert.Equal(t, f.aggregatorDID, record.Value["author"],
-		"an aggregator's post must name the aggregator, not the community that hosts it")
+	assert.NotContains(t, record.Value, "author",
+		"authorship is the repo the record lives in — an aggregator's post is no exception")
 
 	// And the post is billed against the aggregator's quota. Without this the
 	// rate limit would never engage, because CreatePost records the post itself

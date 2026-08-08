@@ -35,6 +35,14 @@ type postService struct {
 	blockChecker      BlockChecker
 	admission         *AdmissionPolicy
 	pdsURL            string
+
+	// The author-owned write path (§4.2). authorRepos opens the AUTHOR's repo
+	// under the author's own credentials; admissions and acceptor are the
+	// local-community fast path — the row the post is seeded into and the
+	// engine that settles it. See postv2.go.
+	authorRepos AuthorRepoFactory
+	admissions  AdmissionRepository
+	acceptor    SubmissionAcceptor
 }
 
 // PostServiceOption configures optional postService dependencies. Options keep the
@@ -100,7 +108,13 @@ func NewPostService(
 // failure AFTER admission (steps 5-8) must release the ledger reservation the
 // admission took, or the failure costs the author a quota slot and refuses
 // their retry as a duplicate.
-func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*CreatePostResponse, error) {
+func (s *postService) CreatePost(ctx context.Context, session *oauth.ClientSessionData, req CreatePostRequest) (*CreatePostResponse, error) {
+	// RED STUB SEAM (task 6): the session is the author's credential and is
+	// consumed by the author-repo write the GREEN cycle installs below. It is
+	// accepted here so the contract compiles against the flipped signature
+	// while the body still write-forwards to the community's repo.
+	_ = session
+
 	// 1. Validate basic input (before DID checks to give clear validation errors)
 	if err := s.validateCreateRequest(&req); err != nil {
 		return nil, err
@@ -251,6 +265,15 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 		URI: uri,
 		CID: cid,
 	}, nil
+}
+
+// UpdatePost edits a post in place in the author's repository.
+//
+// RED STUB (task 6): see interfaces.go for the contract and
+// service_writeflip_test.go for the pinned journey.
+func (s *postService) UpdatePost(ctx context.Context, session *oauth.ClientSessionData, req UpdatePostRequest) (*UpdatePostResponse, error) {
+	_, _, _ = ctx, session, req
+	return nil, ErrNotFound
 }
 
 // postRecordFor builds the record a request describes, stamped with the given

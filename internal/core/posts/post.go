@@ -69,6 +69,54 @@ type CreatePostRequest struct {
 type CreatePostResponse struct {
 	URI string `json:"uri"` // AT-URI of created post
 	CID string `json:"cid"` // CID of created post
+
+	// Status is the community's decision as of this response: PostStatusAccepted
+	// when the local fast path settled it synchronously, PostStatusPending when
+	// the community still owes a decision (§4.2 steps 4 and 5).
+	//
+	// IT IS NOT AN ERROR CHANNEL. Pending is a SUCCESS: the author's record
+	// exists and is theirs whatever the community decides, and the acceptance
+	// this AppView failed to write is retried idempotently by the firehose
+	// engine. A client that treated pending as a failure and resubmitted would
+	// be answered with its own post's URI, because the rkey is deterministic —
+	// but it would also show its author an error over a post that was written.
+	//
+	// Omitted when empty so pre-flip clients, which have never seen the field,
+	// decode a response identical to the one they used to get.
+	Status string `json:"status,omitempty"`
+}
+
+// UpdatePostRequest represents input for editing an existing post.
+//
+// It carries the post's URI and the mutable content fields ONLY. There is
+// deliberately no community field: the postv2 lexicon calls `community`
+// immutable — retargeting a post means writing a new post record, and consumers
+// discard an update event that changes it — so an edit that could express a
+// retarget would be an edit whose only possible outcome is being ignored by
+// every reader.
+type UpdatePostRequest struct {
+	Title   *string                `json:"title,omitempty"`
+	Content *string                `json:"content,omitempty"`
+	Embed   map[string]interface{} `json:"embed,omitempty"`
+	Labels  *SelfLabels            `json:"labels,omitempty"`
+
+	// Community is accepted so that a client which sends it can be REFUSED
+	// rather than silently obeyed-in-part. See the type comment: it is not a
+	// field an edit may change, and a request naming a different community is a
+	// validation error, not a partially applied update.
+	Community string `json:"community,omitempty"`
+
+	URI    string        `json:"uri"`
+	Facets []interface{} `json:"facets,omitempty"`
+	Langs  []string      `json:"langs,omitempty"`
+	Tags   []string      `json:"tags,omitempty"`
+}
+
+// UpdatePostResponse is the edited record's identity: the same URI it always
+// had, and the NEW CID the edit committed.
+type UpdatePostResponse struct {
+	URI string `json:"uri"`
+	CID string `json:"cid"`
 }
 
 // DeletePostRequest represents input for deleting a post

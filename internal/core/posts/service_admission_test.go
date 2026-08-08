@@ -117,12 +117,17 @@ func newAdmissionFixture(t *testing.T) *admissionFixture {
 		service: posts.NewPostService(
 			postgres.NewPostRepository(base.db), base.communityService,
 			nil, nil, nil, nil, base.pds.URL(),
-			posts.WithAdmissionPolicy(posts.AdmissionPolicy{
-				Ledger: postgres.NewSubmissionLedger(base.db),
-				Bans:   base.communityService,
-				Limits: limits,
-				Now:    clock.Now,
-			})),
+			// The write path needs the author's own credentials now (§4.2): a
+			// post is written to the AUTHOR's repo, so a service wired without
+			// the factory could not write one at all and every refusal here
+			// would pass for the wrong reason.
+			append(base.writePathOptions(),
+				posts.WithAdmissionPolicy(posts.AdmissionPolicy{
+					Ledger: postgres.NewSubmissionLedger(base.db),
+					Bans:   base.communityService,
+					Limits: limits,
+					Now:    clock.Now,
+				}))...),
 		repo:   postgres.NewCommunityRepository(base.db),
 		clock:  clock,
 		limits: limits,
@@ -137,6 +142,7 @@ func (f *admissionFixture) submit(t *testing.T, communityDID, title string) (*po
 	content := "a body that makes this a complete post"
 	return f.service.CreatePost(
 		middleware.SetTestUserDID(context.Background(), f.base.author.DID),
+		sessionFor(t, f.base.author, f.base.pds.URL()),
 		posts.CreatePostRequest{
 			Community: communityDID,
 			Title:     &title,
@@ -330,18 +336,17 @@ func TestService_AFailedPDSWriteReleasesTheReservation(t *testing.T) {
 
 	f := newAdmissionFixture(t)
 
-	// A PDS that refuses every write. Pointing the community's stored pds_url at
-	// it is how the failure is injected: createPostOnPDS reads the URL off the
-	// community row it just fetched (service.go, "each community can be hosted
-	// on a different PDS instance"), so this is the real write path failing for
-	// a real reason rather than a stubbed-out client.
+	// A PDS that refuses every write. Pointing the AUTHOR's repo client at it is
+	// how the failure is injected, because the write goes to the author's repo
+	// now (§4.2 step 3) — the community's stored pds_url, which this test used to
+	// break, is no longer on the create path at all. It is still the real write
+	// failing for a real reason rather than a stubbed-out client.
 	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, `{"error":"InternalServerError"}`, http.StatusInternalServerError)
 	}))
 	t.Cleanup(broken.Close)
 
-	healthyURL := communityPDSURL(t, f.base.db, f.base.community.DID)
-	setCommunityPDSURL(t, f.base.db, f.base.community.DID, broken.URL)
+	f.base.authorRepos.pointAt(f.base.author.DID, broken.URL)
 
 	const repeatable = "a post whose write will fail the first time"
 	_, err := f.submit(t, f.base.community.DID, repeatable)
@@ -350,7 +355,7 @@ func TestService_AFailedPDSWriteReleasesTheReservation(t *testing.T) {
 	assert.Zerof(t, f.ledgerRows(t, f.base.community.DID),
 		"the reservation for a post that was never written is still on the ledger: it has burned a quota slot and will refuse the retry as a duplicate")
 
-	setCommunityPDSURL(t, f.base.db, f.base.community.DID, healthyURL)
+	f.base.authorRepos.pointAt(f.base.author.DID, "")
 
 	// The retry a client would actually send: byte-identical content. It must be
 	// admitted, which is only possible if the reservation was released.
@@ -361,10 +366,11 @@ func TestService_AFailedPDSWriteReleasesTheReservation(t *testing.T) {
 	assert.Equal(t, 1, f.ledgerRows(t, f.base.community.DID),
 		"exactly one submission survived: the failed attempt released its row and the retry took a fresh one")
 
-	// The record really is in the community's repo, so "admitted" here means a
-	// post exists rather than merely that no error came back.
-	record := f.base.communityAccount(t).GetRecord(t, postCollection, rkeyOf(t, resp.URI))
-	assert.Equal(t, f.base.author.DID, record.Value["author"])
+	// The record really is in the AUTHOR's repo, so "admitted" here means a post
+	// exists rather than merely that no error came back. The repo flipped in
+	// task 6 (§3.1); what this assertion is for did not.
+	record := f.base.author.GetRecord(t, posts.PostV2Collection, rkeyOf(t, resp.URI))
+	assert.Equal(t, f.base.community.DID, record.Value["community"])
 }
 
 // A client that goes away MID-WRITE must still get its reservation back.
@@ -400,12 +406,11 @@ func TestService_ACancellationDuringThePDSWriteStillReleasesTheReservation(t *te
 	}))
 	t.Cleanup(canceling.Close)
 
-	healthyURL := communityPDSURL(t, f.base.db, f.base.community.DID)
-	setCommunityPDSURL(t, f.base.db, f.base.community.DID, canceling.URL)
+	f.base.authorRepos.pointAt(f.base.author.DID, canceling.URL)
 
 	const repeatable = "a post whose client disconnects mid-write"
 	content := "a body that makes this a complete post"
-	_, err := f.service.CreatePost(ctx, posts.CreatePostRequest{
+	_, err := f.service.CreatePost(ctx, sessionFor(t, f.base.author, f.base.pds.URL()), posts.CreatePostRequest{
 		Community: f.base.community.DID,
 		Title:     func() *string { s := repeatable; return &s }(),
 		Content:   &content,
@@ -416,7 +421,7 @@ func TestService_ACancellationDuringThePDSWriteStillReleasesTheReservation(t *te
 	assert.Zerof(t, f.ledgerRows(t, f.base.community.DID),
 		"the release ran on the caller's canceled context and was refused with it: the reservation leaked, burning a quota slot and blocking the retry as a duplicate")
 
-	setCommunityPDSURL(t, f.base.db, f.base.community.DID, healthyURL)
+	f.base.authorRepos.pointAt(f.base.author.DID, "")
 
 	// The retry a reconnected client sends: byte-identical content on a live
 	// context. Admissible only if the canceled attempt released its row.
@@ -504,6 +509,7 @@ func TestService_AnEmbedEnhancementFailureReleasesTheReservation(t *testing.T) {
 		}
 		return f.service.CreatePost(
 			middleware.SetTestUserDID(context.Background(), f.base.author.DID),
+			sessionFor(t, f.base.author, f.base.pds.URL()),
 			posts.CreatePostRequest{
 				Community: f.base.community.DID,
 				Title:     &title,
