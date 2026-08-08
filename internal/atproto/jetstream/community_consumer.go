@@ -7,6 +7,7 @@ import (
 	"Coves/internal/core/richtext"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -213,6 +214,25 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 			if err != nil {
 				return fmt.Errorf("failed to resolve handle from PLC for %s: %w (no fallback - will retry during backfill)", did, err)
 			}
+			// "handle.invalid" IS NOT A HANDLE. atProto identity resolution
+			// reports a DID whose handle it could not verify bidirectionally
+			// by returning that reserved placeholder rather than an error, so
+			// what arrives here is a perfectly well-formed identity naming a
+			// non-handle — and communities.handle is UNIQUE. Store it once and
+			// every subsequent unverifiable community collides with it, which
+			// the insert reports as a conflict and the swallow below used to
+			// discard silently.
+			//
+			// TRANSIENT, deliberately: this is a fact about the RESOLUTION, not
+			// about the record. The PLC directory may be unreachable this
+			// second and answer fine the next, so the redrive has to be allowed
+			// to succeed. The user path applies the same guard for the same
+			// reason (authorpost.go, hydrateAuthorOpportunistically).
+			if identity.Handle == "" || identity.Handle == invalidHandle {
+				return fmt.Errorf("resolving the handle of community %s: identity resolution returned %q, "+
+					"which is the reserved placeholder for an unverifiable handle and must never be stored in a unique column "+
+					"(retryable — the directory may verify it later)", did, identity.Handle)
+			}
 			profile.Handle = identity.Handle
 			// Persist the resolved PDS host: BridgeTrust gates bridgedStats
 			// on the post's community row carrying its repo's PDS URL, and a
@@ -300,19 +320,70 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 		}
 	}
 
-	// Index in AppView database
+	// Index in AppView database.
+	//
+	// THE TWO CONFLICTS MEAN OPPOSITE THINGS, and treating them alike is what
+	// turned one handle collision into a flood of unrelated dead letters.
+	// communities.IsConflict matches both, so it is too wide to switch on here.
 	_, err = c.repo.Create(ctx, community)
 	if err != nil {
-		// Check if it already exists (idempotency)
-		if communities.IsConflict(err) {
+		switch {
+		case errors.Is(err, communities.ErrCommunityAlreadyExists):
+			// The DID is already in the table: a genuine idempotent replay.
+			// The connector rewinds its cursor after every reconnect and the
+			// AppView consumes overlapping feeds, so this path is walked
+			// constantly for every community and must stay a silent no-op.
 			log.Printf("Community already indexed: %s (%s)", community.Handle, community.DID)
 			return nil
+
+		case errors.Is(err, communities.ErrHandleTaken):
+			// A DIFFERENT DID already holds this handle. Nothing about that is
+			// idempotent: the community in this event was NOT indexed, is in
+			// the table under no DID at all, and never will be while the
+			// incumbent stands.
+			//
+			// PERMANENT. A handle held by someone else does not resolve itself
+			// by waiting, so a transient classification spends the connector's
+			// full inline retry budget — about 4.2 seconds of blocking, on a
+			// lane that also carries posts — and then ten redrives, per
+			// delivery, forever. Both DIDs and the handle go in the message
+			// because a log line is the only place this is diagnosable from.
+			return fmt.Errorf("%w: cannot index community %s: handle %q is already held by community %s",
+				ErrPermanentEvent, community.DID, community.Handle, c.incumbentOfHandle(ctx, community.Handle))
+
+		case communities.IsConflict(err):
+			// A conflict this build does not recognise. Reported rather than
+			// swallowed: the swallow is what hid the handle collision, and a
+			// new unique constraint would otherwise inherit the same silence.
+			return fmt.Errorf("failed to index community %s: unclassified conflict: %w", community.DID, err)
 		}
 		return fmt.Errorf("failed to index community: %w", err)
 	}
 
 	log.Printf("Indexed new community: %s (%s)", community.Handle, community.DID)
 	return nil
+}
+
+// incumbentOfHandle names the community that already holds a contested handle,
+// for the refusal message.
+//
+// BEST EFFORT, and never allowed to change the outcome. The refusal is already
+// decided by the time this runs; this only fills in the half of the message an
+// operator cannot otherwise get — "some other community has it" sends them to
+// the database, "did:plc:… has it" sends them to the community. A lookup that
+// fails yields a placeholder rather than an error, because replacing a precise
+// permanent refusal with a vague transient one would trade the diagnosis for
+// the flood this whole change exists to stop.
+func (c *CommunityEventConsumer) incumbentOfHandle(ctx context.Context, handle string) string {
+	const unknown = "an unidentified DID"
+	if c.repo == nil {
+		return unknown
+	}
+	incumbent, err := c.repo.GetByHandle(ctx, handle)
+	if err != nil || incumbent == nil {
+		return unknown
+	}
+	return incumbent.DID
 }
 
 // updateCommunity updates an existing community from the firehose

@@ -73,7 +73,8 @@ func registerXRPCRoutes(r chi.Router, app *application) {
 	// Posts accept dual auth so aggregator bots can publish with a service
 	// JWT or API key rather than a user's OAuth session.
 	routes.RegisterPostRoutes(r, app.postService, app.voteService, app.blueskyService,
-		app.dualAuth, app.authMiddleware)
+		app.dualAuth, app.authMiddleware,
+		routes.WithPostStatusService(app.postStatusService))
 
 	routes.RegisterVoteRoutes(r, app.voteService, app.authMiddleware)
 	routes.RegisterUserBlockRoutes(r, app.userBlockService, app.authMiddleware)
@@ -169,5 +170,13 @@ func registerWebRoutes(r chi.Router, app *application) {
 func registerHealthRoutes(r chi.Router, app *application, consumers *consumerSet) {
 	r.Get("/health", livenessHandler)
 	r.Get("/xrpc/_health", livenessHandler)
-	r.Get("/health/consumers", consumerHealthHandler(consumers.connectors, app.jetstreamState))
+	// The option is added only when a driver actually runs. Passing a typed nil
+	// pointer instead would be non-nil to an interface comparison, and the
+	// response would carry an all-zero queue — which reads as a driver that is
+	// running and settling nothing, the exact failure an operator watches for.
+	var healthOptions []consumerHealthOption
+	if app.acceptanceQueue != nil {
+		healthOptions = append(healthOptions, withAcceptanceQueue(app.acceptanceQueue))
+	}
+	r.Get("/health/consumers", consumerHealthHandler(consumers.connectors, app.jetstreamState, healthOptions...))
 }

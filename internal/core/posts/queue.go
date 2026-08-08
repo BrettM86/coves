@@ -1,0 +1,470 @@
+package posts
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"sync"
+	"time"
+)
+
+// The acceptance engine's driver: the thing that decides WHEN the engine runs
+// and on what (docs/PRD_AUTHOR_OWNED_POSTS.md §5.6, §8).
+//
+// The engine settles one subject. Nothing until now decided which subjects, in
+// what order, or how often — the firehose consumer pushes work at it today, and
+// task 6's synchronous fast path will push more, and neither can see a subject
+// that was left pending because a credential expired or a lookup blipped. This is the pull side: a periodic pass
+// over the undecided backlog that eventually reaches every stranded row.
+//
+// # IT IS A SINGLE GOROUTINE, AND THAT IS THE PER-COMMUNITY SERIALIZATION
+//
+// Task 4 recorded the requirement: serialize the queue per community DID,
+// because swapCommit is repo-global and sibling workers on one busy community
+// would starve each other's removals. In v1 that requirement is satisfied
+// trivially and completely — one goroutine walks one ordered list, so no two
+// subjects of any community are ever in flight together. The ordering matters
+// anyway: the list is grouped by community so that when this DOES grow a worker
+// pool, the partition it has to shard on is already the shape of the data,
+// rather than something a later change has to introduce.
+//
+// # A DEFERRAL IS NOT A FAILURE, AND MUST NOT BECOME A SPIN
+//
+// EngineDeferred is the common outcome, not the exceptional one: a community
+// whose token expired, a post whose content CID has not been decoded yet, a
+// policy lookup that could not be reached. Every one of those is "look again
+// later", and a driver that took it as "try again now" would turn one wedged
+// subject into a hot loop against a PDS that is already unhappy. Deferred
+// subjects therefore carry a per-subject backoff, and the same subject is never
+// touched twice in one pass — §8's edit-debounce falls out of the same rule,
+// since a post being edited in a storm coalesces into one pending_reacceptance
+// row that this pass sees exactly once.
+
+// AdmissionProcessor settles one subject. Satisfied by *AcceptanceEngine.
+type AdmissionProcessor interface {
+	ProcessAdmission(ctx context.Context, communityDID, postURI string) (EngineOutcome, error)
+}
+
+// PendingSubjectLister supplies the backlog. Satisfied by AdmissionRepository.
+type PendingSubjectLister interface {
+	ListPendingSubjects(ctx context.Context, limit int) ([]PendingSubject, error)
+}
+
+// PassReport is what one pass did, for logs and for the health surface.
+//
+// Deferred and Failed are counted separately because they mean opposite things
+// to an operator. A pass that defers everything is usually a credential or
+// connectivity problem that will clear; a pass that FAILS everything is a bug.
+// Collapsing them into one number would make the first look like the second at
+// exactly the moment somebody is deciding whether to page.
+type PassReport struct {
+	// Listed is how many subjects the backlog query returned.
+	Listed int
+
+	// Processed is how many were handed to the engine — Listed minus those the
+	// backoff held back.
+	Processed int
+
+	// Settled is how many reached a verdict: accepted, rejected, removed or
+	// repinned.
+	Settled int
+
+	// Deferred is how many the engine declined to decide yet.
+	Deferred int
+
+	// Failed is how many returned an error.
+	Failed int
+
+	// StartedAt is when the pass began.
+	StartedAt time.Time
+}
+
+// QueueSnapshot is the driver's health surface: what the backlog looks like and
+// when it was last worked.
+//
+// LastPassAt is the liveness signal and the reason the snapshot exists at all.
+// A driver that has stopped running produces no logs and no errors — it simply
+// stops, and every symptom of that appears somewhere else, as posts that never
+// become visible. An operator needs one number that says the pass is happening.
+type QueueSnapshot struct {
+	PendingBacklog int
+
+	// OldestPendingAt is the created_at of the oldest subject the last pass
+	// listed, or nil when the backlog was empty.
+	OldestPendingAt *time.Time
+
+	// LastPassAt is nil until the first pass completes — distinguishing "the
+	// driver has never run" from "the driver ran and found nothing", which look
+	// identical in every other field.
+	LastPassAt *time.Time
+
+	LastPassDeferred int
+	LastPassFailed   int
+
+	// DeferredSubjects is how many subjects are currently holding a backoff.
+	//
+	// Exposed because it is the only external view of a map that would
+	// otherwise grow for the life of the process: entries are keyed by subject
+	// and a subject settled by somebody else — the fast path, a firehose
+	// acceptance, a moderator — stops being listed without ever telling the
+	// driver to forget it. A number that climbs while the backlog does not is
+	// the leak, visible.
+	DeferredSubjects int
+}
+
+// QueueDriverOption configures the driver.
+type QueueDriverOption func(*QueueDriver)
+
+// WithQueueBatchSize bounds how many subjects one pass lists.
+func WithQueueBatchSize(size int) QueueDriverOption {
+	return func(d *QueueDriver) { d.batchSize = size }
+}
+
+// WithQueueBackoff sets the delay before a DEFERRED subject is offered to the
+// engine again, and the ceiling that delay grows to.
+//
+// It is per-subject rather than global: one community with dead credentials must
+// not slow down the queue for everyone else, which is exactly what a global
+// backoff would do.
+func WithQueueBackoff(base, max time.Duration) QueueDriverOption {
+	return func(d *QueueDriver) { d.backoffBase, d.backoffMax = base, max }
+}
+
+// QueueDriver walks the undecided backlog and feeds the engine.
+type QueueDriver struct {
+	subjects  PendingSubjectLister
+	engine    AdmissionProcessor
+	now       Clock
+	batchSize int
+
+	backoffBase time.Duration
+	backoffMax  time.Duration
+
+	// deferrals holds the per-subject backoff state. In-memory on purpose: it is
+	// a politeness hint, not state anything is allowed to depend on, so a
+	// restart that forgets it costs one extra attempt per subject and nothing
+	// else.
+	//
+	// It is keyed by (community, post) rather than by the whole PendingSubject
+	// because the third field is a time.Time read back from Postgres, and Go
+	// compares those by wall clock AND monotonic reading AND location. Two
+	// reads of one unchanged row can therefore produce values that are equal to
+	// a human and distinct to a map, which would silently defeat the backoff.
+	deferrals map[subjectKey]deferral
+
+	// mu guards deferrals and snapshot. Snapshot is read by the health handler
+	// on an HTTP goroutine while RunPass is writing on the job goroutine, so
+	// this is a genuine race rather than a defensive one.
+	mu       sync.Mutex
+	snapshot QueueSnapshot
+}
+
+// subjectKey identifies one subject by the two fields that actually name it.
+type subjectKey struct {
+	communityDID string
+	postURI      string
+}
+
+func keyOf(subject PendingSubject) subjectKey {
+	return subjectKey{communityDID: subject.CommunityDID, postURI: subject.PostURI}
+}
+
+// deferral is how long one subject is held back, and until when.
+//
+// The delay is carried alongside the deadline so it can GROW: a subject that
+// defers repeatedly is one whose community is wedged, and re-offering it on a
+// fixed interval would keep a steady trickle of doomed requests pointed at a
+// PDS that is already failing.
+type deferral struct {
+	until time.Time
+	delay time.Duration
+}
+
+// Default queue bounds, applied when the corresponding option is not given.
+//
+// The batch bound is not a nicety: this query runs on a timer against a table
+// that grows with every submission the instance has ever seen, so a driver
+// built without one must still not ask for the whole backlog.
+const (
+	defaultQueueBatchSize   = 100
+	defaultQueueBackoffBase = time.Minute
+	defaultQueueBackoffMax  = 15 * time.Minute
+)
+
+// NewQueueDriver wires the driver.
+func NewQueueDriver(subjects PendingSubjectLister, engine AdmissionProcessor, now Clock, opts ...QueueDriverOption) *QueueDriver {
+	d := &QueueDriver{
+		subjects:    subjects,
+		engine:      engine,
+		now:         now,
+		batchSize:   defaultQueueBatchSize,
+		backoffBase: defaultQueueBackoffBase,
+		backoffMax:  defaultQueueBackoffMax,
+		deferrals:   make(map[subjectKey]deferral),
+	}
+	for _, opt := range opts {
+		opt(d)
+	}
+	return d
+}
+
+// RunPass processes one batch of the backlog.
+//
+// It returns an error ONLY when the backlog itself could not be read. A subject
+// the engine failed on is counted and the pass continues: one poisonous row
+// must not stop every other community's posts from being decided, which is what
+// an early return would do — and the row is still in the backlog next pass.
+func (d *QueueDriver) RunPass(ctx context.Context) (PassReport, error) {
+	startedAt := d.now()
+	report := PassReport{StartedAt: startedAt}
+
+	subjects, err := d.subjects.ListPendingSubjects(ctx, d.fetchSize())
+	if err != nil {
+		// The one failure a pass has nothing to do about. Every other outcome
+		// below is per-subject and counted; this one means there is no work
+		// list to count against.
+		return report, fmt.Errorf("listing the acceptance backlog: %w", err)
+	}
+	report.Listed = len(subjects)
+
+	for _, subject := range groupByCommunity(subjects) {
+		// THE BATCH IS FILLED WITH WORK, not with rows. Skipping a backed-off
+		// subject must not consume a slot, or a stuck prefix would spend the
+		// whole pass on subjects it never touched — see fetchSize.
+		if report.Processed >= d.batchSize {
+			break
+		}
+		if d.heldBack(subject, startedAt) {
+			continue
+		}
+
+		outcome, err := d.engine.ProcessAdmission(ctx, subject.CommunityDID, subject.PostURI)
+		report.Processed++
+
+		// The ERROR is checked before the outcome, because a failing engine
+		// returns EngineDeferred alongside it and reading the outcome first
+		// would file every failure as a deferral — collapsing the two numbers an
+		// operator uses to decide whether this is credentials or a bug.
+		//
+		// They are COUNTED apart and BACKED OFF the same. The counters are what
+		// an operator reads, and there the difference is the whole point: a pass
+		// that defers everything is usually credentials and will clear, while a
+		// pass that fails everything is a bug. The backoff answers a different
+		// question — "how soon is it worth asking again" — and the honest answer
+		// for a failure is at least as conservative as for a deferral. A wedged
+		// community's PDS returns errors, not deferrals, so exempting failures
+		// would leave the loudest case as the one thing nothing paced.
+		switch {
+		case errors.Is(err, ErrSubjectGone):
+			// NOT A FAILURE, and counting it as one would make an ordinary race
+			// look like an outage. The backlog query excludes tombstoned and
+			// unindexed posts, but a post can be deleted between the listing and
+			// the decision — so this is the queue meeting a subject that stopped
+			// existing while it worked, which is exactly what the exclusion is
+			// for and needs no operator's attention. It is counted as deferred
+			// and backed off like any other "nothing to do yet"; the next pass
+			// will not list it at all.
+			report.Deferred++
+			d.deferSubject(subject, startedAt)
+		case err != nil:
+			report.Failed++
+			log.Printf("[ACCEPTANCE-QUEUE] Warning: %s in %s could not be settled: %v",
+				subject.PostURI, subject.CommunityDID, err)
+			d.deferSubject(subject, startedAt)
+		case outcome == EngineDeferred:
+			report.Deferred++
+			d.deferSubject(subject, startedAt)
+		default:
+			report.Settled++
+			d.clearDeferral(subject)
+		}
+	}
+
+	d.pruneDeferrals(subjects)
+	d.record(subjects, report, startedAt)
+	return report, nil
+}
+
+// queueOverFetchFactor bounds how far past a backed-off prefix one pass may
+// reach: a pass never asks the query for more than batchSize × this.
+//
+// FOUR, and the number is a trade rather than a preference. The backlog is
+// ordered oldest-first, so the subjects most likely to be stuck are exactly the
+// ones at the front of it — a community whose credentials expired weeks ago sits
+// there forever. Without over-fetching, a pass asks for LIMIT rows, gets LIMIT
+// stuck ones, skips them all for backoff and does nothing; every pass, while a
+// healthy post two rows behind is never decided. Over-fetching without a bound
+// would instead let one pass drag the entire backlog into memory to find one
+// live subject. Four buys three batches of headroom against a query whose cost
+// grows with it, and a prefix deeper than that drains as backoffs expire.
+const queueOverFetchFactor = 4
+
+// fetchSize is how many rows to ask for so the pass can still fill its batch
+// after skipping the subjects it already knows are held back.
+//
+// It asks for the batch plus exactly the number of deferrals currently held —
+// the measured size of the prefix that may be skipped — rather than always
+// over-fetching. A driver with nothing backed off has nothing to skip, so it
+// asks for precisely what it will use.
+func (d *QueueDriver) fetchSize() int {
+	held := d.deferredCount()
+	size := d.batchSize + held
+	if ceiling := d.batchSize * queueOverFetchFactor; size > ceiling {
+		size = ceiling
+	}
+	return size
+}
+
+func (d *QueueDriver) deferredCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.deferrals)
+}
+
+// pruneDeferrals forgets the backoffs of subjects that are no longer listed.
+//
+// A deferral outlives its subject otherwise. The row gets settled by somebody
+// else — the synchronous fast path, a firehose acceptance, a moderator's
+// removal — and simply stops being listed, without ever telling the driver. The
+// map is keyed by subject and swept by nothing, so on a busy instance it is an
+// unbounded leak held for the life of the process.
+//
+// It is also wrong on RE-ENTRY, which is the part a leak metric would not show:
+// a subject that leaves the backlog and comes back — an edit reopening an
+// accepted post — would arrive carrying a stale backoff it did nothing to earn,
+// and wait out a delay that was about a completely different decision.
+//
+// Pruning against the LISTING rather than against what the pass processed is
+// deliberate: a subject skipped for backoff is still in the backlog, and
+// forgetting it would defeat the backoff on the very next pass.
+func (d *QueueDriver) pruneDeferrals(listed []PendingSubject) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if len(d.deferrals) == 0 {
+		return
+	}
+	stillListed := make(map[subjectKey]bool, len(listed))
+	for _, subject := range listed {
+		stillListed[keyOf(subject)] = true
+	}
+	for key := range d.deferrals {
+		if !stillListed[key] {
+			delete(d.deferrals, key)
+		}
+	}
+}
+
+// Snapshot returns the driver's health surface as of the last completed pass.
+func (d *QueueDriver) Snapshot() QueueSnapshot {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.snapshot
+}
+
+// heldBack reports whether a subject's backoff has yet to elapse.
+//
+// It is judged against the instant the PASS began rather than against the clock
+// now, so one pass makes one decision about what is due. Reading the clock per
+// subject would let a long pass treat its first and last subjects by different
+// rules, and would make which subjects ran depend on how slow the engine was.
+func (d *QueueDriver) heldBack(subject PendingSubject, at time.Time) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	held, ok := d.deferrals[keyOf(subject)]
+	return ok && at.Before(held.until)
+}
+
+// deferSubject holds a subject back, doubling its wait each consecutive time.
+func (d *QueueDriver) deferSubject(subject PendingSubject, at time.Time) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	key := keyOf(subject)
+	delay := d.backoffBase
+	if previous, ok := d.deferrals[key]; ok && previous.delay > 0 {
+		delay = previous.delay * 2
+	}
+	if delay > d.backoffMax {
+		delay = d.backoffMax
+	}
+	d.deferrals[key] = deferral{until: at.Add(delay), delay: delay}
+}
+
+// clearDeferral forgets a settled subject, so the map tracks the backlog rather
+// than the history of everything the driver has ever seen.
+func (d *QueueDriver) clearDeferral(subject PendingSubject) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.deferrals, keyOf(subject))
+}
+
+// record publishes the pass's health surface.
+func (d *QueueDriver) record(subjects []PendingSubject, report PassReport, at time.Time) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	snapshot := QueueSnapshot{
+		PendingBacklog:   report.Listed,
+		LastPassDeferred: report.Deferred,
+		LastPassFailed:   report.Failed,
+		DeferredSubjects: len(d.deferrals),
+	}
+	// Taken as a MINIMUM rather than as subjects[0], even though the query
+	// orders by age. The oldest entry's age is the queue's only early warning,
+	// and deriving it from an ordering assumption would make it silently wrong
+	// the first time anything reorders the list.
+	for i, subject := range subjects {
+		if i == 0 || subject.CreatedAt.Before(*snapshot.OldestPendingAt) {
+			oldest := subject.CreatedAt
+			snapshot.OldestPendingAt = &oldest
+		}
+	}
+	passedAt := at
+	snapshot.LastPassAt = &passedAt
+
+	d.snapshot = snapshot
+}
+
+// groupByCommunity returns the subjects with each community's contiguous, and
+// with duplicates dropped.
+//
+// GROUPING. swapCommit is repo-global, so two writers on one community's repo
+// starve each other — task 4 recorded that before this driver existed. A single
+// goroutine satisfies it today whatever the order; what the grouping protects is
+// the NEXT version, where a worker pool has to shard on something, and the only
+// safe partition is the community. Output that interleaved communities would be
+// output with no partition in it.
+//
+// DEDUPLICATION. A subject appearing twice in one listing is what a racing edit
+// produces, and §8's edit-debounce is exactly this rule: a post edited in a
+// storm coalesces into one pending_reacceptance row, and a driver that re-decided
+// it per occurrence would re-run the whole policy per keystroke.
+//
+// The order WITHIN a community is preserved, and so is the order BETWEEN them
+// (first appearance wins), so the query's oldest-first discipline survives.
+func groupByCommunity(subjects []PendingSubject) []PendingSubject {
+	var order []string
+	byCommunity := make(map[string][]PendingSubject)
+	seen := make(map[subjectKey]bool, len(subjects))
+
+	for _, subject := range subjects {
+		if seen[keyOf(subject)] {
+			continue
+		}
+		seen[keyOf(subject)] = true
+
+		if _, known := byCommunity[subject.CommunityDID]; !known {
+			order = append(order, subject.CommunityDID)
+		}
+		byCommunity[subject.CommunityDID] = append(byCommunity[subject.CommunityDID], subject)
+	}
+
+	grouped := make([]PendingSubject, 0, len(seen))
+	for _, communityDID := range order {
+		grouped = append(grouped, byCommunity[communityDID]...)
+	}
+	return grouped
+}

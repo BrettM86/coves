@@ -326,29 +326,34 @@ const contractHoldWindow = 5 * time.Second
 
 // contractPollInterval is how often a T2 wait re-asks the serving endpoint.
 //
-// Slower than testkit's 100ms default ON PURPOSE, and the reason is the rate
-// limiter described in the package doc. Every poll is a request against a
-// 100-per-minute budget, so the interval and contractBudget are a pair:
+// Slower than testkit's 100ms default ON PURPOSE, and the interval and
+// contractBudget are a pair against the 100-per-minute limiter described in
+// the package doc:
 //
-//	45s budget ÷ 250ms  =  180 polls  if a wait runs its FULL length
+//	45s budget ÷ 600ms  =  75 polls  if a wait runs its FULL length
 //
-// which is over the 100 a bucket allows. That is deliberate rather than
-// overlooked, because of what the two cases cost:
+// which fits inside the 100 a bucket allows, so a wait always fails on the
+// BUDGET (a real timeout with consumer health attached), never on the
+// limiter. That invariant is what the 429-explainer in Await promises, and
+// it was not always true here.
 //
-//   - A wait that SUCCEEDS costs one or two polls. The pipeline delivers in
-//     well under a second on this stack, and WaitFor probes before it sleeps,
-//     so a healthy contract never approaches the budget. This is every poll the
-//     tier issues on a green run.
-//   - A wait that FAILS was going to fail anyway. Past roughly 25 seconds it
-//     starts collecting 429s instead of "not yet" — so Await translates that
-//     status into a message saying so, rather than letting a rate limit
-//     masquerade as a broken endpoint.
+// HISTORY — this was 250ms, on the stated premise that "the pipeline
+// delivers in well under a second, so a healthy contract never approaches
+// the budget," making the limiter cliff (100 polls ≈ 25s) unreachable for
+// green runs. The premise was measured false twice as the suite grew:
+// task 4 found the comment contract's parent-post wait at 23.97s healthy
+// latency under full-suite load (five consecutive cliff deaths), and task 5
+// measured FOUR contracts clustered at 23.9-24.7s against the 25s wall —
+// one scheduling hiccup from red on every gate run. Under `make ci` the
+// posts lane legitimately runs tens of seconds behind (it carries four
+// collections, and inline dead-letter retries block it by design), so long
+// waits are healthy, not hopeless. 600ms buys the full budget for every
+// wait at a cost of ~350ms average extra discovery latency on fast runs.
 //
-// Buying the difference would mean either a 1s interval (adding half a second
-// to every wait in the tier for the benefit of runs that are already red) or
-// raising the AppView's limit in .env.ci — which would delete the one signal
-// that a polling storm is happening at all. Neither trade is worth it.
-const contractPollInterval = 250 * time.Millisecond
+// Do NOT "fix" a marginal wait by raising the AppView's limit in .env.ci —
+// that would delete the one signal that a genuine polling storm is
+// happening at all.
+const contractPollInterval = 600 * time.Millisecond
 
 // contractHoldPollInterval is how often a Holds re-asks. It is deliberately
 // four times slower than contractPollInterval, and the reason is arithmetic the

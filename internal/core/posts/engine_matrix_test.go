@@ -161,6 +161,17 @@ func (w *fakeWriter) RepinAcceptance(_ context.Context, _ CommunityWriteCommand)
 	return CommunityWriteResult{}, nil
 }
 
+// DeleteAcceptance is the author-deletion sweep, which the ENGINE never
+// performs — an author withdrawing their own post is not a verdict. It records
+// its call for the same reason every other method here does: the recorder is
+// how this file asserts which repo write each verdict produced, so an engine
+// that started withdrawing acceptances would show up as an unexpected entry
+// rather than as a silent behaviour change.
+func (w *fakeWriter) DeleteAcceptance(_ context.Context, _ CommunityAcceptanceDeleteCommand) (CommunityWriteResult, error) {
+	w.rec.record("DeleteAcceptance")
+	return CommunityWriteResult{}, nil
+}
+
 // fakeRefresher counts forced credential renewals.
 type fakeRefresher struct {
 	rec *engineRecorder
@@ -248,6 +259,20 @@ func (a *fakeAdmissions) GetByPostURIs(_ context.Context, _ []string) (map[strin
 func (a *fakeAdmissions) ListByStatusForCommunity(_ context.Context, _ string, _ AdmissionStatus, _ int, _ *string) ([]*Admission, *string, error) {
 	a.rec.record("ListByStatusForCommunity")
 	return nil, nil, nil
+}
+
+// ListPendingSubjects is the queue driver's backlog query. The engine never
+// calls it — the driver does, and drives the engine with what it returns — so
+// this exists to satisfy the interface and records the call, which is itself an
+// assertion: an engine that started listing its own work would show up here.
+func (a *fakeAdmissions) ListPendingSubjects(_ context.Context, _ int) ([]PendingSubject, error) {
+	a.rec.record("ListPendingSubjects")
+	return nil, nil
+}
+
+func (a *fakeAdmissions) CountRecentAdmissions(_ context.Context, _, _ string, _ time.Time) (int, error) {
+	a.rec.record("CountRecentAdmissions")
+	return 0, nil
 }
 
 // ---------------------------------------------------------------------------

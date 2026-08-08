@@ -17,6 +17,12 @@ import (
 	"github.com/lib/pq"
 )
 
+// legacyPostCollection is the DEPRECATED community-repo post record (§3.0). A
+// post written since the author-owned flip is a posts.PostV2Collection record
+// in the author's own repo; both are indexed into the same table, and the URI
+// is what says which one a row came from.
+const legacyPostCollection = "social.coves.community.post"
+
 type postgresPostRepo struct {
 	db *sql.DB
 }
@@ -484,12 +490,27 @@ func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, er
 		CommentCount: postView.CommentCount,
 	}
 
-	// Build the record (required by lexicon)
+	// Build the record (required by lexicon).
+	//
+	// THE SHAPE FOLLOWS THE URI, because the two post collections are different
+	// records rather than two spellings of one. A postv2 record lives in the
+	// AUTHOR's repo and has NO author field — its removal is what makes
+	// authorship unforgeable (§3.1) — so synthesising one here would hand every
+	// reader back exactly the field the flip deleted, and a client that trusted
+	// it would be trusting a value this AppView made up.
+	collection := posts.CollectionOfPostURI(postView.URI)
+	if collection == "" {
+		collection = legacyPostCollection
+	}
 	record := map[string]interface{}{
-		"$type":     "social.coves.community.post",
+		"$type":     collection,
 		"community": communityRef.DID,
-		"author":    authorView.DID,
 		"createdAt": postView.CreatedAt.Format(time.RFC3339),
+	}
+	if collection == legacyPostCollection {
+		// The deprecated community-repo record DOES carry an author field, and
+		// it is part of the record a client may verify against the repo.
+		record["author"] = authorView.DID
 	}
 
 	// Add optional fields to record if present

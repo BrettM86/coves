@@ -21,6 +21,17 @@ import (
 // because a re-fire must not mint a new record CID.
 
 const (
+	// PostV2Collection is the AUTHOR-repo collection a post record lives in
+	// under author-owned posts (§3.1) — the successor to the deprecated
+	// community-repo social.coves.community.post.
+	//
+	// It lives beside the two community-repo collections because the three are
+	// one vocabulary: an acceptance's subject is a record in this collection,
+	// and the ingestion consumer re-exports this constant rather than declaring
+	// its own so that the reader and the writer cannot come to disagree about
+	// what a post record is called.
+	PostV2Collection = "social.coves.community.postv2"
+
 	// AcceptanceCollection is the community-repo collection holding a
 	// community's attestation that it accepts a post.
 	AcceptanceCollection = "social.coves.community.acceptance"
@@ -173,6 +184,42 @@ type CommunityRecordWriter interface {
 	// meaning "when this community accepted this post" rather than being
 	// restamped every time a bridge refreshes its vote counts.
 	RepinAcceptance(ctx context.Context, cmd CommunityWriteCommand) (CommunityWriteResult, error)
+
+	// DeleteAcceptance withdraws this community's acceptance WITHOUT writing a
+	// removal, which is the one shape the other four cannot express.
+	//
+	// It exists for the author's own deletion (§5.3): the author tombstones
+	// their post, and the community's acceptance now points at a record that no
+	// longer exists. Leaving it standing means the community's repo — the
+	// curated index its whole portability argument rests on — permanently cites
+	// content nobody can fetch, and any peer replaying that CAR would show a
+	// post the author withdrew.
+	//
+	// IT IS NOT A REMOVAL, and conflating the two would be a factual error the
+	// firehose carries forever. A removal record is a MODERATION act, signed by
+	// the community, carrying a reason code, portable and auditable. An author
+	// deleting their own post is not the community judging anything, and
+	// publishing a removal for it would put a moderation event in the public
+	// record that never happened.
+	//
+	// Deleting a record that is not there is a no-op reported as a skip, not an
+	// error: the sweep is idempotent by necessity — every tombstone event may be
+	// redelivered, and the acceptance may already have been withdrawn by an
+	// earlier pass.
+	DeleteAcceptance(ctx context.Context, cmd CommunityAcceptanceDeleteCommand) (CommunityWriteResult, error)
+}
+
+// CommunityAcceptanceDeleteCommand withdraws an acceptance.
+//
+// It carries no CID, deliberately. Every other command pins one because it is
+// making a claim about a specific version; this one is undoing a claim, and the
+// subject it is undoing it for is identified by URI — the same URI the
+// deterministic rkey is derived from. A CID here would suggest the delete is
+// conditional on a version, which it is not: the post is gone, whatever version
+// the acceptance happened to pin.
+type CommunityAcceptanceDeleteCommand struct {
+	CommunityDID string
+	PostURI      string
 }
 
 // communityRecordWriter is the production writer over real repos.
@@ -315,6 +362,85 @@ func (w *communityRecordWriter) WriteAcceptance(ctx context.Context, cmd Communi
 
 func (w *communityRecordWriter) RepinAcceptance(ctx context.Context, cmd CommunityWriteCommand) (CommunityWriteResult, error) {
 	return w.pinAcceptance(ctx, cmd, acceptanceMustExist)
+}
+
+// DeleteAcceptance withdraws a standing acceptance and writes nothing in its
+// place.
+//
+// STATE-SHAPED, like every other writer here and for the same reason task 4
+// recorded: the PDS has no tolerant delete, and answers a delete of a missing
+// record with a 500. So absence is read first and reported as a skip. That is
+// not an edge case — it is the COMMON one, because the sweep fires on every
+// tombstone event and most posts a community sees were never accepted by it,
+// and because the connector rewinds its cursor after every reconnect so each
+// tombstone arrives at least twice.
+//
+// It is a batch of one rather than a putRecord-shaped call because applyWrites
+// is where a delete can be guarded by swapCommit: the pre-read that found the
+// acceptance is only true until somebody else writes, and the guard is what
+// turns a concurrent restore into a detected conflict instead of a silently
+// deleted fresh acceptance.
+func (w *communityRecordWriter) DeleteAcceptance(ctx context.Context, cmd CommunityAcceptanceDeleteCommand) (CommunityWriteResult, error) {
+	if err := validateAcceptanceDeleteCommand(cmd); err != nil {
+		return CommunityWriteResult{}, err
+	}
+
+	repo, err := w.openRepo(ctx, cmd.CommunityDID)
+	if err != nil {
+		return CommunityWriteResult{}, err
+	}
+
+	rkey := SubjectRkey(cmd.PostURI)
+	uri := recordURI(repo.DID(), AcceptanceCollection, rkey)
+
+	for attempt := 0; ; attempt++ {
+		// The head is read before the record, for the same reason commitPair
+		// reads it first: a swapCommit read afterwards could be newer than the
+		// state the batch was shaped from, guarding the commit against a
+		// revision that already contains the change the shape assumed absent.
+		head, err := repo.GetLatestCommit(ctx)
+		if err != nil {
+			return CommunityWriteResult{}, fmt.Errorf("reading the head of %s: %w", cmd.CommunityDID, err)
+		}
+
+		standing, err := readStandingRecord(ctx, repo, AcceptanceCollection, rkey)
+		if err != nil {
+			return CommunityWriteResult{}, err
+		}
+		if standing == nil {
+			// Nothing to withdraw. The head is still reported as the Rev, on the
+			// same catch-up reasoning the other writers' skips use: a row
+			// stranded by an earlier failed stamp can be caught up from it.
+			return CommunityWriteResult{URI: uri, RKey: rkey, Rev: head.Rev, Skipped: true}, nil
+		}
+
+		result, err := repo.ApplyWrites(ctx, []pds.Write{{
+			Op:         pds.WriteOpDelete,
+			Collection: AcceptanceCollection,
+			RKey:       rkey,
+		}}, head.CID)
+		if err == nil {
+			// No CID: a delete leaves no record to name. The Rev is the §5.2
+			// watermark the firehose copy of this same deletion is compared
+			// against, so it is the one field that must be here.
+			return CommunityWriteResult{URI: uri, RKey: rkey, Rev: result.CommitRev}, nil
+		}
+
+		// A lost swapCommit and a 500 are the same fact from two directions: the
+		// state this batch was shaped from is not the state the PDS is in. Both
+		// are answered by reading again, never by resending the same shape —
+		// here that matters most for the 500, which is what a delete of a record
+		// somebody else removed between the pre-read and the commit looks like.
+		staleShape := errors.Is(err, pds.ErrSwapConflict) || errors.Is(err, pds.ErrServerError)
+		if !staleShape || attempt >= swapRetryLimit {
+			return CommunityWriteResult{}, fmt.Errorf("withdrawing the acceptance of %s in %s: %w",
+				cmd.PostURI, cmd.CommunityDID, err)
+		}
+		if err := w.backoff(ctx, attempt); err != nil {
+			return CommunityWriteResult{}, fmt.Errorf("withdrawing the acceptance of %s in %s: %w",
+				cmd.PostURI, cmd.CommunityDID, err)
+		}
+	}
 }
 
 // pinAcceptance makes an acceptance of cmd.PostCID stand at the subject's rkey.
@@ -733,6 +859,26 @@ func validateWriteCommand(cmd CommunityWriteCommand) error {
 			"is required — an acceptance's subject is a strongRef, and one without a CID pins nothing"))
 	}
 	return validateSubjectURI("acceptance write", cmd.PostURI)
+}
+
+// validateAcceptanceDeleteCommand refuses a withdrawal that names no repo or no
+// subject.
+//
+// The subject check is not symmetry with the other writers — it is the point.
+// The rkey is a DIGEST of the subject URI, so a malformed or empty subject
+// hashes to a perfectly well-formed key pointing at something else entirely,
+// and a delete aimed at the wrong rkey in a community's own repo is a WRITE. A
+// validation that only the create paths performed would leave the one operation
+// that destroys data unchecked.
+func validateAcceptanceDeleteCommand(cmd CommunityAcceptanceDeleteCommand) error {
+	switch {
+	case cmd.CommunityDID == "":
+		return fmt.Errorf("acceptance withdrawal: %w", NewValidationError("communityDID", "is required"))
+	case cmd.PostURI == "":
+		return fmt.Errorf("acceptance withdrawal: %w", NewValidationError("postURI",
+			"is required — the record key is derived from it, so an empty subject deletes a well-formed key belonging to nothing"))
+	}
+	return validateSubjectURI("acceptance withdrawal", cmd.PostURI)
 }
 
 // validateRemovalCommand refuses a removal with no reason code. `code` is

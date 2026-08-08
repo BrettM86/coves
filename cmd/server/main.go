@@ -96,6 +96,13 @@ func run() error {
 	startOAuthCleanupJob(backgroundCtx, &backgroundWG, sessionStore)
 	startAggregatorTokenRefreshJob(backgroundCtx, &backgroundWG, app.apiKeyService)
 
+	// Nil when the driver is disabled, and passed as a typed nil would be a
+	// non-nil interface — so the guard is here rather than inside the job.
+	if app.acceptanceQueue != nil {
+		startAcceptanceQueueJob(backgroundCtx, &backgroundWG,
+			app.acceptanceQueue, cfg.Submissions.AcceptanceQueueInterval)
+	}
+
 	consumers, err := startConsumers(backgroundCtx, &backgroundWG, app)
 	if err != nil {
 		// Some connectors may already be running. Drain them under the same

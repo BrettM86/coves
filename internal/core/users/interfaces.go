@@ -13,6 +13,21 @@ type UpdateProfileInput struct {
 }
 
 // UserRepository defines the interface for user data persistence
+// ErasureLookup reports whether a DID names an account this AppView was asked
+// to erase (migration 036).
+//
+// It is a SEPARATE, OPTIONAL interface rather than a method on UserRepository,
+// and detected with a type assertion at the one call site that needs it. Adding
+// it to UserRepository would oblige every implementation to answer a question
+// only the PostgreSQL one can — and a double that answered "not erased" by
+// default would be a gate that fails open, which is the single outcome this
+// marker exists to prevent. A repository that does not implement it disables
+// the gate rather than weakening it, and nothing in production is such a
+// repository.
+type ErasureLookup interface {
+	IsAccountDeleted(ctx context.Context, did string) (bool, error)
+}
+
 type UserRepository interface {
 	Create(ctx context.Context, user *User) (*User, error)
 	GetByDID(ctx context.Context, did string) (*User, error)

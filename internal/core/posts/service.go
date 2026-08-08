@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -135,22 +134,11 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 		return nil, fmt.Errorf("authenticated DID does not match author DID")
 	}
 
-	// 3. Determine actor type: trusted aggregator, other aggregator, or regular user
-	// Check against comma-separated list of trusted aggregator DIDs
-	trustedDIDs := os.Getenv("TRUSTED_AGGREGATOR_DIDS")
-	if trustedDIDs == "" {
-		// Fallback to legacy single DID env var
-		trustedDIDs = os.Getenv("KAGI_AGGREGATOR_DID")
-	}
-	isTrustedAggregator := false
-	if trustedDIDs != "" {
-		for _, did := range strings.Split(trustedDIDs, ",") {
-			if strings.TrimSpace(did) == req.AuthorDID {
-				isTrustedAggregator = true
-				break
-			}
-		}
-	}
+	// 3. Determine actor type: trusted aggregator, other aggregator, or regular user.
+	// The allowlist is read through the shared helper rather than inline, so
+	// this path and the acceptance engine's decider cannot drift into disagreeing
+	// about who is trusted — see TrustedAggregatorDIDs.
+	isTrustedAggregator := TrustedAggregatorDIDs()[req.AuthorDID]
 
 	// Check if this is a non-trusted aggregator (requires database lookup)
 	var isOtherAggregator bool
@@ -858,13 +846,40 @@ func parsePostURIParts(uri, field string) (authority string, rkey string, err er
 	if authority == "" {
 		return "", "", NewValidationError(field, "invalid post URI: missing authority")
 	}
-	if collection != postCollection {
-		return "", "", NewValidationError(field, fmt.Sprintf("invalid collection in URI: expected %s, got %s", postCollection, collection))
+	// EITHER post collection is a well-formed post URI. A post now lives in the
+	// author's repo under social.coves.community.postv2 (§3.1), while every post
+	// written before the flip is still at the deprecated community-repo NSID, and
+	// a reader has to be able to name both — refusing postv2 here made the new
+	// records unfetchable by the endpoint that hydrates every feed.
+	//
+	// What the authority MEANS differs between them — the community for the old
+	// collection, the author for the new — so a caller that goes on to use it as
+	// one or the other must narrow this itself. parsePostURI does, because it
+	// writes to the repo the authority names.
+	if collection != postCollection && collection != PostV2Collection {
+		return "", "", NewValidationError(field, fmt.Sprintf("invalid collection in URI: expected %s or %s, got %s",
+			postCollection, PostV2Collection, collection))
 	}
 	if rkey == "" {
 		return "", "", NewValidationError(field, "invalid post URI: missing rkey")
 	}
 	return authority, rkey, nil
+}
+
+// CollectionOfPostURI returns the collection segment of an at:// record URI, or
+// "" when the URI is not shaped like one.
+//
+// It is exported because the two post collections are now indexed into one
+// table, so every layer that renders or narrows a post has to ask the same
+// question of the same URI — the repository decides which record shape to
+// build from it, and this path decides which writes it will accept. A second
+// spelling of the split is a second place for the two to disagree.
+func CollectionOfPostURI(uri string) string {
+	parts := strings.Split(strings.TrimPrefix(uri, "at://"), "/")
+	if len(parts) != 3 {
+		return ""
+	}
+	return parts[1]
 }
 
 // requireDIDAuthority enforces that a parsed post-URI authority is a DID (not a handle).
@@ -1106,6 +1121,17 @@ func (s *postService) parsePostURI(uri string) (communityDID string, rkey string
 	communityDID, rkey, err = parsePostURIParts(uri, "uri")
 	if err != nil {
 		return "", "", err
+	}
+
+	// NARROWED to the community-repo collection, which the shared splitter
+	// deliberately is not. This path treats the authority as the COMMUNITY and
+	// goes on to open that repo and delete from it — so handed an author-repo
+	// postv2 URI it would authenticate as the AUTHOR's DID and try to delete a
+	// record there. The write path moves to postv2 in task 6; until it does,
+	// refusing is the only correct answer.
+	if collection := CollectionOfPostURI(uri); collection != postCollection {
+		return "", "", NewValidationError("uri", fmt.Sprintf(
+			"deleting a post is only supported for %s URIs, got %s", postCollection, collection))
 	}
 	if err := requireDIDAuthority(communityDID, "uri"); err != nil {
 		return "", "", err

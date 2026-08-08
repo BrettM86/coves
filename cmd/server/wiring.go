@@ -97,11 +97,27 @@ type application struct {
 	commentRepo    comments.Repository
 	userBlockRepo  userblocks.Repository
 	aggregatorRepo aggregators.Repository
+	// admissionRepo is shared by the ingestion consumer, which WRITES the
+	// per-(community, post) decisions, and the status query, which reads them.
+	admissionRepo posts.AdmissionRepository
 
 	// Domain services
-	userService                users.UserService
-	communityService           communities.Service
-	postService                posts.Service
+	userService      users.UserService
+	communityService communities.Service
+	postService      posts.Service
+	// postStatusService answers post.getStatus. Separate from postService
+	// because a status query needs the admissions store and nothing else, and
+	// widening the write-path interface to reach it would make every test
+	// double of posts.Service carry a method it has no opinion about.
+	postStatusService posts.StatusService
+	// communityWriter publishes acceptances and removals into the repos of
+	// communities this AppView hosts. Shared by the acceptance engine, which
+	// writes verdicts, and the post consumer, which withdraws an acceptance
+	// when the author deletes the post it covers.
+	communityWriter posts.CommunityRecordWriter
+	// acceptanceQueue walks the undecided backlog. nil when the driver is
+	// disabled (ACCEPTANCE_QUEUE_INTERVAL=0).
+	acceptanceQueue            *posts.QueueDriver
 	voteService                votes.Service
 	commentService             comments.Service
 	userBlockService           userblocks.Service
@@ -251,6 +267,7 @@ func (a *application) buildRepositories() {
 	a.commentRepo = postgresRepo.NewCommentRepository(a.db)
 	a.userBlockRepo = postgresRepo.NewUserBlockRepository(a.db)
 	a.aggregatorRepo = postgresRepo.NewAggregatorRepository(a.db)
+	a.admissionRepo = postgresRepo.NewAdmissionRepository(a.db)
 }
 
 func (a *application) buildServices(ctx context.Context) error {
@@ -348,6 +365,14 @@ func (a *application) buildServices(ctx context.Context) error {
 		}),
 	)
 
+	// getStatus is how an author on another server learns what happened to
+	// their post. It is the ONLY way a rejection is reachable — a submission
+	// refused before it was ever accepted writes no community record, so there
+	// is nothing on the firehose to read.
+	a.postStatusService = posts.NewStatusService(a.admissionRepo)
+
+	a.buildAcceptanceEngine()
+
 	// Subject existence is deliberately not validated: the vote is written to
 	// the user's own PDS regardless, and the Jetstream consumer only updates
 	// counts for subjects that still exist. Checking here would trade a
@@ -378,6 +403,60 @@ func (a *application) buildServices(ctx context.Context) error {
 
 	slog.Info("domain services initialized")
 	return nil
+}
+
+// buildAcceptanceEngine wires the §5.6 acceptance engine and the driver that
+// feeds it.
+//
+// EVERYTHING HERE IS ABOUT WRITING INTO A COMMUNITY'S OWN REPO, which only that
+// community's host can do — so on an instance that hosts nothing, all of it is
+// a no-op that costs one query a minute: the repo factory refuses with
+// ErrCommunityNotHosted and the backlog query returns nothing. Both are keyed on
+// STORED CREDENTIALS rather than on communities.hosted_by_did, which is copied
+// out of a community's own profile record and can therefore be claimed by any
+// repo on the network.
+func (a *application) buildAcceptanceEngine() {
+	repoFactory := posts.NewCommunityRepoFactory(a.communityService)
+	a.communityWriter = posts.NewCommunityRecordWriter(repoFactory, time.Now)
+
+	decider := posts.NewAdmissionEngineDecider(posts.DeciderDeps{
+		Posts:       a.postRepo,
+		Communities: a.communityService,
+		Authorizer:  a.aggregatorService,
+		Aggregators: a.aggregatorService,
+		Policy: posts.AdmissionPolicy{
+			Ledger: postgresRepo.NewSubmissionLedger(a.db),
+			Bans:   a.communityService,
+			Limits: posts.SubmissionLimits{
+				MaxPerAuthorPerCommunity: a.cfg.Submissions.MaxPerAuthorPerCommunity,
+				Window:                   a.cfg.Submissions.Window,
+				DedupeWindow:             a.cfg.Submissions.DedupeWindow,
+			},
+			Now: time.Now,
+		},
+		// Resolved ONCE, here, rather than read per decision — and through the
+		// same helper the write path uses, so the two cannot drift into
+		// disagreeing about who is privileged.
+		TrustedAggregatorDIDs: posts.TrustedAggregatorDIDs(),
+	})
+
+	engine := posts.NewAcceptanceEngine(
+		a.admissionRepo, decider, a.communityWriter,
+		posts.NewCommunityCredentialRefresher(a.communityService))
+
+	// Zero DISABLES the driver, and leaving the field nil is what makes
+	// /health/consumers omit the queue block entirely. An all-zero queue and an
+	// absent one mean different things: the first reads as a driver that is
+	// running and settling nothing, which is the exact failure an operator
+	// watches for.
+	if a.cfg.Submissions.AcceptanceQueueInterval <= 0 {
+		slog.Warn("acceptance queue driver disabled (ACCEPTANCE_QUEUE_INTERVAL=0); " +
+			"posts left undecided by the fast path and the firehose will not be revisited")
+		return
+	}
+
+	a.acceptanceQueue = posts.NewQueueDriver(a.admissionRepo, engine, time.Now,
+		posts.WithQueueBatchSize(a.cfg.Submissions.AcceptanceQueueBatchSize))
 }
 
 // adminReportAlertOptions builds the operator-alert wiring for admin reports.

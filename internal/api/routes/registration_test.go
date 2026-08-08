@@ -182,6 +182,25 @@ var declaredRoutes = []declaredRoute{
 	{http.MethodPost, "/xrpc/social.coves.community.post.create", authRequired, 0, false},
 	{http.MethodPost, "/xrpc/social.coves.community.post.delete", authRequired, 0, false},
 	{http.MethodGet, "/xrpc/social.coves.community.post.get", authOptional, 0, false},
+	// getStatus takes no auth at all, unlike post.get beside it, and the
+	// asymmetry is the decision this line exists to hold. The caller it is for
+	// is an author on ANOTHER server asking this host whether it accepted their
+	// post (PRD §7): they have no account here, so there is no session to
+	// require and no viewer state to personalise. A rejection is AppView-local
+	// and writes no community record (§3.3), so this endpoint is the only way
+	// that answer is reachable at all. The accepted cost, recorded in PRD rev
+	// 2.7: anyone who can name a post URI learns its status in a community.
+	// Adding OptionalAuth here would be harmless; adding RequireAuth would make
+	// the cross-server case unanswerable, which is why it is declared.
+	// getStatus carries its OWN limiter, tighter than the global 100/minute,
+	// and it is the only unauthenticated route in the product that does. Two
+	// things make it worth the exception: §7's client UX is to POLL it until a
+	// post flips to accepted, so the honest traffic shape is repeated requests
+	// from one caller; and because it takes no auth, an unauthenticated
+	// stranger can ask about any post URI they can name. The budget is what
+	// bounds enumeration of a community's rejected posts to something an
+	// operator would notice.
+	{http.MethodGet, "/xrpc/social.coves.community.post.getStatus", authNone, 120, false},
 
 	// RegisterVoteRoutes — social.coves.feed.vote.*
 	{http.MethodPost, "/xrpc/social.coves.feed.vote.create", authRequired, 0, false},
@@ -413,8 +432,11 @@ func walkRoutes(t *testing.T, mux *chi.Mux) map[routeKey][]func(http.Handler) ht
 // middleware that has refused nothing after this many requests from one client
 // is reported as "not a rate limiter" — so a real limiter set above this
 // ceiling would be classified as absent. TestRoutes_BudgetProbeCeilingIsAdequate
-// keeps that from happening quietly.
-const maxBudgetProbe = 64
+// keeps that from happening quietly — and it works: it fired when getStatus's
+// budget rose to 120 (above the then-64 ceiling), which is why this is 128.
+// The probe is in-process httptest, so the extra requests cost milliseconds;
+// never size a production budget down to make this probe cheaper.
+const maxBudgetProbe = 128
 
 type mwKind int
 
