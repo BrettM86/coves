@@ -4,6 +4,8 @@ package posts_test
 
 import (
 	"context"
+	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -106,6 +108,14 @@ func TestRematerialize_OuterContract_RealPDS_MovesPostAndIsIdempotent(t *testing
 			Content:   strPtr("words the author is accountable for"),
 			CreatedAt: "2026-01-02T03:04:05Z",
 		},
+		RawRecord: map[string]any{
+			"$type":     postCollection,
+			"community": communityAcct.DID,
+			"author":    authorAcct.DID,
+			"title":     title,
+			"content":   "words the author is accountable for",
+			"createdAt": "2026-01-02T03:04:05Z",
+		},
 	}
 
 	// Real author-repo credentials for the author, over the real PDS.
@@ -181,4 +191,106 @@ func TestRematerialize_OuterContract_RealPDS_MovesPostAndIsIdempotent(t *testing
 
 	require.Truef(t, testkit.IsNotFound(getRecordErr(ctx, communityAcct, postCollection, oldRkey)),
 		"the old community.post must stay gone across a re-run")
+}
+
+// P4 — embed blob BYTES must be copied to the author's repo, not just referenced
+// (whole-branch review, P4).
+//
+// A blob ref names a CID and not a repository, so a reader resolves it against
+// the repo it believes owns the record — after the flip, the AUTHOR's. The legacy
+// post's images live in the COMMUNITY's blob store; if the tool copies only the
+// embed REFERENCE and then deletes the legacy record, the postv2's media resolves
+// against an author repo where the bytes never landed (broken image), and the
+// community's now-unreferenced blob becomes garbage-collectable — the only copy,
+// gone. The bytes must be uploaded into the author's repo, and the old record must
+// not be deleted until they are verified present.
+func TestRematerialize_OuterContract_CopiesEmbedBlobToAuthorRepo(t *testing.T) {
+	t.Parallel()
+
+	pdsServer := testkit.NewPDS(t)
+	communityAcct := pdsServer.CreateAccount(t, testkit.WithHandlePrefix("rbmc"))
+	authorAcct := pdsServer.CreateAccount(t, testkit.WithHandlePrefix("rbma"))
+	ctx := context.Background()
+
+	// A real blob uploaded into the COMMUNITY's blob store, referenced by a legacy
+	// post's images embed — exactly where a pre-flip post's media lives.
+	blob := communityAcct.UploadBlob(t, []byte("PNGDATA-re-materialization-blob-bytes"), "image/png")
+	embed := map[string]any{
+		"$type":  "social.coves.embed.images",
+		"images": []any{map[string]any{"image": blob, "alt": "a picture"}},
+	}
+
+	oldRkey := testkit.TID()
+	title := "legacy with media " + testkit.UniqueID(t)
+	seeded := communityAcct.PutRecord(t, postCollection, oldRkey, map[string]any{
+		"$type":     postCollection,
+		"community": communityAcct.DID,
+		"author":    authorAcct.DID,
+		"title":     title,
+		"embed":     embed,
+		"createdAt": "2026-01-02T03:04:05Z",
+	})
+
+	legacy := posts.LegacyPost{
+		URI:          seeded.URI,
+		CID:          seeded.CID,
+		CommunityDID: communityAcct.DID,
+		AuthorDID:    authorAcct.DID,
+		Record: posts.PostRecord{
+			Type:      postCollection,
+			Community: communityAcct.DID,
+			Author:    authorAcct.DID,
+			Title:     strPtr(title),
+			Embed:     embed,
+			CreatedAt: "2026-01-02T03:04:05Z",
+		},
+		RawRecord: map[string]any{
+			"$type":     postCollection,
+			"community": communityAcct.DID,
+			"author":    authorAcct.DID,
+			"title":     title,
+			"embed":     embed,
+			"createdAt": "2026-01-02T03:04:05Z",
+		},
+	}
+
+	authorFactory := func(_ context.Context, _ string, _ *oauth.ClientSessionData) (posts.AuthorRepo, error) {
+		generic, err := pds.NewFromAccessToken(pdsServer.URL(), authorAcct.DID, authorAcct.AccessToken)
+		require.NoError(t, err)
+		repo, ok := generic.(posts.AuthorRepo)
+		require.True(t, ok)
+		return repo, nil
+	}
+	communityGeneric, err := pds.NewFromAccessToken(pdsServer.URL(), communityAcct.DID, communityAcct.AccessToken)
+	require.NoError(t, err)
+	communityRepo, ok := communityGeneric.(posts.CommunityRepo)
+	require.True(t, ok)
+	writer := posts.NewCommunityRecordWriter(
+		func(_ context.Context, _ string) (posts.CommunityRepo, error) { return communityRepo, nil }, time.Now)
+
+	source := &realLegacySource{community: communityGeneric, staged: []posts.LegacyPost{legacy}}
+	ledger := postgres.NewRematerializeLedger(testkit.DB(t))
+	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authorFactory, Acceptances: writer}
+
+	_, err = tool.RematerializeOne(ctx, legacy)
+	require.NoError(t, err)
+
+	// The blob's BYTES must now be fetchable from the AUTHOR's repo. sync.getBlob
+	// serves a blob only from a repo that actually holds it, so a 200 here proves
+	// the bytes were copied — a 404 (the current behaviour) proves only the
+	// reference was, and the post's media is broken the moment the old record goes.
+	require.Equalf(t, 200, getBlobStatus(t, pdsServer.URL(), authorAcct.DID, blob.CID()),
+		"the embed blob %s was not copied into the author's repo: the postv2 references a CID whose bytes live only in the community's blob store, "+
+			"which is now garbage-collectable and about to be the only copy lost", blob.CID())
+}
+
+// getBlobStatus fetches a blob from a repo via com.atproto.sync.getBlob and
+// returns the HTTP status — 200 if the repo holds the blob, 404 if it does not.
+func getBlobStatus(t *testing.T, pdsURL, did, cid string) int {
+	t.Helper()
+	req := pdsURL + "/xrpc/com.atproto.sync.getBlob?did=" + url.QueryEscape(did) + "&cid=" + url.QueryEscape(cid)
+	resp, err := http.Get(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	return resp.StatusCode
 }

@@ -1,12 +1,10 @@
 package posts
 
 import (
-	"crypto/sha256"
-	"encoding/base32"
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -14,50 +12,37 @@ import (
 // The single highest-risk detail in the whole cutover: the postv2 record key the
 // re-materialization tool writes at (docs/PRD_AUTHOR_OWNED_POSTS.md §11 step 4).
 //
-// A wrong rkey does not fail loudly — it MINTS DUPLICATES. If a re-run computes a
-// different key than the first run, createAuthorRecord's converge-by-read never
-// fires (the create-only guard is against a DIFFERENT key, which is empty), so a
-// second postv2 lands for the same legacy post. Every strongRef built from the
-// first run — the acceptance's pinned subject, every comment and vote — points at
-// the first record; the second is an orphan duplicate. So this file pins the key
-// harder than anything else in the suite:
+// It has TWO hard constraints that pull in different directions, and the RED-1
+// digest scheme satisfied only one of them (whole-branch review, P9):
 //
-//   1. It is DETERMINISTIC — two computations of the same old URI are identical.
-//   2. It is a PURE FUNCTION OF THE OLD URI ALONE — nothing submission-time
-//      (fingerprint, dedupe bucket, clock) leaks in, because the migration has
-//      none of that and a re-run must reproduce the key from the old record only.
-//   3. It is NOT SubmissionRkey — the write-path key needs exactly the
-//      submission-time material this tool lacks, so a tool that reused it would
-//      draw a fresh key every run and duplicate every post.
-//   4. It is the SubjectRkey DIGEST SCHEME applied to the OLD URI: unpadded
-//      lowercase base32 of the SHA-256 of the URI bytes — total over the legal
-//      URI space and collision-free, the scheme the write path already trusts.
+//  1. STABLE PURE FUNCTION OF THE OLD URI. A wrong or non-deterministic key does
+//     not fail loudly — it MINTS DUPLICATES: if a re-run computes a different key,
+//     createAuthorRecord's converge-by-read never fires (the create-only guard is
+//     against a DIFFERENT, empty key), so a second postv2 lands for one legacy
+//     post and every strongRef built from the first dangles. So the key must be a
+//     deterministic function of the OLD URI ALONE — nothing submission-time
+//     (fingerprint, bucket, clock), which the migration does not have and a re-run
+//     could not reproduce. In particular it must NOT be SubmissionRkey.
 //
-// The expected value is re-derived here from stdlib rather than by calling
-// SubjectRkey, so a bug that changed BOTH the helper and a naive expectation
-// together cannot hide: this is an independent check of the derivation.
+//  2. IT MUST BE A VALID TID. The postv2 lexicon declares "key": "tid", so a
+//     validating PDS rejects any rkey that is not a TID, and feed ordering reads
+//     the timestamp OUT of the key. The RED-1 scheme, SubjectRkey (a 52-char
+//     base32 SHA-256 digest), is NOT a TID — syntax.ParseTID rejects it — so a
+//     conformant PDS would refuse every re-materialized record. The key must be a
+//     deterministic TID derived purely from the old URI (a hashed timestamp+clock,
+//     e.g. tidepool's DeterministicTID shape), NOT SubmissionRkey (which mixes in
+//     submission-time material) and NOT SubjectRkey (which is not a TID at all).
 
-// independentRematerializeRkey recomputes the pinned scheme straight from stdlib.
-func independentRematerializeRkey(oldURI string) string {
-	digest := sha256.Sum256([]byte(oldURI))
-	return strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(digest[:]))
-}
-
-func TestRematerializeRkey_IsTheDigestOfTheOldURI(t *testing.T) {
+func TestRematerializeRkey_IsAValidTID(t *testing.T) {
 	oldURI := "at://did:plc:community2222222222222222/social.coves.community.post/3kqijkl2m4c2r"
 
-	got := RematerializeRkey(oldURI)
+	rkey := RematerializeRkey(oldURI)
 
-	assert.Equalf(t, independentRematerializeRkey(oldURI), got,
-		"the re-materialization rkey must be the unpadded lowercase base32 SHA-256 digest of the OLD URI (the SubjectRkey scheme applied to the legacy record). "+
-			"A different scheme means a re-run computes a different key, the create-only converge never fires, and a second postv2 is minted for one legacy post")
-
-	// The digest scheme is a fixed 52 characters drawn entirely from the
-	// rkey-safe lowercase base32 charset — the property that makes it total over
-	// the legal URI space (§3.2's argument for a digest over a readable transform).
-	assert.Lenf(t, got, 52, "the digest rkey is a fixed 52 characters for any input; %q is not", got)
-	assert.Truef(t, got == strings.ToLower(got), "the rkey must be lowercase — an uppercase key is a DIFFERENT key to a PDS that treats rkeys as opaque bytes")
-	assert.NotContainsf(t, got, "=", "base32 padding '=' is outside the atProto record-key charset and must be dropped")
+	parsed, err := syntax.ParseTID(rkey)
+	require.NoErrorf(t, err,
+		"the re-materialization rkey %q is not a valid TID. The postv2 lexicon declares key:tid, so a validating PDS rejects a non-TID rkey and feed ordering cannot read a timestamp out of it. "+
+			"The RED-1 SubjectRkey digest scheme is a 52-char base32 hash, which is not a TID — derive a deterministic TID from the old URI instead", rkey)
+	assert.Equalf(t, rkey, parsed.String(), "ParseTID must round-trip the rkey unchanged")
 }
 
 func TestRematerializeRkey_IsDeterministic(t *testing.T) {
@@ -67,7 +52,7 @@ func TestRematerializeRkey_IsDeterministic(t *testing.T) {
 	second := RematerializeRkey(oldURI)
 
 	require.Equalf(t, first, second,
-		"two computations of the re-materialization rkey for the same old URI must be identical, or a crash-resumed run cannot converge on the record its first attempt wrote")
+		"two computations of the re-materialization rkey for the same old URI must be identical, or a crash-resumed run cannot converge on the record its first attempt wrote — it mints a duplicate")
 }
 
 func TestRematerializeRkey_DependsOnlyOnTheOldURI(t *testing.T) {
@@ -91,7 +76,6 @@ func TestRematerializeRkey_IsNotSubmissionRkey(t *testing.T) {
 	oldURI := "at://did:plc:community2222222222222222/social.coves.community.post/3kqijkl2m4c2r"
 	communityDID := "did:plc:community2222222222222222"
 
-	// A representative SubmissionRkey over unrelated but plausible material.
 	submission := SubmissionRkey(communityDID, "d41d8cd98f00b204e9800998ecf8427e", 0, 5*time.Minute)
 
 	assert.NotEqualf(t, submission, RematerializeRkey(oldURI),

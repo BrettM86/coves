@@ -437,11 +437,15 @@ func (a *application) buildServices(ctx context.Context) error {
 // STORED CREDENTIALS rather than on communities.hosted_by_did, which is copied
 // out of a community's own profile record and can therefore be claimed by any
 // repo on the network.
-func (a *application) buildAcceptanceEngine() *posts.AcceptanceEngine {
-	repoFactory := posts.NewCommunityRepoFactory(a.communityService)
-	a.communityWriter = posts.NewCommunityRecordWriter(repoFactory, time.Now)
-
-	decider := posts.NewAdmissionEngineDecider(posts.DeciderDeps{
+// buildDeciderDeps assembles everything the production admission decider reads.
+//
+// Extracted from buildAcceptanceEngine so the wiring itself is testable: the §8
+// firehose quota is only enforced when DeciderDeps.Admissions is wired
+// (decider.go applyQuota short-circuits on a nil counter), and a struct literal
+// that silently omits the field disables the abuse control in production with no
+// error anywhere. wiring_quota_test.go asserts the field is set.
+func (a *application) buildDeciderDeps() posts.DeciderDeps {
+	return posts.DeciderDeps{
 		Posts:       a.postRepo,
 		Communities: a.communityService,
 		Authorizer:  a.aggregatorService,
@@ -460,7 +464,14 @@ func (a *application) buildAcceptanceEngine() *posts.AcceptanceEngine {
 		// same helper the write path uses, so the two cannot drift into
 		// disagreeing about who is privileged.
 		TrustedAggregatorDIDs: posts.TrustedAggregatorDIDs(),
-	})
+	}
+}
+
+func (a *application) buildAcceptanceEngine() *posts.AcceptanceEngine {
+	repoFactory := posts.NewCommunityRepoFactory(a.communityService)
+	a.communityWriter = posts.NewCommunityRecordWriter(repoFactory, time.Now)
+
+	decider := posts.NewAdmissionEngineDecider(a.buildDeciderDeps())
 
 	engine := posts.NewAcceptanceEngine(
 		a.admissionRepo, decider, a.communityWriter,

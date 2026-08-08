@@ -115,10 +115,22 @@ type LegacyPost struct {
 	// record (postV2From), but it is exactly who to re-author under.
 	AuthorDID string
 
-	// Record is the decoded legacy body. postV2From drops its `author` field and
-	// re-stamps the $type; its createdAt is preserved so the re-materialized post
-	// keeps its original time.
+	// Record is the decoded legacy body.
+	//
+	// DEPRECATED, LOSSY: PostRecord omits published fields — langs, tags,
+	// crosspostOf, crosspostChain, bridgedStats — so converting through it before
+	// deleting the old record IRREVERSIBLY drops them (whole-branch review, P5).
+	// The conversion must run off RawRecord instead; this field is retained only
+	// until GREEN removes the lossy path.
 	Record PostRecord
+
+	// RawRecord is the legacy record EXACTLY as it stands in the community repo —
+	// the lossless source the postv2 is built from. The conversion drops only the
+	// `author` field and re-stamps `$type`; every other field (including langs,
+	// tags, crosspostOf, crosspostChain, bridgedStats, facets, embed, labels) is
+	// carried through byte-for-byte, and createdAt is preserved so the
+	// re-materialized post keeps its original time.
+	RawRecord map[string]any
 }
 
 // LegacySource enumerates and deletes the deprecated community.post records.
@@ -165,6 +177,14 @@ type RematerializeLedger interface {
 
 	// Get reads one row. found is false when the URI has never been discovered.
 	Get(ctx context.Context, oldURI string) (row RematerializeLedgerRow, found bool, err error)
+
+	// ListResumable returns every row in a non-terminal state (not done, not a
+	// fallback). It is what makes crash-resume drive off the LEDGER rather than
+	// the source listing (whole-branch review, P7): a record whose delete
+	// succeeded but whose MarkDone crashed is GONE from the community repo, so a
+	// re-run's listRecords can never rediscover it — only the ledger row proves it
+	// is owed a final MarkDone.
+	ListResumable(ctx context.Context) ([]RematerializeLedgerRow, error)
 
 	// RecordPostV2Written moves discovered → postv2_written and records the
 	// postv2 coordinates.

@@ -86,6 +86,47 @@ func (l *rematerializeLedger) Get(ctx context.Context, oldURI string) (posts.Rem
 	return row, true, nil
 }
 
+// ListResumable returns every row still in a non-terminal state — the ledger-
+// driven resume set (whole-branch review, P7). A migrated row whose delete
+// succeeded but whose MarkDone crashed is GONE from the community repo, so only
+// this query — never the source's listRecords — can rediscover it.
+func (l *rematerializeLedger) ListResumable(ctx context.Context) ([]posts.RematerializeLedgerRow, error) {
+	rows, err := l.db.QueryContext(ctx, `
+		SELECT old_uri, state, author_did, new_uri, new_cid, new_rkey, reason, created_at, updated_at
+		FROM post_rematerialization_ledger
+		WHERE state NOT IN ('done', 'fallback_left_legacy', 'fallback_no_creds')
+		ORDER BY created_at
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("listing resumable ledger rows: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []posts.RematerializeLedgerRow
+	for rows.Next() {
+		var (
+			row       posts.RematerializeLedgerRow
+			state     string
+			authorDID sql.NullString
+			newURI    sql.NullString
+			newCID    sql.NullString
+			newRkey   sql.NullString
+			reason    sql.NullString
+		)
+		if err := rows.Scan(&row.OldURI, &state, &authorDID, &newURI, &newCID, &newRkey, &reason, &row.CreatedAt, &row.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scanning a resumable ledger row: %w", err)
+		}
+		row.State = posts.RematerializeState(state)
+		row.AuthorDID = authorDID.String
+		row.NewURI = newURI.String
+		row.NewCID = newCID.String
+		row.NewRkey = newRkey.String
+		row.Reason = reason.String
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
 // RecordPostV2Written moves discovered → postv2_written and records the postv2
 // coordinates the resume path reads back.
 func (l *rematerializeLedger) RecordPostV2Written(ctx context.Context, oldURI, newURI, newCID, newRkey string) error {
