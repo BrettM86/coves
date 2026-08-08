@@ -331,8 +331,13 @@ func TestClient_GetLatestCommit(t *testing.T) {
 	// has to be read immediately before the batch is shaped — the pre-read and
 	// the commit it is consistent with are the same observation.
 	c, closeServer := newCommitClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/xrpc/com.atproto.repo.getLatestCommit" {
-			t.Errorf("path = %q, want /xrpc/com.atproto.repo.getLatestCommit", r.URL.Path)
+		// THE SYNC NAMESPACE, NOT THE REPO ONE. getLatestCommit is
+		// com.atproto.sync.getLatestCommit — there is no repo-namespace
+		// spelling, and a PDS answers that one with "No service configured"
+		// rather than a 404, so the mistake reads as a deployment problem
+		// instead of a wrong method name.
+		if r.URL.Path != "/xrpc/com.atproto.sync.getLatestCommit" {
+			t.Errorf("path = %q, want /xrpc/com.atproto.sync.getLatestCommit", r.URL.Path)
 		}
 		if got := r.URL.Query().Get("did"); got != applyWritesDID {
 			t.Errorf("did = %q, want %q", got, applyWritesDID)

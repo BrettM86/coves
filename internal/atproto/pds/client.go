@@ -98,6 +98,44 @@ func wrapAPIError(err error, operation string) error {
 	// Check if it's an APIError from atclient
 	var apiErr *atclient.APIError
 	if errors.As(err, &apiErr) {
+		// THE ERROR NAME IS CONSULTED ON TOP OF THE STATUS, for one case. A lost
+		// swap comes back from a live PDS as HTTP 400 with "error":
+		// "InvalidSwap", not the 409 the lexicon documents, so the status alone
+		// maps it onto ErrBadRequest — indistinguishable from a malformed
+		// record. It is the one 400 that must be re-read and retried rather than
+		// reported.
+		//
+		// A 409 InvalidSwap — what the lexicon says, and what some
+		// implementation may yet send — is BOTH sentinels at once, so callers
+		// written against either one behave correctly whichever status arrives.
+		if apiErr.Name == "InvalidSwap" {
+			switch apiErr.StatusCode {
+			case 400:
+				return fmt.Errorf("%s: %w: %s", operation, ErrSwapConflict, apiErr.Message)
+			case 409:
+				return fmt.Errorf("%s: %w: %w: %s", operation, ErrConflict, ErrSwapConflict, apiErr.Message)
+			}
+		}
+
+		// "No such record" is the other name that outranks its status. The
+		// reference PDS answers getRecord for a missing record with HTTP 400 and
+		// "error": "RecordNotFound" (internal/core/users/profile_backfill.go
+		// documents the same observation), so the status alone calls an absent
+		// record a malformed request. A writer that shapes create-vs-update from
+		// a pre-read cannot tell those apart, and every caller already testing
+		// errors.Is(err, ErrNotFound) after a GetRecord is silently never true.
+		if apiErr.StatusCode == 400 && (apiErr.Name == "RecordNotFound" || apiErr.Name == "NotFound") {
+			return fmt.Errorf("%s: %w: %s", operation, ErrNotFound, apiErr.Message)
+		}
+
+		// A 5xx is its own class, not the generic wrap. applyWrites answers a
+		// delete of a missing record — and a create of an existing one — with a
+		// 500, and a state-shaped writer meeting that has to know its pre-read
+		// went stale so it can re-shape the batch.
+		if apiErr.StatusCode >= 500 {
+			return fmt.Errorf("%s: %w: %s", operation, ErrServerError, apiErr.Message)
+		}
+
 		switch apiErr.StatusCode {
 		case 400:
 			return fmt.Errorf("%s: %w: %s", operation, ErrBadRequest, apiErr.Message)

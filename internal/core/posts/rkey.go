@@ -1,5 +1,23 @@
 package posts
 
+import (
+	"crypto/sha256"
+	"encoding/base32"
+	"strings"
+)
+
+// subjectRkeyEncoding is RFC 4648 base32 with the padding removed.
+//
+// Padding is dropped rather than trimmed afterwards because '=' is not in the
+// atProto record-key charset, and the lowercasing that follows is what keeps
+// the key inside it: the standard alphabet is uppercase, and an uppercase rkey
+// is a different key to a PDS that treats record keys as opaque bytes.
+//
+// base32-Hex (the other encoding in the same package) draws from a DIFFERENT
+// alphabet and would produce a different, equally plausible-looking key for
+// every subject in the network. It is not interchangeable here.
+var subjectRkeyEncoding = base32.StdEncoding.WithPadding(base32.NoPadding)
+
 // SubjectRkey is the record key a community's records about one post use.
 //
 // It is the unpadded lowercase base32 encoding of the SHA-256 digest of the
@@ -26,5 +44,6 @@ package posts
 // The row's bytes are the identity the AppView indexes under, so a writer that
 // normalized would key its records to a URI the reader never looks up.
 func SubjectRkey(postURI string) string {
-	return ""
+	digest := sha256.Sum256([]byte(postURI))
+	return strings.ToLower(subjectRkeyEncoding.EncodeToString(digest[:]))
 }

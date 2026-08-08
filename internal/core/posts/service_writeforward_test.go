@@ -238,28 +238,14 @@ func TestService_DeleteRemovesTheRecordFromTheCommunityRepo(t *testing.T) {
 	assert.True(t, testkit.IsNotFound(getRecordErr(ctx, community, postCollection, rkey)),
 		"the post record is still in the community's repo after its author deleted it")
 
-	// KNOWN DEFECT, pinned as it behaves rather than as it is meant to.
-	//
-	// DeletePost intends a repeated delete to be idempotent: it checks the
-	// record fetch for pds.ErrNotFound and returns nil, commented "Post already
-	// deleted or never existed - idempotent success" (service.go step 7). That
-	// branch is unreachable against this PDS. com.atproto.repo.getRecord answers
-	// a missing record with HTTP 400 and "Could not locate record", and
-	// pds/client.go maps 400 to ErrBadRequest — so the not-found check misses,
-	// and the delete a client retries after a lost response comes back as an
-	// opaque failure the handler renders as a 500.
-	//
-	// Asserting the intent here would fail the suite over a production bug this
-	// task is not fixing; asserting nothing would let the bug become invisible.
-	// So the assertion is the current truth, and it is written to FAIL LOUDLY
-	// the moment the classification is fixed — at which point this block becomes
-	// assert.NoError and the comment goes away.
-	err := f.service.DeletePost(ctx, sessionFor(t, f.author, f.pds.URL()),
-		posts.DeletePostRequest{URI: resp.URI})
-	require.Errorf(t, err, "the idempotent-delete defect appears to be FIXED: "+
-		"replace this block with assert.NoError and delete the KNOWN DEFECT comment above it")
-	assert.Contains(t, err.Error(), "Could not locate record",
-		"the repeated delete failed for a different reason than the known not-found misclassification")
+	// The idempotent-delete path is real now: the PDS answers a missing record
+	// with HTTP 400 named RecordNotFound, and the client's name-before-status
+	// mapping turns that into pds.ErrNotFound, so DeletePost's not-found branch
+	// is reachable. Previously pinned as a known defect (p3 from the
+	// test-refactor loop); fixed by task 4's PDS error mapping.
+	assert.NoError(t, f.service.DeletePost(ctx, sessionFor(t, f.author, f.pds.URL()),
+		posts.DeletePostRequest{URI: resp.URI}),
+		"a repeated delete is idempotent — the retried delete after a lost response succeeds")
 }
 
 func TestService_DeleteRefusesEveryoneButTheAuthor(t *testing.T) {

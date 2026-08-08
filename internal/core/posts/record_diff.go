@@ -1,5 +1,12 @@
 package posts
 
+import "reflect"
+
+// bridgedStatsField is the ONE field §5.5 lets through unexamined. It is named
+// once, here, so that widening the exception is a visible edit to this file
+// rather than a condition that grew a second disjunct.
+const bridgedStatsField = "bridgedStats"
+
 // RecordDiffClass says what kind of change an author made to a post record —
 // the classification the bridgedStats exception of §5.5 turns on.
 type RecordDiffClass string
@@ -40,5 +47,48 @@ const (
 // bridge post; in the unsafe direction it is edited content rendering under an
 // acceptance granted to different content.
 func classifyRecordDiff(oldRecord, newRecord map[string]any) RecordDiffClass {
-	return ""
+	// A version that is not there proves nothing about the version that is. The
+	// engine reaches this with whatever it managed to decode, and "I could not
+	// read the old record" must not read as "the change was only stats".
+	if oldRecord == nil || newRecord == nil {
+		return RecordDiffPolicyRelevant
+	}
+
+	// EVERYTHING EXCEPT bridgedStats, COMPARED WHOLE. Comparing the remainder as
+	// one value rather than field by field is what makes the exception fail
+	// closed against fields this build has never heard of: an unknown key is
+	// part of the remainder, so it is compared like any other, and a bridge
+	// running a newer lexicon cannot smuggle one past.
+	oldRest := withoutBridgedStats(oldRecord)
+	newRest := withoutBridgedStats(newRecord)
+	if !reflect.DeepEqual(oldRest, newRest) {
+		return RecordDiffPolicyRelevant
+	}
+
+	// The remainder is identical, so bridgedStats is the only thing left that
+	// can differ. Presence is part of the comparison: a bridge that started or
+	// stopped reporting counts changed its stats, not its content.
+	oldStats, oldHasStats := oldRecord[bridgedStatsField]
+	newStats, newHasStats := newRecord[bridgedStatsField]
+	if oldHasStats == newHasStats && reflect.DeepEqual(oldStats, newStats) {
+		return RecordDiffNone
+	}
+	return RecordDiffBridgedStatsOnly
+}
+
+// withoutBridgedStats copies a record with the excepted field removed.
+//
+// The copy is not an optimisation to skip: the caller owns these maps — they
+// are decoded event payloads that the engine goes on to index — and a
+// classifier that deleted a field from them would silently strip bridged vote
+// counts out of everything downstream of the decision.
+func withoutBridgedStats(record map[string]any) map[string]any {
+	rest := make(map[string]any, len(record))
+	for field, value := range record {
+		if field == bridgedStatsField {
+			continue
+		}
+		rest[field] = value
+	}
+	return rest
 }

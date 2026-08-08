@@ -913,7 +913,14 @@ func (s *commentService) UpdateComment(ctx context.Context, session *oauth.Clien
 		if pds.IsAuthError(err) {
 			return nil, fmt.Errorf("%w: %w", ErrNotAuthorized, err)
 		}
-		if errors.Is(err, pds.ErrConflict) {
+		// ErrSwapConflict is the branch that actually fires. A PDS answers a
+		// stale swapRecord with HTTP 400 and "error": "InvalidSwap", not the 409
+		// the lexicon documents — verified against a live PDS — so the
+		// ErrConflict test alone never matched and every concurrent edit
+		// surfaced as a generic failure instead of ErrConcurrentModification.
+		// Both are kept: 409 remains legal, and an implementation that sends it
+		// must not regress to the generic branch.
+		if errors.Is(err, pds.ErrSwapConflict) || errors.Is(err, pds.ErrConflict) {
 			return nil, fmt.Errorf("%w: %w", ErrConcurrentModification, err)
 		}
 		return nil, fmt.Errorf("failed to update comment: %w", err)
