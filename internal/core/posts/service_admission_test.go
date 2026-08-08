@@ -5,7 +5,6 @@ package posts_test
 import (
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -431,60 +430,34 @@ func TestService_ACancellationDuringThePDSWriteStillReleasesTheReservation(t *te
 	assert.Equal(t, 1, f.ledgerRows(t, f.base.community.DID))
 }
 
-// A token-refresh failure (step 5) happens with the reservation already on the
-// ledger, and must give it back for the same reason a failed PDS write must:
-// the community's credentials failing is not the author's fault, and must not
-// cost them a quota slot or refuse their retry as a duplicate.
-func TestService_ATokenRefreshFailureReleasesTheReservation(t *testing.T) {
-	t.Parallel()
-
-	f := newAdmissionFixture(t)
-	ctx := context.Background()
-
-	original, err := f.repo.GetByDID(ctx, f.base.community.DID)
-	require.NoError(t, err)
-	require.NotEmpty(t, original.PDSAccessToken, "the fixture community must hold real credentials to restore")
-
-	// An expired access token forces EnsureFreshToken down the refresh path,
-	// and the community's PDS — repointed at a server that 500s everything —
-	// refuses the refresh. Same seam as the failed-write test: the pds_url and
-	// credentials are read fresh off the community row on every write.
-	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		http.Error(w, `{"error":"InternalServerError"}`, http.StatusInternalServerError)
-	}))
-	t.Cleanup(broken.Close)
-
-	healthyURL := communityPDSURL(t, f.base.db, f.base.community.DID)
-	setCommunityPDSURL(t, f.base.db, f.base.community.DID, broken.URL)
-	require.NoError(t, f.repo.UpdateCredentials(ctx, f.base.community.DID, expiredJWT(t), original.PDSRefreshToken))
-
-	const repeatable = "a post whose community credentials fail to refresh"
-	_, err = f.submit(t, f.base.community.DID, repeatable)
-	require.Error(t, err, "the token refresh failed, so CreatePost must report a failure")
-
-	assert.Zerof(t, f.ledgerRows(t, f.base.community.DID),
-		"the reservation for a submission that failed at token refresh is still on the ledger")
-
-	setCommunityPDSURL(t, f.base.db, f.base.community.DID, healthyURL)
-	require.NoError(t, f.repo.UpdateCredentials(ctx, f.base.community.DID, original.PDSAccessToken, original.PDSRefreshToken))
-
-	resp, err := f.submit(t, f.base.community.DID, repeatable)
-	require.NoError(t, err, "the identical retry after the credentials recovered was refused, so the refresh-failure path leaked its reservation")
-	require.NotEmpty(t, resp.URI)
-	assert.Equal(t, 1, f.ledgerRows(t, f.base.community.DID))
-}
-
-// expiredJWT builds a structurally valid, long-expired JWT: enough for
-// communities.NeedsRefresh (which parses the exp claim without verifying the
-// signature) to answer "refresh this now".
-func expiredJWT(t *testing.T) string {
-	t.Helper()
-
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
-	payload := base64.RawURLEncoding.EncodeToString(
-		[]byte(fmt.Sprintf(`{"exp":%d}`, time.Now().Add(-time.Hour).Unix())))
-	return header + "." + payload + ".unverified"
-}
+// RETIRED: TestService_ATokenRefreshFailureReleasesTheReservation.
+//
+// It pinned that a failed community-token refresh releases the ledger
+// reservation, which was a correct property of the PRE-FLIP write path — a post
+// went into the COMMUNITY's repo, so that token was the credential the post
+// could not be written without.
+//
+// It is not a correct property any more, and keeping it was actively harmful.
+// A post is written to the AUTHOR's repo now (§4.2 step 3); the community's
+// token is read only for a link preview's thumbnail, which has since moved to
+// the author's repo as well, leaving the step with nothing to buy. Worse, the
+// step does not merely idle: communities.NeedsRefresh cannot parse the EMPTY
+// access token that every firehose-indexed community carries, so it ERRORS for
+// exactly the remote communities §4.2 step 5 is about — turning the pending
+// flow the flip exists to deliver into a 500. This test was the only thing
+// requiring that step to exist, so the test had to go before the step could.
+//
+// THE PROPERTY IT GUARDED IS NOT LOST. "A failure after admission and before the
+// record exists releases the reservation" is pinned three other ways, each on a
+// step that is still real: TestService_AFailedPDSWriteReleasesTheReservation
+// (the author-repo write), TestService_ACancellationDuringThePDSWriteStill-
+// ReleasesTheReservation (a dead caller context), and the embed-guard release
+// case below. Retiring this one removes a redundant assertion about a step that
+// should not exist, not a unique one about a step that should.
+//
+// Its expiredJWT helper went with it: nothing else in this package forces a
+// token refresh, and a helper kept "in case" is how a retired path grows a
+// second test later.
 
 // An embed-enhancement failure (step 7) also runs with the reservation held.
 // The thumb-must-be-a-blob guard is the reachable failure in that step without

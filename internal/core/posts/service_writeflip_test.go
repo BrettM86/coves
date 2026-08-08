@@ -186,7 +186,11 @@ func TestService_CreateLeavesThePostPendingInACommunityThisAppViewDoesNotHost(t 
 
 	resp, err := f.createPostIn(t, remote.DID, "submitted to a community we do not host", "body")
 	require.NoErrorf(t, err, "not hosting a community is not a reason to refuse its author's post — "+
-		"the record belongs to the author either way")
+		"the record belongs to the author either way. A failure here is the retained community-token "+
+		"step (service.go step 6): EnsureFreshToken cannot parse an empty access token, so it errors "+
+		"for EVERY firehose-indexed community and blocks the remote pending flow the flip exists to "+
+		"deliver. The post is written to the AUTHOR's repo now; the community's token buys a link "+
+		"preview at most, and must not be able to refuse the post: %v", err)
 
 	assert.Equal(t, posts.PostStatusPending, resp.Status)
 
@@ -405,14 +409,19 @@ func TestService_UpdateLeavesTheSubmissionLedgerUntouched(t *testing.T) {
 // Fixtures
 // ---------------------------------------------------------------------------
 
-// unhostedCommunity provisions a community and then takes away the one thing
-// that makes it ours: the stored refresh token.
+// unhostedCommunity provisions a community and then takes away the two things
+// that make it ours: BOTH stored tokens.
 //
-// That is the honest way to build one. Hosting is credential presence and
-// nothing else — NewCommunityRepoFactory refuses to consult hosted_by_did,
-// because that column is populated from a profile record anyone can write — so a
-// community with no stored refresh token is precisely what a community hosted by
-// another instance looks like to this code.
+// CLEARING ONLY THE REFRESH TOKEN WAS NOT ENOUGH, and the gap hid a real bug.
+// Hosting is credential presence — NewCommunityRepoFactory refuses to consult
+// hosted_by_did, because that column comes from a profile record anyone can
+// write — so an empty refresh token is what makes the factory answer
+// ErrCommunityNotHosted, and that much was right. But a community indexed from
+// someone else's firehose has NO access token either, and leaving a live one
+// here let the write path's EnsureFreshToken step succeed on credentials no real
+// remote community has. The fixture was quietly propping up a step that fails
+// for every genuine remote community, and the pending flow the whole flip exists
+// to deliver was untested against the shape it will actually meet.
 func (f *postFixture) unhostedCommunity(t *testing.T) *communities.Community {
 	t.Helper()
 
@@ -428,13 +437,16 @@ func (f *postFixture) unhostedCommunity(t *testing.T) *communities.Community {
 	})
 	require.NoError(t, err)
 
-	result, err := f.db.ExecContext(context.Background(),
-		`UPDATE communities SET pds_refresh_token_encrypted = NULL WHERE did = $1`, community.DID)
+	result, err := f.db.ExecContext(context.Background(), `
+		UPDATE communities
+		   SET pds_refresh_token_encrypted = NULL,
+		       pds_access_token_encrypted  = NULL
+		 WHERE did = $1`, community.DID)
 	require.NoError(t, err)
 	affected, err := result.RowsAffected()
 	require.NoError(t, err)
 	require.Equalf(t, int64(1), affected,
-		"the fixture cleared no refresh token for %s, so the community is still hosted and the test "+
+		"the fixture cleared no credentials for %s, so the community is still hosted and the test "+
 			"would prove nothing", community.DID)
 
 	return community
@@ -510,4 +522,129 @@ func (f *ledgerFixture) submitErr(t *testing.T, title, content string) (*posts.C
 func (f *ledgerFixture) ledgerRows(t *testing.T) int {
 	t.Helper()
 	return countSubmissions(t, f.base.db, f.base.author.DID, f.base.community.DID)
+}
+
+func TestService_UpdateIsIdempotentOnAnIdenticalReEdit(t *testing.T) {
+	t.Parallel()
+
+	// THE PDS ANSWERS A NO-OP PUT WITH A 200 AND NO COMMIT. GREEN verified that
+	// against a live PDS on the create path (pds.ErrNoCommit): a put of bytes
+	// identical to what already stands changes no record, so there is no commit
+	// to report, and the sentinel exists because the response would otherwise
+	// read as a malformed body.
+	//
+	// The edit path can reach exactly the same state and currently turns it into
+	// a 500. Three ordinary things produce it: a client retrying after a lost
+	// response, a UI that fires save on blur whether or not anything changed,
+	// and a user who opens the editor and saves without typing. In every one of
+	// them the record already holds precisely what the client asked for, which
+	// is the definition of the request having succeeded — answering 500 tells
+	// the author their edit failed while showing them the edited post.
+	f := newPostFixture(t)
+	created := f.createPost(t, f.author.DID, "a post edited twice, identically", "the original body")
+
+	edited := "the corrected body"
+	first, err := f.service.UpdatePost(context.Background(), sessionFor(t, f.author, f.pds.URL()),
+		posts.UpdatePostRequest{URI: created.URI, Content: &edited})
+	require.NoError(t, err)
+
+	second, err := f.service.UpdatePost(context.Background(), sessionFor(t, f.author, f.pds.URL()),
+		posts.UpdatePostRequest{URI: created.URI, Content: &edited})
+	require.NoErrorf(t, err, "an identical re-edit is a state the record is ALREADY in, which is what "+
+		"the client asked for; a PDS 200-without-commit must not surface as a failure")
+
+	assert.Equal(t, first.URI, second.URI)
+	assert.Equalf(t, first.CID, second.CID,
+		"the re-edit must report the CID that is standing — a different one would mean the record was "+
+			"rewritten, and every strongRef built from the first response now dangles")
+
+	// And nothing committed. The put changed no bytes, so the repo's revision
+	// must not have moved: a second commit here is a firehose event describing
+	// an edit that did not happen, which every consumer would apply as one.
+	head := repoHead(t, f.author)
+	_, err = f.service.UpdatePost(context.Background(), sessionFor(t, f.author, f.pds.URL()),
+		posts.UpdatePostRequest{URI: created.URI, Content: &edited})
+	require.NoError(t, err)
+	assert.Equal(t, head, repoHead(t, f.author),
+		"the identical re-edit committed to the author's repo — a no-op put must report what stands, "+
+			"not rewrite it")
+}
+
+func TestService_TheSeedNeverRewindsContentTheFirehoseHasAlreadyAdvanced(t *testing.T) {
+	t.Parallel()
+
+	// THE RACE, CONSTRUCTED. CreatePost writes the record and then seeds the
+	// admission row with the CID it just wrote. Between those two steps the
+	// firehose is live, and it can deliver BOTH the create and a subsequent edit
+	// — an author correcting a typo immediately, a bridge that creates then
+	// updates, or simply an AppView busy enough that its own seed runs late.
+	//
+	// The seed is an UpsertPending, whose guard is `evaluated_cid IS DISTINCT
+	// FROM excluded`. That guard is right for the firehose, where a differing
+	// CID always means newer content. It is wrong for the seed, which carries
+	// content that may already be OLD: a row advanced to the edit's CID_B meets
+	// a seed carrying CID_A, the CIDs differ, and the row is written BACKWARDS
+	// to CID_A.
+	//
+	// What that costs is not a stale column. AcceptSubmission's guard is "row
+	// pending AND evaluated_cid == the CID I am accepting", so the rewind makes
+	// the guard pass against superseded content and the community publishes an
+	// acceptance pinning a version the author has already replaced — the exact
+	// outcome §5.5 exists to prevent, reached without any moderator being wrong
+	// about anything.
+	//
+	// The ordering is forced through the author-repo seam rather than by timing:
+	// the hook fires once the record has committed and its CID is known, which
+	// is precisely the window the firehose would land in.
+	f := newPostFixture(t)
+	ctx := context.Background()
+
+	const editedCID = "bafyreicaneditedversionthefirehosealreadyindexed"
+
+	var seededURI string
+	f.authorRepos.afterPut(f.author.DID, func(uri, _ string) {
+		// The firehose, arriving first: it indexed the create and then the edit,
+		// so the row already holds the LATER content.
+		seededURI = uri
+		_, err := f.admissions.UpsertPending(ctx, posts.UpsertPendingCommand{
+			CommunityDID: f.community.DID,
+			PostURI:      uri,
+			EvaluatedCID: editedCID,
+		})
+		require.NoError(t, err)
+	})
+
+	resp, err := f.submitPost(t, f.author.DID, "a post edited before its own seed ran", "body")
+	require.NoError(t, err)
+	require.Equalf(t, resp.URI, seededURI,
+		"the hook and the response must describe one record, or this test is racing something else")
+
+	row := f.admissionOf(t, resp.URI)
+	require.NotNil(t, row.EvaluatedCID)
+
+	// THE ROW MUST STILL HOLD THE NEWER CONTENT. A seed that overwrote it has
+	// moved the AppView's belief about this post backwards in time.
+	assert.Equalf(t, editedCID, *row.EvaluatedCID,
+		"the seed rewound the row from the edit's CID back to the create's: UpsertPending writes on any "+
+			"DISTINCT cid, so a seed carrying content the firehose has already superseded moves the "+
+			"AppView's view of the post backwards")
+
+	// AND NO ACCEPTANCE PINS THE SUPERSEDED VERSION. This is what the rewind
+	// actually buys an attacker or an unlucky author: with the row rewound,
+	// AcceptSubmission's CID guard passes and the community publishes an
+	// attestation to content nobody is reading any more.
+	acceptances := listRecordKeys(t, f.communityAccount(t), posts.AcceptanceCollection)
+	if len(acceptances) > 0 {
+		acceptance := f.communityAccount(t).GetRecord(t, posts.AcceptanceCollection, acceptances[0])
+		subject, ok := acceptance.Value["subject"].(map[string]any)
+		require.True(t, ok)
+		assert.NotEqualf(t, resp.CID, subject["cid"],
+			"the community accepted the CREATE's content after the firehose had already recorded an "+
+				"edit — an acceptance must never pin a version the row no longer holds")
+	}
+
+	// The author is told the truth: the AppView has not evaluated the content it
+	// currently holds, so the post is pending, not accepted.
+	assert.Equalf(t, posts.PostStatusPending, resp.Status,
+		"the row holds content this request never evaluated, so the community cannot have accepted it")
 }

@@ -132,6 +132,13 @@ type authorRepoRegistry struct {
 	// same way.
 	afterRead map[string]func()
 
+	// afterPutHooks run once the author's record has COMMITTED and its CID is
+	// known, per author DID. That instant is the window the firehose lands in —
+	// the record is public, its events are in flight, and the write path has not
+	// yet seeded its admission row — and it is the only way to construct the
+	// orderings that window makes possible from outside the service.
+	afterPutHooks map[string]func(uri, cid string)
+
 	// hosts overrides the PDS an author's repo client talks to. It is how a
 	// write FAILURE is injected now: the write goes to the AUTHOR's repo, so
 	// pointing the community's stored pds_url at a broken server — which is how
@@ -142,11 +149,22 @@ type authorRepoRegistry struct {
 
 func newAuthorRepoRegistry(pdsServer *testkit.PDS) *authorRepoRegistry {
 	return &authorRepoRegistry{
-		pds:       pdsServer,
-		accounts:  map[string]*testkit.Account{},
-		afterRead: map[string]func(){},
-		hosts:     map[string]string{},
+		pds:           pdsServer,
+		accounts:      map[string]*testkit.Account{},
+		afterRead:     map[string]func(){},
+		afterPutHooks: map[string]func(uri, cid string){},
+		hosts:         map[string]string{},
 	}
+}
+
+// afterPut arranges for fn to run once, immediately after the next record
+// commits in authorDID's repo, with the record's URI and CID.
+func (r *authorRepoRegistry) afterPut(authorDID string, fn func(uri, cid string)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	var once sync.Once
+	r.afterPutHooks[authorDID] = func(uri, cid string) { once.Do(func() { fn(uri, cid) }) }
 }
 
 // pointAt sends an author's repo writes to host instead of the test PDS. An
@@ -178,6 +196,7 @@ func (r *authorRepoRegistry) raceAfterRead(authorDID string, fn func()) {
 type racingAuthorRepo struct {
 	posts.AuthorRepo
 	afterRead func()
+	afterPut  func(uri, cid string)
 }
 
 func (r *racingAuthorRepo) GetRecord(ctx context.Context, collection, rkey string) (*pds.RecordResponse, error) {
@@ -186,6 +205,14 @@ func (r *racingAuthorRepo) GetRecord(ctx context.Context, collection, rkey strin
 		r.afterRead()
 	}
 	return record, err
+}
+
+func (r *racingAuthorRepo) PutRecordWithCommit(ctx context.Context, collection, rkey string, record any, swapRecord string) (*pds.RecordCommit, error) {
+	commit, err := r.AuthorRepo.PutRecordWithCommit(ctx, collection, rkey, record, swapRecord)
+	if r.afterPut != nil && err == nil && commit != nil {
+		r.afterPut(commit.URI, commit.CID)
+	}
+	return commit, err
 }
 
 // register makes an account's repo reachable by its DID.
@@ -202,6 +229,7 @@ func (r *authorRepoRegistry) factory() posts.AuthorRepoFactory {
 		r.mu.Lock()
 		account := r.accounts[authorDID]
 		race := r.afterRead[authorDID]
+		committed := r.afterPutHooks[authorDID]
 		host := r.hosts[authorDID]
 		r.mu.Unlock()
 
@@ -221,8 +249,8 @@ func (r *authorRepoRegistry) factory() posts.AuthorRepoFactory {
 			return nil, fmt.Errorf("opening the repo of %s: the PDS client does not implement the "+
 				"author-repo write surface (guarded put + commit rev)", authorDID)
 		}
-		if race != nil {
-			return &racingAuthorRepo{AuthorRepo: repo, afterRead: race}, nil
+		if race != nil || committed != nil {
+			return &racingAuthorRepo{AuthorRepo: repo, afterRead: race, afterPut: committed}, nil
 		}
 		return repo, nil
 	}

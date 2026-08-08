@@ -52,13 +52,44 @@ type Service interface {
 
 type blobService struct {
 	pdsURL string
+
+	// allowPrivateHosts disables the SSRF guard that refuses private, loopback
+	// and link-local addresses on a remote image fetch. NEVER set in production:
+	// the URL being fetched is chosen by whoever controls the page being
+	// unfurled, and the AppView shares a network with its database, its PDS and
+	// a cloud metadata endpoint.
+	//
+	// It is construction state rather than an environment read inside the fetch,
+	// for the reason blueskypost's blueskyAPI.allowPrivateHost documents: every
+	// honest test of a remote fetch serves it from httptest, which listens on
+	// loopback, and Go's testing package refuses t.Setenv alongside t.Parallel —
+	// so an env read would make the guarded branch untestable in parallel and
+	// force the whole package serial.
+	allowPrivateHosts bool
+}
+
+// BlobServiceOption configures optional blob service behaviour.
+type BlobServiceOption func(*blobService)
+
+// WithPrivateHostsAllowed disables the remote-fetch SSRF guard.
+//
+// THE NAME IS THE CONTRACT: production must not call this. cmd/server derives
+// the value from config once (the IS_DEV_ENV gate); tests that serve their
+// fixtures from httptest pass it because loopback is exactly what the guard
+// refuses.
+func WithPrivateHostsAllowed() BlobServiceOption {
+	return func(s *blobService) { s.allowPrivateHosts = true }
 }
 
 // NewBlobService creates a new blob service
-func NewBlobService(pdsURL string) Service {
-	return &blobService{
+func NewBlobService(pdsURL string, opts ...BlobServiceOption) Service {
+	s := &blobService{
 		pdsURL: pdsURL,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // UploadBlobFromURL fetches an image from a URL and uploads it to PDS

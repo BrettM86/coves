@@ -128,7 +128,9 @@ func newBlobFixture(t *testing.T) *blobFixture {
 		service: posts.NewPostService(
 			postgres.NewPostRepository(base.db), base.communityService,
 			nil, // aggregators
-			blobs.NewBlobService(base.pds.URL()),
+			// The origin is an httptest server on loopback, which is exactly what
+			// the remote-fetch SSRF guard refuses. Production never passes this.
+			blobs.NewBlobService(base.pds.URL(), blobs.WithPrivateHostsAllowed()),
 			&scriptedUnfurl{thumbnailURL: origin.thumbnailURL()},
 			nil, // bluesky
 			base.pds.URL(),
