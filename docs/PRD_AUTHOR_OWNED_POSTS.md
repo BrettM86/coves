@@ -708,3 +708,52 @@ different DID) is deliberately **not** built now — the data model supports it
 4. **Private communities** (Beta): acceptance records leak subject URIs on the
    public firehose; private-community design must address opaque/hashed
    subjects. Out of scope for the flip.
+
+---
+
+## 11. Cutover deploy runbook (task-8 plan review, rev 2.8)
+
+The re-materialization tool ships in the loop; the **prod run and the legacy
+removal do not** — they are manual, deploy-sequenced, and gated on facts only
+the operator can confirm. Getting the order wrong makes live posts vanish or
+relaunders a removed post, so the sequence is fixed:
+
+1. **Deploy the branch** (tool + migration 037 ledger + docs). Legacy read/
+   ingest code stays intact — prod still has `community.post` rows.
+2. **Maintenance window: stop writers.** Only inside this window:
+   `TRUNCATE post_submissions` and deploy the fingerprint retype to
+   `PostV2Record` (a live-writer retype strands in-flight dedupe reservations —
+   the retype is deploy-sequenced, never merge-coupled; it also ripples through
+   `enhanceExternalEmbed`/`postV2From`, budget for that).
+3. **Credential census FIRST (gates everything).** The tool enumerates authors
+   whose repo credentials cannot be restored. The fallback for such a post is
+   to **leave it as `community.post`** (ledger terminal `fallback_left_legacy`),
+   logged, never deleted — and NEVER an admin-forged postv2 (forging authorship
+   reintroduces the §2 impersonation liability the whole flip removes). The run
+   refuses to report "complete" while any fallback row survives.
+4. **Run the tool** (resumable, verify-before-delete, idempotent). Per record:
+   postv2 into the author repo (deterministic rkey = pure function of the OLD
+   record, NOT `SubmissionRkey`) → acceptance via `WriteAcceptance` DIRECT (NOT
+   the engine — the engine re-decides and could reject a since-banned author's
+   live post, rewriting history) pinning the NEW CID → verify both + CID →
+   ledger `migrated` → delete old → `done`. `migrated` and `done` are distinct
+   states so a crash after checkpoint retries only the delete.
+5. **Truncate + firehose re-index `posts`** (§5.1). The tool writes repo records
+   + ledger only; the consumer re-indexes the fresh postv2/acceptance.
+6. **POST-DRAIN FOLLOW-UP (separate branch, gated on
+   `SELECT count(*) FROM posts WHERE split_part(uri,'/',4)='social.coves.community.post'`
+   = 0 AND fallbacks = 0):** only then remove the legacy surfaces —
+   `consumerWantedCollections` community.post entry, the post_consumer legacy
+   branch, `visiblePostsJoin`'s NULL-non-postv2-visible branch, `blobOwnerOf`
+   community fallback, `removedMarkers` legacy handling + record author-field
+   synthesis, `legacyPostCollection`, `applyRemoval`'s absent collection guard.
+   These retire together; removing ingest ahead of read (or either ahead of the
+   drain) is the vanish/relaunder bug.
+
+**Deferred, independent of the cutover (file as issues):** orphan
+community-admissions sweep on community deletion; `community.post_count`
+incrementer wiring onto `countAcceptedPostsForCommunity` (cosmetic — display
+already excludes non-accepted; no leak). Neither blocks the merge.
+
+**Merge hygiene:** never run `go mod tidy` (upgrades transitives into a broken
+go-log; go-car is pinned indirect — `make ci` uses `mod download`, safe).
