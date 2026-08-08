@@ -18,7 +18,7 @@ Stop when every task is done, or on any `blocked:` row.
 | 3 | admitPost extraction + NEW policy (bans, rate limits, dedupe) wired into existing write path | A | done | df97cb2 | make ci 4840/0. PRD → rev 2.6. Migration 035 ledger (plan review killed posts-table limiter). BANS NOW ENFORCED. T2 wire probe added |
 | 4 | Acceptance engine: deterministic rkey, swap-safe acceptance writer, atomic applyWrites removal, repin/terminality rules | B | done | e00d97a | make ci 4944/0. Probe-driven plan review killed 4 assumptions pre-code. 2 production bugs fixed as side effects. Gate saga: 2 latent test defects fixed + Docker restart (150d uptime) |
 | 5 | Ingestion: postv2/acceptance/removal consumers, watermark gating, direct-fetch convergence, WantedCollections + 3 e2e contracts | B | done | 0caeda4 | make ci 5047/0. PRD → rev 2.7. getStatus pulled forward; migration 036; queue driver + decider + factory; 6 production defects fixed as by-catch; CAR-recomputed CID verification |
-| 6 | Write path flip: author-repo postv2 via session, author-PDS blobs, sync fast-path accept, post.delete flip, post.update NEW | C | pending | | review MUST include pragma:security — verify it fired |
+| 6 | Write path flip: author-repo postv2 via session, author-PDS blobs, sync fast-path accept, post.delete flip, post.update NEW | C | done | 2c66287 | make ci 5120/0. pragma:security FIRED — bypass CLEAN. Seed-rewind (published false acceptance) + UpdatePost validation bypass + dead token step + SSRF fixed. DEPLOY GATE: not ahead of task 7 |
 | 7 | Read path: centralized visibility predicate, full surface inventory, #removedPost, getStatus, alternate-endpoint invisibility T2s | C | pending | | |
 | 8 | Cutover: re-materialization script (ledger, verify-before-delete, hermetic test), old-path removal, docs, tracker cleanup; panel on whole branch; /merge-to-main | D | pending | | prod script run is MANUAL, outside loop |
 
@@ -146,6 +146,36 @@ Stop when every task is done, or on any `blocked:` row.
   tidy` — tidy upgrades transitives into a broken github.com/ipfs/go-log.
   Do not tidy this module until that upstream resolves; note for task 8's
   cleanup pass.
+- (2026-08-08, task 6 → HARD DEPLOY GATE, security-mandated): the write
+  flip REMOVES the credential barrier that gated who could put a post into a
+  community (that IS the feature). Pre-task-7 reads are status-agnostic, so
+  on this branch any authenticated user can write a postv2 naming ANY
+  community (banned-from/private/unrelated) and it renders as that
+  community's content immediately, regardless of the engine's acceptance
+  decision. CLOSED completely by task 7's visibility predicate. Loop-safe
+  (whole branch merges to main once, at task 8 — never task-6-alone). BUT:
+  task 6 MUST NOT deploy to prod ahead of task 7. Bypass enumeration itself
+  is CLEAN — the firehose path independently re-derives full admission +
+  quota for any direct-PDS write; no gate is bypassable.
+- (task 6, deferred to task 8 with pointers): fingerprint retype to
+  PostV2Record (byte-stability makes re-materialization the free moment);
+  the community.post delete branch + blobOwnerOf community-fallback
+  scaffolding; RecordAggregatorPost double-meter on converged retry
+  (backlog); §8 edit-debounce now reachable at volume via the new update
+  path (backlog, task-4-originated).
+- (2026-08-08, task 6 → TASK 7 OBLIGATIONS, now with security teeth): the
+  centralized visibility predicate must gate EVERY read surface on
+  community_post_admissions (security §6: post_repo.go + all feed queries
+  currently reference it NOWHERE outside getStatus) — this is the
+  compensating control for the deploy gate, not just a feature. Also:
+  blob_transform's blobOwnerOf per-record owner is LIVE (postv2→author,
+  legacy→community) — task 7's hydration must honor it, and AuthorView.PDSURL
+  is now carried out of the scan (was dropped). getStatus↔post.get admission
+  convergence per task-5 note. SELF-HOSTER config surface (GREEN flag): the
+  SSRF fix silently drops thumbnails whose unfurl targets resolve to private
+  addresses (internal wikis / same-network services); IS_DEV_ENV is the only
+  escape hatch — a narrower per-host allowance is a deliberate config-design
+  task if self-hosters need it (backlog, owner decision).
 - (harness, multi-agent stacks): ONE coves-ci compose-project runner at a
   time — a conductor ci run and an agent test-e2e run collided (force-
   recreate mid-run → phantom dead-letter floods + starved lanes). The
