@@ -432,8 +432,11 @@ func walkRoutes(t *testing.T, mux *chi.Mux) map[routeKey][]func(http.Handler) ht
 // middleware that has refused nothing after this many requests from one client
 // is reported as "not a rate limiter" — so a real limiter set above this
 // ceiling would be classified as absent. TestRoutes_BudgetProbeCeilingIsAdequate
-// keeps that from happening quietly.
-const maxBudgetProbe = 64
+// keeps that from happening quietly — and it works: it fired when getStatus's
+// budget rose to 120 (above the then-64 ceiling), which is why this is 128.
+// The probe is in-process httptest, so the extra requests cost milliseconds;
+// never size a production budget down to make this probe cheaper.
+const maxBudgetProbe = 128
 
 type mwKind int
 
