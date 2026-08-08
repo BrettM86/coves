@@ -20,6 +20,7 @@ import (
 	"Coves/internal/core/unfurl"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
+	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 
 type postService struct {
@@ -120,22 +121,14 @@ func NewPostService(
 // meter is degraded service, never data loss, and never a reason to withdraw
 // someone else's record (§4.2).
 func (s *postService) CreatePost(ctx context.Context, session *oauth.ClientSessionData, req CreatePostRequest) (*CreatePostResponse, error) {
-	// 1. Validate basic input (before DID checks to give clear validation errors)
+	// 1. Validate basic input, and normalize the fields the lexicon declares as
+	// `format: uri`, before any of them reach the record. Both live in the
+	// SHARED gate (normalizeAndValidatePostContent) rather than here, so the
+	// edit path cannot get a weaker version of either. It runs ahead of the
+	// community and PDS work, so an unrecoverable URI fails fast without burning
+	// a DB lookup or an unfurl fetch, and it mutates req in place.
 	if err := s.validateCreateRequest(&req); err != nil {
 		return nil, err
-	}
-
-	// 1b. Normalize the fields the lexicon declares as `format: uri` before any
-	// of them reach the record. Runs here, ahead of the community and PDS work,
-	// so an unrecoverable URI fails fast without burning a DB lookup or an
-	// unfurl fetch. Mutates req in place; the record built below reads these
-	// same values, and the unfurl step then works from the encoded URI,
-	// which dereferences identically.
-	if err := normalizeEmbedURIs(req.Embed); err != nil {
-		return nil, err
-	}
-	if err := richtext.NormalizeLinkURIs(req.Facets); err != nil {
-		return nil, NewValidationErrorFrom("facets", err)
 	}
 
 	// 2. SECURITY: Extract authenticated DID from context (set by JWT middleware)
@@ -234,11 +227,13 @@ func (s *postService) CreatePost(ctx context.Context, session *oauth.ClientSessi
 	// 6. Build post record for PDS
 	postRecord := postRecordFor(req, communityDID, time.Now().UTC().Format(time.RFC3339))
 
-	// 7. Enhance external embeds
-	if err := s.enhanceExternalEmbed(ctx, &postRecord, req, authorRepo, actor == ActorTrustedAggregator); err != nil {
-		releaseOnFailure()
-		return nil, err
-	}
+	// 7. Enhance external embeds.
+	//
+	// It cannot fail, so there is nothing to release here — see its doc comment.
+	// A future step added inside it that CAN fail must return an error, and this
+	// call must then release the reservation before returning it, exactly as
+	// steps 5 and 8 do.
+	s.enhanceExternalEmbed(ctx, &postRecord, req, authorRepo, actor == ActorTrustedAggregator)
 
 	// 8. Write to the author's PDS repository.
 	//
@@ -514,19 +509,30 @@ func (s *postService) UpdatePost(ctx context.Context, session *oauth.ClientSessi
 
 	applyPostV2Edit(&record, req)
 
-	// VALIDATED AFTER THE MERGE AND BEFORE THE PUT, and both halves of that are
-	// load-bearing. After the merge, because a facet's byte range is meaningful
-	// only against the content the record will actually hold — an edit sending
-	// facets and no content is checked against the standing content, and one
-	// sending shorter content and no facets re-checks the standing facets
-	// against it. Before the put, because a check that ran afterwards would
-	// return exactly this error over a record already signed and on the wire.
-	if err := validatePostContent(postContent{
+	// NORMALIZED AND VALIDATED AFTER THE MERGE AND BEFORE THE PUT, and every
+	// half of that is load-bearing. After the merge, because a facet's byte
+	// range is meaningful only against the content the record will actually
+	// hold — an edit sending facets and no content is checked against the
+	// standing content, and one sending shorter content and no facets re-checks
+	// the standing facets against it. Before the put, because a check that ran
+	// afterwards would return exactly this error over a record already signed
+	// and on the wire.
+	//
+	// THE SAME CALL THE CREATE PATH MAKES, which is the point: it is the one
+	// function that refuses a javascript: embed or facet URI, caps the sources
+	// array and percent-encodes what the lexicon declares `format: uri`. When
+	// those ran at CreatePost's call site instead, an author could post a clean
+	// link and then edit it into a URI create would never have accepted. It
+	// rewrites record.Embed and record.Facets in place, so the put below carries
+	// the normalized values.
+	if err := normalizeAndValidatePostContent(postContent{
 		Title:   record.Title,
 		Content: record.Content,
 		Facets:  record.Facets,
 		Labels:  record.Labels,
 		Embed:   record.Embed,
+		Langs:   record.Langs,
+		Tags:    record.Tags,
 	}); err != nil {
 		return nil, err
 	}
@@ -631,7 +637,7 @@ func applyPostV2Edit(record *PostV2Record, req UpdatePostRequest) {
 // that reach the PDS are postV2From's.
 func postRecordFor(req CreatePostRequest, community, createdAt string) PostRecord {
 	return PostRecord{
-		Type:           postCollection,
+		Type:           LegacyPostCollection,
 		Community:      community,
 		Author:         req.AuthorDID,
 		Title:          req.Title,
@@ -639,6 +645,8 @@ func postRecordFor(req CreatePostRequest, community, createdAt string) PostRecor
 		Facets:         req.Facets,
 		Embed:          req.Embed, // Start with user-provided embed
 		Labels:         req.Labels,
+		Langs:          req.Langs,
+		Tags:           req.Tags,
 		OriginalAuthor: req.OriginalAuthor,
 		FederatedFrom:  req.FederatedFrom,
 		Location:       req.Location,
@@ -665,6 +673,8 @@ func postV2From(record PostRecord) PostV2Record {
 		Facets:         record.Facets,
 		Embed:          record.Embed,
 		Labels:         record.Labels,
+		Langs:          record.Langs,
+		Tags:           record.Tags,
 		OriginalAuthor: record.OriginalAuthor,
 		FederatedFrom:  record.FederatedFrom,
 		Location:       record.Location,
@@ -672,17 +682,32 @@ func postV2From(record PostRecord) PostV2Record {
 }
 
 // enhanceExternalEmbed applies the external-embed handling that has to happen
-// against a live network: Bluesky URL conversion, client thumb validation, and
-// unfurl enrichment with its blob uploads.
+// against a live network: Bluesky URL conversion and unfurl enrichment with its
+// blob uploads.
 //
-// It is a method rather than inline steps because every failure inside it now
-// happens with a submission reservation already on the ledger, and a caller
-// that has one error return to handle can give the reservation back in one
-// place instead of at each of the four validation exits.
+// IT CANNOT FAIL, AND THE SIGNATURE SAYS SO. It used to return an error for the
+// four thumb-validation exits it owned; those moved into the shared content gate
+// (validateExternalThumb), which runs before admission — a client mistake is
+// answerable with a 400 without costing a ledger reservation to discover. What
+// is left is pure enhancement, and enhancement has never been able to fail a
+// post: an unfurl that times out, a thumbnail that will not fetch and a Bluesky
+// URL that will not resolve are all logged and stepped over, because the author
+// asked to publish a post, not to publish a preview.
+//
+// It kept the error return for a while afterwards, with the caller holding a
+// `releaseOnFailure()` branch for it, and both were dead. They are gone rather
+// than kept as a seam, because an untestable branch is not a safety net — no
+// fixture can make this function fail, so nothing could ever prove the branch
+// worked. THE INVARIANT IT GUARDED IS STILL WRITTEN DOWN, at the call site and
+// in CreatePost's own doc comment: this runs with a submission reservation on
+// the ledger, so anything added here that CAN fail must return that error and
+// the caller must release the reservation before returning it. Re-introducing
+// the error return is the change that forces the caller to be edited, which is
+// the point.
 //
 // trusted marks a trusted aggregator, which supplies its own metadata and is
 // unfurled only for a thumbnail it did not provide.
-func (s *postService) enhanceExternalEmbed(ctx context.Context, postRecord *PostRecord, req CreatePostRequest, authorRepo AuthorRepo, trusted bool) error {
+func (s *postService) enhanceExternalEmbed(ctx context.Context, postRecord *PostRecord, req CreatePostRequest, authorRepo AuthorRepo, trusted bool) {
 	if postRecord.Embed != nil {
 		embedType, typeOk := postRecord.Embed["$type"].(string)
 		if typeOk && embedType == "social.coves.embed.external" {
@@ -773,8 +798,6 @@ func (s *postService) enhanceExternalEmbed(ctx context.Context, postRecord *Post
 			}
 		}
 	}
-
-	return nil
 }
 
 // uploadThumbnail fetches a remote thumbnail through the blob service's guard
@@ -810,10 +833,11 @@ func (s *postService) uploadThumbnail(ctx context.Context, authorRepo AuthorRepo
 	return authorRepo.UploadBlob(blobCtx, data, mimeType)
 }
 
-// validateCreateRequest validates basic input requirements
+// validateCreateRequest validates basic input requirements, and normalizes the
+// request's `format: uri` fields in place through the shared content gate.
 func (s *postService) validateCreateRequest(req *CreatePostRequest) error {
 	// The two fields only a SUBMISSION has. They are deliberately not in
-	// validatePostContent: an edit carries neither — the community is immutable
+	// normalizeAndValidatePostContent: an edit carries neither — the community is immutable
 	// by lexicon and the author is the repository — so a validator that demanded
 	// them would refuse every legitimate edit.
 	if req.Community == "" {
@@ -823,27 +847,62 @@ func (s *postService) validateCreateRequest(req *CreatePostRequest) error {
 		return NewValidationError("authorDid", "authorDid must be set from authenticated user")
 	}
 
-	return validatePostContent(postContent{
+	// Normalizes req.Embed and req.Facets IN PLACE as well as checking them —
+	// the record built later reads these same values, and the unfurl step then
+	// works from the encoded URI, which dereferences identically.
+	return normalizeAndValidatePostContent(postContent{
 		Title:   req.Title,
 		Content: req.Content,
 		Facets:  req.Facets,
 		Labels:  req.Labels,
 		Embed:   req.Embed,
+		Langs:   req.Langs,
+		Tags:    req.Tags,
 	})
 }
 
 // postContent is the mutable surface of a post — everything an edit may change
 // and a create may set, and nothing that identifies WHICH post it is.
+//
+// EVERY FIELD AN EDIT CAN WRITE HAS TO BE HERE. A field the record carries and
+// this struct does not is a field the shared gate cannot see, and therefore one
+// that reaches a signed record with no validation at all — which is exactly what
+// happened to langs and tags before they were added.
 type postContent struct {
 	Title   *string
 	Content *string
 	Facets  []interface{}
 	Labels  *SelfLabels
 	Embed   map[string]interface{}
+	Langs   []string
+	Tags    []string
 }
 
-// validatePostContent is the definition of a well-formed Coves post, and it is
-// SHARED by the create and the edit path rather than duplicated across them.
+// Lexicon caps on the two list fields, from social.coves.community.postv2 (and
+// matched by both the post.create and post.update procedure lexicons).
+const (
+	// maxLangs is the postv2 `langs` array maxLength.
+	maxLangs = 3
+	// maxTags is the postv2 `tags` array maxLength.
+	maxTags = 8
+	// maxTagLength is the postv2 per-tag maxLength, in BYTES.
+	//
+	// The lexicon also declares maxGraphemes 64, which is NOT checked here —
+	// the same known gap the title check carries and names, and it is left as
+	// one gap rather than two half-solutions. The byte cap is the one that
+	// bounds what gets written; a grapheme cap needs a unicode segmentation
+	// library and belongs with the title's when that lands.
+	maxTagLength = 640
+)
+
+// normalizeAndValidatePostContent is the definition of a well-formed Coves post,
+// and it is SHARED by the create and the edit path rather than duplicated across
+// them.
+//
+// IT NORMALIZES IN PLACE AS WELL AS VALIDATING, which is why the name says so.
+// The `format: uri` fields are repaired on the value the caller goes on to
+// write — see the normalization section below — so a caller that skipped this
+// function would not merely miss a check, it would sign un-encoded URIs.
 //
 // # THE APP LAYER IS THE ONLY GATE THERE IS
 //
@@ -871,7 +930,23 @@ type postContent struct {
 // facets must re-check the STANDING facets against it. Either omission signs a
 // record whose annotations slice outside its own text, which is a renderer crash
 // on somebody else's client.
-func validatePostContent(post postContent) error {
+//
+// # AND THE NORMALIZATION IS PART OF THE SAME GATE
+//
+// The `format: uri` fields — external.uri, each external.sources[].uri, and each
+// facet #link uri — are normalized here rather than at one call site, because
+// that is where they were and the edit path did not have one. Nothing else
+// refuses a javascript: URI: validateEmbed only asks that external.uri be a
+// non-empty string and never looks at sources at all, and richtext's structural
+// check deliberately has no #link arm.
+//
+// Be precise about what that buys, because it is easy to overclaim: an author
+// can write whatever record they like straight into their own PDS repo without
+// going near this API, and the firehose ingest path does not scheme-check what
+// it indexes. This is not the system's only defence against a hostile URI. What
+// it IS: the guarantee that a record THIS AppView signs conforms to the lexicon
+// it claims, identically on both paths that produce one.
+func normalizeAndValidatePostContent(post postContent) error {
 	// Global content limits (from lexicon)
 	const (
 		maxContentLength = 100000 // 100k characters - matches the postv2 lexicon
@@ -916,6 +991,14 @@ func validatePostContent(post postContent) error {
 		}
 	}
 
+	if err := validatePostLangs(post.Langs); err != nil {
+		return err
+	}
+
+	if err := validatePostTags(post.Tags); err != nil {
+		return err
+	}
+
 	// Validate the embed (if provided) matches a known lexicon union member.
 	// Catches malformed embeds at the API boundary instead of silently
 	// persisting an unrenderable record to the PDS.
@@ -926,7 +1009,67 @@ func validatePostContent(post postContent) error {
 	// And the external embed's thumbnail, which validateEmbed deliberately does
 	// not look at: it checks the union's SHAPE, and the thumb is a blob whose
 	// parts a client gets wrong in four distinct ways worth naming separately.
-	return validateExternalThumb(post.Embed)
+	if err := validateExternalThumb(post.Embed); err != nil {
+		return err
+	}
+
+	// NORMALIZATION RUNS LAST, on the structure the checks above established:
+	// normalizeEmbedURIs walks an embed validateEmbed has already shaped, and
+	// NormalizeLinkURIs walks facets ValidateFacets has already shaped. Both
+	// rewrite in place, so the caller's record carries the encoded values.
+	if err := normalizeEmbedURIs(post.Embed); err != nil {
+		return err
+	}
+	if err := richtext.NormalizeLinkURIs(post.Facets); err != nil {
+		return NewValidationErrorFrom("facets", err)
+	}
+	return nil
+}
+
+// validatePostLangs enforces the postv2 lexicon's `langs`: at most maxLangs
+// entries, each a real language tag.
+//
+// The format check is indigo's own parser rather than a hand-rolled one,
+// because `format: language` means what the atProto spec says it means, and the
+// package that ships ParseLanguage is the package every other implementation
+// validates our records with.
+func validatePostLangs(langs []string) error {
+	if len(langs) > maxLangs {
+		return NewValidationError("langs",
+			fmt.Sprintf("too many langs: %d (max %d)", len(langs), maxLangs))
+	}
+	for i, lang := range langs {
+		if _, err := syntax.ParseLanguage(lang); err != nil {
+			return NewValidationError("langs",
+				fmt.Sprintf("langs[%d] %q is not a valid language tag: %v", i, lang, err))
+		}
+	}
+	return nil
+}
+
+// validatePostTags enforces the postv2 lexicon's `tags`: at most maxTags
+// entries, each at most maxTagLength bytes.
+//
+// The empty-string refusal is deliberately STRICTER than the lexicon, which
+// declares no minLength: a tag with no characters is an unusable entry that
+// renders as a blank chip and matches nothing, the same reasoning that already
+// refuses an embed source carrying no uri. Being stricter about what we SIGN is
+// safe; consumers still accept whatever the schema allows.
+func validatePostTags(tags []string) error {
+	if len(tags) > maxTags {
+		return NewValidationError("tags",
+			fmt.Sprintf("too many tags: %d (max %d)", len(tags), maxTags))
+	}
+	for i, tag := range tags {
+		if tag == "" {
+			return NewValidationError("tags", fmt.Sprintf("tags[%d] must not be empty", i))
+		}
+		if len(tag) > maxTagLength {
+			return NewValidationError("tags",
+				fmt.Sprintf("tags[%d] too long: %d bytes (max %d)", i, len(tag), maxTagLength))
+		}
+	}
+	return nil
 }
 
 // validateExternalThumb enforces that a social.coves.embed.external carries a
@@ -1106,14 +1249,10 @@ func (s *postService) GetAuthorPosts(ctx context.Context, req GetAuthorPostsRequ
 	}, nil
 }
 
-// Bounds for the social.coves.community.post.get endpoint.
-const (
-	postCollection = "social.coves.community.post"
-	// MaxGetPostsURIs is the maximum number of URIs accepted by a single
-	// social.coves.community.post.get request (matches the lexicon maxLength).
-	// Exported so the handler layer reuses the same bound (single source of truth).
-	MaxGetPostsURIs = 25
-)
+// MaxGetPostsURIs is the maximum number of URIs accepted by a single
+// social.coves.community.post.get request (matches the lexicon maxLength).
+// Exported so the handler layer reuses the same bound (single source of truth).
+const MaxGetPostsURIs = 25
 
 // GetPosts batch-fetches post views by AT-URI for feed hydration and permalink
 // (cold-load) rendering. Implements social.coves.community.post.get.
@@ -1316,7 +1455,7 @@ func parsePostURIParts(uri, field string) (authority string, rkey string, err er
 	}
 	parts := strings.Split(strings.TrimPrefix(uri, "at://"), "/")
 	if len(parts) != 3 {
-		return "", "", NewValidationError(field, "invalid post URI format: expected at://authority/"+postCollection+"/rkey")
+		return "", "", NewValidationError(field, "invalid post URI format: expected at://authority/"+LegacyPostCollection+"/rkey")
 	}
 	authority, collection, rkey := parts[0], parts[1], parts[2]
 	if authority == "" {
@@ -1332,9 +1471,9 @@ func parsePostURIParts(uri, field string) (authority string, rkey string, err er
 	// collection, the author for the new — so a caller that goes on to use it as
 	// one or the other must narrow this itself. parsePostURI does, because it
 	// writes to the repo the authority names.
-	if collection != postCollection && collection != PostV2Collection {
+	if collection != LegacyPostCollection && collection != PostV2Collection {
 		return "", "", NewValidationError(field, fmt.Sprintf("invalid collection in URI: expected %s or %s, got %s",
-			postCollection, PostV2Collection, collection))
+			LegacyPostCollection, PostV2Collection, collection))
 	}
 	if rkey == "" {
 		return "", "", NewValidationError(field, "invalid post URI: missing rkey")
@@ -1356,6 +1495,30 @@ func CollectionOfPostURI(uri string) string {
 		return ""
 	}
 	return parts[1]
+}
+
+// IsPostCollection reports whether an NSID names a post record — either the
+// author-repo PostV2Collection or the deprecated community-repo one.
+//
+// IT ANSWERS ONE QUESTION: does a record in this collection live in the `posts`
+// table? Both do, and they will for as long as the flip's dual-collection window
+// is open: §10.1 truncates and re-indexes rather than migrating the schema, so a
+// legacy record and an author-owned one produce rows that differ only in what
+// their URI says, and everything downstream of the row — the counters, the feed
+// queries, the rendered view — treats them alike. The prod drain (§11) is what
+// finally closes the window, and until it has run, production holds records of
+// both kinds and this AppView consumes both.
+//
+// It exists as one predicate rather than as a pair of comparisons at each site
+// because the sites are the aggregation paths — the vote consumer, the comment
+// consumer, the reconciliation tool — and their failure mode when they disagree
+// is SILENT. A subject URI whose collection is not recognised falls to an
+// "unsupported collection" branch that indexes the vote or the comment and
+// simply never touches the counter: no error, no dead letter, just a post whose
+// score never moves. One predicate is one place to delete when §11's follow-up
+// retires the legacy NSID, and one place to be wrong in the meantime.
+func IsPostCollection(collection string) bool {
+	return collection == PostV2Collection || collection == LegacyPostCollection
 }
 
 // requireDIDAuthority enforces that a parsed post-URI authority is a DID (not a handle).
@@ -1585,7 +1748,7 @@ func (s *postService) deleteCommunityPost(ctx context.Context, userDID, communit
 	}
 
 	// 7. Fetch post record from PDS to verify author
-	record, err := pdsClient.GetRecord(ctx, postCollection, rkey)
+	record, err := pdsClient.GetRecord(ctx, LegacyPostCollection, rkey)
 	if err != nil {
 		if errors.Is(err, pds.ErrNotFound) {
 			// Post already deleted or never existed - idempotent success
@@ -1612,7 +1775,7 @@ func (s *postService) deleteCommunityPost(ctx context.Context, userDID, communit
 	}
 
 	// 9. Delete record from community's PDS
-	if err := pdsClient.DeleteRecord(ctx, postCollection, rkey); err != nil {
+	if err := pdsClient.DeleteRecord(ctx, LegacyPostCollection, rkey); err != nil {
 		if errors.Is(err, pds.ErrNotFound) {
 			// Already deleted - idempotent success
 			log.Printf("[POST-DELETE] Post already deleted from PDS: %s", uri)

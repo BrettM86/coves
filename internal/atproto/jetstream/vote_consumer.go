@@ -2,6 +2,7 @@ package jetstream
 
 import (
 	"Coves/internal/atproto/utils"
+	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
 	"Coves/internal/core/votes"
 	"context"
@@ -12,6 +13,16 @@ import (
 	"strings"
 	"time"
 )
+
+// A vote names its subject by AT-URI and nothing else, so the collection segment
+// of that URI is the ONLY thing that says which table the count belongs in. Both
+// post collections route to `posts` — posts.IsPostCollection is the shared
+// predicate — because the author-owned flip put new posts in a new collection
+// (social.coves.community.postv2) while every pre-flip post kept the deprecated
+// one, and both are indexed into the same table until §11's drain retires the
+// legacy NSID. A router that knows only one of them stops counting the other
+// SILENTLY: the vote row is still indexed and no error is raised, the score just
+// never moves.
 
 // VoteEventConsumer consumes vote-related events from Jetstream
 // Handles CREATE and DELETE operations for social.coves.feed.vote
@@ -214,8 +225,8 @@ func (c *VoteEventConsumer) deleteVote(ctx context.Context, repoDID string, comm
 	collection := utils.ExtractCollectionFromURI(subjectURI)
 
 	var updateQuery string
-	switch collection {
-	case "social.coves.community.post":
+	switch {
+	case posts.IsPostCollection(collection):
 		// Vote on post - update posts table
 		if direction == "up" {
 			updateQuery = `
@@ -233,7 +244,7 @@ func (c *VoteEventConsumer) deleteVote(ctx context.Context, repoDID string, comm
 			`
 		}
 
-	case "social.coves.community.comment":
+	case collection == CommentCollection:
 		// Vote on comment - update comments table
 		if direction == "up" {
 			updateQuery = `
@@ -349,15 +360,15 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 		collection := utils.ExtractCollectionFromURI(vote.SubjectURI)
 		var decrementQuery string
 		if existingDirection.String == "up" {
-			if collection == "social.coves.community.post" {
+			if posts.IsPostCollection(collection) {
 				decrementQuery = `UPDATE posts SET upvote_count = GREATEST(0, upvote_count - 1), score = GREATEST(0, upvote_count - 1) - downvote_count + bridged_upvote_count - bridged_downvote_count WHERE uri = $1 AND deleted_at IS NULL`
-			} else if collection == "social.coves.community.comment" {
+			} else if collection == CommentCollection {
 				decrementQuery = `UPDATE comments SET upvote_count = GREATEST(0, upvote_count - 1), score = GREATEST(0, upvote_count - 1) - downvote_count + bridged_upvote_count - bridged_downvote_count WHERE uri = $1 AND deleted_at IS NULL`
 			}
 		} else {
-			if collection == "social.coves.community.post" {
+			if posts.IsPostCollection(collection) {
 				decrementQuery = `UPDATE posts SET downvote_count = GREATEST(0, downvote_count - 1), score = upvote_count - GREATEST(0, downvote_count - 1) + bridged_upvote_count - bridged_downvote_count WHERE uri = $1 AND deleted_at IS NULL`
-			} else if collection == "social.coves.community.comment" {
+			} else if collection == CommentCollection {
 				decrementQuery = `UPDATE comments SET downvote_count = GREATEST(0, downvote_count - 1), score = upvote_count - GREATEST(0, downvote_count - 1) + bridged_upvote_count - bridged_downvote_count WHERE uri = $1 AND deleted_at IS NULL`
 			}
 		}
@@ -423,8 +434,8 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 	collection := utils.ExtractCollectionFromURI(vote.SubjectURI)
 
 	var updateQuery string
-	switch collection {
-	case "social.coves.community.post":
+	switch {
+	case posts.IsPostCollection(collection):
 		// Vote on post - update posts table
 		if vote.Direction == "up" {
 			updateQuery = `
@@ -442,7 +453,7 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 			`
 		}
 
-	case "social.coves.community.comment":
+	case collection == CommentCollection:
 		// Vote on comment - update comments table
 		if vote.Direction == "up" {
 			updateQuery = `

@@ -40,7 +40,7 @@ func viewWithAuthor(uri, authorDID string) *PostView {
 const testCommunityDID = "did:plc:ewvi7nxzyoun6zhxrhs64oiz"
 
 func didPostURI(rkey string) string {
-	return "at://" + testCommunityDID + "/" + postCollection + "/" + rkey
+	return "at://" + testCommunityDID + "/" + LegacyPostCollection + "/" + rkey
 }
 
 func TestParsePostURIParts(t *testing.T) {
@@ -61,18 +61,18 @@ func TestParsePostURIParts(t *testing.T) {
 		},
 		{
 			name:          "handle authority parses (DID check happens in validatePostURI)",
-			uri:           "at://c-test-community/" + postCollection + "/abc123",
+			uri:           "at://c-test-community/" + LegacyPostCollection + "/abc123",
 			wantAuthority: "c-test-community",
 			wantRKey:      "abc123",
 		},
 		{
 			name:    "missing at:// scheme",
-			uri:     testCommunityDID + "/" + postCollection + "/abc123",
+			uri:     testCommunityDID + "/" + LegacyPostCollection + "/abc123",
 			wantErr: true,
 		},
 		{
 			name:    "too few segments",
-			uri:     "at://" + testCommunityDID + "/" + postCollection,
+			uri:     "at://" + testCommunityDID + "/" + LegacyPostCollection,
 			wantErr: true,
 		},
 		{
@@ -82,12 +82,12 @@ func TestParsePostURIParts(t *testing.T) {
 		},
 		{
 			name:    "missing rkey",
-			uri:     "at://" + testCommunityDID + "/" + postCollection + "/",
+			uri:     "at://" + testCommunityDID + "/" + LegacyPostCollection + "/",
 			wantErr: true,
 		},
 		{
 			name:    "empty authority",
-			uri:     "at:///" + postCollection + "/abc123",
+			uri:     "at:///" + LegacyPostCollection + "/abc123",
 			wantErr: true,
 		},
 	}
@@ -121,11 +121,11 @@ func TestValidatePostURI(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "valid DID-based URI", uri: didPostURI("abc123"), wantErr: false},
-		{name: "handle authority is rejected", uri: "at://c-test-community/" + postCollection + "/abc123", wantErr: true},
-		{name: "missing scheme", uri: testCommunityDID + "/" + postCollection + "/abc", wantErr: true},
+		{name: "handle authority is rejected", uri: "at://c-test-community/" + LegacyPostCollection + "/abc123", wantErr: true},
+		{name: "missing scheme", uri: testCommunityDID + "/" + LegacyPostCollection + "/abc", wantErr: true},
 		{name: "wrong collection", uri: "at://" + testCommunityDID + "/app.bsky.feed.post/abc", wantErr: true},
-		{name: "missing rkey", uri: "at://" + testCommunityDID + "/" + postCollection + "/", wantErr: true},
-		{name: "malformed DID authority", uri: "at://did:plc:UPPERCASE/" + postCollection + "/abc", wantErr: true},
+		{name: "missing rkey", uri: "at://" + testCommunityDID + "/" + LegacyPostCollection + "/", wantErr: true},
+		{name: "malformed DID authority", uri: "at://did:plc:UPPERCASE/" + LegacyPostCollection + "/abc", wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -170,7 +170,7 @@ func TestGetPosts_RejectsNonCanonicalURI(t *testing.T) {
 
 	t.Run("handle-based URI is rejected", func(t *testing.T) {
 		_, err := s.GetPosts(context.Background(), GetPostsRequest{
-			URIs: []string{"at://c-test-community/" + postCollection + "/abc"},
+			URIs: []string{"at://c-test-community/" + LegacyPostCollection + "/abc"},
 		})
 		if err == nil || !IsValidationError(err) {
 			t.Fatalf("expected validation error for handle-based URI, got %v", err)

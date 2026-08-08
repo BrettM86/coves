@@ -19,8 +19,12 @@ import (
 // deterministic key it is written at, and the seam the author's own credentials
 // arrive through.
 //
-// STUB — the declarations exist so the contract can be written against them.
-// Behaviour is task 6's GREEN cycle.
+// Everything declared here is SHIPPED and fully implemented — the record struct
+// the write path marshals, the rkey derivation the create-only write depends on,
+// and the AuthorRepo/AuthorRepoFactory seam production wires with OAuth/DPoP and
+// the integration tier wires with password auth over a real PDS. (This header
+// once said STUB, describing a state that ended with task 6's GREEN cycle; it
+// said so long after it stopped being true, which is worse than saying nothing.)
 
 // PostStatus is what a CreatePost response reports about the community's
 // decision, so a client knows whether the post is already visible in the

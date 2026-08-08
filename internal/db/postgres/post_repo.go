@@ -21,7 +21,7 @@ import (
 // post written since the author-owned flip is a posts.PostV2Collection record
 // in the author's own repo; both are indexed into the same table, and the URI
 // is what says which one a row came from.
-const legacyPostCollection = "social.coves.community.post"
+const legacyPostCollection = posts.LegacyPostCollection
 
 type postgresPostRepo struct {
 	db *sql.DB

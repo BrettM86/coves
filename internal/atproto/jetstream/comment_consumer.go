@@ -3,6 +3,7 @@ package jetstream
 import (
 	"Coves/internal/atproto/utils"
 	"Coves/internal/core/comments"
+	"Coves/internal/core/posts"
 	"Coves/internal/core/richtext"
 	"context"
 	"database/sql"
@@ -783,10 +784,17 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 		return nil
 	}
 
+	// The parent's collection is the only thing that says which table to count
+	// into. BOTH post collections route to `posts`: a top-level comment on an
+	// author-owned post (social.coves.community.postv2) and one on a pre-flip
+	// post are the same thread shape over the same table, and until §11's drain
+	// retires the deprecated NSID production holds rows of both kinds. Knowing
+	// only one of them fails silently — the comment indexes, comment_count never
+	// moves, and the thread renders under a post that reports zero replies.
 	collection := utils.ExtractCollectionFromURI(comment.ParentURI)
 
-	switch collection {
-	case "social.coves.community.post":
+	switch {
+	case posts.IsPostCollection(collection):
 		// Top-level comment on post - increment posts.comment_count
 		// NOTE: No deleted_at filter - we increment even for deleted parents to match reconciliation behavior
 		updateQuery := `
@@ -806,7 +814,7 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 			log.Printf("Warning: Post not found: %s (comment indexed anyway)", comment.ParentURI)
 		}
 
-	case "social.coves.community.comment":
+	case collection == CommentCollection:
 		// Nested reply to comment - update BOTH:
 		// 1. Parent comment's reply_count (for thread structure)
 		// 2. Root post's comment_count (for total thread count display)

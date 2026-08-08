@@ -1205,21 +1205,55 @@ func (s *commentService) buildPostView(ctx context.Context, post *posts.Post, vi
 
 // buildPostRecord constructs a minimal PostRecord from a Post entity
 // Satisfies the lexicon requirement that postView.record is a required field
+//
+// THE SHAPE FOLLOWS THE URI, exactly as the repository's own hydration does
+// (postgres.scanPostView): the two post collections are different records rather
+// than two spellings of one. An author-owned post lives in the AUTHOR's repo
+// under social.coves.community.postv2 and has NO author field — its removal is
+// what makes authorship unforgeable (PRD §3.1) — so stamping the deprecated NSID
+// here would tell a client to read the authority of that URI as a community, and
+// hand it a self-asserted author this AppView invented, which is precisely the
+// mis-indexing §3.0 gave the successor a new NSID to prevent.
+//
+// It returns a map rather than a typed posts.PostRecord for the same reason:
+// that struct carries a non-optional author field, so a postv2 record built from
+// it would serialize one whatever this code assigned. A map lets the field be
+// ABSENT, which is the only honest rendering — and it is the shape every other
+// producer of postView.record already emits (postgres.scanPostView, the feed
+// queries), so the two paths can no longer disagree about what a post record
+// looks like.
+//
 // TODO (Phase 2C): Unmarshal JSON fields (embed, facets, labels) for complete record
-func (s *commentService) buildPostRecord(post *posts.Post) *posts.PostRecord {
-	record := &posts.PostRecord{
-		Type:      "social.coves.community.post",
-		Community: post.CommunityDID,
-		Author:    post.AuthorDID,
-		CreatedAt: post.CreatedAt.Format(time.RFC3339),
-		Title:     post.Title,
-		Content:   post.Content,
+func (s *commentService) buildPostRecord(post *posts.Post) map[string]interface{} {
+	collection := posts.CollectionOfPostURI(post.URI)
+	if !posts.IsPostCollection(collection) {
+		// A URI naming neither collection is not something this AppView indexed
+		// as a post, so there is no better answer than the shape every pre-flip
+		// row has.
+		collection = posts.LegacyPostCollection
+	}
+
+	record := map[string]interface{}{
+		"$type":     collection,
+		"community": post.CommunityDID,
+		"createdAt": post.CreatedAt.Format(time.RFC3339),
+	}
+	if collection == posts.LegacyPostCollection {
+		// The deprecated community-repo record DOES carry an author, and it is
+		// part of what a client may verify against the community's repo.
+		record["author"] = post.AuthorDID
+	}
+	if post.Title != nil {
+		record["title"] = *post.Title
+	}
+	if post.Content != nil {
+		record["content"] = *post.Content
 	}
 
 	// TODO (Phase 2C): Parse JSON fields from database for complete record:
-	// - Unmarshal post.Embed (*string) → record.Embed (map[string]interface{})
-	// - Unmarshal post.ContentFacets (*string) → record.Facets ([]interface{})
-	// - Unmarshal post.ContentLabels (*string) → record.Labels (*SelfLabels)
+	// - Unmarshal post.Embed (*string) → record["embed"]
+	// - Unmarshal post.ContentFacets (*string) → record["facets"]
+	// - Unmarshal post.ContentLabels (*string) → record["labels"]
 	// These fields are stored as JSONB in the database and need proper deserialization
 
 	return record

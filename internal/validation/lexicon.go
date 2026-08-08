@@ -79,7 +79,15 @@ func (v *LexiconValidator) ValidateCommunityProfile(profile map[string]interface
 	return v.ValidateRecord(profile, "social.coves.community.profile")
 }
 
-// ValidatePost validates a post record
+// ValidatePost validates a post record against the DEPRECATED community-repo
+// lexicon, social.coves.community.post.
+//
+// It is deliberately not collection-agnostic. An author-owned post
+// (social.coves.community.postv2) obeys a different schema — no author field,
+// and its repo is the author's rather than the community's — so validating one
+// here would either fail on the missing field or, worse, pass a record whose
+// shape the deprecated schema never described. A caller holding a postv2 record
+// wants ValidateRecord with that NSID.
 func (v *LexiconValidator) ValidatePost(post map[string]interface{}) error {
 	return v.ValidateRecord(post, "social.coves.community.post")
 }

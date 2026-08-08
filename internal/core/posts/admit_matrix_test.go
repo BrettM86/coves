@@ -1175,6 +1175,42 @@ func TestSubmissionFingerprint(t *testing.T) {
 			"an empty fingerprint would make every submission collide with every other")
 	})
 
+	t.Run("the hash of a submission carrying no langs and no tags is unchanged", func(t *testing.T) {
+		t.Parallel()
+
+		// A GOLDEN VALUE, and the only kind of assertion that can catch what it
+		// is for. The fingerprint is a live dedupe key in post_submissions, so a
+		// change to PostRecord's JSON encoding silently repartitions the ledger:
+		// an author mid-retry when the binary rolls would miss their own
+		// reservation and be admitted as a second post.
+		//
+		// langs and tags were APPENDED to PostRecord with omitempty precisely so
+		// that every submission carrying neither — which is every row on the
+		// ledger, because create discarded both fields until they were added —
+		// hashes to exactly what it hashed before. This value was computed
+		// against the struct as it stood BEFORE they were added. If it fails,
+		// the encoding moved and the ledger is about to be repartitioned; that
+		// is a deliberate, migration-shaped decision, not something to re-pin.
+		//
+		// The literals are spelled out rather than taken from the constants
+		// above, because a golden value has to be independent of anything a
+		// future edit might renumber.
+		title, content := "A title", "Some body text"
+		pinned := PostRecord{
+			Type:      "social.coves.community.postv2",
+			Community: "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+			Author:    "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb",
+			Title:     &title,
+			Content:   &content,
+			CreatedAt: "2026-08-01T12:00:00Z",
+		}
+		assert.Equal(t,
+			"8f98863589cb9853b3ea4918febd44fde9aaa019da766ae42d433b695bf83403",
+			submissionFingerprint(pinned, nil),
+			"the fingerprint of a tag-free, lang-free submission moved: every live post_submissions row "+
+				"has just been repartitioned, and retries spanning the deploy will be admitted as new posts")
+	})
+
 	t.Run("a different thumbnail is a different submission", func(t *testing.T) {
 		t.Parallel()
 
@@ -1196,6 +1232,8 @@ func TestSubmissionFingerprint(t *testing.T) {
 		{"embed", func(r *PostRecord) {
 			r.Embed = map[string]interface{}{"$type": "social.coves.embed.external"}
 		}},
+		{"langs", func(r *PostRecord) { r.Langs = []string{"fr"} }},
+		{"tags", func(r *PostRecord) { r.Tags = []string{"gardening"} }},
 	} {
 		t.Run("a different "+tc.field+" is a different submission", func(t *testing.T) {
 			t.Parallel()
@@ -1221,7 +1259,7 @@ func TestAdmitPost_ResubmissionByDIDAfterHandleIsADuplicate(t *testing.T) {
 
 	title, content := "The same post", "the same body"
 	record := PostRecord{
-		Type:    postCollection,
+		Type:    LegacyPostCollection,
 		Author:  admitAuthorDID,
 		Title:   &title,
 		Content: &content,
@@ -1251,7 +1289,7 @@ func TestAdmitPost_AThumbnailOnlyDifferenceIsNotADuplicate(t *testing.T) {
 
 	title := "The same link, a different thumbnail"
 	record := PostRecord{
-		Type:      postCollection,
+		Type:      LegacyPostCollection,
 		Community: admitCommunityHandle,
 		Author:    admitAuthorDID,
 		Title:     &title,

@@ -4,6 +4,7 @@ package posts_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -135,6 +136,76 @@ func TestService_UpdateRefusesContentCreateWouldHaveRefused(t *testing.T) {
 		{
 			name: "an embed matching no union member",
 			req:  posts.UpdatePostRequest{Embed: map[string]interface{}{"$type": "social.coves.embed.nonsense"}},
+		},
+		{
+			// The URI half of the parity, and the one that hid the longest:
+			// validateEmbed only asks that external.uri be a non-empty string —
+			// it never parses it. The scheme rules live in the NORMALIZATION
+			// step, which the create path ran and the edit path did not, so an
+			// author could post a clean link and then edit it into a
+			// javascript: URI signed by their own key.
+			name: "a javascript: external embed URI",
+			req: posts.UpdatePostRequest{Embed: map[string]interface{}{
+				"$type": "social.coves.embed.external",
+				"external": map[string]interface{}{
+					"uri": "javascript:alert(document.cookie)",
+				},
+			}},
+		},
+		{
+			name: "a schemeless external embed URI",
+			req: posts.UpdatePostRequest{Embed: map[string]interface{}{
+				"$type": "social.coves.embed.external",
+				"external": map[string]interface{}{
+					"uri": "example.com/an-article",
+				},
+			}},
+		},
+		{
+			// checkKnownFeature deliberately has no #link arm — the scheme rules
+			// are NormalizeLinkURIs' job — so a structurally perfect facet
+			// carrying a javascript: link passes every check the edit path used
+			// to run.
+			name: "a javascript: facet link URI",
+			req: posts.UpdatePostRequest{Facets: []interface{}{map[string]interface{}{
+				"index": map[string]interface{}{"byteStart": 0, "byteEnd": 6},
+				"features": []interface{}{map[string]interface{}{
+					"$type": "social.coves.richtext.facet#link",
+					"uri":   "javascript:alert(document.cookie)",
+				}},
+			}}},
+		},
+		{
+			// The sources cap is enforced by the normalization step and by
+			// nothing else: validateEmbed does not inspect sources at all.
+			name: "more embed sources than the lexicon allows",
+			req: posts.UpdatePostRequest{Embed: map[string]interface{}{
+				"$type": "social.coves.embed.external",
+				"external": map[string]interface{}{
+					"uri":     "https://example.com/an-article",
+					"sources": tooManySources(51),
+				},
+			}},
+		},
+		{
+			name: "more langs than the lexicon allows",
+			req:  posts.UpdatePostRequest{Langs: []string{"en", "fr", "de", "es"}},
+		},
+		{
+			name: "a lang that is not a language tag",
+			req:  posts.UpdatePostRequest{Langs: []string{"definitely not a language"}},
+		},
+		{
+			name: "more tags than the lexicon allows",
+			req:  posts.UpdatePostRequest{Tags: []string{"a", "b", "c", "d", "e", "f", "g", "h", "i"}},
+		},
+		{
+			name: "a tag past the lexicon's byte cap",
+			req:  posts.UpdatePostRequest{Tags: []string{strings.Repeat("t", 641)}},
+		},
+		{
+			name: "an empty tag",
+			req:  posts.UpdatePostRequest{Tags: []string{"fine", ""}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -289,6 +360,77 @@ func TestService_CreateAndUpdateRefuseTheSameThumbForTheSameReason(t *testing.T)
 	assert.Equal(t, createErr.Error(), updateErr.Error(),
 		"create and update must refuse this thumb with the identical message, because they must be "+
 			"running the identical check — a different wording here means a second copy that will drift")
+}
+
+func TestService_UpdateNormalizesTheURIsItSigns(t *testing.T) {
+	t.Parallel()
+
+	// REFUSING THE DANGEROUS ONES IS ONLY HALF OF PARITY. The create path also
+	// REPAIRS a recoverable URI — an unencoded character in a URL is a client
+	// bug, not user intent — so that the record satisfies the lexicon's
+	// `format: uri`. An edit path that only refused would still sign records the
+	// create path would never have produced, and any third-party tool that
+	// resolves our lexicons and validates the firehose judges the bytes we wrote.
+	f := newEditValidationFixture(t)
+
+	_, err := f.edit(t, posts.UpdatePostRequest{
+		Embed: map[string]interface{}{
+			"$type": "social.coves.embed.external",
+			"external": map[string]interface{}{
+				"uri": "https://example.com/a path/with spaces",
+			},
+		},
+		Facets: []interface{}{map[string]interface{}{
+			"index": map[string]interface{}{"byteStart": 0, "byteEnd": 6},
+			"features": []interface{}{map[string]interface{}{
+				"$type": "social.coves.richtext.facet#link",
+				"uri":   "https://example.com/another path",
+			}},
+		}},
+	})
+	require.NoError(t, err, "a repairable URI is normalized, not refused")
+
+	record := f.standingRecord(t)
+	external, ok := record["embed"].(map[string]any)["external"].(map[string]any)
+	require.True(t, ok, "the edited record kept its external embed")
+	assert.Equal(t, "https://example.com/a%20path/with%20spaces", external["uri"],
+		"the signed record must satisfy the lexicon's format: uri, exactly as the create path guarantees")
+
+	facet := record["facets"].([]any)[0].(map[string]any)
+	feature := facet["features"].([]any)[0].(map[string]any)
+	assert.Equal(t, "https://example.com/another%20path", feature["uri"],
+		"a facet link URI is normalized on the edit path too")
+}
+
+func TestService_UpdateAcceptsTagsAndLangsWithinTheLexiconCaps(t *testing.T) {
+	t.Parallel()
+
+	// The half that keeps the tags/langs pins honest: the caps must refuse what
+	// the lexicon refuses and nothing more, or an author loses fields the schema
+	// allows them.
+	f := newEditValidationFixture(t)
+
+	_, err := f.edit(t, posts.UpdatePostRequest{
+		Langs: []string{"en", "fr", "de"},
+		Tags:  []string{"one", "two", "three", "four", "five", "six", "seven", "eight"},
+	})
+	require.NoError(t, err, "the lexicon allows 3 langs and 8 tags; refusing them would drop fields the schema permits")
+
+	record := f.standingRecord(t)
+	assert.Equal(t, []any{"en", "fr", "de"}, record["langs"])
+	assert.Len(t, record["tags"], 8)
+}
+
+// tooManySources builds an external embed sources array of n well-formed
+// entries, for the cases that must be refused on length alone.
+func tooManySources(n int) []interface{} {
+	sources := make([]interface{}, 0, n)
+	for i := 0; i < n; i++ {
+		sources = append(sources, map[string]interface{}{
+			"uri": fmt.Sprintf("https://example.com/source-%d", i),
+		})
+	}
+	return sources
 }
 
 // ptr is the one-liner every table above needs for an optional string field.

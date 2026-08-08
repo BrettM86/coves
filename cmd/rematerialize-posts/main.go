@@ -47,10 +47,10 @@ import (
 )
 
 // legacyPostCollection is the deprecated community-repo post collection the tool
-// drains. It is the lexicon NSID, spelled here rather than imported because the
-// posts package keeps its copy private; the two must agree, and there is exactly
-// one correct string.
-const legacyPostCollection = "social.coves.community.post"
+// drains — the domain's own constant, not a second spelling of the NSID: the
+// tool enumerates exactly the records the consumers still index, and a private
+// copy here would be free to disagree with them.
+const legacyPostCollection = posts.LegacyPostCollection
 
 // listPageSize bounds each communities/records page so an instance with a large
 // catalogue is enumerated in bounded queries rather than one unbounded read.

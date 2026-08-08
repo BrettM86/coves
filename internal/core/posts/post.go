@@ -62,6 +62,15 @@ type CreatePostRequest struct {
 	Community      string                 `json:"community"`
 	AuthorDID      string                 `json:"authorDid"`
 	Facets         []interface{}          `json:"facets,omitempty"`
+
+	// Langs and Tags are declared by the post.create lexicon and by the postv2
+	// record, and were the two fields this struct did not carry — so a client
+	// that sent them had them silently dropped on submission and could then set
+	// them one second later with an edit, which DID honour them. Carrying them
+	// here closes that asymmetry; their caps are enforced in the shared content
+	// gate, so create and update bound them identically.
+	Langs []string `json:"langs,omitempty"`
+	Tags  []string `json:"tags,omitempty"`
 }
 
 // CreatePostResponse represents the response from creating a post
@@ -277,6 +286,18 @@ type PostRecord struct {
 	Author         string                 `json:"author"`
 	CreatedAt      string                 `json:"createdAt"`
 	Facets         []interface{}          `json:"facets,omitempty"`
+
+	// Langs and Tags are APPENDED, and the position matters as much as the
+	// fields do. This struct is what submissionFingerprint hashes, so its JSON
+	// encoding is a live dedupe key: appending two `omitempty` fields leaves the
+	// bytes of every submission that carries neither — which is every submission
+	// on the ledger today, because create discarded both — byte-identical, and
+	// therefore leaves every standing reservation valid. Inserting them earlier,
+	// or without omitempty, would repartition the whole ledger. See
+	// submissionFingerprint, whose comment states the rule this obeys: a field on
+	// the record and not here is a field the fingerprint cannot see.
+	Langs []string `json:"langs,omitempty"`
+	Tags  []string `json:"tags,omitempty"`
 }
 
 // PostView represents the full view of a post with all metadata

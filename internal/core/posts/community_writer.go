@@ -32,6 +32,18 @@ const (
 	// what a post record is called.
 	PostV2Collection = "social.coves.community.postv2"
 
+	// LegacyPostCollection is the DEPRECATED community-repo post record (§3.0):
+	// the collection every post written before the author-owned flip still
+	// lives in.
+	//
+	// It is exported for the same reason PostV2Collection is. The two
+	// collections are one table (see IsPostCollection), so the consumers that
+	// count votes and comments onto a post row, the repository that renders
+	// one, and the reconciliation tools all have to name the deprecated NSID —
+	// and a literal repeated across those layers is a literal one of them
+	// eventually fails to update when §11's drain retires it.
+	LegacyPostCollection = "social.coves.community.post"
+
 	// AcceptanceCollection is the community-repo collection holding a
 	// community's attestation that it accepts a post.
 	AcceptanceCollection = "social.coves.community.acceptance"

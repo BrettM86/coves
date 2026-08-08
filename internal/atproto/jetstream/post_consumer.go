@@ -102,7 +102,7 @@ func (c *PostEventConsumer) HandleEvent(ctx context.Context, event *JetstreamEve
 	switch commit.Collection {
 	// The DEPRECATED community-repo post (§3.0). Here the repo DID must EQUAL
 	// the record's community; the three collections below invert that.
-	case "social.coves.community.post":
+	case posts.LegacyPostCollection:
 		switch commit.Operation {
 		case "create":
 			return c.createPost(ctx, event.Did, commit, event.TimeUS)
