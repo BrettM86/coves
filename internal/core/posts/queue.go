@@ -218,7 +218,7 @@ func (d *QueueDriver) RunPass(ctx context.Context) (PassReport, error) {
 	report.Listed = len(subjects)
 
 	for _, subject := range groupByCommunity(subjects) {
-		if d.heldBack(subject) {
+		if d.heldBack(subject, startedAt) {
 			continue
 		}
 
@@ -229,14 +229,21 @@ func (d *QueueDriver) RunPass(ctx context.Context) (PassReport, error) {
 		// returns EngineDeferred alongside it and reading the outcome first
 		// would file every failure as a deferral — collapsing the two numbers an
 		// operator uses to decide whether this is credentials or a bug.
+		//
+		// They are COUNTED apart and BACKED OFF the same. The counters are what
+		// an operator reads, and there the difference is the whole point: a pass
+		// that defers everything is usually credentials and will clear, while a
+		// pass that fails everything is a bug. The backoff answers a different
+		// question — "how soon is it worth asking again" — and the honest answer
+		// for a failure is at least as conservative as for a deferral. A wedged
+		// community's PDS returns errors, not deferrals, so exempting failures
+		// would leave the loudest case as the one thing nothing paced.
 		switch {
 		case err != nil:
 			report.Failed++
 			log.Printf("[ACCEPTANCE-QUEUE] Warning: %s in %s could not be settled: %v",
 				subject.PostURI, subject.CommunityDID, err)
-			// NOT backed off. A failure is unexplained, so the driver has no
-			// basis for guessing how long to wait; the next pass re-lists it and
-			// the row is still there. Deferral is the engine SAYING "later".
+			d.deferSubject(subject, startedAt)
 		case outcome == EngineDeferred:
 			report.Deferred++
 			d.deferSubject(subject, startedAt)
@@ -258,12 +265,17 @@ func (d *QueueDriver) Snapshot() QueueSnapshot {
 }
 
 // heldBack reports whether a subject's backoff has yet to elapse.
-func (d *QueueDriver) heldBack(subject PendingSubject) bool {
+//
+// It is judged against the instant the PASS began rather than against the clock
+// now, so one pass makes one decision about what is due. Reading the clock per
+// subject would let a long pass treat its first and last subjects by different
+// rules, and would make which subjects ran depend on how slow the engine was.
+func (d *QueueDriver) heldBack(subject PendingSubject, at time.Time) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	held, ok := d.deferrals[keyOf(subject)]
-	return ok && d.now().Before(held.until)
+	return ok && at.Before(held.until)
 }
 
 // deferSubject holds a subject back, doubling its wait each consecutive time.
