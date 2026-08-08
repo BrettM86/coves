@@ -34,6 +34,20 @@ var (
 
 	// ErrActorNotFound is returned when the requested actor does not exist
 	ErrActorNotFound = errors.New("actor not found")
+
+	// ErrDuplicateSubmission is returned when an author resubmits content
+	// identical to something already on the submission ledger for the current
+	// dedupe window (PRD_AUTHOR_OWNED_POSTS.md §8).
+	//
+	// THE WORDING IS LOAD-BEARING. IsConflict below classifies an error by
+	// looking for "duplicate key", "already exists" or "already indexed" in its
+	// text, because a genuine index conflict arrives from the driver as a
+	// string rather than as a typed error. This sentinel must therefore avoid
+	// all three phrasings: a duplicate SUBMISSION is a client being refused at
+	// the admission gate, while a conflict is the indexer meeting a record it
+	// already has, and collapsing them would let a refused post be reported as
+	// successfully indexed.
+	ErrDuplicateSubmission = errors.New("an identical submission from this author to this community was refused as a repeat")
 )
 
 // ValidationError is the shared validation error type. It is aliased rather

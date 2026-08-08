@@ -34,6 +34,7 @@ type postService struct {
 	unfurlService     unfurl.Service
 	blueskyService    blueskypost.Service
 	blockChecker      BlockChecker
+	admission         *AdmissionPolicy
 	pdsURL            string
 }
 

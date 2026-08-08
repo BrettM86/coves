@@ -106,6 +106,9 @@ type Config struct {
 	Signup    SignupConfig
 	Media     MediaConfig
 
+	// Submissions bounds what one author may post into one community.
+	Submissions SubmissionsConfig
+
 	// CursorSecret is the HMAC key that signs pagination cursors, preventing
 	// clients from forging or tampering with them.
 	CursorSecret string
@@ -324,6 +327,34 @@ type MediaConfig struct {
 	// Validate says so in the startup error rather than leaving it to be
 	// discovered in a browser console.
 	AllowUnproxiedMedia bool
+}
+
+// SubmissionsConfig bounds what one author may submit to one community
+// (docs/PRD_AUTHOR_OWNED_POSTS.md §8).
+//
+// It mirrors posts.SubmissionLimits field for field rather than embedding it.
+// The duplication is deliberate: this package is imported by everything that
+// starts a process, and giving it a dependency on a core domain package would
+// make the domain's import graph the startup path's problem. The mapping is one
+// struct literal at wiring time.
+//
+// EVERY FIELD IS REQUIRED. There is no "unset means unlimited" reading, which
+// is the whole reason these are validated at startup: a quota that evaporates
+// when someone forgets an environment variable is indistinguishable, in
+// production, from having no quota at all — and it fails open, silently, on the
+// one path that exists to bound abuse.
+type SubmissionsConfig struct {
+	// MaxPerAuthorPerCommunity is how many posts one author may have admitted
+	// to one community inside Window.
+	MaxPerAuthorPerCommunity int
+
+	// Window is the rolling window the quota is counted over.
+	Window time.Duration
+
+	// DedupeWindow scopes how long an identical resubmission is refused as a
+	// repeat. It is separate from Window because the two answer different
+	// questions: one bounds volume, the other catches retries.
+	DedupeWindow time.Duration
 }
 
 // TokenEndpointEnabled reports whether the signup-token endpoint can operate.
