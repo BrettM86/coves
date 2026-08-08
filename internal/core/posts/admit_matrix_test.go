@@ -1114,6 +1114,26 @@ func TestErrDuplicateSubmissionIsNotAStorageConflict(t *testing.T) {
 func TestSubmissionFingerprint(t *testing.T) {
 	t.Parallel()
 
+	// THE FINGERPRINT STILL HASHES A PostRecord, DELIBERATELY, EVEN THOUGH THE
+	// RECORD THAT GETS WRITTEN IS A PostV2Record NOW.
+	//
+	// The write path converts once at the boundary (postV2From), and admission
+	// runs on the pre-conversion shape. That ordering is not an oversight left
+	// over from the flip — it is what keeps the fingerprint BYTE-STABLE across
+	// the deploy. The value hashed here is the dedupe key stored in
+	// post_submissions, so retyping it would silently repartition every live
+	// ledger row: an author mid-retry when the new binary rolls would have their
+	// retry hash differently, miss its own reservation, and be admitted as a
+	// second post — the exact duplicate §4.2's deterministic rkey exists to
+	// close, reintroduced by the migration meant to close it.
+	//
+	// The cost is that the two shapes have to be kept in step by hand: a field
+	// added to PostV2Record and not to PostRecord is a field the fingerprint
+	// cannot see, so two posts differing only in it would collide and the second
+	// would be refused as a repeat. TASK 8 REVISIT — it retires the deprecated
+	// collection and re-materializes the live rows, which is the one moment a
+	// fingerprint change is free, and the point at which this converter and
+	// PostRecord itself should both go away.
 	base := func() PostRecord {
 		title, content := "A title", "Some body text"
 		return PostRecord{

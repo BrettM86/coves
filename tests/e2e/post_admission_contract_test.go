@@ -56,10 +56,10 @@ import (
 //     answers the same refusal again, never 409 DuplicateSubmission — with the
 //     ledger wired, a decision that consulted dedupe ahead of authorization
 //     would answer 409 the second time (§8: a refusal consumes no quota);
-//   - reserve-then-release holds: a submission that is ADMITTED but whose PDS
-//     write then fails must hand its ledger slot back, so retrying it answers
-//     the write failure again, never 409 — a leaked reservation would turn one
-//     failed write into a lockout until the dedupe window rolls.
+//   - reserve-then-release holds: a submission that is ADMITTED but which then
+//     fails before the record exists must hand its ledger slot back, so retrying
+//     it answers the same failure again, never 409 — a leaked reservation would
+//     turn one transient failure into a lockout until the dedupe window rolls.
 //
 // The two USER-classified refusals — 403 Banned (step 3) and the per-author
 // 429 RateLimitExceeded (step 6) — are structurally out of this tier's reach:
@@ -76,15 +76,33 @@ import (
 //
 // # THE ADMITTED PATH'S KNOWN CEILING, STATED PLAINLY
 //
-// A community indexed from the firehose carries no PDS credentials in the
-// AppView's store — only social.coves.community.create provisions those, and
-// it sits behind the OAuth-only middleware this tier cannot satisfy. So an
-// ADMITTED submission proceeds past every gate and then fails at the
-// community-credential refresh (posts/service.go step 5, EnsureFreshToken on
-// an empty token), which the mapper reports as a 500. The assertions below are
-// written for the seam under test — refusal vs. admission — and the moment a
-// credentialed community becomes reachable at T2, the same test upgrades
-// itself to the full dedupe proof (the branch is written out below).
+// An admitted submission gets past every gate and then stops, and the write-path
+// flip MOVED where. It used to stop at the community-credential refresh: a
+// community indexed from the firehose carries no PDS credentials in the
+// AppView's store, so EnsureFreshToken on an empty token failed and the mapper
+// reported an unclassified 500.
+//
+// A post is written to its AUTHOR's repository now (PRD §4.2 step 3), so the
+// credential that has to exist is the AUTHOR's, and this tier cannot mint one
+// for the same reason §3.4b gives for everything else. The two ways to hold one
+// are a browser OAuth session (which needs the sealed-session mint that does not
+// exist here) or an aggregator's STORED tokens from migration 025 (which are
+// written by that same OAuth grant, performed once by a human operator). A
+// service JWT authenticates the caller to the AppView; it is not a repo
+// credential and was never meant to be one.
+//
+// So the ceiling is now ErrNoAuthorCredentials, which the mapper reports as a
+// NAMED 503 — and that is a strictly better probe than the 500 it replaces. A
+// 500 was the absence of a classification: it would have been answered just as
+// readily by a nil-pointer panic three layers down. A 503 NoAuthorCredentials is
+// a specific outcome that can only be produced at one place in the write path,
+// so reaching it proves the request travelled past admission, past the actor
+// classification, past the ledger reservation, and all the way to the author-repo
+// open. Any 4xx means the admission gate refused something it had authorized;
+// any 500 now means something unclassified broke.
+//
+// The moment a credentialed author becomes reachable at T2, the same test
+// upgrades itself to the full dedupe proof (the branch is written out below).
 func TestPostAdmissionAPIContract(t *testing.T) {
 	p := newPipeline(t)
 
@@ -178,34 +196,46 @@ func TestPostAdmissionAPIContract(t *testing.T) {
 		err := submitPost(asAggregator, community.DID, title)
 
 		if err == nil {
-			// The stack can complete a community-credentialed write — the
-			// admitted path ran to the PDS and back. The reservation is now
-			// CONFIRMED on the ledger, so the identical resubmission is the
-			// full dedupe proof.
+			// The stack can complete an author-credentialed write — the admitted
+			// path ran to the PDS and back. The reservation is now CONFIRMED on
+			// the ledger, so the identical resubmission is the full dedupe proof.
 			err = submitPost(asAggregator, community.DID, title)
 			requireXRPCRefusal(t, err, http.StatusConflict, "DuplicateSubmission",
 				"an identical resubmission of an admitted post inside the dedupe window")
 			return
 		}
 
-		// Today's ceiling (see the file comment): admission PASSED and the
-		// write then failed at the community-credential refresh, which no
-		// firehose-indexed community can satisfy. The mapper reports that
-		// unclassified failure as exactly one thing, and pinning it keeps this
-		// branch honest — any 4xx here would mean the admission gate refused,
-		// which is the regression this contract exists to catch.
-		requireXRPCRefusal(t, err, http.StatusInternalServerError, "InternalServerError",
-			"an ADMITTED submission failing at the community-credential refresh — any 4xx here "+
-				"means the admission decision refused a submission the community has authorized")
+		// Today's ceiling (see the file comment): admission PASSED and the write
+		// then stopped at the AUTHOR-repo open, because no principal this tier
+		// can mint holds a repo credential. The status and the NAME are both
+		// pinned, and the name is what makes this branch worth having — it is
+		// produced at exactly one place in the write path, so meeting it proves
+		// the submission travelled past every gate this contract is about.
+		//
+		// The two ways this assertion fails are the two regressions it exists to
+		// catch. A 4xx means the admission decision refused a submission the
+		// community has authorized. A 500 means the write path broke somewhere
+		// that has no classification at all — which is what this arc used to
+		// assert, back when the ceiling was the community-credential refresh, and
+		// is precisely the vagueness the named sentinel removed.
+		requireXRPCRefusal(t, err, http.StatusServiceUnavailable, "NoAuthorCredentials",
+			"an ADMITTED submission stopping at the author-repo open — any 4xx here means the "+
+				"admission decision refused a submission the community has authorized, and any 500 "+
+				"means it broke somewhere unclassified instead")
 
-		// And the failed write handed its ledger slot back: the identical
-		// retry meets the same write failure, never 409. A leaked reservation
-		// would refuse the retry as a duplicate of a post that does not exist —
-		// the §8 failure mode where a transient outage becomes a lockout.
+		// And the failed write handed its ledger slot back: the identical retry
+		// meets the same failure, never 409. This property is UNCHANGED by the
+		// flip and had to be re-verified rather than assumed — the release now
+		// happens at a different step (the author-repo open, which sits between
+		// admission and the community token), and a reservation released on the
+		// old step but not the new one would look identical from every other
+		// tier. A leaked one refuses the retry as a duplicate of a post that
+		// does not exist: the §8 failure mode where a transient outage becomes a
+		// lockout until the dedupe window rolls.
 		err = submitPost(asAggregator, community.DID, title)
-		requireXRPCRefusal(t, err, http.StatusInternalServerError, "InternalServerError",
+		requireXRPCRefusal(t, err, http.StatusServiceUnavailable, "NoAuthorCredentials",
 			"the retry of a failed write — a 409 means the failed write's reservation was never "+
-				"released, turning one PDS failure into a lockout until the dedupe window rolls")
+				"released, turning one failure into a lockout until the dedupe window rolls")
 	})
 }
 

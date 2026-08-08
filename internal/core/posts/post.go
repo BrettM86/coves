@@ -284,6 +284,17 @@ type AuthorView struct {
 	Reputation  *int    `json:"reputation,omitempty"`
 	DID         string  `json:"did"`
 	Handle      string  `json:"handle"`
+
+	// PDSURL is the author's PDS, not exposed to the API — the mirror of
+	// CommunityRef.PDSURL beside it, and needed for the same reason: a postv2
+	// post's blobs live in the AUTHOR's repository, so building their URLs
+	// means knowing which server holds them.
+	//
+	// The repository query has always SELECTed this column (it hydrates the
+	// author's avatar) and always dropped it here. Carrying it is what lets the
+	// blob transform pick an owner per record instead of assuming every post's
+	// media is the community's.
+	PDSURL string `json:"-"`
 }
 
 // CommunityRef represents minimal community info in post views

@@ -4,6 +4,7 @@ package posts_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -227,13 +228,25 @@ func TestService_RevokingAnAuthorizationStopsTheNextPost(t *testing.T) {
 // worth the cost here because the count they are checked against is the one
 // CreatePost itself writes: this is the only test in the tree where the
 // producer and the consumer of that counter are the same code path.
+//
+// THE TITLES ARE DISTINCT, AND THAT IS NOT COSMETIC. This loop used to submit
+// ten copies of one string, which worked only while the record key came from
+// the clock: ten identical submissions produced ten records because each got a
+// fresh TID. Under the write-path flip the key is derived from the submission's
+// own content (§4.2), so ten identical submissions converge on ONE record — the
+// second through tenth find their own post already standing and are reported
+// back the URI of the first, which is the designed idempotence and not a bug to
+// route around. The quota, meanwhile, is metered per ACCEPTED submission, so the
+// old loop would still reach ten and then assert the eleventh was refused while
+// exactly one post existed. Distinct titles keep the premise honest: ten
+// submissions, ten posts, ten metered, and the eleventh refused.
 func TestService_AggregatorQuotaStopsTheEleventhPost(t *testing.T) {
 	t.Parallel()
 
 	f := newAggregatorFixture(t)
 
 	for i := 0; i < aggregators.RateLimitMaxPosts; i++ {
-		_, err := f.createPost(t, "syndicated item")
+		_, err := f.createPost(t, fmt.Sprintf("syndicated item %d", i))
 		require.NoErrorf(t, err, "post %d of %d was refused inside the quota", i+1, aggregators.RateLimitMaxPosts)
 	}
 	require.Equal(t, aggregators.RateLimitMaxPosts, f.postsThisHour(t))
