@@ -17,7 +17,7 @@ Stop when every task is done, or on any `blocked:` row.
 | 2 | Migration 034: community_post_admissions + posts FK drop; admissions repo + T1 transition/watermark matrix | A | done | 9491744 | make ci 4735/0. PRD → rev 2.4 (tuple watermark, pending-only rejection CAS, repo-side op-rank). Behavior flips: unknown authors indexable, explicit deletion sweep |
 | 3 | admitPost extraction + NEW policy (bans, rate limits, dedupe) wired into existing write path | A | done | df97cb2 | make ci 4840/0. PRD → rev 2.6. Migration 035 ledger (plan review killed posts-table limiter). BANS NOW ENFORCED. T2 wire probe added |
 | 4 | Acceptance engine: deterministic rkey, swap-safe acceptance writer, atomic applyWrites removal, repin/terminality rules | B | done | e00d97a | make ci 4944/0. Probe-driven plan review killed 4 assumptions pre-code. 2 production bugs fixed as side effects. Gate saga: 2 latent test defects fixed + Docker restart (150d uptime) |
-| 5 | Ingestion: postv2/acceptance/removal consumers, watermark gating, direct-fetch convergence, WantedCollections + 3 e2e contracts | B | pending | | parent may split 5a/5b at brief time; WantedCollections + contracts same merge |
+| 5 | Ingestion: postv2/acceptance/removal consumers, watermark gating, direct-fetch convergence, WantedCollections + 3 e2e contracts | B | done | 0caeda4 | make ci 5047/0. PRD → rev 2.7. getStatus pulled forward; migration 036; queue driver + decider + factory; 6 production defects fixed as by-catch; CAR-recomputed CID verification |
 | 6 | Write path flip: author-repo postv2 via session, author-PDS blobs, sync fast-path accept, post.delete flip, post.update NEW | C | pending | | review MUST include pragma:security — verify it fired |
 | 7 | Read path: centralized visibility predicate, full surface inventory, #removedPost, getStatus, alternate-endpoint invisibility T2s | C | pending | | |
 | 8 | Cutover: re-materialization script (ledger, verify-before-delete, hermetic test), old-path removal, docs, tracker cleanup; panel on whole branch; /merge-to-main | D | pending | | prod script run is MANUAL, outside loop |
@@ -111,6 +111,59 @@ Stop when every task is done, or on any `blocked:` row.
   logged-only, non-atomic count) — pre-existing; IsAggregator lookup
   failure downgrades to user class (documented, stricter-path fallback);
   post_submissions + aggregator_posts sweeper/retention (§8).
+- (2026-08-08, task 5 → DEFERRED DECISION, owner input wanted): the §5.5
+  bridgedStats REPIN path is wired nowhere — classifyRecordDiff and
+  RepinAcceptedCID ship pure+uncalled. Consequence: once bridges write
+  postv2, every stats refresh strobes the accepted post through
+  pending_reacceptance + a fresh acceptance record (the exact churn §5.5
+  exists to prevent). SAFE TODAY: no postv2 bridged traffic exists until
+  tidepool adopts postv2 (post-cutover). Blocker for wiring it: the
+  consumer keeps no old-record snapshot, and reconstructing from columns
+  is lossy in exactly the way the classifier's fail-closed doc forbids —
+  needs a design decision (stored record snapshot vs PRD open question #3's
+  separate bridged-stats record, which would dissolve the problem
+  entirely). DECIDE BEFORE tidepool's postv2 migration; candidate homes:
+  task 6 (touches record shapes) or a named follow-up with open question
+  #3. Also carried: credential force-renew gap (revoked tokens defer
+  forever — needs a communities.Service method); removal-DELETE events are
+  logged no-ops (pair-PUT-outranks argument, review-flagged).
+- (2026-08-08, task 5 gate saga — ROOT CAUSE, evidence-backed): the e2e
+  starvation flood = TWO composing PRE-EXISTING production defects, fixed
+  in-task: CreateCommunity omitted `handle` from the profile record
+  (egress-blocked PLC lookup → handle.invalid → UNIQUE collision) and the
+  community consumer swallowed ErrHandleTaken as idempotent-replay →
+  T1-created communities silently dropped → 72 of their records
+  dead-lettered transiently at 4.2s inline head-of-line blocking each ≈
+  5min posts-lane outage spanning T2. The defect was ALREADY DOCUMENTED
+  in community_contract_test.go:81-95 as reported-not-worked-around.
+  Task 5 tripled the poison (4 collections on one lane), making a
+  marginal latent failure deterministic. Relay/cursors/load exonerated.
+  FORENSIC GAP filed for suite health: the reliability suite recreates
+  the appview container late in make ci, so .ci-out/appview.log loses
+  the entire early-run window — capture continuously (backlog candidate).
+- (2026-08-08, deps): sync.getRecord CAR verification pulled in
+  github.com/ipld/go-car pinned to indigo's exact version WITHOUT `go mod
+  tidy` — tidy upgrades transitives into a broken github.com/ipfs/go-log.
+  Do not tidy this module until that upstream resolves; note for task 8's
+  cleanup pass.
+- (harness, multi-agent stacks): ONE coves-ci compose-project runner at a
+  time — a conductor ci run and an agent test-e2e run collided (force-
+  recreate mid-run → phantom dead-letter floods + starved lanes). The
+  conductor owns stack runs; agents request them.
+- (2026-08-08, task 5 → TASK 6/7/8 OBLIGATIONS): TASK 6 — write-path flip
+  re-runs the bypass security review; deterministic client-chosen rkeys
+  from the submission fingerprint (idempotent PDS retries); the old
+  community.post author-not-found transient burn decision; sync fast path
+  'pushes work at the engine' claims become true here. TASK 7 — getStatus
+  ↔ post.get admission-context convergence (getStatus rationale notes the
+  hydrating-join blindspot); §9's re-scoped T2 arcs land with the read
+  paths. TASK 8 — drop deprecated community.post collection + its marker;
+  orphan community-admissions sweep (re-deferred from task 2/5); go mod
+  tidy hazard; forensic appview-log continuous capture (backlog).
+  BACKLOG (owner-visible): per-source-DID token bucket on the ingestion
+  lane (remaining ~4.2s transient stall primitives: unknown-community
+  events); handle-squatting primitive now LOUD but not closed; -race
+  suite needs batching if it ever joins the gate.
 - (harness) pr-review-toolkit agents unregistered this session →
   /second-opinion runs general-purpose stand-ins with specialty briefs
   (worked well). Named TDD agents spawn in mailbox mode — gate on their
