@@ -2,6 +2,12 @@ package posts
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
 	"time"
 
 	"Coves/internal/core/communities"
@@ -101,20 +107,34 @@ type AdmissionDecision struct {
 	// Cause carries the underlying error behind a refusal, when there is one,
 	// so the caller can wrap it and keep it matchable.
 	//
-	// It exists for exactly one case today: aggregator authorization. The API
-	// boundary maps that refusal through aggregators.IsUnauthorized and
-	// aggregators.IsRateLimited (internal/api/handlers/post/errors.go), which
-	// are predicates over the AGGREGATORS package's sentinels. Collapsing that
-	// error into a bare DecisionCode would turn a 403 "stop asking" and a 429
-	// "ask later" into the same answer, and a well-behaved aggregator would
-	// retry a permanent refusal forever.
+	// The refusal case is aggregator authorization. The API boundary maps that
+	// refusal through aggregators.IsUnauthorized and aggregators.IsRateLimited
+	// (internal/api/handlers/post/errors.go), which are predicates over the
+	// AGGREGATORS package's sentinels. Collapsing that error into a bare
+	// DecisionCode would turn a 403 "stop asking" and a 429 "ask later" into
+	// the same answer, and a well-behaved aggregator would retry a permanent
+	// refusal forever.
+	//
+	// It is ALSO set on the decision returned alongside a non-nil error, which
+	// is what keeps a decision that could not be made from reading as an
+	// admission — see Admitted.
 	Cause error
 }
 
-// Admitted reports whether the submission may proceed. There is no separate
-// bool field: two representations of one fact drift, and the code is the one
-// that has to be right.
-func (d AdmissionDecision) Admitted() bool { return d.Code == "" }
+// Admitted reports whether the submission may proceed.
+//
+// There are three states here, not two: admitted, refused with a code, and
+// NOT DECIDED — a lookup failed and nothing was concluded either way. The third
+// is why this is not simply `Code == ""`. An infrastructure failure must not be
+// dressed up as a policy code (the client would be told to stop retrying
+// something that will work in a second), so those returns carry an empty Code;
+// a bare code test would then read the zero value as an admission, which is the
+// most dangerous default available on a security decision. A decision is an
+// admission only when there is neither a refusal code nor a cause.
+//
+// There is still no separate `admitted` bool: two representations of one fact
+// drift, and the code is the one that has to be right.
+func (d AdmissionDecision) Admitted() bool { return d.Code == "" && d.Cause == nil }
 
 // SubmissionReservation identifies the ledger row admitPost inserted for a
 // submission, so a caller whose subsequent PDS write failed can release it.
@@ -245,6 +265,114 @@ func WithAdmissionPolicy(policy AdmissionPolicy) PostServiceOption {
 	return func(s *postService) { s.admission = &policy }
 }
 
+// completeAdmissionPolicy fills in the collaborators a policy did not name, so
+// that CreatePost has exactly ONE decision path to run.
+//
+// The alternative — branching on whether a policy was supplied, and keeping the
+// pre-policy checks inline for the other branch — would leave two copies of the
+// community/visibility/authorization sequence, and §4.1 of the PRD exists
+// because the one copy we had already drifted from what its docstring claimed.
+//
+// The substitutes are named for what they are. A service constructed without a
+// policy enforces exactly what CreatePost enforced before this decision existed:
+// community existence, private visibility, and aggregator authorization. It is
+// the shape every test fixture that predates §8 uses, and cmd/server always
+// supplies the real policy — which is what makes the ban lookup and the quota
+// live in production.
+func completeAdmissionPolicy(policy *AdmissionPolicy) *AdmissionPolicy {
+	complete := AdmissionPolicy{}
+	if policy != nil {
+		complete = *policy
+	}
+	if complete.Ledger == nil {
+		complete.Ledger = unmeteredLedger{}
+	}
+	if complete.Bans == nil {
+		complete.Bans = unenforcedBans{}
+	}
+	if complete.Now == nil {
+		complete.Now = time.Now
+	}
+	return &complete
+}
+
+// unmeteredLedger stands in when no submission ledger was wired: it reserves
+// nothing, so neither dedupe nor the per-author quota applies.
+//
+// It cannot silently disable a configured limiter — it is only ever reachable
+// when AdmissionPolicy.Ledger is nil, which cmd/server never leaves so.
+type unmeteredLedger struct{}
+
+func (unmeteredLedger) Reserve(context.Context, ReserveSubmissionCommand) (SubmissionReservation, error) {
+	return SubmissionReservation{}, nil
+}
+
+func (unmeteredLedger) Release(context.Context, SubmissionReservation) error { return nil }
+
+// CountSince answers zero, which admits: with no ledger there is nothing to
+// count, and refusing on an absent substrate would take a service that never
+// asked for a quota and stop it posting at all.
+func (unmeteredLedger) CountSince(context.Context, string, string, time.Time) (int, error) {
+	return 0, nil
+}
+
+// unenforcedBans stands in when no ban lookup was wired, answering the way an
+// author with no membership row does. It returns the sentinel rather than a nil
+// membership so that it travels the same branch a real absent row does — the
+// "no membership means not banned" translation stays in one place.
+type unenforcedBans struct{}
+
+func (unenforcedBans) GetMembership(context.Context, string, string) (*communities.Membership, error) {
+	return nil, communities.ErrMembershipNotFound
+}
+
+// admissionDeps assembles the decision's inputs from the service's
+// collaborators. s.admission is never nil — NewPostService completes it — so
+// this cannot silently hand admitPost a missing ledger or clock.
+func (s *postService) admissionDeps() admissionDeps {
+	return admissionDeps{
+		communities: s.communityService,
+		bans:        s.admission.Bans,
+		aggregators: s.aggregatorService,
+		ledger:      s.admission.Ledger,
+		limits:      s.admission.Limits,
+		now:         s.admission.Now,
+	}
+}
+
+// refusalError translates a refusal into the sentinel the API boundary maps.
+//
+// The codes and the sentinels are separate vocabularies on purpose: a code is
+// what the admissions table stores and what a federated peer is told, while a
+// sentinel is what internal/api/handlers/post turns into a status. This is the
+// one place they meet.
+func refusalError(decision AdmissionDecision) error {
+	switch decision.Code {
+	case DecisionCommunityNotFound:
+		return ErrCommunityNotFound
+	case DecisionCommunityPrivate:
+		// Unchanged from the pre-§8 behaviour: a private community answers the
+		// same 403 to a member-less user it always did.
+		return ErrNotAuthorized
+	case DecisionAuthorBanned:
+		return ErrBanned
+	case DecisionAggregatorNotAuthorized:
+		// The aggregators-package sentinel has to survive: the boundary tells a
+		// permanent 403 from a retryable 429 by matching on it, and the wording
+		// is the one CreatePost has always used.
+		return fmt.Errorf("aggregator not authorized: %w", decision.Cause)
+	case DecisionDuplicateSubmission:
+		return ErrDuplicateSubmission
+	case DecisionRateLimitExceeded:
+		return ErrRateLimitExceeded
+	default:
+		// A code minted without a mapping. Answering with a bare 500 would be
+		// wrong twice over — the submission WAS refused, and the operator would
+		// have nothing to search for — so the code itself goes in the error.
+		return fmt.Errorf("submission refused: %s", decision.Code)
+	}
+}
+
 // admissionDeps is everything admitPost reads, gathered so the decision is a
 // function of its arguments rather than of a service's field set.
 type admissionDeps struct {
@@ -307,14 +435,140 @@ type admissionDeps struct {
 // A non-nil error means the decision could NOT be made — a lookup failed — and
 // is distinct from a refusal, which is a decision.
 func admitPost(ctx context.Context, deps admissionDeps, req AdmissionRequest) (AdmissionDecision, error) {
-	return AdmissionDecision{}, nil
+	// 1. Community resolution. Two lookups — the at-identifier to a DID, then
+	// the DID to the indexed row — and either failing to find it is the same
+	// answer to the client.
+	communityDID, err := deps.communities.ResolveCommunityIdentifier(ctx, req.Community)
+	if err != nil {
+		switch {
+		case errors.Is(err, communities.ErrCommunityNotFound):
+			return AdmissionDecision{Code: DecisionCommunityNotFound}, nil
+		case communities.IsValidationError(err):
+			// A malformed identifier is the client's mistake and has to reach
+			// the boundary as one: a validation error becomes a 400 naming the
+			// bad field, while an unclassified error becomes an opaque 500.
+			return undecided(NewValidationError("community", err.Error()))
+		default:
+			return undecided(fmt.Errorf("failed to resolve community identifier: %w", err))
+		}
+	}
+
+	community, err := deps.communities.GetByDID(ctx, communityDID)
+	if err != nil {
+		if errors.Is(err, communities.ErrCommunityNotFound) {
+			return AdmissionDecision{Code: DecisionCommunityNotFound}, nil
+		}
+		return undecided(fmt.Errorf("failed to fetch community: %w", err))
+	}
+
+	if req.Actor == ActorUser {
+		// 2. The privacy wall, and it stands ahead of the ban lookup rather
+		// than beside it: moderation state must not be read at all for a
+		// community the submitter cannot see. See the check-order note above.
+		if community.Visibility == "private" {
+			return AdmissionDecision{Code: DecisionCommunityPrivate}, nil
+		}
+
+		// 3. The ban. Looked up against the RESOLVED DID — handles are mutable,
+		// and a ban keyed to one stops applying the moment a community renames
+		// itself.
+		membership, err := deps.bans.GetMembership(ctx, req.AuthorDID, community.DID)
+		switch {
+		case errors.Is(err, communities.ErrMembershipNotFound):
+			// A VALUE meaning "not banned". Posting in a public community has
+			// never required joining it, so an absent row is the common case.
+		case err != nil:
+			// Fail closed. Treating an unreachable database as "not banned"
+			// would turn a Postgres blip into a global unban for its duration.
+			return undecided(fmt.Errorf("failed to look up community membership: %w", err))
+		case membership != nil && membership.IsBanned:
+			return AdmissionDecision{Code: DecisionAuthorBanned}, nil
+		}
+	}
+
+	// 4. Aggregator authorization, which carries the aggregators-package
+	// sentinel that caused it: the boundary tells 403 from 429 by matching on
+	// it, and a bare code would have a well-behaved aggregator retry a
+	// permanent refusal forever.
+	if req.Actor == ActorRegisteredAggregator {
+		if err := deps.aggregators.ValidateAggregatorPost(ctx, req.AuthorDID, community.DID); err != nil {
+			return AdmissionDecision{Code: DecisionAggregatorNotAuthorized, Cause: err}, nil
+		}
+	}
+
+	// 5. Dedupe, for every actor class. The INSERT is the check: a unique
+	// violation means an identical submission is already on the ledger for this
+	// window. It runs ahead of the quota so that a client retrying after a lost
+	// response is told its post already exists rather than told to slow down.
+	now := deps.now()
+	reservation, err := deps.ledger.Reserve(ctx, ReserveSubmissionCommand{
+		AuthorDID:    req.AuthorDID,
+		CommunityDID: community.DID,
+		Fingerprint:  req.Fingerprint,
+		DedupeBucket: dedupeBucket(now, deps.limits.DedupeWindow),
+	})
+	if err != nil {
+		if errors.Is(err, ErrDuplicateSubmission) {
+			return AdmissionDecision{Code: DecisionDuplicateSubmission}, nil
+		}
+		return undecided(fmt.Errorf("failed to reserve submission: %w", err))
+	}
+
+	// 6. The rolling-window quota, for regular users only. Aggregators are
+	// metered by their own limiter (step 4) or, when trusted, not at all.
+	//
+	// The reservation is already on the ledger, so it is counted here — the
+	// limit is reached when the count EXCEEDS it — and every path out of this
+	// block that is not an admission has to hand the slot back.
+	if req.Actor == ActorUser {
+		count, err := deps.ledger.CountSince(ctx, req.AuthorDID, community.DID, now.Add(-deps.limits.Window))
+		if err != nil {
+			releaseReservation(ctx, deps.ledger, reservation)
+			return undecided(fmt.Errorf("failed to count recent submissions: %w", err))
+		}
+		if count > deps.limits.MaxPerAuthorPerCommunity {
+			releaseReservation(ctx, deps.ledger, reservation)
+			return AdmissionDecision{Code: DecisionRateLimitExceeded}, nil
+		}
+	}
+
+	return AdmissionDecision{Community: community, Reservation: &reservation}, nil
+}
+
+// undecided reports that the decision could NOT be made.
+//
+// The error is returned twice — as the error, and on the decision's Cause — and
+// the second copy is the load-bearing one: it is what makes Admitted() false
+// for a caller that inspects the value. Leaving the decision zero would have a
+// caller who checked the decision before the error read a database outage as
+// permission to post.
+func undecided(err error) (AdmissionDecision, error) {
+	return AdmissionDecision{Cause: err}, err
+}
+
+// releaseReservation gives back a slot the decision took and then declined to
+// use. The error is logged rather than returned: every caller reaches this
+// while already reporting a refusal or a failure, and replacing that answer
+// with a second one would hide the reason the submission was actually stopped.
+func releaseReservation(ctx context.Context, ledger SubmissionLedger, reservation SubmissionReservation) {
+	if err := ledger.Release(ctx, reservation); err != nil {
+		log.Printf("[POST-ADMIT] Warning: failed to release submission reservation %d: %v", reservation.ID, err)
+	}
 }
 
 // dedupeBucket is the index of the window `now` falls in, so that two
 // submissions in the same window collide on the ledger's unique key and two
 // submissions a window apart do not.
 func dedupeBucket(now time.Time, window time.Duration) int64 {
-	return 0
+	// A non-positive window would divide by zero. config.Validate refuses to
+	// start a process with one, so reaching this is a wiring bug rather than an
+	// operator mistake; collapsing to a single bucket keeps it from panicking
+	// on the write path, and the constant bucket makes the misconfiguration
+	// loud (every repost is refused) rather than silent.
+	if window <= 0 {
+		return 0
+	}
+	return now.UnixNano() / int64(window)
 }
 
 // submissionFingerprint hashes what a moderator would judge about a record:
@@ -325,5 +579,21 @@ func dedupeBucket(now time.Time, window time.Duration) int64 {
 // after a lost response, which is the case dedupe exists to catch. A
 // fingerprint that included it would never match anything.
 func submissionFingerprint(record PostRecord) string {
-	return ""
+	// The record is taken by value, so clearing the timestamp here cannot
+	// affect the record the caller goes on to write.
+	record.CreatedAt = ""
+
+	canonical, err := json.Marshal(record)
+	if err != nil {
+		// Unreachable in practice: every field of a PostRecord either has a
+		// concrete marshalable type or holds a value decoded from JSON. Hashing
+		// a Go rendering instead of returning an empty string matters anyway —
+		// a constant fingerprint would collide every submission with every
+		// other, and the second post the instance ever received would be
+		// refused as a repeat of the first.
+		canonical = []byte(fmt.Sprintf("%#v", record))
+	}
+
+	sum := sha256.Sum256(canonical)
+	return hex.EncodeToString(sum[:])
 }

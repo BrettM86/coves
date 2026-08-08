@@ -326,10 +326,26 @@ func (a *application) buildServices(ctx context.Context) error {
 
 	// userBlockRepo backs viewer block enforcement on GetPosts, keeping
 	// permalink and cold-load reads consistent with feed/timeline filtering.
+	// The admission policy is what makes the ban lookup and the per-author
+	// submission quota live (PRD_AUTHOR_OWNED_POSTS §4.1, §8). A post service
+	// built without it enforces only what CreatePost enforced before those
+	// existed, so this is not an optional enrichment — it is the enforcement.
+	// The limits come from config, which refuses to start the process with a
+	// non-positive one rather than letting an omission read as "unlimited".
 	a.postService = posts.NewPostService(
 		a.postRepo, a.communityService, a.aggregatorService, blobService,
 		unfurlService, a.blueskyService, a.cfg.PDS.URL,
 		posts.WithBlockChecker(a.userBlockRepo),
+		posts.WithAdmissionPolicy(posts.AdmissionPolicy{
+			Ledger: postgresRepo.NewSubmissionLedger(a.db),
+			Bans:   a.communityService,
+			Limits: posts.SubmissionLimits{
+				MaxPerAuthorPerCommunity: a.cfg.Submissions.MaxPerAuthorPerCommunity,
+				Window:                   a.cfg.Submissions.Window,
+				DedupeWindow:             a.cfg.Submissions.DedupeWindow,
+			},
+			Now: time.Now,
+		}),
 	)
 
 	// Subject existence is deliberately not validated: the vote is written to

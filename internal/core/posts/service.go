@@ -74,19 +74,24 @@ func NewPostService(
 	for _, opt := range opts {
 		opt(s)
 	}
+	s.admission = completeAdmissionPolicy(s.admission)
 	return s
 }
 
 // CreatePost creates a new post in a community
 // Flow:
-// 1. Validate input
-// 2. Check if author is an aggregator (server-side validation using DID from JWT)
-// 3. If aggregator: validate authorization and rate limits, skip membership checks
-// 4. If user: resolve community and perform membership/ban validation
-// 5. Build post record
-// 6. Write to community's PDS repository
-// 7. If aggregator: record post for rate limiting
-// 8. Return URI/CID (AppView indexes asynchronously via Jetstream)
+//  1. Validate input
+//  2. Check if author is an aggregator (server-side validation using DID from JWT)
+//  3. Admission: one decision over community existence, visibility, ban,
+//     aggregator authorization, dedupe and the per-author quota (admitPost)
+//  4. Build post record
+//  5. Write to community's PDS repository
+//  6. If aggregator: record post for rate limiting
+//  7. Return URI/CID (AppView indexes asynchronously via Jetstream)
+//
+// Admission runs BEFORE the token refresh, the blob uploads and the PDS write,
+// so a refused submission costs a few lookups rather than an upload — and,
+// more to the point, leaves no record in a community that refused it.
 func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*CreatePostResponse, error) {
 	// 1. Validate basic input (before DID checks to give clear validation errors)
 	if err := s.validateCreateRequest(&req); err != nil {
@@ -96,8 +101,8 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 	// 1b. Normalize the fields the lexicon declares as `format: uri` before any
 	// of them reach the record. Runs here, ahead of the community and PDS work,
 	// so an unrecoverable URI fails fast without burning a DB lookup or an
-	// unfurl fetch. Mutates req in place; the record built in step 9 reads these
-	// same values, and the unfurl step below then works from the encoded URI,
+	// unfurl fetch. Mutates req in place; the record built below reads these
+	// same values, and the unfurl step then works from the encoded URI,
 	// which dereferences identically.
 	if err := normalizeEmbedURIs(req.Embed); err != nil {
 		return nil, err
@@ -140,85 +145,128 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 
 	// Check if this is a non-trusted aggregator (requires database lookup)
 	var isOtherAggregator bool
-	var err error
 	if !isTrustedAggregator && s.aggregatorService != nil {
-		isOtherAggregator, err = s.aggregatorService.IsAggregator(ctx, req.AuthorDID)
+		aggregator, err := s.aggregatorService.IsAggregator(ctx, req.AuthorDID)
 		if err != nil {
 			log.Printf("[POST-CREATE] Warning: failed to check if DID is aggregator: %v", err)
 			// Don't fail the request - treat as regular user if check fails
 			isOtherAggregator = false
+		} else {
+			isOtherAggregator = aggregator
 		}
 	}
 
-	// 4. Resolve community at-identifier (handle or DID) to DID
-	// This accepts both formats per atProto best practices:
-	// - Handles: !gardening.communities.coves.social
-	// - DIDs: did:plc:abc123 or did:web:coves.social
-	communityDID, err := s.communityService.ResolveCommunityIdentifier(ctx, req.Community)
+	// The classification the admission decision is made against. It is resolved
+	// HERE, at the call site, rather than inside admitPost: "who is trusted"
+	// comes out of the process environment, and a decision function that read it
+	// itself would hide the most consequential input to a security decision from
+	// the place that makes it.
+	actor := ActorUser
+	switch {
+	case isTrustedAggregator:
+		log.Printf("[POST-CREATE] Trusted aggregator detected: %s posting to community: %s", req.AuthorDID, req.Community)
+		actor = ActorTrustedAggregator
+	case isOtherAggregator:
+		actor = ActorRegisteredAggregator
+	}
+
+	// 4. ADMISSION: the single decision over community existence, visibility,
+	// ban, aggregator authorization, dedupe and the per-author quota (§4.1, §8).
+	//
+	// The fingerprint is taken from the record as the CLIENT sent it, before
+	// unfurl enhancement rewrites the embed: two submissions of the same content
+	// must hash the same, and an enriched embed varies with whatever the remote
+	// page served at the time.
+	decision, err := admitPost(ctx, s.admissionDeps(), AdmissionRequest{
+		Actor:       actor,
+		AuthorDID:   req.AuthorDID,
+		Community:   req.Community,
+		Fingerprint: submissionFingerprint(postRecordFor(req, req.Community, "")),
+	})
 	if err != nil {
-		// Handle specific error types appropriately
-		if communities.IsNotFound(err) {
-			return nil, ErrCommunityNotFound
-		}
-		if communities.IsValidationError(err) {
-			// Pass through validation errors (invalid format, etc.)
-			return nil, NewValidationError("community", err.Error())
-		}
-		// Infrastructure failures (DB errors, network issues) should be internal errors
-		// Don't leak internal details to client (e.g., "pq: connection refused")
-		return nil, fmt.Errorf("failed to resolve community identifier: %w", err)
+		return nil, err
+	}
+	if !decision.Admitted() {
+		log.Printf("[POST-CREATE] Refused: author=%s, community=%s, actor=%s, code=%s",
+			req.AuthorDID, req.Community, actor, decision.Code)
+		return nil, refusalError(decision)
 	}
 
-	// 5. AUTHORIZATION: For non-Kagi aggregators, validate authorization and rate limits
-	// Kagi is exempted from database checks via env var (temporary until XRPC endpoint is ready)
-	if isOtherAggregator && s.aggregatorService != nil {
-		if err := s.aggregatorService.ValidateAggregatorPost(ctx, req.AuthorDID, communityDID); err != nil {
-			log.Printf("[POST-CREATE] Aggregator authorization failed: %s -> %s: %v", req.AuthorDID, communityDID, err)
-			return nil, fmt.Errorf("aggregator not authorized: %w", err)
-		}
-		log.Printf("[POST-CREATE] Aggregator authorized: %s -> %s", req.AuthorDID, communityDID)
-	}
+	community := decision.Community
+	communityDID := community.DID
 
-	// 6. Fetch community from AppView (includes all metadata)
-	community, err := s.communityService.GetByDID(ctx, communityDID)
-	if err != nil {
-		if communities.IsNotFound(err) {
-			return nil, ErrCommunityNotFound
-		}
-		return nil, fmt.Errorf("failed to fetch community: %w", err)
-	}
-
-	// 7. Apply validation based on actor type (aggregator vs user)
-	if isTrustedAggregator {
-		// TRUSTED AGGREGATOR VALIDATION FLOW
-		// Trusted aggregators are authorized via TRUSTED_AGGREGATOR_DIDS env var (temporary)
-		// TODO: Replace with proper XRPC aggregator authorization endpoint
-		log.Printf("[POST-CREATE] Trusted aggregator detected: %s posting to community: %s", req.AuthorDID, communityDID)
-		// Aggregators skip membership checks and visibility restrictions
-		// They are authorized services, not community members
-	} else if isOtherAggregator {
-		// OTHER AGGREGATOR VALIDATION FLOW
-		// Authorization and rate limits already validated above via ValidateAggregatorPost
-		log.Printf("[POST-CREATE] Authorized aggregator detected: %s posting to community: %s", req.AuthorDID, communityDID)
-	} else {
-		// USER VALIDATION FLOW
-		// Check community visibility (Alpha: public/unlisted only)
-		// Beta will add membership checks for private communities
-		if community.Visibility == "private" {
-			return nil, ErrNotAuthorized
+	// From here on the submission holds a ledger row. Every path that fails
+	// before the record exists has to give it back, or a transient failure
+	// permanently costs the author a quota slot AND blocks them from retrying
+	// the same content until the dedupe window rolls.
+	releaseOnFailure := func() {
+		if decision.Reservation != nil {
+			releaseReservation(ctx, s.admission.Ledger, *decision.Reservation)
 		}
 	}
 
-	// 8. Ensure community has fresh PDS credentials (token refresh if needed)
+	// 5. Ensure community has fresh PDS credentials (token refresh if needed)
 	community, err = s.communityService.EnsureFreshToken(ctx, community)
 	if err != nil {
+		releaseOnFailure()
 		return nil, fmt.Errorf("failed to refresh community credentials: %w", err)
 	}
 
-	// 9. Build post record for PDS
-	postRecord := PostRecord{
-		Type:           "social.coves.community.post",
-		Community:      communityDID,
+	// 6. Build post record for PDS
+	postRecord := postRecordFor(req, communityDID, time.Now().UTC().Format(time.RFC3339))
+
+	// 7. Validate and enhance external embeds
+	if err := s.enhanceExternalEmbed(ctx, &postRecord, req, community, actor == ActorTrustedAggregator); err != nil {
+		releaseOnFailure()
+		return nil, err
+	}
+
+	// 8. Write to community's PDS repository
+	//
+	// A failure here is the case the reservation was designed around: the row
+	// went in before the write precisely so two concurrent identical submissions
+	// would collide on the unique key, and the cost of that ordering is that a
+	// write which never happened owes the author their slot back. Without it, a
+	// PDS hiccup would consume a quota slot AND refuse the retry as a duplicate,
+	// turning a transient outage into a per-author lockout that outlives it.
+	uri, cid, err := s.createPostOnPDS(ctx, community, postRecord)
+	if err != nil {
+		releaseOnFailure()
+		return nil, fmt.Errorf("failed to write post to PDS: %w", err)
+	}
+
+	// 9. Record aggregator post for rate limiting (non-Kagi aggregators only)
+	// Kagi is exempted from rate limiting via env var (temporary)
+	if isOtherAggregator && s.aggregatorService != nil {
+		if recordErr := s.aggregatorService.RecordAggregatorPost(ctx, req.AuthorDID, communityDID, uri, cid); recordErr != nil {
+			// Log but don't fail - post was already created successfully
+			log.Printf("[POST-CREATE] Warning: failed to record aggregator post for rate limiting: %v", recordErr)
+		}
+	}
+
+	// 10. Return response (AppView will index via Jetstream consumer)
+	log.Printf("[POST-CREATE] Author: %s (trustedKagi=%v, otherAggregator=%v), Community: %s, URI: %s",
+		req.AuthorDID, isTrustedAggregator, isOtherAggregator, communityDID, uri)
+
+	return &CreatePostResponse{
+		URI: uri,
+		CID: cid,
+	}, nil
+}
+
+// postRecordFor builds the record a request describes, stamped with the given
+// community identifier and creation time.
+//
+// It is shared by the submission fingerprint and the record actually written,
+// so that the thing dedupe hashes and the thing the community's repo receives
+// cannot drift into describing different posts. The two callers differ in
+// exactly the two arguments: the fingerprint is taken before the community
+// identifier has been resolved and with no timestamp at all (createdAt is
+// stamped per attempt, so including it would make every retry look new).
+func postRecordFor(req CreatePostRequest, community, createdAt string) PostRecord {
+	return PostRecord{
+		Type:           postCollection,
+		Community:      community,
 		Author:         req.AuthorDID,
 		Title:          req.Title,
 		Content:        req.Content,
@@ -228,22 +276,34 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 		OriginalAuthor: req.OriginalAuthor,
 		FederatedFrom:  req.FederatedFrom,
 		Location:       req.Location,
-		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
+		CreatedAt:      createdAt,
 	}
+}
 
-	// 10. Validate and enhance external embeds
+// enhanceExternalEmbed applies the external-embed handling that has to happen
+// against a live network: Bluesky URL conversion, client thumb validation, and
+// unfurl enrichment with its blob uploads.
+//
+// It is a method rather than inline steps because every failure inside it now
+// happens with a submission reservation already on the ledger, and a caller
+// that has one error return to handle can give the reservation back in one
+// place instead of at each of the four validation exits.
+//
+// trusted marks a trusted aggregator, which supplies its own metadata and is
+// unfurled only for a thumbnail it did not provide.
+func (s *postService) enhanceExternalEmbed(ctx context.Context, postRecord *PostRecord, req CreatePostRequest, community *communities.Community, trusted bool) error {
 	if postRecord.Embed != nil {
 		embedType, typeOk := postRecord.Embed["$type"].(string)
 		if typeOk && embedType == "social.coves.embed.external" {
 			if external, extOk := postRecord.Embed["external"].(map[string]interface{}); extOk {
 				// Check if this is a Bluesky post URL and convert to post embed
-				if !s.tryConvertBlueskyURLToPostEmbed(ctx, external, &postRecord) {
+				if !s.tryConvertBlueskyURLToPostEmbed(ctx, external, postRecord) {
 					// Not a Bluesky URL or conversion failed - continue with normal external embed processing
 					// SECURITY: Validate thumb field (must be blob, not URL string)
 					// This validation happens BEFORE unfurl to catch client errors early
 					if existingThumb := external["thumb"]; existingThumb != nil {
 						if thumbStr, isString := existingThumb.(string); isString {
-							return nil, NewValidationError("thumb",
+							return NewValidationError("thumb",
 								fmt.Sprintf("thumb must be a blob reference (with $type, ref, mimeType, size), not URL string: %s", thumbStr))
 						}
 
@@ -251,26 +311,26 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 						if thumbMap, isMap := existingThumb.(map[string]interface{}); isMap {
 							// Check for $type field
 							if thumbType, ok := thumbMap["$type"].(string); !ok || thumbType != "blob" {
-								return nil, NewValidationError("thumb",
+								return NewValidationError("thumb",
 									fmt.Sprintf("thumb must have $type: blob (got: %v)", thumbType))
 							}
 							// Check for required blob fields
 							if _, hasRef := thumbMap["ref"]; !hasRef {
-								return nil, NewValidationError("thumb", "thumb blob missing required 'ref' field")
+								return NewValidationError("thumb", "thumb blob missing required 'ref' field")
 							}
 							if _, hasMimeType := thumbMap["mimeType"]; !hasMimeType {
-								return nil, NewValidationError("thumb", "thumb blob missing required 'mimeType' field")
+								return NewValidationError("thumb", "thumb blob missing required 'mimeType' field")
 							}
 							log.Printf("[POST-CREATE] Client provided valid thumbnail blob")
 						} else {
-							return nil, NewValidationError("thumb",
+							return NewValidationError("thumb",
 								fmt.Sprintf("thumb must be a blob object, got: %T", existingThumb))
 						}
 					}
 
 					// TRUSTED AGGREGATOR: Allow Kagi aggregator to provide thumbnail URLs directly
 					// This bypasses unfurl for more accurate RSS-sourced thumbnails
-					if req.ThumbnailURL != nil && *req.ThumbnailURL != "" && isTrustedAggregator {
+					if req.ThumbnailURL != nil && *req.ThumbnailURL != "" && trusted {
 						log.Printf("[AGGREGATOR-THUMB] Trusted aggregator provided thumbnail: %s", *req.ThumbnailURL)
 
 						if s.blobService != nil {
@@ -291,8 +351,8 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 					// Unfurl enhancement (optional, only if URL is supported)
 					// For trusted aggregators: only unfurl for thumbnail if they didn't provide one
 					// For regular users: full unfurl for all metadata
-					needsThumbnailUnfurl := isTrustedAggregator && external["thumb"] == nil && (req.ThumbnailURL == nil || *req.ThumbnailURL == "")
-					needsFullUnfurl := !isTrustedAggregator
+					needsThumbnailUnfurl := trusted && external["thumb"] == nil && (req.ThumbnailURL == nil || *req.ThumbnailURL == "")
+					needsFullUnfurl := !trusted
 
 					if needsThumbnailUnfurl || needsFullUnfurl {
 						if uri, ok := external["uri"].(string); ok && uri != "" {
@@ -359,29 +419,7 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 		}
 	}
 
-	// 11. Write to community's PDS repository
-	uri, cid, err := s.createPostOnPDS(ctx, community, postRecord)
-	if err != nil {
-		return nil, fmt.Errorf("failed to write post to PDS: %w", err)
-	}
-
-	// 12. Record aggregator post for rate limiting (non-Kagi aggregators only)
-	// Kagi is exempted from rate limiting via env var (temporary)
-	if isOtherAggregator && s.aggregatorService != nil {
-		if recordErr := s.aggregatorService.RecordAggregatorPost(ctx, req.AuthorDID, communityDID, uri, cid); recordErr != nil {
-			// Log but don't fail - post was already created successfully
-			log.Printf("[POST-CREATE] Warning: failed to record aggregator post for rate limiting: %v", recordErr)
-		}
-	}
-
-	// 13. Return response (AppView will index via Jetstream consumer)
-	log.Printf("[POST-CREATE] Author: %s (trustedKagi=%v, otherAggregator=%v), Community: %s, URI: %s",
-		req.AuthorDID, isTrustedAggregator, isOtherAggregator, communityDID, uri)
-
-	return &CreatePostResponse{
-		URI: uri,
-		CID: cid,
-	}, nil
+	return nil
 }
 
 // validateCreateRequest validates basic input requirements

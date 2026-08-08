@@ -393,6 +393,9 @@ func Load() (*Config, error) {
 	if err := cfg.loadJetstream(); err != nil {
 		return nil, err
 	}
+	if err := cfg.loadSubmissions(); err != nil {
+		return nil, err
+	}
 
 	cfg.PDS = PDSConfig{
 		URL:              stringVar("PDS_URL", "http://localhost:3001"),
@@ -627,6 +630,41 @@ func (c *Config) loadJetstream() error {
 	return nil
 }
 
+// Default submission quotas. They apply in every environment, dev and
+// production alike, because the alternative — requiring the variables in
+// production — makes an omission fail closed on the wrong side: the process
+// refuses to boot over an abuse limit rather than running with a conservative
+// one. The bounds are deliberately generous enough that no ordinary author
+// meets them and tight enough to make scripted flooding expensive, and every
+// instance can move them.
+const (
+	defaultMaxSubmissionsPerCommunity = 10
+	defaultSubmissionWindow           = time.Hour
+	defaultSubmissionDedupeWindow     = time.Hour
+)
+
+func (c *Config) loadSubmissions() error {
+	maxPerCommunity, err := intVar("POST_SUBMISSIONS_MAX_PER_COMMUNITY", defaultMaxSubmissionsPerCommunity)
+	if err != nil {
+		return err
+	}
+	window, err := durationVar("POST_SUBMISSIONS_WINDOW", defaultSubmissionWindow)
+	if err != nil {
+		return err
+	}
+	dedupeWindow, err := durationVar("POST_SUBMISSIONS_DEDUPE_WINDOW", defaultSubmissionDedupeWindow)
+	if err != nil {
+		return err
+	}
+
+	c.Submissions = SubmissionsConfig{
+		MaxPerAuthorPerCommunity: maxPerCommunity,
+		Window:                   window,
+		DedupeWindow:             dedupeWindow,
+	}
+	return nil
+}
+
 // Validate enforces the constraints that Load's defaults cannot express,
 // notably the ones that differ between dev and production. It returns every
 // problem at once so a misconfigured deployment can be fixed in a single pass
@@ -706,6 +744,32 @@ func (c *Config) Validate() error {
 		// runtime rather than at startup.
 		problems = append(problems, fmt.Sprintf(
 			"INSTANCE_DID must be a DID (got %q)", c.Instance.DID))
+	}
+
+	// The submission quotas, in every environment. §8's limits exist because
+	// anyone can write unlimited records naming any community, so "unset" must
+	// not be readable as "unlimited" — and a zero is worse than unlimited: a
+	// limit check written as `count > limit` refuses every post, one written the
+	// other way admits every post, and either way the behaviour was decided by
+	// an omission. Load supplies defaults, so reaching any of these means an
+	// operator set the variable to something that is not a quota.
+	if c.Submissions.MaxPerAuthorPerCommunity <= 0 {
+		problems = append(problems, fmt.Sprintf(
+			"POST_SUBMISSIONS_MAX_PER_COMMUNITY must be greater than 0 (got %d); "+
+				"a non-positive per-author quota disables or inverts the abuse limit rather than relaxing it",
+			c.Submissions.MaxPerAuthorPerCommunity))
+	}
+	if c.Submissions.Window <= 0 {
+		problems = append(problems, fmt.Sprintf(
+			"POST_SUBMISSIONS_WINDOW must be greater than 0 (got %s); "+
+				"the quota is counted over a rolling window, and a zero-width one counts nothing",
+			c.Submissions.Window))
+	}
+	if c.Submissions.DedupeWindow <= 0 {
+		problems = append(problems, fmt.Sprintf(
+			"POST_SUBMISSIONS_DEDUPE_WINDOW must be greater than 0 (got %s); "+
+				"it scopes the ledger's uniqueness bucket, and without a width every repost collides with the original forever",
+			c.Submissions.DedupeWindow))
 	}
 
 	if !c.IsDevEnv {

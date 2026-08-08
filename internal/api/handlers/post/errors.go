@@ -32,6 +32,15 @@ var errorMapper = xrpc.NewMapper("post",
 	xrpc.Sentinel(posts.ErrNotFound, http.StatusNotFound,
 		"NotFound", "Post not found"),
 
+	// A submission refused at the admission gate, which is NOT the generic
+	// AlreadyExists that a storage conflict produces: 409 DuplicateSubmission
+	// tells a client whose response was lost that its post already exists and
+	// it should stop resending, where a 429 would have it retry on a timer
+	// forever. Ahead of the shared ConflictError rule, which answers with the
+	// less specific code.
+	xrpc.Sentinel(posts.ErrDuplicateSubmission, http.StatusConflict,
+		"DuplicateSubmission", "You have already submitted this post to this community"),
+
 	xrpc.Match(aggregators.IsUnauthorized, http.StatusForbidden,
 		"NotAuthorized", "Aggregator not authorized to post in this community"),
 	xrpc.Match(aggregators.IsRateLimited, http.StatusTooManyRequests,
