@@ -97,8 +97,28 @@ func newQuotaFixture(t *testing.T) *quotaFixture {
 		postLookup:   &quotaPosts{posts: map[string]*posts.Post{}},
 		communityDID: communityDID,
 		authorDID:    fixtures.DID(testkit.UniqueID(t)),
-		now:          time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC),
-		trusted:      map[string]bool{},
+		// TWO CLOCKS, AND THEY HAVE TO AGREE. The quota compares an injected
+		// `now` against created_at on the admission rows — and those are stamped
+		// by POSTGRES, with NOW(), by design: the repository owns that column
+		// and a test does not get to hand it one. So the injected clock is only
+		// free to move RELATIVE to the database's, never to be planted somewhere
+		// else entirely.
+		//
+		// A fixed instant looks like the suite's injected-clock rule and inverts
+		// it. Pinned at a hardcoded 2026-08-08T12:00:00Z with a one-hour window,
+		// the count's floor is 11:00 that day while the rows carry whatever the
+		// database's real clock said — so the two only overlap during one hour
+		// of one day, and worse, they overlap in a way no implementation can
+		// satisfy: rows stamped hours LATER than the injected now stay inside
+		// every window the test then advances through, so the refusal pin and
+		// TheWindowRolls become mutually unsatisfiable.
+		//
+		// Anchoring on the real clock keeps the injection where it belongs — on
+		// the DELTAS the tests apply — which is the whole reason the clock is
+		// injectable: crossing a window boundary must cost no wall time
+		// (docs/TEST_ARCHITECTURE.md forbids sleeping for it).
+		now:     time.Now().UTC(),
+		trusted: map[string]bool{},
 	}
 
 	f.decider = posts.NewAdmissionEngineDecider(posts.DeciderDeps{
