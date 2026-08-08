@@ -5,6 +5,7 @@ package posts_test
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -283,20 +284,23 @@ func TestService_TheAuthorQuotaStopsTheNextSubmission(t *testing.T) {
 	assert.NoError(t, err, "the quota is per (author, community); being at the limit in one must not close the others")
 }
 
-// An identical resubmission is a repeat, not a new post.
+// An identical resubmission is a repeat, not a new post — even when the retry
+// names the community by DID and the original named it by handle.
 //
 // The canonical case is a client that retried after a lost response, and the
 // answer has to be distinguishable from a quota breach: 409 tells the client its
 // post already exists, 429 tells it to wait. A submission refused as a duplicate
 // must also not be billed, or a flaky connection would rate-limit a user who
-// posted once.
+// posted once. Submitting first by HANDLE and retrying by DID is the identifier
+// dodge the fingerprint must not fall for: the ledger scopes dedupe by the
+// RESOLVED community DID, so the client-typed spelling must not enter the key.
 func TestService_AnIdenticalResubmissionIsRefusedAsADuplicate(t *testing.T) {
 	t.Parallel()
 
 	f := newAdmissionFixture(t)
 
-	_, err := f.submit(t, f.base.community.DID, "the very same post")
-	require.NoError(t, err)
+	_, err := f.submit(t, f.base.community.Handle, "the very same post")
+	require.NoError(t, err, "submitting by handle must resolve and admit like submitting by DID")
 
 	_, err = f.submit(t, f.base.community.DID, "the very same post")
 	require.Error(t, err)
@@ -361,6 +365,210 @@ func TestService_AFailedPDSWriteReleasesTheReservation(t *testing.T) {
 	// post exists rather than merely that no error came back.
 	record := f.base.communityAccount(t).GetRecord(t, postCollection, rkeyOf(t, resp.URI))
 	assert.Equal(t, f.base.author.DID, record.Value["author"])
+}
+
+// A client that goes away MID-WRITE must still get its reservation back.
+//
+// The failure path runs on the same context the request came in on, and by the
+// time the release runs that context is already dead — the canceled write is
+// exactly why the path was taken. A release issued on the caller's context
+// would be refused by Postgres as canceled too, and the leak would be
+// invisible: the request already failed, the log line is a warning, and the
+// author discovers it as a duplicate refusal of a post that does not exist.
+// The release must therefore run detached from the caller's cancellation
+// (precedent: adminreports raiseAlert), bounded by its own timeout.
+func TestService_ACancellationDuringThePDSWriteStillReleasesTheReservation(t *testing.T) {
+	t.Parallel()
+
+	f := newAdmissionFixture(t)
+
+	// The client's context, canceled by the "PDS" at the exact moment the
+	// write is in flight — the request-scoped context is dead by the time
+	// CreatePost's failure path runs, which is the shape of a client
+	// disconnecting mid-request.
+	ctx, cancel := context.WithCancel(middleware.SetTestUserDID(context.Background(), f.base.author.DID))
+	defer cancel()
+
+	canceling := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// Kill the caller's context while its write is in flight, then refuse
+		// the write. Whether CreatePost's failure surfaces as the canceled
+		// context or as the 500 is an interleaving detail; cancel() happens
+		// before the response is written, so by the time the failure path runs
+		// the request's context is dead either way.
+		cancel()
+		http.Error(w, `{"error":"InternalServerError"}`, http.StatusInternalServerError)
+	}))
+	t.Cleanup(canceling.Close)
+
+	healthyURL := communityPDSURL(t, f.base.db, f.base.community.DID)
+	setCommunityPDSURL(t, f.base.db, f.base.community.DID, canceling.URL)
+
+	const repeatable = "a post whose client disconnects mid-write"
+	content := "a body that makes this a complete post"
+	_, err := f.service.CreatePost(ctx, posts.CreatePostRequest{
+		Community: f.base.community.DID,
+		Title:     func() *string { s := repeatable; return &s }(),
+		Content:   &content,
+		AuthorDID: f.base.author.DID,
+	})
+	require.Error(t, err, "the write ran against a dead context and must fail")
+
+	assert.Zerof(t, f.ledgerRows(t, f.base.community.DID),
+		"the release ran on the caller's canceled context and was refused with it: the reservation leaked, burning a quota slot and blocking the retry as a duplicate")
+
+	setCommunityPDSURL(t, f.base.db, f.base.community.DID, healthyURL)
+
+	// The retry a reconnected client sends: byte-identical content on a live
+	// context. Admissible only if the canceled attempt released its row.
+	resp, err := f.submit(t, f.base.community.DID, repeatable)
+	require.NoError(t, err, "the identical retry was refused, so the canceled attempt leaked its reservation")
+	require.NotEmpty(t, resp.URI)
+	assert.Equal(t, 1, f.ledgerRows(t, f.base.community.DID))
+}
+
+// A token-refresh failure (step 5) happens with the reservation already on the
+// ledger, and must give it back for the same reason a failed PDS write must:
+// the community's credentials failing is not the author's fault, and must not
+// cost them a quota slot or refuse their retry as a duplicate.
+func TestService_ATokenRefreshFailureReleasesTheReservation(t *testing.T) {
+	t.Parallel()
+
+	f := newAdmissionFixture(t)
+	ctx := context.Background()
+
+	original, err := f.repo.GetByDID(ctx, f.base.community.DID)
+	require.NoError(t, err)
+	require.NotEmpty(t, original.PDSAccessToken, "the fixture community must hold real credentials to restore")
+
+	// An expired access token forces EnsureFreshToken down the refresh path,
+	// and the community's PDS — repointed at a server that 500s everything —
+	// refuses the refresh. Same seam as the failed-write test: the pds_url and
+	// credentials are read fresh off the community row on every write.
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":"InternalServerError"}`, http.StatusInternalServerError)
+	}))
+	t.Cleanup(broken.Close)
+
+	healthyURL := communityPDSURL(t, f.base.db, f.base.community.DID)
+	setCommunityPDSURL(t, f.base.db, f.base.community.DID, broken.URL)
+	require.NoError(t, f.repo.UpdateCredentials(ctx, f.base.community.DID, expiredJWT(t), original.PDSRefreshToken))
+
+	const repeatable = "a post whose community credentials fail to refresh"
+	_, err = f.submit(t, f.base.community.DID, repeatable)
+	require.Error(t, err, "the token refresh failed, so CreatePost must report a failure")
+
+	assert.Zerof(t, f.ledgerRows(t, f.base.community.DID),
+		"the reservation for a submission that failed at token refresh is still on the ledger")
+
+	setCommunityPDSURL(t, f.base.db, f.base.community.DID, healthyURL)
+	require.NoError(t, f.repo.UpdateCredentials(ctx, f.base.community.DID, original.PDSAccessToken, original.PDSRefreshToken))
+
+	resp, err := f.submit(t, f.base.community.DID, repeatable)
+	require.NoError(t, err, "the identical retry after the credentials recovered was refused, so the refresh-failure path leaked its reservation")
+	require.NotEmpty(t, resp.URI)
+	assert.Equal(t, 1, f.ledgerRows(t, f.base.community.DID))
+}
+
+// expiredJWT builds a structurally valid, long-expired JWT: enough for
+// communities.NeedsRefresh (which parses the exp claim without verifying the
+// signature) to answer "refresh this now".
+func expiredJWT(t *testing.T) string {
+	t.Helper()
+
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
+	payload := base64.RawURLEncoding.EncodeToString(
+		[]byte(fmt.Sprintf(`{"exp":%d}`, time.Now().Add(-time.Hour).Unix())))
+	return header + "." + payload + ".unverified"
+}
+
+// An embed-enhancement failure (step 7) also runs with the reservation held.
+// The thumb-must-be-a-blob guard is the reachable failure in that step without
+// a network: it refuses the submission after admission, so the refusal must
+// hand the slot back or the author's corrected retry meets a quota they never
+// spent.
+func TestService_AnEmbedEnhancementFailureReleasesTheReservation(t *testing.T) {
+	t.Parallel()
+
+	f := newAdmissionFixture(t)
+
+	title := "a link post with a malformed thumbnail"
+	content := "a body that makes this a complete post"
+	submitWithThumb := func(thumb interface{}) (*posts.CreatePostResponse, error) {
+		external := map[string]interface{}{
+			"uri":         "https://example.com/article",
+			"title":       "An article",
+			"description": "worth reading",
+		}
+		if thumb != nil {
+			external["thumb"] = thumb
+		}
+		return f.service.CreatePost(
+			middleware.SetTestUserDID(context.Background(), f.base.author.DID),
+			posts.CreatePostRequest{
+				Community: f.base.community.DID,
+				Title:     &title,
+				Content:   &content,
+				AuthorDID: f.base.author.DID,
+				Embed: map[string]interface{}{
+					"$type":    "social.coves.embed.external",
+					"external": external,
+				},
+			})
+	}
+
+	// A thumb sent as a URL string passes the lexicon-shape validation of step
+	// 1 and is refused by the blob guard in step 7 — after admission.
+	_, err := submitWithThumb("https://example.com/thumb.jpg")
+	require.Error(t, err)
+	require.True(t, posts.IsValidationError(err), "the thumb guard reports a validation error, got: %v", err)
+
+	assert.Zerof(t, f.ledgerRows(t, f.base.community.DID),
+		"the reservation for a submission refused by the embed guard is still on the ledger")
+
+	// The corrected retry — same post, thumb omitted — must be admitted.
+	resp, err := submitWithThumb(nil)
+	require.NoError(t, err, "the corrected retry was refused, so the embed-guard path leaked its reservation")
+	require.NotEmpty(t, resp.URI)
+	assert.Equal(t, 1, f.ledgerRows(t, f.base.community.DID))
+}
+
+// The concurrent double-tap the reserve-then-confirm ordering exists to stop:
+// two byte-identical submissions racing through CreatePost. The ledger's
+// unique key is the only arbiter both goroutines share, so exactly one may be
+// admitted; the loser must hear the DUPLICATE sentinel (its post exists — a
+// 409), not a generic failure, and must not leave a second row behind.
+func TestService_ConcurrentIdenticalSubmissionsAdmitExactlyOne(t *testing.T) {
+	t.Parallel()
+
+	f := newAdmissionFixture(t)
+
+	const doubleTap = "the same post, submitted twice at once"
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range errs {
+		wg.Add(1)
+		go func(slot int) {
+			defer wg.Done()
+			_, errs[slot] = f.submit(t, f.base.community.DID, doubleTap)
+		}(i)
+	}
+	wg.Wait()
+
+	winners, losers := 0, 0
+	for _, err := range errs {
+		if err == nil {
+			winners++
+			continue
+		}
+		losers++
+		assert.ErrorIsf(t, err, posts.ErrDuplicateSubmission,
+			"the racing loser must hear the duplicate sentinel — its post exists — not %v", err)
+	}
+	assert.Equal(t, 1, winners, "exactly one of two identical concurrent submissions may be admitted")
+	assert.Equal(t, 1, losers)
+
+	assert.Equal(t, 1, f.ledgerRows(t, f.base.community.DID),
+		"the race must leave exactly the winner's row: the unique key is the arbiter, not a second insert")
 }
 
 // communityPDSURL reads a community's stored PDS, so a test that repoints it

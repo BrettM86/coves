@@ -10,6 +10,7 @@ import (
 	"log"
 	"time"
 
+	"Coves/internal/core/aggregators"
 	"Coves/internal/core/communities"
 )
 
@@ -76,9 +77,10 @@ type AdmissionRequest struct {
 	Community string
 
 	// Fingerprint identifies WHAT is being submitted: the hash of the canonical
-	// record with createdAt removed (see submissionFingerprint). It is the
-	// dedupe key, and it must exclude the timestamp or every resubmission of
-	// identical content would look new.
+	// record with createdAt and the client-typed community identifier removed,
+	// and the supplied thumbnail URL folded in (see submissionFingerprint). It
+	// is the dedupe key, and it must exclude the timestamp or every
+	// resubmission of identical content would look new.
 	Fingerprint string
 }
 
@@ -259,48 +261,55 @@ type AdmissionPolicy struct {
 	Now    Clock
 }
 
-// WithAdmissionPolicy enables the ban check, dedupe and per-author rate limit
-// on CreatePost.
+// WithAdmissionPolicy supplies the ban check, dedupe and per-author rate limit
+// on CreatePost. It is not optional: NewPostService refuses to construct a
+// service without a complete policy (see mustCompleteAdmissionPolicy), because
+// a post service whose admission policy silently defaulted to no-ops would be
+// one whose ban check and quota do not exist and nothing says so.
 func WithAdmissionPolicy(policy AdmissionPolicy) PostServiceOption {
 	return func(s *postService) { s.admission = &policy }
 }
 
-// completeAdmissionPolicy fills in the collaborators a policy did not name, so
-// that CreatePost has exactly ONE decision path to run.
+// mustCompleteAdmissionPolicy is NewPostService's guard: a service may not be
+// constructed without a complete admission policy.
 //
-// The alternative — branching on whether a policy was supplied, and keeping the
-// pre-policy checks inline for the other branch — would leave two copies of the
-// community/visibility/authorization sequence, and §4.1 of the PRD exists
-// because the one copy we had already drifted from what its docstring claimed.
+// It panics rather than returning an error, matching how this codebase treats
+// every other mandatory collaborator (aggregators.NewAPIKeyService,
+// blueskypost.NewService): a missing policy is a wiring bug that must stop the
+// process at startup, not a runtime condition to handle. The old alternative —
+// silently substituting a no-op ledger and ban lookup — is exactly how the
+// pre-§4.1 docstring came to claim "membership/ban validation" that had never
+// existed on the write path.
 //
-// The substitutes are named for what they are. A service constructed without a
-// policy enforces exactly what CreatePost enforced before this decision existed:
-// community existence, private visibility, and aggregator authorization. It is
-// the shape every test fixture that predates §8 uses, and cmd/server always
-// supplies the real policy — which is what makes the ban lookup and the quota
-// live in production.
-func completeAdmissionPolicy(policy *AdmissionPolicy) *AdmissionPolicy {
-	complete := AdmissionPolicy{}
-	if policy != nil {
-		complete = *policy
+// Every limit must be positive for the same reason config.Validate enforces
+// it: a quota that silently disappears when a field is left zero is not a
+// quota. Tests that are not about admission opt out EXPLICITLY with
+// NewAllowAllAdmissionPolicyForTests.
+func mustCompleteAdmissionPolicy(policy *AdmissionPolicy) {
+	switch {
+	case policy == nil:
+		panic("posts.NewPostService: an admission policy is required — wire posts.WithAdmissionPolicy " +
+			"(cmd/server) or posts.NewAllowAllAdmissionPolicyForTests (fixtures that are not about admission)")
+	case policy.Ledger == nil:
+		panic("posts.NewPostService: AdmissionPolicy.Ledger cannot be nil")
+	case policy.Bans == nil:
+		panic("posts.NewPostService: AdmissionPolicy.Bans cannot be nil")
+	case policy.Now == nil:
+		panic("posts.NewPostService: AdmissionPolicy.Now cannot be nil")
+	case policy.Limits.MaxPerAuthorPerCommunity <= 0:
+		panic("posts.NewPostService: AdmissionPolicy.Limits.MaxPerAuthorPerCommunity must be positive")
+	case policy.Limits.Window <= 0:
+		panic("posts.NewPostService: AdmissionPolicy.Limits.Window must be positive")
+	case policy.Limits.DedupeWindow <= 0:
+		panic("posts.NewPostService: AdmissionPolicy.Limits.DedupeWindow must be positive")
 	}
-	if complete.Ledger == nil {
-		complete.Ledger = unmeteredLedger{}
-	}
-	if complete.Bans == nil {
-		complete.Bans = unenforcedBans{}
-	}
-	if complete.Now == nil {
-		complete.Now = time.Now
-	}
-	return &complete
 }
 
-// unmeteredLedger stands in when no submission ledger was wired: it reserves
-// nothing, so neither dedupe nor the per-author quota applies.
+// unmeteredLedger is the allow-all test policy's ledger: it reserves nothing,
+// so neither dedupe nor the per-author quota applies.
 //
 // It cannot silently disable a configured limiter — it is only ever reachable
-// when AdmissionPolicy.Ledger is nil, which cmd/server never leaves so.
+// through NewAllowAllAdmissionPolicyForTests, whose name is the warning.
 type unmeteredLedger struct{}
 
 func (unmeteredLedger) Reserve(context.Context, ReserveSubmissionCommand) (SubmissionReservation, error) {
@@ -316,19 +325,44 @@ func (unmeteredLedger) CountSince(context.Context, string, string, time.Time) (i
 	return 0, nil
 }
 
-// unenforcedBans stands in when no ban lookup was wired, answering the way an
-// author with no membership row does. It returns the sentinel rather than a nil
-// membership so that it travels the same branch a real absent row does — the
-// "no membership means not banned" translation stays in one place.
+// unenforcedBans is the allow-all test policy's ban lookup, answering the way
+// an author with no membership row does. It returns the sentinel rather than a
+// nil membership so that it travels the same branch a real absent row does —
+// the "no membership means not banned" translation stays in one place.
 type unenforcedBans struct{}
 
 func (unenforcedBans) GetMembership(context.Context, string, string) (*communities.Membership, error) {
 	return nil, communities.ErrMembershipNotFound
 }
 
+// NewAllowAllAdmissionPolicyForTests is the explicit opt-out for TEST fixtures
+// whose subject is not admission: it admits everything an unconfigured service
+// used to — no ban rows to find, no dedupe, no per-author quota — while
+// community existence, visibility and aggregator authorization stay enforced.
+//
+// THE NAME IS THE CONTRACT: this must never be wired in production code.
+// cmd/server wires the real policy, and mustCompleteAdmissionPolicy exists
+// precisely so that forgetting to do so fails at startup instead of shipping a
+// post service whose §8 enforcement quietly does not exist. The limits are
+// real (and enormous) only because construction refuses non-positive ones; the
+// unmetered ledger never counts against them anyway.
+func NewAllowAllAdmissionPolicyForTests() AdmissionPolicy {
+	return AdmissionPolicy{
+		Ledger: unmeteredLedger{},
+		Bans:   unenforcedBans{},
+		Limits: SubmissionLimits{
+			MaxPerAuthorPerCommunity: 1 << 30,
+			Window:                   time.Hour,
+			DedupeWindow:             time.Hour,
+		},
+		Now: time.Now,
+	}
+}
+
 // admissionDeps assembles the decision's inputs from the service's
-// collaborators. s.admission is never nil — NewPostService completes it — so
-// this cannot silently hand admitPost a missing ledger or clock.
+// collaborators. s.admission is never nil or incomplete — NewPostService
+// refuses to construct without a complete policy — so this cannot silently
+// hand admitPost a missing ledger or clock.
 func (s *postService) admissionDeps() admissionDeps {
 	return admissionDeps{
 		communities: s.communityService,
@@ -435,6 +469,17 @@ type admissionDeps struct {
 // A non-nil error means the decision could NOT be made — a lookup failed — and
 // is distinct from a refusal, which is a decision.
 func admitPost(ctx context.Context, deps admissionDeps, req AdmissionRequest) (AdmissionDecision, error) {
+	// 0. The actor class must be one this decision knows. It gates everything
+	// below — including the trusted skip of visibility, ban and authorization —
+	// so an unknown value must fail CLOSED before any lookup runs. Falling
+	// through would hand the zero value (a caller that forgot to classify) the
+	// widest privileges in the system.
+	switch req.Actor {
+	case ActorUser, ActorRegisteredAggregator, ActorTrustedAggregator:
+	default:
+		return undecided(fmt.Errorf("unknown actor class %q: the submission cannot be evaluated", req.Actor))
+	}
+
 	// 1. Community resolution. Two lookups — the at-identifier to a DID, then
 	// the DID to the indexed row — and either failing to find it is the same
 	// answer to the client.
@@ -490,9 +535,18 @@ func admitPost(ctx context.Context, deps admissionDeps, req AdmissionRequest) (A
 	// sentinel that caused it: the boundary tells 403 from 429 by matching on
 	// it, and a bare code would have a well-behaved aggregator retry a
 	// permanent refusal forever.
+	//
+	// Only the package's POLICY sentinels are refusals. ValidateAggregatorPost
+	// also fails when its own lookups do (a wrapped driver error carrying no
+	// sentinel), and that is an undecided infrastructure failure like any
+	// other — dressing it as DecisionAggregatorNotAuthorized would mint a
+	// permanent-sounding 403 out of a Postgres blip.
 	if req.Actor == ActorRegisteredAggregator {
 		if err := deps.aggregators.ValidateAggregatorPost(ctx, req.AuthorDID, community.DID); err != nil {
-			return AdmissionDecision{Code: DecisionAggregatorNotAuthorized, Cause: err}, nil
+			if errors.Is(err, aggregators.ErrNotAuthorized) || errors.Is(err, aggregators.ErrRateLimitExceeded) {
+				return AdmissionDecision{Code: DecisionAggregatorNotAuthorized, Cause: err}, nil
+			}
+			return undecided(fmt.Errorf("failed to validate aggregator post: %w", err))
 		}
 	}
 
@@ -550,8 +604,21 @@ func undecided(err error) (AdmissionDecision, error) {
 // use. The error is logged rather than returned: every caller reaches this
 // while already reporting a refusal or a failure, and replacing that answer
 // with a second one would hide the reason the submission was actually stopped.
+//
+// The release runs DETACHED from the caller's cancellation (precedent:
+// adminreports.raiseAlert), because the most common reason to be here at all
+// is that the caller's context is already dead — a client that disconnected
+// mid-write is exactly a failed PDS write. A release issued on that context
+// would be refused by Postgres as canceled too, and the reservation would
+// leak: one quota slot burned and the author's retry refused as a duplicate,
+// with nothing but a warning line to say why. Context values (trace IDs)
+// survive; only the cancellation signal is dropped, and the fresh timeout
+// keeps a wedged database from pinning the goroutine.
 func releaseReservation(ctx context.Context, ledger SubmissionLedger, reservation SubmissionReservation) {
-	if err := ledger.Release(ctx, reservation); err != nil {
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+
+	if err := ledger.Release(releaseCtx, reservation); err != nil {
 		log.Printf("[POST-ADMIT] Warning: failed to release submission reservation %d: %v", reservation.ID, err)
 	}
 }
@@ -559,6 +626,16 @@ func releaseReservation(ctx context.Context, ledger SubmissionLedger, reservatio
 // dedupeBucket is the index of the window `now` falls in, so that two
 // submissions in the same window collide on the ledger's unique key and two
 // submissions a window apart do not.
+//
+// Buckets are aligned to the epoch, not to the submission, so the effective
+// dedupe protection ranges over (0, window] depending on where in the bucket
+// a submission lands: content submitted just before a bucket edge can be
+// resubmitted the moment the edge passes. That tradeoff is deliberate — the
+// epoch-aligned key self-expires without a sweeper, where a per-submission
+// window would need a range predicate or a cleanup process to expire. The
+// same boundary bounds a leaked reservation: a crash between Reserve and the
+// PDS write leaves a row that burns one quota slot and refuses identical
+// content as a duplicate until the bucket rolls, then heals on its own.
 func dedupeBucket(now time.Time, window time.Duration) int64 {
 	// A non-positive window would divide by zero. config.Validate refuses to
 	// start a process with one, so reaching this is a wiring bug rather than an
@@ -571,19 +648,40 @@ func dedupeBucket(now time.Time, window time.Duration) int64 {
 	return now.UnixNano() / int64(window)
 }
 
-// submissionFingerprint hashes what a moderator would judge about a record:
-// everything except createdAt.
+// submissionFingerprint hashes what a moderator would judge about a
+// submission: everything on the record except createdAt and community, plus
+// the thumbnail URL that rides alongside the record.
 //
 // The timestamp has to go. It is stamped by the server at submission time
-// (service.go step 9), so it differs on every attempt — including the retry
+// (service.go step 6), so it differs on every attempt — including the retry
 // after a lost response, which is the case dedupe exists to catch. A
 // fingerprint that included it would never match anything.
-func submissionFingerprint(record PostRecord) string {
-	// The record is taken by value, so clearing the timestamp here cannot
-	// affect the record the caller goes on to write.
+//
+// The community field has to go too, for the opposite failure. It holds the
+// at-identifier as the CLIENT typed it — a handle one time, a DID the next —
+// while the ledger's unique key already scopes the fingerprint by the
+// RESOLVED community DID. Hashing the client-typed identifier would let the
+// same submission to the same community bypass dedupe simply by switching
+// spelling between attempts; leaving it out cannot collide submissions to
+// DIFFERENT communities, because the ledger key keeps them apart.
+//
+// The thumbnail URL is IN, even though it is not a record field: a trusted
+// aggregator supplies it alongside the record (CreatePostRequest.ThumbnailURL)
+// and it changes what readers ultimately see. Two submissions differing only
+// in their thumbnail are different posts, and excluding it would refuse the
+// second as a repeat of the first.
+func submissionFingerprint(record PostRecord, thumbnailURL *string) string {
+	// The record is taken by value, so clearing fields here cannot affect the
+	// record the caller goes on to write.
 	record.CreatedAt = ""
+	record.Community = ""
 
-	canonical, err := json.Marshal(record)
+	material := struct {
+		Record       PostRecord `json:"record"`
+		ThumbnailURL *string    `json:"thumbnailUrl,omitempty"`
+	}{Record: record, ThumbnailURL: thumbnailURL}
+
+	canonical, err := json.Marshal(material)
 	if err != nil {
 		// Unreachable in practice: every field of a PostRecord either has a
 		// concrete marshalable type or holds a value decoded from JSON. Hashing
@@ -591,7 +689,8 @@ func submissionFingerprint(record PostRecord) string {
 		// a constant fingerprint would collide every submission with every
 		// other, and the second post the instance ever received would be
 		// refused as a repeat of the first.
-		canonical = []byte(fmt.Sprintf("%#v", record))
+		log.Printf("[POST-ADMIT] Warning: submission fingerprint fell back to a Go rendering, canonical JSON marshal failed: %v", err)
+		canonical = []byte(fmt.Sprintf("%#v", material))
 	}
 
 	sum := sha256.Sum256(canonical)

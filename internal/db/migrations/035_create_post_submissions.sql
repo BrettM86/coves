@@ -24,6 +24,29 @@
 -- The bucket is the index of the application's dedupe window, derived from the
 -- injected clock, so the key expires on its own without a sweeper.
 --
+-- THE BUCKET BOUNDARY IS A TRADEOFF, taken deliberately. Buckets are aligned
+-- to the epoch, not to the submission, so a submission landing just before a
+-- bucket edge is protected against an identical resubmission only until that
+-- edge: the effective dedupe protection ranges over (0, window] depending on
+-- where in the bucket the submission falls. A per-submission window would
+-- protect for the full width every time, but expiring it would take a range
+-- predicate or a sweeper; the epoch-aligned bucket lets the unique key expire
+-- entirely on its own.
+--
+-- A LEAKED RESERVATION IS BOUNDED BY THE SAME MECHANISM. If the process dies
+-- between reserving the row and completing the PDS write, the orphaned row
+-- burns one quota slot until it ages out of the rolling window, and refuses
+-- identical content as a duplicate until the bucket rolls. There is no
+-- sweeper to reclaim it — deliberate: the damage is bounded and self-healing,
+-- and a reaper would be one more process able to disagree with the gate it
+-- cleans.
+--
+-- THIS TABLE GROWS WITHOUT BOUND. Confirmed rows are never deleted — only
+-- releasing a reservation removes a row — so the ledger accumulates one row
+-- per admitted post forever. Retention is a known, deliberate deferral:
+-- docs/PRD_AUTHOR_OWNED_POSTS.md §8's retention item names post_submissions
+-- alongside the pending/rejected admissions rows.
+--
 -- WHY NO FOREIGN KEYS. Migration 034 dropped posts.fk_author because a
 -- federated author has no `users` row (§5.3) — the AppView only bootstraps
 -- authors from trusted bridge PDSs today — and a community named by a

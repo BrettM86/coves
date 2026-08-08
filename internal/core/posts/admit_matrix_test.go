@@ -556,6 +556,62 @@ func TestAdmitPost_AnAggregatorRefusalKeepsItsSentinel(t *testing.T) {
 // Failing closed
 // ---------------------------------------------------------------------------
 
+// An actor class the decision does not recognise must fail CLOSED, before any
+// lookup runs. The zero value is the dangerous one: a caller that forgot to
+// classify the actor would otherwise sail past every check that switches on
+// req.Actor — which is exactly the trusted-aggregator skip path — and a
+// database outage would be the least of it.
+func TestAdmitPost_AnUnknownActorClassFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		actor ActorClass
+	}{
+		{"the zero value", ActorClass("")},
+		{"an unrecognised class", ActorClass("99")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newAdmitHarness()
+
+			decision, err := h.admit(t, tc.actor, "probe")
+			require.Error(t, err,
+				"an unclassifiable actor must fail the request, never fall through to the trusted-skip path")
+			assert.False(t, decision.Admitted())
+			assert.Emptyf(t, decision.Code,
+				"an unclassifiable actor is a caller bug, not a policy refusal (%q)", decision.Code)
+
+			assert.Zero(t, h.communities.resolveCalls, "no lookup may run for an actor the decision cannot classify")
+			assert.Zero(t, h.communities.getCalls, "no lookup may run for an actor the decision cannot classify")
+			assert.Zero(t, h.bans.calls, "no lookup may run for an actor the decision cannot classify")
+			assert.Zero(t, h.aggregators.calls, "no lookup may run for an actor the decision cannot classify")
+			assert.Empty(t, h.ledger.reserveCalls, "no reservation may be taken for an actor the decision cannot classify")
+		})
+	}
+}
+
+// A ValidateAggregatorPost failure that is NOT one of the aggregators package's
+// policy sentinels is infrastructure, not a refusal. Mapping a database error
+// to DecisionAggregatorNotAuthorized would tell a perfectly authorized
+// aggregator to stop asking — a 403 minted out of a Postgres blip.
+func TestAdmitPost_AnAggregatorLookupFailureIsAnErrorNotARefusal(t *testing.T) {
+	t.Parallel()
+
+	h := newAdmitHarness()
+	h.aggregators.err = errors.New("driver: bad connection")
+
+	decision, err := h.admit(t, ActorRegisteredAggregator, "item")
+	require.Error(t, err,
+		"an authorization check that could not be evaluated must fail the request, not refuse it")
+	assert.False(t, decision.Admitted())
+	assert.Emptyf(t, decision.Code,
+		"an infrastructure failure must not be dressed up as an authorization refusal (%q)", decision.Code)
+	assert.Empty(t, h.ledger.reserveCalls,
+		"a submission we could not evaluate must not reserve quota")
+}
+
 // A ban lookup that fails for any reason OTHER than "no such membership" must
 // fail the request.
 //
@@ -587,6 +643,11 @@ func TestAdmitPost_InfrastructureFailuresAreErrorsNotRefusals(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		setup func(*admitHarness)
+
+		// wantReserveCalls is how many times the failing path was expected to
+		// reach the ledger before the failure stopped it — the precondition
+		// that makes the liveRows assertion below meaningful.
+		wantReserveCalls int
 	}{
 		{
 			name:  "the community index is unreachable",
@@ -597,12 +658,14 @@ func TestAdmitPost_InfrastructureFailuresAreErrorsNotRefusals(t *testing.T) {
 			setup: func(h *admitHarness) { h.communities.getErr = errors.New("connection reset by peer") },
 		},
 		{
-			name:  "the ledger insert fails for a reason that is not a duplicate",
-			setup: func(h *admitHarness) { h.ledger.reserveErr = errors.New("deadlock detected") },
+			name:             "the ledger insert fails for a reason that is not a duplicate",
+			setup:            func(h *admitHarness) { h.ledger.reserveErr = errors.New("deadlock detected") },
+			wantReserveCalls: 1,
 		},
 		{
-			name:  "the quota count fails",
-			setup: func(h *admitHarness) { h.ledger.countErr = errors.New("statement timeout") },
+			name:             "the quota count fails",
+			setup:            func(h *admitHarness) { h.ledger.countErr = errors.New("statement timeout") },
+			wantReserveCalls: 1,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -611,12 +674,19 @@ func TestAdmitPost_InfrastructureFailuresAreErrorsNotRefusals(t *testing.T) {
 			h := newAdmitHarness()
 			tc.setup(h)
 
+			require.Zero(t, h.ledger.liveRows(), "the ledger must start empty for the release assertion to mean anything")
+
 			decision, err := h.admit(t, ActorUser, "probe")
 			require.Error(t, err)
 			assert.False(t, decision.Admitted(),
 				"a decision that could not be made must not read as an admission")
 			assert.Emptyf(t, decision.Code,
 				"an infrastructure failure must not be dressed up as a policy code (%q); the client would be told to stop retrying something that will work in a second", decision.Code)
+
+			assert.Len(t, h.ledger.reserveCalls, tc.wantReserveCalls,
+				"the failure was injected at a different point in the flow than this case describes")
+			assert.Zero(t, h.ledger.liveRows(),
+				"an undecided submission left a reservation on the ledger: it burned quota and will refuse the client's retry as a duplicate")
 		})
 	}
 }
@@ -902,6 +972,117 @@ func TestAdmitPost_QuotaIsScopedToOneCommunity(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Construction
+// ---------------------------------------------------------------------------
+
+// A post service without a complete admission policy is not a lighter post
+// service — it is one whose ban check, dedupe and quota silently do not exist.
+// Construction must therefore fail loudly, the way this codebase treats every
+// other mandatory collaborator (aggregators.NewAPIKeyService, blueskypost),
+// rather than substituting no-op defaults a production wiring mistake would
+// never notice.
+func TestNewPostService_RefusesConstructionWithoutACompleteAdmissionPolicy(t *testing.T) {
+	t.Parallel()
+
+	validLimits := SubmissionLimits{
+		MaxPerAuthorPerCommunity: 3,
+		Window:                   time.Hour,
+		DedupeWindow:             time.Hour,
+	}
+	complete := func() AdmissionPolicy {
+		return AdmissionPolicy{
+			Ledger: &stubLedger{now: time.Now},
+			Bans:   &stubBans{},
+			Limits: validLimits,
+			Now:    time.Now,
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		opts []PostServiceOption
+	}{
+		{
+			name: "no admission policy at all",
+			opts: nil,
+		},
+		{
+			name: "a policy with no ledger",
+			opts: []PostServiceOption{WithAdmissionPolicy(func() AdmissionPolicy {
+				p := complete()
+				p.Ledger = nil
+				return p
+			}())},
+		},
+		{
+			name: "a policy with no ban lookup",
+			opts: []PostServiceOption{WithAdmissionPolicy(func() AdmissionPolicy {
+				p := complete()
+				p.Bans = nil
+				return p
+			}())},
+		},
+		{
+			name: "a policy with no clock",
+			opts: []PostServiceOption{WithAdmissionPolicy(func() AdmissionPolicy {
+				p := complete()
+				p.Now = nil
+				return p
+			}())},
+		},
+		{
+			name: "a policy with an unset quota",
+			opts: []PostServiceOption{WithAdmissionPolicy(func() AdmissionPolicy {
+				p := complete()
+				p.Limits.MaxPerAuthorPerCommunity = 0
+				return p
+			}())},
+		},
+		{
+			name: "a policy with an unset window",
+			opts: []PostServiceOption{WithAdmissionPolicy(func() AdmissionPolicy {
+				p := complete()
+				p.Limits.Window = 0
+				return p
+			}())},
+		},
+		{
+			name: "a policy with an unset dedupe window",
+			opts: []PostServiceOption{WithAdmissionPolicy(func() AdmissionPolicy {
+				p := complete()
+				p.Limits.DedupeWindow = 0
+				return p
+			}())},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Panics(t, func() {
+				NewPostService(nil, nil, nil, nil, nil, nil, "", tc.opts...)
+			}, "a service constructed without a complete admission policy would enforce nothing and say nothing about it")
+		})
+	}
+
+	t.Run("a complete policy constructs", func(t *testing.T) {
+		t.Parallel()
+
+		require.NotPanics(t, func() {
+			NewPostService(nil, nil, nil, nil, nil, nil, "", WithAdmissionPolicy(complete()))
+		})
+	})
+
+	t.Run("the test-only allow-all policy constructs", func(t *testing.T) {
+		t.Parallel()
+
+		require.NotPanics(t, func() {
+			NewPostService(nil, nil, nil, nil, nil, nil, "",
+				WithAdmissionPolicy(NewAllowAllAdmissionPolicyForTests()))
+		}, "fixtures that are not about admission need an explicit, honestly-named way to opt out")
+	})
+}
+
+// ---------------------------------------------------------------------------
 // The sentinel's wording
 // ---------------------------------------------------------------------------
 
@@ -924,9 +1105,12 @@ func TestErrDuplicateSubmissionIsNotAStorageConflict(t *testing.T) {
 
 // The fingerprint is what makes two submissions "identical". createdAt is
 // stamped per attempt, so including it would make every retry look new and
-// dedupe would never fire; everything a moderator would judge must be included,
-// or two genuinely different posts would collide and the second would be
-// refused as a repeat of the first.
+// dedupe would never fire; the community field is the identifier as the CLIENT
+// typed it, so including it would let a handle-vs-DID resubmission bypass
+// dedupe; everything a moderator would judge must be included — including the
+// thumbnail an aggregator supplies alongside the record — or two genuinely
+// different posts would collide and the second would be refused as a repeat of
+// the first.
 func TestSubmissionFingerprint(t *testing.T) {
 	t.Parallel()
 
@@ -948,15 +1132,38 @@ func TestSubmissionFingerprint(t *testing.T) {
 		later := base()
 		later.CreatedAt = "2026-08-01T12:00:09Z"
 
-		assert.Equal(t, submissionFingerprint(base()), submissionFingerprint(later),
+		assert.Equal(t, submissionFingerprint(base(), nil), submissionFingerprint(later, nil),
 			"the server stamps createdAt per attempt, so a fingerprint that included it would never match a retry")
+	})
+
+	t.Run("the community identifier is excluded", func(t *testing.T) {
+		t.Parallel()
+
+		byHandle := base()
+		byHandle.Community = admitCommunityHandle
+
+		assert.Equal(t, submissionFingerprint(base(), nil), submissionFingerprint(byHandle, nil),
+			"the community field holds whatever identifier the client typed; hashing it would let the same "+
+				"submission dodge dedupe by naming the community by handle once and by DID the next time — "+
+				"the ledger's unique key already scopes the fingerprint to the RESOLVED community DID")
 	})
 
 	t.Run("a non-empty fingerprint", func(t *testing.T) {
 		t.Parallel()
 
-		assert.NotEmpty(t, submissionFingerprint(base()),
+		assert.NotEmpty(t, submissionFingerprint(base(), nil),
 			"an empty fingerprint would make every submission collide with every other")
+	})
+
+	t.Run("a different thumbnail is a different submission", func(t *testing.T) {
+		t.Parallel()
+
+		one, two := "https://example.com/thumb-1.jpg", "https://example.com/thumb-2.jpg"
+		assert.NotEqual(t, submissionFingerprint(base(), &one), submissionFingerprint(base(), &two),
+			"the thumbnail is submission material an aggregator supplies alongside the record; "+
+				"excluding it would refuse a post differing only in its thumbnail as a repeat")
+		assert.NotEqual(t, submissionFingerprint(base(), nil), submissionFingerprint(base(), &one),
+			"a submission with a thumbnail is not a repeat of the same submission without one")
 	})
 
 	for _, tc := range []struct {
@@ -965,7 +1172,6 @@ func TestSubmissionFingerprint(t *testing.T) {
 	}{
 		{"title", func(r *PostRecord) { title := "A different title"; r.Title = &title }},
 		{"content", func(r *PostRecord) { content := "Different body text"; r.Content = &content }},
-		{"community", func(r *PostRecord) { r.Community = "did:plc:dddddddddddddddddddddddd" }},
 		{"author", func(r *PostRecord) { r.Author = "did:plc:eeeeeeeeeeeeeeeeeeeeeeee" }},
 		{"embed", func(r *PostRecord) {
 			r.Embed = map[string]interface{}{"$type": "social.coves.embed.external"}
@@ -976,8 +1182,70 @@ func TestSubmissionFingerprint(t *testing.T) {
 
 			changed := base()
 			tc.mutate(&changed)
-			assert.NotEqual(t, submissionFingerprint(base()), submissionFingerprint(changed),
+			assert.NotEqual(t, submissionFingerprint(base(), nil), submissionFingerprint(changed, nil),
 				"two posts differing in %s would collide, and the second would be refused as a repeat of the first", tc.field)
 		})
 	}
+}
+
+// The dedupe gate must recognise a resubmission no matter which at-identifier
+// the client used to name the community. The ledger's unique key scopes the
+// fingerprint by the RESOLVED community DID, so the fingerprint itself must not
+// re-introduce the client-typed identifier — a fingerprint that hashed it would
+// admit the same post twice for anyone who typed the handle once and the DID
+// the second time.
+func TestAdmitPost_ResubmissionByDIDAfterHandleIsADuplicate(t *testing.T) {
+	t.Parallel()
+
+	h := newAdmitHarness()
+
+	title, content := "The same post", "the same body"
+	record := PostRecord{
+		Type:    postCollection,
+		Author:  admitAuthorDID,
+		Title:   &title,
+		Content: &content,
+	}
+
+	byHandle := record
+	byHandle.Community = admitCommunityHandle
+	first, err := h.admit(t, ActorUser, submissionFingerprint(byHandle, nil))
+	require.NoError(t, err)
+	require.True(t, first.Admitted())
+
+	byDID := record
+	byDID.Community = admitCommunityDID
+	second, err := h.admit(t, ActorUser, submissionFingerprint(byDID, nil))
+	require.NoError(t, err)
+	assert.Equal(t, DecisionDuplicateSubmission, second.Code,
+		"naming the community by DID instead of by handle must not turn a resubmission into a new post")
+	assert.Equal(t, 1, h.ledger.liveRows())
+}
+
+// The other direction of the same property: two submissions differing ONLY in
+// their thumbnail are different posts, and both must be admitted.
+func TestAdmitPost_AThumbnailOnlyDifferenceIsNotADuplicate(t *testing.T) {
+	t.Parallel()
+
+	h := newAdmitHarness()
+
+	title := "The same link, a different thumbnail"
+	record := PostRecord{
+		Type:      postCollection,
+		Community: admitCommunityHandle,
+		Author:    admitAuthorDID,
+		Title:     &title,
+	}
+
+	one, two := "https://example.com/thumb-1.jpg", "https://example.com/thumb-2.jpg"
+
+	first, err := h.admit(t, ActorUser, submissionFingerprint(record, &one))
+	require.NoError(t, err)
+	require.True(t, first.Admitted())
+
+	second, err := h.admit(t, ActorUser, submissionFingerprint(record, &two))
+	require.NoError(t, err)
+	assert.Truef(t, second.Admitted(),
+		"a thumbnail-only difference is a different post, refused with %q", second.Code)
+	assert.Equal(t, 2, h.ledger.liveRows())
 }

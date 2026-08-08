@@ -74,24 +74,33 @@ func NewPostService(
 	for _, opt := range opts {
 		opt(s)
 	}
-	s.admission = completeAdmissionPolicy(s.admission)
+	// The admission policy is mandatory, and a missing or partial one panics
+	// here rather than defaulting to no-ops: a post service whose ban check and
+	// quota silently do not exist is a wiring bug, not a configuration.
+	mustCompleteAdmissionPolicy(s.admission)
 	return s
 }
 
 // CreatePost creates a new post in a community
 // Flow:
-//  1. Validate input
-//  2. Check if author is an aggregator (server-side validation using DID from JWT)
-//  3. Admission: one decision over community existence, visibility, ban,
+//  1. Validate input (and normalize embed/facet URIs)
+//  2. Verify the authenticated DID matches the request's author DID
+//  3. Classify the actor: trusted aggregator, registered aggregator, or user
+//  4. Admission: one decision over community existence, visibility, ban,
 //     aggregator authorization, dedupe and the per-author quota (admitPost)
-//  4. Build post record
-//  5. Write to community's PDS repository
-//  6. If aggregator: record post for rate limiting
-//  7. Return URI/CID (AppView indexes asynchronously via Jetstream)
+//  5. Ensure the community has fresh PDS credentials (token refresh)
+//  6. Build the post record
+//  7. Validate and enhance external embeds (thumb validation, unfurl, blobs)
+//  8. Write to community's PDS repository
+//  9. If aggregator: record post for rate limiting
+//  10. Return URI/CID (AppView indexes asynchronously via Jetstream)
 //
 // Admission runs BEFORE the token refresh, the blob uploads and the PDS write,
 // so a refused submission costs a few lookups rather than an upload — and,
-// more to the point, leaves no record in a community that refused it.
+// more to the point, leaves no record in a community that refused it. Every
+// failure AFTER admission (steps 5-8) must release the ledger reservation the
+// admission took, or the failure costs the author a quota slot and refuses
+// their retry as a duplicate.
 func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*CreatePostResponse, error) {
 	// 1. Validate basic input (before DID checks to give clear validation errors)
 	if err := s.validateCreateRequest(&req); err != nil {
@@ -146,13 +155,13 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 	// Check if this is a non-trusted aggregator (requires database lookup)
 	var isOtherAggregator bool
 	if !isTrustedAggregator && s.aggregatorService != nil {
-		aggregator, err := s.aggregatorService.IsAggregator(ctx, req.AuthorDID)
+		isAggregator, err := s.aggregatorService.IsAggregator(ctx, req.AuthorDID)
 		if err != nil {
 			log.Printf("[POST-CREATE] Warning: failed to check if DID is aggregator: %v", err)
 			// Don't fail the request - treat as regular user if check fails
 			isOtherAggregator = false
 		} else {
-			isOtherAggregator = aggregator
+			isOtherAggregator = isAggregator
 		}
 	}
 
@@ -176,12 +185,14 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 	// The fingerprint is taken from the record as the CLIENT sent it, before
 	// unfurl enhancement rewrites the embed: two submissions of the same content
 	// must hash the same, and an enriched embed varies with whatever the remote
-	// page served at the time.
+	// page served at the time. The thumbnail URL rides along as submitted; the
+	// client-typed community identifier and the per-attempt timestamp are
+	// excluded inside submissionFingerprint (see its doc comment).
 	decision, err := admitPost(ctx, s.admissionDeps(), AdmissionRequest{
 		Actor:       actor,
 		AuthorDID:   req.AuthorDID,
 		Community:   req.Community,
-		Fingerprint: submissionFingerprint(postRecordFor(req, req.Community, "")),
+		Fingerprint: submissionFingerprint(postRecordFor(req, req.Community, ""), req.ThumbnailURL),
 	})
 	if err != nil {
 		return nil, err

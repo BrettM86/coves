@@ -35,7 +35,10 @@ moderation.ban ingestion exists; no production ban writer yet); rate
 limits/dedupe get a synchronous post_submissions ledger (migration 035) —
 the posts table is unusable as a limiter substrate (ingestion lag,
 author-supplied created_at, delete-to-evade); per-origin-PDS quota
-explicitly deferred to Beta.**
+explicitly deferred to Beta.
+Rev 2.6 (2026-08-08): task-3 second-opinion — fingerprint normalized to
+resolved-DID scope, release decoupled from request context, admission wiring
+fail-loud, ActorClass fail-closed.**
 
 **Supersedes** the write-path architecture in `docs/federation-prd.md`: that
 document solves cross-instance posting by service-auth-forwarding the write to
@@ -335,6 +338,11 @@ fiction.
 Failure mode: author-repo write succeeds, acceptance write fails → post stays
 `pending`; the firehose engine (§5.6) retries idempotently (same rkey).
 Degraded latency, not data loss. Never roll back the author's record.
+There is a lost-response asymmetry here: when the PDS write's outcome is
+ambiguous (the record may or may not exist) and the submission reservation is
+released, a client retry can produce a duplicate post — the remedy, noted for
+task 6, is to derive the record rkey deterministically from the submission
+fingerprint so retries become idempotent at the PDS layer.
 
 `post.delete` likewise flips to an author-session delete.
 
@@ -596,11 +604,14 @@ Anyone can write unlimited posts naming any community; nothing stops the
 - Per-author, per-community, and per-origin-PDS submission quotas in the
   acceptance engine (new policy, §4.1), with `rejected` +
   `rate-limit-exceeded` decision codes, `redrivable = false`.
-- Dedupe identical submissions by (author, community, content CID).
+- Dedupe identical submissions by (author, community, canonical-record
+  fingerprint) — the hash of the canonical record with `createdAt` removed
+  (§4.1, rev 2.5), bucketed by the dedupe window.
 - Debounce edit re-evaluation per post (a rapid edit storm collapses to the
   latest CID).
 - Retention caps on `pending`/`rejected` admission rows for never-accepted
-  posts.
+  posts, and on the `post_submissions` ledger (migration 035), whose
+  confirmed rows are otherwise never deleted and grow one per admitted post.
 - Notify endpoint: per-caller and per-PDS quotas on top of service-auth.
 - All outbound fetches (identity bootstrap §5.3, record fetch §5.4/§7) behind
   SSRF guards, response-size caps, and timeouts.

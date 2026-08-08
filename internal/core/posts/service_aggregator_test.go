@@ -22,8 +22,8 @@ import (
 //
 // An aggregator is a service that writes into communities it does not belong
 // to, so the membership and visibility rules a human is held to say nothing
-// useful about it. CreatePost swaps them for two others (service.go steps 3, 5
-// and 12): the community must have published an authorization record naming
+// useful about it. CreatePost swaps them for two others (service.go steps 3, 4
+// and 9): the community must have published an authorization record naming
 // this aggregator, and the aggregator must be inside its hourly quota. Both are
 // checked BEFORE anything reaches the community's repository, and a successful
 // post is then recorded against the aggregator — which is what makes the next
@@ -85,7 +85,10 @@ func newAggregatorFixture(t *testing.T) *aggregatorFixture {
 		service: posts.NewPostService(
 			postgres.NewPostRepository(base.db), base.communityService,
 			aggregators.NewAggregatorService(index, base.communityService),
-			nil, nil, nil, base.pds.URL()),
+			nil, nil, nil, base.pds.URL(),
+			// The aggregator's OWN hourly quota is the subject here; the §8
+			// per-author policy is opted out of explicitly.
+			posts.WithAdmissionPolicy(posts.NewAllowAllAdmissionPolicyForTests())),
 		index:         index,
 		aggregatorDID: aggregatorDID,
 		authorizationURI: "at://" + base.community.DID +

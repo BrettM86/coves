@@ -26,7 +26,12 @@ var (
 	// ErrNotFound is returned when a post is not found by URI
 	ErrNotFound = errors.New("post not found")
 
-	// ErrRateLimitExceeded is returned when an aggregator exceeds rate limits
+	// ErrRateLimitExceeded is returned when a submission is refused for being
+	// over quota — primarily the per-author, per-community submission limit of
+	// PRD_AUTHOR_OWNED_POSTS.md §8 (DecisionRateLimitExceeded). The handler
+	// maps it to a 429. (An aggregator over its OWN hourly quota is refused
+	// through the aggregators package's sentinel instead, so the boundary can
+	// tell the two apart.)
 	ErrRateLimitExceeded = errors.New("rate limit exceeded")
 
 	// ErrInvalidCursor is returned when a pagination cursor is malformed

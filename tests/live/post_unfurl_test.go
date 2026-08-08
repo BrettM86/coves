@@ -223,6 +223,7 @@ func TestPostUnfurl_UserProvidedMetadata(t *testing.T) {
 		unfurlService,
 		nil, // blueskyService
 		pdsURL,
+		posts.WithAdmissionPolicy(posts.NewAllowAllAdmissionPolicyForTests()),
 	)
 
 	// Create test user and community

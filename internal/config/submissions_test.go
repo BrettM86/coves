@@ -63,6 +63,39 @@ func TestLoad_SubmissionQuotaIsReadFromTheEnvironment(t *testing.T) {
 	}
 }
 
+// The two tests above prove Load reads the variables and TestValidate below
+// proves a zero quota is refused at the struct level. Neither proves the
+// COMPOSITION: that a bad value set in the environment actually stops Load()
+// itself, the call startup makes. These two close that gap.
+
+func TestLoad_RejectsAnUnparseableSubmissionWindow(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("IS_DEV_ENV", "true")
+	t.Setenv("POST_SUBMISSIONS_WINDOW", "banana")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() accepted POST_SUBMISSIONS_WINDOW=banana; an unparseable window must stop startup, not fall back silently")
+	}
+	if !strings.Contains(err.Error(), "POST_SUBMISSIONS_WINDOW") {
+		t.Errorf("error should name POST_SUBMISSIONS_WINDOW so an operator can fix it; got:\n%s", err.Error())
+	}
+}
+
+func TestLoad_RejectsAZeroSubmissionQuotaFromTheEnvironment(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("IS_DEV_ENV", "true")
+	t.Setenv("POST_SUBMISSIONS_MAX_PER_COMMUNITY", "0")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() accepted POST_SUBMISSIONS_MAX_PER_COMMUNITY=0; the process would start with the abuse limit inverted or disabled")
+	}
+	if !strings.Contains(err.Error(), "POST_SUBMISSIONS_MAX_PER_COMMUNITY") {
+		t.Errorf("error should name POST_SUBMISSIONS_MAX_PER_COMMUNITY so an operator can fix it; got:\n%s", err.Error())
+	}
+}
+
 // A config assembled with the quota left at its zero value must not validate.
 // This is the assertion that makes "unset means unlimited" unrepresentable
 // rather than merely discouraged.
