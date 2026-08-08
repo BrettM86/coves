@@ -118,7 +118,11 @@ func RegisterPostRoutes(
 	// ask about any post URI they can name. The budget is what bounds
 	// enumeration of a community's rejected posts to a rate an operator notices.
 	statusHandler := post.NewGetStatusHandler(cfg.statusService)
-	statusRateLimiter := middleware.NewRateLimiter(getStatusRateLimit, time.Minute)
+	// NAMED, so a 429 from here is distinguishable in the logs from the global
+	// limiter's. They have different budgets and different fixes, and an
+	// unnamed one logs "default" — which is exactly the diagnosis an operator
+	// staring at a rate-limited poller needs and would not get.
+	statusRateLimiter := middleware.NewNamedRateLimiter("postGetStatus", getStatusRateLimit, time.Minute)
 	r.With(statusRateLimiter.Middleware).
 		Get("/xrpc/social.coves.community.post.getStatus", statusHandler.HandleGetStatus)
 
