@@ -1155,13 +1155,24 @@ func (s *postService) GetPosts(ctx context.Context, req GetPostsRequest) ([]*Pos
 		return nil, fmt.Errorf("failed to fetch post views: %w", err)
 	}
 
-	// 3. Assemble results in request order; valid-but-absent URIs become notFoundPost
+	// 3. Assemble results in request order. A visible view is a postView; an
+	// absent URI is a notFoundPost — UNLESS its own community removed it, in
+	// which case it becomes a #removedPost tombstone carrying the removal code
+	// (PRD §3.4/§6.2). The visibility predicate hides a removed post from
+	// GetViewsByURIs exactly as it hides a pending one, so the removal is
+	// recovered here from the admission row rather than from the (absent) view.
+	removed := s.removedMarkers(ctx, req.URIs, views)
 	results := make([]*PostResult, len(req.URIs))
 	for i, uri := range req.URIs {
-		if view := views[uri]; view != nil {
-			results[i] = foundResult(view)
-		} else {
-			results[i] = notFoundResult(uri)
+		switch {
+		case views[uri] != nil:
+			results[i] = foundResult(views[uri])
+		default:
+			if code, ok := removed[uri]; ok {
+				results[i] = removedResult(uri, code)
+			} else {
+				results[i] = notFoundResult(uri)
+			}
 		}
 	}
 
@@ -1175,6 +1186,73 @@ func (s *postService) GetPosts(ctx context.Context, req GetPostsRequest) ([]*Pos
 	}
 
 	return results, nil
+}
+
+// removedMarkers returns, for the requested URIs absent from the visible view
+// set, the removal code of any whose OWN community removed it — so post.get can
+// serve a #removedPost tombstone (PRD §3.4) instead of collapsing a moderator
+// removal into an indistinguishable notFoundPost. The presence of a URI in the
+// returned map is the removed signal; the value is the code (possibly empty).
+//
+// It is a no-op when the admissions store is not wired (minimal setups and unit
+// tests), leaving every absent URI a plain notFound — the pre-task-7 behavior.
+func (s *postService) removedMarkers(ctx context.Context, uris []string, views map[string]*PostView) map[string]string {
+	markers := make(map[string]string)
+	if s.admissions == nil {
+		return markers
+	}
+
+	// Collect the absent URIs once (deduped), then resolve their admissions in a
+	// single batched lookup rather than one round-trip per URI.
+	seen := make(map[string]struct{}, len(uris))
+	absent := make([]string, 0, len(uris))
+	for _, uri := range uris {
+		if views[uri] != nil {
+			continue // visible — not a candidate for a tombstone
+		}
+		if _, done := seen[uri]; done {
+			continue
+		}
+		seen[uri] = struct{}{}
+		absent = append(absent, uri)
+	}
+	if len(absent) == 0 {
+		return markers
+	}
+
+	admissionsByURI, err := s.admissions.GetByPostURIs(ctx, absent)
+	if err != nil {
+		return markers // best-effort: on failure every absent URI stays a plain notFound
+	}
+
+	for _, uri := range absent {
+		// A removal is an admission-state change, not a soft delete, so the post
+		// row still stands and its own community — the key the admission is scoped
+		// by — comes straight off it. A URI with no row is genuinely not-indexed
+		// and stays a notFound.
+		post, err := s.repo.GetByURI(ctx, uri)
+		if err != nil {
+			continue
+		}
+		// A soft-deleted post is GONE, not a tombstone: the author withdrew it, so
+		// even a standing removal must render as notFound rather than advertising
+		// a moderation reason for a post its own author took down.
+		if post.DeletedAt != nil {
+			continue
+		}
+
+		for _, admission := range admissionsByURI[uri] {
+			if admission.CommunityDID == post.CommunityDID && admission.Status == AdmissionStatusRemoved {
+				code := ""
+				if admission.DecisionCode != nil {
+					code = *admission.DecisionCode
+				}
+				markers[uri] = code
+				break
+			}
+		}
+	}
+	return markers
 }
 
 // applyViewerBlocks rewrites found posts whose author the viewer has blocked into

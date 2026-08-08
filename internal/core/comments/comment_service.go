@@ -161,8 +161,19 @@ func (s *commentService) GetComments(ctx context.Context, req *GetCommentsReques
 		return nil, fmt.Errorf("failed to fetch post: %w", err)
 	}
 
-	// Build post view for response (hydrates author handle and community name)
-	postView := s.buildPostView(ctx, post, req.ViewerDID)
+	// 2a. Resolve the thread header through the read-path visibility predicate
+	// (task 7, PRD §6.2). GetByURI is admission-blind and serves soft-deleted rows
+	// (the 2026-07-29 defect), so without this the thread endpoint hands a
+	// non-author the full header — title, content, author — of a post the feeds
+	// correctly hide. The header answers as post.get does: a soft-deleted post is
+	// gone, and a post its community has not admitted (a pending/removed/rejected
+	// row on ANY collection, or a failed-seed postv2) is root-not-found to everyone
+	// but its own author. The resolved view is the admission-hydrated one, so its
+	// status/acceptanceUri survive onto the served header.
+	postView, err := s.resolveVisibleHeader(ctx, post, req.ViewerDID)
+	if err != nil {
+		return nil, err
+	}
 
 	// 2b. If a parent comment rkey is provided, return only that comment's subtree
 	if req.ParentRkey != "" {
@@ -201,6 +212,57 @@ func (s *commentService) GetComments(ctx context.Context, req *GetCommentsReques
 		Post:     postView,
 		Cursor:   nextCursor,
 	}, nil
+}
+
+// postHeaderVisibilityChecker is the viewer-aware, admission-aware slice of the
+// post repository the thread-header gate needs. The real postgres repository
+// implements it (VisibleHeaderView); unit-test fakes do not, and a service built
+// on a fake keeps the pre-admission behavior — see resolveVisibleHeader.
+type postHeaderVisibilityChecker interface {
+	// VisibleHeaderView returns the hydrated post view iff the post is visible to
+	// viewerDID under the read-path predicate, or nil when it is hidden.
+	VisibleHeaderView(ctx context.Context, uri, viewerDID string) (*posts.PostView, error)
+}
+
+// resolveVisibleHeader returns the post view to render as the getComments thread
+// header, or ErrRootNotFound when the post must not be shown to this viewer.
+//
+// It consults a REAL admission lookup, never the collection: the previous gate
+// inferred visibility from the URI's collection, which leaked a moderator-REMOVED
+// legacy community.post (a legacy row CAN carry a removed admission — applyRemoval
+// has no collection guard). VisibleHeaderView runs the same predicate as post.get
+// and the feeds — admission status, pinned CID, soft-delete, and the author
+// self-view branch — and returns the admission-hydrated view, so the served
+// header carries status/acceptanceUri instead of a second view rebuilt from the
+// raw Post (which dropped them).
+//
+// A unit-test fake postRepo does not implement the checker; such a service keeps
+// the pre-admission behavior, gated only on the soft-delete the raw Post carries.
+// This is safe because a fake is never wired to real admission data — production
+// always uses the real repository, which always implements the checker.
+func (s *commentService) resolveVisibleHeader(ctx context.Context, post *posts.Post, viewerDID *string) (*posts.PostView, error) {
+	if checker, ok := s.postRepo.(postHeaderVisibilityChecker); ok {
+		viewer := ""
+		if viewerDID != nil {
+			viewer = *viewerDID
+		}
+		view, err := checker.VisibleHeaderView(ctx, post.URI, viewer)
+		if err != nil {
+			return nil, fmt.Errorf("checking post header visibility: %w", err)
+		}
+		if view == nil {
+			return nil, ErrRootNotFound
+		}
+		return view, nil
+	}
+
+	// Fake repository (unit tests): no admission-aware fetch available. Honor only
+	// the gate the raw Post carries — a soft delete — and build the header from it
+	// as before.
+	if post.DeletedAt != nil {
+		return nil, ErrRootNotFound
+	}
+	return s.buildPostView(ctx, post, viewerDID), nil
 }
 
 // getCommentSubtree returns the subtree rooted at the comment identified by req.ParentRkey

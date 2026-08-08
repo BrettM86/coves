@@ -37,13 +37,22 @@ type postgresPostRepo struct {
 // (upvote_count + bridged_upvote_count, etc.) so federated/bridged content shows the
 // origin platform's votes. score is already stored inclusive of bridged aggregates, so
 // it is selected as-is.
+//
+// author_handle is COALESCEd to the author DID because the users join is a LEFT
+// join (a federated author with no users row must not vanish, PRD §5.3), so
+// u.handle is NULL for an unindexed author; the comment read path does the same
+// (comment_repo.go). a.status and a.acceptance_uri come from the admission LEFT
+// join every display query splices in via visiblePostsJoin — they carry the
+// per-community admission context an author's own view renders, and are NULL for
+// legacy/bridged rows that hold no admission.
 const postViewSelectColumns = `
 		p.uri, p.cid, p.rkey,
-		p.author_did, u.handle as author_handle, u.display_name as author_display_name, u.avatar_cid as author_avatar, u.pds_url as author_pds_url,
+		p.author_did, COALESCE(u.handle, p.author_did) as author_handle, u.display_name as author_display_name, u.avatar_cid as author_avatar, u.pds_url as author_pds_url,
 		p.community_did, c.handle as community_handle, c.name as community_name, c.avatar_cid as community_avatar, c.pds_url as community_pds_url,
 		p.title, p.content, p.content_facets, p.embed, p.content_labels,
 		p.created_at, p.edited_at, p.indexed_at,
-		p.upvote_count + p.bridged_upvote_count AS upvote_count, p.downvote_count + p.bridged_downvote_count AS downvote_count, p.score, p.comment_count`
+		p.upvote_count + p.bridged_upvote_count AS upvote_count, p.downvote_count + p.bridged_downvote_count AS downvote_count, p.score, p.comment_count,
+		a.status AS admission_status, a.acceptance_uri AS admission_acceptance_uri`
 
 // NewPostRepository creates a new PostgreSQL post repository
 func NewPostRepository(db *sql.DB) posts.Repository {
@@ -181,18 +190,26 @@ func (r *postgresPostRepo) GetViewsByURIs(ctx context.Context, uris []string) (m
 		return result, nil
 	}
 
-	// Static query: the URI set is bound through a single array parameter (= ANY($1))
-	// rather than an interpolated IN list, so the SQL is constant (no fmt.Sprintf, one
-	// cached query plan regardless of batch size) and the values stay fully parameterized.
+	// The URI set is bound through a single array parameter (= ANY($1)) rather
+	// than an interpolated IN list, so the SQL stays fully parameterized and the
+	// plan is cached regardless of batch size.
+	//
+	// post.get is the public permalink surface, so the visibility gate runs with
+	// an ANONYMOUS viewer ($2 = ""): accepted posts (and legacy/bridged rows)
+	// only. A pending/rejected/removed post is absent from the result, which the
+	// service renders as notFoundPost — or, for a removal, upgrades to a
+	// #removedPost tombstone from the admission row. An author's privileged view
+	// of their own pending posts is served by actor.getPosts (GetByAuthor), which
+	// threads a real viewer DID.
+	visJoin, visWhere := visiblePostsJoin(2)
 	query := `
 		SELECT` + postViewSelectColumns + `
 		FROM posts p
-		INNER JOIN users u ON p.author_did = u.did
-		INNER JOIN communities c ON p.community_did = c.did
-		WHERE p.uri = ANY($1) AND p.deleted_at IS NULL
-	`
+		LEFT JOIN users u ON p.author_did = u.did
+		INNER JOIN communities c ON p.community_did = c.did` + visJoin + `
+		WHERE p.uri = ANY($1) AND p.deleted_at IS NULL AND ` + visWhere
 
-	rows, err := r.db.QueryContext(ctx, query, pq.Array(uris))
+	rows, err := r.db.QueryContext(ctx, query, pq.Array(uris), "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to query posts by URIs: %w", err)
 	}
@@ -215,6 +232,57 @@ func (r *postgresPostRepo) GetViewsByURIs(ctx context.Context, uris []string) (m
 	}
 
 	return result, nil
+}
+
+// VisibleHeaderView returns the hydrated view of a single post IFF it is visible
+// to viewerDID under the read-path predicate, and nil when it is hidden (or does
+// not exist).
+//
+// It is the viewer-aware companion to GetViewsByURIs, which GetViewsByURIs itself
+// cannot be because posts.Repository's signature is frozen at two arguments
+// (three in-suite fakes implement it). getComments needs both halves the
+// anonymous batch fetch cannot give it — a VIEWER (so an author reaches their own
+// pending post's thread header) and the HYDRATED view (so the served header
+// carries status/acceptanceUri, PRD §6.2). It is deliberately NOT on the
+// Repository interface: the comment service reaches it by an optional type
+// assertion, so a unit-test fake without it degrades gracefully rather than
+// forcing every fake to grow a method.
+//
+// It runs the SAME predicate as every other display query — visiblePostsJoin,
+// admission status + pinned-CID + collection fail-closed + author self-view — and
+// the same deleted_at filter and scanPostView hydration, so the thread header can
+// never diverge from post.get or the feeds on what is visible.
+func (r *postgresPostRepo) VisibleHeaderView(ctx context.Context, uri, viewerDID string) (*posts.PostView, error) {
+	visJoin, visWhere := visiblePostsJoin(2)
+	query := `
+		SELECT` + postViewSelectColumns + `
+		FROM posts p
+		LEFT JOIN users u ON p.author_did = u.did
+		INNER JOIN communities c ON p.community_did = c.did` + visJoin + `
+		WHERE p.uri = $1 AND p.deleted_at IS NULL AND ` + visWhere
+
+	rows, err := r.db.QueryContext(ctx, query, uri, viewerDID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query visible post header: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			slog.Warn("failed to close rows", "error", err)
+		}
+	}()
+
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("error iterating visible post header: %w", err)
+		}
+		return nil, nil
+	}
+
+	postView, err := scanPostView(rows)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan visible post header: %w", err)
+	}
+	return postView, nil
 }
 
 // GetByAuthor retrieves posts by author with filtering and pagination
@@ -263,6 +331,19 @@ func (r *postgresPostRepo) GetByAuthor(ctx context.Context, req posts.GetAuthorP
 		paramIndex += len(cursorArgs)
 	}
 
+	// The admission visibility gate, threading the viewer DID. A stranger (or the
+	// anonymous public) sees the author's accepted posts only; the author
+	// themselves ($viewer = ActorDID) additionally sees their own pending /
+	// rejected / removed posts, which is how a profile renders per-community
+	// status (PRD §6.2). This is the alternate-endpoint the feed gate is
+	// worthless without: an author feed showing ungated content leaks exactly
+	// what the community feed hides.
+	visibilityParam := paramIndex
+	visJoin, visWhere := visiblePostsJoin(visibilityParam)
+	whereConditions = append(whereConditions, visWhere)
+	args = append(args, req.ViewerDID)
+	paramIndex++
+
 	// Add limit to args
 	limit := req.Limit
 	if limit <= 0 {
@@ -278,12 +359,12 @@ func (r *postgresPostRepo) GetByAuthor(ctx context.Context, req posts.GetAuthorP
 	query := fmt.Sprintf(`
 		SELECT %s
 		FROM posts p
-		INNER JOIN users u ON p.author_did = u.did
-		INNER JOIN communities c ON p.community_did = c.did
+		LEFT JOIN users u ON p.author_did = u.did
+		INNER JOIN communities c ON p.community_did = c.did%s
 		WHERE %s
 		ORDER BY p.created_at DESC, p.uri DESC
 		LIMIT $%d
-	`, postViewSelectColumns, whereClause, paramIndex)
+	`, postViewSelectColumns, visJoin, whereClause, paramIndex)
 
 	// Execute query
 	rows, err := r.db.QueryContext(ctx, query, args...)
@@ -413,6 +494,8 @@ func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, er
 		communityHandle   sql.NullString
 		communityAvatar   sql.NullString
 		communityPDSURL   sql.NullString
+		admissionStatus   sql.NullString
+		acceptanceURI     sql.NullString
 	)
 
 	dest := []interface{}{
@@ -422,6 +505,7 @@ func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, er
 		&title, &content, &facets, &embed, &labelsJSON,
 		&postView.CreatedAt, &editedAt, &postView.IndexedAt,
 		&postView.UpvoteCount, &postView.DownvoteCount, &postView.Score, &postView.CommentCount,
+		&admissionStatus, &acceptanceURI,
 	}
 	dest = append(dest, extraDest...)
 
@@ -460,6 +544,17 @@ func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, er
 	// Set optional fields
 	if editedAt.Valid {
 		postView.EditedAt = &editedAt.Time
+	}
+
+	// Per-community admission context (PRD §6.2). Present on any row the
+	// visibility predicate returned that carries an admission decision — every
+	// accepted post, and an author's own non-accepted posts on their profile.
+	// Absent (NULL) for legacy/bridged rows, which omit it on the wire.
+	if admissionStatus.Valid {
+		postView.Status = admissionStatus.String
+	}
+	if acceptanceURI.Valid {
+		postView.AcceptanceURI = acceptanceURI.String
 	}
 
 	// Parse facets JSON into local variable (will be added to record below)
