@@ -498,6 +498,147 @@ func TestDirectPostFetcher_RefusesAPrivateHostByDefault(t *testing.T) {
 	assert.Falsef(t, reached, "the guard must refuse before the request is made, not after the server has already answered")
 }
 
+// ---------------------------------------------------------------------------
+// §5.4 direct fetch: classifying what the author's PDS answered
+// ---------------------------------------------------------------------------
+
+// How a failed fetch is CLASSIFIED, which decides what the connector does next.
+//
+// The consumer returns an error and the connector reads its shape: an error
+// wrapping ErrPermanentEvent is dead-lettered with the redrive budget already
+// spent, and anything else is retried inline (~4.2 seconds of blocking, per
+// event) and then redriven ten times. So the classification is not a label — it
+// is the difference between one forensic row and forty pointless refetches
+// against somebody else's PDS while this consumer stops indexing.
+//
+// A non-200 from getRecord is currently one undifferentiated failure, and the
+// three cases below need three different answers:
+//
+//   - A GENUINE XRPC RecordNotFound is a definite fact about the repo: the PDS
+//     was reached, it understood the question, and the record is not there. No
+//     retry changes that.
+//   - A BARE 404 — no XRPC error envelope — usually means the request never
+//     reached a PDS at all: a stale pds_url pointing at a reverse proxy or a
+//     generic web server, which answers 404 for everything. Treating that as
+//     proof the record does not exist would permanently discard a post over a
+//     misconfigured hostname. users.FetchProfileRecord already draws exactly
+//     this distinction, and for exactly this reason.
+//   - A 5xx is the PDS saying it is having a bad time. Definitionally transient.
+//
+// WHAT IS ASSERTED HERE, AND WHAT IS NOT. These drive HandleEvent directly, so
+// no dead-letter row is written and no redrive runs — the consumer never touches
+// that table; the connector does. What these pin is the input the connector
+// switches on (the ErrPermanentEvent wrapping) plus the request count, which
+// proves the consumer and fetcher hold no retry loop of their own. The
+// connector's half — that a permanent error is dead-lettered exhausted and a
+// transient one is retried — is TestConnector_DeadLettersAfterRetryExhaustion.
+
+// countingAuthorPDS is fakeAuthorPDS with a request tally, so a test can prove
+// one event produced exactly one outbound fetch.
+func countingAuthorPDS(t *testing.T, expectRepo string, requests *int, handler http.HandlerFunc) *httptest.Server {
+	t.Helper()
+	return fakeAuthorPDS(t, expectRepo, func(w http.ResponseWriter, r *http.Request) {
+		*requests++
+		handler(w, r)
+	})
+}
+
+func TestAcceptanceConsumer_GenuineRecordNotFound_IsPermanentlyRefusedAfterOneFetch(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	base := time.Now().UnixMicro()
+	uri := accPostURI("accgone")
+
+	var requests int
+	srv := countingAuthorPDS(t, accAuthor, &requests, func(w http.ResponseWriter, r *http.Request) {
+		// The reference PDS' answer for a repo that exists and a record that
+		// does not: 400 with an XRPC error envelope naming RecordNotFound.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"RecordNotFound","message":"Could not locate record: ` + uri + `"}`))
+	})
+	defer srv.Close()
+
+	f := newAccFixture(t, db, WithPostRecordFetcher(newFetcherAt(t, accAuthor, srv.URL)))
+
+	err := f.consumer.HandleEvent(context.Background(),
+		acceptanceEvent(accCommunity, uri, "bafyreiaccgonepinned", testkit.TID(), base))
+
+	require.Error(t, err, "an acceptance whose subject the PDS says does not exist cannot be applied")
+	assert.ErrorIs(t, err, ErrPermanentEvent,
+		"a genuine RecordNotFound is a definite fact about the repo — the PDS was reached and answered — so no retry can change it. "+
+			"Left transient, every one of these costs ~4.2s of inline blocking plus ten redrives, and a community can mint them at will "+
+			"by writing acceptances for URIs nobody wrote")
+
+	assert.Equalf(t, 1, requests,
+		"one event produced %d fetches: the consumer or the fetcher is retrying internally. Retries belong to the connector, "+
+			"which can classify and budget them; a loop in here is invisible to it and unbounded", requests)
+
+	assert.Zero(t, countRows(t, db, `SELECT count(*) FROM posts WHERE uri = $1`, uri),
+		"nothing may be indexed for a subject the PDS says does not exist")
+}
+
+func TestAcceptanceConsumer_BareNotFound_StaysTransient(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	base := time.Now().UnixMicro()
+	uri := accPostURI("accbare404")
+
+	var requests int
+	srv := countingAuthorPDS(t, accAuthor, &requests, func(w http.ResponseWriter, r *http.Request) {
+		// No XRPC envelope. This is what a reverse proxy, a load balancer or a
+		// generic web server answers — which is what a stale pds_url in a DID
+		// document points at.
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("<html><body>404 Not Found</body></html>"))
+	})
+	defer srv.Close()
+
+	f := newAccFixture(t, db, WithPostRecordFetcher(newFetcherAt(t, accAuthor, srv.URL)))
+
+	err := f.consumer.HandleEvent(context.Background(),
+		acceptanceEvent(accCommunity, uri, "bafyreiaccbarepinned", testkit.TID(), base))
+
+	require.Error(t, err, "a fetch that did not produce a record cannot apply the acceptance")
+	assert.NotErrorIs(t, err, ErrPermanentEvent,
+		"a bare 404 carries no XRPC error envelope, which means the request most likely never reached a PDS at all — a stale pds_url "+
+			"pointing at a proxy. Reading it as proof the record does not exist permanently discards a real post over a misconfigured "+
+			"hostname; users.FetchProfileRecord draws the same distinction for the same reason")
+
+	assert.Equal(t, 1, requests, "one event, one fetch — the connector owns retries")
+}
+
+func TestAcceptanceConsumer_PDSServerError_StaysTransient(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	base := time.Now().UnixMicro()
+	uri := accPostURI("accpds5xx")
+
+	var requests int
+	srv := countingAuthorPDS(t, accAuthor, &requests, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"InternalServerError","message":"upstream unavailable"}`))
+	})
+	defer srv.Close()
+
+	f := newAccFixture(t, db, WithPostRecordFetcher(newFetcherAt(t, accAuthor, srv.URL)))
+
+	err := f.consumer.HandleEvent(context.Background(),
+		acceptanceEvent(accCommunity, uri, "bafyreiacc5xxpinned", testkit.TID(), base))
+
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrPermanentEvent,
+		"a 5xx is the author's PDS saying it is unwell, which is the definition of transient; discarding the acceptance permanently "+
+			"would lose a post because somebody else's server restarted")
+
+	assert.Equal(t, 1, requests, "one event, one fetch — the connector owns retries")
+}
+
 // readAdmissionRow returns every mutable column of one admission row as a
 // comparable value, so "the row did not change" can be asserted as a whole
 // rather than field by field — a new column added later is covered without
