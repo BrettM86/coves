@@ -518,15 +518,28 @@ func TestGetCommentsVisibility_HeaderIsAdmissionAndDeleteAware(t *testing.T) {
 	createTestUser(t, db, "visgcstranger.test", stranger)
 
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	accepted := seedVisibilityPost(t, db, community, author, "gcacc", "accepted header", base.Add(3*time.Hour))
-	pending := seedVisibilityPost(t, db, community, author, "gcpen", "pending header", base.Add(2*time.Hour))
-	deleted := seedVisibilityPost(t, db, community, author, "gcdel", "deleted header", base.Add(1*time.Hour))
-	seedVisibilityAdmission(t, db, community, accepted, posts.AdmissionStatusAccepted, "bafypostv2gcacc", "")
-	seedVisibilityAdmission(t, db, community, pending, posts.AdmissionStatusPending, "", "")
-	seedVisibilityAdmission(t, db, community, deleted, posts.AdmissionStatusAccepted, "bafypostv2gcdel", "")
 
-	// Soft-delete the third post the way the consumer does.
-	_, err := db.ExecContext(ctx, `UPDATE posts SET deleted_at = NOW() WHERE uri = $1`, deleted)
+	acceptedV2 := seedVisibilityPost(t, db, community, author, "gcacc", "accepted header", base.Add(6*time.Hour))
+	pendingV2 := seedVisibilityPost(t, db, community, author, "gcpen", "pending header", base.Add(5*time.Hour))
+	removedV2 := seedVisibilityPost(t, db, community, author, "gcrv2", "removed postv2 header", base.Add(4*time.Hour))
+	seedVisibilityAdmission(t, db, community, acceptedV2, posts.AdmissionStatusAccepted, "bafypostv2gcacc", "")
+	seedVisibilityAdmission(t, db, community, pendingV2, posts.AdmissionStatusPending, "", "")
+	seedVisibilityAdmission(t, db, community, removedV2, posts.AdmissionStatusRemoved, "", "rule-violation")
+
+	// A LEGACY community.post carrying a REMOVED admission row. A legacy post can
+	// hold one — applyRemoval has no collection guard (unlike applyAcceptance) — so
+	// a moderator removes a legacy post exactly as they remove a postv2. This is
+	// the P1 leak: GetViewsByURIs correctly omits it, but a header gate that infers
+	// "omitted + non-postv2 = show it" serves its content to the anonymous public.
+	removedLegacy := seedFilterablePost(t, db, community, author, "gcrleg", base.Add(3*time.Hour))
+	seedVisibilityAdmission(t, db, community, removedLegacy, posts.AdmissionStatusRemoved, "", "rule-violation")
+
+	// A LEGACY community.post that has been SOFT-DELETED, with no admission row.
+	// This is the REAL 2026-07-29 case: nothing but deleted_at hides it (a legacy
+	// post with no admission is otherwise visible), so it isolates the deleted_at
+	// gate that GetByURI omits.
+	deletedLegacy := seedFilterablePost(t, db, community, author, "gcdleg", base.Add(2*time.Hour))
+	_, err := db.ExecContext(ctx, `UPDATE posts SET deleted_at = NOW() WHERE uri = $1`, deletedLegacy)
 	require.NoError(t, err)
 
 	service := comments.NewCommentServiceWithPDSFactory(
@@ -546,29 +559,60 @@ func TestGetCommentsVisibility_HeaderIsAdmissionAndDeleteAware(t *testing.T) {
 		return service.GetComments(ctx, &comments.GetCommentsRequest{PostURI: postURI, ViewerDID: viewer})
 	}
 
-	t.Run("an accepted post serves its header", func(t *testing.T) {
-		resp, err := header(t, accepted, stranger)
+	requireHidden := func(t *testing.T, postURI, viewer, what string) {
+		t.Helper()
+		_, err := header(t, postURI, viewer)
+		require.Errorf(t, err, "getComments served %s", what)
+		assert.ErrorIsf(t, err, comments.ErrRootNotFound,
+			"%s must be root-not-found through getComments, the same answer post.get gives", what)
+	}
+
+	t.Run("an accepted post serves its header, carrying the hydrated admission context", func(t *testing.T) {
+		resp, err := header(t, acceptedV2, stranger)
 		require.NoError(t, err, "getComments must serve the header of an accepted post")
 		require.NotNil(t, resp.Post)
 		postView, ok := resp.Post.(*posts.PostView)
 		require.Truef(t, ok, "getComments post header is %T, not *posts.PostView", resp.Post)
-		assert.Equal(t, accepted, postView.URI)
+		assert.Equal(t, acceptedV2, postView.URI)
+
+		// P5: the header the visibility check hydrated (via GetViewsByURIs) must be
+		// the one served — not a second view rebuilt from the raw Post, which drops
+		// the admission context. status and acceptanceUri are the fields postView
+		// gained for exactly this (PRD §6.2); a thread header that omits them makes
+		// the thread endpoint disagree with post.get about a post they both serve.
+		assert.Equalf(t, string(posts.AdmissionStatusAccepted), postView.Status,
+			"the served thread header dropped the admission status. buildPostView rebuilds the view from the raw Post "+
+				"and discards the admission-aware view GetViewsByURIs already hydrated — reuse that view instead")
+		assert.NotEmptyf(t, postView.AcceptanceURI,
+			"the served thread header dropped acceptanceUri — a client cannot follow the accepted post to its attestation")
 	})
 
-	t.Run("a pending post's header is hidden from a non-author", func(t *testing.T) {
-		_, err := header(t, pending, stranger)
-		require.Errorf(t, err, "getComments served a non-author the header of a PENDING post — the alternate-endpoint "+
-			"leak PRD §6.2 names: a post hidden from the feed is fully readable through its comment thread")
-		assert.ErrorIs(t, err, comments.ErrRootNotFound,
-			"a pending post must be root-not-found to a non-author's getComments, the same answer post.get gives")
+	t.Run("the author sees their own pending post's header", func(t *testing.T) {
+		resp, err := header(t, pendingV2, author)
+		require.NoError(t, err, "an author must reach their own pending post's thread header, matching the feed's author branch")
+		require.NotNil(t, resp.Post)
 	})
 
-	t.Run("a soft-deleted post no longer leaks (closes the 2026-07-29 defect)", func(t *testing.T) {
-		_, err := header(t, deleted, stranger)
-		require.Errorf(t, err, "getComments served the full header of a SOFT-DELETED post. GetByURI has no deleted_at "+
-			"filter, so the withdrawn post's title/content/author are still returned through the thread endpoint — the "+
-			"defect filed 2026-07-29")
-		assert.ErrorIs(t, err, comments.ErrRootNotFound)
+	t.Run("a pending postv2 header is hidden from a non-author", func(t *testing.T) {
+		requireHidden(t, pendingV2, stranger, "a non-author the header of a PENDING postv2")
+	})
+
+	t.Run("a removed postv2 header is hidden from a non-author", func(t *testing.T) {
+		requireHidden(t, removedV2, stranger, "a non-author the header of a REMOVED postv2")
+	})
+
+	t.Run("a removed LEGACY post's header is hidden from a non-author (P1 leak)", func(t *testing.T) {
+		// The header gate must not infer visibility from the collection. A legacy
+		// post with a removed admission row is omitted by GetViewsByURIs for a REAL
+		// reason, and treating "omitted + non-postv2" as "show it" serves a
+		// moderator-removed post's content to anyone.
+		requireHidden(t, removedLegacy, stranger,
+			"a non-author the content of a moderator-REMOVED legacy community.post (the collection-inference leak)")
+	})
+
+	t.Run("a soft-deleted LEGACY post no longer leaks (the real 2026-07-29 case)", func(t *testing.T) {
+		requireHidden(t, deletedLegacy, stranger,
+			"a non-author the header of a SOFT-DELETED legacy post — nothing but deleted_at hides it, and GetByURI has no such filter")
 	})
 }
 
@@ -610,4 +654,168 @@ func TestCommunityPostCountVisibility_AcceptedOnly(t *testing.T) {
 	assert.Equalf(t, 1, count,
 		"a community's accepted-post count must be 1 (3 seeded: accepted, pending, removed); a count that includes "+
 			"non-accepted rows advertises content no reader can reach")
+}
+
+// TestPostGetVisibility_AcceptedBranchHonorsPinnedCID pins §5.5 at the READ path:
+// an acceptance pins a CID, and edited content must never render under it. The
+// admission consumer commits an edit's new content (posts.cid advances) in a
+// SEPARATE transaction from the admission transition (accepted →
+// pending_reacceptance), so there is a window where the row is still
+// status='accepted' but posts.cid no longer equals accepted_cid. In that window
+// the accepted content the community attested to is GONE and the new,
+// un-attested content stands in its place — and a predicate that gates on
+// status='accepted' alone renders it.
+//
+// The gate must also check a.accepted_cid = p.cid. This seeds the mismatch
+// directly (accepted_cid one value, the post's cid another) rather than racing
+// the consumer.
+func TestPostGetVisibility_AcceptedBranchHonorsPinnedCID(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+	ctx := context.Background()
+
+	community := visibilityCommunity(t, db, "pc")
+	author := "did:plc:vispcauthor"
+	createTestUser(t, db, "vispcauthor.test", author)
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// The post's real content CID is "bafypostv2pcmis" (seedVisibilityPost derives
+	// it from the rkey). The acceptance pins a DIFFERENT, older CID.
+	mismatched := seedVisibilityPost(t, db, community, author, "pcmis", "edited past the acceptance", base.Add(2*time.Hour))
+	seedVisibilityAdmission(t, db, community, mismatched, posts.AdmissionStatusAccepted, "bafySTALEacceptedcid", "")
+
+	// A control whose acceptance pins the CURRENT content CID.
+	matched := seedVisibilityPost(t, db, community, author, "pcmat", "still matches the acceptance", base.Add(1*time.Hour))
+	seedVisibilityAdmission(t, db, community, matched, posts.AdmissionStatusAccepted, "bafypostv2pcmat", "")
+
+	postRepo := NewPostRepository(db)
+	views, err := postRepo.GetViewsByURIs(ctx, []string{mismatched, matched})
+	require.NoError(t, err)
+
+	assert.Containsf(t, views, matched, "an accepted post whose pinned CID still matches its content must be visible")
+	assert.NotContainsf(t, views, mismatched,
+		"post.get served an 'accepted' post whose pinned CID no longer matches its content. The acceptance attests to "+
+			"accepted_cid, and posts.cid has moved past it (an edit landed before the pending_reacceptance transition) — "+
+			"rendering it shows un-attested content under a stale acceptance (§5.5). The accepted branch must AND "+
+			"a.accepted_cid = p.cid.")
+
+	feedRepo := NewCommunityFeedRepository(db, "test-secret")
+	feed, _, err := feedRepo.GetCommunityFeed(ctx, communityFeeds.GetCommunityFeedRequest{
+		Community: community, ViewerDID: publicViewer, Sort: visibilitySort, Limit: 50,
+	})
+	require.NoError(t, err)
+	got := feedURIs(feed)
+	assert.Contains(t, got, matched)
+	assert.NotContainsf(t, got, mismatched,
+		"the community feed rendered an accepted post whose content has drifted past its pinned CID (§5.5 read-side leak)")
+}
+
+// TestFeedsVisibility_UnknownAuthorAccepted guards the §5.3 open-posting promise
+// on EVERY feed, not just post.get. An accepted post by an author with no `users`
+// row (a federated author the AppView has not hydrated) must appear, with its
+// handle COALESCE'd to the author DID. The users join on each feed is a LEFT join
+// for exactly this — reverting any one of them to INNER would silently vanish
+// every federated author's accepted post, and cycle 1 pinned this on post.get
+// alone. These are the per-feed regression guards.
+func TestFeedsVisibility_UnknownAuthorAccepted(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+	ctx := context.Background()
+
+	community := visibilityCommunity(t, db, "ua")
+	// Deliberately NO createTestUser: this author is indexed nowhere.
+	unknownAuthor := "did:plc:visuaunknownfederated"
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	post := seedVisibilityPost(t, db, community, unknownAuthor, "uapost", "federated accepted", base.Add(1*time.Hour))
+	seedVisibilityAdmission(t, db, community, post, posts.AdmissionStatusAccepted, "bafypostv2uapost", "")
+
+	assertUnknownAuthorHandle := func(t *testing.T, pv *posts.PostView) {
+		t.Helper()
+		require.NotNil(t, pv.Author)
+		assert.Equalf(t, unknownAuthor, pv.Author.Handle,
+			"an unindexed author's handle must COALESCE to their DID; a NULL handle means the feed is INNER-joining users "+
+				"and dropping every federated author's accepted post (§5.3)")
+	}
+
+	t.Run("feed.getCommunity", func(t *testing.T) {
+		feed, _, err := NewCommunityFeedRepository(db, "test-secret").GetCommunityFeed(ctx,
+			communityFeeds.GetCommunityFeedRequest{Community: community, ViewerDID: publicViewer, Sort: visibilitySort, Limit: 50})
+		require.NoError(t, err)
+		require.Containsf(t, feedURIs(feed), post, "the community feed dropped an accepted post by an unindexed author (users INNER join?)")
+		assertUnknownAuthorHandle(t, feed[0].Post)
+	})
+
+	t.Run("feed.getDiscover", func(t *testing.T) {
+		feed, _, err := NewDiscoverRepository(db, "test-secret").GetDiscover(ctx,
+			discover.GetDiscoverRequest{ViewerDID: publicViewer, Sort: visibilitySort, Limit: 50})
+		require.NoError(t, err)
+		require.Containsf(t, discoverFeedURIs(feed), post, "discover dropped an accepted post by an unindexed author")
+		assertUnknownAuthorHandle(t, feed[0].Post)
+	})
+
+	t.Run("feed.getTimeline", func(t *testing.T) {
+		subscriber := "did:plc:visuasubscriber"
+		createTestUser(t, db, "visuasubscriber.test", subscriber)
+		_, err := db.ExecContext(ctx, `INSERT INTO community_subscriptions (user_did, community_did, subscribed_at) VALUES ($1, $2, NOW())`, subscriber, community)
+		require.NoError(t, err)
+		feed, _, err := NewTimelineRepository(db, "test-secret").GetTimeline(ctx,
+			timeline.GetTimelineRequest{UserDID: subscriber, Sort: visibilitySort, Limit: 50})
+		require.NoError(t, err)
+		require.Containsf(t, timelineFeedURIs(feed), post, "the timeline dropped an accepted post by an unindexed author")
+		assertUnknownAuthorHandle(t, feed[0].Post)
+	})
+
+	t.Run("actor.getPosts", func(t *testing.T) {
+		views, _, err := NewPostRepository(db).GetByAuthor(ctx, posts.GetAuthorPostsRequest{ActorDID: unknownAuthor, Limit: 50})
+		require.NoError(t, err)
+		require.Lenf(t, views, 1, "actor.getPosts dropped an accepted post by an unindexed author")
+		assert.Equal(t, post, views[0].URI)
+		assertUnknownAuthorHandle(t, views[0])
+	})
+}
+
+// TestActorCommentsVisibility_RootIsReferenceOnly pins P4's finding: GetActorComments
+// carries only a REFERENCE to each comment's root post (root_uri / root_cid), never
+// the root's hydrated content — so a comment on a pending or removed root leaks
+// nothing about that root, and following the reference lands on the gated post.get.
+// The comment itself is the actor's own public speech and is still listed; the root
+// being hidden does not suppress it. This is the reference-only guarantee that keeps
+// actor.getComments off the leak list.
+func TestActorCommentsVisibility_RootIsReferenceOnly(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+	ctx := context.Background()
+
+	community := visibilityCommunity(t, db, "ac")
+	actor := "did:plc:visacactor"
+	createTestUser(t, db, "visacactor.test", actor)
+
+	// The root is a PENDING postv2 — hidden from the public everywhere else.
+	root := seedVisibilityPost(t, db, community, actor, "acroot", "secret pending root", time.Now().Add(-time.Hour))
+	seedVisibilityAdmission(t, db, community, root, posts.AdmissionStatusPending, "", "")
+
+	commentURI := "at://" + actor + "/social.coves.community.comment/accmt1"
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO comments (uri, cid, rkey, commenter_did, root_uri, root_cid, parent_uri, parent_cid, content, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $5, $6, $7, NOW())
+	`, commentURI, "bafycmtac", "accmt1", actor, root, "bafypostv2acroot", "a comment on a hidden root")
+	require.NoError(t, err)
+
+	service := comments.NewCommentServiceWithPDSFactory(
+		NewCommentRepository(db), NewUserRepository(db), NewPostRepository(db), NewCommunityRepository(db), nil, nil,
+	)
+
+	resp, err := service.GetActorComments(ctx, &comments.GetActorCommentsRequest{ActorDID: actor, Limit: 50})
+	require.NoError(t, err)
+	require.Lenf(t, resp.Comments, 1, "the actor's comment must be listed even though its root is hidden — the comment is the actor's own public record")
+
+	cv := resp.Comments[0]
+	require.Equalf(t, commentURI, cv.URI, "the listed comment must be the actor's own comment")
+	require.NotNil(t, cv.Post, "the comment must reference its root")
+	assert.Equalf(t, root, cv.Post.URI, "actor.getComments must carry the root as a reference (uri/cid), which following lands on the gated post.get")
+	// The response shape carries no root-content field at all: the guarantee is
+	// structural — CommentView holds the root only as a CommentRef (uri/cid), so
+	// the root's title/body cannot appear here even when it is a hidden post.
 }
