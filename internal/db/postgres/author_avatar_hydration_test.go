@@ -63,7 +63,7 @@ func TestAuthorProfileHydration(t *testing.T) {
 	postRepo := postgres.NewPostRepository(db)
 
 	t.Run("GetViewsByURIs", func(t *testing.T) {
-		views, err := postRepo.GetViewsByURIs(ctx, []string{postURI})
+		views, err := postRepo.GetViewsByURIs(ctx, []string{postURI}, "")
 		require.NoError(t, err)
 		require.Contains(t, views, postURI)
 		assertAuthorHydrated(t, views[postURI].Author, "GetViewsByURIs")
@@ -94,7 +94,7 @@ func TestAuthorProfileHydration(t *testing.T) {
 		bareDID := fmt.Sprintf("did:plc:bare%s", testID)
 		bareURI := fixtures.Post(t, db, communityDID, bareDID, "Bare author post", 1, time.Now())
 
-		views, err := postRepo.GetViewsByURIs(ctx, []string{bareURI})
+		views, err := postRepo.GetViewsByURIs(ctx, []string{bareURI}, "")
 		require.NoError(t, err)
 		require.Contains(t, views, bareURI)
 		author := views[bareURI].Author

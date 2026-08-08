@@ -121,7 +121,7 @@ func TestPostRepo_Create(t *testing.T) {
 		assert.False(t, post.IndexedAt.Equal(authored),
 			"indexed_at must be when the AppView saw the record, not when the author wrote it")
 
-		stored, err := repo.GetByURI(ctx, post.URI)
+		stored, err := repo.GetRawIndexedRow(ctx, post.URI)
 		require.NoError(t, err)
 		assert.Equal(t, post.CID, stored.CID)
 		assert.Equal(t, post.RKey, stored.RKey)
@@ -156,7 +156,7 @@ func TestPostRepo_Create(t *testing.T) {
 		post := postRecord(authorDID, communityDID, "bare"+testkit.UniqueID(t))
 		require.NoError(t, repo.Create(ctx, post))
 
-		stored, err := repo.GetByURI(ctx, post.URI)
+		stored, err := repo.GetRawIndexedRow(ctx, post.URI)
 		require.NoError(t, err)
 		assert.Nil(t, stored.Title, "a post with no title must read back as absent; an empty string "+
 			"renders as a blank heading rather than as no heading")
@@ -175,7 +175,7 @@ func TestPostRepo_Create(t *testing.T) {
 		post := postRecord(authorDID, communityDID, "counts"+testkit.UniqueID(t))
 		require.NoError(t, repo.Create(ctx, post))
 
-		stored, err := repo.GetByURI(ctx, post.URI)
+		stored, err := repo.GetRawIndexedRow(ctx, post.URI)
 		require.NoError(t, err)
 		assert.Zero(t, stored.UpvoteCount)
 		assert.Zero(t, stored.DownvoteCount)
@@ -210,7 +210,7 @@ func TestPostRepo_Create(t *testing.T) {
 				"the translation, and a consumer that could not recognise a replay would treat it as "+
 				"an infrastructure failure and retry forever")
 
-		stored, err := repo.GetByURI(ctx, first.URI)
+		stored, err := repo.GetRawIndexedRow(ctx, first.URI)
 		require.NoError(t, err)
 		require.NotNil(t, stored.Title)
 		assert.Equal(t, "As indexed", *stored.Title,
@@ -248,7 +248,7 @@ func TestPostRepo_Create(t *testing.T) {
 			"an author with no users row must index: under author-owned posts that is a federated "+
 				"author, not an ordering artefact waiting on a backfill")
 
-		stored, err := repo.GetByURI(ctx, post.URI)
+		stored, err := repo.GetRawIndexedRow(ctx, post.URI)
 		require.NoError(t, err, "the post must be readable back, not half-written")
 		assert.Equal(t, unknownAuthor, stored.AuthorDID,
 			"the author DID is carried on the row itself; it is the only identity the AppView has "+
@@ -311,7 +311,7 @@ func TestPostRepo_Create(t *testing.T) {
 			err := repo.Create(ctx, post)
 			require.Errorf(t, err, "%s: a JSONB column accepted a value that is not JSON", tc.name)
 
-			_, err = repo.GetByURI(ctx, post.URI)
+			_, err = repo.GetRawIndexedRow(ctx, post.URI)
 			assert.ErrorIsf(t, err, posts.ErrNotFound, "%s: the rejected post was indexed anyway", tc.name)
 		}
 	})
@@ -375,7 +375,7 @@ func TestPostRepo_SoftDelete(t *testing.T) {
 		t.Parallel()
 		fixture := seed(t)
 
-		views, err := fixture.repo.GetViewsByURIs(ctx, []string{fixture.deletedURI, fixture.survivorURI})
+		views, err := fixture.repo.GetViewsByURIs(ctx, []string{fixture.deletedURI, fixture.survivorURI}, "")
 		require.NoError(t, err)
 		assert.NotContains(t, views, fixture.deletedURI,
 			"a deleted post must be absent from the map so the caller emits a notFoundPost marker; "+
@@ -414,7 +414,7 @@ func TestPostRepo_SoftDelete(t *testing.T) {
 		t.Parallel()
 		fixture := seed(t)
 
-		stored, err := fixture.repo.GetByURI(ctx, fixture.deletedURI)
+		stored, err := fixture.repo.GetRawIndexedRow(ctx, fixture.deletedURI)
 		require.NoError(t, err,
 			"IF THIS FAILED (issue 2026-07-29-deleted-posts-still-served-by-getcomments.md) the defect is FIXED — delete this pin. The right behaviour is "+
 				"posts.ErrNotFound (or a caller that checks DeletedAt): a post withdrawn from its "+
@@ -477,7 +477,7 @@ func TestPostRepo_SoftDelete(t *testing.T) {
 				"improvement for a consumer that wants to know a delete arrived before its create — "+
 				"assert the new error here rather than reverting")
 
-		_, err := repo.GetByURI(ctx, absent)
+		_, err := repo.GetRawIndexedRow(ctx, absent)
 		assert.ErrorIs(t, err, posts.ErrNotFound, "and no row was conjured by the delete")
 	})
 
@@ -485,7 +485,7 @@ func TestPostRepo_SoftDelete(t *testing.T) {
 		t.Parallel()
 		fixture := seed(t)
 
-		survivor, err := fixture.repo.GetByURI(ctx, fixture.survivorURI)
+		survivor, err := fixture.repo.GetRawIndexedRow(ctx, fixture.survivorURI)
 		require.NoError(t, err)
 		assert.Nil(t, survivor.DeletedAt,
 			"deleting one post marked another as deleted; only the URI predicate separates them")

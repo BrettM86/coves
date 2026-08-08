@@ -775,10 +775,21 @@ the loop's throwaway tracker (file as issues; none blocks the current feature):
   writers-stopped maintenance window (`TRUNCATE post_submissions` alongside) —
   a live retype strands in-flight dedupe reservations. Ripples through
   `enhanceExternalEmbed`/`postV2From`.
-- **`community.post_count` incrementer:** wire onto
-  `countAcceptedPostsForCommunity` (increment on →accepted, decrement on
-  accepted→removed/rejected in the admission consumer). Cosmetic — display
-  already excludes non-accepted; no leak.
+- ~~**`community.post_count` incrementer**~~ **— DONE, and done the other way.**
+  The served `postCount` is now a LIVE, visibility-gated subquery over the same
+  predicate the feeds run (`visiblePostCountSubquery`, `post_visibility.go`),
+  wired into `community.get`/`.list`/`.search` and into the `sort=active` key,
+  which was previously ordering by a uniformly-zero column. A stored counter
+  needed advancing on →accepted and decrementing on removal, re-acceptance
+  drift, rejection and author tombstone — five chances to disagree with what a
+  reader can actually reach; the subquery cannot disagree because it *is* the
+  read path's answer. It is also collection-aware, where the accepted-only
+  count it replaced would have undercounted every legacy
+  `social.coves.community.post` (accepted by construction, no admission row).
+  **Remaining follow-up:** the stored `communities.post_count` column,
+  `IncrementPostCount` and its `communities.Repository` entry are now vestigial
+  — nothing reads what they write. Drop them with a migration when the legacy
+  drain lands (they are annotated as vestigial at the source in the meantime).
 - **Orphan `community_post_admissions` sweep on community deletion.**
 - **Ingestion-lane abuse hardening:** per-source-DID token bucket on the
   shared posts consumer (remaining ~4.2s transient-retry stall on
@@ -789,10 +800,17 @@ the loop's throwaway tracker (file as issues; none blocks the current feature):
   appview container late, so `.ci-out/appview.log` loses the early-run window
   (capture continuously). Never `go mod tidy` (breaks a go-log transitive;
   go-car is pinned indirect).
-- **Deferred product/UX:** author-self-view on `post.get` (needs a viewer-aware
-  `GetViewsByURIs`; author reaches own posts via `actor.getPosts` + `getStatus`
-  today); self-hoster SSRF allowance for private-address unfurl targets
-  (`IS_DEV_ENV` is the only current escape hatch).
+- ~~**Author-self-view on `post.get`**~~ **— DONE.** `GetViewsByURIs` takes a
+  viewer DID and `post.get` threads `req.ViewerDID` into it, so a permalink now
+  gives an author the same answer their own profile, the feeds and the
+  `getComments` thread header already gave them. `""` remains the fail-closed
+  anonymous value. One narrow case stays hidden from the author by design: an
+  `accepted` row whose `accepted_cid` does not match `posts.cid` (the §5.5
+  drifted window, and the representable NULL-pin variant) is hidden from
+  everyone, author included — `post.getStatus` reports it from the admission row
+  instead.
+- **Deferred product/UX:** self-hoster SSRF allowance for private-address
+  unfurl targets (`IS_DEV_ENV` is the only current escape hatch).
 
 **Open product question for the owner:** comments bypass admission entirely — a
 banned author can still comment (PRD open question #2). Decide whether bans

@@ -261,15 +261,61 @@ func (m *mockUserRepo) UpdateProfile(ctx context.Context, did string, input user
 	return user, nil
 }
 
-// mockPostRepo is a mock implementation of the posts.Repository interface
+// mockPostRepo is a mock implementation of the PostReader interface — which is
+// posts.Repository PLUS the admission-aware header lookup the comment service
+// requires. Implementing the whole thing is not optional: the header gate is the
+// dependency's type, so a fake that dropped VisibleHeaderView could not be handed
+// to the constructors at all. That is deliberate — the fake used to be the ONE
+// shape that exercised the old fail-open fallback, which meant every getComments
+// unit test ran through a path production could never take.
 type mockPostRepo struct {
 	posts map[string]*posts.Post
+	// hidden marks posts the visibility predicate refuses for the calling viewer:
+	// a pending / rejected / removed admission, or a postv2 whose admission row
+	// never seeded. The fake keeps it a plain set because what these tests assert
+	// is the SERVICE's reaction to a hidden answer, not the SQL that produces one
+	// (that is pinned at T1 in internal/db/postgres/post_visibility_test.go).
+	hidden map[string]bool
 }
 
 func newMockPostRepo() *mockPostRepo {
 	return &mockPostRepo{
-		posts: make(map[string]*posts.Post),
+		posts:  make(map[string]*posts.Post),
+		hidden: make(map[string]bool),
 	}
+}
+
+// hideFromHeader makes the visibility predicate refuse this post, as it does for
+// any non-accepted admission state when the viewer is not the author.
+func (m *mockPostRepo) hideFromHeader(uri string) {
+	m.hidden[uri] = true
+}
+
+// VisibleHeaderView models the real repository's gate: nothing for an unindexed
+// post, nothing for a soft-deleted one, nothing for a post the test marked
+// hidden, and otherwise the hydrated header.
+func (m *mockPostRepo) VisibleHeaderView(ctx context.Context, uri, viewerDID string) (*posts.PostView, error) {
+	post, ok := m.posts[uri]
+	if !ok || post.DeletedAt != nil || m.hidden[uri] {
+		return nil, nil
+	}
+
+	view := &posts.PostView{
+		URI:       post.URI,
+		CID:       post.CID,
+		RKey:      post.RKey,
+		CreatedAt: post.CreatedAt,
+		IndexedAt: post.IndexedAt,
+		Author:    &posts.AuthorView{DID: post.AuthorDID, Handle: post.AuthorDID},
+		Community: &posts.CommunityRef{DID: post.CommunityDID, Handle: post.CommunityDID, Name: post.CommunityDID},
+		Stats: &posts.PostStats{
+			Upvotes:      post.UpvoteCount,
+			Downvotes:    post.DownvoteCount,
+			Score:        post.Score,
+			CommentCount: post.CommentCount,
+		},
+	}
+	return view, nil
 }
 
 func (m *mockPostRepo) Create(ctx context.Context, post *posts.Post) error {
@@ -277,11 +323,21 @@ func (m *mockPostRepo) Create(ctx context.Context, post *posts.Post) error {
 	return nil
 }
 
-func (m *mockPostRepo) GetByURI(ctx context.Context, uri string) (*posts.Post, error) {
+func (m *mockPostRepo) GetRawIndexedRow(ctx context.Context, uri string) (*posts.Post, error) {
 	if p, ok := m.posts[uri]; ok {
 		return p, nil
 	}
 	return nil, posts.NewNotFoundError("post", uri)
+}
+
+func (m *mockPostRepo) GetRawIndexedRowsByURIs(ctx context.Context, uris []string) (map[string]*posts.Post, error) {
+	out := make(map[string]*posts.Post, len(uris))
+	for _, uri := range uris {
+		if p, ok := m.posts[uri]; ok {
+			out[uri] = p
+		}
+	}
+	return out, nil
 }
 
 func (m *mockPostRepo) GetByAuthor(ctx context.Context, req posts.GetAuthorPostsRequest) ([]*posts.PostView, *string, error) {
@@ -289,7 +345,7 @@ func (m *mockPostRepo) GetByAuthor(ctx context.Context, req posts.GetAuthorPosts
 	return nil, nil, nil
 }
 
-func (m *mockPostRepo) GetViewsByURIs(ctx context.Context, uris []string) (map[string]*posts.PostView, error) {
+func (m *mockPostRepo) GetViewsByURIs(ctx context.Context, uris []string, viewerDID string) (map[string]*posts.PostView, error) {
 	// Mock implementation - returns empty for tests
 	return map[string]*posts.PostView{}, nil
 }

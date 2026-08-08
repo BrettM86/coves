@@ -192,6 +192,11 @@ type fakeAdmissions struct {
 	row    *Admission
 	getErr error
 
+	// byPostURIs / byPostURIsErr back GetByPostURIs, the batched lookup post.get's
+	// removal-tombstone path runs. The engine never reads them.
+	byPostURIs    map[string][]*Admission
+	byPostURIsErr error
+
 	acceptanceResult AdmissionResult
 	removalResult    AdmissionResult
 	rejectionResult  AdmissionResult
@@ -253,7 +258,10 @@ func (a *fakeAdmissions) RepinAcceptedCID(_ context.Context, _ RepinAcceptanceCo
 
 func (a *fakeAdmissions) GetByPostURIs(_ context.Context, _ []string) (map[string][]*Admission, error) {
 	a.rec.record("GetByPostURIs")
-	return nil, nil
+	if a.byPostURIsErr != nil {
+		return nil, a.byPostURIsErr
+	}
+	return a.byPostURIs, nil
 }
 
 func (a *fakeAdmissions) ListByStatusForCommunity(_ context.Context, _ string, _ AdmissionStatus, _ int, _ *string) ([]*Admission, *string, error) {

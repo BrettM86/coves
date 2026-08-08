@@ -64,7 +64,7 @@ func (quotaBans) GetMembership(context.Context, string, string) (*communities.Me
 // quotaPosts serves whichever post the subject names.
 type quotaPosts struct{ posts map[string]*posts.Post }
 
-func (q *quotaPosts) GetByURI(_ context.Context, uri string) (*posts.Post, error) {
+func (q *quotaPosts) GetRawIndexedRow(_ context.Context, uri string) (*posts.Post, error) {
 	if p, ok := q.posts[uri]; ok {
 		return p, nil
 	}

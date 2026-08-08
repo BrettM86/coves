@@ -73,8 +73,15 @@ func TrustedAggregatorDIDs() map[string]bool {
 
 // PostLookup reads the indexed post a decision is about. Satisfied by
 // Repository.
+//
+// It is the RAW, ungated row by design and this is one of the few places that is
+// correct: the decider is what DECIDES whether a post becomes visible, so
+// reading it through the visibility predicate would make every undecided post
+// invisible to the thing that has to decide about it. See the danger banner on
+// Repository.GetRawIndexedRow before copying this pattern anywhere a reader can
+// see the result.
 type PostLookup interface {
-	GetByURI(ctx context.Context, uri string) (*Post, error)
+	GetRawIndexedRow(ctx context.Context, uri string) (*Post, error)
 }
 
 // AdmissionCounter is the narrow slice of AdmissionRepository the quota needs.
@@ -161,7 +168,7 @@ func (d *AdmissionEngineDecider) DecideAdmission(ctx context.Context, communityD
 	// lookup and both gate the policy: whether there is any content to judge,
 	// and who wrote it — and the author is what the actor class is derived
 	// from, so nothing about privilege can be decided before this returns.
-	post, err := d.deps.Posts.GetByURI(ctx, postURI)
+	post, err := d.deps.Posts.GetRawIndexedRow(ctx, postURI)
 	switch {
 	case err != nil && IsNotFound(err):
 		// Absent. An admission row can legitimately exist with no post — an

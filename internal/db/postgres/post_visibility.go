@@ -1,8 +1,6 @@
 package postgres
 
 import (
-	"context"
-	"database/sql"
 	"fmt"
 
 	"Coves/internal/core/posts"
@@ -12,9 +10,21 @@ import (
 //
 // This is the single admission-aware gate every posts display query goes
 // through so that no read path can forget it (the piecemeal-predicate failure
-// PRD §6.2 calls out). It is wired into GetViewsByURIs, the three feed queries
-// and GetByAuthor; the profile/community counts apply the same accepted rule
-// inline (a COUNT subquery has no row to hydrate).
+// PRD §6.2 calls out). ONE predicate string serves all of them —
+// visiblePostsPredicate below — and everything else in this file is a different
+// way of BINDING ITS VIEWER, never a second copy of the rule:
+//
+//   - visiblePostsJoin(n)              — viewer bound to $n. GetViewsByURIs,
+//     VisibleHeaderView, GetByAuthor, the three feed queries, and the profile
+//     post_count.
+//   - visiblePostCountSubquery(expr)   — viewer bound to the anonymous literal,
+//     wrapped in a COUNT over one community. The served community postCount.
+//
+// The counts used to hand-copy the predicate instead. A reviewer demonstrated
+// three separate mutations to that copy — dropping the collection check,
+// dropping the pinned-CID equality, dropping the community half of the join key
+// — that no test caught, because a copy has no way to disagree with itself.
+// There is nothing to copy now.
 //
 // # The join key is (a.community_did = p.community_did AND a.post_uri = p.uri)
 //
@@ -71,56 +81,75 @@ import (
 // bound where the viewer DID is already in the argument list (the timeline
 // reuses $1).
 func visiblePostsJoin(viewerParam int) (joinSQL, whereSQL string) {
+	return visiblePostsPredicate(fmt.Sprintf("$%d", viewerParam))
+}
+
+// anonymousViewerSQL is the viewer expression for a read that HAS no viewer: a
+// literal empty string, which is the same value visiblePostsJoin's callers bind
+// for an anonymous read.
+//
+// It is a SQL literal rather than a bound parameter because there is no input
+// here to bind — the public count of a community's posts is definitionally
+// viewer-independent, so there is no caller-supplied value that could reach it.
+// The constant is spliced into a query built entirely from other constants; no
+// user data is concatenated into SQL anywhere in this file.
+const anonymousViewerSQL = `''`
+
+// visiblePostsPredicate is THE read-path predicate, and the only place it is
+// spelled. viewerExpr is whatever SQL evaluates to the viewer's DID — a bind
+// parameter reference for a query that has a viewer to bind, or
+// anonymousViewerSQL for one that structurally does not.
+//
+// Everything above about the join key, the collection-aware status rule and the
+// pinned CID describes THIS function; visiblePostsJoin is the parameterized
+// spelling of it. Two viewer bindings, one predicate: a count and a display
+// query cannot disagree about what "visible" means, because there is only one
+// string.
+func visiblePostsPredicate(viewerExpr string) (joinSQL, whereSQL string) {
 	joinSQL = `
 			LEFT JOIN community_post_admissions a
 				ON a.community_did = p.community_did AND a.post_uri = p.uri`
 
 	whereSQL = fmt.Sprintf(`(
 				(a.status = 'accepted' AND a.accepted_cid = p.cid)
-				OR (a.status IS NULL AND (split_part(p.uri, '/', 4) <> '%s' OR p.author_did = $%d))
-				OR (a.status IN ('pending', 'pending_reacceptance', 'removed', 'rejected') AND p.author_did = $%d)
-			)`, posts.PostV2Collection, viewerParam, viewerParam)
+				OR (a.status IS NULL AND (split_part(p.uri, '/', 4) <> '%s' OR p.author_did = %s))
+				OR (a.status IN ('pending', 'pending_reacceptance', 'removed', 'rejected') AND p.author_did = %s)
+			)`, posts.PostV2Collection, viewerExpr, viewerExpr)
 
 	return joinSQL, whereSQL
 }
 
-// countAcceptedPostsForCommunity is the accepted-only source of truth for a
-// community's post_count (task 7, PRD §6.2).
+// visiblePostCountSubquery renders a scalar subquery counting the posts that are
+// PUBLICLY visible in the community named by communityExpr — the same predicate
+// every display query runs, with the anonymous viewer.
 //
-// It counts the posts a community has ACCEPTED: a join of `posts` to
-// community_post_admissions on the subject key with status = 'accepted',
-// excluding soft-deleted rows.
+// It exists because `communities.post_count` was a STORED column, and the only
+// thing that ever incremented it (community_repo_memberships.go's
+// IncrementPostCount) belonged to the retired community-repo write path, so
+// nothing has advanced it since posts became author-owned: every community's
+// postCount served 0 on community.get/.list/.search, and `ORDER BY post_count`
+// was a sort on a uniformly-zero key. A stored counter also has to be advanced
+// on the accept transition AND decremented on remove/unaccept/tombstone, and
+// every one of those is a chance to drift out of agreement with what the read
+// path will actually render. A live subquery over the same predicate cannot
+// drift by construction: it IS the read path's answer.
 //
-// It exists because community.post_count is a STORED column whose only
-// incrementer is the old community-repo write path (community_repo_memberships.go)
-// — nothing advances it on an acceptance, so it is stale under author-owned
-// posts. THIS is the accepted-only value the counter must converge on.
+// communityExpr must be a column reference or a bind parameter — it is spliced,
+// never a caller-supplied value.
 //
-// DEFERRED, deliberately not wired here: reconciling the stored column is a
-// consumer-side follow-up (increment on the accept transition, decrement on
-// remove/unaccept), sequenced to task 8 — not a read-path concern. There is NO
-// content leak in the meantime: every display query already excludes
-// non-accepted rows via visiblePostsJoin, so the stale column is a cosmetic
-// count, not reachable content. This helper lands the semantics (and its pin,
-// TestCommunityPostCountVisibility_AcceptedOnly) now; the incrementer follows.
-func countAcceptedPostsForCommunity(ctx context.Context, db *sql.DB, communityDID string) (int, error) {
-	var count int
-	err := db.QueryRowContext(ctx, `
-		SELECT COUNT(*)
-		FROM posts p
-		JOIN community_post_admissions a
-			ON a.community_did = p.community_did AND a.post_uri = p.uri
-		WHERE p.community_did = $1
-			AND p.deleted_at IS NULL
-			AND a.status = 'accepted'
-			AND a.accepted_cid = p.cid
-	`, communityDID).Scan(&count)
-	if err != nil {
-		return 0, fmt.Errorf("counting accepted posts for community %s: %w", communityDID, err)
-	}
-	return count, nil
+// It is COLLECTION-AWARE, which an accepted-only count is not. A legacy
+// social.coves.community.post lives in the community's own repo, is accepted by
+// construction, and carries no admission row at all (§3.0) — an accepted-only
+// count silently undercounts every community that still holds legacy posts,
+// which today is all of them. Counting exactly what the predicate renders is
+// also the only definition that cannot advertise unreachable content: the count
+// and the feed answer the same question.
+func visiblePostCountSubquery(communityExpr string) string {
+	joinSQL, whereSQL := visiblePostsPredicate(anonymousViewerSQL)
+	return `(SELECT COUNT(*)
+			FROM posts p` + joinSQL + `
+			WHERE p.community_did = ` + communityExpr + `
+				AND p.deleted_at IS NULL
+				AND ` + whereSQL + `)`
 }
 
-// Referenced so the count stub is not flagged as dead before GREEN wires it into
-// the community counter. Delete this line once it has a real caller.
-var _ = countAcceptedPostsForCommunity

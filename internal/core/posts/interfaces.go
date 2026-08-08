@@ -85,15 +85,53 @@ type Repository interface {
 	// Called by Jetstream consumer after post is created on PDS
 	Create(ctx context.Context, post *Post) error
 
-	// GetByURI retrieves a post by its AT-URI
-	// Used for E2E test verification and single-record lookups (returns the raw
-	// record without author/community joins)
-	GetByURI(ctx context.Context, uri string) (*Post, error)
+	// ────────────────────────────────────────────────────────────────────────
+	// DANGER — GetRawIndexedRow IS NOT A DISPLAY READ. It applies NEITHER the
+	// admission visibility predicate NOR `deleted_at IS NULL`, so it returns
+	// the full title and content of a post that is pending, rejected, removed
+	// by a moderator, or soft-deleted by its own author.
+	//
+	// It is named for what it is — the raw indexed row — precisely so that it
+	// cannot be reached for by accident, because misuse is SILENT: it selects
+	// bare columns with no join a compiler could miss and no error a test would
+	// see, just a hidden post's content on the wire.
+	//
+	// If you are hydrating anything a reader will SEE, use one of:
+	//   • GetViewsByURIs(ctx, uris, viewerDID)  — batch, hydrated, gated
+	//   • VisibleHeaderView(ctx, uri, viewerDID) — single post, hydrated, gated
+	//     (on the concrete postgres repo; the comment service requires it
+	//     through comments.PostReader, so the binding is a compile error to omit)
+	//
+	// Legitimate callers are the ones that must see a row REGARDLESS of who may
+	// look at it: the admission decider (it decides visibility, so it cannot
+	// depend on it) and the post.get removal path (a tombstone is emitted for a
+	// post the predicate has already hidden). Both check what they need
+	// themselves — the removal path re-checks deleted_at explicitly.
+	// ────────────────────────────────────────────────────────────────────────
+	GetRawIndexedRow(ctx context.Context, uri string) (*Post, error)
+
+	// GetRawIndexedRowsByURIs is the batched GetRawIndexedRow: same ungated raw
+	// rows, one round trip. THE SAME DANGER APPLIES — read the banner above
+	// before calling it. URIs with no indexed row are absent from the map.
+	//
+	// It exists because the post.get removal path needs the community and
+	// soft-delete state of every absent URI in a caller-supplied batch, and
+	// looping GetRawIndexedRow there put an N+1 on a public endpoint whose URI
+	// list the caller controls.
+	GetRawIndexedRowsByURIs(ctx context.Context, uris []string) (map[string]*Post, error)
 
 	// GetViewsByURIs retrieves full post views (with author + community joins) for a
 	// set of canonical DID-based AT-URIs. Returns a map keyed by URI; missing or
 	// soft-deleted posts are simply absent from the map. Backs social.coves.community.post.get.
-	GetViewsByURIs(ctx context.Context, uris []string) (map[string]*PostView, error)
+	//
+	// viewerDID scopes the admission visibility gate and is REQUIRED: pass the
+	// authenticated viewer's DID, or "" for an anonymous read. "" is the
+	// fail-closed value — accepted content only — so an implementation that
+	// ignores this argument narrows nothing and widens nothing for the public,
+	// while an author passed here reaches their own pending/rejected/removed
+	// posts, the same author-self-view contract actor.getPosts and the feeds
+	// honor (PRD §6.2).
+	GetViewsByURIs(ctx context.Context, uris []string, viewerDID string) (map[string]*PostView, error)
 
 	// GetByAuthor retrieves posts authored by a specific user
 	// Supports filtering by post type and community

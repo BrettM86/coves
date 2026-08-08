@@ -1,7 +1,6 @@
 package postgres
 
 import (
-	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
 	"context"
 	"database/sql"
@@ -225,6 +224,15 @@ func (r *postgresUserRepo) GetByDIDs(ctx context.Context, dids []string) (map[st
 	return result, nil
 }
 
+// anonymousProfileViewer is the viewer bound into the profile's post_count.
+//
+// A profile's stats are a PUBLIC surface — the same numbers go to every caller,
+// so there is no viewer to thread and the author self-view branches must not
+// fire. Naming it rather than passing a bare "" at the call site is the point:
+// an empty string in an argument list reads like an oversight, and this one is a
+// decision.
+const anonymousProfileViewer = ""
+
 // GetProfileStats retrieves aggregated statistics for a user profile
 // This performs a single query with scalar subqueries for efficiency
 func (r *postgresUserRepo) GetProfileStats(ctx context.Context, did string) (*users.ProfileStats, error) {
@@ -237,31 +245,43 @@ func (r *postgresUserRepo) GetProfileStats(ctx context.Context, did string) (*us
 	// Reputation represents historical contributions, while membership_count
 	// reflects current active community access. A banned user keeps their
 	// earned reputation but loses the membership count.
+	//
 	// post_count counts VISIBLE posts only: a profile advertising posts no reader
-	// can reach is a side channel onto non-accepted content (PRD §6.2). This is
-	// the public count — the anonymous, collection-aware rule of visiblePostsJoin,
-	// with no author self-view branch: a post with a decision counts only once its
-	// own community accepted it AND the acceptance still pins the current content
-	// (§5.5 — a drifted-accepted post is un-attested and does not count); a row
-	// with no admission counts iff it is NOT an author-owned postv2 (legacy/bridged
-	// stays counted, a postv2 with a missing/failed pending seed does not — fail
-	// closed). The collection is the AT-URI's fourth '/'-segment (split_part), same
-	// as CollectionOfPostURI; the postv2 collection literal is the shared constant.
-	query := fmt.Sprintf(`
+	// can reach is a side channel onto non-accepted content (PRD §6.2). It runs
+	// THE read-path predicate (visiblePostsJoin) rather than a copy of it — an
+	// earlier revision inlined the rule here, and a reviewer showed three
+	// mutations of that copy (dropping the collection check, the pinned-CID
+	// equality, or the community half of the join key) that no test could catch,
+	// because a count nobody cross-checks against a feed is unfalsifiable. $2 is
+	// bound to the empty viewer, which is exactly what makes this the PUBLIC
+	// count: the author self-view branches turn on `p.author_did = $2`, and no
+	// DID is "".
+	//
+	// comment_count is DELIBERATELY ROOT-BLIND — it counts the actor's comments
+	// whatever the admission state of the post they hang under, and that is not
+	// an oversight to be fixed by symmetry with post_count above. A comment is
+	// the actor's own public speech, and actor.getComments already LISTS it when
+	// its root is pending or removed, carrying the root as a bare uri/cid
+	// reference that leaks nothing and resolves through the gated post.get
+	// (TestActorCommentsVisibility_RootIsReferenceOnly pins that shape). Gating
+	// the count would put the profile's headline number in disagreement with the
+	// list the same profile renders, and would leak in the other direction: a
+	// comment count that visibly drops tells the reader a root they cannot see
+	// was moderated. The asymmetry with post_count is real and intended — a
+	// post's visibility IS its community's decision, a comment's is not.
+	visJoin, visWhere := visiblePostsJoin(2)
+	query := `
 		SELECT
-			(SELECT COUNT(*) FROM posts p
-				LEFT JOIN community_post_admissions a ON a.community_did = p.community_did AND a.post_uri = p.uri
-				WHERE p.author_did = $1 AND p.deleted_at IS NULL
-					AND ((a.status = 'accepted' AND a.accepted_cid = p.cid)
-						OR (a.status IS NULL AND split_part(p.uri, '/', 4) <> '%s'))) as post_count,
+			(SELECT COUNT(*) FROM posts p` + visJoin + `
+				WHERE p.author_did = $1 AND p.deleted_at IS NULL AND ` + visWhere + `) as post_count,
 			(SELECT COUNT(*) FROM comments WHERE commenter_did = $1 AND deleted_at IS NULL) as comment_count,
 			(SELECT COUNT(*) FROM community_subscriptions WHERE user_did = $1) as community_count,
 			(SELECT COUNT(*) FROM community_memberships WHERE user_did = $1 AND is_banned = false) as membership_count,
 			(SELECT COALESCE(SUM(reputation_score), 0) FROM community_memberships WHERE user_did = $1) as reputation
-	`, posts.PostV2Collection)
+	`
 
 	stats := &users.ProfileStats{}
-	err := r.db.QueryRowContext(ctx, query, did).Scan(
+	err := r.db.QueryRowContext(ctx, query, did, anonymousProfileViewer).Scan(
 		&stats.PostCount,
 		&stats.CommentCount,
 		&stats.CommunityCount,

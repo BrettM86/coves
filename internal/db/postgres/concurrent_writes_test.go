@@ -140,7 +140,7 @@ func TestConcurrentVoting_MultipleUsersOnSamePost(t *testing.T) {
 			t.Errorf("Expected no errors during concurrent voting, got %d errors", errorCount)
 		}
 
-		post, err := postRepo.GetByURI(ctx, postURI)
+		post, err := postRepo.GetRawIndexedRow(ctx, postURI)
 		if err != nil {
 			t.Fatalf("Failed to get post: %v", err)
 		}
@@ -247,7 +247,7 @@ func TestConcurrentVoting_MultipleUsersOnSamePost(t *testing.T) {
 			t.Errorf("Expected no errors during concurrent voting, got %d errors", errorCount)
 		}
 
-		post, err := postRepo.GetByURI(ctx, testPost2URI)
+		post, err := postRepo.GetRawIndexedRow(ctx, testPost2URI)
 		if err != nil {
 			t.Fatalf("Failed to get post: %v", err)
 		}
@@ -378,7 +378,7 @@ func TestConcurrentCommenting_MultipleUsersOnSamePost(t *testing.T) {
 			t.Errorf("Expected no errors during concurrent commenting, got %d errors", errorCount)
 		}
 
-		post, err := postRepo.GetByURI(ctx, postURI)
+		post, err := postRepo.GetRawIndexedRow(ctx, postURI)
 		if err != nil {
 			t.Fatalf("Failed to get post: %v", err)
 		}

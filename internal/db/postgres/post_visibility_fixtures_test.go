@@ -90,6 +90,28 @@ func seedVisibilityPostWithEmbed(t *testing.T, db *sql.DB, communityDID, authorD
 	return uri
 }
 
+// driftedAcceptedCID is the pinned CID of an acceptance the post's content has
+// moved PAST (PRD §5.5): the community attested to this CID, an edit landed, and
+// posts.cid advanced before the accepted → pending_reacceptance transition
+// committed. It is deliberately a value seedVisibilityPost can never mint, so a
+// row carrying it is un-attested by construction and the read predicate must
+// hide it from everyone.
+const driftedAcceptedCID = "bafyDRIFTEDacceptedcid"
+
+// postContentCID reads back the content CID a seeded post actually carries, so
+// an acceptance can PIN it. The read path gates on a.accepted_cid = p.cid, which
+// makes "what CID does this post have" load-bearing rather than incidental: an
+// acceptance pinning anything else is an acceptance of content that no longer
+// stands.
+func postContentCID(t *testing.T, db *sql.DB, postURI string) string {
+	t.Helper()
+
+	var cid string
+	err := db.QueryRowContext(context.Background(), `SELECT cid FROM posts WHERE uri = $1`, postURI).Scan(&cid)
+	require.NoErrorf(t, err, "reading the content CID of %s (seed the post before its admission)", postURI)
+	return cid
+}
+
 // seedAdmission writes one community's decision about one post directly into
 // community_post_admissions.
 //
@@ -99,6 +121,18 @@ func seedVisibilityPostWithEmbed(t *testing.T, db *sql.DB, communityDID, authorD
 // a community event (accept/remove) advances the (rev, op_rank) watermark, while
 // a pending observation and a local rejection do not. Callers that only care
 // about the STATUS a reader keys off can ignore the detail and pass "".
+//
+// acceptedCID == "" MEANS "PIN THE POST'S REAL CONTENT CID", not "pin some
+// placeholder". This is the intuitive-call trap the fixture used to set: the
+// default was a fixed literal ("bafyaccepted") that can never equal the CID
+// seedVisibilityPost derives from the rkey, so the obvious `…, Accepted, "", ""`
+// call seeded an acceptance pinning content the post does not have and produced
+// an INVISIBLE post. Every accepted seed in the suite had to hand-repeat the
+// "bafypostv2"+rkey literal to work, and the next surface's test would have
+// silently asserted against a post nobody can see. The default now looks the CID
+// up, so the intuitive call means what it reads as. To seed the §5.5 drifted
+// case deliberately, call seedVisibilityAdmissionDriftedCID; for an accepted row
+// with NO pin at all, seedVisibilityAdmissionUnpinned.
 func seedVisibilityAdmission(t *testing.T, db *sql.DB, communityDID, postURI string, status posts.AdmissionStatus, acceptedCID, decisionCode string) {
 	t.Helper()
 
@@ -112,10 +146,23 @@ func seedVisibilityAdmission(t *testing.T, db *sql.DB, communityDID, postURI str
 		acceptanceURI = sql.NullString{String: "at://" + communityDID + "/" + posts.AcceptanceCollection + "/acc" + postURI[len(postURI)-6:], Valid: true}
 		acceptanceRkey = sql.NullString{String: "acc" + postURI[len(postURI)-6:], Valid: true}
 		if acceptedCID == "" {
-			acceptedCID = "bafyaccepted"
+			if status == posts.AdmissionStatusPendingReacceptance {
+				// pending_reacceptance IS the drifted state — the standing
+				// acceptance pins content the post has moved past — so pinning the
+				// post's current CID here would seed a row that contradicts its own
+				// status.
+				acceptedCID = driftedAcceptedCID
+			} else {
+				acceptedCID = postContentCID(t, db, postURI)
+			}
 		}
 		accCID = sql.NullString{String: acceptedCID, Valid: true}
-		evalCID = sql.NullString{String: acceptedCID, Valid: true}
+		// evaluated_cid is "the exact content CID the AppView has indexed", which
+		// is the POST's CID whatever the acceptance pins — that is precisely how a
+		// drifted acceptance is recognisable as drifted (accepted_cid <>
+		// evaluated_cid). Mirroring accepted_cid into it, as this fixture used to,
+		// seeds a row that claims the acceptance still matches the content.
+		evalCID = sql.NullString{String: postContentCID(t, db, postURI), Valid: true}
 		rev = sql.NullString{String: "3lqqqqqqqqqq2", Valid: true}
 		opRank = sql.NullInt16{Int16: int16(posts.CommunityOpPut), Valid: true}
 	case posts.AdmissionStatusRemoved:
@@ -161,6 +208,41 @@ func seedVisibilityAdmission(t *testing.T, db *sql.DB, communityDID, postURI str
 		acceptanceURI, acceptanceRkey, accCID, evalCID,
 		code, decisionAt, rev, opRank)
 	require.NoErrorf(t, err, "seeding admission %s for %s in %s", status, postURI, communityDID)
+}
+
+// seedVisibilityAdmissionDriftedCID seeds the §5.5 read-side hazard explicitly:
+// a row that still says status='accepted' while the acceptance pins content the
+// post has moved past. The admission consumer commits an edit's new content
+// (posts.cid advances) in a SEPARATE transaction from the accepted →
+// pending_reacceptance transition, so this state is reachable in production for
+// as long as that window is open, and in it the attested content is gone with
+// un-attested content standing in its place. The predicate must hide it from
+// EVERYONE, author included — there is nothing here anyone agreed to carry.
+func seedVisibilityAdmissionDriftedCID(t *testing.T, db *sql.DB, communityDID, postURI string) {
+	t.Helper()
+	require.NotEqualf(t, driftedAcceptedCID, postContentCID(t, db, postURI),
+		"seedVisibilityAdmissionDriftedCID needs a post whose CID differs from the drifted pin, or it seeds the matched case")
+	seedVisibilityAdmission(t, db, communityDID, postURI, posts.AdmissionStatusAccepted, driftedAcceptedCID, "")
+}
+
+// seedVisibilityAdmissionUnpinned seeds an accepted row whose accepted_cid is
+// NULL. The column is nullable and migration 034 attaches no CHECK tying it to
+// the status, so an acceptance with nothing pinned is REPRESENTABLE — a partial
+// write, an acceptance record indexed before its subject's content, or a future
+// writer that forgets the column. `a.accepted_cid = p.cid` is NULL-propagating,
+// so such a row can never satisfy the accepted branch and the post is hidden
+// from everyone but its author. That is the fail-closed answer (an acceptance
+// that attests to no CID attests to nothing) and this helper exists so the case
+// is stated rather than inferred.
+func seedVisibilityAdmissionUnpinned(t *testing.T, db *sql.DB, communityDID, postURI string) {
+	t.Helper()
+
+	seedVisibilityAdmission(t, db, communityDID, postURI, posts.AdmissionStatusAccepted, "", "")
+	_, err := db.ExecContext(context.Background(), `
+		UPDATE community_post_admissions SET accepted_cid = NULL
+		WHERE community_did = $1 AND post_uri = $2
+	`, communityDID, postURI)
+	require.NoErrorf(t, err, "unpinning the acceptance of %s in %s", postURI, communityDID)
 }
 
 // visibilityCommunity creates a community row plus its owner, returning the DID.

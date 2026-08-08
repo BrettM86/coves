@@ -152,7 +152,7 @@ func TestPostConsumer_ReconcilesCommentCountWhenCommentsArriveFirst(t *testing.T
 
 		require.NoError(t, postConsumer.HandleEvent(ctx, postEvent("post-rev", postRkey, "bafypost", "Post arriving after comment")))
 
-		post, err := postRepo.GetByURI(ctx, postURI)
+		post, err := postRepo.GetRawIndexedRow(ctx, postURI)
 		require.NoError(t, err, "the post should be indexed")
 		require.Equal(t, 1, post.CommentCount,
 			"the post consumer should have counted the comment that arrived before it")
@@ -176,7 +176,7 @@ func TestPostConsumer_ReconcilesCommentCountWhenCommentsArriveFirst(t *testing.T
 
 		require.NoError(t, postConsumer.HandleEvent(ctx, postEvent("post2-rev", postRkey, "bafypost2", "Post with 3 pre-existing comments")))
 
-		post, err := postRepo.GetByURI(ctx, postURI)
+		post, err := postRepo.GetRawIndexedRow(ctx, postURI)
 		require.NoError(t, err)
 		require.Equal(t, 3, post.CommentCount,
 			"reconciliation counts every pre-existing comment, not just the first")
@@ -193,7 +193,7 @@ func TestPostConsumer_ReconcilesCommentCountWhenCommentsArriveFirst(t *testing.T
 
 		require.NoError(t, postConsumer.HandleEvent(ctx, postEvent("post3-rev", postRkey, "bafypost3", "Post with before and after comments")))
 
-		post, err := postRepo.GetByURI(ctx, postURI)
+		post, err := postRepo.GetRawIndexedRow(ctx, postURI)
 		require.NoError(t, err)
 		require.Equal(t, 2, post.CommentCount)
 
@@ -202,7 +202,7 @@ func TestPostConsumer_ReconcilesCommentCountWhenCommentsArriveFirst(t *testing.T
 		// bug seen from the other end.
 		commentOnPost(t, "after-rev", "bafyafter", "Comment after post exists", postURI, "bafypost3")
 
-		post, err = postRepo.GetByURI(ctx, postURI)
+		post, err = postRepo.GetRawIndexedRow(ctx, postURI)
 		require.NoError(t, err)
 		require.Equal(t, 3, post.CommentCount,
 			"a comment arriving after the post should increment the reconciled count")
@@ -217,7 +217,7 @@ func TestPostConsumer_ReconcilesCommentCountWhenCommentsArriveFirst(t *testing.T
 		event := postEvent("idem-post-rev", postRkey, "bafyidempost", "Idempotent test post")
 		require.NoError(t, postConsumer.HandleEvent(ctx, event))
 
-		post, err := postRepo.GetByURI(ctx, postURI)
+		post, err := postRepo.GetRawIndexedRow(ctx, postURI)
 		require.NoError(t, err)
 		require.Equal(t, 1, post.CommentCount)
 
@@ -226,7 +226,7 @@ func TestPostConsumer_ReconcilesCommentCountWhenCommentsArriveFirst(t *testing.T
 		// it had just reconciled.
 		require.NoError(t, postConsumer.HandleEvent(ctx, event), "a replayed post event should be a no-op, not an error")
 
-		post, err = postRepo.GetByURI(ctx, postURI)
+		post, err = postRepo.GetRawIndexedRow(ctx, postURI)
 		require.NoError(t, err)
 		require.Equal(t, 1, post.CommentCount,
 			"replaying the post event must not reset comment_count")

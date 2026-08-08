@@ -8,20 +8,54 @@ import (
 // mockRepository implements Repository for testing
 type mockRepository struct {
 	getByAuthorFunc    func(ctx context.Context, req GetAuthorPostsRequest) ([]*PostView, *string, error)
-	getViewsByURIsFunc func(ctx context.Context, uris []string) (map[string]*PostView, error)
+	getViewsByURIsFunc func(ctx context.Context, uris []string, viewerDID string) (map[string]*PostView, error)
+
+	// rawRows backs both raw lookups; rawRowsErr makes them fail, which is how a
+	// test drives the "we could not find out" path.
+	rawRows    map[string]*Post
+	rawRowsErr error
+
+	// gotViewsViewerDID records the viewer the service threaded into the
+	// visibility gate — "" is a real value here (the anonymous read), so the
+	// separate flag is what distinguishes it from "never called".
+	gotViewsViewerDID   string
+	getViewsByURIsCalls int
+	rawBatchCalls       int
 }
 
 func (m *mockRepository) Create(ctx context.Context, post *Post) error {
 	return nil
 }
 
-func (m *mockRepository) GetByURI(ctx context.Context, uri string) (*Post, error) {
-	return nil, nil
+func (m *mockRepository) GetRawIndexedRow(ctx context.Context, uri string) (*Post, error) {
+	if m.rawRowsErr != nil {
+		return nil, m.rawRowsErr
+	}
+	if p, ok := m.rawRows[uri]; ok {
+		return p, nil
+	}
+	return nil, ErrNotFound
 }
 
-func (m *mockRepository) GetViewsByURIs(ctx context.Context, uris []string) (map[string]*PostView, error) {
+func (m *mockRepository) GetRawIndexedRowsByURIs(ctx context.Context, uris []string) (map[string]*Post, error) {
+	m.rawBatchCalls++
+	if m.rawRowsErr != nil {
+		return nil, m.rawRowsErr
+	}
+	out := make(map[string]*Post, len(uris))
+	for _, uri := range uris {
+		if p, ok := m.rawRows[uri]; ok {
+			out[uri] = p
+		}
+	}
+	return out, nil
+}
+
+func (m *mockRepository) GetViewsByURIs(ctx context.Context, uris []string, viewerDID string) (map[string]*PostView, error) {
+	m.getViewsByURIsCalls++
+	m.gotViewsViewerDID = viewerDID
 	if m.getViewsByURIsFunc != nil {
-		return m.getViewsByURIsFunc(ctx, uris)
+		return m.getViewsByURIsFunc(ctx, uris, viewerDID)
 	}
 	return map[string]*PostView{}, nil
 }

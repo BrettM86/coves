@@ -12,6 +12,25 @@ import (
 	"github.com/lib/pq"
 )
 
+// The served `postCount` is a LIVE count over the read-path visibility
+// predicate, not the stored `communities.post_count` column.
+//
+// The column is a leftover of the community-repo write path: its only
+// incrementer (IncrementPostCount, community_repo_memberships.go) lost its
+// caller when posts became author-owned, so every community served postCount 0
+// and `sort=active` ordered by a uniformly zero key. Rehabilitating a stored
+// counter means advancing it on the accept transition and decrementing it on
+// removal, re-acceptance drift, rejection and author tombstone — five chances to
+// disagree with what the feed will render. The subquery cannot disagree, because
+// it runs the same predicate the feed runs. See visiblePostCountSubquery.
+//
+// Two spellings only because the queries differ in whether `communities` carries
+// an alias. Both come from the one predicate builder.
+var (
+	communityPostCountUnqualified = visiblePostCountSubquery("communities.did")
+	communityPostCountAliasedC    = visiblePostCountSubquery("c.did")
+)
+
 type postgresCommunityRepo struct {
 	db *sql.DB
 }
@@ -135,7 +154,7 @@ func (r *postgresCommunityRepo) GetByDID(ctx context.Context, did string) (*comm
 			END as pds_refresh_token,
 			pds_url,
 			visibility, allow_external_discovery, moderation_type, content_warnings,
-			member_count, subscriber_count, post_count,
+			member_count, subscriber_count, ` + communityPostCountUnqualified + ` AS post_count,
 			federated_from, federated_id, created_at, updated_at,
 			record_uri, record_cid
 		FROM communities
@@ -202,7 +221,7 @@ func (r *postgresCommunityRepo) GetByHandle(ctx context.Context, handle string) 
 		SELECT id, did, handle, name, display_name, description, description_facets,
 			avatar_cid, banner_cid, owner_did, created_by_did, hosted_by_did,
 			visibility, allow_external_discovery, moderation_type, content_warnings,
-			member_count, subscriber_count, post_count,
+			member_count, subscriber_count, ` + communityPostCountUnqualified + ` AS post_count,
 			federated_from, federated_id, created_at, updated_at,
 			record_uri, record_cid
 		FROM communities
@@ -390,8 +409,15 @@ func (r *postgresCommunityRepo) List(ctx context.Context, req communities.ListCo
 		sortColumn = "c.subscriber_count"
 		sortOrder = "DESC"
 	case "active":
-		// Most posts/activity
-		sortColumn = "c.post_count"
+		// Most posts/activity. This is the OUTPUT column named post_count — the
+		// live visibility-gated subquery aliased in the SELECT list below — not
+		// the stored c.post_count it replaced, which is uniformly zero and made
+		// this sort a no-op. PostgreSQL resolves a bare name in ORDER BY to an
+		// output column in preference to an input column, and the SELECT list
+		// emits exactly one column by this name, so the binding is unambiguous;
+		// it is spelled without the `c.` qualifier precisely because a qualified
+		// name would bind to the stale table column instead.
+		sortColumn = "post_count"
 		sortOrder = "DESC"
 	case "new":
 		// Recently created
@@ -412,7 +438,7 @@ func (r *postgresCommunityRepo) List(ctx context.Context, req communities.ListCo
 		SELECT c.id, c.did, c.handle, c.name, c.display_name, c.description, c.description_facets,
 			c.avatar_cid, c.banner_cid, c.owner_did, c.created_by_did, c.hosted_by_did,
 			c.visibility, c.allow_external_discovery, c.moderation_type, c.content_warnings,
-			c.member_count, c.subscriber_count, c.post_count,
+			c.member_count, c.subscriber_count, `+communityPostCountAliasedC+` AS post_count,
 			c.federated_from, c.federated_id, c.created_at, c.updated_at,
 			c.record_uri, c.record_cid, c.pds_url
 		FROM communities c
@@ -522,7 +548,7 @@ func (r *postgresCommunityRepo) Search(ctx context.Context, req communities.Sear
 		SELECT id, did, handle, name, display_name, description, description_facets,
 			avatar_cid, banner_cid, owner_did, created_by_did, hosted_by_did,
 			visibility, allow_external_discovery, moderation_type, content_warnings,
-			member_count, subscriber_count, post_count,
+			member_count, subscriber_count, ` + communityPostCountUnqualified + ` AS post_count,
 			federated_from, federated_id, created_at, updated_at,
 			record_uri, record_cid, pds_url,
 			similarity(name, $1) + similarity(COALESCE(description, ''), $1) as relevance

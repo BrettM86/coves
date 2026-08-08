@@ -134,7 +134,7 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 
 		// STEP 5: Verify post was indexed with blob reference
 		postURI := fmt.Sprintf("at://%s/social.coves.community.post/%s", community.DID, rkey)
-		indexedPost, err := postRepo.GetByURI(ctx, postURI)
+		indexedPost, err := postRepo.GetRawIndexedRow(ctx, postURI)
 		require.NoError(t, err, "Post should be indexed")
 
 		// Verify embed contains blob (Embed is stored as *string JSON in DB)
@@ -277,7 +277,7 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 
 		// Verify all images indexed
 		postURI := fmt.Sprintf("at://%s/social.coves.community.post/%s", community.DID, rkey)
-		indexedPost, err := postRepo.GetByURI(ctx, postURI)
+		indexedPost, err := postRepo.GetRawIndexedRow(ctx, postURI)
 		require.NoError(t, err, "Multi-image post should be indexed")
 
 		// Parse embed JSON
@@ -336,7 +336,7 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 
 		// Verify thumbnail blob indexed
 		postURI := fmt.Sprintf("at://%s/social.coves.community.post/%s", community.DID, rkey)
-		indexedPost, err := postRepo.GetByURI(ctx, postURI)
+		indexedPost, err := postRepo.GetRawIndexedRow(ctx, postURI)
 		require.NoError(t, err, "External embed post should be indexed")
 
 		// Parse embed JSON

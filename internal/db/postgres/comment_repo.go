@@ -468,14 +468,43 @@ func (r *postgresCommentRepo) ListByCommenterWithCursor(ctx context.Context, req
 
 	// Build community filter if provided
 	// Parameter numbering: $1=commenterDID, $2=limit+1 (for pagination detection)
-	// Cursor values (if present) use $3 and $4, community DID comes after
+	// Cursor values (if present) use $3 and $4, then the community DID and the
+	// viewer DID the visibility predicate binds.
+	//
+	// SECURITY (PRD §6.2 — "comment community filters" are in the must-convert
+	// inventory): naming a community in this query is a claim about that
+	// community's scope, so the roots it selects must be the posts that community
+	// actually ADMITTED. Under author-owned posts anyone can write a postv2 naming
+	// any community, and the comment consumer indexes a comment whatever its root
+	// is — so a bare `community_did = $n` subquery lets an attacker comment on
+	// their own never-accepted post and have the comment served back, in full,
+	// inside a listing clients render as "this user's comments in <community>".
+	// That is the removed write barrier being rebuilt one table over.
+	//
+	// The subquery therefore runs the SAME centralized predicate every other posts
+	// read path runs (visiblePostsJoin) plus the soft-delete gate, with the
+	// viewer's DID bound so the author keeps the carve-out over their own
+	// pending/rejected/removed posts and nobody else gains it. Reusing the helper
+	// rather than hand-rolling the status rule is the point: a second copy of the
+	// predicate is a second thing to forget to update.
 	var communityFilter string
 	var communityValue []interface{}
 	paramOffset := 2 + len(cursorValues) // Start after $1, $2, and any cursor params
 	if req.CommunityDID != nil && *req.CommunityDID != "" {
 		paramOffset++
-		communityFilter = fmt.Sprintf("AND c.root_uri IN (SELECT uri FROM posts WHERE community_did = $%d)", paramOffset)
-		communityValue = append(communityValue, *req.CommunityDID)
+		communityParam := paramOffset
+		paramOffset++
+		viewerParam := paramOffset
+
+		visJoin, visWhere := visiblePostsJoin(viewerParam)
+		communityFilter = fmt.Sprintf(`AND c.root_uri IN (
+				SELECT p.uri
+				FROM posts p%s
+				WHERE p.community_did = $%d
+					AND p.deleted_at IS NULL
+					AND %s
+			)`, visJoin, communityParam, visWhere)
+		communityValue = append(communityValue, *req.CommunityDID, req.ViewerDID)
 	}
 
 	// Build complete query with JOINs and filters

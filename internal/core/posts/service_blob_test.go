@@ -369,7 +369,7 @@ func TestService_AuthorPDSIsHydratedOntoPostViews(t *testing.T) {
 	`, f.community.DID, uri, "bafyblobowner")
 	require.NoError(t, err)
 
-	views, err := postgres.NewPostRepository(f.db).GetViewsByURIs(ctx, []string{uri})
+	views, err := postgres.NewPostRepository(f.db).GetViewsByURIs(ctx, []string{uri}, "")
 	require.NoError(t, err)
 	require.Contains(t, views, uri)
 

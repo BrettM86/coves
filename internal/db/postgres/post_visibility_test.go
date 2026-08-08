@@ -4,10 +4,12 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
 	"Coves/internal/core/comments"
+	"Coves/internal/core/communities"
 	"Coves/internal/core/communityFeeds"
 	"Coves/internal/core/discover"
 	"Coves/internal/core/posts"
@@ -238,7 +240,7 @@ func TestPostGetVisibility_PublicSeesAcceptedOnly(t *testing.T) {
 	seedVisibilityAdmission(t, db, community, removed, posts.AdmissionStatusRemoved, "", "rule-violation")
 
 	repo := NewPostRepository(db)
-	views, err := repo.GetViewsByURIs(ctx, []string{accepted, pending, rejected, removed})
+	views, err := repo.GetViewsByURIs(ctx, []string{accepted, pending, rejected, removed}, publicViewer)
 	require.NoError(t, err)
 
 	require.Containsf(t, views, accepted, "an accepted post must be served by post.get")
@@ -258,7 +260,7 @@ func TestPostGetVisibility_PublicSeesAcceptedOnly(t *testing.T) {
 		unknownPost := seedVisibilityPost(t, db, community, unknownAuthor, "pgunk", "federated", base.Add(5*time.Hour))
 		seedVisibilityAdmission(t, db, community, unknownPost, posts.AdmissionStatusAccepted, "bafypostv2pgunk", "")
 
-		got, err := repo.GetViewsByURIs(ctx, []string{unknownPost})
+		got, err := repo.GetViewsByURIs(ctx, []string{unknownPost}, publicViewer)
 		require.NoError(t, err)
 		require.Containsf(t, got, unknownPost,
 			"an accepted post whose author has no users row was dropped by post.get. The author join must be a LEFT "+
@@ -268,6 +270,85 @@ func TestPostGetVisibility_PublicSeesAcceptedOnly(t *testing.T) {
 		require.NotNil(t, view.Author)
 		assert.Equal(t, unknownAuthor, view.Author.DID,
 			"the unhydrated author's DID must still be carried — it is the repo the postv2 record lives in")
+	})
+}
+
+// TestPostGetVisibility_AuthorSeesOwnPendingPost is post.get's AUTHOR branch.
+//
+// The author-self-view contract (PRD §6.2) is one contract, not a per-endpoint
+// courtesy: an author sees their own posts in every admission state so a client
+// can render "pending review" / "removed". actor.getPosts, the feeds and the
+// getComments thread header all honor it, and post.get — the permalink surface a
+// client sends the author to from their own profile — must give the same answer,
+// or an author following a link to their own pending post is told it does not
+// exist while the profile they came from just listed it.
+//
+// The viewer is threaded through GetViewsByURIs, so the anonymous read is the
+// EXPLICIT "" case rather than the only case. Every non-author — the anonymous
+// public and an authenticated stranger alike — still sees accepted content only.
+func TestPostGetVisibility_AuthorSeesOwnPendingPost(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+	ctx := context.Background()
+
+	community := visibilityCommunity(t, db, "as")
+	author := "did:plc:visasauthor"
+	createTestUser(t, db, "visasauthor.test", author)
+	stranger := "did:plc:visasstranger"
+	createTestUser(t, db, "visasstranger.test", stranger)
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	accepted := seedVisibilityPost(t, db, community, author, "asacc", "accepted", base.Add(5*time.Hour))
+	pending := seedVisibilityPost(t, db, community, author, "aspen", "pending", base.Add(4*time.Hour))
+	rejected := seedVisibilityPost(t, db, community, author, "asrej", "rejected", base.Add(3*time.Hour))
+	removed := seedVisibilityPost(t, db, community, author, "asrem", "removed", base.Add(2*time.Hour))
+	// No admission row at all: the failed-seed postv2 case, which must also
+	// resolve for its author and for nobody else.
+	unseeded := seedVisibilityPost(t, db, community, author, "asuns", "no admission row", base.Add(1*time.Hour))
+
+	seedVisibilityAdmission(t, db, community, accepted, posts.AdmissionStatusAccepted, "", "")
+	seedVisibilityAdmission(t, db, community, pending, posts.AdmissionStatusPending, "", "")
+	seedVisibilityAdmission(t, db, community, rejected, posts.AdmissionStatusRejected, "", "spam")
+	seedVisibilityAdmission(t, db, community, removed, posts.AdmissionStatusRemoved, "", "rule-violation")
+
+	repo := NewPostRepository(db)
+	all := []string{accepted, pending, rejected, removed, unseeded}
+	read := func(t *testing.T, viewer string) map[string]*posts.PostView {
+		t.Helper()
+		views, err := repo.GetViewsByURIs(ctx, all, viewer)
+		require.NoError(t, err)
+		return views
+	}
+
+	t.Run("the author sees their own posts in every admission state", func(t *testing.T) {
+		views := read(t, author)
+		for _, uri := range all {
+			assert.Containsf(t, views, uri,
+				"post.get hid a post from its own AUTHOR (%s). The author-self-view contract is one contract across "+
+					"surfaces: actor.getPosts, the feeds and the getComments header all show the author their own "+
+					"pending/rejected/removed posts, so a permalink that answers notFound makes post.get the one surface "+
+					"that disagrees (PRD §6.2)", uri)
+		}
+	})
+
+	t.Run("an authenticated stranger sees accepted only", func(t *testing.T) {
+		views := read(t, stranger)
+		assert.Contains(t, views, accepted)
+		for _, uri := range []string{pending, rejected, removed, unseeded} {
+			assert.NotContainsf(t, views, uri,
+				"post.get served a non-accepted post (%s) to an authenticated stranger. Threading a viewer must widen the "+
+					"view for the AUTHOR only — anyone else is exactly the anonymous public", uri)
+		}
+	})
+
+	t.Run("the anonymous public sees accepted only", func(t *testing.T) {
+		views := read(t, publicViewer)
+		assert.Contains(t, views, accepted)
+		for _, uri := range []string{pending, rejected, removed, unseeded} {
+			assert.NotContainsf(t, views, uri,
+				"post.get served a non-accepted post (%s) to the anonymous public. The empty viewer DID is the fail-closed "+
+					"default and must stay indistinguishable from a stranger", uri)
+		}
 	})
 }
 
@@ -294,7 +375,7 @@ func TestPostGetVisibility_AuthorMediaResolvesOnVisibleRow(t *testing.T) {
 	seedVisibilityAdmission(t, db, community, accepted, posts.AdmissionStatusAccepted, "bafypostv2pmacc", "")
 
 	repo := NewPostRepository(db)
-	views, err := repo.GetViewsByURIs(ctx, []string{accepted})
+	views, err := repo.GetViewsByURIs(ctx, []string{accepted}, publicViewer)
 	require.NoError(t, err)
 	require.Contains(t, views, accepted)
 
@@ -393,6 +474,68 @@ func TestProfileStatsVisibility_PostCountExcludesNonAccepted(t *testing.T) {
 			"1 accepted) advertises the existence of content no reader can reach", 3)
 }
 
+// TestProfileStatsVisibility_PostCountRunsTheWholePredicate pins the three parts
+// of the read-path rule that the profile count used to re-implement inline, and
+// that a reviewer showed could each be deleted from that copy with no test
+// noticing:
+//
+//	1. the collection check   — drop it and a failed-seed postv2 counts
+//	2. the pinned-CID equality — drop it and a §5.5 drifted post counts
+//	3. the community join half — drop it and another community's acceptance counts
+//
+// The count now calls visiblePostsJoin, so a copy cannot drift; this is the
+// assertion that says so out loud, and it is the one that fails if anyone
+// re-inlines the rule. The oracle is actor.getPosts read anonymously — the count
+// must equal the number of posts a stranger can actually list.
+func TestProfileStatsVisibility_PostCountRunsTheWholePredicate(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+	ctx := context.Background()
+
+	community := visibilityCommunity(t, db, "pw")
+	forker := visibilityCommunity(t, db, "pwF")
+	author := "did:plc:vispwauthor"
+	createTestUser(t, db, "vispwauthor.test", author)
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	accepted := seedVisibilityPost(t, db, community, author, "pwacc", "accepted", base.Add(5*time.Hour))
+	legacy := seedFilterablePost(t, db, community, author, "pwleg", base.Add(4*time.Hour))
+	// (1) postv2, no admission row: the pending seed failed. Fail closed.
+	seedVisibilityPost(t, db, community, author, "pwuns", "no admission row", base.Add(3*time.Hour))
+	// (2) accepted, but the acceptance pins content the post has moved past.
+	drifted := seedVisibilityPost(t, db, community, author, "pwdri", "drifted", base.Add(2*time.Hour))
+	// (3) pending at home, accepted by a community that forked it.
+	forked := seedVisibilityPost(t, db, community, author, "pwfrk", "forked elsewhere", base.Add(1*time.Hour))
+
+	seedVisibilityAdmission(t, db, community, accepted, posts.AdmissionStatusAccepted, "", "")
+	seedVisibilityAdmissionDriftedCID(t, db, community, drifted)
+	seedVisibilityAdmission(t, db, community, forked, posts.AdmissionStatusPending, "", "")
+	seedVisibilityAdmission(t, db, forker, forked, posts.AdmissionStatusAccepted, "", "")
+
+	// The oracle: exactly what a stranger can list on this author's profile.
+	views, _, err := NewPostRepository(db).GetByAuthor(ctx, posts.GetAuthorPostsRequest{
+		ActorDID: author, ViewerDID: publicViewer, Limit: 50,
+	})
+	require.NoError(t, err)
+	listed := make([]string, 0, len(views))
+	for _, v := range views {
+		listed = append(listed, v.URI)
+	}
+	require.ElementsMatchf(t, []string{accepted, legacy}, listed,
+		"the fixture no longer means what this test says it means: expected the accepted postv2 and the legacy post "+
+			"to be the only publicly listable posts, got %v", listed)
+
+	stats, err := NewUserRepository(db).GetProfileStats(ctx, author)
+	require.NoError(t, err)
+	assert.Equalf(t, len(listed), stats.PostCount,
+		"a profile's post_count (%d) must equal what actor.getPosts lists to a stranger (%d: %v). The three ways "+
+			"this diverges are the three mutations the inline copy of the predicate admitted: counting the "+
+			"no-admission postv2 (the collection check), counting the drifted-CID post (the accepted_cid = p.cid "+
+			"equality, §5.5), and counting the post another community forked (the a.community_did = p.community_did "+
+			"half of the join key). Any of them advertises content no reader can reach",
+		stats.PostCount, len(listed), listed)
+}
+
 // TestVisibility_CollectionAwareFailClosed is the corrected core of task 7, and
 // the single most important assertion in this suite. Cycle 1's predicate went
 // FAIL-OPEN: a post with no admission row was visible to everyone. That is
@@ -446,7 +589,7 @@ func TestVisibility_CollectionAwareFailClosed(t *testing.T) {
 			"a legacy community.post with no admission row must stay visible — it was accepted by construction under the "+
 				"old model and task 7 must not retro-hide content that predates admissions (visible until task 8's drain)")
 
-		views, err := postRepo.GetViewsByURIs(ctx, []string{legacy})
+		views, err := postRepo.GetViewsByURIs(ctx, []string{legacy}, publicViewer)
 		require.NoError(t, err)
 		assert.Contains(t, views, legacy, "post.get must still serve a legacy post with no admission row to the public")
 	})
@@ -469,7 +612,7 @@ func TestVisibility_CollectionAwareFailClosed(t *testing.T) {
 		assert.NotContains(t, discoverFeedURIs(disc), postv2,
 			"a postv2 with no admission row leaked into discover")
 
-		views, err := postRepo.GetViewsByURIs(ctx, []string{postv2})
+		views, err := postRepo.GetViewsByURIs(ctx, []string{postv2}, publicViewer)
 		require.NoError(t, err)
 		assert.NotContainsf(t, views, postv2,
 			"post.get served a postv2 with no admission row to the public — permalink is the alternate path the feed "+
@@ -485,13 +628,15 @@ func TestVisibility_CollectionAwareFailClosed(t *testing.T) {
 			"the author of a postv2 with no admission row cannot see their own post in the community feed; a missing "+
 				"seed must fail closed for OTHERS, never for the author")
 
-		// NOTE — post.get's author path is a known follow-up, not covered here.
-		// GetViewsByURIs takes no viewer DID (posts.Repository's 2-arg signature),
-		// so post.get currently hides a non-accepted postv2 from its author too.
-		// Threading a viewer would break the three in-suite Repository fakes, so it
-		// is deferred: the author reaches their own pending/no-admission posts
-		// through actor.getPosts (TestActorPostsVisibility_AuthorVsNonAuthor) and
-		// getStatus, which is sufficient. Flagged in the cycle-2 report.
+		// post.get honors the same branch. It used to be the one surface that did
+		// not — GetViewsByURIs took no viewer — so an author following a permalink
+		// to a post their own profile had just listed was told it did not exist.
+		authorViews, err := postRepo.GetViewsByURIs(ctx, []string{postv2}, author)
+		require.NoError(t, err)
+		assert.Containsf(t, authorViews, postv2,
+			"post.get hid a postv2 with no admission row from its own AUTHOR. Every other surface (the feeds, "+
+				"actor.getPosts, the getComments header) shows it, so the permalink must too — see "+
+				"TestPostGetVisibility_AuthorSeesOwnPendingPost for the full state matrix")
 	})
 }
 
@@ -616,44 +761,97 @@ func TestGetCommentsVisibility_HeaderIsAdmissionAndDeleteAware(t *testing.T) {
 	})
 }
 
-// TestCommunityPostCountVisibility_AcceptedOnly pins that a community's
-// post_count reflects accepted posts only (PRD §6.2: counts must not include
-// non-accepted rows).
+// TestCommunityPostCountVisibility_MatchesWhatTheFeedRenders pins that the
+// postCount a community SERVES is the number of posts a reader can actually
+// reach in it (PRD §6.2: counts must not include non-accepted rows — and, just
+// as much, must not omit rows the feed does show).
 //
-// UNLIKE the user post_count, which is a live COUNT this task can gate directly,
-// community.post_count is a STORED column with a write-time incrementer
-// (community_repo_memberships.go) left over from the old community-repo write
-// path. Under author-owned posts nothing increments it on acceptance, so it is
-// already stale — and the honest fix is consumer-side (increment on the accept
-// transition, decrement on remove/unaccept), NOT a read predicate.
+// It used to be a STORED column whose only incrementer belonged to the retired
+// community-repo write path, so under author-owned posts nothing advanced it:
+// every community served postCount 0, and `sort=active` ordered by a uniformly
+// zero key. It is now a live subquery over the SAME predicate the feeds run, so
+// the count and the feed cannot disagree.
 //
-// This pins the accepted-only SEMANTICS against countAcceptedPostsForCommunity —
-// the source of truth GREEN would drive the counter from, whether it recomputes
-// live or reconciles the stored column from the admission consumer. See the
-// cycle-2 report for the sequencing recommendation (this is a consumer-side
-// follow-up, not part of the read-path predicate).
-func TestCommunityPostCountVisibility_AcceptedOnly(t *testing.T) {
+// The seeded set is deliberately the whole matrix, because the two obvious
+// wrong answers each fail on half of it: an accepted-only count drops the legacy
+// post (accepted by construction, no admission row — §3.0), and a
+// status-only count keeps the drifted-CID post the feed hides (§5.5).
+func TestCommunityPostCountVisibility_MatchesWhatTheFeedRenders(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 	ctx := context.Background()
 
 	community := visibilityCommunity(t, db, "cc")
+	forker := visibilityCommunity(t, db, "ccF")
 	author := "did:plc:visccauthor"
 	createTestUser(t, db, "visccauthor.test", author)
 
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	accepted := seedVisibilityPost(t, db, community, author, "ccacc", "accepted", base.Add(3*time.Hour))
-	pending := seedVisibilityPost(t, db, community, author, "ccpen", "pending", base.Add(2*time.Hour))
-	removed := seedVisibilityPost(t, db, community, author, "ccrem", "removed", base.Add(1*time.Hour))
-	seedVisibilityAdmission(t, db, community, accepted, posts.AdmissionStatusAccepted, "bafypostv2ccacc", "")
+	accepted := seedVisibilityPost(t, db, community, author, "ccacc", "accepted", base.Add(7*time.Hour))
+	pending := seedVisibilityPost(t, db, community, author, "ccpen", "pending", base.Add(6*time.Hour))
+	removed := seedVisibilityPost(t, db, community, author, "ccrem", "removed", base.Add(5*time.Hour))
+	drifted := seedVisibilityPost(t, db, community, author, "ccdri", "drifted past its acceptance", base.Add(4*time.Hour))
+	// Accepted, then withdrawn by its author: gone, and gone from the count.
+	deleted := seedVisibilityPost(t, db, community, author, "ccdel", "author withdrew it", base.Add(3*time.Hour))
+	// A postv2 whose pending seed never landed: fail closed, so uncounted.
+	seedVisibilityPost(t, db, community, author, "ccuns", "no admission row", base.Add(2*time.Hour))
+	// A LEGACY community-repo post with no admission row: accepted by
+	// construction, rendered by the feed, and therefore counted.
+	legacy := seedFilterablePost(t, db, community, author, "cclegacy", base.Add(1*time.Hour))
+	// The fork case: pending here, accepted by a DIFFERENT community — which
+	// also holds one accepted post of its own, so the forker's count has a
+	// nonzero right answer and "the acceptance leaked into the wrong community's
+	// count" is distinguishable from "every count is zero".
+	forked := seedVisibilityPost(t, db, community, author, "ccfrk", "forked elsewhere", base.Add(30*time.Minute))
+	forkerOwn := seedVisibilityPost(t, db, forker, author, "ccfown", "the forker's own post", base.Add(20*time.Minute))
+	seedVisibilityAdmission(t, db, forker, forkerOwn, posts.AdmissionStatusAccepted, "", "")
+
+	seedVisibilityAdmission(t, db, community, accepted, posts.AdmissionStatusAccepted, "", "")
 	seedVisibilityAdmission(t, db, community, pending, posts.AdmissionStatusPending, "", "")
 	seedVisibilityAdmission(t, db, community, removed, posts.AdmissionStatusRemoved, "", "rule-violation")
-
-	count, err := countAcceptedPostsForCommunity(ctx, db, community)
+	seedVisibilityAdmissionDriftedCID(t, db, community, drifted)
+	seedVisibilityAdmission(t, db, community, deleted, posts.AdmissionStatusAccepted, "", "")
+	seedVisibilityAdmission(t, db, community, forked, posts.AdmissionStatusPending, "", "")
+	seedVisibilityAdmission(t, db, forker, forked, posts.AdmissionStatusAccepted, "", "")
+	_, err := db.ExecContext(ctx, `UPDATE posts SET deleted_at = NOW() WHERE uri = $1`, deleted)
 	require.NoError(t, err)
-	assert.Equalf(t, 1, count,
-		"a community's accepted-post count must be 1 (3 seeded: accepted, pending, removed); a count that includes "+
-			"non-accepted rows advertises content no reader can reach")
+
+	// The oracle: whatever the community feed renders to the anonymous public is
+	// exactly what the count must report. Asserting against the FEED rather than
+	// a hand-counted literal is what keeps the two from drifting.
+	feed, _, err := NewCommunityFeedRepository(db, "test-secret").GetCommunityFeed(ctx,
+		communityFeeds.GetCommunityFeedRequest{Community: community, ViewerDID: publicViewer, Sort: visibilitySort, Limit: 50})
+	require.NoError(t, err)
+	visible := feedURIs(feed)
+	require.ElementsMatchf(t, []string{accepted, legacy}, visible,
+		"the fixture no longer means what this test says it means: expected exactly the accepted postv2 and the "+
+			"legacy post to be publicly visible, got %v", visible)
+
+	got, err := NewCommunityRepository(db).GetByDID(ctx, community)
+	require.NoError(t, err)
+	assert.Equalf(t, len(visible), got.PostCount,
+		"community.postCount (%d) disagrees with what the community feed serves (%d posts: %v). It must be the SAME "+
+			"predicate: an accepted-only count drops the legacy post (accepted by construction, no admission row), a "+
+			"status-only count keeps the drifted-CID post the feed hides (§5.5), and a stored counter — which is what "+
+			"this was — drifts to 0 the moment its incrementer stops being called",
+		got.PostCount, len(visible), visible)
+	assert.Equalf(t, 1, communityPostCount(t, ctx, db, forker),
+		"the forking community's count must be 1 — its OWN accepted post (%s) and nothing else. It also holds an "+
+			"accepted admission for %s, a post whose home community is %s, and counting that would publish another "+
+			"community's post into this one's headline number. The count runs the same (community_did, post_uri) join "+
+			"key the feeds do, so an acceptance can only ever count toward the community that issued it ABOUT a post "+
+			"it hosts",
+		forkerOwn, forked, community)
+}
+
+// communityPostCount reads one community's SERVED postCount — the number the
+// API hands a client, not a recomputation of it, so the assertion is about the
+// wire value rather than about a query the test wrote itself.
+func communityPostCount(t *testing.T, ctx context.Context, db *sql.DB, communityDID string) int {
+	t.Helper()
+	community, err := NewCommunityRepository(db).GetByDID(ctx, communityDID)
+	require.NoError(t, err)
+	return community.PostCount
 }
 
 // TestPostGetVisibility_AcceptedBranchHonorsPinnedCID pins §5.5 at the READ path:
@@ -690,7 +888,7 @@ func TestPostGetVisibility_AcceptedBranchHonorsPinnedCID(t *testing.T) {
 	seedVisibilityAdmission(t, db, community, matched, posts.AdmissionStatusAccepted, "bafypostv2pcmat", "")
 
 	postRepo := NewPostRepository(db)
-	views, err := postRepo.GetViewsByURIs(ctx, []string{mismatched, matched})
+	views, err := postRepo.GetViewsByURIs(ctx, []string{mismatched, matched}, publicViewer)
 	require.NoError(t, err)
 
 	assert.Containsf(t, views, matched, "an accepted post whose pinned CID still matches its content must be visible")
@@ -709,6 +907,207 @@ func TestPostGetVisibility_AcceptedBranchHonorsPinnedCID(t *testing.T) {
 	assert.Contains(t, got, matched)
 	assert.NotContainsf(t, got, mismatched,
 		"the community feed rendered an accepted post whose content has drifted past its pinned CID (§5.5 read-side leak)")
+}
+
+// TestPostGetVisibility_AcceptedWithNoPinnedCIDIsHidden covers the state the
+// schema allows and nothing had exercised: status='accepted' with accepted_cid
+// NULL.
+//
+// Migration 034 makes accepted_cid nullable and attaches no CHECK tying it to
+// the status, so the row is representable — a partial write, an acceptance
+// indexed before its subject's content, or a future writer that simply forgets
+// the column. `a.accepted_cid = p.cid` is NULL-propagating, so the accepted
+// branch evaluates to NULL rather than TRUE and the post is hidden. That is the
+// fail-closed answer and it should stay one: an acceptance that attests to NO
+// CID attests to nothing, and rendering it would publish content on the strength
+// of a row that never named it.
+//
+// It is hidden from its AUTHOR too, and that is the same deliberate answer the
+// §5.5 drifted-CID case gets (see visiblePostsJoin's doc comment: an accepted row
+// whose pin does not match is hidden from EVERYONE). The author branch keys on
+// the non-accepted statuses, and this row says 'accepted' — so there is no
+// widening here that would not also un-hide drifted content. The author's
+// recourse is post.getStatus, which reads the admission row directly rather than
+// through the display predicate, and reports exactly this state.
+func TestPostGetVisibility_AcceptedWithNoPinnedCIDIsHidden(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+	ctx := context.Background()
+
+	community := visibilityCommunity(t, db, "np")
+	author := "did:plc:visnpauthor"
+	createTestUser(t, db, "visnpauthor.test", author)
+	stranger := "did:plc:visnpstranger"
+	createTestUser(t, db, "visnpstranger.test", stranger)
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	unpinned := seedVisibilityPost(t, db, community, author, "npunp", "accepted, nothing pinned", base.Add(2*time.Hour))
+	pinned := seedVisibilityPost(t, db, community, author, "nppin", "accepted and pinned", base.Add(1*time.Hour))
+	seedVisibilityAdmissionUnpinned(t, db, community, unpinned)
+	seedVisibilityAdmission(t, db, community, pinned, posts.AdmissionStatusAccepted, "", "")
+
+	repo := NewPostRepository(db)
+	for _, viewer := range []struct{ name, did string }{
+		{"the anonymous public", publicViewer},
+		{"an authenticated stranger", stranger},
+	} {
+		t.Run(viewer.name+" cannot see it", func(t *testing.T) {
+			views, err := repo.GetViewsByURIs(ctx, []string{unpinned, pinned}, viewer.did)
+			require.NoError(t, err)
+			assert.Contains(t, views, pinned, "the control — an acceptance that pins the current content — must be visible")
+			assert.NotContainsf(t, views, unpinned,
+				"post.get served a post whose acceptance pins NO CID. accepted_cid is nullable with no CHECK tying it "+
+					"to the status, so this row is representable in production; `a.accepted_cid = p.cid` is "+
+					"NULL-propagating and that NULL is what keeps it closed. A predicate rewritten to COALESCE, or to "+
+					"gate on status alone, would publish content on the strength of an acceptance that never named it")
+		})
+	}
+
+	t.Run("not even its author sees it, matching the drifted-CID case", func(t *testing.T) {
+		views, err := repo.GetViewsByURIs(ctx, []string{unpinned, pinned}, author)
+		require.NoError(t, err)
+		assert.Contains(t, views, pinned, "the author's own accepted-and-pinned post is unaffected")
+		assert.NotContainsf(t, views, unpinned,
+			"an accepted row with no pinned CID is hidden from EVERYONE, its author included — the same answer the "+
+				"§5.5 drifted-CID case gets, because the author branch keys on the non-accepted statuses and this row "+
+				"says 'accepted'. If you are changing this to show the author, note that the same change un-hides "+
+				"drifted content, and that post.getStatus already reports this state from the admission row directly")
+	})
+}
+
+// TestVisibility_PendingReacceptanceIsAuthorOnly covers the one admission status
+// the visibility suite had never exercised, though the schema, the consumer and
+// the fixture all support it.
+//
+// pending_reacceptance is the §5.5 settled state: an acceptance stands but pins
+// content the author has since edited past, so the community has attested to
+// something that is no longer there. The post is therefore NOT public — the
+// community has not agreed to carry what the post now says — while remaining
+// visible to its author, who is precisely the person who needs to see that their
+// edit is awaiting re-acceptance. It is listed in the predicate's author branch
+// alongside pending/removed/rejected; nothing proved it.
+func TestVisibility_PendingReacceptanceIsAuthorOnly(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+	ctx := context.Background()
+
+	community := visibilityCommunity(t, db, "pr")
+	author := "did:plc:visprauthor"
+	createTestUser(t, db, "visprauthor.test", author)
+	stranger := "did:plc:visprstranger"
+	createTestUser(t, db, "visprstranger.test", stranger)
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	reaccepting := seedVisibilityPost(t, db, community, author, "prrea", "edited, awaiting re-acceptance", base.Add(2*time.Hour))
+	accepted := seedVisibilityPost(t, db, community, author, "pracc", "accepted", base.Add(1*time.Hour))
+	seedVisibilityAdmission(t, db, community, reaccepting, posts.AdmissionStatusPendingReacceptance, "", "")
+	seedVisibilityAdmission(t, db, community, accepted, posts.AdmissionStatusAccepted, "", "")
+
+	postRepo := NewPostRepository(db)
+	feedRepo := NewCommunityFeedRepository(db, "test-secret")
+	communityFeed := func(t *testing.T, viewer string) []string {
+		t.Helper()
+		feed, _, err := feedRepo.GetCommunityFeed(ctx, communityFeeds.GetCommunityFeedRequest{
+			Community: community, ViewerDID: viewer, Sort: visibilitySort, Limit: 50,
+		})
+		require.NoError(t, err)
+		return feedURIs(feed)
+	}
+
+	for _, viewer := range []struct{ name, did string }{
+		{"the anonymous public", publicViewer},
+		{"an authenticated stranger", stranger},
+	} {
+		t.Run(viewer.name+" cannot reach a pending_reacceptance post", func(t *testing.T) {
+			assert.NotContainsf(t, communityFeed(t, viewer.did), reaccepting,
+				"the community feed served a pending_reacceptance post. The standing acceptance pins content the "+
+					"author has edited past (§5.5), so what the post says NOW is un-attested — the community agreed "+
+					"to carry something else")
+
+			views, err := postRepo.GetViewsByURIs(ctx, []string{reaccepting}, viewer.did)
+			require.NoError(t, err)
+			assert.NotContains(t, views, reaccepting,
+				"post.get served a pending_reacceptance post to a non-author — the permalink is the alternate path "+
+					"the feed gate is worthless without")
+		})
+	}
+
+	t.Run("its author sees it in both surfaces", func(t *testing.T) {
+		assert.Containsf(t, communityFeed(t, author), reaccepting,
+			"an author must see their own post awaiting re-acceptance — it is how a client renders 'your edit is "+
+				"waiting for the moderators' rather than silently losing the post")
+		views, err := postRepo.GetViewsByURIs(ctx, []string{reaccepting}, author)
+		require.NoError(t, err)
+		require.Contains(t, views, reaccepting)
+		assert.Equalf(t, string(posts.AdmissionStatusPendingReacceptance), views[reaccepting].Status,
+			"the author's own view must carry the admission status, or the client has nothing to render the "+
+				"'awaiting re-acceptance' state from")
+	})
+
+	t.Run("the accepted control is public", func(t *testing.T) {
+		assert.Contains(t, communityFeed(t, publicViewer), accepted)
+	})
+}
+
+// TestCommunityListVisibility_ActiveSortOrdersByVisiblePosts pins the sort key
+// that `sort=active` orders on.
+//
+// It used to be the stored communities.post_count, whose incrementer lost its
+// caller when posts became author-owned — so every community's key was 0 and
+// "most active" returned an arbitrary order while looking like it worked. It is
+// now the same live, visibility-gated count community.get serves, which means
+// this sort can only ever be as wrong as the feed is.
+func TestCommunityListVisibility_ActiveSortOrdersByVisiblePosts(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+	ctx := context.Background()
+
+	// The QUIET community is created first on purpose: with the old stale sort key
+	// every community ties at 0, and a tie falls back to whatever order the plan
+	// produces — so a test whose expected winner is also the first row inserted
+	// passes against the broken key by luck. Seeding the loser first makes the
+	// assertion depend on the key rather than on the scan.
+	quiet := visibilityCommunity(t, db, "sa2")
+	busy := visibilityCommunity(t, db, "sa1")
+	author := "did:plc:vissaauthor"
+	createTestUser(t, db, "vissaauthor.test", author)
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	// The busy community: two accepted posts.
+	for i, rkey := range []string{"sabu1", "sabu2"} {
+		uri := seedVisibilityPost(t, db, busy, author, rkey, "accepted", base.Add(time.Duration(i)*time.Hour))
+		seedVisibilityAdmission(t, db, busy, uri, posts.AdmissionStatusAccepted, "", "")
+	}
+	// The quiet community: one accepted post, plus three the predicate hides. A
+	// sort keyed on raw row count would put this community FIRST.
+	visible := seedVisibilityPost(t, db, quiet, author, "saqu1", "accepted", base.Add(3*time.Hour))
+	seedVisibilityAdmission(t, db, quiet, visible, posts.AdmissionStatusAccepted, "", "")
+	for i, rkey := range []string{"saqu2", "saqu3", "saqu4"} {
+		uri := seedVisibilityPost(t, db, quiet, author, rkey, "pending", base.Add(time.Duration(4+i)*time.Hour))
+		seedVisibilityAdmission(t, db, quiet, uri, posts.AdmissionStatusPending, "", "")
+	}
+
+	listed, err := NewCommunityRepository(db).List(ctx, communities.ListCommunitiesRequest{
+		Sort: "active", Limit: 100,
+	})
+	require.NoError(t, err)
+
+	rank := map[string]int{}
+	counts := map[string]int{}
+	for i, c := range listed {
+		rank[c.DID] = i
+		counts[c.DID] = c.PostCount
+	}
+	require.Containsf(t, rank, busy, "the busy community is missing from the list")
+	require.Containsf(t, rank, quiet, "the quiet community is missing from the list")
+
+	assert.Equal(t, 2, counts[busy], "the busy community has two accepted posts")
+	assert.Equal(t, 1, counts[quiet], "the quiet community has one accepted post and three the predicate hides")
+	assert.Lessf(t, rank[busy], rank[quiet],
+		"sort=active ranked the community with ONE visible post (%d of 4 rows) above the one with TWO. The key must "+
+			"be the visibility-gated count: keyed on the stale stored column every community ties at 0 and the order "+
+			"is arbitrary, and keyed on a raw row count the pending posts nobody can see decide the ranking",
+		counts[quiet])
 }
 
 // TestFeedsVisibility_UnknownAuthorAccepted guards the §5.3 open-posting promise

@@ -229,7 +229,7 @@ func TestCommentWrite_CreateTopLevelComment(t *testing.T) {
 
 	// Verify post comment count updated
 	t.Logf("\n🔍 Verifying post comment count updated...")
-	updatedPost, err := postRepo.GetByURI(ctx, postURI)
+	updatedPost, err := postRepo.GetRawIndexedRow(ctx, postURI)
 	if err != nil {
 		t.Fatalf("Failed to get updated post: %v", err)
 	}

@@ -404,7 +404,7 @@ func TestPostUnfurl_E2E_WithJetstream(t *testing.T) {
 
 	// Verify post was indexed with unfurl metadata
 	uri := fmt.Sprintf("at://%s/social.coves.community.post/%s", community.DID, rkey)
-	indexedPost, err := postRepo.GetByURI(ctx, uri)
+	indexedPost, err := postRepo.GetRawIndexedRow(ctx, uri)
 	require.NoError(t, err, "Post should be indexed")
 
 	// Verify embed was stored

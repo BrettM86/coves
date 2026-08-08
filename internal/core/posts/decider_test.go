@@ -51,7 +51,7 @@ type stubPostLookup struct {
 	calls int
 }
 
-func (s *stubPostLookup) GetByURI(_ context.Context, _ string) (*Post, error) {
+func (s *stubPostLookup) GetRawIndexedRow(_ context.Context, _ string) (*Post, error) {
 	s.calls++
 	if s.err != nil {
 		return nil, s.err

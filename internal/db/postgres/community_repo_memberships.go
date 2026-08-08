@@ -269,6 +269,18 @@ func (r *postgresCommunityRepo) DecrementSubscriberCount(ctx context.Context, co
 	return nil
 }
 
+// IncrementPostCount advances the STORED communities.post_count column.
+//
+// VESTIGIAL, AND NOTHING READS WHAT IT WRITES. It has had no production caller
+// since posts became author-owned (the community-repo write path that called it
+// is gone), and the served `postCount` is now a live visibility-gated subquery
+// rather than this column — see communityPostCountUnqualified in
+// community_repo.go. Calling this therefore has no observable effect on any API
+// response, which is exactly the trap worth naming: wiring it up to "fix the
+// counter" would advance a column no reader consults, and would look like it had
+// worked. Removing the column, this method and its interface entry is filed in
+// PRD_AUTHOR_OWNED_POSTS.md §12; it is left standing only because deleting it is
+// a schema + interface change with its own blast radius.
 func (r *postgresCommunityRepo) IncrementPostCount(ctx context.Context, communityDID string) error {
 	query := `UPDATE communities SET post_count = post_count + 1 WHERE did = $1`
 	_, err := r.db.ExecContext(ctx, query, communityDID)

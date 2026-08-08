@@ -92,7 +92,11 @@ type application struct {
 	// route options).
 	userRepo       users.UserRepository
 	communityRepo  communities.Repository
-	postRepo       posts.Repository
+	// postRepo is held as the CONCRETE repository rather than posts.Repository:
+	// the comment service's PostReader requires the admission-aware
+	// VisibleHeaderView as well, and storing the narrower interface here would
+	// erase it before the wiring could hand it over.
+	postRepo       *postgresRepo.PostRepository
 	voteRepo       votes.Repository
 	commentRepo    comments.Repository
 	userBlockRepo  userblocks.Repository

@@ -73,12 +73,41 @@ type GetCommentsRequest struct {
 	Limit      int
 }
 
+// PostReader is the post-repository surface the comment service depends on, and
+// it is deliberately NARROWER TO IMPLEMENT than posts.Repository: a type must
+// carry the visibility-aware header lookup as well.
+//
+// This is a security requirement expressed in the type system. The thread header
+// getComments serves is a posts read path — full title, content and admission
+// context of the viewed post — so it has to run the same admission predicate as
+// post.get and the feeds. That gate used to be reached through an OPTIONAL type
+// assertion, with a miss silently degrading to the pre-admission header builder;
+// production happened to satisfy it, so nothing leaked, but the property rested
+// on convention. Any decorator that wrapped the repository for metrics, caching
+// or tracing and forwarded only posts.Repository would have turned the gate off
+// with no build error, no test failure and no log line.
+//
+// Making it the dependency's TYPE moves that failure to compile time: a
+// repository without VisibleHeaderView cannot be handed to the constructors at
+// all, so there is no runtime path left that can serve an ungated header.
+type PostReader interface {
+	posts.Repository
+
+	// VisibleHeaderView returns the hydrated post view IFF the post is visible to
+	// viewerDID under the read-path visibility predicate, and (nil, nil) when it is
+	// hidden — a pending, rejected or removed admission for a viewer who is not the
+	// author, a postv2 whose admission row never seeded, or a soft-deleted row.
+	// The returned view is the admission-hydrated one, so status/acceptanceUri
+	// survive onto the served header.
+	VisibleHeaderView(ctx context.Context, uri, viewerDID string) (*posts.PostView, error)
+}
+
 // commentService implements the Service interface
 // Coordinates between repository layer and view model construction
 type commentService struct {
 	commentRepo      Repository               // Comment data access
 	userRepo         users.UserRepository     // User lookup for author hydration
-	postRepo         posts.Repository         // Post lookup for building post views
+	postRepo         PostReader               // Post lookup + the admission-aware header gate
 	communityRepo    communities.Repository   // Community lookup for community hydration
 	oauthClient      *oauthclient.OAuthClient // OAuth client for PDS authentication
 	oauthStore       oauth.ClientAuthStore    // OAuth session store
@@ -91,7 +120,7 @@ type commentService struct {
 func NewCommentService(
 	commentRepo Repository,
 	userRepo users.UserRepository,
-	postRepo posts.Repository,
+	postRepo PostReader,
 	communityRepo communities.Repository,
 	oauthClient *oauthclient.OAuthClient,
 	oauthStore oauth.ClientAuthStore,
@@ -116,7 +145,7 @@ func NewCommentService(
 func NewCommentServiceWithPDSFactory(
 	commentRepo Repository,
 	userRepo users.UserRepository,
-	postRepo posts.Repository,
+	postRepo PostReader,
 	communityRepo communities.Repository,
 	logger *slog.Logger,
 	factory PDSClientFactory,
@@ -152,7 +181,7 @@ func (s *commentService) GetComments(ctx context.Context, req *GetCommentsReques
 	defer cancel()
 
 	// 2. Fetch post for context
-	post, err := s.postRepo.GetByURI(ctx, req.PostURI)
+	post, err := s.postRepo.GetRawIndexedRow(ctx, req.PostURI)
 	if err != nil {
 		// Translate post not-found errors to comment-layer errors for proper HTTP status
 		if posts.IsNotFound(err) {
@@ -214,20 +243,10 @@ func (s *commentService) GetComments(ctx context.Context, req *GetCommentsReques
 	}, nil
 }
 
-// postHeaderVisibilityChecker is the viewer-aware, admission-aware slice of the
-// post repository the thread-header gate needs. The real postgres repository
-// implements it (VisibleHeaderView); unit-test fakes do not, and a service built
-// on a fake keeps the pre-admission behavior — see resolveVisibleHeader.
-type postHeaderVisibilityChecker interface {
-	// VisibleHeaderView returns the hydrated post view iff the post is visible to
-	// viewerDID under the read-path predicate, or nil when it is hidden.
-	VisibleHeaderView(ctx context.Context, uri, viewerDID string) (*posts.PostView, error)
-}
-
 // resolveVisibleHeader returns the post view to render as the getComments thread
 // header, or ErrRootNotFound when the post must not be shown to this viewer.
 //
-// It consults a REAL admission lookup, never the collection: the previous gate
+// It consults a REAL admission lookup, never the collection: an earlier gate
 // inferred visibility from the URI's collection, which leaked a moderator-REMOVED
 // legacy community.post (a legacy row CAN carry a removed admission — applyRemoval
 // has no collection guard). VisibleHeaderView runs the same predicate as post.get
@@ -236,33 +255,26 @@ type postHeaderVisibilityChecker interface {
 // header carries status/acceptanceUri instead of a second view rebuilt from the
 // raw Post (which dropped them).
 //
-// A unit-test fake postRepo does not implement the checker; such a service keeps
-// the pre-admission behavior, gated only on the soft-delete the raw Post carries.
-// This is safe because a fake is never wired to real admission data — production
-// always uses the real repository, which always implements the checker.
+// THERE IS NO FALLBACK, deliberately. The lookup used to be reached through an
+// optional type assertion whose miss served the pre-admission header, so a
+// repository that merely FORGOT the capability disabled the gate silently. The
+// requirement now lives in the PostReader dependency type, so a type without it
+// cannot be wired at all — the compiler refuses the wiring instead of this
+// function refusing the request, and every path through here is gated.
 func (s *commentService) resolveVisibleHeader(ctx context.Context, post *posts.Post, viewerDID *string) (*posts.PostView, error) {
-	if checker, ok := s.postRepo.(postHeaderVisibilityChecker); ok {
-		viewer := ""
-		if viewerDID != nil {
-			viewer = *viewerDID
-		}
-		view, err := checker.VisibleHeaderView(ctx, post.URI, viewer)
-		if err != nil {
-			return nil, fmt.Errorf("checking post header visibility: %w", err)
-		}
-		if view == nil {
-			return nil, ErrRootNotFound
-		}
-		return view, nil
+	viewer := ""
+	if viewerDID != nil {
+		viewer = *viewerDID
 	}
 
-	// Fake repository (unit tests): no admission-aware fetch available. Honor only
-	// the gate the raw Post carries — a soft delete — and build the header from it
-	// as before.
-	if post.DeletedAt != nil {
+	view, err := s.postRepo.VisibleHeaderView(ctx, post.URI, viewer)
+	if err != nil {
+		return nil, fmt.Errorf("checking post header visibility: %w", err)
+	}
+	if view == nil {
 		return nil, ErrRootNotFound
 	}
-	return s.buildPostView(ctx, post, viewerDID), nil
+	return view, nil
 }
 
 // getCommentSubtree returns the subtree rooted at the comment identified by req.ParentRkey
@@ -1303,9 +1315,22 @@ func (s *commentService) GetActorComments(ctx context.Context, req *GetActorComm
 	}
 
 	// 3. Fetch comments from repository
+	//
+	// The viewer DID is threaded because the community filter resolves each
+	// comment's root through the read-path visibility predicate (PRD §6.2): it
+	// decides whether a caller may see comments rooted at posts the named
+	// community has not admitted. An authenticated author keeps the carve-out over
+	// their own pending/rejected/removed roots; everyone else, including the
+	// anonymous "" viewer, sees admitted roots only.
+	var viewerDID string
+	if req.ViewerDID != nil {
+		viewerDID = *req.ViewerDID
+	}
+
 	repoReq := ListByCommenterRequest{
 		CommenterDID: req.ActorDID,
 		CommunityDID: communityDID,
+		ViewerDID:    viewerDID,
 		Limit:        req.Limit,
 		Cursor:       req.Cursor,
 	}

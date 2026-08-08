@@ -126,7 +126,7 @@ func TestPostConsumer_Create_WithBridgedStats(t *testing.T) {
 
 	// Read-path fold: displayed stats include bridged counts.
 	repo := postgres.NewPostRepository(db)
-	views, err := repo.GetViewsByURIs(ctx, []string{uri})
+	views, err := repo.GetViewsByURIs(ctx, []string{uri}, "")
 	require.NoError(t, err)
 	view := views[uri]
 	require.NotNil(t, view)
@@ -351,7 +351,7 @@ func TestPostConsumer_InclusiveScore_NativeVotesStackOnBridged(t *testing.T) {
 
 	// Displayed stats fold native + bridged.
 	repo := postgres.NewPostRepository(db)
-	views, err := repo.GetViewsByURIs(ctx, []string{uri})
+	views, err := repo.GetViewsByURIs(ctx, []string{uri}, "")
 	require.NoError(t, err)
 	assert.Equal(t, 31, views[uri].Stats.Upvotes)
 	assert.Equal(t, 2, views[uri].Stats.Downvotes)
