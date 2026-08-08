@@ -318,13 +318,15 @@ func TestMigration034_DownRestoresTheAuthorForeignKeyUnvalidated(t *testing.T) {
 	require.NoError(t, err,
 		"with fk_author dropped, a federated author's post must index even though no users row exists for them")
 
-	// The expected-version parameter is the tripwire, and it has fired once
-	// already: migration 035 (post_submissions) now sits on top of 034, so it
-	// has to come off first. Rolling back explicitly, one asserted step at a
-	// time, is what keeps the assertions below pointed at 034's Down rather than
-	// at whatever happens to be newest.
+	// The expected-version parameter is the tripwire, and it has now fired
+	// twice: migration 035 (post_submissions) and 036 (deleted_accounts) both
+	// sit on top of 034, so both have to come off first. Rolling back
+	// explicitly, one asserted step at a time, is what keeps the assertions
+	// below pointed at 034's Down rather than at whatever happens to be newest.
+	require.EqualValues(t, 36, testkit.MigrateDownOne(t, db, 36),
+		"036 sits on top of 034 and must be rolled back first; asserting which migration came off is what stops this test drifting onto a newer one")
 	require.EqualValues(t, 35, testkit.MigrateDownOne(t, db, 35),
-		"035 sits on top of 034 and must be rolled back first; asserting which migration came off is what stops this test drifting onto a newer one")
+		"035 sits on top of 034 and must be rolled back next; asserting which migration came off is what stops this test drifting onto a newer one")
 	assert.EqualValues(t, 34, testkit.MigrateDownOne(t, db, 34),
 		"this test asserts on 034's Down section; rolling back a different migration would prove nothing about it")
 

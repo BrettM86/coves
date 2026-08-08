@@ -29,6 +29,19 @@ type PostEventConsumer struct {
 	// before its author's profile. The identity is admitted only when its PDS
 	// passes bridgeTrust.
 	identityResolver identity.Resolver
+
+	// RED STUB fields (task 5, cycle 1) — the collaborators author-owned post
+	// ingestion needs. Declared here so the options in authorpost.go compile;
+	// nothing reads them yet. See docs/PRD_AUTHOR_OWNED_POSTS.md §5.3-§5.6.
+	//
+	// admissions holds the per-(community, post) decision state. nil means the
+	// consumer is running in its pre-034 shape and records no admissions.
+	admissions posts.AdmissionRepository
+	// deletedAccounts gates events from erased accounts. nil means no gate.
+	deletedAccounts DeletedAccountLookup
+	// postFetcher resolves an acceptance whose subject was never indexed. nil
+	// means the dead-letter queue is the only convergence mechanism.
+	postFetcher PostRecordFetcher
 }
 
 // PostEventConsumerOption configures optional PostEventConsumer behaviour.

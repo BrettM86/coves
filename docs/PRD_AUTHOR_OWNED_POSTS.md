@@ -38,7 +38,18 @@ author-supplied created_at, delete-to-evade); per-origin-PDS quota
 explicitly deferred to Beta.
 Rev 2.6 (2026-08-08): task-3 second-opinion — fingerprint normalized to
 resolved-DID scope, release decoupled from request context, admission wiring
-fail-loud, ActorClass fail-closed.**
+fail-loud, ActorClass fail-closed.
+Rev 2.7 (2026-08-08): task-5 plan review — post.getStatus pulled forward into
+task 5 as the T2 observation surface (unauthenticated; mild disclosure of
+rejected-post status accepted, owner-flagged); hosted-community detection =
+community credential presence, NEVER hosted_by_did (attacker-controlled for
+firehose-indexed communities); deleted_accounts marker table (migration 036 —
+account deletion previously left no marker, so swept admissions could be
+recreated by replayed events); author-delete resurrection loop closed (driver
+excludes tombstoned posts; decider refuses them); §5.1 keeps the deprecated
+community.post collection subscribed until task 8's drain; §9's T2 list
+re-scoped — accepted-state arcs prove at T1 (no T2 community holds
+credentials), T2 contracts assert consumer semantics via getStatus.**
 
 **Supersedes** the write-path architecture in `docs/federation-prd.md`: that
 document solves cross-instance posting by service-auth-forwarding the write to
