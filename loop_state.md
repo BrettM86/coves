@@ -14,7 +14,7 @@ Stop when every task is done, or on any `blocked:` row.
 | # | Task | Phase | Status | Merge commit | Notes |
 |---|------|-------|--------|--------------|-------|
 | 1 | Lexicons: postv2 + acceptance + removal, deprecation note, fixtures, T0 validation | A | done | 4574151 | make ci 4640/0. 10-stream review; codex HIGH: rkey transform non-total → digest scheme (PRD rev 2.2) |
-| 2 | Migration 034: community_post_admissions + posts FK drop; admissions repo + T1 transition/watermark matrix | A | pending | | |
+| 2 | Migration 034: community_post_admissions + posts FK drop; admissions repo + T1 transition/watermark matrix | A | done | 9491744 | make ci 4735/0. PRD → rev 2.4 (tuple watermark, pending-only rejection CAS, repo-side op-rank). Behavior flips: unknown authors indexable, explicit deletion sweep |
 | 3 | admitPost extraction + NEW policy (bans, rate limits, dedupe) wired into existing write path | A | pending | | |
 | 4 | Acceptance engine: deterministic rkey, swap-safe acceptance writer, atomic applyWrites removal, repin/terminality rules | B | pending | | |
 | 5 | Ingestion: postv2/acceptance/removal consumers, watermark gating, direct-fetch convergence, WantedCollections + 3 e2e contracts | B | pending | | parent may split 5a/5b at brief time; WantedCollections + contracts same merge |
@@ -40,6 +40,26 @@ Stop when every task is done, or on any `blocked:` row.
   fix batch (no package captured; cold-cache ×2 green; make ci 4640/0
   green). Watch for recurrence — if seen again, capture the package and
   /file-issue.
+- (2026-08-08, task 2 incident) **Conductor wiped uncommitted GREEN work**:
+  `git checkout <file>` used to revert a deliberate test-bite mutation reset
+  admission_repo.go to the RED-stub commit because GREEN's gate-passed
+  cycle-1 work was never committed. Recovered from the persistent GREEN
+  agent's context. HARD RULES now: (1) commit at EVERY gate — RED gate AND
+  GREEN gate, before the next phase starts; (2) revert deliberate mutations
+  by re-editing the line, NEVER `git checkout`/`git restore` on files with
+  uncommitted multi-agent work.
+- (2026-08-08, task 2 → TASK 5 OBLIGATIONS): the engine/consumers must use
+  the AdmissionRepository outcome taxonomy correctly (skips NEVER
+  dead-letter); rejection = RecordRejection(judgedCID) from pending only —
+  re-acceptance failure is REMOVAL not rejection (PRD §5.6); ingestion must
+  gate events for DELETED accounts (stale replay could recreate swept
+  admissions — codex catch, deferred); community deletion leaves orphan
+  admissions rows (pre-existing-adjacent, sweep in task 5 or 8).
+- (task 2 → TASK 7 OBLIGATION): post read paths INNER JOIN users — posts by
+  unknown authors index fine but are INVISIBLE to every hydrating read
+  (GetViewsByURIs/GetByAuthor). Task 7's visibility work must add
+  opportunistic-hydration-tolerant joins or the write path's promise breaks
+  silently at the read path.
 - (harness) pr-review-toolkit agents unregistered this session →
   /second-opinion runs general-purpose stand-ins with specialty briefs
   (worked well). Named TDD agents spawn in mailbox mode — gate on their
