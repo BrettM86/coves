@@ -39,7 +39,7 @@ import (
 // A post record does not live in its author's repo. It lives in the COMMUNITY's
 // repo, written with the community's own PDS credentials, carrying an `author`
 // field that names the human who wrote it (internal/core/posts/service.go step
-// 9, and the reason the Jetstream consumer's first security check is
+// 8, and the reason the Jetstream consumer's first security check is
 // repoDID == record.community).
 //
 // That makes two things testable only from the PDS side. First, that the
@@ -125,7 +125,9 @@ func newPostFixture(t *testing.T) *postFixture {
 	return &postFixture{
 		service: posts.NewPostService(
 			postgres.NewPostRepository(db), communityService,
-			nil, nil, nil, nil, pdsServer.URL()),
+			nil, nil, nil, nil, pdsServer.URL(),
+			// Write-forward is not about admission; the opt-out is explicit.
+			posts.WithAdmissionPolicy(posts.NewAllowAllAdmissionPolicyForTests())),
 		pds:              pdsServer,
 		db:               db,
 		communityService: communityService,

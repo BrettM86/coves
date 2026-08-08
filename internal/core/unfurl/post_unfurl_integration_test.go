@@ -61,6 +61,7 @@ func TestPostUnfurl_UnsupportedURL(t *testing.T) {
 		nil, // unfurlService - intentionally nil to test graceful handling
 		nil, // blueskyService
 		testkit.Endpoints().PDS.BaseURL,
+		posts.WithAdmissionPolicy(posts.NewAllowAllAdmissionPolicyForTests()),
 	)
 
 	// Create test user
@@ -156,6 +157,7 @@ func TestPostUnfurl_MissingEmbedType(t *testing.T) {
 		unfurlService,
 		nil, // blueskyService
 		testkit.Endpoints().PDS.BaseURL,
+		posts.WithAdmissionPolicy(posts.NewAllowAllAdmissionPolicyForTests()),
 	)
 
 	// Create test user and community

@@ -157,6 +157,26 @@ func TestAggregatorErrorCodes(t *testing.T) {
 	}
 }
 
+// A submission refused as a repeat is a 409, and it must not be confused with
+// anything else.
+//
+// Two client behaviours depend on the distinction. A 409 says "your post
+// already exists, stop retrying and go look for it", which is exactly what a
+// client whose response was lost needs to hear; a 429 says "wait", and a client
+// told to wait would resend the same content on a timer forever. And the code
+// must be its own — folding it into the generic AlreadyExists that
+// coreerrors.ConflictError produces would leave a client unable to tell a
+// refused submission from a record the indexer already holds.
+func TestDuplicateSubmissionIsItsOwnConflict(t *testing.T) {
+	rec := httptest.NewRecorder()
+	handleServiceError(rec, fmt.Errorf("createPost: %w", posts.ErrDuplicateSubmission))
+
+	body := assertXRPCError(t, rec, http.StatusConflict, "DuplicateSubmission")
+	if strings.Contains(body.Message, "createPost") {
+		t.Errorf("wrapper context leaked into the client message: %q", body.Message)
+	}
+}
+
 // posts.ErrCommunityNotFound must keep beating the generic not-found rule that
 // also matches it.
 func TestCommunityNotFoundBeatsGenericNotFound(t *testing.T) {

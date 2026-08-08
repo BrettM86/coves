@@ -318,9 +318,13 @@ func TestMigration034_DownRestoresTheAuthorForeignKeyUnvalidated(t *testing.T) {
 	require.NoError(t, err,
 		"with fk_author dropped, a federated author's post must index even though no users row exists for them")
 
-	// The expected-version parameter is the tripwire: when migration 035 lands,
-	// this call fails with the remedy in its message instead of silently
-	// rolling back 035's Down and leaving 034's untested.
+	// The expected-version parameter is the tripwire, and it has fired once
+	// already: migration 035 (post_submissions) now sits on top of 034, so it
+	// has to come off first. Rolling back explicitly, one asserted step at a
+	// time, is what keeps the assertions below pointed at 034's Down rather than
+	// at whatever happens to be newest.
+	require.EqualValues(t, 35, testkit.MigrateDownOne(t, db, 35),
+		"035 sits on top of 034 and must be rolled back first; asserting which migration came off is what stops this test drifting onto a newer one")
 	assert.EqualValues(t, 34, testkit.MigrateDownOne(t, db, 34),
 		"this test asserts on 034's Down section; rolling back a different migration would prove nothing about it")
 
@@ -361,7 +365,7 @@ func requireTableExists(t *testing.T, db *sql.DB, table string) {
 		SELECT count(*) FROM information_schema.tables
 		WHERE table_schema = current_schema() AND table_name = $1
 	`, table).Scan(&count))
-	require.Equalf(t, 1, count, "table %s does not exist; migration 034 has not been written", table)
+	require.Equalf(t, 1, count, "table %s does not exist; the migration that creates it has not been written", table)
 }
 
 // primaryKeyColumns returns the table's primary key columns in key order.

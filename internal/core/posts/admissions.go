@@ -341,3 +341,58 @@ type AdmissionRepository interface {
 	// make a moderator re-review what they had already cleared.
 	ListByStatusForCommunity(ctx context.Context, communityDID string, status AdmissionStatus, limit int, cursor *string) ([]*Admission, *string, error)
 }
+
+// DecisionCode is the reason a post was refused or removed — the value stored
+// in community_post_admissions.decision_code and, for the subset that a
+// community publishes, in a social.coves.community.removal record's `code`.
+//
+// It is a plain named string with NO validation function, deliberately. The
+// removal lexicon spells `code` as `knownValues`, which is an OPEN set by
+// definition — "values are not limited to this set" (§3.3) — so that new codes
+// ship without a lexicon break. A Go-side IsValid would re-close what the
+// lexicon deliberately left open, and would start rejecting perfectly legal
+// codes minted by a remote community running a newer build than ours.
+type DecisionCode string
+
+// The six codes the removal lexicon names (§3.3). These are the vocabulary a
+// COMMUNITY publishes: they appear in removal records, so a client reading the
+// firehose meets them. Kebab-case is the lexicon style guide's convention for
+// fixed strings.
+const (
+	DecisionRuleViolation       DecisionCode = "rule-violation"
+	DecisionSpam                DecisionCode = "spam"
+	DecisionOffTopic            DecisionCode = "off-topic"
+	DecisionIllegalContent      DecisionCode = "illegal-content"
+	DecisionAuthorBanned        DecisionCode = "author-banned"
+	DecisionModeratorDiscretion DecisionCode = "moderator-discretion"
+)
+
+// The admission-time codes. These never reach a community repo: §3.3 is
+// explicit that a submission refused before it was ever accepted writes NO
+// record, because spam must not bloat the community's repository. They live in
+// the same vocabulary anyway — the admissions table's decision_code column
+// stores both kinds, and getStatus serves both to the author who asked why.
+const (
+	// DecisionRateLimitExceeded: the author is over their per-community
+	// submission quota (§8).
+	DecisionRateLimitExceeded DecisionCode = "rate-limit-exceeded"
+
+	// DecisionDuplicateSubmission: an identical submission from this author to
+	// this community is already on the ledger for the current window.
+	DecisionDuplicateSubmission DecisionCode = "duplicate-submission"
+
+	// DecisionCommunityNotFound: the at-identifier names no community this
+	// AppView has indexed.
+	DecisionCommunityNotFound DecisionCode = "community-not-found"
+
+	// DecisionCommunityPrivate: a private community refusing a regular user.
+	//
+	// It is deliberately the answer for a BANNED user of a private community
+	// too — see admitPost's check order, which explains why a ban must not be
+	// disclosed through a privacy wall.
+	DecisionCommunityPrivate DecisionCode = "community-private"
+
+	// DecisionAggregatorNotAuthorized: a registered aggregator the community
+	// has not authorized (or whose authorization it has revoked).
+	DecisionAggregatorNotAuthorized DecisionCode = "aggregator-not-authorized"
+)

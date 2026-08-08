@@ -61,7 +61,8 @@ func TestService_CreateResolvesTheCommunityAndValidatesTheRequest(t *testing.T) 
 	// in the community's handle.
 	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo, pdsURL, instanceDID, instanceDomain, nil, nil, nil)
-	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, pdsURL)
+	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, pdsURL,
+		posts.WithAdmissionPolicy(posts.NewAllowAllAdmissionPolicyForTests()))
 
 	authorDID := fixtures.DID("postauthor")
 	_, err := userService.CreateUser(ctx, users.CreateUserRequest{
