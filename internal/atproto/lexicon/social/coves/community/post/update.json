@@ -72,6 +72,12 @@
                 "maxLength": 640,
                 "maxGraphemes": 64
               }
+            },
+            "editNote": {
+              "type": "string",
+              "maxLength": 3000,
+              "maxGraphemes": 300,
+              "description": "DEPRECATED, retained for backward compatibility: an optional note explaining the edit. This field ships on main; removing it is a non-additive break, so it stays declared as an optional input until a new-NSID change retires it."
             }
           }
         }

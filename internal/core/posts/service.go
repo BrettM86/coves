@@ -334,7 +334,13 @@ func (s *postService) openAuthorRepo(ctx context.Context, authorDID string, sess
 //
 // converged reports that no new record was written — the caller is looking at a
 // post that already existed.
-func createAuthorRecord(ctx context.Context, repo AuthorRepo, rkey string, record PostV2Record) (uri, cid string, converged bool, err error) {
+//
+// record is `any` rather than PostV2Record because the two callers assemble the
+// body differently and both are correct: the write path passes a typed
+// PostV2Record (postV2From), while the re-materialization tool passes the legacy
+// record's lossless map so no published field is dropped in the conversion. Both
+// serialise to the same postv2 shape; the guard and read-back are identical.
+func createAuthorRecord(ctx context.Context, repo AuthorRepo, rkey string, record any) (uri, cid string, converged bool, err error) {
 	commit, err := repo.PutRecordWithCommit(ctx, PostV2Collection, rkey, record, "")
 	if err == nil {
 		return commit.URI, commit.CID, false, nil

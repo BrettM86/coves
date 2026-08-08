@@ -249,6 +249,14 @@ func oauthScopes() []string {
 	return []string{
 		"atproto",
 		"blob:*/*", // avatar and image uploads
+		// The author-owned post collection: CreatePost, UpdatePost (§3.4),
+		// post.delete AND the cutover tool all write postv2 through the author's
+		// own OAuth session, so a scope-enforcing PDS refuses the entire write
+		// path without this grant.
+		"repo:social.coves.community.postv2?action=create&action=update&action=delete",
+		// The deprecated collection is RETAINED through the drain: the cutover tool
+		// deletes legacy community.post records through these same sessions (§11);
+		// dropping it would strand every legacy record undeleteable.
 		"repo:social.coves.community.post?action=create&action=update&action=delete",
 		"repo:social.coves.community.comment?action=create&action=update&action=delete",
 		"repo:social.coves.community.profile?action=create&action=update&action=delete",
@@ -437,14 +445,23 @@ func (a *application) buildServices(ctx context.Context) error {
 // STORED CREDENTIALS rather than on communities.hosted_by_did, which is copied
 // out of a community's own profile record and can therefore be claimed by any
 // repo on the network.
-func (a *application) buildAcceptanceEngine() *posts.AcceptanceEngine {
-	repoFactory := posts.NewCommunityRepoFactory(a.communityService)
-	a.communityWriter = posts.NewCommunityRecordWriter(repoFactory, time.Now)
-
-	decider := posts.NewAdmissionEngineDecider(posts.DeciderDeps{
+// buildDeciderDeps assembles everything the production admission decider reads.
+//
+// Extracted from buildAcceptanceEngine so the wiring itself is testable: the §8
+// firehose quota is only enforced when DeciderDeps.Admissions is wired
+// (decider.go applyQuota short-circuits on a nil counter), and a struct literal
+// that silently omits the field disables the abuse control in production with no
+// error anywhere. wiring_quota_test.go asserts the field is set.
+func (a *application) buildDeciderDeps() posts.DeciderDeps {
+	return posts.DeciderDeps{
 		Posts:       a.postRepo,
 		Communities: a.communityService,
 		Authorizer:  a.aggregatorService,
+		// The §8 firehose quota counter. Without it decider.go's applyQuota
+		// short-circuits and admits UNLIMITED posts — the same admissions repo the
+		// ingestion consumer writes and the engine settles, so the rows counted as
+		// admitted are the rows the quota meters.
+		Admissions: a.admissionRepo,
 		Aggregators: a.aggregatorService,
 		Policy: posts.AdmissionPolicy{
 			Ledger: postgresRepo.NewSubmissionLedger(a.db),
@@ -460,7 +477,14 @@ func (a *application) buildAcceptanceEngine() *posts.AcceptanceEngine {
 		// same helper the write path uses, so the two cannot drift into
 		// disagreeing about who is privileged.
 		TrustedAggregatorDIDs: posts.TrustedAggregatorDIDs(),
-	})
+	}
+}
+
+func (a *application) buildAcceptanceEngine() *posts.AcceptanceEngine {
+	repoFactory := posts.NewCommunityRepoFactory(a.communityService)
+	a.communityWriter = posts.NewCommunityRecordWriter(repoFactory, time.Now)
+
+	decider := posts.NewAdmissionEngineDecider(a.buildDeciderDeps())
 
 	engine := posts.NewAcceptanceEngine(
 		a.admissionRepo, decider, a.communityWriter,
