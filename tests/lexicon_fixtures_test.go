@@ -46,7 +46,14 @@ var invalidFixtureExpectedErrors = map[string]string{
 	"rule-proposal-invalid-type.json":         "enum",
 	"rules-invalid-moderation.json":           "$type",
 	"subscription-invalid-visibility.json":    "outside specified range",
-	"tribunal-vote-invalid-decision.json":     "AT-URI",
+	// The fixture's ONE violation is the decision enum. It used to carry an
+	// accidental second violation (a literal `$1` in subject — an unexpanded
+	// template), and with two invalid fields the reported error followed Go's
+	// randomized map iteration order inside indigo's object validation — a
+	// coin-flip flake that passed three CI runs on luck before failing.
+	// Invalid fixtures must have exactly one violation for exactly this
+	// reason.
+	"tribunal-vote-invalid-decision.json":     "enum",
 	"vote-invalid-option.json":                "enum",
 	"wiki-invalid-slug.json":                  "length outside specified range",
 }
