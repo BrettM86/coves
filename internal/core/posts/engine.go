@@ -17,9 +17,24 @@ import (
 // agree with the answer: an acceptance record, a removal commit, or an
 // AppView-local rejection that writes no record at all.
 //
-// It is the ONLY writer of community-repo records in the post system, which is
-// what makes "every write is idempotent" a property of the system rather than a
-// convention each call site has to remember.
+// CommunityRecordWriter is the single component that writes community-repo
+// records in the post system, and this engine is its decision point: every
+// verdict that becomes a record flows through here first. That funnel is what
+// makes "every write is idempotent" a property of the system rather than a
+// convention each call site has to remember — the writers get their
+// idempotency from deterministic rkeys and swap guards, and the engine is the
+// one place that decides they should fire at all.
+//
+// THERE IS NO LEASE, AND THAT IS DELIBERATE. Nothing stops two passes — the
+// fast path, a firehose redelivery, a notify — from processing the same
+// subject at the same moment, and no lock or per-subject claim is taken.
+// Safety comes from the layers instead: deterministic rkeys make the racers
+// aim at the same record; every put and batch is swap-guarded, so a loser is
+// told rather than clobbering; a loser that re-reads and finds the winner
+// wrote its exact target converges as a skip; and the repository's watermark
+// CAS makes the row's state advance monotonically no matter which pass
+// stamps first. Serializing the passes properly (a per-community queue) is
+// task 5's job; until then concurrent passes are expected and harmless.
 
 // EngineOutcome reports what one pass over one subject DID.
 //
@@ -46,13 +61,27 @@ const (
 
 	// EngineRepinned means a standing acceptance moved onto new content with no
 	// re-decision — the bridgedStats exception of §5.5.
+	//
+	// NOT PRODUCED BY ANY PATH YET. ProcessAdmission runs full re-admission on
+	// every edit; the repin path — classifyRecordDiff choosing the exception,
+	// the bridge-trust gate approving the author, RepinAcceptance moving the
+	// record — is task 5's consumer wiring. The outcome is declared now so
+	// that path lands against a named contract instead of minting one.
 	EngineRepinned EngineOutcome = "repinned"
 
-	// EngineDeferred means NOTHING was written anywhere and the subject is
-	// still owed a decision. It covers an undecided policy answer, a row whose
-	// content CID is not yet known, a row already in a terminal state, and a
-	// credential failure. In every one of those cases the correct next step is
-	// to look again later, never to record a verdict.
+	// EngineDeferred means the subject is still owed a decision and nothing
+	// NEW was verdicted. It covers an undecided policy answer, a row whose
+	// content CID is not yet known, a row already in a terminal state, a
+	// credential failure, and a repo write refused by the §5.5 removal guard.
+	// In every one of those cases the correct next step is to look again
+	// later, never to record a verdict.
+	//
+	// "Nothing was written" is the local truth, but a REMOTE outcome can be
+	// ambiguous: a PDS write whose response was lost may have committed
+	// anyway. That ambiguity is why deferral is always safe to re-fire — the
+	// next pass's pre-read finds whatever actually stands, a write that
+	// already landed converges as a skip, and the skip's catch-up stamp
+	// (see accept) reconciles the row with it.
 	EngineDeferred EngineOutcome = "deferred"
 )
 
@@ -219,12 +248,25 @@ func (e *AcceptanceEngine) accept(ctx context.Context, communityDID, postURI, ev
 		return EngineDeferred, err
 	}
 
-	// A SKIPPED WRITE STAMPS NOTHING. The repo already held this exact
-	// acceptance, so nothing committed and there is no revision to report —
-	// getRecord does not reveal the revision an existing record was written at.
-	// The repository refuses an empty rev as a fabricated watermark, and
-	// inventing one to get past that would write a clock value no commit had.
-	if written.Skipped {
+	// A SKIPPED WRITE STILL STAMPS — with the catch-up watermark. The repo
+	// already held this exact acceptance, so nothing committed; the writer
+	// reports the repo's HEAD rev instead (read before its pre-read — see
+	// CommunityWriteResult.Rev). Stamping it is what un-strands a row whose
+	// previous pass committed the acceptance and then failed this very stamp:
+	// until task 5's reconciler exists, a re-fire of this engine is the only
+	// thing that revisits the subject, and a skip that stamped nothing would
+	// leave the row pending forever.
+	//
+	// WHY THE HEAD REV IS SAFE: a standing acceptance pinning our CID proves no
+	// subject-scoped community event lies between the acceptance's commit and
+	// the head — a removal would have deleted the record, and a repin would pin
+	// a different CID. The stamp is also conservative: the head was read before
+	// the record, so any event racing the pre-read carries a strictly greater
+	// rev and its firehose copy still applies.
+	if written.Skipped && written.Rev == "" {
+		// Defensive only: the writer contract reports the head rev on every
+		// skip. An empty one must not be stamped — the repository refuses it as
+		// a fabricated watermark, correctly.
 		return EngineAccepted, nil
 	}
 
@@ -254,7 +296,7 @@ func (e *AcceptanceEngine) accept(ctx context.Context, communityDID, postURI, ev
 // community's repository — spam would otherwise be permanently archived in the
 // repo of the community that refused it.
 func (e *AcceptanceEngine) reject(ctx context.Context, communityDID, postURI, evaluatedCID string, code DecisionCode) (EngineOutcome, error) {
-	if _, err := e.admissions.RecordRejection(ctx, RecordRejectionCommand{
+	result, err := e.admissions.RecordRejection(ctx, RecordRejectionCommand{
 		CommunityDID: communityDID,
 		PostURI:      postURI,
 		DecisionCode: string(code),
@@ -266,8 +308,21 @@ func (e *AcceptanceEngine) reject(ctx context.Context, communityDID, postURI, ev
 		// A policy refusal is terminal. Leaving this true would have the
 		// dead-letter redrive pass retry a decision that will never change.
 		Redrivable: false,
-	}); err != nil {
+	})
+	if err != nil {
 		return EngineDeferred, fmt.Errorf("recording the rejection of %s in %s: %w", postURI, communityDID, err)
+	}
+
+	// A SKIPPED REJECTION DID NOT LAND, and the outcome must say so. The CAS
+	// refuses in two ways and both mean "no rejection was recorded":
+	// skipped_stale, the author edited between the read and the verdict, so
+	// the judged CID is no longer the row's and the edit will re-drive the
+	// subject; skipped_terminal, another writer settled the row first.
+	// Reporting EngineRejected for either would claim a refusal the row does
+	// not hold — and the caller would answer the author with a verdict that
+	// was never made.
+	if result.Outcome != AdmissionApplied {
+		return EngineDeferred, nil
 	}
 
 	return EngineRejected, nil
@@ -289,7 +344,13 @@ func (e *AcceptanceEngine) remove(ctx context.Context, communityDID, postURI, ev
 		return EngineDeferred, err
 	}
 
-	if written.Skipped {
+	// The removal twin of accept's catch-up stamp: a skipped removal reports
+	// the head rev, and stamping it un-strands a row whose previous pass
+	// committed the removal but failed the stamp. Safe for the same shape of
+	// reason — a standing removal carrying this decision proves no
+	// subject-scoped community event lies between its commit and the head (a
+	// restore would have deleted the removal in its own commit).
+	if written.Skipped && written.Rev == "" {
 		return EngineRemoved, nil
 	}
 

@@ -4,6 +4,7 @@ package posts_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -257,9 +258,9 @@ func TestEngine_AcceptanceLandsInTheCommunityRepoAndSurvivesRefiring(t *testing.
 	require.NoError(t, err)
 	assert.Truef(t, result.Skipped,
 		"the repo already held this exact acceptance, so the writer must write NOTHING")
-	assert.Emptyf(t, result.Rev,
-		"nothing committed, so there is no revision to report — and a caller that stamped one "+
-			"would write a watermark no commit ever had")
+	assert.NotEmptyf(t, result.Rev,
+		"a skip reports the repo's head rev — the catch-up watermark that un-strands a row whose "+
+			"earlier stamp failed after the acceptance committed (see CommunityWriteResult.Rev)")
 
 	// THE ASSERTION WITH TEETH.
 	assert.Equalf(t, firstRecordCID, f.acceptanceOf(t, post.URI).CID,
@@ -410,6 +411,170 @@ func TestEngine_ApplyAcceptanceTwiceAtTheSameRevIsASkipThatChangesNothing(t *tes
 			"how a replay looks like a fresh decision in the moderation log")
 }
 
+// stampFailingAdmissions fails ApplyAcceptance a scripted number of times and
+// then delegates — the database blip that strikes AFTER the PDS commit landed.
+type stampFailingAdmissions struct {
+	posts.AdmissionRepository
+	failures int
+}
+
+func (a *stampFailingAdmissions) ApplyAcceptance(ctx context.Context, cmd posts.ApplyAcceptanceCommand) (posts.AdmissionResult, error) {
+	if a.failures > 0 {
+		a.failures--
+		return posts.AdmissionResult{}, errAppViewDown
+	}
+	return a.AdmissionRepository.ApplyAcceptance(ctx, cmd)
+}
+
+// errAppViewDown is the injected stamp failure: the AppView's own database
+// refusing the write, after the PDS commit already landed.
+var errAppViewDown = errors.New("injected: the admissions store is unreachable")
+
+func TestEngine_ReFireAfterAFailedStampCatchesUpViaTheSkipPath(t *testing.T) {
+	t.Parallel()
+
+	// THE STRANDED-ROW SCENARIO. Pass one commits the acceptance on the PDS and
+	// then fails to stamp the row — a database blip after the write landed. The
+	// record stands, the row is still pending, and until task 5's reconciler
+	// exists the ONLY thing that revisits the subject is a re-fire of this same
+	// engine. On that re-fire the writer skips (the record already pins the
+	// target), so if the skip path stamps nothing the row is pending forever.
+	//
+	// The skip therefore carries the repo's head rev and the engine stamps it.
+	// Safe, because a standing acceptance pinning our CID proves no
+	// subject-scoped community event lies between the acceptance's commit and
+	// the head: a removal would have deleted the record, and a repin would pin
+	// a different CID.
+	f := newEngineFixture(t)
+	ctx := context.Background()
+
+	post := f.publishPost(t, "a post whose first stamp fails")
+	f.seedPending(t, post.URI, post.CID)
+
+	admissions := &stampFailingAdmissions{AdmissionRepository: f.admissions, failures: 1}
+	engine := posts.NewAcceptanceEngine(admissions, f.decider, f.writer, f.refreshes)
+
+	outcome, err := engine.ProcessAdmission(ctx, f.community.DID, post.URI)
+	require.Error(t, err, "the failed stamp must be visible — the repo and the row now disagree")
+	require.Equal(t, posts.EngineAccepted, outcome,
+		"the acceptance IS in the community's repo; that is what the outcome reports")
+
+	row, err := f.admissions.Get(ctx, f.community.DID, post.URI)
+	require.NoError(t, err)
+	require.Equalf(t, posts.AdmissionStatusPending, row.Status,
+		"precondition: the stamp failed, so the row must still be pending")
+
+	// The re-fire. The writer finds the acceptance standing and skips; the
+	// catch-up stamp is what moves the row.
+	outcome, err = engine.ProcessAdmission(ctx, f.community.DID, post.URI)
+	require.NoError(t, err)
+	assert.Equal(t, posts.EngineAccepted, outcome)
+
+	row, err = f.admissions.Get(ctx, f.community.DID, post.URI)
+	require.NoError(t, err)
+	assert.Equalf(t, posts.AdmissionStatusAccepted, row.Status,
+		"the re-fire must catch the row up: the acceptance stands on the PDS and nothing else "+
+			"re-drives this subject until task 5 exists")
+	require.NotNil(t, row.LastCommunityEvent)
+	assert.NotEmpty(t, row.LastCommunityEvent.Rev)
+
+	// And the catch-up minted nothing: the record's CID is untouched.
+	acceptance := f.acceptanceOf(t, post.URI)
+	assertSubject(t, acceptance, post.URI, post.CID)
+}
+
+// ---------------------------------------------------------------------------
+// The removal guard
+// ---------------------------------------------------------------------------
+
+func TestEngine_AcceptanceRefusesToWriteOverAStandingRemoval(t *testing.T) {
+	t.Parallel()
+
+	// §5.5: removal is terminal, and the ONLY sanctioned exit is a moderator
+	// restore — one commit that deletes the removal AND writes the fresh
+	// acceptance. An acceptance created over a standing removal leaves both
+	// records live, and the acceptance's younger watermark outranks the removal
+	// at every consumer: a moderated post laundered back into feeds by a retry.
+	//
+	// Here the removal already stands at the writer's pre-read: the community
+	// removed the post, and this engine pass is working from a row the firehose
+	// has not caught up yet.
+	f := newEngineFixture(t)
+	ctx := context.Background()
+
+	post := f.publishPost(t, "a post removed before the engine fires")
+	_, err := f.writer.WriteRemoval(ctx, posts.CommunityRemovalCommand{
+		CommunityDID: f.community.DID,
+		PostURI:      post.URI,
+		PostCID:      post.CID,
+		Code:         posts.DecisionSpam,
+	})
+	require.NoError(t, err)
+
+	f.seedPending(t, post.URI, post.CID)
+
+	outcome, err := f.process(t, post.URI)
+	require.Error(t, err, "an acceptance over a standing removal must be refused, not committed")
+	assert.ErrorIs(t, err, posts.ErrRemovalStands)
+	assert.Equalf(t, posts.EngineDeferred, outcome,
+		"the refusal is a deferral — the subject is owed a decision, but not this one")
+
+	rkey := posts.SubjectRkey(post.URI)
+	removal := f.communityAt.GetRecord(t, posts.RemovalCollection, rkey)
+	assert.Equalf(t, string(posts.DecisionSpam), removal.Value["code"],
+		"the removal must still stand untouched")
+	f.assertRecordAbsent(t, posts.AcceptanceCollection, rkey, "the acceptance record")
+}
+
+func TestEngine_AcceptanceRefusesARemovalDiscoveredMidConvergence(t *testing.T) {
+	t.Parallel()
+
+	// The harder shape of the same guard: the removal lands BETWEEN the
+	// writer's pre-read and its put. The put loses its swapRecord guard (the
+	// acceptance it aimed at was deleted by the removal commit), and the
+	// convergence re-read is where the standing removal has to be discovered —
+	// a re-read that only looked at the acceptance rkey would see "nothing
+	// there" and create straight over the removal.
+	f := newEngineFixture(t)
+	ctx := context.Background()
+
+	post := f.publishPost(t, "a post removed mid-write")
+	_, err := f.writer.WriteAcceptance(ctx, posts.CommunityWriteCommand{
+		CommunityDID: f.community.DID,
+		PostURI:      post.URI,
+		PostCID:      post.CID,
+	})
+	require.NoError(t, err)
+
+	edited := f.editPost(t, post, "an edit whose re-acceptance races a removal")
+
+	// Between our pre-read and our put, a moderation removal commits: the
+	// acceptance is deleted and the removal created, in one commit.
+	racing := f.racingWriter(t, func() {
+		_, removeErr := f.writer.WriteRemoval(ctx, posts.CommunityRemovalCommand{
+			CommunityDID: f.community.DID,
+			PostURI:      post.URI,
+			PostCID:      post.CID,
+			Code:         posts.DecisionRuleViolation,
+		})
+		require.NoError(t, removeErr)
+	})
+
+	_, err = racing.WriteAcceptance(ctx, posts.CommunityWriteCommand{
+		CommunityDID: f.community.DID,
+		PostURI:      post.URI,
+		PostCID:      edited.CID,
+	})
+	require.Error(t, err,
+		"the convergence re-read met a standing removal and must refuse rather than create over it")
+	assert.ErrorIs(t, err, posts.ErrRemovalStands)
+
+	rkey := posts.SubjectRkey(post.URI)
+	removal := f.communityAt.GetRecord(t, posts.RemovalCollection, rkey)
+	assert.Equal(t, string(posts.DecisionRuleViolation), removal.Value["code"])
+	f.assertRecordAbsent(t, posts.AcceptanceCollection, rkey, "the acceptance record")
+}
+
 // ---------------------------------------------------------------------------
 // Swap conflicts
 // ---------------------------------------------------------------------------
@@ -447,6 +612,10 @@ func (f *engineFixture) racingWriter(t *testing.T, fn func()) posts.CommunityRec
 			return &racingRepo{CommunityRepo: repo, race: fn}, nil
 		},
 		func() time.Time { return time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC) },
+		// The race is deterministic here, so the retry backoff would only slow
+		// the suite: docs/TEST_ARCHITECTURE.md §3.3 — waiting is asserted on,
+		// never performed.
+		posts.WithSwapRetrySleeper(func(context.Context, time.Duration) error { return nil }),
 	)
 }
 
@@ -460,6 +629,99 @@ func (f *engineFixture) writeAcceptanceDirectly(t *testing.T, postURI, pinnedCID
 		"subject":   map[string]any{"uri": postURI, "cid": pinnedCID},
 		"createdAt": "2026-07-01T11:59:00Z",
 	})
+}
+
+// racingCommitRepo fires its race once, before the FIRST ApplyWrites, and
+// records every inner result — so a test can prove the first attempt met a
+// REAL InvalidSwap from a real PDS and the writer then converged, rather than
+// merely observing a final state that an unguarded batch would also reach.
+type racingCommitRepo struct {
+	posts.CommunityRepo
+
+	race  func()
+	fired bool
+	errs  []error
+}
+
+func (r *racingCommitRepo) ApplyWrites(ctx context.Context, writes []pds.Write, swapCommit string) (*pds.ApplyWritesResult, error) {
+	if !r.fired {
+		r.fired = true
+		r.race()
+	}
+	result, err := r.CommunityRepo.ApplyWrites(ctx, writes, swapCommit)
+	r.errs = append(r.errs, err)
+	return result, err
+}
+
+func TestEngine_RemovalCommitLosesItsSwapCommitAndConverges(t *testing.T) {
+	t.Parallel()
+
+	// The commitPair twin of the putRecord swap races below. The removal batch
+	// is guarded by the head CID read before its pre-reads, so ANY commit
+	// landing in the community's repo mid-window — here an unrelated
+	// acceptance for a different post — makes the guard stale. The PDS must
+	// answer with a real InvalidSwap (not a fake's error value), and the
+	// writer must re-read, re-shape and converge rather than either failing or
+	// silently clobbering.
+	f := newEngineFixture(t)
+	ctx := context.Background()
+
+	post := f.publishPost(t, "a post whose removal loses the swapCommit race")
+	_, err := f.writer.WriteAcceptance(ctx, posts.CommunityWriteCommand{
+		CommunityDID: f.community.DID,
+		PostURI:      post.URI,
+		PostCID:      post.CID,
+	})
+	require.NoError(t, err)
+
+	otherPost := f.publishPost(t, "an unrelated post whose acceptance advances the head")
+
+	generic, err := pds.NewFromAccessToken(f.pds.URL(), f.communityAt.DID, f.communityAt.AccessToken)
+	require.NoError(t, err)
+	commitClient, ok := generic.(pds.CommitClient)
+	require.True(t, ok)
+
+	racing := &racingCommitRepo{
+		CommunityRepo: commitClient,
+		race: func() {
+			// A competing write commits between the batch's head read and its
+			// applyWrites — another engine pass, the fast path, a moderator.
+			f.writeAcceptanceDirectly(t, otherPost.URI, otherPost.CID)
+		},
+	}
+	writer := posts.NewCommunityRecordWriter(
+		func(_ context.Context, _ string) (posts.CommunityRepo, error) { return racing, nil },
+		func() time.Time { return time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC) },
+		posts.WithSwapRetrySleeper(func(context.Context, time.Duration) error { return nil }),
+	)
+
+	result, err := writer.WriteRemoval(ctx, posts.CommunityRemovalCommand{
+		CommunityDID: f.community.DID,
+		PostURI:      post.URI,
+		PostCID:      post.CID,
+		Code:         posts.DecisionSpam,
+	})
+	require.NoErrorf(t, err, "a lost swapCommit within the retry budget must converge, not surface")
+	assert.False(t, result.Skipped, "the removal had real work to do")
+	assert.NotEmpty(t, result.Rev)
+
+	// THE GUARD WAS REALLY ENGAGED. Without this assertion an unguarded batch
+	// — one that dropped swapCommit — would sail through first try and reach
+	// the same final state, and the test would prove nothing about the guard.
+	require.GreaterOrEqualf(t, len(racing.errs), 2,
+		"the first batch must have been refused and retried; attempts: %d", len(racing.errs))
+	assert.ErrorIsf(t, racing.errs[0], pds.ErrSwapConflict,
+		"the competing commit must surface as a real InvalidSwap from the PDS, mapped to "+
+			"ErrSwapConflict — got: %v", racing.errs[0])
+	assert.NoError(t, racing.errs[len(racing.errs)-1], "the re-shaped batch must commit cleanly")
+
+	// And the converged state is the moderation action, whole: acceptance
+	// gone, removal standing, in the community's repo.
+	rkey := posts.SubjectRkey(post.URI)
+	f.assertRecordAbsent(t, posts.AcceptanceCollection, rkey, "the acceptance record")
+	removal := f.communityAt.GetRecord(t, posts.RemovalCollection, rkey)
+	assert.Equal(t, string(posts.DecisionSpam), removal.Value["code"])
+	assertSubject(t, removal, post.URI, post.CID)
 }
 
 func TestEngine_LostSwapRaceToTheSameCIDIsAlreadyDone(t *testing.T) {

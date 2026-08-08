@@ -32,6 +32,16 @@ const (
 // classifyRecordDiff reports whether the change between two versions of a post
 // record is the bridgedStats refresh of §5.5 or an edit needing re-admission.
 //
+// IT CLASSIFIES THE DIFF ONLY. §5.5 conditions the repin on the bridge-trust
+// gate as well — "the record diff touches only bridgedStats AND the author
+// passes the bridge-trust gate" — and the gate is the CALLER's to apply. A
+// RecordDiffBridgedStatsOnly answer is necessary for a repin, never sufficient.
+//
+// NOT CALLED BY ANYTHING YET. It ships with the engine so that the repin path
+// has a decision procedure to call when it lands (task 5's consumer wiring,
+// alongside EngineRepinned and CommunityRecordWriter.RepinAcceptance), and it
+// is specified now so that path cannot be written against a guess.
+//
 // IT TAKES DECODED RECORDS, NOT PostRecord VALUES, AND THAT IS THE WHOLE POINT.
 // A typed struct silently drops every field it does not know about, so an
 // author who added an unmodelled field — or a bridge running a newer lexicon

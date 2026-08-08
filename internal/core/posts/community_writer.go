@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"time"
+
+	"github.com/bluesky-social/indigo/atproto/syntax"
 
 	"Coves/internal/atproto/pds"
 )
@@ -102,12 +105,20 @@ type CommunityWriteResult struct {
 	RKey string
 	CID  string
 
-	// Rev is the repo revision the write committed in: the §5.2 watermark.
+	// Rev is a repo revision the caller may stamp as the §5.2 watermark.
 	//
-	// It is EMPTY when Skipped is true, and that is not an oversight — nothing
-	// committed, so there is no revision to report, and getRecord does not
-	// reveal the revision an existing record was written at. A caller must
-	// therefore not stamp a watermark from a skipped write; see Skipped.
+	// For a write that committed, it is the revision the commit landed in. For
+	// a SKIPPED write it is the repo's HEAD revision, read BEFORE the pre-read
+	// that found the standing record — the catch-up watermark. That is safe to
+	// stamp because the standing record proves what the repo says about this
+	// subject as of the pre-read: a standing acceptance pinning the target CID
+	// means no subject-scoped community event lies between the acceptance's
+	// commit and that head (a removal would have deleted the record; a repin
+	// would pin a different CID), so a row stranded by an earlier failed stamp
+	// is caught up rather than left pending forever. Reading the head BEFORE
+	// the records keeps the rev conservative — a removal committing between
+	// the two reads has a rev strictly greater than the stamp, so its firehose
+	// event still applies.
 	Rev string
 
 	// Skipped reports that the repo already held exactly this record, so
@@ -168,6 +179,19 @@ type CommunityRecordWriter interface {
 type communityRecordWriter struct {
 	repos CommunityRepoFactory
 	now   Clock
+	sleep func(ctx context.Context, d time.Duration) error
+}
+
+// WriterOption configures a CommunityRecordWriter.
+type WriterOption func(*communityRecordWriter)
+
+// WithSwapRetrySleeper replaces the pause between swap retries.
+//
+// Injected for the same reason the clock is: docs/TEST_ARCHITECTURE.md §3.3
+// forbids a test from actually sleeping, so a test hands in a recorder and
+// asserts on the durations instead of waiting through them.
+func WithSwapRetrySleeper(sleep func(ctx context.Context, d time.Duration) error) WriterOption {
+	return func(w *communityRecordWriter) { w.sleep = sleep }
 }
 
 // NewCommunityRecordWriter returns the writer that publishes acceptances and
@@ -176,9 +200,39 @@ type communityRecordWriter struct {
 // The clock is injected for the same reason admitPost's is: createdAt is the
 // one field a test cannot otherwise pin, and docs/TEST_ARCHITECTURE.md §3.3
 // forbids sleeping to move time.
-func NewCommunityRecordWriter(repos CommunityRepoFactory, now Clock) CommunityRecordWriter {
-	return &communityRecordWriter{repos: repos, now: now}
+func NewCommunityRecordWriter(repos CommunityRepoFactory, now Clock, opts ...WriterOption) CommunityRecordWriter {
+	w := &communityRecordWriter{repos: repos, now: now, sleep: sleepWithContext}
+	for _, opt := range opts {
+		opt(w)
+	}
+	return w
 }
+
+// sleepWithContext is the production pause: a timer that a cancelled context
+// cuts short, so a shutting-down worker is not held hostage by a backoff.
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// ErrRemovalStands reports that an acceptance write met a standing removal
+// record for its subject.
+//
+// §5.5 makes removal terminal: the ONLY sanctioned exit is a moderator restore,
+// which deletes the removal in the same commit that writes the fresh acceptance
+// (RestoreAcceptance). An acceptance created OVER a standing removal would leave
+// both records live at once, and every consumer ordering by the §5.2 tuple
+// would see the acceptance outrank the older removal — a moderated post
+// laundered back into feeds by a retry. The writer therefore refuses, and the
+// engine classifies the refusal as a deferral: the row is owed a decision, but
+// not this one.
+var ErrRemovalStands = errors.New("a removal record stands for this subject")
 
 // swapRetryLimit is how many times a writer re-reads and re-shapes after losing
 // an optimistic guard before it gives up and lets the caller try again later.
@@ -190,6 +244,27 @@ func NewCommunityRecordWriter(repos CommunityRepoFactory, now Clock) CommunityRe
 // genuinely churning would spin a queue worker against a PDS instead of
 // deferring the subject and moving on.
 const swapRetryLimit = 2
+
+// swapRetryBaseDelay is the first retry's backoff ceiling. Each further retry
+// doubles it.
+const swapRetryBaseDelay = 25 * time.Millisecond
+
+// backoff pauses before retry number `attempt` (zero-based), for a jittered
+// duration in (0, base<<attempt].
+//
+// The jitter is the point, not a refinement: the writers that lose a swap to
+// each other are the three acceptance writers of §3.2 converging on the SAME
+// rkey, so retries that waited a fixed interval would collide again on
+// schedule. Full jitter decorrelates them cheaply. This is only a courtesy
+// between racing writers, though — actually serializing the work is the
+// per-community queue, which is task 5's job, not this backoff's.
+func (w *communityRecordWriter) backoff(ctx context.Context, attempt int) error {
+	ceiling := swapRetryBaseDelay << attempt
+	if err := w.sleep(ctx, time.Duration(1+rand.Int64N(int64(ceiling)))); err != nil {
+		return fmt.Errorf("waiting to retry a lost swap: %w", err)
+	}
+	return nil
+}
 
 // standingRecord is what a pre-read found in the community's repo, reduced to
 // the four things a writer shapes its commit from.
@@ -267,9 +342,45 @@ func (w *communityRecordWriter) pinAcceptance(ctx context.Context, cmd Community
 	uri := recordURI(repo.DID(), AcceptanceCollection, rkey)
 
 	for attempt := 0; ; attempt++ {
+		// THE HEAD IS READ FIRST, before either record, for the same reason
+		// commitPair reads it first: it is the catch-up watermark a skip
+		// reports, and a head read AFTER the records could include a removal
+		// that committed between the two — stamping that head would outrank the
+		// removal's own firehose event and freeze the row `accepted` over a
+		// removed post. Read first, the rev is at worst conservative: any later
+		// subject event carries a strictly greater rev and still applies.
+		head, err := repo.GetLatestCommit(ctx)
+		if err != nil {
+			return CommunityWriteResult{}, fmt.Errorf("reading the head of %s: %w", cmd.CommunityDID, err)
+		}
+
 		standing, err := readStandingRecord(ctx, repo, AcceptanceCollection, rkey)
 		if err != nil {
 			return CommunityWriteResult{}, err
+		}
+
+		// THE REMOVAL GUARD (§5.5). Removal is terminal, and its ONLY
+		// sanctioned exit is a moderator restore — which deletes the removal in
+		// the same commit that writes the fresh acceptance (RestoreAcceptance).
+		// An acceptance put over a standing removal would leave both records
+		// live, and its younger watermark would outrank the removal at every
+		// consumer: a moderated post laundered back into feeds by a retry. So
+		// every pass through this loop — the pre-read AND each convergence
+		// re-read after a lost swap — checks the removal rkey and refuses.
+		//
+		// It is read AFTER the acceptance to keep the window between this check
+		// and the put as narrow as it can be; the removal commit deletes any
+		// standing acceptance, so a removal landing after this read still
+		// surfaces as ErrSwapConflict on the put, and the next iteration's
+		// re-read is where it is caught.
+		removal, err := readStandingRecord(ctx, repo, RemovalCollection, rkey)
+		if err != nil {
+			return CommunityWriteResult{}, err
+		}
+		if removal != nil {
+			return CommunityWriteResult{}, fmt.Errorf(
+				"writing the acceptance of %s in %s: %w: §5.5 sanctions no exit from removal except a restore",
+				cmd.PostURI, cmd.CommunityDID, ErrRemovalStands)
 		}
 
 		if standing == nil && mode == acceptanceMustExist {
@@ -281,8 +392,10 @@ func (w *communityRecordWriter) pinAcceptance(ctx context.Context, cmd Community
 		// ALREADY DONE. Re-putting an identical record would mint a fresh record
 		// CID, emit a commit that decided nothing, and invalidate every
 		// reference to the acceptance it just rewrote — on every retry, forever.
+		// The skip reports the head as its Rev — see CommunityWriteResult.Rev —
+		// so a row stranded by an earlier failed stamp can be caught up.
 		if standing != nil && standing.SubjectCID == cmd.PostCID {
-			return CommunityWriteResult{URI: uri, RKey: rkey, CID: standing.CID, Skipped: true}, nil
+			return CommunityWriteResult{URI: uri, RKey: rkey, CID: standing.CID, Rev: head.Rev, Skipped: true}, nil
 		}
 
 		swapRecord, createdAt := "", w.stamp()
@@ -303,8 +416,12 @@ func (w *communityRecordWriter) pinAcceptance(ctx context.Context, cmd Community
 			return CommunityWriteResult{}, fmt.Errorf("writing the acceptance of %s in %s: %w",
 				cmd.PostURI, cmd.CommunityDID, err)
 		}
-		// Lost the race. Loop: re-read what the winner actually wrote, and
-		// either discover the work is done or aim at the new record.
+		// Lost the race. Back off, then loop: re-read what the winner actually
+		// wrote, and either discover the work is done or aim at the new record.
+		if err := w.backoff(ctx, attempt); err != nil {
+			return CommunityWriteResult{}, fmt.Errorf("writing the acceptance of %s in %s: %w",
+				cmd.PostURI, cmd.CommunityDID, err)
+		}
 	}
 }
 
@@ -419,9 +536,11 @@ func (w *communityRecordWriter) commitPair(ctx context.Context, spec pairCommit)
 
 		// Nothing to clear and the standing record already says it: a re-fire of
 		// a commit that has already landed writes nothing, for the same reason
-		// an identical acceptance is not re-put.
+		// an identical acceptance is not re-put. The skip reports the head as
+		// its Rev — the catch-up watermark of CommunityWriteResult.Rev — so a
+		// row stranded by an earlier failed stamp is caught up on the re-fire.
 		if toClear == nil && standing != nil && spec.unchanged(standing) {
-			return CommunityWriteResult{URI: uri, RKey: rkey, CID: standing.CID, Skipped: true}, nil
+			return CommunityWriteResult{URI: uri, RKey: rkey, CID: standing.CID, Rev: head.Rev, Skipped: true}, nil
 		}
 
 		writes := make([]pds.Write, 0, 2)
@@ -462,6 +581,10 @@ func (w *communityRecordWriter) commitPair(ctx context.Context, spec pairCommit)
 		// are answered by reading again, never by resending the same shape.
 		staleShape := errors.Is(err, pds.ErrSwapConflict) || errors.Is(err, pds.ErrServerError)
 		if !staleShape || attempt >= swapRetryLimit {
+			return CommunityWriteResult{}, fmt.Errorf("committing %s for %s in %s: %w",
+				spec.standCollection, spec.postURI, spec.communityDID, err)
+		}
+		if err := w.backoff(ctx, attempt); err != nil {
 			return CommunityWriteResult{}, fmt.Errorf("committing %s for %s in %s: %w",
 				spec.standCollection, spec.postURI, spec.communityDID, err)
 		}
@@ -527,9 +650,10 @@ func readStandingRecord(ctx context.Context, repo CommunityRepo, collection, rke
 // standCIDOf picks the written record's CID out of a batch's results.
 //
 // Results are POSITIONAL — the lexicon returns one per submitted write, in
-// order — so the record this commit made stand is the last one. A result that
-// carries no CID (the lexicon's #updateResult may omit it) leaves the field
-// empty rather than borrowing a neighbour's.
+// order — so the record this commit made stand is the last one. The transport
+// (pds.ApplyWrites) refuses a success whose results are short or whose
+// create/update entries lack uri/cid, so the bounds check here is defensive
+// only.
 func standCIDOf(result *pds.ApplyWritesResult, index int) string {
 	if result == nil || index < 0 || index >= len(result.Results) {
 		return ""
@@ -571,6 +695,28 @@ func removalRecord(cmd CommunityRemovalCommand, createdAt string) map[string]any
 	return record
 }
 
+// removalCodeMaxLength is the removal lexicon's maxLength for `code`
+// (internal/atproto/lexicon/social/coves/community/removal.json), in BYTES —
+// which is what a lexicon maxLength counts.
+const removalCodeMaxLength = 64
+
+// validateSubjectURI refuses a subject that is not a parseable at:// URI.
+//
+// EVERY RECORD THESE WRITERS SEND GOES OUT WITH validate:false — the PDS has
+// never been taught Coves lexicons, so it checks nothing. What this process
+// sends is exactly what the firehose carries under the community's signature,
+// and a subject that is not an AT-URI would be a malformed strongRef every
+// conformant consumer is entitled to refuse. The engine only ever hands the
+// writers URIs read from its own admission rows, so a violation here is a
+// programming error, refused before any network call.
+func validateSubjectURI(kind, postURI string) error {
+	if _, err := syntax.ParseATURI(postURI); err != nil {
+		return fmt.Errorf("%s: %w", kind, NewValidationError("postURI",
+			fmt.Sprintf("must be a parseable at:// URI (%v) — the record embeds it in a strongRef and is sent with validate:false, so nothing downstream re-checks it", err)))
+	}
+	return nil
+}
+
 // validateWriteCommand refuses an acceptance that would pin nothing.
 //
 // A strongRef without a CID is the one thing an acceptance may not be: the
@@ -586,7 +732,7 @@ func validateWriteCommand(cmd CommunityWriteCommand) error {
 		return fmt.Errorf("acceptance write: %w", NewValidationError("postCID",
 			"is required — an acceptance's subject is a strongRef, and one without a CID pins nothing"))
 	}
-	return nil
+	return validateSubjectURI("acceptance write", cmd.PostURI)
 }
 
 // validateRemovalCommand refuses a removal with no reason code. `code` is
@@ -603,6 +749,12 @@ func validateRemovalCommand(cmd CommunityRemovalCommand) error {
 			"is required — it records the version present at removal time"))
 	case cmd.Code == "":
 		return fmt.Errorf("removal write: %w", NewValidationError("code", "is required"))
+	case len(cmd.Code) > removalCodeMaxLength:
+		// Sent with validate:false, so the PDS would happily commit a longer
+		// one — and every conformant consumer could then refuse the record this
+		// community signed.
+		return fmt.Errorf("removal write: %w", NewValidationError("code",
+			fmt.Sprintf("is %d bytes; the removal lexicon caps code at %d (maxLength)", len(cmd.Code), removalCodeMaxLength)))
 	}
-	return nil
+	return validateSubjectURI("removal write", cmd.PostURI)
 }

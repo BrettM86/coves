@@ -24,6 +24,11 @@ import (
 // struct discards unknown fields, so an author who added one would produce two
 // structs comparing equal and an edit classified as "nothing changed".
 //
+// The classification is half of the §5.5 rule, not all of it: §5.5 conditions
+// the repin on the bridge-trust gate as well — this function classifies the
+// diff only; the caller applies the gate. A stats-only answer is necessary for
+// a repin, never sufficient.
+//
 // classifyRecordDiff is not called by anything yet. It ships with the engine so
 // that the repin path has a decision procedure to call when it lands, and it is
 // specified here so that path cannot be written against a guess.

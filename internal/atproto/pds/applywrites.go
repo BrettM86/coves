@@ -208,6 +208,26 @@ func (c *client) ApplyWrites(ctx context.Context, writes []Write, swapCommit str
 		return nil, fmt.Errorf("applyWrites: PDS returned success without a commit rev (%d writes)", len(writes))
 	}
 
+	// THE RESULTS ARE POSITIONAL — the lexicon returns one per submitted write,
+	// in order — and callers index into them to find the record their commit
+	// made stand. A response with fewer (or more) results than writes would
+	// silently hand a caller the WRONG entry; a create/update result without
+	// uri+cid would hand it empty identity for a record that committed. Both
+	// are malformed successes from the PDS or something in front of it, and are
+	// refused for the same reason recordCommit refuses them on single-record
+	// writes: the missing fields are precisely what the caller is about to
+	// persist.
+	if len(response.Results) != len(writes) {
+		return nil, fmt.Errorf("applyWrites: PDS returned %d results for %d writes", len(response.Results), len(writes))
+	}
+	for i, entry := range response.Results {
+		op := writes[i].Op
+		if (op == WriteOpCreate || op == WriteOpUpdate) && (entry.URI == "" || entry.CID == "") {
+			return nil, fmt.Errorf("applyWrites: PDS returned success without uri/cid for writes[%d] (%s %s/%s)",
+				i, op, writes[i].Collection, writes[i].RKey)
+		}
+	}
+
 	result := &ApplyWritesResult{
 		CommitRev: response.Commit.Rev,
 		CommitCID: response.Commit.CID,

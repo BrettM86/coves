@@ -179,8 +179,12 @@ func TestClient_ApplyWrites_UpdateUsesTheUpdateDiscriminant(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&payload)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"commit":  map[string]any{"cid": testCommitCID, "rev": testCommitRev},
-			"results": []any{map[string]any{"$type": "com.atproto.repo.applyWrites#updateResult"}},
+			"commit": map[string]any{"cid": testCommitCID, "rev": testCommitRev},
+			"results": []any{map[string]any{
+				"$type": "com.atproto.repo.applyWrites#updateResult",
+				"uri":   "at://did:plc:test/social.coves.community.removal/rk",
+				"cid":   "bafyreiremovalaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			}},
 		})
 	})
 	defer closeServer()
@@ -206,6 +210,81 @@ func TestClient_ApplyWrites_UpdateUsesTheUpdateDiscriminant(t *testing.T) {
 	// string". Sending it would have every unguarded batch rejected.
 	if _, present := payload["swapCommit"]; present {
 		t.Error("an empty swapCommit must be omitted, not sent")
+	}
+}
+
+func TestClient_ApplyWrites_RefusesAShortResultsArray(t *testing.T) {
+	// The results are POSITIONAL — one per submitted write, in order — and the
+	// caller indexes into them to find the record its commit made stand
+	// (standCIDOf in the community writer). A server returning fewer results
+	// than writes would silently hand the caller the WRONG entry, or an empty
+	// CID for a record that committed. That is a malformed success and must be
+	// an error, not a zero value the caller persists.
+	c, closeServer := newCommitClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"commit": map[string]any{"cid": testCommitCID, "rev": testCommitRev},
+			// Two writes went up; one result comes back.
+			"results": []any{
+				map[string]any{"$type": "com.atproto.repo.applyWrites#deleteResult"},
+			},
+		})
+	})
+	defer closeServer()
+
+	_, err := c.ApplyWrites(context.Background(), []Write{
+		{Op: WriteOpDelete, Collection: "social.coves.community.acceptance", RKey: "rk"},
+		{
+			Op:         WriteOpCreate,
+			Collection: "social.coves.community.removal",
+			RKey:       "rk",
+			Record:     map[string]any{"$type": "social.coves.community.removal", "code": "spam"},
+		},
+	}, testCommitCID)
+	if err == nil {
+		t.Fatal("a results array shorter than the batch is a malformed response and must be an error")
+	}
+}
+
+func TestClient_ApplyWrites_RefusesACreateOrUpdateResultWithoutURIOrCID(t *testing.T) {
+	// A create or an update committed a record the caller is about to
+	// reference: its result's uri and cid are exactly what gets persisted onto
+	// the admission row. A 200 that omits them is the same class of malformed
+	// body recordCommit refuses for single-record writes.
+	for name, entry := range map[string]map[string]any{
+		"create without cid": {
+			"$type": "com.atproto.repo.applyWrites#createResult",
+			"uri":   "at://did:plc:test/social.coves.community.removal/rk",
+		},
+		"update without uri": {
+			"$type": "com.atproto.repo.applyWrites#updateResult",
+			"cid":   "bafyreiremovalaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, closeServer := newCommitClient(t, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"commit":  map[string]any{"cid": testCommitCID, "rev": testCommitRev},
+					"results": []any{entry},
+				})
+			})
+			defer closeServer()
+
+			op := WriteOpCreate
+			if name == "update without uri" {
+				op = WriteOpUpdate
+			}
+			_, err := c.ApplyWrites(context.Background(), []Write{{
+				Op:         op,
+				Collection: "social.coves.community.removal",
+				RKey:       "rk",
+				Record:     map[string]any{"$type": "social.coves.community.removal", "code": "spam"},
+			}}, "")
+			if err == nil {
+				t.Fatal("a create/update result without uri+cid is a malformed response and must be an error")
+			}
+		})
 	}
 }
 
@@ -374,6 +453,32 @@ func TestWrapAPIError_ServerErrorsAreTheirOwnClass(t *testing.T) {
 		if !errors.Is(err, ErrServerError) {
 			t.Errorf("HTTP %d: error %v does not match ErrServerError", status, err)
 		}
+	}
+}
+
+func TestWrapAPIError_NameChecksOutrankTheStatusEvenOn5xx(t *testing.T) {
+	// The name says what happened; the status says how the server framed it. A
+	// PDS (or a proxy in front of one) that wraps an InvalidSwap in a 500 is
+	// still reporting a lost swap, and a caller that saw only ErrServerError
+	// would resend the same shape instead of re-reading — the exact behaviour
+	// the sentinel exists to prevent. So the name checks run BEFORE the 5xx
+	// branch, for every status.
+	err := wrapAPIError(&atclient.APIError{
+		StatusCode: 500,
+		Name:       "InvalidSwap",
+		Message:    "Commit was at bafyreiotheraaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	}, "applyWrites")
+	if !errors.Is(err, ErrSwapConflict) {
+		t.Errorf("a 500-carrying InvalidSwap must still map ErrSwapConflict, got %v", err)
+	}
+
+	err = wrapAPIError(&atclient.APIError{
+		StatusCode: 500,
+		Name:       "RecordNotFound",
+		Message:    "Record not found",
+	}, "getRecord")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("a 500-carrying RecordNotFound must still map ErrNotFound, got %v", err)
 	}
 }
 

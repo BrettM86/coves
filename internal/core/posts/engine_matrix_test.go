@@ -85,6 +85,13 @@ type fakeDecider struct {
 	code DecisionCode
 	err  error
 
+	// cause is the VALUE-shaped undecided answer: Cause set, Code empty, and
+	// a NIL error. It is a separate field from err so the fake can produce
+	// each of the two undecided shapes independently — a policy bug (or a
+	// future refusal path) can hand back exactly this, and the engine must
+	// treat it as undecided rather than as a verdict.
+	cause error
+
 	lastCommunityDID string
 	lastPostURI      string
 }
@@ -98,6 +105,9 @@ func (d *fakeDecider) DecideAdmission(_ context.Context, communityDID, postURI s
 		// carried on the decision, so a caller inspecting only the value still
 		// sees "not admitted".
 		return AdmissionDecision{Cause: d.err}, d.err
+	}
+	if d.cause != nil {
+		return AdmissionDecision{Cause: d.cause}, nil
 	}
 	return AdmissionDecision{Code: d.code}, nil
 }
@@ -485,6 +495,27 @@ func TestEngine_UndecidedWritesNothingAnywhere(t *testing.T) {
 	}
 }
 
+func TestEngine_ValueShapedUndecidedWritesNothingAnywhere(t *testing.T) {
+	t.Parallel()
+
+	// The undecided answer arriving as a VALUE: Cause set, Code empty, error
+	// nil. Admitted() is false for a refusal and for an undecided answer
+	// alike, and the empty code is the only thing telling them apart — an
+	// answer with neither a code nor a clean bill is one nothing may be
+	// written from. A decider bug that produced this shape must cost a
+	// deferral, never a verdict.
+	lookupFailed := errors.New("aggregator authorization: connection refused")
+	h := newEngineHarness(AdmissionStatusPending, cidPtr(engineIndexedCID))
+	h.decider.cause = lookupFailed
+
+	outcome, err := h.process(t)
+	assert.Equal(t, EngineDeferred, outcome)
+	require.Error(t, err, "a policy that returned no verdict is a genuine failure and must be visible")
+	assert.ErrorIs(t, err, lookupFailed)
+
+	assertWroteNothing(t, h.rec)
+}
+
 func TestEngine_AdmittedWithNoIndexedCIDDefers(t *testing.T) {
 	t.Parallel()
 
@@ -658,17 +689,15 @@ func TestEngine_TreatsRepositorySkipsAsSuccess(t *testing.T) {
 	}
 }
 
-func TestEngine_SkippedWriteStampsNothing(t *testing.T) {
+func TestEngine_SkippedWriteWithNoRevStampsNothing(t *testing.T) {
 	t.Parallel()
 
-	// When the community's repo already holds an acceptance pinning this exact
-	// CID, the writer writes nothing and reports no commit rev — getRecord does
-	// not reveal the revision an existing record was written at.
-	//
-	// So the engine must NOT stamp the row: ApplyAcceptance refuses an empty
-	// rev with ErrInvalidWatermark (correctly — an empty rev is a fabricated
-	// clock value), and inventing one to get past that would write a watermark
-	// no commit ever had.
+	// THE DEFENSIVE HALF of the skip contract. The writer reports the repo's
+	// head rev on every skip (see TestEngine_SkippedWriteStampsTheCatchUpWatermark),
+	// but if a skip ever arrives WITHOUT one, the engine must not stamp:
+	// ApplyAcceptance refuses an empty rev with ErrInvalidWatermark (correctly
+	// — an empty rev is a fabricated clock value), and inventing one to get
+	// past that would write a watermark no commit ever had.
 	h := newEngineHarness(AdmissionStatusPending, cidPtr(engineIndexedCID))
 	h.writer.acceptanceResult = CommunityWriteResult{
 		URI:     "at://" + engineCommunityDID + "/" + AcceptanceCollection + "/" + SubjectRkey(enginePostURI),
@@ -685,6 +714,95 @@ func TestEngine_SkippedWriteStampsNothing(t *testing.T) {
 	assert.Equal(t, []string{"Get", "DecideAdmission", "WriteAcceptance"}, h.rec.calls)
 	assert.Empty(t, h.admissions.acceptanceCmds,
 		"a skipped write has no commit rev, and the repository refuses an empty one as a fabricated watermark")
+}
+
+func TestEngine_SkippedWriteStampsTheCatchUpWatermark(t *testing.T) {
+	t.Parallel()
+
+	// THE RE-FIRE AFTER A LOST STAMP. The first pass wrote the acceptance and
+	// then failed ApplyAcceptance — a database blip after a successful PDS
+	// commit. The record stands, the row is still pending, and the next pass's
+	// write is a skip. If a skip stamps nothing, that row is stranded until a
+	// human notices: nothing else re-drives it before task 5 exists.
+	//
+	// So a skip carries the repo's HEAD rev and the engine stamps it. That is
+	// safe because a standing acceptance pinning our CID proves no
+	// subject-scoped community event lies between the acceptance's commit and
+	// the head: a removal would have deleted the record, and a repin would pin
+	// a different CID.
+	h := newEngineHarness(AdmissionStatusPending, cidPtr(engineIndexedCID))
+	h.writer.acceptanceResult = CommunityWriteResult{
+		URI:  "at://" + engineCommunityDID + "/" + AcceptanceCollection + "/" + SubjectRkey(enginePostURI),
+		RKey: SubjectRkey(enginePostURI),
+		CID:  engineRecordCID,
+		// The head rev the writer read around its pre-read — the catch-up
+		// watermark.
+		Rev:     engineCommitRev,
+		Skipped: true,
+	}
+
+	outcome, err := h.process(t)
+	require.NoError(t, err)
+	assert.Equal(t, EngineAccepted, outcome)
+
+	assert.Equal(t, []string{"Get", "DecideAdmission", "WriteAcceptance", "ApplyAcceptance"}, h.rec.calls,
+		"a skipped write that reports a head rev must still stamp the row — that is what un-strands "+
+			"a row whose first stamp failed after the PDS commit landed")
+	require.Len(t, h.admissions.acceptanceCmds, 1)
+	assert.Equal(t, engineCommitRev, h.admissions.acceptanceCmds[0].Watermark.Rev)
+	assert.Equal(t, engineIndexedCID, h.admissions.acceptanceCmds[0].PinnedCID)
+}
+
+func TestEngine_SkippedRemovalStampsTheCatchUpWatermark(t *testing.T) {
+	t.Parallel()
+
+	// The removal twin of the acceptance catch-up: a removal commit landed, the
+	// stamp failed, and the re-fire's write is a skip carrying the head rev.
+	h := newEngineHarness(AdmissionStatusPendingReacceptance, cidPtr(engineIndexedCID))
+	h.decider.code = DecisionSpam
+	h.writer.removalResult = CommunityWriteResult{
+		URI:     "at://" + engineCommunityDID + "/" + RemovalCollection + "/" + SubjectRkey(enginePostURI),
+		RKey:    SubjectRkey(enginePostURI),
+		CID:     engineRemovalCID,
+		Rev:     engineCommitRev,
+		Skipped: true,
+	}
+
+	outcome, err := h.process(t)
+	require.NoError(t, err)
+	assert.Equal(t, EngineRemoved, outcome)
+
+	assert.Equal(t, []string{"Get", "DecideAdmission", "WriteRemoval", "ApplyRemoval"}, h.rec.calls)
+	require.Len(t, h.admissions.removalCmds, 1)
+	assert.Equal(t, engineCommitRev, h.admissions.removalCmds[0].Watermark.Rev)
+}
+
+func TestEngine_ARejectionThatDidNotLandIsDeferredNotRejected(t *testing.T) {
+	t.Parallel()
+
+	// RecordRejection is a pending-only CAS carrying the judged CID, and both
+	// of its skip outcomes mean THE REJECTION DID NOT LAND: skipped_stale, the
+	// author edited between the read and the write, so the verdict judged
+	// content the row no longer holds; skipped_terminal, another writer settled
+	// the row first. Reporting EngineRejected for either would claim a refusal
+	// that was never recorded — and the caller would tell the author their post
+	// was rejected while the row says otherwise. The honest outcome is a
+	// deferral: nothing landed, and the edit (or the settled state) is what
+	// drives the subject next.
+	for _, skip := range []AdmissionOutcome{AdmissionSkippedStale, AdmissionSkippedTerminal} {
+		t.Run(string(skip), func(t *testing.T) {
+			t.Parallel()
+
+			h := newEngineHarness(AdmissionStatusPending, cidPtr(engineIndexedCID))
+			h.decider.code = DecisionSpam
+			h.admissions.rejectionResult = AdmissionResult{Outcome: skip, Admission: h.admissions.row}
+
+			outcome, err := h.process(t)
+			require.NoError(t, err, "a rejection refused by the CAS is the guard working, not a failure")
+			assert.Equalf(t, EngineDeferred, outcome,
+				"the rejection did not land, so the pass must not report EngineRejected")
+		})
+	}
 }
 
 func TestEngine_ReportsAFailedStamp(t *testing.T) {

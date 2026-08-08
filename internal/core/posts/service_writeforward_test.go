@@ -246,6 +246,12 @@ func TestService_DeleteRemovesTheRecordFromTheCommunityRepo(t *testing.T) {
 	assert.NoError(t, f.service.DeletePost(ctx, sessionFor(t, f.author, f.pds.URL()),
 		posts.DeletePostRequest{URI: resp.URI}),
 		"a repeated delete is idempotent — the retried delete after a lost response succeeds")
+
+	// And idempotent means the record STAYED gone: a second delete that
+	// somehow resurrected or re-wrote the record would also return success,
+	// so the absence has to be re-asserted, not assumed.
+	assert.True(t, testkit.IsNotFound(getRecordErr(ctx, community, postCollection, rkey)),
+		"the record must still be absent after the idempotent re-delete")
 }
 
 func TestService_DeleteRefusesEveryoneButTheAuthor(t *testing.T) {

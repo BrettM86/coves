@@ -139,12 +139,24 @@ var sharedRules = []Rule{
 		"Invalid request to PDS"),
 	Sentinel(pds.ErrNotFound, http.StatusNotFound, "NotFound",
 		"Record not found on PDS"),
+	// ErrSwapConflict before ErrConflict: a 409 InvalidSwap wraps both
+	// sentinels, and the lost-swap message is the more actionable one. A 400
+	// InvalidSwap wraps only ErrSwapConflict, so without this rule it would
+	// fall through to the generic 500 — a lost race reported as our failure.
+	Sentinel(pds.ErrSwapConflict, http.StatusConflict, "Conflict",
+		"Record was modified by another operation, please retry"),
 	Sentinel(pds.ErrConflict, http.StatusConflict, "Conflict",
 		"Record was modified by another operation"),
 	Sentinel(pds.ErrPayloadTooLarge, http.StatusRequestEntityTooLarge, "PayloadTooLarge",
 		"Request payload exceeds size limit"),
 	Sentinel(pds.ErrRateLimited, http.StatusTooManyRequests, "RateLimitExceeded",
 		"Too many requests, please try again later"),
+	// A PDS 5xx is a classified upstream failure, not our internal error, so it
+	// answers 502 rather than falling through to internalError — the same call
+	// the image proxy makes for a PDS it cannot reach. The message is fixed:
+	// the PDS's own text may carry internal detail we must not forward.
+	Sentinel(pds.ErrServerError, http.StatusBadGateway, "UpstreamFailure",
+		"PDS failed to process the request"),
 
 	// Request lifecycle. A cancellation is the client's own doing, so it is a
 	// 4xx; a deadline we blew is ours to report as a gateway timeout.
