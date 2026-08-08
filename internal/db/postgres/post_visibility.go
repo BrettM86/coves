@@ -32,7 +32,16 @@ import (
 // The gate turns on the admission row the LEFT JOIN produced for the post's OWN
 // community:
 //
-//   - a.status = 'accepted'  → visible to everyone.
+//   - a.status = 'accepted' AND a.accepted_cid = p.cid  → visible to everyone.
+//     The CID equality is the §5.5 read-side guard: an acceptance attests to a
+//     SPECIFIC content CID, and the admission consumer commits an edit's new
+//     content (posts.cid advances) in a separate transaction from the accepted →
+//     pending_reacceptance status transition. In that window the row still reads
+//     'accepted' while posts.cid has moved past accepted_cid, so the attested
+//     content is gone and un-attested content stands in its place. Gating on
+//     status alone would render it; requiring accepted_cid = p.cid hides the
+//     drifted post from EVERYONE until the status catches up (whereupon the
+//     author-branch below shows the author their own pending_reacceptance).
 //   - a.status IS NULL       → the collection decides. No admission row exists
 //     for this (community, post), and what that MEANS depends on the collection:
 //     a LEGACY community-repo post (social.coves.community.post), a bridged post,
@@ -67,7 +76,7 @@ func visiblePostsJoin(viewerParam int) (joinSQL, whereSQL string) {
 				ON a.community_did = p.community_did AND a.post_uri = p.uri`
 
 	whereSQL = fmt.Sprintf(`(
-				a.status = 'accepted'
+				(a.status = 'accepted' AND a.accepted_cid = p.cid)
 				OR (a.status IS NULL AND (split_part(p.uri, '/', 4) <> '%s' OR p.author_did = $%d))
 				OR (a.status IN ('pending', 'pending_reacceptance', 'removed', 'rejected') AND p.author_did = $%d)
 			)`, posts.PostV2Collection, viewerParam, viewerParam)
@@ -104,6 +113,7 @@ func countAcceptedPostsForCommunity(ctx context.Context, db *sql.DB, communityDI
 		WHERE p.community_did = $1
 			AND p.deleted_at IS NULL
 			AND a.status = 'accepted'
+			AND a.accepted_cid = p.cid
 	`, communityDID).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("counting accepted posts for community %s: %w", communityDID, err)

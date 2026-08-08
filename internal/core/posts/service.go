@@ -1202,7 +1202,10 @@ func (s *postService) removedMarkers(ctx context.Context, uris []string, views m
 		return markers
 	}
 
+	// Collect the absent URIs once (deduped), then resolve their admissions in a
+	// single batched lookup rather than one round-trip per URI.
 	seen := make(map[string]struct{}, len(uris))
+	absent := make([]string, 0, len(uris))
 	for _, uri := range uris {
 		if views[uri] != nil {
 			continue // visible — not a candidate for a tombstone
@@ -1211,25 +1214,43 @@ func (s *postService) removedMarkers(ctx context.Context, uris []string, views m
 			continue
 		}
 		seen[uri] = struct{}{}
+		absent = append(absent, uri)
+	}
+	if len(absent) == 0 {
+		return markers
+	}
 
+	admissionsByURI, err := s.admissions.GetByPostURIs(ctx, absent)
+	if err != nil {
+		return markers // best-effort: on failure every absent URI stays a plain notFound
+	}
+
+	for _, uri := range absent {
 		// A removal is an admission-state change, not a soft delete, so the post
-		// row still stands and its own community — the key the admission is
-		// scoped by — comes straight off it. A URI with no row is genuinely
-		// not-indexed and stays a notFound.
+		// row still stands and its own community — the key the admission is scoped
+		// by — comes straight off it. A URI with no row is genuinely not-indexed
+		// and stays a notFound.
 		post, err := s.repo.GetByURI(ctx, uri)
 		if err != nil {
 			continue
 		}
-		admission, err := s.admissions.Get(ctx, post.CommunityDID, uri)
-		if err != nil || admission == nil || admission.Status != AdmissionStatusRemoved {
+		// A soft-deleted post is GONE, not a tombstone: the author withdrew it, so
+		// even a standing removal must render as notFound rather than advertising
+		// a moderation reason for a post its own author took down.
+		if post.DeletedAt != nil {
 			continue
 		}
 
-		code := ""
-		if admission.DecisionCode != nil {
-			code = *admission.DecisionCode
+		for _, admission := range admissionsByURI[uri] {
+			if admission.CommunityDID == post.CommunityDID && admission.Status == AdmissionStatusRemoved {
+				code := ""
+				if admission.DecisionCode != nil {
+					code = *admission.DecisionCode
+				}
+				markers[uri] = code
+				break
+			}
 		}
-		markers[uri] = code
 	}
 	return markers
 }

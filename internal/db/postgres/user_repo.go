@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
 	"context"
 	"database/sql"
@@ -240,22 +241,24 @@ func (r *postgresUserRepo) GetProfileStats(ctx context.Context, did string) (*us
 	// can reach is a side channel onto non-accepted content (PRD §6.2). This is
 	// the public count — the anonymous, collection-aware rule of visiblePostsJoin,
 	// with no author self-view branch: a post with a decision counts only once its
-	// own community accepted it; a row with no admission counts iff it is NOT an
-	// author-owned postv2 (legacy/bridged stays counted, a postv2 with a missing/
-	// failed pending seed does not — fail closed). The collection is the AT-URI's
-	// fourth '/'-segment (split_part), same as CollectionOfPostURI.
-	query := `
+	// own community accepted it AND the acceptance still pins the current content
+	// (§5.5 — a drifted-accepted post is un-attested and does not count); a row
+	// with no admission counts iff it is NOT an author-owned postv2 (legacy/bridged
+	// stays counted, a postv2 with a missing/failed pending seed does not — fail
+	// closed). The collection is the AT-URI's fourth '/'-segment (split_part), same
+	// as CollectionOfPostURI; the postv2 collection literal is the shared constant.
+	query := fmt.Sprintf(`
 		SELECT
 			(SELECT COUNT(*) FROM posts p
 				LEFT JOIN community_post_admissions a ON a.community_did = p.community_did AND a.post_uri = p.uri
 				WHERE p.author_did = $1 AND p.deleted_at IS NULL
-					AND (a.status = 'accepted'
-						OR (a.status IS NULL AND split_part(p.uri, '/', 4) <> 'social.coves.community.postv2'))) as post_count,
+					AND ((a.status = 'accepted' AND a.accepted_cid = p.cid)
+						OR (a.status IS NULL AND split_part(p.uri, '/', 4) <> '%s'))) as post_count,
 			(SELECT COUNT(*) FROM comments WHERE commenter_did = $1 AND deleted_at IS NULL) as comment_count,
 			(SELECT COUNT(*) FROM community_subscriptions WHERE user_did = $1) as community_count,
 			(SELECT COUNT(*) FROM community_memberships WHERE user_did = $1 AND is_banned = false) as membership_count,
 			(SELECT COALESCE(SUM(reputation_score), 0) FROM community_memberships WHERE user_did = $1) as reputation
-	`
+	`, posts.PostV2Collection)
 
 	stats := &users.ProfileStats{}
 	err := r.db.QueryRowContext(ctx, query, did).Scan(

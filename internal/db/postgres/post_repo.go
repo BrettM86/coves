@@ -234,6 +234,57 @@ func (r *postgresPostRepo) GetViewsByURIs(ctx context.Context, uris []string) (m
 	return result, nil
 }
 
+// VisibleHeaderView returns the hydrated view of a single post IFF it is visible
+// to viewerDID under the read-path predicate, and nil when it is hidden (or does
+// not exist).
+//
+// It is the viewer-aware companion to GetViewsByURIs, which GetViewsByURIs itself
+// cannot be because posts.Repository's signature is frozen at two arguments
+// (three in-suite fakes implement it). getComments needs both halves the
+// anonymous batch fetch cannot give it — a VIEWER (so an author reaches their own
+// pending post's thread header) and the HYDRATED view (so the served header
+// carries status/acceptanceUri, PRD §6.2). It is deliberately NOT on the
+// Repository interface: the comment service reaches it by an optional type
+// assertion, so a unit-test fake without it degrades gracefully rather than
+// forcing every fake to grow a method.
+//
+// It runs the SAME predicate as every other display query — visiblePostsJoin,
+// admission status + pinned-CID + collection fail-closed + author self-view — and
+// the same deleted_at filter and scanPostView hydration, so the thread header can
+// never diverge from post.get or the feeds on what is visible.
+func (r *postgresPostRepo) VisibleHeaderView(ctx context.Context, uri, viewerDID string) (*posts.PostView, error) {
+	visJoin, visWhere := visiblePostsJoin(2)
+	query := `
+		SELECT` + postViewSelectColumns + `
+		FROM posts p
+		LEFT JOIN users u ON p.author_did = u.did
+		INNER JOIN communities c ON p.community_did = c.did` + visJoin + `
+		WHERE p.uri = $1 AND p.deleted_at IS NULL AND ` + visWhere
+
+	rows, err := r.db.QueryContext(ctx, query, uri, viewerDID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query visible post header: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			slog.Warn("failed to close rows", "error", err)
+		}
+	}()
+
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("error iterating visible post header: %w", err)
+		}
+		return nil, nil
+	}
+
+	postView, err := scanPostView(rows)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan visible post header: %w", err)
+	}
+	return postView, nil
+}
+
 // GetByAuthor retrieves posts by author with filtering and pagination
 // Supports filter options: posts_with_replies (default), posts_no_replies, posts_with_media
 // Uses cursor-based pagination with created_at + uri for stable ordering
