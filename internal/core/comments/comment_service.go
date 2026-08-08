@@ -161,6 +161,17 @@ func (s *commentService) GetComments(ctx context.Context, req *GetCommentsReques
 		return nil, fmt.Errorf("failed to fetch post: %w", err)
 	}
 
+	// 2a. Gate the thread header on the read-path visibility predicate (task 7,
+	// PRD §6.2). GetByURI is admission-blind and serves soft-deleted rows (the
+	// 2026-07-29 defect), so without this the thread endpoint hands a non-author
+	// the full header — title, content, author — of a post the feeds correctly
+	// hide. The header must answer as post.get does: a soft-deleted post is gone,
+	// and a postv2 its community has not admitted is root-not-found to everyone
+	// but its own author.
+	if err := s.assertRootHeaderVisible(ctx, post, req.ViewerDID); err != nil {
+		return nil, err
+	}
+
 	// Build post view for response (hydrates author handle and community name)
 	postView := s.buildPostView(ctx, post, req.ViewerDID)
 
@@ -201,6 +212,53 @@ func (s *commentService) GetComments(ctx context.Context, req *GetCommentsReques
 		Post:     postView,
 		Cursor:   nextCursor,
 	}, nil
+}
+
+// assertRootHeaderVisible enforces the read-path visibility predicate on a
+// getComments thread header, returning ErrRootNotFound when the post must not be
+// shown to this viewer.
+//
+// It answers through the SAME anonymous predicate post.get uses — the post
+// repository's GetViewsByURIs, which is admission- and soft-delete-aware — so the
+// two endpoints can never diverge on what the public may read:
+//
+//   - a soft-deleted post is gone (GetByURI still returns it, so the deleted_at
+//     check is explicit here — this is the half that closes the 2026-07-29 leak);
+//   - a URI GetViewsByURIs returns is visible to the public (accepted, or a
+//     legacy/bridged row that predates admissions) → shown;
+//   - a URI it omits is hidden. For an author-owned postv2 that is the
+//     fail-closed answer, so a non-author gets ErrRootNotFound; the author still
+//     reaches their own non-accepted postv2, matching the feed's author branch.
+//
+// The collection guard is what keeps this correct when postRepo is a unit-test
+// fake whose GetViewsByURIs returns nothing: a non-postv2 URI it omits is a fake,
+// not a hidden row, so it stays visible. A real hidden non-postv2 cannot occur —
+// the predicate never hides a non-postv2 row — so nothing real is leaked.
+func (s *commentService) assertRootHeaderVisible(ctx context.Context, post *posts.Post, viewerDID *string) error {
+	if post.DeletedAt != nil {
+		return ErrRootNotFound
+	}
+
+	views, err := s.postRepo.GetViewsByURIs(ctx, []string{post.URI})
+	if err != nil {
+		return fmt.Errorf("failed to check post visibility: %w", err)
+	}
+	if _, visible := views[post.URI]; visible {
+		return nil
+	}
+
+	// Not served by the anonymous predicate. Fail closed for an author-owned
+	// postv2 the viewer does not own; every other collection stays visible.
+	if posts.CollectionOfPostURI(post.URI) == posts.PostV2Collection {
+		viewer := ""
+		if viewerDID != nil {
+			viewer = *viewerDID
+		}
+		if viewer != post.AuthorDID {
+			return ErrRootNotFound
+		}
+	}
+	return nil
 }
 
 // getCommentSubtree returns the subtree rooted at the comment identified by req.ParentRkey
