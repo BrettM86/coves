@@ -3,11 +3,16 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
+	"time"
 
 	"Coves/internal/core/posts"
+
+	"github.com/lib/pq"
 )
 
 // PostgreSQL storage for per-(community, post) admission decisions
@@ -139,7 +144,7 @@ func (r *postgresAdmissionRepo) UpsertPending(ctx context.Context, cmd posts.Ups
 		WHERE community_post_admissions.evaluated_cid IS DISTINCT FROM excluded.evaluated_cid
 		RETURNING ` + admissionColumns
 
-	return r.compareAndSwap(ctx, "UpsertPending", cmd.CommunityDID, cmd.PostURI, authorEventOutcome,
+	return r.compareAndSwap(ctx, "UpsertPending", cmd.CommunityDID, cmd.PostURI, nonCommunityEventOutcome,
 		query, cmd.CommunityDID, cmd.PostURI, cmd.EvaluatedCID)
 }
 
@@ -297,29 +302,285 @@ func (r *postgresAdmissionRepo) ApplyRemovalDelete(ctx context.Context, cmd post
 		query, cmd.CommunityDID, cmd.PostURI, cmd.Watermark.Rev, int16(cmd.Watermark.OpRank))
 }
 
-// ---------------------------------------------------------------------------
-// COMPILE STUBS — cycle 2's contract, deliberately unimplemented.
+// RepinAcceptedCID moves a standing acceptance onto new content without
+// re-deciding anything — the §5.5 bridgedStats exception.
 //
-// These four are declared by posts.AdmissionRepository, so the package does not
-// build without them. They return zero values so that the tests written against
-// them fail on their ASSERTIONS rather than on a missing symbol: a red that is a
-// build error proves nothing about the specification.
-// ---------------------------------------------------------------------------
-
+// Bridges refresh their records specifically to carry the origin platform's new
+// vote counts, so the CID changes while nothing a moderator would judge does.
+// Through the ordinary edit path each refresh would drop the post out of every
+// feed until a re-acceptance commit caught up, repeatedly, for as long as the
+// origin post keeps collecting votes. So this moves accepted_cid and
+// evaluated_cid together and leaves the status alone. Moving them TOGETHER is
+// the point: leaving evaluated_cid behind would make the very next author event
+// read as an edit and demand the re-acceptance this exists to avoid.
+//
+// The caller establishes that the diff touches only bridgedStats and that the
+// author passes the bridge-trust gate. What this enforces is narrower and
+// structural: a repin updates an acceptance that STANDS. Without that
+// precondition a repin arriving at a removed post — whose removal cleared the
+// acceptance — would write a fresh accepted_cid onto it, which is exactly the
+// live-acceptance-on-a-removed-post state the removal path takes care to
+// prevent.
+//
+// It is an UPDATE rather than an upsert for the same reason: a repin must never
+// be able to CREATE an admission. Manufacturing an accepted row from a bridge's
+// refresh would be an auto-admission the community never wrote.
 func (r *postgresAdmissionRepo) RepinAcceptedCID(ctx context.Context, cmd posts.RepinAcceptanceCommand) (posts.AdmissionResult, error) {
-	return posts.AdmissionResult{}, nil
+	query := `
+		UPDATE community_post_admissions SET
+			accepted_cid = $3,
+			evaluated_cid = $3,
+			last_community_rev = $4,
+			last_community_op_rank = $5,
+			updated_at = NOW()
+		WHERE community_did = $1
+		  AND post_uri = $2
+		  AND acceptance_uri IS NOT NULL
+		  AND (last_community_rev IS NULL
+		       OR (last_community_rev, last_community_op_rank) < ($4::text COLLATE "C", $5::smallint))
+		RETURNING ` + admissionColumns
+
+	return r.compareAndSwap(ctx, "RepinAcceptedCID", cmd.CommunityDID, cmd.PostURI, repinOutcome,
+		query, cmd.CommunityDID, cmd.PostURI, cmd.PinnedCID,
+		cmd.Watermark.Rev, int16(cmd.Watermark.OpRank))
 }
 
+// RecordRejection records the AppView's OWN decision not to admit a post.
+//
+// There is no community-repo record behind a rejection, which is why it must
+// not advance the community watermark: a local decision that outranked a
+// genuine community event would suppress the very acceptance that overrules it,
+// leaving the community no way to publish its way past us. It does not touch
+// evaluated_cid either — the rejection judges the content already recorded, it
+// does not change what was judged.
+//
+// Redrivable is the caller's classification of WHY, stored verbatim: a policy
+// rejection is terminal and must not be retried by the dead-letter pass, while
+// a transient evaluation failure has to stay retryable.
 func (r *postgresAdmissionRepo) RecordRejection(ctx context.Context, cmd posts.RecordRejectionCommand) (posts.AdmissionResult, error) {
-	return posts.AdmissionResult{}, nil
+	// Guarded against `removed` because a removal is the moderator's decision
+	// and a rejection is ours. Overwriting decision_code there would replace
+	// what a reader renders as #removedPost with a code the community never
+	// issued.
+	query := `
+		INSERT INTO community_post_admissions (
+			community_did, post_uri, status, decision_code, decision_at, redrivable, created_at, updated_at
+		) VALUES ($1, $2, 'rejected', $3, NOW(), $4, NOW(), NOW())
+		ON CONFLICT (community_did, post_uri) DO UPDATE SET
+			status = 'rejected',
+			decision_code = excluded.decision_code,
+			decision_at = excluded.decision_at,
+			redrivable = excluded.redrivable,
+			updated_at = NOW()
+		WHERE community_post_admissions.status <> 'removed'
+		RETURNING ` + admissionColumns
+
+	return r.compareAndSwap(ctx, "RecordRejection", cmd.CommunityDID, cmd.PostURI, nonCommunityEventOutcome,
+		query, cmd.CommunityDID, cmd.PostURI, cmd.DecisionCode, cmd.Redrivable)
 }
 
+// GetByPostURIs returns every community's decision about each of the given
+// posts, keyed by post URI.
+//
+// The map is per-URI rather than flat because one post genuinely has several
+// decisions — an author may submit the same post to several communities, and
+// the author's own view has to show each answer separately. A post no community
+// has an opinion about is ABSENT from the map rather than present with an empty
+// slice, so a caller ranging over it cannot mistake "never seen" for
+// "considered and passed over".
 func (r *postgresAdmissionRepo) GetByPostURIs(ctx context.Context, postURIs []string) (map[string][]*posts.Admission, error) {
-	return nil, nil
+	byPostURI := make(map[string][]*posts.Admission, len(postURIs))
+	if len(postURIs) == 0 {
+		return byPostURI, nil
+	}
+
+	// The URI set is bound through a single array parameter rather than an
+	// interpolated IN list, so the SQL is constant — one cached plan whatever
+	// the batch size, and no string building anywhere near a query. This
+	// mirrors GetViewsByURIs, which hydrates the posts these decisions are
+	// about.
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT `+admissionColumns+`
+		FROM community_post_admissions
+		WHERE post_uri = ANY($1)
+		ORDER BY post_uri, community_did
+	`, pq.Array(postURIs))
+	if err != nil {
+		return nil, fmt.Errorf("reading admissions for %d posts: %w", len(postURIs), err)
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			slog.Warn("failed to close admission rows", slog.String("error", closeErr.Error()))
+		}
+	}()
+
+	for rows.Next() {
+		admission, scanErr := scanAdmission(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("reading admissions for %d posts: %w", len(postURIs), scanErr)
+		}
+		byPostURI[admission.PostURI] = append(byPostURI[admission.PostURI], admission)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading admissions for %d posts: %w", len(postURIs), err)
+	}
+	return byPostURI, nil
 }
 
+// admissionQueuePageSize bounds one page of a moderation queue. A caller asking
+// for nothing gets the default rather than the whole queue, and a caller asking
+// for more than the maximum gets the maximum: an unbounded listing is a table
+// scan a moderator's browser cannot render anyway.
+const (
+	admissionQueuePageSize    = 50
+	admissionQueuePageMaximum = 200
+)
+
+// ListByStatusForCommunity pages one community's admissions in one status —
+// the moderation queue — oldest first, matching the
+// (community_did, status, created_at) index.
+//
+// Both columns filter. Scoping by only one would still return a plausible page
+// on the happy path and be wrong in production, where a community holds rows in
+// every status and a status is held by every community.
+//
+// Paging is keyset rather than OFFSET: a queue is being worked while it is
+// being read, and OFFSET shifts under inserts, which shows up as a moderator
+// re-reviewing rows they had cleared or never seeing rows at all. The key is
+// (created_at, post_uri) because created_at alone is not unique — two rows
+// written in one transaction share it, and a cursor that could not separate
+// them would either repeat or skip the pair.
 func (r *postgresAdmissionRepo) ListByStatusForCommunity(ctx context.Context, communityDID string, status posts.AdmissionStatus, limit int, cursor *string) ([]*posts.Admission, *string, error) {
-	return nil, nil, nil
+	if limit <= 0 {
+		limit = admissionQueuePageSize
+	}
+	if limit > admissionQueuePageMaximum {
+		limit = admissionQueuePageMaximum
+	}
+
+	keyset, err := parseAdmissionQueueCursor(cursor)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Two constant statements rather than one assembled from pieces. Both are
+	// fully parameterized either way, but a query whose text never varies has
+	// one cached plan and can be read as-is, and the first page keeps the index
+	// range the second page's keyset clause would otherwise have to fake with a
+	// nullable comparison.
+	query, args := admissionQueueFirstPage, []interface{}{communityDID, string(status), limit}
+	if keyset != nil {
+		query = admissionQueueNextPage
+		args = []interface{}{communityDID, string(status), keyset.createdAt, keyset.postURI, limit}
+	}
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("listing %s admissions for %s: %w", status, communityDID, err)
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			slog.Warn("failed to close admission rows", slog.String("error", closeErr.Error()))
+		}
+	}()
+
+	page := make([]*posts.Admission, 0, limit)
+	for rows.Next() {
+		admission, scanErr := scanAdmission(rows)
+		if scanErr != nil {
+			return nil, nil, fmt.Errorf("listing %s admissions for %s: %w", status, communityDID, scanErr)
+		}
+		page = append(page, admission)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("listing %s admissions for %s: %w", status, communityDID, err)
+	}
+
+	// A short page exhausted the queue, so there is nothing to point at. Only a
+	// FULL page might have more behind it.
+	if len(page) < limit {
+		return page, nil, nil
+	}
+	next := buildAdmissionQueueCursor(page[len(page)-1])
+	return page, &next, nil
+}
+
+// The moderation queue's two statements. Oldest first matches the
+// (community_did, status, created_at) index, and a queue that reordered under a
+// moderator would have them re-reviewing what they had cleared.
+//
+// The next page's key is (created_at, post_uri), strictly greater: the row the
+// cursor names was the last one delivered. post_uri is in the key because
+// created_at alone is not unique — rows written in one transaction share it,
+// and a cursor that could not separate them would either repeat the pair or
+// skip it.
+const (
+	admissionQueueFirstPage = `
+		SELECT ` + admissionColumns + `
+		FROM community_post_admissions
+		WHERE community_did = $1 AND status = $2
+		ORDER BY created_at ASC, post_uri ASC
+		LIMIT $3`
+
+	admissionQueueNextPage = `
+		SELECT ` + admissionColumns + `
+		FROM community_post_admissions
+		WHERE community_did = $1 AND status = $2
+		  AND (created_at, post_uri) > ($3::timestamptz, $4::text)
+		ORDER BY created_at ASC, post_uri ASC
+		LIMIT $5`
+)
+
+// admissionQueueKeyset is a decoded cursor: the last row of the previous page.
+type admissionQueueKeyset struct {
+	createdAt string
+	postURI   string
+}
+
+// parseAdmissionQueueCursor decodes a queue cursor. Format:
+// base64(created_at|post_uri), following the convention post_repo's
+// author-posts cursor established. A nil cursor decodes to nil, meaning the
+// first page.
+//
+// A malformed cursor is an ERROR rather than a silent reset to the first page:
+// restarting the queue under a moderator would make them re-review everything
+// they had already cleared, and would read as a UI bug rather than as the
+// corrupted input it is.
+func parseAdmissionQueueCursor(cursor *string) (*admissionQueueKeyset, error) {
+	if cursor == nil || *cursor == "" {
+		return nil, nil
+	}
+
+	// Bound the input before decoding it: base64 expands into memory, and a
+	// cursor is attacker-supplied on any endpoint that echoes one back.
+	const maxCursorSize = 512
+	if len(*cursor) > maxCursorSize {
+		return nil, fmt.Errorf("%w: cursor exceeds maximum length", posts.ErrInvalidCursor)
+	}
+
+	decoded, err := base64.URLEncoding.DecodeString(*cursor)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid base64 encoding", posts.ErrInvalidCursor)
+	}
+
+	createdAt, postURI, found := strings.Cut(string(decoded), "|")
+	if !found {
+		return nil, fmt.Errorf("%w: malformed cursor format", posts.ErrInvalidCursor)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, createdAt); err != nil {
+		return nil, fmt.Errorf("%w: invalid timestamp in cursor", posts.ErrInvalidCursor)
+	}
+	if !strings.HasPrefix(postURI, "at://") {
+		return nil, fmt.Errorf("%w: invalid URI format in cursor", posts.ErrInvalidCursor)
+	}
+	return &admissionQueueKeyset{createdAt: createdAt, postURI: postURI}, nil
+}
+
+// buildAdmissionQueueCursor names the last row of a page, so the next page
+// starts after it.
+func buildAdmissionQueueCursor(last *posts.Admission) string {
+	return base64.URLEncoding.EncodeToString(
+		[]byte(last.CreatedAt.Format(time.RFC3339Nano) + "|" + last.PostURI))
 }
 
 // Get returns the admission row for one subject, or posts.ErrNotFound when this
@@ -355,20 +616,35 @@ func communityEventOutcome(wrote bool, _ *posts.Admission) posts.AdmissionOutcom
 	return posts.AdmissionSkippedStale
 }
 
-// authorEventOutcome classifies an author-repo event, where a write and an
-// applied transition are not the same thing.
+// nonCommunityEventOutcome classifies the two mutations that carry no
+// watermark — the author-repo content observation and the AppView's own
+// rejection — where a write and an applied transition are not the same thing.
 //
-// A removed row still records the content it now holds, so the upsert writes
-// while the transition it was asking for was refused by removal terminality —
-// that is skipped_terminal, audit columns notwithstanding. Anything else that
-// wrote applied; anything that did not write was a re-delivery of content the
-// row already carried.
-func authorEventOutcome(wrote bool, current *posts.Admission) posts.AdmissionOutcome {
+// Both are refused by the same thing: removal is terminal against everything
+// except a community event that outranks it. UpsertPending still records the
+// content a removed row now holds, so it WRITES while the transition it asked
+// for was refused; that is skipped_terminal, audit columns notwithstanding.
+// Anything else that wrote applied, and anything that did not write met a row
+// already holding what it carried.
+func nonCommunityEventOutcome(wrote bool, current *posts.Admission) posts.AdmissionOutcome {
 	if current.Status == posts.AdmissionStatusRemoved {
 		return posts.AdmissionSkippedTerminal
 	}
 	if wrote {
 		return posts.AdmissionApplied
+	}
+	return posts.AdmissionSkippedStale
+}
+
+// repinOutcome classifies a bridge repin, whose guard has two halves and so two
+// ways to refuse. No standing acceptance to move is the row's state refusing
+// the transition regardless of ordering; anything else is the watermark.
+func repinOutcome(wrote bool, current *posts.Admission) posts.AdmissionOutcome {
+	if wrote {
+		return posts.AdmissionApplied
+	}
+	if current.AcceptanceURI == nil {
+		return posts.AdmissionSkippedTerminal
 	}
 	return posts.AdmissionSkippedStale
 }
@@ -414,11 +690,15 @@ func (r *postgresAdmissionRepo) compareAndSwap(
 			 WHERE community_did = $1 AND post_uri = $2`,
 			communityDID, postURI))
 		if errors.Is(err, sql.ErrNoRows) {
-			// Every guard here refuses only an existing row: an absent subject
-			// takes the INSERT branch, which cannot be refused. Reaching this
-			// means the row vanished between the two statements, which nothing
-			// in the system does.
-			return posts.AdmissionResult{}, fmt.Errorf("%s for %s in %s: the compare-and-swap neither wrote nor found a row", operation, postURI, communityDID)
+			// Only the UPDATE-shaped mutations reach this. The upserts insert
+			// when the subject is absent, so their guard can refuse nothing but
+			// an existing row; a repin, which must never create an admission,
+			// simply has no row to move. That is a state the row refuses by not
+			// existing, and it is not an error — the ordering skew that
+			// delivers a community event early delivers a bridge refresh early
+			// too, and routing it to the dead-letter queue would bury it among
+			// genuine failures.
+			return posts.AdmissionResult{Outcome: posts.AdmissionSkippedTerminal}, nil
 		}
 	}
 	if err != nil {

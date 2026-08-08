@@ -148,6 +148,12 @@ type Admission struct {
 // still needs the current state to decide whether to notify, re-emit, or do
 // nothing, and making it fetch that separately would reintroduce the read-then-
 // write race the single-statement CAS exists to avoid.
+//
+// Admission is nil in exactly one case: a mutation that may not CREATE a row
+// met a subject that has none. Only RepinAcceptedCID can be in that position —
+// every other mutation inserts when the subject is absent — and there is
+// genuinely no row to describe, so the outcome is skipped_terminal and the
+// caller has nothing to reconcile.
 type AdmissionResult struct {
 	Outcome   AdmissionOutcome
 	Admission *Admission
