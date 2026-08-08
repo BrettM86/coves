@@ -356,6 +356,19 @@ func TestService_AuthorPDSIsHydratedOntoPostViews(t *testing.T) {
 	`, uri, "bafyblobowner", rkey, f.author.DID, f.community.DID, "a post with media")
 	require.NoError(t, err)
 
+	// This subject is a postv2, so the task-7 visibility predicate hides it from
+	// the anonymous GetViewsByURIs read below unless a community has accepted it —
+	// a postv2 with no admission row fails CLOSED (the consumer always seeds a
+	// pending row, so a missing one means a failed seed). This test is about PDS
+	// HYDRATION on a VISIBLE row, not visibility, so it needs the row to be
+	// visible: seed the accepted admission the acceptance engine would have
+	// written.
+	_, err = f.db.ExecContext(ctx, `
+		INSERT INTO community_post_admissions (community_did, post_uri, status, accepted_cid, evaluated_cid, last_community_rev, last_community_op_rank, created_at, updated_at)
+		VALUES ($1, $2, 'accepted', $3, $3, '3lqqqqqqqqqq2', 1, NOW(), NOW())
+	`, f.community.DID, uri, "bafyblobowner")
+	require.NoError(t, err)
+
 	views, err := postgres.NewPostRepository(f.db).GetViewsByURIs(ctx, []string{uri})
 	require.NoError(t, err)
 	require.Contains(t, views, uri)

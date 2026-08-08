@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/core/comments"
 	"Coves/internal/core/communityFeeds"
 	"Coves/internal/core/discover"
 	"Coves/internal/core/posts"
@@ -390,4 +391,223 @@ func TestProfileStatsVisibility_PostCountExcludesNonAccepted(t *testing.T) {
 	assert.Equalf(t, 1, stats.PostCount,
 		"a profile's post_count must count accepted posts only; counting the pending and removed rows too (%d seeded, "+
 			"1 accepted) advertises the existence of content no reader can reach", 3)
+}
+
+// TestVisibility_CollectionAwareFailClosed is the corrected core of task 7, and
+// the single most important assertion in this suite. Cycle 1's predicate went
+// FAIL-OPEN: a post with no admission row was visible to everyone. That is
+// correct for a LEGACY community.post — it was signed into the community's own
+// repo under the old model, is accepted by construction, and must stay visible
+// until task 8 drains it — but it is a security HOLE for a postv2, because the
+// task-5 consumer ALWAYS seeds a pending admission the moment it indexes a
+// postv2. A postv2 with NO admission row therefore does not mean "pre-admission
+// content to grandfather in"; it means the seed has not happened (or failed),
+// and the right answer is to FAIL CLOSED.
+//
+// So the no-admission rule is COLLECTION-AWARE, discriminated by the collection
+// segment of the post URI (CollectionOfPostURI): legacy → visible, postv2 →
+// hidden from non-authors, visible to its author. Both posts below carry no
+// admission row at all; only their collection differs.
+func TestVisibility_CollectionAwareFailClosed(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+	ctx := context.Background()
+
+	community := visibilityCommunity(t, db, "fc2")
+	author := "did:plc:visfc2author"
+	createTestUser(t, db, "visfc2author.test", author)
+	stranger := "did:plc:visfc2stranger"
+	createTestUser(t, db, "visfc2stranger.test", stranger)
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// A legacy community-repo post, no admission row: accepted-by-construction,
+	// must stay visible to the public until task 8's drain.
+	legacy := seedFilterablePost(t, db, community, author, "fc2leg", base.Add(2*time.Hour))
+	// A postv2, no admission row: the consumer would have seeded pending, so a
+	// missing row is a failed seed — fail closed for non-authors.
+	postv2 := seedVisibilityPost(t, db, community, author, "fc2pv2", "postv2 with no admission", base.Add(1*time.Hour))
+
+	feedRepo := NewCommunityFeedRepository(db, "test-secret")
+	postRepo := NewPostRepository(db)
+	discoverRepo := NewDiscoverRepository(db, "test-secret")
+
+	communityFeed := func(t *testing.T, viewer string) []string {
+		t.Helper()
+		feed, _, err := feedRepo.GetCommunityFeed(ctx, communityFeeds.GetCommunityFeedRequest{
+			Community: community, ViewerDID: viewer, Sort: visibilitySort, Limit: 50,
+		})
+		require.NoError(t, err)
+		return feedURIs(feed)
+	}
+
+	t.Run("the legacy post with no admission row stays visible to the public", func(t *testing.T) {
+		assert.Containsf(t, communityFeed(t, publicViewer), legacy,
+			"a legacy community.post with no admission row must stay visible — it was accepted by construction under the "+
+				"old model and task 7 must not retro-hide content that predates admissions (visible until task 8's drain)")
+
+		views, err := postRepo.GetViewsByURIs(ctx, []string{legacy})
+		require.NoError(t, err)
+		assert.Contains(t, views, legacy, "post.get must still serve a legacy post with no admission row to the public")
+	})
+
+	t.Run("the postv2 with no admission row is HIDDEN from non-authors everywhere", func(t *testing.T) {
+		// The corrected security core. A missing admission row on a postv2 is a
+		// failed pending seed, not grandfathered content — so it must fail closed
+		// on every display surface for anyone who is not its author.
+		assert.NotContainsf(t, communityFeed(t, publicViewer), postv2,
+			"a postv2 with no admission row leaked to the public in the community feed. The consumer always seeds a "+
+				"pending row on index, so no-row means the seed failed — the read path must FAIL CLOSED for postv2, "+
+				"not fail open as it does for legacy posts (this is the hole this task closes)")
+		assert.NotContainsf(t, communityFeed(t, stranger), postv2,
+			"a postv2 with no admission row leaked to a non-author (an authenticated stranger) in the community feed")
+
+		disc, _, err := discoverRepo.GetDiscover(ctx, discover.GetDiscoverRequest{
+			ViewerDID: publicViewer, Sort: visibilitySort, Limit: 50,
+		})
+		require.NoError(t, err)
+		assert.NotContains(t, discoverFeedURIs(disc), postv2,
+			"a postv2 with no admission row leaked into discover")
+
+		views, err := postRepo.GetViewsByURIs(ctx, []string{postv2})
+		require.NoError(t, err)
+		assert.NotContainsf(t, views, postv2,
+			"post.get served a postv2 with no admission row to the public — permalink is the alternate path the feed "+
+				"gate is worthless without")
+	})
+
+	t.Run("the postv2 with no admission row is visible to its own author", func(t *testing.T) {
+		// A failed/absent seed must not cost the AUTHOR their own post. On the
+		// surfaces that thread a viewer DID (the feed does), the author sees their
+		// own postv2 even with no admission row, exactly as they see their own
+		// pending one.
+		assert.Containsf(t, communityFeed(t, author), postv2,
+			"the author of a postv2 with no admission row cannot see their own post in the community feed; a missing "+
+				"seed must fail closed for OTHERS, never for the author")
+
+		// NOTE — post.get's author path is a known follow-up, not covered here.
+		// GetViewsByURIs takes no viewer DID (posts.Repository's 2-arg signature),
+		// so post.get currently hides a non-accepted postv2 from its author too.
+		// Threading a viewer would break the three in-suite Repository fakes, so it
+		// is deferred: the author reaches their own pending/no-admission posts
+		// through actor.getPosts (TestActorPostsVisibility_AuthorVsNonAuthor) and
+		// getStatus, which is sufficient. Flagged in the cycle-2 report.
+	})
+}
+
+// TestGetCommentsVisibility_HeaderIsAdmissionAndDeleteAware closes the read-path
+// hole getComments has carried since 2026-07-29. GetComments hydrates its thread
+// header through postRepo.GetByURI, which has NO admission gate and NO
+// `deleted_at IS NULL` filter — so the comment thread endpoint serves the full
+// header (title, content, author) of a post the feeds correctly hide: a pending
+// postv2, and a soft-deleted post. The header must go through the same
+// admission+deleted-aware fetch the feeds use.
+//
+// Driven through the comment SERVICE rather than a bare repo call, because the
+// defect is in which fetch GetComments chooses — a repo-only test could not see
+// it pick the leaky one.
+func TestGetCommentsVisibility_HeaderIsAdmissionAndDeleteAware(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+	ctx := context.Background()
+
+	community := visibilityCommunity(t, db, "gc")
+	author := "did:plc:visgcauthor"
+	createTestUser(t, db, "visgcauthor.test", author)
+	stranger := "did:plc:visgcstranger"
+	createTestUser(t, db, "visgcstranger.test", stranger)
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	accepted := seedVisibilityPost(t, db, community, author, "gcacc", "accepted header", base.Add(3*time.Hour))
+	pending := seedVisibilityPost(t, db, community, author, "gcpen", "pending header", base.Add(2*time.Hour))
+	deleted := seedVisibilityPost(t, db, community, author, "gcdel", "deleted header", base.Add(1*time.Hour))
+	seedVisibilityAdmission(t, db, community, accepted, posts.AdmissionStatusAccepted, "bafypostv2gcacc", "")
+	seedVisibilityAdmission(t, db, community, pending, posts.AdmissionStatusPending, "", "")
+	seedVisibilityAdmission(t, db, community, deleted, posts.AdmissionStatusAccepted, "bafypostv2gcdel", "")
+
+	// Soft-delete the third post the way the consumer does.
+	_, err := db.ExecContext(ctx, `UPDATE posts SET deleted_at = NOW() WHERE uri = $1`, deleted)
+	require.NoError(t, err)
+
+	service := comments.NewCommentServiceWithPDSFactory(
+		NewCommentRepository(db),
+		NewUserRepository(db),
+		NewPostRepository(db),
+		NewCommunityRepository(db),
+		nil, nil,
+	)
+
+	header := func(t *testing.T, postURI, viewerDID string) (*comments.GetCommentsResponse, error) {
+		t.Helper()
+		var viewer *string
+		if viewerDID != "" {
+			viewer = &viewerDID
+		}
+		return service.GetComments(ctx, &comments.GetCommentsRequest{PostURI: postURI, ViewerDID: viewer})
+	}
+
+	t.Run("an accepted post serves its header", func(t *testing.T) {
+		resp, err := header(t, accepted, stranger)
+		require.NoError(t, err, "getComments must serve the header of an accepted post")
+		require.NotNil(t, resp.Post)
+		postView, ok := resp.Post.(*posts.PostView)
+		require.Truef(t, ok, "getComments post header is %T, not *posts.PostView", resp.Post)
+		assert.Equal(t, accepted, postView.URI)
+	})
+
+	t.Run("a pending post's header is hidden from a non-author", func(t *testing.T) {
+		_, err := header(t, pending, stranger)
+		require.Errorf(t, err, "getComments served a non-author the header of a PENDING post — the alternate-endpoint "+
+			"leak PRD §6.2 names: a post hidden from the feed is fully readable through its comment thread")
+		assert.ErrorIs(t, err, comments.ErrRootNotFound,
+			"a pending post must be root-not-found to a non-author's getComments, the same answer post.get gives")
+	})
+
+	t.Run("a soft-deleted post no longer leaks (closes the 2026-07-29 defect)", func(t *testing.T) {
+		_, err := header(t, deleted, stranger)
+		require.Errorf(t, err, "getComments served the full header of a SOFT-DELETED post. GetByURI has no deleted_at "+
+			"filter, so the withdrawn post's title/content/author are still returned through the thread endpoint — the "+
+			"defect filed 2026-07-29")
+		assert.ErrorIs(t, err, comments.ErrRootNotFound)
+	})
+}
+
+// TestCommunityPostCountVisibility_AcceptedOnly pins that a community's
+// post_count reflects accepted posts only (PRD §6.2: counts must not include
+// non-accepted rows).
+//
+// UNLIKE the user post_count, which is a live COUNT this task can gate directly,
+// community.post_count is a STORED column with a write-time incrementer
+// (community_repo_memberships.go) left over from the old community-repo write
+// path. Under author-owned posts nothing increments it on acceptance, so it is
+// already stale — and the honest fix is consumer-side (increment on the accept
+// transition, decrement on remove/unaccept), NOT a read predicate.
+//
+// This pins the accepted-only SEMANTICS against countAcceptedPostsForCommunity —
+// the source of truth GREEN would drive the counter from, whether it recomputes
+// live or reconciles the stored column from the admission consumer. See the
+// cycle-2 report for the sequencing recommendation (this is a consumer-side
+// follow-up, not part of the read-path predicate).
+func TestCommunityPostCountVisibility_AcceptedOnly(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+	ctx := context.Background()
+
+	community := visibilityCommunity(t, db, "cc")
+	author := "did:plc:visccauthor"
+	createTestUser(t, db, "visccauthor.test", author)
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	accepted := seedVisibilityPost(t, db, community, author, "ccacc", "accepted", base.Add(3*time.Hour))
+	pending := seedVisibilityPost(t, db, community, author, "ccpen", "pending", base.Add(2*time.Hour))
+	removed := seedVisibilityPost(t, db, community, author, "ccrem", "removed", base.Add(1*time.Hour))
+	seedVisibilityAdmission(t, db, community, accepted, posts.AdmissionStatusAccepted, "bafypostv2ccacc", "")
+	seedVisibilityAdmission(t, db, community, pending, posts.AdmissionStatusPending, "", "")
+	seedVisibilityAdmission(t, db, community, removed, posts.AdmissionStatusRemoved, "", "rule-violation")
+
+	count, err := countAcceptedPostsForCommunity(ctx, db, community)
+	require.NoError(t, err)
+	assert.Equalf(t, 1, count,
+		"a community's accepted-post count must be 1 (3 seeded: accepted, pending, removed); a count that includes "+
+			"non-accepted rows advertises content no reader can reach")
 }

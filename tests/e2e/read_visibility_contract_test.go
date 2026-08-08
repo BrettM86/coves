@@ -155,6 +155,17 @@ func TestReadVisibilityContract(t *testing.T) {
 		assert.False(t, got.NotFound, "an accepted post must be served by post.get")
 		assert.False(t, got.Removed)
 
+		// Authorship comes from the repo the commit arrived in, not a self-asserted
+		// field — the postv2 record has no author field at all (§3.1). This proof
+		// moved here from TestAuthorPostIngestion, which can no longer make it on a
+		// pending post now that the predicate hides one from the anonymous public.
+		full, err := p.Post(context.Background(), acceptedURI)
+		require.NoError(t, err)
+		assert.Equalf(t, author.DID, full.Author.DID,
+			"the accepted post's author must be the repo DID that signed the commit; a different DID here means an author field was invented")
+		assert.Nilf(t, full.Record["author"],
+			"a postv2 record must carry no author field — its absence is what makes authorship unforgeable (§3.1)")
+
 		thread, err := p.Thread(context.Background(), acceptedURI, nil)
 		require.NoError(t, err, "getComments must serve the header of an accepted post")
 		assert.Equal(t, acceptedURI, thread.Post.URI)

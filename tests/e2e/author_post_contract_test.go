@@ -242,22 +242,20 @@ func TestAuthorPostIngestion(t *testing.T) {
 	assert.Empty(t, view.AcceptanceURI, "a pending post has no acceptance record to point at")
 	assert.Empty(t, view.DecisionCode, "a pending post has been refused by nobody")
 
-	// The post itself is served, attributed to the repo it arrived in. post.get
-	// is status-agnostic today — task 7 owes the centralized visibility
-	// predicate that makes a pending post invisible to non-authors (§6.2) — so
-	// what is asserted here is what IS true: the record was indexed, and its
-	// author is the DID that signed the commit rather than a field somebody
-	// could have written.
+	// The post is INVISIBLE to the anonymous public through post.get. Task 7's
+	// centralized visibility predicate (§6.2) hides any non-accepted postv2 from a
+	// non-author, and absence from the view set becomes a notFoundPost on the
+	// wire. This is the compensating control for the write-path flip: a post any
+	// author can index naming any community must not render as that community's
+	// content until the community admits it. (The record WAS indexed — getStatus
+	// above reports it pending — and its author's own privileged view of it is a
+	// T1 concern, since this tier can only read as the anonymous public.)
 	served, err := p.Post(context.Background(), uri)
 	require.NoError(t, err)
-	require.Falsef(t, served.NotFound, "the indexed post must be served by post.get: %+v", served)
-	assert.Equalf(t, author.DID, served.Author.DID,
-		"authorship must come from the repo the commit arrived in; the postv2 record carries no author field at all, so a different DID here means one was invented")
-	assert.Equal(t, community.DID, served.Community.DID)
-	assert.Equal(t, record.CID, served.CID, "the indexed CID must be the commit's")
-	assert.Equal(t, title, served.Record["title"])
-	assert.Nilf(t, served.Record["author"],
-		"the record must not carry an author field: it is the field whose removal makes authorship unforgeable (§3.1)")
+	assert.Truef(t, served.NotFound,
+		"a PENDING post must be a notFoundPost to the anonymous public through post.get, or every feed gate is worthless against a direct permalink: %+v", served)
+	assert.NotEqualf(t, record.CID, served.CID,
+		"a notFoundPost must leak nothing about the unadmitted post it stands in for — not even the committed CID")
 
 	// ---- retarget: the whole event is invalid ------------------------------
 	// §3.1 is explicit — a consumer must DISCARD an update that changes
@@ -295,13 +293,33 @@ func TestAuthorPostIngestion(t *testing.T) {
 	assert.Equal(t, "pending", original.Status,
 		"the original community's decision must be untouched by an invalid update")
 
-	unchanged, err := p.Post(context.Background(), uri)
-	require.NoError(t, err)
-	assert.Equalf(t, title, unchanged.Record["title"],
-		"the CONTENT of a discarded event must be discarded with it: applying the new title while refusing the new community would leave the community holding a CID it never judged")
-	assert.NotEqual(t, retargeted, unchanged.Record["title"])
+	// The CONTENT half of the discard — that the original post's row still holds
+	// the pre-retarget title and CID rather than the retargeted ones — is no
+	// longer observable here: task 7 hides a pending postv2 from the anonymous
+	// public, so post.get answers notFoundPost and there is no record to read the
+	// title out of. It is asserted at T1 against the consumer's stored row
+	// (internal/atproto/jetstream/postv2_consumer_test.go). What this tier proves
+	// is the STATE truth via getStatus: the retarget opened no admission
+	// elsewhere and left the original community's pending decision untouched.
 
 	// ---- delete -------------------------------------------------------------
+	// A delete is only observable as a TRANSITION, and a pending post is already
+	// invisible to the public — so to prove the delete does anything, the post is
+	// first ACCEPTED (making it publicly served), then deleted. The acceptance's
+	// pinned CID is the original record's; the retarget above was discarded, so
+	// the row still holds it.
+	acceptRkey := subjectRkey(uri)
+	community.PutRecord(t, acceptanceCollection, acceptRkey, acceptanceRecord(uri, record.CID))
+	awaitStatus(t, p, uri, community.DID, "accepted", "the post to be accepted so its deletion is an observable transition")
+
+	p.Await(t, "the accepted post to be served before it is deleted", func() (bool, error) {
+		v, err := p.Post(context.Background(), uri)
+		if err != nil {
+			return false, err
+		}
+		return !v.NotFound, nil
+	})
+
 	author.DeleteExistingRecord(t, postV2Collection, rkey)
 
 	gone := func() (bool, error) {
