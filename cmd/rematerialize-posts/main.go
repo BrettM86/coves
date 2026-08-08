@@ -258,9 +258,12 @@ func (s *realLegacySource) communityClient(ctx context.Context, did string) (pds
 	return pds.NewFromAccessToken(fresh.PDSURL, fresh.DID, fresh.PDSAccessToken)
 }
 
-// legacyPostFromEntry decodes one listRecords entry into a LegacyPost, carrying
-// the decoded body forward so the tool re-materializes the record's ACTUAL
-// content rather than a re-fetch that might have changed under it.
+// legacyPostFromEntry decodes one listRecords entry into a LegacyPost.
+//
+// The author DID is read out of the decoded body, but the LOSSLESS conversion
+// runs off RawRecord — entry.Value verbatim — so every published field
+// (langs/tags/crosspostOf/crosspostChain/bridgedStats and the rest) is carried
+// through to the postv2 rather than dropped by the lossy PostRecord shape (P5).
 func legacyPostFromEntry(communityDID string, entry pds.RecordEntry) (posts.LegacyPost, error) {
 	raw, err := json.Marshal(entry.Value)
 	if err != nil {
@@ -279,6 +282,8 @@ func legacyPostFromEntry(communityDID string, entry pds.RecordEntry) (posts.Lega
 		CommunityDID: communityDID,
 		AuthorDID:    record.Author,
 		Record:       record,
+		// The lossless source the postv2 is built from (P5): the raw PDS record.
+		RawRecord: entry.Value,
 	}, nil
 }
 
