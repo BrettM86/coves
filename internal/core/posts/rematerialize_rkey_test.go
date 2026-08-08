@@ -81,3 +81,38 @@ func TestRematerializeRkey_IsNotSubmissionRkey(t *testing.T) {
 	assert.NotEqualf(t, submission, RematerializeRkey(oldURI),
 		"the re-materialization key must be independent of SubmissionRkey — it is derived from the OLD record's URI, not the submission fingerprint the migration lacks")
 }
+
+// THE GOLDEN VALUES. Determinism WITHIN one process (the test above) is not the
+// property production needs: a per-process salt — a package-level random seed, a
+// map iteration order that leaked into the digest, a hostname — passes every
+// other test in this file and still mints a SECOND postv2 for every already-
+// migrated post the first time the tool is restarted.
+//
+// These literals are the only thing that pins the derivation ACROSS processes,
+// releases and machines. They were produced by the shipped implementation and
+// must never be "fixed" to match a changed one.
+func TestRematerializeRkey_GoldenValues(t *testing.T) {
+	golden := []struct {
+		name    string
+		oldURI  string
+		wantKey string
+	}{
+		{"plc community, tid rkey", "at://did:plc:community2222222222222222/social.coves.community.post/3kqijkl2m4c2r", "beq7r3yeigi53"},
+		{"same community, adjacent rkey", "at://did:plc:community2222222222222222/social.coves.community.post/3kqijkl2m4c2s", "2o3lkuliyahmi"},
+		{"different community, same rkey", "at://did:plc:community3333333333333333/social.coves.community.post/3kqijkl2m4c2r", "4kwla2cw7a4pv"},
+		{"did:web community", "at://did:web:coves.social/social.coves.community.post/3kqijkl2m4c2r", "a3jez3fwk5sz2"},
+		{"empty string", "", "6a6cegjsb2orv"},
+		{"unicode in the rkey position", "at://did:plc:community2222222222222222/social.coves.community.post/naïve", "7g76vsnjgfeey"},
+	}
+
+	for _, tc := range golden {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equalf(t, tc.wantKey, RematerializeRkey(tc.oldURI),
+				"THE RE-MATERIALIZATION RKEY DERIVATION CHANGED.\n"+
+					"This is not a test to update. Every post already migrated by the shipped derivation is at the OLD key, so a run under the new one "+
+					"writes a SECOND postv2 for every one of them: createAuthorRecord's converge-by-read fires against a different, empty key, the "+
+					"duplicate lands, and every strongRef built from the first record dangles. Revert the derivation instead.\n"+
+					"old URI: %q", tc.oldURI)
+		})
+	}
+}

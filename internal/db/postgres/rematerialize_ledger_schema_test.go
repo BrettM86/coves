@@ -30,10 +30,16 @@ import (
 // delete, and a delete of an already-gone record is success — which is only
 // coherent if the checkpoint BEFORE the delete is its own persisted state.
 //
-// The two fallback states are the credential census (§11 step 3): a record whose
+// The fallback state is the credential census (§11 step 3): a record whose
 // author credentials cannot be restored is left as legacy, never re-authored
 // under a forged signature, and the run refuses to report "complete" while any
 // such row survives.
+//
+// There is exactly ONE fallback state, and the schema is where that is enforced.
+// An earlier revision also admitted 'fallback_no_creds' and NO code path ever
+// wrote it. A state the vocabulary permits but nothing produces is worse than
+// missing: it is what an operator writes recovery SQL against at 2am, silently
+// matching nothing, and it is a second name one WHERE clause eventually forgets.
 
 const rematerializeLedgerTable = "post_rematerialization_ledger"
 
@@ -69,6 +75,18 @@ func TestRematerializeLedgerTable_Columns(t *testing.T) {
 		"new_uri":  {"text", true},
 		"new_cid":  {"text", true},
 		"new_rkey": {"text", true},
+
+		// The community repo the legacy record lives in. STORED rather than
+		// parsed back out of old_uri, because the destructive half of the tool is
+		// scoped by it: a staged run resumes, counts and DELETES only rows
+		// carrying this value.
+		"community_did": {"text", true},
+
+		// The legacy record's CID as of the read the postv2 was built from. It is
+		// a safety interlock, not audit trim: the delete is refused unless a fresh
+		// read still reports it, and it is the swapRecord the delete is sent
+		// under, so the PDS refuses a stale delete independently.
+		"source_cid": {"text", true},
 
 		// The human-readable note on a fallback row.
 		"reason": {"text", true},
@@ -125,11 +143,17 @@ func TestRematerializeLedgerTable_StateVocabularyIsClosed(t *testing.T) {
 		"migrated",
 		"done",
 		"fallback_left_legacy",
-		"fallback_no_creds",
 	} {
 		assert.Containsf(t, all, state,
 			"the state CHECK constraint must admit %q; a missing state is one the tool can never persist", state)
 	}
+
+	// The inverse, asserted rather than merely omitted: a state nothing produces
+	// must not be in the vocabulary at all. Leaving it admitted is how recovery
+	// SQL comes to be written against a state that cannot exist.
+	assert.NotContainsf(t, all, "fallback_no_creds",
+		"the CHECK constraint still admits 'fallback_no_creds', which no code path writes. One cause — the author-repo factory reporting no restorable "+
+			"credentials — has exactly one state, fallback_left_legacy; a second admitted spelling is a trap for whoever writes the recovery UPDATE")
 }
 
 func TestRematerializeLedgerTable_ValidStatesInsertAndBogusIsRejected(t *testing.T) {
@@ -142,7 +166,7 @@ func TestRematerializeLedgerTable_ValidStatesInsertAndBogusIsRejected(t *testing
 	// migrated and done are BOTH valid and DISTINCT — the checkpoint-before-delete
 	// property depends on it. A bogus state must be refused at the schema, where
 	// every writer meets the constraint, not left to repository discipline.
-	valid := []string{"discovered", "postv2_written", "verified", "migrated", "done", "fallback_left_legacy", "fallback_no_creds"}
+	valid := []string{"discovered", "postv2_written", "verified", "migrated", "done", "fallback_left_legacy"}
 	for i, state := range valid {
 		oldURI := "at://did:plc:community2222222222222222/social.coves.community.post/valid" + string(rune('a'+i))
 		_, err := db.ExecContext(ctx, `
@@ -152,12 +176,14 @@ func TestRematerializeLedgerTable_ValidStatesInsertAndBogusIsRejected(t *testing
 		require.NoErrorf(t, err, "state %q must be a permitted ledger state", state)
 	}
 
-	_, err := db.ExecContext(ctx, `
-		INSERT INTO post_rematerialization_ledger (old_uri, state, created_at, updated_at)
-		VALUES ($1, $2, NOW(), NOW())
-	`, "at://did:plc:community2222222222222222/social.coves.community.post/bogus", "half_migrated")
-	require.Errorf(t, err,
-		"an unknown state 'half_migrated' was accepted; the vocabulary must be closed by a CHECK, or a typo lands as a row nothing resumes")
+	for _, bogus := range []string{"half_migrated", "fallback_no_creds"} {
+		_, err := db.ExecContext(ctx, `
+			INSERT INTO post_rematerialization_ledger (old_uri, state, created_at, updated_at)
+			VALUES ($1, $2, NOW(), NOW())
+		`, "at://did:plc:community2222222222222222/social.coves.community.post/bogus-"+bogus, bogus)
+		require.Errorf(t, err,
+			"the state %q was accepted; the vocabulary must be closed by a CHECK, or a typo — or a state no code path writes — lands as a row nothing resumes", bogus)
+	}
 }
 
 func TestRematerializeLedgerMigration_RollsBack(t *testing.T) {

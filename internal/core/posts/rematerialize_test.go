@@ -89,8 +89,15 @@ func firstMutationIndex(events []string) int {
 // under the verify, an author with no credentials — are precisely the ones a real
 // PDS will not produce on demand. The write PRIMITIVES the tool reuses
 // (createAuthorRecord's converge-by-read, WriteAcceptance's skip) have their own
-// real-PDS coverage; the outer real-stack proof is tests/e2e/rematerialize_
-// contract_test.go.
+// real-PDS coverage; the outer real-infrastructure proof is
+// rematerialize_outer_test.go in this package, which drives the whole tool
+// against a REAL PDS and a real ledger (its header explains why it is T1 and not
+// T2 — the tool's ledger is a table in the AppView's own database, which the e2e
+// package's constitution forbids a contract from touching).
+//
+// The guards on the irreversible step — that the delete does not happen unless a
+// replacement is provably standing RIGHT NOW, on every resumed path — live in
+// rematerialize_guard_test.go.
 //
 // # THE TOOL DOES NOT RE-DECIDE (mirrors the scriptedDecider trick)
 //
@@ -120,20 +127,50 @@ func deterministicCID(rkey string) string { return "bafyreipostv2" + rkey }
 type fakeAuthorRepo struct {
 	did string
 
+	// host is the PDS this repo is bound to, exposed through HostURL so the blob
+	// paths address the same host a real run would.
+	host string
+
 	mu       sync.Mutex
 	records  map[string]*pds.RecordResponse // rkey -> record
 	putErr   error                          // one-shot injected put failure
 	getCIDAt map[string]string              // rkey -> CID GetRecord should report (verify-window override)
-	blobs    map[string]bool                // blob CIDs uploaded into this repo (P4)
-	log      *callLog                       // shared ordering log (P8), nil when unused
+	// getErrAt makes GetRecord FAIL for a rkey — the transport-failure branch of
+	// the verification read, which no test used to reach.
+	getErrAt map[string]error
+	// deleteOnGet models the record vanishing between the write and the verify.
+	deleteOnGet map[string]bool
+	blobs       map[string]bool // blob CIDs uploaded into this repo (P4)
+	log         *callLog        // shared ordering log (P8), nil when unused
+}
+
+// HostURL is what the blob paths resolve against.
+func (r *fakeAuthorRepo) HostURL() string {
+	if r.host == "" {
+		return "http://author-pds.invalid"
+	}
+	return r.host
+}
+
+// standingCID reports the CID of the record standing at a rkey, so a re-entry
+// test can prove the postv2 converged rather than being re-minted.
+func (r *fakeAuthorRepo) standingCID(rkey string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if rec, ok := r.records[rkey]; ok {
+		return rec.CID
+	}
+	return ""
 }
 
 func newFakeAuthorRepo(did string) *fakeAuthorRepo {
 	return &fakeAuthorRepo{
-		did:      did,
-		records:  map[string]*pds.RecordResponse{},
-		getCIDAt: map[string]string{},
-		blobs:    map[string]bool{},
+		did:         did,
+		records:     map[string]*pds.RecordResponse{},
+		getCIDAt:    map[string]string{},
+		getErrAt:    map[string]error{},
+		deleteOnGet: map[string]bool{},
+		blobs:       map[string]bool{},
 	}
 }
 
@@ -157,6 +194,13 @@ func (r *fakeAuthorRepo) writtenBody(rkey string) map[string]any {
 func (r *fakeAuthorRepo) GetRecord(_ context.Context, collection, rkey string) (*pds.RecordResponse, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if err, ok := r.getErrAt[rkey]; ok {
+		return nil, err
+	}
+	if r.deleteOnGet[rkey] {
+		delete(r.records, rkey)
+		delete(r.deleteOnGet, rkey)
+	}
 	rec, ok := r.records[rkey]
 	if !ok {
 		return nil, pds.ErrNotFound
@@ -219,7 +263,7 @@ func (r *fakeAuthorRepo) UploadBlob(_ context.Context, data []byte, mimeType str
 	// embeds against what actually landed here.
 	cid := blobCIDFor(data)
 	r.blobs[cid] = true
-	return &blobs.BlobRef{}, nil
+	return &blobs.BlobRef{Type: "blob", Ref: map[string]string{"$link": cid}, MimeType: mimeType, Size: len(data)}, nil
 }
 
 func (r *fakeAuthorRepo) hasBlob(cid string) bool {
@@ -254,11 +298,19 @@ func blobCIDFor(data []byte) string { return "bafkreiblob" + fmt.Sprintf("%x", l
 type fakeAuthorFactory struct {
 	repos   map[string]*fakeAuthorRepo
 	noCreds map[string]bool
-	log     *callLog // shared ordering log (P8), nil when unused
+	// retryable marks a DID whose credentials fail transiently — a network blip,
+	// a PDS 5xx. It is a different error class from noCreds and the tool must
+	// treat it differently: no verdict, fail the run.
+	retryable map[string]bool
+	log       *callLog // shared ordering log (P8), nil when unused
 }
 
 func newFakeAuthorFactory() *fakeAuthorFactory {
-	return &fakeAuthorFactory{repos: map[string]*fakeAuthorRepo{}, noCreds: map[string]bool{}}
+	return &fakeAuthorFactory{
+		repos:     map[string]*fakeAuthorRepo{},
+		noCreds:   map[string]bool{},
+		retryable: map[string]bool{},
+	}
 }
 
 func (f *fakeAuthorFactory) repo(did string) *fakeAuthorRepo {
@@ -277,6 +329,10 @@ func (f *fakeAuthorFactory) factory() posts.AuthorRepoFactory {
 		// first pin (P8) can assert the tool resolves EVERY author before it
 		// mutates ANY repo.
 		f.log.note("resolve:" + authorDID)
+		if f.retryable[authorDID] {
+			return nil, fmt.Errorf("resuming the stored session of %s: %w: dial tcp: connection refused",
+				authorDID, posts.ErrAuthorCredentialsUnavailable)
+		}
 		if f.noCreds[authorDID] {
 			return nil, fmt.Errorf("resuming the stored session of %s: %w", authorDID, posts.ErrNoAuthorCredentials)
 		}
@@ -297,8 +353,27 @@ type spyAcceptanceWriter struct {
 	mu             sync.Mutex
 	acceptanceCmds []posts.CommunityWriteCommand
 	writeErr       error // one-shot injected failure
-	otherCalled    []string
-	log            *callLog // shared ordering log (P8), nil when unused
+	// resultOverride replaces what WriteAcceptance reports, so a test can model a
+	// writer that answers success without the record standing.
+	resultOverride *posts.CommunityWriteResult
+	// suppressStanding makes the writer REPORT success without the record ever
+	// standing in the community repo — a lost commit, a proxy that swallowed the
+	// write, a bug in the writer.
+	suppressStanding bool
+	// afterWrite runs once the write has been recorded, so a test can mutate what
+	// stands before the verification reads it.
+	afterWrite func(*spyAcceptanceWriter, posts.CommunityWriteCommand)
+	// readErr makes the community repo's GetRecord fail.
+	readErr error
+	// communityHost is the PDS the community's repo is bound to.
+	communityHost string
+	// standing is the acceptance record the COMMUNITY repo actually serves, keyed
+	// by rkey. It is what the verification read-back sees, and it is deliberately
+	// separate from the command log: a writer that reports success without the
+	// record standing is exactly the case the read-back exists to catch.
+	standing    map[string]*pds.RecordResponse
+	otherCalled []string
+	log         *callLog // shared ordering log (P8), nil when unused
 }
 
 func (s *spyAcceptanceWriter) WriteAcceptance(_ context.Context, cmd posts.CommunityWriteCommand) (posts.CommunityWriteResult, error) {
@@ -322,14 +397,156 @@ func (s *spyAcceptanceWriter) WriteAcceptance(_ context.Context, cmd posts.Commu
 	s.acceptanceCmds = append(s.acceptanceCmds, cmd)
 
 	rkey := posts.SubjectRkey(cmd.PostURI)
+	if s.standing == nil {
+		s.standing = map[string]*pds.RecordResponse{}
+	}
+	if _, already := s.standing[rkey]; !already && !s.suppressStanding {
+		s.standing[rkey] = &pds.RecordResponse{
+			URI: "at://" + cmd.CommunityDID + "/" + posts.AcceptanceCollection + "/" + rkey,
+			CID: "bafyreiacceptance" + rkey,
+			Value: map[string]any{
+				"$type":     posts.AcceptanceCollection,
+				"subject":   map[string]any{"uri": cmd.PostURI, "cid": cmd.PostCID},
+				"createdAt": "2026-01-02T03:04:05Z",
+			},
+		}
+	}
+
+	if s.afterWrite != nil {
+		hook := s.afterWrite
+		s.mu.Unlock()
+		hook(s, cmd)
+		s.mu.Lock()
+	}
+
+	if s.resultOverride != nil {
+		return *s.resultOverride, nil
+	}
 	return posts.CommunityWriteResult{
-		URI:     "at://" + cmd.CommunityDID + "/social.coves.community.acceptance/" + rkey,
+		URI:     "at://" + cmd.CommunityDID + "/" + posts.AcceptanceCollection + "/" + rkey,
 		RKey:    rkey,
 		CID:     "bafyreiacceptance" + rkey,
 		Rev:     "3krematacceptxx",
 		Skipped: repeat,
 	}, nil
 }
+
+// seedStandingAcceptance stages an acceptance as if a previous run had written
+// it, WITHOUT recording a WriteAcceptance call — the state a crash-resumed run
+// finds.
+func (s *spyAcceptanceWriter) seedStandingAcceptance(communityDID, postURI, postCID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.standing == nil {
+		s.standing = map[string]*pds.RecordResponse{}
+	}
+	rkey := posts.SubjectRkey(postURI)
+	s.standing[rkey] = &pds.RecordResponse{
+		URI: "at://" + communityDID + "/" + posts.AcceptanceCollection + "/" + rkey,
+		CID: "bafyreiacceptance" + rkey,
+		Value: map[string]any{
+			"$type":     posts.AcceptanceCollection,
+			"subject":   map[string]any{"uri": postURI, "cid": postCID},
+			"createdAt": "2026-01-02T03:04:05Z",
+		},
+	}
+}
+
+// withdrawStanding removes the acceptance record from the community repo without
+// touching the command log — the "the writer said yes, the repo says no" case.
+func (s *spyAcceptanceWriter) withdrawStanding(postURI string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.standing, posts.SubjectRkey(postURI))
+}
+
+// repinStanding rewrites the standing acceptance to name a different subject, so
+// a test can prove the read-back compares the SUBJECT rather than merely finding
+// a record at the deterministic key.
+func (s *spyAcceptanceWriter) repinStanding(postURI, subjectURI, subjectCID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rkey := posts.SubjectRkey(postURI)
+	if rec, ok := s.standing[rkey]; ok {
+		rec.Value = map[string]any{
+			"$type":   posts.AcceptanceCollection,
+			"subject": map[string]any{"uri": subjectURI, "cid": subjectCID},
+		}
+	}
+}
+
+// acceptanceCount reports how many distinct acceptance records stand.
+func (s *spyAcceptanceWriter) acceptanceCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.standing)
+}
+
+// standingCID is the CID of the acceptance record that stands for a subject.
+func (s *spyAcceptanceWriter) standingCID(postURI string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rec, ok := s.standing[posts.SubjectRkey(postURI)]; ok {
+		return rec.CID
+	}
+	return ""
+}
+
+// repos is the CommunityRepoFactory the Rematerializer reads the acceptance back
+// through. It serves ONLY what this writer actually made stand, which is the
+// whole point: an acceptance the writer merely REPORTED is not one the community
+// repo holds, and only a read can tell the two apart.
+func (s *spyAcceptanceWriter) repos() posts.CommunityRepoFactory {
+	return func(_ context.Context, communityDID string) (posts.CommunityRepo, error) {
+		return &fakeCommunityRepo{did: communityDID, writer: s, getErr: s.readErr, host: s.communityHost}, nil
+	}
+}
+
+// fakeCommunityRepo is the read side of the community's repo: it serves the
+// acceptance records the spy writer made stand, and nothing else.
+type fakeCommunityRepo struct {
+	did    string
+	writer *spyAcceptanceWriter
+	// getErr, when set, makes the acceptance read-back fail — the transport
+	// failure whose branch had no coverage at all.
+	getErr error
+	host   string
+}
+
+// HostURL is where the community's blobs are served from.
+func (r *fakeCommunityRepo) HostURL() string {
+	if r.host == "" {
+		return "http://community-pds.invalid"
+	}
+	return r.host
+}
+
+func (r *fakeCommunityRepo) GetRecord(_ context.Context, collection, rkey string) (*pds.RecordResponse, error) {
+	if r.getErr != nil {
+		return nil, r.getErr
+	}
+	if collection != posts.AcceptanceCollection {
+		return nil, pds.ErrNotFound
+	}
+	r.writer.mu.Lock()
+	defer r.writer.mu.Unlock()
+	rec, ok := r.writer.standing[rkey]
+	if !ok {
+		return nil, pds.ErrNotFound
+	}
+	return rec, nil
+}
+
+func (r *fakeCommunityRepo) PutRecordWithCommit(context.Context, string, string, any, string) (*pds.RecordCommit, error) {
+	return nil, fmt.Errorf("the re-materialization tool must not write to the community repo through this seam")
+}
+func (r *fakeCommunityRepo) ApplyWrites(context.Context, []pds.Write, string) (*pds.ApplyWritesResult, error) {
+	return nil, fmt.Errorf("the re-materialization tool must never batch community writes")
+}
+func (r *fakeCommunityRepo) GetLatestCommit(context.Context) (*pds.LatestCommit, error) {
+	return &pds.LatestCommit{}, nil
+}
+func (r *fakeCommunityRepo) DID() string { return r.did }
 
 // The other four methods exist only to satisfy CommunityRecordWriter. The tool
 // must never call them: a re-materialized post is accepted, not removed,
@@ -371,28 +588,96 @@ type fakeLegacySource struct {
 	posts     []posts.LegacyPost
 	deleted   map[string]int
 	deleteErr map[string]error
-	log       *callLog // shared ordering log (P8), nil when unused
+	gone      map[string]bool
+	readErr   map[string]error
+	// pending records appear on a LATER listing, modelling a write that lands
+	// after the discovery pass.
+	pending   []posts.LegacyPost
+	listCalls int
+	// swaps records the CID each delete was guarded by, so a test can prove the
+	// guard is actually sent rather than merely accepted as a parameter.
+	swaps []string
+	log   *callLog // shared ordering log (P8), nil when unused
 }
 
 func newFakeLegacySource(ps ...posts.LegacyPost) *fakeLegacySource {
-	return &fakeLegacySource{posts: ps, deleted: map[string]int{}, deleteErr: map[string]error{}}
+	return &fakeLegacySource{
+		posts:     ps,
+		deleted:   map[string]int{},
+		deleteErr: map[string]error{},
+		gone:      map[string]bool{},
+		readErr:   map[string]error{},
+	}
 }
 
+// ListLegacyPosts returns the records that still STAND — a deleted one is gone
+// from the listing, the way a real listRecords behaves. The final re-scan the
+// census gates completion on is only meaningful against a source that models
+// this.
 func (s *fakeLegacySource) ListLegacyPosts(_ context.Context) ([]posts.LegacyPost, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]posts.LegacyPost(nil), s.posts...), nil
+	// Pending records land on the SECOND listing and later: the first listing is
+	// the run's discovery pass, and the whole point is a record that appears after
+	// it.
+	s.listCalls++
+	if s.listCalls > 1 && len(s.pending) > 0 {
+		s.posts = append(s.posts, s.pending...)
+		s.pending = nil
+	}
+	var out []posts.LegacyPost
+	for _, p := range s.posts {
+		if s.gone[p.URI] {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out, nil
 }
 
-func (s *fakeLegacySource) DeleteLegacyPost(_ context.Context, legacy posts.LegacyPost) error {
+func (s *fakeLegacySource) ReadLegacyPost(_ context.Context, uri string) (posts.LegacyPost, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err, ok := s.readErr[uri]; ok {
+		return posts.LegacyPost{}, false, err
+	}
+	if s.gone[uri] {
+		return posts.LegacyPost{}, false, nil
+	}
+	for _, p := range s.posts {
+		if p.URI == uri {
+			return p, true, nil
+		}
+	}
+	return posts.LegacyPost{}, false, nil
+}
+
+// setCurrentCID models an edit landing on the legacy record after the tool read
+// it: the record still stands, but under a different CID.
+func (s *fakeLegacySource) setCurrentCID(uri, cid string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.posts {
+		if s.posts[i].URI == uri {
+			s.posts[i].CID = cid
+		}
+	}
+}
+
+func (s *fakeLegacySource) DeleteLegacyPost(_ context.Context, legacy posts.LegacyPost, swapCID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.log.note("delete:" + legacy.URI)
 	s.deleted[legacy.URI]++
+	s.swaps = append(s.swaps, swapCID)
+	if swapCID == "" {
+		return fmt.Errorf("refusing to delete %s without a swap guard", legacy.URI)
+	}
 	if err, ok := s.deleteErr[legacy.URI]; ok {
 		delete(s.deleteErr, legacy.URI)
 		return err
 	}
+	s.gone[legacy.URI] = true
 	return nil
 }
 
@@ -400,6 +685,29 @@ func (s *fakeLegacySource) deleteCount(uri string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.deleted[uri]
+}
+
+// markGone models the record having already been deleted — the state a crash
+// between the delete and MarkDone leaves behind.
+func (s *fakeLegacySource) markGone(uri string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.gone[uri] = true
+}
+
+// appendOnNextList stages a record that appears only on a LATER listing — a
+// writer the maintenance window did not stop, landing a post mid-run. It is what
+// makes the final re-scan mean anything.
+func (s *fakeLegacySource) appendOnNextList(p posts.LegacyPost) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pending = append(s.pending, p)
+}
+
+func (s *fakeLegacySource) swapGuards() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.swaps...)
 }
 
 // legacyPost stages one deprecated community.post, keyed by a unique rkey so
@@ -452,7 +760,7 @@ func TestRematerialize_HappyPath_WalksToDoneVerifyBeforeDelete(t *testing.T) {
 	legacy := legacyPost(t, rematCommunityDID, rematAuthorDID)
 	source := newFakeLegacySource(legacy)
 
-	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer}
+	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos()}
 
 	state, err := tool.RematerializeOne(context.Background(), legacy)
 	require.NoError(t, err)
@@ -497,7 +805,7 @@ func TestRematerialize_ReRun_IsAPureNoOp(t *testing.T) {
 	writer := &spyAcceptanceWriter{}
 	legacy := legacyPost(t, rematCommunityDID, rematAuthorDID)
 	source := newFakeLegacySource(legacy)
-	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer}
+	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos()}
 
 	first, err := tool.RematerializeOne(context.Background(), legacy)
 	require.NoError(t, err)
@@ -513,10 +821,17 @@ func TestRematerialize_ReRun_IsAPureNoOp(t *testing.T) {
 	assert.Equalf(t, 1, authors.repo(rematAuthorDID).recordCount(),
 		"a re-run must not mint a second postv2 — the deterministic rkey converges on the first record")
 
+	// EXACT counts. "at least one acceptance write" is satisfied by a SECOND one,
+	// which mints a fresh record CID and invalidates every reference to the record
+	// it replaced — on every retry, forever.
 	calls := writer.calls()
-	require.GreaterOrEqual(t, len(calls), 1)
-	assert.Truef(t, calls[len(calls)-1].PostCID == deterministicCID(posts.RematerializeRkey(legacy.URI)),
+	require.Lenf(t, calls, 1,
+		"a re-run over a done row wrote %d acceptance(s); it must write exactly the one the first run did and no more", len(calls))
+	assert.Equalf(t, deterministicCID(posts.RematerializeRkey(legacy.URI)), calls[0].PostCID,
 		"a re-run's acceptance must still pin the same CID; a fresh CID would dangle every reference to the acceptance")
+	assert.Equalf(t, 1, source.deleteCount(legacy.URI),
+		"a re-run over a done row attempted a second delete; the row is terminal and the record is already gone")
+	assert.Equalf(t, 1, writer.acceptanceCount(), "exactly one acceptance record must stand after a re-run")
 	// The old record was already gone; a re-run's delete (if attempted) is a no-op
 	// success, never an error, and never resurrects the record.
 	row, _, err := ledger.Get(context.Background(), legacy.URI)
@@ -535,7 +850,7 @@ func TestRematerialize_ResumeAfterDeleteFailure_RetriesOnlyTheDelete(t *testing.
 	legacy := legacyPost(t, rematCommunityDID, rematAuthorDID)
 	source := newFakeLegacySource(legacy)
 	source.deleteErr[legacy.URI] = fmt.Errorf("transient: the community PDS returned 502 on delete")
-	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer}
+	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos()}
 
 	// First pass: everything succeeds up to the delete, which fails once. The row
 	// must stop at migrated — the checkpoint BEFORE the delete — never done.
@@ -577,7 +892,7 @@ func TestRematerialize_CIDMismatch_DoesNotCheckpointOrDelete(t *testing.T) {
 	writer := &spyAcceptanceWriter{}
 	legacy := legacyPost(t, rematCommunityDID, rematAuthorDID)
 	source := newFakeLegacySource(legacy)
-	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer}
+	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos()}
 
 	// The verify re-read of the postv2 comes back with a DIFFERENT CID than the
 	// one the acceptance pinned — a concurrent edit landing in the write→verify
@@ -596,9 +911,15 @@ func TestRematerialize_CIDMismatch_DoesNotCheckpointOrDelete(t *testing.T) {
 	row, found, err := ledger.Get(context.Background(), legacy.URI)
 	require.NoError(t, err)
 	require.True(t, found)
-	assert.NotEqualf(t, posts.RematerializeDone, row.State, "a mismatched record must never reach done")
-	assert.NotEqualf(t, posts.RematerializeMigrated, row.State,
-		"a mismatched record must never reach the migrated checkpoint — migrated asserts the delete is safe, and it is not")
+	// THE EXACT STATE, not merely "not those two". Asserting NotEqual leaves the
+	// checkpoint-before-verify mutation uncatchable: move MarkVerified above the
+	// read-back and the row lands on `verified` — which is neither done nor
+	// migrated, so a NotEqual pair stays green while the ledger now claims a
+	// verification that never happened.
+	assert.Equalf(t, posts.RematerializePostV2Written, row.State,
+		"a record whose postv2 CID no longer matches must stop at postv2_written. It reached %s instead: the postv2 exists and NOTHING about it has been "+
+			"verified, so any state past postv2_written is a claim the ledger cannot support — and `verified`/`migrated` are what a later pass reads as "+
+			"permission to delete", row.State)
 }
 
 func TestRematerialize_NoCredentials_LeavesLegacyNeverForges(t *testing.T) {
@@ -618,7 +939,7 @@ func TestRematerialize_NoCredentials_LeavesLegacyNeverForges(t *testing.T) {
 	authors.noCreds[humanDID] = true
 	legacy := legacyPost(t, rematCommunityDID, humanDID)
 	source := newFakeLegacySource(legacy)
-	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer}
+	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos()}
 
 	state, err := tool.RematerializeOne(context.Background(), legacy)
 	require.NoError(t, err, "a no-creds record is an expected terminal outcome, not a run-failing error")
@@ -654,7 +975,7 @@ func TestRematerialize_Run_CensusGatesCompletionWhileFallbackSurvives(t *testing
 	stranded := legacyPost(t, rematCommunityDID, humanDID)
 	source := newFakeLegacySource(migratable, stranded)
 	writer := &spyAcceptanceWriter{}
-	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer}
+	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos()}
 
 	report, err := tool.Run(context.Background())
 	require.NoError(t, err)
@@ -690,7 +1011,7 @@ func TestRematerialize_UsesDirectAcceptanceWriter_NeverReDecides(t *testing.T) {
 	// community it currently sits in. This mirrors service_writeforward_test.go's
 	// scriptedDecider trick, made structural: the acceptance is written for the
 	// post's content unconditionally.
-	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer}
+	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos()}
 
 	state, err := tool.RematerializeOne(context.Background(), legacy)
 	require.NoError(t, err)
@@ -742,7 +1063,7 @@ func TestRematerialize_PreservesEveryPublishedField(t *testing.T) {
 		RawRecord:    raw,
 	}
 	source := newFakeLegacySource(legacy)
-	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer}
+	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos()}
 
 	_, err := tool.RematerializeOne(context.Background(), legacy)
 	require.NoError(t, err)
@@ -776,7 +1097,7 @@ func TestRematerialize_RefusesWhenADifferentRecordStandsAtTheRkey(t *testing.T) 
 	writer := &spyAcceptanceWriter{}
 	legacy := legacyPost(t, rematCommunityDID, rematAuthorDID)
 	source := newFakeLegacySource(legacy)
-	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer}
+	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos()}
 
 	// A DIFFERENT record already stands at the target rkey — its CID is the one a
 	// fresh write would get (so a CID-only verify passes), but its body is NOT this
@@ -801,8 +1122,9 @@ func TestRematerialize_RefusesWhenADifferentRecordStandsAtTheRkey(t *testing.T) 
 	row, found, err := ledger.Get(context.Background(), legacy.URI)
 	require.NoError(t, err)
 	require.True(t, found)
-	assert.NotEqualf(t, posts.RematerializeDone, row.State, "a body-mismatched record must never reach done")
-	assert.NotEqualf(t, posts.RematerializeMigrated, row.State, "a body-mismatched record must never reach the migrated checkpoint")
+	assert.Equalf(t, posts.RematerializeDiscovered, row.State,
+		"a record whose deterministic rkey is occupied by a FOREIGN record must stay at discovered — nothing has been written for it. It reached %s "+
+			"instead, and every state past discovered is read by a later pass as work already done", row.State)
 }
 
 // P7 — crash-resume must be driven by the LEDGER, not the source listing, and
@@ -824,15 +1146,23 @@ func TestRematerialize_Run_ReconcilesStrandedMigratedRowFromLedger(t *testing.T)
 	newRkey := posts.RematerializeRkey(strandedURI)
 	newURI := "at://" + rematAuthorDID + "/social.coves.community.postv2/" + newRkey
 	newCID := deterministicCID(newRkey)
-	_, err := ledger.Discover(ctx, strandedURI, rematAuthorDID)
+	_, err := ledger.Discover(ctx, strandedURI, rematCommunityDID, rematAuthorDID)
 	require.NoError(t, err)
-	require.NoError(t, ledger.RecordPostV2Written(ctx, strandedURI, newURI, newCID, newRkey))
+	require.NoError(t, ledger.RecordPostV2Written(ctx, strandedURI, "bafyreilegacysource", newURI, newCID, newRkey))
 	require.NoError(t, ledger.MarkVerified(ctx, strandedURI))
 	require.NoError(t, ledger.MarkMigrated(ctx, strandedURI))
 
+	// The REPO STATE a crashed run leaves behind: the postv2 stands in the
+	// author's repo and the acceptance stands in the community's. The resumed run
+	// re-reads BOTH before it will finish the row — a ledger row at `migrated` is a
+	// memory of a check that passed, not a licence to delete — so a reconcile test
+	// that stages only the ledger proves nothing about the repos.
+	authors.repo(rematAuthorDID).seedStanding(posts.PostV2Collection, newRkey)
+	writer.seedStandingAcceptance(rematCommunityDID, newURI, newCID)
+
 	// The source does NOT list the stranded record — its community.post is gone.
 	source := newFakeLegacySource()
-	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer}
+	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos()}
 
 	report, err := tool.Run(ctx)
 	require.NoError(t, err)
@@ -883,8 +1213,9 @@ func TestRematerialize_Run_ResolvesAllCredentialsBeforeAnyMutation(t *testing.T)
 
 	first := legacyPost(t, rematCommunityDID, withCreds)
 	second := legacyPost(t, rematCommunityDID, noCreds)
-	source := &fakeLegacySource{posts: []posts.LegacyPost{first, second}, deleted: map[string]int{}, deleteErr: map[string]error{}, log: log}
-	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer}
+	source := newFakeLegacySource(first, second)
+	source.log = log
+	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos()}
 
 	_, err := tool.Run(context.Background())
 	require.NoError(t, err)

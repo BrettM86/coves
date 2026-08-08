@@ -2,11 +2,13 @@ package posts
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 
+	covesoauth "Coves/internal/atproto/oauth"
 	"Coves/internal/atproto/pds"
 )
 
@@ -37,6 +39,20 @@ import (
 // running, correctly configured, and completely unable to post. Collapsing them
 // would have a revoked aggregator grant diagnosed as a PDS outage, or a
 // signed-out user told to file a ticket.
+//
+// # AND WHY "MISSING" IS NARROWER THAN "FAILED" (classifyResumeFailure)
+//
+// ErrNoAuthorCredentials is a TERMINAL verdict to one caller: the
+// re-materialization census writes it as fallback_left_legacy, a state nothing
+// in the tool can move a row back out of. Reporting every ResumeSession failure
+// under it therefore turns a network blip, a PDS 5xx, or a DPoP nonce failure
+// into a permanent sentence — and since one aggregator authors most of the
+// corpus, into a permanent sentence over most of the corpus, in seconds.
+//
+// So only "the store holds no live grant for this DID" keeps the terminal
+// sentinel. Every other failure is ErrAuthorCredentialsUnavailable, which is
+// RETRYABLE and which the tool answers by failing the run loudly rather than by
+// writing a verdict it cannot take back.
 func NewAuthorRepoFactory(oauthClient *oauth.ClientApp, storedSessionID string) AuthorRepoFactory {
 	return func(ctx context.Context, authorDID string, session *oauth.ClientSessionData) (AuthorRepo, error) {
 		if oauthClient == nil {
@@ -57,8 +73,7 @@ func NewAuthorRepoFactory(oauthClient *oauth.ClientApp, storedSessionID string) 
 			// to resume" is answered in the vocabulary the boundary needs.
 			resumed, resumeErr := oauthClient.ResumeSession(ctx, did, storedSessionID)
 			if resumeErr != nil {
-				return nil, fmt.Errorf("resuming the stored session of %s: %w: %w",
-					authorDID, ErrNoAuthorCredentials, resumeErr)
+				return nil, classifyResumeFailure(authorDID, resumeErr)
 			}
 			if resumed == nil || resumed.Data == nil {
 				return nil, fmt.Errorf("resuming the stored session of %s: the store returned nothing: %w",
@@ -90,4 +105,42 @@ func NewAuthorRepoFactory(oauthClient *oauth.ClientApp, storedSessionID string) 
 		}
 		return repo, nil
 	}
+}
+
+// ErrAuthorCredentialsUnavailable reports that the author's credentials could
+// not be resolved RIGHT NOW — and says nothing about whether a grant exists.
+//
+// It is the counterpart to ErrNoAuthorCredentials, and the distinction is the
+// whole point: ErrNoAuthorCredentials means "there is nothing to resume, and a
+// batch tool cannot make there be", which is a terminal outcome; this one means
+// "ask again", which must never be recorded as a verdict. A caller that cannot
+// act on the difference should treat this one as fatal to its run, because
+// continuing past it silently narrows the work it believes is left.
+var ErrAuthorCredentialsUnavailable = errors.New("the author's credentials could not be resolved right now")
+
+// classifyResumeFailure decides whether a failed session resume is a verdict or
+// a retry.
+//
+// THE ONLY TERMINAL CASE IS AN ABSENT GRANT. The session store answers a DID it
+// holds no live row for with ErrSessionNotFound, and that is the condition a
+// batch tool genuinely cannot resolve on its own: nobody is at the keyboard to
+// re-authorize. (A stored session past its expiry reads as the same absence,
+// which is correct — an expired grant also needs a human — and it is exactly why
+// the ledger has an operator-driven way back out of the fallback state.)
+//
+// Everything else — a refused dial, a 5xx from the PDS, a DPoP nonce dance that
+// did not converge, a database error reading the store — is transport. Those are
+// reported as retryable so the run stops and says so, instead of writing a
+// terminal fallback for every post by an author whose session happened to be
+// mid-blip.
+func classifyResumeFailure(authorDID string, resumeErr error) error {
+	if resumeErr == nil {
+		return nil
+	}
+	if errors.Is(resumeErr, covesoauth.ErrSessionNotFound) {
+		return fmt.Errorf("resuming the stored session of %s: %w: %w",
+			authorDID, ErrNoAuthorCredentials, resumeErr)
+	}
+	return fmt.Errorf("resuming the stored session of %s: %w: %w",
+		authorDID, ErrAuthorCredentialsUnavailable, resumeErr)
 }

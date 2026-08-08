@@ -4,6 +4,7 @@ package posts_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -64,9 +65,42 @@ func (s *realLegacySource) ListLegacyPosts(_ context.Context) ([]posts.LegacyPos
 	return s.staged, nil
 }
 
-func (s *realLegacySource) DeleteLegacyPost(ctx context.Context, legacy posts.LegacyPost) error {
+// ReadLegacyPost re-reads the record from the REAL community repo — the read the
+// pre-delete CID check is made against.
+func (s *realLegacySource) ReadLegacyPost(ctx context.Context, uri string) (posts.LegacyPost, bool, error) {
+	rkey := uri[strings.LastIndex(uri, "/")+1:]
+	record, err := s.community.GetRecord(ctx, postCollection, rkey)
+	if err != nil {
+		if testkit.IsNotFound(err) {
+			return posts.LegacyPost{}, false, nil
+		}
+		return posts.LegacyPost{}, false, err
+	}
+	for _, staged := range s.staged {
+		if staged.URI == uri {
+			// The staged shape, re-stamped with what the repo says NOW: the CID is
+			// the whole reason for re-reading.
+			staged.CID = record.CID
+			staged.RawRecord = record.Value
+			return staged, true, nil
+		}
+	}
+	return posts.LegacyPost{}, false, nil
+}
+
+// DeleteLegacyPost deletes UNDER THE SWAP GUARD, exactly as production does: the
+// PDS refuses the delete if the record no longer carries swapCID, so a
+// concurrent edit cannot be destroyed.
+func (s *realLegacySource) DeleteLegacyPost(ctx context.Context, legacy posts.LegacyPost, swapCID string) error {
+	if swapCID == "" {
+		return fmt.Errorf("refusing to delete %s without a swap guard", legacy.URI)
+	}
 	rkey := legacy.URI[strings.LastIndex(legacy.URI, "/")+1:]
-	err := s.community.DeleteRecord(ctx, postCollection, rkey)
+	guarded, ok := s.community.(pds.GuardedDeleter)
+	if !ok {
+		return fmt.Errorf("the PDS client does not support the swap-guarded delete")
+	}
+	err := guarded.DeleteRecordWithSwap(ctx, postCollection, rkey, swapCID)
 	if err != nil && testkit.IsNotFound(err) {
 		return nil
 	}
@@ -140,7 +174,8 @@ func TestRematerialize_OuterContract_RealPDS_MovesPostAndIsIdempotent(t *testing
 
 	source := &realLegacySource{community: communityGeneric, staged: []posts.LegacyPost{legacy}}
 	ledger := postgres.NewRematerializeLedger(testkit.DB(t))
-	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authorFactory, Acceptances: writer}
+	communityRepos := func(_ context.Context, _ string) (posts.CommunityRepo, error) { return communityRepo, nil }
+	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authorFactory, Acceptances: writer, CommunityRepos: communityRepos}
 
 	// ---- run -----------------------------------------------------------------
 	state, err := tool.RematerializeOne(ctx, legacy)
@@ -270,7 +305,8 @@ func TestRematerialize_OuterContract_CopiesEmbedBlobToAuthorRepo(t *testing.T) {
 
 	source := &realLegacySource{community: communityGeneric, staged: []posts.LegacyPost{legacy}}
 	ledger := postgres.NewRematerializeLedger(testkit.DB(t))
-	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authorFactory, Acceptances: writer}
+	communityRepos := func(_ context.Context, _ string) (posts.CommunityRepo, error) { return communityRepo, nil }
+	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authorFactory, Acceptances: writer, CommunityRepos: communityRepos}
 
 	_, err = tool.RematerializeOne(ctx, legacy)
 	require.NoError(t, err)
