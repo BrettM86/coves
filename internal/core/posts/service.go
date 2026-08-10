@@ -1863,17 +1863,32 @@ func (s *postService) compensateAuthorDelete(ctx context.Context, uri string) er
 		return fmt.Errorf("resolving the admissions of %s: %w", uri, err)
 	}
 
-	// EVERY community that admitted this post, not just the one the record
-	// names. A post can also carry a decision from a community that FORKED it
-	// (the case removedMarkers reads the same map for), and every acceptance of
-	// it now cites a record that no longer exists. The ones this AppView does
-	// not host answer ErrCommunityNotHosted and cost a lookup.
+	// ONE ROW TODAY, and this does not pretend otherwise. The only thing that
+	// would give a post URI a second STANDING acceptance is §10.2's fork/import
+	// flow, which is deliberately not built — both consumer paths refuse a
+	// cross-community acceptance until it is — so at most one accepted row per
+	// post exists right now.
+	//
+	// It is walked as a set anyway, because the data model already permits the
+	// rows and the fork flow is exactly what would populate them: a
+	// compensation shaped around a single community would, on the day that flow
+	// lands, silently leave every other acceptance standing.
+	//
+	// EVERY MEMBER IS ATTEMPTED AND THE FAILURES ARE JOINED. Returning on the
+	// first would make the set only as available as its least-available member:
+	// every community behind a dead host is skipped on this pass and skipped
+	// again on every retry, because the retry re-enters the same loop and stops
+	// in the same place — so one host that never comes back would strand the
+	// rest permanently. Attempting them all means each pass finishes what it
+	// can and the retry has strictly less left to do. The ones this AppView
+	// does not host answer ErrCommunityNotHosted and cost a lookup.
+	var failures []error
 	for _, admission := range admissionsByURI[uri] {
 		if err := s.withdrawAcceptanceOf(ctx, admission); err != nil {
-			return err
+			failures = append(failures, err)
 		}
 	}
-	return nil
+	return errors.Join(failures...)
 }
 
 // withdrawAcceptanceOf removes one community's acceptance record and stamps the
@@ -1907,6 +1922,17 @@ func (s *postService) withdrawAcceptanceOf(ctx context.Context, admission *Admis
 		log.Printf("[POST-DELETE] %s is hosted elsewhere; its acceptance of %s is not ours to withdraw",
 			admission.CommunityDID, admission.PostURI)
 		return nil
+	case pds.IsAuthError(err):
+		// THE COMMUNITY'S TOKEN, NOT THE AUTHOR'S SESSION. This withdrawal goes
+		// out on the community's stored service credentials, and their rejection
+		// produces the very same pds sentinels a dead OAuth session does. Letting
+		// them travel up the chain has the API boundary read a community-side
+		// credential outage as the CALLER's session being dead: the author is
+		// told to sign in again over something only the server can fix, and the
+		// outage is filed as a 401 client error where no 5xx alert looks. Severed
+		// exactly as the legacy delete path severs it.
+		return communityCredentialFailure(
+			fmt.Sprintf("withdrawing the acceptance of %s", admission.PostURI), admission.CommunityDID, err)
 	case err != nil:
 		return fmt.Errorf("withdrawing the acceptance of %s in %s: %w",
 			admission.PostURI, admission.CommunityDID, err)
@@ -1918,11 +1944,25 @@ func (s *postService) withdrawAcceptanceOf(ctx context.Context, admission *Admis
 	// row stranded by an earlier pass that committed the delete and then failed
 	// this stamp is caught up. The engine's accept path stamps a skip for the
 	// same reason.
+	//
+	// AN EMPTY REV MEANS TWO DIFFERENT THINGS, and only one of them is fine.
 	if withdrawn.Rev == "" {
-		// Defensive only: the writer contract reports a rev on every path,
-		// committed or skipped. An empty one must not be stamped — the
-		// repository refuses it as a fabricated watermark, correctly.
-		return nil
+		if withdrawn.Skipped {
+			// Nothing stood in the community's repo and there is no head rev to
+			// catch up from, so there is nothing to record. The ordinary
+			// redelivery case, and not a failure.
+			return nil
+		}
+		// A COMMITTED withdrawal that reports no rev is the writer breaking its
+		// own contract (CommunityWriteResult documents a rev on every path), and
+		// it leaves exactly the half-finished state this path exists to make
+		// impossible: the acceptance record is GONE, the row still names it, and
+		// there is no watermark to stamp it with. Stamping anyway would write a
+		// fabricated clock value the repository correctly refuses, and returning
+		// nil would report success over a silently stranded row — so the
+		// contract violation is surfaced instead.
+		return fmt.Errorf("withdrawing the acceptance of %s in %s: %w: the withdrawal committed but reported no rev",
+			admission.PostURI, admission.CommunityDID, ErrInvalidWatermark)
 	}
 
 	if _, err := s.admissions.ApplyAcceptanceDelete(ctx, CommunityDeleteCommand{
