@@ -3,6 +3,7 @@ package posts
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"Coves/internal/atproto/pds"
@@ -44,18 +45,54 @@ import (
 // for their own tests and useless for these.
 // ---------------------------------------------------------------------------
 
-// recordingWithdrawer is the AcceptanceWithdrawer seam, observed. It is the
-// whole point of the fake set: the community-repo write is the step no unit
-// test can perform and the one the compensation exists to make.
-type recordingWithdrawer struct {
-	cmds   []CommunityAcceptanceDeleteCommand
+// withdrawalOutcome is what one community's host answers.
+type withdrawalOutcome struct {
 	result CommunityWriteResult
 	err    error
 }
 
+// recordingWithdrawer is the AcceptanceWithdrawer seam, observed. It is the
+// whole point of the fake set: the community-repo write is the step no unit
+// test can perform and the one the compensation exists to make.
+//
+// It answers PER COMMUNITY when byCommunity holds an entry, and falls back to
+// the flat result/err otherwise. The per-community layer exists because the
+// interesting failures are asymmetric: one community's host being down while
+// another's is healthy is precisely the case a loop that aborts on the first
+// error gets wrong, and a single shared answer cannot express it.
+type recordingWithdrawer struct {
+	cmds   []CommunityAcceptanceDeleteCommand
+	result CommunityWriteResult
+	err    error
+
+	byCommunity map[string]withdrawalOutcome
+}
+
 func (w *recordingWithdrawer) DeleteAcceptance(_ context.Context, cmd CommunityAcceptanceDeleteCommand) (CommunityWriteResult, error) {
 	w.cmds = append(w.cmds, cmd)
+	if outcome, ok := w.byCommunity[cmd.CommunityDID]; ok {
+		return outcome.result, outcome.err
+	}
 	return w.result, w.err
+}
+
+// answer scripts one community's host.
+func (w *recordingWithdrawer) answer(communityDID string, result CommunityWriteResult, err error) {
+	if w.byCommunity == nil {
+		w.byCommunity = map[string]withdrawalOutcome{}
+	}
+	w.byCommunity[communityDID] = withdrawalOutcome{result: result, err: err}
+}
+
+// callsFor counts the withdrawals aimed at one community.
+func (w *recordingWithdrawer) callsFor(communityDID string) int {
+	n := 0
+	for _, cmd := range w.cmds {
+		if cmd.CommunityDID == communityDID {
+			n++
+		}
+	}
+	return n
 }
 
 // tombstoningRepo is mockRepository with a SoftDelete that remembers and can
@@ -85,6 +122,17 @@ type stampingAdmissions struct {
 func (a *stampingAdmissions) ApplyAcceptanceDelete(_ context.Context, cmd CommunityDeleteCommand) (AdmissionResult, error) {
 	a.stamps = append(a.stamps, cmd)
 	return AdmissionResult{}, a.stampErr
+}
+
+// stampsFor returns the stamps aimed at one community.
+func (a *stampingAdmissions) stampsFor(communityDID string) []CommunityDeleteCommand {
+	var out []CommunityDeleteCommand
+	for _, cmd := range a.stamps {
+		if cmd.CommunityDID == communityDID {
+			out = append(out, cmd)
+		}
+	}
+	return out
 }
 
 // deletingAuthorRepo is memAuthorRepo with a DeleteRecord that can answer
@@ -202,6 +250,28 @@ func (h *deleteHarness) withCommunityService(communityService communities.Servic
 // delete runs the deletion under test.
 func (h *deleteHarness) delete(uri string) error {
 	return h.service.DeletePost(context.Background(), h.session, DeletePostRequest{URI: uri})
+}
+
+// acceptedIn replaces the post's admissions with one accepted row per
+// community, IN THE ORDER GIVEN — the order the compensation will walk them, so
+// a test can put the sick community first and ask what happened to the healthy
+// one behind it.
+//
+// A post carries more than one admission whenever a community FORKED it: the
+// fork's acceptance is a real record in a real repo, standing on its own, and
+// every one of them now cites a postv2 that no longer exists.
+func (h *deleteHarness) acceptedIn(communityDIDs ...string) {
+	rows := make([]*Admission, 0, len(communityDIDs))
+	for _, did := range communityDIDs {
+		acceptance := "at://" + did + "/" + AcceptanceCollection + "/" + SubjectRkey(h.uri)
+		rows = append(rows, &Admission{
+			CommunityDID:  did,
+			PostURI:       h.uri,
+			Status:        AdmissionStatusAccepted,
+			AcceptanceURI: &acceptance,
+		})
+	}
+	h.admissions.byPostURIs[h.uri] = rows
 }
 
 func sessionForDIDString(t *testing.T, did string) *oauth.ClientSessionData {
@@ -483,4 +553,205 @@ func TestDeletePost_DoesNotWithdrawAcceptancesForALegacyCommunityRepoPost(t *tes
 		"nothing about a legacy post's deletion stamps an admission row")
 	assert.Empty(t, h.repo.softDeleted,
 		"the legacy path's own tombstone is the firehose consumer's, unchanged by this work")
+}
+
+// ---------------------------------------------------------------------------
+// 8. ONE SICK COMMUNITY MUST NOT STARVE THE OTHERS
+//
+// A post can hold an admission from more than one community: the one it was
+// written into, and any that FORKED it. Each has its own acceptance record in
+// its own repo, on its own host, and those hosts fail independently.
+//
+// The compensation walks them in a loop, and a loop that returns on the first
+// error makes the set only as available as its least-available member. The
+// author is told their delete failed, which is true; what is NOT true is that
+// the work was attempted — every community behind the failing one is skipped,
+// and it is skipped again on every retry, because the retry re-enters the same
+// loop and stops in the same place. A single community whose host is gone for
+// good therefore strands the acceptance of every other community, permanently,
+// with no signal that anything but the first is even involved.
+//
+// Processing all of them and joining the failures converges instead: each pass
+// completes the ones it can, and the retry has strictly less to do.
+// ---------------------------------------------------------------------------
+
+const (
+	compensationCommunityA = "did:plc:deletecompensationcommunitya"
+	compensationCommunityB = "did:plc:deletecompensationcommunityb"
+)
+
+func TestDeletePost_WithdrawsFromEveryCommunityEvenWhenOneOfThemFails(t *testing.T) {
+	h := newDeleteHarness(t)
+	h.acceptedIn(compensationCommunityA, compensationCommunityB)
+
+	// A's host is down — a real failure, not the ErrCommunityNotHosted skip.
+	// B's is healthy, and B is behind A in the walk.
+	hostDown := errors.New("community A's PDS is unreachable")
+	h.withdrawer.answer(compensationCommunityA, CommunityWriteResult{}, hostDown)
+	h.withdrawer.answer(compensationCommunityB, CommunityWriteResult{Rev: withdrawalRev}, nil)
+
+	err := h.delete(h.uri)
+
+	// THE FAILURE STILL SURFACES. The compensation did not finish, and the
+	// client is the retry loop.
+	require.Error(t, err, "A's acceptance is still standing, so the delete has not finished")
+
+	// AND B WAS STILL PROCESSED. This is the finding: today the loop returns on
+	// A and B is never reached, so B's community keeps a signed acceptance of a
+	// post that no longer exists — and no retry ever gets to it, because every
+	// retry stops on A first.
+	assert.Equalf(t, 1, h.withdrawer.callsFor(compensationCommunityB),
+		"community B was never asked to withdraw: the loop aborted on A. One unreachable host must not "+
+			"strand every community behind it — each pass must attempt them all and join what failed, so "+
+			"a retry has strictly less left to do rather than stopping in the same place forever")
+	assert.Lenf(t, h.admissions.stampsFor(compensationCommunityB), 1,
+		"B's withdrawal committed, so B's admission row must be stamped back to pending; leaving it "+
+			"accepted tells the author their deleted post is still live in B")
+
+	// A's row is NOT stamped: nothing was withdrawn there, so there is no
+	// withdrawal rev and no withdrawal to record.
+	assert.Empty(t, h.admissions.stampsFor(compensationCommunityA),
+		"A's withdrawal failed, so A's row must keep claiming the acceptance that is genuinely still there")
+
+	// AND THE OPERATOR CAN SEE WHICH COMMUNITY FAILED. A joined error that
+	// named neither would leave "one of this post's communities failed" as the
+	// entire diagnosis.
+	assert.ErrorContainsf(t, err, compensationCommunityA,
+		"the error must name the community whose withdrawal failed; got: %v", err)
+	assert.ErrorIsf(t, err, hostDown,
+		"a generic (non-auth) failure must stay in the error chain — only the pds AUTH sentinels are "+
+			"severed, and for a specific reason that does not apply here; got: %v", err)
+}
+
+func TestDeletePost_ContinuesPastACommunityHostedElsewhereToOneWeDoHost(t *testing.T) {
+	h := newDeleteHarness(t)
+	h.acceptedIn(compensationCommunityA, compensationCommunityB)
+
+	// A is somebody else's community — a permanent, expected skip — and it is
+	// FIRST. B is ours.
+	h.withdrawer.answer(compensationCommunityA, CommunityWriteResult{}, ErrCommunityNotHosted)
+	h.withdrawer.answer(compensationCommunityB, CommunityWriteResult{Rev: withdrawalRev}, nil)
+
+	require.NoError(t, h.delete(h.uri),
+		"a community hosted elsewhere is not a failure — its own AppView performs the cleanup when the "+
+			"deletion reaches it over the firehose — so it must not fail the author's delete")
+
+	assert.Equal(t, 1, h.withdrawer.callsFor(compensationCommunityA))
+	assert.Empty(t, h.admissions.stampsFor(compensationCommunityA),
+		"a withdrawal this instance cannot perform must not be recorded as one")
+
+	assert.Equalf(t, 1, h.withdrawer.callsFor(compensationCommunityB),
+		"the skip must not end the walk: B's acceptance is ours to withdraw and is the whole reason "+
+			"this instance is doing any of this")
+	assert.Len(t, h.admissions.stampsFor(compensationCommunityB), 1)
+}
+
+// ---------------------------------------------------------------------------
+// 9. THE COMMUNITY'S CREDENTIALS ARE NOT THE AUTHOR'S SESSION
+//
+// The acceptance being withdrawn lives in the COMMUNITY's repo and goes out on
+// the community's stored service token. When that token is rejected, the pds
+// package answers ErrUnauthorized/ErrForbidden — the same sentinels the author's
+// own session produces when IT dies.
+//
+// Letting them travel up the chain means the XRPC boundary reads a community's
+// expired token as the caller's session being dead and answers 401 "sign in
+// again": a user with a perfectly healthy session is told to re-authenticate
+// over a server-side credential problem they cannot fix, they do, and it fails
+// identically. It also hides a real outage from 5xx alerting, because a 401 is
+// a client error by every dashboard's reckoning.
+//
+// The legacy delete path already severs this (communityCredentialFailure, %v
+// not %w). The compensation is the same class of failure and needs the same cut.
+// ---------------------------------------------------------------------------
+
+func TestDeletePost_DoesNotBlameTheAuthorsSessionForTheCommunitysCredentials(t *testing.T) {
+	for _, sentinel := range []error{pds.ErrUnauthorized, pds.ErrForbidden} {
+		t.Run(sentinel.Error(), func(t *testing.T) {
+			h := newDeleteHarness(t)
+
+			// Exactly the shape pds.wrapAPIError produces for a 401/403 from the
+			// community's host.
+			h.withdrawer.err = fmt.Errorf("applyWrites: %w: token has expired", sentinel)
+
+			err := h.delete(h.uri)
+
+			// IT STILL FAILS. The acceptance is standing and the compensation did
+			// not finish; swallowing it would be the silence this whole path exists
+			// to end.
+			require.Error(t, err, "the withdrawal failed, so the delete has not finished")
+
+			// BUT NOT AS AN AUTH FAILURE. This is the finding: the boundary maps
+			// these sentinels to a 401 aimed at the CALLER.
+			assert.Falsef(t, errors.Is(err, sentinel),
+				"the community's rejected credentials reached the API boundary carrying %v, which the "+
+					"mapper reads as the AUTHOR's session being dead — answering 401 `sign in again` to a "+
+					"user whose session is fine, over a token only the server can fix. Sever it with %%v "+
+					"the way communityCredentialFailure does, so it lands as an unclassified 500 and "+
+					"shows up in outage alerting; got: %v", sentinel, err)
+			assert.Falsef(t, pds.IsAuthError(err),
+				"pds.IsAuthError is the predicate the boundary actually consults; got: %v", err)
+
+			// The diagnosis survives the cut — the operator still gets the cause
+			// and the community it came from, just not as a typed auth error.
+			assert.ErrorContains(t, err, compensationCommunityDID,
+				"severing the sentinel must not sever the operator's ability to tell which community's "+
+					"credentials were rejected")
+			assert.ErrorContains(t, err, "token has expired",
+				"the underlying message must survive; a bare `credentials rejected` names no cause")
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 10. AN EMPTY REV MEANS TWO DIFFERENT THINGS
+//
+// The stamp is guarded on a non-empty rev, because the admission repository
+// refuses a fabricated watermark — correctly. But the guard currently answers
+// the same way to two states that are not remotely the same:
+//
+//   - a SKIP with no rev: nothing stood in the community's repo, so there is
+//     nothing to record. Returning nil is right.
+//   - a COMMITTED withdrawal with no rev: the acceptance record is GONE and the
+//     writer failed to report where. The row still names it, and returning nil
+//     reports success over exactly the half-finished state — record gone, row
+//     stranded, nothing scheduled to notice — that this whole change exists to
+//     make impossible.
+//
+// The second is a writer-contract violation (CommunityWriteResult documents a
+// rev on every path), and a contract violation that produces silence is the
+// worst available outcome. It has to surface.
+// ---------------------------------------------------------------------------
+
+func TestDeletePost_SucceedsWhenTheSkippedWithdrawalHasNoRevToStamp(t *testing.T) {
+	h := newDeleteHarness(t)
+	h.withdrawer.result = CommunityWriteResult{Skipped: true, Rev: ""}
+
+	require.NoError(t, h.delete(h.uri),
+		"nothing stood in the community's repo, so there is nothing to withdraw and nothing to record; "+
+			"this is the ordinary redelivery case and must not fail the author's delete")
+	assert.Empty(t, h.admissions.stamps,
+		"there is no rev, and a stamp without one would be a fabricated watermark the repository "+
+			"correctly refuses")
+}
+
+func TestDeletePost_FailsWhenACommittedWithdrawalReportsNoRev(t *testing.T) {
+	h := newDeleteHarness(t)
+
+	// Skipped false: the writer says it COMMITTED the deletion. And no rev,
+	// which its own contract forbids.
+	h.withdrawer.result = CommunityWriteResult{Skipped: false, Rev: ""}
+
+	err := h.delete(h.uri)
+
+	require.Error(t, err,
+		"the acceptance record is OUT of the community's repo and the admission row still names it, "+
+			"because there was no rev to stamp with. Answering success here strands the row silently — "+
+			"getStatus keeps saying `accepted` for a post whose acceptance no longer exists, and nothing "+
+			"anywhere is scheduled to reconcile it. A writer that committed without reporting a rev has "+
+			"broken its contract, and a broken contract must not be absorbed into a success")
+
+	assert.Empty(t, h.admissions.stamps,
+		"an empty rev must never be stamped — the repository refuses it as a fabricated watermark, and "+
+			"surfacing the writer's failure is the answer, not laundering it into a bad write")
 }
