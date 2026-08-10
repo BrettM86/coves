@@ -1820,13 +1820,17 @@ func (s *postService) deleteAuthorPost(ctx context.Context, session *oauth.Clien
 // no-op while doing it zero times is the failure above.
 //
 // A FAILURE IS RETURNED, and that is the one place this deliberately departs
-// from the consumer, which logs and swallows. The consumer must: an error
-// there dead-letters an event whose local half already committed, and the rev
-// gate would refuse the redrive, so the retry could never reach the sweep
-// again. Here the CLIENT is the retry loop — the author's record is already
-// gone, every step below is idempotent, and surfacing the failure is what gets
-// the remaining work done. Reporting success over a half-finished compensation
-// reproduces the exact silence this path exists to end.
+// from the consumer, which logs and swallows. The consumer can afford to: its
+// sweep is reconsidered on every redelivery whose row is already tombstoned
+// (authorpost.go withdrawAcceptance is gated on the POST's state, not the
+// event's), so a transient withdrawal failure there gets another firehose
+// attempt for free, and returning an error would only dead-letter an event
+// whose local half already committed. Here the firehose is exactly the thing
+// that may never arrive — the CLIENT is the only retry loop, the author's
+// record is already gone, and every step below is idempotent — so surfacing the
+// failure is what gets the remaining work done. Reporting success over a
+// half-finished compensation reproduces the exact silence this path exists to
+// end.
 func (s *postService) compensateAuthorDelete(ctx context.Context, uri string) error {
 	// THE LOCAL TRUTH LANDS FIRST, in the consumer's order and for its reason:
 	// the author asked for their post to be gone, and a community PDS that
