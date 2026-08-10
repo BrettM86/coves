@@ -389,6 +389,11 @@ func (a *application) buildServices(ctx context.Context) error {
 		posts.WithAuthorRepoFactory(
 			posts.NewAuthorRepoFactory(a.oauthClient.ClientApp, aggregators.DefaultSessionID)),
 		posts.WithSyncAcceptance(a.admissionRepo, acceptanceEngine),
+		// The SAME writer the engine accepts through, so both ends of an
+		// acceptance's life — the write the fast path makes and the withdrawal
+		// the author's delete makes (§5.3) — share one writer's clock and swap
+		// retry budget. buildAcceptanceEngine above is what populated it.
+		posts.WithAcceptanceWithdrawal(a.communityWriter),
 		posts.WithAdmissionPolicy(posts.AdmissionPolicy{
 			Ledger: postgresRepo.NewSubmissionLedger(a.db),
 			Bans:   a.communityService,
