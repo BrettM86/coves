@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/api/middleware"
 	"Coves/internal/core/comments"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
@@ -566,6 +567,83 @@ func TestGetCommentsHandler_WithCommunityFilter(t *testing.T) {
 	if receivedCommunity != "did:plc:community123" {
 		t.Errorf("Expected community 'did:plc:community123', got '%s'", receivedCommunity)
 	}
+}
+
+// TestGetCommentsHandler_ViewerDIDComesFromTheAuthMiddleware is the provenance
+// pin for actor.getComments, and it became a security pin the moment the
+// COMMUNITY FILTER started resolving each comment's root through the read-path
+// visibility predicate (PRD §6.2).
+//
+// With `?community=` set, the repository only lists comments whose root that
+// community admitted — except for the root's own AUTHOR, who keeps the carve-out
+// over their pending / rejected / removed posts. The viewer DID is what selects
+// that branch, so a caller who could name the viewer from the query string could
+// ask for a victim's comment history in a community AS the victim and receive
+// the threads rooted at posts the community never accepted.
+func TestGetCommentsHandler_ViewerDIDComesFromTheAuthMiddleware(t *testing.T) {
+	const victim = "did:plc:victimauthor"
+	const adversarialQuery = "actor=" + victim +
+		"&community=did:plc:community123" +
+		"&viewer=" + victim +
+		"&viewerDid=" + victim +
+		"&viewer_did=" + victim +
+		"&as=" + victim
+
+	capture := func(t *testing.T, ctxDID string) *comments.GetActorCommentsRequest {
+		t.Helper()
+
+		var got *comments.GetActorCommentsRequest
+		mockComments := &mockCommentService{
+			getActorCommentsFunc: func(ctx context.Context, req *comments.GetActorCommentsRequest) (*comments.GetActorCommentsResponse, error) {
+				got = req
+				return &comments.GetActorCommentsResponse{Comments: []*comments.CommentView{}}, nil
+			},
+		}
+		handler := NewGetCommentsHandler(mockComments, &mockUserServiceForComments{}, &mockVoteServiceForComments{})
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.actor.getComments?"+adversarialQuery, nil)
+		if ctxDID != "" {
+			req = req.WithContext(middleware.SetTestUserDID(req.Context(), ctxDID))
+		}
+		handler.HandleGetComments(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+		}
+		if got == nil {
+			t.Fatal("the service was never called")
+		}
+		return got
+	}
+
+	t.Run("an unauthenticated request carries no viewer, whatever it asks for", func(t *testing.T) {
+		t.Parallel()
+
+		got := capture(t, "")
+
+		if got.ViewerDID != nil {
+			t.Errorf("ViewerDID = %q for an UNAUTHENTICATED request, want nil. A query parameter became the viewer "+
+				"identity, so an anonymous caller can read %q's comments rooted at posts the named community never "+
+				"admitted", *got.ViewerDID, victim)
+		}
+	})
+
+	t.Run("an authenticated request carries the context DID, and no parameter displaces it", func(t *testing.T) {
+		t.Parallel()
+
+		const authenticated = "did:plc:realsessionviewer"
+		got := capture(t, authenticated)
+
+		if got.ViewerDID == nil {
+			t.Fatal("ViewerDID = nil; the DID the auth middleware put on the context was dropped, which downgrades an " +
+				"author's own community-filtered history to an anonymous read")
+		}
+		if *got.ViewerDID != authenticated {
+			t.Errorf("ViewerDID = %q, want %q — the viewer identity must come from the auth middleware and never from "+
+				"the query string", *got.ViewerDID, authenticated)
+		}
+	})
 }
 
 func TestGetCommentsHandler_ServiceError_Returns500(t *testing.T) {

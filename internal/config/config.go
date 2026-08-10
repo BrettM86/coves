@@ -106,6 +106,9 @@ type Config struct {
 	Signup    SignupConfig
 	Media     MediaConfig
 
+	// Submissions bounds what one author may post into one community.
+	Submissions SubmissionsConfig
+
 	// CursorSecret is the HMAC key that signs pagination cursors, preventing
 	// clients from forging or tampering with them.
 	CursorSecret string
@@ -326,6 +329,59 @@ type MediaConfig struct {
 	AllowUnproxiedMedia bool
 }
 
+// SubmissionsConfig bounds what one author may submit to one community
+// (docs/PRD_AUTHOR_OWNED_POSTS.md §8).
+//
+// It mirrors posts.SubmissionLimits field for field rather than embedding it.
+// The duplication is deliberate: this package is imported by everything that
+// starts a process, and giving it a dependency on a core domain package would
+// make the domain's import graph the startup path's problem. The mapping is one
+// struct literal at wiring time.
+//
+// EVERY FIELD IS REQUIRED. There is no "unset means unlimited" reading, which
+// is the whole reason these are validated at startup: a quota that evaporates
+// when someone forgets an environment variable is indistinguishable, in
+// production, from having no quota at all — and it fails open, silently, on the
+// one path that exists to bound abuse.
+type SubmissionsConfig struct {
+	// MaxPerAuthorPerCommunity is how many posts one author may have admitted
+	// to one community inside Window.
+	MaxPerAuthorPerCommunity int
+
+	// Window is the rolling window the quota is counted over.
+	Window time.Duration
+
+	// DedupeWindow scopes how long an identical resubmission is refused as a
+	// repeat. It is separate from Window because the two answer different
+	// questions: one bounds volume, the other catches retries.
+	DedupeWindow time.Duration
+
+	// AcceptanceQueueInterval is how often the acceptance engine's driver walks
+	// the undecided backlog (docs/PRD_AUTHOR_OWNED_POSTS.md §5.6).
+	//
+	// It is the PULL side of admission. The synchronous fast path and the
+	// firehose consumer both push work at the engine, and neither can see a
+	// subject that was left undecided because a credential expired or a lookup
+	// blipped — this pass is what eventually reaches those, so its cadence is
+	// the worst-case delay before a stranded post becomes visible.
+	//
+	// Zero DISABLES the driver, which is a supported deployment rather than a
+	// misconfiguration: an AppView that hosts no communities can accept nothing
+	// and has no backlog to walk. It is the one submission setting Validate does
+	// not require to be positive, for exactly that reason.
+	AcceptanceQueueInterval time.Duration
+
+	// AcceptanceQueueBatchSize bounds how many subjects one pass lists. The
+	// backlog table grows with every submission the instance has ever seen, so
+	// an unbounded pass would hold a transaction open across all of it and then
+	// try to settle it inside a single cycle.
+	//
+	// Unlike the quotas above it is not validated, because it cannot fail open:
+	// the backlog query substitutes its own page size for a non-positive value
+	// and clamps an over-large one, so a bound exists whatever is set here.
+	AcceptanceQueueBatchSize int
+}
+
 // TokenEndpointEnabled reports whether the signup-token endpoint can operate.
 // It needs both the captcha secret and (from PDSConfig) an admin password to
 // mint invite codes, so the caller passes the latter in.
@@ -360,6 +416,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if err := cfg.loadJetstream(); err != nil {
+		return nil, err
+	}
+	if err := cfg.loadSubmissions(); err != nil {
 		return nil, err
 	}
 
@@ -596,6 +655,65 @@ func (c *Config) loadJetstream() error {
 	return nil
 }
 
+// Default submission quotas. They apply in every environment, dev and
+// production alike, because the alternative — requiring the variables in
+// production — makes an omission fail closed on the wrong side: the process
+// refuses to boot over an abuse limit rather than running with a conservative
+// one. The bounds are deliberately generous enough that no ordinary author
+// meets them and tight enough to make scripted flooding expensive, and every
+// instance can move them.
+const (
+	defaultMaxSubmissionsPerCommunity = 10
+	defaultSubmissionWindow           = time.Hour
+	defaultSubmissionDedupeWindow     = time.Hour
+
+	// defaultAcceptanceQueueInterval is the backlog pass's cadence. A minute is
+	// the compromise the two failure modes point at from opposite directions:
+	// the pass is the only thing that reaches a subject nothing else will
+	// retry, so a long interval is a long wait for an author whose post got
+	// stuck, while a short one repeatedly scans a backlog that is usually empty.
+	defaultAcceptanceQueueInterval = time.Minute
+
+	// defaultAcceptanceQueueBatch is how many subjects one pass takes. Small
+	// enough that a pass fits comfortably inside its own interval even when
+	// every subject needs a PDS round trip, since the backlog is drained across
+	// passes rather than in one.
+	defaultAcceptanceQueueBatch = 50
+)
+
+func (c *Config) loadSubmissions() error {
+	maxPerCommunity, err := intVar("POST_SUBMISSIONS_MAX_PER_COMMUNITY", defaultMaxSubmissionsPerCommunity)
+	if err != nil {
+		return err
+	}
+	window, err := durationVar("POST_SUBMISSIONS_WINDOW", defaultSubmissionWindow)
+	if err != nil {
+		return err
+	}
+	dedupeWindow, err := durationVar("POST_SUBMISSIONS_DEDUPE_WINDOW", defaultSubmissionDedupeWindow)
+	if err != nil {
+		return err
+	}
+
+	queueInterval, err := durationVar("ACCEPTANCE_QUEUE_INTERVAL", defaultAcceptanceQueueInterval)
+	if err != nil {
+		return err
+	}
+	queueBatch, err := intVar("ACCEPTANCE_QUEUE_BATCH_SIZE", defaultAcceptanceQueueBatch)
+	if err != nil {
+		return err
+	}
+
+	c.Submissions = SubmissionsConfig{
+		MaxPerAuthorPerCommunity: maxPerCommunity,
+		Window:                   window,
+		DedupeWindow:             dedupeWindow,
+		AcceptanceQueueInterval:  queueInterval,
+		AcceptanceQueueBatchSize: queueBatch,
+	}
+	return nil
+}
+
 // Validate enforces the constraints that Load's defaults cannot express,
 // notably the ones that differ between dev and production. It returns every
 // problem at once so a misconfigured deployment can be fixed in a single pass
@@ -676,6 +794,47 @@ func (c *Config) Validate() error {
 		problems = append(problems, fmt.Sprintf(
 			"INSTANCE_DID must be a DID (got %q)", c.Instance.DID))
 	}
+
+	// The submission quotas, in every environment. §8's limits exist because
+	// anyone can write unlimited records naming any community, so "unset" must
+	// not be readable as "unlimited" — and a zero is worse than unlimited: a
+	// limit check written as `count > limit` refuses every post, one written the
+	// other way admits every post, and either way the behaviour was decided by
+	// an omission. Load supplies defaults, so reaching any of these means an
+	// operator set the variable to something that is not a quota.
+	if c.Submissions.MaxPerAuthorPerCommunity <= 0 {
+		problems = append(problems, fmt.Sprintf(
+			"POST_SUBMISSIONS_MAX_PER_COMMUNITY must be greater than 0 (got %d); "+
+				"a non-positive per-author quota disables or inverts the abuse limit rather than relaxing it",
+			c.Submissions.MaxPerAuthorPerCommunity))
+	}
+	if c.Submissions.Window <= 0 {
+		problems = append(problems, fmt.Sprintf(
+			"POST_SUBMISSIONS_WINDOW must be greater than 0 (got %s); "+
+				"the quota is counted over a rolling window, and a zero-width one counts nothing",
+			c.Submissions.Window))
+	}
+	if c.Submissions.DedupeWindow <= 0 {
+		problems = append(problems, fmt.Sprintf(
+			"POST_SUBMISSIONS_DEDUPE_WINDOW must be greater than 0 (got %s); "+
+				"it scopes the ledger's uniqueness bucket, and without a width every repost collides with the original forever",
+			c.Submissions.DedupeWindow))
+	}
+	// The interval is checked for being NEGATIVE rather than non-positive,
+	// unlike the three above: zero is the documented way to disable the driver
+	// on an instance that hosts no communities, while a negative one is a
+	// time.Ticker panic waiting for the first boot after a typo.
+	if c.Submissions.AcceptanceQueueInterval < 0 {
+		problems = append(problems, fmt.Sprintf(
+			"ACCEPTANCE_QUEUE_INTERVAL cannot be negative (got %s); use 0 to disable the acceptance queue driver",
+			c.Submissions.AcceptanceQueueInterval))
+	}
+	// The batch size is deliberately NOT validated, unlike every quota above.
+	// The quotas fail open when unset — an absent limit is no limit — so an
+	// omission there has to stop the boot. A batch size does not: the backlog
+	// query substitutes its own page for a non-positive limit and clamps an
+	// over-large one, so the bound exists whatever this value is, and the worst
+	// an omission costs is a different page size.
 
 	if !c.IsDevEnv {
 		switch {

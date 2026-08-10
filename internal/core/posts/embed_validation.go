@@ -137,18 +137,25 @@ func validateEmbed(embed map[string]interface{}) error {
 // the lexicon declares as `format: uri` — external.uri and each
 // external.sources[].uri — into a form that satisfies that format.
 //
-// The AppView signs community post records into the community's PDS itself, and
-// the PDS does not validate custom social.coves.* lexicons. That makes this the
-// only point in the pipeline that can guarantee a schema-conforming record no
-// matter which client produced it, which matters because these URIs federate:
+// The AppView signs post records into the AUTHOR's PDS (§4.2) with
+// `validate: false`, because the PDS does not know custom social.coves.*
+// lexicons. That makes this the only point in the pipeline that can guarantee a
+// schema-conforming record no matter which client produced it — for the records
+// this AppView signs, at least; an author writing to their own repo directly
+// passes nowhere near here. It matters because these URIs federate:
 // any third-party tool that resolves our lexicons and validates the firehose
 // judges the bytes we wrote. An unencoded character in a URL is a client bug,
 // not user intent, so it is repaired rather than rejected — see
 // validation.NormalizeURI. Input that carries no recoverable URI at all still
 // fails loudly instead of being persisted as a broken link.
 //
-// Must run after validateEmbed, which establishes the structure this walks.
-// Non-external embeds carry no `format: uri` fields and are left untouched.
+// Must run after validateEmbed, which establishes the structure this walks —
+// which is why both are called from the one shared gate
+// (normalizeAndValidatePostContent) rather than from each write path: an edit
+// path that had its own idea of the order, or skipped this half entirely, is
+// precisely the drift that let an author post a clean link and then edit it into
+// a javascript: URI. Non-external embeds carry no `format: uri` fields and are
+// left untouched.
 func normalizeEmbedURIs(embed map[string]interface{}) error {
 	if embed == nil {
 		return nil

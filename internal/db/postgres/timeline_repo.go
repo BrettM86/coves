@@ -46,21 +46,28 @@ func (r *postgresTimelineRepo) GetTimeline(ctx context.Context, req timeline.Get
 		selectClause = feedPostSelectClause("NULL::numeric")
 	}
 
+	// The admission visibility gate reuses $1 (the subscriber's DID) as the
+	// viewer — the same intentional reuse the block filter below makes — so a
+	// pending post reaching the home feed is impossible, while the subscriber
+	// still sees their own non-accepted posts in communities they subscribe to.
+	visJoin, visWhere := visiblePostsJoin(1)
+
 	// Join with community_subscriptions to get posts from subscribed communities
 	query := fmt.Sprintf(`
 		%s
-		INNER JOIN users u ON p.author_did = u.did
+		LEFT JOIN users u ON p.author_did = u.did
 		INNER JOIN communities c ON p.community_did = c.did
-		INNER JOIN community_subscriptions cs ON p.community_did = cs.community_did
+		INNER JOIN community_subscriptions cs ON p.community_did = cs.community_did%s
 		WHERE cs.user_did = $1
 			AND p.deleted_at IS NULL
+			AND %s
 			-- Intentional $1 reuse: the viewer's DID (cs.user_did) is also the blocker for block filtering
 			AND NOT EXISTS (SELECT 1 FROM user_blocks WHERE blocker_did = $1 AND blocked_did = p.author_did)
 			%s
 			%s
 		ORDER BY %s
 		LIMIT $2
-	`, selectClause, timeFilter, cursorFilter, orderBy)
+	`, selectClause, visJoin, visWhere, timeFilter, cursorFilter, orderBy)
 
 	// Prepare query arguments
 	args := []interface{}{req.UserDID, req.Limit + 1} // +1 to check for next page

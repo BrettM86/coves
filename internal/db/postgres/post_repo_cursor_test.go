@@ -11,7 +11,7 @@ import (
 )
 
 func TestParseAuthorPostsCursor(t *testing.T) {
-	repo := &postgresPostRepo{db: nil} // db not needed for cursor parsing
+	repo := &PostRepository{db: nil} // db not needed for cursor parsing
 
 	// Helper to create a valid cursor
 	makeCursor := func(timestamp, uri string) string {
@@ -119,7 +119,7 @@ func TestParseAuthorPostsCursor(t *testing.T) {
 }
 
 func TestBuildAuthorPostsCursor(t *testing.T) {
-	repo := &postgresPostRepo{db: nil}
+	repo := &PostRepository{db: nil}
 
 	now := time.Now()
 	post := &posts.PostView{
@@ -149,7 +149,7 @@ func TestBuildAuthorPostsCursor(t *testing.T) {
 }
 
 func TestBuildAndParseCursorRoundTrip(t *testing.T) {
-	repo := &postgresPostRepo{db: nil}
+	repo := &PostRepository{db: nil}
 
 	now := time.Now()
 	post := &posts.PostView{
@@ -223,15 +223,19 @@ func (m *mockPostRepository) Create(ctx context.Context, post *posts.Post) error
 	return nil
 }
 
-func (m *mockPostRepository) GetByURI(ctx context.Context, uri string) (*posts.Post, error) {
+func (m *mockPostRepository) GetRawIndexedRow(ctx context.Context, uri string) (*posts.Post, error) {
 	return nil, nil
+}
+
+func (m *mockPostRepository) GetRawIndexedRowsByURIs(ctx context.Context, uris []string) (map[string]*posts.Post, error) {
+	return map[string]*posts.Post{}, nil
 }
 
 func (m *mockPostRepository) GetByAuthor(ctx context.Context, req posts.GetAuthorPostsRequest) ([]*posts.PostView, *string, error) {
 	return nil, nil, nil
 }
 
-func (m *mockPostRepository) GetViewsByURIs(ctx context.Context, uris []string) (map[string]*posts.PostView, error) {
+func (m *mockPostRepository) GetViewsByURIs(ctx context.Context, uris []string, viewerDID string) (map[string]*posts.PostView, error) {
 	return map[string]*posts.PostView{}, nil
 }
 

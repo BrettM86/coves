@@ -273,6 +273,10 @@ func indexedPost(t *testing.T, p *pipeline, community provisionedCommunity, auth
 		postRecord(community.DID, authorDID, title, "a post to hang comments on"))
 	uri := postURI(community.DID, rkey)
 
+	// This wait was the first to hit the 250ms-era limiter cliff (measured
+	// 23.97s healthy latency; five consecutive gate deaths) and carried its
+	// own 600ms override until task 5 made that the tier default — see
+	// contractPollInterval's HISTORY note.
 	p.Await(t, "the post these comments hang off to be indexed", func() (bool, error) {
 		view, err := p.Post(context.Background(), uri)
 		if err != nil {

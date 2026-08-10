@@ -92,16 +92,36 @@ type application struct {
 	// route options).
 	userRepo       users.UserRepository
 	communityRepo  communities.Repository
-	postRepo       posts.Repository
+	// postRepo is held as the CONCRETE repository rather than posts.Repository:
+	// the comment service's PostReader requires the admission-aware
+	// VisibleHeaderView as well, and storing the narrower interface here would
+	// erase it before the wiring could hand it over.
+	postRepo       *postgresRepo.PostRepository
 	voteRepo       votes.Repository
 	commentRepo    comments.Repository
 	userBlockRepo  userblocks.Repository
 	aggregatorRepo aggregators.Repository
+	// admissionRepo is shared by the ingestion consumer, which WRITES the
+	// per-(community, post) decisions, and the status query, which reads them.
+	admissionRepo posts.AdmissionRepository
 
 	// Domain services
-	userService                users.UserService
-	communityService           communities.Service
-	postService                posts.Service
+	userService      users.UserService
+	communityService communities.Service
+	postService      posts.Service
+	// postStatusService answers post.getStatus. Separate from postService
+	// because a status query needs the admissions store and nothing else, and
+	// widening the write-path interface to reach it would make every test
+	// double of posts.Service carry a method it has no opinion about.
+	postStatusService posts.StatusService
+	// communityWriter publishes acceptances and removals into the repos of
+	// communities this AppView hosts. Shared by the acceptance engine, which
+	// writes verdicts, and the post consumer, which withdraws an acceptance
+	// when the author deletes the post it covers.
+	communityWriter posts.CommunityRecordWriter
+	// acceptanceQueue walks the undecided backlog. nil when the driver is
+	// disabled (ACCEPTANCE_QUEUE_INTERVAL=0).
+	acceptanceQueue            *posts.QueueDriver
 	voteService                votes.Service
 	commentService             comments.Service
 	userBlockService           userblocks.Service
@@ -233,6 +253,14 @@ func oauthScopes() []string {
 	return []string{
 		"atproto",
 		"blob:*/*", // avatar and image uploads
+		// The author-owned post collection: CreatePost, UpdatePost (§3.4),
+		// post.delete AND the cutover tool all write postv2 through the author's
+		// own OAuth session, so a scope-enforcing PDS refuses the entire write
+		// path without this grant.
+		"repo:social.coves.community.postv2?action=create&action=update&action=delete",
+		// The deprecated collection is RETAINED through the drain: the cutover tool
+		// deletes legacy community.post records through these same sessions (§11);
+		// dropping it would strand every legacy record undeleteable.
 		"repo:social.coves.community.post?action=create&action=update&action=delete",
 		"repo:social.coves.community.comment?action=create&action=update&action=delete",
 		"repo:social.coves.community.profile?action=create&action=update&action=delete",
@@ -251,6 +279,7 @@ func (a *application) buildRepositories() {
 	a.commentRepo = postgresRepo.NewCommentRepository(a.db)
 	a.userBlockRepo = postgresRepo.NewUserBlockRepository(a.db)
 	a.aggregatorRepo = postgresRepo.NewAggregatorRepository(a.db)
+	a.admissionRepo = postgresRepo.NewAdmissionRepository(a.db)
 }
 
 func (a *application) buildServices(ctx context.Context) error {
@@ -281,7 +310,19 @@ func (a *application) buildServices(ctx context.Context) error {
 	a.oauthHandler = oauth.NewOAuthHandler(a.oauthClient, a.oauthStore,
 		oauth.WithUserIndexer(a.userService))
 
-	blobService := blobs.NewBlobService(a.cfg.PDS.URL)
+	// The remote-fetch SSRF guard is ON in production and off only in dev, where
+	// the PDS, the PLC and every fixture origin live on loopback — exactly what
+	// the guard refuses. Derived from config ONCE, here, rather than read inside
+	// the fetch: an environment read at the call site would make the guarded
+	// branch untestable alongside t.Parallel and hide the most consequential
+	// input to a security decision from the place that makes it.
+	blobOptions := []blobs.BlobServiceOption{}
+	if a.cfg.IsDevEnv {
+		slog.Warn("dev mode: the blob fetch SSRF guard is disabled; " +
+			"remote image URLs may resolve to private addresses")
+		blobOptions = append(blobOptions, blobs.WithPrivateHostsAllowed())
+	}
+	blobService := blobs.NewBlobService(a.cfg.PDS.URL, blobOptions...)
 
 	// V2.0: the PDS generates and manages community DIDs and keys entirely;
 	// Coves performs no cryptography of its own here.
@@ -326,11 +367,45 @@ func (a *application) buildServices(ctx context.Context) error {
 
 	// userBlockRepo backs viewer block enforcement on GetPosts, keeping
 	// permalink and cold-load reads consistent with feed/timeline filtering.
+	// The admission policy is what makes the ban lookup and the per-author
+	// submission quota live (PRD_AUTHOR_OWNED_POSTS §4.1, §8). A post service
+	// built without it enforces only what CreatePost enforced before those
+	// existed, so this is not an optional enrichment — it is the enforcement.
+	// The limits come from config, which refuses to start the process with a
+	// non-positive one rather than letting an omission read as "unlimited".
+	//
+	// The engine is built FIRST because the write path now holds it: §4.2 step
+	// 4 has CreatePost settle a local community's admission before it answers,
+	// so the author gets the community's decision with their post rather than
+	// waiting for their own write to come back around the firehose.
+	acceptanceEngine := a.buildAcceptanceEngine()
+
 	a.postService = posts.NewPostService(
 		a.postRepo, a.communityService, a.aggregatorService, blobService,
 		unfurlService, a.blueskyService, a.cfg.PDS.URL,
 		posts.WithBlockChecker(a.userBlockRepo),
+		// The AUTHOR's own credentials: a browser session when there is one,
+		// and an aggregator's stored tokens when there is not (§4.2 step 3).
+		posts.WithAuthorRepoFactory(
+			posts.NewAuthorRepoFactory(a.oauthClient.ClientApp, aggregators.DefaultSessionID)),
+		posts.WithSyncAcceptance(a.admissionRepo, acceptanceEngine),
+		posts.WithAdmissionPolicy(posts.AdmissionPolicy{
+			Ledger: postgresRepo.NewSubmissionLedger(a.db),
+			Bans:   a.communityService,
+			Limits: posts.SubmissionLimits{
+				MaxPerAuthorPerCommunity: a.cfg.Submissions.MaxPerAuthorPerCommunity,
+				Window:                   a.cfg.Submissions.Window,
+				DedupeWindow:             a.cfg.Submissions.DedupeWindow,
+			},
+			Now: time.Now,
+		}),
 	)
+
+	// getStatus is how an author on another server learns what happened to
+	// their post. It is the ONLY way a rejection is reachable — a submission
+	// refused before it was ever accepted writes no community record, so there
+	// is nothing on the firehose to read.
+	a.postStatusService = posts.NewStatusService(a.admissionRepo)
 
 	// Subject existence is deliberately not validated: the vote is written to
 	// the user's own PDS regardless, and the Jetstream consumer only updates
@@ -362,6 +437,83 @@ func (a *application) buildServices(ctx context.Context) error {
 
 	slog.Info("domain services initialized")
 	return nil
+}
+
+// buildAcceptanceEngine wires the §5.6 acceptance engine and the driver that
+// feeds it.
+//
+// EVERYTHING HERE IS ABOUT WRITING INTO A COMMUNITY'S OWN REPO, which only that
+// community's host can do — so on an instance that hosts nothing, all of it is
+// a no-op that costs one query a minute: the repo factory refuses with
+// ErrCommunityNotHosted and the backlog query returns nothing. Both are keyed on
+// STORED CREDENTIALS rather than on communities.hosted_by_did, which is copied
+// out of a community's own profile record and can therefore be claimed by any
+// repo on the network.
+// buildDeciderDeps assembles everything the production admission decider reads.
+//
+// Extracted from buildAcceptanceEngine so the wiring itself is testable: the §8
+// firehose quota is only enforced when DeciderDeps.Admissions is wired
+// (decider.go applyQuota short-circuits on a nil counter), and a struct literal
+// that silently omits the field disables the abuse control in production with no
+// error anywhere. wiring_quota_test.go asserts the field is set.
+func (a *application) buildDeciderDeps() posts.DeciderDeps {
+	return posts.DeciderDeps{
+		Posts:       a.postRepo,
+		Communities: a.communityService,
+		Authorizer:  a.aggregatorService,
+		// The §8 firehose quota counter. Without it decider.go's applyQuota
+		// short-circuits and admits UNLIMITED posts — the same admissions repo the
+		// ingestion consumer writes and the engine settles, so the rows counted as
+		// admitted are the rows the quota meters.
+		Admissions: a.admissionRepo,
+		Aggregators: a.aggregatorService,
+		Policy: posts.AdmissionPolicy{
+			Ledger: postgresRepo.NewSubmissionLedger(a.db),
+			Bans:   a.communityService,
+			Limits: posts.SubmissionLimits{
+				MaxPerAuthorPerCommunity: a.cfg.Submissions.MaxPerAuthorPerCommunity,
+				Window:                   a.cfg.Submissions.Window,
+				DedupeWindow:             a.cfg.Submissions.DedupeWindow,
+			},
+			Now: time.Now,
+		},
+		// Resolved ONCE, here, rather than read per decision — and through the
+		// same helper the write path uses, so the two cannot drift into
+		// disagreeing about who is privileged.
+		TrustedAggregatorDIDs: posts.TrustedAggregatorDIDs(),
+	}
+}
+
+func (a *application) buildAcceptanceEngine() *posts.AcceptanceEngine {
+	repoFactory := posts.NewCommunityRepoFactory(a.communityService)
+	a.communityWriter = posts.NewCommunityRecordWriter(repoFactory, time.Now)
+
+	decider := posts.NewAdmissionEngineDecider(a.buildDeciderDeps())
+
+	engine := posts.NewAcceptanceEngine(
+		a.admissionRepo, decider, a.communityWriter,
+		posts.NewCommunityCredentialRefresher(a.communityService))
+
+	// Zero DISABLES the driver, and leaving the field nil is what makes
+	// /health/consumers omit the queue block entirely. An all-zero queue and an
+	// absent one mean different things: the first reads as a driver that is
+	// running and settling nothing, which is the exact failure an operator
+	// watches for.
+	if a.cfg.Submissions.AcceptanceQueueInterval <= 0 {
+		slog.Warn("acceptance queue driver disabled (ACCEPTANCE_QUEUE_INTERVAL=0); " +
+			"posts left undecided by the fast path and the firehose will not be revisited")
+		return engine
+	}
+
+	a.acceptanceQueue = posts.NewQueueDriver(a.admissionRepo, engine, time.Now,
+		posts.WithQueueBatchSize(a.cfg.Submissions.AcceptanceQueueBatchSize))
+
+	// RETURNED, NOT ONLY STORED IN THE DRIVER. The write path's fast path and
+	// the queue driver settle the same subjects through the same engine on
+	// purpose: the deterministic rkeys and swap guards make concurrent passes
+	// converge, and a second engine instance would just be a second set of the
+	// same collaborators.
+	return engine
 }
 
 // adminReportAlertOptions builds the operator-alert wiring for admin reports.

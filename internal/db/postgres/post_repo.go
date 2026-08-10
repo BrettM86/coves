@@ -17,7 +17,15 @@ import (
 	"github.com/lib/pq"
 )
 
-type postgresPostRepo struct {
+// legacyPostCollection is the DEPRECATED community-repo post record (§3.0). A
+// post written since the author-owned flip is a posts.PostV2Collection record
+// in the author's own repo; both are indexed into the same table, and the URI
+// is what says which one a row came from.
+const legacyPostCollection = posts.LegacyPostCollection
+
+// PostRepository is the PostgreSQL posts read/write surface. It is EXPORTED
+// because it carries more than posts.Repository does — see NewPostRepository.
+type PostRepository struct {
 	db *sql.DB
 }
 
@@ -31,22 +39,43 @@ type postgresPostRepo struct {
 // (upvote_count + bridged_upvote_count, etc.) so federated/bridged content shows the
 // origin platform's votes. score is already stored inclusive of bridged aggregates, so
 // it is selected as-is.
+//
+// author_handle is COALESCEd to the author DID because the users join is a LEFT
+// join (a federated author with no users row must not vanish, PRD §5.3), so
+// u.handle is NULL for an unindexed author; the comment read path does the same
+// (comment_repo.go). a.status and a.acceptance_uri come from the admission LEFT
+// join every display query splices in via visiblePostsJoin — they carry the
+// per-community admission context an author's own view renders, and are NULL for
+// legacy/bridged rows that hold no admission.
 const postViewSelectColumns = `
 		p.uri, p.cid, p.rkey,
-		p.author_did, u.handle as author_handle, u.display_name as author_display_name, u.avatar_cid as author_avatar, u.pds_url as author_pds_url,
+		p.author_did, COALESCE(u.handle, p.author_did) as author_handle, u.display_name as author_display_name, u.avatar_cid as author_avatar, u.pds_url as author_pds_url,
 		p.community_did, c.handle as community_handle, c.name as community_name, c.avatar_cid as community_avatar, c.pds_url as community_pds_url,
 		p.title, p.content, p.content_facets, p.embed, p.content_labels,
 		p.created_at, p.edited_at, p.indexed_at,
-		p.upvote_count + p.bridged_upvote_count AS upvote_count, p.downvote_count + p.bridged_downvote_count AS downvote_count, p.score, p.comment_count`
+		p.upvote_count + p.bridged_upvote_count AS upvote_count, p.downvote_count + p.bridged_downvote_count AS downvote_count, p.score, p.comment_count,
+		a.status AS admission_status, a.acceptance_uri AS admission_acceptance_uri`
 
-// NewPostRepository creates a new PostgreSQL post repository
-func NewPostRepository(db *sql.DB) posts.Repository {
-	return &postgresPostRepo{db: db}
+// NewPostRepository creates a new PostgreSQL post repository.
+//
+// It returns the CONCRETE type, not posts.Repository, and that is load-bearing
+// rather than stylistic: VisibleHeaderView — the viewer-aware, admission-aware
+// header lookup the comment thread endpoint must go through — is not on
+// posts.Repository, so a constructor returning the interface would erase it and
+// leave callers that need the gated read unable to reach it. Callers that only
+// want the interface still get it by assignment; the ones that need the gate get
+// a compile error instead of a silent downgrade.
+func NewPostRepository(db *sql.DB) *PostRepository {
+	return &PostRepository{db: db}
 }
+
+// Compile-time proof that the concrete repository still satisfies the interface
+// every consumer other than the comment header gate depends on.
+var _ posts.Repository = (*PostRepository)(nil)
 
 // Create inserts a new post into the posts table
 // Called by Jetstream consumer after post is created on PDS
-func (r *postgresPostRepo) Create(ctx context.Context, post *posts.Post) error {
+func (r *PostRepository) Create(ctx context.Context, post *posts.Post) error {
 	// Serialize JSON fields for storage
 	var facetsJSON, embedJSON sql.NullString
 
@@ -94,14 +123,13 @@ func (r *postgresPostRepo) Create(ctx context.Context, post *posts.Post) error {
 			return fmt.Errorf("post already indexed: %s", post.URI)
 		}
 
-		// Check for foreign key violations
-		if strings.Contains(err.Error(), "violates foreign key constraint") {
-			if strings.Contains(err.Error(), "fk_author") {
-				return fmt.Errorf("author DID not found: %s", post.AuthorDID)
-			}
-			if strings.Contains(err.Error(), "fk_community") {
-				return fmt.Errorf("community DID not found: %s", post.CommunityDID)
-			}
+		// Check for a foreign key violation. fk_community is the only FK left
+		// on posts: migration 034 dropped fk_author (author-owned posts — a
+		// federated author may have no users row, and that must not block
+		// indexing).
+		if strings.Contains(err.Error(), "violates foreign key constraint") &&
+			strings.Contains(err.Error(), "fk_community") {
+			return fmt.Errorf("community DID not found: %s", post.CommunityDID)
 		}
 
 		return fmt.Errorf("failed to insert post: %w", err)
@@ -110,43 +138,118 @@ func (r *postgresPostRepo) Create(ctx context.Context, post *posts.Post) error {
 	return nil
 }
 
-// GetByURI retrieves a post by its AT-URI
-// Used for E2E test verification and future GET endpoint
-//
-// KNOWN DEFECT (issue 2026-07-29-deleted-posts-still-served-by-getcomments.md): this is the one post read path with no
-// `deleted_at IS NULL` predicate, so
-// it serves a soft-deleted post in full — title, body, facets and all. It is not a dead
-// path: comments.GetComments calls it to build the thread's post header and never inspects
-// DeletedAt, so social.coves.community.comment.getComments still returns the whole of a
-// withdrawn post to an anonymous caller. Same shape as the comment-thread hole found in
-// task 12, one table over. (see TestPostRepo_SoftDelete)
-func (r *postgresPostRepo) GetByURI(ctx context.Context, uri string) (*posts.Post, error) {
-	query := `
-		SELECT
-			id, uri, cid, rkey, author_did, community_did,
-			title, content, content_facets, embed, content_labels,
-			created_at, edited_at, indexed_at, deleted_at,
-			upvote_count + bridged_upvote_count AS upvote_count, downvote_count + bridged_downvote_count AS downvote_count, score, comment_count
-		FROM posts
-		WHERE uri = $1
-	`
+// rawIndexedRowColumns is the ordered SELECT list for an UNGATED raw post row,
+// shared by GetRawIndexedRow and GetRawIndexedRowsByURIs so the two cannot drift
+// apart. It must stay byte-aligned with scanRawIndexedRow's positional Scan.
+const rawIndexedRowColumns = `
+		id, uri, cid, rkey, author_did, community_did,
+		title, content, content_facets, embed, content_labels,
+		created_at, edited_at, indexed_at, deleted_at,
+		upvote_count + bridged_upvote_count AS upvote_count, downvote_count + bridged_downvote_count AS downvote_count, score, comment_count`
 
+// ════════════════════════════════════════════════════════════════════════════
+// DANGER — GetRawIndexedRow IS NOT A DISPLAY READ.
+//
+// It is the ONLY post read in this file that applies NEITHER the admission
+// visibility predicate NOR `deleted_at IS NULL`. It returns the full title and
+// content of a post that is pending, rejected, moderator-removed, or
+// soft-deleted by its own author.
+//
+// Misuse is SILENT. Unlike every gated query here it selects bare columns with
+// no `a.` reference and no join, so a caller that reaches for it by mistake gets
+// no compile error and no runtime error — just a hidden post's content on the
+// wire. That is why it is named for the row it returns rather than for the
+// lookup a reader would naturally ask for.
+//
+// If a reader will SEE the result, call one of these instead:
+//   - GetViewsByURIs(ctx, uris, viewerDID)   — batch, hydrated, gated
+//   - VisibleHeaderView(ctx, uri, viewerDID) — single post, hydrated, gated
+//
+// Legitimate callers are the ones that must see the row regardless of who may
+// look at it: the admission decider (it DECIDES visibility, so it cannot depend
+// on it), the ingestion/consumer paths, and post.get's removal-tombstone path,
+// which re-checks deleted_at itself before emitting anything.
+// ════════════════════════════════════════════════════════════════════════════
+func (r *PostRepository) GetRawIndexedRow(ctx context.Context, uri string) (*posts.Post, error) {
+	query := `SELECT` + rawIndexedRowColumns + `
+		FROM posts
+		WHERE uri = $1`
+
+	post, err := scanRawIndexedRow(r.db.QueryRowContext(ctx, query, uri))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, posts.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get post by URI: %w", err)
+	}
+	return post, nil
+}
+
+// GetRawIndexedRowsByURIs is the batched GetRawIndexedRow. THE SAME DANGER
+// APPLIES — read the banner above before calling it.
+//
+// URIs with no indexed row are absent from the returned map; that is not an
+// error, it is the answer ("this URI is not indexed here"), and it is what lets
+// the caller tell a genuine lookup FAILURE (a returned error) apart from a URI
+// the AppView has never seen.
+func (r *PostRepository) GetRawIndexedRowsByURIs(ctx context.Context, uris []string) (map[string]*posts.Post, error) {
+	result := make(map[string]*posts.Post, len(uris))
+	if len(uris) == 0 {
+		return result, nil
+	}
+
+	// Bound through a single array parameter (= ANY($1)) rather than an
+	// interpolated IN list, so the SQL stays fully parameterized and the plan is
+	// cached regardless of batch size.
+	query := `SELECT` + rawIndexedRowColumns + `
+		FROM posts
+		WHERE uri = ANY($1)`
+
+	rows, err := r.db.QueryContext(ctx, query, pq.Array(uris))
+	if err != nil {
+		return nil, fmt.Errorf("failed to query raw post rows by URIs: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			slog.Warn("failed to close rows", "error", err)
+		}
+	}()
+
+	for rows.Next() {
+		post, err := scanRawIndexedRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan raw post row: %w", err)
+		}
+		result[post.URI] = post
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating raw post rows: %w", err)
+	}
+
+	return result, nil
+}
+
+// rowScanner is the Scan surface shared by *sql.Row and *sql.Rows, so one scan
+// body serves both the single-row and batched raw reads.
+type rowScanner interface {
+	Scan(dest ...interface{}) error
+}
+
+// scanRawIndexedRow scans one rawIndexedRowColumns row into a posts.Post. The
+// Scan order below MUST stay byte-aligned with that column list.
+func scanRawIndexedRow(row rowScanner) (*posts.Post, error) {
 	var post posts.Post
 	var facetsJSON, embedJSON, labelsJSON sql.NullString
 
-	err := r.db.QueryRowContext(ctx, query, uri).Scan(
+	err := row.Scan(
 		&post.ID, &post.URI, &post.CID, &post.RKey,
 		&post.AuthorDID, &post.CommunityDID,
 		&post.Title, &post.Content, &facetsJSON, &embedJSON, &labelsJSON,
 		&post.CreatedAt, &post.EditedAt, &post.IndexedAt, &post.DeletedAt,
 		&post.UpvoteCount, &post.DownvoteCount, &post.Score, &post.CommentCount,
 	)
-
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, posts.ErrNotFound
-	}
 	if err != nil {
-		return nil, fmt.Errorf("failed to get post by URI: %w", err)
+		return nil, err
 	}
 
 	// Convert SQL types back to Go types
@@ -164,30 +267,43 @@ func (r *postgresPostRepo) GetByURI(ctx context.Context, uri string) (*posts.Pos
 	return &post, nil
 }
 
-// GetViewsByURIs retrieves full post views for a set of canonical (DID-based) AT-URIs.
-// Returns a map keyed by URI; URIs that are missing or soft-deleted are simply absent
-// from the map (the caller emits notFoundPost markers for those).
+// GetViewsByURIs retrieves full post views for a set of canonical (DID-based) AT-URIs
+// VISIBLE to viewerDID.
+// Returns a map keyed by URI; URIs that are missing, soft-deleted or hidden from this
+// viewer are simply absent from the map (the caller emits notFoundPost markers for
+// those, or upgrades a standing removal to a #removedPost tombstone).
 // Row scanning goes through the shared scanPostView, whose Scan order is kept aligned
 // with the single source of truth for the SELECT list, postViewSelectColumns.
 // Backs the social.coves.community.post.get endpoint (feed hydration + permalinks).
-func (r *postgresPostRepo) GetViewsByURIs(ctx context.Context, uris []string) (map[string]*posts.PostView, error) {
+func (r *PostRepository) GetViewsByURIs(ctx context.Context, uris []string, viewerDID string) (map[string]*posts.PostView, error) {
 	result := make(map[string]*posts.PostView, len(uris))
 	if len(uris) == 0 {
 		return result, nil
 	}
 
-	// Static query: the URI set is bound through a single array parameter (= ANY($1))
-	// rather than an interpolated IN list, so the SQL is constant (no fmt.Sprintf, one
-	// cached query plan regardless of batch size) and the values stay fully parameterized.
+	// The URI set is bound through a single array parameter (= ANY($1)) rather
+	// than an interpolated IN list, so the SQL stays fully parameterized and the
+	// plan is cached regardless of batch size.
+	//
+	// The visibility gate runs with the CALLER's viewer bound to $2. An anonymous
+	// permalink read passes "" and sees accepted posts (plus legacy/bridged rows)
+	// only; a pending/rejected/removed post is absent from the result, which the
+	// service renders as notFoundPost — or, for a removal, upgrades to a
+	// #removedPost tombstone from the admission row. An AUTHOR passing their own
+	// DID additionally reaches their own non-accepted posts, which is what keeps
+	// post.get agreeing with actor.getPosts, the feeds and the getComments thread
+	// header about a post the author can see (PRD §6.2). "" is fail-closed, so a
+	// caller that has no viewer to offer degrades to the public answer rather
+	// than to an ungated one.
+	visJoin, visWhere := visiblePostsJoin(2)
 	query := `
 		SELECT` + postViewSelectColumns + `
 		FROM posts p
-		INNER JOIN users u ON p.author_did = u.did
-		INNER JOIN communities c ON p.community_did = c.did
-		WHERE p.uri = ANY($1) AND p.deleted_at IS NULL
-	`
+		LEFT JOIN users u ON p.author_did = u.did
+		INNER JOIN communities c ON p.community_did = c.did` + visJoin + `
+		WHERE p.uri = ANY($1) AND p.deleted_at IS NULL AND ` + visWhere
 
-	rows, err := r.db.QueryContext(ctx, query, pq.Array(uris))
+	rows, err := r.db.QueryContext(ctx, query, pq.Array(uris), viewerDID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query posts by URIs: %w", err)
 	}
@@ -212,11 +328,62 @@ func (r *postgresPostRepo) GetViewsByURIs(ctx context.Context, uris []string) (m
 	return result, nil
 }
 
+// VisibleHeaderView returns the hydrated view of a single post IFF it is visible
+// to viewerDID under the read-path predicate, and nil when it is hidden (or does
+// not exist).
+//
+// It is the SINGLE-post companion to GetViewsByURIs — same predicate, same
+// viewer threading, one URI and one row instead of a batch and a map. getComments
+// needs both halves it gives — a VIEWER (so an author reaches their own pending
+// post's thread header) and the HYDRATED view (so the served header carries
+// status/acceptanceUri, PRD §6.2). It is not on posts.Repository; the comment
+// service names it in comments.PostReader instead, so a repository that lacks it
+// fails to compile at the wiring site. That is deliberate: the earlier optional
+// type assertion here failed OPEN, and any future decorator satisfying only
+// posts.Repository would have silently disabled the gate.
+//
+// It runs the SAME predicate as every other display query — visiblePostsJoin,
+// admission status + pinned-CID + collection fail-closed + author self-view — and
+// the same deleted_at filter and scanPostView hydration, so the thread header can
+// never diverge from post.get or the feeds on what is visible.
+func (r *PostRepository) VisibleHeaderView(ctx context.Context, uri, viewerDID string) (*posts.PostView, error) {
+	visJoin, visWhere := visiblePostsJoin(2)
+	query := `
+		SELECT` + postViewSelectColumns + `
+		FROM posts p
+		LEFT JOIN users u ON p.author_did = u.did
+		INNER JOIN communities c ON p.community_did = c.did` + visJoin + `
+		WHERE p.uri = $1 AND p.deleted_at IS NULL AND ` + visWhere
+
+	rows, err := r.db.QueryContext(ctx, query, uri, viewerDID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query visible post header: %w", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			slog.Warn("failed to close rows", "error", err)
+		}
+	}()
+
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("error iterating visible post header: %w", err)
+		}
+		return nil, nil
+	}
+
+	postView, err := scanPostView(rows)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan visible post header: %w", err)
+	}
+	return postView, nil
+}
+
 // GetByAuthor retrieves posts by author with filtering and pagination
 // Supports filter options: posts_with_replies (default), posts_no_replies, posts_with_media
 // Uses cursor-based pagination with created_at + uri for stable ordering
 // Returns []*PostView, next cursor, and error
-func (r *postgresPostRepo) GetByAuthor(ctx context.Context, req posts.GetAuthorPostsRequest) ([]*posts.PostView, *string, error) {
+func (r *PostRepository) GetByAuthor(ctx context.Context, req posts.GetAuthorPostsRequest) ([]*posts.PostView, *string, error) {
 	// Build WHERE clauses based on filters
 	whereConditions := []string{
 		"p.author_did = $1",
@@ -258,6 +425,19 @@ func (r *postgresPostRepo) GetByAuthor(ctx context.Context, req posts.GetAuthorP
 		paramIndex += len(cursorArgs)
 	}
 
+	// The admission visibility gate, threading the viewer DID. A stranger (or the
+	// anonymous public) sees the author's accepted posts only; the author
+	// themselves ($viewer = ActorDID) additionally sees their own pending /
+	// rejected / removed posts, which is how a profile renders per-community
+	// status (PRD §6.2). This is the alternate-endpoint the feed gate is
+	// worthless without: an author feed showing ungated content leaks exactly
+	// what the community feed hides.
+	visibilityParam := paramIndex
+	visJoin, visWhere := visiblePostsJoin(visibilityParam)
+	whereConditions = append(whereConditions, visWhere)
+	args = append(args, req.ViewerDID)
+	paramIndex++
+
 	// Add limit to args
 	limit := req.Limit
 	if limit <= 0 {
@@ -273,12 +453,12 @@ func (r *postgresPostRepo) GetByAuthor(ctx context.Context, req posts.GetAuthorP
 	query := fmt.Sprintf(`
 		SELECT %s
 		FROM posts p
-		INNER JOIN users u ON p.author_did = u.did
-		INNER JOIN communities c ON p.community_did = c.did
+		LEFT JOIN users u ON p.author_did = u.did
+		INNER JOIN communities c ON p.community_did = c.did%s
 		WHERE %s
 		ORDER BY p.created_at DESC, p.uri DESC
 		LIMIT $%d
-	`, postViewSelectColumns, whereClause, paramIndex)
+	`, postViewSelectColumns, visJoin, whereClause, paramIndex)
 
 	// Execute query
 	rows, err := r.db.QueryContext(ctx, query, args...)
@@ -322,7 +502,7 @@ func (r *postgresPostRepo) GetByAuthor(ctx context.Context, req posts.GetAuthorP
 // Uses simple | delimiter since this is an internal cursor (not signed like feed cursors)
 // Returns filter clause, arguments, and error. Error is returned for malformed cursors
 // to provide clear feedback rather than silently returning the first page.
-func (r *postgresPostRepo) parseAuthorPostsCursor(cursor *string, paramOffset int) (string, []interface{}, error) {
+func (r *PostRepository) parseAuthorPostsCursor(cursor *string, paramOffset int) (string, []interface{}, error) {
 	if cursor == nil || *cursor == "" {
 		return "", nil, nil
 	}
@@ -367,7 +547,7 @@ func (r *postgresPostRepo) parseAuthorPostsCursor(cursor *string, paramOffset in
 
 // buildAuthorPostsCursor creates pagination cursor from last post
 // Cursor format: base64(created_at|uri)
-func (r *postgresPostRepo) buildAuthorPostsCursor(post *posts.PostView) string {
+func (r *PostRepository) buildAuthorPostsCursor(post *posts.PostView) string {
 	cursorStr := fmt.Sprintf("%s|%s", post.CreatedAt.Format(time.RFC3339Nano), post.URI)
 	return base64.URLEncoding.EncodeToString([]byte(cursorStr))
 }
@@ -375,7 +555,7 @@ func (r *postgresPostRepo) buildAuthorPostsCursor(post *posts.PostView) string {
 // SoftDelete marks a post as deleted by setting deleted_at
 // Called by Jetstream consumer after post is deleted from PDS
 // Idempotent: Returns success if post already deleted or doesn't exist
-func (r *postgresPostRepo) SoftDelete(ctx context.Context, uri string) error {
+func (r *PostRepository) SoftDelete(ctx context.Context, uri string) error {
 	query := `
 		UPDATE posts
 		SET deleted_at = NOW()
@@ -408,6 +588,8 @@ func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, er
 		communityHandle   sql.NullString
 		communityAvatar   sql.NullString
 		communityPDSURL   sql.NullString
+		admissionStatus   sql.NullString
+		acceptanceURI     sql.NullString
 	)
 
 	dest := []interface{}{
@@ -417,6 +599,7 @@ func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, er
 		&title, &content, &facets, &embed, &labelsJSON,
 		&postView.CreatedAt, &editedAt, &postView.IndexedAt,
 		&postView.UpvoteCount, &postView.DownvoteCount, &postView.Score, &postView.CommentCount,
+		&admissionStatus, &acceptanceURI,
 	}
 	dest = append(dest, extraDest...)
 
@@ -431,6 +614,12 @@ func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, er
 	if avatarURL := blobs.HydrateImageURL(blobs.GetImageURLConfig(), authorPDSURL.String, authorView.DID, authorAvatar.String, "avatar_small"); avatarURL != "" {
 		authorView.Avatar = &avatarURL
 	}
+	// CARRIED, not just used for the avatar above. A postv2 post's media lives
+	// in the AUTHOR's repository, so the blob transform needs to know which
+	// server holds it; this column has always been selected and always dropped
+	// here, which would leave every author-owned post's images addressed to an
+	// empty host.
+	authorView.PDSURL = authorPDSURL.String
 	postView.Author = &authorView
 
 	// Build community ref
@@ -449,6 +638,17 @@ func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, er
 	// Set optional fields
 	if editedAt.Valid {
 		postView.EditedAt = &editedAt.Time
+	}
+
+	// Per-community admission context (PRD §6.2). Present on any row the
+	// visibility predicate returned that carries an admission decision — every
+	// accepted post, and an author's own non-accepted posts on their profile.
+	// Absent (NULL) for legacy/bridged rows, which omit it on the wire.
+	if admissionStatus.Valid {
+		postView.Status = admissionStatus.String
+	}
+	if acceptanceURI.Valid {
+		postView.AcceptanceURI = acceptanceURI.String
 	}
 
 	// Parse facets JSON into local variable (will be added to record below)
@@ -485,12 +685,27 @@ func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, er
 		CommentCount: postView.CommentCount,
 	}
 
-	// Build the record (required by lexicon)
+	// Build the record (required by lexicon).
+	//
+	// THE SHAPE FOLLOWS THE URI, because the two post collections are different
+	// records rather than two spellings of one. A postv2 record lives in the
+	// AUTHOR's repo and has NO author field — its removal is what makes
+	// authorship unforgeable (§3.1) — so synthesising one here would hand every
+	// reader back exactly the field the flip deleted, and a client that trusted
+	// it would be trusting a value this AppView made up.
+	collection := posts.CollectionOfPostURI(postView.URI)
+	if collection == "" {
+		collection = legacyPostCollection
+	}
 	record := map[string]interface{}{
-		"$type":     "social.coves.community.post",
+		"$type":     collection,
 		"community": communityRef.DID,
-		"author":    authorView.DID,
 		"createdAt": postView.CreatedAt.Format(time.RFC3339),
+	}
+	if collection == legacyPostCollection {
+		// The deprecated community-repo record DOES carry an author field, and
+		// it is part of the record a client may verify against the repo.
+		record["author"] = authorView.DID
 	}
 
 	// Add optional fields to record if present

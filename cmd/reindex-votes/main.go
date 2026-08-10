@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"Coves/internal/core/posts"
+
 	_ "github.com/lib/pq"
 )
 
@@ -229,23 +231,8 @@ func indexVote(ctx context.Context, db *sql.DB, voterDID string, record Record) 
 	}
 
 	// Update post/comment counts
-	collection := extractCollectionFromURI(subjectURI)
-	var updateQuery string
-
-	switch collection {
-	case "social.coves.community.post":
-		if direction == "up" {
-			updateQuery = `UPDATE posts SET upvote_count = upvote_count + 1, score = upvote_count + 1 - downvote_count WHERE uri = $1 AND deleted_at IS NULL`
-		} else {
-			updateQuery = `UPDATE posts SET downvote_count = downvote_count + 1, score = upvote_count - (downvote_count + 1) WHERE uri = $1 AND deleted_at IS NULL`
-		}
-	case "social.coves.community.comment":
-		if direction == "up" {
-			updateQuery = `UPDATE comments SET upvote_count = upvote_count + 1, score = upvote_count + 1 - downvote_count WHERE uri = $1 AND deleted_at IS NULL`
-		} else {
-			updateQuery = `UPDATE comments SET downvote_count = downvote_count + 1, score = upvote_count - (downvote_count + 1) WHERE uri = $1 AND deleted_at IS NULL`
-		}
-	default:
+	updateQuery := voteCountUpdateQuery(extractCollectionFromURI(subjectURI), direction)
+	if updateQuery == "" {
 		// Unknown collection, just index the vote
 		return tx.Commit()
 	}
@@ -255,6 +242,38 @@ func indexVote(ctx context.Context, db *sql.DB, voterDID string, record Record) 
 	}
 
 	return tx.Commit()
+}
+
+// commentCollection is the collection a vote's subject names when the vote was
+// cast on a comment.
+const commentCollection = "social.coves.community.comment"
+
+// voteCountUpdateQuery returns the statement that folds one vote into its
+// subject's denormalized counters, or "" when the subject is something this tool
+// does not count.
+//
+// It is a function rather than an inline switch so the routing can be tested
+// without a database: this tool exists to REPAIR counts that drifted, so a
+// subject it silently declines to route is a rerun that reports success and
+// changes nothing — the least visible failure the tool can have.
+func voteCountUpdateQuery(subjectCollection, direction string) string {
+	switch {
+	// Both post collections, because both are indexed into the `posts` table for
+	// as long as the author-owned flip's dual-collection window is open
+	// (posts.IsPostCollection).
+	case posts.IsPostCollection(subjectCollection):
+		if direction == "up" {
+			return `UPDATE posts SET upvote_count = upvote_count + 1, score = upvote_count + 1 - downvote_count WHERE uri = $1 AND deleted_at IS NULL`
+		}
+		return `UPDATE posts SET downvote_count = downvote_count + 1, score = upvote_count - (downvote_count + 1) WHERE uri = $1 AND deleted_at IS NULL`
+	case subjectCollection == commentCollection:
+		if direction == "up" {
+			return `UPDATE comments SET upvote_count = upvote_count + 1, score = upvote_count + 1 - downvote_count WHERE uri = $1 AND deleted_at IS NULL`
+		}
+		return `UPDATE comments SET downvote_count = downvote_count + 1, score = upvote_count - (downvote_count + 1) WHERE uri = $1 AND deleted_at IS NULL`
+	default:
+		return ""
+	}
 }
 
 func extractCollectionFromURI(uri string) string {

@@ -73,12 +73,41 @@ type GetCommentsRequest struct {
 	Limit      int
 }
 
+// PostReader is the post-repository surface the comment service depends on, and
+// it is deliberately NARROWER TO IMPLEMENT than posts.Repository: a type must
+// carry the visibility-aware header lookup as well.
+//
+// This is a security requirement expressed in the type system. The thread header
+// getComments serves is a posts read path — full title, content and admission
+// context of the viewed post — so it has to run the same admission predicate as
+// post.get and the feeds. That gate used to be reached through an OPTIONAL type
+// assertion, with a miss silently degrading to the pre-admission header builder;
+// production happened to satisfy it, so nothing leaked, but the property rested
+// on convention. Any decorator that wrapped the repository for metrics, caching
+// or tracing and forwarded only posts.Repository would have turned the gate off
+// with no build error, no test failure and no log line.
+//
+// Making it the dependency's TYPE moves that failure to compile time: a
+// repository without VisibleHeaderView cannot be handed to the constructors at
+// all, so there is no runtime path left that can serve an ungated header.
+type PostReader interface {
+	posts.Repository
+
+	// VisibleHeaderView returns the hydrated post view IFF the post is visible to
+	// viewerDID under the read-path visibility predicate, and (nil, nil) when it is
+	// hidden — a pending, rejected or removed admission for a viewer who is not the
+	// author, a postv2 whose admission row never seeded, or a soft-deleted row.
+	// The returned view is the admission-hydrated one, so status/acceptanceUri
+	// survive onto the served header.
+	VisibleHeaderView(ctx context.Context, uri, viewerDID string) (*posts.PostView, error)
+}
+
 // commentService implements the Service interface
 // Coordinates between repository layer and view model construction
 type commentService struct {
 	commentRepo      Repository               // Comment data access
 	userRepo         users.UserRepository     // User lookup for author hydration
-	postRepo         posts.Repository         // Post lookup for building post views
+	postRepo         PostReader               // Post lookup + the admission-aware header gate
 	communityRepo    communities.Repository   // Community lookup for community hydration
 	oauthClient      *oauthclient.OAuthClient // OAuth client for PDS authentication
 	oauthStore       oauth.ClientAuthStore    // OAuth session store
@@ -91,7 +120,7 @@ type commentService struct {
 func NewCommentService(
 	commentRepo Repository,
 	userRepo users.UserRepository,
-	postRepo posts.Repository,
+	postRepo PostReader,
 	communityRepo communities.Repository,
 	oauthClient *oauthclient.OAuthClient,
 	oauthStore oauth.ClientAuthStore,
@@ -116,7 +145,7 @@ func NewCommentService(
 func NewCommentServiceWithPDSFactory(
 	commentRepo Repository,
 	userRepo users.UserRepository,
-	postRepo posts.Repository,
+	postRepo PostReader,
 	communityRepo communities.Repository,
 	logger *slog.Logger,
 	factory PDSClientFactory,
@@ -152,7 +181,7 @@ func (s *commentService) GetComments(ctx context.Context, req *GetCommentsReques
 	defer cancel()
 
 	// 2. Fetch post for context
-	post, err := s.postRepo.GetByURI(ctx, req.PostURI)
+	post, err := s.postRepo.GetRawIndexedRow(ctx, req.PostURI)
 	if err != nil {
 		// Translate post not-found errors to comment-layer errors for proper HTTP status
 		if posts.IsNotFound(err) {
@@ -161,8 +190,19 @@ func (s *commentService) GetComments(ctx context.Context, req *GetCommentsReques
 		return nil, fmt.Errorf("failed to fetch post: %w", err)
 	}
 
-	// Build post view for response (hydrates author handle and community name)
-	postView := s.buildPostView(ctx, post, req.ViewerDID)
+	// 2a. Resolve the thread header through the read-path visibility predicate
+	// (task 7, PRD §6.2). GetByURI is admission-blind and serves soft-deleted rows
+	// (the 2026-07-29 defect), so without this the thread endpoint hands a
+	// non-author the full header — title, content, author — of a post the feeds
+	// correctly hide. The header answers as post.get does: a soft-deleted post is
+	// gone, and a post its community has not admitted (a pending/removed/rejected
+	// row on ANY collection, or a failed-seed postv2) is root-not-found to everyone
+	// but its own author. The resolved view is the admission-hydrated one, so its
+	// status/acceptanceUri survive onto the served header.
+	postView, err := s.resolveVisibleHeader(ctx, post, req.ViewerDID)
+	if err != nil {
+		return nil, err
+	}
 
 	// 2b. If a parent comment rkey is provided, return only that comment's subtree
 	if req.ParentRkey != "" {
@@ -201,6 +241,40 @@ func (s *commentService) GetComments(ctx context.Context, req *GetCommentsReques
 		Post:     postView,
 		Cursor:   nextCursor,
 	}, nil
+}
+
+// resolveVisibleHeader returns the post view to render as the getComments thread
+// header, or ErrRootNotFound when the post must not be shown to this viewer.
+//
+// It consults a REAL admission lookup, never the collection: an earlier gate
+// inferred visibility from the URI's collection, which leaked a moderator-REMOVED
+// legacy community.post (a legacy row CAN carry a removed admission — applyRemoval
+// has no collection guard). VisibleHeaderView runs the same predicate as post.get
+// and the feeds — admission status, pinned CID, soft-delete, and the author
+// self-view branch — and returns the admission-hydrated view, so the served
+// header carries status/acceptanceUri instead of a second view rebuilt from the
+// raw Post (which dropped them).
+//
+// THERE IS NO FALLBACK, deliberately. The lookup used to be reached through an
+// optional type assertion whose miss served the pre-admission header, so a
+// repository that merely FORGOT the capability disabled the gate silently. The
+// requirement now lives in the PostReader dependency type, so a type without it
+// cannot be wired at all — the compiler refuses the wiring instead of this
+// function refusing the request, and every path through here is gated.
+func (s *commentService) resolveVisibleHeader(ctx context.Context, post *posts.Post, viewerDID *string) (*posts.PostView, error) {
+	viewer := ""
+	if viewerDID != nil {
+		viewer = *viewerDID
+	}
+
+	view, err := s.postRepo.VisibleHeaderView(ctx, post.URI, viewer)
+	if err != nil {
+		return nil, fmt.Errorf("checking post header visibility: %w", err)
+	}
+	if view == nil {
+		return nil, ErrRootNotFound
+	}
+	return view, nil
 }
 
 // getCommentSubtree returns the subtree rooted at the comment identified by req.ParentRkey
@@ -913,7 +987,14 @@ func (s *commentService) UpdateComment(ctx context.Context, session *oauth.Clien
 		if pds.IsAuthError(err) {
 			return nil, fmt.Errorf("%w: %w", ErrNotAuthorized, err)
 		}
-		if errors.Is(err, pds.ErrConflict) {
+		// ErrSwapConflict is the branch that actually fires. A PDS answers a
+		// stale swapRecord with HTTP 400 and "error": "InvalidSwap", not the 409
+		// the lexicon documents — verified against a live PDS — so the
+		// ErrConflict test alone never matched and every concurrent edit
+		// surfaced as a generic failure instead of ErrConcurrentModification.
+		// Both are kept: 409 remains legal, and an implementation that sends it
+		// must not regress to the generic branch.
+		if errors.Is(err, pds.ErrSwapConflict) || errors.Is(err, pds.ErrConflict) {
 			return nil, fmt.Errorf("%w: %w", ErrConcurrentModification, err)
 		}
 		return nil, fmt.Errorf("failed to update comment: %w", err)
@@ -1136,21 +1217,55 @@ func (s *commentService) buildPostView(ctx context.Context, post *posts.Post, vi
 
 // buildPostRecord constructs a minimal PostRecord from a Post entity
 // Satisfies the lexicon requirement that postView.record is a required field
+//
+// THE SHAPE FOLLOWS THE URI, exactly as the repository's own hydration does
+// (postgres.scanPostView): the two post collections are different records rather
+// than two spellings of one. An author-owned post lives in the AUTHOR's repo
+// under social.coves.community.postv2 and has NO author field — its removal is
+// what makes authorship unforgeable (PRD §3.1) — so stamping the deprecated NSID
+// here would tell a client to read the authority of that URI as a community, and
+// hand it a self-asserted author this AppView invented, which is precisely the
+// mis-indexing §3.0 gave the successor a new NSID to prevent.
+//
+// It returns a map rather than a typed posts.PostRecord for the same reason:
+// that struct carries a non-optional author field, so a postv2 record built from
+// it would serialize one whatever this code assigned. A map lets the field be
+// ABSENT, which is the only honest rendering — and it is the shape every other
+// producer of postView.record already emits (postgres.scanPostView, the feed
+// queries), so the two paths can no longer disagree about what a post record
+// looks like.
+//
 // TODO (Phase 2C): Unmarshal JSON fields (embed, facets, labels) for complete record
-func (s *commentService) buildPostRecord(post *posts.Post) *posts.PostRecord {
-	record := &posts.PostRecord{
-		Type:      "social.coves.community.post",
-		Community: post.CommunityDID,
-		Author:    post.AuthorDID,
-		CreatedAt: post.CreatedAt.Format(time.RFC3339),
-		Title:     post.Title,
-		Content:   post.Content,
+func (s *commentService) buildPostRecord(post *posts.Post) map[string]interface{} {
+	collection := posts.CollectionOfPostURI(post.URI)
+	if !posts.IsPostCollection(collection) {
+		// A URI naming neither collection is not something this AppView indexed
+		// as a post, so there is no better answer than the shape every pre-flip
+		// row has.
+		collection = posts.LegacyPostCollection
+	}
+
+	record := map[string]interface{}{
+		"$type":     collection,
+		"community": post.CommunityDID,
+		"createdAt": post.CreatedAt.Format(time.RFC3339),
+	}
+	if collection == posts.LegacyPostCollection {
+		// The deprecated community-repo record DOES carry an author, and it is
+		// part of what a client may verify against the community's repo.
+		record["author"] = post.AuthorDID
+	}
+	if post.Title != nil {
+		record["title"] = *post.Title
+	}
+	if post.Content != nil {
+		record["content"] = *post.Content
 	}
 
 	// TODO (Phase 2C): Parse JSON fields from database for complete record:
-	// - Unmarshal post.Embed (*string) → record.Embed (map[string]interface{})
-	// - Unmarshal post.ContentFacets (*string) → record.Facets ([]interface{})
-	// - Unmarshal post.ContentLabels (*string) → record.Labels (*SelfLabels)
+	// - Unmarshal post.Embed (*string) → record["embed"]
+	// - Unmarshal post.ContentFacets (*string) → record["facets"]
+	// - Unmarshal post.ContentLabels (*string) → record["labels"]
 	// These fields are stored as JSONB in the database and need proper deserialization
 
 	return record
@@ -1200,9 +1315,22 @@ func (s *commentService) GetActorComments(ctx context.Context, req *GetActorComm
 	}
 
 	// 3. Fetch comments from repository
+	//
+	// The viewer DID is threaded because the community filter resolves each
+	// comment's root through the read-path visibility predicate (PRD §6.2): it
+	// decides whether a caller may see comments rooted at posts the named
+	// community has not admitted. An authenticated author keeps the carve-out over
+	// their own pending/rejected/removed roots; everyone else, including the
+	// anonymous "" viewer, sees admitted roots only.
+	var viewerDID string
+	if req.ViewerDID != nil {
+		viewerDID = *req.ViewerDID
+	}
+
 	repoReq := ListByCommenterRequest{
 		CommenterDID: req.ActorDID,
 		CommunityDID: communityDID,
+		ViewerDID:    viewerDID,
 		Limit:        req.Limit,
 		Cursor:       req.Cursor,
 	}

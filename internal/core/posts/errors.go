@@ -26,7 +26,12 @@ var (
 	// ErrNotFound is returned when a post is not found by URI
 	ErrNotFound = errors.New("post not found")
 
-	// ErrRateLimitExceeded is returned when an aggregator exceeds rate limits
+	// ErrRateLimitExceeded is returned when a submission is refused for being
+	// over quota — primarily the per-author, per-community submission limit of
+	// PRD_AUTHOR_OWNED_POSTS.md §8 (DecisionRateLimitExceeded). The handler
+	// maps it to a 429. (An aggregator over its OWN hourly quota is refused
+	// through the aggregators package's sentinel instead, so the boundary can
+	// tell the two apart.)
 	ErrRateLimitExceeded = errors.New("rate limit exceeded")
 
 	// ErrInvalidCursor is returned when a pagination cursor is malformed
@@ -34,6 +39,45 @@ var (
 
 	// ErrActorNotFound is returned when the requested actor does not exist
 	ErrActorNotFound = errors.New("actor not found")
+
+	// ErrDuplicateSubmission is returned when an author resubmits content
+	// identical to something already on the submission ledger for the current
+	// dedupe window (PRD_AUTHOR_OWNED_POSTS.md §8).
+	//
+	// THE WORDING IS LOAD-BEARING. IsConflict below classifies an error by
+	// looking for "duplicate key", "already exists" or "already indexed" in its
+	// text, because a genuine index conflict arrives from the driver as a
+	// string rather than as a typed error. This sentinel must therefore avoid
+	// all three phrasings: a duplicate SUBMISSION is a client being refused at
+	// the admission gate, while a conflict is the indexer meeting a record it
+	// already has, and collapsing them would let a refused post be reported as
+	// successfully indexed.
+	ErrDuplicateSubmission = errors.New("an identical submission from this author to this community was refused as a repeat")
+
+	// ErrNoAuthorCredentials is returned when the AppView cannot open the
+	// AUTHOR's repository because it holds nothing to authenticate as them
+	// with: no OAuth session on the request and no stored session to resume
+	// (an aggregator whose tokens were never granted, or were revoked).
+	//
+	// IT IS ITS OWN SENTINEL RATHER THAN A GENERIC FAILURE because the two
+	// audiences need opposite things from it. A human's missing session is
+	// "sign in again" — a 401 the client can act on. An aggregator's revoked
+	// tokens are an operator problem: the service is running, correctly
+	// configured and completely unable to post, and a 500 saying "failed to
+	// write post to PDS" would have that diagnosed as a PDS outage. Posts used
+	// to be written with the COMMUNITY's credentials, so this class of failure
+	// did not exist before the write path flipped to the author's repo.
+	ErrNoAuthorCredentials = errors.New("no credentials to write to the author's repository")
+
+	// ErrConcurrentModification is returned when an update's swap guard fires:
+	// the record changed between the read that shaped the edit and the write
+	// that would have applied it.
+	//
+	// The API boundary maps it to 409. Retrying is the client's decision, not
+	// the server's, because the edit was composed against content that no
+	// longer stands — silently re-reading and re-applying would let a second
+	// device's edit be overwritten by a first device that never saw it.
+	ErrConcurrentModification = errors.New("the post was modified concurrently")
 )
 
 // ValidationError is the shared validation error type. It is aliased rather

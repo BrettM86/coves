@@ -1,0 +1,58 @@
+{
+  "$type": "social.coves.community.postv2",
+  "community": "did:plc:programming123",
+  "title": "Cross-posted from Lemmy: The Button",
+  "content": "The Button\nThey said\nDo not press\nUse:\nfmt.Println(\"hi\")",
+  "facets": [
+    {
+      "index": {
+        "byteStart": 0,
+        "byteEnd": 10
+      },
+      "features": [
+        {
+          "$type": "social.coves.richtext.facet#heading",
+          "level": 2
+        }
+      ]
+    },
+    {
+      "index": {
+        "byteStart": 11,
+        "byteEnd": 20
+      },
+      "features": [
+        {
+          "$type": "social.coves.richtext.facet#blockquote",
+          "level": 1
+        }
+      ]
+    },
+    {
+      "index": {
+        "byteStart": 21,
+        "byteEnd": 33
+      },
+      "features": [
+        {
+          "$type": "social.coves.richtext.facet#blockquote",
+          "level": 2
+        }
+      ]
+    },
+    {
+      "index": {
+        "byteStart": 39,
+        "byteEnd": 56
+      },
+      "features": [
+        {
+          "$type": "social.coves.richtext.facet#codeBlock",
+          "language": "go"
+        }
+      ]
+    }
+  ],
+  "langs": ["en"],
+  "createdAt": "2026-07-22T10:00:00Z"
+}

@@ -46,32 +46,39 @@ func (r *postgresFeedRepo) GetCommunityFeed(ctx context.Context, req communityFe
 		selectClause = feedPostSelectClause("NULL::numeric")
 	}
 
-	// Build optional viewer block filter (only when authenticated viewer is present)
+	// The admission visibility gate always runs, so no read path can serve a
+	// post its community has not admitted. Its viewer parameter ($visibilityParam)
+	// carries the read's viewer DID — empty for the anonymous public, which sees
+	// accepted content only.
+	visibilityParam := 3 + len(cursorValues)
+	visJoin, visWhere := visiblePostsJoin(visibilityParam)
+
+	// The viewer block filter reuses that same viewer parameter; it is only
+	// meaningful for an authenticated viewer and absent for the public.
 	var viewerFilter string
-	var viewerArgs []interface{}
 	if req.ViewerDID != "" {
-		viewerParamIdx := 3 + len(cursorValues)
-		viewerFilter = fmt.Sprintf("AND NOT EXISTS (SELECT 1 FROM user_blocks WHERE blocker_did = $%d AND blocked_did = p.author_did)", viewerParamIdx)
-		viewerArgs = append(viewerArgs, req.ViewerDID)
+		viewerFilter = fmt.Sprintf("AND NOT EXISTS (SELECT 1 FROM user_blocks WHERE blocker_did = $%d AND blocked_did = p.author_did)", visibilityParam)
 	}
 
 	query := fmt.Sprintf(`
 		%s
-		INNER JOIN users u ON p.author_did = u.did
-		INNER JOIN communities c ON p.community_did = c.did
+		LEFT JOIN users u ON p.author_did = u.did
+		INNER JOIN communities c ON p.community_did = c.did%s
 		WHERE p.community_did = $1
 			AND p.deleted_at IS NULL
+			AND %s
 			%s
 			%s
 			%s
 		ORDER BY %s
 		LIMIT $2
-	`, selectClause, timeFilter, cursorFilter, viewerFilter, orderBy)
+	`, selectClause, visJoin, visWhere, timeFilter, cursorFilter, viewerFilter, orderBy)
 
-	// Prepare query arguments
+	// Prepare query arguments. The viewer DID is bound once at $visibilityParam
+	// and reused by the block filter above.
 	args := []interface{}{req.Community, req.Limit + 1} // +1 to check for next page
 	args = append(args, cursorValues...)
-	args = append(args, viewerArgs...)
+	args = append(args, req.ViewerDID)
 
 	// Execute query
 	rows, err := r.db.QueryContext(ctx, query, args...)

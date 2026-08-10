@@ -296,6 +296,9 @@ func TestPostCreate_ServiceEnforcesAuthorship(t *testing.T) {
 		content := "Test post"
 		_, err := stack.service.CreatePost(
 			middleware.SetTestUserDID(t.Context(), contextDID),
+			// No session: the authorship checks under test run before any
+			// credential is needed, which is exactly the ordering they assert.
+			nil,
 			posts.CreatePostRequest{
 				Community: communityDID,
 				AuthorDID: requestDID,

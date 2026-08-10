@@ -21,14 +21,44 @@ func NewUserRepository(db *sql.DB) users.UserRepository {
 	return &postgresUserRepo{db: db}
 }
 
-// Create inserts a new user into the users table
+// Create inserts a new user into the users table.
+//
+// It also clears any migration-036 erasure marker for the DID, in the same
+// transaction, because registering IS the marker's exit. A DID that comes back
+// — the same person signing up again, or an account restored after a mistaken
+// deletion — must index normally, and a marker left standing would have the
+// ingestion gate silently drop every post the returning account writes. Both
+// service paths funnel through here (IndexUser via CreateUser, and
+// RegisterAccount), which is why the clear lives at the repository statement
+// rather than in either of them.
 func (r *postgresUserRepo) Create(ctx context.Context, user *users.User) (*users.User, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start transaction creating user did=%s: %w", user.DID, err)
+	}
+	defer func() {
+		if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
+			slog.Error("failed to rollback user create transaction",
+				slog.String("did", user.DID),
+				slog.String("error", err.Error()),
+			)
+		}
+	}()
+
+	// Ordered before the insert so that a failing insert — a duplicate DID or a
+	// taken handle — rolls the clear back with it. Clearing a marker for an
+	// account that did not actually re-register would silently re-open
+	// ingestion for content the AppView was asked to forget.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM deleted_accounts WHERE did = $1`, user.DID); err != nil {
+		return nil, fmt.Errorf("failed to clear deletion marker for did=%s: %w", user.DID, err)
+	}
+
 	query := `
 		INSERT INTO users (did, handle, pds_url)
 		VALUES ($1, $2, $3)
 		RETURNING did, handle, pds_url, created_at, updated_at`
 
-	err := r.db.QueryRowContext(ctx, query, user.DID, user.Handle, user.PDSURL).
+	err = tx.QueryRowContext(ctx, query, user.DID, user.Handle, user.PDSURL).
 		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		// Check for unique constraint violations
@@ -41,6 +71,10 @@ func (r *postgresUserRepo) Create(ctx context.Context, user *users.User) (*users
 			}
 		}
 		return nil, fmt.Errorf("failed to create user: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit user create transaction for did=%s: %w", user.DID, err)
 	}
 
 	return user, nil
@@ -190,6 +224,15 @@ func (r *postgresUserRepo) GetByDIDs(ctx context.Context, dids []string) (map[st
 	return result, nil
 }
 
+// anonymousProfileViewer is the viewer bound into the profile's post_count.
+//
+// A profile's stats are a PUBLIC surface — the same numbers go to every caller,
+// so there is no viewer to thread and the author self-view branches must not
+// fire. Naming it rather than passing a bare "" at the call site is the point:
+// an empty string in an argument list reads like an oversight, and this one is a
+// decision.
+const anonymousProfileViewer = ""
+
 // GetProfileStats retrieves aggregated statistics for a user profile
 // This performs a single query with scalar subqueries for efficiency
 func (r *postgresUserRepo) GetProfileStats(ctx context.Context, did string) (*users.ProfileStats, error) {
@@ -202,9 +245,35 @@ func (r *postgresUserRepo) GetProfileStats(ctx context.Context, did string) (*us
 	// Reputation represents historical contributions, while membership_count
 	// reflects current active community access. A banned user keeps their
 	// earned reputation but loses the membership count.
+	//
+	// post_count counts VISIBLE posts only: a profile advertising posts no reader
+	// can reach is a side channel onto non-accepted content (PRD §6.2). It runs
+	// THE read-path predicate (visiblePostsJoin) rather than a copy of it — an
+	// earlier revision inlined the rule here, and a reviewer showed three
+	// mutations of that copy (dropping the collection check, the pinned-CID
+	// equality, or the community half of the join key) that no test could catch,
+	// because a count nobody cross-checks against a feed is unfalsifiable. $2 is
+	// bound to the empty viewer, which is exactly what makes this the PUBLIC
+	// count: the author self-view branches turn on `p.author_did = $2`, and no
+	// DID is "".
+	//
+	// comment_count is DELIBERATELY ROOT-BLIND — it counts the actor's comments
+	// whatever the admission state of the post they hang under, and that is not
+	// an oversight to be fixed by symmetry with post_count above. A comment is
+	// the actor's own public speech, and actor.getComments already LISTS it when
+	// its root is pending or removed, carrying the root as a bare uri/cid
+	// reference that leaks nothing and resolves through the gated post.get
+	// (TestActorCommentsVisibility_RootIsReferenceOnly pins that shape). Gating
+	// the count would put the profile's headline number in disagreement with the
+	// list the same profile renders, and would leak in the other direction: a
+	// comment count that visibly drops tells the reader a root they cannot see
+	// was moderated. The asymmetry with post_count is real and intended — a
+	// post's visibility IS its community's decision, a comment's is not.
+	visJoin, visWhere := visiblePostsJoin(2)
 	query := `
 		SELECT
-			(SELECT COUNT(*) FROM posts WHERE author_did = $1 AND deleted_at IS NULL) as post_count,
+			(SELECT COUNT(*) FROM posts p` + visJoin + `
+				WHERE p.author_did = $1 AND p.deleted_at IS NULL AND ` + visWhere + `) as post_count,
 			(SELECT COUNT(*) FROM comments WHERE commenter_did = $1 AND deleted_at IS NULL) as comment_count,
 			(SELECT COUNT(*) FROM community_subscriptions WHERE user_did = $1) as community_count,
 			(SELECT COUNT(*) FROM community_memberships WHERE user_did = $1 AND is_banned = false) as membership_count,
@@ -212,7 +281,7 @@ func (r *postgresUserRepo) GetProfileStats(ctx context.Context, did string) (*us
 	`
 
 	stats := &users.ProfileStats{}
-	err := r.db.QueryRowContext(ctx, query, did).Scan(
+	err := r.db.QueryRowContext(ctx, query, did, anonymousProfileViewer).Scan(
 		&stats.PostCount,
 		&stats.CommentCount,
 		&stats.CommunityCount,
@@ -250,6 +319,30 @@ func (r *postgresUserRepo) Delete(ctx context.Context, did string) error {
 			)
 		}
 	}()
+
+	// 0. Record the erasure marker (migration 036).
+	//
+	// It goes FIRST and inside this transaction, both deliberately. Inside,
+	// because a marker that survived a rolled-back deletion would name an
+	// account that still exists — and the ingestion gate reads this table, so
+	// that account's future posts would be dropped forever with no row
+	// anywhere explaining it. First, because every statement below erases
+	// content, and the marker is what stops the firehose putting it back: a
+	// redriven post event or a replayed acceptance for this DID arrives long
+	// after the sweep, and without a marker the consumer cannot tell an erased
+	// account from a federated author it has simply never indexed (§5.3).
+	//
+	// deleted_rev is left NULL: an AppView-initiated deletion is a local
+	// administrative act, not a repo commit, so there is no revision to record
+	// and inventing one would put a fabricated watermark where real
+	// comparisons happen. A re-delete refreshes the timestamp rather than
+	// erroring, so the sweep stays idempotent.
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO deleted_accounts (did, deleted_at) VALUES ($1, NOW())
+		ON CONFLICT (did) DO UPDATE SET deleted_at = NOW()
+	`, did); err != nil {
+		return fmt.Errorf("failed to record deletion marker for did=%s: %w", did, err)
+	}
 
 	// Delete in correct order to avoid foreign key violations
 	// Tables without FK constraints on user_did are deleted first
@@ -294,7 +387,28 @@ func (r *postgresUserRepo) Delete(ctx context.Context, did string) error {
 		return fmt.Errorf("failed to delete votes for did=%s: %w", did, err)
 	}
 
-	// 9. Delete user (FK CASCADE deletes posts)
+	// 9. Delete the admission rows for this author's posts.
+	//
+	// Author-owned post URIs live in the author's own repo — at://<did>/... —
+	// so a prefix match on the DID reaches every subject, INCLUDING admissions
+	// whose post is not indexed here: an acceptance can arrive before the post
+	// it is about, which is exactly why community_post_admissions deliberately
+	// carries no foreign key to posts (migration 034). A subquery against
+	// posts would miss those rows, and nothing but this statement removes
+	// them — left behind, they would be admissions about a deleted account.
+	if _, err := tx.ExecContext(ctx, `
+		DELETE FROM community_post_admissions
+		WHERE starts_with(post_uri, 'at://' || $1 || '/')
+	`, did); err != nil {
+		return fmt.Errorf("failed to delete community_post_admissions for did=%s: %w", did, err)
+	}
+
+	// 10. Delete posts (explicit DELETE - fk_author CASCADE removed in migration 034)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM posts WHERE author_did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete posts for did=%s: %w", did, err)
+	}
+
+	// 11. Delete user
 	result, err := tx.ExecContext(ctx, `DELETE FROM users WHERE did = $1`, did)
 	if err != nil {
 		return fmt.Errorf("failed to delete user did=%s: %w", did, err)

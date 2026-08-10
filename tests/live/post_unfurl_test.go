@@ -223,6 +223,7 @@ func TestPostUnfurl_UserProvidedMetadata(t *testing.T) {
 		unfurlService,
 		nil, // blueskyService
 		pdsURL,
+		posts.WithAdmissionPolicy(posts.NewAllowAllAdmissionPolicyForTests()),
 	)
 
 	// Create test user and community
@@ -271,9 +272,10 @@ func TestPostUnfurl_UserProvidedMetadata(t *testing.T) {
 	}
 
 	authCtx := middleware.SetTestUserDID(ctx, testUserDID)
-	_, err = postService.CreatePost(authCtx, createReq)
+	_, err = postService.CreatePost(authCtx, nil, createReq)
 
-	// Expected to fail at token refresh
+	// Expected to fail at the author-repo write: no author-repo factory is
+	// wired, so there is nothing to sign the record with (§4.2 step 3).
 	require.Error(t, err)
 
 	// The important check: verify unfurl happened but didn't overwrite user data

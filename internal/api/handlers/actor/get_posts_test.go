@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"Coves/internal/api/middleware"
 	"Coves/internal/core/blueskypost"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
@@ -30,7 +31,11 @@ func (m *mockPostService) GetAuthorPosts(ctx context.Context, req posts.GetAutho
 	}, nil
 }
 
-func (m *mockPostService) CreatePost(ctx context.Context, req posts.CreatePostRequest) (*posts.CreatePostResponse, error) {
+func (m *mockPostService) CreatePost(ctx context.Context, session *oauthlib.ClientSessionData, req posts.CreatePostRequest) (*posts.CreatePostResponse, error) {
+	return nil, nil
+}
+
+func (m *mockPostService) UpdatePost(context.Context, *oauthlib.ClientSessionData, posts.UpdatePostRequest) (*posts.UpdatePostResponse, error) {
 	return nil, nil
 }
 
@@ -326,6 +331,85 @@ func TestGetPostsHandler_HandleResolution(t *testing.T) {
 	if resolvedDID != "did:plc:resolveduser123" {
 		t.Errorf("Expected resolved DID 'did:plc:resolveduser123', got '%s'", resolvedDID)
 	}
+}
+
+// TestGetPostsHandler_ViewerDIDComesFromTheAuthMiddleware is a PROVENANCE pin,
+// and on this endpoint it is the sharpest of the set: actor.getPosts is the one
+// read path whose whole job is "show me THIS author's posts".
+//
+// Under author-owned posts, ViewerDID no longer only drives block filtering — it
+// unlocks the author carve-out inside the read-path visibility predicate
+// (`p.author_did = $viewer` in visiblePostsJoin), which is what lets an author
+// see their own pending / rejected / removed posts on their own profile. So a
+// caller who could set both `actor` and the viewer identity from the query string
+// would be able to ask for a victim's profile AS that victim and receive every
+// post the victim's communities never admitted.
+//
+// The current handler is correct — it takes the DID from middleware.GetUserDID
+// and assigns it after parseRequest — but nothing pinned that, and the mutation a
+// reviewer demonstrated (a three-line "preview as user" override) left the whole
+// suite green. Both halves are asserted: absent without auth even when the query
+// begs for it, and exactly the context DID when authenticated.
+func TestGetPostsHandler_ViewerDIDComesFromTheAuthMiddleware(t *testing.T) {
+	const victim = "did:plc:victimauthor"
+	const adversarialQuery = "actor=" + victim +
+		"&viewer=" + victim +
+		"&viewerDid=" + victim +
+		"&viewer_did=" + victim +
+		"&author=" + victim +
+		"&as=" + victim
+
+	capture := func(t *testing.T, ctxDID string) posts.GetAuthorPostsRequest {
+		t.Helper()
+
+		var got posts.GetAuthorPostsRequest
+		mockPosts := &mockPostService{
+			getAuthorPostsFunc: func(ctx context.Context, req posts.GetAuthorPostsRequest) (*posts.GetAuthorPostsResponse, error) {
+				got = req
+				return &posts.GetAuthorPostsResponse{Feed: []*posts.FeedViewPost{}}, nil
+			},
+		}
+		handler := NewGetPostsHandler(mockPosts, &mockUserService{}, &mockVoteService{}, &mockBlueskyService{})
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.actor.getPosts?"+adversarialQuery, nil)
+		if ctxDID != "" {
+			req = req.WithContext(middleware.SetTestUserDID(req.Context(), ctxDID))
+		}
+		handler.HandleGetPosts(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+		}
+		return got
+	}
+
+	t.Run("an unauthenticated request carries no viewer, whatever it asks for", func(t *testing.T) {
+		t.Parallel()
+
+		got := capture(t, "")
+
+		if got.ActorDID != victim {
+			t.Fatalf("ActorDID = %q, want %q — the fixture must actually be asking for the victim's profile", got.ActorDID, victim)
+		}
+		if got.ViewerDID != "" {
+			t.Errorf("ViewerDID = %q for an UNAUTHENTICATED request, want \"\". A query parameter became the viewer "+
+				"identity, so an anonymous caller can read %q's pending, rejected and removed posts through the "+
+				"visibility predicate's author branch", got.ViewerDID, victim)
+		}
+	})
+
+	t.Run("an authenticated request carries the context DID, and no parameter displaces it", func(t *testing.T) {
+		t.Parallel()
+
+		const authenticated = "did:plc:realsessionviewer"
+		got := capture(t, authenticated)
+
+		if got.ViewerDID != authenticated {
+			t.Errorf("ViewerDID = %q, want %q — the viewer identity must come from the auth middleware's context "+
+				"value and never from the query string, however the query spells it", got.ViewerDID, authenticated)
+		}
+	})
 }
 
 func TestGetPostsHandler_DirectDIDPassthrough(t *testing.T) {

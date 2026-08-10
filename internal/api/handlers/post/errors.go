@@ -32,6 +32,32 @@ var errorMapper = xrpc.NewMapper("post",
 	xrpc.Sentinel(posts.ErrNotFound, http.StatusNotFound,
 		"NotFound", "Post not found"),
 
+	// The AppView holds nothing to authenticate as the author with. It is NOT
+	// the shared re-auth rule's 401: that one means the CALLER's session is
+	// dead and signing in again fixes it, which is true for a person and false
+	// for an aggregator posting on stored tokens — nobody is at the keyboard to
+	// sign it in, and telling its operator to do so would hide a revoked grant
+	// behind a message aimed at a browser. 503 says what is true of both: the
+	// service cannot write on this author's behalf right now.
+	xrpc.Sentinel(posts.ErrNoAuthorCredentials, http.StatusServiceUnavailable,
+		"NoAuthorCredentials", "No credentials are available to write to your repository"),
+
+	// A lost swap guard on an edit. 409 rather than a retry here, because the
+	// edit was composed against content that no longer stands: re-reading and
+	// re-applying it server-side would silently erase the change its author
+	// never saw. The client re-reads and decides.
+	xrpc.Sentinel(posts.ErrConcurrentModification, http.StatusConflict,
+		"ConcurrentModification", "The post was modified by another edit; re-read it and try again"),
+
+	// A submission refused at the admission gate, which is NOT the generic
+	// AlreadyExists that a storage conflict produces: 409 DuplicateSubmission
+	// tells a client whose response was lost that its post already exists and
+	// it should stop resending, where a 429 would have it retry on a timer
+	// forever. Ahead of the shared ConflictError rule, which answers with the
+	// less specific code.
+	xrpc.Sentinel(posts.ErrDuplicateSubmission, http.StatusConflict,
+		"DuplicateSubmission", "You have already submitted this post to this community"),
+
 	xrpc.Match(aggregators.IsUnauthorized, http.StatusForbidden,
 		"NotAuthorized", "Aggregator not authorized to post in this community"),
 	xrpc.Match(aggregators.IsRateLimited, http.StatusTooManyRequests,

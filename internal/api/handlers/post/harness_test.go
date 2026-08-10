@@ -82,6 +82,8 @@ func newCreateStack(t *testing.T, db *sql.DB) createStack {
 		communityService,
 		nil, nil, nil, nil,
 		pdsURL,
+		// Handler translation is the subject here, not admission policy.
+		posts.WithAdmissionPolicy(posts.NewAllowAllAdmissionPolicyForTests()),
 	)
 
 	return createStack{

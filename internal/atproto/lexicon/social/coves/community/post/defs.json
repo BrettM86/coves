@@ -72,6 +72,23 @@
         "viewer": {
           "type": "ref",
           "ref": "#viewerState"
+        },
+        "status": {
+          "type": "string",
+          "knownValues": [
+            "pending",
+            "accepted",
+            "pending_reacceptance",
+            "rejected",
+            "removed"
+          ],
+          "description": "This post's per-community admission status. Present on an accepted post, and on an author's own view of their non-accepted posts; omitted from a public postView of a legacy/bridged row. Optional.",
+          "maxLength": 64
+        },
+        "acceptanceUri": {
+          "type": "string",
+          "format": "at-uri",
+          "description": "AT-URI of the community acceptance record that admitted this post. Present only while an acceptance stands. Optional."
         }
       }
     },
@@ -146,6 +163,29 @@
         "notFound": {
           "type": "boolean",
           "const": true
+        }
+      }
+    },
+    "removedPost": {
+      "type": "object",
+      "description": "Post was removed by its own community's moderators. Served as a tombstone carrying the removal code — distinct from notFoundPost (which is indistinguishable from 'never existed') so a client can explain the takedown to the author.",
+      "required": [
+        "uri",
+        "removed"
+      ],
+      "properties": {
+        "uri": {
+          "type": "string",
+          "format": "at-uri"
+        },
+        "removed": {
+          "type": "boolean",
+          "const": true
+        },
+        "code": {
+          "type": "string",
+          "description": "The community's removal decision code (e.g. rule-violation, spam, off-topic).",
+          "maxLength": 64
         }
       }
     },

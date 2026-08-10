@@ -2,6 +2,7 @@ package main
 
 import (
 	"Coves/internal/atproto/jetstream"
+	"Coves/internal/core/posts"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -34,6 +35,64 @@ type consumerHealthResponse struct {
 	// would look healthier the sicker the database gets.
 	DeadLetterBacklogUnknown bool             `json:"deadLetterBacklogUnknown,omitempty"`
 	Consumers                []consumerHealth `json:"consumers"`
+
+	// AcceptanceQueue reports the acceptance engine's driver, and is omitted
+	// entirely on a deployment that runs no driver (one hosting no communities
+	// has nothing to accept). Omitted rather than zeroed: an all-zero queue and
+	// an absent one mean different things, and only one of them is worth waking
+	// somebody for.
+	AcceptanceQueue *acceptanceQueueHealth `json:"acceptanceQueue,omitempty"`
+}
+
+// acceptanceQueueHealth is the acceptance driver's entry in the response.
+//
+// The two age fields answer the two questions an operator has, and neither can
+// be derived from the backlog size alone. A big backlog on a busy instance is
+// healthy; a backlog whose OLDEST entry keeps getting older is an engine that
+// has stopped settling anything. And a driver that has died produces no error
+// and no log — it simply stops — so lastPassAt is the only signal that the pass
+// is still happening at all.
+type acceptanceQueueHealth struct {
+	PendingBacklog int `json:"pendingBacklog"`
+	// OldestPendingAgeSeconds is omitted when the backlog is empty: there is no
+	// oldest entry, and reporting 0 would read as "something arrived just now".
+	OldestPendingAgeSeconds *int64 `json:"oldestPendingAgeSeconds,omitempty"`
+	// LastPassAt is omitted until the first pass completes, distinguishing "the
+	// driver has never run" from "the driver ran and found nothing".
+	LastPassAt       *time.Time `json:"lastPassAt,omitempty"`
+	LastPassDeferred int        `json:"lastPassDeferred"`
+	LastPassFailed   int        `json:"lastPassFailed"`
+}
+
+// buildAcceptanceQueueHealth renders one driver snapshot.
+//
+// A separate pure function rather than another parameter on
+// buildConsumerHealthResponse: the two have no shared logic, and widening that
+// signature would touch every existing call site to say nothing.
+//
+// Both optional fields are OMITTED rather than zeroed when there is nothing to
+// report, because a zero here would be read, and read wrongly: an age of 0 says
+// "something arrived just now" when in fact nothing is waiting, and a
+// zero-valued timestamp renders as the epoch, which looks like a driver that
+// has been dead since 1970 rather than one that started a minute ago.
+func buildAcceptanceQueueHealth(snapshot posts.QueueSnapshot, now time.Time) acceptanceQueueHealth {
+	queue := acceptanceQueueHealth{
+		PendingBacklog:   snapshot.PendingBacklog,
+		LastPassAt:       snapshot.LastPassAt,
+		LastPassDeferred: snapshot.LastPassDeferred,
+		LastPassFailed:   snapshot.LastPassFailed,
+	}
+
+	// The AGE, not the timestamp. A backlog that is merely big is a busy
+	// instance; a backlog whose oldest entry keeps getting older is an engine
+	// that has stopped settling anything — and only the age says which is
+	// happening without the reader doing arithmetic against their own clock.
+	if snapshot.OldestPendingAt != nil {
+		age := int64(now.Sub(*snapshot.OldestPendingAt).Seconds())
+		queue.OldestPendingAgeSeconds = &age
+	}
+
+	return queue
 }
 
 // buildConsumerHealthResponse is the pure decision core of /health/consumers,
@@ -90,7 +149,39 @@ func buildConsumerHealthResponse(statuses []jetstream.ConnectorStatus, backlogs 
 // and the dead letter backlog per consumer. Responds 503 when any consumer
 // has been disconnected longer than consumerStalledThreshold (indexing is
 // stalled) so monitoring can alert on it.
-func consumerHealthHandler(connectors []*jetstream.Connector, deadLetterQueue jetstream.DeadLetterQueue) http.HandlerFunc {
+// acceptanceQueueReporter is the driver, narrowed to the one method health
+// needs. Nil means no driver runs on this deployment, and the queue block is
+// omitted entirely rather than reported as all-zero — an all-zero queue reads
+// as a driver that is running and settling nothing, which is precisely the
+// failure an operator is watching for.
+type acceptanceQueueReporter interface {
+	Snapshot() posts.QueueSnapshot
+}
+
+// consumerHealthOption adds a surface to /health/consumers that not every
+// deployment has.
+//
+// An option rather than another parameter because the queue is genuinely
+// optional — an AppView hosting no communities runs no driver — and because a
+// nil third argument at every existing call site would say nothing while
+// reading as an omission.
+type consumerHealthOption func(*consumerHealthConfig)
+
+type consumerHealthConfig struct {
+	acceptanceQueue acceptanceQueueReporter
+}
+
+// withAcceptanceQueue reports the acceptance driver alongside the consumers.
+func withAcceptanceQueue(queue acceptanceQueueReporter) consumerHealthOption {
+	return func(c *consumerHealthConfig) { c.acceptanceQueue = queue }
+}
+
+func consumerHealthHandler(connectors []*jetstream.Connector, deadLetterQueue jetstream.DeadLetterQueue, opts ...consumerHealthOption) http.HandlerFunc {
+	var cfg consumerHealthConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		backlogs, err := deadLetterQueue.CountDeadLetters(r.Context())
 		backlogUnknown := err != nil
@@ -105,7 +196,12 @@ func consumerHealthHandler(connectors []*jetstream.Connector, deadLetterQueue je
 			statuses = append(statuses, connector.Status())
 		}
 
-		response, httpCode := buildConsumerHealthResponse(statuses, backlogs, backlogUnknown, time.Now())
+		now := time.Now()
+		response, httpCode := buildConsumerHealthResponse(statuses, backlogs, backlogUnknown, now)
+		if cfg.acceptanceQueue != nil {
+			acceptance := buildAcceptanceQueueHealth(cfg.acceptanceQueue.Snapshot(), now)
+			response.AcceptanceQueue = &acceptance
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(httpCode)

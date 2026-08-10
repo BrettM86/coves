@@ -13,6 +13,21 @@ type UpdateProfileInput struct {
 }
 
 // UserRepository defines the interface for user data persistence
+// ErasureLookup reports whether a DID names an account this AppView was asked
+// to erase (migration 036).
+//
+// It is a SEPARATE, OPTIONAL interface rather than a method on UserRepository,
+// and detected with a type assertion at the one call site that needs it. Adding
+// it to UserRepository would oblige every implementation to answer a question
+// only the PostgreSQL one can — and a double that answered "not erased" by
+// default would be a gate that fails open, which is the single outcome this
+// marker exists to prevent. A repository that does not implement it disables
+// the gate rather than weakening it, and nothing in production is such a
+// repository.
+type ErasureLookup interface {
+	IsAccountDeleted(ctx context.Context, did string) (bool, error)
+}
+
 type UserRepository interface {
 	Create(ctx context.Context, user *User) (*User, error)
 	GetByDID(ctx context.Context, did string) (*User, error)
@@ -67,7 +82,12 @@ type UserRepository interface {
 	//   6. user_blocks (explicit DELETE - both directions)
 	//   7. comments (explicit DELETE)
 	//   8. votes (explicit DELETE - FK removed in migration 014)
-	//   9. users (FK CASCADE deletes posts)
+	//   9. community_post_admissions for this author's posts (explicit DELETE
+	//      by DID-prefix match on post_uri - no FK to posts by design,
+	//      migration 034, and an admission's subject post may never have been
+	//      indexed at all, so the sweep cannot go through the posts table)
+	//   10. posts (explicit DELETE - fk_author CASCADE removed by migration 034)
+	//   11. users
 	//
 	// Returns ErrUserNotFound if the user does not exist.
 	// Returns InvalidDIDError if the DID format is invalid.

@@ -3,7 +3,9 @@ package posts
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
+	"time"
 )
 
 // fakeBlockChecker is an in-memory BlockChecker for unit tests. It records the most
@@ -40,7 +42,7 @@ func viewWithAuthor(uri, authorDID string) *PostView {
 const testCommunityDID = "did:plc:ewvi7nxzyoun6zhxrhs64oiz"
 
 func didPostURI(rkey string) string {
-	return "at://" + testCommunityDID + "/" + postCollection + "/" + rkey
+	return "at://" + testCommunityDID + "/" + LegacyPostCollection + "/" + rkey
 }
 
 func TestParsePostURIParts(t *testing.T) {
@@ -61,18 +63,18 @@ func TestParsePostURIParts(t *testing.T) {
 		},
 		{
 			name:          "handle authority parses (DID check happens in validatePostURI)",
-			uri:           "at://c-test-community/" + postCollection + "/abc123",
+			uri:           "at://c-test-community/" + LegacyPostCollection + "/abc123",
 			wantAuthority: "c-test-community",
 			wantRKey:      "abc123",
 		},
 		{
 			name:    "missing at:// scheme",
-			uri:     testCommunityDID + "/" + postCollection + "/abc123",
+			uri:     testCommunityDID + "/" + LegacyPostCollection + "/abc123",
 			wantErr: true,
 		},
 		{
 			name:    "too few segments",
-			uri:     "at://" + testCommunityDID + "/" + postCollection,
+			uri:     "at://" + testCommunityDID + "/" + LegacyPostCollection,
 			wantErr: true,
 		},
 		{
@@ -82,12 +84,12 @@ func TestParsePostURIParts(t *testing.T) {
 		},
 		{
 			name:    "missing rkey",
-			uri:     "at://" + testCommunityDID + "/" + postCollection + "/",
+			uri:     "at://" + testCommunityDID + "/" + LegacyPostCollection + "/",
 			wantErr: true,
 		},
 		{
 			name:    "empty authority",
-			uri:     "at:///" + postCollection + "/abc123",
+			uri:     "at:///" + LegacyPostCollection + "/abc123",
 			wantErr: true,
 		},
 	}
@@ -121,11 +123,11 @@ func TestValidatePostURI(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "valid DID-based URI", uri: didPostURI("abc123"), wantErr: false},
-		{name: "handle authority is rejected", uri: "at://c-test-community/" + postCollection + "/abc123", wantErr: true},
-		{name: "missing scheme", uri: testCommunityDID + "/" + postCollection + "/abc", wantErr: true},
+		{name: "handle authority is rejected", uri: "at://c-test-community/" + LegacyPostCollection + "/abc123", wantErr: true},
+		{name: "missing scheme", uri: testCommunityDID + "/" + LegacyPostCollection + "/abc", wantErr: true},
 		{name: "wrong collection", uri: "at://" + testCommunityDID + "/app.bsky.feed.post/abc", wantErr: true},
-		{name: "missing rkey", uri: "at://" + testCommunityDID + "/" + postCollection + "/", wantErr: true},
-		{name: "malformed DID authority", uri: "at://did:plc:UPPERCASE/" + postCollection + "/abc", wantErr: true},
+		{name: "missing rkey", uri: "at://" + testCommunityDID + "/" + LegacyPostCollection + "/", wantErr: true},
+		{name: "malformed DID authority", uri: "at://did:plc:UPPERCASE/" + LegacyPostCollection + "/abc", wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -170,7 +172,7 @@ func TestGetPosts_RejectsNonCanonicalURI(t *testing.T) {
 
 	t.Run("handle-based URI is rejected", func(t *testing.T) {
 		_, err := s.GetPosts(context.Background(), GetPostsRequest{
-			URIs: []string{"at://c-test-community/" + postCollection + "/abc"},
+			URIs: []string{"at://c-test-community/" + LegacyPostCollection + "/abc"},
 		})
 		if err == nil || !IsValidationError(err) {
 			t.Fatalf("expected validation error for handle-based URI, got %v", err)
@@ -192,7 +194,7 @@ func TestGetPosts_OrderingAndNotFound(t *testing.T) {
 	missing := didPostURI("missing1")
 
 	repo := &mockRepository{
-		getViewsByURIsFunc: func(ctx context.Context, uris []string) (map[string]*PostView, error) {
+		getViewsByURIsFunc: func(ctx context.Context, uris []string, viewerDID string) (map[string]*PostView, error) {
 			// Only the "found" URI exists in the AppView
 			return map[string]*PostView{
 				found: {URI: found, CID: "cid-found"},
@@ -228,6 +230,50 @@ func TestGetPosts_OrderingAndNotFound(t *testing.T) {
 	}
 }
 
+// TestGetPosts_ThreadsViewerIntoVisibilityGate pins that post.get asks the repository
+// the question the CALLER asked, not an anonymous one.
+//
+// The service already had req.ViewerDID in hand (it runs the block filter on it) and
+// passed "" to the visibility gate anyway, which made post.get the only surface that
+// refused an author their own pending post — actor.getPosts, the feeds and the
+// getComments thread header all show it. This is the service half of that contract;
+// TestPostGetVisibility_AuthorSeesOwnPendingPost is the SQL half.
+func TestGetPosts_ThreadsViewerIntoVisibilityGate(t *testing.T) {
+	uri := didPostURI("v1")
+
+	t.Run("an authenticated viewer reaches the gate", func(t *testing.T) {
+		repo := &mockRepository{}
+		s := &postService{repo: repo}
+
+		if _, err := s.GetPosts(context.Background(), GetPostsRequest{
+			URIs:      []string{uri},
+			ViewerDID: "did:plc:theviewer",
+		}); err != nil {
+			t.Fatalf("GetPosts returned error: %v", err)
+		}
+		if repo.getViewsByURIsCalls != 1 {
+			t.Fatalf("GetViewsByURIs called %d times, want 1", repo.getViewsByURIsCalls)
+		}
+		if repo.gotViewsViewerDID != "did:plc:theviewer" {
+			t.Errorf("GetViewsByURIs got viewer %q, want %q — post.get must gate on the caller's own viewer, "+
+				"or an author is told their own pending post does not exist",
+				repo.gotViewsViewerDID, "did:plc:theviewer")
+		}
+	})
+
+	t.Run("an anonymous caller is the explicit fail-closed empty viewer", func(t *testing.T) {
+		repo := &mockRepository{}
+		s := &postService{repo: repo}
+
+		if _, err := s.GetPosts(context.Background(), GetPostsRequest{URIs: []string{uri}}); err != nil {
+			t.Fatalf("GetPosts returned error: %v", err)
+		}
+		if repo.gotViewsViewerDID != "" {
+			t.Errorf("GetViewsByURIs got viewer %q, want \"\" for an anonymous read", repo.gotViewsViewerDID)
+		}
+	})
+}
+
 // TestGetPosts_ViewerBlocksAuthor verifies that when an authenticated viewer has blocked
 // a post's author, that post comes back as a blockedPost marker (blockedBy "author")
 // while posts by unblocked authors and not-found URIs are unaffected, and request order
@@ -241,7 +287,7 @@ func TestGetPosts_ViewerBlocksAuthor(t *testing.T) {
 	missingURI := didPostURI("missing1")
 
 	repo := &mockRepository{
-		getViewsByURIsFunc: func(ctx context.Context, uris []string) (map[string]*PostView, error) {
+		getViewsByURIsFunc: func(ctx context.Context, uris []string, viewerDID string) (map[string]*PostView, error) {
 			return map[string]*PostView{
 				blockedURI: viewWithAuthor(blockedURI, blockedAuthor),
 				okURI:      viewWithAuthor(okURI, okAuthor),
@@ -300,7 +346,7 @@ func TestGetPosts_DedupesAuthorDIDsForBlockCheck(t *testing.T) {
 	uri1, uri2 := didPostURI("a"), didPostURI("b")
 
 	repo := &mockRepository{
-		getViewsByURIsFunc: func(ctx context.Context, uris []string) (map[string]*PostView, error) {
+		getViewsByURIsFunc: func(ctx context.Context, uris []string, viewerDID string) (map[string]*PostView, error) {
 			return map[string]*PostView{
 				uri1: viewWithAuthor(uri1, author),
 				uri2: viewWithAuthor(uri2, author),
@@ -329,7 +375,7 @@ func TestGetPosts_SkipsBlockFilter(t *testing.T) {
 	uri := didPostURI("p1")
 	newRepo := func() *mockRepository {
 		return &mockRepository{
-			getViewsByURIsFunc: func(ctx context.Context, uris []string) (map[string]*PostView, error) {
+			getViewsByURIsFunc: func(ctx context.Context, uris []string, viewerDID string) (map[string]*PostView, error) {
 				return map[string]*PostView{uri: viewWithAuthor(uri, author)}, nil
 			},
 		}
@@ -367,7 +413,7 @@ func TestGetPosts_SkipsBlockFilter(t *testing.T) {
 func TestGetPosts_BlockCheckErrorFailsClosed(t *testing.T) {
 	uri := didPostURI("p1")
 	repo := &mockRepository{
-		getViewsByURIsFunc: func(ctx context.Context, uris []string) (map[string]*PostView, error) {
+		getViewsByURIsFunc: func(ctx context.Context, uris []string, viewerDID string) (map[string]*PostView, error) {
 			return map[string]*PostView{uri: viewWithAuthor(uri, "did:plc:author")}, nil
 		},
 	}
@@ -377,6 +423,193 @@ func TestGetPosts_BlockCheckErrorFailsClosed(t *testing.T) {
 	results, err := s.GetPosts(context.Background(), GetPostsRequest{URIs: []string{uri}, ViewerDID: "did:plc:viewer"})
 	if err == nil {
 		t.Fatalf("expected error when block check fails, got results %+v", results)
+	}
+}
+
+// TestGetPosts_RemovedMarkers is the tombstone matrix of post.get's removal path.
+//
+// A post the visibility predicate hides is a notFoundPost by default; it is upgraded
+// to a #removedPost carrying the moderation code ONLY when the post's OWN community
+// removed it and its author has not withdrawn it. Three things have to hold at once
+// and each has a distinct failure mode:
+//
+//   - the fork oracle: a removal published by a community that merely FORKED the post
+//     must not become a verdict about the post's own community. Dropping the
+//     community comparison would let any community publish a takedown notice for a
+//     post it does not host.
+//   - the withdrawal rule: a soft-deleted post is GONE, not a tombstone. Emitting a
+//     moderation reason for a post its own author took down advertises both the
+//     removal and the post's continued existence.
+//   - honesty about failure: a lookup that FAILED is not "not removed". Both lookups
+//     used to be best-effort, so a database blip silently changed which union member
+//     a standing removal produced — unfalsifiable from the wire, and different on
+//     every retry.
+func TestGetPosts_RemovedMarkers(t *testing.T) {
+	const ownCommunity = "did:plc:owncommunity"
+	const forkCommunity = "did:plc:forkcommunity"
+	uri := didPostURI("rm1")
+	code := "rule-violation"
+
+	rawRow := func(deleted bool) map[string]*Post {
+		p := &Post{URI: uri, CommunityDID: ownCommunity}
+		if deleted {
+			at := time.Now()
+			p.DeletedAt = &at
+		}
+		return map[string]*Post{uri: p}
+	}
+	admission := func(communityDID string, status AdmissionStatus, decisionCode *string) []*Admission {
+		return []*Admission{{CommunityDID: communityDID, PostURI: uri, Status: status, DecisionCode: decisionCode}}
+	}
+
+	tests := []struct {
+		name          string
+		admissions    map[string][]*Admission
+		admissionsErr error
+		rawRows       map[string]*Post
+		rawRowsErr    error
+		wantErr       bool
+		wantRemoved   bool
+		wantCode      string
+		why           string
+	}{
+		{
+			name:       "pending in its own community is a plain notFound",
+			admissions: map[string][]*Admission{uri: admission(ownCommunity, AdmissionStatusPending, nil)},
+			rawRows:    rawRow(false),
+			why: "a post awaiting a decision has no verdict to report; answering #removedPost would invent a " +
+				"moderation act, and answering anything but notFound tells the public a pending post exists",
+		},
+		{
+			name:        "removed by its OWN community is a tombstone carrying the code",
+			admissions:  map[string][]*Admission{uri: admission(ownCommunity, AdmissionStatusRemoved, &code)},
+			rawRows:     rawRow(false),
+			wantRemoved: true,
+			wantCode:    code,
+			why:         "a removed post is a tombstone the author is owed the reason for, not a blank permalink",
+		},
+		{
+			name:       "removed by a DIFFERENT community is NOT a tombstone (the fork oracle)",
+			admissions: map[string][]*Admission{uri: admission(forkCommunity, AdmissionStatusRemoved, &code)},
+			rawRows:    rawRow(false),
+			why: "the removal belongs to a community that FORKED the post, not to the community that hosts it. " +
+				"Dropping the community comparison lets any community publish a takedown verdict about a post " +
+				"it does not host — the same fork hazard the read predicate's join key closes",
+		},
+		{
+			name:       "soft-deleted AND removed is a notFound, not a tombstone",
+			admissions: map[string][]*Admission{uri: admission(ownCommunity, AdmissionStatusRemoved, &code)},
+			rawRows:    rawRow(true),
+			why: "the author withdrew the post. Rendering the moderation reason anyway advertises both the " +
+				"takedown and the fact that the post still exists in the index",
+		},
+		{
+			name:       "an unindexed URI stays a notFound",
+			admissions: map[string][]*Admission{uri: admission(ownCommunity, AdmissionStatusRemoved, &code)},
+			rawRows:    map[string]*Post{},
+			why: "no indexed row means there is no community to compare the removal against — the admission is " +
+				"about a post this AppView has never seen",
+		},
+		{
+			name:          "an admission lookup FAILURE is an error, not a notFound",
+			admissionsErr: errors.New("admissions db down"),
+			rawRows:       rawRow(false),
+			wantErr:       true,
+			why: "collapsing the failure into notFound makes the answer depend on database health: the same " +
+				"request returns a different union member on every retry and the client cannot tell",
+		},
+		{
+			name:       "a post-row lookup FAILURE is an error, not a notFound",
+			admissions: map[string][]*Admission{uri: admission(ownCommunity, AdmissionStatusRemoved, &code)},
+			rawRowsErr: errors.New("posts db down"),
+			wantErr:    true,
+			why:        "same reason: 'we could not find out' is not 'it was not removed'",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &mockRepository{rawRows: tt.rawRows, rawRowsErr: tt.rawRowsErr}
+			admissions := &fakeAdmissions{
+				rec:           &engineRecorder{},
+				byPostURIs:    tt.admissions,
+				byPostURIsErr: tt.admissionsErr,
+			}
+			s := &postService{repo: repo, admissions: admissions}
+
+			results, err := s.GetPosts(context.Background(), GetPostsRequest{URIs: []string{uri}})
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got results %+v — %s", results, tt.why)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("GetPosts returned error: %v", err)
+			}
+			if len(results) != 1 {
+				t.Fatalf("expected 1 result, got %d", len(results))
+			}
+
+			got := results[0]
+			if got.Post != nil {
+				t.Fatalf("a hidden post must never come back as a postView, got %+v", got.Post)
+			}
+			if !tt.wantRemoved {
+				if got.Removed != nil {
+					t.Fatalf("expected notFound, got removed %+v — %s", got.Removed, tt.why)
+				}
+				if got.NotFound == nil || got.NotFound.URI != uri || !got.NotFound.NotFound {
+					t.Fatalf("expected notFound{%q,true}, got %+v — %s", uri, got.NotFound, tt.why)
+				}
+				return
+			}
+			if got.NotFound != nil {
+				t.Fatalf("expected removed, got notFound %+v — %s", got.NotFound, tt.why)
+			}
+			if got.Removed == nil || got.Removed.URI != uri || !got.Removed.Removed {
+				t.Fatalf("expected removed{%q,true}, got %+v — %s", uri, got.Removed, tt.why)
+			}
+			if got.Removed.Code != tt.wantCode {
+				t.Errorf("removal code = %q, want %q — %s", got.Removed.Code, tt.wantCode, tt.why)
+			}
+		})
+	}
+}
+
+// TestGetPosts_RemovalPathBatchesPostLookups pins that the removal path resolves the
+// whole absent set in ONE round trip.
+//
+// post.get accepts a caller-controlled list of up to MaxGetPostsURIs URIs, and the
+// removal path runs over exactly the ones the visibility predicate already refused —
+// so a per-URI lookup there is an unauthenticated N+1 whose multiplier the caller
+// chooses. The admission lookup was already batched; the post lookup was not.
+func TestGetPosts_RemovalPathBatchesPostLookups(t *testing.T) {
+	uris := make([]string, 0, MaxGetPostsURIs)
+	for i := 0; i < MaxGetPostsURIs; i++ {
+		uris = append(uris, didPostURI(fmt.Sprintf("batch%d", i)))
+	}
+
+	repo := &mockRepository{rawRows: map[string]*Post{}}
+	admissions := &fakeAdmissions{rec: &engineRecorder{}}
+	s := &postService{repo: repo, admissions: admissions}
+
+	if _, err := s.GetPosts(context.Background(), GetPostsRequest{URIs: uris}); err != nil {
+		t.Fatalf("GetPosts returned error: %v", err)
+	}
+	if repo.rawBatchCalls != 1 {
+		t.Errorf("raw post lookup ran %d times for %d absent URIs, want exactly 1 — post.get is public and the "+
+			"URI list is caller-controlled, so a per-URI round trip is an N+1 with a caller-chosen multiplier",
+			repo.rawBatchCalls, len(uris))
+	}
+	admissionLookups := 0
+	for _, call := range admissions.rec.calls {
+		if call == "GetByPostURIs" {
+			admissionLookups++
+		}
+	}
+	if admissionLookups != 1 {
+		t.Errorf("admission lookup ran %d times, want exactly 1", admissionLookups)
 	}
 }
 

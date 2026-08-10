@@ -1,15 +1,11 @@
 package posts
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -24,6 +20,7 @@ import (
 	"Coves/internal/core/unfurl"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
+	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 
 type postService struct {
@@ -34,7 +31,16 @@ type postService struct {
 	unfurlService     unfurl.Service
 	blueskyService    blueskypost.Service
 	blockChecker      BlockChecker
+	admission         *AdmissionPolicy
 	pdsURL            string
+
+	// The author-owned write path (§4.2). authorRepos opens the AUTHOR's repo
+	// under the author's own credentials; admissions and acceptor are the
+	// local-community fast path — the row the post is seeded into and the
+	// engine that settles it. See postv2.go.
+	authorRepos AuthorRepoFactory
+	admissions  AdmissionRepository
+	acceptor    SubmissionAcceptor
 }
 
 // PostServiceOption configures optional postService dependencies. Options keep the
@@ -73,36 +79,56 @@ func NewPostService(
 	for _, opt := range opts {
 		opt(s)
 	}
+	// The admission policy is mandatory, and a missing or partial one panics
+	// here rather than defaulting to no-ops: a post service whose ban check and
+	// quota silently do not exist is a wiring bug, not a configuration.
+	mustCompleteAdmissionPolicy(s.admission)
 	return s
 }
 
-// CreatePost creates a new post in a community
+// CreatePost writes a new post into the AUTHOR's repository (§4.2).
 // Flow:
-// 1. Validate input
-// 2. Check if author is an aggregator (server-side validation using DID from JWT)
-// 3. If aggregator: validate authorization and rate limits, skip membership checks
-// 4. If user: resolve community and perform membership/ban validation
-// 5. Build post record
-// 6. Write to community's PDS repository
-// 7. If aggregator: record post for rate limiting
-// 8. Return URI/CID (AppView indexes asynchronously via Jetstream)
-func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*CreatePostResponse, error) {
-	// 1. Validate basic input (before DID checks to give clear validation errors)
+//  1. Validate input (and normalize embed/facet URIs)
+//  2. Verify the authenticated DID matches the request's author DID
+//  3. Classify the actor: trusted aggregator, registered aggregator, or user
+//  4. Admission: one decision over community existence, visibility, ban,
+//     aggregator authorization, dedupe and the per-author quota (admitPost)
+//  5. Open the AUTHOR's repository under the author's own credentials
+//  6. Build the postv2 record
+//  7. Enhance external embeds (unfurl, and the thumbnail blob into the
+//     author's own storage)
+//  8. Create-only write at the deterministic rkey
+//  9. If aggregator: record post for rate limiting
+//  10. Seed the admission row and, for a community we host, settle it
+//  11. Return URI/CID/status (AppView indexes asynchronously via Jetstream)
+
+// THE COMMUNITY'S OWN CREDENTIALS ARE NOT ON THIS PATH AT ALL, and that is the
+// point of the flip rather than an oversight. Both writes that used them — the
+// post record and its thumbnail blob — are the AUTHOR's now. A refresh step
+// retained here would fail for every community indexed from someone else's
+// firehose, since those carry no stored tokens, and so would refuse exactly the
+// remote-community submissions §4.2 step 5 exists to accept.
+//
+// Admission runs BEFORE the credentials, the blob uploads and the PDS write,
+// so a refused submission costs a few lookups rather than an upload — and,
+// more to the point, leaves no record in a community that refused it. Every
+// failure AFTER admission (steps 5-8) must release the ledger reservation the
+// admission took, or the failure costs the author a quota slot and refuses
+// their retry as a duplicate.
+//
+// NOTHING AFTER THE RECORD COMMITS MAY FAIL THE REQUEST. The record is the
+// author's and it exists; a failed acceptance, a failed row seed or a failed
+// meter is degraded service, never data loss, and never a reason to withdraw
+// someone else's record (§4.2).
+func (s *postService) CreatePost(ctx context.Context, session *oauth.ClientSessionData, req CreatePostRequest) (*CreatePostResponse, error) {
+	// 1. Validate basic input, and normalize the fields the lexicon declares as
+	// `format: uri`, before any of them reach the record. Both live in the
+	// SHARED gate (normalizeAndValidatePostContent) rather than here, so the
+	// edit path cannot get a weaker version of either. It runs ahead of the
+	// community and PDS work, so an unrecoverable URI fails fast without burning
+	// a DB lookup or an unfurl fetch, and it mutates req in place.
 	if err := s.validateCreateRequest(&req); err != nil {
 		return nil, err
-	}
-
-	// 1b. Normalize the fields the lexicon declares as `format: uri` before any
-	// of them reach the record. Runs here, ahead of the community and PDS work,
-	// so an unrecoverable URI fails fast without burning a DB lookup or an
-	// unfurl fetch. Mutates req in place; the record built in step 9 reads these
-	// same values, and the unfurl step below then works from the encoded URI,
-	// which dereferences identically.
-	if err := normalizeEmbedURIs(req.Embed); err != nil {
-		return nil, err
-	}
-	if err := richtext.NormalizeLinkURIs(req.Facets); err != nil {
-		return nil, NewValidationErrorFrom("facets", err)
 	}
 
 	// 2. SECURITY: Extract authenticated DID from context (set by JWT middleware)
@@ -120,178 +146,598 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 		return nil, fmt.Errorf("authenticated DID does not match author DID")
 	}
 
-	// 3. Determine actor type: trusted aggregator, other aggregator, or regular user
-	// Check against comma-separated list of trusted aggregator DIDs
-	trustedDIDs := os.Getenv("TRUSTED_AGGREGATOR_DIDS")
-	if trustedDIDs == "" {
-		// Fallback to legacy single DID env var
-		trustedDIDs = os.Getenv("KAGI_AGGREGATOR_DID")
-	}
-	isTrustedAggregator := false
-	if trustedDIDs != "" {
-		for _, did := range strings.Split(trustedDIDs, ",") {
-			if strings.TrimSpace(did) == req.AuthorDID {
-				isTrustedAggregator = true
-				break
-			}
-		}
-	}
+	// 3. Determine actor type: trusted aggregator, other aggregator, or regular user.
+	// The allowlist is read through the shared helper rather than inline, so
+	// this path and the acceptance engine's decider cannot drift into disagreeing
+	// about who is trusted — see TrustedAggregatorDIDs.
+	isTrustedAggregator := TrustedAggregatorDIDs()[req.AuthorDID]
 
 	// Check if this is a non-trusted aggregator (requires database lookup)
 	var isOtherAggregator bool
-	var err error
 	if !isTrustedAggregator && s.aggregatorService != nil {
-		isOtherAggregator, err = s.aggregatorService.IsAggregator(ctx, req.AuthorDID)
+		isAggregator, err := s.aggregatorService.IsAggregator(ctx, req.AuthorDID)
 		if err != nil {
 			log.Printf("[POST-CREATE] Warning: failed to check if DID is aggregator: %v", err)
 			// Don't fail the request - treat as regular user if check fails
 			isOtherAggregator = false
+		} else {
+			isOtherAggregator = isAggregator
 		}
 	}
 
-	// 4. Resolve community at-identifier (handle or DID) to DID
-	// This accepts both formats per atProto best practices:
-	// - Handles: !gardening.communities.coves.social
-	// - DIDs: did:plc:abc123 or did:web:coves.social
-	communityDID, err := s.communityService.ResolveCommunityIdentifier(ctx, req.Community)
+	// The classification the admission decision is made against. It is resolved
+	// HERE, at the call site, rather than inside admitPost: "who is trusted"
+	// comes out of the process environment, and a decision function that read it
+	// itself would hide the most consequential input to a security decision from
+	// the place that makes it.
+	actor := ActorUser
+	switch {
+	case isTrustedAggregator:
+		log.Printf("[POST-CREATE] Trusted aggregator detected: %s posting to community: %s", req.AuthorDID, req.Community)
+		actor = ActorTrustedAggregator
+	case isOtherAggregator:
+		actor = ActorRegisteredAggregator
+	}
+
+	// 4. ADMISSION: the single decision over community existence, visibility,
+	// ban, aggregator authorization, dedupe and the per-author quota (§4.1, §8).
+	//
+	// The fingerprint is taken from the record as the CLIENT sent it, before
+	// unfurl enhancement rewrites the embed: two submissions of the same content
+	// must hash the same, and an enriched embed varies with whatever the remote
+	// page served at the time. The thumbnail URL rides along as submitted; the
+	// client-typed community identifier and the per-attempt timestamp are
+	// excluded inside submissionFingerprint (see its doc comment).
+	fingerprint := submissionFingerprint(postRecordFor(req, req.Community, ""), req.ThumbnailURL)
+	decision, err := admitPost(ctx, s.admissionDeps(), AdmissionRequest{
+		Actor:       actor,
+		AuthorDID:   req.AuthorDID,
+		Community:   req.Community,
+		Fingerprint: fingerprint,
+	})
 	if err != nil {
-		// Handle specific error types appropriately
-		if communities.IsNotFound(err) {
-			return nil, ErrCommunityNotFound
-		}
-		if communities.IsValidationError(err) {
-			// Pass through validation errors (invalid format, etc.)
-			return nil, NewValidationError("community", err.Error())
-		}
-		// Infrastructure failures (DB errors, network issues) should be internal errors
-		// Don't leak internal details to client (e.g., "pq: connection refused")
-		return nil, fmt.Errorf("failed to resolve community identifier: %w", err)
+		return nil, err
+	}
+	if !decision.Admitted() {
+		log.Printf("[POST-CREATE] Refused: author=%s, community=%s, actor=%s, code=%s",
+			req.AuthorDID, req.Community, actor, decision.Code)
+		return nil, refusalError(decision)
 	}
 
-	// 5. AUTHORIZATION: For non-Kagi aggregators, validate authorization and rate limits
-	// Kagi is exempted from database checks via env var (temporary until XRPC endpoint is ready)
-	if isOtherAggregator && s.aggregatorService != nil {
-		if err := s.aggregatorService.ValidateAggregatorPost(ctx, req.AuthorDID, communityDID); err != nil {
-			log.Printf("[POST-CREATE] Aggregator authorization failed: %s -> %s: %v", req.AuthorDID, communityDID, err)
-			return nil, fmt.Errorf("aggregator not authorized: %w", err)
+	communityDID := decision.Community.DID
+
+	// From here on the submission holds a ledger row. Every path that fails
+	// before the record exists has to give it back, or a transient failure
+	// permanently costs the author a quota slot AND blocks them from retrying
+	// the same content until the dedupe window rolls.
+	releaseOnFailure := func() {
+		if decision.Reservation != nil {
+			releaseReservation(ctx, s.admission.Ledger, *decision.Reservation)
 		}
-		log.Printf("[POST-CREATE] Aggregator authorized: %s -> %s", req.AuthorDID, communityDID)
 	}
 
-	// 6. Fetch community from AppView (includes all metadata)
-	community, err := s.communityService.GetByDID(ctx, communityDID)
+	// 5. Open the AUTHOR's repository, which is where the record goes now — and
+	// the only credential this path needs at all.
+	authorRepo, err := s.openAuthorRepo(ctx, req.AuthorDID, session)
 	if err != nil {
-		if communities.IsNotFound(err) {
-			return nil, ErrCommunityNotFound
-		}
-		return nil, fmt.Errorf("failed to fetch community: %w", err)
+		releaseOnFailure()
+		return nil, err
 	}
 
-	// 7. Apply validation based on actor type (aggregator vs user)
-	if isTrustedAggregator {
-		// TRUSTED AGGREGATOR VALIDATION FLOW
-		// Trusted aggregators are authorized via TRUSTED_AGGREGATOR_DIDS env var (temporary)
-		// TODO: Replace with proper XRPC aggregator authorization endpoint
-		log.Printf("[POST-CREATE] Trusted aggregator detected: %s posting to community: %s", req.AuthorDID, communityDID)
-		// Aggregators skip membership checks and visibility restrictions
-		// They are authorized services, not community members
-	} else if isOtherAggregator {
-		// OTHER AGGREGATOR VALIDATION FLOW
-		// Authorization and rate limits already validated above via ValidateAggregatorPost
-		log.Printf("[POST-CREATE] Authorized aggregator detected: %s posting to community: %s", req.AuthorDID, communityDID)
-	} else {
-		// USER VALIDATION FLOW
-		// Check community visibility (Alpha: public/unlisted only)
-		// Beta will add membership checks for private communities
-		if community.Visibility == "private" {
-			return nil, ErrNotAuthorized
-		}
-	}
+	// 6. Build post record for PDS
+	postRecord := postRecordFor(req, communityDID, time.Now().UTC().Format(time.RFC3339))
 
-	// 8. Ensure community has fresh PDS credentials (token refresh if needed)
-	community, err = s.communityService.EnsureFreshToken(ctx, community)
+	// 7. Enhance external embeds.
+	//
+	// It cannot fail, so there is nothing to release here — see its doc comment.
+	// A future step added inside it that CAN fail must return an error, and this
+	// call must then release the reservation before returning it, exactly as
+	// steps 5 and 8 do.
+	s.enhanceExternalEmbed(ctx, &postRecord, req, authorRepo, actor == ActorTrustedAggregator)
+
+	// 8. Write to the author's PDS repository.
+	//
+	// A failure here is the case the reservation was designed around: the row
+	// went in before the write precisely so two concurrent identical submissions
+	// would collide on the unique key, and the cost of that ordering is that a
+	// write which never happened owes the author their slot back. Without it, a
+	// PDS hiccup would consume a quota slot AND refuse the retry as a duplicate,
+	// turning a transient outage into a per-author lockout that outlives it.
+	rkey := SubmissionRkey(communityDID, fingerprint, decision.DedupeBucket, s.admission.Limits.DedupeWindow)
+	uri, cid, converged, err := createAuthorRecord(ctx, authorRepo, rkey, postV2From(postRecord))
 	if err != nil {
-		return nil, fmt.Errorf("failed to refresh community credentials: %w", err)
+		releaseOnFailure()
+		return nil, fmt.Errorf("failed to write post to PDS: %w", err)
 	}
 
-	// 9. Build post record for PDS
-	postRecord := PostRecord{
-		Type:           "social.coves.community.post",
-		Community:      communityDID,
+	// 9. Record aggregator post for rate limiting (non-Kagi aggregators only)
+	// Kagi is exempted from rate limiting via env var (temporary)
+	//
+	// A CONVERGED RETRY IS NOT A NEW POST AND MUST NOT BE BILLED AS ONE. The
+	// write above found the aggregator's own record already standing and handed
+	// back its URI; metering that again would charge the quota a second time for
+	// one post, so an aggregator whose responses are being lost would be rate
+	// limited for posts it never made — and the retry that finally got through
+	// would be the one refused.
+	if isOtherAggregator && !converged && s.aggregatorService != nil {
+		if recordErr := s.aggregatorService.RecordAggregatorPost(ctx, req.AuthorDID, communityDID, uri, cid); recordErr != nil {
+			// Log but don't fail - post was already created successfully
+			log.Printf("[POST-CREATE] Warning: failed to record aggregator post for rate limiting: %v", recordErr)
+		}
+	}
+
+	// 10. Seed the admission row and, for a community this AppView hosts,
+	// settle it before answering.
+	status := s.settleSubmission(ctx, communityDID, uri, cid)
+
+	// 11. Return response (AppView will index via Jetstream consumer)
+	log.Printf("[POST-CREATE] Author: %s (trustedKagi=%v, otherAggregator=%v), Community: %s, URI: %s, Status: %s",
+		req.AuthorDID, isTrustedAggregator, isOtherAggregator, communityDID, uri, status)
+
+	return &CreatePostResponse{
+		URI:    uri,
+		CID:    cid,
+		Status: status,
+	}, nil
+}
+
+// openAuthorRepo resolves the credentials the record is signed under.
+//
+// A service with no factory wired answers ErrNoAuthorCredentials rather than a
+// nil-pointer panic: it is the same condition the production factory reports
+// for an aggregator whose stored session is gone, and the boundary already
+// knows how to answer it.
+func (s *postService) openAuthorRepo(ctx context.Context, authorDID string, session *oauth.ClientSessionData) (AuthorRepo, error) {
+	// DEFENCE IN DEPTH over a boundary the PDS also enforces. The session's own
+	// DID is what the credentials will actually write as, so a request that
+	// named a different author has already failed CreatePost's spoofing check —
+	// this refuses the same thing one layer down, where a future caller that
+	// skipped that check would otherwise reach the factory with an
+	// author-supplied repo DID.
+	if session != nil && session.AccountDID.String() != authorDID {
+		log.Printf("[SECURITY] Author-repo session mismatch: session=%s, author=%s",
+			session.AccountDID.String(), authorDID)
+		return nil, ErrNotAuthorized
+	}
+
+	if s.authorRepos == nil {
+		return nil, fmt.Errorf("opening the repository of %s: %w", authorDID, ErrNoAuthorCredentials)
+	}
+
+	repo, err := s.authorRepos(ctx, authorDID, session)
+	if err != nil {
+		return nil, err
+	}
+	if repo == nil {
+		return nil, fmt.Errorf("opening the repository of %s: the factory returned no repo: %w",
+			authorDID, ErrNoAuthorCredentials)
+	}
+	return repo, nil
+}
+
+// createAuthorRecord writes the post at its derived key, create-only, and
+// reports the record that stands afterwards.
+//
+// THE GUARD IS THE IDEMPOTENCE. swapRecord "" means "there must be nothing
+// here", so a retry of a submission whose first response was lost meets
+// ErrSwapConflict instead of overwriting its own post — and is answered with
+// the standing record's URI and CID rather than a fresh one. Re-putting an
+// identical record would look harmless and be anything but: a new record CID
+// dangles every strongRef built from the first response, and the second commit
+// reaches every consumer as an EDIT, which drops an already-accepted post out
+// of the community it was accepted into.
+//
+// converged reports that no new record was written — the caller is looking at a
+// post that already existed.
+//
+// record is `any` rather than PostV2Record because the two callers assemble the
+// body differently and both are correct: the write path passes a typed
+// PostV2Record (postV2From), while the re-materialization tool passes the legacy
+// record's lossless map so no published field is dropped in the conversion. Both
+// serialise to the same postv2 shape; the guard and read-back are identical.
+func createAuthorRecord(ctx context.Context, repo AuthorRepo, rkey string, record any) (uri, cid string, converged bool, err error) {
+	commit, err := repo.PutRecordWithCommit(ctx, PostV2Collection, rkey, record, "")
+	if err == nil {
+		return commit.URI, commit.CID, false, nil
+	}
+
+	// TWO ANSWERS MEAN "IT IS ALREADY THERE", because the PDS orders its checks
+	// that way (verified against a live one): a put of bytes IDENTICAL to what
+	// stands is a no-op with no commit, and only a put of DIFFERENT bytes
+	// reaches the swap guard and comes back InvalidSwap. Both are the retry
+	// meeting its own first attempt, and both are answered the same way — by
+	// reporting the record that stands.
+	if !errors.Is(err, pds.ErrSwapConflict) && !errors.Is(err, pds.ErrNoCommit) {
+		return "", "", false, err
+	}
+
+	standing, readErr := repo.GetRecord(ctx, PostV2Collection, rkey)
+	if readErr != nil {
+		// The record exists — that is what the swap conflict said — and we
+		// cannot name it. Reporting the read failure rather than the conflict
+		// keeps the cause the operator needs; the caller's retry converges on
+		// the same key and will find it.
+		return "", "", false, fmt.Errorf("the post already exists at %s but could not be read back: %w", rkey, readErr)
+	}
+	return standing.URI, standing.CID, true, nil
+}
+
+// settleSubmission seeds the admission row for the post just written and, for a
+// community this AppView hosts, settles it synchronously (§4.2 steps 4 and 5).
+//
+// IT CANNOT FAIL THE REQUEST, and every return path here reflects that. The
+// author's record has committed; the worst outcome available is that the
+// community still owes a decision, which the firehose engine will make when the
+// post reaches it. A rollback would be wrong twice over: the record is the
+// AUTHOR's to withdraw, and a rollback whose own delete failed would leave a
+// post nobody has a row for.
+func (s *postService) settleSubmission(ctx context.Context, communityDID, postURI, postCID string) string {
+	// Both or neither, by construction (WithSyncAcceptance). A service without
+	// them is one whose posts wait for the firehose, which is the pre-flip
+	// behaviour and a legitimate wiring.
+	if s.admissions == nil || s.acceptor == nil {
+		return PostStatusPending
+	}
+
+	// THE ROW COMES FIRST. The engine settles a row, so there has to be one —
+	// and the URI it is seeded under must be byte-identical to the one the
+	// firehose consumer builds from the same commit, or the two index one post
+	// as two subjects and neither ever settles.
+	seeded, err := s.admissions.UpsertPending(ctx, UpsertPendingCommand{
+		CommunityDID: communityDID,
+		PostURI:      postURI,
+		EvaluatedCID: postCID,
+		// A SEED, not an observation: it may create the row or re-affirm its own
+		// CID, and may never overwrite content the firehose has already recorded.
+		// The firehose is live in the window between the commit above and this
+		// call, so the row may already hold a LATER version — see IsSeed.
+		IsSeed: true,
+	})
+	if err != nil {
+		log.Printf("[POST-CREATE] Warning: failed to seed the admission of %s in %s: %v",
+			postURI, communityDID, err)
+		return PostStatusPending
+	}
+
+	// ALREADY ACCEPTED, which is what a retry of a settled post finds. The row
+	// is the AppView's answer about a post that exists, so reporting pending
+	// here would show the author a "waiting for the community" state over a post
+	// the community accepted — and a client that resubmitted would be handed the
+	// same URI again, forever.
+	if seeded.Admission != nil && seeded.Admission.Status == AdmissionStatusAccepted {
+		return PostStatusAccepted
+	}
+
+	outcome, err := s.acceptor.AcceptSubmission(ctx, communityDID, postURI, postCID)
+	if err != nil {
+		if errors.Is(err, ErrCommunityNotHosted) {
+			// §4.2 step 5, and NOT a failure: this AppView has no authoritative
+			// view of that community's bans, visibility or quotas, so it must
+			// not decide for it. The community decides when the post reaches it.
+			log.Printf("[POST-CREATE] %s is hosted elsewhere; %s waits for its decision", communityDID, postURI)
+			return PostStatusPending
+		}
+		log.Printf("[POST-CREATE] Warning: the synchronous acceptance of %s in %s failed, leaving it "+
+			"pending for the firehose engine to retry: %v", postURI, communityDID, err)
+		return PostStatusPending
+	}
+
+	if outcome == EngineAccepted {
+		return PostStatusAccepted
+	}
+	return PostStatusPending
+}
+
+// UpdatePost edits a post in place in the author's repository.
+//
+// THE READ IS NOT A CONVENIENCE. community and createdAt are taken from the
+// STANDING RECORD rather than from the request — the first because the lexicon
+// calls it immutable, so an edit that changed it would be discarded entire by
+// every consumer, and the second because every feed orders by it, so
+// re-stamping it would jump a three-year-old post corrected for a typo to the
+// top of every sort. The CID that read returns is also the swap guard, which is
+// what makes a concurrent edit a detected conflict rather than a silent
+// overwrite of a change its author never saw.
+//
+// THE SUBMISSION LEDGER IS NOT TOUCHED. An edit is not a submission: it
+// consumes no quota, and writing the edited content's fingerprint would let the
+// ORIGINAL content be resubmitted inside its own dedupe window.
+func (s *postService) UpdatePost(ctx context.Context, session *oauth.ClientSessionData, req UpdatePostRequest) (*UpdatePostResponse, error) {
+	if session == nil {
+		return nil, NewValidationError("session", "OAuth session required")
+	}
+	userDID := session.AccountDID.String()
+
+	if req.URI == "" {
+		return nil, NewValidationError("uri", "post URI is required")
+	}
+	authority, rkey, err := parsePostURIParts(req.URI, "uri")
+	if err != nil {
+		return nil, err
+	}
+	if err := requireDIDAuthority(authority, "uri"); err != nil {
+		return nil, err
+	}
+
+	// Only postv2 records are editable, and the reason is not squeamishness
+	// about the deprecated collection: a community.post record lives in the
+	// COMMUNITY's repo, so an edit would have to be signed by the community —
+	// the AppView asserting a change to someone else's words. Task 8
+	// re-materializes those posts into their authors' repos; until then they
+	// are readable and deletable, not editable.
+	if collection := CollectionOfPostURI(req.URI); collection != PostV2Collection {
+		return nil, NewValidationError("uri", fmt.Sprintf(
+			"editing a post is only supported for %s URIs, got %s", PostV2Collection, collection))
+	}
+
+	// THE URI'S AUTHORITY IS THE OWNER, so authorization is decided here,
+	// before anything is fetched. The credentials the edit goes out on cannot
+	// reach another author's repo even if this check were wrong, which is
+	// exactly why it must be proven to exist rather than quietly removed.
+	if authority != userDID {
+		log.Printf("[SECURITY] Post update authorization failed: user=%s, authority=%s, uri=%s",
+			userDID, authority, req.URI)
+		return nil, ErrNotAuthorized
+	}
+
+	repo, err := s.openAuthorRepo(ctx, userDID, session)
+	if err != nil {
+		return nil, err
+	}
+
+	standing, err := repo.GetRecord(ctx, PostV2Collection, rkey)
+	if err != nil {
+		if errors.Is(err, pds.ErrNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("failed to fetch the post being edited: %w", err)
+	}
+
+	record, err := decodePostV2Record(standing.Value)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode the post being edited: %w", err)
+	}
+
+	// REFUSED, NOT SILENTLY IGNORED. Both leave the record's community intact,
+	// but only one tells the client that the thing it asked for did not happen —
+	// and a client that believed it had moved a post would show its author a
+	// community the post is not in (§3.1: retargeting means a NEW post record).
+	if req.Community != "" && req.Community != record.Community {
+		return nil, NewValidationError("community",
+			"a post's community is immutable; submitting it elsewhere means creating a new post")
+	}
+
+	applyPostV2Edit(&record, req)
+
+	// NORMALIZED AND VALIDATED AFTER THE MERGE AND BEFORE THE PUT, and every
+	// half of that is load-bearing. After the merge, because a facet's byte
+	// range is meaningful only against the content the record will actually
+	// hold — an edit sending facets and no content is checked against the
+	// standing content, and one sending shorter content and no facets re-checks
+	// the standing facets against it. Before the put, because a check that ran
+	// afterwards would return exactly this error over a record already signed
+	// and on the wire.
+	//
+	// THE SAME CALL THE CREATE PATH MAKES, which is the point: it is the one
+	// function that refuses a javascript: embed or facet URI, caps the sources
+	// array and percent-encodes what the lexicon declares `format: uri`. When
+	// those ran at CreatePost's call site instead, an author could post a clean
+	// link and then edit it into a URI create would never have accepted. It
+	// rewrites record.Embed and record.Facets in place, so the put below carries
+	// the normalized values.
+	if err := normalizeAndValidatePostContent(postContent{
+		Title:   record.Title,
+		Content: record.Content,
+		Facets:  record.Facets,
+		Labels:  record.Labels,
+		Embed:   record.Embed,
+		Langs:   record.Langs,
+		Tags:    record.Tags,
+	}); err != nil {
+		return nil, err
+	}
+
+	// The swap guard is the CID that was just read. An edit landing between the
+	// two is ErrConcurrentModification: the edit was composed against content
+	// that no longer stands, and re-applying it would erase a change its author
+	// never saw. Retrying is the client's decision, not the server's.
+	commit, err := repo.PutRecordWithCommit(ctx, PostV2Collection, rkey, record, standing.CID)
+	if err != nil {
+		// A PUT OF IDENTICAL BYTES IS A SUCCESS, not a failure. The PDS answers
+		// a no-op write with a 200 carrying no commit (pds.ErrNoCommit, verified
+		// against a live PDS on the create path), and three ordinary things
+		// produce one: a client retrying after a lost response, a UI that saves
+		// on blur whether or not anything changed, and an author who opens the
+		// editor and saves without typing. In every case the record already
+		// holds precisely what the client asked for — which is what it means for
+		// the request to have succeeded — so the standing CID is the answer.
+		if errors.Is(err, pds.ErrNoCommit) {
+			log.Printf("[POST-UPDATE] No-op edit (the record already holds this content): %s", req.URI)
+			return &UpdatePostResponse{URI: req.URI, CID: standing.CID}, nil
+		}
+		if errors.Is(err, pds.ErrSwapConflict) {
+			return nil, fmt.Errorf("editing %s: %w", req.URI, ErrConcurrentModification)
+		}
+		return nil, fmt.Errorf("failed to write the edited post to PDS: %w", err)
+	}
+
+	log.Printf("[POST-UPDATE] Author: %s, URI: %s, CID: %s", userDID, commit.URI, commit.CID)
+
+	return &UpdatePostResponse{URI: commit.URI, CID: commit.CID}, nil
+}
+
+// decodePostV2Record reads a standing record into the typed shape an edit is
+// applied to.
+//
+// It round-trips through JSON rather than reading the map by hand so that the
+// struct's tags stay the single description of the record: a field spelled one
+// way in the writer and another in the reader is a field an edit silently
+// erases, and postv2_record_test.go pins the struct against the lexicon for
+// exactly that reason.
+func decodePostV2Record(value map[string]any) (PostV2Record, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return PostV2Record{}, fmt.Errorf("re-encoding the standing record: %w", err)
+	}
+	var record PostV2Record
+	if err := json.Unmarshal(encoded, &record); err != nil {
+		return PostV2Record{}, fmt.Errorf("decoding the standing record: %w", err)
+	}
+	// A record read out of a repo may predate a $type being written, and the
+	// collection it was fetched from is the authority on what it is.
+	record.Type = PostV2Collection
+	return record, nil
+}
+
+// applyPostV2Edit overwrites the mutable surfaces the request named, and only
+// those. A nil field is "leave it alone" rather than "clear it": the update
+// lexicon has no way to spell a deletion, so treating absence as removal would
+// have a client editing a title silently drop the post's embed.
+func applyPostV2Edit(record *PostV2Record, req UpdatePostRequest) {
+	if req.Title != nil {
+		record.Title = req.Title
+	}
+	if req.Content != nil {
+		record.Content = req.Content
+	}
+	if req.Facets != nil {
+		record.Facets = req.Facets
+	}
+	if req.Embed != nil {
+		record.Embed = req.Embed
+	}
+	if req.Labels != nil {
+		record.Labels = req.Labels
+	}
+	if req.Langs != nil {
+		record.Langs = req.Langs
+	}
+	if req.Tags != nil {
+		record.Tags = req.Tags
+	}
+}
+
+// postRecordFor builds the record a request describes, stamped with the given
+// community identifier and creation time.
+//
+// It is shared by the submission fingerprint and the record actually written,
+// so that the thing dedupe hashes and the thing that lands in a repo cannot
+// drift into describing different posts. The two callers differ in exactly the
+// two arguments: the fingerprint is taken before the community identifier has
+// been resolved and with no timestamp at all (createdAt is stamped per attempt,
+// so including it would make every retry look new).
+//
+// IT IS STILL THE DEPRECATED SHAPE, and the write converts at the boundary
+// (postV2From). Two things are typed against it that a postv2 record cannot
+// carry today: the fingerprint, whose stability across the flip keeps the
+// ledger's live dedupe rows valid, and the embed-enhancement pipeline, which is
+// unchanged content work. Retyping both belongs to TASK 8, which re-materializes
+// these records and is therefore the one moment a fingerprint repartition is
+// free — see submissionFingerprint. Nothing behavioural rides on it: the bytes
+// that reach the PDS are postV2From's.
+func postRecordFor(req CreatePostRequest, community, createdAt string) PostRecord {
+	return PostRecord{
+		Type:           LegacyPostCollection,
+		Community:      community,
 		Author:         req.AuthorDID,
 		Title:          req.Title,
 		Content:        req.Content,
 		Facets:         req.Facets,
 		Embed:          req.Embed, // Start with user-provided embed
 		Labels:         req.Labels,
+		Langs:          req.Langs,
+		Tags:           req.Tags,
 		OriginalAuthor: req.OriginalAuthor,
 		FederatedFrom:  req.FederatedFrom,
 		Location:       req.Location,
-		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
+		CreatedAt:      createdAt,
 	}
+}
 
-	// 10. Validate and enhance external embeds
+// postV2From is the write boundary: the record the pipeline assembled, in the
+// shape the AUTHOR's repository receives.
+//
+// THE AUTHOR FIELD IS DROPPED HERE, and this is the one place it happens. Under
+// §3.1 authorship is the repository the record lives in — a claim a verifying
+// relay or a DID-resolved fetch can check — so carrying the old self-asserted
+// field alongside it would give consumers two answers to one question with no
+// rule for which wins. The $type is re-stamped for the same reason: the
+// collection a record is written to and the type it declares must agree.
+func postV2From(record PostRecord) PostV2Record {
+	return PostV2Record{
+		Type:           PostV2Collection,
+		Community:      record.Community,
+		CreatedAt:      record.CreatedAt,
+		Title:          record.Title,
+		Content:        record.Content,
+		Facets:         record.Facets,
+		Embed:          record.Embed,
+		Labels:         record.Labels,
+		Langs:          record.Langs,
+		Tags:           record.Tags,
+		OriginalAuthor: record.OriginalAuthor,
+		FederatedFrom:  record.FederatedFrom,
+		Location:       record.Location,
+	}
+}
+
+// enhanceExternalEmbed applies the external-embed handling that has to happen
+// against a live network: Bluesky URL conversion and unfurl enrichment with its
+// blob uploads.
+//
+// IT CANNOT FAIL, AND THE SIGNATURE SAYS SO. It used to return an error for the
+// four thumb-validation exits it owned; those moved into the shared content gate
+// (validateExternalThumb), which runs before admission — a client mistake is
+// answerable with a 400 without costing a ledger reservation to discover. What
+// is left is pure enhancement, and enhancement has never been able to fail a
+// post: an unfurl that times out, a thumbnail that will not fetch and a Bluesky
+// URL that will not resolve are all logged and stepped over, because the author
+// asked to publish a post, not to publish a preview.
+//
+// It kept the error return for a while afterwards, with the caller holding a
+// `releaseOnFailure()` branch for it, and both were dead. They are gone rather
+// than kept as a seam, because an untestable branch is not a safety net — no
+// fixture can make this function fail, so nothing could ever prove the branch
+// worked. THE INVARIANT IT GUARDED IS STILL WRITTEN DOWN, at the call site and
+// in CreatePost's own doc comment: this runs with a submission reservation on
+// the ledger, so anything added here that CAN fail must return that error and
+// the caller must release the reservation before returning it. Re-introducing
+// the error return is the change that forces the caller to be edited, which is
+// the point.
+//
+// trusted marks a trusted aggregator, which supplies its own metadata and is
+// unfurled only for a thumbnail it did not provide.
+func (s *postService) enhanceExternalEmbed(ctx context.Context, postRecord *PostRecord, req CreatePostRequest, authorRepo AuthorRepo, trusted bool) {
 	if postRecord.Embed != nil {
 		embedType, typeOk := postRecord.Embed["$type"].(string)
 		if typeOk && embedType == "social.coves.embed.external" {
 			if external, extOk := postRecord.Embed["external"].(map[string]interface{}); extOk {
 				// Check if this is a Bluesky post URL and convert to post embed
-				if !s.tryConvertBlueskyURLToPostEmbed(ctx, external, &postRecord) {
-					// Not a Bluesky URL or conversion failed - continue with normal external embed processing
-					// SECURITY: Validate thumb field (must be blob, not URL string)
-					// This validation happens BEFORE unfurl to catch client errors early
-					if existingThumb := external["thumb"]; existingThumb != nil {
-						if thumbStr, isString := existingThumb.(string); isString {
-							return nil, NewValidationError("thumb",
-								fmt.Sprintf("thumb must be a blob reference (with $type, ref, mimeType, size), not URL string: %s", thumbStr))
-						}
-
-						// Validate blob structure if provided
-						if thumbMap, isMap := existingThumb.(map[string]interface{}); isMap {
-							// Check for $type field
-							if thumbType, ok := thumbMap["$type"].(string); !ok || thumbType != "blob" {
-								return nil, NewValidationError("thumb",
-									fmt.Sprintf("thumb must have $type: blob (got: %v)", thumbType))
-							}
-							// Check for required blob fields
-							if _, hasRef := thumbMap["ref"]; !hasRef {
-								return nil, NewValidationError("thumb", "thumb blob missing required 'ref' field")
-							}
-							if _, hasMimeType := thumbMap["mimeType"]; !hasMimeType {
-								return nil, NewValidationError("thumb", "thumb blob missing required 'mimeType' field")
-							}
-							log.Printf("[POST-CREATE] Client provided valid thumbnail blob")
-						} else {
-							return nil, NewValidationError("thumb",
-								fmt.Sprintf("thumb must be a blob object, got: %T", existingThumb))
-						}
-					}
+				if !s.tryConvertBlueskyURLToPostEmbed(ctx, external, postRecord) {
+					// Not a Bluesky URL or conversion failed - continue with normal external embed processing.
+					// The thumb's shape was already checked in validateCreateRequest,
+					// which needs no network and so must not wait for one.
 
 					// TRUSTED AGGREGATOR: Allow Kagi aggregator to provide thumbnail URLs directly
 					// This bypasses unfurl for more accurate RSS-sourced thumbnails
-					if req.ThumbnailURL != nil && *req.ThumbnailURL != "" && isTrustedAggregator {
+					if req.ThumbnailURL != nil && *req.ThumbnailURL != "" && trusted {
 						log.Printf("[AGGREGATOR-THUMB] Trusted aggregator provided thumbnail: %s", *req.ThumbnailURL)
 
-						if s.blobService != nil {
-							blobCtx, blobCancel := context.WithTimeout(ctx, 15*time.Second)
-							defer blobCancel()
-
-							blob, blobErr := s.blobService.UploadBlobFromURL(blobCtx, community, *req.ThumbnailURL)
-							if blobErr != nil {
-								log.Printf("[AGGREGATOR-THUMB] Failed to upload thumbnail: %v", blobErr)
-								// No fallback - aggregators only use RSS feed thumbnails
-							} else {
-								external["thumb"] = blob
-								log.Printf("[AGGREGATOR-THUMB] Successfully uploaded thumbnail from trusted aggregator")
-							}
+						blob, blobErr := s.uploadThumbnail(ctx, authorRepo, *req.ThumbnailURL)
+						if blobErr != nil {
+							log.Printf("[AGGREGATOR-THUMB] Failed to upload thumbnail: %v", blobErr)
+							// No fallback - aggregators only use RSS feed thumbnails
+						} else if blob != nil {
+							external["thumb"] = blob
+							log.Printf("[AGGREGATOR-THUMB] Successfully uploaded thumbnail from trusted aggregator")
 						}
 					}
 
 					// Unfurl enhancement (optional, only if URL is supported)
 					// For trusted aggregators: only unfurl for thumbnail if they didn't provide one
 					// For regular users: full unfurl for all metadata
-					needsThumbnailUnfurl := isTrustedAggregator && external["thumb"] == nil && (req.ThumbnailURL == nil || *req.ThumbnailURL == "")
-					needsFullUnfurl := !isTrustedAggregator
+					needsThumbnailUnfurl := trusted && external["thumb"] == nil && (req.ThumbnailURL == nil || *req.ThumbnailURL == "")
+					needsFullUnfurl := !trusted
 
 					if needsThumbnailUnfurl || needsFullUnfurl {
 						if uri, ok := external["uri"].(string); ok && uri != "" {
@@ -328,18 +774,13 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 
 									// Upload thumbnail from unfurl if client didn't provide one
 									// (Thumb validation already happened above)
-									if external["thumb"] == nil {
-										if result.ThumbnailURL != "" && s.blobService != nil {
-											blobCtx, blobCancel := context.WithTimeout(ctx, 15*time.Second)
-											defer blobCancel()
-
-											blob, blobErr := s.blobService.UploadBlobFromURL(blobCtx, community, result.ThumbnailURL)
-											if blobErr != nil {
-												log.Printf("[POST-CREATE] Warning: Failed to upload thumbnail for %s: %v", uri, blobErr)
-											} else {
-												external["thumb"] = blob
-												log.Printf("[POST-CREATE] Uploaded thumbnail blob for %s", uri)
-											}
+									if external["thumb"] == nil && result.ThumbnailURL != "" {
+										blob, blobErr := s.uploadThumbnail(ctx, authorRepo, result.ThumbnailURL)
+										if blobErr != nil {
+											log.Printf("[POST-CREATE] Warning: Failed to upload thumbnail for %s: %v", uri, blobErr)
+										} else if blob != nil {
+											external["thumb"] = blob
+											log.Printf("[POST-CREATE] Uploaded thumbnail blob for %s", uri)
 										}
 									}
 
@@ -357,63 +798,169 @@ func (s *postService) CreatePost(ctx context.Context, req CreatePostRequest) (*C
 			}
 		}
 	}
-
-	// 11. Write to community's PDS repository
-	uri, cid, err := s.createPostOnPDS(ctx, community, postRecord)
-	if err != nil {
-		return nil, fmt.Errorf("failed to write post to PDS: %w", err)
-	}
-
-	// 12. Record aggregator post for rate limiting (non-Kagi aggregators only)
-	// Kagi is exempted from rate limiting via env var (temporary)
-	if isOtherAggregator && s.aggregatorService != nil {
-		if recordErr := s.aggregatorService.RecordAggregatorPost(ctx, req.AuthorDID, communityDID, uri, cid); recordErr != nil {
-			// Log but don't fail - post was already created successfully
-			log.Printf("[POST-CREATE] Warning: failed to record aggregator post for rate limiting: %v", recordErr)
-		}
-	}
-
-	// 13. Return response (AppView will index via Jetstream consumer)
-	log.Printf("[POST-CREATE] Author: %s (trustedKagi=%v, otherAggregator=%v), Community: %s, URI: %s",
-		req.AuthorDID, isTrustedAggregator, isOtherAggregator, communityDID, uri)
-
-	return &CreatePostResponse{
-		URI: uri,
-		CID: cid,
-	}, nil
 }
 
-// validateCreateRequest validates basic input requirements
-func (s *postService) validateCreateRequest(req *CreatePostRequest) error {
-	// Global content limits (from lexicon)
-	const (
-		maxContentLength  = 100000 // 100k characters - matches social.coves.community.post lexicon
-		maxTitleLength    = 3000   // 3k bytes
-		maxTitleGraphemes = 300    // 300 graphemes (simplified check)
-	)
+// uploadThumbnail fetches a remote thumbnail through the blob service's guard
+// and puts it into the AUTHOR's own repository.
+//
+// THE GUARD RUNS FIRST AND THE UPLOAD ONLY HAPPENS IF IT PASSES. FetchImageForURL
+// bounds the fetch with a timeout, refuses a Content-Type outside the image
+// allowlist and caps the body at 6MB; a refusal returns before the author's PDS
+// has been touched at all. Discarding a bad blob after uploading it would be the
+// easy mistake and the wrong one — it pays the whole cost of not having a cap
+// (the fetch, the transfer, the storage write, the author's quota) and only
+// declines to show the result.
+//
+// A nil blob with a nil error means there was nothing to do: no blob service is
+// wired, or no author repo is available. Both are wiring states a post survives
+// — a thumbnail is an enhancement, and it has never been able to fail a post.
+func (s *postService) uploadThumbnail(ctx context.Context, authorRepo AuthorRepo, imageURL string) (*blobs.BlobRef, error) {
+	if s.blobService == nil || authorRepo == nil || imageURL == "" {
+		return nil, nil
+	}
 
-	// Validate community required
+	// One budget for the fetch and the upload together, as the single
+	// UploadBlobFromURL call used to have: the pair is one enhancement, and
+	// letting each half have its own would double the worst case a post waits.
+	blobCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	data, mimeType, err := s.blobService.FetchImageForURL(blobCtx, imageURL)
+	if err != nil {
+		return nil, err
+	}
+
+	return authorRepo.UploadBlob(blobCtx, data, mimeType)
+}
+
+// validateCreateRequest validates basic input requirements, and normalizes the
+// request's `format: uri` fields in place through the shared content gate.
+func (s *postService) validateCreateRequest(req *CreatePostRequest) error {
+	// The two fields only a SUBMISSION has. They are deliberately not in
+	// normalizeAndValidatePostContent: an edit carries neither — the community is immutable
+	// by lexicon and the author is the repository — so a validator that demanded
+	// them would refuse every legitimate edit.
 	if req.Community == "" {
 		return NewValidationError("community", "community is required")
 	}
-
-	// Validate author DID set by handler
 	if req.AuthorDID == "" {
 		return NewValidationError("authorDid", "authorDid must be set from authenticated user")
 	}
 
-	// Validate content length
-	if req.Content != nil && len(*req.Content) > maxContentLength {
+	// Normalizes req.Embed and req.Facets IN PLACE as well as checking them —
+	// the record built later reads these same values, and the unfurl step then
+	// works from the encoded URI, which dereferences identically.
+	return normalizeAndValidatePostContent(postContent{
+		Title:   req.Title,
+		Content: req.Content,
+		Facets:  req.Facets,
+		Labels:  req.Labels,
+		Embed:   req.Embed,
+		Langs:   req.Langs,
+		Tags:    req.Tags,
+	})
+}
+
+// postContent is the mutable surface of a post — everything an edit may change
+// and a create may set, and nothing that identifies WHICH post it is.
+//
+// EVERY FIELD AN EDIT CAN WRITE HAS TO BE HERE. A field the record carries and
+// this struct does not is a field the shared gate cannot see, and therefore one
+// that reaches a signed record with no validation at all — which is exactly what
+// happened to langs and tags before they were added.
+type postContent struct {
+	Title   *string
+	Content *string
+	Facets  []interface{}
+	Labels  *SelfLabels
+	Embed   map[string]interface{}
+	Langs   []string
+	Tags    []string
+}
+
+// Lexicon caps on the two list fields, from social.coves.community.postv2 (and
+// matched by both the post.create and post.update procedure lexicons).
+const (
+	// maxLangs is the postv2 `langs` array maxLength.
+	maxLangs = 3
+	// maxTags is the postv2 `tags` array maxLength.
+	maxTags = 8
+	// maxTagLength is the postv2 per-tag maxLength, in BYTES.
+	//
+	// The lexicon also declares maxGraphemes 64, which is NOT checked here —
+	// the same known gap the title check carries and names, and it is left as
+	// one gap rather than two half-solutions. The byte cap is the one that
+	// bounds what gets written; a grapheme cap needs a unicode segmentation
+	// library and belongs with the title's when that lands.
+	maxTagLength = 640
+)
+
+// normalizeAndValidatePostContent is the definition of a well-formed Coves post,
+// and it is SHARED by the create and the edit path rather than duplicated across
+// them.
+//
+// IT NORMALIZES IN PLACE AS WELL AS VALIDATING, which is why the name says so.
+// The `format: uri` fields are repaired on the value the caller goes on to
+// write — see the normalization section below — so a caller that skipped this
+// function would not merely miss a check, it would sign un-encoded URIs.
+//
+// # THE APP LAYER IS THE ONLY GATE THERE IS
+//
+// Every write goes out as putRecord with `validate: false`, because the Coves
+// lexicons are ones no PDS has been taught. That is deliberate and correct, and
+// it has a consequence worth stating plainly: the PDS will sign and publish
+// literally any JSON handed to it. There is no second opinion downstream, so
+// whatever this function refuses IS the definition of a well-formed post — and a
+// path that skipped it would be a hole straight through all of it, signed by the
+// author's own key and published to the firehose as a valid record.
+//
+// # WHY SHARED AND NOT COPIED
+//
+// Two copies drift, and the copy that drifts is the one nobody is looking at.
+// An edit path with its own slightly-different rules is how a client comes to be
+// able to post cleanly and then edit into a record no validation would ever have
+// allowed.
+//
+// # THE ARGUMENT IS THE MERGED RECORD
+//
+// Callers pass what the record WILL hold, not what the request happened to
+// carry. It matters for facets, whose byte ranges are meaningful only against
+// the content they annotate: an edit sending new facets and no content must be
+// checked against the STANDING content, and one sending shorter content and no
+// facets must re-check the STANDING facets against it. Either omission signs a
+// record whose annotations slice outside its own text, which is a renderer crash
+// on somebody else's client.
+//
+// # AND THE NORMALIZATION IS PART OF THE SAME GATE
+//
+// The `format: uri` fields — external.uri, each external.sources[].uri, and each
+// facet #link uri — are normalized here rather than at one call site, because
+// that is where they were and the edit path did not have one. Nothing else
+// refuses a javascript: URI: validateEmbed only asks that external.uri be a
+// non-empty string and never looks at sources at all, and richtext's structural
+// check deliberately has no #link arm.
+//
+// Be precise about what that buys, because it is easy to overclaim: an author
+// can write whatever record they like straight into their own PDS repo without
+// going near this API, and the firehose ingest path does not scheme-check what
+// it indexes. This is not the system's only defence against a hostile URI. What
+// it IS: the guarantee that a record THIS AppView signs conforms to the lexicon
+// it claims, identically on both paths that produce one.
+func normalizeAndValidatePostContent(post postContent) error {
+	// Global content limits (from lexicon)
+	const (
+		maxContentLength = 100000 // 100k characters - matches the postv2 lexicon
+		maxTitleLength   = 3000   // 3k bytes
+	)
+
+	if post.Content != nil && len(*post.Content) > maxContentLength {
 		return NewValidationError("content",
 			fmt.Sprintf("content too long (max %d characters)", maxContentLength))
 	}
 
-	// Validate title length
-	if req.Title != nil {
-		if len(*req.Title) > maxTitleLength {
-			return NewValidationError("title",
-				fmt.Sprintf("title too long (max %d bytes)", maxTitleLength))
-		}
+	if post.Title != nil && len(*post.Title) > maxTitleLength {
+		return NewValidationError("title",
+			fmt.Sprintf("title too long (max %d bytes)", maxTitleLength))
 		// Simplified grapheme check (actual implementation would need unicode library)
 		// For Alpha, byte length check is sufficient
 	}
@@ -422,21 +969,21 @@ func (s *postService) validateCreateRequest(req *CreatePostRequest) error {
 	// Catches out-of-range byte slices at the API boundary instead of
 	// persisting a record whose annotations slice outside the content.
 	contentByteLen := 0
-	if req.Content != nil {
-		contentByteLen = len(*req.Content)
+	if post.Content != nil {
+		contentByteLen = len(*post.Content)
 	}
-	if err := richtext.ValidateFacets(req.Facets, contentByteLen); err != nil {
+	if err := richtext.ValidateFacets(post.Facets, contentByteLen); err != nil {
 		return NewValidationError("facets", err.Error())
 	}
 
 	// Validate content labels are from known values
-	if req.Labels != nil {
+	if post.Labels != nil {
 		validLabels := map[string]bool{
 			"nsfw":     true,
 			"spoiler":  true,
 			"violence": true,
 		}
-		for _, label := range req.Labels.Values {
+		for _, label := range post.Labels.Values {
 			if !validLabels[label.Val] {
 				return NewValidationError("labels",
 					fmt.Sprintf("unknown content label: %s (valid: nsfw, spoiler, violence)", label.Val))
@@ -444,106 +991,138 @@ func (s *postService) validateCreateRequest(req *CreatePostRequest) error {
 		}
 	}
 
-	// Validate the embed (if provided) matches a known lexicon union member.
-	// Catches malformed embeds at the API boundary instead of silently
-	// persisting an unrenderable record to the PDS.
-	if err := validateEmbed(req.Embed); err != nil {
+	if err := validatePostLangs(post.Langs); err != nil {
 		return err
 	}
 
+	if err := validatePostTags(post.Tags); err != nil {
+		return err
+	}
+
+	// Validate the embed (if provided) matches a known lexicon union member.
+	// Catches malformed embeds at the API boundary instead of silently
+	// persisting an unrenderable record to the PDS.
+	if err := validateEmbed(post.Embed); err != nil {
+		return err
+	}
+
+	// And the external embed's thumbnail, which validateEmbed deliberately does
+	// not look at: it checks the union's SHAPE, and the thumb is a blob whose
+	// parts a client gets wrong in four distinct ways worth naming separately.
+	if err := validateExternalThumb(post.Embed); err != nil {
+		return err
+	}
+
+	// NORMALIZATION RUNS LAST, on the structure the checks above established:
+	// normalizeEmbedURIs walks an embed validateEmbed has already shaped, and
+	// NormalizeLinkURIs walks facets ValidateFacets has already shaped. Both
+	// rewrite in place, so the caller's record carries the encoded values.
+	if err := normalizeEmbedURIs(post.Embed); err != nil {
+		return err
+	}
+	if err := richtext.NormalizeLinkURIs(post.Facets); err != nil {
+		return NewValidationErrorFrom("facets", err)
+	}
 	return nil
 }
 
-// createPostOnPDS writes a post record to the community's PDS repository
-// Uses com.atproto.repo.createRecord endpoint
-func (s *postService) createPostOnPDS(
-	ctx context.Context,
-	community *communities.Community,
-	record PostRecord,
-) (uri, cid string, err error) {
-	// Use community's PDS URL (not service default) for federated communities
-	// Each community can be hosted on a different PDS instance
-	pdsURL := community.PDSURL
-	if pdsURL == "" {
-		// Fallback to service default if community doesn't have a PDS URL
-		// (shouldn't happen in practice, but safe default)
-		pdsURL = s.pdsURL
+// validatePostLangs enforces the postv2 lexicon's `langs`: at most maxLangs
+// entries, each a real language tag.
+//
+// The format check is indigo's own parser rather than a hand-rolled one,
+// because `format: language` means what the atProto spec says it means, and the
+// package that ships ParseLanguage is the package every other implementation
+// validates our records with.
+func validatePostLangs(langs []string) error {
+	if len(langs) > maxLangs {
+		return NewValidationError("langs",
+			fmt.Sprintf("too many langs: %d (max %d)", len(langs), maxLangs))
 	}
-
-	// Build PDS endpoint URL
-	endpoint := fmt.Sprintf("%s/xrpc/com.atproto.repo.createRecord", pdsURL)
-
-	// Build request payload
-	// IMPORTANT: repo is set to community DID, not author DID
-	// This writes the post to the community's repository
-	payload := map[string]interface{}{
-		"repo":       community.DID,                 // Community's repository
-		"collection": "social.coves.community.post", // Collection type
-		"record":     record,                        // The post record
-		// "rkey" omitted - PDS will auto-generate TID
-	}
-
-	// Marshal payload
-	jsonData, err := json.Marshal(payload)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to marshal post payload: %w", err)
-	}
-
-	// Create HTTP request
-	req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return "", "", fmt.Errorf("failed to create PDS request: %w", err)
-	}
-
-	// Set headers (auth + content type)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+community.PDSAccessToken)
-
-	// Extended timeout for write operations (30 seconds)
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	// Execute request
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", "", fmt.Errorf("PDS request failed: %w", err)
-	}
-	defer func() {
-		if closeErr := resp.Body.Close(); closeErr != nil {
-			log.Printf("Warning: failed to close response body: %v", closeErr)
+	for i, lang := range langs {
+		if _, err := syntax.ParseLanguage(lang); err != nil {
+			return NewValidationError("langs",
+				fmt.Sprintf("langs[%d] %q is not a valid language tag: %v", i, lang, err))
 		}
-	}()
-
-	// Read response body
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to read PDS response: %w", err)
 	}
+	return nil
+}
 
-	// Check for errors
-	if resp.StatusCode != http.StatusOK {
-		// Sanitize error body for logging (prevent sensitive data leakage)
-		bodyPreview := string(body)
-		if len(bodyPreview) > 200 {
-			bodyPreview = bodyPreview[:200] + "... (truncated)"
+// validatePostTags enforces the postv2 lexicon's `tags`: at most maxTags
+// entries, each at most maxTagLength bytes.
+//
+// The empty-string refusal is deliberately STRICTER than the lexicon, which
+// declares no minLength: a tag with no characters is an unusable entry that
+// renders as a blank chip and matches nothing, the same reasoning that already
+// refuses an embed source carrying no uri. Being stricter about what we SIGN is
+// safe; consumers still accept whatever the schema allows.
+func validatePostTags(tags []string) error {
+	if len(tags) > maxTags {
+		return NewValidationError("tags",
+			fmt.Sprintf("too many tags: %d (max %d)", len(tags), maxTags))
+	}
+	for i, tag := range tags {
+		if tag == "" {
+			return NewValidationError("tags", fmt.Sprintf("tags[%d] must not be empty", i))
 		}
-		log.Printf("[POST-CREATE-ERROR] PDS Status: %d, Body: %s", resp.StatusCode, bodyPreview)
+		if len(tag) > maxTagLength {
+			return NewValidationError("tags",
+				fmt.Sprintf("tags[%d] too long: %d bytes (max %d)", i, len(tag), maxTagLength))
+		}
+	}
+	return nil
+}
 
-		// Return truncated error (defense in depth - handler will mask this further)
-		return "", "", fmt.Errorf("PDS returned error %d: %s", resp.StatusCode, bodyPreview)
+// validateExternalThumb enforces that a social.coves.embed.external carries a
+// real atProto blob reference in `thumb`, or nothing at all.
+//
+// Clients repeatedly send a URL STRING here, because that is what the rendered
+// post looks like, and accepting one writes a record no other atProto
+// implementation can read. Each of the four rejections names the part that is
+// missing, because the message is the only thing telling a client which one it
+// left out.
+//
+// IT RUNS AT VALIDATION TIME, before admission and before any credential is
+// resolved, because it needs nothing but the request: a client mistake must be
+// answerable with a 400 whether or not the author's repository can be opened,
+// and it must not cost a ledger reservation to discover.
+func validateExternalThumb(embed map[string]interface{}) error {
+	if embed == nil {
+		return nil
+	}
+	if embedType, ok := embed["$type"].(string); !ok || embedType != embedTypeExternal {
+		return nil
+	}
+	external, ok := embed["external"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	thumb := external["thumb"]
+	if thumb == nil {
+		// The common case: a bare link whose thumbnail unfurl fills in later.
+		return nil
 	}
 
-	// Parse response
-	var result struct {
-		URI string `json:"uri"`
-		CID string `json:"cid"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return "", "", fmt.Errorf("failed to parse PDS response: %w", err)
+	if thumbStr, isString := thumb.(string); isString {
+		return NewValidationError("thumb",
+			fmt.Sprintf("thumb must be a blob reference (with $type, ref, mimeType, size), not URL string: %s", thumbStr))
 	}
 
-	return result.URI, result.CID, nil
+	thumbMap, isMap := thumb.(map[string]interface{})
+	if !isMap {
+		return NewValidationError("thumb",
+			fmt.Sprintf("thumb must be a blob object, got: %T", thumb))
+	}
+	if thumbType, ok := thumbMap["$type"].(string); !ok || thumbType != "blob" {
+		return NewValidationError("thumb",
+			fmt.Sprintf("thumb must have $type: blob (got: %v)", thumbType))
+	}
+	if _, hasRef := thumbMap["ref"]; !hasRef {
+		return NewValidationError("thumb", "thumb blob missing required 'ref' field")
+	}
+	if _, hasMimeType := thumbMap["mimeType"]; !hasMimeType {
+		return NewValidationError("thumb", "thumb blob missing required 'mimeType' field")
+	}
+	return nil
 }
 
 // tryConvertBlueskyURLToPostEmbed attempts to convert a Bluesky URL in an external embed to a post embed.
@@ -670,14 +1249,10 @@ func (s *postService) GetAuthorPosts(ctx context.Context, req GetAuthorPostsRequ
 	}, nil
 }
 
-// Bounds for the social.coves.community.post.get endpoint.
-const (
-	postCollection = "social.coves.community.post"
-	// MaxGetPostsURIs is the maximum number of URIs accepted by a single
-	// social.coves.community.post.get request (matches the lexicon maxLength).
-	// Exported so the handler layer reuses the same bound (single source of truth).
-	MaxGetPostsURIs = 25
-)
+// MaxGetPostsURIs is the maximum number of URIs accepted by a single
+// social.coves.community.post.get request (matches the lexicon maxLength).
+// Exported so the handler layer reuses the same bound (single source of truth).
+const MaxGetPostsURIs = 25
 
 // GetPosts batch-fetches post views by AT-URI for feed hydration and permalink
 // (cold-load) rendering. Implements social.coves.community.post.get.
@@ -720,18 +1295,39 @@ func (s *postService) GetPosts(ctx context.Context, req GetPostsRequest) ([]*Pos
 	for uri := range uniqueSet {
 		unique = append(unique, uri)
 	}
-	views, err := s.repo.GetViewsByURIs(ctx, unique)
+	// The viewer scopes the visibility gate. An anonymous permalink read passes
+	// "" and gets accepted content only; an AUTHOR reading their own
+	// pending/rejected/removed post gets it, exactly as actor.getPosts, the feeds
+	// and the getComments thread header already give it to them (PRD §6.2). This
+	// is the same req.ViewerDID the block filter below runs on — post.get used to
+	// consult it for blocks and ignore it for admission, which made the permalink
+	// the one surface that told an author their own post did not exist.
+	views, err := s.repo.GetViewsByURIs(ctx, unique, req.ViewerDID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch post views: %w", err)
 	}
 
-	// 3. Assemble results in request order; valid-but-absent URIs become notFoundPost
+	// 3. Assemble results in request order. A visible view is a postView; an
+	// absent URI is a notFoundPost — UNLESS its own community removed it, in
+	// which case it becomes a #removedPost tombstone carrying the removal code
+	// (PRD §3.4/§6.2). The visibility predicate hides a removed post from
+	// GetViewsByURIs exactly as it hides a pending one, so the removal is
+	// recovered here from the admission row rather than from the (absent) view.
+	removed, err := s.removedMarkers(ctx, req.URIs, views)
+	if err != nil {
+		return nil, err
+	}
 	results := make([]*PostResult, len(req.URIs))
 	for i, uri := range req.URIs {
-		if view := views[uri]; view != nil {
-			results[i] = foundResult(view)
-		} else {
-			results[i] = notFoundResult(uri)
+		switch {
+		case views[uri] != nil:
+			results[i] = foundResult(views[uri])
+		default:
+			if code, ok := removed[uri]; ok {
+				results[i] = removedResult(uri, code)
+			} else {
+				results[i] = notFoundResult(uri)
+			}
 		}
 	}
 
@@ -745,6 +1341,104 @@ func (s *postService) GetPosts(ctx context.Context, req GetPostsRequest) ([]*Pos
 	}
 
 	return results, nil
+}
+
+// removedMarkers returns, for the requested URIs absent from the visible view
+// set, the removal code of any whose OWN community removed it — so post.get can
+// serve a #removedPost tombstone (PRD §3.4) instead of collapsing a moderator
+// removal into an indistinguishable notFoundPost. The presence of a URI in the
+// returned map is the removed signal; the value is the code (possibly empty).
+//
+// It is a no-op when the admissions store is not wired (minimal setups and unit
+// tests), leaving every absent URI a plain notFound — the pre-task-7 behavior.
+// That is a CONFIGURATION fact, known before any lookup runs, and it is the only
+// thing that silently degrades to notFound.
+//
+// A LOOKUP FAILURE IS AN ERROR, NOT A NOTFOUND. Both lookups here used to be
+// best-effort: a database blip turned a standing removal into notFoundPost, so
+// the same request answered with a different union member depending on the
+// health of the database, and a client (or a moderator checking their own
+// removal) could not tell "this post was taken down" from "we could not find
+// out". post.get answering 5xx is the honest response to "we do not know";
+// silently downgrading the tombstone is not, and it is unfalsifiable from the
+// wire. Callers propagate the error.
+func (s *postService) removedMarkers(ctx context.Context, uris []string, views map[string]*PostView) (map[string]string, error) {
+	markers := make(map[string]string)
+	if s.admissions == nil {
+		return markers, nil
+	}
+
+	// Collect the absent URIs once (deduped), then resolve their admissions in a
+	// single batched lookup rather than one round-trip per URI.
+	seen := make(map[string]struct{}, len(uris))
+	absent := make([]string, 0, len(uris))
+	for _, uri := range uris {
+		if views[uri] != nil {
+			continue // visible — not a candidate for a tombstone
+		}
+		if _, done := seen[uri]; done {
+			continue
+		}
+		seen[uri] = struct{}{}
+		absent = append(absent, uri)
+	}
+	if len(absent) == 0 {
+		return markers, nil
+	}
+
+	admissionsByURI, err := s.admissions.GetByPostURIs(ctx, absent)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve removal state for post.get: %w", err)
+	}
+
+	// The post rows are fetched in ONE batched round trip. Looping a per-URI
+	// lookup here was an N+1 on a public endpoint whose URI list the caller
+	// controls: 25 URIs (MaxGetPostsURIs) meant up to 25 sequential queries per
+	// request, all of them for URIs the visibility predicate had already refused.
+	//
+	// These are RAW rows on purpose — the predicate has already hidden every URI
+	// in `absent`, so a gated read would return nothing and there would be no
+	// removal to report. The raw row is used for exactly two facts, both checked
+	// below and neither of them content: which community owns the post, and
+	// whether its author withdrew it.
+	postsByURI, err := s.repo.GetRawIndexedRowsByURIs(ctx, absent)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve removal state for post.get: %w", err)
+	}
+
+	for _, uri := range absent {
+		// A removal is an admission-state change, not a soft delete, so the post
+		// row still stands and its own community — the key the admission is scoped
+		// by — comes straight off it. A URI with no row is genuinely not-indexed
+		// and stays a notFound.
+		post := postsByURI[uri]
+		if post == nil {
+			continue
+		}
+		// A soft-deleted post is GONE, not a tombstone: the author withdrew it, so
+		// even a standing removal must render as notFound rather than advertising
+		// a moderation reason for a post its own author took down.
+		if post.DeletedAt != nil {
+			continue
+		}
+
+		for _, admission := range admissionsByURI[uri] {
+			// The community half of this comparison is the fork oracle, and it is
+			// load-bearing: a post can carry a removal from a community that FORKED
+			// it while its own community has said nothing. Emitting that as a
+			// tombstone would let any community publish a moderation verdict about
+			// a post it does not host.
+			if admission.CommunityDID == post.CommunityDID && admission.Status == AdmissionStatusRemoved {
+				code := ""
+				if admission.DecisionCode != nil {
+					code = *admission.DecisionCode
+				}
+				markers[uri] = code
+				break
+			}
+		}
+	}
+	return markers, nil
 }
 
 // applyViewerBlocks rewrites found posts whose author the viewer has blocked into
@@ -802,19 +1496,70 @@ func parsePostURIParts(uri, field string) (authority string, rkey string, err er
 	}
 	parts := strings.Split(strings.TrimPrefix(uri, "at://"), "/")
 	if len(parts) != 3 {
-		return "", "", NewValidationError(field, "invalid post URI format: expected at://authority/"+postCollection+"/rkey")
+		return "", "", NewValidationError(field, "invalid post URI format: expected at://authority/"+LegacyPostCollection+"/rkey")
 	}
 	authority, collection, rkey := parts[0], parts[1], parts[2]
 	if authority == "" {
 		return "", "", NewValidationError(field, "invalid post URI: missing authority")
 	}
-	if collection != postCollection {
-		return "", "", NewValidationError(field, fmt.Sprintf("invalid collection in URI: expected %s, got %s", postCollection, collection))
+	// EITHER post collection is a well-formed post URI. A post now lives in the
+	// author's repo under social.coves.community.postv2 (§3.1), while every post
+	// written before the flip is still at the deprecated community-repo NSID, and
+	// a reader has to be able to name both — refusing postv2 here made the new
+	// records unfetchable by the endpoint that hydrates every feed.
+	//
+	// What the authority MEANS differs between them — the community for the old
+	// collection, the author for the new — so a caller that goes on to use it as
+	// one or the other must narrow this itself. parsePostURI does, because it
+	// writes to the repo the authority names.
+	if collection != LegacyPostCollection && collection != PostV2Collection {
+		return "", "", NewValidationError(field, fmt.Sprintf("invalid collection in URI: expected %s or %s, got %s",
+			LegacyPostCollection, PostV2Collection, collection))
 	}
 	if rkey == "" {
 		return "", "", NewValidationError(field, "invalid post URI: missing rkey")
 	}
 	return authority, rkey, nil
+}
+
+// CollectionOfPostURI returns the collection segment of an at:// record URI, or
+// "" when the URI is not shaped like one.
+//
+// It is exported because the two post collections are now indexed into one
+// table, so every layer that renders or narrows a post has to ask the same
+// question of the same URI — the repository decides which record shape to
+// build from it, and this path decides which writes it will accept. A second
+// spelling of the split is a second place for the two to disagree.
+func CollectionOfPostURI(uri string) string {
+	parts := strings.Split(strings.TrimPrefix(uri, "at://"), "/")
+	if len(parts) != 3 {
+		return ""
+	}
+	return parts[1]
+}
+
+// IsPostCollection reports whether an NSID names a post record — either the
+// author-repo PostV2Collection or the deprecated community-repo one.
+//
+// IT ANSWERS ONE QUESTION: does a record in this collection live in the `posts`
+// table? Both do, and they will for as long as the flip's dual-collection window
+// is open: §10.1 truncates and re-indexes rather than migrating the schema, so a
+// legacy record and an author-owned one produce rows that differ only in what
+// their URI says, and everything downstream of the row — the counters, the feed
+// queries, the rendered view — treats them alike. The prod drain (§11) is what
+// finally closes the window, and until it has run, production holds records of
+// both kinds and this AppView consumes both.
+//
+// It exists as one predicate rather than as a pair of comparisons at each site
+// because the sites are the aggregation paths — the vote consumer, the comment
+// consumer, the reconciliation tool — and their failure mode when they disagree
+// is SILENT. A subject URI whose collection is not recognised falls to an
+// "unsupported collection" branch that indexes the vote or the comment and
+// simply never touches the counter: no error, no dead letter, just a post whose
+// score never moves. One predicate is one place to delete when §11's follow-up
+// retires the legacy NSID, and one place to be wrong in the meantime.
+func IsPostCollection(collection string) bool {
+	return collection == PostV2Collection || collection == LegacyPostCollection
 }
 
 // requireDIDAuthority enforces that a parsed post-URI authority is a DID (not a handle).
@@ -938,16 +1683,23 @@ func communityCredentialFailure(operation, communityDID string, err error) error
 		operation, communityDID, err)
 }
 
-// DeletePost deletes a post from the community's PDS repository
-// SECURITY: Only the post author can delete their own posts
-// Flow:
-// 1. Validate session and URI format
-// 2. Extract community DID and rkey from URI
-// 3. Fetch community from AppView
-// 4. Ensure fresh PDS credentials
-// 5. Fetch post record from community's PDS to get author field
-// 6. SECURITY: Verify author matches session.AccountDID
-// 7. Delete record from community's PDS using community credentials
+// DeletePost removes a post record from the repository that holds it.
+// SECURITY: Only the post author can delete their own posts.
+//
+// THE TWO COLLECTIONS AUTHORIZE DIFFERENTLY BECAUSE THEY LIVE IN DIFFERENT
+// REPOS, and collapsing them would break one or the other:
+//
+//   - A postv2 URI names the AUTHOR's repo, so the URI's authority IS the
+//     owner. The check is local, decided before anything is fetched, and the
+//     credentials the delete goes out on cannot reach another author's repo
+//     even if it were wrong.
+//   - A deprecated community.post URI names the COMMUNITY's repo, where the
+//     caller has no credentials at all. The delete goes out on the community's
+//     service token — which could delete anyone's post — so the record's
+//     `author` field has to be fetched and compared. That path survives until
+//     task 8 re-materializes those posts into their authors' repos; every one
+//     of them is standing in a community repo right now with a delete button
+//     that has to keep working.
 func (s *postService) DeletePost(ctx context.Context, session *oauth.ClientSessionData, req DeletePostRequest) error {
 	// 1. Validate session
 	if session == nil {
@@ -955,17 +1707,66 @@ func (s *postService) DeletePost(ctx context.Context, session *oauth.ClientSessi
 	}
 	userDID := session.AccountDID.String()
 
-	// 2. Validate URI format: at://community_did/social.coves.community.post/rkey
+	// 2. Validate URI shape, before anything reaches the network
 	if err := s.validateDeleteRequest(&req); err != nil {
 		return err
 	}
+	authority, rkey, err := parsePostURIParts(req.URI, "uri")
+	if err != nil {
+		return err
+	}
+	if err := requireDIDAuthority(authority, "uri"); err != nil {
+		return err
+	}
+	// Defense-in-depth: verify rkey extraction is consistent with the utils helper.
+	if extractedRkey := utils.ExtractRKeyFromURI(req.URI); extractedRkey != rkey {
+		return NewValidationError("uri", "URI parsing inconsistency")
+	}
 
-	// 3. Extract community DID and rkey from URI
-	communityDID, rkey, err := s.parsePostURI(req.URI)
+	// 3. Route on the collection. parsePostURIParts has already refused
+	// anything that is neither post collection.
+	if CollectionOfPostURI(req.URI) == PostV2Collection {
+		return s.deleteAuthorPost(ctx, session, userDID, authority, rkey, req.URI)
+	}
+	return s.deleteCommunityPost(ctx, userDID, authority, rkey, req.URI)
+}
+
+// deleteAuthorPost removes a postv2 record from its author's own repository.
+func (s *postService) deleteAuthorPost(ctx context.Context, session *oauth.ClientSessionData, userDID, authorDID, rkey, uri string) error {
+	// AUTHORIZATION IS THE URI'S AUTHORITY, decided before anything is fetched.
+	//
+	// Refused as UNAUTHORIZED rather than "not found", which is what the
+	// pre-flip path answered for an authority it could not look up: a 404 there
+	// would tell an attacker that the DID they aimed at is one this AppView has
+	// never seen, and would answer 404 to a probe that deserves 403.
+	if authorDID != userDID {
+		log.Printf("[SECURITY] Post delete authorization failed: user=%s, authority=%s, uri=%s",
+			userDID, authorDID, uri)
+		return ErrNotAuthorized
+	}
+
+	repo, err := s.openAuthorRepo(ctx, userDID, session)
 	if err != nil {
 		return err
 	}
 
+	if err := repo.DeleteRecord(ctx, PostV2Collection, rkey); err != nil {
+		if errors.Is(err, pds.ErrNotFound) {
+			// Already deleted or never existed — the retried delete after a lost
+			// response succeeds.
+			log.Printf("[POST-DELETE] Post not found in the author's repo (already deleted?): %s", uri)
+			return nil
+		}
+		return fmt.Errorf("failed to delete post from PDS: %w", err)
+	}
+
+	log.Printf("[POST-DELETE] Successfully deleted post: uri=%s, author=%s", uri, userDID)
+	return nil
+}
+
+// deleteCommunityPost removes a pre-flip social.coves.community.post record
+// from the community's repository, on the community's own credentials.
+func (s *postService) deleteCommunityPost(ctx context.Context, userDID, communityDID, rkey, uri string) error {
 	// 4. Fetch community from AppView
 	community, err := s.communityService.GetByDID(ctx, communityDID)
 	if err != nil {
@@ -988,11 +1789,11 @@ func (s *postService) DeletePost(ctx context.Context, session *oauth.ClientSessi
 	}
 
 	// 7. Fetch post record from PDS to verify author
-	record, err := pdsClient.GetRecord(ctx, "social.coves.community.post", rkey)
+	record, err := pdsClient.GetRecord(ctx, LegacyPostCollection, rkey)
 	if err != nil {
 		if errors.Is(err, pds.ErrNotFound) {
 			// Post already deleted or never existed - idempotent success
-			log.Printf("[POST-DELETE] Post not found on PDS (already deleted?): %s", req.URI)
+			log.Printf("[POST-DELETE] Post not found on PDS (already deleted?): %s", uri)
 			return nil
 		}
 		if pds.IsAuthError(err) {
@@ -1005,20 +1806,20 @@ func (s *postService) DeletePost(ctx context.Context, session *oauth.ClientSessi
 	// The author field in the record must match the authenticated user's DID
 	postAuthor, ok := record.Value["author"].(string)
 	if !ok || postAuthor == "" {
-		return fmt.Errorf("post record missing author field: %s", req.URI)
+		return fmt.Errorf("post record missing author field: %s", uri)
 	}
 
 	if postAuthor != userDID {
 		log.Printf("[SECURITY] Post delete authorization failed: user=%s, author=%s, uri=%s",
-			userDID, postAuthor, req.URI)
+			userDID, postAuthor, uri)
 		return ErrNotAuthorized
 	}
 
 	// 9. Delete record from community's PDS
-	if err := pdsClient.DeleteRecord(ctx, "social.coves.community.post", rkey); err != nil {
+	if err := pdsClient.DeleteRecord(ctx, LegacyPostCollection, rkey); err != nil {
 		if errors.Is(err, pds.ErrNotFound) {
 			// Already deleted - idempotent success
-			log.Printf("[POST-DELETE] Post already deleted from PDS: %s", req.URI)
+			log.Printf("[POST-DELETE] Post already deleted from PDS: %s", uri)
 			return nil
 		}
 		if pds.IsAuthError(err) {
@@ -1029,7 +1830,7 @@ func (s *postService) DeletePost(ctx context.Context, session *oauth.ClientSessi
 
 	// 10. Log success (AppView will update via Jetstream consumer)
 	log.Printf("[POST-DELETE] Successfully deleted post: uri=%s, author=%s, community=%s",
-		req.URI, userDID, communityDID)
+		uri, userDID, communityDID)
 
 	return nil
 }
@@ -1046,25 +1847,4 @@ func (s *postService) validateDeleteRequest(req *DeletePostRequest) error {
 	}
 
 	return nil
-}
-
-// parsePostURI extracts community DID and rkey from a post URI
-// Format: at://community_did/social.coves.community.post/rkey
-// Returns community DID, rkey, and error
-func (s *postService) parsePostURI(uri string) (communityDID string, rkey string, err error) {
-	// Structure + DID-authority validation is shared with the get path (single source of truth).
-	communityDID, rkey, err = parsePostURIParts(uri, "uri")
-	if err != nil {
-		return "", "", err
-	}
-	if err := requireDIDAuthority(communityDID, "uri"); err != nil {
-		return "", "", err
-	}
-
-	// Defense-in-depth: verify rkey extraction is consistent with the utils helper.
-	if extractedRkey := utils.ExtractRKeyFromURI(uri); extractedRkey != rkey {
-		return "", "", NewValidationError("uri", "URI parsing inconsistency")
-	}
-
-	return communityDID, rkey, nil
 }

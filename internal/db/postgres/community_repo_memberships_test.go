@@ -4,6 +4,7 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
@@ -43,7 +44,18 @@ import (
 // test names only the thing it is about.
 func memberOf(t *testing.T) (communities.Repository, *communities.Community) {
 	t.Helper()
-	repo := NewCommunityRepository(testkit.DB(t))
+	repo, _, community := memberOfWithDB(t)
+	return repo, community
+}
+
+// memberOfWithDB is memberOf, additionally handing back the pool. The stored
+// `communities.post_count` column is no longer SERVED — GetByDID computes
+// postCount live from the visibility predicate — so a test about the stored
+// counter has to read the column rather than the API value.
+func memberOfWithDB(t *testing.T) (communities.Repository, *sql.DB, *communities.Community) {
+	t.Helper()
+	db := testkit.DB(t)
+	repo := NewCommunityRepository(db)
 	id := testkit.UniqueID(t)
 	community, err := repo.Create(context.Background(), &communities.Community{
 		DID:          "did:plc:mem" + id,
@@ -57,7 +69,17 @@ func memberOf(t *testing.T) (communities.Repository, *communities.Community) {
 		UpdatedAt:    time.Now(),
 	})
 	require.NoError(t, err, "seeding the community the memberships hang off")
-	return repo, community
+	return repo, db, community
+}
+
+// storedPostCount reads the raw communities.post_count column — the vestigial
+// stored counter IncrementPostCount advances, which nothing serves any more.
+func storedPostCount(t *testing.T, db *sql.DB, communityDID string) int {
+	t.Helper()
+	var count int
+	require.NoError(t, db.QueryRowContext(context.Background(),
+		`SELECT post_count FROM communities WHERE did = $1`, communityDID).Scan(&count))
+	return count
 }
 
 func aMembership(userDID, communityDID string) *communities.Membership {
@@ -480,13 +502,14 @@ func TestCommunityRepo_Counters(t *testing.T) {
 
 	t.Run("each counter moves only its own column", func(t *testing.T) {
 		t.Parallel()
-		repo, community := memberOf(t)
+		repo, db, community := memberOfWithDB(t)
 
 		require.NoError(t, repo.IncrementMemberCount(ctx, community.DID))
 		members, subscribers, posts := countsOf(t, repo, community.DID)
 		assert.Equal(t, 1, members)
 		assert.Zero(t, subscribers, "incrementing members moved the subscriber count")
 		assert.Zero(t, posts)
+		assert.Zero(t, storedPostCount(t, db, community.DID), "incrementing members moved the post count column")
 
 		require.NoError(t, repo.IncrementSubscriberCount(ctx, community.DID))
 		require.NoError(t, repo.IncrementSubscriberCount(ctx, community.DID))
@@ -494,7 +517,18 @@ func TestCommunityRepo_Counters(t *testing.T) {
 		members, subscribers, posts = countsOf(t, repo, community.DID)
 		assert.Equal(t, 1, members)
 		assert.Equal(t, 2, subscribers)
-		assert.Equal(t, 1, posts)
+		assert.Equal(t, 1, storedPostCount(t, db, community.DID),
+			"IncrementPostCount must still move its own column and only its own column")
+
+		// The SERVED postCount is not that column. It is a live count over the
+		// read-path visibility predicate, and this community has no posts — so
+		// advancing the stored counter changes nothing a client can see. That
+		// asymmetry is the point: the stored column is vestigial (PRD §12), and
+		// a reader who assumes wiring the incrementer would fix postCount needs
+		// to meet this assertion rather than discover it in production.
+		assert.Zerof(t, posts,
+			"the SERVED postCount followed the stored column. It must be the live visibility-gated count — this "+
+				"community has zero posts, so the only honest answer is 0 no matter what IncrementPostCount did")
 	})
 
 	t.Run("decrements come back down", func(t *testing.T) {
@@ -535,11 +569,10 @@ func TestCommunityRepo_Counters(t *testing.T) {
 	// on the record rather than something a reader has to notice.
 	t.Run("the post count only goes up", func(t *testing.T) {
 		t.Parallel()
-		repo, community := memberOf(t)
+		repo, db, community := memberOfWithDB(t)
 		require.NoError(t, repo.IncrementPostCount(ctx, community.DID))
 
-		_, _, posts := countsOf(t, repo, community.DID)
-		assert.Equal(t, 1, posts)
+		assert.Equal(t, 1, storedPostCount(t, db, community.DID))
 		assert.NotImplements(t, (*interface {
 			DecrementPostCount(context.Context, string) error
 		})(nil), repo,

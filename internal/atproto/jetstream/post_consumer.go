@@ -29,6 +29,24 @@ type PostEventConsumer struct {
 	// before its author's profile. The identity is admitted only when its PDS
 	// passes bridgeTrust.
 	identityResolver identity.Resolver
+
+	// The collaborators author-owned post ingestion needs
+	// (docs/PRD_AUTHOR_OWNED_POSTS.md §5.3-§5.6). All four are read by the
+	// handlers in authorpost.go, and a nil one disables a capability rather
+	// than degrading it — see each field.
+	//
+	// admissions holds the per-(community, post) decision state. nil means the
+	// consumer is running in its pre-034 shape and ignores all three
+	// author-owned collections rather than indexing them undecided.
+	admissions posts.AdmissionRepository
+	// deletedAccounts gates events from erased accounts. nil means no gate.
+	deletedAccounts DeletedAccountLookup
+	// postFetcher resolves an acceptance whose subject was never indexed. nil
+	// means the dead-letter queue is the only convergence mechanism.
+	postFetcher PostRecordFetcher
+	// acceptanceCleanup withdraws a hosted community's acceptance when the
+	// author tombstones the post. nil means no sweep runs.
+	acceptanceCleanup AcceptanceDeleter
 }
 
 // PostEventConsumerOption configures optional PostEventConsumer behaviour.
@@ -81,8 +99,10 @@ func (c *PostEventConsumer) HandleEvent(ctx context.Context, event *JetstreamEve
 
 	commit := event.Commit
 
-	// Handle post record operations
-	if commit.Collection == "social.coves.community.post" {
+	switch commit.Collection {
+	// The DEPRECATED community-repo post (§3.0). Here the repo DID must EQUAL
+	// the record's community; the three collections below invert that.
+	case posts.LegacyPostCollection:
 		switch commit.Operation {
 		case "create":
 			return c.createPost(ctx, event.Did, commit, event.TimeUS)
@@ -91,6 +111,22 @@ func (c *PostEventConsumer) HandleEvent(ctx context.Context, event *JetstreamEve
 		case "delete":
 			return c.deletePost(ctx, event.Did, commit)
 		}
+
+	// The author-repo post: event.Did IS the author, and the community is a
+	// claim the record makes (authorpost.go).
+	case PostV2Collection:
+		if !c.canRecordAdmissions(commit.Collection) {
+			return nil
+		}
+		return c.handleAuthorPostEvent(ctx, event, commit)
+
+	// The community's decision records: event.Did IS the community, and the
+	// post is a subject the record names (authorpost.go).
+	case posts.AcceptanceCollection, posts.RemovalCollection:
+		if !c.canRecordAdmissions(commit.Collection) {
+			return nil
+		}
+		return c.handleCommunityDecisionEvent(ctx, event, commit)
 	}
 
 	// Silently ignore other operations and other collections
@@ -148,22 +184,7 @@ func (c *PostEventConsumer) createPost(ctx context.Context, repoDID string, comm
 	// Format: at://community_did/social.coves.community.post/rkey
 	uri := fmt.Sprintf("at://%s/social.coves.community.post/%s", repoDID, commit.RKey)
 
-	// Parse timestamp from record
-	createdAt, err := time.Parse(time.RFC3339, postRecord.CreatedAt)
-	if err != nil {
-		// Fallback to current time if parsing fails
-		log.Printf("Warning: Failed to parse createdAt timestamp, using current time: %v", err)
-		createdAt = time.Now()
-	}
-
-	// SECURITY: Clamp future timestamps to now. created_at drives the "new" sort
-	// and the hot-rank age, so a record asserting a future date (hostile or
-	// clock-skewed federated repo) could otherwise pin itself to the top of
-	// feeds until wall-clock catches up.
-	if now := time.Now(); createdAt.After(now) {
-		log.Printf("Warning: post %s has future createdAt %s, clamping to now", uri, postRecord.CreatedAt)
-		createdAt = now
-	}
+	createdAt := parseRecordCreatedAt(postRecord.CreatedAt, uri)
 
 	// Build post entity
 	post := &posts.Post{
@@ -205,36 +226,17 @@ func (c *PostEventConsumer) createPost(ctx context.Context, repoDID string, comm
 
 	// Serialize JSON fields (facets, embed, labels)
 	// Return error if any non-empty field fails to serialize (prevents silent data loss)
-	postRecord.Facets = sanitizedPostFacets(postRecord, uri)
-	if postRecord.Facets != nil {
-		facetsJSON, marshalErr := json.Marshal(postRecord.Facets)
-		if marshalErr != nil {
-			return fmt.Errorf("failed to serialize facets: %w", marshalErr)
-		}
-		facetsStr := string(facetsJSON)
-		post.ContentFacets = &facetsStr
+	facetsJSON, embedJSON, labelsJSON, err := serializePostContent(
+		sanitizedPostFacets(postRecord, uri), postRecord.Embed, postRecord.Labels)
+	if err != nil {
+		return err
 	}
-
-	if postRecord.Embed != nil {
-		embedJSON, marshalErr := json.Marshal(postRecord.Embed)
-		if marshalErr != nil {
-			return fmt.Errorf("failed to serialize embed: %w", marshalErr)
-		}
-		embedStr := string(embedJSON)
-		post.Embed = &embedStr
-	}
-
-	if postRecord.Labels != nil {
-		labelsJSON, marshalErr := json.Marshal(postRecord.Labels)
-		if marshalErr != nil {
-			return fmt.Errorf("failed to serialize labels: %w", marshalErr)
-		}
-		labelsStr := string(labelsJSON)
-		post.ContentLabels = &labelsStr
-	}
+	post.ContentFacets = nullableString(facetsJSON)
+	post.Embed = nullableString(embedJSON)
+	post.ContentLabels = nullableString(labelsJSON)
 
 	// Atomically: Rev-gate + Index post + Reconcile comment count for out-of-order arrivals
-	if err := c.indexPostAndReconcileCounts(ctx, post, commit.Rev); err != nil {
+	if _, err := c.indexPostIfRevWins(ctx, post, commit.Rev); err != nil {
 		return fmt.Errorf("failed to index post and reconcile counts: %w", err)
 	}
 
@@ -246,10 +248,27 @@ func (c *PostEventConsumer) createPost(ctx context.Context, repoDID string, comm
 // deletePost handles post deletion events from Jetstream
 // Soft-deletes the post in AppView database by setting deleted_at timestamp
 func (c *PostEventConsumer) deletePost(ctx context.Context, repoDID string, commit *CommitEvent) error {
-	// Build AT-URI for this post
 	// Format: at://community_did/social.coves.community.post/rkey
-	uri := fmt.Sprintf("at://%s/social.coves.community.post/%s", repoDID, commit.RKey)
+	_, err := c.tombstoneRecordIfRevWins(ctx,
+		fmt.Sprintf("at://%s/social.coves.community.post/%s", repoDID, commit.RKey), commit.Rev)
+	return err
+}
 
+// tombstoneRecordIfRevWins soft-deletes the post at uri under the rev gate, and
+// reports whether the deletion APPLIED.
+//
+// SOFT, never hard, whichever repo the record lived in: the row is the rev
+// gate's tombstone, the comment thread's parent, and what moderation still
+// reads. It is shared by the community-repo and author-repo delete paths
+// because a deletion is the one operation where the two are identical — the
+// URI already says whose repo it was.
+//
+// The applied flag exists for the author-repo path's acceptance sweep, which
+// must fire once per deletion rather than once per DELIVERY of it: the
+// connector rewinds its cursor after every reconnect, so a tombstone that
+// re-swept on each redelivery would put an authenticated PDS round trip behind
+// every replayed event.
+func (c *PostEventConsumer) tombstoneRecordIfRevWins(ctx context.Context, uri, rev string) (bool, error) {
 	// REV GATE + soft delete in one transaction (the repo's SoftDelete is not
 	// transaction-aware, and the delete's rev must be recorded atomically with
 	// the tombstone: it is what rejects a stale cross-feed copy of the CREATE
@@ -258,7 +277,7 @@ func (c *PostEventConsumer) deletePost(ctx context.Context, repoDID string, comm
 	// record is rejected too.
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
+		return false, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer func() {
 		if rollbackErr := tx.Rollback(); rollbackErr != nil && rollbackErr != sql.ErrTxDone {
@@ -266,13 +285,13 @@ func (c *PostEventConsumer) deletePost(ctx context.Context, repoDID string, comm
 		}
 	}()
 
-	won, err := tryAdvanceRecordRev(ctx, tx, uri, commit.Rev)
+	won, err := tryAdvanceRecordRev(ctx, tx, uri, rev)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !won {
-		logSkippedStaleRev(ConsumerPosts, "delete", uri, commit.Rev)
-		return nil
+		logSkippedStaleRev(ConsumerPosts, "delete", uri, rev)
+		return false, nil
 	}
 
 	// Same statement as postRepo.SoftDelete, inlined for transactionality.
@@ -280,15 +299,15 @@ func (c *PostEventConsumer) deletePost(ctx context.Context, repoDID string, comm
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE posts SET deleted_at = NOW() WHERE uri = $1 AND deleted_at IS NULL`, uri,
 	); err != nil {
-		return fmt.Errorf("failed to soft delete post: %w", err)
+		return false, fmt.Errorf("failed to soft delete post: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit post delete transaction: %w", err)
+		return false, fmt.Errorf("failed to commit post delete transaction: %w", err)
 	}
 
-	log.Printf("✓ Deleted post: %s (community: %s, rkey: %s)", uri, repoDID, commit.RKey)
-	return nil
+	log.Printf("✓ Deleted post: %s", uri)
+	return true, nil
 }
 
 // updatePost handles post record update events from Jetstream.
@@ -327,78 +346,28 @@ func (c *PostEventConsumer) updatePost(ctx context.Context, repoDID string, comm
 	uri := fmt.Sprintf("at://%s/social.coves.community.post/%s", repoDID, commit.RKey)
 
 	// Fetch the stored row so we can enforce immutability and run the asOf regression guard.
-	var (
-		storedID           int64
-		storedCommunityDID string
-		storedAuthorDID    string
-		storedDeletedAt    *time.Time
-		storedAsOf         *time.Time
-		storedIndexedAt    time.Time
-	)
-	err = c.db.QueryRowContext(ctx,
-		`SELECT id, community_did, author_did, deleted_at, bridged_stats_as_of, indexed_at FROM posts WHERE uri = $1`,
-		uri,
-	).Scan(&storedID, &storedCommunityDID, &storedAuthorDID, &storedDeletedAt, &storedAsOf, &storedIndexedAt)
-	if errors.Is(err, sql.ErrNoRows) {
+	stored, found, err := c.loadStoredPost(ctx, uri)
+	if err != nil {
+		return err
+	}
+	if !found {
 		// Not indexed yet (out-of-order delivery). Jetstream will replay CREATE; skip.
 		log.Printf("Update event for non-indexed post: %s (will be indexed on CREATE)", uri)
 		return nil
 	}
-	if err != nil {
-		return fmt.Errorf("failed to load stored post for update: %w", err)
-	}
-
-	// Skip soft-deleted rows: a deleted post should not be resurrected by an edit.
-	if storedDeletedAt != nil {
-		log.Printf("Update event for soft-deleted post: %s (skipping)", uri)
-		return nil
-	}
-
-	// RECENCY GUARD: a redriven (DeadLetterRedriver) or rewound update can arrive
-	// AFTER a newer update was already indexed. indexed_at is the watermark of the
-	// last applied event for this row (event time, see indexedAtForEvent); an event
-	// whose time_us is not strictly newer must be skipped, or a stale replay would
-	// silently revert newer content. Skipping is SUCCESS (the newer state wins) —
-	// returning an error would re-dead-letter an event that must never be applied.
-	// This Go pre-check exists for clean logging; the UPDATE below repeats the
-	// comparison atomically so a concurrent newer write between this read and the
-	// write still cannot be clobbered.
-	if evTime, ok := eventTime(timeUS); ok && !storedIndexedAt.Before(evTime) {
-		log.Printf("INFO: skipping stale post update for %s (event time %s <= last indexed %s; newer state already applied)",
-			uri, evTime.Format(time.RFC3339Nano), storedIndexedAt.Format(time.RFC3339Nano))
-		return nil
-	}
 
 	// SECURITY: community and author are immutable. Reassignment is rejected (skipped).
-	if storedCommunityDID != postRecord.Community || storedAuthorDID != postRecord.Author {
+	if stored.communityDID != postRecord.Community || stored.authorDID != postRecord.Author {
 		log.Printf("🚨 SECURITY: Rejecting post update - community/author reassignment is not allowed: %s (stored community=%s author=%s; incoming community=%s author=%s)",
-			uri, storedCommunityDID, storedAuthorDID, postRecord.Community, postRecord.Author)
+			uri, stored.communityDID, stored.authorDID, postRecord.Community, postRecord.Author)
 		return nil
 	}
 
 	// Serialize optional JSON content fields (return on failure to avoid silent data loss).
-	var facetsJSON, embedJSON, labelsJSON sql.NullString
-	postRecord.Facets = sanitizedPostFacets(postRecord, uri)
-	if postRecord.Facets != nil {
-		b, marshalErr := json.Marshal(postRecord.Facets)
-		if marshalErr != nil {
-			return fmt.Errorf("failed to serialize facets: %w", marshalErr)
-		}
-		facetsJSON.String, facetsJSON.Valid = string(b), true
-	}
-	if postRecord.Embed != nil {
-		b, marshalErr := json.Marshal(postRecord.Embed)
-		if marshalErr != nil {
-			return fmt.Errorf("failed to serialize embed: %w", marshalErr)
-		}
-		embedJSON.String, embedJSON.Valid = string(b), true
-	}
-	if postRecord.Labels != nil {
-		b, marshalErr := json.Marshal(postRecord.Labels)
-		if marshalErr != nil {
-			return fmt.Errorf("failed to serialize labels: %w", marshalErr)
-		}
-		labelsJSON.String, labelsJSON.Valid = string(b), true
+	facetsJSON, embedJSON, labelsJSON, err := serializePostContent(
+		sanitizedPostFacets(postRecord, uri), postRecord.Embed, postRecord.Labels)
+	if err != nil {
+		return err
 	}
 
 	// Decide the candidate bridged aggregate to hand to the atomic UPDATE. It is applied
@@ -418,18 +387,122 @@ func (c *PostEventConsumer) updatePost(ctx context.Context, repoDID string, comm
 		if c.bridgeTrust.TrustsPDS(community.PDSURL) {
 			if up, down, asOf, ok := validatedBridgedStats(postRecord.BridgedStats, uri); ok {
 				incomingUp, incomingDown, incomingAsOf = up, down, &asOf
-				// Best-effort log only (the write is authoritative and atomic): a
-				// strictly-older asOf is dropped by the SQL guard. Kept at debug because
-				// the bridge re-sends the same asOf on every content edit, so this is
-				// noise, not an anomaly.
-				if storedAsOf != nil && asOf.Before(*storedAsOf) {
-					log.Printf("debug: ignoring strictly-older bridgedStats for %s (incoming asOf %s < stored %s)",
-						uri, asOf.Format(time.RFC3339), storedAsOf.Format(time.RFC3339))
-				}
 			}
 		} else {
 			log.Printf("debug: ignoring bridgedStats on post %s from untrusted repo %s (not a trusted bridge PDS)", uri, repoDID)
 		}
+	}
+
+	if _, err := c.applyPostContentUpdate(ctx, postContentUpdate{
+		uri: uri, storedID: stored.id, rev: commit.Rev, cid: commit.CID,
+		title: postRecord.Title, content: postRecord.Content,
+		facets: facetsJSON, embed: embedJSON, labels: labelsJSON,
+		bridgedUpvotes: incomingUp, bridgedDownvotes: incomingDown, bridgedAsOf: incomingAsOf,
+		storedAsOf: stored.bridgedAsOf, storedDeletedAt: stored.deletedAt,
+		storedIndexedAt: stored.indexedAt, timeUS: timeUS,
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+// storedPost is the slice of an indexed post row the write paths need: the
+// identity to update, the columns immutability is checked against, and the two
+// watermarks (bridged asOf, indexed_at) the guards compare.
+type storedPost struct {
+	id           int64
+	communityDID string
+	authorDID    string
+	deletedAt    *time.Time
+	bridgedAsOf  *time.Time
+	indexedAt    time.Time
+}
+
+// loadStoredPost reads the row for uri. found=false means the post has never
+// been indexed, which is an ordinary out-of-order arrival rather than an error.
+func (c *PostEventConsumer) loadStoredPost(ctx context.Context, uri string) (storedPost, bool, error) {
+	var stored storedPost
+	err := c.db.QueryRowContext(ctx,
+		`SELECT id, community_did, author_did, deleted_at, bridged_stats_as_of, indexed_at FROM posts WHERE uri = $1`,
+		uri,
+	).Scan(&stored.id, &stored.communityDID, &stored.authorDID,
+		&stored.deletedAt, &stored.bridgedAsOf, &stored.indexedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return storedPost{}, false, nil
+	}
+	if err != nil {
+		return storedPost{}, false, fmt.Errorf("failed to load stored post %s: %w", uri, err)
+	}
+	return stored, true, nil
+}
+
+// postContentUpdate is one already-validated edit of an indexed post.
+//
+// It exists so the community-repo and author-repo paths share ONE content
+// write. What differs between them is who may claim what — the repo/community
+// check inverts, and bridgedStats provenance keys on a different repo — and all
+// of that is settled by the caller before it gets here. What does not differ is
+// how an edit is applied: the same rev gate, the same recency guard, the same
+// atomic bridged-stats regression rule. Two copies of that would drift.
+type postContentUpdate struct {
+	uri      string
+	storedID int64
+	rev      string
+	cid      string
+
+	title   *string
+	content *string
+	facets  sql.NullString
+	embed   sql.NullString
+	labels  sql.NullString
+
+	bridgedUpvotes   int
+	bridgedDownvotes int
+	// bridgedAsOf nil means "leave the stored bridged columns alone".
+	bridgedAsOf *time.Time
+
+	storedAsOf      *time.Time
+	storedDeletedAt *time.Time
+	storedIndexedAt time.Time
+	timeUS          int64
+}
+
+// applyPostContentUpdate runs the rev gate and the atomic content UPDATE.
+//
+// It reports whether the write APPLIED. A false with no error is a skip — the
+// stored row already holds a newer state — and every skip here is the system
+// working: multi-feed duplicates, dead-letter redrives, and edits of posts
+// deleted between the load and the write all land in it. Returning any of them
+// as an error would dead-letter healthy events.
+func (c *PostEventConsumer) applyPostContentUpdate(ctx context.Context, in postContentUpdate) (bool, error) {
+	// Skip soft-deleted rows: a deleted post should not be resurrected by an edit.
+	if in.storedDeletedAt != nil {
+		log.Printf("Update event for soft-deleted post: %s (skipping)", in.uri)
+		return false, nil
+	}
+
+	// RECENCY GUARD: a redriven (DeadLetterRedriver) or rewound update can arrive
+	// AFTER a newer update was already indexed. indexed_at is the watermark of the
+	// last applied event for this row (event time, see indexedAtForEvent); an event
+	// whose time_us is not strictly newer must be skipped, or a stale replay would
+	// silently revert newer content. Skipping is SUCCESS (the newer state wins) —
+	// returning an error would re-dead-letter an event that must never be applied.
+	// This Go pre-check exists for clean logging; the UPDATE below repeats the
+	// comparison atomically so a concurrent newer write between this read and the
+	// write still cannot be clobbered.
+	if evTime, ok := eventTime(in.timeUS); ok && !in.storedIndexedAt.Before(evTime) {
+		log.Printf("INFO: skipping stale post update for %s (event time %s <= last indexed %s; newer state already applied)",
+			in.uri, evTime.Format(time.RFC3339Nano), in.storedIndexedAt.Format(time.RFC3339Nano))
+		return false, nil
+	}
+
+	// Best-effort log only (the write is authoritative and atomic): a
+	// strictly-older asOf is dropped by the SQL guard. Kept at debug because
+	// the bridge re-sends the same asOf on every content edit, so this is
+	// noise, not an anomaly.
+	if in.bridgedAsOf != nil && in.storedAsOf != nil && in.bridgedAsOf.Before(*in.storedAsOf) {
+		log.Printf("debug: ignoring strictly-older bridgedStats for %s (incoming asOf %s < stored %s)",
+			in.uri, in.bridgedAsOf.Format(time.RFC3339), in.storedAsOf.Format(time.RFC3339))
 	}
 
 	// Single atomic UPDATE. edited_at is bumped only when content actually changed (so a
@@ -489,7 +562,7 @@ func (c *PostEventConsumer) updatePost(ctx context.Context, repoDID string, comm
 	// Only rev, assigned by the repo itself, orders events across feeds.
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
+		return false, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer func() {
 		if rollbackErr := tx.Rollback(); rollbackErr != nil && rollbackErr != sql.ErrTxDone {
@@ -497,23 +570,23 @@ func (c *PostEventConsumer) updatePost(ctx context.Context, repoDID string, comm
 		}
 	}()
 
-	won, err := tryAdvanceRecordRev(ctx, tx, uri, commit.Rev)
+	won, err := tryAdvanceRecordRev(ctx, tx, in.uri, in.rev)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !won {
-		logSkippedStaleRev(ConsumerPosts, "update", uri, commit.Rev)
-		return nil
+		logSkippedStaleRev(ConsumerPosts, "update", in.uri, in.rev)
+		return false, nil
 	}
 
 	result, err := tx.ExecContext(ctx, updateQuery,
-		storedID, commit.CID, postRecord.Title, postRecord.Content,
-		facetsJSON, embedJSON, labelsJSON,
-		incomingUp, incomingDown, incomingAsOf,
-		timeUS,
+		in.storedID, in.cid, in.title, in.content,
+		in.facets, in.embed, in.labels,
+		in.bridgedUpvotes, in.bridgedDownvotes, in.bridgedAsOf,
+		in.timeUS,
 	)
 	if err != nil {
-		return fmt.Errorf("failed to update post: %w", err)
+		return false, fmt.Errorf("failed to update post: %w", err)
 	}
 
 	// A post can be soft-deleted — or overtaken by a concurrent NEWER update (recency
@@ -523,25 +596,26 @@ func (c *PostEventConsumer) updatePost(ctx context.Context, repoDID string, comm
 	// current state supersedes this event.
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("failed to check post update result: %w", err)
+		return false, fmt.Errorf("failed to check post update result: %w", err)
 	}
 	if rowsAffected == 0 {
 		// The deferred rollback also reverts the gate advance — conservative: a
 		// replay re-evaluates against whatever state superseded this event.
-		log.Printf("Update event for post that was deleted or superseded by a newer update between load and write: %s (skipping)", uri)
-		return nil
+		log.Printf("Update event for post that was deleted or superseded by a newer update between load and write: %s (skipping)", in.uri)
+		return false, nil
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit post update transaction: %w", err)
+		return false, fmt.Errorf("failed to commit post update transaction: %w", err)
 	}
 
-	if incomingAsOf != nil {
-		log.Printf("✓ Updated post: %s (bridgedStats candidate applied if newer-or-equal: up=%d down=%d)", uri, incomingUp, incomingDown)
+	if in.bridgedAsOf != nil {
+		log.Printf("✓ Updated post: %s (bridgedStats candidate applied if newer-or-equal: up=%d down=%d)",
+			in.uri, in.bridgedUpvotes, in.bridgedDownvotes)
 	} else {
-		log.Printf("✓ Updated post: %s", uri)
+		log.Printf("✓ Updated post: %s", in.uri)
 	}
-	return nil
+	return true, nil
 }
 
 // parseBridgedAsOf parses a bridgedStats.asOf timestamp, logging (and returning the
@@ -555,12 +629,17 @@ func parseBridgedAsOf(asOf, uri string) (time.Time, error) {
 	return t, nil
 }
 
-// indexPostAndReconcileCounts atomically indexes a post and reconciles comment counts
-// This fixes the race condition where comments arrive before their parent post
-func (c *PostEventConsumer) indexPostAndReconcileCounts(ctx context.Context, post *posts.Post, rev string) error {
+// indexPostIfRevWins atomically indexes a post and reconciles comment counts.
+// This fixes the race condition where comments arrive before their parent post.
+//
+// It reports whether the insert APPLIED: false means the rev gate refused the
+// event, or the row already existed. Callers that must not act on content they
+// did not write — the author-repo path, which opens an admission from the CID
+// it just indexed — read that flag rather than assuming the write happened.
+func (c *PostEventConsumer) indexPostIfRevWins(ctx context.Context, post *posts.Post, rev string) (bool, error) {
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
+		return false, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer func() {
 		if rollbackErr := tx.Rollback(); rollbackErr != nil && rollbackErr != sql.ErrTxDone {
@@ -575,11 +654,11 @@ func (c *PostEventConsumer) indexPostAndReconcileCounts(ctx context.Context, pos
 	// and writes commit or roll back together.
 	won, err := tryAdvanceRecordRev(ctx, tx, post.URI, rev)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !won {
 		logSkippedStaleRev(ConsumerPosts, "create", post.URI, rev)
-		return nil
+		return false, nil
 	}
 
 	// 1. Insert the post (idempotent with RETURNING clause)
@@ -641,13 +720,15 @@ func (c *PostEventConsumer) indexPostAndReconcileCounts(ctx context.Context, pos
 		// machinery already exists; see comment_consumer.go).
 		log.Printf("Post already indexed: %s (idempotent)", post.URI)
 		if commitErr := tx.Commit(); commitErr != nil {
-			return fmt.Errorf("failed to commit transaction: %w", commitErr)
+			return false, fmt.Errorf("failed to commit transaction: %w", commitErr)
 		}
-		return nil
+		// Reported as NOT applied: no content was written, so a caller that
+		// would record what it just indexed has nothing new to record.
+		return false, nil
 	}
 
 	if insertErr != nil {
-		return fmt.Errorf("failed to insert post: %w", insertErr)
+		return false, fmt.Errorf("failed to insert post: %w", insertErr)
 	}
 
 	// 2. Reconcile comment_count for this newly inserted post
@@ -676,15 +757,15 @@ func (c *PostEventConsumer) indexPostAndReconcileCounts(ctx context.Context, pos
 		// Reconciliation failure is a critical error - it means comment_count will be incorrect
 		// This could cause data inconsistency where the displayed count doesn't match reality
 		// Roll back the transaction to maintain consistency
-		return fmt.Errorf("failed to reconcile comment_count for %s: %w", post.URI, reconcileErr)
+		return false, fmt.Errorf("failed to reconcile comment_count for %s: %w", post.URI, reconcileErr)
 	}
 
 	// Commit transaction
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
+		return false, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	return nil
+	return true, nil
 }
 
 // errValidationInfra marks a post-validation failure caused by an infrastructure fault
@@ -810,25 +891,83 @@ type BridgedStatsFromJetstream struct {
 	AsOf      string `json:"asOf"`
 }
 
-// sanitizedPostFacets drops facets whose byte ranges fall outside the post's
+// sanitizedPostFacets sanitizes the facets on a community-repo post record.
+//
+// A record-shaped wrapper over sanitizeFacets, kept because the author-repo
+// record type deliberately has no author field and so cannot be the same type:
+// the shared work is the range checking, not the unwrapping.
+func sanitizedPostFacets(postRecord *PostRecordFromJetstream, uri string) []interface{} {
+	return sanitizeFacets(postRecord.Facets, postRecord.Content, uri)
+}
+
+// sanitizeFacets drops facets whose byte ranges fall outside the post's
 // content (or are otherwise structurally invalid) before indexing. Firehose
 // records from federated repos cannot be rejected back to their author, and
 // clients must never receive ranges that slice outside the content, so invalid
 // facets are dropped rather than failing the event. Returns nil when no
 // facets survive, preserving the callers' nil-means-absent serialization.
-func sanitizedPostFacets(postRecord *PostRecordFromJetstream, uri string) []interface{} {
-	if postRecord.Facets == nil {
+func sanitizeFacets(facets []interface{}, content *string, uri string) []interface{} {
+	if facets == nil {
 		return nil
 	}
 	contentByteLen := 0
-	if postRecord.Content != nil {
-		contentByteLen = len(*postRecord.Content)
+	if content != nil {
+		contentByteLen = len(*content)
 	}
-	kept, dropped := richtext.SanitizeFacets(postRecord.Facets, contentByteLen)
+	kept, dropped := richtext.SanitizeFacets(facets, contentByteLen)
 	if dropped > 0 {
 		log.Printf("Warning: dropped %d invalid facet(s) on post %s during indexing", dropped, uri)
 	}
 	return kept
+}
+
+// serializePostContent marshals the three optional JSON columns a post record
+// carries. A marshal failure is returned rather than swallowed: silently
+// dropping facets, an embed, or labels would index a post that reads as though
+// its author never sent them.
+func serializePostContent(facets []interface{}, embed map[string]interface{}, labels *posts.SelfLabels) (facetsJSON, embedJSON, labelsJSON sql.NullString, err error) {
+	if facets != nil {
+		b, marshalErr := json.Marshal(facets)
+		if marshalErr != nil {
+			return facetsJSON, embedJSON, labelsJSON, fmt.Errorf("failed to serialize facets: %w", marshalErr)
+		}
+		facetsJSON.String, facetsJSON.Valid = string(b), true
+	}
+	if embed != nil {
+		b, marshalErr := json.Marshal(embed)
+		if marshalErr != nil {
+			return facetsJSON, embedJSON, labelsJSON, fmt.Errorf("failed to serialize embed: %w", marshalErr)
+		}
+		embedJSON.String, embedJSON.Valid = string(b), true
+	}
+	if labels != nil {
+		b, marshalErr := json.Marshal(labels)
+		if marshalErr != nil {
+			return facetsJSON, embedJSON, labelsJSON, fmt.Errorf("failed to serialize labels: %w", marshalErr)
+		}
+		labelsJSON.String, labelsJSON.Valid = string(b), true
+	}
+	return facetsJSON, embedJSON, labelsJSON, nil
+}
+
+// parseRecordCreatedAt reads a record's author-supplied createdAt, falling back
+// to now when it does not parse.
+//
+// SECURITY: future timestamps are clamped to now. created_at drives the "new"
+// sort and the hot-rank age, so a record asserting a future date (hostile or
+// clock-skewed federated repo) could otherwise pin itself to the top of feeds
+// until wall-clock catches up.
+func parseRecordCreatedAt(raw, uri string) time.Time {
+	createdAt, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		log.Printf("Warning: Failed to parse createdAt timestamp for %s, using current time: %v", uri, err)
+		return time.Now()
+	}
+	if now := time.Now(); createdAt.After(now) {
+		log.Printf("Warning: post %s has future createdAt %s, clamping to now", uri, raw)
+		return now
+	}
+	return createdAt
 }
 
 // parsePostRecord converts a raw Jetstream record map to a PostRecordFromJetstream

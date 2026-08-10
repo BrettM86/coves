@@ -32,16 +32,20 @@ import (
 // communities table, and "community not found" is only meaningful against a
 // table that could have contained it.
 //
-// # WHY THE COMMUNITY'S CREDENTIALS ARE DELIBERATELY FAKE
+// # WHY THE AUTHOR HAS NO REPOSITORY HERE
 //
-// The community row here is seeded straight into the index with an unusable PDS
-// token, so every request that survives validation stops at the same place:
-// "failed to refresh community credentials", the step immediately before the
-// record is written. That is the assertion — reaching the write is what proves
-// nothing earlier rejected the post — and it costs neither a provisioned PDS
-// account nor a real repo write. A post that must actually arrive somewhere is
-// service_writeforward_test.go's job, where the community is provisioned for
-// real.
+// The service is deliberately wired with NO author-repo factory, so every
+// request that survives validation stops at the same place: opening the author's
+// repository, the step immediately before the record is written, which answers
+// ErrNoAuthorCredentials because there is nothing to authenticate as the author
+// with. That is the assertion — reaching the write is what proves nothing
+// earlier rejected the post — and it costs neither a provisioned PDS account nor
+// a real repo write. A post that must actually arrive somewhere is
+// service_writeforward_test.go's job, where both repos are provisioned for real.
+//
+// Before task 6 the same trick was played on the COMMUNITY's credentials, which
+// the write path no longer touches: a post is written to its author's repo now
+// (§4.2 step 3), so an unusable community token stops nothing.
 func TestService_CreateResolvesTheCommunityAndValidatesTheRequest(t *testing.T) {
 	t.Parallel()
 
@@ -61,7 +65,8 @@ func TestService_CreateResolvesTheCommunityAndValidatesTheRequest(t *testing.T) 
 	// in the community's handle.
 	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo, pdsURL, instanceDID, instanceDomain, nil, nil, nil)
-	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, pdsURL)
+	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, pdsURL,
+		posts.WithAdmissionPolicy(posts.NewAllowAllAdmissionPolicyForTests()))
 
 	authorDID := fixtures.DID("postauthor")
 	_, err := userService.CreateUser(ctx, users.CreateUserRequest{
@@ -91,7 +96,9 @@ func TestService_CreateResolvesTheCommunityAndValidatesTheRequest(t *testing.T) 
 	// createPost sends a request as the author. The DID goes into the context as
 	// well as the request body because the service cross-checks the two.
 	createPost := func(req posts.CreatePostRequest) error {
-		_, err := postService.CreatePost(middleware.SetTestUserDID(ctx, authorDID), req)
+		// No session: this service has no author-repo factory either, so the two
+		// agree about what the author cannot be authenticated as.
+		_, err := postService.CreatePost(middleware.SetTestUserDID(ctx, authorDID), nil, req)
 		return err
 	}
 
@@ -100,9 +107,9 @@ func TestService_CreateResolvesTheCommunityAndValidatesTheRequest(t *testing.T) 
 	// credentials.
 	reachedTheWrite := func(t *testing.T, err error) {
 		t.Helper()
-		require.Error(t, err, "the seeded credentials cannot be refreshed, so the write must fail")
-		assert.Contains(t, err.Error(), "failed to refresh community credentials",
-			"the post should have been rejected by nothing before the PDS write")
+		require.Error(t, err, "there are no credentials for the author's repo, so the write must fail")
+		assert.ErrorIsf(t, err, posts.ErrNoAuthorCredentials,
+			"the post should have been rejected by nothing before the author-repo write; got: %v", err)
 	}
 
 	title := "Test Post Title"

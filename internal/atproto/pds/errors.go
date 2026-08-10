@@ -27,6 +27,46 @@ var (
 	// ErrPayloadTooLarge indicates the request payload exceeds PDS limits (HTTP 413).
 	ErrPayloadTooLarge = errors.New("payload too large")
 
+	// ErrSwapConflict indicates an optimistic-concurrency guard lost: the
+	// swapRecord CID or the swapCommit CID the request named is not the one the
+	// repo is at, so another writer got there first.
+	//
+	// It is NOT ErrConflict, and the difference is not cosmetic. A PDS answers
+	// a failed swap with HTTP 400 and `"error": "InvalidSwap"` — verified
+	// against a live PDS, not inferred from the lexicon, which documents 409 —
+	// so the status code alone maps it onto ErrBadRequest, indistinguishable
+	// from a malformed record. A lost race is the one 400 that must be RETRIED
+	// (re-read, re-shape, write again) rather than reported, so it needs its
+	// own sentinel.
+	ErrSwapConflict = errors.New("swap conflict")
+
+	// ErrNoCommit indicates a single-record write that the PDS accepted without
+	// producing a commit: the record it was asked to write was byte-identical
+	// to the one already standing at that key, so there was nothing to commit.
+	//
+	// VERIFIED AGAINST A LIVE PDS: putRecord answers a no-op write with HTTP
+	// 200 carrying uri and cid but NO `commit` object, and it does so BEFORE
+	// the swapRecord guard is evaluated — a create-only put (swapRecord null)
+	// of an identical record is a 200 no-op, while the same put of DIFFERENT
+	// bytes is InvalidSwap.
+	//
+	// It is an error rather than a zero-valued success because the commit rev
+	// is exactly what most callers are about to persist as an ordering
+	// watermark, and a fabricated one is worse than a failure. It is its OWN
+	// sentinel rather than a generic malformed-body report because for a
+	// GUARDED CREATE it is not a failure at all: it means the record already
+	// exists and is identical, which is precisely what a retry after a lost
+	// response should be told.
+	ErrNoCommit = errors.New("write produced no commit")
+
+	// ErrServerError indicates the PDS failed to process a well-formed request
+	// (HTTP 5xx). It is separated from the generic wrap because it is the one
+	// remote failure class that is worth retrying unchanged: applyWrites
+	// answers a delete of a missing record, or a create of an existing one,
+	// with a 500, and a caller that cannot tell that from a transport failure
+	// cannot decide whether to re-read and re-shape its batch.
+	ErrServerError = errors.New("server error")
+
 	// ErrSessionExpired indicates a stored OAuth session could not be resumed:
 	// the refresh token expired, the session was revoked on the PDS, or the
 	// DPoP key no longer matches. Unlike ErrUnauthorized this is detected

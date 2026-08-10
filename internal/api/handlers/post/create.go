@@ -88,9 +88,15 @@ func (h *CreateHandler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 	// 7. Set author from authenticated user context
 	req.AuthorDID = userDID
 
-	// 8. Call service to create post (write-forward to PDS)
-	// Note: Service layer will resolve community at-identifier (handle or DID) to DID
-	response, err := h.service.CreatePost(r.Context(), req)
+	// 8. Call service to create post (into the AUTHOR's repo, §4.2)
+	// Note: Service layer will resolve community at-identifier (handle or DID) to DID.
+	//
+	// The OAuth session travels with the request because the post is signed
+	// with the AUTHOR's credentials now, not the community's. It may be absent
+	// for a non-interactive author (an aggregator authenticated by API key),
+	// and the service resolves that author's stored tokens instead — so a nil
+	// session here is not an error to raise at the boundary.
+	response, err := h.service.CreatePost(r.Context(), middleware.GetOAuthSession(r), req)
 	if err != nil {
 		handleServiceError(w, err)
 		return

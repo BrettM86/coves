@@ -92,6 +92,14 @@ type SelfLabel struct {
 type ListByCommenterRequest struct {
 	CommenterDID string  // Required: DID of the commenter
 	CommunityDID *string // Optional: filter to comments in a specific community
-	Limit        int     // Max comments to return (1-100)
-	Cursor       *string // Pagination cursor from previous response
+	// ViewerDID is the AUTHENTICATED caller's DID ("" for an anonymous read), and
+	// it is a security parameter rather than a personalization one: the community
+	// filter resolves each comment's root through the read-path visibility
+	// predicate, where the viewer unlocks the author's own carve-out over their
+	// pending / rejected / removed posts (PRD §6.2). It MUST come from the auth
+	// middleware — never from a query parameter — or any caller can read any
+	// author's unadmitted content.
+	ViewerDID string
+	Limit     int     // Max comments to return (1-100)
+	Cursor    *string // Pagination cursor from previous response
 }

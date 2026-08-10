@@ -80,15 +80,9 @@ func FetchProfileRecord(ctx context.Context, client *http.Client, pdsURL, did st
 	switch {
 	case resp.StatusCode == http.StatusOK:
 		// fall through to parse below
-	case resp.StatusCode == http.StatusNotFound && isXRPCErrorBody(body):
-		// Some PDS implementations 404 on missing records. Only trust the 404
-		// when the body is an XRPC error object — a bare 404 (HTML from a
-		// reverse proxy or generic web server behind a stale pds_url) means we
-		// never reached a PDS at all, so it must surface as an error, not be
-		// silently classified as "user has no profile record".
-		return nil, nil
-	case resp.StatusCode == http.StatusBadRequest && isRecordNotFoundBody(body):
-		// Reference PDS returns 400 RecordNotFound when the repo exists but has no profile
+	case IsRecordNotFoundResponse(resp.StatusCode, body):
+		// The PDS was reached and said the record is not there. Absence is a
+		// normal outcome here, not an error.
 		return nil, nil
 	default:
 		// SECURITY: cap the echoed body so a hostile PDS can't flood our logs,
@@ -115,6 +109,38 @@ func FetchProfileRecord(ctx context.Context, client *http.Client, pdsURL, did st
 		return nil, nil // record exists but carries nothing we index
 	}
 	return &input, nil
+}
+
+// IsRecordNotFoundResponse reports whether a getRecord response is a PDS
+// saying, definitively, that the record is not there.
+//
+// It is exported because the answer decides how OTHER callers classify a failed
+// fetch, and there must be exactly one line drawn. The firehose consumer's §5.4
+// direct fetch marks a genuine not-found as a PERMANENT event — dead-lettered
+// with its redrive budget spent — while everything else stays transient and
+// costs the connector three inline retries plus ten redrives. Two
+// implementations of "is this a real not-found" would eventually disagree, and
+// the disagreement would show up as either discarded posts or a blocked lane.
+//
+// THE TWO SHAPES IT ACCEPTS, and the one it deliberately does not:
+//
+//   - 400 with an XRPC RecordNotFound (or an InvalidRequest whose message says
+//     it could not locate the record) — what the reference PDS answers when the
+//     repo exists and the record does not.
+//   - 404 WITH an XRPC error envelope — what some other implementations answer.
+//   - NOT a bare 404. With no envelope the request most likely never reached a
+//     PDS at all: a stale pds_url pointing at a reverse proxy or a generic web
+//     server, both of which answer 404 for everything. Trusting that would
+//     report a record as gone because somebody mistyped a hostname.
+func IsRecordNotFoundResponse(statusCode int, body []byte) bool {
+	switch statusCode {
+	case http.StatusNotFound:
+		return isXRPCErrorBody(body)
+	case http.StatusBadRequest:
+		return isRecordNotFoundBody(body)
+	default:
+		return false
+	}
 }
 
 // isXRPCErrorBody reports whether body is an XRPC error JSON object (has a

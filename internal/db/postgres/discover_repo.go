@@ -44,32 +44,41 @@ func (r *postgresDiscoverRepo) GetDiscover(ctx context.Context, req discover.Get
 		selectClause = feedPostSelectClause("NULL::numeric")
 	}
 
-	// Build optional viewer block filter (only when authenticated viewer is present)
+	// The admission visibility gate always runs. Discover spans every community,
+	// so it cannot lean on a community filter — the gate keys the admission row on
+	// (a.community_did = p.community_did AND a.post_uri = p.uri) so a post is
+	// visible iff ITS OWN community accepted it, never a community that forked it.
+	// Its viewer parameter ($visibilityParam) is empty for the anonymous public,
+	// which sees accepted content only.
+	visibilityParam := 2 + len(cursorValues)
+	visJoin, visWhere := visiblePostsJoin(visibilityParam)
+
+	// The viewer block filter reuses that same viewer parameter; only meaningful
+	// for an authenticated viewer, absent for the public.
 	var viewerFilter string
-	var viewerArgs []interface{}
 	if req.ViewerDID != "" {
-		viewerParamIdx := 2 + len(cursorValues)
-		viewerFilter = fmt.Sprintf("AND NOT EXISTS (SELECT 1 FROM user_blocks WHERE blocker_did = $%d AND blocked_did = p.author_did)", viewerParamIdx)
-		viewerArgs = append(viewerArgs, req.ViewerDID)
+		viewerFilter = fmt.Sprintf("AND NOT EXISTS (SELECT 1 FROM user_blocks WHERE blocker_did = $%d AND blocked_did = p.author_did)", visibilityParam)
 	}
 
 	// No subscription filter - show ALL posts from ALL communities
 	query := fmt.Sprintf(`
 		%s
-		INNER JOIN users u ON p.author_did = u.did
-		INNER JOIN communities c ON p.community_did = c.did
+		LEFT JOIN users u ON p.author_did = u.did
+		INNER JOIN communities c ON p.community_did = c.did%s
 		WHERE p.deleted_at IS NULL
+			AND %s
 			%s
 			%s
 			%s
 		ORDER BY %s
 		LIMIT $1
-	`, selectClause, timeFilter, cursorFilter, viewerFilter, orderBy)
+	`, selectClause, visJoin, visWhere, timeFilter, cursorFilter, viewerFilter, orderBy)
 
-	// Prepare query arguments
+	// Prepare query arguments. The viewer DID is bound once at $visibilityParam
+	// and reused by the block filter above.
 	args := []interface{}{req.Limit + 1} // +1 to check for next page
 	args = append(args, cursorValues...)
-	args = append(args, viewerArgs...)
+	args = append(args, req.ViewerDID)
 
 	// Execute query
 	rows, err := r.db.QueryContext(ctx, query, args...)

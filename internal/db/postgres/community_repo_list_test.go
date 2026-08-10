@@ -4,6 +4,7 @@ package postgres
 
 import (
 	"Coves/internal/core/communities"
+	"Coves/internal/core/posts"
 	"Coves/tests/testkit"
 	"context"
 	"database/sql"
@@ -35,7 +36,15 @@ import (
 // It writes through the repository rather than raw SQL so the row goes in the
 // same way the consumer puts it there, and so a schema change breaks this in the
 // same place it breaks production.
-func seedListableCommunity(t *testing.T, repo communities.Repository, name, visibility string, subscribers, posts int, createdAt time.Time) *communities.Community {
+//
+// `posts` seeds that many REAL, publicly visible posts — accepted postv2 rows —
+// rather than a number in the community's post_count column. The served
+// postCount, and the `sort=active` key with it, is a live count over the
+// read-path visibility predicate; the stored column is vestigial and is
+// deliberately left at 0 here, so a fixture that only wrote the column would
+// rank every community equal and this file's sort assertions would stop meaning
+// anything.
+func seedListableCommunity(t *testing.T, db *sql.DB, repo communities.Repository, name, visibility string, subscribers, posts int, createdAt time.Time) *communities.Community {
 	t.Helper()
 
 	community := &communities.Community{
@@ -49,7 +58,9 @@ func seedListableCommunity(t *testing.T, repo communities.Repository, name, visi
 		Visibility:             visibility,
 		AllowExternalDiscovery: true,
 		SubscriberCount:        subscribers,
-		PostCount:              posts,
+		// Deliberately NOT `posts`: nothing serves this column any more, and
+		// leaving it at zero is what proves the sort reads the live count.
+		PostCount: 0,
 		CreatedAt:              createdAt,
 		UpdatedAt:              createdAt,
 		RecordURI:              "at://did:plc:list" + name + "/social.coves.community.profile/self",
@@ -57,7 +68,38 @@ func seedListableCommunity(t *testing.T, repo communities.Repository, name, visi
 
 	stored, err := repo.Create(context.Background(), community)
 	require.NoErrorf(t, err, "seeding community %s", name)
+	seedVisibleCommunityPosts(t, db, stored.DID, name, posts, createdAt)
+	stored.PostCount = posts
 	return stored
+}
+
+// seedVisibleCommunityPosts inserts `count` accepted, publicly visible postv2
+// rows for a community: a content row plus the acceptance that pins its exact
+// CID, which is what the read-path predicate requires before it will render (or
+// count) anything.
+func seedVisibleCommunityPosts(t *testing.T, db *sql.DB, communityDID, label string, count int, createdAt time.Time) {
+	t.Helper()
+	if count == 0 {
+		return
+	}
+
+	authorDID := "did:plc:lister" + label
+	ctx := context.Background()
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO posts (uri, cid, rkey, author_did, community_did, title, created_at, score, upvote_count, downvote_count)
+		SELECT 'at://' || $1 || '/' || $2 || '/' || $3 || i,
+		       'bafy' || $3 || i, $3 || i, $1, $4, 'seeded post ' || i, $5, 0, 0, 0
+		FROM generate_series(1, $6) AS i
+	`, authorDID, posts.PostV2Collection, label, communityDID, createdAt, count)
+	require.NoErrorf(t, err, "seeding %d visible posts for %s", count, label)
+
+	_, err = db.ExecContext(ctx, `
+		INSERT INTO community_post_admissions (community_did, post_uri, status, accepted_cid, evaluated_cid, created_at, updated_at)
+		SELECT $1, p.uri, 'accepted', p.cid, p.cid, NOW(), NOW()
+		FROM posts p WHERE p.community_did = $1
+		ON CONFLICT (community_did, post_uri) DO NOTHING
+	`, communityDID)
+	require.NoErrorf(t, err, "accepting the seeded posts for %s", label)
 }
 
 // namesOf renders a listing's names in order, which is the whole assertion for
@@ -87,9 +129,9 @@ func seedSortFixture(t *testing.T, db *sql.DB) communities.Repository {
 
 	repo := NewCommunityRepository(db)
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	seedListableCommunity(t, repo, "alpha", "public", 1, 30, base)
-	seedListableCommunity(t, repo, "bravo", "public", 30, 1, base.Add(time.Hour))
-	seedListableCommunity(t, repo, "charlie", "public", 10, 10, base.Add(2*time.Hour))
+	seedListableCommunity(t, db, repo, "alpha", "public", 1, 30, base)
+	seedListableCommunity(t, db, repo, "bravo", "public", 30, 1, base.Add(time.Hour))
+	seedListableCommunity(t, db, repo, "charlie", "public", 10, 10, base.Add(2*time.Hour))
 	return repo
 }
 
@@ -155,8 +197,8 @@ func TestCommunityRepo_ListVisibilityFilter(t *testing.T) {
 	repo := NewCommunityRepository(db)
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-	public := seedListableCommunity(t, repo, "openone", "public", 5, 5, base)
-	unlisted := seedListableCommunity(t, repo, "quietone", "unlisted", 5, 5, base)
+	public := seedListableCommunity(t, db, repo, "openone", "public", 5, 5, base)
+	unlisted := seedListableCommunity(t, db, repo, "quietone", "unlisted", 5, 5, base)
 
 	ctx := context.Background()
 

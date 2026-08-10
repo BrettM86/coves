@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "record",
-      "description": "A post in a Coves community. Posts live in community repositories and persist independently of the author.",
+      "description": "A post in a Coves community. Posts live in community repositories and persist independently of the author. DEPRECATED: no new records are written to this collection. Successor: social.coves.community.postv2, which lives in the author's repository.",
       "key": "tid",
       "record": {
         "type": "object",

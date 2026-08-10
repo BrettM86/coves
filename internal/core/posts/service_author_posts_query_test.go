@@ -96,7 +96,8 @@ func newAuthorPostsFixture(t *testing.T) *authorPostsFixture {
 		communityRepo, pdsURL, fixtures.InstanceDID(), "", nil, nil, nil)
 	// The optional post collaborators (aggregators, blobs, unfurl, bluesky) are
 	// all write-path concerns and stay nil.
-	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, pdsURL)
+	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, pdsURL,
+		posts.WithAdmissionPolicy(posts.NewAllowAllAdmissionPolicyForTests()))
 	voteService := votes.NewServiceWithPDSFactory(voteRepo, nil, nil, fixtures.PasswordAuthPDSClientFactory())
 
 	auth := fixtures.NewOAuthMiddleware()

@@ -62,6 +62,15 @@ type CreatePostRequest struct {
 	Community      string                 `json:"community"`
 	AuthorDID      string                 `json:"authorDid"`
 	Facets         []interface{}          `json:"facets,omitempty"`
+
+	// Langs and Tags are declared by the post.create lexicon and by the postv2
+	// record, and were the two fields this struct did not carry — so a client
+	// that sent them had them silently dropped on submission and could then set
+	// them one second later with an edit, which DID honour them. Carrying them
+	// here closes that asymmetry; their caps are enforced in the shared content
+	// gate, so create and update bound them identically.
+	Langs []string `json:"langs,omitempty"`
+	Tags  []string `json:"tags,omitempty"`
 }
 
 // CreatePostResponse represents the response from creating a post
@@ -69,6 +78,54 @@ type CreatePostRequest struct {
 type CreatePostResponse struct {
 	URI string `json:"uri"` // AT-URI of created post
 	CID string `json:"cid"` // CID of created post
+
+	// Status is the community's decision as of this response: PostStatusAccepted
+	// when the local fast path settled it synchronously, PostStatusPending when
+	// the community still owes a decision (§4.2 steps 4 and 5).
+	//
+	// IT IS NOT AN ERROR CHANNEL. Pending is a SUCCESS: the author's record
+	// exists and is theirs whatever the community decides, and the acceptance
+	// this AppView failed to write is retried idempotently by the firehose
+	// engine. A client that treated pending as a failure and resubmitted would
+	// be answered with its own post's URI, because the rkey is deterministic —
+	// but it would also show its author an error over a post that was written.
+	//
+	// Omitted when empty so pre-flip clients, which have never seen the field,
+	// decode a response identical to the one they used to get.
+	Status string `json:"status,omitempty"`
+}
+
+// UpdatePostRequest represents input for editing an existing post.
+//
+// It carries the post's URI and the mutable content fields ONLY. There is
+// deliberately no community field: the postv2 lexicon calls `community`
+// immutable — retargeting a post means writing a new post record, and consumers
+// discard an update event that changes it — so an edit that could express a
+// retarget would be an edit whose only possible outcome is being ignored by
+// every reader.
+type UpdatePostRequest struct {
+	Title   *string                `json:"title,omitempty"`
+	Content *string                `json:"content,omitempty"`
+	Embed   map[string]interface{} `json:"embed,omitempty"`
+	Labels  *SelfLabels            `json:"labels,omitempty"`
+
+	// Community is accepted so that a client which sends it can be REFUSED
+	// rather than silently obeyed-in-part. See the type comment: it is not a
+	// field an edit may change, and a request naming a different community is a
+	// validation error, not a partially applied update.
+	Community string `json:"community,omitempty"`
+
+	URI    string        `json:"uri"`
+	Facets []interface{} `json:"facets,omitempty"`
+	Langs  []string      `json:"langs,omitempty"`
+	Tags   []string      `json:"tags,omitempty"`
+}
+
+// UpdatePostResponse is the edited record's identity: the same URI it always
+// had, and the NEW CID the edit committed.
+type UpdatePostResponse struct {
+	URI string `json:"uri"`
+	CID string `json:"cid"`
 }
 
 // DeletePostRequest represents input for deleting a post
@@ -121,14 +178,29 @@ type BlockedPost struct {
 	Author    *BlockedAuthor `json:"author,omitempty"`
 }
 
+// RemovedPost is a union member of the social.coves.community.post.get output,
+// emitted when a found post has been REMOVED by its own community. It mirrors
+// notFoundPost (uri + a const discriminator) and additionally carries the removal
+// `code`, so a client can render "removed by moderators: rule-violation" rather
+// than the blank permalink a notFoundPost would produce. A removed post is a
+// tombstone the author is owed the reason for, not a post that never existed.
+// Matches social.coves.community.post.defs#removedPost.
+type RemovedPost struct {
+	URI     string `json:"uri"`
+	Removed bool   `json:"removed"` // Always true (const per lexicon); discriminates the union on the wire
+	Code    string `json:"code,omitempty"`
+}
+
 // PostResult is one ordered element of a GetPosts response. Exactly one of Post,
-// Blocked, or NotFound is set: Post when the post was found and visible to the viewer,
-// Blocked when the viewer has blocked the author, NotFound when the URI could not be
-// resolved. Construct results via the result helpers so the const discriminators
-// (notFound/blocked == true) cannot be left unset.
+// Blocked, Removed, or NotFound is set: Post when the post was found and visible
+// to the viewer, Blocked when the viewer has blocked the author, Removed when the
+// post's own community removed it, NotFound when the URI could not be resolved.
+// Construct results via the result helpers so the const discriminators
+// (notFound/blocked/removed == true) cannot be left unset.
 type PostResult struct {
 	Post     *PostView
 	Blocked  *BlockedPost
+	Removed  *RemovedPost
 	NotFound *NotFoundPost
 }
 
@@ -140,6 +212,12 @@ func foundResult(view *PostView) *PostResult {
 // notFoundResult builds a notFoundPost union member with its const discriminator set.
 func notFoundResult(uri string) *PostResult {
 	return &PostResult{NotFound: &NotFoundPost{URI: uri, NotFound: true}}
+}
+
+// removedResult builds a removedPost union member with its const discriminator set,
+// carrying the community's removal code so the client can explain the takedown.
+func removedResult(uri, code string) *PostResult {
+	return &PostResult{Removed: &RemovedPost{URI: uri, Removed: true, Code: code}}
 }
 
 // blockedByAuthorResult builds a blockedPost union member (blockedBy "author") with its
@@ -179,6 +257,10 @@ func (r *PostResult) Member() (interface{}, bool) {
 		member = r.Blocked
 		count++
 	}
+	if r.Removed != nil {
+		member = r.Removed
+		count++
+	}
 	if r.NotFound != nil {
 		member = r.NotFound
 		count++
@@ -204,6 +286,18 @@ type PostRecord struct {
 	Author         string                 `json:"author"`
 	CreatedAt      string                 `json:"createdAt"`
 	Facets         []interface{}          `json:"facets,omitempty"`
+
+	// Langs and Tags are APPENDED, and the position matters as much as the
+	// fields do. This struct is what submissionFingerprint hashes, so its JSON
+	// encoding is a live dedupe key: appending two `omitempty` fields leaves the
+	// bytes of every submission that carries neither — which is every submission
+	// on the ledger today, because create discarded both — byte-identical, and
+	// therefore leaves every standing reservation valid. Inserting them earlier,
+	// or without omitempty, would repartition the whole ledger. See
+	// submissionFingerprint, whose comment states the rule this obeys: a field on
+	// the record and not here is a field the fingerprint cannot see.
+	Langs []string `json:"langs,omitempty"`
+	Tags  []string `json:"tags,omitempty"`
 }
 
 // PostView represents the full view of a post with all metadata
@@ -223,10 +317,19 @@ type PostView struct {
 	RKey          string        `json:"rkey"`
 	CID           string        `json:"cid"`
 	URI           string        `json:"uri"`
-	UpvoteCount   int           `json:"-"`
-	DownvoteCount int           `json:"-"`
-	Score         int           `json:"-"`
-	CommentCount  int           `json:"-"`
+
+	// Status and AcceptanceURI are the per-community admission context (PRD §6.2),
+	// populated from the visibility join. Both are additive-optional: a public
+	// postView carries status "accepted" (and the acceptance URI), while an
+	// author's own non-accepted post carries "pending"/"removed"/etc.; a
+	// legacy/bridged row that holds no admission omits them entirely.
+	Status        string `json:"status,omitempty"`
+	AcceptanceURI string `json:"acceptanceUri,omitempty"`
+
+	UpvoteCount   int `json:"-"`
+	DownvoteCount int `json:"-"`
+	Score         int `json:"-"`
+	CommentCount  int `json:"-"`
 }
 
 // AuthorView represents author information in post views
@@ -236,6 +339,17 @@ type AuthorView struct {
 	Reputation  *int    `json:"reputation,omitempty"`
 	DID         string  `json:"did"`
 	Handle      string  `json:"handle"`
+
+	// PDSURL is the author's PDS, not exposed to the API — the mirror of
+	// CommunityRef.PDSURL beside it, and needed for the same reason: a postv2
+	// post's blobs live in the AUTHOR's repository, so building their URLs
+	// means knowing which server holds them.
+	//
+	// The repository query has always SELECTed this column (it hydrates the
+	// author's avatar) and always dropped it here. Carrying it is what lets the
+	// blob transform pick an owner per record instead of assuming every post's
+	// media is the community's.
+	PDSURL string `json:"-"`
 }
 
 // CommunityRef represents minimal community info in post views

@@ -1,0 +1,9 @@
+{
+  "$type": "social.coves.community.postv2",
+  "community": "not-a-did",
+  "title": "Best practices for error handling in Go",
+  "content": "The community field must be a syntactically valid DID; this one is not.",
+  "tags": ["golang"],
+  "langs": ["en"],
+  "createdAt": "2025-01-09T14:30:00Z"
+}
