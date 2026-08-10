@@ -41,6 +41,11 @@ type postService struct {
 	authorRepos AuthorRepoFactory
 	admissions  AdmissionRepository
 	acceptor    SubmissionAcceptor
+
+	// acceptanceWithdrawal is the delete path's mirror of acceptor: the writer
+	// that retracts, from a hosted community's repo, the acceptance the fast
+	// path put there. See compensateAuthorDelete.
+	acceptanceWithdrawal AcceptanceWithdrawer
 }
 
 // PostServiceOption configures optional postService dependencies. Options keep the
@@ -79,6 +84,22 @@ func NewPostService(
 	for _, opt := range opts {
 		opt(s)
 	}
+
+	// THE DELETE COMPENSATION IS DEFAULT-ON. There is no wiring in which an
+	// AppView should hold a community's credentials and still decline to
+	// withdraw its acceptance of a post the author has deleted (§5.3), so
+	// leaving it to an option would mean one omitted line silently restores the
+	// bug: a signed acceptance left citing a record nobody can fetch, with
+	// nothing anywhere to notice.
+	//
+	// The writer is a pure derivation of communityService, which is mandatory
+	// here, and the factory's hosting test is CREDENTIAL PRESENCE — so for every
+	// community this instance does not host it answers ErrCommunityNotHosted and
+	// the delete path skips, which is the common case.
+	if s.acceptanceWithdrawal == nil && communityService != nil {
+		s.acceptanceWithdrawal = NewCommunityRecordWriter(NewCommunityRepoFactory(communityService), time.Now)
+	}
+
 	// The admission policy is mandatory, and a missing or partial one panics
 	// here rather than defaulting to no-ops: a post service whose ban check and
 	// quota silently do not exist is a wiring bug, not a configuration.
@@ -1754,13 +1775,213 @@ func (s *postService) deleteAuthorPost(ctx context.Context, session *oauth.Clien
 		if errors.Is(err, pds.ErrNotFound) {
 			// Already deleted or never existed — the retried delete after a lost
 			// response succeeds.
+			//
+			// AND IT STILL COMPENSATES. This is the shape a RETRY arrives in:
+			// the first attempt removed the record and then failed part way
+			// through the compensation below, so the second finds nothing left
+			// to delete. Returning here would make the retry the client is
+			// offered the one path that can never finish the work.
 			log.Printf("[POST-DELETE] Post not found in the author's repo (already deleted?): %s", uri)
-			return nil
+			return s.compensateAuthorDelete(ctx, uri)
 		}
 		return fmt.Errorf("failed to delete post from PDS: %w", err)
 	}
 
 	log.Printf("[POST-DELETE] Successfully deleted post: uri=%s, author=%s", uri, userDID)
+
+	// The AppView's own half of the deletion, performed now rather than left to
+	// a firehose event that may never arrive. See compensateAuthorDelete.
+	return s.compensateAuthorDelete(ctx, uri)
+}
+
+// compensateAuthorDelete retracts everything the create wrote about a post
+// whose author has just deleted it (§5.3), without waiting for the firehose
+// copy of the deletion to come back.
+//
+// IT IS THE MIRROR OF settleSubmission. A create writes the postv2 into the
+// author's repo, seeds the admission row and — for a community this AppView
+// hosts — writes the acceptance into the community's repo and stamps the row,
+// all before it answers the author. A delete undoes exactly those, and it is
+// reachable with exactly the same credentials: the acceptance being withdrawn
+// here is one this instance signed moments or months ago.
+//
+// THE FIREHOSE IS NOT A GUARANTEE, which is why this exists at all. The
+// consumer's tombstoneAuthorPost only runs for an author whose PDS is on a
+// configured jetstream feed, and a feed reconfiguration, a migrated repo or a
+// consumer down for an afternoon all end the same silent way: this AppView
+// keeps serving a post its author withdrew, the community's repo keeps a
+// signed acceptance citing a record nobody can fetch, and getStatus keeps
+// telling the author their deleted post is live in the community.
+//
+// The firehose copy is NOT made redundant by any of this — it still reaches
+// every other AppView, and it still reaches this one on redelivery. Both paths
+// are idempotent by construction (a withdrawal of nothing is a skip, and the
+// §5.2 CAS refuses a rev that does not win), so doing the work twice is a
+// no-op while doing it zero times is the failure above.
+//
+// A FAILURE IS RETURNED, and that is the one place this deliberately departs
+// from the consumer, which logs and swallows. The consumer can afford to: its
+// sweep is reconsidered on every redelivery whose row is already tombstoned
+// (authorpost.go withdrawAcceptance is gated on the POST's state, not the
+// event's), so a transient withdrawal failure there gets another firehose
+// attempt for free, and returning an error would only dead-letter an event
+// whose local half already committed. Here the firehose is exactly the thing
+// that may never arrive — the CLIENT is the only retry loop, the author's
+// record is already gone, and every step below is idempotent — so surfacing the
+// failure is what gets the remaining work done. Reporting success over a
+// half-finished compensation reproduces the exact silence this path exists to
+// end.
+func (s *postService) compensateAuthorDelete(ctx context.Context, uri string) error {
+	// THE LOCAL TRUTH LANDS FIRST, in the consumer's order and for its reason:
+	// the author asked for their post to be gone, and a community PDS that
+	// cannot be reached must not keep this AppView serving it.
+	//
+	// The consumer gates its tombstone on the commit rev; this path needs no
+	// gate. SoftDelete is monotonic — NULL → NOW() under `WHERE deleted_at IS
+	// NULL` — and the create it could race is protected by the indexer's own
+	// ON CONFLICT DO NOTHING, so applying it here and again on the firehose
+	// copy leaves the same row either way.
+	if err := s.repo.SoftDelete(ctx, uri); err != nil {
+		return fmt.Errorf("soft-deleting the indexed row of %s: %w", uri, err)
+	}
+
+	// Without the admissions store there is nothing that says WHICH community
+	// accepted this post — a deletion carries no record to read it from — and
+	// without a withdrawer there are no credentials to withdraw it with. That
+	// combination is the pre-flip wiring, where the firehose owns every
+	// community-repo write, and the tombstone above is all this path can do.
+	if s.admissions == nil || s.acceptanceWithdrawal == nil {
+		return nil
+	}
+
+	admissionsByURI, err := s.admissions.GetByPostURIs(ctx, []string{uri})
+	if err != nil {
+		// SURFACED, never swallowed. A read that failed says nothing about
+		// whether an acceptance stands, and treating "I could not look" as
+		// "there is nothing there" would reintroduce the silent version of this
+		// bug through the back door.
+		return fmt.Errorf("resolving the admissions of %s: %w", uri, err)
+	}
+
+	// ONE ROW TODAY, and this does not pretend otherwise. The only thing that
+	// would give a post URI a second STANDING acceptance is §10.2's fork/import
+	// flow, which is deliberately not built — both consumer paths refuse a
+	// cross-community acceptance until it is — so at most one accepted row per
+	// post exists right now.
+	//
+	// It is walked as a set anyway, because the data model already permits the
+	// rows and the fork flow is exactly what would populate them: a
+	// compensation shaped around a single community would, on the day that flow
+	// lands, silently leave every other acceptance standing.
+	//
+	// EVERY MEMBER IS ATTEMPTED AND THE FAILURES ARE JOINED. Returning on the
+	// first would make the set only as available as its least-available member:
+	// every community behind a dead host is skipped on this pass and skipped
+	// again on every retry, because the retry re-enters the same loop and stops
+	// in the same place — so one host that never comes back would strand the
+	// rest permanently. Attempting them all means each pass finishes what it
+	// can and the retry has strictly less left to do. The ones this AppView
+	// does not host answer ErrCommunityNotHosted and cost a lookup.
+	var failures []error
+	for _, admission := range admissionsByURI[uri] {
+		if err := s.withdrawAcceptanceOf(ctx, admission); err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
+}
+
+// withdrawAcceptanceOf removes one community's acceptance record and stamps the
+// admission row that pointed at it.
+//
+// The two are one unit: the record is what the community publishes, the row is
+// what this AppView answers getStatus from, and a withdrawal that did only the
+// first would leave the author told their deleted post is still live.
+func (s *postService) withdrawAcceptanceOf(ctx context.Context, admission *Admission) error {
+	// THE GUARD IS THE ACCEPTANCE URI, NOT THE STATUS — the same test the
+	// firehose sweep makes. `accepted` and `pending_reacceptance` both have a
+	// live acceptance record standing in the community's repo (the second
+	// merely pins content the author has since edited), and both must be
+	// withdrawn when the subject itself is deleted. A row holding no URI has
+	// nothing standing to withdraw.
+	if admission == nil || admission.AcceptanceURI == nil {
+		return nil
+	}
+
+	withdrawn, err := s.acceptanceWithdrawal.DeleteAcceptance(ctx, CommunityAcceptanceDeleteCommand{
+		CommunityDID: admission.CommunityDID,
+		PostURI:      admission.PostURI,
+	})
+	switch {
+	case errors.Is(err, ErrCommunityNotHosted):
+		// Not this instance's community, and no retry changes that: the
+		// acceptance lives in the community's repo and needs its keys. The
+		// community's own AppView performs this cleanup when the deletion
+		// reaches it over the firehose, so the author's delete succeeds here
+		// rather than failing forever on work this instance cannot do.
+		log.Printf("[POST-DELETE] %s is hosted elsewhere; its acceptance of %s is not ours to withdraw",
+			admission.CommunityDID, admission.PostURI)
+		return nil
+	case pds.IsAuthError(err):
+		// THE COMMUNITY'S TOKEN, NOT THE AUTHOR'S SESSION. This withdrawal goes
+		// out on the community's stored service credentials, and their rejection
+		// produces the very same pds sentinels a dead OAuth session does. Letting
+		// them travel up the chain has the API boundary read a community-side
+		// credential outage as the CALLER's session being dead: the author is
+		// told to sign in again over something only the server can fix, and the
+		// outage is filed as a 401 client error where no 5xx alert looks. Severed
+		// exactly as the legacy delete path severs it.
+		return communityCredentialFailure(
+			fmt.Sprintf("withdrawing the acceptance of %s", admission.PostURI), admission.CommunityDID, err)
+	case err != nil:
+		return fmt.Errorf("withdrawing the acceptance of %s in %s: %w",
+			admission.PostURI, admission.CommunityDID, err)
+	}
+
+	// A SKIPPED WITHDRAWAL STILL STAMPS, on the catch-up rev the writer reports
+	// (the repo HEAD it read before its pre-read). Nothing stood, so the row's
+	// claim to an acceptance is precisely what needs clearing — this is how a
+	// row stranded by an earlier pass that committed the delete and then failed
+	// this stamp is caught up. The engine's accept path stamps a skip for the
+	// same reason.
+	//
+	// AN EMPTY REV MEANS TWO DIFFERENT THINGS, and only one of them is fine.
+	if withdrawn.Rev == "" {
+		if withdrawn.Skipped {
+			// Nothing stood in the community's repo and there is no head rev to
+			// catch up from, so there is nothing to record. The ordinary
+			// redelivery case, and not a failure.
+			return nil
+		}
+		// A COMMITTED withdrawal that reports no rev is the writer breaking its
+		// own contract (CommunityWriteResult documents a rev on every path), and
+		// it leaves exactly the half-finished state this path exists to make
+		// impossible: the acceptance record is GONE, the row still names it, and
+		// there is no watermark to stamp it with. Stamping anyway would write a
+		// fabricated clock value the repository correctly refuses, and returning
+		// nil would report success over a silently stranded row — so the
+		// contract violation is surfaced instead.
+		return fmt.Errorf("withdrawing the acceptance of %s in %s: %w: the withdrawal committed but reported no rev",
+			admission.PostURI, admission.CommunityDID, ErrInvalidWatermark)
+	}
+
+	if _, err := s.admissions.ApplyAcceptanceDelete(ctx, CommunityDeleteCommand{
+		CommunityDID: admission.CommunityDID,
+		PostURI:      admission.PostURI,
+		// The rev the withdrawal COMMITTED in — the §5.2 watermark that makes
+		// the firehose copy of this same deletion a no-op instead of a second
+		// decision. OpRank is left zero deliberately: the repository derives
+		// the rank from the operation, because the rank IS the operation's kind.
+		Watermark: CommunityWatermark{Rev: withdrawn.Rev},
+	}); err != nil {
+		// The record is OUT of the community's repo and the row still names it.
+		// The firehose copy would reconcile it eventually, but "eventually" is
+		// the assumption this whole path refuses to make.
+		return fmt.Errorf("stamping the withdrawal of %s in %s: %w",
+			admission.PostURI, admission.CommunityDID, err)
+	}
+
+	log.Printf("[POST-DELETE] Withdrew the acceptance of %s in %s", admission.PostURI, admission.CommunityDID)
 	return nil
 }
 

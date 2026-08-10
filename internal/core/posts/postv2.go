@@ -271,3 +271,36 @@ func WithSyncAcceptance(admissions AdmissionRepository, acceptor SubmissionAccep
 		s.acceptor = acceptor
 	}
 }
+
+// AcceptanceWithdrawer withdraws a community's acceptance of a post whose
+// AUTHOR has deleted it — the delete path's half of §5.3.
+//
+// Narrowed to the one method, exactly as the firehose consumer's
+// AcceptanceDeleter is and for the same reason: the post service must never
+// write an acceptance, a removal or a repin. Those are the ENGINE's verdicts,
+// reached against a community's own policy, and a service holding the full
+// CommunityRecordWriter is one edit away from making one. Satisfied by
+// CommunityRecordWriter.
+type AcceptanceWithdrawer interface {
+	// DeleteAcceptance removes the community's acceptance record and writes
+	// nothing in its place. It reports "nothing stood" as a skip rather than an
+	// error, which is what makes running it twice — here and again when the
+	// firehose copy of the same deletion arrives — a no-op.
+	DeleteAcceptance(ctx context.Context, cmd CommunityAcceptanceDeleteCommand) (CommunityWriteResult, error)
+}
+
+// WithAcceptanceWithdrawal replaces the writer the delete path withdraws
+// acceptances through.
+//
+// It is deliberately NOT folded into WithSyncAcceptance, whose "both or
+// neither" pairing asserts a different invariant: a row to settle and an engine
+// to settle it. Production passes the SAME CommunityRecordWriter the acceptance
+// engine writes through, so both ends of a subject's life share one writer's
+// clock and retry budget; a test passes one that fails on demand.
+//
+// Omitting it does not disable the compensation — see NewPostService, which
+// derives the production writer from the community service when no option
+// supplies one.
+func WithAcceptanceWithdrawal(withdrawer AcceptanceWithdrawer) PostServiceOption {
+	return func(s *postService) { s.acceptanceWithdrawal = withdrawer }
+}
