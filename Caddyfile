@@ -68,6 +68,38 @@
 
 # AppView Domain (root)
 coves.social {
+    # ── Tidepool's native-user AP surface (AP_USER_ORIGIN) ──────────────
+    # These paths belong to the bridge, not the AppView. More specific than
+    # the /.well-known/* static block below, so they win the handle sort.
+    #
+    # NOTE: no `header_up Host` on these proxies. Caddy v2 forwards the
+    # original Host by default, and Tidepool's Host router keys on it to
+    # choose the persona surface over the bridge surface
+    # (tidepool: internal/personas/hostrouter.go). Rewriting Host to the
+    # upstream address would 421 every one of these requests.
+    handle /.well-known/webfinger {
+        reverse_proxy tidepool:80 {
+            header_up X-Real-IP {remote_host}
+        }
+    }
+    handle /.well-known/nodeinfo {
+        reverse_proxy tidepool:80 {
+            header_up X-Real-IP {remote_host}
+        }
+    }
+    handle /nodeinfo/2.0 {
+        reverse_proxy tidepool:80 {
+            header_up X-Real-IP {remote_host}
+        }
+    }
+    # /ap/actor/{did}, /ap/actor/{did}/outbox, /ap/object/*, /ap/activity/*,
+    # and POST /ap/inbox — the shared inbox for this origin.
+    handle /ap/* {
+        reverse_proxy tidepool:80 {
+            header_up X-Real-IP {remote_host}
+        }
+    }
+
     # Serve .well-known files for DID verification
     handle /.well-known/* {
         header Access-Control-Allow-Origin "*"
@@ -96,6 +128,44 @@ coves.social {
     # permanent and worth caching in the client.
     handle /img/* {
         redir https://img.coves.social{uri} permanent
+    }
+
+    # ── Apex: split by Accept ───────────────────────────────────────────
+    # `handle /` matches the apex EXACTLY (a Caddy path matcher is exact
+    # unless it ends in *), so this replaces only the bare "/" case that
+    # the catch-all below used to serve. Same-name directives run in
+    # Caddyfile order, so the matched reverse_proxy is tried before the
+    # fallback.
+    #
+    # The split is inverted on purpose: EXPLICIT text/html goes to the web
+    # app; everything else — activity+json, ld+json, AND a request with no
+    # Accept header at all — falls through to Tidepool. The bridge's
+    # instance actor (tidepool: internal/personas/instance.go) requires
+    # that a peer sending no Accept still gets the actor, and a positive
+    # @ap matcher can never satisfy that (an absent header matches
+    # nothing). Browsers always send text/html at the apex, so they are
+    # unaffected; the one visible consequence is that a bare `curl /`
+    # (Accept: */*) now gets the actor JSON, which is the AS2-conventional
+    # answer for a non-browser client.
+    handle / {
+        @html header Accept *text/html*
+        # The web app, with the SAME upstream options as the catch-all
+        # below — kept verbatim, header_up Host included (DPoP htu
+        # matching depends on it).
+        reverse_proxy @html appview:8080 {
+            health_uri /xrpc/_health
+            health_interval 30s
+            health_timeout 5s
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+            header_up X-Forwarded-Host {host}
+        }
+        # Fallback: the instance actor (peers, absent-Accept fetchers).
+        reverse_proxy tidepool:80 {
+            header_up X-Real-IP {remote_host}
+        }
     }
 
     # Proxy all requests to AppView
