@@ -78,7 +78,8 @@ func TestDirectFetch_RecomputesTheCIDFromARealRepo(t *testing.T) {
 		"createdAt": time.Now().UTC().Format(time.RFC3339),
 	})
 
-	fetcher := NewDevDirectPostFetcher(pinnedResolver(author.DID, pdsServer.URL()))
+	fetcher := NewDirectPostFetcher(pinnedResolver(author.DID, pdsServer.URL()),
+		PrivatePostFetcherOptions(true)...)
 	consumer := NewPostEventConsumer(
 		postgres.NewPostRepository(db), postgres.NewCommunityRepository(db),
 		newMockUserService(), db,
@@ -114,7 +115,7 @@ func TestDirectFetch_UsesSyncGetRecordNotTheJSONEnvelope(t *testing.T) {
 	defer srv.Close()
 
 	f := newAccFixture(t, db, WithPostRecordFetcher(
-		NewDevDirectPostFetcher(pinnedResolver(accAuthor, srv.URL))))
+		NewDirectPostFetcher(pinnedResolver(accAuthor, srv.URL), PrivatePostFetcherOptions(true)...)))
 
 	_ = f.consumer.HandleEvent(context.Background(),
 		acceptanceEvent(accCommunity, uri, "bafyreiverifyendpoint", testkit.TID(), time.Now().UnixMicro()))
@@ -149,7 +150,7 @@ func TestDirectFetch_RefusesAPDSThatLiesAboutTheCID(t *testing.T) {
 	defer srv.Close()
 
 	f := newAccFixture(t, db, WithPostRecordFetcher(
-		NewDevDirectPostFetcher(pinnedResolver(accAuthor, srv.URL))))
+		NewDirectPostFetcher(pinnedResolver(accAuthor, srv.URL), PrivatePostFetcherOptions(true)...)))
 
 	err := f.consumer.HandleEvent(ctx,
 		acceptanceEvent(accCommunity, uri, pinned, testkit.TID(), time.Now().UnixMicro()))

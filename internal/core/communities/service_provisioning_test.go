@@ -89,9 +89,10 @@ func newCommunityServiceWithDatabase(t *testing.T) (
 		pdsServer.URL(),
 		instanceDID,
 		instanceDomain,
-		communities.NewPDSAccountProvisioner(instanceDomain, pdsServer.URL()),
-		testkit.PasswordAuthFactory(pds.NewFromAccessToken),
-		blobs.NewBlobService(pdsServer.URL()),
+		communities.NewPDSAccountProvisioner(instanceDomain, pdsServer.URL(), communities.PrivateHostOptions(true)...),
+		testkit.PasswordAuthFactory(pds.NewFromAccessToken, pds.PrivateHostOptions(true)...),
+		blobs.NewBlobService(pdsServer.URL(), blobs.PrivateHostOptions(true)...),
+		communities.PrivateHostOptions(true)...,
 	)
 	return service, repo, pdsServer, db
 }

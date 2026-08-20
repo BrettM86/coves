@@ -325,6 +325,6 @@ func PasswordAuthPDSClientFactory() votes.PDSClientFactory {
 		if session.HostURL == "" {
 			return nil, fmt.Errorf("session has no host URL")
 		}
-		return pds.NewFromAccessToken(session.HostURL, session.AccountDID.String(), session.AccessToken)
+		return pds.NewFromAccessToken(session.HostURL, session.AccountDID.String(), session.AccessToken, pds.PrivateHostOptions(true)...)
 	}
 }

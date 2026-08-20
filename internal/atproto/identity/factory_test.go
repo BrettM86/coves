@@ -34,8 +34,8 @@ func TestDefaultConfig_PrefersTheConfiguredPLCDirectory(t *testing.T) {
 		"the Makefile exports .env.dev, so this is how every locally-built resolver reaches the "+
 			"stack's own PLC instead of the public one")
 	assert.Equal(t, 24*time.Hour, config.CacheTTL)
-	require.NotNil(t, config.HTTPClient)
-	assert.Equal(t, 10*time.Second, config.HTTPClient.Timeout,
+	require.NotNil(t, config.httpClient)
+	assert.Equal(t, 10*time.Second, config.httpClient.Timeout,
 		"an unbounded client here hangs an ingestion worker on an unresponsive PDS")
 }
 
@@ -70,7 +70,7 @@ func TestNewResolver_FillsInMissingConfiguration(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "https://plc.directory", dir.PLCURL) // coves:allow-public-host: asserting the documented production default, not an endpoint any test dials
 	assert.Equal(t, 10*time.Second, dir.HTTPClient.Timeout,
-		"a nil HTTPClient in the config must be replaced before it reaches Indigo, which dereferences it")
+		"a config carrying no client must have one filled in before it reaches Indigo, which dereferences it")
 
 	cache, ok := caching.cache.(*postgresCache)
 	require.True(t, ok)
@@ -82,11 +82,17 @@ func TestNewResolver_FillsInMissingConfiguration(t *testing.T) {
 func TestNewResolver_HonoursAnExplicitConfiguration(t *testing.T) {
 	t.Parallel()
 
-	resolver := NewResolver(nil, Config{
-		PLCURL:     "http://plc.invalid:3002",
-		CacheTTL:   90 * time.Second,
-		HTTPClient: &http.Client{Timeout: 3 * time.Second},
-	})
+	// The client goes in through withHTTPClient rather than a struct literal:
+	// the field is unexported so that no package outside this one can replace
+	// the guarded transport without an option to grep for. See
+	// factory_seam_test.go.
+	config := Config{
+		PLCURL:   "http://plc.invalid:3002",
+		CacheTTL: 90 * time.Second,
+	}
+	withHTTPClient(&http.Client{Timeout: 3 * time.Second})(&config)
+
+	resolver := NewResolver(nil, config)
 
 	caching := resolver.(*cachingResolver)
 	dir := caching.base.(*baseResolver).directory.(*indigoIdentity.BaseDirectory)

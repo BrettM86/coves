@@ -57,6 +57,12 @@ func TestRematerializeBlobClient_Fetch_ReturnsTheWholeBodyUnderTheCap(t *testing
 // error and a 404 into a single false — so a network blip refused a healthy
 // record, and any future change of polarity would have licensed deleting the
 // last copy of a blob.
+//
+// THE HATCH IS OPEN IN THESE SUBTESTS because they serve their fixtures from
+// httptest, which listens on loopback — exactly what the address guard refuses.
+// They are about what a STATUS CODE means, not about which addresses may be
+// dialled; rematerialize_blob_guard_test.go owns that, and the last subtest
+// keeps the guarded spelling because it never gets as far as a dial.
 func TestRematerializeBlobClient_Present_DistinguishesAbsentFromUnaskable(t *testing.T) {
 	t.Run("200 is present", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -64,7 +70,7 @@ func TestRematerializeBlobClient_Present_DistinguishesAbsentFromUnaskable(t *tes
 		}))
 		defer server.Close()
 
-		present, err := DefaultRematerializeBlobClient().Present(context.Background(), server.URL, "did:plc:x2222222222222222222222", "bafkrei1")
+		present, err := DefaultRematerializeBlobClient(true).Present(context.Background(), server.URL, "did:plc:x2222222222222222222222", "bafkrei1")
 		require.NoError(t, err)
 		assert.True(t, present)
 	})
@@ -75,7 +81,7 @@ func TestRematerializeBlobClient_Present_DistinguishesAbsentFromUnaskable(t *tes
 		}))
 		defer server.Close()
 
-		present, err := DefaultRematerializeBlobClient().Present(context.Background(), server.URL, "did:plc:x2222222222222222222222", "bafkrei1")
+		present, err := DefaultRematerializeBlobClient(true).Present(context.Background(), server.URL, "did:plc:x2222222222222222222222", "bafkrei1")
 		require.NoErrorf(t, err, "a definite 404 is an ANSWER — the blob is not there — and must not be reported as a failure to ask")
 		assert.False(t, present)
 	})
@@ -86,7 +92,7 @@ func TestRematerializeBlobClient_Present_DistinguishesAbsentFromUnaskable(t *tes
 		}))
 		defer server.Close()
 
-		_, err := DefaultRematerializeBlobClient().Present(context.Background(), server.URL, "did:plc:x2222222222222222222222", "bafkrei1")
+		_, err := DefaultRematerializeBlobClient(true).Present(context.Background(), server.URL, "did:plc:x2222222222222222222222", "bafkrei1")
 		require.Errorf(t, err,
 			"a 503 was collapsed into 'absent'. The caller uses this answer to decide whether it is safe to delete the record that keeps the community's "+
 				"only copy of the bytes alive, and a server that could not answer has told it nothing")
@@ -97,12 +103,12 @@ func TestRematerializeBlobClient_Present_DistinguishesAbsentFromUnaskable(t *tes
 		url := server.URL
 		server.Close() // nothing is listening now
 
-		_, err := DefaultRematerializeBlobClient().Present(context.Background(), url, "did:plc:x2222222222222222222222", "bafkrei1")
+		_, err := DefaultRematerializeBlobClient(true).Present(context.Background(), url, "did:plc:x2222222222222222222222", "bafkrei1")
 		require.Errorf(t, err, "a transport failure must surface; reporting it as 'absent' turns a blip into a refusal and a polarity slip into data loss")
 	})
 
 	t.Run("an unbuildable URL is an error, never a false", func(t *testing.T) {
-		_, err := DefaultRematerializeBlobClient().Present(context.Background(), "", "did:plc:x2222222222222222222222", "bafkrei1")
+		_, err := DefaultRematerializeBlobClient(false).Present(context.Background(), "", "did:plc:x2222222222222222222222", "bafkrei1")
 		require.Errorf(t, err, "a URL that could not be built means the question was never asked")
 	})
 }

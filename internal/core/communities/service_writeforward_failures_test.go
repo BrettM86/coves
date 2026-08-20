@@ -117,7 +117,8 @@ func writeForwardService(t *testing.T) (communities.Service, *fakeCommunityRepo,
 	userPDS := &fakeUserPDS{t: t, did: subscriberDID}
 	service := communities.NewCommunityServiceWithPDSFactory(
 		repo, "http://pds.invalid", fakeInstanceDID, fakeInstanceDomain, nil,
-		func(context.Context, *oauth.ClientSessionData) (pds.Client, error) { return userPDS, nil }, nil)
+		func(context.Context, *oauth.ClientSessionData) (pds.Client, error) { return userPDS, nil }, nil,
+		communities.PrivateHostOptions(true)...)
 	return service, repo, userPDS
 }
 
@@ -132,7 +133,8 @@ func unbuildableClientService(t *testing.T, cause error) (communities.Service, *
 	})
 	service := communities.NewCommunityServiceWithPDSFactory(
 		repo, "http://pds.invalid", fakeInstanceDID, fakeInstanceDomain, nil,
-		func(context.Context, *oauth.ClientSessionData) (pds.Client, error) { return nil, cause }, nil)
+		func(context.Context, *oauth.ClientSessionData) (pds.Client, error) { return nil, cause }, nil,
+		communities.PrivateHostOptions(true)...)
 	return service, repo
 }
 

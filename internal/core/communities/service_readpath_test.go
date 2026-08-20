@@ -60,7 +60,8 @@ func newFakeBackedService(t *testing.T) (communities.Service, *fakeCommunityRepo
 	t.Helper()
 	repo := newFakeCommunityRepo()
 	service := communities.NewCommunityServiceWithPDSFactory(
-		repo, "http://pds.invalid", fakeInstanceDID, fakeInstanceDomain, nil, nil, nil)
+		repo, "http://pds.invalid", fakeInstanceDID, fakeInstanceDomain, nil, nil, nil,
+		communities.PrivateHostOptions(true)...)
 	return service, repo
 }
 

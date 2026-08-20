@@ -38,7 +38,7 @@ type hostRoutedResolver struct {
 	asked   []string
 }
 
-func (r *hostRoutedResolver) lookup(host string) ([]net.IP, error) {
+func (r *hostRoutedResolver) lookup(_ context.Context, host string) ([]net.IP, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.asked = append(r.asked, host)
@@ -97,7 +97,7 @@ func TestSSRFSafeHTTPClient_RevetsEachRedirectHop(t *testing.T) {
 		"hop2.test": {hop2},
 	}}
 
-	client := NewSSRFSafeHTTPClient(false)
+	client := NewSSRFSafeHTTPClient()
 	transport, ok := client.Transport.(*ssrfSafeTransport)
 	require.True(t, ok, "NewSSRFSafeHTTPClient must install an ssrfSafeTransport, got %T", client.Transport)
 	transport.lookupIP = resolver.lookup
@@ -173,7 +173,7 @@ func TestSSRFSafeHTTPClient_RefusesAMixedLookupAnswer(t *testing.T) {
 
 			resolver := &hostRoutedResolver{answers: map[string][]net.IP{"mixed.test": tt.answer}}
 
-			client := NewSSRFSafeHTTPClient(false)
+			client := NewSSRFSafeHTTPClient()
 			transport, ok := client.Transport.(*ssrfSafeTransport)
 			require.True(t, ok, "NewSSRFSafeHTTPClient must install an ssrfSafeTransport, got %T", client.Transport)
 			transport.lookupIP = resolver.lookup
@@ -197,9 +197,28 @@ func TestSSRFSafeHTTPClient_RefusesAMixedLookupAnswer(t *testing.T) {
 			require.Error(t, err, "an answer containing a private address must be refused")
 			assert.Contains(t, err.Error(), "SSRF blocked",
 				"the refusal must name the guard that made it; got: %v", err)
-			assert.Contains(t, err.Error(), private.String(),
-				"the refusal must name the address that caused it, so an operator reading the log knows which "+
-					"of the answers was the problem; got: %v", err)
+			// THE DIAGNOSTIC MOVED; IT WAS NOT DELETED. This assertion used to
+			// read `assert.Contains(err.Error(), private.String())`, and the
+			// reasoning behind it still holds in full: an operator looking at a
+			// refusal has to be able to tell WHICH of the answers was the
+			// problem, or a mixed-answer block is indistinguishable from any
+			// other. What changed is where that detail lives. The rendered
+			// message reaches places the operator does not control — an HTTP
+			// response, a shared log — and "which address did this name resolve
+			// to inside your network" is the one half of that sentence the
+			// attacker did not already supply. So the address is now reachable
+			// through errors.As, which serves the operator without answering
+			// the question to anyone who can read the string.
+			require.ErrorIs(t, err, ErrBlockedAddress,
+				"the refusal must be matchable by identity rather than by substring; got: %v", err)
+
+			var blocked *BlockedAddressError
+			require.ErrorAs(t, err, &blocked,
+				"the refusal must carry its detail on a typed error an operator can reach; got: %v", err)
+			assert.True(t, blocked.IP.Equal(private),
+				"the typed error names %s as the blocking address, but the private answer in this case was %s — "+
+					"an operator reading the block still has to know which of the two answers caused it",
+				blocked.IP, private)
 
 			assert.False(t, dialled.Load(),
 				"a connection was attempted despite a private address in the answer. The dialler picks which "+
@@ -233,7 +252,7 @@ func TestSSRFSafeHTTPClient_RefusesAMixedLookupAnswer(t *testing.T) {
 func TestSSRFSafeTransport_BaseTransportFailsClosedWhenBypassed(t *testing.T) {
 	t.Parallel()
 
-	client := NewSSRFSafeHTTPClient(false)
+	client := NewSSRFSafeHTTPClient()
 	transport, ok := client.Transport.(*ssrfSafeTransport)
 	require.True(t, ok, "NewSSRFSafeHTTPClient must install an ssrfSafeTransport, got %T", client.Transport)
 

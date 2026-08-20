@@ -96,7 +96,7 @@ func newEngineFixture(t *testing.T) *engineFixture {
 	base := newPostFixture(t)
 	account := base.communityAccount(t)
 
-	generic, err := pds.NewFromAccessToken(base.pds.URL(), account.DID, account.AccessToken)
+	generic, err := pds.NewFromAccessToken(base.pds.URL(), account.DID, account.AccessToken, pds.PrivateHostOptions(true)...)
 	require.NoError(t, err)
 
 	repo, ok := generic.(pds.CommitClient)
@@ -602,7 +602,7 @@ func (r *racingRepo) PutRecordWithCommit(ctx context.Context, collection, rkey s
 func (f *engineFixture) racingWriter(t *testing.T, fn func()) posts.CommunityRecordWriter {
 	t.Helper()
 
-	generic, err := pds.NewFromAccessToken(f.pds.URL(), f.communityAt.DID, f.communityAt.AccessToken)
+	generic, err := pds.NewFromAccessToken(f.pds.URL(), f.communityAt.DID, f.communityAt.AccessToken, pds.PrivateHostOptions(true)...)
 	require.NoError(t, err)
 	repo, ok := generic.(pds.CommitClient)
 	require.True(t, ok)
@@ -676,7 +676,7 @@ func TestEngine_RemovalCommitLosesItsSwapCommitAndConverges(t *testing.T) {
 
 	otherPost := f.publishPost(t, "an unrelated post whose acceptance advances the head")
 
-	generic, err := pds.NewFromAccessToken(f.pds.URL(), f.communityAt.DID, f.communityAt.AccessToken)
+	generic, err := pds.NewFromAccessToken(f.pds.URL(), f.communityAt.DID, f.communityAt.AccessToken, pds.PrivateHostOptions(true)...)
 	require.NoError(t, err)
 	commitClient, ok := generic.(pds.CommitClient)
 	require.True(t, ok)

@@ -152,10 +152,12 @@ type DirectPostFetcher struct {
 	resolver identity.Resolver
 
 	// allowPrivateHosts disables the SSRF protection that blocks private and
-	// loopback addresses. NEVER set outside tests. It exists for the same reason
-	// blueskypost's allowPrivateHost does: this package's own tests point the
-	// fetcher at an httptest server, which necessarily listens on loopback and
-	// would otherwise be refused by the guard that must stay on in production.
+	// loopback addresses. Reachable only through withPrivateHostsAllowed, which is
+	// unexported, so the one production route in is PrivatePostFetcherOptions
+	// carrying cmd/server's allowPrivateHosts() — false everywhere but dev. It
+	// exists for the same reason blueskypost's allowPrivateHost does: a dev
+	// stack's PDS, and this package's own fixtures, listen on loopback, which is
+	// exactly what the guard that must stay on in production refuses.
 	//
 	// The guard is not decorative here. The DID document that names the PDS is
 	// attacker-controlled — anyone can publish one — so an unguarded fetcher is
@@ -192,23 +194,62 @@ const maxFetchedRecordBytes = 1 << 20 // 1 MiB
 // into the logs, so a hostile host cannot flood them.
 const maxFetchErrorDetailBytes = 256
 
-// NewDirectPostFetcher wires the §5.4 fetch. SSRF protection is ON and there is
-// no parameter to turn it off: a constructor that accepted a boolean is a
-// constructor someone eventually passes true to from production wiring.
-func NewDirectPostFetcher(resolver identity.Resolver) *DirectPostFetcher {
-	return &DirectPostFetcher{resolver: resolver}
+// DirectPostFetcherOption configures the §5.4 fetch at construction time.
+//
+// Construction state, never a read inside the fetch: an environment read at the
+// call site would make the guarded branch untestable alongside t.Parallel and
+// would hide the most consequential input to a security decision from the place
+// that makes it.
+type DirectPostFetcherOption func(*DirectPostFetcher)
+
+// NewDirectPostFetcher wires the §5.4 fetch. SSRF protection is ON unless an
+// option stands it down, and it takes no boolean: a constructor that accepted
+// one is a constructor someone eventually passes true to from production wiring.
+func NewDirectPostFetcher(resolver identity.Resolver, opts ...DirectPostFetcherOption) *DirectPostFetcher {
+	f := &DirectPostFetcher{resolver: resolver}
+	for _, opt := range opts {
+		opt(f)
+	}
+	return f
 }
 
-// NewDevDirectPostFetcher builds a fetcher with the SSRF guard STOOD DOWN, for
-// development and hermetic test stacks whose PDS is reachable only on a private
-// address.
+// withPrivateHostsAllowed stands the SSRF guard down on the direct fetch.
 //
-// It is a separate constructor rather than a flag on the safe one so that the
-// dangerous choice has to be named at the call site, where a reviewer sees it,
-// and so that no production wiring can reach it by passing a variable that
-// happens to be true. Its one caller is gated on IS_DEV_ENV.
-func NewDevDirectPostFetcher(resolver identity.Resolver) *DirectPostFetcher {
-	return &DirectPostFetcher{resolver: resolver, allowPrivateHosts: true}
+// UNEXPORTED, AND THAT IS THE WHOLE POINT. It replaced NewDevDirectPostFetcher,
+// whose doc comment claimed that "no production wiring can reach it by passing a
+// variable that happens to be true" — but that constructor was EXPORTED, so any
+// package, cmd/server included, could call it directly and open the hatch. The
+// guarantee was prose. This is the type system: outside this package the hatch is
+// unreachable, and the only way in is PrivatePostFetcherOptions, whose false
+// branch returns nothing.
+//
+// pds/factory.go's withTransportOptions and this package's own
+// withWellKnownHTTPClient are unexported for exactly this hazard. Every
+// legitimate caller of the hatch is a fixture in this package, so it costs them
+// nothing.
+func withPrivateHostsAllowed() DirectPostFetcherOption { // coves:allow-ssrf-hatch: this IS the hatch itself; the name is the contract
+	return func(f *DirectPostFetcher) { f.allowPrivateHosts = true }
+}
+
+// PrivatePostFetcherOptions returns the options a caller holding an allow-private
+// boolean should pass to NewDirectPostFetcher: the hatch when it is set, and
+// NOTHING when it is not.
+//
+// It mirrors PrivateHostOptions above and oauth.PrivateAddressOptions, and it is
+// a function rather than an `if` in cmd/server/consumers.go for the reason
+// documented there: `.env.ci:140` sets IS_DEV_ENV=true, so `make ci` takes the
+// PERMISSIVE branch at every call site holding such a boolean. A unit test
+// against this function is the only place in the repository where the branch
+// production actually runs is ever evaluated. Do not inline it back.
+//
+// FALSE RETURNS ZERO OPTIONS, AND THAT IS THE CONTRACT — not "options that are
+// safe", but none, so that what production gets is exactly the constructor's own
+// defaults.
+func PrivatePostFetcherOptions(allowPrivate bool) []DirectPostFetcherOption {
+	if !allowPrivate {
+		return nil
+	}
+	return []DirectPostFetcherOption{withPrivateHostsAllowed()} // coves:allow-ssrf-hatch: the gate helper allow-branch; its false branch returns nothing
 }
 
 // httpClient returns the guarded client, building it once on first use.
@@ -226,7 +267,7 @@ func NewDevDirectPostFetcher(resolver identity.Resolver) *DirectPostFetcher {
 // — costs nothing.
 func (f *DirectPostFetcher) httpClient() *http.Client {
 	f.clientOnce.Do(func() {
-		f.client = oauth.NewSSRFSafeHTTPClient(f.allowPrivateHosts)
+		f.client = oauth.NewSSRFSafeHTTPClient(oauth.PrivateAddressOptions(f.allowPrivateHosts)...)
 	})
 	return f.client
 }

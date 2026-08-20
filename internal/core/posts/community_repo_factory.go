@@ -81,7 +81,19 @@ func (r credentialRefresher) RefreshCommunityCredentials(ctx context.Context, co
 // refresh token — which happens exactly once, when it provisioned the account
 // through social.coves.community.create — or it does not. That is the honest
 // question, and it is the only one this factory asks.
-func NewCommunityRepoFactory(source CommunityCredentialSource) CommunityRepoFactory {
+//
+// # THE OPTIONS ARE THE SSRF DEV GATE, AND OMITTING THEM IS THE SAFE DIRECTION
+//
+// fresh.PDSURL is a per-community database column, so the address this factory
+// dials is data rather than configuration — which is why the client it builds is
+// address-guarded (see pds.newBearerHTTPClient). Passing nothing yields the
+// guarded client, so a caller that forgets the gate gets the strict behaviour
+// and finds out; the reverse default would be an unguarded client nobody
+// notices. Production wiring passes pds.PrivateHostOptions(cfg.IsDevEnv)...,
+// and tests driving the CI stack's loopback PDS pass
+// pds.PrivateHostOptions(true)... because loopback is exactly what the guard
+// refuses.
+func NewCommunityRepoFactory(source CommunityCredentialSource, opts ...pds.ClientOption) CommunityRepoFactory {
 	return func(ctx context.Context, communityDID string) (CommunityRepo, error) {
 		community, err := source.GetByDID(ctx, communityDID)
 		if err != nil {
@@ -120,7 +132,7 @@ func NewCommunityRepoFactory(source CommunityCredentialSource) CommunityRepoFact
 			return nil, fmt.Errorf("refreshing the credentials of %s: no access token came back", communityDID)
 		}
 
-		client, err := pds.NewFromAccessToken(fresh.PDSURL, fresh.DID, fresh.PDSAccessToken)
+		client, err := pds.NewFromAccessToken(fresh.PDSURL, fresh.DID, fresh.PDSAccessToken, opts...)
 		if err != nil {
 			return nil, fmt.Errorf("building a PDS client for %s: %w", communityDID, err)
 		}

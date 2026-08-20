@@ -46,6 +46,13 @@ type communityService struct {
 	oauthClient      *oauthclient.OAuthClient
 	pdsClientFactory PDSClientFactory // Optional, for testing. If nil, uses OAuth.
 
+	// pdsHTTPClient is the SSRF-guarded client the token-refresh and
+	// password-reauth xrpc calls go through, built ONCE at construction. Both
+	// carry a live credential to fresh.PDSURL — a per-community database column —
+	// so this field is what stands between a credential and an address someone
+	// else chose. See newPDSHTTPClient.
+	pdsHTTPClient *http.Client
+
 	// Token refresh concurrency control
 	// Each community gets its own mutex to prevent concurrent refresh attempts
 	refreshMutexes map[string]*sync.Mutex
@@ -68,12 +75,18 @@ const (
 )
 
 // NewCommunityService creates a new community service with OAuth client for user authentication
+//
+// The variadic PDSClientOptions configure the SSRF posture of the token-refresh
+// and password-reauth calls, and omitting them yields the GUARDED client — the
+// branch a caller that forgets lands on. cmd/server passes
+// PrivateHostOptions(cfg.IsDevEnv).
 func NewCommunityService(
 	repo Repository,
 	pdsURL, instanceDID, instanceDomain string,
 	provisioner *PDSAccountProvisioner,
 	oauthClient *oauthclient.OAuthClient,
 	blobService blobs.Service,
+	opts ...PDSClientOption,
 ) Service {
 	// SECURITY: Basic validation that did:web domain matches configured instanceDomain
 	// This catches honest configuration mistakes but NOT malicious code modifications
@@ -97,6 +110,7 @@ func NewCommunityService(
 		provisioner:    provisioner,
 		oauthClient:    oauthClient,
 		blobService:    blobService,
+		pdsHTTPClient:  newPDSHTTPClient(opts...),
 		refreshMutexes: make(map[string]*sync.Mutex),
 	}
 }
@@ -109,6 +123,7 @@ func NewCommunityServiceWithPDSFactory(
 	provisioner *PDSAccountProvisioner,
 	factory PDSClientFactory,
 	blobService blobs.Service,
+	opts ...PDSClientOption,
 ) Service {
 	return &communityService{
 		repo:             repo,
@@ -118,6 +133,7 @@ func NewCommunityServiceWithPDSFactory(
 		provisioner:      provisioner,
 		pdsClientFactory: factory,
 		blobService:      blobService,
+		pdsHTTPClient:    newPDSHTTPClient(opts...),
 		refreshMutexes:   make(map[string]*sync.Mutex),
 	}
 }
@@ -679,7 +695,7 @@ func (s *communityService) EnsureFreshToken(ctx context.Context, community *Comm
 	log.Printf("[TOKEN-REFRESH] Community: %s, Event: token_refresh_started, Message: Access token expiring soon", fresh.DID)
 
 	// Attempt token refresh using refresh token
-	newAccessToken, newRefreshToken, err := refreshPDSToken(ctx, fresh.PDSURL, fresh.PDSRefreshToken)
+	newAccessToken, newRefreshToken, err := refreshPDSToken(ctx, s.pdsHTTPClient, fresh.PDSURL, fresh.PDSRefreshToken)
 	if err != nil {
 		// Check if refresh token expired (need password fallback)
 		// Match both "ExpiredToken" and "Token has expired" error messages
@@ -689,6 +705,7 @@ func (s *communityService) EnsureFreshToken(ctx context.Context, community *Comm
 			// Fallback: Re-authenticate with stored password
 			newAccessToken, newRefreshToken, err = reauthenticateWithPassword(
 				ctx,
+				s.pdsHTTPClient,
 				fresh.PDSURL,
 				fresh.PDSEmail,
 				fresh.PDSPassword, // Retrieved decrypted from DB
@@ -1345,7 +1362,7 @@ func (s *communityService) callPDSWithAuth(ctx context.Context, method, endpoint
 		timeout = 30 * time.Second // Extended timeout for write operations
 	}
 
-	client := &http.Client{Timeout: timeout}
+	client := &http.Client{Timeout: timeout} // coves:allow-bare-client: builds from s.pdsURL, the AppView's own configured PDS, not a caller-supplied endpoint
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to call PDS: %w", err)

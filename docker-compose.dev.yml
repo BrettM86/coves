@@ -202,7 +202,7 @@ services:
   #   PLC_DIRECTORY_URL=http://localhost:3002
   #   IS_DEV_ENV=false  # Use production mode but point to local PLC
   plc-directory:
-    image: node:18-alpine
+    image: node:22.23.2-alpine3.24
     container_name: coves-dev-plc
     ports:
       - "3002:3000"  # PLC directory API

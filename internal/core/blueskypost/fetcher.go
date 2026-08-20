@@ -160,7 +160,7 @@ type blueskyAPIRecordValue struct {
 // fetchBlueskyPost fetches a Bluesky post from the public API
 func fetchBlueskyPost(ctx context.Context, atURI string, timeout time.Duration, api blueskyAPI) (*BlueskyPostResult, error) {
 	// Create SSRF-safe HTTP client
-	client := oauth.NewSSRFSafeHTTPClient(api.allowPrivateHost)
+	client := oauth.NewSSRFSafeHTTPClient(oauth.PrivateAddressOptions(api.allowPrivateHost)...)
 	client.Timeout = timeout
 
 	// Construct API URL

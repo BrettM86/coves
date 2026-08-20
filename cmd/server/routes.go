@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"Coves/internal/api/handlers/aggregator"
 	commentsAPI "Coves/internal/api/handlers/comments"
 
 	"github.com/go-chi/chi/v5"
@@ -95,8 +96,12 @@ func registerXRPCRoutes(r chi.Router, app *application) {
 	routes.RegisterActorRoutes(r, app.postService, app.userService, app.voteService,
 		app.blueskyService, app.commentService, app.authMiddleware)
 
+	// The registration handler fetches .well-known/atproto-did from a domain an
+	// unauthenticated caller supplies, so its client is guarded; the hatch is
+	// for a dev stack whose fixture domains resolve to the machine itself.
 	routes.RegisterAggregatorRoutes(r, app.aggregatorService, app.communityService,
-		app.userService, app.identityResolver)
+		app.userService, app.identityResolver,
+		aggregator.PrivateHostOptions(app.allowPrivateHosts())...)
 	routes.RegisterAggregatorAPIKeyRoutes(r, app.authMiddleware, app.apiKeyService, app.aggregatorService)
 
 	registerCommentQueryRoute(r, app)

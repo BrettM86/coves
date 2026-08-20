@@ -14,6 +14,7 @@ import (
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
 
+	covesoauth "Coves/internal/atproto/oauth"
 	"Coves/internal/core/blobs"
 )
 
@@ -1070,11 +1071,18 @@ func (r *Rematerializer) report(p RematerializeProgress) {
 }
 
 // blobClient returns the injected blob client, or the bounded HTTP default.
+//
+// THE DEFAULT IS GUARDED, WITH NO WAY TO OPEN IT FROM HERE. The host it dials
+// comes from the author repo's HostURL — a DID document's serviceEndpoint — so
+// the fallback has to be the safe one; a caller that genuinely needs the dev
+// hatch (cmd/rematerialize-posts against a local PDS) sets Blobs explicitly from
+// DefaultRematerializeBlobClient(cfg.IsDevEnv), which is a decision visible at
+// the wiring rather than a boolean threaded through the state machine.
 func (r *Rematerializer) blobClient() RematerializeBlobClient {
 	if r.Blobs != nil {
 		return r.Blobs
 	}
-	return DefaultRematerializeBlobClient()
+	return DefaultRematerializeBlobClient(false)
 }
 
 // maxRematerializeBlobBytes caps a single blob copy. It is generous — larger than
@@ -1286,16 +1294,91 @@ type httpRematerializeBlobClient struct {
 }
 
 // DefaultRematerializeBlobClient is the production blob client, over an HTTP
-// client with its OWN timeout.
+// client with its OWN timeout and an ADDRESS GUARD, and it is the dev gate for
+// this call site.
 //
 // http.DefaultClient has none, and a batch tool that hangs on a half-open socket
 // is a batch tool the operator must kill and re-run — mid-migration, without
-// knowing where it stopped.
-func DefaultRematerializeBlobClient() RematerializeBlobClient {
-	return newRematerializeBlobClient(
-		&http.Client{Timeout: rematerializeBlobFetchTimeout},
-		maxRematerializeBlobBytes,
-	)
+// knowing where it stopped. "Which client may this tool dial with" has a second
+// half, and the guard is it. THE TWO METHODS DIAL DIFFERENT HOSTS, and both are
+// data rather than config:
+//
+//   - Fetch takes communityHostURL's answer — hostURLOf on the COMMUNITY's repo,
+//     which NewCommunityRepoFactory builds from the community's PDSURL database
+//     column, written when a community is created or federated in. A federated
+//     community's PDSURL is whatever the remote instance said it was.
+//   - Present takes repoHostURL's answer — hostURLOf on the AUTHOR's repo, which
+//     is the serviceEndpoint of the author's DID document, and minting a did:plc
+//     with any endpoint is free.
+//
+// Either way it is the same attacker-chosen input class as the image proxy's
+// pdsURL, arriving by a route that reads like internal plumbing. That this is an
+// operator-run batch tool does not shrink the exposure: an attacker plants the
+// endpoint and waits for the migration, which runs once, by hand, with thousands
+// of records scrolling past and a refused address looking exactly like a dialled
+// one.
+//
+// # BOTH OF THIS SITE'S OWN LIMITS ARE RE-APPLIED, AND ONE OF THEM IS A TRAP
+//
+// rematerializeBlobFetchTimeout is two MINUTES against the shared client's 15s,
+// because a single blob may be 100 MiB — inheriting the shared ceiling would not
+// hurry those copies, it would fail them.
+//
+// maxRematerializeBlobBytes is 100 MiB against oauth.DefaultMaxResponseBytes's
+// 32 MiB — SMALLER — so unlike every other conversion in this remediation,
+// adopting the shared client here TIGHTENS the limit unless WithMaxResponseBytes
+// raises it, and the failure would arrive as an error on a blob between the two
+// numbers, after the postv2 is written and before the legacy record is deleted.
+// The transport cap and c.maxBytes are separate controls: the transport refuses
+// an announced Content-Length before a byte of body is read, so setting only the
+// field would leave a client whose cap says 100 MiB unable to receive 40.
+//
+// # THE DEV GATE IS THE ONLY THING A CALLER MAY SAY
+//
+// It takes the gate and nothing else, so "only allowPrivateHosts opens the
+// guard" is a fact about the signature rather than a description of current call
+// sites. It used to take `opts ...covesoauth.Option` as a test seam — an
+// EXPORTED type, and covesoauth.WithPrivateAddressesAllowed() is an exported
+// option, so any package in the tree could open the guard on the tool that
+// copies blobs from whatever host a federated community's PDSURL or an author's
+// DID document names, with nothing for the audit to grep. The seam is real and
+// still needed (a guard test that builds its own client proves only that
+// internal/atproto/oauth works), so it lives on
+// newGuardedRematerializeBlobClient, which is unexported and reachable only from
+// this package's own tests. users.NewProfileBackfillClient is the same shape.
+func DefaultRematerializeBlobClient(allowPrivateHosts bool) RematerializeBlobClient {
+	return newGuardedRematerializeBlobClient(allowPrivateHosts, maxRematerializeBlobBytes)
+}
+
+// newGuardedRematerializeBlobClient builds the production client at a copy cap
+// the caller names, so the RELATIONSHIP between the two caps can be driven by a
+// test without moving 100 MiB through one.
+//
+// # THE TRANSPORT CAP IS ONE BYTE ABOVE THE COPY CAP, DELIBERATELY
+//
+// Fetch reads maxBytes+1 through an io.LimitReader because io.ReadAll cannot
+// tell "the body ended" from "the limit was reached" — the extra byte's
+// existence IS the overrun signal. A transport cap set to exactly maxBytes
+// clips that byte, so `len(data) > c.maxBytes` becomes unreachable in
+// production and every overrun surfaces as a generic ErrResponseTooLarge
+// naming a limit no operator configured, instead of the error explaining that a
+// truncated copy is DIFFERENT bytes under a DIFFERENT CID. Not a hole — the
+// oversized blob is refused either way — but the wrong message, during a
+// one-shot migration that has already written the postv2 and is about to delete
+// the only intact copy. imageproxy/fetcher.go:118 is the same trap, sprung the
+// same way.
+//
+// The two caps are separate controls and both are needed: the transport refuses
+// an announced Content-Length before a byte of body is read, while c.maxBytes is
+// what a chunked body — which reports no length at all — is measured against.
+func newGuardedRematerializeBlobClient(
+	allowPrivateHosts bool, maxBytes int, opts ...covesoauth.Option,
+) *httpRematerializeBlobClient {
+	options := append(covesoauth.PrivateAddressOptions(allowPrivateHosts),
+		covesoauth.WithMaxResponseBytes(int64(maxBytes)+1))
+	client := covesoauth.NewSSRFSafeHTTPClient(append(options, opts...)...)
+	client.Timeout = rematerializeBlobFetchTimeout
+	return newRematerializeBlobClient(client, maxBytes)
 }
 
 // newRematerializeBlobClient is the constructor the tests use to shrink the cap.

@@ -69,7 +69,7 @@ func TestProvisioner_FailsClosedWhenThePDSCannotBeReached(t *testing.T) {
 			"://missing-scheme",
 			"",
 		} {
-			provisioner := communities.NewPDSAccountProvisioner(instanceDomain, badURL)
+			provisioner := communities.NewPDSAccountProvisioner(instanceDomain, badURL, communities.PrivateHostOptions(true)...)
 			_, err := provisioner.ProvisionCommunityAccount(ctx, "testcommunity")
 			assert.Errorf(t, err, "provisioning against PDS URL %q must fail", badURL)
 		}
@@ -78,7 +78,7 @@ func TestProvisioner_FailsClosedWhenThePDSCannotBeReached(t *testing.T) {
 	t.Run("reports an unreachable PDS", func(t *testing.T) {
 		t.Parallel()
 
-		provisioner := communities.NewPDSAccountProvisioner(instanceDomain, unreachableAddress(t))
+		provisioner := communities.NewPDSAccountProvisioner(instanceDomain, unreachableAddress(t), communities.PrivateHostOptions(true)...)
 		_, err := provisioner.ProvisionCommunityAccount(ctx, "testcommunity")
 
 		require.Error(t, err)
@@ -100,7 +100,7 @@ func TestProvisioner_FailsClosedWhenThePDSCannotBeReached(t *testing.T) {
 		expired, cancel := context.WithTimeout(ctx, time.Nanosecond)
 		defer cancel()
 
-		provisioner := communities.NewPDSAccountProvisioner(instanceDomain, testkit.Endpoints().PDS.BaseURL)
+		provisioner := communities.NewPDSAccountProvisioner(instanceDomain, testkit.Endpoints().PDS.BaseURL, communities.PrivateHostOptions(true)...)
 		_, err := provisioner.ProvisionCommunityAccount(expired, "testcommunity")
 		require.Error(t, err, "a request with an expired deadline must not reach a live PDS")
 	})
@@ -118,7 +118,7 @@ func TestFetchPDSDID(t *testing.T) {
 	t.Run("reads the DID from a live PDS", func(t *testing.T) {
 		t.Parallel()
 
-		did, err := communities.FetchPDSDID(ctx, testkit.Endpoints().PDS.BaseURL)
+		did, err := communities.FetchPDSDID(ctx, testkit.Endpoints().PDS.BaseURL, communities.PrivateHostOptions(true)...)
 		require.NoError(t, err)
 		assert.NotEmpty(t, did)
 		assert.Contains(t, did, "did:", "com.atproto.server.describeServer must answer with a DID, got %q", did)
@@ -128,7 +128,7 @@ func TestFetchPDSDID(t *testing.T) {
 		t.Parallel()
 
 		for _, badURL := range []string{"not-a-url", "http://", ""} {
-			_, err := communities.FetchPDSDID(ctx, badURL)
+			_, err := communities.FetchPDSDID(ctx, badURL, communities.PrivateHostOptions(true)...)
 			assert.Errorf(t, err, "FetchPDSDID must fail for %q rather than return an empty DID", badURL)
 		}
 	})
@@ -137,7 +137,7 @@ func TestFetchPDSDID(t *testing.T) {
 		t.Parallel()
 
 		address := unreachableAddress(t)
-		_, err := communities.FetchPDSDID(ctx, address)
+		_, err := communities.FetchPDSDID(ctx, address, communities.PrivateHostOptions(true)...)
 		require.Error(t, err)
 		assert.ErrorContains(t, err, "failed to describe server")
 		assert.ErrorContains(t, err, address, "the error must name the server that did not answer")
@@ -149,7 +149,7 @@ func TestFetchPDSDID(t *testing.T) {
 		expired, cancel := context.WithTimeout(ctx, time.Nanosecond)
 		defer cancel()
 
-		_, err := communities.FetchPDSDID(expired, testkit.Endpoints().PDS.BaseURL)
+		_, err := communities.FetchPDSDID(expired, testkit.Endpoints().PDS.BaseURL, communities.PrivateHostOptions(true)...)
 		require.Error(t, err)
 	})
 }

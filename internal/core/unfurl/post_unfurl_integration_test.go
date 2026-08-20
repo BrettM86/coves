@@ -50,6 +50,7 @@ func TestPostUnfurl_UnsupportedURL(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		communities.PrivateHostOptions(true)...,
 	)
 
 	// Create post service WITHOUT unfurl service
@@ -150,6 +151,7 @@ func TestPostUnfurl_MissingEmbedType(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		communities.PrivateHostOptions(true)...,
 	)
 
 	postService := posts.NewPostService(
@@ -303,8 +305,21 @@ func TestPostUnfurl_E2E_WithJetstream(t *testing.T) {
 	identityResolver := identity.NewResolver(db, identityConfig)
 	userService := users.NewUserService(userRepo, identityResolver, testkit.Endpoints().PDS.BaseURL, nil, "")
 
+	// THE HATCH IS OPEN BECAUSE THE FIXTURE IS ON LOOPBACK, and for no other
+	// reason. unfurlTarget below is an httptest server, so its address is
+	// exactly the class the SSRF guard refuses — the same reason
+	// blobs/fetch_guard_test.go builds its service with WithPrivateHostsAllowed.
+	//
+	// This is the honest repair rather than the convenient one. The alternative —
+	// handing this test a client that skips the guarded transport — would keep it
+	// green while removing the thing it exercises: the request below would no
+	// longer travel the path production travels, and a regression in that path
+	// would leave this test passing. The hatch changes ONE decision, the address
+	// classification, and leaves the vetted dial, the byte cap and the timeout
+	// exactly where production has them.
 	unfurlService := unfurl.NewService(unfurlRepo,
 		unfurl.WithTimeout(30*time.Second),
+		unfurl.WithPrivateHostsAllowed(),
 	)
 
 	// The URL this test unfurls is served by an httptest server rather than by a

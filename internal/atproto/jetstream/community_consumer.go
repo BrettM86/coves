@@ -2,9 +2,11 @@ package jetstream
 
 import (
 	"Coves/internal/atproto/identity"
+	covesoauth "Coves/internal/atproto/oauth"
 	"Coves/internal/atproto/utils"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/richtext"
+	"Coves/internal/validation"
 	"context"
 	"encoding/json"
 	"errors"
@@ -31,6 +33,31 @@ type CommunityEventConsumer struct {
 	instanceDID      string                           // DID of this Coves instance
 	skipVerification bool                             // Skip did:web verification (for dev mode)
 	revGate          *RevGate                         // Optional: cross-feed ordering guard for commit events (nil = ungated)
+
+	// allowPrivateHosts disables the SSRF address guard on the .well-known
+	// fetch. NEVER set in production: the domain this consumer dials comes off a
+	// community record published by anyone on the federated network.
+	allowPrivateHosts bool
+
+	// transportOptions is the TEST SEAM, carried on the consumer so that the
+	// client the guard tests exercise is the one this constructor builds.
+	//
+	// The alternative — a fixture that constructs the consumer and then assigns
+	// newWellKnownClient(...) over its client — is what this field exists to
+	// delete, and it is the SECOND time that mistake was made here. The comment
+	// block above guardedConsumer in community_consumer_ssrf_test.go records the
+	// first: a client injected through withWellKnownHTTPClient could not see a
+	// mutation of newWellKnownClient, so the seam was moved onto that function —
+	// and its one caller, applyWellKnownClient below, was left just as
+	// uncovered, because the fixture went on to overwrite what the caller built.
+	// c.allowPrivateHosts is read in exactly one place; threading the seam
+	// through the constructor is what puts that place under test.
+	//
+	// It is UNEXPORTED, and so is the option that sets it: oauth.WithHostResolver
+	// must not be reachable from any non-test package, which scripts/ssrf-audit.sh
+	// enforces as a hard gate. See pds.bearerClientConfig.transportOptions, the
+	// same field for the same reason.
+	transportOptions []covesoauth.Option
 }
 
 // CommunityConsumerOption configures optional CommunityEventConsumer behaviour.
@@ -46,6 +73,159 @@ func WithCommunityRevGate(gate *RevGate) CommunityConsumerOption {
 	return func(c *CommunityEventConsumer) {
 		c.revGate = gate
 	}
+}
+
+// WithPrivateHostsAllowed disables the SSRF address guard on the .well-known
+// DID-document fetch.
+//
+// THE NAME IS THE CONTRACT: production must not call this. cmd/server derives
+// the value from config once (the IS_DEV_ENV gate); tests that serve a DID
+// document from httptest pass it because loopback is exactly what the guard
+// refuses.
+func WithPrivateHostsAllowed() CommunityConsumerOption { // coves:allow-ssrf-hatch: this IS the hatch itself; the name is the contract
+	return func(c *CommunityEventConsumer) { c.allowPrivateHosts = true }
+}
+
+// withTransportOptions passes oauth transport options through to the client
+// applyWellKnownClient builds, and is UNEXPORTED so production cannot reach it.
+//
+// It is not a second hatch: whatever a resolver seam answers is classified by
+// the same pass a real DNS answer goes through, and the dial still goes only to
+// addresses that survived it. See CommunityEventConsumer.transportOptions, and
+// pds/factory.go's withTransportOptions, which is the shape this copies.
+//
+// Unlike withWellKnownHTTPClient, this does NOT replace the consumer's client —
+// it configures the one the constructor builds, which is the whole difference
+// between a test that exercises this consumer's wiring and one that exercises a
+// client the test assembled itself.
+func withTransportOptions(opts ...covesoauth.Option) CommunityConsumerOption {
+	return func(c *CommunityEventConsumer) { c.transportOptions = append(c.transportOptions, opts...) }
+}
+
+// withWellKnownHTTPClient replaces the client used for the .well-known fetch,
+// and is UNEXPORTED because replacing is all it can do.
+//
+// IT EXISTS FOR TESTS, and it is the narrowest seam that makes the two
+// mechanisms separable. The guard classifies ADDRESSES, so proving it requires a
+// hostname that passes validation and answers with a private address — and
+// there is no hermetic way to make a name resolve to a chosen address without
+// oauth.WithHostResolver, which must not appear in production code. Injecting a
+// client the test built with that resolver keeps the seam on the test side.
+//
+// A caller MUST still inject a GUARDED client, or it proves nothing: replacing
+// the guarded client with a permissive one is how a fixture repair silently
+// deletes the property it was meant to preserve. That sentence used to be the
+// whole defence, addressed to a reader the compiler cannot reach, on an EXPORTED
+// option guarding a fetch whose domain comes off a community record published by
+// anyone federated with this instance. pds/factory.go's withTransportOptions is
+// unexported for exactly this hazard, so leaving this one exported had the
+// codebase answering one question two opposite ways. The lowercase name is what
+// makes "a caller outside this package cannot drop the guard" a fact rather than
+// a request; every caller is a fixture in this package, so it costs them
+// nothing.
+//
+// TestNoExportedSeamCanReplaceTheGuardedClient pins the property in general —
+// nothing exported from this package takes an *http.Client — so the next seam
+// somebody adds is covered too.
+func withWellKnownHTTPClient(client *http.Client) CommunityConsumerOption {
+	return func(c *CommunityEventConsumer) {
+		if client == nil {
+			return
+		}
+		c.httpClient = client
+	}
+}
+
+// PrivateHostOptions returns the options a caller holding an allow-private
+// boolean should pass to NewCommunityEventConsumer: the hatch when it is set,
+// and NOTHING when it is not.
+//
+// It mirrors oauth.PrivateAddressOptions, imageproxy.PrivateHostOptions and
+// unfurl.PrivateHostOptions, and it is a function rather than an `if` in
+// cmd/server/wiring.go for the reason documented there: `.env.ci:140` sets
+// IS_DEV_ENV=true, so `make ci` takes the PERMISSIVE branch at every call site
+// holding such a boolean. A unit test against this function is the only place in
+// the repository where the branch production actually runs is ever evaluated. Do
+// not inline it back.
+//
+// FALSE RETURNS ZERO OPTIONS, AND THAT IS THE CONTRACT — not "options that are
+// safe", but none, so that what production gets is exactly the constructor's own
+// defaults.
+func PrivateHostOptions(allowPrivate bool) []CommunityConsumerOption {
+	if !allowPrivate {
+		return nil
+	}
+	return []CommunityConsumerOption{WithPrivateHostsAllowed()} // coves:allow-ssrf-hatch: the gate helper allow-branch; its false branch returns nothing
+}
+
+const (
+	// wellKnownTimeout is the ceiling this consumer has always run the
+	// DID-document fetch under. It is re-applied over the shared SSRF client's
+	// own 15s; see newWellKnownClient.
+	wellKnownTimeout = 10 * time.Second
+
+	// wellKnownMaxIdleConnsPerHost is the per-host pool depth this consumer has
+	// always run with, kept because net/http's default is 2 and a federated
+	// instance is verified repeatedly.
+	wellKnownMaxIdleConnsPerHost = 10
+)
+
+// newWellKnownClient builds the client the DID-document fetch goes through.
+//
+// The SSRF-safe transport of internal/atproto/oauth resolves the host, refuses
+// private, loopback and link-local addresses, and then dials only the address it
+// vetted — closing the check-then-dial window a naive guard leaves open. The
+// domain it is pointed at comes off a community record published by anyone
+// federated with this instance, and the fetch runs from inside the AppView's own
+// network, next to its Postgres, its PDS and, in production, a metadata endpoint
+// that hands credentials to anything that can reach it.
+//
+// IT IS HALF OF A TWO-MECHANISM DEFENCE and does not subsume the other half. A
+// safe dialler has an opinion about addresses and none about paths, so
+// `internal-admin/v1/secrets?x=y#` walks straight past it: that names no private
+// address, it names whatever `internal-admin` resolves to, and the trailing `#`
+// turns the `.well-known/did.json` suffix into a fragment that is never sent.
+// validation.NormalizeDomain, called in verifyDIDDocument BEFORE the URL is
+// built, is what closes that. Neither mechanism is redundant with the other.
+//
+// EVERY SETTING THIS CONSUMER ALREADY HAD IS RE-APPLIED. The shared transport
+// carries MaxIdleConns 100 and IdleConnTimeout 90s of its own; the per-host pool
+// depth and the 10s ceiling are the two it does not, and both are restored here
+// — a firehose path silently re-timed from 10s to the shared client's 15s would
+// be a second change wearing an SSRF fix's clothes, the way
+// blobs.NewBlobService, imageproxy.NewPDSFetcher and unfurl.NewService all say.
+//
+// # THE opts PARAMETER IS THE TEST SEAM, AND IT IS WHY THE GUARD IS PROVABLE
+//
+// It mirrors internal/api/handlers/aggregator's registerHTTPClient exactly, and
+// it exists because of a hole a mutation found: with no seam here, the only way
+// to test the guard was for a test to build its OWN oauth client with
+// WithHostResolver and inject it. That proves internal/atproto/oauth works,
+// which the transport tests already prove, and says nothing about this consumer —
+// flipping the boolean below to a constant `true` failed no test at all,
+// because every input the other tests use is eaten by validation.NormalizeDomain
+// one branch earlier and never reaches a transport.
+//
+// Passing the resolver through HERE means the client under test is the one this
+// function builds, from the same allowPrivateHosts boolean production passes. So
+// disabling the guard on this line now fails
+// TestVerifyDIDDocument_RefusesAValidationPassingHostThatResolvesPrivate.
+//
+// IT CANNOT OPEN THE GUARD. WithPrivateAddressesAllowed is the only thing that
+// does, it is one-way, and it is named at a call site or nowhere; an option
+// passed here is classified by the same pass a real DNS answer goes through.
+// The seam chooses what gets classified, never whether classification happens.
+//
+// Production passes nothing.
+func newWellKnownClient(allowPrivateHosts bool, opts ...covesoauth.Option) *http.Client {
+	client := covesoauth.NewSSRFSafeHTTPClient(append(
+		covesoauth.PrivateAddressOptions(allowPrivateHosts),
+		append([]covesoauth.Option{
+			covesoauth.WithMaxIdleConnsPerHost(wellKnownMaxIdleConnsPerHost),
+		}, opts...)...,
+	)...)
+	client.Timeout = wellKnownTimeout
+	return client
 }
 
 // cachedDIDDoc represents a cached verification result with expiration
@@ -81,20 +261,13 @@ func NewCommunityEventConsumer(repo communities.Repository, instanceDID string, 
 			identityResolver: identityResolver,
 			instanceDID:      instanceDID,
 			skipVerification: skipVerification,
-			httpClient: &http.Client{
-				Timeout: 10 * time.Second,
-				Transport: &http.Transport{
-					MaxIdleConns:        100,
-					MaxIdleConnsPerHost: 10,
-					IdleConnTimeout:     90 * time.Second,
-				},
-			},
 			didCache:         cache,
 			wellKnownLimiter: rate.NewLimiter(10, 20),
 		}
 		for _, opt := range opts {
 			opt(fallback)
 		}
+		applyWellKnownClient(fallback)
 		return fallback
 	}
 
@@ -103,15 +276,6 @@ func NewCommunityEventConsumer(repo communities.Repository, instanceDID string, 
 		identityResolver: identityResolver, // Optional - can be nil for tests
 		instanceDID:      instanceDID,
 		skipVerification: skipVerification,
-		// Shared HTTP client with connection pooling for .well-known fetches
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
-			Transport: &http.Transport{
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 10,
-				IdleConnTimeout:     90 * time.Second,
-			},
-		},
 		// Bounded LRU cache for .well-known verification results (max 1000 entries)
 		// Automatically evicts least-recently-used entries when full
 		didCache: cache,
@@ -122,7 +286,34 @@ func NewCommunityEventConsumer(repo communities.Repository, instanceDID string, 
 	for _, opt := range opts {
 		opt(consumer)
 	}
+	applyWellKnownClient(consumer)
 	return consumer
+}
+
+// applyWellKnownClient gives a consumer its guarded .well-known client, AFTER
+// the options have run.
+//
+// The ordering is the whole of it, in both directions. The hatch is an option,
+// so building the client before the loop would read allowPrivateHosts before
+// anything could set it and hand every developer a client that refuses their own
+// machine. And withWellKnownHTTPClient is also an option, so overwriting
+// unconditionally after the loop would throw away the client a test injected —
+// which would make every ordering assertion in community_consumer_ssrf_test.go
+// pass against a consumer quietly using a client the test cannot see.
+//
+// Hence the nil check: an injected client wins, and a consumer that was given
+// none gets the guarded one.
+//
+// The transport options are threaded for a third reason, and it is what makes
+// this function's own argument observable: the guard tests build a consumer
+// through the constructor and pass the resolver seam as an option, so THIS line
+// is the one that carries their seam. Replacing c.allowPrivateHosts with a
+// constant here now fails them.
+func applyWellKnownClient(c *CommunityEventConsumer) {
+	if c.httpClient != nil {
+		return
+	}
+	c.httpClient = newWellKnownClient(c.allowPrivateHosts, c.transportOptions...)
 }
 
 // RevGated reports whether this consumer applies the per-record rev gate (true when a
@@ -566,6 +757,45 @@ func (c *CommunityEventConsumer) verifyDIDDocument(ctx context.Context, did, dom
 	if c.skipVerification {
 		return nil
 	}
+
+	// SECURITY: the domain came off a community record published by anyone
+	// federated with this instance, and the URL below is built by concatenating
+	// it into a string. A URL parser has no way to know the concatenation was
+	// meant to stop at the host, so every part of a URL that comes after the host
+	// can be smuggled in through it:
+	//
+	//	internal-admin/v1/secrets?x=y#   fetches /v1/secrets?x=y from internal-admin
+	//	evil.com@internal-host           fetches from internal-host; evil.com is userinfo
+	//	127.0.0.1:5432                   fetches from a port on the loopback interface
+	//
+	// The trailing `#` in the first is what makes this a full request-forgery
+	// primitive rather than an SSRF to one fixed path: it turns the
+	// `.well-known/did.json` suffix into a fragment, which is never sent, so the
+	// publisher chooses the path AND the query as well as the host.
+	//
+	// THE GUARDED CLIENT CANNOT CLOSE THIS. It refuses private ADDRESSES and has
+	// no opinion about paths, and `internal-admin` is not an address — it is
+	// whatever this AppView's resolver says it is, which on a split-horizon DNS
+	// is an ordinary-looking answer. The two mechanisms are halves; see
+	// newWellKnownClient.
+	//
+	// IT RUNS BEFORE THE CACHE AND BEFORE THE RATE LIMITER, not just before the
+	// URL. The cache is keyed by DID rather than by domain, so a hit would answer
+	// for a domain nothing ever looked at; and the limiter blocks, which would
+	// let a flood of malformed records spend the budget that legitimate
+	// verifications share.
+	//
+	// The refusal is NOT cached. It costs one pass over a string to recompute,
+	// and the cache key is the DID — so caching would let one bad record suppress
+	// a later good one for the same DID for the full TTL.
+	normalizedDomain, err := validation.NormalizeDomain(domain)
+	if err != nil {
+		return fmt.Errorf("refusing to fetch a DID document for %s: %q is not a hostname: %w",
+			did, domain, err)
+	}
+	// The canonical form from here on, so one domain has one spelling in the URL
+	// and in the logs.
+	domain = normalizedDomain
 
 	// Check bounded LRU cache first (thread-safe, no locks needed)
 	if cached, ok := c.didCache.Get(did); ok {

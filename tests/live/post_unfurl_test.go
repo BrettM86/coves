@@ -213,6 +213,7 @@ func TestPostUnfurl_UserProvidedMetadata(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		communities.PrivateHostOptions(true)...,
 	)
 
 	postService := posts.NewPostService(

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/bluesky-social/indigo/api/atproto"
@@ -41,13 +42,27 @@ func (c *CommunityPDSAccount) GetPDSAccessToken() string {
 type PDSAccountProvisioner struct {
 	instanceDomain string
 	pdsURL         string // URL to call PDS (e.g., http://localhost:3001)
+
+	// httpClient is the SSRF-guarded client createAccount goes through, built
+	// ONCE at construction. Per blobs/service.go's fetchClient: the guard's whole
+	// property is that it resolves the host and dials only the address it vetted,
+	// so a client assembled per call would be the same code with a per-call chance
+	// of being assembled wrongly.
+	httpClient *http.Client
 }
 
 // NewPDSAccountProvisioner creates a new provisioner for V2.0 (PDS-managed keys)
-func NewPDSAccountProvisioner(instanceDomain, pdsURL string) *PDSAccountProvisioner {
+//
+// THE CLIENT IT BUILDS IS GUARDED UNLESS THE CALLER SAYS OTHERWISE, so that
+// forgetting is safe: NewPDSAccountProvisioner with no options is what the next
+// caller will write. cmd/server and cmd/rematerialize-posts pass
+// PrivateHostOptions(cfg.IsDevEnv); tests that drive a PDS on loopback pass
+// PrivateHostOptions(true), because loopback is exactly what the guard refuses.
+func NewPDSAccountProvisioner(instanceDomain, pdsURL string, opts ...PDSClientOption) *PDSAccountProvisioner {
 	return &PDSAccountProvisioner{
 		instanceDomain: instanceDomain,
 		pdsURL:         pdsURL,
+		httpClient:     newPDSHTTPClient(opts...),
 	}
 }
 
@@ -102,8 +117,12 @@ func (p *PDSAccountProvisioner) ProvisionCommunityAccount(
 	//   3. Create a DID (did:plc:xxx)
 	//   4. Register DID with PLC directory
 	//   5. Return credentials (DID, handle, tokens)
+	// Client is set EXPLICITLY. Leaving it nil makes indigo's getClient()
+	// substitute util.RobustHTTPClient() — no address guard — on a POST carrying
+	// this community's generated password and system email. See newPDSHTTPClient.
 	client := &xrpc.Client{
-		Host: p.pdsURL,
+		Client: p.httpClient,
+		Host:   p.pdsURL,
 	}
 
 	emailStr := email
@@ -167,9 +186,14 @@ func generateSecurePassword(length int) (string, error) {
 // FetchPDSDID queries the PDS to get its DID via com.atproto.server.describeServer
 // This is the proper way to get the PDS DID rather than hardcoding it
 // Works in both development (did:web:localhost) and production (did:web:pds.example.com)
-func FetchPDSDID(ctx context.Context, pdsURL string) (string, error) {
+//
+// It takes the options rather than a client because it is a standalone function
+// with no construction to hang one off. Omitting them yields the GUARDED client,
+// which is the branch a caller that forgets lands on.
+func FetchPDSDID(ctx context.Context, pdsURL string, opts ...PDSClientOption) (string, error) {
 	client := &xrpc.Client{
-		Host: pdsURL,
+		Client: newPDSHTTPClient(opts...),
+		Host:   pdsURL,
 	}
 
 	resp, err := comatproto.ServerDescribeServer(ctx, client)

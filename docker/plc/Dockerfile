@@ -9,7 +9,7 @@
 # CI wipes its volumes every run by design, so paying it per run would add
 # minutes to every gate. Baking the same steps into an image moves the cost
 # into Docker's layer cache instead: it is paid again only when PLC_REF changes.
-FROM node:18-alpine
+FROM node:22.23.2-alpine3.24
 
 # Pinned to a SHA rather than tracking main (which the dev compose does), for
 # two reasons: a CI run is reproducible, and an upstream PLC commit can never

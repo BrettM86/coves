@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -41,7 +42,7 @@ type flippingResolver struct {
 	calls   int
 }
 
-func (r *flippingResolver) lookup(string) ([]net.IP, error) {
+func (r *flippingResolver) lookup(context.Context, string) ([]net.IP, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls++
@@ -86,7 +87,7 @@ func TestSSRFTransport_DialsOnlyTheAddressItVetted(t *testing.T) {
 	// pass against a transport with the bug still in it. Disabling the private
 	// check leaves exactly one thing under test: whether the address that was
 	// vetted is the address that gets dialled.
-	client := NewSSRFSafeHTTPClient(true)
+	client := NewSSRFSafeHTTPClient(WithPrivateAddressesAllowed())
 	transport, ok := client.Transport.(*ssrfSafeTransport)
 	if !ok {
 		t.Fatalf("NewSSRFSafeHTTPClient must install an ssrfSafeTransport, got %T", client.Transport)
@@ -124,7 +125,7 @@ func TestSSRFTransport_StillRefusesAPrivateFirstAnswer(t *testing.T) {
 		private: net.ParseIP("169.254.169.254"),
 	}
 
-	client := NewSSRFSafeHTTPClient(false)
+	client := NewSSRFSafeHTTPClient()
 	transport, ok := client.Transport.(*ssrfSafeTransport)
 	if !ok {
 		t.Fatalf("NewSSRFSafeHTTPClient must install an ssrfSafeTransport, got %T", client.Transport)

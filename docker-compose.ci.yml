@@ -98,7 +98,7 @@ services:
   # it exists because a namespace needs a container to belong to and no real
   # service should be load-bearing for the others' networking.
   netns:
-    image: alpine:3.19
+    image: alpine:3.24.1
     command: ["sleep", "infinity"]
     init: true
     healthcheck:

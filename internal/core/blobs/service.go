@@ -75,6 +75,12 @@ type blobService struct {
 	// assembled per call would be the same code with a per-call chance of being
 	// assembled wrongly.
 	fetchClient *http.Client
+
+	// uploadClient is the client the PDS uploadBlob POST goes through. It is
+	// SSRF-guarded from the same allowPrivateHosts boolean as fetchClient, and is
+	// a separate field only because the two carry different options; see
+	// newBlobUploadClient for why this half is the worse of the two to leave open.
+	uploadClient *http.Client
 }
 
 // BlobServiceOption configures optional blob service behaviour.
@@ -86,8 +92,31 @@ type BlobServiceOption func(*blobService)
 // the value from config once (the IS_DEV_ENV gate); tests that serve their
 // fixtures from httptest pass it because loopback is exactly what the guard
 // refuses.
-func WithPrivateHostsAllowed() BlobServiceOption {
+func WithPrivateHostsAllowed() BlobServiceOption { // coves:allow-ssrf-hatch: this IS the hatch itself; the name is the contract
 	return func(s *blobService) { s.allowPrivateHosts = true }
+}
+
+// PrivateHostOptions returns the options a caller holding an allow-private
+// boolean should pass to NewBlobService: the hatch when it is set, and NOTHING
+// when it is not.
+//
+// It mirrors oauth.PrivateAddressOptions and the same helper in imageproxy,
+// unfurl and jetstream. cmd/server calls THIS rather than writing an inline
+// `if a.cfg.IsDevEnv`, which is the one shape this helper exists to replace:
+// `.env.ci:140` sets IS_DEV_ENV=true, so `make ci` takes the PERMISSIVE branch,
+// and an inline `if` in wiring is reachable only by standing up that wiring with
+// a production config — which nothing in this tree does. As a pure function the
+// branch production actually runs becomes testable without a config or an
+// environment. Do not inline it back.
+//
+// FALSE RETURNS ZERO OPTIONS, AND THAT IS THE CONTRACT — not "options that are
+// safe", but none, so that what production gets is exactly the constructor's own
+// defaults.
+func PrivateHostOptions(allowPrivate bool) []BlobServiceOption {
+	if !allowPrivate {
+		return nil
+	}
+	return []BlobServiceOption{WithPrivateHostsAllowed()} // coves:allow-ssrf-hatch: the gate helper allow-branch; its false branch returns nothing
 }
 
 // NewBlobService creates a new blob service
@@ -109,9 +138,58 @@ func NewBlobService(pdsURL string, opts ...BlobServiceOption) Service {
 	// allowed: thumbnails come from CDNs that are slow rather than hostile, and
 	// tightening an unrelated timeout while fixing an SSRF hole would be a
 	// second change wearing the first one's clothes.
-	s.fetchClient = covesoauth.NewSSRFSafeHTTPClient(s.allowPrivateHosts)
+	s.fetchClient = covesoauth.NewSSRFSafeHTTPClient(covesoauth.PrivateAddressOptions(s.allowPrivateHosts)...)
 	s.fetchClient.Timeout = 30 * time.Second
+
+	// The UPLOAD half's client, built here rather than inline in UploadBlob so
+	// that both halves of this service are decided in one place. See
+	// newBlobUploadClient.
+	s.uploadClient = newBlobUploadClient(s.allowPrivateHosts)
 	return s
+}
+
+// newBlobUploadClient builds the client the PDS uploadBlob request goes through.
+//
+// # WHY THIS HALF WAS STILL OPEN
+//
+// The DOWNLOAD half above has been guarded since before this effort started.
+// UploadBlob built a fresh `&http.Client{Timeout: 30 * time.Second}` a hundred
+// and forty lines further down, and that asymmetry reads as deliberate until
+// someone checks — which is exactly why it survived a security review of the
+// file it lives in.
+//
+// # WHY THE UPLOAD HALF IS THE WORSE OF THE TWO
+//
+// The download half fetches a URL. This one sends `Authorization: Bearer
+// <accessToken>` to `owner.GetPDSURL()`, which for a federated community is a
+// PDS URL carried on a record from another instance. So the primitive here is
+// not "make the AppView fetch an internal address" — it is "make the AppView
+// POST a live PDS credential to an address of my choosing", with the blob body
+// attached. A refused DNS answer costs an attacker nothing to retry; a leaked
+// bearer token is not recoverable.
+//
+// # THE opts PARAMETER IS THE TEST SEAM
+//
+// It mirrors jetstream's newWellKnownClient and the aggregator's
+// registerHTTPClient, and it exists for the reason a mutation found there: a
+// guard test that builds its OWN client proves only that internal/atproto/oauth
+// works. Passing oauth.WithHostResolver through HERE means the client under test
+// is the one this constructor builds, from the same allowPrivateHosts boolean,
+// so disabling the guard on this line fails that test. It cannot open the guard.
+// Production passes nothing.
+//
+// # THE TIMEOUT IS THIS SITE'S OWN
+//
+// 30s, re-applied over the shared client's 15s ceiling exactly as the download
+// half does thirty lines up. This POST carries the largest body in the service —
+// up to 6 MB of blob — so it is the request here most likely to need the
+// headroom, and re-timing it while fixing an SSRF hole would be a second change
+// wearing the first one's clothes.
+func newBlobUploadClient(allowPrivateHosts bool, opts ...covesoauth.Option) *http.Client {
+	client := covesoauth.NewSSRFSafeHTTPClient(
+		append(covesoauth.PrivateAddressOptions(allowPrivateHosts), opts...)...)
+	client.Timeout = 30 * time.Second
+	return client
 }
 
 // UploadBlobFromURL fetches an image from a URL and uploads it to PDS
@@ -252,13 +330,9 @@ func (s *blobService) UploadBlob(ctx context.Context, owner BlobOwner, data []by
 	req.Header.Set("Content-Type", mimeType)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
-	// Create HTTP client with timeout
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	// Execute request
-	resp, err := client.Do(req)
+	// Execute request through the service's upload client (see
+	// newBlobUploadClient).
+	resp, err := s.uploadClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("PDS request failed: %w", err)
 	}

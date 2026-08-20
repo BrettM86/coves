@@ -57,7 +57,7 @@ func main() {
 		log.Fatalf("Failed to load lexicon schemas: %v", err)
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 30 * time.Second} // coves:allow-bare-client: operator-run CLI whose -pds flag the operator types; there is no attacker in this path
 
 	repos, err := listAllRepos(client, *pdsURL)
 	if err != nil {

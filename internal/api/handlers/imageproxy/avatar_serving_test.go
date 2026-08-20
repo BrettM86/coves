@@ -65,7 +65,18 @@ func provisionCommunityAvatar(t *testing.T, width, height int, fill color.Color)
 	db := testkit.DB(t)
 	endpoints := testkit.Endpoints()
 
-	identityConfig := identity.DefaultConfig()
+	// The hatch, because the PLC this resolver is pointed at is the test stack's
+	// own and listens on loopback — which is exactly the address class the
+	// resolver's SSRF guard refuses. It is the same repair the loopback fixtures
+	// in core/blobs and core/blueskypost carry, and it is a property of THIS
+	// construction rather than of the environment: cmd/server's
+	// productionPLCResolver is built from a bare identity.DefaultConfig() and
+	// stays guarded even in dev.
+	//
+	// Nothing here is a test OF the guard. That lives in
+	// internal/atproto/identity/resolver_guard_test.go, whose configs are built
+	// without this option and assert the PLC listener is never reached.
+	identityConfig := identity.DefaultConfig(identity.WithPrivateHostsAllowed())
 	identityConfig.PLCURL = endpoints.PLC.BaseURL
 	resolver := identity.NewResolver(db, identityConfig)
 
@@ -78,9 +89,10 @@ func provisionCommunityAvatar(t *testing.T, width, height int, fill color.Color)
 		endpoints.PDS.BaseURL,
 		fixtures.InstanceDID(),
 		handleDomain,
-		communities.NewPDSAccountProvisioner(handleDomain, endpoints.PDS.BaseURL),
+		communities.NewPDSAccountProvisioner(handleDomain, endpoints.PDS.BaseURL, communities.PrivateHostOptions(true)...),
 		nil, // no PDS client factory: provisioning uses the password session
-		blobs.NewBlobService(endpoints.PDS.BaseURL),
+		blobs.NewBlobService(endpoints.PDS.BaseURL, blobs.PrivateHostOptions(true)...),
+		communities.PrivateHostOptions(true)...,
 	)
 
 	// The provisioner prefixes "c-", and a PDS handle's local label is capped

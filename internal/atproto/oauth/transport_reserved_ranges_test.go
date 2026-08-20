@@ -34,8 +34,20 @@ import (
 //   - IETF PROTOCOL ASSIGNMENTS (192.0.0.0/24). Reserved for protocol machinery
 //     (DS-Lite's 192.0.0.0/29 among it); nothing here is a destination a caller
 //     legitimately names.
+//   - 6to4 ANYCAST RELAY (192.88.99.0/24). The relay side of a mechanism whose
+//     destination side is already refused: reservedNetworks bans 2002::/16
+//     outright, and this /24 is where a host sends 6to4 traffic to reach it.
+//     Note the asymmetry in what RFC 7526 actually says, because the comment in
+//     transport.go is careful about it and this row is the other half — RFC 7526
+//     deprecates THIS prefix, and states verbatim that the IPv6 side is not
+//     deprecated. The 2002::/16 ban is our policy call; this one is the RFC's.
 //   - BENCHMARKING (198.18.0.0/15). Reserved for device test harnesses and, in
 //     practice, routed internally where it is used at all.
+//   - IANA NON-GLOBAL SPACE. Documentation, discard, dummy, IPv6 benchmarking,
+//     local-use NAT64, Teredo, deprecated ORCHID and SRv6 SID prefixes are not
+//     globally reachable, but IANA explicitly does not promise they are
+//     unroutable in a local context. Failing open on those ranges lets local
+//     routing policy become an SSRF bypass.
 //   - RESERVED (240.0.0.0/4) and BROADCAST (255.255.255.255). Former class E and
 //     the all-hosts broadcast; the stack handles both unlike a normal unicast
 //     destination.
@@ -112,9 +124,37 @@ func TestIsPrivateIP_ReservedAndUnspecifiedRanges(t *testing.T) {
 		{"IETF protocol assignments first", "192.0.0.0", true},
 		{"IETF protocol assignments last", "192.0.0.255", true},
 
+		// 6to4 anycast relay 192.88.99.0/24, pinned at both ends. There is
+		// nothing inside it to reach on purpose: an address here is not a host, it
+		// is whichever relay router the routing system happens to hand you, and
+		// the mechanism it serves is one this guard already refuses on the IPv6
+		// side. Blocking it costs no legitimate destination.
+		{"6to4 anycast relay first", "192.88.99.0", true},
+		{"6to4 anycast relay last", "192.88.99.255", true},
+
 		// Benchmarking 198.18.0.0/15.
 		{"Benchmarking low edge", "198.18.0.1", true},
 		{"Benchmarking high edge", "198.19.255.255", true},
+
+		// IPv4 documentation space is non-global and can still be routed locally.
+		{"TEST-NET-1", "192.0.2.1", true},
+		{"TEST-NET-2", "198.51.100.1", true},
+		{"TEST-NET-3", "203.0.113.1", true},
+
+		// IANA IPv6 special-purpose ranges whose Globally Reachable property is
+		// false (plus Teredo, whose registry value is context-dependent).
+		{"NAT64 local-use low", "64:ff9b:1::1", true},
+		{"NAT64 local-use custom allocation", "64:ff9b:1:abcd::7f00:1", true},
+		{"IPv6 discard-only", "100::1", true},
+		{"IPv6 dummy", "100:0:0:1::1", true},
+		{"Teredo", "2001::1", true},
+		{"IETF protocol assignments unallocated child", "2001:5::1", true},
+		{"IETF protocol assignments beside an anycast exception", "2001:1::4", true},
+		{"IPv6 benchmarking", "2001:2::1", true},
+		{"Deprecated ORCHID", "2001:10::1", true},
+		{"IPv6 documentation", "2001:db8::1", true},
+		{"IPv6 documentation 3fff", "3fff::1", true},
+		{"SRv6 SID", "5f00::1", true},
 
 		// Reserved 240.0.0.0/4, pinned at both ends for the same reason. It runs
 		// all the way to the limited broadcast address, which is why there is no
@@ -153,8 +193,29 @@ func TestIsPrivateIP_ReservedAndUnspecifiedRanges(t *testing.T) {
 		{"Just above benchmarking", "198.20.0.0", false},
 		{"Just above IETF protocol assignments", "192.0.1.0", false},
 		{"Above IETF protocol assignments", "192.0.1.1", false},
+
+		// Both neighbours of the /24, and they catch different mistakes per this
+		// file's own doctrine: widen 192.88.99.0/24 by one bit and it normalises
+		// to 192.88.98.0/23, which swallows the row below it; the row above
+		// catches a wrong base address or a widening of two bits or more.
+		{"Just below the 6to4 anycast relay", "192.88.98.255", false},
+		{"Just above the 6to4 anycast relay", "192.88.100.0", false},
 		{"Just below multicast", "223.255.255.255", false},
 		{"Just below 10/8", "9.255.255.255", false},
+
+		// More-specific IANA assignments that are globally reachable must remain
+		// usable when the non-global 2001::/23 parent is blocked.
+		{"AS112 IPv4", "192.31.196.1", false},
+		{"AMT IPv4", "192.52.193.1", false},
+		{"Direct AS112 IPv4", "192.175.48.1", false},
+		{"PCP anycast IPv6", "2001:1::1", false},
+		{"TURN anycast IPv6", "2001:1::2", false},
+		{"DNS-SD registration anycast IPv6", "2001:1::3", false},
+		{"AMT IPv6", "2001:3::1", false},
+		{"AS112 IPv6", "2001:4:112::1", false},
+		{"ORCHIDv2", "2001:20::1", false},
+		{"Drone DET", "2001:30::1", false},
+		{"Direct AS112 IPv6", "2620:4f:8000::1", false},
 	}
 
 	for _, tt := range tests {
@@ -259,6 +320,7 @@ func TestIsPrivateIP_MappedSpellingsOfReservedRanges(t *testing.T) {
 		{"Mapped zero network", "::ffff:0.0.0.1", true},
 		{"Mapped CGNAT", "::ffff:100.64.0.1", true},
 		{"Mapped IETF protocol assignments", "::ffff:192.0.0.1", true},
+		{"Mapped 6to4 anycast relay", "::ffff:192.88.99.1", true},
 		{"Mapped benchmarking", "::ffff:198.18.0.1", true},
 		{"Mapped reserved former class E", "::ffff:240.0.0.1", true},
 		{"Mapped limited broadcast", "::ffff:255.255.255.255", true},

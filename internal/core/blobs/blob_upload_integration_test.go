@@ -60,7 +60,19 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 	userRepo := postgres.NewUserRepository(db)
 
 	// Setup services (pdsURL already declared in health check above)
-	blobService := blobs.NewBlobService(pdsURL)
+	//
+	// THE HATCH IS OPEN BECAUSE THE TEST PDS IS ON LOOPBACK, and for no other
+	// reason. testkit.Endpoints().PDS.BaseURL is the CI stack's PDS on the local
+	// machine, so its address is exactly the class the upload guard refuses —
+	// the same reason fetch_guard_test.go opens it for the download half.
+	//
+	// This is the honest repair rather than the convenient one. Handing the
+	// service a client that skips the guarded transport would keep this test
+	// green while removing what it exercises: the upload below would no longer
+	// travel the path production travels. The hatch changes ONE decision, the
+	// address classification, and leaves the vetted dial, the 30s timeout and
+	// everything else where production has them.
+	blobService := blobs.NewBlobService(pdsURL, blobs.WithPrivateHostsAllowed())
 	identityConfig := identity.DefaultConfig()
 	identityResolver := identity.NewResolver(db, identityConfig)
 	userService := users.NewUserService(userRepo, identityResolver, pdsURL, nil, "")
@@ -394,7 +406,11 @@ func TestBlobUpload_E2E_CommentWithImage(t *testing.T) {
 	commentRepo := postgres.NewCommentRepository(db)
 
 	// Setup services (pdsURL already declared in health check above)
-	blobService := blobs.NewBlobService(pdsURL)
+	//
+	// The hatch is open because the test PDS is on loopback; see
+	// TestBlobUpload_E2E_PostWithImages for why that is the honest repair and
+	// not a client substitution.
+	blobService := blobs.NewBlobService(pdsURL, blobs.WithPrivateHostsAllowed())
 
 	// Create test author
 	author := fixtures.User(t, db, "commentblob.test", "did:plc:commentblob123")
@@ -506,7 +522,11 @@ func TestBlobUpload_PDS_MockServer(t *testing.T) {
 	defer mockPDS.Close()
 
 	// Create blob service pointing to mock
-	blobService := blobs.NewBlobService(mockPDS.URL)
+	//
+	// The hatch is open because mockPDS is an httptest server on loopback; see
+	// TestBlobUpload_E2E_PostWithImages for why that is the honest repair and
+	// not a client substitution.
+	blobService := blobs.NewBlobService(mockPDS.URL, blobs.WithPrivateHostsAllowed())
 
 	// Create test community
 	community := &communities.Community{
@@ -538,7 +558,7 @@ func TestBlobUpload_Validation(t *testing.T) {
 	db := testkit.DB(t)
 
 	communityRepo := postgres.NewCommunityRepository(db)
-	blobService := blobs.NewBlobService(testkit.Endpoints().PDS.BaseURL)
+	blobService := blobs.NewBlobService(testkit.Endpoints().PDS.BaseURL, blobs.PrivateHostOptions(true)...)
 	community := createTestCommunityWithBlobCredentials(t, communityRepo, "validation")
 	ctx := context.Background()
 

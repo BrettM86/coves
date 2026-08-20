@@ -31,6 +31,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	covesoauth "Coves/internal/atproto/oauth"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
 
@@ -53,6 +54,8 @@ type backfillStats struct {
 func main() {
 	dryRun := flag.Bool("dry-run", false, "fetch and report what would be updated without writing to the database")
 	concurrency := flag.Int("concurrency", 4, "number of concurrent PDS fetches")
+	allowPrivateHosts := flag.Bool("allow-private-hosts", false,
+		"DEV ONLY: dial PDS URLs that resolve to private, loopback or link-local addresses (a local dev stack); never pass this against a real database")
 	flag.Parse()
 
 	if *concurrency < 1 {
@@ -115,7 +118,7 @@ func main() {
 		return
 	}
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := newProfileFetchClient(*allowPrivateHosts)
 
 	var stats backfillStats
 	var wg sync.WaitGroup
@@ -145,6 +148,54 @@ func main() {
 	if stats.failed.Load() > 0 {
 		os.Exit(1)
 	}
+}
+
+// profileFetchTimeout bounds one getRecord round trip against a user's PDS.
+//
+// It is this tool's own value and not the AppView's: processUser wraps each
+// fetch in a 20s context, and the client's ceiling has always sat below that so
+// a stalled PDS is attributed to the fetch rather than to the context.
+const profileFetchTimeout = 15 * time.Second
+
+// newProfileFetchClient builds the client every profile fetch in this job goes
+// through, and is the dev gate for this call site.
+//
+// # WHAT IT IS GUARDING
+//
+// processUser hands `u.pdsURL` to users.FetchProfileRecord, and that value is
+// read straight out of the `users` table — so it is whatever some other
+// instance's account data put there, the same attacker-influenced input the
+// AppView's own backfill was converted for. Being a CLI makes it worse rather
+// than better: it is run by hand against production while an operator reconciles
+// an incident, it fetches for every bare user at once, and its failures are one
+// log.Printf per user among thousands, so a request to an internal address reads
+// as ordinary churn.
+//
+// # THE FLAG IS THE GATE
+//
+// DATABASE_URL defaults to the LOCAL DEV database, whose PDS is on loopback, so
+// the documented no-environment invocation is exactly the one the guard refuses.
+// -allow-private-hosts is what keeps that usage working, and it is the only way
+// to open the guard: false yields no options at all, which is
+// PrivateAddressOptions' contract.
+//
+// # THE opts PARAMETER IS THE TEST SEAM
+//
+// It mirrors users.NewProfileBackfillClient and the other converted sites, and
+// exists because a guard test that builds its own client proves only that
+// internal/atproto/oauth works. main passes nothing.
+//
+// # WHY THE CLIENT MOVED OUT OF main()
+//
+// It was a bare `&http.Client{Timeout: 15 * time.Second}` on a line inside
+// main(), which no test can reach — main() opens a database, queries it and
+// blocks on a worker pool. This is the smallest extraction that makes the
+// construction addressable; main keeps every other line it had.
+func newProfileFetchClient(allowPrivateHosts bool, opts ...covesoauth.Option) *http.Client {
+	client := covesoauth.NewSSRFSafeHTTPClient(
+		append(covesoauth.PrivateAddressOptions(allowPrivateHosts), opts...)...)
+	client.Timeout = profileFetchTimeout
+	return client
 }
 
 func updatedVerb(dryRun bool) string {

@@ -164,7 +164,7 @@ func TestFetchOpenGraph_Success(t *testing.T) {
 	defer server.Close()
 
 	ctx := context.Background()
-	result, err := fetchOpenGraph(ctx, server.URL, 10*time.Second, "CovesBot/1.0")
+	result, err := fetchOpenGraph(ctx, server.URL, hatchOpenClient(t, 10*time.Second), "CovesBot/1.0")
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
@@ -183,7 +183,7 @@ func TestFetchOpenGraph_HTTPError(t *testing.T) {
 	defer server.Close()
 
 	ctx := context.Background()
-	result, err := fetchOpenGraph(ctx, server.URL, 10*time.Second, "CovesBot/1.0")
+	result, err := fetchOpenGraph(ctx, server.URL, hatchOpenClient(t, 10*time.Second), "CovesBot/1.0")
 	require.Error(t, err)
 	assert.Nil(t, result)
 	assert.Contains(t, err.Error(), "404")
@@ -209,7 +209,7 @@ func TestFetchOpenGraph_Timeout(t *testing.T) {
 	defer close(release)
 
 	ctx := context.Background()
-	result, err := fetchOpenGraph(ctx, server.URL, 100*time.Millisecond, "CovesBot/1.0")
+	result, err := fetchOpenGraph(ctx, server.URL, hatchOpenClient(t, 100*time.Millisecond), "CovesBot/1.0")
 	require.Error(t, err)
 	assert.Nil(t, result)
 }
@@ -225,7 +225,7 @@ func TestFetchOpenGraph_NoMetadata(t *testing.T) {
 	defer server.Close()
 
 	ctx := context.Background()
-	result, err := fetchOpenGraph(ctx, server.URL, 10*time.Second, "CovesBot/1.0")
+	result, err := fetchOpenGraph(ctx, server.URL, hatchOpenClient(t, 10*time.Second), "CovesBot/1.0")
 	require.NoError(t, err)
 	require.NotNil(t, result)
 

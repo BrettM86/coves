@@ -81,6 +81,20 @@ echo
 # to learn about it twenty minutes later.
 bash /src/scripts/test-audit.sh
 
+# The SSRF fence, a SIBLING of the audit above rather than a category in it:
+# test-audit.sh scans test code and says so in its scope note, this one scans
+# production sources exclusively.
+#
+# It runs in the tier and not merely on demand because it is the only mechanism
+# here that can notice a new unguarded client. .env.ci:140 sets IS_DEV_ENV=true,
+# so every guarded call site in this very run takes the PERMISSIVE branch — the
+# suite that follows is structurally incapable of telling a guarded deployment
+# from an unguarded one, and a fence nobody runs is a fence that is not standing.
+#
+# tests/audit exercises the script's own rules against planted violations, so
+# this line is the fence applied and that package is the fence proven.
+bash /src/scripts/ssrf-audit.sh
+
 # ---------------------------------------------------------------------------
 # 1e. Test template database
 # ---------------------------------------------------------------------------

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/bluesky-social/indigo/api/atproto"
@@ -13,7 +14,17 @@ import (
 // refreshPDSToken exchanges a refresh token for new access and refresh tokens
 // Uses com.atproto.server.refreshSession endpoint via Indigo SDK
 // CRITICAL: Refresh tokens are single-use - old refresh token is revoked on success
-func refreshPDSToken(ctx context.Context, pdsURL, refreshToken string) (newAccessToken, newRefreshToken string, err error) {
+//
+// httpClient is REQUIRED and is the SSRF guard. Leaving xrpc.Client.Client nil
+// makes indigo substitute util.RobustHTTPClient() — unguarded — on a call that
+// sends the community's refresh token as the Authorization header. See
+// newPDSHTTPClient.
+func refreshPDSToken(
+	ctx context.Context, httpClient *http.Client, pdsURL, refreshToken string,
+) (newAccessToken, newRefreshToken string, err error) {
+	if httpClient == nil {
+		return "", "", fmt.Errorf("HTTP client is required")
+	}
 	if pdsURL == "" {
 		return "", "", fmt.Errorf("PDS URL is required")
 	}
@@ -26,7 +37,8 @@ func refreshPDSToken(ctx context.Context, pdsURL, refreshToken string) (newAcces
 	// but refreshSession requires the refresh token in that header.
 	// So we put the refresh token in AccessJwt to make it work correctly.
 	client := &xrpc.Client{
-		Host: pdsURL,
+		Client: httpClient,
+		Host:   pdsURL,
 		Auth: &xrpc.AuthInfo{
 			AccessJwt:  refreshToken, // Refresh token goes here (sent as Authorization header)
 			RefreshJwt: refreshToken, // Also set here for completeness
@@ -63,7 +75,17 @@ func refreshPDSToken(ctx context.Context, pdsURL, refreshToken string) (newAcces
 // reauthenticateWithPassword creates a new session using stored credentials
 // This is the fallback when refresh tokens expire (after ~2 months)
 // Uses com.atproto.server.createSession endpoint via Indigo SDK
-func reauthenticateWithPassword(ctx context.Context, pdsURL, email, password string) (accessToken, refreshToken string, err error) {
+//
+// httpClient is REQUIRED and is the SSRF guard. This call POSTs the community's
+// CLEARTEXT password and system email in the request body, which makes it the
+// worst payload in this package to deliver to an address someone else chose. See
+// newPDSHTTPClient.
+func reauthenticateWithPassword(
+	ctx context.Context, httpClient *http.Client, pdsURL, email, password string,
+) (accessToken, refreshToken string, err error) {
+	if httpClient == nil {
+		return "", "", fmt.Errorf("HTTP client is required")
+	}
 	if pdsURL == "" {
 		return "", "", fmt.Errorf("PDS URL is required")
 	}
@@ -76,7 +98,8 @@ func reauthenticateWithPassword(ctx context.Context, pdsURL, email, password str
 
 	// Create unauthenticated XRPC client
 	client := &xrpc.Client{
-		Host: pdsURL,
+		Client: httpClient,
+		Host:   pdsURL,
 	}
 
 	// Prepare createSession input

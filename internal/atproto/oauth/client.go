@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"time"
 
@@ -36,10 +37,72 @@ type OAuthConfig struct {
 	ClientKeyID               string
 }
 
+// clientOptions is what the clientOption values accumulate into: the extra
+// transport options all three of this constructor's HTTP clients are built with.
+type clientOptions struct {
+	// transportOptions is the TEST SEAM, and it is unexported deliberately —
+	// scripts/ssrf-audit.sh fails the build if the resolver seam it carries is
+	// reachable from any non-test package. Every peer that needed the same thing
+	// keeps it unexported for the same reason: pds/factory.go's
+	// withTransportOptions, identity's withHTTPClient, jetstream's
+	// withWellKnownHTTPClient, blobs' setHTTPClient.
+	transportOptions []Option
+}
+
+// clientOption configures the HTTP clients NewOAuthClient builds.
+type clientOption func(*clientOptions)
+
+// withTransportOptions passes extra options to ALL THREE clients this
+// constructor builds — the ClientApp's, the OAuth metadata resolver's, and the
+// directory's.
+//
+// IT EXISTS BECAUSE A LOOPBACK FIXTURE PROVES THE WRONG BRANCH. Every address a
+// hermetic test can offer is an IP literal, which RoundTrip refuses on SHAPE one
+// branch before the address classifier runs — so a literal-only test here would
+// leave classification, the check these three clients actually depend on for a
+// PDS host that arrives from a DID document, unexercised. Threading
+// WithHostResolver through this seam lets a test drive a real HOSTNAME whose
+// answer it chooses.
+//
+// ALL THREE CLIENTS, not one. They are the same construction with the same
+// address policy, and a seam that reached only the first would let a test
+// certify the ClientApp's client while saying nothing about the directory's.
+func withTransportOptions(opts ...Option) clientOption {
+	return func(c *clientOptions) { c.transportOptions = append(c.transportOptions, opts...) }
+}
+
+const oauthMetadataMaxResponseBytes int64 = 1 << 20
+
+// newOAuthResolverHTTPClient keeps Indigo's resolver-specific restrictions on
+// top of the shared Coves address guard. Resolver responses are small JSON
+// documents, so they get a much tighter cap than general PDS responses.
+func newOAuthResolverHTTPClient(opts ...Option) *http.Client {
+	resolverOptions := append([]Option(nil), opts...)
+	resolverOptions = append(resolverOptions, WithMaxResponseBytes(oauthMetadataMaxResponseBytes))
+
+	client := NewSSRFSafeHTTPClient(resolverOptions...)
+	client.Timeout = 10 * time.Second
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return fmt.Errorf("too many redirects")
+		}
+		if req.URL.Scheme != "https" || req.URL.Hostname() == "" || req.URL.Port() != "" {
+			return fmt.Errorf("OAuth metadata redirect must use HTTPS with no explicit port: %s", req.URL.Redacted())
+		}
+		return nil
+	}
+	return client
+}
+
 // NewOAuthClient creates a new OAuth client for Coves
-func NewOAuthClient(config *OAuthConfig, store oauth.ClientAuthStore) (*OAuthClient, error) {
+func NewOAuthClient(config *OAuthConfig, store oauth.ClientAuthStore, opts ...clientOption) (*OAuthClient, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
+	}
+
+	var options clientOptions
+	for _, opt := range opts {
+		opt(&options)
 	}
 
 	// PLCURL must be explicit. An empty value used to fall through to indigo's
@@ -133,17 +196,26 @@ func NewOAuthClient(config *OAuthConfig, store oauth.ClientAuthStore) (*OAuthCli
 
 	// Set user agent
 	clientConfig.UserAgent = "Coves/1.0"
+	transportOptions := append([]Option(nil), PrivateAddressOptions(config.AllowPrivateIPs)...)
+	transportOptions = append(transportOptions, options.transportOptions...)
 
 	// Create the indigo OAuth ClientApp
+	// coves:allow-bare-client: NewClientApp installs http.DefaultClient (indigo auth/oauth/oauth.go:55); the next statement replaces it with the guarded client
 	clientApp := oauth.NewClientApp(&clientConfig, store)
 
 	// Override the default HTTP client with our SSRF-safe client
 	// This protects against SSRF attacks via malicious PDS URLs, DID documents, and JWKS URIs
-	clientApp.Client = NewSSRFSafeHTTPClient(config.AllowPrivateIPs)
+	clientApp.Client = NewSSRFSafeHTTPClient(transportOptions...)
+
+	// Indigo constructs its OAuth metadata resolver with a third, independent
+	// HTTP client. Replace it too: StartAuthFlow accepts an attacker-controlled
+	// https:// authorization-server identifier on a public route, so leaving the
+	// resolver's default client in place would leave a proxy-aware SSRF path.
+	clientApp.Resolver.Client = newOAuthResolverHTTPClient(transportOptions...)
 
 	// Always override the directory so resolution goes to the configured PLC
 	// rather than indigo's default. Use SSRF-safe HTTP client for PLC requests.
-	httpClient := NewSSRFSafeHTTPClient(config.AllowPrivateIPs)
+	httpClient := NewSSRFSafeHTTPClient(transportOptions...)
 	baseDir := &identity.BaseDirectory{
 		PLCURL:     config.PLCURL,
 		HTTPClient: *httpClient,

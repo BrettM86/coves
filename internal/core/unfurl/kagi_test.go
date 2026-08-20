@@ -35,7 +35,7 @@ func TestFetchKagiKite_Success(t *testing.T) {
 
 	ctx := context.Background()
 
-	result, err := fetchKagiKite(ctx, server.URL, 5*time.Second, "TestBot/1.0")
+	result, err := fetchKagiKite(ctx, server.URL, hatchOpenClient(t, 5*time.Second), "TestBot/1.0")
 
 	require.NoError(t, err)
 	assert.Equal(t, "article", result.Type)
@@ -63,7 +63,7 @@ func TestFetchKagiKite_NoImage(t *testing.T) {
 
 	ctx := context.Background()
 
-	result, err := fetchKagiKite(ctx, server.URL, 5*time.Second, "TestBot/1.0")
+	result, err := fetchKagiKite(ctx, server.URL, hatchOpenClient(t, 5*time.Second), "TestBot/1.0")
 
 	assert.Error(t, err)
 	assert.Nil(t, result)
@@ -89,7 +89,7 @@ func TestFetchKagiKite_FallbackToTitle(t *testing.T) {
 
 	ctx := context.Background()
 
-	result, err := fetchKagiKite(ctx, server.URL, 5*time.Second, "TestBot/1.0")
+	result, err := fetchKagiKite(ctx, server.URL, hatchOpenClient(t, 5*time.Second), "TestBot/1.0")
 
 	require.NoError(t, err)
 	assert.Equal(t, "Fallback Title", result.Title)
@@ -115,7 +115,7 @@ func TestFetchKagiKite_ImageWithAltText(t *testing.T) {
 
 	ctx := context.Background()
 
-	result, err := fetchKagiKite(ctx, server.URL, 5*time.Second, "TestBot/1.0")
+	result, err := fetchKagiKite(ctx, server.URL, hatchOpenClient(t, 5*time.Second), "TestBot/1.0")
 
 	require.NoError(t, err)
 	assert.Equal(t, "News Story", result.Title)
@@ -132,7 +132,7 @@ func TestFetchKagiKite_HTTPError(t *testing.T) {
 
 	ctx := context.Background()
 
-	result, err := fetchKagiKite(ctx, server.URL, 5*time.Second, "TestBot/1.0")
+	result, err := fetchKagiKite(ctx, server.URL, hatchOpenClient(t, 5*time.Second), "TestBot/1.0")
 
 	assert.Error(t, err)
 	assert.Nil(t, result)
@@ -160,7 +160,7 @@ func TestFetchKagiKite_Timeout(t *testing.T) {
 
 	ctx := context.Background()
 
-	result, err := fetchKagiKite(ctx, server.URL, 100*time.Millisecond, "TestBot/1.0")
+	result, err := fetchKagiKite(ctx, server.URL, hatchOpenClient(t, 100*time.Millisecond), "TestBot/1.0")
 
 	assert.Error(t, err)
 	assert.Nil(t, result)
@@ -186,7 +186,7 @@ func TestFetchKagiKite_MultipleImages_PicksSecond(t *testing.T) {
 
 	ctx := context.Background()
 
-	result, err := fetchKagiKite(ctx, server.URL, 5*time.Second, "TestBot/1.0")
+	result, err := fetchKagiKite(ctx, server.URL, hatchOpenClient(t, 5*time.Second), "TestBot/1.0")
 
 	require.NoError(t, err)
 	// We skip the first image (often a header/logo) and use the second
@@ -213,7 +213,7 @@ func TestFetchKagiKite_OnlyNonKagiImages_NoMatch(t *testing.T) {
 
 	ctx := context.Background()
 
-	result, err := fetchKagiKite(ctx, server.URL, 5*time.Second, "TestBot/1.0")
+	result, err := fetchKagiKite(ctx, server.URL, hatchOpenClient(t, 5*time.Second), "TestBot/1.0")
 
 	assert.Error(t, err)
 	assert.Nil(t, result)

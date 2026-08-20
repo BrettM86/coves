@@ -99,6 +99,30 @@ func main() {
 }
 
 // fetchAllAccountsFromPDS queries the PDS sync API to get all repo DIDs
+//
+// # WHY THIS FETCH IS NOT GUARDED, AND WHAT WOULD CHANGE THAT
+//
+// pdsURL is os.Getenv("PDS_URL"), defaulting to this instance's own local dev
+// PDS — operator configuration, not data. That is the whole test: every guarded
+// site in this remediation dials a host that arrived from a DID document, a
+// federated record or a database column, and this one dials the host the person
+// running the tool typed. There is no attacker in the path to the ADDRESS.
+//
+// Guarding it would also break the only invocation that needs no environment at
+// all, since the default is loopback and loopback is what the guard refuses.
+//
+// If pdsURL is ever taken from a record, a database row or a flag whose value
+// comes from indexed data, this marker is wrong and the call site needs
+// oauth.NewSSRFSafeHTTPClient behind a dev gate, like cmd/backfill-profiles.
+//
+// # THE SEPARATE DEFECT, RECORDED RATHER THAN QUIETLY FIXED
+//
+// http.Get is http.DefaultClient, whose Timeout is ZERO — and zero in net/http
+// means wait forever. Both loops here page until the cursor runs out, so a PDS
+// that accepts the connection and then stops answering hangs this tool with no
+// deadline of any kind, and an operator has to notice and kill it. That is a
+// real weakness and it is not an SSRF one; it is left here deliberately rather
+// than changed under a commit about audit tooling.
 func fetchAllAccountsFromPDS(pdsURL string) ([]string, error) {
 	// Use com.atproto.sync.listRepos to get all repos on this PDS
 	var allDIDs []string
@@ -110,6 +134,7 @@ func fetchAllAccountsFromPDS(pdsURL string) ([]string, error) {
 			reqURL += "&cursor=" + url.QueryEscape(cursor)
 		}
 
+		// coves:allow-bare-client: pdsURL is PDS_URL from the environment, so the host is operator config; the DIDs are query parameters only. NO TIMEOUT — see the doc comment.
 		resp, err := http.Get(reqURL)
 		if err != nil {
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
@@ -143,6 +168,12 @@ func fetchAllAccountsFromPDS(pdsURL string) ([]string, error) {
 	return allDIDs, nil
 }
 
+// fetchVotesFromPDS reads one repo's vote records. Same host, same reasoning,
+// same separate defect as fetchAllAccountsFromPDS — see its doc comment.
+//
+// `did` comes from the PDS's own listRepos answer and is url.QueryEscape'd into
+// a QUERY PARAMETER. It never reaches the host, so it cannot redirect this
+// request anywhere: the address is still PDS_URL and nothing else.
 func fetchVotesFromPDS(pdsURL, did string) ([]Record, error) {
 	var allRecords []Record
 	cursor := ""
@@ -155,6 +186,7 @@ func fetchVotesFromPDS(pdsURL, did string) ([]Record, error) {
 			reqURL += "&cursor=" + url.QueryEscape(cursor)
 		}
 
+		// coves:allow-bare-client: the host is PDS_URL from the environment; the DID is an escaped query parameter. NO TIMEOUT — see fetchAllAccountsFromPDS.
 		resp, err := http.Get(reqURL)
 		if err != nil {
 			return nil, fmt.Errorf("HTTP request failed: %w", err)

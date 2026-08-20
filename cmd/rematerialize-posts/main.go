@@ -163,8 +163,20 @@ func main() {
 		log.Fatalf("rematerialize-posts: %v", err)
 	}
 
-	blobService := blobs.NewBlobService(cfg.PDS.URL)
-	provisioner := communities.NewPDSAccountProvisioner(cfg.Instance.Domain, cfg.PDS.URL)
+	// Same gate as cmd/server: the blob service's fetch and PDS upload are both
+	// guarded, and the hatch opens only in dev, where cfg.PDS.URL is a loopback
+	// address the guard would otherwise refuse. The gate is allowPrivateHosts —
+	// the IS_DEV_ENV environment variable, not one of this tool's own flags — and
+	// every other guarded construction here goes through the same accessor,
+	// including the OAuth client's AllowPrivateIPs.
+	blobService := blobs.NewBlobService(cfg.PDS.URL, blobs.PrivateHostOptions(allowPrivateHosts(cfg))...)
+
+	// The same gate again, on the xrpc calls this package makes to a community's
+	// PDS. They used to leave xrpc.Client.Client nil, which makes indigo
+	// substitute an unguarded util.RobustHTTPClient().
+	communityPDSOptions := communities.PrivateHostOptions(allowPrivateHosts(cfg))
+	provisioner := communities.NewPDSAccountProvisioner(
+		cfg.Instance.Domain, cfg.PDS.URL, communityPDSOptions...)
 	communityService := communities.NewCommunityService(
 		postgresRepo.NewCommunityRepository(db),
 		cfg.PDS.URL,
@@ -173,13 +185,21 @@ func main() {
 		provisioner,
 		oauthClient,
 		blobService,
+		communityPDSOptions...,
 	)
 
 	// The DIRECT acceptance writer over the production community-repo factory —
 	// the same credential-presence hosting test the acceptance engine uses. The
 	// tool holds this writer and no decider, so it cannot re-run admission. The
 	// same factory is handed to the Rematerializer for the acceptance READ-BACK.
-	repoFactory := posts.NewCommunityRepoFactory(communityService)
+	//
+	// pdsClientOptions is this tool's SSRF dev gate, resolved once and shared by
+	// both PDS-client paths below: every community PDS URL they dial comes from
+	// the database, and allowPrivateHosts is what lets a local run reach a
+	// loopback PDS without opening the guard anywhere else.
+	pdsClientOptions := pds.PrivateHostOptions(allowPrivateHosts(cfg))
+
+	repoFactory := posts.NewCommunityRepoFactory(communityService, pdsClientOptions...)
 	writer := posts.NewCommunityRecordWriter(repoFactory, time.Now)
 
 	authorFactory := posts.NewAuthorRepoFactory(oauthClient.ClientApp, aggregators.DefaultSessionID)
@@ -187,17 +207,28 @@ func main() {
 	source := &realLegacySource{
 		communityFilter: *communityFilter,
 		hostedDIDs:      postgresRepo.NewHostedCommunityQuery(db).HostedCommunityDIDs,
-		openRepo:        communityRepoOpener(communityService),
+		openRepo:        communityRepoOpener(communityService, pdsClientOptions...),
 	}
 
 	progress := newProgressLogger()
 	tool := &posts.Rematerializer{
-		Source:           source,
-		Ledger:           ledger,
-		AuthorRepos:      authorFactory,
-		Acceptances:      writer,
-		CommunityRepos:   repoFactory,
-		CommunityScope:   *communityFilter,
+		Source:         source,
+		Ledger:         ledger,
+		AuthorRepos:    authorFactory,
+		Acceptances:    writer,
+		CommunityRepos: repoFactory,
+		CommunityScope: *communityFilter,
+		// The blob copy's dev gate, decided HERE rather than inside the state
+		// machine, exactly as blobs.PrivateHostOptions is decided above.
+		//
+		// The Rematerializer's own fallback is guarded with no way to open it,
+		// because it is what every caller that expressed no opinion degrades to.
+		// This is the caller that has an opinion: the host it copies from is the
+		// author repo's serviceEndpoint, which in a local stack is a loopback PDS —
+		// the address the guard exists to refuse. Passing allowPrivateHosts keeps a
+		// dev run working and leaves production on the guarded path, and it puts the
+		// decision where an operator reading the wiring can see which one they got.
+		Blobs:            posts.DefaultRematerializeBlobClient(allowPrivateHosts(cfg)),
 		Progress:         progress.log,
 		PerRecordTimeout: perRecordTimeout,
 		AbortOnFallback:  !*acceptFallbacks,
@@ -469,7 +500,12 @@ func (s *realLegacySource) hostedCommunityDIDs(ctx context.Context) ([]string, e
 
 // communityRepoOpener builds the production repo opener: a full PDS client bound
 // to one community's repo, over freshly-renewed stored credentials.
-func communityRepoOpener(creds posts.CommunityCredentialSource) func(context.Context, string) (repoClient, error) {
+//
+// The options carry the SSRF dev gate, and passing none leaves the client
+// guarded: fresh.PDSURL is a per-community database column, so this tool dials
+// an address that is data. A local dev run against a loopback PDS is what the
+// caller's pds.PrivateHostOptions(allowPrivateHosts(cfg)) opens.
+func communityRepoOpener(creds posts.CommunityCredentialSource, opts ...pds.ClientOption) func(context.Context, string) (repoClient, error) {
 	return func(ctx context.Context, did string) (repoClient, error) {
 		community, err := creds.GetByDID(ctx, did)
 		if err != nil {
@@ -485,7 +521,7 @@ func communityRepoOpener(creds posts.CommunityCredentialSource) func(context.Con
 		if fresh == nil || fresh.PDSAccessToken == "" {
 			return nil, fmt.Errorf("renewing the credentials of %s: no access token came back", did)
 		}
-		client, err := pds.NewFromAccessToken(fresh.PDSURL, fresh.DID, fresh.PDSAccessToken)
+		client, err := pds.NewFromAccessToken(fresh.PDSURL, fresh.DID, fresh.PDSAccessToken, opts...)
 		if err != nil {
 			return nil, err
 		}
@@ -700,6 +736,25 @@ func takeAdvisoryLock(ctx context.Context, db *sql.DB) (release func(), err erro
 	}, nil
 }
 
+// allowPrivateHosts is THE ONE CONVERSION from configuration to SSRF policy in
+// this binary, the counterpart of cmd/server's method of the same name.
+//
+// Every hatch-bearing call site in this tool calls it rather than reading
+// cfg.IsDevEnv, so there is exactly one expression whose polarity has to be
+// right and exactly one place a test has to reach. The five spellings it
+// replaced were evaluated by no test at all, and `.env.ci:140` sets
+// IS_DEV_ENV=true, so the merge gate ran the permissive branch at every one of
+// them — inverting any single site left `make ci` green.
+//
+// It takes cfg rather than reading the environment for the reason blobs and
+// pds both document: an ambient read makes the guarded branch untestable
+// alongside t.Parallel, and it opens every construction in the process at once.
+//
+// buildOAuthClient's DevMode is deliberately NOT routed through here. It is an
+// AUTHENTICATION gate over the same input, and one accessor answering two
+// different questions is one that gets changed for the wrong reason.
+func allowPrivateHosts(cfg *config.Config) bool { return cfg.IsDevEnv }
+
 // openDatabase opens the AppView Postgres the ledger and community catalogue
 // live in, with the pool bounds from config.
 func openDatabase(cfg *config.Config) (*sql.DB, error) {
@@ -726,7 +781,7 @@ func buildOAuthClient(cfg *config.Config, db *sql.DB) (*oauth.OAuthClient, error
 		SealSecret:                cfg.OAuth.SealSecret,
 		Scopes:                    oauthScopes(),
 		DevMode:                   cfg.IsDevEnv,
-		AllowPrivateIPs:           cfg.IsDevEnv,
+		AllowPrivateIPs:           allowPrivateHosts(cfg),
 		PLCURL:                    cfg.Identity.PLCURL,
 		PDSURL:                    cfg.PDS.URL,
 		ClientPrivateKeyMultibase: cfg.OAuth.ClientPrivateKeyMultibase,

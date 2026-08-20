@@ -1,6 +1,7 @@
 package unfurl
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,10 +9,53 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"golang.org/x/net/html"
 )
+
+// maxUnfurlBodyBytes is how much of a remote response this site is willing to
+// hold in memory: 10 MB, the limit both HTML reads below have always enforced
+// through an io.LimitReader.
+//
+// IT IS ALSO WHAT THE TRANSPORT IS TOLD, PLUS ONE, in NewService. The shared
+// SSRF-safe client defaults to oauth.DefaultMaxResponseBytes (32 MiB), which is
+// larger, so adopting it without passing this value would triple what a pasted
+// link can make this process allocate — silently, since every existing fixture
+// still passes under the looser bound. Both layers read the same constant so the
+// two cannot drift, and the +1 is the room readCappedBody needs to PROBE past
+// this limit rather than truncate at it. See readCappedBody for why that byte
+// decides between a refusal and a half-page served into a post.
+const maxUnfurlBodyBytes = 10 * 1024 * 1024
+
+// readCappedBody reads a remote page and REFUSES one that runs past this site's
+// limit, instead of handing back the part that fitted.
+//
+// # WHY THE LIMIT READER PROBES ONE BYTE PAST THE CAP
+//
+// io.ReadAll over an io.LimitReader cannot tell "the body ended" from "the limit
+// was reached" — both arrive as EOF and a nil error. Reading maxUnfurlBodyBytes
+// exactly is therefore a silent truncation: a page one byte too long comes back
+// clipped, and because parseOpenGraph and html.Parse are both error-tolerant by
+// design, the clipped bytes still yield an og:title and og:description. The
+// caller gets an UnfurlResult that reads as a complete page, caches it for 24
+// hours and serves it into a post. The extra byte's EXISTENCE is the signal, so
+// it has to be asked for.
+//
+// It follows that the transport must be told maxUnfurlBodyBytes+1 (NewService
+// does): a transport cap set to exactly the limit clips the probing byte and
+// restores the truncation this function exists to prevent. imageproxy/fetcher.go
+// and posts' newGuardedRematerializeBlobClient are the same pairing, and the
+// only reason they were not the same defect.
+func readCappedBody(body io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, maxUnfurlBodyBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+	if len(data) > maxUnfurlBodyBytes {
+		return nil, fmt.Errorf("%w: read more than %d bytes", ErrPageTooLarge, maxUnfurlBodyBytes)
+	}
+	return data, nil
+}
 
 // Provider configuration
 var oEmbedEndpoints = map[string]string{
@@ -81,7 +125,7 @@ func isOEmbedProvider(urlStr string) bool {
 }
 
 // fetchOEmbed fetches oEmbed data from the provider
-func fetchOEmbed(ctx context.Context, urlStr string, timeout time.Duration, userAgent string) (*oEmbedResponse, error) {
+func fetchOEmbed(ctx context.Context, urlStr string, client *http.Client, userAgent string) (*oEmbedResponse, error) {
 	domain := extractDomain(urlStr)
 	endpoint, exists := oEmbedEndpoints[domain]
 	if !exists {
@@ -99,8 +143,6 @@ func fetchOEmbed(ctx context.Context, urlStr string, timeout time.Duration, user
 
 	req.Header.Set("User-Agent", userAgent)
 
-	// Create HTTP client with timeout
-	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch oEmbed data: %w", err)
@@ -172,7 +214,7 @@ type openGraphData struct {
 }
 
 // fetchOpenGraph fetches OpenGraph metadata from a URL
-func fetchOpenGraph(ctx context.Context, urlStr string, timeout time.Duration, userAgent string) (*UnfurlResult, error) {
+func fetchOpenGraph(ctx context.Context, urlStr string, client *http.Client, userAgent string) (*UnfurlResult, error) {
 	// Create HTTP request
 	req, err := http.NewRequestWithContext(ctx, "GET", urlStr, nil)
 	if err != nil {
@@ -181,8 +223,6 @@ func fetchOpenGraph(ctx context.Context, urlStr string, timeout time.Duration, u
 
 	req.Header.Set("User-Agent", userAgent)
 
-	// Create HTTP client with timeout
-	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch URL: %w", err)
@@ -193,11 +233,9 @@ func fetchOpenGraph(ctx context.Context, urlStr string, timeout time.Duration, u
 		return nil, fmt.Errorf("HTTP request returned status %d", resp.StatusCode)
 	}
 
-	// Read response body (limit to 10MB to prevent abuse)
-	limitedReader := io.LimitReader(resp.Body, 10*1024*1024)
-	body, err := io.ReadAll(limitedReader)
+	body, err := readCappedBody(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
+		return nil, err
 	}
 
 	// Parse OpenGraph metadata
@@ -312,7 +350,7 @@ func getAttr(n *html.Node, key string) string {
 // fetchKagiKite handles special unfurling for Kagi Kite news pages
 // Kagi Kite pages use client-side rendering, so og:image tags aren't available at SSR time
 // Instead, we parse the HTML to extract the story image from the page content
-func fetchKagiKite(ctx context.Context, urlStr string, timeout time.Duration, userAgent string) (*UnfurlResult, error) {
+func fetchKagiKite(ctx context.Context, urlStr string, client *http.Client, userAgent string) (*UnfurlResult, error) {
 	// Create HTTP request
 	req, err := http.NewRequestWithContext(ctx, "GET", urlStr, nil)
 	if err != nil {
@@ -321,8 +359,6 @@ func fetchKagiKite(ctx context.Context, urlStr string, timeout time.Duration, us
 
 	req.Header.Set("User-Agent", userAgent)
 
-	// Create HTTP client with timeout
-	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch URL: %w", err)
@@ -333,11 +369,19 @@ func fetchKagiKite(ctx context.Context, urlStr string, timeout time.Duration, us
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
 
-	// Limit response size to 10MB
-	limitedReader := io.LimitReader(resp.Body, 10*1024*1024)
+	// Read before parsing, rather than handing html.Parse the capped reader
+	// directly, because the overrun has to be decided on the WHOLE body: a
+	// streaming parse would consume the page and only then meet the extra byte,
+	// by which point a document already exists to return. Reading first costs
+	// nothing — io.ReadAll's buffer is the same 10 MB the parse was going to
+	// allocate anyway.
+	body, err := readCappedBody(resp.Body)
+	if err != nil {
+		return nil, err
+	}
 
 	// Parse HTML
-	doc, err := html.Parse(limitedReader)
+	doc, err := html.Parse(bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse HTML: %w", err)
 	}

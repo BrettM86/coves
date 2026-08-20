@@ -154,11 +154,18 @@ func (a *application) registerFeedConsumers() []feedConsumer {
 	if a.cfg.Instance.SkipDIDWebVerification {
 		slog.Warn("did:web domain verification is DISABLED; this must never be set in production")
 	}
+	// The SSRF hatch is open only in dev, where a developer's own instance is
+	// what the .well-known DID document is fetched from. In production that
+	// fetch dials whatever domain a community record published by anyone on the
+	// federated network names, from inside this AppView's own network.
+	communityOpts := append(
+		[]jetstream.CommunityConsumerOption{jetstream.WithCommunityRevGate(a.revGate)},
+		jetstream.PrivateHostOptions(a.allowPrivateHosts())...)
 	consumers = append(consumers, feedConsumer{
 		name: jetstream.ConsumerCommunities,
 		handler: jetstream.NewCommunityEventConsumer(
 			a.communityRepo, a.cfg.Instance.DID, a.cfg.Instance.SkipDIDWebVerification,
-			a.identityResolver, jetstream.WithCommunityRevGate(a.revGate)),
+			a.identityResolver, communityOpts...),
 	})
 
 	// Posts, in both shapes, plus the community records that decide about
@@ -168,15 +175,27 @@ func (a *application) registerFeedConsumers() []feedConsumer {
 	//
 	// The direct fetcher is what makes acceptance-before-post converge without
 	// full relay coverage (PRD §5.4). It dials a PDS named by a DID document
-	// anyone can publish, so its SSRF guard stays on in production and the
-	// stood-down constructor is reachable only under IS_DEV_ENV — where the
-	// hermetic stack's PDS is a private address the guard would otherwise
-	// refuse.
-	postFetcher := jetstream.NewDirectPostFetcher(a.identityResolver)
-	if a.cfg.IsDevEnv {
+	// anyone can publish, so its SSRF guard stays on in production and the hatch
+	// opens only under IS_DEV_ENV — where the hermetic stack's PDS is a private
+	// address the guard would otherwise refuse.
+	//
+	// The decision goes through jetstream.PrivatePostFetcherOptions rather than
+	// the `if` that used to stand here, for the same reason the community
+	// consumer's gate does nineteen lines above: `.env.ci:140` sets
+	// IS_DEV_ENV=true, so `make ci` takes the permissive branch and an inline
+	// conditional in wiring is reachable only by standing up this wiring with a
+	// production config, which nothing in this tree does. As a pure function the
+	// branch production actually runs is testable in T0.
+	//
+	// The warning stays here, because it is about this process rather than about
+	// the option — a helper that logged would fire once per test that builds a
+	// hatched fetcher, and this line has to mean "this server is running
+	// unguarded".
+	if a.allowPrivateHosts() {
 		slog.Warn("direct post fetch has SSRF protection DISABLED (IS_DEV_ENV); this must never be set in production")
-		postFetcher = jetstream.NewDevDirectPostFetcher(a.identityResolver)
 	}
+	postFetcher := jetstream.NewDirectPostFetcher(a.identityResolver,
+		jetstream.PrivatePostFetcherOptions(a.allowPrivateHosts())...)
 	consumers = append(consumers, feedConsumer{
 		name: jetstream.ConsumerPosts,
 		handler: jetstream.NewPostEventConsumer(a.postRepo, a.communityRepo, a.userService, a.db,

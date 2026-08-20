@@ -59,9 +59,10 @@ import (
 // ban. That would be an outage. `64:ff9b::/96` is a legitimate connect()
 // destination: an IPv6-only host with DNS64 reaches every IPv4-only server in the
 // world through it, so on an IPv6-only deployment a wholesale ban does not block
-// some outbound federation, it blocks ALL of it. `64:ff9b:1::/48` (RFC 8215) is
-// the same mechanism with a locally-chosen prefix and carries the same
-// consequence.
+// some outbound federation, it blocks ALL of it. `64:ff9b:1::/48` (RFC 8215)
+// differs in the security-relevant way: it is local-use space and RFC 6052
+// permits several payload layouts beneath it. Without a configured Pref64 the
+// guard cannot decode it soundly, so the secure default is to block that /48.
 //
 // The asymmetry, stated plainly, is the thing to remember about this file:
 // **6to4 embeds a gateway, so we ban it. NAT64 embeds the destination, so we
@@ -69,11 +70,11 @@ import (
 //
 // # WHAT THE ALLOWED ROWS ARE FOR
 //
-// Every remaining allowed row embeds the public 8.8.8.8 under a prefix that is
-// still decoded. They are what stops the 6to4 decision from being generalised
-// into "ban every prefix": a wholesale ban of NAT64 or SIIT turns all their
-// blocked rows green and these red. The blocked rows prove the extraction
-// happens; the allowed rows prove it is a decode and not a ban.
+// Every remaining allowed row embeds the public 8.8.8.8 under a globally
+// reachable prefix that is still decoded. They are what stops the fail-closed
+// local-use decision from being generalised into "ban every translation
+// prefix": a wholesale ban of well-known NAT64 or SIIT turns all their blocked
+// rows green and these red.
 //
 // # DELIBERATE EXCLUSIONS
 //
@@ -109,13 +110,16 @@ func TestIsPrivateIP_IPv6FormsEmbeddingIPv4(t *testing.T) {
 		{"NAT64 well-known embedding RFC1918 10/8", "64:ff9b::a00:1", true},
 		{"NAT64 well-known embedding a public address", "64:ff9b::808:808", false},
 
-		// NAT64 local-use prefix, 64:ff9b:1::/48 (RFC 8215). Same semantics as the
-		// well-known prefix and a separate range: an implementation matching only
-		// 64:ff9b::/96 lets every one of these through, and the metadata-service row
-		// is what that costs.
+		// NAT64 local-use prefix, 64:ff9b:1::/48 (RFC 8215). RFC 6052 allows
+		// operators to allocate multiple Pref64 lengths beneath this reservation,
+		// moving the embedded IPv4 field. With no configured Pref64 there is no
+		// sound payload offset, so every layout fails closed.
 		{"NAT64 local-use embedding loopback", "64:ff9b:1::7f00:1", true},
 		{"NAT64 local-use embedding the metadata service", "64:ff9b:1::a9fe:a9fe", true},
-		{"NAT64 local-use embedding a public address", "64:ff9b:1::808:808", false},
+		{"NAT64 local-use /96 layout with a public payload", "64:ff9b:1::808:808", true},
+		{"NAT64 local-use custom /96 embedding loopback", "64:ff9b:1:abcd::7f00:1", true},
+		{"NAT64 local-use custom layout with opaque payload", "64:ff9b:1:abcd:1234:5678::1", true},
+		{"Just above NAT64 local-use", "64:ff9b:2::1", false},
 
 		// SIIT IPv4-translated, ::ffff:0:0:0/96 — bytes 0-7 zero, 8-9 ffff, 10-11
 		// zero, IPv4 in the last 4. Decoded, not banned: like NAT64, the embedded

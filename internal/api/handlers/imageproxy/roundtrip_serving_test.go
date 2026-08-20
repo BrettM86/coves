@@ -55,7 +55,11 @@ func TestImageProxy_EmittedURLsAreFetchable(t *testing.T) {
 	db := testkit.DB(t)
 	endpoints := testkit.Endpoints()
 
-	identityConfig := identity.DefaultConfig()
+	// The hatch: the stack's PLC listens on loopback, which the resolver's SSRF
+	// guard refuses by default. Per-construction, not ambient — see the note in
+	// avatar_serving_test.go, and the guard's own tests in
+	// internal/atproto/identity/resolver_guard_test.go.
+	identityConfig := identity.DefaultConfig(identity.WithPrivateHostsAllowed())
 	identityConfig.PLCURL = endpoints.PLC.BaseURL
 	// The proxy resolves the community's DID through the stack's PLC directory to
 	// find the blob, so a fabricated DID would never get past resolution.
@@ -71,9 +75,10 @@ func TestImageProxy_EmittedURLsAreFetchable(t *testing.T) {
 		endpoints.PDS.BaseURL,
 		fixtures.InstanceDID(),
 		handleDomain,
-		communities.NewPDSAccountProvisioner(handleDomain, endpoints.PDS.BaseURL),
+		communities.NewPDSAccountProvisioner(handleDomain, endpoints.PDS.BaseURL, communities.PrivateHostOptions(true)...),
 		nil, // no PDS client factory: provisioning uses the password session
-		blobs.NewBlobService(endpoints.PDS.BaseURL),
+		blobs.NewBlobService(endpoints.PDS.BaseURL, blobs.PrivateHostOptions(true)...),
+		communities.PrivateHostOptions(true)...,
 	)
 
 	// The provisioner prefixes "c-", and a PDS handle's local label is capped at

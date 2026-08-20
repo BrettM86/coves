@@ -34,7 +34,7 @@ type ProtectedResourceMetadata struct {
 // NewDevAuthResolver creates a resolver that accepts localhost HTTP URLs
 func NewDevAuthResolver(pdsURL string, allowPrivateIPs bool) *DevAuthResolver {
 	resolver := &DevAuthResolver{
-		Client:    NewSSRFSafeHTTPClient(allowPrivateIPs),
+		Client:    NewSSRFSafeHTTPClient(PrivateAddressOptions(allowPrivateIPs)...),
 		UserAgent: "Coves/1.0",
 		PDSURL:    pdsURL,
 	}

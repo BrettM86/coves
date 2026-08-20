@@ -67,7 +67,7 @@ func NewCloudflareTurnstile(secret string, opts ...TurnstileOption) TurnstileVer
 	c := &cloudflareTurnstile{
 		secret:        secret,
 		siteverifyURL: defaultTurnstileSiteverifyURL,
-		httpClient:    &http.Client{Timeout: turnstileHTTPTimeout},
+		httpClient:    &http.Client{Timeout: turnstileHTTPTimeout}, // coves:allow-bare-client: challenges.cloudflare.com, a fixed host; no caller-supplied URL reaches it
 	}
 	for _, opt := range opts {
 		opt(c)

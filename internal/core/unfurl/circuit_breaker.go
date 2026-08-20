@@ -1,10 +1,13 @@
 package unfurl
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"sync"
 	"time"
+
+	covesoauth "Coves/internal/atproto/oauth"
 )
 
 // circuitState represents the state of a circuit breaker
@@ -97,8 +100,43 @@ func (cb *circuitBreaker) recordSuccess(provider string) {
 	}
 }
 
-// recordFailure records a failed unfurl attempt
+// recordFailure records a failed unfurl attempt.
+//
+// # A GUARD REFUSAL IS NOT A FAILURE, AND COUNTING IT IS A DENIAL OF SERVICE
+//
+// The SSRF guard refuses a private, loopback or link-local destination before a
+// packet leaves the process, so a refusal carries no information about whether
+// the provider is up — nobody spoke to it. Counting one is wrong twice over.
+//
+// The first cost is availability, and it is an attack. The breaker's bucket for
+// the OpenGraph path is the constant string "opengraph": ONE bucket for the
+// whole instance, not one per host. Three pasted `http://127.0.0.1/` links
+// therefore disabled link previews for every user of this instance for
+// openDuration, at the cost of three posts, repeatable on expiry. The guard did
+// its job on each request and the aggregate was the outage — a denial of service
+// delivered THROUGH the security control.
+//
+// The second is diagnostic: the log line below names a healthy provider as the
+// failing party and quotes an address error as the evidence, which is exactly
+// the wrong place to send an operator looking.
+//
+// THE CHECK LIVES HERE, not at the three call sites in UnfurlURL, because those
+// three sit a few lines apart and each looks like the one above it. That is the
+// shape the three-unguarded-clients defect in providers.go took; one check at
+// the single point where a failure is COUNTED cannot be forgotten by the fourth
+// path someone adds. errors.Is and not a comparison, because what arrives here
+// has been through http.Client.Do's *url.Error and one fmt.Errorf of UnfurlURL's
+// own.
 func (cb *circuitBreaker) recordFailure(provider string, err error) {
+	if errors.Is(err, covesoauth.ErrBlockedAddress) {
+		log.Printf(
+			"[UNFURL-CIRCUIT] Not counting a refused address against provider '%s': %v",
+			provider,
+			err,
+		)
+		return
+	}
+
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 

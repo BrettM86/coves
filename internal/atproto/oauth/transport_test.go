@@ -74,7 +74,7 @@ func TestNewSSRFSafeHTTPClient(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := NewSSRFSafeHTTPClient(tt.allowPrivate)
+			client := NewSSRFSafeHTTPClient(PrivateAddressOptions(tt.allowPrivate)...)
 
 			if client == nil {
 				t.Fatal("NewSSRFSafeHTTPClient returned nil")
@@ -101,7 +101,7 @@ func TestNewSSRFSafeHTTPClient(t *testing.T) {
 }
 
 func TestSSRFSafeHTTPClient_RedirectLimit(t *testing.T) {
-	client := NewSSRFSafeHTTPClient(false)
+	client := NewSSRFSafeHTTPClient()
 
 	// Simulate checking redirect limit
 	if client.CheckRedirect == nil {

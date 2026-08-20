@@ -58,7 +58,7 @@ func authenticateWithPDS(ctx context.Context, pdsURL, handle, password string) (
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // coves:allow-bare-client: pdsURL is a.cfg.PDS.URL, operator config; this is the AppView authenticating to its own PDS at startup
 	if err != nil {
 		return "", fmt.Errorf("failed to call PDS: %w", err)
 	}

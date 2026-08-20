@@ -725,7 +725,30 @@ func (a *Account) UploadBlob(t TestingT, data []byte, mimeType string) BlobRef {
 // ones, so no conversion is needed. That one line replaces the four adapters in
 // tests/integration/helpers.go, and the validation they each did slightly
 // differently now happens once, here.
-func PasswordAuthFactory[C any](newClient func(host, did, accessToken string) (C, error)) func(context.Context, *oauth.ClientSessionData) (C, error) {
+//
+// # IT IS GENERIC OVER THE OPTION TYPE TOO, AND THAT IS THE POINT
+//
+// internal/atproto/pds/factory.go used to carry a comment naming THIS function
+// as the reason its constructors could not take a dev hatch: adding a variadic
+// parameter would change their type and stop them being assignable here. That
+// was true of a non-generic parameter and is not true of this one — O is
+// inferred from the constructor itself, so pds.NewFromAccessToken keeps being
+// passed by name whether it takes options or not, and all twenty of its direct
+// call sites compile unchanged because a variadic parameter is optional.
+//
+// The trailing opts are how a test opens that hatch ONCE for a whole service,
+// rather than at each of the constructor's call sites:
+//
+//	testkit.PasswordAuthFactory(pds.NewFromAccessToken, pds.PrivateHostOptions(true)...)
+//
+// Every PDS this seam reaches is the CI stack's, on loopback, which is exactly
+// the address class the guard refuses — so a test that omits them will fail at
+// the first write with an SSRF refusal rather than silently doing something
+// weaker.
+func PasswordAuthFactory[C any, O any](
+	newClient func(host, did, accessToken string, opts ...O) (C, error),
+	opts ...O,
+) func(context.Context, *oauth.ClientSessionData) (C, error) {
 	return func(_ context.Context, session *oauth.ClientSessionData) (C, error) {
 		var zero C
 		switch {
@@ -736,6 +759,6 @@ func PasswordAuthFactory[C any](newClient func(host, did, accessToken string) (C
 		case session.HostURL == "":
 			return zero, fmt.Errorf("testkit: session for %s has no host URL", session.AccountDID)
 		}
-		return newClient(session.HostURL, session.AccountDID.String(), session.AccessToken)
+		return newClient(session.HostURL, session.AccountDID.String(), session.AccessToken, opts...)
 	}
 }

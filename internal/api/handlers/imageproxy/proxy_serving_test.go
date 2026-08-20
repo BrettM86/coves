@@ -124,7 +124,14 @@ func newProxyServer(t *testing.T, resolver identity.Resolver, fetchTimeout time.
 	service, err := imageproxycore.NewService(
 		cache,
 		imageproxycore.NewProcessor(),
-		imageproxycore.NewPDSFetcher(fetchTimeout, 10),
+		// The hatch, for the same reason the T0 fixtures in
+		// core/imageproxy/fetcher_test.go carry it: every PDS these tests point
+		// at is an httptest server or the CI stack's own PDS, and both listen on
+		// loopback — which is precisely what the fetcher's SSRF guard refuses.
+		// Nothing here is a test OF the guard; that lives in
+		// core/imageproxy/fetcher_guard_test.go, whose fetchers are built
+		// without this option and assert the listener is never reached.
+		imageproxycore.NewPDSFetcher(fetchTimeout, 10, imageproxycore.WithPrivateHostsAllowed()),
 		imageproxycore.Config{
 			Enabled:         true,
 			CachePath:       cacheDir,

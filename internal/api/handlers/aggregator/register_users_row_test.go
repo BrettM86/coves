@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -74,13 +73,16 @@ func TestRegister_WritesTheAggregatorIntoTheUsersTable(t *testing.T) {
 	userService := users.NewUserService(userRepo, resolver, pdsURL, nil, "")
 
 	handler := NewRegisterHandler(userService, resolver)
-	handler.SetHTTPClient(stub.Client())
+	handler.setHTTPClient(stubClient(t, stub))
 
 	body, err := json.Marshal(RegisterRequest{
 		DID: did,
-		// The client sends a bare host:port, and the handler is what turns it
-		// into an https:// URL.
-		Domain: strings.TrimPrefix(stub.URL, "https://"),
+		// The client sends a bare hostname, and the handler is what turns it
+		// into an https:// URL. It cannot send the stub's own address: that is
+		// 127.0.0.1:PORT, which registration now refuses as not-a-hostname
+		// before any HTTP client is touched. stubClient pins the dial so this
+		// name reaches the stub anyway — see register_test.go.
+		Domain: stubDomain,
 	})
 	require.NoError(t, err)
 

@@ -34,7 +34,12 @@ func newCommitClient(t *testing.T, handler http.HandlerFunc) (CommitClient, func
 
 	server := httptest.NewServer(handler)
 
-	generic, err := NewFromAccessToken(server.URL, applyWritesDID, "test-token")
+	// The hatch is open because httptest listens on loopback, which is exactly the
+	// address class the guard refuses. These tests are about applyWrites' WIRE
+	// FORMAT, not about which addresses may be dialled — factory_guard_test.go
+	// owns that — so opening it here keeps each test measuring one thing.
+	generic, err := NewFromAccessToken(server.URL, applyWritesDID, "test-token",
+		PrivateHostOptions(true)...)
 	if err != nil {
 		server.Close()
 		t.Fatalf("NewFromAccessToken: %v", err)

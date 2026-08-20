@@ -240,7 +240,7 @@ func (r *authorRepoRegistry) factory() posts.AuthorRepoFactory {
 		if host == "" {
 			host = r.pds.URL()
 		}
-		client, err := pds.NewFromAccessToken(host, account.DID, account.AccessToken)
+		client, err := pds.NewFromAccessToken(host, account.DID, account.AccessToken, pds.PrivateHostOptions(true)...)
 		if err != nil {
 			return nil, fmt.Errorf("opening the repo of %s: %w", authorDID, err)
 		}
@@ -319,9 +319,10 @@ func newPostFixture(t *testing.T) *postFixture {
 		pdsServer.URL(),
 		instanceDID,
 		instanceDomain,
-		communities.NewPDSAccountProvisioner(instanceDomain, pdsServer.URL()),
-		testkit.PasswordAuthFactory(pds.NewFromAccessToken),
+		communities.NewPDSAccountProvisioner(instanceDomain, pdsServer.URL(), communities.PrivateHostOptions(true)...),
+		testkit.PasswordAuthFactory(pds.NewFromAccessToken, pds.PrivateHostOptions(true)...),
 		nil,
+		communities.PrivateHostOptions(true)...,
 	)
 
 	authorRepos := newAuthorRepoRegistry(pdsServer)
@@ -353,7 +354,12 @@ func newPostFixture(t *testing.T) *postFixture {
 		// fail. It is scripted to refuse, so a fast path that consulted it at
 		// all fails these tests loudly.
 		&scriptedDecider{code: posts.DecisionRuleViolation},
-		posts.NewCommunityRecordWriter(posts.NewCommunityRepoFactory(communityService), time.Now),
+		posts.NewCommunityRecordWriter(
+			// The hatch, because every community repo this factory opens is on the
+			// CI stack's PDS at loopback — exactly the address class the guard
+			// refuses. Production wiring passes pds.PrivateHostOptions(cfg.IsDevEnv).
+			posts.NewCommunityRepoFactory(communityService, pds.PrivateHostOptions(true)...),
+			time.Now),
 		posts.NewCommunityCredentialRefresher(communityService),
 	)
 	acceptor := &acceptorSpy{delegate: engine}
@@ -389,6 +395,14 @@ func (f *postFixture) writePathOptions() []posts.PostServiceOption {
 	return []posts.PostServiceOption{
 		posts.WithAuthorRepoFactory(f.authorRepos.factory()),
 		posts.WithSyncAcceptance(f.admissions, f.acceptor),
+
+		// The SSRF dev gate for the clients the service builds against a
+		// COMMUNITY's repo — deleteCommunityPost's direct client and the
+		// acceptance withdrawer's factory. It belongs here rather than at one
+		// fixture because it is a property of WHERE these tests point (the CI
+		// stack's loopback PDS), not of what any one of them is proving, and the
+		// neighbouring fixtures dial the same PDS through the same two paths.
+		posts.WithPDSClientOptions(pds.PrivateHostOptions(true)...),
 	}
 }
 

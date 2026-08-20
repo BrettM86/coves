@@ -374,7 +374,8 @@ func newRealRepoFixture(t *testing.T, db *sql.DB) *realRepoFixture {
 		newMockUserService(), db,
 		WithAdmissions(admissions),
 		WithDeletedAccounts(postgres.NewDeletedAccountRepository(db)),
-		WithPostRecordFetcher(NewDevDirectPostFetcher(pinnedResolver(author.DID, pdsServer.URL()))),
+		WithPostRecordFetcher(NewDirectPostFetcher(pinnedResolver(author.DID, pdsServer.URL()),
+			PrivatePostFetcherOptions(true)...)),
 	)
 
 	return &realRepoFixture{

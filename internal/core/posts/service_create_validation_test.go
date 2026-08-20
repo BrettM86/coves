@@ -64,7 +64,8 @@ func TestService_CreateResolvesTheCommunityAndValidatesTheRequest(t *testing.T) 
 	// instance hosts, so the service's notion of "here" has to match the domain
 	// in the community's handle.
 	communityService := communities.NewCommunityServiceWithPDSFactory(
-		communityRepo, pdsURL, instanceDID, instanceDomain, nil, nil, nil)
+		communityRepo, pdsURL, instanceDID, instanceDomain, nil, nil, nil,
+		communities.PrivateHostOptions(true)...)
 	postService := posts.NewPostService(postRepo, communityService, nil, nil, nil, nil, pdsURL,
 		posts.WithAdmissionPolicy(posts.NewAllowAllAdmissionPolicyForTests()))
 

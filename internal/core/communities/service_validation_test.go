@@ -56,9 +56,10 @@ const reachedProvisioning = "PDS account creation failed"
 func newValidationService(t *testing.T) (communities.Service, *fakeCommunityRepo) {
 	t.Helper()
 	repo := newFakeCommunityRepo()
-	provisioner := communities.NewPDSAccountProvisioner(fakeInstanceDomain, unparseablePDSURL)
+	provisioner := communities.NewPDSAccountProvisioner(fakeInstanceDomain, unparseablePDSURL, communities.PrivateHostOptions(true)...)
 	service := communities.NewCommunityServiceWithPDSFactory(
-		repo, unparseablePDSURL, fakeInstanceDID, fakeInstanceDomain, provisioner, nil, nil)
+		repo, unparseablePDSURL, fakeInstanceDID, fakeInstanceDomain, provisioner, nil, nil,
+		communities.PrivateHostOptions(true)...)
 	return service, repo
 }
 

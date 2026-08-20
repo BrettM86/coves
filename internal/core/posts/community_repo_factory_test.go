@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 
+	"Coves/internal/atproto/pds"
 	"Coves/internal/core/posts"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
@@ -43,7 +44,13 @@ func TestCommunityRepoFactory_OpensAHostedCommunitysRepo(t *testing.T) {
 	t.Parallel()
 
 	fixture := newPostFixture(t)
-	factory := posts.NewCommunityRepoFactory(fixture.communityService)
+
+	// The hatch, and this is the ONLY test in this file that needs it: it is the
+	// only one that gets far enough to open a repo, which means dialling the CI
+	// stack's PDS on loopback. The two refusal cases below deliberately keep the
+	// GUARDED spelling — they must fail before any client is built, so if either
+	// ever started dialling, an SSRF refusal is exactly the loud failure wanted.
+	factory := posts.NewCommunityRepoFactory(fixture.communityService, pds.PrivateHostOptions(true)...)
 
 	repo, err := factory(context.Background(), fixture.community.DID)
 	require.NoError(t, err, "the AppView provisioned this community's account, so it holds its credentials")

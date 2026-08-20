@@ -166,7 +166,8 @@ func TestAdmission_ConvergeMustNotRegressTheEvaluatedCID(t *testing.T) {
 		WithAdmissions(f.admissions),
 		WithDeletedAccounts(postgres.NewDeletedAccountRepository(db)),
 		WithPostRecordFetcher(&racingFetcher{
-			inner: NewDevDirectPostFetcher(pinnedResolver(f.author.DID, f.pds.URL())),
+			inner: NewDirectPostFetcher(pinnedResolver(f.author.DID, f.pds.URL()),
+				PrivatePostFetcherOptions(true)...),
 			before: func() {
 				require.NoError(t, f.consumer.HandleEvent(context.Background(), pv2Event(
 					f.author.DID, "create", record.RKey, testkit.TID(), newerCID, time.Now().UnixMicro(),

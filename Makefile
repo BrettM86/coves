@@ -1,4 +1,4 @@
-.PHONY: help dev-up dev-up-otel dev-down dev-logs dev-status dev-reset test test-integration test-e2e test-e2e-dev test-live test-db-prepare test-audit ci ci-clean clean mobile-full-setup
+.PHONY: help dev-up dev-up-otel dev-down dev-logs dev-status dev-reset test test-integration test-e2e test-e2e-dev test-live test-db-prepare test-audit ssrf-audit ci ci-clean clean mobile-full-setup
 
 # Default target - show help
 .DEFAULT_GOAL := help
@@ -287,6 +287,9 @@ test-db-prepare: ## Create or refresh the template database that testkit.DB clon
 
 test-audit: ## Test-suite invariant audit - hard gate, any violation fails (-v for file:line)
 	@./scripts/test-audit.sh
+
+ssrf-audit: ## SSRF guard regression fence over production code - hard gate (-v for file:line)
+	@./scripts/ssrf-audit.sh
 
 test-db-stop: ## Stop test database
 	@docker-compose -f docker-compose.dev.yml --env-file .env.dev --profile test stop postgres-test

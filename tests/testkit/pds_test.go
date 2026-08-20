@@ -499,10 +499,17 @@ func TestPDS_RejectsAMalformedSessionResponse(t *testing.T) {
 // call sites in phase 3, where importing a domain package is legal.
 type fakeClient struct {
 	host, did, token string
+	opts             []fakeOption
 }
 
-func newFakeClient(host, did, token string) (*fakeClient, error) {
-	return &fakeClient{host: host, did: did, token: token}, nil
+// fakeOption stands in for pds.ClientOption — the dev-hatch option type the real
+// constructors now carry. It is a distinct type so the inference this adapter
+// depends on (O from the constructor, not from the trailing arguments) is
+// exercised rather than assumed.
+type fakeOption struct{ name string }
+
+func newFakeClient(host, did, token string, opts ...fakeOption) (*fakeClient, error) {
+	return &fakeClient{host: host, did: did, token: token, opts: opts}, nil
 }
 
 func TestPasswordAuthFactory_PassesTheSessionThrough(t *testing.T) {
@@ -522,11 +529,38 @@ func TestPasswordAuthFactory_PassesTheSessionThrough(t *testing.T) {
 	assert.Equal(t, "token-abc", client.token)
 }
 
+// TestPasswordAuthFactory_ForwardsTheConstructorOptions is what makes the dev
+// hatch reachable through this seam at all.
+//
+// The real constructors refuse private addresses, and every PDS this adapter
+// reaches is the CI stack's, on loopback. So a caller passes
+// pds.PrivateHostOptions(true) here ONCE for a whole service — and if the
+// adapter accepted those options and dropped them, every such caller would get a
+// guarded client while reading as though it had opened the hatch, which is the
+// failure mode that is hardest to see from the call site.
+func TestPasswordAuthFactory_ForwardsTheConstructorOptions(t *testing.T) {
+	hatch := fakeOption{name: "private-hosts-allowed"}
+	factory := PasswordAuthFactory(newFakeClient, hatch)
+
+	did, err := syntax.ParseDID("did:plc:abc123")
+	require.NoError(t, err)
+	client, err := factory(context.Background(), &oauth.ClientSessionData{
+		AccountDID: did, AccessToken: "token-abc", HostURL: "http://pds.test",
+	})
+
+	require.NoError(t, err)
+	assert.Equalf(t, []fakeOption{hatch}, client.opts,
+		"the adapter dropped the options it was given. A caller passing "+
+			"pds.PrivateHostOptions(true) would get a GUARDED client and no indication of it, and "+
+			"every write against the loopback CI stack would fail as an SSRF refusal attributed to "+
+			"the service under test")
+}
+
 func TestPasswordAuthFactory_PropagatesAConstructorRejection(t *testing.T) {
 	// The real constructor validates its arguments too. A factory that
 	// swallowed that error would hand back a nil client and move the failure to
 	// whichever line first used it.
-	failing := func(host, did, token string) (*fakeClient, error) {
+	failing := func(host, _, _ string, _ ...fakeOption) (*fakeClient, error) {
 		return nil, fmt.Errorf("constructor refused host %q", host)
 	}
 	factory := PasswordAuthFactory(failing)

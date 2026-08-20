@@ -72,7 +72,7 @@ func newWriteForwardFixture(t *testing.T) *writeForwardFixture {
 	// DID, and resolveIdentifier short-circuits before touching it. Handle
 	// resolution is service_test.go's subject.
 	service := userblocks.NewServiceWithPDSFactory(repo, nil,
-		testkit.PasswordAuthFactory(pds.NewFromAccessToken))
+		testkit.PasswordAuthFactory(pds.NewFromAccessToken, pds.PrivateHostOptions(true)...))
 
 	return &writeForwardFixture{
 		service: service,

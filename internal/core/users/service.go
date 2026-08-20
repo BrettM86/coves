@@ -2,6 +2,7 @@ package users
 
 import (
 	"Coves/internal/atproto/identity"
+	covesoauth "Coves/internal/atproto/oauth"
 	"Coves/internal/core/blobs"
 	"bytes"
 	"context"
@@ -84,18 +85,117 @@ type userService struct {
 	profileBackfillClient *http.Client
 }
 
+// NewProfileBackfillClient builds the client the detached profile backfill
+// fetches through, and is the dev gate for this call site.
+//
+// # WHAT IT IS GUARDING
+//
+// backfillProfile fetches `pdsURL` — taken from the indexed user's record, so
+// chosen by whoever that user's PDS says it is — from a goroutine detached from
+// the request that started it. Nothing waits on it and nothing retries it, so
+// today a refusal, a timeout and a hang are all equally invisible. That is the
+// second half of what makes this site worth closing: an SSRF nobody can see is
+// also a control nobody can tell is working.
+//
+// # THE BOOLEAN IS THE GATE
+//
+// It takes an allow-private boolean rather than returning options, because
+// WithProfileBackfill takes a whole client and there is nothing to append to.
+// The contract is the same as PrivateHostOptions everywhere else: FALSE MUST
+// PRODUCE A GUARDED CLIENT, and `.env.ci:140` sets IS_DEV_ENV=true so `make ci`
+// never evaluates that branch anywhere else. This function is where it is
+// tested.
+//
+// # THE DEV GATE IS THE ONLY THING A CALLER MAY SAY
+//
+// It takes the gate and nothing else, so "production cannot open the guard" is a
+// fact about the signature rather than a description of current call sites. It
+// used to take `opts ...covesoauth.Option` as a test seam — an EXPORTED type,
+// and covesoauth.WithPrivateAddressesAllowed() is an exported option, so any
+// package in the tree could open the guard here with nothing for the audit to
+// grep. The seam is real and still needed (a guard test that builds its own
+// client proves only that internal/atproto/oauth works), so it moved down to
+// newProfileBackfillClient, which is unexported and reachable only from this
+// package's own tests. That mirrors jetstream's newWellKnownClient, blobs'
+// newBlobUploadClient and the aggregator's registerHTTPClient.
+//
+// # THE TIMEOUT IS THIS SITE'S OWN, AND IT IS THE SECOND OF TWO
+//
+// profileBackfillTimeout is re-applied over the shared client's 15s ceiling.
+// backfillProfile detaches from its caller with context.WithoutCancel and then
+// re-bounds with context.WithTimeout on the SAME constant, so the two agree by
+// construction and the fetch is bounded even if this line is lost. Keep them
+// equal: a client ceiling above the context deadline makes this field dead, and
+// one below it silently shortens every backfill.
+//
+// # SO IS THE BYTE CEILING, AND IT IS THIRTY-TWO TIMES SMALLER THAN THE DEFAULT
+//
+// maxProfileResponseBytes is 1 MiB against oauth.DefaultMaxResponseBytes's
+// 32 MiB, and oauth.DefaultMaxResponseBytes documents by name that a caller
+// holding its own limit has to state it. FetchProfileRecord's io.LimitReader is
+// only half of that limit: it bounds what io.ReadAll ALLOCATES and has no say
+// over a response that ANNOUNCES its length, which the transport refuses before
+// a byte of body is read. Inheriting the shared default left this site — a fetch
+// against whatever host the indexed user's PDS names, from a goroutine nothing
+// waits on — running a ceiling thirty-two times looser than the one written
+// beside the read.
+//
+// EXACTLY THE LIMIT, NOT ONE ABOVE IT, and the difference from
+// imageproxy/fetcher.go and posts' newGuardedRematerializeBlobClient is in what
+// those two sites read. Both probe one byte PAST their own cap so that an
+// oversized body is DETECTED rather than truncated, and a transport cap set to
+// exactly their cap clips the probing byte. FetchProfileRecord reads
+// maxProfileResponseBytes and stops, so there is no probe to make room for and a
+// cap one byte higher would be a number describing nothing.
+func NewProfileBackfillClient(allowPrivateHosts bool) *http.Client {
+	return newProfileBackfillClient(allowPrivateHosts)
+}
+
+// newProfileBackfillClient is NewProfileBackfillClient with the test seam
+// attached, unexported so that the seam cannot be reached from outside this
+// package. See NewProfileBackfillClient for everything the numbers below mean.
+func newProfileBackfillClient(allowPrivateHosts bool, opts ...covesoauth.Option) *http.Client {
+	// The site's own cap goes in BEFORE opts, so the test seam keeps its ability
+	// to override — and after PrivateAddressOptions, which is one-way and cannot
+	// be affected by either.
+	client := covesoauth.NewSSRFSafeHTTPClient(append(
+		covesoauth.PrivateAddressOptions(allowPrivateHosts),
+		append([]covesoauth.Option{
+			covesoauth.WithMaxResponseBytes(maxProfileResponseBytes),
+		}, opts...)...,
+	)...)
+	client.Timeout = profileBackfillTimeout
+	return client
+}
+
 // UserServiceOption configures optional behavior on the user service.
 type UserServiceOption func(*userService)
 
 // WithProfileBackfill enables best-effort profile backfill during IndexUser (see
-// profileBackfillClient). Pass nil to use a default client with a 10s timeout.
-// The fetch+store runs in a detached goroutine so it never blocks IndexUser
-// callers (OAuth login, Jetstream consumers); failures are logged only — run
-// cmd/backfill-profiles to reconcile users whose backfill fetch failed.
+// profileBackfillClient). Pass nil to use NewProfileBackfillClient's GUARDED
+// client. The fetch+store runs in a detached goroutine so it never blocks
+// IndexUser callers (OAuth login, Jetstream consumers); failures are logged only
+// — run cmd/backfill-profiles to reconcile users whose backfill fetch failed.
+//
+// # THE NIL FALLBACK GOES THROUGH THE GATE, NOT AROUND IT
+//
+// It used to be `&http.Client{Timeout: 10 * time.Second}` — a second way for
+// this service to acquire a backfill client, and the only one that never met
+// NewProfileBackfillClient. That mattered because the nil branch is not a call
+// site anyone reviews; it is what a call site DEGRADES TO, so the failure mode
+// was "someone wired this the way the doc comment suggested" rather than
+// "someone wired this wrongly". A guard whose default is unguarded is not a
+// guard.
+//
+// The hatch is deliberately unreachable from here: false is hardcoded because
+// the argument this option takes is a whole client, so a caller that wants the
+// dev hatch has NewProfileBackfillClient(true) to pass — which cmd/server
+// already does, from cfg.IsDevEnv. Falling back is for callers that expressed no
+// opinion, and what those get has to be the safe value.
 func WithProfileBackfill(client *http.Client) UserServiceOption {
 	return func(s *userService) {
 		if client == nil {
-			client = &http.Client{Timeout: 10 * time.Second}
+			client = NewProfileBackfillClient(false)
 		}
 		s.profileBackfillClient = client
 	}
@@ -160,7 +260,7 @@ func NewUserService(
 		defaultPDS:       defaultPDS,
 		turnstile:        turnstile,
 		pdsAdminPassword: pdsAdminPassword,
-		pdsAdminClient:   &http.Client{Timeout: pdsAdminCallTimeout},
+		pdsAdminClient:   &http.Client{Timeout: pdsAdminCallTimeout}, // coves:allow-bare-client: pdsAdminClient talks to the AppView's own PDS from operator config
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -322,7 +422,7 @@ func (s *userService) RegisterAccount(ctx context.Context, req RegisterAccountRe
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	// Set timeout to prevent hanging on slow/unavailable PDS
-	client := &http.Client{
+	client := &http.Client{ // coves:allow-bare-client: endpoint is built from s.defaultPDS, operator config, never a caller-supplied host
 		Timeout: 10 * time.Second,
 	}
 	resp, err := client.Do(httpReq)

@@ -25,7 +25,7 @@ type DevHandleResolver struct {
 func NewDevHandleResolver(pdsURL string, allowPrivateIPs bool) *DevHandleResolver {
 	return &DevHandleResolver{
 		pdsURL:     strings.TrimSuffix(pdsURL, "/"),
-		httpClient: NewSSRFSafeHTTPClient(allowPrivateIPs),
+		httpClient: NewSSRFSafeHTTPClient(PrivateAddressOptions(allowPrivateIPs)...),
 	}
 }
 

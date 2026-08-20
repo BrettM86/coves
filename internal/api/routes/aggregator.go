@@ -15,12 +15,19 @@ import (
 
 // RegisterAggregatorRoutes registers aggregator-related XRPC endpoints
 // Following Bluesky's pattern for feed generators and labelers
+//
+// registerOpts is threaded straight through to the registration handler, and
+// exists because that handler makes an outbound request to a domain an
+// unauthenticated caller supplies. This function has no config of its own, so
+// the SSRF gate has to arrive from cmd/server; it is variadic so that the
+// guarded construction stays the one a caller gets by writing nothing.
 func RegisterAggregatorRoutes(
 	r chi.Router,
 	aggregatorService aggregators.Service,
 	communityService communities.Service,
 	userService users.UserService,
 	identityResolver identity.Resolver,
+	registerOpts ...aggregator.RegisterHandlerOption,
 ) {
 	// Create query handlers
 	getServicesHandler := aggregator.NewGetServicesHandler(aggregatorService)
@@ -28,7 +35,7 @@ func RegisterAggregatorRoutes(
 	listForCommunityHandler := aggregator.NewListForCommunityHandler(aggregatorService, communityService)
 
 	// Create registration handler
-	registerHandler := aggregator.NewRegisterHandler(userService, identityResolver)
+	registerHandler := aggregator.NewRegisterHandler(userService, identityResolver, registerOpts...)
 
 	// Query endpoints (public - no auth required)
 	// GET /xrpc/social.coves.aggregator.getServices?dids=did:plc:abc,did:plc:def

@@ -69,6 +69,7 @@ func newCommunityFeedHandler(db *sql.DB) *communityFeed.GetCommunityHandler {
 		nil,
 		nil,
 		nil,
+		communities.PrivateHostOptions(true)...,
 	)
 	feedService := communityFeeds.NewCommunityFeedService(
 		postgres.NewCommunityFeedRepository(db, feedCursorSecret),

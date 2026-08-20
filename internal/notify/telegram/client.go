@@ -65,7 +65,7 @@ func NewClient(cfg Config) (*Client, error) {
 		botToken:   cfg.BotToken,
 		chatID:     cfg.ChatID,
 		baseURL:    strings.TrimSuffix(baseURL, "/"),
-		httpClient: &http.Client{Timeout: cfg.Timeout},
+		httpClient: &http.Client{Timeout: cfg.Timeout}, // coves:allow-bare-client: api.telegram.org, a fixed host in this package's own const; no caller-supplied URL reaches it
 	}, nil
 }
 

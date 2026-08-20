@@ -2,7 +2,7 @@
 # Builds a minimal production image for the Go server
 
 # Stage 1: Build
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26.7-alpine3.24 AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates tzdata
@@ -36,7 +36,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${GOARCH} go build \
     ./cmd/server
 
 # Stage 2: Runtime
-FROM alpine:3.19
+FROM alpine:3.24.1
 
 # Install runtime dependencies
 RUN apk add --no-cache ca-certificates tzdata

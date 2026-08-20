@@ -9,6 +9,26 @@ import (
 	"time"
 )
 
+// EVERY FETCHER BELOW IS BUILT WITH THE HATCH OPEN, AND THAT IS A FIXTURE
+// REPAIR RATHER THAN A CHANGE OF SUBJECT.
+//
+// These are the fetcher's ordinary behaviours — status mapping, timeouts, URL
+// construction, the size limit — and every one of them serves its PDS from
+// httptest, which listens on loopback. Loopback is exactly what the SSRF guard
+// refuses, so once NewPDSFetcher started returning a guarded client all ten
+// failed identically, at the guard, before reaching the behaviour under test.
+// WithPrivateHostsAllowed() puts the address guard back out of the way; not one
+// assertion in this file was weakened, and the same repair is what
+// blobs/fetch_guard_test.go:128 and blueskypost/service_test.go:62 did.
+//
+// WHAT THIS COSTS, STATED PLAINLY: with the hatch open none of these tests says
+// anything about the guard. They are not supposed to. The guard is bound in
+// fetcher_guard_test.go, whose cases build the fetcher WITHOUT the hatch and
+// assert the listener is never reached — so if a repair here ever leaked into
+// those, they would go green while the endpoint was wide open. That is the
+// failure mode this comment exists to name, and the reason the hatch appears
+// only in fixtures whose subject is something else entirely.
+
 func TestPDSFetcher_Fetch_Success(t *testing.T) {
 	// Setup test server that returns blob data
 	expectedData := []byte("test image data")
@@ -28,7 +48,7 @@ func TestPDSFetcher_Fetch_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	fetcher := NewPDSFetcher(5*time.Second, 10)
+	fetcher := NewPDSFetcher(5*time.Second, 10, WithPrivateHostsAllowed())
 	ctx := context.Background()
 
 	data, err := fetcher.Fetch(ctx, server.URL, "did:plc:test123", "bafyreicid123")
@@ -46,7 +66,7 @@ func TestPDSFetcher_Fetch_NotFound(t *testing.T) {
 	}))
 	defer server.Close()
 
-	fetcher := NewPDSFetcher(5*time.Second, 10)
+	fetcher := NewPDSFetcher(5*time.Second, 10, WithPrivateHostsAllowed())
 	ctx := context.Background()
 
 	_, err := fetcher.Fetch(ctx, server.URL, "did:plc:test123", "bafyreicid123")
@@ -72,7 +92,7 @@ func TestPDSFetcher_Fetch_Timeout(t *testing.T) {
 	defer close(release)
 
 	// Use a very short timeout
-	fetcher := NewPDSFetcher(50*time.Millisecond, 10)
+	fetcher := NewPDSFetcher(50*time.Millisecond, 10, WithPrivateHostsAllowed())
 	ctx := context.Background()
 
 	_, err := fetcher.Fetch(ctx, server.URL, "did:plc:test123", "bafyreicid123")
@@ -82,7 +102,7 @@ func TestPDSFetcher_Fetch_Timeout(t *testing.T) {
 }
 
 func TestPDSFetcher_Fetch_NetworkError(t *testing.T) {
-	fetcher := NewPDSFetcher(5*time.Second, 10)
+	fetcher := NewPDSFetcher(5*time.Second, 10, WithPrivateHostsAllowed())
 	ctx := context.Background()
 
 	// Port 99999 is outside the valid range, so this is a malformed address
@@ -109,7 +129,7 @@ func TestPDSFetcher_Fetch_ContextCancellation(t *testing.T) {
 	defer server.Close()
 	defer close(release)
 
-	fetcher := NewPDSFetcher(5*time.Second, 10)
+	fetcher := NewPDSFetcher(5*time.Second, 10, WithPrivateHostsAllowed())
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Cancel the context immediately
@@ -131,7 +151,7 @@ func TestPDSFetcher_Fetch_ServerError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	fetcher := NewPDSFetcher(5*time.Second, 10)
+	fetcher := NewPDSFetcher(5*time.Second, 10, WithPrivateHostsAllowed())
 	ctx := context.Background()
 
 	_, err := fetcher.Fetch(ctx, server.URL, "did:plc:test123", "bafyreicid123")
@@ -149,7 +169,7 @@ func TestPDSFetcher_Fetch_URLConstruction(t *testing.T) {
 	}))
 	defer server.Close()
 
-	fetcher := NewPDSFetcher(5*time.Second, 10)
+	fetcher := NewPDSFetcher(5*time.Second, 10, WithPrivateHostsAllowed())
 	ctx := context.Background()
 
 	_, err := fetcher.Fetch(ctx, server.URL, "did:plc:abc123", "bafyreicid456")
@@ -174,7 +194,7 @@ func TestPDSFetcher_Fetch_ImageTooLarge_ContentLength(t *testing.T) {
 	defer server.Close()
 
 	// Use 1MB max size
-	fetcher := NewPDSFetcher(5*time.Second, 1)
+	fetcher := NewPDSFetcher(5*time.Second, 1, WithPrivateHostsAllowed())
 	ctx := context.Background()
 
 	_, err := fetcher.Fetch(ctx, server.URL, "did:plc:test123", "bafyreicid123")
@@ -193,7 +213,7 @@ func TestPDSFetcher_Fetch_ImageTooLarge_StreamingBody(t *testing.T) {
 	defer server.Close()
 
 	// Use 1MB max size
-	fetcher := NewPDSFetcher(5*time.Second, 1)
+	fetcher := NewPDSFetcher(5*time.Second, 1, WithPrivateHostsAllowed())
 	ctx := context.Background()
 
 	_, err := fetcher.Fetch(ctx, server.URL, "did:plc:test123", "bafyreicid123")
@@ -215,7 +235,7 @@ func TestPDSFetcher_Fetch_SizeWithinLimit(t *testing.T) {
 	defer server.Close()
 
 	// Use 1MB max size
-	fetcher := NewPDSFetcher(5*time.Second, 1)
+	fetcher := NewPDSFetcher(5*time.Second, 1, WithPrivateHostsAllowed())
 	ctx := context.Background()
 
 	data, err := fetcher.Fetch(ctx, server.URL, "did:plc:test123", "bafyreicid123")

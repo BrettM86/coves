@@ -151,7 +151,21 @@ func handleServiceError(w http.ResponseWriter, err error) {
 		writeErrorResponse(w, http.StatusNotFound, "blob not found")
 	case errors.Is(err, imageproxy.ErrPDSTimeout):
 		writeErrorResponse(w, http.StatusGatewayTimeout, "request timed out")
-	case errors.Is(err, imageproxy.ErrPDSFetchFailed):
+	// ONE BRANCH FOR BOTH, so the status and the body cannot drift apart. A
+	// guard refusal must be indistinguishable from a PDS that is simply
+	// unreachable: the endpoint comes from a DID document anyone can mint, and
+	// this route needs no credential, so a distinct status — or the same status
+	// with a distinct body, which is the same oracle read one line further
+	// down — tells a stranger probing addresses which ones are internal.
+	//
+	// The internal distinction survives in the log line below and in
+	// errors.Is at every other caller; only the response is flattened.
+	case errors.Is(err, imageproxy.ErrPDSFetchFailed), errors.Is(err, imageproxy.ErrPDSBlocked):
+		if errors.Is(err, imageproxy.ErrPDSBlocked) {
+			slog.Warn("[IMAGE-PROXY] SSRF guard refused a PDS endpoint",
+				"error", err,
+			)
+		}
 		writeErrorResponse(w, http.StatusBadGateway, "failed to fetch blob from PDS")
 	case errors.Is(err, imageproxy.ErrInvalidPreset):
 		writeErrorResponse(w, http.StatusBadRequest, "invalid preset")

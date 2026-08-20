@@ -58,7 +58,7 @@ func TestCommentWrite_CreateTopLevelComment(t *testing.T) {
 			return nil, fmt.Errorf("session has no host URL")
 		}
 
-		return pds.NewFromAccessToken(session.HostURL, session.AccountDID.String(), session.AccessToken)
+		return pds.NewFromAccessToken(session.HostURL, session.AccountDID.String(), session.AccessToken, pds.PrivateHostOptions(true)...)
 	}
 
 	commentService := comments.NewCommentServiceWithPDSFactory(
@@ -266,7 +266,7 @@ func TestCommentWrite_CreateNestedReply(t *testing.T) {
 			return nil, fmt.Errorf("session has no host URL")
 		}
 
-		return pds.NewFromAccessToken(session.HostURL, session.AccountDID.String(), session.AccessToken)
+		return pds.NewFromAccessToken(session.HostURL, session.AccountDID.String(), session.AccessToken, pds.PrivateHostOptions(true)...)
 	}
 
 	commentService := comments.NewCommentServiceWithPDSFactory(
@@ -406,7 +406,7 @@ func TestCommentWrite_UpdateComment(t *testing.T) {
 			return nil, fmt.Errorf("session has no host URL")
 		}
 
-		return pds.NewFromAccessToken(session.HostURL, session.AccountDID.String(), session.AccessToken)
+		return pds.NewFromAccessToken(session.HostURL, session.AccountDID.String(), session.AccessToken, pds.PrivateHostOptions(true)...)
 	}
 
 	commentService := comments.NewCommentServiceWithPDSFactory(
@@ -516,7 +516,7 @@ func TestCommentWrite_DeleteComment(t *testing.T) {
 			return nil, fmt.Errorf("session has no host URL")
 		}
 
-		return pds.NewFromAccessToken(session.HostURL, session.AccountDID.String(), session.AccessToken)
+		return pds.NewFromAccessToken(session.HostURL, session.AccountDID.String(), session.AccessToken, pds.PrivateHostOptions(true)...)
 	}
 
 	commentService := comments.NewCommentServiceWithPDSFactory(
@@ -609,7 +609,7 @@ func TestCommentWrite_CannotUpdateOthersComment(t *testing.T) {
 			return nil, fmt.Errorf("session has no host URL")
 		}
 
-		return pds.NewFromAccessToken(session.HostURL, session.AccountDID.String(), session.AccessToken)
+		return pds.NewFromAccessToken(session.HostURL, session.AccountDID.String(), session.AccessToken, pds.PrivateHostOptions(true)...)
 	}
 
 	// Setup service
@@ -674,7 +674,7 @@ func TestCommentWrite_CannotDeleteOthersComment(t *testing.T) {
 			return nil, fmt.Errorf("session has no host URL")
 		}
 
-		return pds.NewFromAccessToken(session.HostURL, session.AccountDID.String(), session.AccessToken)
+		return pds.NewFromAccessToken(session.HostURL, session.AccountDID.String(), session.AccessToken, pds.PrivateHostOptions(true)...)
 	}
 
 	// Setup service
@@ -748,7 +748,7 @@ func TestCommentWrite_ConcurrentModificationDetection(t *testing.T) {
 		if session.HostURL == "" {
 			return nil, fmt.Errorf("session has no host URL")
 		}
-		return pds.NewFromAccessToken(session.HostURL, session.AccountDID.String(), session.AccessToken)
+		return pds.NewFromAccessToken(session.HostURL, session.AccountDID.String(), session.AccessToken, pds.PrivateHostOptions(true)...)
 	}
 
 	commentService := comments.NewCommentServiceWithPDSFactory(
@@ -818,7 +818,7 @@ func TestCommentWrite_ConcurrentModificationDetection(t *testing.T) {
 	// Create a PDS client and attempt to update with the stale (original) CID
 	t.Logf("\n🔍 Step 3: Testing concurrent modification detection with stale CID...")
 
-	pdsClient, err := pds.NewFromAccessToken(pdsURL, userDID, pdsAccessToken)
+	pdsClient, err := pds.NewFromAccessToken(pdsURL, userDID, pdsAccessToken, pds.PrivateHostOptions(true)...)
 	if err != nil {
 		t.Fatalf("Failed to create PDS client: %v", err)
 	}

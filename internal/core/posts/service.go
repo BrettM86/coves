@@ -46,6 +46,11 @@ type postService struct {
 	// that retracts, from a hosted community's repo, the acceptance the fast
 	// path put there. See compensateAuthorDelete.
 	acceptanceWithdrawal AcceptanceWithdrawer
+
+	// pdsClientOptions is the SSRF dev gate for every PDS client this service
+	// builds from a community's own credentials. Empty — the zero value — means
+	// GUARDED, so a wiring that forgets it is strict rather than open.
+	pdsClientOptions []pds.ClientOption
 }
 
 // PostServiceOption configures optional postService dependencies. Options keep the
@@ -58,6 +63,19 @@ type PostServiceOption func(*postService)
 // cold-load reads consistent with feed/timeline block filtering.
 func WithBlockChecker(checker BlockChecker) PostServiceOption {
 	return func(s *postService) { s.blockChecker = checker }
+}
+
+// WithPDSClientOptions supplies the SSRF dev gate for the PDS clients this
+// service builds against a COMMUNITY's repo, on that community's credentials.
+//
+// Two paths need it and both dial `community.PDSURL`, a database column rather
+// than configuration: deleteCommunityPost's direct client, and the acceptance
+// withdrawer's repo factory built in NewPostService. Passing nothing leaves both
+// guarded, which is why this is an option and not a required parameter — the
+// omission fails closed. cmd/server passes pds.PrivateHostOptions(cfg.IsDevEnv)...;
+// tests against the CI stack's loopback PDS pass pds.PrivateHostOptions(true)...
+func WithPDSClientOptions(opts ...pds.ClientOption) PostServiceOption {
+	return func(s *postService) { s.pdsClientOptions = opts }
 }
 
 // NewPostService creates a new post service
@@ -97,7 +115,8 @@ func NewPostService(
 	// community this instance does not host it answers ErrCommunityNotHosted and
 	// the delete path skips, which is the common case.
 	if s.acceptanceWithdrawal == nil && communityService != nil {
-		s.acceptanceWithdrawal = NewCommunityRecordWriter(NewCommunityRepoFactory(communityService), time.Now)
+		s.acceptanceWithdrawal = NewCommunityRecordWriter(
+			NewCommunityRepoFactory(communityService, s.pdsClientOptions...), time.Now)
 	}
 
 	// The admission policy is mandatory, and a missing or partial one panics
@@ -2003,8 +2022,10 @@ func (s *postService) deleteCommunityPost(ctx context.Context, userDID, communit
 		return fmt.Errorf("failed to refresh community credentials: %w", err)
 	}
 
-	// 6. Create PDS client for community repository
-	pdsClient, err := pds.NewFromAccessToken(community.PDSURL, community.DID, community.PDSAccessToken)
+	// 6. Create PDS client for community repository. The options carry the SSRF
+	// dev gate; empty means guarded, and community.PDSURL is a database column.
+	pdsClient, err := pds.NewFromAccessToken(community.PDSURL, community.DID, community.PDSAccessToken,
+		s.pdsClientOptions...)
 	if err != nil {
 		return fmt.Errorf("failed to create PDS client: %w", err)
 	}

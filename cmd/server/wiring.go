@@ -5,6 +5,7 @@ import (
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/atproto/oauth"
+	"Coves/internal/atproto/pds"
 	"Coves/internal/config"
 	"Coves/internal/core/adminreports"
 	"Coves/internal/core/aggregators"
@@ -27,7 +28,6 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -46,9 +46,11 @@ const (
 	// net for a PLC directory that accepts connections but never answers.
 	identityHTTPTimeout = 10 * time.Second
 
-	// profileBackfillTimeout bounds the best-effort fetch of a user's
-	// social.coves.actor.profile from their PDS during indexing.
-	profileBackfillTimeout = 10 * time.Second
+	// (The profile backfill's timeout used to be declared here as well. It now
+	// lives with the client that carries it, in users.NewProfileBackfillClient,
+	// because that client also has to re-apply it over the shared SSRF client's
+	// own ceiling — and a deadline stated in two packages is one that can be
+	// changed in one of them.)
 
 	// unfurlTimeout bounds fetching and parsing a link preview target.
 	unfurlTimeout = 10 * time.Second
@@ -90,8 +92,8 @@ type application struct {
 
 	// Repositories reused outside their own service (Jetstream consumers,
 	// route options).
-	userRepo       users.UserRepository
-	communityRepo  communities.Repository
+	userRepo      users.UserRepository
+	communityRepo communities.Repository
 	// postRepo is held as the CONCRETE repository rather than posts.Repository:
 	// the comment service's PostReader requires the admission-aware
 	// VisibleHeaderView as well, and storing the narrower interface here would
@@ -196,15 +198,48 @@ func (a *application) Close() {
 	})
 }
 
+// allowPrivateHosts is THE ONE CONVERSION from configuration to SSRF policy in
+// this binary. Every hatch-bearing call site below calls this rather than
+// reading a.cfg.IsDevEnv, so there is exactly one expression whose polarity has
+// to be right, and exactly one place a test has to reach.
+//
+// It exists because the polarity was previously spelled out thirteen times in
+// this package and no test anywhere evaluated any of them. `.env.ci:140` sets
+// IS_DEV_ENV=true, so `make ci` — the hermetic merge gate — takes the PERMISSIVE
+// branch at every one of those sites; inverting any single spelling left the
+// whole gate green. Collapsed here, the production branch is evaluated by
+// TestApplication_AllowPrivateHosts_IsOffUnderAProductionConfig, which is the
+// only place in the repository that ever runs it.
+//
+// It deliberately does NOT read the environment. cfg.IsDevEnv is parsed once at
+// boot, and an ambient read here would open every construction in this process
+// at once — including productionPLCResolver, which has to stay guarded in dev.
+//
+// NOT every a.cfg.IsDevEnv read belongs here. buildAuth's OAuthConfig.DevMode is
+// an AUTHENTICATION gate (cookie Secure flags, redirect-URI validation) that
+// happens to share the same input, and the two slog severity switches are about
+// what an operator is told rather than about what may be dialled. Folding those
+// in would make one accessor answer three different questions.
+func (a *application) allowPrivateHosts() bool { return a.cfg.IsDevEnv }
+
 func (a *application) buildIdentity() {
-	identityConfig := identity.DefaultConfig()
+	// The hatch, and ONLY here. This resolver follows
+	// cfg.Identity.ResolverPLCURL, which in dev is a PLC on the developer's own
+	// machine. productionPLCResolver below is built from the same DefaultConfig
+	// and must NOT get it — the two resolvers need opposite answers in the same
+	// process, which is why this is an argument rather than something the
+	// identity package works out for itself.
+	identityConfig := identity.DefaultConfig(identity.PrivateHostOptions(a.allowPrivateHosts())...)
 	identityConfig.PLCURL = a.cfg.Identity.ResolverPLCURL
 	if a.cfg.Identity.CacheTTL > 0 {
 		identityConfig.CacheTTL = a.cfg.Identity.CacheTTL
 	}
 	a.identityResolver = identity.NewResolver(a.db, identityConfig)
 
-	if a.cfg.IsDevEnv {
+	// The same expression the hatch above was derived from, not a second read of
+	// the same config field: a log line describing the SSRF gate has to be unable
+	// to disagree with the gate itself.
+	if a.allowPrivateHosts() {
 		slog.Warn("dev mode: identity resolver is using a local PLC directory",
 			"plc_url", identityConfig.PLCURL)
 	} else {
@@ -226,7 +261,7 @@ func (a *application) buildAuth() error {
 		// Private IPs are only resolvable in dev, where the PDS and PLC run
 		// on localhost. In production this must stay off: it is what stops
 		// OAuth from being pointed at an internal address.
-		AllowPrivateIPs: a.cfg.IsDevEnv,
+		AllowPrivateIPs: a.allowPrivateHosts(),
 		PLCURL:          a.cfg.Identity.PLCURL,
 		PDSURL:          a.cfg.PDS.URL,
 		// Setting both upgrades this to a confidential client, lifting the
@@ -301,7 +336,11 @@ func (a *application) buildServices(ctx context.Context) error {
 		a.cfg.PDS.URL,
 		turnstileVerifier,
 		a.cfg.PDS.AdminPassword,
-		users.WithProfileBackfill(&http.Client{Timeout: profileBackfillTimeout}),
+		// The backfill dials a PDS URL taken from the indexed user's record —
+		// firehose-discovered users bring that value from another instance — so
+		// the guard stays on in production and the hatch opens only in dev,
+		// where every PDS a developer indexes against is on loopback.
+		users.WithProfileBackfill(users.NewProfileBackfillClient(a.allowPrivateHosts())),
 		users.WithInstanceDomain(a.cfg.Instance.Domain),
 	)
 
@@ -316,17 +355,34 @@ func (a *application) buildServices(ctx context.Context) error {
 	// the fetch: an environment read at the call site would make the guarded
 	// branch untestable alongside t.Parallel and hide the most consequential
 	// input to a security decision from the place that makes it.
-	blobOptions := []blobs.BlobServiceOption{}
-	if a.cfg.IsDevEnv {
-		slog.Warn("dev mode: the blob fetch SSRF guard is disabled; " +
-			"remote image URLs may resolve to private addresses")
-		blobOptions = append(blobOptions, blobs.WithPrivateHostsAllowed())
+	//
+	// The decision goes through blobs.PrivateHostOptions rather than an inline
+	// `if` here, for the reason that helper documents: `.env.ci:140` sets
+	// IS_DEV_ENV=true, so `make ci` takes the permissive branch, and an inline
+	// conditional in wiring is reachable only by standing up this wiring with a
+	// production config — which nothing in this tree does. As a pure function the
+	// branch production actually runs becomes testable. The warning stays here,
+	// because it is about this process and not about the option — and it reads the
+	// SAME accessor the option is derived from, so it cannot drift into describing
+	// a gate state that is not the one in force.
+	if a.allowPrivateHosts() {
+		slog.Warn("dev mode: the blob SSRF guard is disabled on both the remote fetch and the " +
+			"PDS upload; remote image URLs and PDS URLs may resolve to private addresses")
 	}
-	blobService := blobs.NewBlobService(a.cfg.PDS.URL, blobOptions...)
+	blobService := blobs.NewBlobService(a.cfg.PDS.URL, blobs.PrivateHostOptions(a.allowPrivateHosts())...)
 
 	// V2.0: the PDS generates and manages community DIDs and keys entirely;
 	// Coves performs no cryptography of its own here.
-	provisioner := communities.NewPDSAccountProvisioner(a.cfg.Instance.Domain, a.cfg.PDS.URL)
+	//
+	// The same gate as the blob service above, on the xrpc calls this package
+	// makes to a community's PDS: account provisioning, token refresh, and the
+	// password re-auth that carries the community's cleartext password. All three
+	// used to leave xrpc.Client.Client nil, which makes indigo substitute an
+	// unguarded util.RobustHTTPClient(). In dev cfg.PDS.URL is a loopback address
+	// the guard would otherwise refuse.
+	communityPDSOptions := communities.PrivateHostOptions(a.allowPrivateHosts())
+	provisioner := communities.NewPDSAccountProvisioner(
+		a.cfg.Instance.Domain, a.cfg.PDS.URL, communityPDSOptions...)
 	a.communityService = communities.NewCommunityService(
 		a.communityRepo,
 		a.cfg.PDS.URL,
@@ -335,6 +391,7 @@ func (a *application) buildServices(ctx context.Context) error {
 		provisioner,
 		a.oauthClient,
 		blobService,
+		communityPDSOptions...,
 	)
 	a.authenticateInstanceWithPDS(ctx)
 
@@ -343,17 +400,34 @@ func (a *application) buildServices(ctx context.Context) error {
 
 	a.buildDualAuth()
 
-	unfurlService := unfurl.NewService(
-		unfurl.NewRepository(a.db),
+	// The SSRF hatch is open only in dev, where the links a developer pastes and
+	// the fixtures the test suite serves both live on the developer's own
+	// machine. In production this fetch dials whatever address a link pasted into
+	// a post resolves to — and unlike every other guarded fetch in this tree, it
+	// hands the response's CONTENT back, so an internal endpoint's page title
+	// would land in the unfurl cache and then in the post itself.
+	unfurlOptions := append([]unfurl.ServiceOption{
 		unfurl.WithTimeout(unfurlTimeout),
 		unfurl.WithUserAgent(unfurlUserAgent),
 		unfurl.WithCacheTTL(unfurlCacheTTL),
-	)
+	}, unfurl.PrivateHostOptions(a.allowPrivateHosts())...)
+	unfurlService := unfurl.NewService(unfurl.NewRepository(a.db), unfurlOptions...)
 
 	// Quoted Bluesky posts reference real handles on the production atProto
 	// network, which the dev/test PLC cannot resolve. This resolver is
-	// therefore always pointed at plc.directory — and is safe to use in dev
-	// because identity.Resolver only ever issues HTTP GETs.
+	// therefore always pointed at plc.directory, in every environment.
+	//
+	// NO SSRF HATCH, IN DEV EITHER — deliberately, and unlike a.identityResolver
+	// above. It is aimed at the public directory, so it has no reason to dial a
+	// private address; and dev is precisely the environment where the loopback
+	// it would otherwise be allowed to dial is a real PLC, a real Postgres and
+	// a real PDS. DefaultConfig() with no options is the guarded construction,
+	// which is why this line looks like it is doing nothing.
+	//
+	// (An earlier comment justified this resolver as "safe to use in dev
+	// because identity.Resolver only ever issues HTTP GETs". That reasoning is
+	// backwards: only-GETs IS the SSRF primitive. The image-proxy port scanner
+	// closed in ff901a5 was GET-only.)
 	productionPLCConfig := identity.DefaultConfig()
 	productionPLCConfig.PLCURL = "https://plc.directory"
 	productionPLCResolver := identity.NewResolver(a.db, productionPLCConfig)
@@ -384,6 +458,11 @@ func (a *application) buildServices(ctx context.Context) error {
 		a.postRepo, a.communityService, a.aggregatorService, blobService,
 		unfurlService, a.blueskyService, a.cfg.PDS.URL,
 		posts.WithBlockChecker(a.userBlockRepo),
+		// The SSRF dev gate for the clients this service builds against a
+		// COMMUNITY's repo, whose PDS URL is a database column. deleteCommunityPost
+		// is the path that needs it here; the withdrawer's factory carries its own,
+		// set in buildAcceptanceEngine.
+		posts.WithPDSClientOptions(pds.PrivateHostOptions(a.allowPrivateHosts())...),
 		// The AUTHOR's own credentials: a browser session when there is one,
 		// and an aggregator's stored tokens when there is not (§4.2 step 3).
 		posts.WithAuthorRepoFactory(
@@ -472,7 +551,7 @@ func (a *application) buildDeciderDeps() posts.DeciderDeps {
 		// short-circuits and admits UNLIMITED posts — the same admissions repo the
 		// ingestion consumer writes and the engine settles, so the rows counted as
 		// admitted are the rows the quota meters.
-		Admissions: a.admissionRepo,
+		Admissions:  a.admissionRepo,
 		Aggregators: a.aggregatorService,
 		Policy: posts.AdmissionPolicy{
 			Ledger: postgresRepo.NewSubmissionLedger(a.db),
@@ -492,7 +571,8 @@ func (a *application) buildDeciderDeps() posts.DeciderDeps {
 }
 
 func (a *application) buildAcceptanceEngine() *posts.AcceptanceEngine {
-	repoFactory := posts.NewCommunityRepoFactory(a.communityService)
+	repoFactory := posts.NewCommunityRepoFactory(a.communityService,
+		pds.PrivateHostOptions(a.allowPrivateHosts())...)
 	a.communityWriter = posts.NewCommunityRecordWriter(repoFactory, time.Now)
 
 	decider := posts.NewAdmissionEngineDecider(a.buildDeciderDeps())
@@ -577,14 +657,61 @@ func adminReportAlertOptions() ([]adminreports.ServiceOption, error) {
 	}, nil
 }
 
+// serviceJWTIdentityDirectory builds the identity directory that service-JWT
+// validation resolves an inbound `iss` DID through.
+//
+// # THE MOST CREDENTIAL-FREE FETCH IN THE PROCESS
+//
+// indigo's ServiceAuthValidator resolves a JWT's `iss` DID in order to find the
+// key that would verify its signature — so the resolution happens BEFORE the
+// credential is trusted, and it has to: there is nothing to verify against
+// until the DID document is in hand. An attacker sends a syntactically valid
+// JWT claiming any `iss` they like and the AppView fetches whatever that DID
+// document points at. No token needs to be valid and no account needs to exist.
+//
+// # WHY A FUNCTION AND NOT AN `if` IN buildDualAuth
+//
+// buildDualAuth is a method on *application, so reaching it means standing up
+// wiring with a config, a database and an OAuth client, which nothing in this
+// tree does. `.env.ci:140` sets IS_DEV_ENV=true, so `make ci` would take the
+// permissive branch even if it could. Extracted, the decision is testable in T0
+// without any of that — and the gate must stay an ARGUMENT rather than an
+// ambient read of the environment, because this same process builds
+// productionPLCResolver, which has to stay guarded in dev. Do not inline it
+// back.
+//
+// # ORDERING
+//
+// BaseDirectory.HTTPClient is a VALUE, so the shared constructor's pointer is
+// dereferenced here — and the timeout has to be applied BEFORE the copy is
+// taken, since anything set afterwards is set on a client nobody holds.
+//
+// The copy itself is safe, though not for the reason it is tempting to give:
+// http.Client carries NO LOCK of its own — its four fields are a Transport
+// interface, two funcs and a Duration — so `go vet`'s copylocks has nothing to
+// say here and would not have caught a type that did. What makes it safe is
+// that the copy shares rather than duplicates: both values hold the same
+// *ssrfSafeTransport pointer, so the guard, the resolver and the connection
+// pool behind it are one instance. A transport copied BY VALUE would be the
+// bug, and it is not what this line does.
+//
+// identityHTTPTimeout (10s) survives the shared client's own
+// 15s ceiling because it bounds a fetch an unauthenticated caller can trigger,
+// which makes it a denial-of-service bound and not just a latency one.
+func serviceJWTIdentityDirectory(plcURL string, allowPrivateHosts bool) *indigoidentity.BaseDirectory {
+	client := oauth.NewSSRFSafeHTTPClient(oauth.PrivateAddressOptions(allowPrivateHosts)...)
+	client.Timeout = identityHTTPTimeout
+	return &indigoidentity.BaseDirectory{
+		PLCURL:     plcURL,
+		HTTPClient: *client,
+	}
+}
+
 // buildDualAuth wires the middleware that accepts all three credential types:
 // sealed OAuth session tokens (users), PDS-signed service JWTs (aggregators),
 // and API keys (aggregator bots).
 func (a *application) buildDualAuth() {
-	identityDir := &indigoidentity.BaseDirectory{
-		PLCURL:     a.cfg.Identity.PLCURL,
-		HTTPClient: http.Client{Timeout: identityHTTPTimeout},
-	}
+	identityDir := serviceJWTIdentityDirectory(a.cfg.Identity.PLCURL, a.allowPrivateHosts())
 	serviceValidator := &indigoauth.ServiceAuthValidator{
 		// The instance DID is the audience aggregator JWTs must be issued for.
 		Audience:        a.cfg.Instance.DID,
@@ -701,7 +828,12 @@ func (a *application) buildImageProxy() error {
 	service, err := imageproxy.NewService(
 		cache,
 		imageproxy.NewProcessor(),
-		imageproxy.NewPDSFetcher(cfg.FetchTimeout, cfg.MaxSourceSizeMB),
+		// The SSRF hatch is open only in dev, where the PDS runs on the
+		// developer's own machine. In production this fetch dials whatever
+		// address a DID document's serviceEndpoint names, over a public route
+		// that carries no credential.
+		imageproxy.NewPDSFetcher(cfg.FetchTimeout, cfg.MaxSourceSizeMB,
+			imageproxy.PrivateHostOptions(a.allowPrivateHosts())...),
 		cfg,
 	)
 	if err != nil {

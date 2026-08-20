@@ -155,7 +155,7 @@ func TestRematerialize_OuterContract_RealPDS_MovesPostAndIsIdempotent(t *testing
 	// Real author-repo credentials for the author, over the real PDS.
 	authorFactory := func(_ context.Context, authorDID string, _ *oauth.ClientSessionData) (posts.AuthorRepo, error) {
 		require.Equalf(t, authorAcct.DID, authorDID, "the tool asked for a repo other than the post's author")
-		generic, err := pds.NewFromAccessToken(pdsServer.URL(), authorAcct.DID, authorAcct.AccessToken)
+		generic, err := pds.NewFromAccessToken(pdsServer.URL(), authorAcct.DID, authorAcct.AccessToken, pds.PrivateHostOptions(true)...)
 		require.NoError(t, err)
 		repo, ok := generic.(posts.AuthorRepo)
 		require.True(t, ok, "the PDS client must implement the author-repo write surface")
@@ -163,7 +163,7 @@ func TestRematerialize_OuterContract_RealPDS_MovesPostAndIsIdempotent(t *testing
 	}
 
 	// Real community-repo credentials, and the DIRECT acceptance writer over them.
-	communityGeneric, err := pds.NewFromAccessToken(pdsServer.URL(), communityAcct.DID, communityAcct.AccessToken)
+	communityGeneric, err := pds.NewFromAccessToken(pdsServer.URL(), communityAcct.DID, communityAcct.AccessToken, pds.PrivateHostOptions(true)...)
 	require.NoError(t, err)
 	communityRepo, ok := communityGeneric.(posts.CommunityRepo)
 	require.True(t, ok, "the PDS client must implement the community-repo write surface")
@@ -290,13 +290,13 @@ func TestRematerialize_OuterContract_CopiesEmbedBlobToAuthorRepo(t *testing.T) {
 	}
 
 	authorFactory := func(_ context.Context, _ string, _ *oauth.ClientSessionData) (posts.AuthorRepo, error) {
-		generic, err := pds.NewFromAccessToken(pdsServer.URL(), authorAcct.DID, authorAcct.AccessToken)
+		generic, err := pds.NewFromAccessToken(pdsServer.URL(), authorAcct.DID, authorAcct.AccessToken, pds.PrivateHostOptions(true)...)
 		require.NoError(t, err)
 		repo, ok := generic.(posts.AuthorRepo)
 		require.True(t, ok)
 		return repo, nil
 	}
-	communityGeneric, err := pds.NewFromAccessToken(pdsServer.URL(), communityAcct.DID, communityAcct.AccessToken)
+	communityGeneric, err := pds.NewFromAccessToken(pdsServer.URL(), communityAcct.DID, communityAcct.AccessToken, pds.PrivateHostOptions(true)...)
 	require.NoError(t, err)
 	communityRepo, ok := communityGeneric.(posts.CommunityRepo)
 	require.True(t, ok)
@@ -306,7 +306,26 @@ func TestRematerialize_OuterContract_CopiesEmbedBlobToAuthorRepo(t *testing.T) {
 	source := &realLegacySource{community: communityGeneric, staged: []posts.LegacyPost{legacy}}
 	ledger := postgres.NewRematerializeLedger(testkit.DB(t))
 	communityRepos := func(_ context.Context, _ string) (posts.CommunityRepo, error) { return communityRepo, nil }
-	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authorFactory, Acceptances: writer, CommunityRepos: communityRepos}
+
+	// THE HATCH IS OPEN, AND THIS IS THE ONLY TEST IN THE TREE THAT NEEDS IT.
+	//
+	// Rematerializer.blobClient() falls back to the GUARDED default, which refuses
+	// private, loopback and link-local addresses — and the CI stack's PDS is on
+	// loopback, which is exactly what it refuses. Every other Rematerializer test
+	// stages records carrying no blobs, so the fallback client is constructed and
+	// never dialled; this one copies real bytes through it.
+	//
+	// It is passed as an explicit Blobs client rather than reached by loosening
+	// the fallback, for the reason blobs and imageproxy pass PrivateHostOptions at
+	// their construction: the decision to dial a private address is made ONCE, in
+	// the open, by whoever built the thing — and the guarded spelling stays the
+	// one a caller gets by omission. Nothing about the state machine's own
+	// behaviour changes; this replaces the client, not the path.
+	tool := &posts.Rematerializer{
+		Source: source, Ledger: ledger, AuthorRepos: authorFactory, Acceptances: writer,
+		CommunityRepos: communityRepos,
+		Blobs:          posts.DefaultRematerializeBlobClient(true),
+	}
 
 	_, err = tool.RematerializeOne(ctx, legacy)
 	require.NoError(t, err)
