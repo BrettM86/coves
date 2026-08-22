@@ -60,6 +60,16 @@ COPY --from=builder /build/static /app/static
 # Set ownership
 RUN chown -R coves:coves /app
 
+# Image-proxy cache. Pre-create it OWNED BY coves even though production mounts
+# a named volume here: Docker seeds a fresh named volume from this path's
+# ownership, and when the path is absent from the image it creates the
+# mountpoint as root:755 instead. With that, uid 1000 cannot mkdir a single
+# preset directory, every cache write fails, and every image view becomes a
+# full PDS fetch + re-encode — which is exactly what prod ran for months.
+# (An already-initialised root-owned volume is not rewritten by this line; it
+# needs a one-off `chown -R 1000:1000` on the volume.)
+RUN mkdir -p /var/cache/coves/images && chown -R coves:coves /var/cache/coves
+
 # Switch to non-root user
 USER coves
 
