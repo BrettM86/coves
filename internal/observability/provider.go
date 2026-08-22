@@ -9,7 +9,7 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 )
 
 // Provider manages the OpenTelemetry TracerProvider lifecycle.
@@ -54,15 +54,9 @@ func NewProvider(ctx context.Context, cfg Config) (*Provider, error) {
 	}
 
 	// Create the resource with service information
-	res, err := resource.Merge(
-		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceName(cfg.ServiceName),
-		),
-	)
+	res, err := newResource(cfg.ServiceName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create resource: %w", err)
+		return nil, err
 	}
 
 	// Create the sampler based on the sample ratio
@@ -142,4 +136,28 @@ func parseHeaders(headers string) map[string]string {
 		}
 	}
 	return result
+}
+
+// newResource describes this process to the collector: the SDK's default
+// resource (telemetry.sdk.*, and whatever OTEL_RESOURCE_ATTRIBUTES adds) plus
+// our service.name.
+//
+// THE SEMCONV IMPORT ABOVE MUST MATCH THE SDK VERSION IN go.mod. resource.Merge
+// refuses two resources stamped with different, non-empty schema URLs, and
+// resource.Default() is stamped with the semconv the SDK was built against. A
+// bump of go.opentelemetry.io/otel/sdk that leaves the import behind compiles
+// cleanly and fails here — but only with tracing enabled, i.e. only in
+// production. TestNewResourceMergesWithSDKDefault pins the two together.
+func newResource(serviceName string) (*resource.Resource, error) {
+	res, err := resource.Merge(
+		resource.Default(),
+		resource.NewWithAttributes(
+			semconv.SchemaURL,
+			semconv.ServiceName(serviceName),
+		),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create resource: %w", err)
+	}
+	return res, nil
 }
