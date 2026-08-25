@@ -2,6 +2,8 @@ package community
 
 import (
 	"Coves/internal/api/middleware"
+	"Coves/internal/api/reqbody"
+	"Coves/internal/api/xrpc"
 	"Coves/internal/core/communities"
 	"encoding/json"
 	"net/http"
@@ -44,10 +46,11 @@ func (h *CreateHandler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse request body
+	// Parse request body under the image tier: the request carries inline
+	// base64 avatarBlob/bannerBlob bytes (up to 1MB + 2MB raw per the
+	// lexicon), so a text-sized cap would reject legitimate uploads.
 	var req communities.CreateCommunityRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "InvalidRequest", "Invalid request body")
+	if !xrpc.DecodeJSON(w, r, reqbody.LimitImage, &req) {
 		return
 	}
 

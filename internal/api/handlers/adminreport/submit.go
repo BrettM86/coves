@@ -2,6 +2,8 @@ package adminreport
 
 import (
 	"Coves/internal/api/middleware"
+	"Coves/internal/api/reqbody"
+	"Coves/internal/api/xrpc"
 	"Coves/internal/core/adminreports"
 	"encoding/json"
 	"log"
@@ -45,15 +47,9 @@ func (h *SubmitHandler) HandleSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Limit request body size to 10KB to prevent DoS attacks
-	r.Body = http.MaxBytesReader(w, r.Body, 10*1024)
-
-	// 3. Parse JSON body into SubmitReportInput
+	// 2+3. Parse JSON body into SubmitReportInput under the small tier
 	var input SubmitReportInput
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		// Log the decode error for debugging (but don't expose to client)
-		log.Printf("[ADMIN_REPORT] Failed to decode JSON request: %v", err)
-		writeError(w, http.StatusBadRequest, "InvalidRequest", "Invalid request body")
+	if !xrpc.DecodeJSON(w, r, reqbody.LimitSmall, &input) {
 		return
 	}
 

@@ -2,6 +2,8 @@ package communitysuggestion
 
 import (
 	"Coves/internal/api/middleware"
+	"Coves/internal/api/reqbody"
+	"Coves/internal/api/xrpc"
 	"Coves/internal/core/communitysuggestions"
 	"encoding/json"
 	"log"
@@ -34,14 +36,9 @@ func (h *CreateHandler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Limit request body size to 10KB to prevent DoS attacks
-	r.Body = http.MaxBytesReader(w, r.Body, 10*1024)
-
-	// Parse JSON body
+	// Parse JSON body under the small tier
 	var input createSuggestionInput
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		log.Printf("[COMMUNITY_SUGGESTION] Failed to decode JSON request: %v", err)
-		writeError(w, http.StatusBadRequest, "InvalidRequest", "Invalid request body")
+	if !xrpc.DecodeJSON(w, r, reqbody.LimitSmall, &input) {
 		return
 	}
 

@@ -268,6 +268,9 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 		if req.AvatarMimeType == "" {
 			return nil, fmt.Errorf("avatarMimeType is required when avatarBlob is provided")
 		}
+		if len(req.AvatarBlob) > MaxAvatarBlobSize {
+			return nil, NewValidationError("avatarBlob", "avatar exceeds 1MB limit")
+		}
 		if s.blobService == nil {
 			return nil, fmt.Errorf("blob service not configured, cannot upload avatar")
 		}
@@ -289,6 +292,9 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 	if len(req.BannerBlob) > 0 {
 		if req.BannerMimeType == "" {
 			return nil, fmt.Errorf("bannerMimeType is required when bannerBlob is provided")
+		}
+		if len(req.BannerBlob) > MaxBannerBlobSize {
+			return nil, NewValidationError("bannerBlob", "banner exceeds 2MB limit")
 		}
 		if s.blobService == nil {
 			return nil, fmt.Errorf("blob service not configured, cannot upload banner")
@@ -471,6 +477,9 @@ func (s *communityService) UpdateCommunity(ctx context.Context, req UpdateCommun
 		if req.AvatarMimeType == "" {
 			return nil, fmt.Errorf("avatarMimeType is required when avatarBlob is provided")
 		}
+		if len(req.AvatarBlob) > MaxAvatarBlobSize {
+			return nil, NewValidationError("avatarBlob", "avatar exceeds 1MB limit")
+		}
 		if s.blobService == nil {
 			return nil, fmt.Errorf("blob service not configured, cannot upload avatar")
 		}
@@ -486,6 +495,9 @@ func (s *communityService) UpdateCommunity(ctx context.Context, req UpdateCommun
 	if len(req.BannerBlob) > 0 {
 		if req.BannerMimeType == "" {
 			return nil, fmt.Errorf("bannerMimeType is required when bannerBlob is provided")
+		}
+		if len(req.BannerBlob) > MaxBannerBlobSize {
+			return nil, NewValidationError("bannerBlob", "banner exceeds 2MB limit")
 		}
 		if s.blobService == nil {
 			return nil, fmt.Errorf("blob service not configured, cannot upload banner")

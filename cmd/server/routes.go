@@ -2,6 +2,7 @@ package main
 
 import (
 	"Coves/internal/api/middleware"
+	"Coves/internal/api/reqbody"
 	"Coves/internal/api/routes"
 	"log/slog"
 	"net/http"
@@ -37,6 +38,11 @@ func newRouter(otelMiddleware func(http.Handler) http.Handler) chi.Router {
 	r.Use(chiMiddleware.RequestID)
 	r.Use(chiMiddleware.Logger)
 	r.Use(chiMiddleware.Recoverer)
+	// Backstop body cap for every route, present and future. Handlers layer
+	// tighter per-endpoint limits via reqbody.DecodeJSON (equal, on the image
+	// tier); this bound only has to make "one giant request OOMs the AppView"
+	// impossible.
+	r.Use(chiMiddleware.RequestSize(int64(reqbody.LimitGlobal)))
 	r.Use(middleware.NewNamedRateLimiter("global", globalRateLimit, globalRateWindow).Middleware)
 
 	if otelMiddleware != nil {

@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"Coves/internal/api/middleware"
+	"Coves/internal/api/reqbody"
 	"Coves/internal/api/xrpc"
 	"Coves/internal/core/posts"
 )
@@ -30,19 +31,11 @@ func (h *UpdateHandler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The same 1MB ceiling the create path uses: an edit carries the same
+	// The same ceiling the create path uses: an edit carries the same
 	// content and embeds a create does, so a tighter bound here would refuse
 	// edits to posts this service accepted.
-	r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024)
-
 	var req posts.UpdatePostRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		if err.Error() == "http: request body too large" {
-			writeError(w, http.StatusRequestEntityTooLarge, "RequestTooLarge",
-				"Request body too large (max 1MB)")
-			return
-		}
-		writeError(w, http.StatusBadRequest, "InvalidRequest", "Invalid request body")
+	if !xrpc.DecodeJSON(w, r, reqbody.LimitLarge, &req) {
 		return
 	}
 

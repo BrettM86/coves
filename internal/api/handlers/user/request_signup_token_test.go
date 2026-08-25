@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"Coves/internal/api/reqbody"
 	"Coves/internal/core/users"
 
 	"github.com/stretchr/testify/assert"
@@ -188,7 +189,7 @@ func TestRequestSignupToken_BodyLimitEnforced(t *testing.T) {
 	mockService := new(MockUserService)
 	handler := NewRequestSignupTokenHandler(mockService)
 
-	huge := strings.Repeat("A", 8192) // > maxSignupTokenBody (4096)
+	huge := strings.Repeat("A", 8192) // > reqbody.LimitTiny (4096)
 	body := fmt.Sprintf(`{"turnstileToken":%q}`, huge)
 	require.Greater(t, len(body), 4096)
 
@@ -207,10 +208,10 @@ func TestRequestSignupToken_BodyOverLimitReturns413(t *testing.T) {
 	mockService := new(MockUserService)
 	handler := NewRequestSignupTokenHandler(mockService)
 
-	// Construct a JSON object whose token field alone exceeds maxSignupTokenBody.
+	// Construct a JSON object whose token field alone exceeds reqbody.LimitTiny.
 	huge := strings.Repeat("A", 10000)
 	body := fmt.Sprintf(`{"turnstileToken":%q}`, huge)
-	require.Greater(t, len(body), maxSignupTokenBody)
+	require.Greater(t, len(body), int(reqbody.LimitTiny))
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	w := httptest.NewRecorder()

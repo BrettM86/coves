@@ -21,6 +21,7 @@
 #     someCall(x) // coves:allow-sleep: <reason>
 #     someCall(x) // coves:allow-host-literal: <reason>
 #     someCall(x) // coves:allow-public-host: <reason>
+#     someCall(x) // coves:allow-raw-body-decode: <reason>
 #
 # and, where per-line markers would be noise because the whole file's subject
 # matter IS the literal (the Bluesky URL parser; the config parser), a
@@ -43,10 +44,13 @@
 # tests/, plus every .go file under tests/ — shared helpers that do not end in
 # _test.go (tests/testkit, tests/fixtures) are test code too, and historically
 # some of the worst offenders lived in exactly those files. Production sources
-# are out of scope for every category except testing.Short(), which nothing in
-# this tree may call: production code legitimately dials websockets and names
-# public hosts, and auditing it here would mean exempting the AppView from a
-# rule written for its tests.
+# are out of scope for the test-hygiene categories, because production code
+# legitimately dials websockets and names public hosts, and auditing it here
+# would mean exempting the AppView from a rule written for its tests. Three
+# categories run wider on purpose: testing.Short() scans everything (nothing
+# in this tree may call it), and the raw-request-body and unchecked-DecodeJSON
+# rules scan production sources only — they are API-hardening fences, not test
+# hygiene.
 #
 # Usage:
 #   scripts/test-audit.sh        summary table; exits nonzero on any violation
@@ -80,6 +84,10 @@ test_code_files() {
 
 all_go_files() {
     find cmd internal tests -type f -name '*.go' 2>/dev/null | sort -u
+}
+
+production_go_files() {
+    find cmd internal -type f -name '*.go' ! -name '*_test.go' 2>/dev/null | sort -u
 }
 
 # ---------------------------------------------------------------------------
@@ -251,6 +259,32 @@ scan "public atProto hosts outside tests/live" \
     '(https?|wss?)://[^"'"'"'[:space:]]*(plc\.directory|bsky\.network|bsky\.social|bsky\.app)' \
     test_code_files 'tests/live/' 'coves:allow-public-host'
 
+# 7. Raw request-body reads in production code. Every JSON request body is
+#    read through internal/api/reqbody, which is the single place body size
+#    caps, 413 semantics, and trailing-data rejection live. A bare
+#    json.NewDecoder(r.Body), io.ReadAll(r.Body), or un-capped form parse is
+#    an unbounded allocation an unauthenticated caller controls — the exact
+#    DoS the reqbody package closed. reqbody is excluded by path because it
+#    holds the one sanctioned json.NewDecoder(r.Body) call; anything else
+#    that must read a body raw declares why with a marker (the delete-account
+#    form in internal/web does, with its own MaxBytesReader cap). The
+#    identifier alternation (r|req|request) is a tripwire, not a proof — a
+#    body reached through an unusual variable name evades it, same as every
+#    other grep in this file.
+scan "raw request-body read outside reqbody" \
+    'json\.NewDecoder\((r|req|request)\.Body\)|(io|ioutil)\.ReadAll\((r|req|request)\.Body\)|\.ParseForm\(\)|\.ParseMultipartForm\(' \
+    production_go_files 'internal/api/reqbody/' 'coves:allow-raw-body-decode'
+
+# 8. Discarded xrpc.DecodeJSON result. The wrapper returns bool, and an
+#    ignored bool is invisible to errcheck and vet — but a call at statement
+#    position has already written the 413/400 and the handler then continues
+#    with a zero-valued request and double-writes a response. A used result
+#    always appears after `if !` or an assignment, never at the start of a
+#    statement, so this pattern has no false positives.
+scan "unchecked xrpc.DecodeJSON result" \
+    '^[[:space:]]*xrpc\.DecodeJSON\(' \
+    production_go_files '' ''
+
 # ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
@@ -291,7 +325,7 @@ if [[ $TOTAL -eq 0 ]]; then
 fi
 
 printf "${RED}  %d violation(s). Fix them, or annotate each with a reason:${RESET}\n" "$TOTAL"
-printf "    coves:allow-sleep / coves:allow-host-literal / coves:allow-public-host\n"
+printf "    coves:allow-sleep / coves:allow-host-literal / coves:allow-public-host / coves:allow-raw-body-decode\n"
 printf "    (append '-file:' for a whole-file exemption; see this script's header)\n"
 printf "  Run with -v for file:line. t.Skip has no marker — see tests/ci/allowed_skips.txt.\n"
 echo

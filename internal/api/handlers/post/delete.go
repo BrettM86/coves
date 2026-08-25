@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"Coves/internal/api/middleware"
+	"Coves/internal/api/reqbody"
 	"Coves/internal/api/xrpc"
 	"Coves/internal/core/posts"
 )
@@ -42,13 +43,9 @@ func (h *DeleteHandler) HandleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Limit request body size to prevent DoS attacks (100KB should be plenty for delete requests)
-	r.Body = http.MaxBytesReader(w, r.Body, 100*1024)
-
-	// 3. Parse JSON body into DeletePostInput
+	// 2+3. Parse JSON body into DeletePostInput under the medium tier
 	var input DeletePostInput
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "InvalidRequest", "Invalid request body")
+	if !xrpc.DecodeJSON(w, r, reqbody.LimitMedium, &input) {
 		return
 	}
 

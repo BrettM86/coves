@@ -7,13 +7,9 @@ import (
 	"net/http"
 
 	"Coves/internal/api/middleware"
+	"Coves/internal/api/reqbody"
 	"Coves/internal/core/users"
 )
-
-// maxSignupTokenBody caps the decoded request body. Legitimate payload is just
-// a Turnstile token (~1-2 KB); 4 KB blocks memory-amplification probes without
-// rejecting anyone real.
-const maxSignupTokenBody = 4096
 
 // RequestSignupTokenHandler serves the social.coves.actor.requestSignupToken
 // XRPC endpoint: it verifies a Cloudflare Turnstile token and, on success,
@@ -42,19 +38,17 @@ func (h *RequestSignupTokenHandler) HandleRequestSignupToken(w http.ResponseWrit
 
 	clientIP := middleware.GetClientIP(r)
 
-	// http.MaxBytesReader gives us a real 413 path (via *http.MaxBytesError) for
-	// oversized bodies — io.LimitReader silently truncates and produces a
-	// confusing 400 instead.
-	r.Body = http.MaxBytesReader(w, r.Body, maxSignupTokenBody)
+	// This endpoint is pure bot bait, so rejections log the client IP with
+	// endpoint-specific message prefixes — bespoke handling beyond the shared
+	// xrpc.DecodeJSON wrapper. Unknown fields are rejected too: a real client
+	// sends exactly one field (a Turnstile token, ~1-2 KB, so the tiny tier).
 	var req users.RequestSignupTokenRequest
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
+	if err := reqbody.DecodeJSON(w, r, reqbody.LimitTiny, &req, reqbody.WithDisallowUnknownFields()); err != nil {
+		var tooLarge *reqbody.TooLargeError
+		if errors.As(err, &tooLarge) {
 			slog.Info("request signup token: body over limit",
 				slog.String("client_ip", clientIP),
-				slog.Int64("limit", maxBytesErr.Limit),
+				slog.Int64("limit", tooLarge.Limit),
 			)
 			writeJSONError(w, http.StatusRequestEntityTooLarge, "PayloadTooLarge", "Request body too large")
 			return
@@ -63,15 +57,6 @@ func (h *RequestSignupTokenHandler) HandleRequestSignupToken(w http.ResponseWrit
 		slog.Info("request signup token: decode failed",
 			slog.String("client_ip", clientIP),
 			slog.String("error", err.Error()),
-		)
-		writeJSONError(w, http.StatusBadRequest, "InvalidRequest", "Invalid request body")
-		return
-	}
-	// Trailing data after the JSON object (concatenated objects, padding) is a
-	// strong smuggling smell — reject.
-	if dec.More() {
-		slog.Info("request signup token: trailing data after json object",
-			slog.String("client_ip", clientIP),
 		)
 		writeJSONError(w, http.StatusBadRequest, "InvalidRequest", "Invalid request body")
 		return

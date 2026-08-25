@@ -1,6 +1,7 @@
 package aggregator
 
 import (
+	"Coves/internal/api/reqbody"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/users"
 	"bytes"
@@ -522,7 +523,25 @@ func TestRegister_RejectsABodyThatIsNotJSON(t *testing.T) {
 	f := newRegisterFixture(t, wellKnownServing(registrantDID))
 
 	rec := f.send(t, http.MethodPost, []byte(`{"did": `))
-	assertRegisterError(t, rec, http.StatusBadRequest, "InvalidDID")
+	// InvalidRequest, not InvalidDID: a body that never parsed has no DID to
+	// judge — the shared xrpc.DecodeJSON wrapper answers before domain
+	// validation runs.
+	assertRegisterError(t, rec, http.StatusBadRequest, "InvalidRequest")
+}
+
+// A body over the endpoint's cap must be refused with a 413 before it is
+// parsed — registration is unauthenticated, so the cap is the only bound on
+// what a stranger can make this handler buffer.
+func TestRegister_RejectsAnOversizedBody(t *testing.T) {
+	f := newRegisterFixture(t, wellKnownServing(registrantDID))
+
+	huge := []byte(`{"did":"` + strings.Repeat("a", int(reqbody.LimitSmall)) + `"}`)
+	rec := f.send(t, http.MethodPost, huge)
+	assertRegisterError(t, rec, http.StatusRequestEntityTooLarge, "PayloadTooLarge")
+
+	if len(f.users.created) != 0 {
+		t.Errorf("an oversized request still registered %d users", len(f.users.created))
+	}
 }
 
 // Registration writes; a GET must not reach the body-parsing path at all.

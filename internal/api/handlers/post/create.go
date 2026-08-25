@@ -2,6 +2,8 @@ package post
 
 import (
 	"Coves/internal/api/middleware"
+	"Coves/internal/api/reqbody"
+	"Coves/internal/api/xrpc"
 	"Coves/internal/core/posts"
 	"encoding/json"
 	"log"
@@ -30,20 +32,10 @@ func (h *CreateHandler) HandleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Limit request body size to prevent DoS attacks
-	// 1MB allows for large content + embeds while preventing abuse
-	r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024)
-
-	// 3. Parse request body
+	// 2+3. Parse the request body under the large tier: post content plus
+	// embeds legitimately runs big, but images arrive as URLs, never bytes.
 	var req posts.CreatePostRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		// Check if error is due to body size limit
-		if err.Error() == "http: request body too large" {
-			writeError(w, http.StatusRequestEntityTooLarge, "RequestTooLarge",
-				"Request body too large (max 1MB)")
-			return
-		}
-		writeError(w, http.StatusBadRequest, "InvalidRequest", "Invalid request body")
+	if !xrpc.DecodeJSON(w, r, reqbody.LimitLarge, &req) {
 		return
 	}
 

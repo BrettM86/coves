@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"Coves/internal/api/middleware"
+	"Coves/internal/api/reqbody"
 	"Coves/internal/core/userblocks"
 	"Coves/internal/core/users"
 )
@@ -258,6 +260,28 @@ func TestSignup_MalformedBodyNeverReachesTheService(t *testing.T) {
 				t.Errorf("the service was called %d time(s) for a body that does not parse", service.calls)
 			}
 		})
+	}
+}
+
+// TestSignup_OversizedBodyIsRefusedBeforeParsing pins the DoS guard on the
+// one endpoint anyone on the internet may POST to without credentials: a body
+// over the tiny tier must die with a 413 before the service — and the PDS
+// behind it — hears about the request.
+func TestSignup_OversizedBodyIsRefusedBeforeParsing(t *testing.T) {
+	t.Parallel()
+	service := &signupService{}
+
+	body := `{"handle":"` + strings.Repeat("a", int(reqbody.LimitTiny)) + `"}`
+	rec := postSignup(t, service, body)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("status = %d, want 413 (body: %s)", rec.Code, rec.Body.String())
+	}
+	if got := decodeSignupError(t, rec).Error; got != "PayloadTooLarge" {
+		t.Errorf("error code = %q, want PayloadTooLarge", got)
+	}
+	if service.calls != 0 {
+		t.Errorf("the service was called %d time(s) for a body over the size limit", service.calls)
 	}
 }
 

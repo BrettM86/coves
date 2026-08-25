@@ -37,7 +37,7 @@ func TestNewResourceMergesWithSDKDefault(t *testing.T) {
 func TestNewProviderEnabledStartsWithoutCollector(t *testing.T) {
 	provider, err := NewProvider(context.Background(), Config{
 		Enabled:     true,
-		Endpoint:    "http://127.0.0.1:4318",
+		Endpoint:    "http://127.0.0.1:4318", // coves:allow-host-literal: config VALUE handed to the OTLP exporter, never dialled — the exporter connects lazily on first export, and no spans are recorded here, so the cleanup Shutdown flushes nothing
 		ServiceName: "coves-appview",
 		Insecure:    true,
 		SampleRatio: 1.0,

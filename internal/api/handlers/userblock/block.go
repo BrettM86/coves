@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"Coves/internal/api/middleware"
+	"Coves/internal/api/reqbody"
+	"Coves/internal/api/xrpc"
 	"Coves/internal/core/userblocks"
 )
 
@@ -66,11 +68,8 @@ type blockedUserEntry struct {
 // Request body: { "subject": "did-or-handle" }
 // The subject can be a DID (did:plc:xxx) or a handle.
 func (h *BlockHandler) HandleBlock(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 10*1024)
-
 	var req blockRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "InvalidRequest", "Invalid request body")
+	if !xrpc.DecodeJSON(w, r, reqbody.LimitSmall, &req) {
 		return
 	}
 
@@ -104,11 +103,8 @@ func (h *BlockHandler) HandleBlock(w http.ResponseWriter, r *http.Request) {
 //
 // Request body: { "subject": "did-or-handle" }
 func (h *BlockHandler) HandleUnblock(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 10*1024)
-
 	var req blockRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "InvalidRequest", "Invalid request body")
+	if !xrpc.DecodeJSON(w, r, reqbody.LimitSmall, &req) {
 		return
 	}
 

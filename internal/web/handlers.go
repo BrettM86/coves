@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"Coves/internal/api/reqbody"
 	"Coves/internal/atproto/oauth"
 	"Coves/internal/core/users"
 )
@@ -126,8 +127,11 @@ func (h *Handlers) DeleteAccountSubmitHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Parse form to check confirmation checkbox
-	if err := r.ParseForm(); err != nil {
+	// Parse form to check confirmation checkbox. The legitimate payload is a
+	// single checkbox field, so cap the body far below net/http's 10MB form
+	// default before ParseForm reads it.
+	r.Body = http.MaxBytesReader(w, r.Body, int64(reqbody.LimitTiny))
+	if err := r.ParseForm(); err != nil { // coves:allow-raw-body-decode: form endpoint, not JSON — capped by the MaxBytesReader on the line above
 		slog.Error("delete account submit: failed to parse form", "error", err)
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return

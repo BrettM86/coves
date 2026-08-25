@@ -3,6 +3,7 @@ package routes
 import (
 	"Coves/internal/api/handlers/user"
 	"Coves/internal/api/middleware"
+	"Coves/internal/api/reqbody"
 	"Coves/internal/api/xrpc"
 	"Coves/internal/core/userblocks"
 	"Coves/internal/core/users"
@@ -200,10 +201,11 @@ func writeXRPCError(w http.ResponseWriter, errorName, message string, statusCode
 func (h *UserHandler) Signup(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Parse request body
+	// Parse request body. Signup is unauthenticated, so this cap is the
+	// tightest bound between a bot and a giant allocation (the router-wide
+	// backstop and rate limiter sit above it).
 	var req users.RegisterAccountRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if !xrpc.DecodeJSON(w, r, reqbody.LimitTiny, &req) {
 		return
 	}
 

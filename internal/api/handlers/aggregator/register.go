@@ -1,6 +1,8 @@
 package aggregator
 
 import (
+	"Coves/internal/api/reqbody"
+	"Coves/internal/api/xrpc"
 	"Coves/internal/atproto/identity"
 	covesoauth "Coves/internal/atproto/oauth"
 	"Coves/internal/core/users"
@@ -230,10 +232,11 @@ func (h *RegisterHandler) HandleRegister(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Parse request body
+	// Parse request body. Registration is unauthenticated, so the body cap
+	// is load-bearing, not hygiene — the tightest of the bounds (router
+	// backstop, rate limit) standing in front of this handler.
 	var req RegisterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "InvalidDID", "Invalid request body: JSON decode failed")
+	if !xrpc.DecodeJSON(w, r, reqbody.LimitSmall, &req) {
 		return
 	}
 

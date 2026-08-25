@@ -2,6 +2,8 @@ package community
 
 import (
 	"Coves/internal/api/middleware"
+	"Coves/internal/api/reqbody"
+	"Coves/internal/api/xrpc"
 	"Coves/internal/core/communities"
 	"encoding/json"
 	"log"
@@ -41,8 +43,7 @@ func (h *SubscribeHandler) HandleSubscribe(w http.ResponseWriter, r *http.Reques
 		ContentVisibility int    `json:"contentVisibility"` // Optional: 1-5 scale, defaults to 3
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "InvalidRequest", "Invalid request body")
+	if !xrpc.DecodeJSON(w, r, reqbody.LimitSmall, &req) {
 		return
 	}
 
@@ -101,8 +102,7 @@ func (h *SubscribeHandler) HandleUnsubscribe(w http.ResponseWriter, r *http.Requ
 		Community string `json:"community"` // DID, handle, or scoped identifier
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "InvalidRequest", "Invalid request body")
+	if !xrpc.DecodeJSON(w, r, reqbody.LimitSmall, &req) {
 		return
 	}
 

@@ -8,6 +8,8 @@ import (
 	"net/http"
 
 	"Coves/internal/api/middleware"
+	"Coves/internal/api/reqbody"
+	"Coves/internal/api/xrpc"
 	"Coves/internal/atproto/pds"
 	"Coves/internal/core/users"
 
@@ -37,8 +39,6 @@ const (
 	MaxAvatarBlobSize = 1_000_000
 	// MaxBannerBlobSize is the maximum allowed banner size in bytes (2MB per lexicon)
 	MaxBannerBlobSize = 2_000_000
-	// MaxRequestBodySize is the maximum request body size (10MB to accommodate base64 overhead)
-	MaxRequestBodySize = 10_000_000
 )
 
 // UpdateProfileRequest represents the request body for updating a user profile
@@ -134,11 +134,10 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// 2. Parse request
-	r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBodySize)
+	// 2. Parse request under the image tier — this endpoint accepts inline
+	// base64 image bytes (avatar/banner), as do community create/update
 	var req UpdateProfileRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeUpdateProfileError(w, http.StatusBadRequest, "InvalidRequest", "Invalid request body")
+	if !xrpc.DecodeJSON(w, r, reqbody.LimitImage, &req) {
 		return
 	}
 

@@ -2,6 +2,8 @@ package vote
 
 import (
 	"Coves/internal/api/middleware"
+	"Coves/internal/api/reqbody"
+	"Coves/internal/api/xrpc"
 	"Coves/internal/core/votes"
 	"encoding/json"
 	"log"
@@ -45,8 +47,7 @@ func (h *DeleteVoteHandler) HandleDeleteVote(w http.ResponseWriter, r *http.Requ
 
 	// Parse request body
 	var input DeleteVoteInput
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		writeError(w, http.StatusBadRequest, "InvalidRequest", "Invalid request body")
+	if !xrpc.DecodeJSON(w, r, reqbody.LimitTiny, &input) {
 		return
 	}
 

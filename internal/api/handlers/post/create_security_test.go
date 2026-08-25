@@ -28,6 +28,7 @@ import (
 	"testing"
 
 	"Coves/internal/api/middleware"
+	"Coves/internal/api/reqbody"
 	"Coves/internal/core/posts"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
@@ -110,14 +111,16 @@ func TestPostCreate_HandlerRejections(t *testing.T) {
 		assert.Equal(t, "AuthRequired", decodeXRPCError(t, rec)["error"])
 	})
 
-	t.Run("body over 1MB is refused before it is parsed", func(t *testing.T) {
+	t.Run("body over the large tier is refused before it is parsed", func(t *testing.T) {
+		// Sized off the tier constant so this keeps measuring the boundary
+		// if the tier ever moves.
 		rec := createPost(t, stack, authorDID, map[string]any{
 			"community": communityDID,
-			"content":   strings.Repeat("A", 1*1024*1024+1000),
+			"content":   strings.Repeat("A", int(reqbody.LimitLarge)+1000),
 		})
 
 		assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
-		assert.Equal(t, "RequestTooLarge", decodeXRPCError(t, rec)["error"])
+		assert.Equal(t, "PayloadTooLarge", decodeXRPCError(t, rec)["error"])
 	})
 
 	t.Run("malformed JSON is refused", func(t *testing.T) {

@@ -2,6 +2,8 @@ package community
 
 import (
 	"Coves/internal/api/middleware"
+	"Coves/internal/api/reqbody"
+	"Coves/internal/api/xrpc"
 	"Coves/internal/core/communities"
 	"encoding/json"
 	"net/http"
@@ -28,10 +30,10 @@ func (h *UpdateHandler) HandleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse request body
+	// Parse request body under the image tier: like create, an update may
+	// carry inline base64 avatarBlob/bannerBlob bytes.
 	var req communities.UpdateCommunityRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "InvalidRequest", "Invalid request body")
+	if !xrpc.DecodeJSON(w, r, reqbody.LimitImage, &req) {
 		return
 	}
 

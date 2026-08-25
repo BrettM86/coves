@@ -2,8 +2,9 @@ package communitysuggestion
 
 import (
 	"Coves/internal/api/middleware"
+	"Coves/internal/api/reqbody"
+	"Coves/internal/api/xrpc"
 	"Coves/internal/core/communitysuggestions"
-	"encoding/json"
 	"log"
 	"net/http"
 )
@@ -64,14 +65,9 @@ func (h *UpdateStatusHandler) HandleUpdateStatus(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// Limit request body size to 10KB
-	r.Body = http.MaxBytesReader(w, r.Body, 10*1024)
-
-	// Parse JSON body
+	// Parse JSON body under the small tier
 	var input updateStatusInput
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		log.Printf("[COMMUNITY_SUGGESTION] Failed to decode update status JSON request: %v", err)
-		writeError(w, http.StatusBadRequest, "InvalidRequest", "Invalid request body")
+	if !xrpc.DecodeJSON(w, r, reqbody.LimitSmall, &input) {
 		return
 	}
 

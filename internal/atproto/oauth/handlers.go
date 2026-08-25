@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 
+	"Coves/internal/api/reqbody"
+
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/identity"
 	"github.com/bluesky-social/indigo/atproto/syntax"
@@ -1126,7 +1128,19 @@ func (h *OAuthHandler) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 		SessionID   string `json:"session_id"`
 		SealedToken string `json:"sealed_token,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// Unauthenticated endpoint: cap the body before decoding. A sealed token
+	// is a few hundred base64 bytes; the small tier leaves room for the DID
+	// appearing twice (raw and sealed) even for a long did:web.
+	if err := reqbody.DecodeJSON(w, r, reqbody.LimitSmall, &req); err != nil {
+		var tooLarge *reqbody.TooLargeError
+		if errors.As(err, &tooLarge) {
+			slog.Info("refresh: body over limit", "limit", tooLarge.Limit)
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		// Security event: malformed probes against a credential endpoint are
+		// worth counting, same as oversize ones.
+		slog.Info("refresh: invalid request body", "error", err.Error())
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}

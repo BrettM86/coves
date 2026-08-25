@@ -187,6 +187,15 @@ type ModerationAction struct {
 	Broadcast    bool       `json:"broadcast" db:"broadcast"`
 }
 
+const (
+	// MaxAvatarBlobSize is the maximum decoded avatar size in bytes,
+	// matching the community.profile lexicon's avatar maxSize (1MB).
+	MaxAvatarBlobSize = 1_000_000
+	// MaxBannerBlobSize is the maximum decoded banner size in bytes,
+	// matching the community.profile lexicon's banner maxSize (2MB).
+	MaxBannerBlobSize = 2_000_000
+)
+
 // CreateCommunityRequest represents input for creating a new community
 type CreateCommunityRequest struct {
 	Name                   string   `json:"name"`

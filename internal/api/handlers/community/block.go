@@ -2,6 +2,8 @@ package community
 
 import (
 	"Coves/internal/api/middleware"
+	"Coves/internal/api/reqbody"
+	"Coves/internal/api/xrpc"
 	"Coves/internal/core/communities"
 	"encoding/json"
 	"log"
@@ -37,8 +39,7 @@ func (h *BlockHandler) HandleBlock(w http.ResponseWriter, r *http.Request) {
 		Community string `json:"community"` // at-identifier (DID or handle)
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "InvalidRequest", "Invalid request body")
+	if !xrpc.DecodeJSON(w, r, reqbody.LimitSmall, &req) {
 		return
 	}
 
@@ -94,8 +95,7 @@ func (h *BlockHandler) HandleUnblock(w http.ResponseWriter, r *http.Request) {
 		Community string `json:"community"` // at-identifier (DID or handle)
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "InvalidRequest", "Invalid request body")
+	if !xrpc.DecodeJSON(w, r, reqbody.LimitSmall, &req) {
 		return
 	}
 
