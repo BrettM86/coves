@@ -15,7 +15,8 @@
     "  empty            -> ErrURIEmpty",
     "  no_scheme        -> ErrURINoScheme",
     "  bad_scheme       -> ErrURIBadScheme",
-    "  scheme_forbidden -> ErrURISchemeNotAllowed",
+    "  scheme_forbidden -> ErrURISchemeNotAllowed (any scheme other than http/https)",
+    "  no_authority     -> ErrURINoAuthority (http(s) without a //host part)",
     "  too_long         -> ErrURITooLong",
     "  unnormalizable   -> ErrURIUnnormalizable (includes punycode failures)"
   ],
@@ -136,24 +137,39 @@
       "output": "https://%C3%BCser@[2001:db8::1]:8080/p"
     },
     {
-      "name": "at-uri with non-ascii rkey encodes without misreading the did as a port",
-      "input": "at://did:plc:abc123/social.coves.community.post/héllo",
-      "output": "at://did:plc:abc123/social.coves.community.post/h%C3%A9llo"
-    },
-    {
-      "name": "at-uri that already conforms",
+      "name": "at-uri is refused in a link field even when it conforms (record refs use embed.post, not a link)",
       "input": "at://did:plc:abc123/social.coves.community.post/3kabc",
-      "output": "at://did:plc:abc123/social.coves.community.post/3kabc"
+      "error": "scheme_forbidden"
     },
     {
-      "name": "opaque uri (no authority) encodes its body",
-      "input": "urn:isbn:café-2024",
-      "output": "urn:isbn:caf%C3%A9-2024"
+      "name": "http(s) without an authority is refused: browsers cannot parse it",
+      "input": "https:isbn:café-2024",
+      "error": "no_authority"
     },
     {
-      "name": "opaque uri with query and fragment encodes throughout",
-      "input": "magnet:?xt=urn:btih:café&dn=naïve",
-      "output": "magnet:?xt=urn:btih:caf%C3%A9&dn=na%C3%AFve"
+      "name": "http(s) with only a query and no authority is refused",
+      "input": "https:?xt=urn:btih:café&dn=naïve",
+      "error": "no_authority"
+    },
+    {
+      "name": "scheme and slashes with nothing after is refused",
+      "input": "https://",
+      "error": "no_authority"
+    },
+    {
+      "name": "empty host before a path is refused",
+      "input": "https:///path",
+      "error": "no_authority"
+    },
+    {
+      "name": "userinfo with no host is refused",
+      "input": "https://user:pw@/path",
+      "error": "no_authority"
+    },
+    {
+      "name": "ipv6 literal host is accepted",
+      "input": "https://[2001:db8::1]:8443/x",
+      "output": "https://[2001:db8::1]:8443/x"
     },
     {
       "name": "surrounding whitespace is stripped, not escaped",
@@ -221,7 +237,7 @@
       "error": "scheme_forbidden"
     },
     {
-      "name": "mailto scheme is refused (harvesting vector, not a fetchable resource)",
+      "name": "mailto scheme is refused (allowlist: only http and https; also a harvesting vector)",
       "input": "mailto:josé@example.com",
       "error": "scheme_forbidden"
     },
@@ -231,9 +247,39 @@
       "error": "scheme_forbidden"
     },
     {
+      "name": "ftp scheme is refused (allowlist: only http and https)",
+      "input": "ftp://example.com/file.zip",
+      "error": "scheme_forbidden"
+    },
+    {
+      "name": "blob scheme is refused",
+      "input": "blob:https://example.com/9d1b3b2a",
+      "error": "scheme_forbidden"
+    },
+    {
+      "name": "intent scheme is refused (android app launcher)",
+      "input": "intent://scan/#Intent;scheme=zxing;end",
+      "error": "scheme_forbidden"
+    },
+    {
+      "name": "gopher scheme is refused",
+      "input": "gopher://example.com/1/",
+      "error": "scheme_forbidden"
+    },
+    {
+      "name": "ws scheme is refused (not a navigable web resource)",
+      "input": "ws://example.com/socket",
+      "error": "scheme_forbidden"
+    },
+    {
+      "name": "uppercase forbidden scheme is still refused",
+      "input": "FTP://example.com/file.zip",
+      "error": "scheme_forbidden"
+    },
+    {
       "name": "scheme with no body names no resource",
       "input": "https:",
-      "error": "unnormalizable"
+      "error": "no_authority"
     },
     {
       "name": "empty host label is not resolvable",

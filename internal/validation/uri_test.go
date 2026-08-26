@@ -21,6 +21,7 @@ var errorClasses = map[string]error{
 	"no_scheme":        ErrURINoScheme,
 	"bad_scheme":       ErrURIBadScheme,
 	"scheme_forbidden": ErrURISchemeNotAllowed,
+	"no_authority":     ErrURINoAuthority,
 	"too_long":         ErrURITooLong,
 	"unnormalizable":   ErrURIUnnormalizable,
 }
@@ -154,6 +155,9 @@ func TestNormalizeURIErrorsAreDescriptive(t *testing.T) {
 		{"missing scheme", "example.com/path", ErrURINoScheme, "scheme"},
 		{"scheme with digits", "s3://bucket/key", ErrURIBadScheme, "s3"},
 		{"forbidden scheme", "javascript:alert(1)", ErrURISchemeNotAllowed, "javascript"},
+		{"non-web scheme", "ftp://example.com/x", ErrURISchemeNotAllowed, "ftp"},
+		{"no authority", "https:isbn:123", ErrURINoAuthority, "authority"},
+		{"empty host", "https:///path", ErrURINoAuthority, "host"},
 		{"too long", "https://example.com/" + strings.Repeat("a", 9000), ErrURITooLong, "max"},
 		{"unresolvable host", "https://ä..com/x", ErrURIUnnormalizable, "punycode"},
 	}

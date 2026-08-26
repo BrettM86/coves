@@ -43,25 +43,22 @@ var (
 	// See testdata/uri_vectors.json, which pins that agreement.
 	hostProfile = idna.New(idna.MapForLookup(), idna.BidiRule(), idna.VerifyDNSLength(true))
 
-	// disallowedURIs are schemes refused outright rather than normalized. These
-	// values reach `embed.external.uri` and richtext `#link.uri`, both of which
-	// clients render as hrefs, and normalization would otherwise happily
-	// *repair* such a URI into a schema-valid one and sign it into a federated
-	// record that every downstream consumer inherits.
+	// allowedURIs are the only schemes NormalizeURI will emit. These values
+	// reach `embed.external.uri`, `embed.external.sources[].uri` and richtext
+	// `#link.uri`, all of which clients render as hrefs, and normalization
+	// would otherwise happily *repair* an unsafe URI into a schema-valid one
+	// and sign it into a federated record that every downstream consumer
+	// inherits.
 	//
-	// Two categories, refused for different reasons:
-	//   - javascript/data/vbscript execute or inline content in the renderer,
-	//     so a stored one is stored XSS in any client that does not defend
-	//     itself.
-	//   - file/mailto do not name a fetchable remote resource. file: points at
-	//     the viewer's own disk, and mailto: in a public federated feed is an
-	//     address-harvesting and spam vector rather than a link to content.
-	disallowedURIs = map[string]struct{}{
-		"javascript": {},
-		"data":       {},
-		"vbscript":   {},
-		"file":       {},
-		"mailto":     {},
+	// This is an allowlist, not a blocklist, on purpose. A blocklist of
+	// javascript/data/vbscript/file/mailto still waved through ftp:, blob:,
+	// intent:, gopher: and every custom app scheme, none of which names a web
+	// resource a browser should navigate a user to from a feed. A link in a
+	// post is a web link; anything else is refused with
+	// ErrURISchemeNotAllowed rather than guessed at.
+	allowedURIs = map[string]struct{}{
+		"http":  {},
+		"https": {},
 	}
 )
 
@@ -80,10 +77,14 @@ var (
 	// and "view-source:…" are both rejected).
 	ErrURIBadScheme = errors.New("uri scheme is not valid for the atproto uri format")
 
-	// ErrURISchemeNotAllowed is returned for a scheme that names executable or
-	// inline content, or that does not name a fetchable remote resource at all.
-	// See disallowedURIs for the set and the reasoning.
-	ErrURISchemeNotAllowed = errors.New("uri scheme is not allowed in a rendered link")
+	// ErrURISchemeNotAllowed is returned for any scheme other than http or
+	// https. See allowedURIs for the reasoning.
+	ErrURISchemeNotAllowed = errors.New("uri scheme is not allowed in a rendered link (only http and https are accepted)")
+
+	// ErrURINoAuthority is returned for an http(s) URI with no "//host" part
+	// ("https:foo", "https://", "https:///path"). Such a string satisfies the
+	// atproto format but no browser will parse it, so it cannot be a link.
+	ErrURINoAuthority = errors.New("uri has no host")
 
 	// ErrURITooLong is returned for a URI beyond the atproto length cap, either
 	// as supplied or after percent-encoding expanded it.
@@ -103,7 +104,9 @@ func ValidURI(raw string) bool {
 }
 
 // NormalizeURI coerces raw into a string that satisfies the atproto `uri`
-// format, returning an error only when no valid URI can be recovered.
+// format, returning an error when no valid URI can be recovered or when the
+// URI is not an http(s) web link (see allowedURIs): every field this feeds is
+// rendered as an href, so only a URL a browser will navigate to is accepted.
 //
 // The transform is meaning-preserving. Bytes outside printable ASCII are
 // percent-encoded and a non-ASCII host is punycoded; both name the exact same
@@ -122,8 +125,7 @@ func ValidURI(raw string) bool {
 // Encoding is done by splitting the URI into scheme / authority / remainder
 // with plain string operations rather than net/url. url.Parse rejects several
 // inputs that are trivially recoverable — a stray '%' that is not an escape, an
-// interior tab, a non-ASCII userinfo, an `at://` URI whose DID reads as a port
-// — and round-tripping through url.URL.String() decodes reserved characters in
+// interior tab, a non-ASCII userinfo — and round-tripping through url.URL.String() decodes reserved characters in
 // the path. Both behaviours are the opposite of what this function promises.
 //
 // NormalizeURI is idempotent: input that already conforms is returned untouched,
@@ -153,8 +155,20 @@ func NormalizeURI(raw string) (string, error) {
 	if !atprotoScheme.MatchString(scheme) {
 		return "", fmt.Errorf("%w: %q", ErrURIBadScheme, scheme)
 	}
-	if _, blocked := disallowedURIs[scheme]; blocked {
+	if _, allowed := allowedURIs[scheme]; !allowed {
 		return "", fmt.Errorf("%w: %q", ErrURISchemeNotAllowed, scheme)
+	}
+
+	// An http(s) URI must be hierarchical with a host. "https:foo" and
+	// "https://" satisfy the atproto format and the scheme check, but the
+	// WHATWG parser every client renders through rejects them, so signing one
+	// would produce a record whose link silently vanishes in the UI.
+	rest := trimmed[len(match[0]):]
+	if !strings.HasPrefix(rest, "//") {
+		return "", fmt.Errorf("%w: %s URI has no authority (expected %s://host/…)", ErrURINoAuthority, scheme, scheme)
+	}
+	if authority, _ := splitAuthority(rest[2:]); hostOf(authority) == "" {
+		return "", fmt.Errorf("%w: %s URI has an empty host", ErrURINoAuthority, scheme)
 	}
 
 	if ValidURI(trimmed) {
@@ -166,21 +180,14 @@ func NormalizeURI(raw string) (string, error) {
 	out.WriteString(scheme)
 	out.WriteByte(':')
 
-	rest := trimmed[len(match[0]):]
-	if strings.HasPrefix(rest, "//") {
-		out.WriteString("//")
-		authority, remainder := splitAuthority(rest[2:])
-		encoded, err := encodeAuthority(authority)
-		if err != nil {
-			return "", err
-		}
-		out.WriteString(encoded)
-		out.WriteString(escapeNonGraphBytes(remainder))
-	} else {
-		// Opaque URI (urn:, magnet:, at: without an authority, …): everything after
-		// the scheme is encoded as-is.
-		out.WriteString(escapeNonGraphBytes(rest))
+	out.WriteString("//")
+	authority, remainder := splitAuthority(rest[2:])
+	encoded, err := encodeAuthority(authority)
+	if err != nil {
+		return "", err
 	}
+	out.WriteString(encoded)
+	out.WriteString(escapeNonGraphBytes(remainder))
 
 	normalized := out.String()
 	if len(normalized) > maxURILength {
@@ -200,6 +207,26 @@ func splitAuthority(s string) (authority, remainder string) {
 		return s[:i], s[i:]
 	}
 	return s, ""
+}
+
+// hostOf returns the host portion of an authority: userinfo and port stripped.
+// Only emptiness is decided on the result; encodeAuthority does the real work.
+func hostOf(authority string) string {
+	host := authority
+	if at := strings.LastIndex(host, "@"); at >= 0 {
+		host = host[at+1:]
+	}
+	if strings.HasPrefix(host, "[") {
+		// IPv6 literal: the closing bracket ends the host.
+		if end := strings.Index(host, "]"); end >= 0 {
+			return host[:end+1]
+		}
+		return host
+	}
+	if colon := strings.LastIndex(host, ":"); colon >= 0 && isAllDigits(host[colon+1:]) {
+		host = host[:colon]
+	}
+	return host
 }
 
 // encodeAuthority punycodes a non-ASCII host and percent-encodes any userinfo,
