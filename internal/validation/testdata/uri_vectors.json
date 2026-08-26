@@ -15,7 +15,7 @@
     "  empty            -> ErrURIEmpty",
     "  no_scheme        -> ErrURINoScheme",
     "  bad_scheme       -> ErrURIBadScheme",
-    "  scheme_forbidden -> ErrURISchemeNotAllowed",
+    "  scheme_forbidden -> ErrURISchemeNotAllowed (any scheme other than http/https)",
     "  too_long         -> ErrURITooLong",
     "  unnormalizable   -> ErrURIUnnormalizable (includes punycode failures)"
   ],
@@ -136,24 +136,19 @@
       "output": "https://%C3%BCser@[2001:db8::1]:8080/p"
     },
     {
-      "name": "at-uri with non-ascii rkey encodes without misreading the did as a port",
-      "input": "at://did:plc:abc123/social.coves.community.post/héllo",
-      "output": "at://did:plc:abc123/social.coves.community.post/h%C3%A9llo"
-    },
-    {
-      "name": "at-uri that already conforms",
+      "name": "at-uri is refused in a link field even when it conforms (record refs use embed.post, not a link)",
       "input": "at://did:plc:abc123/social.coves.community.post/3kabc",
-      "output": "at://did:plc:abc123/social.coves.community.post/3kabc"
+      "error": "scheme_forbidden"
     },
     {
       "name": "opaque uri (no authority) encodes its body",
-      "input": "urn:isbn:café-2024",
-      "output": "urn:isbn:caf%C3%A9-2024"
+      "input": "https:isbn:café-2024",
+      "output": "https:isbn:caf%C3%A9-2024"
     },
     {
       "name": "opaque uri with query and fragment encodes throughout",
-      "input": "magnet:?xt=urn:btih:café&dn=naïve",
-      "output": "magnet:?xt=urn:btih:caf%C3%A9&dn=na%C3%AFve"
+      "input": "https:?xt=urn:btih:café&dn=naïve",
+      "output": "https:?xt=urn:btih:caf%C3%A9&dn=na%C3%AFve"
     },
     {
       "name": "surrounding whitespace is stripped, not escaped",
@@ -228,6 +223,36 @@
     {
       "name": "mailto scheme is refused even when already conforming",
       "input": "mailto:someone@example.com",
+      "error": "scheme_forbidden"
+    },
+    {
+      "name": "ftp scheme is refused (allowlist: only http and https)",
+      "input": "ftp://example.com/file.zip",
+      "error": "scheme_forbidden"
+    },
+    {
+      "name": "blob scheme is refused",
+      "input": "blob:https://example.com/9d1b3b2a",
+      "error": "scheme_forbidden"
+    },
+    {
+      "name": "intent scheme is refused (android app launcher)",
+      "input": "intent://scan/#Intent;scheme=zxing;end",
+      "error": "scheme_forbidden"
+    },
+    {
+      "name": "gopher scheme is refused",
+      "input": "gopher://example.com/1/",
+      "error": "scheme_forbidden"
+    },
+    {
+      "name": "ws scheme is refused (not a navigable web resource)",
+      "input": "ws://example.com/socket",
+      "error": "scheme_forbidden"
+    },
+    {
+      "name": "uppercase forbidden scheme is still refused",
+      "input": "FTP://example.com/file.zip",
       "error": "scheme_forbidden"
     },
     {

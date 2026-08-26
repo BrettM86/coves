@@ -710,6 +710,11 @@ func TestNormalizeLinkURIsRejectsForbiddenSchemes(t *testing.T) {
 		"vbscript:msgbox(1)",
 		"file:///etc/passwd",
 		"mailto:someone@example.com",
+		// Allowlist, not blocklist: anything that is not http/https is refused.
+		"ftp://example.com/file.zip",
+		"blob:https://example.com/9d1b3b2a",
+		"intent://scan/#Intent;scheme=zxing;end",
+		"at://did:plc:abc/social.coves.community.post/xyz",
 	} {
 		t.Run(uri, func(t *testing.T) {
 			facets := []interface{}{linkFacet(uri)}

@@ -510,6 +510,8 @@ func TestNormalizeEmbedURIsPreservesErrorChain(t *testing.T) {
 	}{
 		{"no scheme", "example.com/path", validation.ErrURINoScheme, "embed.external.uri"},
 		{"forbidden scheme", "javascript:alert(1)", validation.ErrURISchemeNotAllowed, "embed.external.uri"},
+		{"non-web scheme (allowlist)", "ftp://example.com/file.zip", validation.ErrURISchemeNotAllowed, "embed.external.uri"},
+		{"blob scheme (allowlist)", "blob:https://example.com/abc", validation.ErrURISchemeNotAllowed, "embed.external.uri"},
 		{"bad scheme", "s3://bucket/key", validation.ErrURIBadScheme, "embed.external.uri"},
 	}
 	for _, tt := range tests {

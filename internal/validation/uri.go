@@ -43,25 +43,22 @@ var (
 	// See testdata/uri_vectors.json, which pins that agreement.
 	hostProfile = idna.New(idna.MapForLookup(), idna.BidiRule(), idna.VerifyDNSLength(true))
 
-	// disallowedURIs are schemes refused outright rather than normalized. These
-	// values reach `embed.external.uri` and richtext `#link.uri`, both of which
-	// clients render as hrefs, and normalization would otherwise happily
-	// *repair* such a URI into a schema-valid one and sign it into a federated
-	// record that every downstream consumer inherits.
+	// allowedURIs are the only schemes NormalizeURI will emit. These values
+	// reach `embed.external.uri`, `embed.external.sources[].uri` and richtext
+	// `#link.uri`, all of which clients render as hrefs, and normalization
+	// would otherwise happily *repair* an unsafe URI into a schema-valid one
+	// and sign it into a federated record that every downstream consumer
+	// inherits.
 	//
-	// Two categories, refused for different reasons:
-	//   - javascript/data/vbscript execute or inline content in the renderer,
-	//     so a stored one is stored XSS in any client that does not defend
-	//     itself.
-	//   - file/mailto do not name a fetchable remote resource. file: points at
-	//     the viewer's own disk, and mailto: in a public federated feed is an
-	//     address-harvesting and spam vector rather than a link to content.
-	disallowedURIs = map[string]struct{}{
-		"javascript": {},
-		"data":       {},
-		"vbscript":   {},
-		"file":       {},
-		"mailto":     {},
+	// This is an allowlist, not a blocklist, on purpose. A blocklist of
+	// javascript/data/vbscript/file/mailto still waved through ftp:, blob:,
+	// intent:, gopher: and every custom app scheme, none of which names a web
+	// resource a browser should navigate a user to from a feed. A link in a
+	// post is a web link; anything else is refused with
+	// ErrURISchemeNotAllowed rather than guessed at.
+	allowedURIs = map[string]struct{}{
+		"http":  {},
+		"https": {},
 	}
 )
 
@@ -80,10 +77,9 @@ var (
 	// and "view-source:…" are both rejected).
 	ErrURIBadScheme = errors.New("uri scheme is not valid for the atproto uri format")
 
-	// ErrURISchemeNotAllowed is returned for a scheme that names executable or
-	// inline content, or that does not name a fetchable remote resource at all.
-	// See disallowedURIs for the set and the reasoning.
-	ErrURISchemeNotAllowed = errors.New("uri scheme is not allowed in a rendered link")
+	// ErrURISchemeNotAllowed is returned for any scheme other than http or
+	// https. See allowedURIs for the reasoning.
+	ErrURISchemeNotAllowed = errors.New("uri scheme is not allowed in a rendered link (only http and https are accepted)")
 
 	// ErrURITooLong is returned for a URI beyond the atproto length cap, either
 	// as supplied or after percent-encoding expanded it.
@@ -153,7 +149,7 @@ func NormalizeURI(raw string) (string, error) {
 	if !atprotoScheme.MatchString(scheme) {
 		return "", fmt.Errorf("%w: %q", ErrURIBadScheme, scheme)
 	}
-	if _, blocked := disallowedURIs[scheme]; blocked {
+	if _, allowed := allowedURIs[scheme]; !allowed {
 		return "", fmt.Errorf("%w: %q", ErrURISchemeNotAllowed, scheme)
 	}
 

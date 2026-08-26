@@ -154,6 +154,7 @@ func TestNormalizeURIErrorsAreDescriptive(t *testing.T) {
 		{"missing scheme", "example.com/path", ErrURINoScheme, "scheme"},
 		{"scheme with digits", "s3://bucket/key", ErrURIBadScheme, "s3"},
 		{"forbidden scheme", "javascript:alert(1)", ErrURISchemeNotAllowed, "javascript"},
+		{"non-web scheme", "ftp://example.com/x", ErrURISchemeNotAllowed, "ftp"},
 		{"too long", "https://example.com/" + strings.Repeat("a", 9000), ErrURITooLong, "max"},
 		{"unresolvable host", "https://ä..com/x", ErrURIUnnormalizable, "punycode"},
 	}

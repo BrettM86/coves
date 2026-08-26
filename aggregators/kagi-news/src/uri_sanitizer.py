@@ -45,15 +45,13 @@ _MAX_URI_LENGTH = 8192
 _SCHEME = re.compile(r"^([A-Za-z][A-Za-z0-9+.-]*):")
 _ATPROTO_SCHEME = re.compile(r"^[a-z][a-z.-]{0,80}$")
 
-# Schemes refused outright rather than sanitized. These reach fields that
-# clients render as clickable links, and sanitizing would otherwise happily
-# repair one into a valid record. Two categories:
-#   - javascript/data/vbscript execute or inline content in the renderer, so a
-#     stored one is stored XSS in every client that does not defend itself.
-#   - file/mailto do not name a fetchable remote resource. file: points at the
-#     viewer's own disk, and mailto: in a public federated feed is an
-#     address-harvesting and spam vector rather than a link to content.
-_FORBIDDEN_SCHEMES = frozenset({"javascript", "data", "vbscript", "file", "mailto"})
+# The only schemes sanitize_uri will emit. These reach fields that clients
+# render as clickable links, and sanitizing would otherwise happily repair an
+# unsafe URI into a valid record. An allowlist rather than a blocklist: a
+# blocklist of javascript/data/vbscript/file/mailto still let through ftp:,
+# blob:, intent: and every custom app scheme, none of which is a web link a
+# browser should navigate a reader to from a feed.
+_ALLOWED_SCHEMES = frozenset({"http", "https"})
 
 
 def is_valid_uri(value: str) -> bool:
@@ -112,8 +110,10 @@ def sanitize_uri(value) -> str:
     scheme = match.group(1).lower()
     if not _ATPROTO_SCHEME.match(scheme):
         raise ValueError(f"uri scheme is not valid for the atproto uri format: {scheme!r}")
-    if scheme in _FORBIDDEN_SCHEMES:
-        raise ValueError(f"uri scheme is not allowed in a rendered link: {scheme!r}")
+    if scheme not in _ALLOWED_SCHEMES:
+        raise ValueError(
+            f"uri scheme is not allowed in a rendered link (only http and https are accepted): {scheme!r}"
+        )
 
     if is_valid_uri(trimmed):
         return trimmed
