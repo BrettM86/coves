@@ -115,16 +115,21 @@ def sanitize_uri(value) -> str:
             f"uri scheme is not allowed in a rendered link (only http and https are accepted): {scheme!r}"
         )
 
+    # An http(s) URI must be hierarchical with a host. "https:foo" and
+    # "https://" satisfy the atproto format and the scheme check, but the
+    # WHATWG parser every client renders through rejects them, so a record
+    # carrying one would have a link that silently vanishes in the UI.
+    rest = trimmed[match.end():]
+    if not rest.startswith("//"):
+        raise ValueError(f"uri has no host: {scheme} URI has no authority (expected {scheme}://host/…)")
+    authority, remainder = _split_authority(rest[2:])
+    if not _host_of(authority):
+        raise ValueError(f"uri has no host: {scheme} URI has an empty host")
+
     if is_valid_uri(trimmed):
         return trimmed
 
-    rest = trimmed[match.end():]
-    if rest.startswith("//"):
-        authority, remainder = _split_authority(rest[2:])
-        sanitized = f"{scheme}://{_encode_authority(authority)}{_escape_non_graph(remainder)}"
-    else:
-        # Opaque URI (urn:, magnet:, at: without an authority, …).
-        sanitized = f"{scheme}:{_escape_non_graph(rest)}"
+    sanitized = f"{scheme}://{_encode_authority(authority)}{_escape_non_graph(remainder)}"
 
     if len(sanitized) > _MAX_URI_LENGTH:
         raise ValueError(
@@ -133,6 +138,18 @@ def sanitize_uri(value) -> str:
     if not is_valid_uri(sanitized):
         raise ValueError("uri cannot be normalized to the atproto uri format")
     return sanitized
+
+
+def _host_of(authority: str) -> str:
+    """Return the host portion of an authority (userinfo and port stripped)."""
+    host = authority.rsplit("@", 1)[-1]
+    if host.startswith("["):
+        end = host.find("]")
+        return host[: end + 1] if end >= 0 else host
+    head, sep, tail = host.rpartition(":")
+    if sep and tail.isdigit():
+        return head
+    return host
 
 
 def _split_authority(value: str) -> tuple:

@@ -535,26 +535,32 @@ func TestNormalizeEmbedURIsPreservesErrorChain(t *testing.T) {
 }
 
 // TestNormalizeEmbedURIsRejectsForbiddenSchemeInSources ensures the scheme guard
-// applies to aggregated sources too, not just the primary link.
+// applies to aggregated sources too, not just the primary link. ftp: is included
+// because the old blocklist accepted it: it proves sources see the allowlist,
+// not merely the executable-scheme refusal.
 func TestNormalizeEmbedURIsRejectsForbiddenSchemeInSources(t *testing.T) {
-	embed := map[string]interface{}{
-		"$type": embedTypeExternal,
-		"external": map[string]interface{}{
-			"uri": "https://kagi.com/news/daily",
-			"sources": []interface{}{
-				map[string]interface{}{"uri": "https://example.com/ok"},
-				map[string]interface{}{"uri": "javascript:alert(1)"},
-			},
-		},
-	}
-	err := normalizeEmbedURIs(embed)
-	if err == nil {
-		t.Fatal("normalizeEmbedURIs() = nil, want the forbidden scheme rejected")
-	}
-	if !errors.Is(err, validation.ErrURISchemeNotAllowed) {
-		t.Errorf("error = %v, want ErrURISchemeNotAllowed", err)
-	}
-	if !strings.Contains(err.Error(), "sources[1]") {
-		t.Errorf("error = %q, want it to point at sources[1]", err)
+	for _, bad := range []string{"javascript:alert(1)", "ftp://example.com/file.zip"} {
+		t.Run(bad, func(t *testing.T) {
+			embed := map[string]interface{}{
+				"$type": embedTypeExternal,
+				"external": map[string]interface{}{
+					"uri": "https://kagi.com/news/daily",
+					"sources": []interface{}{
+						map[string]interface{}{"uri": "https://example.com/ok"},
+						map[string]interface{}{"uri": bad},
+					},
+				},
+			}
+			err := normalizeEmbedURIs(embed)
+			if err == nil {
+				t.Fatal("normalizeEmbedURIs() = nil, want the forbidden scheme rejected")
+			}
+			if !errors.Is(err, validation.ErrURISchemeNotAllowed) {
+				t.Errorf("error = %v, want ErrURISchemeNotAllowed", err)
+			}
+			if !strings.Contains(err.Error(), "sources[1]") {
+				t.Errorf("error = %q, want it to point at sources[1]", err)
+			}
+		})
 	}
 }

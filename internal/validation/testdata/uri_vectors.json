@@ -16,6 +16,7 @@
     "  no_scheme        -> ErrURINoScheme",
     "  bad_scheme       -> ErrURIBadScheme",
     "  scheme_forbidden -> ErrURISchemeNotAllowed (any scheme other than http/https)",
+    "  no_authority     -> ErrURINoAuthority (http(s) without a //host part)",
     "  too_long         -> ErrURITooLong",
     "  unnormalizable   -> ErrURIUnnormalizable (includes punycode failures)"
   ],
@@ -141,14 +142,34 @@
       "error": "scheme_forbidden"
     },
     {
-      "name": "opaque uri (no authority) encodes its body",
+      "name": "http(s) without an authority is refused: browsers cannot parse it",
       "input": "https:isbn:café-2024",
-      "output": "https:isbn:caf%C3%A9-2024"
+      "error": "no_authority"
     },
     {
-      "name": "opaque uri with query and fragment encodes throughout",
+      "name": "http(s) with only a query and no authority is refused",
       "input": "https:?xt=urn:btih:café&dn=naïve",
-      "output": "https:?xt=urn:btih:caf%C3%A9&dn=na%C3%AFve"
+      "error": "no_authority"
+    },
+    {
+      "name": "scheme and slashes with nothing after is refused",
+      "input": "https://",
+      "error": "no_authority"
+    },
+    {
+      "name": "empty host before a path is refused",
+      "input": "https:///path",
+      "error": "no_authority"
+    },
+    {
+      "name": "userinfo with no host is refused",
+      "input": "https://user:pw@/path",
+      "error": "no_authority"
+    },
+    {
+      "name": "ipv6 literal host is accepted",
+      "input": "https://[2001:db8::1]:8443/x",
+      "output": "https://[2001:db8::1]:8443/x"
     },
     {
       "name": "surrounding whitespace is stripped, not escaped",
@@ -216,7 +237,7 @@
       "error": "scheme_forbidden"
     },
     {
-      "name": "mailto scheme is refused (harvesting vector, not a fetchable resource)",
+      "name": "mailto scheme is refused (allowlist: only http and https; also a harvesting vector)",
       "input": "mailto:josé@example.com",
       "error": "scheme_forbidden"
     },
@@ -258,7 +279,7 @@
     {
       "name": "scheme with no body names no resource",
       "input": "https:",
-      "error": "unnormalizable"
+      "error": "no_authority"
     },
     {
       "name": "empty host label is not resolvable",

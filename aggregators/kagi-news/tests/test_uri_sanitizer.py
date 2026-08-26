@@ -28,6 +28,7 @@ _ERROR_CLASS_MESSAGES = {
     "no_scheme": "scheme",
     "bad_scheme": "not valid for the atproto uri format",
     "scheme_forbidden": "not allowed in a rendered link",
+    "no_authority": "no host",
     "too_long": "too long",
     "unnormalizable": "cannot",
 }
