@@ -34,6 +34,11 @@ type CommunityEventConsumer struct {
 	skipVerification bool                             // Skip did:web verification (for dev mode)
 	revGate          *RevGate                         // Optional: cross-feed ordering guard for commit events (nil = ungated)
 
+	// bridgeTrust decides which repos may assert an `origin` that differs from
+	// their verified handle's domain (see admitCommunityOrigin). nil is
+	// default-deny: only a handle-matching origin is kept.
+	bridgeTrust *BridgeTrust
+
 	// allowPrivateHosts disables the SSRF address guard on the .well-known
 	// fetch. NEVER set in production: the domain this consumer dials comes off a
 	// community record published by anyone on the federated network.
@@ -73,6 +78,15 @@ func WithCommunityRevGate(gate *RevGate) CommunityConsumerOption {
 	return func(c *CommunityEventConsumer) {
 		c.revGate = gate
 	}
+}
+
+// WithCommunityBridgeTrust installs the provenance gate that decides which
+// community repos may self-assert an `origin` foreign to their handle's domain
+// (a Tidepool-bridged community claiming lemmy.world). Without it, a foreign
+// origin is dropped and the community is indexed without one — mirrors
+// WithPostBridgeTrust.
+func WithCommunityBridgeTrust(bt *BridgeTrust) CommunityConsumerOption {
+	return func(c *CommunityEventConsumer) { c.bridgeTrust = bt }
 }
 
 // WithPrivateHostsAllowed disables the SSRF address guard on the .well-known
@@ -489,6 +503,7 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 		UpdatedAt:              time.Now(),
 		RecordURI:              uri,
 		RecordCID:              commit.CID,
+		Origin:                 admitCommunityOrigin(c.bridgeTrust, did, resolvedPDSURL, profile.Handle, profile.Origin),
 	}
 
 	// Handle blobs (avatar/banner) if present
@@ -648,6 +663,10 @@ func (c *CommunityEventConsumer) updateCommunity(ctx context.Context, did string
 	existing.ModerationType = profile.ModerationType
 	existing.ContentWarnings = profile.ContentWarnings
 	existing.RecordCID = commit.CID
+	// The stored pds_url is the same provenance BridgeTrust reads for
+	// bridgedStats, and it is what the create path resolved (or a later update
+	// backfilled); a fresh resolution above takes precedence when there is one.
+	existing.Origin = admitCommunityOrigin(c.bridgeTrust, did, existing.PDSURL, profile.Handle, profile.Origin)
 
 	// Update blobs
 	if avatarCID, ok := extractBlobCID(profile.Avatar); ok {
@@ -900,6 +919,55 @@ func (c *CommunityEventConsumer) cacheVerificationResult(did string, valid bool,
 		valid:     valid,
 		expiresAt: time.Now().Add(ttl),
 	})
+}
+
+// admitCommunityOrigin applies the trust rule for a profile record's
+// self-asserted `origin` and returns the value to store — "" when the field is
+// absent or dropped.
+//
+// `origin` is the instance a community actually lives on, and exists so a
+// bridged community whose DNS handle is the lossy comicstrips.lemmy-world.tdpl.io
+// can still render as !comicstrips@lemmy.world. Because it is self-asserted by
+// whoever writes the record, an unconstrained value would let any repo claim to
+// be !nba@coves.social. So:
+//
+//   - A repo hosted on a trusted bridge PDS (BridgeTrust, the same gate that
+//     decides bridgedStats provenance) may assert any well-formed origin.
+//   - Any other repo may assert only its OWN domain: the origin must be the
+//     registrable domain of its verified handle (c-nba.coves.social → coves.social)
+//     or a parent domain of that handle (c-nba.dev.coves.social → dev.coves.social).
+//     Both are domains the handle already proves control of.
+//   - Anything else is DROPPED with a warning and the community is indexed
+//     without an origin. The event is NEVER rejected over this field: a
+//     community whose display name would be wrong is still a community, and a
+//     refusal would dead-letter every post naming it.
+//
+// pdsURL is whatever host the caller knows at that point (freshly resolved on
+// create, the stored row on update). Empty is default-deny, exactly as
+// BridgeTrust.TrustsPDS treats it.
+func admitCommunityOrigin(bt *BridgeTrust, did, pdsURL, handle, origin string) string {
+	if origin == "" {
+		return ""
+	}
+
+	normalized, err := validation.NormalizeDomain(origin)
+	if err != nil {
+		log.Printf("WARNING: dropping origin %q on community %s: not a valid hostname (%v); indexing without it", origin, did, err)
+		return ""
+	}
+
+	if bt.TrustsPDS(pdsURL) {
+		return normalized
+	}
+
+	handle = strings.ToLower(strings.TrimSpace(handle))
+	if normalized == extractDomainFromHandle(handle) || strings.HasSuffix(handle, "."+normalized) {
+		return normalized
+	}
+
+	log.Printf("WARNING: dropping origin %q on community %s: repo (pds=%q) is not a trusted bridge and the origin does not match its handle %q; indexing without it",
+		origin, did, pdsURL, handle)
+	return ""
 }
 
 // extractDomainFromHandle extracts the registrable domain from a community handle
@@ -1186,6 +1254,7 @@ type CommunityProfile struct {
 	DisplayName       string                 `json:"displayName"`
 	Name              string                 `json:"name"`
 	Handle            string                 `json:"handle"`
+	Origin            string                 `json:"origin"`
 	HostedBy          string                 `json:"hostedBy"`
 	Description       string                 `json:"description"`
 	FederatedID       string                 `json:"federatedId"`

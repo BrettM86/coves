@@ -304,19 +304,19 @@ type PostRecord struct {
 // Matches social.coves.community.post.get#postView lexicon
 // Used in feeds and get endpoints
 type PostView struct {
-	IndexedAt     time.Time     `json:"indexedAt"`
-	CreatedAt     time.Time     `json:"createdAt"`
-	Record        interface{}   `json:"record,omitempty"`
-	Embed         interface{}   `json:"embed,omitempty"`
-	Language      *string       `json:"language,omitempty"`
-	EditedAt      *time.Time    `json:"editedAt,omitempty"`
-	Viewer        *ViewerState  `json:"viewer,omitempty"`
-	Author        *AuthorView   `json:"author"`
-	Stats         *PostStats    `json:"stats,omitempty"`
-	Community     *CommunityRef `json:"community"`
-	RKey          string        `json:"rkey"`
-	CID           string        `json:"cid"`
-	URI           string        `json:"uri"`
+	IndexedAt time.Time     `json:"indexedAt"`
+	CreatedAt time.Time     `json:"createdAt"`
+	Record    interface{}   `json:"record,omitempty"`
+	Embed     interface{}   `json:"embed,omitempty"`
+	Language  *string       `json:"language,omitempty"`
+	EditedAt  *time.Time    `json:"editedAt,omitempty"`
+	Viewer    *ViewerState  `json:"viewer,omitempty"`
+	Author    *AuthorView   `json:"author"`
+	Stats     *PostStats    `json:"stats,omitempty"`
+	Community *CommunityRef `json:"community"`
+	RKey      string        `json:"rkey"`
+	CID       string        `json:"cid"`
+	URI       string        `json:"uri"`
 
 	// Status and AcceptanceURI are the per-community admission context (PRD §6.2),
 	// populated from the visibility join. Both are additive-optional: a public
@@ -355,6 +355,7 @@ type AuthorView struct {
 // CommunityRef represents minimal community info in post views
 type CommunityRef struct {
 	Avatar *string `json:"avatar,omitempty"`
+	Origin *string `json:"origin,omitempty"` // Instance the community lives on (hostname); clients render !name@origin
 	DID    string  `json:"did"`
 	Handle string  `json:"handle"`
 	Name   string  `json:"name"`

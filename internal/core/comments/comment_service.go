@@ -1170,11 +1170,18 @@ func (s *commentService) buildPostView(ctx context.Context, post *posts.Post, vi
 		avatarURL = &hydrated
 	}
 
+	var communityOrigin *string
+	if community.Origin != "" {
+		origin := community.Origin
+		communityOrigin = &origin
+	}
+
 	communityRef := &posts.CommunityRef{
 		DID:    post.CommunityDID,
 		Handle: communityHandle,
 		Name:   communityName,
 		Avatar: avatarURL,
+		Origin: communityOrigin,
 	}
 
 	// Build aggregated statistics

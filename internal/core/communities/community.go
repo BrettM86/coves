@@ -68,6 +68,7 @@ type Community struct {
 	PDSPassword            string                `json:"-" db:"pds_password_encrypted"`
 	Name                   string                `json:"name" db:"name"`                 // Short name (e.g., "gardening")
 	DisplayHandle          string                `json:"displayHandle,omitempty" db:"-"` // UI hint: !gardening@coves.social (computed, not stored)
+	Origin                 string                `json:"origin,omitempty" db:"origin"`   // Instance the community lives on (hostname only); empty when unknown
 	RecordCID              string                `json:"recordCid,omitempty" db:"record_cid"`
 	FederatedID            string                `json:"federatedId,omitempty" db:"federated_id"`
 	PDSAccessToken         string                `json:"-" db:"pds_access_token"`
@@ -108,6 +109,7 @@ type CommunityView struct {
 	Name            string                `json:"name"`
 	DisplayName     string                `json:"displayName,omitempty"`
 	DisplayHandle   string                `json:"displayHandle,omitempty"`
+	Origin          string                `json:"origin,omitempty"`
 	Avatar          string                `json:"avatar,omitempty"` // URL, not CID
 	Visibility      string                `json:"visibility,omitempty"`
 	SubscriberCount int                   `json:"subscriberCount"`
@@ -124,6 +126,7 @@ type CommunityViewDetailed struct {
 	Name                   string                `json:"name"`
 	DisplayName            string                `json:"displayName,omitempty"`
 	DisplayHandle          string                `json:"displayHandle,omitempty"`
+	Origin                 string                `json:"origin,omitempty"`
 	Description            string                `json:"description,omitempty"`
 	Avatar                 string                `json:"avatar,omitempty"` // URL
 	Banner                 string                `json:"banner,omitempty"` // URL
@@ -253,11 +256,21 @@ type SearchCommunitiesRequest struct {
 // Following Bluesky's pattern where client adds @ prefix for users, but for communities we use ! prefix
 // Example: "c-gardening.coves.social" -> "!gardening@coves.social"
 //
+// When the community carries a validated Origin, the display handle is
+// "!{Name}@{Origin}" regardless of the DNS handle's shape. That is what lets a
+// bridged community whose handle is the lossy "comicstrips.lemmy-world.tdpl.io"
+// render as "!comicstrips@lemmy.world". Without an origin (or without a name to
+// pair it with) the handle-derived form below is the fallback.
+//
 // Handles various domain formats correctly:
 // - "c-gaming.coves.social" -> "!gaming@coves.social"
 // - "c-gaming.coves.co.uk" -> "!gaming@coves.co.uk"
 // - "c-test.dev.coves.social" -> "!test@dev.coves.social"
 func (c *Community) GetDisplayHandle() string {
+	if c.Origin != "" && c.Name != "" {
+		return fmt.Sprintf("!%s@%s", c.Name, c.Origin)
+	}
+
 	// Handle format: c-{name}.{instance}
 	if !strings.HasPrefix(c.Handle, "c-") {
 		log.Printf("DEBUG: GetDisplayHandle: handle %q missing c- prefix, returning raw handle", c.Handle)
@@ -305,6 +318,7 @@ func (c *Community) ToCommunityView() *CommunityView {
 		Name:            c.Name,
 		DisplayName:     c.DisplayName,
 		DisplayHandle:   c.GetDisplayHandle(),
+		Origin:          c.Origin,
 		Avatar:          blobs.HydrateImageURL(blobs.GetImageURLConfig(), c.PDSURL, c.DID, c.AvatarCID, "avatar_small"),
 		Visibility:      c.Visibility,
 		SubscriberCount: c.SubscriberCount,
@@ -325,6 +339,7 @@ func (c *Community) ToCommunityViewDetailed() *CommunityViewDetailed {
 		Name:                   c.Name,
 		DisplayName:            c.DisplayName,
 		DisplayHandle:          c.GetDisplayHandle(),
+		Origin:                 c.Origin,
 		Description:            c.Description,
 		Avatar:                 blobs.HydrateImageURL(blobs.GetImageURLConfig(), c.PDSURL, c.DID, c.AvatarCID, "avatar"),
 		Banner:                 blobs.HydrateImageURL(blobs.GetImageURLConfig(), c.PDSURL, c.DID, c.BannerCID, "banner"),

@@ -234,6 +234,7 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 		"$type":      "social.coves.community.profile",
 		"name":       req.Name, // Short name for !mentions (e.g., "gaming")
 		"handle":     pdsAccount.Handle,
+		"origin":     s.instanceDomain, // Instance the community lives on; clients render !name@origin
 		"visibility": req.Visibility,
 		"hostedBy":   s.instanceDID, // V2: Instance hosts, community owns
 		"createdBy":  req.CreatedByDID,
@@ -513,6 +514,7 @@ func (s *communityService) UpdateCommunity(ctx context.Context, req UpdateCommun
 	profile := map[string]interface{}{
 		"$type":     "social.coves.community.profile",
 		"name":      existing.Name,
+		"origin":    s.instanceDomain, // Re-asserted on every update: the consumer replaces the stored value from the record
 		"owner":     existing.OwnerDID,
 		"createdBy": existing.CreatedByDID,
 		"hostedBy":  existing.HostedByDID,

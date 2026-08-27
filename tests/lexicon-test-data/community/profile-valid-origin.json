@@ -1,0 +1,11 @@
+{
+  "$type": "social.coves.community.profile",
+  "name": "comicstrips",
+  "origin": "lemmy.world",
+  "displayName": "Comic Strips",
+  "description": "Bridged from lemmy.world via Tidepool",
+  "createdBy": "did:plc:bridgecreator123",
+  "hostedBy": "did:web:tdpl.io",
+  "visibility": "public",
+  "createdAt": "2026-08-01T08:00:00Z"
+}

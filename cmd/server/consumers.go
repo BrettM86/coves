@@ -158,8 +158,14 @@ func (a *application) registerFeedConsumers() []feedConsumer {
 	// what the .well-known DID document is fetched from. In production that
 	// fetch dials whatever domain a community record published by anyone on the
 	// federated network names, from inside this AppView's own network.
+	// BridgeTrust here gates the self-asserted `origin` on profile records: a
+	// repo on a trusted bridge PDS may claim a foreign origin (lemmy.world);
+	// anyone else may claim only their own handle's domain.
 	communityOpts := append(
-		[]jetstream.CommunityConsumerOption{jetstream.WithCommunityRevGate(a.revGate)},
+		[]jetstream.CommunityConsumerOption{
+			jetstream.WithCommunityRevGate(a.revGate),
+			jetstream.WithCommunityBridgeTrust(a.bridgeTrust),
+		},
 		jetstream.PrivateHostOptions(a.allowPrivateHosts())...)
 	consumers = append(consumers, feedConsumer{
 		name: jetstream.ConsumerCommunities,
