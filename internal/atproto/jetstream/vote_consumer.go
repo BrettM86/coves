@@ -324,7 +324,46 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 		return false, nil
 	}
 
-	// 1. Check for existing active vote with different URI (stale record)
+	// 1. ORDERING GATE: refuse the vote until its subject is indexed.
+	//
+	// A vote and its subject always live in different repos and Jetstream
+	// parallelises across repos, so a vote that arrives first is ordinary
+	// delivery, not a malformed event. There is no row to count it on yet, and
+	// an indexed-but-uncounted vote row is worse than none: deleteVote later
+	// decrements the subject from whatever the row says, subtracting an
+	// increment that was never applied.
+	//
+	// Deliberately NOT ErrPermanentEvent: this is an ORDERING failure (the
+	// subject's create event may simply not have been indexed yet) — the redrive
+	// succeeds once the subject arrives. Mirrors post_consumer.go's "community
+	// not found" and createSubscription. Refusing before the stale-vote cleanup
+	// below, and rolling the whole transaction back, is what leaves the voter's
+	// rows untouched and the rev gate unadvanced for that replay.
+	//
+	// A soft-deleted subject counts as indexed: the gate asks only whether the
+	// AppView has seen the record at all, which is why the check carries no
+	// deleted_at filter.
+	var subjectExistsQuery string
+	switch collection := utils.ExtractCollectionFromURI(vote.SubjectURI); {
+	case posts.IsPostCollection(collection):
+		subjectExistsQuery = `SELECT 1 FROM posts WHERE uri = $1`
+	case collection == CommentCollection:
+		subjectExistsQuery = `SELECT 1 FROM comments WHERE uri = $1`
+	}
+	// Unsupported collections have no table to count on in the first place; they
+	// keep indexing without counts (see the default branch of the count switch).
+	if subjectExistsQuery != "" {
+		var subjectExists int
+		err := tx.QueryRowContext(ctx, subjectExistsQuery, vote.SubjectURI).Scan(&subjectExists)
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, fmt.Errorf("vote subject not indexed: %s - cannot count vote before its subject", vote.SubjectURI)
+		}
+		if err != nil {
+			return false, fmt.Errorf("failed to verify vote subject exists: %w", err)
+		}
+	}
+
+	// 2. Check for existing active vote with different URI (stale record)
 	// This handles cases where:
 	// - User voted on another client and we missed the delete event
 	// - Vote was reindexed but user created a new vote with different rkey
@@ -380,7 +419,7 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 		log.Printf("Cleaned up stale vote for %s on %s (was %s)", vote.VoterDID, vote.SubjectURI, existingDirection.String)
 	}
 
-	// 2. Index the vote (idempotent with ON CONFLICT DO NOTHING)
+	// 3. Index the vote (idempotent with ON CONFLICT DO NOTHING)
 	query := `
 		INSERT INTO votes (
 			uri, cid, rkey, voter_did,
@@ -429,7 +468,7 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 		return false, fmt.Errorf("failed to insert vote: %w", err)
 	}
 
-	// 3. Update vote counts on the subject (post or comment)
+	// 4. Update vote counts on the subject (post or comment)
 	// Parse collection from subject URI to determine target table
 	collection := utils.ExtractCollectionFromURI(vote.SubjectURI)
 
@@ -491,26 +530,11 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 		return false, fmt.Errorf("failed to check update result: %w", err)
 	}
 
-	// KNOWN DEFECT — zero rows here is NOT OK, which is what this comment used
-	// to say. See
-	// ~/Code/claude-skills/issues/2026-07-29-vote-before-subject-lost-then-subtracts.md.
-	//
-	// Two distinct cases reach this branch and only one of them is benign:
-	//
-	//   - the subject was DELETED. Nothing to count; the vote row is harmless.
-	//   - the subject has NOT BEEN INDEXED YET. A vote and its subject always
-	//     live in different repos and Jetstream parallelises across repos, so
-	//     this is ordinary, not exotic. The vote is then counted by nobody,
-	//     forever — the post consumer INSERTs fresh zeroed counters when the
-	//     subject finally arrives and never consults this table. And because the
-	//     row below is live, deleteVote will later decrement the subject for it,
-	//     subtracting a vote it never added.
-	//
-	// The fix is a must-exist gate on the subject returning a TRANSIENT error
-	// (as post_consumer.go and createSubscription already do) so the redrive
-	// succeeds once the subject lands. Pinned meanwhile by
-	// TestVoteOutOfOrderIsLostAndSubtracts (tests/e2e/vote_contract_test.go),
-	// which fails when this is fixed.
+	// The ordering gate above proved a subject row exists, so zero rows here
+	// means it is soft-deleted — the count queries filter on deleted_at, the
+	// gate does not. Nothing to count on a deleted subject, and deleteVote's
+	// decrement is filtered the same way, so the vote's eventual withdrawal is
+	// the matching no-op rather than a subtraction of something never added.
 	if rowsAffected == 0 {
 		log.Printf("Warning: Vote subject not found or deleted: %s (vote indexed anyway)", vote.SubjectURI)
 	}
