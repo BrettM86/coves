@@ -324,42 +324,57 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 		return false, nil
 	}
 
-	// 1. ORDERING GATE: refuse the vote until its subject is indexed.
+	// 1. ORDERING GATE: a vote is only indexed onto a subject that is present
+	// and live. The subject's deleted_at is read WITHOUT filtering on it because
+	// the three states need three different answers:
 	//
-	// A vote and its subject always live in different repos and Jetstream
-	// parallelises across repos, so a vote that arrives first is ordinary
-	// delivery, not a malformed event. There is no row to count it on yet, and
-	// an indexed-but-uncounted vote row is worse than none: deleteVote later
-	// decrements the subject from whatever the row says, subtracting an
-	// increment that was never applied.
+	//   - NO ROW: refuse transiently. A vote and its subject always live in
+	//     different repos and Jetstream parallelises across repos, so a vote that
+	//     arrives first is ordinary delivery, not a malformed event. Deliberately
+	//     NOT ErrPermanentEvent: this is an ORDERING failure — the redrive
+	//     succeeds once the subject arrives, the shape post_consumer.go's
+	//     "community not found" and createSubscription already use. Refusing
+	//     before the stale-vote cleanup below, and rolling the whole transaction
+	//     back, is what leaves the voter's rows untouched and the rev gate
+	//     unadvanced so that replay can win.
 	//
-	// Deliberately NOT ErrPermanentEvent: this is an ORDERING failure (the
-	// subject's create event may simply not have been indexed yet) — the redrive
-	// succeeds once the subject arrives. Mirrors post_consumer.go's "community
-	// not found" and createSubscription. Refusing before the stale-vote cleanup
-	// below, and rolling the whole transaction back, is what leaves the voter's
-	// rows untouched and the rev gate unadvanced for that replay.
+	//   - DELETED: drop the vote and commit. A deleted subject will not un-delete
+	//     because a redriver asked again, so refusing costs the redrive budget and
+	//     a dead letter per vote for nothing. Dropping rather than indexing
+	//     without counts is what makes this safe under RESURRECTION: comments come
+	//     back with their native counts intact (see indexCommentAndUpdateCounts's
+	//     re-create path), and an uncounted vote row left live here would have
+	//     deleteVote decrement the revived subject for an increment never applied.
+	//     No row, nothing to withdraw. The commit keeps the rev advance as a
+	//     tombstone — the drop is a decision, not a deferral — so duplicate
+	//     deliveries are answered by the gate above (mirrors deleteVote's
+	//     not-found branch).
 	//
-	// A soft-deleted subject counts as indexed: the gate asks only whether the
-	// AppView has seen the record at all, which is why the check carries no
-	// deleted_at filter.
-	var subjectExistsQuery string
+	//   - LIVE: proceed.
+	var subjectStateQuery string
 	switch collection := utils.ExtractCollectionFromURI(vote.SubjectURI); {
 	case posts.IsPostCollection(collection):
-		subjectExistsQuery = `SELECT 1 FROM posts WHERE uri = $1`
+		subjectStateQuery = `SELECT deleted_at FROM posts WHERE uri = $1`
 	case collection == CommentCollection:
-		subjectExistsQuery = `SELECT 1 FROM comments WHERE uri = $1`
+		subjectStateQuery = `SELECT deleted_at FROM comments WHERE uri = $1`
 	}
 	// Unsupported collections have no table to count on in the first place; they
 	// keep indexing without counts (see the default branch of the count switch).
-	if subjectExistsQuery != "" {
-		var subjectExists int
-		err := tx.QueryRowContext(ctx, subjectExistsQuery, vote.SubjectURI).Scan(&subjectExists)
+	if subjectStateQuery != "" {
+		var subjectDeletedAt sql.NullTime
+		err := tx.QueryRowContext(ctx, subjectStateQuery, vote.SubjectURI).Scan(&subjectDeletedAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, fmt.Errorf("vote subject not indexed: %s - cannot count vote before its subject", vote.SubjectURI)
 		}
 		if err != nil {
 			return false, fmt.Errorf("failed to verify vote subject exists: %w", err)
+		}
+		if subjectDeletedAt.Valid {
+			if commitErr := tx.Commit(); commitErr != nil {
+				return false, fmt.Errorf("failed to commit transaction: %w", commitErr)
+			}
+			log.Printf("Dropped vote on deleted subject: %s (%s on %s)", vote.URI, vote.Direction, vote.SubjectURI)
+			return false, nil
 		}
 	}
 
@@ -530,11 +545,12 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 		return false, fmt.Errorf("failed to check update result: %w", err)
 	}
 
-	// The ordering gate above proved a subject row exists, so zero rows here
-	// means it is soft-deleted — the count queries filter on deleted_at, the
-	// gate does not. Nothing to count on a deleted subject, and deleteVote's
-	// decrement is filtered the same way, so the vote's eventual withdrawal is
-	// the matching no-op rather than a subtraction of something never added.
+	// The ordering gate above proved the subject was present and live, and its
+	// read takes no row lock, so zero rows here means a delete of the subject
+	// committed between that read and this update. The vote row stays: deleteVote
+	// decrements through the same `deleted_at IS NULL` filter, so its eventual
+	// withdrawal is the matching no-op rather than a subtraction of something
+	// never added.
 	if rowsAffected == 0 {
 		log.Printf("Warning: Vote subject not found or deleted: %s (vote indexed anyway)", vote.SubjectURI)
 	}

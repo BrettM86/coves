@@ -61,6 +61,15 @@ const (
 	// which is exactly how a vote comes to name a subject the AppView has never
 	// seen.
 	subjectGateHost = subjectGatePrefix + "host"
+
+	// Fixtures for the deleted-subject branch. A post lives in its community's
+	// repo and a comment in its author's, so the two variants build their
+	// subject URI from different DIDs — the URI's repo segment is not what the
+	// vote consumer routes on, but a fixture that spelled it wrong would model a
+	// record atProto cannot produce.
+	deletedSubjectCommunity = subjectGatePrefix + "delcommunity"
+	deletedSubjectAuthor    = subjectGatePrefix + "delauthor"
+	deletedSubjectVoter     = subjectGatePrefix + "delvoter"
 )
 
 // seedActiveVote writes an active vote row directly, bypassing the consumer.
@@ -302,4 +311,191 @@ func TestVoteConsumer_SubjectIndexedAfterRefusal_IdenticalReplayIsCounted(t *tes
 	assert.Equal(t, 1, upvotes, "the deferred vote must be counted on the subject that finally arrived")
 	assert.Equal(t, 0, downvotes)
 	assert.Equal(t, 1, score, "score must reflect the one recovered upvote")
+}
+
+// subjectCounts is the (upvotes, downvotes, score) triple both subject tables
+// carry, read through a query the caller supplies so that no table name is ever
+// concatenated into SQL.
+type subjectCounts struct {
+	Upvotes   int
+	Downvotes int
+	Score     int
+}
+
+func readSubjectCounts(t *testing.T, db *sql.DB, query, uri string) subjectCounts {
+	t.Helper()
+	var counts subjectCounts
+	require.NoError(t, db.QueryRow(query, uri).Scan(&counts.Upvotes, &counts.Downvotes, &counts.Score))
+	return counts
+}
+
+// TestVoteConsumer_SubjectSoftDeleted_DropsTheVoteEntirely covers the branch the
+// ordering gate deliberately lets through, and which needs the OPPOSITE
+// treatment from an absent subject.
+//
+// # WHY THIS IS A DROP AND NOT A TRANSIENT REFUSAL
+//
+// The two cases look alike at the count update — both leave nothing to
+// increment — but they differ in what the future holds. An absent subject is a
+// statement about ordering that time will falsify, so refusing transiently and
+// letting the redriver replay is exactly right. A DELETED subject is not going
+// to un-delete because a redriver asked again ten times; refusing it would turn
+// every vote on every deleted post into ten pointless replays and a dead letter,
+// burying the dead letter queue's real signal in noise.
+//
+// # WHY IT IS A DROP AND NOT TODAY'S INDEX-WITHOUT-COUNTING
+//
+// This is the part that makes the test worth writing rather than a matter of
+// taste, and it turns on a fact about the neighbouring domain: COMMENTS CAN BE
+// RESURRECTED. comment_consumer.go's re-create path clears deleted_at and
+// deliberately preserves the comment's native vote counts, so a deleted comment
+// is not a terminal state — it is a pause.
+//
+// An indexed-but-uncounted vote on a deleted subject is therefore a time bomb
+// with a fuse of unknown length. The subject comes back carrying the counts it
+// had before; the uncounted vote is still sitting there, live and undeleted;
+// and when it is eventually withdrawn, deleteVote decrements the resurrected
+// subject for an increment that was never applied. That is precisely the drift
+// the ordering gate was built to kill, surviving inside the one branch the gate
+// waves through — and it takes a real voter's vote with it, floored at zero by
+// GREATEST(0, …) so it never looks wrong in the data.
+//
+// Dropping the vote is what makes the deleted branch safe under resurrection:
+// no row, nothing to withdraw, nothing to subtract.
+//
+// # WHY THE REV GATE MUST COMMIT HERE AND ROLL BACK IN B1
+//
+// The drop is a decision, not a deferral, so it leaves a tombstone: the gate
+// advance commits, and a duplicate delivery of the same commit is answered by
+// the cheap gate check instead of re-running the subject lookup. That is the
+// same shape deleteVote's not-found branch already has, and asserting it is what
+// distinguishes this path from
+// TestVoteConsumer_SubjectNotIndexed_RefusesTransientlyAndPersistsNothing, where
+// the advance must NOT survive.
+func TestVoteConsumer_SubjectSoftDeleted_DropsTheVoteEntirely(t *testing.T) {
+	t.Parallel()
+
+	for _, subject := range []struct {
+		kind        string
+		repoDID     string
+		collection  string
+		seed        func(t *testing.T, db *sql.DB, uri string)
+		countsQuery string
+	}{
+		{
+			kind:       "a post that has been deleted",
+			repoDID:    deletedSubjectCommunity,
+			collection: "social.coves.community.post",
+			seed: func(t *testing.T, db *sql.DB, uri string) {
+				t.Helper()
+				insertBridgedUser(t, db, deletedSubjectAuthor, "deletedauthor.test")
+				insertBridgedCommunity(t, db, deletedSubjectCommunity, "deletedcommunity.test", deletedSubjectAuthor)
+				_, err := db.Exec(`
+					INSERT INTO posts (uri, cid, rkey, author_did, community_did, title,
+					                   created_at, upvote_count, downvote_count, score, deleted_at)
+					VALUES ($1, $2, $3, $4, $5, $6, $7, 3, 0, 3, NOW())`,
+					uri, "bafdeletedsubject", "deletedsubject", deletedSubjectAuthor,
+					deletedSubjectCommunity, "the deleted subject",
+					time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC))
+				require.NoError(t, err)
+			},
+			countsQuery: `SELECT upvote_count, downvote_count, score FROM posts WHERE uri = $1`,
+		},
+		{
+			kind:       "a comment that has been deleted",
+			repoDID:    deletedSubjectAuthor,
+			collection: CommentCollection,
+			seed: func(t *testing.T, db *sql.DB, uri string) {
+				t.Helper()
+				root := "at://" + deletedSubjectCommunity + "/social.coves.community.post/deletedroot"
+				_, err := db.Exec(`
+					INSERT INTO comments (uri, cid, rkey, commenter_did, root_uri, root_cid,
+					                      parent_uri, parent_cid, content, created_at,
+					                      upvote_count, downvote_count, score, deleted_at)
+					VALUES ($1, $2, $3, $4, $5, $6, $5, $6, $7, $8, 3, 0, 3, NOW())`,
+					uri, "bafdeletedsubject", "deletedsubject", deletedSubjectAuthor,
+					root, "bafdeletedroot", "the deleted subject",
+					time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC))
+				require.NoError(t, err)
+			},
+			countsQuery: `SELECT upvote_count, downvote_count, score FROM comments WHERE uri = $1`,
+		},
+	} {
+		t.Run(subject.kind, func(t *testing.T) {
+			t.Parallel()
+			db := testkit.DB(t)
+			ctx := context.Background()
+
+			subjectURI := "at://" + subject.repoDID + "/" + subject.collection + "/deletedsubject"
+			subject.seed(t, db, subjectURI)
+
+			// The subject is seeded with counts ALREADY ON IT — the votes it
+			// collected while it was alive. Nonzero on purpose: "the counts did
+			// not change" is a claim that says nothing against a row of zeroes,
+			// and these are exactly the counts a resurrection would revive.
+			before := readSubjectCounts(t, db, subject.countsQuery, subjectURI)
+			require.Equal(t, subjectCounts{Upvotes: 3, Score: 3}, before,
+				"the fixture must start with counts a spurious mutation could disturb")
+
+			consumer := NewVoteEventConsumer(postgres.NewVoteRepository(db), newMockUserService(), db)
+
+			const voteRev = "3lgatedeletedaa2a"
+			voteURI := "at://" + deletedSubjectVoter + "/social.coves.feed.vote/deletedvote"
+			event := &JetstreamEvent{
+				Kind:   "commit",
+				Did:    deletedSubjectVoter,
+				TimeUS: time.Now().UnixMicro(),
+				Commit: &CommitEvent{
+					Rev:        voteRev,
+					Operation:  "create",
+					Collection: "social.coves.feed.vote",
+					RKey:       "deletedvote",
+					CID:        "bafgatedeletedvote",
+					Record: map[string]interface{}{
+						"$type":     "social.coves.feed.vote",
+						"subject":   map[string]interface{}{"uri": subjectURI, "cid": "bafdeletedsubject"},
+						"direction": "up",
+						"createdAt": "2026-03-01T01:00:00Z",
+					},
+				},
+			}
+
+			require.NoError(t, consumer.HandleEvent(ctx, event),
+				"a vote on a deleted subject must be DROPPED, not refused: a deleted subject will "+
+					"not un-delete because a redriver asked again, so a transient error here buys "+
+					"ten replays and a dead letter for every vote on every deleted post")
+
+			exists, _ := voteRowState(t, db, voteURI)
+			assert.False(t, exists,
+				"no row may land at %s, active or soft-deleted. A deleted COMMENT can be "+
+					"resurrected — comment_consumer.go's re-create path clears deleted_at and keeps "+
+					"the native counts — so an indexed-but-uncounted vote here is a decrement waiting "+
+					"for the subject to come back", voteURI)
+
+			assert.Equal(t, before, readSubjectCounts(t, db, subject.countsQuery, subjectURI),
+				"the deleted subject's counts must be exactly as they were: they are what a "+
+					"resurrection restores, and this vote was never counted among them")
+
+			// ---- the same commit, delivered twice ---------------------------
+			// A rewind duplicate or a redrive of some other event in the same
+			// batch. The drop must be as final the second time as the first.
+			require.NoError(t, consumer.HandleEvent(ctx, event),
+				"a duplicate delivery of a dropped vote must also be a no-op")
+
+			exists, _ = voteRowState(t, db, voteURI)
+			assert.False(t, exists, "the duplicate delivery must not resurrect the dropped vote as a row")
+			assert.Equal(t, before, readSubjectCounts(t, db, subject.countsQuery, subjectURI),
+				"the duplicate delivery must not move the deleted subject's counts either")
+
+			// The drop is a DECISION and leaves a tombstone, unlike the ordering
+			// refusal, which must leave the gate untouched so its replay can win.
+			// Equal rev reads as stale precisely when the advance committed.
+			stale, err := NewRevGate(db).IsStale(ctx, voteURI, voteRev)
+			require.NoError(t, err)
+			assert.True(t, stale,
+				"the dropped vote's rev advance must COMMIT, so a duplicate delivery is answered by "+
+					"the gate rather than by re-deciding the drop — the opposite of the ordering "+
+					"refusal, whose advance must roll back or its own redrive would be rejected")
+		})
+	}
 }
