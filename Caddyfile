@@ -192,29 +192,38 @@ coves.social {
         format json
     }
 
-    # Security headers (applied to every response)
+    # Security headers. HSTS and -Server are edge-only and unconditional. The
+    # `?` prefix on the rest makes them set-if-absent: the SvelteKit frontend
+    # owns these values (coves-frontend: src/lib/server/security-headers.ts)
+    # and must not be silently overridden by a replace-semantics header the
+    # day it tightens one; the defaults here cover responses that never pass
+    # through its hooks (AppView, and the frontend's sirv-served static
+    # assets once it is proxied here).
     header {
         Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
-        X-Content-Type-Options "nosniff"
-        X-Frame-Options "DENY"
-        Referrer-Policy "strict-origin-when-cross-origin"
+        ?X-Content-Type-Options "nosniff"
+        ?X-Frame-Options "DENY"
+        ?Referrer-Policy "strict-origin-when-cross-origin"
         # Remove Server header
         -Server
     }
 
-    # Global CSP — but NOT on the Turnstile widget host page. That page must load
-    # Cloudflare's challenge script + iframe, so the AppView sets its own tighter,
-    # Cloudflare-allowing CSP there (see internal/web/handlers.go TurnstileHandler).
-    # Caddy's `header` directive REPLACES the upstream value, so without this
-    # carve-out the site-wide CSP below strangles the widget (api.js is blocked).
-    # TODO(frontend-deploy): when the SvelteKit frontend service joins this
-    # stack, carve its routes out of this header (like the turnstile carve-out
-    # above) and let the app's own CSP pass through. SvelteKit emits a
-    # per-request nonce'd `script-src 'self'` header; this static header
-    # REPLACES it, and its `'unsafe-inline'` (needed because a static header
-    # can't carry nonces) silently downgrades the frontend's script-src
-    # hardening. Flagged in the July 2026 frontend security review.
-    @csp_default not path /m/turnstile.html
+    # Default CSP for responses that carry none of their own. Set-if-absent for
+    # the same reason as above: the frontend emits a complete, per-request
+    # nonce'd policy, and the Turnstile widget host page sets its own
+    # Cloudflare-allowing one (internal/web/handlers.go TurnstileHandler) —
+    # both pass through untouched. A plain `header` would REPLACE the
+    # frontend's nonce with the `'unsafe-inline'` a static header has to carry,
+    # silently undoing its script-src hardening (flagged in the July 2026
+    # frontend security review).
+    #
+    # NOTE(frontend-deploy): the SvelteKit service is not yet proxied by this
+    # block; this is preparatory. When it is, give it its own reverse_proxy
+    # block WITHOUT this fallback so a missing app CSP is visibly missing, and
+    # keep in mind this default also lands on its sirv-served
+    # /service-worker.js (a CSP on a script governs the worker it becomes —
+    # the worker only handles same-origin requests for that reason).
+    #
     # img-src covers the media hostname every image URL the AppView emits now
     # points at. media-src is separate and must name the PDS hosts directly:
     # the image proxy transcodes stills and cannot stream, so
@@ -233,7 +242,7 @@ coves.social {
     # fail-closed and browser-side only (blocked in console, no server signal).
     # It closes when video gets a streaming passthrough on img.coves.social,
     # which is also what closes the workstream-5 scanning gap.
-    header @csp_default Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://img.coves.social; media-src 'self' https://pds.coves.me https://coves.me https://tdpl.io; connect-src 'self' https://*.bsky.network wss://*.bsky.network; base-uri 'self'; object-src 'none'; frame-ancestors 'none'"
+    header ?Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://img.coves.social; media-src 'self' https://pds.coves.me https://coves.me https://tdpl.io; connect-src 'self' https://*.bsky.network wss://*.bsky.network; base-uri 'self'; object-src 'none'; frame-ancestors 'none'"
 
     # Enable compression
     encode gzip zstd

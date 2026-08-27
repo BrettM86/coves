@@ -65,6 +65,9 @@ Thumbs.db
 # Per-machine Claude Code agent memory (local review-agent state, not shared config)
 .claude/agent-memory/
 
+# Per-machine Codex configuration and runtime state
+.codex/
+
 # Beads issue tracker (local runtime state)
 .beads/
 scripts/.env.lexicon
