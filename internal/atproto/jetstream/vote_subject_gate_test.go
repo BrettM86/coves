@@ -70,6 +70,12 @@ const (
 	deletedSubjectCommunity = subjectGatePrefix + "delcommunity"
 	deletedSubjectAuthor    = subjectGatePrefix + "delauthor"
 	deletedSubjectVoter     = subjectGatePrefix + "delvoter"
+
+	// Fixtures for the bridged-subject branch. The author DID is never inserted
+	// anywhere: a bridged Bluesky account has no row in this database, which is
+	// the whole point of the branch.
+	bridgedSubjectAuthor = subjectGatePrefix + "bridgedauthor"
+	bridgedSubjectVoter  = subjectGatePrefix + "bridgedvoter"
 )
 
 // seedActiveVote writes an active vote row directly, bypassing the consumer.
@@ -498,4 +504,125 @@ func TestVoteConsumer_SubjectSoftDeleted_DropsTheVoteEntirely(t *testing.T) {
 					"refusal, whose advance must roll back or its own redrive would be rejected")
 		})
 	}
+}
+
+// requireNoCountsAnywhere asserts that no row in either subject table carries a
+// vote count.
+//
+// This is what "no counts changed anywhere" can honestly mean for a subject the
+// AppView has no table for. A bystander fixture would prove nothing: every
+// count statement on this path is keyed `WHERE uri = $1` on the vote's own
+// subject URI, so it structurally cannot reach another row, and a green
+// assertion about one would be theatre. A table-wide sweep is a different
+// claim, and a real one — it fails if ANY count moved, including one written
+// through a query this test never anticipated.
+//
+// It is affordable because testkit.DB hands each test a fresh clone: both
+// tables start genuinely empty, so the sweep is over exactly the rows this test
+// created, which is none.
+func requireNoCountsAnywhere(t *testing.T, db *sql.DB) {
+	t.Helper()
+	for _, sweep := range []struct {
+		what  string
+		query string
+	}{
+		{"posts", `SELECT COUNT(*) FROM posts WHERE upvote_count <> 0 OR downvote_count <> 0 OR score <> 0`},
+		{"comments", `SELECT COUNT(*) FROM comments WHERE upvote_count <> 0 OR downvote_count <> 0 OR score <> 0`},
+	} {
+		var rows int
+		require.NoError(t, db.QueryRow(sweep.query).Scan(&rows))
+		assert.Zero(t, rows,
+			"a vote on a subject with no table of its own must not move a count in %s — not on "+
+				"its own subject, which has no row there, and not on anything else", sweep.what)
+	}
+}
+
+// TestVoteConsumer_UnsupportedSubjectCollection_IsIndexedWithoutCounting pins
+// the branch the ordering gate must NOT apply to.
+//
+// A vote names its subject by AT-URI and nothing else, so the URI's collection
+// segment is the only thing that says which table the count belongs in. Two
+// collections route to `posts` and one to `comments`; everything else routes
+// nowhere, and the realistic everything-else is a BRIDGED Bluesky subject — a
+// Coves user upvoting an app.bsky.feed.post they are seeing through the bridge.
+//
+// # WHY THE GATE MUST NOT REACH THIS BRANCH
+//
+// The gate's two outcomes both presuppose a table. "Refuse until the subject is
+// indexed" is a promise that indexing will eventually happen, and no consumer
+// will ever index an app.bsky.feed.post into this database — so a refusal here
+// is not a deferral, it is ten redrives and a dead letter per vote, forever,
+// for a condition that is permanent by construction. "Drop it" is equally wrong
+// in the other direction: it would silently discard the vote.
+//
+// # WHY THE ROW IS KEPT EVEN THOUGH NOTHING COUNTS IT
+//
+// This is the case where an indexed-but-uncounted vote row is CORRECT rather
+// than a time bomb, and the difference is worth stating because it is the exact
+// shape B1 and B3 forbid.
+//
+// The row is not a pending count. It is VIEWER STATE: it is how the AppView
+// answers "did I vote on this, and which way" for bridged content, which is the
+// only thing it can usefully answer about a subject it does not host. And it
+// cannot become a phantom decrement the way an orphaned row on a real post
+// does, because the decrement is keyed on the same collection routing that
+// declined to increment — deleteVote's switch has no branch for this collection
+// either, so the withdrawal is as countless as the vote was.
+//
+// That symmetry is load-bearing, and it is why migration 038's orphan sweep
+// must be restricted to KNOWN collections: a sweep that deleted every
+// uncounted vote row would delete exactly this, and take the bridge's viewer
+// state with it.
+func TestVoteConsumer_UnsupportedSubjectCollection_IsIndexedWithoutCounting(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+	ctx := context.Background()
+
+	// A bridged Bluesky post: a subject that genuinely exists in the world, is
+	// genuinely votable from a Coves client, and will never have a row here.
+	subjectURI := "at://" + bridgedSubjectAuthor + "/app.bsky.feed.post/3lbridgedpost"
+	voteURI := "at://" + bridgedSubjectVoter + "/social.coves.feed.vote/bridgedvote"
+
+	consumer := NewVoteEventConsumer(postgres.NewVoteRepository(db), newMockUserService(), db)
+
+	require.NoError(t, consumer.HandleEvent(ctx, &JetstreamEvent{
+		Kind:   "commit",
+		Did:    bridgedSubjectVoter,
+		TimeUS: time.Now().UnixMicro(),
+		Commit: &CommitEvent{
+			Rev:        "3lgatebridgedaa2a",
+			Operation:  "create",
+			Collection: "social.coves.feed.vote",
+			RKey:       "bridgedvote",
+			CID:        "bafgatebridgedvote",
+			Record: map[string]interface{}{
+				"$type":     "social.coves.feed.vote",
+				"subject":   map[string]interface{}{"uri": subjectURI, "cid": "bafbridgedsubject"},
+				"direction": "up",
+				"createdAt": "2026-03-01T01:00:00Z",
+			},
+		},
+	}), "a vote on a collection with no table must be accepted: neither of the gate's outcomes "+
+		"fits a subject that will never be indexed — refusing burns the redrive budget forever, "+
+		"and dropping discards the vote")
+
+	exists, active := voteRowState(t, db, voteURI)
+	assert.True(t, exists, "the vote must be indexed at %s", voteURI)
+	assert.True(t, active,
+		"and it must be ACTIVE: the row is viewer state for bridged content — how the AppView "+
+			"answers 'did I vote on this' for a subject it does not host — not a count waiting to "+
+			"be applied")
+
+	// The row has to be USABLE as viewer state, which means it has to carry the
+	// subject and direction a viewer query reads back. An indexed row with the
+	// wrong subject would satisfy the assertions above and answer every viewer
+	// question wrongly.
+	var storedSubject, storedDirection string
+	require.NoError(t, db.QueryRow(
+		`SELECT subject_uri, direction FROM votes WHERE uri = $1`, voteURI,
+	).Scan(&storedSubject, &storedDirection))
+	assert.Equal(t, subjectURI, storedSubject, "the stored row must name the subject that was voted on")
+	assert.Equal(t, "up", storedDirection, "the stored row must carry the direction that was cast")
+
+	requireNoCountsAnywhere(t, db)
 }
