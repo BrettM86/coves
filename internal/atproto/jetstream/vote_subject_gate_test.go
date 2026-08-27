@@ -193,3 +193,113 @@ func TestVoteConsumer_SubjectNotIndexed_RefusesTransientlyAndPersistsNothing(t *
 		})
 	}
 }
+
+// seedIndexedPost inserts a post row directly, which is what "the subject
+// finally arrived" looks like from the vote consumer's side.
+//
+// Direct SQL rather than a PostEventConsumer round-trip because this test is
+// about the VOTE consumer's second attempt, and routing the fixture through
+// another consumer would put that consumer's behaviour — its own rev gate, its
+// community checks — between the setup and the thing being measured. The FK
+// rows are seeded because posts.author_did and posts.community_did reference
+// users and communities; nothing else about them matters here.
+func seedIndexedPost(t *testing.T, db *sql.DB, uri, communityDID, authorDID, rkey string) {
+	t.Helper()
+	insertBridgedUser(t, db, authorDID, "redriveauthor.test")
+	insertBridgedCommunity(t, db, communityDID, "redrivecommunity.test", authorDID)
+	_, err := db.Exec(`
+		INSERT INTO posts (uri, cid, rkey, author_did, community_did, title, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		uri, "bafredrivesubject", rkey, authorDID, communityDID, "the late subject",
+		time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC))
+	require.NoError(t, err, "seeding the subject that arrives after the vote")
+}
+
+// TestVoteConsumer_SubjectIndexedAfterRefusal_IdenticalReplayIsCounted is the
+// other half of the ordering gate, and the half that is easy to build wrong.
+//
+// The gate's refusal is only useful if the SAME event can succeed later, and
+// "the same event" is meant literally: the dead letter redriver stores the
+// event as it arrived and re-invokes HandleEvent with it. Same URI, same CID,
+// same rev, same everything. The replay is therefore indistinguishable from a
+// duplicate delivery — and the vote consumer has a machine whose entire job is
+// to reject those, the per-record rev gate, where an incoming rev that is not
+// strictly greater than the stored one loses.
+//
+// So the refusal must roll the gate's advance back along with the rest of the
+// transaction. If it ever did not — the check moved outside the transaction, an
+// early commit before the error return, a gate advance written through a
+// different connection — the redriven replay would be rejected as stale and the
+// vote lost PERMANENTLY, and the only trace would be a routine-looking
+//
+//	rev-gate: votes skipped stale create for at://… (incoming rev "…" <= stored)
+//
+// which is a line the logs are full of for genuinely stale events. No count
+// goes wrong, no error is raised, and no dead letter is left behind: the
+// failure is a vote that silently never existed. This test is the only thing
+// that would notice, which is why it asserts on the SECOND call's success
+// rather than on the gate's internals.
+func TestVoteConsumer_SubjectIndexedAfterRefusal_IdenticalReplayIsCounted(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+	ctx := context.Background()
+
+	const (
+		redriveCommunity = subjectGatePrefix + "redrivecommunity"
+		redriveAuthor    = subjectGatePrefix + "redriveauthor"
+		redriveVoter     = subjectGatePrefix + "redrivevoter"
+		redriveRKey      = "redrivesubject"
+	)
+	subjectURI := "at://" + redriveCommunity + "/social.coves.community.post/" + redriveRKey
+	voteURI := "at://" + redriveVoter + "/social.coves.feed.vote/redrivevote"
+
+	consumer := NewVoteEventConsumer(postgres.NewVoteRepository(db), newMockUserService(), db)
+
+	// ONE event value, handled twice. Built once and reused rather than built
+	// twice from the same literals, so that "identical" is guaranteed by the
+	// code rather than by two spellings happening to agree — the rev in
+	// particular is what the second call's success turns on.
+	event := &JetstreamEvent{
+		Kind:   "commit",
+		Did:    redriveVoter,
+		TimeUS: time.Now().UnixMicro(),
+		Commit: &CommitEvent{
+			Rev:        "3lgateredriveaa2a",
+			Operation:  "create",
+			Collection: "social.coves.feed.vote",
+			RKey:       "redrivevote",
+			CID:        "bafgateredrivevote",
+			Record: map[string]interface{}{
+				"$type":     "social.coves.feed.vote",
+				"subject":   map[string]interface{}{"uri": subjectURI, "cid": "bafredrivesubject"},
+				"direction": "up",
+				"createdAt": "2026-03-01T01:00:00Z",
+			},
+		},
+	}
+
+	// ---- the first delivery, before the subject exists ----------------------
+	err := consumer.HandleEvent(ctx, event)
+	require.Error(t, err, "the vote must be refused while its subject has no row")
+	require.False(t, errors.Is(err, ErrPermanentEvent),
+		"the refusal must be transient or the redriver would never replay it at all, and the "+
+			"rest of this test would be measuring nothing. Got: %v", err)
+
+	// ---- the subject arrives -------------------------------------------------
+	seedIndexedPost(t, db, subjectURI, redriveCommunity, redriveAuthor, redriveRKey)
+
+	// ---- the redriver replays the stored event verbatim ----------------------
+	require.NoError(t, consumer.HandleEvent(ctx, event),
+		"the identical event must succeed once its subject is indexed. A rev-gate rejection here "+
+			"means the refused attempt left its rev advance committed, so every redrive of a "+
+			"deferred vote is silently discarded as stale")
+
+	exists, active := voteRowState(t, db, voteURI)
+	assert.True(t, exists, "the replayed vote must be indexed at %s", voteURI)
+	assert.True(t, active, "the replayed vote must be ACTIVE, not soft-deleted")
+
+	upvotes, downvotes, score, _ := readDupPostCounts(t, db, subjectURI)
+	assert.Equal(t, 1, upvotes, "the deferred vote must be counted on the subject that finally arrived")
+	assert.Equal(t, 0, downvotes)
+	assert.Equal(t, 1, score, "score must reflect the one recovered upvote")
+}
