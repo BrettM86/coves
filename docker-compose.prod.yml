@@ -96,7 +96,6 @@ services:
       SKIP_DID_WEB_VERIFICATION: "false"
 
       # OAuth (for community account provisioning)
-      OAUTH_CLIENT_ID: ${OAUTH_CLIENT_ID}
       OAUTH_REDIRECT_URI: ${OAUTH_REDIRECT_URI}
       OAUTH_SEAL_SECRET: ${OAUTH_SEAL_SECRET}
 
@@ -322,7 +321,7 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
-      # Static files (.well-known, client-metadata.json, oauth callback)
+      # Static files (.well-known DID docs, images)
       - ./static:/srv:ro
     networks:
       - coves-internal
