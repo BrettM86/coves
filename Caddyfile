@@ -107,12 +107,6 @@ coves.social {
         file_server
     }
 
-    # Serve OAuth client metadata
-    handle /client-metadata.json {
-        root * /srv
-        file_server
-    }
-
     # /img/* belongs to the media hostname, and only to the media hostname.
     #
     # The AppView registers the image-proxy route on its router with no Host

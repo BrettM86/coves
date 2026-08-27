@@ -96,7 +96,6 @@ services:
       SKIP_DID_WEB_VERIFICATION: "false"
 
       # OAuth (for community account provisioning)
-      OAUTH_CLIENT_ID: ${OAUTH_CLIENT_ID}
       OAUTH_REDIRECT_URI: ${OAUTH_REDIRECT_URI}
       OAUTH_SEAL_SECRET: ${OAUTH_SEAL_SECRET}
 
@@ -213,7 +212,7 @@ services:
     # Bump: `docker buildx imagetools inspect ghcr.io/bluesky-social/pds:<tag>`.
     # Same depends_on caveat as postgres above: a changed pin is applied by
     # the next `up -d caddy` unless --no-deps is used.
-    image: ghcr.io/bluesky-social/pds:0.4.193@sha256:50e60af25fa7b580ddae8fc18ae97b1d7cdeb1a3068a3d345f9161cc7796417b
+    image: ghcr.io/bluesky-social/pds:0.4.5027@sha256:d95725b24dbe53af9d91dc69750556931ebed6c396f2cfa42b221434db642f12
     container_name: coves-prod-pds
     restart: unless-stopped
     ports:
@@ -322,7 +321,7 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
-      # Static files (.well-known, client-metadata.json, oauth callback)
+      # Static files (.well-known DID docs, images)
       - ./static:/srv:ro
     networks:
       - coves-internal
