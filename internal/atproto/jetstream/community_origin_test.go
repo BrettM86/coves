@@ -2,6 +2,7 @@ package jetstream
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -63,6 +64,13 @@ func TestAdmitCommunityOrigin(t *testing.T) {
 		{"untrusted repo asserting a sibling subdomain is dropped", trustingBridge(), untrustedPDS, subdomainHandle, "prod.coves.social", ""},
 		{"a look-alike suffix without a dot boundary is dropped", trustingBridge(), untrustedPDS, "c-nba.evilcoves.social", nativeOrigin, ""},
 		{"matching origin compares case-insensitively", trustingBridge(), untrustedPDS, "C-NBA.Coves.Social", "COVES.SOCIAL", nativeOrigin},
+
+		// A parent of the handle ABOVE its registrable domain is a public suffix
+		// nobody owns; the handle proves nothing about it.
+		{"a multi-label public suffix is not an owned domain", trustingBridge(), untrustedPDS, "c-nba.coves.co.uk", "co.uk", ""},
+		{"a private-registry suffix is not an owned domain", trustingBridge(), untrustedPDS, "c-nba.someuser.github.io", "github.io", ""},
+		{"the registrable domain under a public suffix is kept", trustingBridge(), untrustedPDS, "c-nba.coves.co.uk", "coves.co.uk", "coves.co.uk"},
+		{"origin equal to the handle's own full hostname is dropped", trustingBridge(), untrustedPDS, nativeHandle, nativeHandle, ""},
 
 		// Default-deny: no gate, no allowlist, no known PDS all mean "own domain only".
 		{"nil gate accepts a matching origin", nil, trustedBridgePDS, nativeHandle, nativeOrigin, nativeOrigin},
@@ -210,6 +218,94 @@ func TestCreateCommunity_NativeRecord_KeepsMatchingOrigin(t *testing.T) {
 	require.NotNil(t, stored)
 	assert.Equal(t, nativeOrigin, stored.Origin)
 	assert.Equal(t, "!nba@coves.social", stored.GetDisplayHandle())
+}
+
+// failingResolver is a directory that is down: the origin has to be dropped,
+// not the event.
+type failingResolver struct{}
+
+func (failingResolver) Resolve(context.Context, string) (*identity.Identity, error) {
+	return nil, errors.New("plc: connection refused")
+}
+
+// The gate reads the repo's RESOLVED identity, never the record's own handle
+// field: a record can carry any handle its author likes.
+func TestCreateCommunity_RecordHandleIsNotProvenance(t *testing.T) {
+	t.Parallel()
+	repo := newOriginRepo()
+	resolver := fixedResolver{identity.Identity{Handle: "c-nba.example.net", PDSURL: untrustedPDS}}
+	consumer := NewCommunityEventConsumer(repo, originTestInstance, true, resolver,
+		WithCommunityBridgeTrust(trustingBridge()))
+
+	const did = "did:plc:handleforger"
+	// The record claims the native handle and the matching origin; the
+	// directory says the repo is c-nba.example.net on an untrusted PDS.
+	commit := profileCommit("create", "nba", nativeOrigin, map[string]interface{}{"handle": nativeHandle})
+	require.NoError(t, consumer.createCommunity(context.Background(), did, commit))
+
+	stored := repo.byDID[did]
+	require.NotNil(t, stored)
+	assert.Empty(t, stored.Origin, "the origin must be measured against the resolved handle, not the record's")
+	assert.Equal(t, untrustedPDS, stored.PDSURL, "the resolution that decided the origin is persisted as the row's provenance")
+}
+
+func TestUpdateCommunity_ProvenanceIsResolvedAfresh(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a repo that migrated off the trusted bridge loses its foreign origin", func(t *testing.T) {
+		t.Parallel()
+		repo := newOriginRepo()
+		const did = "did:plc:migratedbridge"
+		repo.byDID[did] = &communities.Community{DID: did, Handle: bridgedHandle, Name: "comicstrips", PDSURL: trustedBridgePDS, Origin: bridgedOrigin}
+		resolver := fixedResolver{identity.Identity{Handle: bridgedHandle, PDSURL: untrustedPDS}}
+		consumer := NewCommunityEventConsumer(repo, originTestInstance, true, resolver, WithCommunityBridgeTrust(trustingBridge()))
+
+		// The record carries a handle, which used to skip resolution entirely
+		// and leave the stored (trusted) pds_url as the provenance forever.
+		commit := profileCommit("update", "comicstrips", bridgedOrigin, map[string]interface{}{"handle": bridgedHandle})
+		require.NoError(t, consumer.updateCommunity(context.Background(), did, commit))
+		assert.Empty(t, repo.byDID[did].Origin, "stored provenance is stale by definition; the fresh resolution decides")
+		assert.Equal(t, untrustedPDS, repo.byDID[did].PDSURL, "the fresh PDS host replaces the stale one")
+	})
+
+	t.Run("a record-carried handle cannot widen what the stored handle proves", func(t *testing.T) {
+		t.Parallel()
+		repo := newOriginRepo()
+		const did = "did:plc:updateforger"
+		// No resolver: the fallback is the stored row, whose handle was
+		// verified at create and is never rewritten by Update.
+		repo.byDID[did] = &communities.Community{DID: did, Handle: "c-nba.example.net", Name: "nba", PDSURL: untrustedPDS}
+		consumer := NewCommunityEventConsumer(repo, originTestInstance, true, nil, WithCommunityBridgeTrust(trustingBridge()))
+
+		commit := profileCommit("update", "nba", nativeOrigin, map[string]interface{}{"handle": nativeHandle})
+		require.NoError(t, consumer.updateCommunity(context.Background(), did, commit))
+		assert.Empty(t, repo.byDID[did].Origin)
+	})
+
+	t.Run("a directory outage drops the origin, not the event", func(t *testing.T) {
+		t.Parallel()
+		repo := newOriginRepo()
+		const did = "did:plc:plcdown"
+		repo.byDID[did] = &communities.Community{DID: did, Handle: bridgedHandle, Name: "comicstrips", PDSURL: trustedBridgePDS, Origin: bridgedOrigin}
+		consumer := NewCommunityEventConsumer(repo, originTestInstance, true, failingResolver{}, WithCommunityBridgeTrust(trustingBridge()))
+
+		commit := profileCommit("update", "comicstrips", bridgedOrigin, map[string]interface{}{"handle": bridgedHandle})
+		require.NoError(t, consumer.updateCommunity(context.Background(), did, commit))
+		assert.Empty(t, repo.byDID[did].Origin, "unverifiable provenance is default-deny")
+		assert.Equal(t, trustedBridgePDS, repo.byDID[did].PDSURL, "a failed resolution must not clobber the stored host")
+	})
+
+	t.Run("a record without origin does not resolve at all", func(t *testing.T) {
+		t.Parallel()
+		repo := newOriginRepo()
+		const did = "did:plc:noresolve"
+		repo.byDID[did] = &communities.Community{DID: did, Handle: nativeHandle, Name: "nba"}
+		consumer := NewCommunityEventConsumer(repo, originTestInstance, true, failingResolver{})
+
+		commit := profileCommit("update", "nba", "", map[string]interface{}{"handle": nativeHandle})
+		require.NoError(t, consumer.updateCommunity(context.Background(), did, commit))
+		assert.Empty(t, repo.byDID[did].Origin)
+	})
 }
 
 func TestUpdateCommunity_AppliesTheSameRuleFromTheStoredPDS(t *testing.T) {
