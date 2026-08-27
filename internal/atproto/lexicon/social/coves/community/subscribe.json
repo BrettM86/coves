@@ -13,7 +13,7 @@
           "properties": {
             "community": {
               "type": "string",
-              "format": "at-identifier",
+              "maxLength": 320,
               "description": "Community identifier (DID, handle, name@origin, or bare local name) of the community to subscribe to"
             }
           }

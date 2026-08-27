@@ -185,6 +185,10 @@ func TestResolveCommunityIdentifier_RepoErrorIsNotSwallowed(t *testing.T) {
 func TestResolveCommunityIdentifier_ScopedForms(t *testing.T) {
 	local := &Community{DID: "did:plc:local123", Handle: "c-gaming.coves.social", Name: "gaming"}
 	bridged := &Community{DID: "did:plc:bridged456", Handle: "comicstrips.lemmy-world.tdpl.io", Name: "comicstrips", Origin: "lemmy.world"}
+	// A federated Coves community indexed before the origin column existed:
+	// EffectiveOrigin advertises othercoves.social for it, so that has to
+	// resolve, and the only thing that can find it is its handle.
+	federated := &Community{DID: "did:plc:federated789", Handle: "c-gaming.othercoves.social", Name: "gaming"}
 
 	tests := []struct {
 		name            string
@@ -235,11 +239,18 @@ func TestResolveCommunityIdentifier_ScopedForms(t *testing.T) {
 			wantDID:         bridged.DID,
 			wantHandleLooks: []string{"comicstrips.lemmy-world.tdpl.io"},
 		},
+		{
+			name:            "name@remote with no stored pair falls back to the c-{name}.{origin} handle",
+			identifier:      "gaming@othercoves.social",
+			wantDID:         federated.DID,
+			wantPairLooks:   [][2]string{{"gaming", "othercoves.social"}},
+			wantHandleLooks: []string{"c-gaming.othercoves.social"},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			repo := newStubRepo(local, bridged)
+			repo := newStubRepo(local, bridged, federated)
 			svc := &communityService{repo: repo, instanceDomain: "coves.social"}
 
 			did, err := svc.ResolveCommunityIdentifier(context.Background(), tt.identifier)

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"Coves/internal/core/blobs"
+	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
 
 	"github.com/lib/pq"
@@ -634,8 +635,13 @@ func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, er
 	if communityPDSURL.Valid {
 		communityRef.PDSURL = communityPDSURL.String
 	}
-	if communityOrigin.Valid && communityOrigin.String != "" {
-		communityRef.Origin = &communityOrigin.String
+	// Same fallback the community views apply (Community.EffectiveOrigin):
+	// native rows indexed before the origin column existed carry NULL, and
+	// clients build /c/{name}@{origin} links from this ref.
+	if origin := communityOrigin.String; origin != "" {
+		communityRef.Origin = &origin
+	} else if derived := communities.OriginFromHandle(communityRef.Handle); derived != "" {
+		communityRef.Origin = &derived
 	}
 	postView.Community = &communityRef
 

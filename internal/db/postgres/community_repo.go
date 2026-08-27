@@ -290,7 +290,7 @@ func (r *postgresCommunityRepo) GetByNameAndOrigin(ctx context.Context, name, or
 			federated_from, federated_id, created_at, updated_at,
 			record_uri, record_cid, origin
 		FROM communities
-		WHERE name = $1 AND origin = $2
+		WHERE lower(name) = lower($1) AND origin = $2
 		LIMIT 2`
 
 	rows, err := r.db.QueryContext(ctx, query, name, origin)

@@ -13,7 +13,7 @@
         "properties": {
           "community": {
             "type": "string",
-            "format": "at-identifier",
+            "maxLength": 320,
             "description": "Get community feed for specific community (DID, handle, name@origin, or bare local name)"
           },
           "sort": {

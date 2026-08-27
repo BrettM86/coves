@@ -1171,8 +1171,7 @@ func (s *commentService) buildPostView(ctx context.Context, post *posts.Post, vi
 	}
 
 	var communityOrigin *string
-	if community.Origin != "" {
-		origin := community.Origin
+	if origin := community.EffectiveOrigin(); origin != "" {
 		communityOrigin = &origin
 	}
 

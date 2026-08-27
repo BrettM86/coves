@@ -335,6 +335,7 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 		DID:                    pdsAccount.DID,    // Community's DID (owns the repo!)
 		Handle:                 pdsAccount.Handle, // atProto handle (e.g., gaming.community.coves.social)
 		Name:                   req.Name,
+		Origin:                 s.instanceDomain, // What the record asserts; the firehose replay is a no-op on this row, so it must land here
 		DisplayName:            req.DisplayName,
 		Description:            req.Description,
 		OwnerDID:               pdsAccount.DID, // V2: Community owns itself
@@ -1272,10 +1273,22 @@ func (s *communityService) resolveScopedIdentifier(ctx context.Context, scoped s
 	}
 
 	community, err := s.repo.GetByNameAndOrigin(ctx, name, normalizedOrigin)
+	if err == nil {
+		return community.DID, nil
+	}
+	if IsAmbiguous(err) {
+		return "", fmt.Errorf("resolving scoped identifier !%s@%s: %w", name, normalizedOrigin, err)
+	}
+	if !IsNotFound(err) {
+		return "", fmt.Errorf("failed to look up community !%s@%s: %w", name, normalizedOrigin, err)
+	}
+
+	// No stored pair. A federated Coves community indexed before the origin
+	// column existed still follows the c-{name}.{origin} handle convention,
+	// and EffectiveOrigin advertises exactly that origin to clients — so the
+	// identifier the API hands out has to resolve here too.
+	community, err = s.repo.GetByHandle(ctx, fmt.Sprintf("c-%s.%s", name, normalizedOrigin))
 	if err != nil {
-		if IsAmbiguous(err) {
-			return "", fmt.Errorf("resolving scoped identifier !%s@%s: %w", name, normalizedOrigin, err)
-		}
 		if IsNotFound(err) {
 			return "", fmt.Errorf("community not found for scoped identifier !%s@%s: %w", name, normalizedOrigin, err)
 		}

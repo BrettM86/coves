@@ -14,9 +14,10 @@ type Repository interface {
 	GetByDID(ctx context.Context, did string) (*Community, error)
 	GetByHandle(ctx context.Context, handle string) (*Community, error)
 	// GetByNameAndOrigin resolves the name@origin form against the stored
-	// (name, origin) pair. Returns ErrCommunityNotFound when nothing matches
-	// and ErrAmbiguousCommunity when more than one row does; both arguments
-	// are expected already lower-cased.
+	// (name, origin) pair, comparing name case-insensitively (names are
+	// stored as the record spelled them). Returns ErrCommunityNotFound when
+	// nothing matches and ErrAmbiguousCommunity when more than one row does;
+	// origin is expected already normalised (lower-case hostname).
 	GetByNameAndOrigin(ctx context.Context, name, origin string) (*Community, error)
 	Update(ctx context.Context, community *Community) (*Community, error)
 	Delete(ctx context.Context, did string) error

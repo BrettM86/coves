@@ -145,3 +145,35 @@ func TestCommunityRepo_GetByNameAndOrigin(t *testing.T) {
 	assert.ErrorIs(t, err, communities.ErrAmbiguousCommunity)
 	assert.NotErrorIs(t, err, communities.ErrCommunityNotFound)
 }
+
+// Records spell the name however they like (ComicStrips); identifiers are
+// lower-cased before lookup. The pair lookup has to meet in the middle.
+func TestCommunityRepo_GetByNameAndOriginIgnoresNameCase(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+	ctx := context.Background()
+	repo := postgres.NewCommunityRepository(db)
+
+	suffix := testkit.UniqueID(t)
+	did := "did:plc:mixedcase" + suffix
+	created, err := repo.Create(ctx, &communities.Community{
+		DID:          did,
+		Handle:       "mixedcase" + suffix + ".lemmy-world.tdpl.io",
+		Name:         "MixedCase" + suffix,
+		DisplayName:  "Mixed case name",
+		OwnerDID:     did,
+		CreatedByDID: "did:plc:mixedcasecreator",
+		HostedByDID:  "did:web:tdpl.io",
+		PDSURL:       "https://pds.tdpl.io",
+		Visibility:   "public",
+		Origin:       "lemmy.world",
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	})
+	require.NoError(t, err)
+
+	got, err := repo.GetByNameAndOrigin(ctx, "mixedcase"+suffix, "lemmy.world")
+	require.NoError(t, err)
+	assert.Equal(t, created.DID, got.DID)
+	assert.Equal(t, "MixedCase"+suffix, got.Name, "the stored spelling is preserved")
+}
