@@ -279,6 +279,20 @@ type JetstreamConfig struct {
 	// Parsing into feeds lives in the jetstream package, which owns the
 	// primary-feed and cursor-naming semantics.
 	FeedsSpec string
+
+	// RedriveInterval is how often the dead letter redriver replays the
+	// backlog.
+	//
+	// It must be STRICTLY POSITIVE, which is the opposite of
+	// SubmissionsConfig.AcceptanceQueueInterval, and the difference is worth
+	// keeping straight because the two look interchangeable. Zero disables the
+	// acceptance driver, and disabling it is a supported deployment: an AppView
+	// that hosts no communities has no backlog to walk. The redriver has no
+	// such deployment — every consumer dead-letters, so a disabled redriver is
+	// a queue that only ever grows — and a zero interval would panic
+	// time.NewTicker on the first boot after a typo rather than quietly
+	// disabling anything.
+	RedriveInterval time.Duration
 }
 
 // SignupConfig holds the bot-protected signup settings.
@@ -651,9 +665,37 @@ func (c *Config) loadJetstream() error {
 		feedsSpec = "self=ws://localhost:6008"
 	}
 
-	c.Jetstream = JetstreamConfig{FeedsSpec: feedsSpec}
+	redriveInterval, err := durationVar("REDRIVE_INTERVAL", defaultRedriveInterval)
+	if err != nil {
+		return err
+	}
+	// Rejected HERE rather than in Validate, and rejected at zero rather than at
+	// negative, which is the opposite of ACCEPTANCE_QUEUE_INTERVAL on both
+	// counts. Zero disables that driver and disabling it is a supported
+	// deployment; the redriver has no such mode — every consumer dead-letters, so
+	// a redriver that never runs is a queue that only grows — and time.NewTicker
+	// panics on zero, which would turn a typo into a crash inside a running
+	// consumer. Validate reads a Config that callers also assemble by hand, where
+	// an unset field means "this test is not about the redriver"; only a value
+	// that came from the environment can be held to this.
+	if redriveInterval <= 0 {
+		return fmt.Errorf("REDRIVE_INTERVAL must be greater than 0 (got %s); "+
+			"the dead letter redriver cannot be disabled", redriveInterval)
+	}
+
+	c.Jetstream = JetstreamConfig{
+		FeedsSpec:       feedsSpec,
+		RedriveInterval: redriveInterval,
+	}
 	return nil
 }
+
+// defaultRedriveInterval is how long a dead-lettered event waits for its next
+// replay. Five minutes is slow enough that a backlog of events failing for the
+// same reason does not hammer the dependency that is already unwell, and fast
+// enough that MaxRedriveAttempts passes still fit inside an outage a person
+// would call brief.
+const defaultRedriveInterval = 5 * time.Minute
 
 // Default submission quotas. They apply in every environment, dev and
 // production alike, because the alternative — requiring the variables in
@@ -829,6 +871,9 @@ func (c *Config) Validate() error {
 			"ACCEPTANCE_QUEUE_INTERVAL cannot be negative (got %s); use 0 to disable the acceptance queue driver",
 			c.Submissions.AcceptanceQueueInterval))
 	}
+	// REDRIVE_INTERVAL is checked in loadJetstream instead of here; see the note
+	// there for why the environment's value and a hand-assembled Config cannot be
+	// held to the same rule.
 	// The batch size is deliberately NOT validated, unlike every quota above.
 	// The quotas fail open when unset — an absent limit is no limit — so an
 	// omission there has to stop the boot. A batch size does not: the backlog
