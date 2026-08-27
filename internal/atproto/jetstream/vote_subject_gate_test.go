@@ -76,6 +76,13 @@ const (
 	// the whole point of the branch.
 	bridgedSubjectAuthor = subjectGatePrefix + "bridgedauthor"
 	bridgedSubjectVoter  = subjectGatePrefix + "bridgedvoter"
+
+	// Fixtures for the erased-subject branch. erasedSubjectAuthor gets a
+	// migration-036 marker and nothing else — erasure hard-deletes the rows, so
+	// the marker is the only trace an erased account leaves.
+	erasedSubjectAuthor  = subjectGatePrefix + "erasedauthor"
+	erasedSubjectUnknown = subjectGatePrefix + "unknownerasure"
+	erasedSubjectVoter   = subjectGatePrefix + "erasedvoter"
 )
 
 // seedActiveVote writes an active vote row directly, bypassing the consumer.
@@ -625,4 +632,160 @@ func TestVoteConsumer_UnsupportedSubjectCollection_IsIndexedWithoutCounting(t *t
 	assert.Equal(t, "up", storedDirection, "the stored row must carry the direction that was cast")
 
 	requireNoCountsAnywhere(t, db)
+}
+
+// erasedSubjectVoteEvent builds the vote-create commit both erasure subtests
+// send. The subject's repo DID is a parameter because that DID — not the
+// voter's — is what the erasure gate must consult: the vote is the erased
+// person's CONTENT only in the sense that it points at it.
+func erasedSubjectVoteEvent(voterDID, rkey, rev, subjectURI string) *JetstreamEvent {
+	return &JetstreamEvent{
+		Kind:   "commit",
+		Did:    voterDID,
+		TimeUS: time.Now().UnixMicro(),
+		Commit: &CommitEvent{
+			Rev:        rev,
+			Operation:  "create",
+			Collection: "social.coves.feed.vote",
+			RKey:       rkey,
+			CID:        "bafgateerasedvote",
+			Record: map[string]interface{}{
+				"$type":     "social.coves.feed.vote",
+				"subject":   map[string]interface{}{"uri": subjectURI, "cid": "baferasedsubject"},
+				"direction": "up",
+				"createdAt": "2026-03-01T01:00:00Z",
+			},
+		},
+	}
+}
+
+// TestVoteConsumer_SubjectInErasedAccount covers the third reason a subject can
+// be permanently absent, and the one the ordering gate gets exactly backwards.
+//
+// # WHY AN ERASED SUBJECT LOOKS IDENTICAL TO A LATE ONE, AND MUST NOT BE
+// TREATED LIKE ONE
+//
+// Account erasure (migration 036) HARD-deletes the account's posts, comments
+// and votes — no tombstone row, no deleted_at, nothing. From inside the vote
+// consumer's transaction the result is a subject URI with no row, which is
+// pixel-for-pixel what a vote arriving ahead of its subject looks like.
+//
+// The ordering gate's answer to "no row" is to refuse transiently and wait for
+// the subject to arrive. For an erased account the subject is never arriving:
+// the post consumer refuses to re-index an erased account's posts precisely so
+// that it cannot (WithDeletedAccounts, authorpost.go's authorWasErased). So the
+// vote burns its whole redrive budget, ten replays of an event whose outcome
+// was decided the moment the account was deleted, and then sits in the dead
+// letter queue forever — where it is indistinguishable from a real backlog and
+// buries the signal the queue exists to carry.
+//
+// erasure_integrity_test.go states the principle for the neighbouring case:
+// such an event "must be DROPPED, not refused". This is the vote-shaped
+// instance of it.
+//
+// # THE DID THE GATE MUST ASK ABOUT IS THE SUBJECT'S, NOT THE VOTER'S
+//
+// Worth stating because the vote consumer's every other identity check reads
+// the voter's DID off the commit's repo. The erased party here is the person
+// whose post was voted on, and their DID is reachable only by taking the repo
+// segment out of the SUBJECT URI. A gate that checked the voter would answer
+// the wrong question and let the event through.
+func TestVoteConsumer_SubjectInErasedAccount(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a vote on an erased account's post is dropped, not refused", func(t *testing.T) {
+		t.Parallel()
+		db := testkit.DB(t)
+		ctx := context.Background()
+
+		// The erasure swept the post itself, so the ONLY trace of this DID
+		// anywhere in the database is the marker. That is the whole difficulty:
+		// there is nothing else left to distinguish it from a subject in flight.
+		erased := erasedSubjectAuthor
+		markAccountDeleted(t, db, erased)
+		subjectURI := "at://" + erased + "/" + PostV2Collection + "/erasedsubject"
+		require.Zero(t, countRows(t, db, `SELECT count(*) FROM posts WHERE uri = $1`, subjectURI),
+			"the erasure hard-deletes the post, leaving no row — asserted so this test cannot pass "+
+				"against a fixture that quietly left one behind")
+
+		consumer := NewVoteEventConsumer(
+			postgres.NewVoteRepository(db), newMockUserService(), db,
+			WithVoteDeletedAccounts(postgres.NewDeletedAccountRepository(db)))
+
+		const voteRev = "3lgateerasedaa2a"
+		voteURI := "at://" + erasedSubjectVoter + "/social.coves.feed.vote/erasedvote"
+
+		require.NoError(t,
+			consumer.HandleEvent(ctx, erasedSubjectVoteEvent(erasedSubjectVoter, "erasedvote", voteRev, subjectURI)),
+			"a vote naming an erased account's post must be DROPPED, not refused. The subject is "+
+				"never arriving — the post consumer's own erasure gate guarantees it — so a "+
+				"transient refusal buys ten redrives and a permanent dead letter for a condition "+
+				"that was decided when the account was deleted")
+
+		exists, _ := voteRowState(t, db, voteURI)
+		assert.False(t, exists,
+			"no row may land at %s: indexing a vote that points into an erasure is the resurrection "+
+				"migration 036 exists to prevent, arriving through the votes table", voteURI)
+		requireNoCountsAnywhere(t, db)
+
+		// Same shape as the soft-deleted drop: a permanent condition is a
+		// DECISION, so the gate advance commits as a tombstone and a duplicate
+		// delivery is answered by the gate rather than by re-deciding.
+		stale, err := NewRevGate(db).IsStale(ctx, voteURI, voteRev)
+		require.NoError(t, err)
+		assert.True(t, stale, "the dropped vote's rev advance must COMMIT, as it does for a deleted subject")
+	})
+
+	t.Run("an unreadable marker table fails closed", func(t *testing.T) {
+		t.Parallel()
+		db := testkit.DB(t)
+		ctx := context.Background()
+
+		// "I could not read the marker" and "there is no marker" must never be
+		// the same answer. Failing OPEN here means a database blip becomes a
+		// window in which votes pointing into erased accounts are indexed —
+		// content coming back that somebody asked to have removed — with
+		// nothing recording that it happened. Failing closed costs a redrive.
+		lookupErr := errors.New("deleted_accounts is unreachable")
+		consumer := NewVoteEventConsumer(
+			postgres.NewVoteRepository(db), newMockUserService(), db,
+			WithVoteDeletedAccounts(failingErasureLookup{err: lookupErr}))
+
+		const voteRev = "3lgateerasedaa2b"
+		subjectURI := "at://" + erasedSubjectUnknown + "/" + PostV2Collection + "/unknownerasure"
+		voteURI := "at://" + erasedSubjectVoter + "/social.coves.feed.vote/unknownerasurevote"
+
+		err := consumer.HandleEvent(ctx,
+			erasedSubjectVoteEvent(erasedSubjectVoter, "unknownerasurevote", voteRev, subjectURI))
+
+		require.Error(t, err, "a failed erasure lookup must not be treated as 'not erased'")
+
+		// The assertion that makes this subtest MEAN something today. With the
+		// subject absent, a consumer that never consulted the lookup at all
+		// refuses transiently anyway — for ordering reasons — and would satisfy
+		// every other assertion here vacuously. Requiring the returned error to
+		// carry the lookup's own error is what proves the gate was consulted
+		// and that its failure, not the missing row, is what stopped the event.
+		// The post consumer already wraps this way (authorWasErased).
+		assert.ErrorIs(t, err, lookupErr,
+			"the refusal must be attributable to the erasure lookup: an error that merely says the "+
+				"subject is not indexed is what this consumer already returns without consulting "+
+				"any lookup, and it would leave a fail-open gate undetected")
+		assert.NotErrorIs(t, err, ErrPermanentEvent,
+			"an unreachable table is transient: the redrive is what makes failing closed cheap "+
+				"rather than lossy")
+
+		exists, _ := voteRowState(t, db, voteURI)
+		assert.False(t, exists, "nothing may be indexed while the gate cannot be consulted")
+		requireNoCountsAnywhere(t, db)
+
+		// Unlike the drop, this one must NOT leave a tombstone: the condition is
+		// an infrastructure failure that will pass, so the replay has to be able
+		// to win the gate. Same rollback the ordering refusal relies on.
+		stale, err := NewRevGate(db).IsStale(ctx, voteURI, voteRev)
+		require.NoError(t, err)
+		assert.False(t, stale,
+			"a fail-closed refusal must roll the rev advance back, or the redrive that makes "+
+				"failing closed affordable would itself be rejected as stale")
+	})
 }

@@ -30,6 +30,19 @@ type VoteEventConsumer struct {
 	voteRepo    votes.Repository
 	userService users.UserService
 	db          *sql.DB // Direct DB access for atomic vote count updates
+	// deletedAccounts gates votes whose SUBJECT lives in an erased account's
+	// repo. nil means no gate.
+	deletedAccounts DeletedAccountLookup
+}
+
+// VoteEventConsumerOption configures optional VoteEventConsumer behaviour.
+type VoteEventConsumerOption func(*VoteEventConsumer)
+
+// WithVoteDeletedAccounts installs the erased-account gate for vote subjects.
+// Without it no gate runs, and a vote naming an erased account's post is
+// treated as an ordinary not-yet-indexed subject.
+func WithVoteDeletedAccounts(lookup DeletedAccountLookup) VoteEventConsumerOption {
+	return func(c *VoteEventConsumer) { c.deletedAccounts = lookup }
 }
 
 // NewVoteEventConsumer creates a new Jetstream consumer for vote events
@@ -37,12 +50,17 @@ func NewVoteEventConsumer(
 	voteRepo votes.Repository,
 	userService users.UserService,
 	db *sql.DB,
+	opts ...VoteEventConsumerOption,
 ) *VoteEventConsumer {
-	return &VoteEventConsumer{
+	c := &VoteEventConsumer{
 		voteRepo:    voteRepo,
 		userService: userService,
 		db:          db,
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 // RevGated reports whether this consumer applies the per-record rev gate; always true
@@ -336,7 +354,8 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 	//     "community not found" and createSubscription already use. Refusing
 	//     before the stale-vote cleanup below, and rolling the whole transaction
 	//     back, is what leaves the voter's rows untouched and the rev gate
-	//     unadvanced so that replay can win.
+	//     unadvanced so that replay can win. An ERASED subject is absent for good
+	//     and splits off inside that branch.
 	//
 	//   - DELETED: drop the vote and commit. A deleted subject will not un-delete
 	//     because a redriver asked again, so refusing costs the redrive budget and
@@ -364,6 +383,30 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 		var subjectDeletedAt sql.NullTime
 		err := tx.QueryRowContext(ctx, subjectStateQuery, vote.SubjectURI).Scan(&subjectDeletedAt)
 		if errors.Is(err, sql.ErrNoRows) {
+			// ERASURE is the third reason a subject can be missing, and it is the
+			// one "no row" cannot distinguish on its own: migration 036 hard-deletes
+			// an erased account's posts and comments, leaving exactly what a subject
+			// still in flight leaves. The difference is that this one is never
+			// arriving — the post consumer's own gate refuses to re-index it — so it
+			// is a drop with a tombstone (B3's shape) rather than a refusal that
+			// spends the entire redrive budget before dead-lettering forever.
+			//
+			// Asked only when the row is absent: a subject that exists makes erasure
+			// moot, so the lookup stays off the path every ordinary vote takes.
+			erased, erasureErr := c.subjectWasErased(ctx, vote.SubjectURI)
+			if erasureErr != nil {
+				// Fail closed, and transiently: "the marker could not be read" is
+				// never "not erased", and the rollback lets the redrive ask again
+				// once the table is reachable.
+				return false, erasureErr
+			}
+			if erased {
+				if commitErr := tx.Commit(); commitErr != nil {
+					return false, fmt.Errorf("failed to commit transaction: %w", commitErr)
+				}
+				log.Printf("Dropped vote on erased account's subject: %s (%s on %s)", vote.URI, vote.Direction, vote.SubjectURI)
+				return false, nil
+			}
 			return false, fmt.Errorf("vote subject not indexed: %s - cannot count vote before its subject", vote.SubjectURI)
 		}
 		if err != nil {
@@ -561,6 +604,35 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 	}
 
 	return true, nil // Vote was newly indexed
+}
+
+// subjectWasErased reports whether the repo HOSTING this subject carries a
+// migration-036 erasure marker.
+//
+// The DID it asks about comes out of the subject URI's repo segment, which is
+// worth saying because every other identity on this path is the voter's: the
+// erased party is whoever wrote the post or comment that was voted on, and a
+// gate that consulted the voter would answer a different question and let the
+// event through.
+//
+// A lookup failure is an ERROR, never a false — failing open would index votes
+// pointing into content a deletion erased. With no lookup wired the gate is
+// absent and an erased subject is treated as an ordinary late one.
+func (c *VoteEventConsumer) subjectWasErased(ctx context.Context, subjectURI string) (bool, error) {
+	if c.deletedAccounts == nil {
+		return false, nil
+	}
+	// A subject that is not an at:// record URI names no repo, so there is no
+	// marker to consult; the caller's absent-subject refusal stands.
+	subjectRepoDID, _, _, ok := parseRecordURI(subjectURI)
+	if !ok {
+		return false, nil
+	}
+	erased, err := c.deletedAccounts.IsAccountDeleted(ctx, subjectRepoDID)
+	if err != nil {
+		return false, fmt.Errorf("checking the erasure marker for %s: %w", subjectRepoDID, err)
+	}
+	return erased, nil
 }
 
 // validateVoteEvent performs security validation on vote events
