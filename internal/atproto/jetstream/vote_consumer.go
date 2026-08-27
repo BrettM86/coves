@@ -24,6 +24,19 @@ import (
 // SILENTLY: the vote row is still indexed and no error is raised, the score just
 // never moves.
 
+// Every count mutation here matches its subject by URI ALONE. None of them
+// carries `deleted_at IS NULL` on the SUBJECT row, and that is the invariant:
+// a LIVE vote row is included in its subject's stored counts unconditionally,
+// not merely while the subject is visible. A deletion is a pause rather than an
+// end — a comment comes back through indexCommentAndUpdateCounts's re-create
+// path with its native counts intact — so a mutation suppressed during a deleted
+// window leaves the resurrected subject claiming a vote no live row explains,
+// permanently and with nothing left to attribute it to.
+//
+// Only the withdrawal path can meet a deleted subject today; the ordering gate
+// drops creates before any count runs. The filter is absent at all four mutating
+// sites anyway, so the invariant reads the same wherever a reader lands.
+
 // VoteEventConsumer consumes vote-related events from Jetstream
 // Handles CREATE and DELETE operations for social.coves.feed.vote
 type VoteEventConsumer struct {
@@ -251,14 +264,14 @@ func (c *VoteEventConsumer) deleteVote(ctx context.Context, repoDID string, comm
 				UPDATE posts
 				SET upvote_count = GREATEST(0, upvote_count - 1),
 				    score = GREATEST(0, upvote_count - 1) - downvote_count + bridged_upvote_count - bridged_downvote_count
-				WHERE uri = $1 AND deleted_at IS NULL
+				WHERE uri = $1
 			`
 		} else { // "down"
 			updateQuery = `
 				UPDATE posts
 				SET downvote_count = GREATEST(0, downvote_count - 1),
 				    score = upvote_count - GREATEST(0, downvote_count - 1) + bridged_upvote_count - bridged_downvote_count
-				WHERE uri = $1 AND deleted_at IS NULL
+				WHERE uri = $1
 			`
 		}
 
@@ -269,14 +282,14 @@ func (c *VoteEventConsumer) deleteVote(ctx context.Context, repoDID string, comm
 				UPDATE comments
 				SET upvote_count = GREATEST(0, upvote_count - 1),
 				    score = GREATEST(0, upvote_count - 1) - downvote_count + bridged_upvote_count - bridged_downvote_count
-				WHERE uri = $1 AND deleted_at IS NULL
+				WHERE uri = $1
 			`
 		} else { // "down"
 			updateQuery = `
 				UPDATE comments
 				SET downvote_count = GREATEST(0, downvote_count - 1),
 				    score = upvote_count - GREATEST(0, downvote_count - 1) + bridged_upvote_count - bridged_downvote_count
-				WHERE uri = $1 AND deleted_at IS NULL
+				WHERE uri = $1
 			`
 		}
 
@@ -300,9 +313,12 @@ func (c *VoteEventConsumer) deleteVote(ctx context.Context, repoDID string, comm
 		return fmt.Errorf("failed to check update result: %w", err)
 	}
 
-	// If subject doesn't exist or is deleted, that's OK (vote still deleted)
+	// The decrement no longer filters the subject on deleted_at, so zero rows
+	// means the subject row is GONE — hard-deleted, which in practice means an
+	// account erasure swept it. There is nothing left to decrement and nothing
+	// that can come back to claim this vote; the withdrawal stands on its own.
 	if rowsAffected == 0 {
-		log.Printf("Warning: Vote subject not found or deleted: %s (vote deleted anyway)", subjectURI)
+		log.Printf("Warning: Vote subject no longer exists: %s (vote deleted anyway)", subjectURI)
 	}
 
 	// Commit transaction
@@ -458,15 +474,15 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 		var decrementQuery string
 		if existingDirection.String == "up" {
 			if posts.IsPostCollection(collection) {
-				decrementQuery = `UPDATE posts SET upvote_count = GREATEST(0, upvote_count - 1), score = GREATEST(0, upvote_count - 1) - downvote_count + bridged_upvote_count - bridged_downvote_count WHERE uri = $1 AND deleted_at IS NULL`
+				decrementQuery = `UPDATE posts SET upvote_count = GREATEST(0, upvote_count - 1), score = GREATEST(0, upvote_count - 1) - downvote_count + bridged_upvote_count - bridged_downvote_count WHERE uri = $1`
 			} else if collection == CommentCollection {
-				decrementQuery = `UPDATE comments SET upvote_count = GREATEST(0, upvote_count - 1), score = GREATEST(0, upvote_count - 1) - downvote_count + bridged_upvote_count - bridged_downvote_count WHERE uri = $1 AND deleted_at IS NULL`
+				decrementQuery = `UPDATE comments SET upvote_count = GREATEST(0, upvote_count - 1), score = GREATEST(0, upvote_count - 1) - downvote_count + bridged_upvote_count - bridged_downvote_count WHERE uri = $1`
 			}
 		} else {
 			if posts.IsPostCollection(collection) {
-				decrementQuery = `UPDATE posts SET downvote_count = GREATEST(0, downvote_count - 1), score = upvote_count - GREATEST(0, downvote_count - 1) + bridged_upvote_count - bridged_downvote_count WHERE uri = $1 AND deleted_at IS NULL`
+				decrementQuery = `UPDATE posts SET downvote_count = GREATEST(0, downvote_count - 1), score = upvote_count - GREATEST(0, downvote_count - 1) + bridged_upvote_count - bridged_downvote_count WHERE uri = $1`
 			} else if collection == CommentCollection {
-				decrementQuery = `UPDATE comments SET downvote_count = GREATEST(0, downvote_count - 1), score = upvote_count - GREATEST(0, downvote_count - 1) + bridged_upvote_count - bridged_downvote_count WHERE uri = $1 AND deleted_at IS NULL`
+				decrementQuery = `UPDATE comments SET downvote_count = GREATEST(0, downvote_count - 1), score = upvote_count - GREATEST(0, downvote_count - 1) + bridged_upvote_count - bridged_downvote_count WHERE uri = $1`
 			}
 		}
 		if decrementQuery != "" {
@@ -539,14 +555,14 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 				UPDATE posts
 				SET upvote_count = upvote_count + 1,
 				    score = upvote_count + 1 - downvote_count + bridged_upvote_count - bridged_downvote_count
-				WHERE uri = $1 AND deleted_at IS NULL
+				WHERE uri = $1
 			`
 		} else { // "down"
 			updateQuery = `
 				UPDATE posts
 				SET downvote_count = downvote_count + 1,
 				    score = upvote_count - (downvote_count + 1) + bridged_upvote_count - bridged_downvote_count
-				WHERE uri = $1 AND deleted_at IS NULL
+				WHERE uri = $1
 			`
 		}
 
@@ -557,14 +573,14 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 				UPDATE comments
 				SET upvote_count = upvote_count + 1,
 				    score = upvote_count + 1 - downvote_count + bridged_upvote_count - bridged_downvote_count
-				WHERE uri = $1 AND deleted_at IS NULL
+				WHERE uri = $1
 			`
 		} else { // "down"
 			updateQuery = `
 				UPDATE comments
 				SET downvote_count = downvote_count + 1,
 				    score = upvote_count - (downvote_count + 1) + bridged_upvote_count - bridged_downvote_count
-				WHERE uri = $1 AND deleted_at IS NULL
+				WHERE uri = $1
 			`
 		}
 
@@ -588,14 +604,15 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 		return false, fmt.Errorf("failed to check update result: %w", err)
 	}
 
-	// The ordering gate above proved the subject was present and live, and its
-	// read takes no row lock, so zero rows here means a delete of the subject
-	// committed between that read and this update. The vote row stays: deleteVote
-	// decrements through the same `deleted_at IS NULL` filter, so its eventual
-	// withdrawal is the matching no-op rather than a subtraction of something
-	// never added.
+	// The ordering gate above proved the subject was present, this update filters
+	// on nothing but its URI, and the gate's read takes no row lock — so zero rows
+	// means the subject was HARD-deleted between the two, which in practice means
+	// an account erasure landed mid-transaction. The vote row stays and is
+	// uncounted, which is safe only because the subject is gone for good:
+	// deleteVote's decrement will match zero rows for the same reason, so nothing
+	// can later be subtracted for an increment that never applied.
 	if rowsAffected == 0 {
-		log.Printf("Warning: Vote subject not found or deleted: %s (vote indexed anyway)", vote.SubjectURI)
+		log.Printf("Warning: Vote subject no longer exists: %s (vote indexed anyway)", vote.SubjectURI)
 	}
 
 	// Commit transaction
