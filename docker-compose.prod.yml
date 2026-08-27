@@ -22,6 +22,11 @@ services:
     # Pinned by digest: `docker compose pull` must never silently change what
     # runs in prod. Bump tag + digest together in a reviewed commit
     # (`docker buildx imagetools inspect postgres:<tag>` resolves the digest).
+    #
+    # WARNING: changing this line (or pds's) makes the NEXT `up -d` of any
+    # service that depends_on it (caddy, appview) recreate this container too,
+    # unless that `up -d` passes --no-deps. Plan a DB restart window when you
+    # bump it. This digest is 15.19, running in prod since 2026-08-26.
     image: postgres:15@sha256:926f8799aef36e00001cfe15fba7abbd37d3c5224ea57e4c858e4bb670f10561
     container_name: coves-prod-postgres
     restart: unless-stopped
@@ -206,6 +211,8 @@ services:
     # Pinned by tag + digest — the PDS holds community repo signing keys, so
     # upgrades are an explicit reviewed commit, never an implicit pull.
     # Bump: `docker buildx imagetools inspect ghcr.io/bluesky-social/pds:<tag>`.
+    # Same depends_on caveat as postgres above: a changed pin is applied by
+    # the next `up -d caddy` unless --no-deps is used.
     image: ghcr.io/bluesky-social/pds:0.4.193@sha256:50e60af25fa7b580ddae8fc18ae97b1d7cdeb1a3068a3d345f9161cc7796417b
     container_name: coves-prod-pds
     restart: unless-stopped

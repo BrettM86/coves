@@ -85,7 +85,11 @@ if [ -n "$SERVICE" ]; then
     docker compose -f "$COMPOSE_FILE" build --no-cache "$SERVICE"
 
     log "Deploying $SERVICE..."
-    docker compose -f "$COMPOSE_FILE" up -d "$SERVICE"
+    # --no-deps: recreate ONLY this container. Without it compose also
+    # recreates any dependency whose config changed — e.g. bumping the
+    # pds/postgres image pin and then deploying caddy (depends_on both)
+    # restarted the database and PDS as a side effect (2026-08-26).
+    docker compose -f "$COMPOSE_FILE" up -d --no-deps "$SERVICE"
 else
     log "Building all services..."
     docker compose -f "$COMPOSE_FILE" build --no-cache
