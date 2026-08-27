@@ -61,17 +61,30 @@ type DeadLetterRedriver struct {
 	maxAttempts int
 }
 
+// RedriveOption configures optional DeadLetterRedriver behaviour.
+type RedriveOption func(*DeadLetterRedriver)
+
+// WithRedriveInterval sets how often Run starts a redrive pass, replacing the
+// constructor's five-minute default.
+func WithRedriveInterval(interval time.Duration) RedriveOption {
+	return func(r *DeadLetterRedriver) { r.interval = interval }
+}
+
 // NewDeadLetterRedriver creates a redriver over the given consumers.
 // Events that exhaust maxAttempts redrives stay in the table for manual
 // inspection and are surfaced in the /health/consumers backlog counts.
-func NewDeadLetterRedriver(queue DeadLetterQueue, handlers map[string]EventHandler) *DeadLetterRedriver {
-	return &DeadLetterRedriver{
+func NewDeadLetterRedriver(queue DeadLetterQueue, handlers map[string]EventHandler, opts ...RedriveOption) *DeadLetterRedriver {
+	r := &DeadLetterRedriver{
 		queue:       queue,
 		handlers:    handlers,
 		interval:    5 * time.Minute,
 		batchSize:   100,
 		maxAttempts: MaxRedriveAttempts,
 	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // Run redrives dead letters on an interval until ctx is cancelled.
