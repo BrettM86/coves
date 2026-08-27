@@ -422,11 +422,10 @@ func TestCommentFederationIngestion(t *testing.T) {
 // deterministic rather than a race — and is legitimate per §3.4 rule 4.
 //
 // Measured on this topology, all four steps behave exactly as they do locally.
-// The known out-of-order defect (2026-07-29-vote-before-subject-lost-then-
-// subtracts) is NOT re-pinned here: it is already pinned in
-// TestVoteOutOfOrderIsLostAndSubtracts, its cause is ordering rather than
-// hosting, and the second PDS changes only how easily production reaches it —
-// which the issue file now records.
+// The out-of-order case is NOT re-exercised here: it has its own contract in
+// TestVoteBeforeSubjectIsCountedOnceSubjectIndexed, its cause is ordering
+// rather than hosting, and the second PDS changes only how easily production
+// reaches it.
 func TestVoteFederationIngestion(t *testing.T) {
 	p := newPipeline(t)
 	remote := testkit.NewFederatedPDS(t)

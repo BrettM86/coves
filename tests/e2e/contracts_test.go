@@ -132,14 +132,20 @@
 // function beside the contract, because the marker would otherwise be
 // advertising a proof that no longer runs.
 //
-// Both shapes are in the tree as worked examples, and the difference is
-// instructive. vote_contract_test.go pins a same-rkey update being dropped
-// INSIDE TestVoteIngestion: fixing it changes one step's expected counts and
-// leaves create, re-tap, direction change and delete proving exactly what they
-// prove today. The out-of-order defect is pinned OUTSIDE, in
-// TestVoteOutOfOrderIsLostAndSubtracts, because its whole arc is the defect —
-// there is no residual pipeline proof left if the behaviour changes, so it
-// carries no marker and claims nothing about the collection.
+// vote_contract_test.go has the inside shape: it pins a same-rkey update being
+// dropped INSIDE TestVoteIngestion, because fixing that changes one step's
+// expected counts and leaves create, re-tap, direction change and delete
+// proving exactly what they prove today.
+//
+// Its vote-before-subject defect took the outside shape, and what happened to
+// it since is the reason the rule is worth stating. Its whole arc WAS the
+// defect — there was no residual pipeline proof left if the behaviour changed —
+// so it lived in an unmarked function of its own. When the ordering gate was
+// built, that function inverted in place into
+// TestVoteBeforeSubjectIsCountedOnceSubjectIndexed and kept its lack of a
+// marker: a marker is a claim about a collection's pipeline, and a function
+// whose whole arc is one behaviour makes no such claim whether that behaviour
+// is the bug or the fix.
 //
 // Two obligations either way. Name the issue file in the assertion message, so
 // a red run says which defect got fixed rather than merely which line moved.

@@ -30,9 +30,11 @@ import (
 // and its subject are necessarily in DIFFERENT repos, Jetstream parallelises
 // across repos, and so "the vote arrives after the post" is topology luck rather
 // than a protocol promise. The contract below does not pretend otherwise: it
-// waits for the post to be INDEXED before writing a vote, and the out-of-order
-// case is not an edge this contract avoids but the defect it pins (see
-// TestVoteOutOfOrderIsLostAndSubtracts).
+// waits for the post to be INDEXED before writing a vote so that its own steps
+// are deterministic, and the out-of-order case is not an edge it avoids but a
+// contract of its own (see TestVoteBeforeSubjectIsCountedOnceSubjectIndexed) —
+// a vote that reaches the AppView before its subject must still be counted once
+// the subject lands.
 //
 // # THERE IS NO RECONCILIATION PATH FOR VOTES (checked)
 //
@@ -283,12 +285,17 @@ func TestVoteIngestion(t *testing.T) {
 		postStats{Upvotes: 1, Score: 1})
 }
 
-// TestVoteOutOfOrderIsLostAndSubtracts PINS A DEFECT. It is not an aspiration
-// and it is not a contract — it carries no ingestion marker — it is the
-// executable record of what the shipped pipeline does when a vote reaches the
-// AppView before the thing it votes on.
+// TestVoteBeforeSubjectIsCountedOnceSubjectIndexed is the ordering contract for
+// votes: a vote that reaches the AppView BEFORE the thing it votes on must end
+// up counted exactly once, and withdrawing it must take back exactly its own
+// vote and nobody else's.
 //
-// # WHY THIS IS REACHABLE IN PRODUCTION
+// It carries NO ingestion marker. TestVoteIngestion above owns the
+// social.coves.feed.vote marker and cmd/contract-manifest hard-fails on a
+// duplicate, so this sits beside the pipeline proof as an unmarked correctness
+// contract, the same shape as TestVoteAPIContract.
+//
+// # WHY OUT-OF-ORDER IS THE ORDINARY CASE AND NOT AN EDGE
 //
 // A vote lives in the voter's repo and its subject lives in another (a post is
 // in the community's repo, a comment in its author's). Jetstream serialises a
@@ -296,43 +303,61 @@ func TestVoteIngestion(t *testing.T) {
 // against its subject. The window is small in a healthy stack and arbitrarily
 // large in an unhealthy one — a redriven post, a consumer catching up after a
 // restart, a slow blob fetch upstream — and Phase 5's relay topology widens it
-// further.
+// further. Arrival order is topology luck, so a pipeline that only counts votes
+// which happen to arrive second is not counting votes.
 //
-// # WHAT THE CONSUMER DOES, AND WHY IT LOSES
+// # WHY "EVENTUALLY" IS THE HONEST STRENGTH FOR THE FIRST HALF
 //
-// vote_consumer.go's createVote has NO must-exist gate on the subject: unlike
-// the post consumer (which rejects a post whose community it has not seen, with
-// a TRANSIENT error so the redrive succeeds later) and unlike the subscription
-// consumer (same pattern), a vote whose subject is unknown is accepted. The row
-// is inserted; the `UPDATE posts SET upvote_count = …` that follows matches
-// zero rows; and the zero-row case is a log line:
+// A vote whose subject is unknown cannot be counted at the moment it arrives —
+// there is no row to count it on. The counting is therefore deferred: the
+// consumer refuses the event TRANSIENTLY (the shape post_consumer.go already
+// uses for a post whose community it has not seen), the event goes to the dead
+// letter queue, and the redriver replays it after the subject lands. So the
+// assertion below is an Await, not a Holds-from-the-start: the contract is that
+// the vote is counted, not that it is counted synchronously.
 //
-//	log.Printf("Warning: Vote subject not found or deleted: %s (vote indexed anyway)", …)
+// That deferral is what dictates the ORDER of the setup, which reads oddly and
+// is load-bearing. The redrive budget is finite (MaxRedriveAttempts), so every
+// second between the early vote reaching the dead letter queue and the subject
+// being indexed spends attempts. Everything slow — three signups, a community,
+// the warm-up post, and the early voter's own first trip through the vote
+// consumer — is therefore done BEFORE the early vote is written, leaving only
+// one PDS write between the vote and its subject. A contract that stood its
+// fixtures up in between would fail on the budget while the mechanism it is
+// testing worked perfectly.
 //
-// Nothing reconciles afterwards. The post consumer, when the post finally
-// arrives, INSERTs it with fresh zeroed counters and never looks at the votes
-// table. So the vote is counted by nobody, forever.
+// # WHY THE SECOND HALF IS HERE
 //
-// # AND IT IS WORSE THAN A LOST VOTE
-//
-// The row that was inserted is a live, undeleted vote. When it is eventually
-// withdrawn — the user un-taps, or the record is tidied up — deleteVote loads
-// that row, finds a direction and a subject, and DECREMENTS the post. It
-// subtracts a vote it never added, taking a real vote from a real voter with it.
-// The steady-state error is therefore not "one vote short", it is unbounded
-// downward drift, floored at zero by GREATEST(0, …) so that it never even looks
-// wrong in the data.
-//
-// Both halves are asserted below, because the second is the one that turns a
-// missing-increment annoyance into a correctness bug, and it is the one a
-// reader would not predict.
-func TestVoteOutOfOrderIsLostAndSubtracts(t *testing.T) {
+// A deferred vote that is counted twice, or a withdrawal that subtracts a vote
+// the consumer never applied, are the two ways the deferral goes wrong, and
+// both are invisible on the first half's assertion alone. GREATEST(0, …) floors
+// the count, so an over-subtraction hides itself in the data; asserting the
+// withdrawal against a SECOND, correctly-ordered voter's live upvote is what
+// gives a spurious decrement something to take, and makes it visible.
+func TestVoteBeforeSubjectIsCountedOnceSubjectIndexed(t *testing.T) {
 	p := newPipeline(t)
 
 	author := p.IndexedAccount(t, "vd")
 	early := p.IndexedAccount(t, "ve")
 	late := p.IndexedAccount(t, "vl")
 	community := indexedCommunity(t, p, "vd", author.DID)
+
+	// The warm-up post and the early voter's vote on it exist to move every slow
+	// step to BEFORE the clock starts — see the doc comment's note on the redrive
+	// budget. Waiting for this vote to be counted proves the early voter's repo
+	// reaches the vote consumer and is counted normally, so when the ordering
+	// assertion below fails it is about ordering and not about a cold fixture.
+	//
+	// It is a DIFFERENT post from the one voted on out of order, so the two
+	// votes never meet: the consumer's stale-vote cleanup keys on
+	// (voter_did, subject_uri), and a shared subject would make the second vote
+	// supersede the first.
+	warmupPost := indexedPost(t, p, community, author.DID, "vote consumer warm-up "+testkit.UniqueID(t))
+	early.PutRecord(t, voteCollection, testkit.TID(), voteRecord(warmupPost, "up"))
+	awaitStats(t, p, warmupPost.URI,
+		"the early voter's repo to reach the vote consumer and be counted, before the "+
+			"out-of-order case is exercised",
+		func(s postStats) bool { return s.Upvotes == 1 })
 
 	// The post's URI is knowable before the post exists — the community's DID
 	// and an rkey this test chooses are all it is made of — which is exactly why
@@ -344,26 +369,14 @@ func TestVoteOutOfOrderIsLostAndSubtracts(t *testing.T) {
 	// The CID is a well-formed placeholder rather than the post's real one,
 	// which the test cannot know yet. The consumer stores subject_cid without
 	// checking it against anything (there is no CID validation on the vote path
-	// at all — worth knowing, and not this test's subject).
-	orphanRKey := testkit.TID()
-	early.PutRecord(t, voteCollection, orphanRKey, voteRecord(
+	// at all — worth knowing, and not this contract's subject).
+	earlyRKey := testkit.TID()
+	early.PutRecord(t, voteCollection, earlyRKey, voteRecord(
 		strongRef{URI: uri, CID: "bafyreiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, "up"))
 
-	// Bounded INTRA-REPO, the way §3.4's negatives have to be: a second record
-	// in the SAME repo, whose arrival proves the first has already been through
-	// the consumer. Cross-repo ordering is the very thing this test is about, so
-	// it cannot also be the thing the test assumes.
-	//
-	// The bounding record is a vote on a DIFFERENT, already-indexed post, so its
-	// effect is observable — an unobservable bound is not a bound.
-	boundPost := indexedPost(t, p, community, author.DID, "ordering bound "+testkit.UniqueID(t))
-	early.PutRecord(t, voteCollection, testkit.TID(), voteRecord(boundPost, "up"))
-	awaitStats(t, p, boundPost.URI,
-		"a later vote from the SAME repo to be indexed, proving the orphan vote's commit "+
-			"has already passed through the vote consumer",
-		func(s postStats) bool { return s.Upvotes == 1 })
-
-	// ---- now the subject arrives --------------------------------------------
+	// ---- and now its subject, immediately -----------------------------------
+	// Nothing may go between these two writes. Every wait here is spent out of
+	// the deferred vote's redrive budget.
 	community.PutRecord(t, postCollection, rkey,
 		postRecord(community.DID, author.DID, "voted on before it existed", "the late post"))
 	p.Await(t, "the post to be indexed after the vote that names it", func() (bool, error) {
@@ -374,52 +387,42 @@ func TestVoteOutOfOrderIsLostAndSubtracts(t *testing.T) {
 		return !view.NotFound, nil
 	})
 
-	// ---- half one: the vote is lost, and stays lost -------------------------
-	// Holds rather than a single read, because "no reconciliation happens" is a
-	// claim about the future: a repair pass that ran a second later would make
-	// this the wrong assertion, and Holds is what would notice.
-	holdStats(t, p, uri,
-		"the out-of-order vote to be INVISIBLE on the post it names, and to stay invisible "+
-			"(pinning known defect 2026-07-29-vote-before-subject-lost-then-subtracts: createVote "+
-			"has no must-exist gate on its subject, its count UPDATE matches zero rows, and nothing "+
-			"recomputes counts afterwards. IF THIS FAILED, the defect is FIXED — invert this step "+
-			"to expect {Upvotes:1, Score:1} and close the issue)",
-		postStats{})
+	// ---- half one: the early vote is counted once its subject exists --------
+	stats := awaitStats(t, p, uri,
+		"the vote that arrived before its subject to be counted on the post once the post is "+
+			"indexed (the consumer must refuse an unknown subject TRANSIENTLY so the dead letter "+
+			"redriver replays it, the way post_consumer.go handles a post whose community it has "+
+			"not seen — a vote accepted with a count UPDATE that matches zero rows is counted by "+
+			"nobody, forever)",
+		func(s postStats) bool { return s.Upvotes == 1 })
+	require.Equal(t, postStats{Upvotes: 1, Score: 1}, stats,
+		"the recovered vote must land as one upvote and one point of score and touch nothing else")
 
-	// ---- half two: the lost vote can still subtract -------------------------
-	// A real, correctly-ordered vote from another actor takes the count to one.
+	// ---- half two: withdrawing it takes back its own vote and no other ------
+	// A second, correctly-ordered vote from another actor, so the withdrawal
+	// below has something to steal if it subtracts more than it should.
 	view, err := p.Post(context.Background(), uri)
 	require.NoError(t, err)
 	late.PutRecord(t, voteCollection, testkit.TID(), voteRecord(strongRef{URI: uri, CID: view.CID}, "up"))
-	awaitStats(t, p, uri, "a correctly-ordered vote to be counted normally",
+	awaitStats(t, p, uri, "a correctly-ordered vote from a second voter to be counted alongside it",
+		func(s postStats) bool { return s.Upvotes == 2 })
+
+	early.DeleteExistingRecord(t, voteCollection, earlyRKey)
+	stats = awaitStats(t, p, uri,
+		"withdrawing the vote that arrived early to remove exactly that vote",
 		func(s postStats) bool { return s.Upvotes == 1 })
+	require.Equal(t, postStats{Upvotes: 1, Score: 1}, stats,
+		"the withdrawal must leave the second voter's upvote alone: a decrement applied for a vote "+
+			"whose increment never happened subtracts a real voter's vote, and GREATEST(0, …) hides "+
+			"the drift by flooring it at zero")
 
-	// Withdrawing the ORPHAN — which never incremented anything — takes the
-	// other voter's upvote away with it.
-	early.DeleteExistingRecord(t, voteCollection, orphanRKey)
-	stats := awaitStats(t, p,
-		uri, "withdrawing the never-counted vote to DECREMENT the post anyway",
-		func(s postStats) bool { return s.Upvotes == 0 })
-	require.Equal(t, postStats{}, stats,
-		"the orphaned vote's delete subtracted a vote it never added, and the count it took "+
-			"belonged to a different voter whose vote is still live in the votes table")
-
-	// AND IT STAYS WRONG. The Await above would be satisfied by a fix that
-	// repairs the count ASYNCHRONOUSLY — a reconciliation pass, a recount
-	// triggered by the delete — because it only has to observe zero once, on its
-	// way back up. This pin would then keep passing against code that no longer
-	// has the defect, which is the specific way a pin rots: it stops being a
-	// record of current behaviour and becomes a test of nothing.
-	//
-	// Holding the wrong-but-current value is what closes that. When the defect
-	// is fixed by any means, sync or async, THIS is the assertion that fails.
+	// The Await above only has to observe one upvote ONCE, on the way down from
+	// two — a delayed second decrement, or a repair pass that recounts wrongly a
+	// moment later, would satisfy it and leave the contract green against a
+	// broken pipeline. Holding the right value is what closes that.
 	holdStats(t, p, uri,
-		"the stolen upvote to STAY stolen (pinning known defect "+
-			"2026-07-29-vote-before-subject-lost-then-subtracts, second half: deleteVote decrements "+
-			"unconditionally from the stored row and cannot tell an applied increment from a missed "+
-			"one. IF THIS FAILED, the defect is FIXED — the surviving voter's upvote should read "+
-			"{Upvotes:1, Score:1}; invert this step and close the issue)",
-		postStats{})
+		"the second voter's upvote to survive the other voter's withdrawal",
+		postStats{Upvotes: 1, Score: 1})
 }
 
 // TestVoteAPIContract covers the client-facing surface of the vote endpoints as
