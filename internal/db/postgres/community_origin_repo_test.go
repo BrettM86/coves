@@ -81,3 +81,67 @@ func originOf(rows []*communities.Community, did string) string {
 	}
 	return "<row not returned>"
 }
+
+// TestCommunityRepo_GetByNameAndOrigin pins the resolver's remote-origin
+// lookup: exact (name, origin) match, a miss for an unknown pair, and an
+// explicit ambiguity error when a second row carries the same pair rather
+// than an arbitrary pick between them.
+func TestCommunityRepo_GetByNameAndOrigin(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+	ctx := context.Background()
+	repo := postgres.NewCommunityRepository(db)
+
+	suffix := testkit.UniqueID(t)
+	name := "pair" + suffix
+	bridged := func(handleLabel, origin string) *communities.Community {
+		did := fmt.Sprintf("did:plc:%s%s", handleLabel, suffix)
+		community := &communities.Community{
+			DID:          did,
+			Handle:       handleLabel + suffix + ".lemmy-world.tdpl.io",
+			Name:         name,
+			DisplayName:  "Pair lookup " + handleLabel,
+			OwnerDID:     did,
+			CreatedByDID: "did:plc:paircreator",
+			HostedByDID:  "did:web:tdpl.io",
+			PDSURL:       "https://pds.tdpl.io",
+			Visibility:   "public",
+			Origin:       origin,
+			CreatedAt:    time.Now(),
+			UpdatedAt:    time.Now(),
+		}
+		created, err := repo.Create(ctx, community)
+		require.NoError(t, err)
+		return created
+	}
+
+	world := bridged("world", "lemmy.world")
+	// Same name on a different origin must not collide.
+	ml := bridged("ml", "lemmy.ml")
+
+	got, err := repo.GetByNameAndOrigin(ctx, name, "lemmy.world")
+	require.NoError(t, err)
+	assert.Equal(t, world.DID, got.DID)
+	assert.Equal(t, "lemmy.world", got.Origin, "the row must come back fully scanned")
+	assert.Equal(t, world.Handle, got.Handle)
+
+	got, err = repo.GetByNameAndOrigin(ctx, name, "lemmy.ml")
+	require.NoError(t, err)
+	assert.Equal(t, ml.DID, got.DID)
+
+	_, err = repo.GetByNameAndOrigin(ctx, name, "lemmy.zip")
+	assert.ErrorIs(t, err, communities.ErrCommunityNotFound)
+
+	_, err = repo.GetByNameAndOrigin(ctx, "someoneelse"+suffix, "lemmy.world")
+	assert.ErrorIs(t, err, communities.ErrCommunityNotFound)
+
+	// A row with no origin never matches, even for the empty string.
+	_, err = repo.GetByNameAndOrigin(ctx, name, "")
+	assert.ErrorIs(t, err, communities.ErrCommunityNotFound)
+
+	// The collision case: Tidepool suffixes the handle label, the origin stays.
+	bridged("world-2", "lemmy.world")
+	_, err = repo.GetByNameAndOrigin(ctx, name, "lemmy.world")
+	assert.ErrorIs(t, err, communities.ErrAmbiguousCommunity)
+	assert.NotErrorIs(t, err, communities.ErrCommunityNotFound)
+}

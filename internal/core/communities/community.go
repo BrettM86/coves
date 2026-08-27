@@ -297,6 +297,40 @@ func (c *Community) GetDisplayHandle() string {
 	return fmt.Sprintf("!%s@%s", name, instanceDomain)
 }
 
+// EffectiveOrigin returns the instance a community should be addressed at in
+// the name@origin form: the validated Origin column when present, otherwise
+// the domain derived from a native c-{name}.{domain} handle.
+//
+// Rows indexed before the origin column existed carry NULL there even though
+// they are native communities whose origin is fully determined by the handle.
+// Deriving it here means API views always carry an origin for native
+// communities, so a client can build /c/{name} or /c/{name}@{origin} links
+// without re-implementing the handle convention. A bridged community stored
+// without an origin has no derivable one — its DNS handle is lossy — and gets
+// the empty string.
+func (c *Community) EffectiveOrigin() string {
+	if c.Origin != "" {
+		return c.Origin
+	}
+	return OriginFromHandle(c.Handle)
+}
+
+// OriginFromHandle derives the instance domain from a native community handle
+// (c-{name}.{domain} -> domain). Handles without the community prefix — bridged
+// communities keep their source platform's handle — yield the empty string,
+// because the domain after the first label is the bridge's, not the origin's.
+func OriginFromHandle(handle string) string {
+	if !strings.HasPrefix(handle, communityHandlePrefix) {
+		return ""
+	}
+	afterPrefix := handle[len(communityHandlePrefix):]
+	dotIndex := strings.Index(afterPrefix, ".")
+	if dotIndex <= 0 || dotIndex == len(afterPrefix)-1 {
+		return ""
+	}
+	return afterPrefix[dotIndex+1:]
+}
+
 // GetPDSURL implements blobs.BlobOwner interface.
 // Returns the community's PDS URL for blob uploads.
 func (c *Community) GetPDSURL() string {
@@ -318,7 +352,7 @@ func (c *Community) ToCommunityView() *CommunityView {
 		Name:            c.Name,
 		DisplayName:     c.DisplayName,
 		DisplayHandle:   c.GetDisplayHandle(),
-		Origin:          c.Origin,
+		Origin:          c.EffectiveOrigin(),
 		Avatar:          blobs.HydrateImageURL(blobs.GetImageURLConfig(), c.PDSURL, c.DID, c.AvatarCID, "avatar_small"),
 		Visibility:      c.Visibility,
 		SubscriberCount: c.SubscriberCount,
@@ -339,7 +373,7 @@ func (c *Community) ToCommunityViewDetailed() *CommunityViewDetailed {
 		Name:                   c.Name,
 		DisplayName:            c.DisplayName,
 		DisplayHandle:          c.GetDisplayHandle(),
-		Origin:                 c.Origin,
+		Origin:                 c.EffectiveOrigin(),
 		Description:            c.Description,
 		Avatar:                 blobs.HydrateImageURL(blobs.GetImageURLConfig(), c.PDSURL, c.DID, c.AvatarCID, "avatar"),
 		Banner:                 blobs.HydrateImageURL(blobs.GetImageURLConfig(), c.PDSURL, c.DID, c.BannerCID, "banner"),

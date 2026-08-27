@@ -273,6 +273,85 @@ func (r *postgresCommunityRepo) GetByHandle(ctx context.Context, handle string) 
 	return community, nil
 }
 
+// GetByNameAndOrigin resolves the name@origin form against the stored pair.
+//
+// (name, origin) is deliberately NOT unique: the origin is self-asserted by
+// the community record and only validated against the bridge's trust, so two
+// bridged rows can legitimately carry the same pair (Tidepool suffixes
+// colliding handle labels with -2). Fetching two rows and refusing when the
+// second exists is what turns that into an explicit error instead of an
+// arbitrary pick.
+func (r *postgresCommunityRepo) GetByNameAndOrigin(ctx context.Context, name, origin string) (*communities.Community, error) {
+	query := `
+		SELECT id, did, handle, name, display_name, description, description_facets,
+			avatar_cid, banner_cid, owner_did, created_by_did, hosted_by_did,
+			visibility, allow_external_discovery, moderation_type, content_warnings,
+			member_count, subscriber_count, ` + communityPostCountUnqualified + ` AS post_count,
+			federated_from, federated_id, created_at, updated_at,
+			record_uri, record_cid, origin
+		FROM communities
+		WHERE name = $1 AND origin = $2
+		LIMIT 2`
+
+	rows, err := r.db.QueryContext(ctx, query, name, origin)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get community by name and origin: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var matches []*communities.Community
+	for rows.Next() {
+		community := &communities.Community{}
+		var displayName, description, avatarCID, bannerCID, moderationType sql.NullString
+		var federatedFrom, federatedID, recordURI, recordCID, rowOrigin sql.NullString
+		var descFacets []byte
+		var contentWarnings []string
+
+		if err := rows.Scan(
+			&community.ID, &community.DID, &community.Handle, &community.Name,
+			&displayName, &description, &descFacets,
+			&avatarCID, &bannerCID,
+			&community.OwnerDID, &community.CreatedByDID, &community.HostedByDID,
+			&community.Visibility, &community.AllowExternalDiscovery,
+			&moderationType, pq.Array(&contentWarnings),
+			&community.MemberCount, &community.SubscriberCount, &community.PostCount,
+			&federatedFrom, &federatedID,
+			&community.CreatedAt, &community.UpdatedAt,
+			&recordURI, &recordCID, &rowOrigin,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan community by name and origin: %w", err)
+		}
+
+		community.DisplayName = displayName.String
+		community.Description = description.String
+		community.AvatarCID = avatarCID.String
+		community.BannerCID = bannerCID.String
+		community.ModerationType = moderationType.String
+		community.ContentWarnings = contentWarnings
+		community.FederatedFrom = federatedFrom.String
+		community.FederatedID = federatedID.String
+		community.RecordURI = recordURI.String
+		community.RecordCID = recordCID.String
+		community.Origin = rowOrigin.String
+		if descFacets != nil {
+			community.DescriptionFacets = descFacets
+		}
+		matches = append(matches, community)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read communities by name and origin: %w", err)
+	}
+
+	switch len(matches) {
+	case 0:
+		return nil, communities.ErrCommunityNotFound
+	case 1:
+		return matches[0], nil
+	default:
+		return nil, communities.ErrAmbiguousCommunity
+	}
+}
+
 // Update modifies an existing community's metadata
 func (r *postgresCommunityRepo) Update(ctx context.Context, community *communities.Community) (*communities.Community, error) {
 	query := `

@@ -13,6 +13,11 @@ type Repository interface {
 	Create(ctx context.Context, community *Community) (*Community, error)
 	GetByDID(ctx context.Context, did string) (*Community, error)
 	GetByHandle(ctx context.Context, handle string) (*Community, error)
+	// GetByNameAndOrigin resolves the name@origin form against the stored
+	// (name, origin) pair. Returns ErrCommunityNotFound when nothing matches
+	// and ErrAmbiguousCommunity when more than one row does; both arguments
+	// are expected already lower-cased.
+	GetByNameAndOrigin(ctx context.Context, name, origin string) (*Community, error)
 	Update(ctx context.Context, community *Community) (*Community, error)
 	Delete(ctx context.Context, did string) error
 

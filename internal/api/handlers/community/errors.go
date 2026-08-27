@@ -23,6 +23,11 @@ var errorMapper = xrpc.NewMapper("community",
 		"Forbidden", "You do not have permission to perform this action"),
 	xrpc.Sentinel(communities.ErrMemberBanned, http.StatusForbidden,
 		"Blocked", "You are blocked from this community"),
+	// Ahead of the not-found and validation rules: a name@origin that matches
+	// more than one community is neither missing nor malformed, and the client
+	// needs to be told to address it by DID or handle instead.
+	xrpc.Sentinel(communities.ErrAmbiguousCommunity, http.StatusConflict,
+		"AmbiguousCommunity", "More than one community matches this name and origin; address it by DID or handle instead"),
 
 	// The domain's own predicates. Their sentinel text is written for the
 	// client, so it doubles as the message.

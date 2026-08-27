@@ -46,6 +46,13 @@ var (
 
 	// ErrInvalidInput is returned for general validation failures
 	ErrInvalidInput = errors.New("invalid input")
+
+	// ErrAmbiguousCommunity is returned when a name@origin identifier matches
+	// more than one indexed community. (name, origin) is not unique on the
+	// communities table — a bridge that suffixes colliding handle labels can
+	// index two rows that both self-assert the same origin and name — and
+	// picking one silently would route a client to the wrong community.
+	ErrAmbiguousCommunity = errors.New("community identifier is ambiguous: more than one community matches this name and origin")
 )
 
 // ValidationError is the shared validation error type. It is aliased rather
@@ -65,6 +72,11 @@ func IsNotFound(err error) bool {
 		errors.Is(err, ErrSubscriptionNotFound) ||
 		errors.Is(err, ErrBlockNotFound) ||
 		errors.Is(err, ErrMembershipNotFound)
+}
+
+// IsAmbiguous checks if error is an ambiguous-identifier error
+func IsAmbiguous(err error) bool {
+	return errors.Is(err, ErrAmbiguousCommunity)
 }
 
 // IsConflict checks if error is a conflict error (duplicate)
