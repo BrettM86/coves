@@ -83,6 +83,11 @@ const (
 	erasedSubjectAuthor  = subjectGatePrefix + "erasedauthor"
 	erasedSubjectUnknown = subjectGatePrefix + "unknownerasure"
 	erasedSubjectVoter   = subjectGatePrefix + "erasedvoter"
+
+	// Fixtures for the withdrawal-through-a-deleted-window arc.
+	withdrawCommunity = subjectGatePrefix + "wdcommunity"
+	withdrawAuthor    = subjectGatePrefix + "wdauthor"
+	withdrawVoter     = subjectGatePrefix + "wdvoter"
 )
 
 // seedActiveVote writes an active vote row directly, bypassing the consumer.
@@ -788,4 +793,210 @@ func TestVoteConsumer_SubjectInErasedAccount(t *testing.T) {
 			"a fail-closed refusal must roll the rev advance back, or the redrive that makes "+
 				"failing closed affordable would itself be rejected as stale")
 	})
+}
+
+// countSubject describes one of the two subject tables for the withdrawal
+// tests. Every statement is carried whole rather than built from a table name,
+// so no SQL here is assembled by concatenation.
+type countSubject struct {
+	kind        string
+	repoDID     string
+	collection  string
+	seedLive    func(t *testing.T, db *sql.DB, uri string)
+	softDelete  string
+	resurrect   string
+	countsQuery string
+}
+
+// countSubjects is the post/comment pair, seeded LIVE with counts already on
+// them: three upvotes, of which the vote row each test creates is one. The
+// other two are numbers with no rows behind them, which is deliberate — the
+// tests below assert on the stored count, and inventing two more vote rows
+// would add fixture without adding an assertion.
+var countSubjects = []countSubject{
+	{
+		kind:       "a post",
+		repoDID:    withdrawCommunity,
+		collection: "social.coves.community.post",
+		seedLive: func(t *testing.T, db *sql.DB, uri string) {
+			t.Helper()
+			insertBridgedUser(t, db, withdrawAuthor, "withdrawauthor.test")
+			insertBridgedCommunity(t, db, withdrawCommunity, "withdrawcommunity.test", withdrawAuthor)
+			_, err := db.Exec(`
+				INSERT INTO posts (uri, cid, rkey, author_did, community_did, title,
+				                   created_at, upvote_count, downvote_count, score)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, 3, 0, 3)`,
+				uri, "bafwithdrawsubject", "withdrawsubject", withdrawAuthor, withdrawCommunity,
+				"the subject being deleted under a live vote",
+				time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC))
+			require.NoError(t, err)
+		},
+		softDelete:  `UPDATE posts SET deleted_at = NOW() WHERE uri = $1`,
+		resurrect:   `UPDATE posts SET deleted_at = NULL WHERE uri = $1`,
+		countsQuery: `SELECT upvote_count, downvote_count, score FROM posts WHERE uri = $1`,
+	},
+	{
+		kind:       "a comment",
+		repoDID:    withdrawAuthor,
+		collection: CommentCollection,
+		seedLive: func(t *testing.T, db *sql.DB, uri string) {
+			t.Helper()
+			root := "at://" + withdrawCommunity + "/social.coves.community.post/withdrawroot"
+			_, err := db.Exec(`
+				INSERT INTO comments (uri, cid, rkey, commenter_did, root_uri, root_cid,
+				                      parent_uri, parent_cid, content, created_at,
+				                      upvote_count, downvote_count, score)
+				VALUES ($1, $2, $3, $4, $5, $6, $5, $6, $7, $8, 3, 0, 3)`,
+				uri, "bafwithdrawsubject", "withdrawsubject", withdrawAuthor,
+				root, "bafwithdrawroot", "the subject being deleted under a live vote",
+				time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC))
+			require.NoError(t, err)
+		},
+		softDelete:  `UPDATE comments SET deleted_at = NOW() WHERE uri = $1`,
+		resurrect:   `UPDATE comments SET deleted_at = NULL WHERE uri = $1`,
+		countsQuery: `SELECT upvote_count, downvote_count, score FROM comments WHERE uri = $1`,
+	},
+}
+
+// withdrawUnderDeletedSubject runs the shared arc: a live subject carrying a
+// counted vote, the subject soft-deleted, then the vote withdrawn. It returns
+// the subject URI so a caller can carry the arc further.
+func withdrawUnderDeletedSubject(t *testing.T, db *sql.DB, subject countSubject, rev string) string {
+	t.Helper()
+	ctx := context.Background()
+
+	subjectURI := "at://" + subject.repoDID + "/" + subject.collection + "/withdrawsubject"
+	subject.seedLive(t, db, subjectURI)
+
+	// The vote is seeded directly and counted by construction: it is one of the
+	// three the subject already carries. Going through the consumer instead
+	// would put the create path's own behaviour between the setup and the
+	// measurement, and after the ordering gate landed that path has its own
+	// opinions about deleted subjects.
+	voteURI := "at://" + withdrawVoter + "/social.coves.feed.vote/withdrawvote"
+	seedActiveVote(t, db, voteURI, withdrawVoter, subjectURI, "up")
+
+	// THE DELETED WINDOW OPENS. Nothing about the vote changes here — it is
+	// still live, still counted, still one of the three.
+	_, err := db.Exec(subject.softDelete, subjectURI)
+	require.NoError(t, err, "soft-deleting the subject out from under a live vote")
+
+	consumer := NewVoteEventConsumer(postgres.NewVoteRepository(db), newMockUserService(), db)
+	require.NoError(t, consumer.HandleEvent(ctx, &JetstreamEvent{
+		Kind:   "commit",
+		Did:    withdrawVoter,
+		TimeUS: time.Now().UnixMicro(),
+		Commit: &CommitEvent{
+			Rev:        rev,
+			Operation:  "delete",
+			Collection: "social.coves.feed.vote",
+			RKey:       "withdrawvote",
+		},
+	}), "withdrawing a vote must succeed whatever state its subject is in")
+
+	exists, active := voteRowState(t, db, voteURI)
+	require.True(t, exists, "the withdrawn vote's row must still be there, soft-deleted")
+	require.False(t, active, "the withdrawal must soft-delete the vote row")
+
+	return subjectURI
+}
+
+// TestVoteConsumer_WithdrawalDecrementsThroughADeletedSubject is the
+// count-integrity half of this run, and the one that outlives every gate above
+// it.
+//
+// # THE INVARIANT
+//
+// Every LIVE vote row on a post or comment must be included in that subject's
+// stored counts. Not "while the subject is visible" — always. The gates above
+// keep uncounted rows from being created; this keeps counted rows from
+// silently becoming uncounted.
+//
+// # WHY A deleted_at FILTER ON THE SUBJECT BREAKS IT
+//
+// Every count mutation in vote_consumer.go filters the SUBJECT row on
+// `deleted_at IS NULL`, which reads as harmless — why touch a deleted row? —
+// and is not, because deletion is not the end of the story:
+//
+//	the vote is cast and counted        subject live, counts 3
+//	the subject is soft-deleted         counts still 3, vote still live
+//	the voter withdraws                 decrement matches ZERO rows, suppressed
+//	the subject is RESURRECTED          counts 3, live votes 2
+//
+// The discrepancy is permanent and unattributable. Nothing recounts on
+// resurrection — comment_consumer.go's re-create path preserves native counts
+// deliberately — and the vote row that would explain the extra point is
+// soft-deleted, so no query over live votes can ever find it. The count is
+// simply wrong forever, by an amount that grows with every withdrawal that
+// happens to land inside a deleted window.
+//
+// # WHY THE WITHDRAWAL IS THE ONE SITE WORTH TESTING
+//
+// There are four mutating sites and all four carry the filter, but only this
+// one is reachable now. The create-path increment can no longer meet a deleted
+// subject at all — the ordering gate drops that event before any count runs —
+// and the stale-cleanup decrement operates on rows the create path will no
+// longer produce for a deleted subject. Removing their filters is consistency,
+// not behaviour, and a test that forced those paths would be asserting against
+// code the gates make unreachable. This one is plain: a live counted vote, its
+// subject deleted, the voter changes their mind.
+func TestVoteConsumer_WithdrawalDecrementsThroughADeletedSubject(t *testing.T) {
+	t.Parallel()
+
+	for _, subject := range countSubjects {
+		t.Run(subject.kind+" that was deleted after the vote was counted", func(t *testing.T) {
+			t.Parallel()
+			db := testkit.DB(t)
+
+			subjectURI := withdrawUnderDeletedSubject(t, db, subject, "3lgatewithdrawaa2a")
+
+			assert.Equal(t, subjectCounts{Upvotes: 2, Score: 2},
+				readSubjectCounts(t, db, subject.countsQuery, subjectURI),
+				"the withdrawal must decrement THROUGH the deleted window. Counts still reading "+
+					"{3,0,3} means the decrement's `AND deleted_at IS NULL` on the subject "+
+					"suppressed it, and the subject now claims a vote that no longer exists — "+
+					"unattributably, because the row that would explain it is soft-deleted")
+		})
+	}
+}
+
+// TestVoteConsumer_ResurrectedCommentCarriesTheDecrementedCount is the
+// user-visible statement of the same invariant, and the reason it is worth
+// fixing rather than filing.
+//
+// A soft-deleted comment is not a terminal state, it is a pause:
+// comment_consumer.go's re-create path clears deleted_at and preserves the
+// native vote counts on purpose, so whatever the counts say when the comment
+// comes back is what readers see. If a withdrawal was suppressed while it was
+// away, the resurrected comment displays a score one higher than the votes it
+// actually holds, permanently, with nothing left to point at.
+//
+// Posts have no equivalent re-create path today, which is why this arc is
+// asserted for comments only — the invariant is the same for both, but this is
+// where a reader can actually observe it being violated.
+func TestVoteConsumer_ResurrectedCommentCarriesTheDecrementedCount(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+
+	var comment countSubject
+	for _, subject := range countSubjects {
+		if subject.collection == CommentCollection {
+			comment = subject
+		}
+	}
+	require.NotEmpty(t, comment.kind, "the comment fixture must be present in countSubjects")
+
+	subjectURI := withdrawUnderDeletedSubject(t, db, comment, "3lgatewithdrawaa2b")
+
+	// The resurrection: exactly what indexCommentAndUpdateCounts's re-create
+	// path does to the row — deleted_at cleared, counts left alone.
+	_, err := db.Exec(comment.resurrect, subjectURI)
+	require.NoError(t, err)
+
+	assert.Equal(t, subjectCounts{Upvotes: 2, Score: 2},
+		readSubjectCounts(t, db, comment.countsQuery, subjectURI),
+		"the comment came back claiming a vote that was withdrawn while it was deleted. This is "+
+			"what the suppressed decrement looks like to a reader: a score that cannot be "+
+			"reconciled against any live vote row, and that no recount will ever correct because "+
+			"the re-create path preserves native counts by design")
 }
