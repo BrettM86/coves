@@ -66,6 +66,11 @@ if [ "$PULL_GIT" = true ]; then
     git pull origin main
 fi
 
+# Tag the AppView image with the commit being deployed so `docker image ls`
+# on the box says exactly what is running (compose defaults to :latest).
+export VERSION="${VERSION:-$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || echo latest)}"
+log "AppView image tag: coves/appview:$VERSION"
+
 # Check database connectivity before deployment
 log "Checking database connectivity..."
 if docker compose -f "$COMPOSE_FILE" exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" > /dev/null 2>&1; then

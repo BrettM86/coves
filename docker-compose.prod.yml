@@ -19,7 +19,10 @@
 services:
   # PostgreSQL Database for AppView
   postgres:
-    image: postgres:15
+    # Pinned by digest: `docker compose pull` must never silently change what
+    # runs in prod. Bump tag + digest together in a reviewed commit
+    # (`docker buildx imagetools inspect postgres:<tag>` resolves the digest).
+    image: postgres:15@sha256:926f8799aef36e00001cfe15fba7abbd37d3c5224ea57e4c858e4bb670f10561
     container_name: coves-prod-postgres
     restart: unless-stopped
     environment:
@@ -50,6 +53,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    # VERSION defaults to the git short SHA in scripts/deploy.sh so the image
+    # tag on the box says exactly which commit is running.
     image: coves/appview:${VERSION:-latest}
     container_name: coves-prod-appview
     restart: unless-stopped
@@ -198,7 +203,10 @@ services:
   # Bluesky PDS (Personal Data Server)
   # Handles community accounts and their repositories
   pds:
-    image: ghcr.io/bluesky-social/pds:latest
+    # Pinned by tag + digest — the PDS holds community repo signing keys, so
+    # upgrades are an explicit reviewed commit, never an implicit pull.
+    # Bump: `docker buildx imagetools inspect ghcr.io/bluesky-social/pds:<tag>`.
+    image: ghcr.io/bluesky-social/pds:0.4.193@sha256:50e60af25fa7b580ddae8fc18ae97b1d7cdeb1a3068a3d345f9161cc7796417b
     container_name: coves-prod-pds
     restart: unless-stopped
     ports:
@@ -276,10 +284,14 @@ services:
   # Handles HTTPS automatically via Let's Encrypt
   # Uses Cloudflare plugin for wildcard SSL certificates (*.coves.social)
   caddy:
-    # Pre-built Caddy with Cloudflare DNS plugin
-    # Updates automatically with docker-compose pull
-    # Alternative: build your own with Dockerfile.caddy
-    image: ghcr.io/slothcroissant/caddy-cloudflaredns:latest
+    # Built locally from the official caddy image + caddy-dns/cloudflare, both
+    # pinned (see docker/caddy/Dockerfile). Never a floating third-party tag:
+    # this container holds the Cloudflare tokens and terminates all TLS.
+    # Upgrade = bump the Dockerfile pins, then `build caddy` + `up -d caddy`.
+    build:
+      context: ./docker/caddy
+      dockerfile: Dockerfile
+    image: coves/caddy:${CADDY_VERSION:-2.11.4}
     container_name: coves-prod-caddy
     restart: unless-stopped
     ports:

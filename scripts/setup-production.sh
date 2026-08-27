@@ -60,13 +60,15 @@ fi
 # If you need host-accessible logs, uncomment and run as root:
 # mkdir -p /var/log/caddy && chown 1000:1000 /var/log/caddy
 
-# Pull Docker images
+# Pull the digest-pinned external images (see docker-compose.prod.yml)
 log "Pulling Docker images..."
-docker compose -f docker-compose.prod.yml pull postgres pds caddy
+docker compose -f docker-compose.prod.yml pull postgres pds
 
-# Build AppView
-log "Building AppView..."
-docker compose -f docker-compose.prod.yml build appview
+# Build locally-built images: AppView and Caddy (official image + Cloudflare
+# DNS plugin, pinned in docker/caddy/Dockerfile)
+log "Building AppView and Caddy..."
+export VERSION="${VERSION:-$(git rev-parse --short HEAD 2>/dev/null || echo latest)}"
+docker compose -f docker-compose.prod.yml build appview caddy
 
 # Start services
 log "Starting services..."
