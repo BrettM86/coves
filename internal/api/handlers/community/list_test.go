@@ -112,6 +112,9 @@ func (r *listTestRepo) GetByDID(ctx context.Context, did string) (*communities.C
 func (r *listTestRepo) GetByHandle(ctx context.Context, handle string) (*communities.Community, error) {
 	return nil, nil
 }
+func (r *listTestRepo) GetByNameAndOrigin(ctx context.Context, name, origin string) (*communities.Community, error) {
+	return nil, nil
+}
 func (r *listTestRepo) Update(ctx context.Context, community *communities.Community) (*communities.Community, error) {
 	return nil, nil
 }

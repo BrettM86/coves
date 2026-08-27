@@ -5,6 +5,7 @@ import (
 	"Coves/internal/atproto/pds"
 	"Coves/internal/atproto/utils"
 	"Coves/internal/core/blobs"
+	"Coves/internal/validation"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -234,6 +235,7 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 		"$type":      "social.coves.community.profile",
 		"name":       req.Name, // Short name for !mentions (e.g., "gaming")
 		"handle":     pdsAccount.Handle,
+		"origin":     s.instanceDomain, // Instance the community lives on; clients render !name@origin
 		"visibility": req.Visibility,
 		"hostedBy":   s.instanceDID, // V2: Instance hosts, community owns
 		"createdBy":  req.CreatedByDID,
@@ -333,6 +335,7 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 		DID:                    pdsAccount.DID,    // Community's DID (owns the repo!)
 		Handle:                 pdsAccount.Handle, // atProto handle (e.g., gaming.community.coves.social)
 		Name:                   req.Name,
+		Origin:                 s.instanceDomain, // What the record asserts; the firehose replay is a no-op on this row, so it must land here
 		DisplayName:            req.DisplayName,
 		Description:            req.Description,
 		OwnerDID:               pdsAccount.DID, // V2: Community owns itself
@@ -374,7 +377,9 @@ func (s *communityService) CreateCommunity(ctx context.Context, req CreateCommun
 // GetCommunity retrieves a community from AppView DB
 // identifier can be:
 //   - DID: did:plc:xxx
-//   - Scoped handle: !name@instance
+//   - Scoped handle: !name@instance or name@origin (remote origins resolve
+//     against the stored (name, origin) pair)
+//   - Bare name: name (a community on this instance)
 //   - At-identifier: @c-name.domain
 //   - Canonical handle: c-name.domain
 func (s *communityService) GetCommunity(ctx context.Context, identifier string) (*Community, error) {
@@ -412,8 +417,9 @@ func (s *communityService) GetCommunity(ctx context.Context, identifier string) 
 	identifier = strings.TrimPrefix(identifier, "@")
 
 	// 4. Canonical handle format: c-name.domain (also accepts the prefix-free
-	// form clients display and link to)
-	if strings.Contains(identifier, ".") {
+	// form clients display and link to). Checked only when the identifier
+	// carries no "@": name@origin is scoped, whatever dots the origin has.
+	if !strings.Contains(identifier, "@") && strings.Contains(identifier, ".") {
 		community, err := LookupByHandle(ctx, s.repo, identifier)
 		if err != nil {
 			if !IsNotFound(err) {
@@ -424,7 +430,20 @@ func (s *communityService) GetCommunity(ctx context.Context, identifier string) 
 		return community, nil
 	}
 
-	return nil, NewValidationError("identifier", "must be a DID, handle, or scoped identifier (!name@instance)")
+	// 5. Scoped without the "!" (name@origin) or a bare local name (name):
+	// both resolve through the scoped path, then fetch by DID.
+	if !strings.Contains(identifier, "@") {
+		identifier = identifier + "@" + s.instanceDomain
+	}
+	did, err := s.resolveScopedIdentifier(ctx, identifier)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve identifier %q: %w", originalIdentifier, err)
+	}
+	community, err := s.repo.GetByDID(ctx, did)
+	if err != nil {
+		return nil, fmt.Errorf("community not found for identifier %q: %w", originalIdentifier, err)
+	}
+	return community, nil
 }
 
 // GetByDID retrieves a community by its DID
@@ -513,6 +532,7 @@ func (s *communityService) UpdateCommunity(ctx context.Context, req UpdateCommun
 	profile := map[string]interface{}{
 		"$type":     "social.coves.community.profile",
 		"name":      existing.Name,
+		"origin":    s.instanceDomain, // Re-asserted on every update: the consumer replaces the stored value from the record
 		"owner":     existing.OwnerDID,
 		"createdBy": existing.CreatedByDID,
 		"hostedBy":  existing.HostedByDID,
@@ -1129,6 +1149,9 @@ func (s *communityService) ValidateHandle(handle string) error {
 //
 // Coves-specific extensions:
 //  4. Scoped format: !gardening@coves.social (parse and resolve)
+//  5. Prefix-free scoped format: gardening@coves.social, comicstrips@lemmy.world
+//     (a remote origin resolves against the stored (name, origin) pair)
+//  6. Bare name: gardening (a community on this instance)
 //
 // Returns: DID string
 func (s *communityService) ResolveCommunityIdentifier(ctx context.Context, identifier string) (string, error) {
@@ -1158,7 +1181,12 @@ func (s *communityService) ResolveCommunityIdentifier(ctx context.Context, ident
 	// 3. At-identifier format: @handle (Bluesky standard - strip @ prefix)
 	identifier = strings.TrimPrefix(identifier, "@")
 
-	// 4. Canonical handle: name.community.instance.com (Bluesky standard)
+	// 4. Prefix-free scoped format: name@origin (what web URLs carry)
+	if strings.Contains(identifier, "@") {
+		return s.resolveScopedIdentifier(ctx, identifier)
+	}
+
+	// 5. Canonical handle: name.community.instance.com (Bluesky standard)
 	if strings.Contains(identifier, ".") {
 		community, err := LookupByHandle(ctx, s.repo, identifier)
 		if err == nil {
@@ -1170,28 +1198,37 @@ func (s *communityService) ResolveCommunityIdentifier(ctx context.Context, ident
 		return "", fmt.Errorf("community not found for handle %s: %w", identifier, err)
 	}
 
-	return "", NewValidationError("identifier", "must be a DID, handle, or scoped identifier (!name@instance)")
+	// 6. Bare name: a community on this instance (/c/gaming)
+	return s.resolveScopedIdentifier(ctx, identifier+"@"+s.instanceDomain)
 }
 
-// resolveScopedIdentifier handles Coves-specific !name@instance format
+// resolveScopedIdentifier handles the Coves-specific name@origin form, with or
+// without the leading "!" clients display.
+//
 // Formats accepted:
 //
-//	!gardening@coves.social  -> c-gardening.coves.social
+//	!gardening@coves.social   -> the local row c-gardening.coves.social
+//	gardening@coves.social    -> the same
+//	comicstrips@lemmy.world   -> the bridged row stored with (name, origin)
+//
+// A local origin keeps the handle fast path: the canonical handle is fully
+// determined by the name and the instance domain, so it is rebuilt and looked
+// up directly. Any other origin is resolved against the (name, origin) pair
+// the community consumer validated at ingest, which is what lets a bridged
+// community be addressed by the instance it was bridged FROM rather than by
+// its lossy DNS handle.
 func (s *communityService) resolveScopedIdentifier(ctx context.Context, scoped string) (string, error) {
 	// Remove ! prefix
 	scoped = strings.TrimPrefix(scoped, "!")
 
-	var name string
-	var instanceDomain string
-
-	// Parse !name@instance
+	// Parse name@origin
 	if !strings.Contains(scoped, "@") {
 		return "", NewValidationError("identifier", "scoped identifier must include @ symbol (!name@instance)")
 	}
 
 	parts := strings.SplitN(scoped, "@", 2)
-	name = strings.TrimSpace(parts[0])
-	instanceDomain = strings.TrimSpace(parts[1])
+	name := strings.TrimSpace(parts[0])
+	origin := strings.TrimSpace(parts[1])
 
 	// Validate name format
 	if name == "" {
@@ -1204,33 +1241,59 @@ func (s *communityService) resolveScopedIdentifier(ctx context.Context, scoped s
 		return "", NewValidationError("identifier", "community name must be valid DNS label (alphanumeric and hyphens only, 1-63 chars, cannot start or end with hyphen)")
 	}
 
-	// Validate instance domain format
-	if !isValidDomain(instanceDomain) {
+	// Validate origin format. The local instance is matched before the stricter
+	// public-hostname normalisation so a single-label dev instance domain keeps
+	// resolving its own communities.
+	if !isValidDomain(origin) {
 		return "", NewValidationError("identifier", "invalid instance domain format")
 	}
 
-	// Normalize domain to lowercase (DNS is case-insensitive)
-	// This fixes the bug where !gardening@Coves.social would fail lookup
-	instanceDomain = strings.ToLower(instanceDomain)
+	// Normalize to lowercase (DNS is case-insensitive). This is what lets
+	// !gardening@Coves.social find the row stored for coves.social.
+	name = strings.ToLower(name)
+	origin = strings.ToLower(origin)
 
-	// Validate the instance matches this server
-	if !s.isLocalInstance(instanceDomain) {
-		return "", NewValidationError("identifier",
-			fmt.Sprintf("community is not hosted on this instance (expected @%s)", s.instanceDomain))
+	if s.isLocalInstance(origin) {
+		// Construct canonical handle: c-{name}.{instanceDomain}
+		canonicalHandle := fmt.Sprintf("c-%s.%s", name, origin)
+
+		community, err := s.repo.GetByHandle(ctx, canonicalHandle)
+		if err != nil {
+			return "", fmt.Errorf("community not found for scoped identifier !%s@%s: %w", name, origin, err)
+		}
+		return community.DID, nil
 	}
 
-	// Construct canonical handle: c-{name}.{instanceDomain}
-	// Both name and instanceDomain are normalized to lowercase for consistent DB lookup
-	canonicalHandle := fmt.Sprintf("c-%s.%s",
-		strings.ToLower(name),
-		instanceDomain) // Already normalized to lowercase above
-
-	// Look up by canonical handle
-	community, err := s.repo.GetByHandle(ctx, canonicalHandle)
+	// A remote origin must be a real public hostname: it is compared against
+	// the value the consumer admitted from the community record, which went
+	// through the same normalisation.
+	normalizedOrigin, err := validation.NormalizeDomain(origin)
 	if err != nil {
-		return "", fmt.Errorf("community not found for scoped identifier !%s@%s: %w", name, instanceDomain, err)
+		return "", NewValidationError("identifier", "invalid instance domain format")
 	}
 
+	community, err := s.repo.GetByNameAndOrigin(ctx, name, normalizedOrigin)
+	if err == nil {
+		return community.DID, nil
+	}
+	if IsAmbiguous(err) {
+		return "", fmt.Errorf("resolving scoped identifier !%s@%s: %w", name, normalizedOrigin, err)
+	}
+	if !IsNotFound(err) {
+		return "", fmt.Errorf("failed to look up community !%s@%s: %w", name, normalizedOrigin, err)
+	}
+
+	// No stored pair. A federated Coves community indexed before the origin
+	// column existed still follows the c-{name}.{origin} handle convention,
+	// and EffectiveOrigin advertises exactly that origin to clients — so the
+	// identifier the API hands out has to resolve here too.
+	community, err = s.repo.GetByHandle(ctx, fmt.Sprintf("c-%s.%s", name, normalizedOrigin))
+	if err != nil {
+		if IsNotFound(err) {
+			return "", fmt.Errorf("community not found for scoped identifier !%s@%s: %w", name, normalizedOrigin, err)
+		}
+		return "", fmt.Errorf("failed to look up community !%s@%s: %w", name, normalizedOrigin, err)
+	}
 	return community.DID, nil
 }
 

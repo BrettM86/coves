@@ -56,6 +56,12 @@ func TestCommunityErrorCodes(t *testing.T) {
 			wantCode:   "Blocked",
 		},
 		{
+			name:       "ambiguous name@origin is neither missing nor malformed",
+			err:        fmt.Errorf("resolving scoped identifier !comicstrips@lemmy.world: %w", communities.ErrAmbiguousCommunity),
+			wantStatus: http.StatusConflict,
+			wantCode:   "AmbiguousCommunity",
+		},
+		{
 			name:       "missing community",
 			err:        fmt.Errorf("service: %w", communities.ErrCommunityNotFound),
 			wantStatus: http.StatusNotFound,

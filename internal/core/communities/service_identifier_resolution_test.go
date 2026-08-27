@@ -106,6 +106,10 @@ func TestService_ResolveIdentifierAcceptsEveryAddressableForm(t *testing.T) {
 		{"scoped identifier with an upper-cased domain", "!" + name + "@" + strings.ToUpper(instanceDomain)},
 		{"scoped identifier with an alternating-case domain", "!" + name + "@" + alternatingCase(instanceDomain)},
 		{"scoped identifier with an upper-cased name", "!" + strings.ToUpper(name) + "@" + instanceDomain},
+		{"scoped identifier without the ! prefix", name + "@" + instanceDomain},
+		{"scoped identifier without the ! prefix, upper-cased domain", name + "@" + strings.ToUpper(instanceDomain)},
+		{"bare name", name},
+		{"bare name upper-cased", strings.ToUpper(name)},
 		{"handle padded with whitespace", "  " + community.Handle + "  "},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -160,13 +164,16 @@ func TestService_ResolveIdentifierRejectsMalformedScopedIdentifiers(t *testing.T
 			"an empty name must be refused before it becomes the handle c-.%s", instanceDomain)
 	})
 
-	t.Run("rejects scoped identifier with wrong instance", func(t *testing.T) {
+	t.Run("unknown remote origin is a miss, not a validation failure", func(t *testing.T) {
+		// A remote origin is no longer refused up front: it is looked up against
+		// the (name, origin) pairs this AppView has indexed, and a pair it has
+		// never seen is a community it does not know about.
 		_, err := service.ResolveCommunityIdentifier(ctx, "!testcommunity@wrong.social")
 		require.Error(t, err)
-		assert.ErrorContains(t, err, "not hosted on this instance")
-		assert.ErrorContains(t, err, instanceDomain,
-			"the error must name the instance that WOULD have been accepted, or the client cannot correct it")
-		assert.True(t, communities.IsValidationError(err))
+		assert.ErrorContains(t, err, "community not found")
+		assert.ErrorContains(t, err, "testcommunity@wrong.social")
+		assert.True(t, communities.IsNotFound(err))
+		assert.False(t, communities.IsValidationError(err))
 	})
 
 	t.Run("rejects non-existent community in scoped format", func(t *testing.T) {
@@ -261,12 +268,19 @@ func TestService_ResolveIdentifierRejectsUnaddressableInput(t *testing.T) {
 		assert.True(t, errors.Is(err, communities.ErrInvalidInput))
 	})
 
-	t.Run("rejects identifier without dots (not a valid handle)", func(t *testing.T) {
-		// A dotless string is not a handle, not a DID and not scoped, so there is
-		// no lookup that could be attempted for it.
+	t.Run("dotless identifier is a bare local name", func(t *testing.T) {
+		// A dotless string is a community on THIS instance (/c/nodots), so it
+		// is looked up as c-nodots.<instance> and misses as a 404, not a 400.
 		_, err := service.ResolveCommunityIdentifier(ctx, "nodots")
 		require.Error(t, err)
-		assert.ErrorContains(t, err, "must be a DID, handle, or scoped identifier")
+		assert.ErrorContains(t, err, "community not found for scoped identifier !nodots@"+instanceDomain)
+		assert.True(t, communities.IsNotFound(err))
+		assert.False(t, communities.IsValidationError(err))
+	})
+
+	t.Run("bare name that is not a DNS label is still refused", func(t *testing.T) {
+		_, err := service.ResolveCommunityIdentifier(ctx, "no dots")
+		require.Error(t, err)
 		assert.True(t, communities.IsValidationError(err))
 	})
 
@@ -326,11 +340,11 @@ func TestService_ResolveIdentifierErrorsNameWhatFailed(t *testing.T) {
 		assert.ErrorContains(t, err, missingHandle)
 	})
 
-	t.Run("scoped error includes the expected instance", func(t *testing.T) {
+	t.Run("scoped error includes the name and origin looked up", func(t *testing.T) {
 		_, err := service.ResolveCommunityIdentifier(ctx, "!test@wrong.instance")
 		require.Error(t, err)
-		assert.ErrorContains(t, err, "not hosted on this instance")
-		assert.ErrorContains(t, err, instanceDomain)
+		assert.ErrorContains(t, err, "community not found")
+		assert.ErrorContains(t, err, "!test@wrong.instance")
 	})
 }
 
@@ -381,10 +395,13 @@ func TestService_GetCommunityRejectsUnaddressableInput(t *testing.T) {
 		assert.True(t, errors.Is(err, communities.ErrInvalidInput))
 	})
 
-	t.Run("rejects identifier without dots", func(t *testing.T) {
+	t.Run("bare name that names no local community is a miss", func(t *testing.T) {
+		// A bare name is a community on this instance (/c/nodots), so the
+		// failure is a 404 that carries what the client sent.
 		_, err := service.GetCommunity(ctx, "nodots")
 		require.Error(t, err)
-		assert.ErrorContains(t, err, "must be a DID, handle, or scoped identifier")
+		assert.True(t, communities.IsNotFound(err))
+		assert.ErrorContains(t, err, `"nodots"`)
 	})
 
 	// The error text carries the identifier AS THE CLIENT SENT IT — GetCommunity
@@ -459,5 +476,94 @@ func TestCommunity_GetDisplayHandle(t *testing.T) {
 			assert.Equalf(t, handle, community.GetDisplayHandle(),
 				"a handle it cannot decompose must be returned as-is: %q", handle)
 		}
+	})
+}
+
+// bridgedCommunity indexes a row the way the community consumer does for a
+// Tidepool-bridged community: an unprefixed DNS handle on the bridge's domain
+// and a validated origin naming the platform it was bridged FROM. It is written
+// through the repository rather than CreateCommunity because provisioning only
+// ever produces local rows.
+func bridgedCommunity(t *testing.T, repo communities.Repository, name, origin string) *communities.Community {
+	t.Helper()
+	suffix := testkit.UniqueID(t)
+	community := &communities.Community{
+		DID:          "did:plc:bridged" + suffix,
+		Handle:       name + "-" + suffix + ".lemmy-world.tdpl.io",
+		Name:         name,
+		DisplayName:  "Bridged " + name,
+		OwnerDID:     "did:plc:bridged" + suffix,
+		CreatedByDID: "did:plc:bridgedcreator",
+		HostedByDID:  "did:web:tdpl.io",
+		PDSURL:       "https://pds.tdpl.io",
+		Visibility:   "public",
+		Origin:       origin,
+	}
+	created, err := repo.Create(context.Background(), community)
+	require.NoError(t, err)
+	return created
+}
+
+// TestService_ResolveIdentifierByNameAndOrigin covers the remote half of the
+// scoped form: comicstrips@lemmy.world is not a handle this AppView can rebuild,
+// so it has to be found by the (name, origin) pair the consumer stored.
+func TestService_ResolveIdentifierByNameAndOrigin(t *testing.T) {
+	t.Parallel()
+
+	service, repo, _ := newCommunityService(t)
+	ctx := context.Background()
+
+	name := testkit.UniqueIDWithPrefix(t, "cs")
+	bridged := bridgedCommunity(t, repo, name, "lemmy.world")
+
+	for _, testCase := range []struct {
+		name       string
+		identifier string
+	}{
+		{"name@origin", name + "@lemmy.world"},
+		{"!name@origin", "!" + name + "@lemmy.world"},
+		{"name@origin with mixed-case origin", name + "@Lemmy.World"},
+		{"name@origin with an upper-cased name", strings.ToUpper(name) + "@lemmy.world"},
+	} {
+		t.Run("resolves "+testCase.name, func(t *testing.T) {
+			did, err := service.ResolveCommunityIdentifier(ctx, testCase.identifier)
+			require.NoError(t, err)
+			assert.Equal(t, bridged.DID, did)
+
+			got, err := service.GetCommunity(ctx, testCase.identifier)
+			require.NoError(t, err)
+			assert.Equal(t, bridged.DID, got.DID)
+		})
+	}
+
+	t.Run("the same name at an origin nobody indexed is a miss", func(t *testing.T) {
+		_, err := service.ResolveCommunityIdentifier(ctx, name+"@lemmy.ml")
+		require.Error(t, err)
+		assert.True(t, communities.IsNotFound(err))
+	})
+
+	t.Run("the bridged handle still resolves on its own", func(t *testing.T) {
+		did, err := service.ResolveCommunityIdentifier(ctx, bridged.Handle)
+		require.NoError(t, err)
+		assert.Equal(t, bridged.DID, did)
+	})
+
+	t.Run("a second row with the same pair makes the identifier ambiguous", func(t *testing.T) {
+		bridgedCommunity(t, repo, name, "lemmy.world")
+
+		_, err := service.ResolveCommunityIdentifier(ctx, name+"@lemmy.world")
+		require.Error(t, err)
+		assert.True(t, communities.IsAmbiguous(err),
+			"two rows carrying the same (name, origin) must be reported, not resolved to whichever came first")
+		assert.False(t, communities.IsNotFound(err))
+
+		_, err = service.GetCommunity(ctx, name+"@lemmy.world")
+		require.Error(t, err)
+		assert.True(t, communities.IsAmbiguous(err))
+
+		// Both rows stay reachable by the forms that ARE unique.
+		did, err := service.ResolveCommunityIdentifier(ctx, bridged.Handle)
+		require.NoError(t, err)
+		assert.Equal(t, bridged.DID, did)
 	})
 }

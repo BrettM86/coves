@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"Coves/internal/core/blobs"
+	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
 
 	"github.com/lib/pq"
@@ -50,7 +51,7 @@ type PostRepository struct {
 const postViewSelectColumns = `
 		p.uri, p.cid, p.rkey,
 		p.author_did, COALESCE(u.handle, p.author_did) as author_handle, u.display_name as author_display_name, u.avatar_cid as author_avatar, u.pds_url as author_pds_url,
-		p.community_did, c.handle as community_handle, c.name as community_name, c.avatar_cid as community_avatar, c.pds_url as community_pds_url,
+		p.community_did, c.handle as community_handle, c.name as community_name, c.avatar_cid as community_avatar, c.pds_url as community_pds_url, c.origin as community_origin,
 		p.title, p.content, p.content_facets, p.embed, p.content_labels,
 		p.created_at, p.edited_at, p.indexed_at,
 		p.upvote_count + p.bridged_upvote_count AS upvote_count, p.downvote_count + p.bridged_downvote_count AS downvote_count, p.score, p.comment_count,
@@ -588,6 +589,7 @@ func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, er
 		communityHandle   sql.NullString
 		communityAvatar   sql.NullString
 		communityPDSURL   sql.NullString
+		communityOrigin   sql.NullString
 		admissionStatus   sql.NullString
 		acceptanceURI     sql.NullString
 	)
@@ -595,7 +597,7 @@ func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, er
 	dest := []interface{}{
 		&postView.URI, &postView.CID, &postView.RKey,
 		&authorView.DID, &authorView.Handle, &authorDisplayName, &authorAvatar, &authorPDSURL,
-		&communityRef.DID, &communityHandle, &communityRef.Name, &communityAvatar, &communityPDSURL,
+		&communityRef.DID, &communityHandle, &communityRef.Name, &communityAvatar, &communityPDSURL, &communityOrigin,
 		&title, &content, &facets, &embed, &labelsJSON,
 		&postView.CreatedAt, &editedAt, &postView.IndexedAt,
 		&postView.UpvoteCount, &postView.DownvoteCount, &postView.Score, &postView.CommentCount,
@@ -632,6 +634,14 @@ func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, er
 	}
 	if communityPDSURL.Valid {
 		communityRef.PDSURL = communityPDSURL.String
+	}
+	// Same fallback the community views apply (Community.EffectiveOrigin):
+	// native rows indexed before the origin column existed carry NULL, and
+	// clients build /c/{name}@{origin} links from this ref.
+	if origin := communityOrigin.String; origin != "" {
+		communityRef.Origin = &origin
+	} else if derived := communities.OriginFromHandle(communityRef.Handle); derived != "" {
+		communityRef.Origin = &derived
 	}
 	postView.Community = &communityRef
 

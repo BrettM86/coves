@@ -23,6 +23,9 @@ var errorMapper = xrpc.NewMapper("community",
 		"Forbidden", "You do not have permission to perform this action"),
 	xrpc.Sentinel(communities.ErrMemberBanned, http.StatusForbidden,
 		"Blocked", "You are blocked from this community"),
+	// communities.ErrAmbiguousCommunity (name@origin matching more than one
+	// row) is mapped by the shared rules: every handler that resolves a
+	// community identifier can surface it, not just this one.
 
 	// The domain's own predicates. Their sentinel text is written for the
 	// client, so it doubles as the message.

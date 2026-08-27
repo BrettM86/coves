@@ -34,6 +34,11 @@ type CommunityEventConsumer struct {
 	skipVerification bool                             // Skip did:web verification (for dev mode)
 	revGate          *RevGate                         // Optional: cross-feed ordering guard for commit events (nil = ungated)
 
+	// bridgeTrust decides which repos may assert an `origin` that differs from
+	// their verified handle's domain (see admitCommunityOrigin). nil is
+	// default-deny: only a handle-matching origin is kept.
+	bridgeTrust *BridgeTrust
+
 	// allowPrivateHosts disables the SSRF address guard on the .well-known
 	// fetch. NEVER set in production: the domain this consumer dials comes off a
 	// community record published by anyone on the federated network.
@@ -73,6 +78,15 @@ func WithCommunityRevGate(gate *RevGate) CommunityConsumerOption {
 	return func(c *CommunityEventConsumer) {
 		c.revGate = gate
 	}
+}
+
+// WithCommunityBridgeTrust installs the provenance gate that decides which
+// community repos may self-assert an `origin` foreign to their handle's domain
+// (a Tidepool-bridged community claiming lemmy.world). Without it, a foreign
+// origin is dropped and the community is indexed without one — mirrors
+// WithPostBridgeTrust.
+func WithCommunityBridgeTrust(bt *BridgeTrust) CommunityConsumerOption {
+	return func(c *CommunityEventConsumer) { c.bridgeTrust = bt }
 }
 
 // WithPrivateHostsAllowed disables the SSRF address guard on the .well-known
@@ -396,6 +410,7 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 	// atProto Best Practice: Handles are NOT stored in records (they're mutable, resolved from DIDs)
 	// If handle is missing from record (new atProto-compliant records), resolve it from PLC/DID
 	var resolvedPDSURL string
+	var resolved *identity.Identity
 	if profile.Handle == "" {
 		if c.identityResolver != nil {
 			// Production: Resolve handle from PLC (source of truth)
@@ -405,6 +420,7 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 			if err != nil {
 				return fmt.Errorf("failed to resolve handle from PLC for %s: %w (no fallback - will retry during backfill)", did, err)
 			}
+			resolved = identity
 			// "handle.invalid" IS NOT A HANDLE. atProto identity resolution
 			// reports a DID whose handle it could not verify bidirectionally
 			// by returning that reserved placeholder rather than an error, so
@@ -466,6 +482,15 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 	// V2: Community ALWAYS owns itself
 	ownerDID := did
 
+	// The origin gate measures against the repo's RESOLVED identity, never the
+	// record's own handle field: a record can carry any handle it likes. A
+	// fresh resolution also backfills the PDS host the gate (and bridgedStats)
+	// reads.
+	origin, provenancePDSURL := c.admitRecordOrigin(ctx, did, profile, resolved, profile.Handle, resolvedPDSURL)
+	if resolvedPDSURL == "" {
+		resolvedPDSURL = provenancePDSURL
+	}
+
 	// Create community entity
 	community := &communities.Community{
 		DID:                    did, // V2: Repository DID IS the community DID
@@ -489,6 +514,7 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 		UpdatedAt:              time.Now(),
 		RecordURI:              uri,
 		RecordCID:              commit.CID,
+		Origin:                 origin,
 	}
 
 	// Handle blobs (avatar/banner) if present
@@ -598,6 +624,7 @@ func (c *CommunityEventConsumer) updateCommunity(ctx context.Context, did string
 	// atProto Best Practice: Handles are NOT stored in records (they're mutable, resolved from DIDs)
 	// If handle is missing from record (new atProto-compliant records), resolve it from PLC/DID
 	var resolvedPDSURL string
+	var resolved *identity.Identity
 	if profile.Handle == "" {
 		if c.identityResolver != nil {
 			// Production: Resolve handle from PLC (source of truth)
@@ -607,6 +634,7 @@ func (c *CommunityEventConsumer) updateCommunity(ctx context.Context, did string
 			if err != nil {
 				return fmt.Errorf("failed to resolve handle from PLC for %s: %w (no fallback - will retry during backfill)", did, err)
 			}
+			resolved = identity
 			profile.Handle = identity.Handle
 			// Backfill the stored PDS host too (see createCommunity): rows
 			// indexed before this fix carry an empty pds_url, which makes
@@ -635,6 +663,20 @@ func (c *CommunityEventConsumer) updateCommunity(ctx context.Context, did string
 		return fmt.Errorf("failed to get existing community: %w", err)
 	}
 
+	// The origin gate runs BEFORE the record's fields are copied over, so it
+	// measures against the handle this row was created with (verified then,
+	// never rewritten by Update) and, when a resolver is configured, against a
+	// fresh resolution of the repo — not against whatever handle or stale
+	// pds_url the record's author would like it to see. The fresh PDS host
+	// replaces the stored one for the same reason.
+	admittedOrigin, provenancePDSURL := c.admitRecordOrigin(ctx, did, profile, resolved, existing.Handle, existing.PDSURL)
+	if resolvedPDSURL == "" && provenancePDSURL != existing.PDSURL {
+		resolvedPDSURL = provenancePDSURL
+	}
+	if existing.Origin != "" && admittedOrigin == "" {
+		log.Printf("WARNING: community %s loses its stored origin %q: this profile update carries origin %q, which was absent or not admitted", did, existing.Origin, profile.Origin)
+	}
+
 	// Update fields
 	if resolvedPDSURL != "" {
 		existing.PDSURL = resolvedPDSURL
@@ -648,6 +690,7 @@ func (c *CommunityEventConsumer) updateCommunity(ctx context.Context, did string
 	existing.ModerationType = profile.ModerationType
 	existing.ContentWarnings = profile.ContentWarnings
 	existing.RecordCID = commit.CID
+	existing.Origin = admittedOrigin
 
 	// Update blobs
 	if avatarCID, ok := extractBlobCID(profile.Avatar); ok {
@@ -900,6 +943,108 @@ func (c *CommunityEventConsumer) cacheVerificationResult(did string, valid bool,
 		valid:     valid,
 		expiresAt: time.Now().Add(ttl),
 	})
+}
+
+// admitRecordOrigin decides the origin to store for a profile record, and
+// returns alongside it the PDS host that decision was made against (so the
+// caller can persist it).
+//
+// The gate's inputs are PROVENANCE, and provenance is never read off the
+// record: a record can carry any handle its author likes, and the stored
+// pds_url can only ever be as fresh as the last time something resolved it.
+// So when a resolver is configured the repo is resolved afresh every time an
+// origin is asserted, and that identity's handle and PDS host are what the
+// rule sees. resolved short-circuits that when the caller already has one.
+// Without a resolver (tests, dev) the fallback handle and PDS host are used —
+// on update those are the stored row's, which Update never rewrites from the
+// record, so they are the create-time-verified values.
+//
+// Resolution failing is default-deny on the ORIGIN ONLY: the community is
+// still indexed, without one. Rejecting the event would dead-letter every post
+// naming the community over a display string, and the next profile write
+// gets another chance.
+func (c *CommunityEventConsumer) admitRecordOrigin(ctx context.Context, did string, profile *CommunityProfile, resolved *identity.Identity, fallbackHandle, fallbackPDSURL string) (origin, pdsURL string) {
+	if profile.Origin == "" {
+		return "", fallbackPDSURL
+	}
+
+	if resolved == nil && c.identityResolver != nil {
+		id, err := c.identityResolver.Resolve(ctx, did)
+		if err != nil {
+			log.Printf("WARNING: dropping origin %q on community %s: could not resolve the repo's identity to check it (%v); indexing without it", profile.Origin, did, err)
+			return "", fallbackPDSURL
+		}
+		resolved = id
+	}
+
+	handle, pdsURL := fallbackHandle, fallbackPDSURL
+	if resolved != nil {
+		if resolved.Handle == "" || resolved.Handle == invalidHandle {
+			log.Printf("WARNING: dropping origin %q on community %s: the repo's handle could not be verified (%q); indexing without it", profile.Origin, did, resolved.Handle)
+			return "", fallbackPDSURL
+		}
+		handle = resolved.Handle
+		if resolved.PDSURL != "" {
+			pdsURL = resolved.PDSURL
+		}
+	}
+
+	return admitCommunityOrigin(c.bridgeTrust, did, pdsURL, handle, profile.Origin), pdsURL
+}
+
+// admitCommunityOrigin applies the trust rule for a profile record's
+// self-asserted `origin` and returns the value to store — "" when the field is
+// absent or dropped.
+//
+// `origin` is the instance a community actually lives on, and exists so a
+// bridged community whose DNS handle is the lossy comicstrips.lemmy-world.tdpl.io
+// can still render as !comicstrips@lemmy.world. Because it is self-asserted by
+// whoever writes the record, an unconstrained value would let any repo claim to
+// be !nba@coves.social. So:
+//
+//   - A repo hosted on a trusted bridge PDS (BridgeTrust, the same gate that
+//     decides bridgedStats provenance) may assert any well-formed origin.
+//   - Any other repo may assert only its OWN domain: the origin must be the
+//     registrable domain (eTLD+1) of its verified handle
+//     (c-nba.coves.social → coves.social) or a parent domain of the handle that
+//     sits UNDER that registrable domain (c-nba.dev.coves.social →
+//     dev.coves.social). Both are domains the handle already proves control
+//     of. A public suffix above the registrable domain (co.uk, github.io) is
+//     not: nobody owns it, so it is refused even though it is a parent of the
+//     handle.
+//   - Anything else is DROPPED with a warning and the community is indexed
+//     without an origin. The event is NEVER rejected over this field: a
+//     community whose display name would be wrong is still a community, and a
+//     refusal would dead-letter every post naming it.
+//
+// pdsURL and handle are the repo's provenance as admitRecordOrigin established
+// it (a fresh resolution when one is available). Empty pdsURL is default-deny,
+// exactly as BridgeTrust.TrustsPDS treats it.
+func admitCommunityOrigin(bt *BridgeTrust, did, pdsURL, handle, origin string) string {
+	if origin == "" {
+		return ""
+	}
+
+	normalized, err := validation.NormalizeDomain(origin)
+	if err != nil {
+		log.Printf("WARNING: dropping origin %q on community %s: not a valid hostname (%v); indexing without it", origin, did, err)
+		return ""
+	}
+
+	if bt.TrustsPDS(pdsURL) {
+		return normalized
+	}
+
+	handle = strings.ToLower(strings.TrimSpace(handle))
+	registrable := extractDomainFromHandle(handle)
+	if registrable != "" && (normalized == registrable ||
+		(strings.HasSuffix(handle, "."+normalized) && strings.HasSuffix(normalized, "."+registrable))) {
+		return normalized
+	}
+
+	log.Printf("WARNING: dropping origin %q on community %s: repo (pds=%q) is not a trusted bridge and the origin does not match its handle %q; indexing without it",
+		origin, did, pdsURL, handle)
+	return ""
 }
 
 // extractDomainFromHandle extracts the registrable domain from a community handle
@@ -1186,6 +1331,7 @@ type CommunityProfile struct {
 	DisplayName       string                 `json:"displayName"`
 	Name              string                 `json:"name"`
 	Handle            string                 `json:"handle"`
+	Origin            string                 `json:"origin"`
 	HostedBy          string                 `json:"hostedBy"`
 	Description       string                 `json:"description"`
 	FederatedID       string                 `json:"federatedId"`
