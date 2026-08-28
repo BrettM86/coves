@@ -609,10 +609,13 @@ func TestCommunityRepo_Counters(t *testing.T) {
 // This is not (today) a defect on its own: every caller is a firehose consumer
 // that has already resolved the community, and the sibling consumers gate on
 // the community existing. It IS the mechanism behind the vote-count drift filed
-// as issue 2026-07-29-vote-before-subject-lost-then-subtracts, which is the same
-// shape one table over — an UPDATE that matches nothing, logged and forgotten.
-// Recorded here so the next person to add a counter caller knows that a nil
-// error from these methods is not evidence anything happened.
+// as issue 2026-07-29-vote-before-subject-lost-then-subtracts — the same shape
+// one table over, an UPDATE that matches nothing, logged and forgotten. That
+// issue is FIXED for votes: the vote consumer now refuses an event whose subject
+// has no row instead of indexing it against a zero-row count update. The
+// mechanism described here survives untouched, because these counters were never
+// what was changed. Recorded so the next person to add a counter caller knows
+// that a nil error from these methods is not evidence anything happened.
 func TestCommunityRepo_CountersOnAnAbsentCommunityAreSilent(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

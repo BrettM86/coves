@@ -2,6 +2,8 @@ package jetstream
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -42,11 +44,12 @@ func (q *intervalProbeQueue) CountDeadLetters(context.Context) (map[string]int64
 // WithRedriveInterval actually controls Run's redrive cadence, rather than
 // being stored in a field Run never reads.
 //
-// Run always fires an immediate boot pass, so the first receive below
-// passes today regardless of the bug. The second receive is the one that
-// exposes it: with a 10ms configured interval, a second pass must start
-// well within 2 seconds. Today it can't — Run ticks on a hardcoded
-// 5-minute interval no matter what WithRedriveInterval was given.
+// Run always fires an immediate boot pass, so the first receive below is
+// satisfied by any redriver that starts at all. The second receive is the
+// one that carries the claim: with a 10ms configured interval a second pass
+// must start well within 2 seconds, which is false of a Run that ticks on
+// the constructor's five-minute default regardless of what
+// WithRedriveInterval was given.
 func TestDeadLetterRedriver_HonoursConfiguredInterval(t *testing.T) {
 	queue := newIntervalProbeQueue()
 	handlers := map[string]EventHandler{"test-consumer": newFakeEventHandler()}
@@ -68,7 +71,46 @@ func TestDeadLetterRedriver_HonoursConfiguredInterval(t *testing.T) {
 		// second pass, driven by the configured 10ms interval
 	case <-time.After(2 * time.Second):
 		t.Fatal("second redrive pass did not start within 2s of a 10ms configured interval; " +
-			"WithRedriveInterval's value is stored in configuredInterval but Run still ticks " +
-			"on its hardcoded 5-minute interval")
+			"WithRedriveInterval's value is being stored in a field Run never reads, so the " +
+			"redriver still ticks on the constructor's five-minute default")
+	}
+}
+
+// TestNewDeadLetterRedriver_RejectsNonPositiveInterval pins WHERE a bad interval
+// is caught: at construction, not at the first tick.
+//
+// time.NewTicker panics on a non-positive duration, and Run builds its ticker
+// after the boot pass, inside the goroutine cmd/server launches and never joins.
+// So a zero or negative interval — a mis-set REDRIVE_INTERVAL, an arithmetic slip
+// at a call site — takes down the process from a goroutine whose stack names
+// time.NewTicker rather than the configuration that supplied the value, and it
+// does so AFTER the server has reported itself healthy and started serving.
+//
+// Panicking in the constructor is the same failure moved to where it is
+// diagnosable: it happens on the main goroutine during wiring, before anything
+// is served, and the message names the interval. A returned error would be
+// better still, but NewDeadLetterRedriver has no error in its signature and
+// every caller is boot-time wiring, which is precisely the setting where a panic
+// is the honest response to an impossible configuration.
+func TestNewDeadLetterRedriver_RejectsNonPositiveInterval(t *testing.T) {
+	for _, badInterval := range []time.Duration{0, -1 * time.Second} {
+		t.Run(badInterval.String(), func(t *testing.T) {
+			handlers := map[string]EventHandler{"test-consumer": newFakeEventHandler()}
+
+			defer func() {
+				recovered := recover()
+				if recovered == nil {
+					t.Fatalf("NewDeadLetterRedriver accepted a %s interval; the failure is deferred to "+
+						"time.NewTicker inside Run's goroutine, which panics after boot has reported "+
+						"healthy and names the ticker rather than the configuration that broke it", badInterval)
+				}
+				if message := fmt.Sprint(recovered); !strings.Contains(message, "interval") {
+					t.Errorf("the construction panic must name the interval so the operator can find the "+
+						"setting that produced it; got %q", message)
+				}
+			}()
+
+			NewDeadLetterRedriver(newIntervalProbeQueue(), handlers, WithRedriveInterval(badInterval))
+		})
 	}
 }

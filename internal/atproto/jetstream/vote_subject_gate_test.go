@@ -78,8 +78,8 @@ const (
 	bridgedSubjectVoter  = subjectGatePrefix + "bridgedvoter"
 
 	// Fixtures for the erased-subject branch. erasedSubjectAuthor gets a
-	// migration-036 marker and nothing else — erasure hard-deletes the rows, so
-	// the marker is the only trace an erased account leaves.
+	// migration-036 marker and nothing else — the erasure flow hard-deletes the
+	// rows, so the marker is the only trace an erased account leaves.
 	erasedSubjectAuthor  = subjectGatePrefix + "erasedauthor"
 	erasedSubjectUnknown = subjectGatePrefix + "unknownerasure"
 	erasedSubjectVoter   = subjectGatePrefix + "erasedvoter"
@@ -219,6 +219,127 @@ func TestVoteConsumer_SubjectNotIndexed_RefusesTransientlyAndPersistsNothing(t *
 				"the refused event must leave the voter's vote rows exactly as it found them")
 		})
 	}
+}
+
+// TestVoteConsumer_MalformedSubjectURI_IsRejectedPermanently covers the input
+// the ordering gate mistakes for an ordering problem.
+//
+// A subject URI that is not a well-formed at:// record URI names nothing this
+// AppView could ever index, so the subject lookup finds no row and the gate
+// answers what it answers for a late subject: refuse transiently, wait for the
+// subject to arrive. It never arrives. The event burns its whole redrive budget
+// and settles in the dead letter queue permanently, where it is
+// indistinguishable from a genuine backlog — the same noise the erased-account
+// drop exists to avoid, arriving through a malformed payload instead.
+//
+// The distinction the consumer has to make is not "is there a row" but "could
+// there ever be one", and for a malformed URI the answer is decidable from the
+// immutable payload alone. That is the definition of ErrPermanentEvent, and it
+// is what every other payload-shaped rejection in validateVoteEvent already
+// returns.
+//
+// The three cases are the three ways parseRecordURI (authorpost.go) refuses,
+// because a strict parse is what the routing downstream already assumes: the
+// collection is read out of the URI's second segment to pick a table, so a URI
+// with the segments in the wrong places routes on a value that was never a
+// collection. Note that a BRIDGED subject — at://did/app.bsky.feed.post/rkey —
+// parses cleanly and must keep doing so; what is rejected here is malformed
+// structure, never an unfamiliar collection.
+func TestVoteConsumer_MalformedSubjectURI_IsRejectedPermanently(t *testing.T) {
+	t.Parallel()
+
+	for _, malformed := range []struct {
+		name string
+		uri  string
+	}{
+		{
+			// The countable collection sits in segment position, so a parser
+			// that split on "/" without demanding the scheme would route this
+			// to `posts` and look up a row keyed on a string no record has.
+			name: "no at:// scheme",
+			uri:  subjectGateHost + "/social.coves.community.post/malformedsubject",
+		},
+		{
+			name: "no rkey",
+			uri:  "at://" + subjectGateHost + "/social.coves.community.post",
+		},
+		{
+			name: "an extra path segment",
+			uri:  "at://" + subjectGateHost + "/social.coves.community.post/malformedsubject/extra",
+		},
+	} {
+		t.Run(malformed.name, func(t *testing.T) {
+			t.Parallel()
+			db := testkit.DB(t)
+			ctx := context.Background()
+
+			consumer := NewVoteEventConsumer(postgres.NewVoteRepository(db), newMockUserService(), db)
+
+			voteURI := "at://" + subjectGateVoter + "/social.coves.feed.vote/malformedvote"
+			err := consumer.HandleEvent(ctx, &JetstreamEvent{
+				Kind:   "commit",
+				Did:    subjectGateVoter,
+				TimeUS: time.Now().UnixMicro(),
+				Commit: &CommitEvent{
+					Rev:        "3lgatemalformedaa2a",
+					Operation:  "create",
+					Collection: "social.coves.feed.vote",
+					RKey:       "malformedvote",
+					CID:        "bafgatemalformedvote",
+					Record: map[string]interface{}{
+						"$type":     "social.coves.feed.vote",
+						"subject":   map[string]interface{}{"uri": malformed.uri, "cid": "bafgatesubject"},
+						"direction": "up",
+						"createdAt": "2026-03-01T01:00:00Z",
+					},
+				},
+			})
+
+			require.Error(t, err, "a vote whose subject URI is not a record URI must be refused")
+			assert.True(t, errors.Is(err, ErrPermanentEvent),
+				"the refusal must be PERMANENT: %q can never name an indexed record, so the transient "+
+					"refusal the absent-subject gate returns buys ten redrives and a permanent dead "+
+					"letter for a verdict the payload alone already settles. Got: %v", malformed.uri, err)
+
+			exists, _ := voteRowState(t, db, voteURI)
+			assert.False(t, exists,
+				"a rejected vote must leave no row at %s: an indexed row naming an unparseable subject "+
+					"is viewer state no query can key on and a decrement no count can absorb", voteURI)
+			requireNoCountsAnywhere(t, db)
+		})
+	}
+}
+
+// TestVoteConsumer_ErasureGatedReportsItsWiring pins the erasure gate the way
+// RevGated pins the rev gate: as a property boot can read off the consumer.
+//
+// The rev gate is hardwired — RevGated returns a constant true because c.db is
+// always present — but the erasure gate arrives through an option, and an option
+// that is not passed produces a consumer that is perfectly functional and
+// quietly wrong. subjectWasErased returns (false, nil) with no lookup installed,
+// so every vote naming an erased account's post is treated as an ordinary late
+// subject and indexed the moment a row for it happens to exist. Nothing logs,
+// nothing fails, and the erasure leaks back through the votes table.
+//
+// A wiring mistake is only expensive when it is invisible, so the consumer has
+// to be able to answer the question at boot, where cmd/server can refuse to
+// start rather than serve a gate-less consumer for a week.
+func TestVoteConsumer_ErasureGatedReportsItsWiring(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+
+	gated := NewVoteEventConsumer(
+		postgres.NewVoteRepository(db), newMockUserService(), db,
+		WithVoteDeletedAccounts(postgres.NewDeletedAccountRepository(db)))
+	assert.True(t, gated.ErasureGated(),
+		"a consumer built WITH WithVoteDeletedAccounts must report itself gated; if this reports false "+
+			"then a boot check can never tell a correctly wired consumer from one silently missing "+
+			"the lookup, which is the whole point of asking")
+
+	ungated := NewVoteEventConsumer(postgres.NewVoteRepository(db), newMockUserService(), db)
+	assert.False(t, ungated.ErasureGated(),
+		"a consumer built WITHOUT the option must report itself ungated: a check that answered true "+
+			"unconditionally would pass at boot and leave the erasure gate absent in production")
 }
 
 // seedIndexedPost inserts a post row directly, which is what "the subject
@@ -381,7 +502,7 @@ func readSubjectCounts(t *testing.T, db *sql.DB, query, uri string) subjectCount
 // Dropping the vote is what makes the deleted branch safe under resurrection:
 // no row, nothing to withdraw, nothing to subtract.
 //
-// # WHY THE REV GATE MUST COMMIT HERE AND ROLL BACK IN B1
+// # WHY THE REV GATE MUST COMMIT HERE AND ROLL BACK FOR AN ABSENT SUBJECT
 //
 // The drop is a decision, not a deferral, so it leaves a tombstone: the gate
 // advance commits, and a duplicate delivery of the same commit is answered by
@@ -571,7 +692,8 @@ func requireNoCountsAnywhere(t *testing.T, db *sql.DB) {
 //
 // This is the case where an indexed-but-uncounted vote row is CORRECT rather
 // than a time bomb, and the difference is worth stating because it is the exact
-// shape B1 and B3 forbid.
+// shape the other two branches forbid — the absent subject, which must persist
+// nothing at all, and the soft-deleted subject, whose vote is dropped outright.
 //
 // The row is not a pending count. It is VIEWER STATE: it is how the AppView
 // answers "did I vote on this, and which way" for bridged content, which is the
@@ -670,8 +792,9 @@ func erasedSubjectVoteEvent(voterDID, rkey, rev, subjectURI string) *JetstreamEv
 // # WHY AN ERASED SUBJECT LOOKS IDENTICAL TO A LATE ONE, AND MUST NOT BE
 // TREATED LIKE ONE
 //
-// Account erasure (migration 036) HARD-deletes the account's posts, comments
-// and votes — no tombstone row, no deleted_at, nothing. From inside the vote
+// Account erasure — the migration-036 marker flow, whose deletes live in
+// user_repo.DeleteUser — HARD-deletes the account's posts, comments and votes:
+// no tombstone row, no deleted_at, nothing. From inside the vote
 // consumer's transaction the result is a subject URI with no row, which is
 // pixel-for-pixel what a vote arriving ahead of its subject looks like.
 //
@@ -730,7 +853,7 @@ func TestVoteConsumer_SubjectInErasedAccount(t *testing.T) {
 		exists, _ := voteRowState(t, db, voteURI)
 		assert.False(t, exists,
 			"no row may land at %s: indexing a vote that points into an erasure is the resurrection "+
-				"migration 036 exists to prevent, arriving through the votes table", voteURI)
+				"the migration-036 marker flow exists to prevent, arriving through the votes table", voteURI)
 		requireNoCountsAnywhere(t, db)
 
 		// Same shape as the soft-deleted drop: a permanent condition is a
@@ -802,82 +925,83 @@ type countSubject struct {
 	kind        string
 	repoDID     string
 	collection  string
-	seedLive    func(t *testing.T, db *sql.DB, uri string)
+	seedLive    func(t *testing.T, db *sql.DB, uri string, counts subjectCounts)
 	softDelete  string
-	resurrect   string
 	countsQuery string
 }
 
-// countSubjects is the post/comment pair, seeded LIVE with counts already on
-// them: three upvotes, of which the vote row each test creates is one. The
-// other two are numbers with no rows behind them, which is deliberate — the
-// tests below assert on the stored count, and inventing two more vote rows
-// would add fixture without adding an assertion.
+// countSubjects is the post/comment pair, seeded LIVE with counts the caller
+// supplies: the vote row each test creates is one of them, and the rest are
+// numbers with no rows behind them. That is deliberate — the tests below assert
+// on the stored count, and inventing more vote rows would add fixture without
+// adding an assertion — but the counts have to be a parameter rather than a
+// constant, because a withdrawal in one direction says nothing about the
+// statement that handles the other.
 var countSubjects = []countSubject{
 	{
 		kind:       "a post",
 		repoDID:    withdrawCommunity,
 		collection: "social.coves.community.post",
-		seedLive: func(t *testing.T, db *sql.DB, uri string) {
+		seedLive: func(t *testing.T, db *sql.DB, uri string, counts subjectCounts) {
 			t.Helper()
 			insertBridgedUser(t, db, withdrawAuthor, "withdrawauthor.test")
 			insertBridgedCommunity(t, db, withdrawCommunity, "withdrawcommunity.test", withdrawAuthor)
 			_, err := db.Exec(`
 				INSERT INTO posts (uri, cid, rkey, author_did, community_did, title,
 				                   created_at, upvote_count, downvote_count, score)
-				VALUES ($1, $2, $3, $4, $5, $6, $7, 3, 0, 3)`,
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 				uri, "bafwithdrawsubject", "withdrawsubject", withdrawAuthor, withdrawCommunity,
 				"the subject being deleted under a live vote",
-				time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC))
+				time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+				counts.Upvotes, counts.Downvotes, counts.Score)
 			require.NoError(t, err)
 		},
 		softDelete:  `UPDATE posts SET deleted_at = NOW() WHERE uri = $1`,
-		resurrect:   `UPDATE posts SET deleted_at = NULL WHERE uri = $1`,
 		countsQuery: `SELECT upvote_count, downvote_count, score FROM posts WHERE uri = $1`,
 	},
 	{
 		kind:       "a comment",
 		repoDID:    withdrawAuthor,
 		collection: CommentCollection,
-		seedLive: func(t *testing.T, db *sql.DB, uri string) {
+		seedLive: func(t *testing.T, db *sql.DB, uri string, counts subjectCounts) {
 			t.Helper()
 			root := "at://" + withdrawCommunity + "/social.coves.community.post/withdrawroot"
 			_, err := db.Exec(`
 				INSERT INTO comments (uri, cid, rkey, commenter_did, root_uri, root_cid,
 				                      parent_uri, parent_cid, content, created_at,
 				                      upvote_count, downvote_count, score)
-				VALUES ($1, $2, $3, $4, $5, $6, $5, $6, $7, $8, 3, 0, 3)`,
+				VALUES ($1, $2, $3, $4, $5, $6, $5, $6, $7, $8, $9, $10, $11)`,
 				uri, "bafwithdrawsubject", "withdrawsubject", withdrawAuthor,
 				root, "bafwithdrawroot", "the subject being deleted under a live vote",
-				time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC))
+				time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC),
+				counts.Upvotes, counts.Downvotes, counts.Score)
 			require.NoError(t, err)
 		},
 		softDelete:  `UPDATE comments SET deleted_at = NOW() WHERE uri = $1`,
-		resurrect:   `UPDATE comments SET deleted_at = NULL WHERE uri = $1`,
 		countsQuery: `SELECT upvote_count, downvote_count, score FROM comments WHERE uri = $1`,
 	},
 }
 
 // withdrawUnderDeletedSubject runs the shared arc: a live subject carrying a
-// counted vote, the subject soft-deleted, then the vote withdrawn. It returns
-// the subject URI so a caller can carry the arc further.
-func withdrawUnderDeletedSubject(t *testing.T, db *sql.DB, subject countSubject, rev string) string {
+// counted vote in the given direction, the subject soft-deleted, then the vote
+// withdrawn. It returns the subject URI so a caller can carry the arc further.
+func withdrawUnderDeletedSubject(t *testing.T, db *sql.DB, subject countSubject, rev, direction string, before subjectCounts) string {
 	t.Helper()
 	ctx := context.Background()
 
 	subjectURI := "at://" + subject.repoDID + "/" + subject.collection + "/withdrawsubject"
-	subject.seedLive(t, db, subjectURI)
+	subject.seedLive(t, db, subjectURI, before)
 
 	// The vote is seeded directly and counted by construction: it is one of the
-	// three the subject already carries. Going through the consumer instead
+	// votes the subject already carries. Going through the consumer instead
 	// would put the create path's own behaviour between the setup and the
 	// measurement, and after the ordering gate landed that path has its own
 	// opinions about deleted subjects.
 	voteURI := "at://" + withdrawVoter + "/social.coves.feed.vote/withdrawvote"
-	seedActiveVote(t, db, voteURI, withdrawVoter, subjectURI, "up")
+	seedActiveVote(t, db, voteURI, withdrawVoter, subjectURI, direction)
 
 	// THE DELETED WINDOW OPENS. Nothing about the vote changes here — it is
-	// still live, still counted, still one of the three.
+	// still live, still counted, still one of the subject's own.
 	_, err := db.Exec(subject.softDelete, subjectURI)
 	require.NoError(t, err, "soft-deleting the subject out from under a live vote")
 
@@ -914,9 +1038,9 @@ func withdrawUnderDeletedSubject(t *testing.T, db *sql.DB, subject countSubject,
 //
 // # WHY A deleted_at FILTER ON THE SUBJECT BREAKS IT
 //
-// Every count mutation in vote_consumer.go filters the SUBJECT row on
-// `deleted_at IS NULL`, which reads as harmless — why touch a deleted row? —
-// and is not, because deletion is not the end of the story:
+// Before this branch, every count mutation in vote_consumer.go filtered the
+// SUBJECT row on `deleted_at IS NULL`. It reads as harmless — why touch a
+// deleted row? — and is not, because deletion is not the end of the story:
 //
 //	the vote is cast and counted        subject live, counts 3
 //	the subject is soft-deleted         counts still 3, vote still live
@@ -932,31 +1056,62 @@ func withdrawUnderDeletedSubject(t *testing.T, db *sql.DB, subject countSubject,
 //
 // # WHY THE WITHDRAWAL IS THE ONE SITE WORTH TESTING
 //
-// There are four mutating sites and all four carry the filter, but only this
-// one is reachable now. The create-path increment can no longer meet a deleted
-// subject at all — the ordering gate drops that event before any count runs —
-// and the stale-cleanup decrement operates on rows the create path will no
-// longer produce for a deleted subject. Removing their filters is consistency,
-// not behaviour, and a test that forced those paths would be asserting against
-// code the gates make unreachable. This one is plain: a live counted vote, its
-// subject deleted, the voter changes their mind.
+// Three mutating sites — twelve statements across the two subject tables and
+// both directions — carried the filter, but only this one is reachable now. The
+// create-path increment can no longer meet a deleted subject at all: the
+// ordering gate drops that event before any count runs, and the stale-cleanup
+// decrement operates on rows the create path will no longer produce for a
+// deleted subject. Removing their filters is consistency, not behaviour, and a
+// test that forced those paths would be asserting against code the gates make
+// unreachable. This one is plain: a live counted vote, its subject deleted, the
+// voter changes their mind.
+//
+// Both DIRECTIONS are exercised because the decrement is not one statement: the
+// consumer picks a column by the stored row's direction, so an upvote
+// withdrawal proves nothing about the downvote statement standing beside it,
+// and the score arithmetic differs in sign between them.
 func TestVoteConsumer_WithdrawalDecrementsThroughADeletedSubject(t *testing.T) {
 	t.Parallel()
 
-	for _, subject := range countSubjects {
-		t.Run(subject.kind+" that was deleted after the vote was counted", func(t *testing.T) {
-			t.Parallel()
-			db := testkit.DB(t)
+	for _, cast := range []struct {
+		direction string
+		rev       string
+		before    subjectCounts
+		after     subjectCounts
+	}{
+		{
+			direction: "up",
+			rev:       "3lgatewithdrawaa2a",
+			before:    subjectCounts{Upvotes: 3, Downvotes: 0, Score: 3},
+			after:     subjectCounts{Upvotes: 2, Downvotes: 0, Score: 2},
+		},
+		{
+			// The subject carries a downvote among its counts, so withdrawing
+			// it moves downvote_count DOWN and the score UP — the opposite
+			// direction from the upvote case in both columns, which is what
+			// makes a decrement wired to the wrong column visible.
+			direction: "down",
+			rev:       "3lgatewithdrawaa2d",
+			before:    subjectCounts{Upvotes: 3, Downvotes: 1, Score: 2},
+			after:     subjectCounts{Upvotes: 3, Downvotes: 0, Score: 3},
+		},
+	} {
+		for _, subject := range countSubjects {
+			t.Run(subject.kind+" that was deleted after a "+cast.direction+"vote was counted", func(t *testing.T) {
+				t.Parallel()
+				db := testkit.DB(t)
 
-			subjectURI := withdrawUnderDeletedSubject(t, db, subject, "3lgatewithdrawaa2a")
+				subjectURI := withdrawUnderDeletedSubject(t, db, subject, cast.rev, cast.direction, cast.before)
 
-			assert.Equal(t, subjectCounts{Upvotes: 2, Score: 2},
-				readSubjectCounts(t, db, subject.countsQuery, subjectURI),
-				"the withdrawal must decrement THROUGH the deleted window. Counts still reading "+
-					"{3,0,3} means the decrement's `AND deleted_at IS NULL` on the subject "+
-					"suppressed it, and the subject now claims a vote that no longer exists — "+
-					"unattributably, because the row that would explain it is soft-deleted")
-		})
+				assert.Equal(t, cast.after,
+					readSubjectCounts(t, db, subject.countsQuery, subjectURI),
+					"the withdrawal must decrement THROUGH the deleted window. Counts still reading "+
+						"%v means the decrement's `AND deleted_at IS NULL` on the subject "+
+						"suppressed it, and the subject now claims a vote that no longer exists — "+
+						"unattributably, because the row that would explain it is soft-deleted",
+					cast.before)
+			})
+		}
 	}
 }
 
@@ -974,29 +1129,86 @@ func TestVoteConsumer_WithdrawalDecrementsThroughADeletedSubject(t *testing.T) {
 // Posts have no equivalent re-create path today, which is why this arc is
 // asserted for comments only — the invariant is the same for both, but this is
 // where a reader can actually observe it being violated.
+//
+// # WHY THE WHOLE ARC IS DRIVEN THROUGH THE REAL CONSUMERS
+//
+// The deletion and the resurrection here are genuine Jetstream commits handled
+// by CommentEventConsumer, not UPDATE statements this test writes. The
+// invariant's premise is a claim about the comment consumer's behaviour —
+// "re-create clears deleted_at and PRESERVES the native counts" — and a test
+// that performed the resurrection itself would assert that claim against its
+// own UPDATE, staying green for as long as the test kept agreeing with itself
+// and going silent the day the re-create path started zeroing counts or
+// recounting them. Driving the real event binds the two behaviours together:
+// if the comment consumer ever stops preserving native counts, this fails, and
+// it should, because the vote consumer's decrement-through-a-deleted-window is
+// only load-bearing while something downstream carries the corrected number
+// back into view.
+//
+// The re-create carries a HIGHER rev than the delete, which is what makes it a
+// genuine atProto recreate-same-rkey rather than a stale replay the rev gate is
+// supposed to reject (rev_gate_test.go pins both sides of that).
 func TestVoteConsumer_ResurrectedCommentCarriesTheDecrementedCount(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
+	ctx := context.Background()
 
-	var comment countSubject
-	for _, subject := range countSubjects {
-		if subject.collection == CommentCollection {
-			comment = subject
-		}
-	}
-	require.NotEmpty(t, comment.kind, "the comment fixture must be present in countSubjects")
+	_, postURI, postCID := setupRevFixtures(t, db)
+	commentConsumer := NewCommentEventConsumer(postgres.NewCommentRepository(db), db)
+	baseTime := time.Now().UnixMicro()
 
-	subjectURI := withdrawUnderDeletedSubject(t, db, comment, "3lgatewithdrawaa2b")
+	const commentRKey = "resurrectedsubject"
+	commentURI := "at://" + revTestCommenter + "/" + CommentCollection + "/" + commentRKey
+	commentRecord := revCommentRecord("the comment that goes away and comes back", postURI, postCID, postURI, postCID)
 
-	// The resurrection: exactly what indexCommentAndUpdateCounts's re-create
-	// path does to the row — deleted_at cleared, counts left alone.
-	_, err := db.Exec(comment.resurrect, subjectURI)
-	require.NoError(t, err)
+	// ---- first life -----------------------------------------------------------
+	require.NoError(t, commentConsumer.HandleEvent(ctx, revCommitEvent(
+		revTestCommenter, CommentCollection, "create", commentRKey, revA, "bafresurrect1", baseTime, commentRecord)))
+
+	// Three upvotes, of which the seeded row is one. The other two are numbers
+	// with no rows behind them, the same shape countSubjects uses: what is
+	// asserted is the stored count, and two more vote rows would add fixture
+	// without adding an assertion.
+	_, err := db.Exec(
+		`UPDATE comments SET upvote_count = 3, score = 3 WHERE uri = $1`, commentURI)
+	require.NoError(t, err, "putting the votes the comment collected in its first life on the row")
+
+	voteURI := "at://" + revTestVoter + "/social.coves.feed.vote/resurrectvote"
+	seedActiveVote(t, db, voteURI, revTestVoter, commentURI, "up")
+
+	// ---- the comment is deleted, through its own consumer ---------------------
+	require.NoError(t, commentConsumer.HandleEvent(ctx, revCommitEvent(
+		revTestCommenter, CommentCollection, "delete", commentRKey, revB, "", baseTime+1_000_000, nil)))
+
+	var deletedAt *time.Time
+	require.NoError(t, db.QueryRow(`SELECT deleted_at FROM comments WHERE uri = $1`, commentURI).Scan(&deletedAt))
+	require.NotNil(t, deletedAt, "the comment consumer's delete must soft-delete the row, or there is no deleted window to withdraw inside")
+
+	// ---- the voter withdraws while it is away ---------------------------------
+	voteConsumer := NewVoteEventConsumer(postgres.NewVoteRepository(db), newMockUserService(), db)
+	require.NoError(t, voteConsumer.HandleEvent(ctx, &JetstreamEvent{
+		Kind:   "commit",
+		Did:    revTestVoter,
+		TimeUS: baseTime + 1_500_000,
+		Commit: &CommitEvent{
+			Rev:        "3lgateresurrectaa2a",
+			Operation:  "delete",
+			Collection: "social.coves.feed.vote",
+			RKey:       "resurrectvote",
+		},
+	}), "withdrawing a vote must succeed whatever state its subject is in")
+
+	// ---- the comment comes back, through its own consumer ---------------------
+	require.NoError(t, commentConsumer.HandleEvent(ctx, revCommitEvent(
+		revTestCommenter, CommentCollection, "create", commentRKey, revC, "bafresurrect2", baseTime+2_000_000, commentRecord)))
+
+	require.NoError(t, db.QueryRow(`SELECT deleted_at FROM comments WHERE uri = $1`, commentURI).Scan(&deletedAt))
+	require.Nil(t, deletedAt, "the genuine re-create (higher rev) must resurrect the comment, or the arc measures nothing")
 
 	assert.Equal(t, subjectCounts{Upvotes: 2, Score: 2},
-		readSubjectCounts(t, db, comment.countsQuery, subjectURI),
+		readSubjectCounts(t, db, `SELECT upvote_count, downvote_count, score FROM comments WHERE uri = $1`, commentURI),
 		"the comment came back claiming a vote that was withdrawn while it was deleted. This is "+
-			"what the suppressed decrement looks like to a reader: a score that cannot be "+
+			"what a suppressed decrement looks like to a reader: a score that cannot be "+
 			"reconciled against any live vote row, and that no recount will ever correct because "+
 			"the re-create path preserves native counts by design")
 }

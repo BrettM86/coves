@@ -87,22 +87,31 @@ func TestMigration038_RecountsVoteDriftAndSweepsLegacyOrphans(t *testing.T) {
 	communityDID, err := fixtures.Community(ctx, db, communityName, "owner"+communityName)
 	require.NoError(t, err)
 
-	// A live post whose stored counts drifted upward: two live up-votes and one
-	// withdrawn (soft-deleted) up-vote, recorded as five up and one down. The
-	// bridged 3/0 is consistent with the stored score (5-1+3-0 = 7), so nothing
-	// about this row looks wrong until it is recounted.
+	// A live post whose stored counts drifted upward: two live up-votes, one
+	// live DOWN-vote and one withdrawn (soft-deleted) up-vote, recorded as five
+	// up and one down. The bridged 3/0 is consistent with the stored score
+	// (5-1+3-0 = 7), so nothing about this row looks wrong until it is
+	// recounted. Both directions are seeded because the recount rebuilds two
+	// columns from one scan of the vote rows, and a fixture with no down-votes
+	// leaves the downvote half of that statement unexercised — it would pass
+	// just as well if it counted every vote as an upvote.
 	driftedPost := seedRecountPost(t, db, communityDID, "drifted", recountCounts{upvotes: 5, downvotes: 1, score: 7}, 3, 0, false)
 	seedRecountVote(t, db, "drift-live-a", driftedPost, "up", true)
 	seedRecountVote(t, db, "drift-live-b", driftedPost, "up", true)
+	seedRecountVote(t, db, "drift-live-down", driftedPost, "down", true)
 	seedRecountVote(t, db, "drift-withdrawn", driftedPost, "up", false)
 
-	// A SOFT-DELETED comment. One live up-vote, stored as three.
-	deletedComment := seedRecountComment(t, db, "deleted", recountCounts{upvotes: 3, downvotes: 0, score: 3}, 0, 0, true)
+	// A SOFT-DELETED comment. One live up-vote, stored as three. Its bridged
+	// 2/1 is the other half of the score claim: the comments statement is a
+	// separate UPDATE from the posts one, and preserving the bridged terms in
+	// one is no evidence at all about the other.
+	deletedComment := seedRecountComment(t, db, "deleted", recountCounts{upvotes: 3, downvotes: 0, score: 4}, 2, 1, true)
 	seedRecountVote(t, db, "deleted-comment-live", deletedComment, "up", true)
 
 	// The erasure case: a post crediting two up-votes whose vote rows are gone
-	// outright. Account erasure (migration 036) HARD-deletes the erased user's
-	// vote rows rather than tombstoning them, so nothing decremented the subject
+	// outright. Account erasure — the migration-036 marker flow, whose deletes
+	// live in user_repo.DeleteUser — HARD-deletes the erased user's vote rows
+	// rather than tombstoning them, so nothing decremented the subject
 	// on the way out and the only remaining evidence of the inflation is the
 	// absence of rows to justify it.
 	erasedPost := seedRecountPost(t, db, communityDID, "erased", recountCounts{upvotes: 2, downvotes: 0, score: 2}, 0, 0, false)
@@ -124,11 +133,11 @@ func TestMigration038_RecountsVoteDriftAndSweepsLegacyOrphans(t *testing.T) {
 
 	testkit.MigrateUp(t, db)
 
-	assert.Equal(t, recountCounts{upvotes: 2, downvotes: 0, score: 5}, postCountsOf(t, db, driftedPost),
-		"the live post must be recounted from its two live votes, keeping the bridged 3/0 in the score (2-0+3-0)")
+	assert.Equal(t, recountCounts{upvotes: 2, downvotes: 1, score: 4}, postCountsOf(t, db, driftedPost),
+		"the live post must be recounted from its three live votes in both directions, keeping the bridged 3/0 in the score (2-1+3-0)")
 
-	assert.Equal(t, recountCounts{upvotes: 1, downvotes: 0, score: 1}, commentCountsOf(t, db, deletedComment),
-		"a soft-deleted subject must be recounted too; skipping deleted rows leaves corrupt counts to be revived if the comment is ever restored")
+	assert.Equal(t, recountCounts{upvotes: 1, downvotes: 0, score: 2}, commentCountsOf(t, db, deletedComment),
+		"a soft-deleted subject must be recounted too, and its bridged 2/1 must survive the recount (1-0+2-1); skipping deleted rows leaves corrupt counts to be revived if the comment is ever restored")
 
 	assert.Equal(t, recountCounts{upvotes: 0, downvotes: 0, score: 0}, postCountsOf(t, db, erasedPost),
 		"a post whose voters were erased has no live vote rows left, so its recounted totals are zero; erasure-inflated counts are exactly what nothing else repairs")

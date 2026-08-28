@@ -81,6 +81,15 @@ func NewVoteEventConsumer(
 // multi-feed operation with an ungated consumer.
 func (c *VoteEventConsumer) RevGated() bool { return true }
 
+// ErasureGated reports whether this consumer consults the erasure marker before
+// indexing a vote whose subject lives in another repo. Unlike RevGated it is not
+// hardwired: the lookup arrives through WithVoteDeletedAccounts, so a wiring
+// mistake in cmd/server silently produces a consumer that treats an erased
+// account's post as an ordinary late one and indexes votes pointing into content
+// somebody asked to have removed. Boot checks this the way they check RevGated,
+// which is the only place the mistake is cheap to catch.
+func (c *VoteEventConsumer) ErasureGated() bool { return false }
+
 // HandleEvent processes a Jetstream event for vote records
 func (c *VoteEventConsumer) HandleEvent(ctx context.Context, event *JetstreamEvent) error {
 	// We only care about commit events for vote records
