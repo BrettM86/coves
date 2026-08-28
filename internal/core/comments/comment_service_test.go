@@ -379,6 +379,22 @@ func (m *mockCommunityRepo) GetByDID(ctx context.Context, did string) (*communit
 	return nil, communities.ErrCommunityNotFound
 }
 
+func (m *mockCommunityRepo) GetByNameAndOrigin(ctx context.Context, name, origin string) (*communities.Community, error) {
+	var match *communities.Community
+	for _, c := range m.communities {
+		if c.Name == name && c.Origin == origin {
+			if match != nil {
+				return nil, communities.ErrAmbiguousCommunity
+			}
+			match = c
+		}
+	}
+	if match == nil {
+		return nil, communities.ErrCommunityNotFound
+	}
+	return match, nil
+}
+
 func (m *mockCommunityRepo) GetByHandle(ctx context.Context, handle string) (*communities.Community, error) {
 	for _, c := range m.communities {
 		if c.Handle == handle {

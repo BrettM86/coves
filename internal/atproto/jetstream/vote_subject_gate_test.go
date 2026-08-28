@@ -703,7 +703,7 @@ func requireNoCountsAnywhere(t *testing.T, db *sql.DB) {
 // declined to increment — deleteVote's switch has no branch for this collection
 // either, so the withdrawal is as countless as the vote was.
 //
-// That symmetry is load-bearing, and it is why migration 038's orphan sweep
+// That symmetry is load-bearing, and it is why migration 040's orphan sweep
 // must be restricted to KNOWN collections: a sweep that deleted every
 // uncounted vote row would delete exactly this, and take the bridge's viewer
 // state with it.

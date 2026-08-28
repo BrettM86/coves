@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"Coves/internal/atproto/pds"
+	"Coves/internal/core/communities"
 	coreerrors "Coves/internal/core/errors"
 )
 
@@ -128,6 +129,14 @@ var sharedRules = []Rule{
 		func(e *coreerrors.NotFoundError) string { return e.Error() }),
 	As[*coreerrors.ConflictError](http.StatusConflict, "AlreadyExists",
 		func(e *coreerrors.ConflictError) string { return e.Error() }),
+
+	// Every handler that accepts a community identifier resolves it through
+	// communities.ResolveCommunityIdentifier, so a name@origin that matches
+	// more than one indexed community can surface from any of them. It is
+	// neither missing nor malformed: the client has to address the community
+	// by DID or handle instead, and has to be told so rather than get a 500.
+	Sentinel(communities.ErrAmbiguousCommunity, http.StatusConflict, "AmbiguousCommunity",
+		"More than one community matches this name and origin; address it by DID or handle instead"),
 
 	// PDS failures other than a dead session, which is handled ahead of the
 	// domain rules. 403 is a permissions problem — a missing OAuth scope, say —

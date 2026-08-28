@@ -192,12 +192,17 @@ func TestRematerializeLedgerMigration_RollsBack(t *testing.T) {
 	db := testkit.DB(t)
 	requireTableExists(t, db, rematerializeLedgerTable)
 
-	// The expected-version tripwire, which has now fired once: 038 (the vote-drift
-	// repair) sits on top of 037 and must come off first. Asserting which migration
-	// rolled back at each step is what keeps this pointed at 037's Down rather than
-	// drifting onto a newer one later.
+	// The expected-version tripwire, which has now fired twice: 040 (the
+	// vote-drift repair), 039 (the communities (name, origin) index) and 038
+	// (communities.origin) sit on top of 037 and come off first, one asserted
+	// step at a time. Asserting which migration rolled back is what keeps this
+	// pointed at 037's Down rather than drifting onto a newer one later.
+	require.EqualValues(t, 40, testkit.MigrateDownOne(t, db, 40),
+		"040 (the vote-drift repair) sits on top of 039 and must be rolled back first")
+	require.EqualValues(t, 39, testkit.MigrateDownOne(t, db, 39),
+		"039 (the communities (name, origin) index) sits on top of 038 and must be rolled back next")
 	require.EqualValues(t, 38, testkit.MigrateDownOne(t, db, 38),
-		"038 (the vote-drift repair) sits on top of 037 and must be rolled back first; asserting which migration came off is what stops this test drifting onto a newer one")
+		"038 (communities.origin) sits on top of 037 and must be rolled back next")
 	assert.EqualValues(t, 37, testkit.MigrateDownOne(t, db, 37),
 		"this test asserts on migration 037's Down section; rolling back a different migration would prove nothing about it")
 

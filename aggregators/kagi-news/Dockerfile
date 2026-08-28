@@ -16,14 +16,10 @@ WORKDIR /app
 # Copy requirements first for better caching
 COPY requirements.txt .
 
-# Install Python dependencies (exclude dev/test deps in production)
-RUN pip install --no-cache-dir \
-    feedparser==6.0.11 \
-    beautifulsoup4==4.12.3 \
-    requests==2.31.0 \
-    atproto==0.0.55 \
-    pyyaml==6.0.1 \
-    anthropic>=0.40.0
+# Install Python dependencies from requirements.txt so the image and the
+# repository can never disagree on a version. Dev/test deps live in
+# requirements-dev.txt and are deliberately not installed here.
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY src/ ./src/

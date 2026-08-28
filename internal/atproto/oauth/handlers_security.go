@@ -9,6 +9,18 @@ import (
 	"net/url"
 )
 
+const (
+	// postLoginRedirectCookieName is the one-shot cookie carrying the
+	// post-login redirect target from HandleLogin to handleWebCallback.
+	postLoginRedirectCookieName = "oauth_redirect"
+
+	// maxPostLoginRedirectLen bounds the post-login redirect target. Nothing we
+	// link to is anywhere near this long; the cap exists so an attacker cannot
+	// use the cookie as unbounded storage or push a giant Location header
+	// through the callback.
+	maxPostLoginRedirectLen = 2048
+)
+
 // baseMobileRedirectURIs contains the EXACT allowed redirect URIs for mobile apps.
 // These are always allowed regardless of configuration.
 //
@@ -127,4 +139,99 @@ func clearMobileCookies(w http.ResponseWriter) {
 		Path:   "/oauth",
 		MaxAge: -1,
 	})
+}
+
+// isSafeLocalPath reports whether s may be used as a post-login redirect
+// target: a path on this origin, and nothing else.
+//
+// A leading '/' alone is not that test. "//host" is a scheme-relative URL, so
+// a browser reads everything after the "//" as an authority and navigates
+// off-origin. A backslash is the same attack in another spelling: at position
+// 2 it opens an authority, and elsewhere browsers simply rewrite it to '/'.
+// Rather than reason about where it lands after that rewriting, we refuse it
+// everywhere; the second-byte check therefore overlaps the loop below on
+// purpose, stating the authority case outright rather than leaving it implied.
+//
+// Percent-encoded separators are the mirror image and are ACCEPTED: %2f and
+// %5c are ordinary path bytes decoded long after the origin has been fixed, so
+// refusing them would break legitimate paths without buying any safety.
+//
+// Control bytes are refused outright: CR and LF are header injection into the
+// Location header, and NUL and DEL are parser-confusion bytes. Browsers strip
+// tab, CR and LF from ANYWHERE in a URL before parsing it, not merely from the
+// front - "/\t//evil" becomes "///evil" - so position tells us nothing and
+// every control byte is refused wherever it appears.
+//
+// url.Parse is a second, structural gate behind the byte checks: whatever the
+// bytes say, the result must parse as a URL with no scheme and no authority.
+// It also catches the one input the byte checks let through, a malformed
+// percent-escape such as "/%zz".
+func isSafeLocalPath(s string) bool {
+	if s == "" || len(s) > maxPostLoginRedirectLen {
+		return false
+	}
+	if s[0] != '/' {
+		return false
+	}
+	// Reject scheme-relative authorities in either spelling.
+	if len(s) > 1 && (s[1] == '/' || s[1] == '\\') {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\\' || c < 0x20 || c == 0x7F {
+			return false
+		}
+	}
+
+	parsed, err := url.Parse(s)
+	if err != nil {
+		return false
+	}
+	return parsed.Scheme == "" && parsed.Host == ""
+}
+
+// postLoginRedirectCookie builds the one-shot post-login redirect cookie
+// carrying a redirect target, or nil if raw is not a safe local path. Callers
+// pass secure=!DevMode, like the other session cookies.
+//
+// Returning nil rather than an empty cookie is deliberate: an unsafe target
+// must leave nothing behind for the callback to read back, so a rejection here
+// cannot be laundered into a redirect later.
+//
+// The value is stored percent-encoded and handleWebCallback decodes it before
+// validating, so the string that was checked is the string that comes back.
+// Without that, net/http silently DROPS bytes it will not serialize in a
+// cookie value ('"', ';', anything non-ASCII) rather than rejecting them,
+// which would let a validated path like `/";/attacker.example` go out on the
+// wire as `//attacker.example` - validation having run on a string the browser
+// never sees.
+func postLoginRedirectCookie(raw string, secure bool) *http.Cookie {
+	if !isSafeLocalPath(raw) {
+		return nil
+	}
+	return &http.Cookie{
+		Name:     postLoginRedirectCookieName,
+		Value:    url.QueryEscape(raw),
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   300, // 5 minutes - enough for the OAuth round trip and no more
+	}
+}
+
+// expirePostLoginRedirectCookie builds the cookie that clears any existing
+// post-login redirect target. HandleLogin emits it whenever it does not store
+// a fresh validated target, and handleWebCallback emits it after consuming
+// one: the cookie lives for five minutes and survives across login attempts,
+// so a target planted by an earlier visit would otherwise steer an unrelated
+// flow.
+func expirePostLoginRedirectCookie() *http.Cookie {
+	return &http.Cookie{
+		Name:   postLoginRedirectCookieName,
+		Value:  "",
+		Path:   "/",
+		MaxAge: -1,
+	}
 }

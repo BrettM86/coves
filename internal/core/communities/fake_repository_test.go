@@ -147,6 +147,32 @@ func (f *fakeCommunityRepo) GetByHandle(_ context.Context, handle string) (*comm
 	return nil, communities.ErrCommunityNotFound
 }
 
+// GetByNameAndOrigin mirrors the repository contract: zero matches is a miss,
+// more than one is ambiguity, and it answers from the same seeded rows so a
+// test can build a collision by seeding two rows with the same pair.
+func (f *fakeCommunityRepo) GetByNameAndOrigin(_ context.Context, name, origin string) (*communities.Community, error) {
+	f.record("GetByNameAndOrigin", name, origin)
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var matches []*communities.Community
+	for _, community := range f.byDID {
+		if community.Name == name && community.Origin == origin {
+			matches = append(matches, community)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return nil, communities.ErrCommunityNotFound
+	case 1:
+		return matches[0], nil
+	default:
+		return nil, communities.ErrAmbiguousCommunity
+	}
+}
+
 func (f *fakeCommunityRepo) Update(_ context.Context, community *communities.Community) (*communities.Community, error) {
 	f.record("Update", community.DID)
 	if f.err != nil {

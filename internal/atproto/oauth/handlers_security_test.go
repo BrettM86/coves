@@ -3,6 +3,8 @@ package oauth
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
@@ -516,5 +518,198 @@ func TestMobileURIs_OnlyMobileAllowed(t *testing.T) {
 			"localhost should be rejected")
 		assert.False(t, handler.isAllowedRedirectURI(loopbackIPRedirectURI),
 			"127.0.0.1 should be rejected")
+	})
+}
+
+// TestIsSafeLocalPath pins the validation shared by the two post-login redirect
+// sites: HandleLogin, which accepts `?redirect=` off the query string, and
+// handleWebCallback, which reads it back out of the oauth_redirect cookie.
+//
+// The rule is "a path on this origin, and nothing else". A leading '/' is not
+// that rule: `//host` and `/\host` are scheme-relative URLs that browsers
+// resolve to a foreign authority, which is the open redirect this helper
+// exists to close. Percent-encoded separators are the mirror image and must be
+// ACCEPTED: %2f and %5c are ordinary path bytes, decoded long after the origin
+// has been fixed, so rejecting them would break legitimate paths without
+// buying any safety.
+//
+// coves:allow-host-literal: attacker.example is an RFC 2606 reserved name used
+// as the off-origin redirect target in these fixtures; nothing resolves or
+// dials it.
+func TestIsSafeLocalPath(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		// Accepted: genuine local paths.
+		{name: "bare root", input: "/", want: true},
+		{name: "simple path", input: "/delete-account", want: true},
+		{name: "path with query and fragment", input: "/a/b?c=d#e", want: true},
+		{
+			name:  "percent-encoded slashes stay a path",
+			input: "/%2f%2fattacker.example",
+			want:  true,
+		},
+		{
+			name:  "percent-encoded backslash stays a path",
+			input: "/%5cattacker.example",
+			want:  true,
+		},
+		{
+			name:  "maximum length path",
+			input: "/" + strings.Repeat("a", maxPostLoginRedirectLen-1),
+			want:  true,
+		},
+
+		// Rejected: empty, or not a path at all.
+		{name: "empty string", input: "", want: false},
+		{name: "no leading slash", input: "delete-account", want: false},
+
+		// Rejected: scheme-relative authorities.
+		{name: "scheme-relative authority", input: "//attacker.example", want: false},
+		{name: "triple slash authority", input: "///attacker.example", want: false},
+
+		// Rejected: backslashes anywhere. Browsers normalize '\' to '/' in the
+		// authority position, so a single one turns a path into a hostname.
+		{name: "leading backslash authority", input: "/\\attacker.example", want: false},
+		{name: "backslash mid-path", input: "/x/\\/evil", want: false},
+
+		// Rejected: absolute URLs, case-insensitively.
+		{name: "absolute https URL", input: "https://attacker.example", want: false},
+		{name: "absolute https URL uppercase scheme", input: "HTTPS://attacker.example", want: false},
+		{name: "javascript scheme", input: "javascript:alert(1)", want: false},
+		{name: "javascript scheme mixed case", input: "JaVaScRiPt:alert(1)", want: false},
+
+		// Rejected: control bytes. CRLF is header injection; NUL and DEL are
+		// parser-confusion bytes, and a leading tab is stripped by browsers,
+		// exposing the '//' behind it.
+		{name: "CRLF header injection", input: "/a\r\nX: y", want: false},
+		{name: "NUL byte", input: "/a\x00b", want: false},
+		{name: "tab before scheme-relative authority", input: "/\t//evil", want: false},
+		{name: "DEL byte", input: "/a\x7fb", want: false},
+
+		// Rejected: malformed percent-escapes. A truncated or non-hex escape is
+		// not a path we can reason about: whatever decodes it downstream may
+		// disagree with us about what it means, and disagreement is where the
+		// bypass lives.
+		{name: "non-hex percent escape", input: "/%zz", want: false},
+		{name: "truncated percent escape", input: "/%2", want: false},
+
+		// Rejected: unbounded length.
+		{name: "over maximum length", input: "/" + strings.Repeat("a", maxPostLoginRedirectLen), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isSafeLocalPath(tt.input),
+				"isSafeLocalPath(%q)", tt.input)
+		})
+	}
+}
+
+// TestPostLoginRedirectCookie pins the constructor for the one-shot
+// oauth_redirect cookie. Returning nil rather than an empty cookie is the
+// point: an unsafe target must leave no cookie at all for the callback to read
+// back, so the rejection cannot be laundered into a redirect later.
+//
+// coves:allow-host-literal: attacker.example is an RFC 2606 reserved name used
+// as the rejected off-origin target; nothing resolves or dials it.
+func TestPostLoginRedirectCookie(t *testing.T) {
+	t.Run("safe path over TLS", func(t *testing.T) {
+		cookie := postLoginRedirectCookie("/delete-account", true)
+
+		require.NotNil(t, cookie, "a safe local path must produce a cookie")
+		assert.Equal(t, "oauth_redirect", cookie.Name)
+		assert.Equal(t, url.QueryEscape("/delete-account"), cookie.Value,
+			"the target is transmitted percent-encoded so net/http cannot mangle it in transit")
+		assert.Equal(t, "/", cookie.Path)
+		assert.True(t, cookie.HttpOnly, "redirect target must not be readable from JS")
+		assert.True(t, cookie.Secure, "secure=true must set the Secure attribute")
+		assert.Equal(t, http.SameSiteLaxMode, cookie.SameSite)
+		assert.Equal(t, 300, cookie.MaxAge, "cookie should outlive the OAuth round trip and no more")
+	})
+
+	t.Run("safe path without TLS", func(t *testing.T) {
+		cookie := postLoginRedirectCookie("/delete-account", false)
+
+		require.NotNil(t, cookie, "a safe local path must produce a cookie")
+		assert.False(t, cookie.Secure, "secure=false must clear the Secure attribute")
+		assert.Equal(t, url.QueryEscape("/delete-account"), cookie.Value,
+			"value is unaffected by the Secure flag")
+	})
+
+	t.Run("scheme-relative target produces no cookie", func(t *testing.T) {
+		assert.Nil(t, postLoginRedirectCookie("//attacker.example", true),
+			"an off-origin target must not be stored for the callback to read back")
+	})
+
+	t.Run("empty target produces no cookie", func(t *testing.T) {
+		assert.Nil(t, postLoginRedirectCookie("", true),
+			"no requested redirect means no cookie")
+	})
+
+	// The cookie has to survive the WIRE, and the wire is where a
+	// validated-then-mangled value turns back into the bug this whole change
+	// closes. net/http does not reject a cookie value containing '"' or ';' —
+	// it silently DROPS those bytes (sanitizeCookieValue). So a target like
+	// `/";/attacker.example`, which isSafeLocalPath correctly accepts as a
+	// path, is transmitted as `//attacker.example`: a scheme-relative URL that
+	// the callback reads back and honors. Validation ran on a string the
+	// browser never sees.
+	//
+	// Percent-encoding the value closes that gap. Every byte that leaves is one
+	// net/http will carry unchanged, and the callback unescapes before
+	// validating, so the string checked is the string stored. The non-ASCII
+	// case is the same defect without an attacker: "café" is silently
+	// transmitted as "caf".
+	//
+	// coves:allow-host-literal: attacker.example is an RFC 2606 reserved name
+	// used as the smuggled off-origin target; nothing resolves or dials it.
+	t.Run("value survives the wire byte for byte", func(t *testing.T) {
+		targets := []struct {
+			name string
+			raw  string
+		}{
+			{name: "quote and semicolon smuggle an authority", raw: `/";/attacker.example`},
+			{name: "non-ASCII path", raw: "/café/page"},
+			{name: "plain path", raw: "/delete-account"},
+			{name: "path with query and fragment", raw: "/a/b?c=d#e"},
+		}
+
+		for _, target := range targets {
+			t.Run(target.name, func(t *testing.T) {
+				cookie := postLoginRedirectCookie(target.raw, true)
+				require.NotNil(t, cookie, "%q is a safe local path and must produce a cookie", target.raw)
+				assert.Equal(t, url.QueryEscape(target.raw), cookie.Value,
+					"the stored value must be the percent-encoded target")
+
+				// Serialize exactly as the handler does, then read it back the
+				// way the callback does.
+				rec := httptest.NewRecorder()
+				http.SetCookie(rec, cookie)
+				setCookie := rec.Header().Get("Set-Cookie")
+				require.NotEmpty(t, setCookie, "http.SetCookie emitted no header")
+
+				assert.NotContains(t, setCookie, "=//",
+					"the serialized cookie carries a scheme-relative authority: net/http dropped "+
+						"bytes from %q until what is left resolves off-origin", target.raw)
+
+				nameValue := setCookie
+				if end := strings.Index(setCookie, ";"); end != -1 {
+					nameValue = setCookie[:end]
+				}
+				req := httptest.NewRequest(http.MethodGet, "/oauth/callback", nil)
+				req.Header.Set("Cookie", nameValue)
+
+				echoed, err := req.Cookie("oauth_redirect")
+				require.NoError(t, err, "the cookie did not survive the round trip at all")
+
+				decoded, err := url.QueryUnescape(echoed.Value)
+				require.NoError(t, err, "the transmitted value must decode")
+				assert.Equal(t, target.raw, decoded,
+					"the target changed in transit: validation ran on a string the browser never sees")
+			})
+		}
 	})
 }

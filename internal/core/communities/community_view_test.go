@@ -57,6 +57,7 @@ func fullCommunity() *communities.Community {
 		DID:                    "did:plc:viewcommunity00000000",
 		Handle:                 "c-gardening.coves.example",
 		Name:                   "gardening",
+		Origin:                 "coves.example",
 		DisplayName:            "Gardening",
 		Description:            "things that grow",
 		DescriptionFacets:      []byte(`[{"index":{"byteStart":0,"byteEnd":6}}]`),
@@ -91,6 +92,7 @@ func TestToCommunityView_CarriesTheListFields(t *testing.T) {
 	assert.Equal(t, community.Name, view.Name)
 	assert.Equal(t, community.DisplayName, view.DisplayName)
 	assert.Equal(t, "!gardening@coves.example", view.DisplayHandle)
+	assert.Equal(t, community.Origin, view.Origin)
 	assert.Equal(t, community.Visibility, view.Visibility)
 
 	// The three counters are the classic transposition: they are all ints, all
@@ -117,7 +119,7 @@ func TestToCommunityView_OmitsTheDetailOnlyFields(t *testing.T) {
 	view := fullCommunity().ToCommunityView()
 
 	assert.Equal(t, []string{
-		"DID", "Handle", "Name", "DisplayName", "DisplayHandle", "Avatar",
+		"DID", "Handle", "Name", "DisplayName", "DisplayHandle", "Origin", "Avatar",
 		"Visibility", "SubscriberCount", "MemberCount", "PostCount", "Viewer",
 	}, fieldNamesOf(view),
 		"CommunityView's shape changed. If the new field belongs in a list of communities, add it "+
@@ -135,6 +137,7 @@ func TestToCommunityViewDetailed_CarriesEverything(t *testing.T) {
 	assert.Equal(t, community.Name, view.Name)
 	assert.Equal(t, community.DisplayName, view.DisplayName)
 	assert.Equal(t, "!gardening@coves.example", view.DisplayHandle)
+	assert.Equal(t, community.Origin, view.Origin)
 	assert.Equal(t, community.Description, view.Description)
 	assert.Equal(t, community.CreatedByDID, view.CreatedByDID)
 	assert.Equal(t, community.HostedByDID, view.HostedByDID,
@@ -223,6 +226,36 @@ func TestGetDisplayHandle(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			community := &communities.Community{Handle: tc.handle}
+			assert.Equal(t, tc.want, community.GetDisplayHandle())
+		})
+	}
+}
+
+// TestGetDisplayHandle_Origin pins the other input: a validated Origin wins
+// over whatever the DNS handle looks like. This is what lets a bridged
+// community whose handle is comicstrips.lemmy-world.tdpl.io — no c- prefix, a
+// domain nobody would want to read — render as !comicstrips@lemmy.world. The
+// handle-derived form is only the fallback for rows that carry no origin.
+func TestGetDisplayHandle_Origin(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		handle string
+		cname  string
+		origin string
+		want   string
+	}{
+		{"a bridged community", "comicstrips.lemmy-world.tdpl.io", "comicstrips", "lemmy.world", "!comicstrips@lemmy.world"},
+		{"a native community", "c-nba.coves.social", "nba", "coves.social", "!nba@coves.social"},
+		{"origin overrides a handle it disagrees with", "c-nba.dev.coves.social", "nba", "dev.coves.social", "!nba@dev.coves.social"},
+		{"no origin falls back to the handle", "c-nba.coves.social", "nba", "", "!nba@coves.social"},
+		{"no origin and an unprefixed handle stays raw", "comicstrips.lemmy-world.tdpl.io", "comicstrips", "", "comicstrips.lemmy-world.tdpl.io"},
+		{"origin without a name cannot build the form", "c-nba.coves.social", "", "coves.social", "!nba@coves.social"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			community := &communities.Community{Handle: tc.handle, Name: tc.cname, Origin: tc.origin}
 			assert.Equal(t, tc.want, community.GetDisplayHandle())
 		})
 	}

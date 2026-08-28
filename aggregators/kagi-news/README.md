@@ -36,7 +36,8 @@ aggregators/kagi-news/
 ├── docker-compose.yml         # Docker Compose configuration
 ├── docker-entrypoint.sh       # Container entrypoint script
 ├── .dockerignore              # Docker build exclusions
-├── requirements.txt           # Python dependencies
+├── requirements.txt           # Runtime dependencies (what the image installs)
+├── requirements-dev.txt       # Test/lint dependencies (includes requirements.txt)
 ├── config.example.yaml        # Example configuration
 ├── .env.example               # Environment variables template
 ├── crontab                    # CRON schedule
@@ -128,7 +129,7 @@ Once registered and authorized by a community, your aggregator can post content.
 
 2. Install dependencies:
    ```bash
-   pip install -r requirements.txt
+   pip install -r requirements-dev.txt
    ```
 
 3. Copy configuration templates:
@@ -265,7 +266,7 @@ If you prefer running without Docker, use the traditional approach:
    ```bash
    python3 -m venv venv
    source venv/bin/activate
-   pip install -r requirements.txt
+   pip install -r requirements-dev.txt
    ```
 
 2. **Configure crontab:**

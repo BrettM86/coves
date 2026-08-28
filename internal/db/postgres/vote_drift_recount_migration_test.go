@@ -16,7 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Migration 038, the one-time repair of vote drift left behind by the consumer
+// Migration 040, the one-time repair of vote drift left behind by the consumer
 // this branch fixes.
 //
 // Going forward the vote consumer holds two invariants: no vote row lands
@@ -69,19 +69,19 @@ type recountCounts struct {
 	score     int
 }
 
-func TestMigration038_RecountsVoteDriftAndSweepsLegacyOrphans(t *testing.T) {
+func TestMigration040_RecountsVoteDriftAndSweepsLegacyOrphans(t *testing.T) {
 	t.Parallel()
 
 	db := testkit.DB(t)
 	ctx := context.Background()
 
-	// Roll 038 off, seed the pre-repair state, then roll it back on: the
+	// Roll 040 off, seed the pre-repair state, then roll it back on: the
 	// migration has to find drifted rows already present, which is the whole
 	// point of a repair migration and cannot be observed by seeding after it has
 	// run. Asserting the version that came off is the tripwire that keeps this
-	// pointed at 038 once a 039 lands.
-	require.EqualValues(t, 38, testkit.MigrateDownOne(t, db, 38),
-		"this test seeds the state migration 038 repairs; rolling back a different migration would seed against the wrong schema")
+	// pointed at 040 once a 041 lands.
+	require.EqualValues(t, 40, testkit.MigrateDownOne(t, db, 40),
+		"this test seeds the state migration 040 repairs; rolling back a different migration would seed against the wrong schema")
 
 	communityName := testkit.UniqueIDWithPrefix(t, "drift")
 	communityDID, err := fixtures.Community(ctx, db, communityName, "owner"+communityName)
