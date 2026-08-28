@@ -224,8 +224,10 @@ func (a *application) registerFeedConsumers() []feedConsumer {
 	// Votes from user repositories, with atomic post/comment count updates.
 	//
 	// The same erasure marker the post consumer reads: a vote whose subject was
-	// swept by migration 036 has no row to wait for, and without the lookup the
-	// ordering gate would redrive it until it dead-letters.
+	// swept by an account erasure has no row to wait for. Without the lookup, the
+	// ordering gate refuses it as merely early — it dead-letters at once, the
+	// redriver replays it until the attempt budget is spent, and the row then sits
+	// retired in the queue alongside events that represent a real backlog.
 	consumers = append(consumers, feedConsumer{
 		name: jetstream.ConsumerVotes,
 		handler: jetstream.NewVoteEventConsumer(a.voteRepo, a.userService, a.db,

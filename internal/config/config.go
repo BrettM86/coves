@@ -26,6 +26,13 @@ const (
 	// minSecretLength is the shortest value accepted for a production secret
 	// that is used directly as key material rather than decoded.
 	minSecretLength = 16
+
+	// defaultRedriveInterval is how long a dead-lettered event waits for its
+	// next replay. Five minutes is slow enough that a backlog of events failing
+	// for the same reason does not hammer the dependency that is already unwell,
+	// and fast enough that MaxRedriveAttempts passes still fit inside an outage
+	// a person would call brief.
+	defaultRedriveInterval = 5 * time.Minute
 )
 
 // placeholderPrefix marks the documented "fill this in" values in
@@ -669,15 +676,12 @@ func (c *Config) loadJetstream() error {
 	if err != nil {
 		return err
 	}
-	// Rejected HERE rather than in Validate, and rejected at zero rather than at
-	// negative, which is the opposite of ACCEPTANCE_QUEUE_INTERVAL on both
-	// counts. Zero disables that driver and disabling it is a supported
-	// deployment; the redriver has no such mode — every consumer dead-letters, so
-	// a redriver that never runs is a queue that only grows — and time.NewTicker
-	// panics on zero, which would turn a typo into a crash inside a running
-	// consumer. Validate reads a Config that callers also assemble by hand, where
-	// an unset field means "this test is not about the redriver"; only a value
-	// that came from the environment can be held to this.
+	// Rejected HERE rather than in Validate — the only part of this rule that is
+	// about placement; why zero is rejected at all is on the
+	// JetstreamConfig.RedriveInterval field doc. Validate reads a Config that
+	// callers also assemble by hand, where an unset field means "this test is not
+	// about the redriver"; only a value that came from the environment can be
+	// held to this.
 	if redriveInterval <= 0 {
 		return fmt.Errorf("REDRIVE_INTERVAL must be greater than 0 (got %s); "+
 			"the dead letter redriver cannot be disabled", redriveInterval)
@@ -689,13 +693,6 @@ func (c *Config) loadJetstream() error {
 	}
 	return nil
 }
-
-// defaultRedriveInterval is how long a dead-lettered event waits for its next
-// replay. Five minutes is slow enough that a backlog of events failing for the
-// same reason does not hammer the dependency that is already unwell, and fast
-// enough that MaxRedriveAttempts passes still fit inside an outage a person
-// would call brief.
-const defaultRedriveInterval = 5 * time.Minute
 
 // Default submission quotas. They apply in every environment, dev and
 // production alike, because the alternative — requiring the variables in

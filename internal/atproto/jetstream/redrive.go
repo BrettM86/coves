@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 )
@@ -83,6 +84,16 @@ func NewDeadLetterRedriver(queue DeadLetterQueue, handlers map[string]EventHandl
 	}
 	for _, opt := range opts {
 		opt(r)
+	}
+	// A non-positive interval panics time.NewTicker, and Run builds its ticker
+	// inside the goroutine cmd/server launches and never joins — so the failure
+	// would land after boot has reported healthy, on a stack naming the ticker
+	// rather than the configuration that supplied the value. Raised here it
+	// happens during wiring, on the main goroutine, before anything is served.
+	// The environment path already rejects this at load; what reaches here is a
+	// hand-assembled config, which is programmer error.
+	if r.interval <= 0 {
+		panic(fmt.Sprintf("jetstream: NewDeadLetterRedriver needs a positive redrive interval, got %s", r.interval))
 	}
 	return r
 }

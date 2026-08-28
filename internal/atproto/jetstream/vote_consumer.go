@@ -34,8 +34,9 @@ import (
 // permanently and with nothing left to attribute it to.
 //
 // Only the withdrawal path can meet a deleted subject today; the ordering gate
-// drops creates before any count runs. The filter is absent at all four mutating
-// sites anyway, so the invariant reads the same wherever a reader lands.
+// drops creates before any count runs. The filter is absent at all three mutating
+// sites (twelve statements) anyway, so the invariant reads the same wherever a
+// reader lands.
 
 // VoteEventConsumer consumes vote-related events from Jetstream
 // Handles CREATE and DELETE operations for social.coves.feed.vote
@@ -88,7 +89,7 @@ func (c *VoteEventConsumer) RevGated() bool { return true }
 // account's post as an ordinary late one and indexes votes pointing into content
 // somebody asked to have removed. Boot checks this the way they check RevGated,
 // which is the only place the mistake is cheap to catch.
-func (c *VoteEventConsumer) ErasureGated() bool { return false }
+func (c *VoteEventConsumer) ErasureGated() bool { return c.deletedAccounts != nil }
 
 // HandleEvent processes a Jetstream event for vote records
 func (c *VoteEventConsumer) HandleEvent(ctx context.Context, event *JetstreamEvent) error {
@@ -395,6 +396,11 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 	//     not-found branch).
 	//
 	//   - LIVE: proceed.
+	//
+	// Both drop branches commit BEFORE the stale-vote cleanup below, deliberately.
+	// A drop decides THIS event and nothing else; a stale live vote by the same
+	// voter on the same subject only matters when a countable vote next arrives
+	// for it, and that arrival runs the cleanup itself.
 	var subjectStateQuery string
 	switch collection := utils.ExtractCollectionFromURI(vote.SubjectURI); {
 	case posts.IsPostCollection(collection):
@@ -409,12 +415,14 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 		err := tx.QueryRowContext(ctx, subjectStateQuery, vote.SubjectURI).Scan(&subjectDeletedAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			// ERASURE is the third reason a subject can be missing, and it is the
-			// one "no row" cannot distinguish on its own: migration 036 hard-deletes
-			// an erased account's posts and comments, leaving exactly what a subject
-			// still in flight leaves. The difference is that this one is never
-			// arriving — the post consumer's own gate refuses to re-index it — so it
-			// is a drop with a tombstone (B3's shape) rather than a refusal that
-			// spends the entire redrive budget before dead-lettering forever.
+			// one "no row" cannot distinguish on its own: account erasure (the
+			// migration-036 marker flow; the deletes live in user_repo.DeleteUser)
+			// hard-deletes the account's posts and comments, leaving exactly what a
+			// subject still in flight leaves. The difference is that this one is
+			// never arriving — the post consumer's own gate refuses to re-index it —
+			// so it takes the deleted-subject drop's shape, tombstone and all,
+			// rather than a refusal that spends the entire redrive budget before
+			// dead-lettering forever.
 			//
 			// Asked only when the row is absent: a subject that exists makes erasure
 			// moot, so the lookup stays off the path every ordinary vote takes.
@@ -613,15 +621,25 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 		return false, fmt.Errorf("failed to check update result: %w", err)
 	}
 
-	// The ordering gate above proved the subject was present, this update filters
-	// on nothing but its URI, and the gate's read takes no row lock — so zero rows
-	// means the subject was HARD-deleted between the two, which in practice means
-	// an account erasure landed mid-transaction. The vote row stays and is
-	// uncounted, which is safe only because the subject is gone for good:
-	// deleteVote's decrement will match zero rows for the same reason, so nothing
-	// can later be subtracted for an increment that never applied.
+	// The ordering gate above proved the subject was present and live, this update
+	// filters on nothing but its URI, and the gate's read takes no row lock — so
+	// zero rows means the subject was hard-deleted between the two, an account
+	// erasure landing mid-transaction.
+	//
+	// Refusing rather than committing an uncounted row hands the decision back to
+	// the gate: the rollback undoes the insert AND the rev advance, and the
+	// redriven replay finds no subject row at all, so it lands on the erased drop
+	// or the absent-subject refusal — whichever is true by then — instead of this
+	// path having to guess. Plain error, not ErrPermanentEvent: the redrive is the
+	// whole mechanism.
+	//
+	// Not directly pinned by a test. The race needs a delete to commit inside this
+	// transaction's window, which HandleEvent alone cannot arrange without a hook
+	// into the transaction; the gate's own tests cover both outcomes the replay
+	// can reach.
 	if rowsAffected == 0 {
-		log.Printf("Warning: Vote subject no longer exists: %s (vote indexed anyway)", vote.SubjectURI)
+		return false, fmt.Errorf("vote subject %s disappeared while counting the vote: retry once the gate can classify it",
+			vote.SubjectURI)
 	}
 
 	// Commit transaction
@@ -693,6 +711,21 @@ func (c *VoteEventConsumer) validateVoteEvent(ctx context.Context, repoDID strin
 	// Validate subject has both URI and CID (strong reference)
 	if vote.Subject.URI == "" || vote.Subject.CID == "" {
 		return fmt.Errorf("%w: invalid subject: must have both URI and CID (strong reference)", ErrPermanentEvent)
+	}
+
+	// The subject URI must be a well-formed record URI, not merely non-empty.
+	// Everything downstream reads structure out of it — the collection segment
+	// picks the table, the repo segment is the DID the erasure gate asks about —
+	// so a URI with its segments in the wrong places routes on a value that was
+	// never a collection and looks up a row no record could be keyed on. The
+	// ordering gate would then read that miss as "the subject has not arrived
+	// yet" and refuse transiently, spending the whole redrive budget on a verdict
+	// the payload alone already settles. An unfamiliar collection is NOT rejected
+	// here: a bridged app.bsky.feed.post subject parses cleanly and must keep
+	// doing so.
+	if _, _, _, ok := parseRecordURI(vote.Subject.URI); !ok {
+		return fmt.Errorf("%w: invalid subject URI %q: must be at://<repo>/<collection>/<rkey>",
+			ErrPermanentEvent, vote.Subject.URI)
 	}
 
 	return nil

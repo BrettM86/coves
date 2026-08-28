@@ -29,6 +29,11 @@
 -- subject is indexed later reads as un-voted to the voter until they tap again,
 -- which is the same thing they see today for a vote that was never counted.
 --
+-- The three literals below mirror the Go predicates that route a vote to a table
+-- — posts.IsPostCollection (the two post collections) and
+-- jetstream.CommentCollection — which remain the source of truth; a collection
+-- added there and not here is simply not repaired by this one-time migration.
+--
 -- split_part(subject_uri, '/', 4) is the collection segment: an AT-URI splits as
 -- 'at:', '', <repo did>, <collection>, <rkey>.
 UPDATE votes AS v
@@ -49,7 +54,8 @@ WHERE v.deleted_at IS NULL
 -- restored and whose counts moderation surfaces still read, so skipping it
 -- leaves the rows the bug hit hardest wrong and revives corrupt counts on
 -- resurrection. Subjects with no live votes are reset rather than skipped, which
--- is what repairs the erasure case — migration 036 hard-deletes an erased
+-- is what repairs the erasure case — account erasure (the migration-036 marker
+-- flow; the deletes live in user_repo.DeleteUser) hard-deletes an erased
 -- account's vote rows, so the only evidence of the inflation they left behind is
 -- the absence of rows to justify it.
 --
