@@ -314,19 +314,21 @@ func (h *OAuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Store post-login redirect URL in cookie if provided
 	// This allows redirecting to a specific page after OAuth completes (e.g., /delete-account)
-	if postLoginRedirect := r.URL.Query().Get("redirect"); postLoginRedirect != "" {
-		// Only allow relative paths to prevent open redirect vulnerabilities
-		if len(postLoginRedirect) > 0 && postLoginRedirect[0] == '/' {
-			http.SetCookie(w, &http.Cookie{
-				Name:     "oauth_redirect",
-				Value:    postLoginRedirect,
-				Path:     "/",
-				HttpOnly: true,
-				Secure:   !h.client.Config.DevMode,
-				SameSite: http.SameSiteLaxMode,
-				MaxAge:   300, // 5 minutes - enough for OAuth flow
-			})
+	// Only a genuinely local path may be stored; anything else is an open
+	// redirect waiting for the callback to honor it. Whenever we do NOT store a
+	// fresh validated target we must expire the cookie instead of leaving it
+	// alone, or a target planted by an earlier visit survives into this login.
+	postLoginRedirect := r.URL.Query().Get("redirect")
+	if cookie := postLoginRedirectCookie(postLoginRedirect, !h.client.Config.DevMode); cookie != nil {
+		http.SetCookie(w, cookie)
+	} else {
+		if postLoginRedirect != "" {
+			// Never log the value or any prefix of it: it is attacker-chosen
+			// and would put an off-origin URL into the logs verbatim.
+			slog.Warn("rejected unsafe post-login redirect target",
+				"site", "login", "len", len(postLoginRedirect))
 		}
+		http.SetCookie(w, expirePostLoginRedirectCookie())
 	}
 
 	// Redirect to PDS
@@ -838,18 +840,26 @@ func (h *OAuthHandler) handleWebCallback(w http.ResponseWriter, r *http.Request,
 
 	// Check for post-login redirect cookie
 	redirectURL := "/"
-	if redirectCookie, err := r.Cookie("oauth_redirect"); err == nil && redirectCookie.Value != "" {
-		// Validate it's a relative path (security check)
-		if len(redirectCookie.Value) > 0 && redirectCookie.Value[0] == '/' {
-			redirectURL = redirectCookie.Value
+	if redirectCookie, err := r.Cookie(postLoginRedirectCookieName); err == nil && redirectCookie.Value != "" {
+		// The write site stores the target percent-encoded, so decode before
+		// validating — never instead of validating. A value that does not
+		// decode is refused rather than guessed at. Unescaping is a no-op for
+		// an unencoded legacy cookie, which therefore still works.
+		//
+		// Validation is "is this a genuinely local path", not merely
+		// slash-prefixed: "//host" is a scheme-relative URL a browser resolves
+		// off-origin. An unsafe value falls back to "/" rather than being
+		// partially sanitized.
+		decoded, decodeErr := url.QueryUnescape(redirectCookie.Value)
+		if decodeErr == nil && isSafeLocalPath(decoded) {
+			redirectURL = decoded
+		} else {
+			// Never log the value or any prefix of it: it is attacker-chosen.
+			slog.Warn("rejected unsafe post-login redirect target",
+				"site", "callback", "len", len(redirectCookie.Value))
 		}
-		// Clear the redirect cookie
-		http.SetCookie(w, &http.Cookie{
-			Name:   "oauth_redirect",
-			Value:  "",
-			Path:   "/",
-			MaxAge: -1,
-		})
+		// Clear the one-shot redirect cookie
+		http.SetCookie(w, expirePostLoginRedirectCookie())
 	}
 
 	// Add base URL for production
