@@ -1,8 +1,10 @@
 # Coves Production Caddyfile
-# Handles HTTPS for both coves.social (AppView) and coves.me (PDS)
+# Handles HTTPS for coves.social (web app + AppView), coves.me (PDS), the
+# media hostname and the Tidepool bridge.
 #
 # Domain architecture:
-#   - coves.social: AppView (API, web app)
+#   - coves.social: SvelteKit frontend (pages) + AppView (XRPC/OAuth
+#     allowlist) + Tidepool's ActivityPub surface
 #   - *.coves.social: Community handles (route atproto-did to PDS)
 #   - pds.coves.me: PDS canonical hostname (for relay registration)
 #   - coves.me: PDS legacy hostname (kept for compatibility)
@@ -143,14 +145,9 @@ coves.social {
     # answer for a non-browser client.
     handle / {
         @html header Accept *text/html*
-        # The web app, with the SAME upstream options as the catch-all
-        # below — kept verbatim, header_up Host included (DPoP htu
-        # matching depends on it).
-        reverse_proxy @html appview:8080 {
-            health_uri /xrpc/_health
-            health_interval 30s
-            health_timeout 5s
-            header_up Host {host}
+        # The web app: the SvelteKit frontend, with the SAME upstream options
+        # as the frontend catch-all below (see there for why each matters).
+        reverse_proxy @html coves-prod-frontend:3000 {
             header_up X-Real-IP {remote_host}
             header_up X-Forwarded-For {remote_host}
             header_up X-Forwarded-Proto {scheme}
@@ -162,8 +159,47 @@ coves.social {
         }
     }
 
-    # Proxy all requests to AppView
-    handle {
+    # ── AppView: an explicit allowlist, no longer the catch-all ─────────
+    # Every Go route that is MEANT to be reachable on this hostname is named
+    # here (internal/api/routes/*.go, cmd/server/routes.go). Anything not
+    # listed is a page and belongs to the SvelteKit frontend below — so a
+    # new AppView HTTP route must be added to this matcher, or the frontend
+    # answers it with its rendered 404 page. The guard is
+    # internal/api/routes/caddy_allowlist_test.go, which walks the real
+    # router against this block in both directions (`make test`).
+    #
+    #   /xrpc/*                       XRPC API (browser calls this directly;
+    #                                 the frontend's own server goes to
+    #                                 appview:8080 over the Docker network)
+    #   /oauth/*                      web + mobile OAuth login/callback/
+    #                                 logout/refresh
+    #   /app/oauth/callback           mobile deep-link fallback
+    #   /oauth-client-metadata.json   OAuth client metadata + JWKS
+    #   /oauth-client-keys.json
+    #   /api/me                       session → viewer (RequireAuth)
+    #   /static/*, /m/turnstile.html  Go-served assets + Turnstile host page
+    #   /privacy, /safety/*,          Go-rendered policy + account pages
+    #   /delete-account*              (the frontend has /legal, not these;
+    #                                 community-guidelines.md links here)
+    #   /health*                      liveness / consumer health
+    #
+    # Go also registers "/", /img/*, and three /.well-known/* files. Those
+    # are deliberately NOT here: the apex is split by Accept in its own
+    # block above, /img/* is a redirect to the media hostname, and
+    # /.well-known/* is answered by the static file_server block above
+    # (which shadows the AppView's own /.well-known handlers by design).
+    # Keep this matcher's path set DISJOINT from every other handle in the
+    # block: Caddy only specificity-sorts single-path handles, so a
+    # multi-path named matcher like this one takes its precedence purely
+    # from position — it is above the frontend catch-all, and nothing else.
+    #
+    # One `path` line on purpose: Caddy 2.11 merges repeated `path` lines in
+    # a named matcher, but not every reader knows that, and the test above
+    # parses this block literally.
+    @appview {
+        path /xrpc/* /oauth/* /app/oauth/callback /oauth-client-metadata.json /oauth-client-keys.json /api/me /static/* /m/turnstile.html /privacy /safety/* /delete-account /delete-account/* /health /health/*
+    }
+    handle @appview {
         reverse_proxy appview:8080 {
             # Health check
             health_uri /xrpc/_health
@@ -173,6 +209,87 @@ coves.social {
             # Headers for proper DPoP verification
             # Host headers are critical for DPoP htu (HTTP URI) matching
             header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+            header_up X-Forwarded-Host {host}
+        }
+
+        # Default CSP for AppView responses that carry none of their own.
+        # Set-if-absent: the Turnstile widget host page sets its own
+        # Cloudflare-allowing policy (internal/web/handlers.go
+        # TurnstileHandler) and must pass through untouched. Scoped to THIS
+        # route on purpose — the frontend below owns its policy
+        # (coves-frontend: src/lib/server/security-headers.ts), and a
+        # missing app CSP there must be visibly missing, not papered over
+        # by a static header carrying 'unsafe-inline'.
+        #
+        # img-src covers the media hostname every image URL the AppView
+        # emits now points at. media-src must name the PDS hosts directly:
+        # the image proxy transcodes stills and cannot stream, so
+        # social.coves.embed.video#view serves video from the hosting PDS
+        # (the accepted gap in docs/PRD_CSAM_SCANNING.md workstream 5).
+        # The listed hosts are our own PDS plus tdpl.io, the bridge PDS
+        # hosting blobs for bridged Lemmy communities. Video on a community
+        # hosted by any OTHER peer is blocked, fail-closed, browser-side —
+        # a fixed host list cannot say "any PDS in the network". It closes
+        # when video gets a streaming passthrough on img.coves.social. The
+        # frontend's copy of this list is CSP_VIDEO_ORIGINS in
+        # coves-frontend .env.prod; keep the two in step.
+        header ?Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://img.coves.social; media-src 'self' https://pds.coves.me https://coves.me https://tdpl.io; connect-src 'self' https://*.bsky.network wss://*.bsky.network; base-uri 'self'; object-src 'none'; frame-ancestors 'none'"
+    }
+
+    # ── Frontend: the catch-all ─────────────────────────────────────────
+    # The SvelteKit app (coves-frontend), deployed as its OWN compose project
+    # from /opt/coves-frontend and reachable only on coves-prod-network. It
+    # is addressed by CONTAINER name: a bare `frontend` service alias is not
+    # unique across the compose projects sharing this network (the same
+    # cross-stack trap as the `postgres` / `jetstream` aliases).
+    #
+    # X-Real-IP is what the frontend reads as the client address
+    # (ADDRESS_HEADER=x-real-ip) and stamps onto every upstream request it
+    # makes to the AppView — the /api/proxy hop AND the per-page /api/me
+    # session check — so the backend's rate limits key on the real user.
+    # header_up REPLACES the header, which is the property the whole scheme
+    # rests on: a client-supplied X-Real-IP must never survive to the
+    # frontend. The container publishes no port, so nothing outside Docker
+    # can reach it; the boundary is membership of coves-prod-network. Peers
+    # on that network (appview, pds, tidepool, the aggregators) COULD dial
+    # it and assert any address — they are our own infrastructure, and that
+    # is the accepted trust model, not an enforced one.
+    #
+    # No active health check, deliberately: there is a single upstream and
+    # nothing to fail over to, so one failed/slow probe would 503 the whole
+    # site until the next probe. Passive dial failure -> 502 carries the
+    # same signal (same reasoning as the tdpl.io block).
+    #
+    # No CSP fallback on the page routes — the app emits a complete,
+    # per-request nonce'd policy (coves-frontend:
+    # src/lib/server/security-headers.ts), and the launch gate is
+    # `curl -sI -H 'Accept: text/html' https://coves.social/` showing
+    # 'nonce-' in script-src (the Accept header matters: the apex split
+    # above sends anything else to Tidepool).
+    #
+    # The frontend's build assets, service worker and the files under its
+    # static/ dir are served by adapter-node's sirv AHEAD of the app's hooks
+    # and carry no CSP of their own. They get a minimal fallback here so
+    # the compiled service worker is still governed by a policy — a CSP on
+    # a script governs the worker it becomes — without touching any page
+    # response. Set-if-absent, like every other default in this file.
+    @frontend_static {
+        path /_app/* /service-worker.js /manifest.json /robots.txt /favicon.svg /font/* /logo_512.png /logo_maskable_512.png
+    }
+    handle @frontend_static {
+        reverse_proxy coves-prod-frontend:3000 {
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+            header_up X-Forwarded-Host {host}
+        }
+        header ?Content-Security-Policy "default-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'self'; object-src 'none'; frame-ancestors 'none'"
+    }
+    handle {
+        reverse_proxy coves-prod-frontend:3000 {
             header_up X-Real-IP {remote_host}
             header_up X-Forwarded-For {remote_host}
             header_up X-Forwarded-Proto {scheme}
@@ -191,8 +308,10 @@ coves.social {
     # owns these values (coves-frontend: src/lib/server/security-headers.ts)
     # and must not be silently overridden by a replace-semantics header the
     # day it tightens one; the defaults here cover responses that never pass
-    # through its hooks (AppView, and the frontend's sirv-served static
-    # assets once it is proxied here).
+    # through its hooks. Content-Security-Policy is deliberately NOT among
+    # them: the AppView's fallback lives inside its handle block and the
+    # frontend's static-asset fallback inside @frontend_static, so no CSP
+    # here can ever land on a frontend page response.
     header {
         Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
         ?X-Content-Type-Options "nosniff"
@@ -201,42 +320,6 @@ coves.social {
         # Remove Server header
         -Server
     }
-
-    # Default CSP for responses that carry none of their own. Set-if-absent for
-    # the same reason as above: the frontend emits a complete, per-request
-    # nonce'd policy, and the Turnstile widget host page sets its own
-    # Cloudflare-allowing one (internal/web/handlers.go TurnstileHandler) —
-    # both pass through untouched. A plain `header` would REPLACE the
-    # frontend's nonce with the `'unsafe-inline'` a static header has to carry,
-    # silently undoing its script-src hardening (flagged in the July 2026
-    # frontend security review).
-    #
-    # NOTE(frontend-deploy): the SvelteKit service is not yet proxied by this
-    # block; this is preparatory. When it is, give it its own reverse_proxy
-    # block WITHOUT this fallback so a missing app CSP is visibly missing, and
-    # keep in mind this default also lands on its sirv-served
-    # /service-worker.js (a CSP on a script governs the worker it becomes —
-    # the worker only handles same-origin requests for that reason).
-    #
-    # img-src covers the media hostname every image URL the AppView emits now
-    # points at. media-src is separate and must name the PDS hosts directly:
-    # the image proxy transcodes stills and cannot stream, so
-    # social.coves.embed.video#view deliberately serves video from the hosting
-    # PDS (the accepted gap in docs/PRD_CSAM_SCANNING.md workstream 5). Without
-    # this directive video falls back to default-src 'self' and is blocked.
-    #
-    # The listed hosts are our own PDS plus tdpl.io, the bridge PDS that hosts
-    # blobs for bridged Lemmy communities. Both are reachable; both are needed.
-    #
-    # Known limitation, deliberately not papered over: projectVideo builds the
-    # video URL from whatever PDS owns the record, so video on a community
-    # hosted by any *other* peer in the network is blocked by this directive.
-    # A fixed host list cannot express "any PDS in the network", and widening it
-    # to a wildcard would defeat the point of having one. The failure is
-    # fail-closed and browser-side only (blocked in console, no server signal).
-    # It closes when video gets a streaming passthrough on img.coves.social,
-    # which is also what closes the workstream-5 scanning gap.
-    header ?Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://img.coves.social; media-src 'self' https://pds.coves.me https://coves.me https://tdpl.io; connect-src 'self' https://*.bsky.network wss://*.bsky.network; base-uri 'self'; object-src 'none'; frame-ancestors 'none'"
 
     # Enable compression
     encode gzip zstd
