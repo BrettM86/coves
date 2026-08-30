@@ -18,11 +18,36 @@ type baseResolver struct {
 
 // newBaseResolver creates a new base resolver using Indigo
 func newBaseResolver(plcURL string, httpClient *http.Client) Resolver {
+	return newBaseResolverWithWellKnownHosts(plcURL, httpClient, nil)
+}
+
+// newBaseResolverWithWellKnownHosts is newBaseResolver plus the dev/CI override
+// that redirects the HTTP leg of handle verification for the suffixes it names.
+//
+// Both halves of the override are applied HERE rather than in the factory,
+// because both belong to the same directory and applying them in two places is
+// how one of them ends up missing: the client wrapping and
+// SkipDNSDomainSuffixes have to describe the same set of suffixes or a mapped
+// handle spends a DNS timeout before reaching the host we configured for it.
+// This is also the one place the directory is built, so the wrapping cannot be
+// applied twice.
+//
+// hosts is nil for every resolver but the dev and CI ones, and a nil map leaves
+// the client and the directory exactly as they were.
+func newBaseResolverWithWellKnownHosts(plcURL string, httpClient *http.Client, hosts map[string]string) Resolver {
 	// Create Indigo's BaseDirectory which handles DNS and HTTPS resolution
 	dir := &indigoIdentity.BaseDirectory{
 		PLCURL:     plcURL,
 		HTTPClient: *httpClient,
 		// Indigo will use default DNS resolver if not specified
+	}
+
+	if len(hosts) > 0 {
+		// WRAPPING, not replacing: the SSRF-safe transport still vets and dials
+		// the rewritten address. It permits the loopback host this points at only
+		// because WithPrivateHostsAllowed was required alongside.
+		dir.HTTPClient.Transport = newWellKnownRewriteTransport(dir.HTTPClient.Transport, hosts)
+		dir.SkipDNSDomainSuffixes = wellKnownSuffixes(hosts)
 	}
 
 	return &baseResolver{

@@ -40,7 +40,10 @@ func startConsumers(ctx context.Context, wg *sync.WaitGroup, app *application) (
 	}
 	warnIfNoPrimaryFeed(feeds)
 
-	consumers := app.registerFeedConsumers()
+	consumers, err := app.registerFeedConsumers()
+	if err != nil {
+		return nil, err
+	}
 
 	// FAIL CLOSED: with more than one feed, every consumer must be
 	// rev-gated. An ungated consumer would apply the lagging feed's stale
@@ -122,7 +125,7 @@ func (s *consumerSet) start(ctx context.Context, wg *sync.WaitGroup, app *applic
 // registerFeedConsumers builds every consumer, in a fixed order. Each runs
 // once per configured feed, with its collection filters appended by
 // jetstream.WantedCollections.
-func (a *application) registerFeedConsumers() []feedConsumer {
+func (a *application) registerFeedConsumers() ([]feedConsumer, error) {
 	var consumers []feedConsumer
 
 	// Users: actor profiles and actor blocks.
@@ -154,6 +157,16 @@ func (a *application) registerFeedConsumers() []feedConsumer {
 	// resolver supplies PLC handle resolution, which is the source of truth.
 	if a.cfg.Instance.SkipDIDWebVerification {
 		slog.Warn("did:web domain verification is DISABLED; this must never be set in production")
+	}
+	// A community's stored handle comes ONLY from resolving its DID
+	// (the create-path-handle-spoofing fix). Without a resolver the consumer falls
+	// back to the record's own handle — a T0-only mode that would let any repo
+	// name itself c-<anything>.<our domain>. buildIdentity always constructs one,
+	// so this is the assertion that keeps a future refactor from starting the
+	// consumer in that mode.
+	if a.identityResolver == nil {
+		return nil, fmt.Errorf("community consumer requires an identity resolver: a consumer without one " +
+			"indexes communities under whatever handle their own record claims")
 	}
 	// The SSRF hatch is open only in dev, where a developer's own instance is
 	// what the .well-known DID document is fetched from. In production that
@@ -247,7 +260,7 @@ func (a *application) registerFeedConsumers() []feedConsumer {
 			jetstream.WithCommentBridgeTrust(a.bridgeTrust)),
 	})
 
-	return consumers
+	return consumers, nil
 }
 
 // warnIfNoPrimaryFeed flags a topology with no primary-key feed. This is

@@ -25,9 +25,32 @@ func (r *cachingResolver) Resolve(ctx context.Context, identifier string) (*Iden
 	// Try cache first
 	cached, err := r.cache.Get(ctx, identifier)
 	if err == nil {
-		// Cache hit - mark it as from cache
-		cached.Method = MethodCache
-		return cached, nil
+		// A row carrying no usable handle is NOT AN ANSWER, and is treated
+		// exactly as an empty cache would be.
+		//
+		// Declining to write these rows (below) does nothing for the ones
+		// already stored: every resolution that ran while DNS could not answer
+		// left one behind, and a hit never reaches the base resolver — so those
+		// rows keep being served for the rest of their 24h TTL, and the
+		// TRANSIENT classification every caller gives ErrHandleUnverified stays
+		// a lie until they expire. Reading past them is what actually drains
+		// them.
+		//
+		// PURGED rather than merely ignored. Leaving the row in place means the
+		// next resolution pays for the same query and discards the same value,
+		// and anything reading identity_cache directly — a person debugging,
+		// above all — still finds the placeholder recorded against this DID as
+		// though it were a fact about the identity. The purge failing is not
+		// fatal: the caller still gets a correct fresh answer, and the write
+		// below replaces the row anyway.
+		if cached != nil && cached.Handle != "" && cached.Handle != InvalidHandle {
+			// Cache hit - mark it as from cache
+			cached.Method = MethodCache
+			return cached, nil
+		}
+		if purgeErr := r.cache.Purge(ctx, identifier); purgeErr != nil {
+			log.Printf("Warning: failed to purge unverified cached identity for %s: %v", identifier, purgeErr)
+		}
 	}
 
 	// Cache miss - resolve using base resolver
@@ -36,9 +59,27 @@ func (r *cachingResolver) Resolve(ctx context.Context, identifier string) (*Iden
 		return nil, err
 	}
 
-	// Cache the resolved identity (ignore cache errors, just log them)
-	if cacheErr := r.cache.Set(ctx, identity); cacheErr != nil {
-		log.Printf("Warning: failed to cache identity for %s: %v", identifier, cacheErr)
+	// Cache only a VERIFIED identity. An InvalidHandle (or empty) handle is not
+	// a fact about the identity — it is a fact about the network at the instant
+	// of the lookup: DNS was slow, the TXT record had not propagated, this
+	// resolver had no egress. Writing it back converts that moment into a stored
+	// one, and IDENTITY_CACHE_TTL is 24h, so a single transient DNS failure pins
+	// the DID as unverifiable for a day, for every caller, with nothing to
+	// notice it and nothing to purge unless someone thinks to.
+	//
+	// That also makes the TRANSIENT classification callers give
+	// ErrHandleUnverified a lie: every redrive inside the TTL is served the
+	// stored placeholder without reaching the network, so the event can never
+	// recover and just exhausts its redrive budget. Same rule as an outright
+	// resolution error above, which is likewise not cached — this is that
+	// failure wearing a success's clothes.
+	//
+	// The caller still gets the answer; only the write is skipped.
+	if identity != nil && identity.Handle != "" && identity.Handle != InvalidHandle {
+		// Cache the resolved identity (ignore cache errors, just log them)
+		if cacheErr := r.cache.Set(ctx, identity); cacheErr != nil {
+			log.Printf("Warning: failed to cache identity for %s: %v", identifier, cacheErr)
+		}
 	}
 
 	return identity, nil

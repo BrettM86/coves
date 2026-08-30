@@ -95,7 +95,11 @@ subsequent authenticated requests share the guarded transport.
 ## Development hatch
 
 Private addresses are available only through explicit option functions such as
-`WithPrivateAddressesAllowed` and package-specific equivalents. They exist for
+`WithPrivateAddressesAllowed` and package-specific equivalents (including
+`identity.WithWellKnownHosts`, which redirects the handle-verification GET for
+configured suffixes to a local PDS over plain `http` — it wraps the guarded
+transport rather than replacing it, and both identity constructors refuse it
+unless the hatch is also set; see `internal/atproto/identity/well_known_hosts.go`). They exist for
 local development and hermetic tests, whose services normally listen on
 loopback.
 

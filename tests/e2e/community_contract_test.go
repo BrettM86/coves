@@ -70,33 +70,24 @@ import (
 // So a single create → visible observation is already honest here, and the
 // contract does not need the smoke test's arming write.
 //
-// # WHY THE RECORD CARRIES A handle FIELD (a finding, not a convenience)
+// # THE RECORD'S handle FIELD IS INERT (and why it is still written)
 //
-// The consumer resolves a community's handle from the DID document when the
-// record omits one (community_consumer.go, "NO FALLBACK - if PLC is down, we
-// fail"), and resolution goes through indigo's BaseDirectory.LookupDID, which
-// VERIFIES the declared handle bidirectionally: DNS TXT at _atproto.<handle>, or
-// HTTPS at https://<handle>/.well-known/atproto-did. The hermetic stack is
-// egress-blocked by design (§3.7), so neither can answer, and indigo's contract
-// for an unresolvable handle is not an error — it is syntax.HandleInvalid.
+// The consumer ALWAYS resolves a community's handle from its DID: indigo's
+// BaseDirectory.LookupDID verifies the declared handle bidirectionally, and
+// only the verified handle is stored (identity.VerifiedHandle). A
+// `handle` in the record is never the stored value; if it disagrees with
+// resolution the consumer logs a warning and indexes under the resolved one.
 //
-// Measured, in this stack: a community indexed from the firehose without a
-// handle field lands with handle "handle.invalid". The communities table has a
-// UNIQUE constraint on handle, so the SECOND such community collides, the
-// consumer reads the collision as idempotent replay ("Community already
-// indexed") and returns nil, and the community is silently dropped. A contract
-// written that way would pass once per fresh stack and then quietly stop
-// proving anything.
+// That verification works in this egress-blocked stack because .env.ci sets
+// HANDLE_WELL_KNOWN_HOSTS: the https://<handle>/.well-known/atproto-did GET
+// is sent to the local PDS with the handle in the Host header — the same
+// trial-host trick the relay uses — and the PDS answers with the DID it minted
+// the handle for. The bidirectional comparison is unchanged, so this contract
+// DOES exercise the production handle-resolution path.
 //
-// Writing the handle into the record takes that branch out of the picture: the
-// consumer uses the record's handle verbatim (the path
-// community_v2_validation_test.go pins) and each community keeps its own. The
-// cost is stated plainly — this contract does NOT exercise PLC handle
-// resolution, and cannot until the stack can answer handle lookups, which is
-// the second-PDS-and-relay topology of Phase 5. The silent-drop behaviour
-// itself is a production defect (one unverifiable federated community squats
-// the handle.invalid row for all the others) and is reported, not worked around
-// here.
+// The record still carries a handle because internal/core/communities/service.go
+// writes one and this fixture mirrors the record production writes. Dropping
+// the field from both is a filed follow-up; it is dead weight, not an input.
 //
 // # WHAT THIS CONTRACT DOES NOT PROVE: hostedBy VERIFICATION
 //
@@ -220,8 +211,9 @@ func provisionCommunityRepo(t *testing.T, p *pipeline, prefix string) provisione
 }
 
 // communityProfile builds a social.coves.community.profile record in the shape
-// internal/core/communities writes it (plus the handle field the package doc
-// explains), so the consumer parses exactly what production hands it.
+// internal/core/communities writes it (including the handle field, which the
+// consumer ignores in favour of resolution — see the package doc), so the
+// consumer parses exactly what production hands it.
 func communityProfile(c provisionedCommunity, creatorDID, displayName, description, visibility string) map[string]any {
 	return map[string]any{
 		"$type":       communityProfileCollection,

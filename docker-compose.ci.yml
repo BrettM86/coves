@@ -374,10 +374,11 @@ services:
   #     handles.go: the warning is the loop continuing, not the resolution
   #     failing.
   #
-  # Note what this does NOT fix: the relay verifying a handle says nothing about
-  # the AppView's own identity resolver, which is indigo's BaseDirectory and has
-  # no trial-host mode. See tests/e2e/federation_contract_test.go for what that
-  # means for federated identities.
+  # The AppView's own resolver (indigo's BaseDirectory) gets the equivalent
+  # through HANDLE_WELL_KNOWN_HOSTS in .env.ci: the well-known GET for each
+  # mapped suffix is sent to that PDS with the handle in the Host header. Both
+  # sides of the stack therefore verify handles without DNS. See
+  # identity.WithWellKnownHosts in internal/atproto/identity/well_known_hosts.go.
   relay:
     image: ghcr.io/bluesky-social/indigo:bigsky-0a2d4173e6e89e49b448f6bb0a6e1ab58d12b385
     # No arm64 manifest upstream; Apple Silicon runs this under emulation.

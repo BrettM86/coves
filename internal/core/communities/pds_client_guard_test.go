@@ -130,6 +130,98 @@ func TestRefreshPDSToken_RefusesAWellFormedHostThatResolvesPrivate(t *testing.T)
 			"actually uses; got: %v", err)
 }
 
+// TestRefreshPDSToken_DoesNotMistakeAGuardRefusalForAnExpiredToken is a
+// deterministic repro of a flake, and the flake is a real classification bug.
+//
+// refreshPDSToken classifies an expired refresh token twice: once from the typed
+// *xrpc.Error, and then again by searching the error's TEXT for "401" or
+// "Unauthorized". The second check is the problem, and it is worse than
+// redundant, because the branch it takes does not wrap: it discards the original
+// error and returns a fresh one saying "refresh token expired or invalid (needs
+// password re-auth)". Whatever chain the error carried is gone.
+//
+// A transport error's text contains the URL that was dialled, port included. So
+// any PDS on a port whose digits happen to contain "401" — 401, 4010, 34013,
+// 8401, 14019 — produces a guard refusal that this function reports as an
+// expired credential, with ErrBlockedAddress no longer in the chain.
+//
+// # WHY IT SURFACED AS A RANDOM CI FAILURE
+//
+// TestRefreshPDSToken_RefusesAPrivatePDSWithoutSendingTheRefreshToken points at
+// an httptest listener, and httptest takes whatever ephemeral port the kernel
+// hands it. Roughly one run in forty draws a port containing those three digits,
+// and on that run the ErrorIs assertion fails while every other run passes. The
+// test was not flaky; the code is nondeterministic in a way the test happened to
+// sample.
+//
+// This case removes the sampling. The port is written down, no listener is
+// needed — the guard refuses an IP literal on shape, one branch before it would
+// dial — so the collision happens on every run instead of on 2% of them.
+//
+// # WHY MISREPORTING IT IS SERIOUS ON ITS OWN
+//
+// The two diagnoses call for opposite actions. "Refresh token expired" tells the
+// operator to re-authenticate with the stored password — which is
+// reauthenticateWithPassword, the call that POSTs the community's CLEARTEXT
+// password to that same address. So a refused address does not merely produce a
+// confusing message: it invites the caller to retry with a far worse payload
+// against the host the guard just refused.
+func TestRefreshPDSToken_DoesNotMistakeAGuardRefusalForAnExpiredToken(t *testing.T) {
+	t.Parallel()
+
+	// coves:allow-host-literal: never dialled — the guard refuses a loopback
+	// literal on shape. The port is the fixture: its digits contain "401".
+	const pdsURL = "http://127.0.0.1:34013" // coves:allow-host-literal: the port must contain the digits 401 to reproduce the misclassification, and the guard refuses before anything dials it
+	require.Contains(t, pdsURL, "401",
+		"this test is only meaningful if the URL the guard names contains the digits the string "+
+			"fallback searches for; a port change here quietly turns it into a duplicate of the "+
+			"loopback case above")
+
+	_, _, err := refreshPDSToken(context.Background(), newPDSHTTPClient(), pdsURL, "the-refresh-token")
+
+	require.Error(t, err, "a PDS on loopback must be refused")
+	assert.ErrorIsf(t, err, covesoauth.ErrBlockedAddress,
+		"the guard's refusal was rewritten as an expired credential and its identity dropped from the "+
+			"chain, because the dialled URL in the message contains \"401\". Nothing above this can "+
+			"tell a blocked address from a dead token any more — and the remedy for a dead token is "+
+			"reauthenticateWithPassword, which POSTs the community's cleartext password to the very "+
+			"address that was just refused; got: %v", err)
+}
+
+// TestRefreshPDSToken_ReportsARealUnauthorizedAsAnExpiredToken is the fence for
+// the case above.
+//
+// The friendly message is right and must survive: a 401 from the PDS genuinely
+// does mean the refresh token is spent, and the caller's next step genuinely is
+// a password re-auth. Deleting the string fallback must not take the diagnosis
+// with it — the typed *xrpc.Error branch already carries it, and this says so.
+//
+// The hatch is open here because the fixture has to be REACHED: this is the one
+// case in this file that needs a real response rather than a refusal, so it is
+// the one place the guard is deliberately out of the way.
+func TestRefreshPDSToken_ReportsARealUnauthorizedAsAnExpiredToken(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"ExpiredToken","message":"Token has expired"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client := newPDSHTTPClient(WithPrivateHostsAllowed()) // coves:allow-ssrf-hatch: the fixture must be reached; a refusal here would assert nothing about 401 handling
+
+	_, _, err := refreshPDSToken(context.Background(), client, server.URL, "the-spent-refresh-token")
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "needs password re-auth",
+		"a genuine 401 must still be reported as a spent refresh token: it is the one diagnosis that "+
+			"tells the caller to fall back to reauthenticateWithPassword, and the typed *xrpc.Error "+
+			"branch is what has to carry it once the string search is gone")
+	assert.NotErrorIs(t, err, covesoauth.ErrBlockedAddress,
+		"a real 401 is not a guard refusal")
+}
+
 func TestReauthenticateWithPassword_RefusesAPrivatePDSWithoutSendingThePassword(t *testing.T) {
 	t.Parallel()
 

@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -204,6 +206,15 @@ type IdentityConfig struct {
 	// CacheTTL overrides the resolver's default cache lifetime. Zero means
 	// use the resolver default.
 	CacheTTL time.Duration
+
+	// WellKnownHosts redirects the HTTP leg of handle verification, mapping a
+	// handle suffix to the host:port that answers /.well-known/atproto-did for
+	// it. Read from HANDLE_WELL_KNOWN_HOSTS.
+	//
+	// DEV AND CI ONLY. See handle_well_known_hosts_config_test.go for the
+	// format, the leading-dot rule, and why a value outside dev is a hard
+	// error rather than an ignored one.
+	WellKnownHosts map[string]string
 }
 
 // OAuthConfig holds the atProto OAuth client settings.
@@ -595,12 +606,156 @@ func (c *Config) loadIdentity() error {
 		resolverPLCURL = stringVar("IDENTITY_PLC_URL", plcURL)
 	}
 
+	wellKnownHosts, err := wellKnownHostsVar(c.IsDevEnv)
+	if err != nil {
+		return err
+	}
+
 	c.Identity = IdentityConfig{
 		PLCURL:         plcURL,
 		ResolverPLCURL: resolverPLCURL,
 		CacheTTL:       cacheTTL,
+		WellKnownHosts: wellKnownHosts,
 	}
 	return nil
+}
+
+// wellKnownHostsVar parses HANDLE_WELL_KNOWN_HOSTS: comma-separated
+// <suffix>=<host:port> entries naming where handle verification should look for
+// each handle suffix when DNS cannot answer.
+//
+// Returns nil when unset, so "not configured" contributes NOTHING rather than an
+// empty map — the same shape identity.PrivateHostOptions(false) returns, and the
+// shape production must have.
+//
+// # WHY A MALFORMED ENTRY IS FATAL RATHER THAN SKIPPED
+//
+// A partial parse is the dangerous outcome. The operator sees the stack
+// half-work, with one namespace verifying and another silently not, and no
+// reason to suspect an entry was dropped rather than a PDS being wrong. Every
+// malformed shape here is a typo in a file someone edited by hand, and stopping
+// the boot is the only report that reaches them.
+//
+// # WHY THE LEADING DOT IS REQUIRED AND NOT ADDED
+//
+// The suffix is matched against a hostname, so `pds2.test` also matches
+// `evilpds2.test` — a different domain, somebody else's, whose handle
+// verification would then be redirected to a host we chose. The dot forces the
+// match onto a label boundary; it is the same rule admitCommunityOrigin applies
+// to origins. It is refused rather than silently inserted because a config value
+// that quietly means something other than what was typed is worse than one that
+// stops the boot.
+//
+// # WHY IT IS AN ERROR OUTSIDE DEV
+//
+// Unlike TURNSTILE_SITEVERIFY_URL earlier in this file, there is no safe fallback to
+// ignore this in favour of. identity.NewResolver PANICS when handed well-known
+// hosts without the private-address hatch, and cmd/server passes that hatch only
+// when IsDevEnv — so the combination this variable creates in production is a
+// panic deep in resolver wiring, with a stack trace where an explanation should
+// be. Refusing here turns it into one readable line naming the variable. A
+// warning would be worse than either: the operator would be left with a resolver
+// that verifies nothing in the namespace they thought they had configured.
+func wellKnownHostsVar(isDevEnv bool) (map[string]string, error) {
+	const key = "HANDLE_WELL_KNOWN_HOSTS"
+
+	entries := csvVar(key)
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	if !isDevEnv {
+		return nil, fmt.Errorf("%s: handle verification may only be redirected in dev and CI; "+
+			"set IS_DEV_ENV=true or unset %s", key, key)
+	}
+
+	hosts := make(map[string]string, len(entries))
+	order := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		rawSuffix, rawHost, found := strings.Cut(entry, "=")
+		if !found {
+			return nil, fmt.Errorf("%s: %q is not a <suffix>=<host:port> entry", key, entry)
+		}
+		suffix := strings.TrimSpace(rawSuffix)
+		host := strings.TrimSpace(rawHost)
+		if suffix == "" {
+			return nil, fmt.Errorf("%s: %q has an empty handle suffix, which is a suffix of every "+
+				"hostname and would redirect all handle verification", key, entry)
+		}
+		if host == "" {
+			return nil, fmt.Errorf("%s: %q names no host for %q, so verification would be sent to "+
+				"http:///.well-known/atproto-did", key, entry, suffix)
+		}
+		if !strings.HasPrefix(suffix, ".") {
+			return nil, fmt.Errorf("%s: suffix %q must start with a dot, or it also matches "+
+				"evil%s — a domain we do not own", key, suffix, suffix)
+		}
+
+		// The value is DIALLED, not fetched: the rewrite transport puts it
+		// straight into URL.Host and supplies the scheme and the path itself. So
+		// anything URL-shaped is a misunderstanding of the format that would
+		// otherwise surface long after boot, as handles that quietly will not
+		// verify.
+		if strings.Contains(host, "://") {
+			return nil, fmt.Errorf("%s: %q names a URL, but %q is dialled as a host:port — the transport "+
+				"supplies the scheme, and this one would end up inside the authority", key, entry, host)
+		}
+		// Checked SEPARATELY from SplitHostPort, which accepts it: that function
+		// splits on the last colon and hands back the port "3011/pds" without an
+		// error, so a check that only called it would pass a path straight
+		// through.
+		if strings.Contains(host, "/") {
+			return nil, fmt.Errorf("%s: %q has a path in its host, but %q is dialled as a host:port — the "+
+				"transport supplies /.well-known/atproto-did itself", key, entry, host)
+		}
+		hostname, port, splitErr := net.SplitHostPort(host)
+		if splitErr != nil || hostname == "" || port == "" {
+			return nil, fmt.Errorf("%s: %q in %q is not a host:port — the transport dials exactly this "+
+				"string and there is no default port to fall back on", key, host, entry)
+		}
+		// SplitHostPort does not look at the port beyond finding it: it returns
+		// "notaport" as happily as "3011". So the only thing that would notice a
+		// port that cannot be dialled is the dial itself, once per resolution,
+		// reported by indigo as handle.invalid — a config typo surfacing as
+		// "handles do not verify in this environment".
+		//
+		// 1-65535 because TCP port numbers are 16-bit and 0 is not a
+		// destination: to a listener it means "any free port", and to a dialler
+		// it means nothing at all.
+		if portNumber, portErr := strconv.Atoi(port); portErr != nil || portNumber < 1 || portNumber > 65535 {
+			return nil, fmt.Errorf("%s: %q in %q is not a port number between 1 and 65535 — the transport "+
+				"dials this address, and nothing before the dial would notice", key, port, entry)
+		}
+
+		// DNS names are case-insensitive, and every consumer of this map already
+		// compares against a lowered hostname — the rewrite transport lowers the
+		// handle before matching, indigo normalises before checking
+		// SkipDNSDomainSuffixes. A key that kept its case would match nothing at
+		// all, and would do it silently, with a correct-looking value sitting in
+		// the env file.
+		suffix = strings.ToLower(suffix)
+
+		if _, duplicate := hosts[suffix]; duplicate {
+			return nil, fmt.Errorf("%s: suffix %q appears more than once; map assignment keeps whichever "+
+				"entry was parsed last and drops the other without a word", key, suffix)
+		}
+		// Overlap is checked against the entries ALREADY ACCEPTED, in input
+		// order, so the pair named is the same on every run — map iteration is
+		// not ordered, and an error message that changes between boots is one an
+		// operator cannot search for. Both suffixes are named because an overlap
+		// is a relationship: with six entries configured, a message naming one of
+		// them has not said which pair to fix.
+		for _, seen := range order {
+			if strings.HasSuffix(suffix, seen) || strings.HasSuffix(seen, suffix) {
+				return nil, fmt.Errorf("%s: suffixes %q and %q overlap — a handle under the longer one "+
+					"matches both, so which host answers for it turns on a precedence rule that is not "+
+					"visible anywhere in this value", key, seen, suffix)
+			}
+		}
+
+		hosts[suffix] = host
+		order = append(order, suffix)
+	}
+	return hosts, nil
 }
 
 func (c *Config) loadOAuth() error {

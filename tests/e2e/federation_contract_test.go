@@ -46,42 +46,34 @@
 //     in TRUSTED_BRIDGE_PDS_HOSTS (user_consumer.go's handleProfileCommit). That
 //     list is EMPTY in .env.ci, so a pds2 profile is default-denied and silently
 //     ignored. TestFederatedIdentityIsNotIndexed asserts exactly that.
-//  2. Were pds2 trusted, the identity still could not be indexed, because its
-//     handle does not verify. Resolution goes through indigo's BaseDirectory,
-//     which checks a declared handle bidirectionally over DNS TXT or
-//     https://<handle>/.well-known/atproto-did; neither exists for a
-//     `.pds2.test` name on an egress-blocked network, so indigo returns its
-//     `handle.invalid` sentinel and users.CreateUser rejects it ("TLD .invalid
-//     is not allowed"). That is a filed defect, reproduced hermetically for the
-//     first time on this topology — see
-//     2026-07-22-bridged-author-handle-invalid-dead-letter.
+//  2. (Historical.) Until 2026-08-30 the identity could not have been indexed
+//     even if trusted: a `.pds2.test` handle could not verify on an
+//     egress-blocked network, indigo returned `handle.invalid`, and
+//     users.CreateUser rejected it — the defect filed as
+//     2026-07-22-bridged-author-handle-invalid-dead-letter. That half is gone:
+//     .env.ci's HANDLE_WELL_KNOWN_HOSTS completes the well-known leg in-stack
+//     and pds2 handles verify. Only (1) keeps the identity out of `users` now.
 //
 // So a federated comment is served with its author's handle rendered as the
 // DID, which is the honest, observable consequence and is asserted below rather
 // than worked around.
 //
-// The environment half of (2) could be removed — a DNS shim answering
-// _atproto.<handle> for the pds2 domain would make handles verify — and is
-// deliberately NOT built: it would falsify the precondition of two pinned
-// defects (this one and the community handle.invalid squat), which is fixing a
-// filed bug by changing the environment rather than the code.
+// The environment half of (2) is now GONE: .env.ci's HANDLE_WELL_KNOWN_HOSTS
+// maps .pds2.test to pds2, so the AppView's resolver completes the well-known
+// leg in-stack and pds2 handles DO verify. (1) alone keeps the identity out of
+// `users`, and TestFederatedIdentityIsNotIndexed is what asserts it.
 //
-// # WHY THE FEDERATED COMMUNITY PROFILES CARRY A HANDLE
+// # THE FEDERATED COMMUNITY PROFILES' handle FIELD IS INERT
 //
-// Same workaround, same reason, as community_contract_test.go: a profile record
-// with no `handle` field sends the consumer down the resolution branch, which
-// returns `handle.invalid` for any host whose handles cannot be verified. The
-// FIRST such community indexes under that literal and every later one collides
-// with it on a UNIQUE column and is silently dropped
-// (2026-07-29-community-handle-invalid-silently-dropped), so a contract that
-// used that branch would pass once per stack and then fail — breaking the
-// re-runnability rule that kept stacks depend on.
-//
-// The cost of the workaround is that these communities are indexed with an
-// EMPTY pds_url, because the consumer resolves the PDS host only inside the
-// same branch. That is the same defect's second symptom, and this topology is
-// what finally makes it observable end to end — see the issue file for the
-// measurement.
+// The consumer always resolves a community's handle from its DID and stores
+// only the verified result (identity.VerifiedHandle); the record's
+// handle is at most a warning when it disagrees. Verification of a .pds2.test
+// handle completes in this stack through HANDLE_WELL_KNOWN_HOSTS, so these
+// communities are indexed under their REAL, verified handle with their real
+// pds_url — the two symptoms of 2026-07-29-community-handle-invalid-silently-
+// dropped are both fixed on this topology, and the contracts below observe the
+// fix rather than a workaround. The field stays in the fixture because
+// production's service.go still writes it (removal is a filed follow-up).
 //
 // (Separated from the package clause by a blank line on purpose: the package
 // doc lives in contracts_test.go, and a second one here would compete with it.)
@@ -372,13 +364,12 @@ func TestCommentFederationIngestion(t *testing.T) {
 	// DID. A reader seeing a DID where a handle belongs is looking at exactly
 	// this: an author the AppView cannot index. If this ever starts serving a
 	// real handle, a federated identity has become indexable and the package
-	// doc's structural limit — and the two defects behind it — have changed.
+	// doc's structural limit — the empty TRUSTED_BRIDGE_PDS_HOSTS — has changed.
 	require.Equalf(t, commenter.DID, created.Comment.Author.Handle,
 		"the remote commenter's handle was served as %q rather than falling back to the DID. "+
 			"That means a pds2-hosted identity reached the users table, which the package doc "+
-			"says is impossible on this topology — re-read it and the two issues it names "+
-			"(2026-07-22-bridged-author-handle-invalid-dead-letter, "+
-			"2026-07-29-community-handle-invalid-silently-dropped) before relaxing this",
+			"says is impossible on this topology while TRUSTED_BRIDGE_PDS_HOSTS is empty in "+
+			".env.ci — re-read it before relaxing this",
 		created.Comment.Author.Handle)
 
 	edited := "edited from the other PDS " + testkit.UniqueID(t)

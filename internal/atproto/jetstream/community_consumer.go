@@ -395,10 +395,161 @@ func (c *CommunityEventConsumer) handleCommunityProfile(ctx context.Context, did
 	}
 }
 
+// resolveVerifiedHandle asks the directory about did and returns the identity it
+// answered with, together with the handle identity.VerifiedHandle established
+// for that DID.
+//
+// # ONE COPY, BECAUSE THE TWO ALREADY DRIFTED
+//
+// createCommunity and updateCommunity ran near-identical resolution blocks that
+// had come to disagree about the same resolver: one nil-checked the identity and
+// the other dereferenced it, and neither asked whether the answer described the
+// DID that signed the commit. Every fix then had to be made twice, and was not.
+// The paths differ in what they DO about a failure, which is a decision for
+// them; how the question is asked and answered is not.
+//
+// # THE THREE OUTCOMES, AND WHY THEY ARE DISTINGUISHABLE
+//
+//   - The directory could not be reached. Transient by nature — it may answer
+//     next time.
+//   - identity.ErrHandleUnverified: the lookup succeeded but established no
+//     handle (empty, or the reserved handle.invalid placeholder that resolution
+//     reports as a SUCCESS), or returned no identity at all. Also a fact about
+//     the RESOLUTION, so also transient.
+//   - identity.ErrIdentitySubjectMismatch: the answer is about somebody else.
+//     Wrapped in ErrPermanentEvent here rather than at the call sites, because
+//     it is permanent for the same reason on both — a contradiction reproduces
+//     on every redrive, and classifying it transient parks the event in a retry
+//     queue that can never drain. Production wraps the directory in a Postgres
+//     cache, so a stale or mis-keyed row handing back a well-formed identity for
+//     the wrong subject is the realistic way this arrives.
+//
+// The callers classify the first two OPPOSITELY, which is why they are returned
+// distinguishably rather than collapsed: on create there is no handle to index
+// under, so it rejects; on update a verified handle is already stored from the
+// create that made the row, so a directory that cannot answer right now says
+// nothing about that community and the edit proceeds.
+//
+// The identity is returned even alongside an error, so a caller that tolerates
+// the failure can still hand what came back to admitRecordOrigin — which applies
+// the same predicate itself and default-denies. It is nil after a directory
+// error, and callers must not dereference it without checking err.
+func (c *CommunityEventConsumer) resolveVerifiedHandle(ctx context.Context, did string) (*identity.Identity, string, error) {
+	// NO FALLBACK - if PLC is down, we fail and backfill later
+	// This prevents storing incorrect handles in federated scenarios
+	resolved, err := c.identityResolver.Resolve(ctx, did)
+	if err != nil {
+		// A MALFORMED IDENTIFIER can never succeed on redrive, so it is the one
+		// resolver failure that is permanent. identity.ErrInvalidIdentifier means
+		// syntax.ParseAtIdentifier refused the string before any network call was
+		// made, and the string is this event's own repo DID — fixed for the life
+		// of the event. Every in-line retry and every redrive re-asks a question
+		// already answered, and a repo emitting malformed DIDs decides how many
+		// times we ask.
+		//
+		// Every OTHER resolver failure stays transient, and that half matters as
+		// much: a directory that is unreachable this instant is exactly what the
+		// redrive exists to repair, and classifying those permanent would
+		// dead-letter every community that happened to arrive during a PLC
+		// outage, silently and for good.
+		var invalidIdentifier *identity.ErrInvalidIdentifier
+		if errors.As(err, &invalidIdentifier) {
+			return nil, "", fmt.Errorf("%w: resolving community %s: %w (the identifier is malformed, so no "+
+				"redrive can turn this into a success)", ErrPermanentEvent, did, err)
+		}
+		return nil, "", fmt.Errorf("failed to resolve handle from PLC for %s: %w (no fallback - will retry during backfill)", did, err)
+	}
+
+	verifiedHandle, err := identity.VerifiedHandle(resolved, did)
+	if err != nil {
+		if errors.Is(err, identity.ErrIdentitySubjectMismatch) {
+			return resolved, "", fmt.Errorf("%w: resolving the handle of community %s: %w (the directory described %q instead, "+
+				"and its handle must not be indexed under this DID)",
+				ErrPermanentEvent, did, err, resolved.DID)
+		}
+		return resolved, "", fmt.Errorf("resolving the handle of community %s: %w — an empty handle or the reserved %q "+
+			"placeholder must never be stored in a unique column (retryable — the directory may verify it later)",
+			did, err, identity.InvalidHandle)
+	}
+
+	return resolved, verifiedHandle, nil
+}
+
+// resolveVerifiedHandleForUpdate is resolveVerifiedHandle with the update path's
+// classification applied: a failure that can NEVER succeed on redrive is
+// returned to be rejected, and everything else is logged and swallowed.
+//
+// The line is drawn at "can this ever succeed", not at any particular sentinel.
+// It used to test for a subject mismatch specifically, which was right only for
+// as long as a mismatch was the sole permanent failure the shared helper could
+// produce — the moment it also began classifying identity.ErrInvalidIdentifier
+// as permanent, that error fell into the tolerate-everything arm. The
+// consequence is worse than mis-logging it: swallowing means the event is ACKED,
+// so it is neither redriven nor dead-lettered, it simply disappears, having
+// already written a row against an identity nothing established. Testing for
+// ErrPermanentEvent itself keeps the two in step however many permanent kinds
+// the helper grows.
+//
+// Both directions matter and each can be broken by over-correcting the other.
+// Propagating every error would turn one PLC outage into a dead-letter storm
+// across every community being edited, which is precisely what the tolerant arm
+// exists to prevent.
+//
+// A NON-EMPTY handle means "verified, and safe to believe". That is the signal
+// the caller gates the pds_url write on, and the reason a tolerated failure
+// returns "" rather than whatever unverified string came back: an identity
+// nothing confirmed must not be able to look like one that was.
+//
+// The identity itself is still returned on a tolerated failure, so the caller can
+// hand it to admitRecordOrigin — which runs the same predicate and default-denies
+// the origin on it — instead of leaving that function to resolve all over again.
+//
+// A nil resolver is the test and dev construction: there is nothing to ask, so
+// this establishes nothing and the stored row is the whole provenance.
+func (c *CommunityEventConsumer) resolveVerifiedHandleForUpdate(ctx context.Context, did string) (*identity.Identity, string, error) {
+	if c.identityResolver == nil {
+		return nil, "", nil
+	}
+
+	resolved, verifiedHandle, err := c.resolveVerifiedHandle(ctx, did)
+	switch {
+	case err == nil:
+		return resolved, verifiedHandle, nil
+	case errors.Is(err, ErrPermanentEvent):
+		// Already classified by the shared helper — a subject mismatch, a
+		// malformed identifier, or whatever it comes to classify next.
+		return nil, "", err
+	default:
+		log.Printf("WARNING: could not refresh the identity of community %s (%v); applying the profile edit "+
+			"against its stored handle and PDS host", did, err)
+		return resolved, "", nil
+	}
+}
+
 // createCommunity indexes a new community from the firehose
 func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string, commit *CommitEvent) error {
 	if commit.Record == nil {
 		return fmt.Errorf("%w: community profile create event missing record data", ErrPermanentEvent)
+	}
+
+	// REJECT non-V2 communities (pre-production: no V1 compatibility).
+	// PERMANENT: the rkey is immutable — replays fail identically.
+	//
+	// FIRST, ahead of the resolution below, and the ordering is the point rather
+	// than a micro-optimisation. This check is pure and total: it reads one
+	// string already in hand and can fail for no reason outside the event. The
+	// resolution is the opposite — it leaves the process, on the firehose worker,
+	// against a directory we do not operate. Running the expensive one first
+	// meant every malformed event bought a PLC lookup before being thrown away,
+	// and the rkey is chosen by whoever writes the record: a repo could emit
+	// profiles at arbitrary keys as fast as it liked and charge this AppView one
+	// directory round trip apiece, for events rejected on a field the answer
+	// could not have affected. Cheap total checks before expensive fallible ones.
+	//
+	// updateCommunity has had the same check in the same position all along; the
+	// create path is what was out of step.
+	if commit.RKey != "self" {
+		return fmt.Errorf("%w: invalid community profile rkey: expected 'self', got '%s' (V1 communities not supported)", ErrPermanentEvent, commit.RKey)
 	}
 
 	// Parse the community profile record
@@ -408,53 +559,104 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 	}
 
 	// atProto Best Practice: Handles are NOT stored in records (they're mutable, resolved from DIDs)
-	// If handle is missing from record (new atProto-compliant records), resolve it from PLC/DID
+	// The handle stored is the one the DIRECTORY names for this repo, always,
+	// and the record's own handle field is not an input to it.
+	//
+	// This used to be guarded by `if profile.Handle == ""`, so a record that
+	// carried a handle was never resolved at all and the field went into the
+	// database exactly as its author typed it. That was not an optimisation, it
+	// was the whole vulnerability: social.coves.community.profile does not
+	// declare a handle property, so no PDS on the network validates one, and a
+	// foreign PDS that has never seen a social.coves.* lexicon puts the extra
+	// field on the firehose untouched. communities.handle is UNIQUE and
+	// resolveScopedIdentifier addresses communities BY it, so an unchecked claim
+	// is how an arbitrary repo comes to own !nba@coves.social.
+	//
+	// The saving that guard bought — one directory round trip on records that
+	// already "know" their handle — is exactly the shape a future refactor will
+	// propose reinstating. It is invisible in the stored row whenever the record
+	// and the directory agree, which is the common case; the CALL COUNT in
+	// TestCreateCommunity_ResolvesEvenWhenTheRecordCarriesAHandle (and its
+	// acceptance twin in internal/core/communities) is the only place in the
+	// suite it would show up. That assertion is load-bearing, not incidental.
+	// The record's CLAIM, captured before the resolution overwrites it. It is
+	// never stored; it exists only to be contradicted.
+	claimedHandle := profile.Handle
+
 	var resolvedPDSURL string
 	var resolved *identity.Identity
-	if profile.Handle == "" {
-		if c.identityResolver != nil {
-			// Production: Resolve handle from PLC (source of truth)
-			// NO FALLBACK - if PLC is down, we fail and backfill later
-			// This prevents creating communities with incorrect handles in federated scenarios
-			identity, err := c.identityResolver.Resolve(ctx, did)
-			if err != nil {
-				return fmt.Errorf("failed to resolve handle from PLC for %s: %w (no fallback - will retry during backfill)", did, err)
-			}
-			resolved = identity
-			// "handle.invalid" IS NOT A HANDLE. atProto identity resolution
-			// reports a DID whose handle it could not verify bidirectionally
-			// by returning that reserved placeholder rather than an error, so
-			// what arrives here is a perfectly well-formed identity naming a
-			// non-handle — and communities.handle is UNIQUE. Store it once and
-			// every subsequent unverifiable community collides with it, which
-			// the insert reports as a conflict and the swallow below used to
-			// discard silently.
-			//
-			// TRANSIENT, deliberately: this is a fact about the RESOLUTION, not
-			// about the record. The PLC directory may be unreachable this
-			// second and answer fine the next, so the redrive has to be allowed
-			// to succeed. The user path applies the same guard for the same
-			// reason (authorpost.go, hydrateAuthorOpportunistically).
-			if identity.Handle == "" || identity.Handle == invalidHandle {
-				return fmt.Errorf("resolving the handle of community %s: identity resolution returned %q, "+
-					"which is the reserved placeholder for an unverifiable handle and must never be stored in a unique column "+
-					"(retryable — the directory may verify it later)", did, identity.Handle)
-			}
-			profile.Handle = identity.Handle
-			// Persist the resolved PDS host: BridgeTrust gates bridgedStats
-			// on the post's community row carrying its repo's PDS URL, and a
-			// firehose-indexed community (a Tidepool bridge community above
-			// all) is created HERE — leaving pds_url empty makes the trust
-			// gate default-deny every bridged vote count forever.
-			resolvedPDSURL = identity.PDSURL
-			log.Printf("✓ Resolved handle from PLC: %s (did=%s, method=%s)",
-				profile.Handle, did, identity.Method)
-		} else {
-			// Test mode only: construct deterministically when no resolver available
-			profile.Handle = constructHandleFromProfile(profile)
-			log.Printf("✓ Constructed handle (test mode): %s (name=%s, hostedBy=%s)",
-				profile.Handle, profile.Name, profile.HostedBy)
+	if c.identityResolver != nil {
+		// EVERY failure is fatal here, which is what separates this path from
+		// the update one. A create has no stored handle to fall back on: without
+		// a verified one there is nothing to index the community under, so a
+		// resolution that established nothing has to become a retry rather than
+		// a row. updateCommunity tolerates the same two failures precisely
+		// because the row it is editing already carries a handle this consumer
+		// verified when it created it.
+		resolvedIdentity, verifiedHandle, err := c.resolveVerifiedHandle(ctx, did)
+		if err != nil {
+			return err
 		}
+		resolved = resolvedIdentity
+
+		// A record that claims a handle the directory contradicts is WARNED
+		// ABOUT, not refused. The claim is inert either way: profile.Handle is
+		// overwritten with the verified handle on the next line, so the string
+		// the record asserted reaches no column and survives only in the local
+		// above. There is nothing left for a refusal to protect.
+		//
+		// Refusing here WAS implemented, and reverted. It will be proposed
+		// again, because it reads like obvious hardening, so:
+		//
+		// It buys no security. The takeover was never that a record could CLAIM
+		// c-nba.coves.social — it was that the claim was STORED, and B1 ended
+		// that by resolving unconditionally. The real spoof is still refused a
+		// few lines below: verifyHostedByClaim measures the VERIFIED handle's
+		// domain against the record's hostedBy, so a repo resolving to
+		// c-atk.attacker.example that claims hostedBy did:web:coves.social dies
+		// on attacker.example != coves.social. The string comparison here was
+		// never the thing stopping it.
+		//
+		// It costs a PERMANENT false positive on ordinary drift. Handles are
+		// mutable and a record is a SNAPSHOT, so the field goes stale the
+		// instant a community renames and then contradicts its own correct
+		// resolution. ErrPermanentEvent means no redrive: that community is
+		// dead-lettered until someone intervenes by hand. These are our own
+		// communities — CreateCommunity writes the field into every profile
+		// this instance publishes (communities/service.go) — and the update
+		// path's GetByDID-NotFound fallthrough routes updates for unindexed
+		// repos into this create path, so stale-handle records land here
+		// routinely. Dead-lettering a community for renaming is a worse
+		// outcome than indexing a forgery whose forged part is discarded.
+		//
+		// The disagreement is still worth SAYING: it is either a rename caught
+		// mid-propagation or an attempted land grab, and an operator wants to
+		// see it. Both strings go in the line because neither alone
+		// distinguishes those two.
+		if claimedHandle != "" && claimedHandle != verifiedHandle {
+			log.Printf("WARNING: community %s published a profile claiming the handle %q, but its DID document resolves to %q; "+
+				"indexing under the resolved handle and ignoring the claim", did, claimedHandle, verifiedHandle)
+		}
+
+		profile.Handle = verifiedHandle
+		// Persist the resolved PDS host: BridgeTrust gates bridgedStats
+		// on the post's community row carrying its repo's PDS URL, and a
+		// firehose-indexed community (a Tidepool bridge community above
+		// all) is created HERE — leaving pds_url empty makes the trust
+		// gate default-deny every bridged vote count forever.
+		resolvedPDSURL = resolved.PDSURL
+		log.Printf("✓ Resolved handle from PLC: %s (did=%s, method=%s)",
+			profile.Handle, did, resolved.Method)
+	} else if profile.Handle == "" {
+		// Test mode only: construct deterministically when no resolver available.
+		// The record's own handle is preferred over construction here — it is
+		// the only thing that establishes anything at all on a path with no
+		// directory to ask, and fixtures routinely carry a handle
+		// (gaming.coves.social) that construction would never produce from the
+		// record's name.
+		profile.Handle = constructHandleFromProfile(profile)
+		log.Printf("✓ Constructed handle (test mode): %s (name=%s, hostedBy=%s)",
+			profile.Handle, profile.Name, profile.HostedBy)
 	}
 
 	// SECURITY: Verify hostedBy claim matches handle domain
@@ -468,15 +670,8 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 	// Build AT-URI for this record
 	// V2 Architecture (ONLY):
 	//   - 'did' parameter IS the community DID (community owns its own repo)
-	//   - rkey MUST be "self" for community profiles
+	//   - rkey MUST be "self" for community profiles (checked at the top)
 	//   - URI: at://community_did/social.coves.community.profile/self
-
-	// REJECT non-V2 communities (pre-production: no V1 compatibility).
-	// PERMANENT: the rkey is immutable — replays fail identically.
-	if commit.RKey != "self" {
-		return fmt.Errorf("%w: invalid community profile rkey: expected 'self', got '%s' (V1 communities not supported)", ErrPermanentEvent, commit.RKey)
-	}
-
 	uri := fmt.Sprintf("at://%s/social.coves.community.profile/self", did)
 
 	// V2: Community ALWAYS owns itself
@@ -621,38 +816,13 @@ func (c *CommunityEventConsumer) updateCommunity(ctx context.Context, did string
 		return fmt.Errorf("failed to parse community profile: %w", err)
 	}
 
-	// atProto Best Practice: Handles are NOT stored in records (they're mutable, resolved from DIDs)
-	// If handle is missing from record (new atProto-compliant records), resolve it from PLC/DID
-	var resolvedPDSURL string
-	var resolved *identity.Identity
-	if profile.Handle == "" {
-		if c.identityResolver != nil {
-			// Production: Resolve handle from PLC (source of truth)
-			// NO FALLBACK - if PLC is down, we fail and backfill later
-			// This prevents creating communities with incorrect handles in federated scenarios
-			identity, err := c.identityResolver.Resolve(ctx, did)
-			if err != nil {
-				return fmt.Errorf("failed to resolve handle from PLC for %s: %w (no fallback - will retry during backfill)", did, err)
-			}
-			resolved = identity
-			profile.Handle = identity.Handle
-			// Backfill the stored PDS host too (see createCommunity): rows
-			// indexed before this fix carry an empty pds_url, which makes
-			// BridgeTrust default-deny their posts' bridgedStats. Update()
-			// only overwrites when non-empty.
-			resolvedPDSURL = identity.PDSURL
-			log.Printf("✓ Resolved handle from PLC: %s (did=%s, method=%s)",
-				profile.Handle, did, identity.Method)
-		} else {
-			// Test mode only: construct deterministically when no resolver available
-			profile.Handle = constructHandleFromProfile(profile)
-			log.Printf("✓ Constructed handle (test mode): %s (name=%s, hostedBy=%s)",
-				profile.Handle, profile.Name, profile.HostedBy)
-		}
-	}
-
 	// V2: Repository DID IS the community DID
 	// Get existing community using the repo DID
+	//
+	// BEFORE the resolution, so that an update for a repo this AppView has never
+	// indexed falls through to createCommunity without having resolved first —
+	// create resolves for itself, and a directory round trip per firehose event
+	// is not free.
 	existing, err := c.repo.GetByDID(ctx, did)
 	if err != nil {
 		if communities.IsNotFound(err) {
@@ -661,6 +831,52 @@ func (c *CommunityEventConsumer) updateCommunity(ctx context.Context, did string
 			return c.createCommunity(ctx, did, commit)
 		}
 		return fmt.Errorf("failed to get existing community: %w", err)
+	}
+
+	// atProto Best Practice: Handles are NOT stored in records (they're mutable, resolved from DIDs)
+	//
+	// This resolves UNCONDITIONALLY, where it used to be gated on
+	// `if profile.Handle == ""`. A record that named a handle was never resolved
+	// at all, so on this path the consumer never learned the repo's current PDS
+	// host and never noticed an identity describing a different DID — and the one
+	// field it goes on to write was decided by the record's author.
+	//
+	// What is done with the answer is where this path parts company with
+	// createCommunity, and the asymmetry is the whole point:
+	//
+	//   - A SUBJECT MISMATCH is refused, permanently, exactly as on create.
+	//     Applying the edit would write another repo's PDS host onto this
+	//     community — worse in a quiet way than a bad create, because the row
+	//     keeps its correct handle and looks entirely healthy while BridgeTrust
+	//     makes admissibility decisions about it from somebody else's provenance.
+	//   - EVERY OTHER FAILURE — the directory unreachable, an unverifiable
+	//     handle, no identity at all — is TOLERATED. This community's handle was
+	//     verified when the row was created, so a directory that cannot answer
+	//     right now says nothing about it, and refusing would dead-letter every
+	//     profile edit made during a DNS wobble.
+	//
+	// Tolerating is not believing. resolvedPDSURL stays empty, so nothing
+	// unverified reaches the column BridgeTrust reads and admitRecordOrigin's
+	// stored-row fallback governs the origin instead. That pairing is the
+	// substance of this cycle: an unverified resolution can arrive carrying a
+	// confident-looking PDS host — the TRUSTED bridge host, even — and taking it
+	// would promote a community's provenance on the strength of an identity
+	// nothing confirmed. Only a VERIFIED resolution may write that column, which
+	// keeps the backfill working (rows predating pds_url carry an empty value and
+	// this path is what repairs them) without making it a trust hole.
+	var resolvedPDSURL string
+	resolved, verifiedHandle, err := c.resolveVerifiedHandleForUpdate(ctx, did)
+	if err != nil {
+		return err
+	}
+	if verifiedHandle != "" {
+		// Backfill the stored PDS host (see createCommunity): rows indexed
+		// before this fix carry an empty pds_url, which makes BridgeTrust
+		// default-deny their posts' bridgedStats. Update() only overwrites when
+		// non-empty.
+		resolvedPDSURL = resolved.PDSURL
+		log.Printf("✓ Resolved handle from PLC: %s (did=%s, method=%s)",
+			verifiedHandle, did, resolved.Method)
 	}
 
 	// The origin gate runs BEFORE the record's fields are copied over, so it
@@ -681,7 +897,12 @@ func (c *CommunityEventConsumer) updateCommunity(ctx context.Context, did string
 	if resolvedPDSURL != "" {
 		existing.PDSURL = resolvedPDSURL
 	}
-	existing.Handle = profile.Handle
+	// existing.Handle is NOT assigned from the record. Update never writes the
+	// handle column at all, so the assignment that used to be here changed
+	// nothing in the database — it only overwrote the verified handle held in
+	// this struct, which is what the "Updated community" line below reports and
+	// what admitRecordOrigin above was measured against. Its single observable
+	// effect was to make the log name whatever the record's author typed.
 	existing.Name = profile.Name
 	existing.DisplayName = profile.DisplayName
 	existing.Description = profile.Description
@@ -978,12 +1199,32 @@ func (c *CommunityEventConsumer) admitRecordOrigin(ctx context.Context, did stri
 	}
 
 	handle, pdsURL := fallbackHandle, fallbackPDSURL
+	// Only a resolution that actually happened is measured. resolved staying nil
+	// means no resolver is configured at all (tests, dev), which is the fallback
+	// contract above and NOT a failed verification — running it through the
+	// predicate would turn "we never asked" into "the answer was bad" and drop
+	// every origin on those paths.
 	if resolved != nil {
-		if resolved.Handle == "" || resolved.Handle == invalidHandle {
-			log.Printf("WARNING: dropping origin %q on community %s: the repo's handle could not be verified (%q); indexing without it", profile.Origin, did, resolved.Handle)
+		verifiedHandle, err := identity.VerifiedHandle(resolved, did)
+		if err != nil {
+			// Both sentinels drop the ORIGIN and nothing else, by the contract
+			// documented above: a community whose display string is missing is
+			// still a community, and rejecting here would dead-letter every post
+			// naming it. They are still logged apart because they mean different
+			// things to whoever reads the line — an unverifiable handle is the
+			// directory being unhelpful for now, while a resolution about another
+			// DID means the identity path handed back somebody else's repo and is
+			// worth chasing.
+			if errors.Is(err, identity.ErrIdentitySubjectMismatch) {
+				log.Printf("WARNING: dropping origin %q on community %s: identity resolution described %q instead; indexing without it",
+					profile.Origin, did, resolved.DID)
+			} else {
+				log.Printf("WARNING: dropping origin %q on community %s: the repo's handle could not be verified (%q); indexing without it",
+					profile.Origin, did, resolved.Handle)
+			}
 			return "", fallbackPDSURL
 		}
-		handle = resolved.Handle
+		handle = verifiedHandle
 		if resolved.PDSURL != "" {
 			pdsURL = resolved.PDSURL
 		}

@@ -133,10 +133,24 @@ func (r *originRepo) Update(_ context.Context, c *communities.Community) (*commu
 // fixedResolver answers every DID with one identity: the shape of a bridged
 // community whose record carries no handle, so the consumer resolves one and,
 // with it, the PDS host BridgeTrust reads.
+//
+// It ECHOES the DID it was asked about unless the fixture pinned one, and that
+// is not a convenience. A resolution carries a subject, and callers compare it
+// to the DID they asked about — identity.VerifiedHandle exists to make that
+// comparison uniform, because a caching resolver sits in front of the directory
+// in production and a stale or mis-keyed cache row is how a DID and a handle
+// that do not belong together reach a caller. A fake that answered about nobody
+// in particular (DID: "") would fail that check in every test that used it, on
+// a mismatch invented by the fixture — which would have made the check look
+// wrong and, worse, made it untestable by construction. Pinning id.DID
+// explicitly is how a test asks for a genuine mismatch.
 type fixedResolver struct{ id identity.Identity }
 
-func (f fixedResolver) Resolve(context.Context, string) (*identity.Identity, error) {
+func (f fixedResolver) Resolve(_ context.Context, did string) (*identity.Identity, error) {
 	id := f.id
+	if id.DID == "" {
+		id.DID = did
+	}
 	return &id, nil
 }
 
@@ -230,6 +244,19 @@ func (failingResolver) Resolve(context.Context, string) (*identity.Identity, err
 
 // The gate reads the repo's RESOLVED identity, never the record's own handle
 // field: a record can carry any handle its author likes.
+//
+// The record here is a forgery — it claims c-nba.coves.social and the matching
+// origin, while the directory says the repo is c-nba.example.net on an untrusted
+// PDS — and it is INDEXED, not refused. That is deliberate. The claim is inert:
+// it is never stored, never compared, and never reaches the origin gate, so it
+// cannot decide anything. The row that results describes the repo as the
+// directory describes it, with the foreign origin dropped because an untrusted
+// PDS may assert only its own domain.
+//
+// Refusing such a record was tried and reverted. The field goes stale on every
+// legitimate rename — a record is a snapshot and handles are mutable — so a
+// refusal turns ordinary drift into a permanent dead-letter. The claim being
+// worth nothing is what makes ignoring it safe.
 func TestCreateCommunity_RecordHandleIsNotProvenance(t *testing.T) {
 	t.Parallel()
 	repo := newOriginRepo()
@@ -245,6 +272,8 @@ func TestCreateCommunity_RecordHandleIsNotProvenance(t *testing.T) {
 
 	stored := repo.byDID[did]
 	require.NotNil(t, stored)
+	assert.Equal(t, "c-nba.example.net", stored.Handle,
+		"the row carries what the directory established, never what the record claimed")
 	assert.Empty(t, stored.Origin, "the origin must be measured against the resolved handle, not the record's")
 	assert.Equal(t, untrustedPDS, stored.PDSURL, "the resolution that decided the origin is persisted as the row's provenance")
 }

@@ -177,6 +177,160 @@ func TestCachingResolver_MissResolvesAndCaches(t *testing.T) {
 	assert.Equal(t, fixtureDID, got.DID)
 }
 
+// unverifiedIdentity is what resolution returns when the DID document was read
+// but the handle could not be confirmed against DNS: the reserved placeholder in
+// Handle, and a perfectly good PDS alongside it, since the PDS comes from the
+// document and needs no DNS at all.
+func unverifiedIdentity() *Identity {
+	return &Identity{
+		DID:        fixtureDID,
+		Handle:     InvalidHandle,
+		PDSURL:     fixturePDS,
+		ResolvedAt: time.Now().UTC(),
+		Method:     MethodHTTPS,
+	}
+}
+
+// TestCachingResolver_DoesNotCacheAnUnverifiedIdentity is a bug that predates
+// the handle-binding work and is worth stating on its own terms.
+//
+// InvalidHandle is not a fact about an identity. It is a fact about the NETWORK
+// at the instant of the lookup: DNS was slow, the TXT record had not propagated,
+// the resolver had no egress. Caching it converts a momentary condition into a
+// stored one, and IDENTITY_CACHE_TTL is 24h in .env.ci — so a single transient
+// DNS failure pins a DID as unverifiable for a day, for every caller, with no
+// way to notice and nothing to purge unless someone thinks to.
+//
+// The consumer already treats an unverified handle as TRANSIENT and expects the
+// redrive to succeed (identity.ErrHandleUnverified is classified that way at
+// every call site). A cache that memoises the failure makes that expectation
+// false: every retry inside the TTL gets the same stored placeholder without a
+// single network call, so the event can never recover and eventually exhausts
+// its redrive budget.
+//
+// This is the same rule TestCachingResolver_PropagatesAResolutionFailure states
+// for an outright error — a failed resolution must not be cached, or an account
+// stays invisible for a full TTL after the reason went away. A handle.invalid
+// result is that failure wearing a success's clothes.
+func TestCachingResolver_DoesNotCacheAnUnverifiedIdentity(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		handle string
+		why    string
+	}{
+		{
+			name:   "the reserved placeholder",
+			handle: InvalidHandle,
+			why:    "resolution reports an unverifiable handle as a SUCCESS carrying this string",
+		},
+		{
+			name:   "an empty handle",
+			handle: "",
+			why:    "an identity with no handle establishes nothing worth remembering, and the cache is keyed by handle too",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			resolver, base, cache := newCachingFixture()
+			unverified := unverifiedIdentity()
+			unverified.Handle = tc.handle
+			base.identity = unverified
+
+			got, err := resolver.Resolve(context.Background(), fixtureDID)
+			require.NoError(t, err, "an unverifiable handle is not a resolution error: %s", tc.why)
+			assert.Equal(t, tc.handle, got.Handle, "the caller still gets the answer, unchanged")
+
+			assert.Empty(t, cache.sets,
+				"the unverified result was written to a cache with a 24h TTL: one transient DNS failure "+
+					"now pins this DID as unverifiable for a day, and the transient classification every "+
+					"caller applies to it becomes a lie")
+
+			_, err = resolver.Resolve(context.Background(), fixtureDID)
+			require.NoError(t, err)
+			assert.Equal(t, 2, base.resolves,
+				"the second resolution was served from cache. Nothing about the identity changed — only "+
+					"the network did — so the next attempt must be allowed to reach it")
+		})
+	}
+}
+
+// TestCachingResolver_TreatsAnUnverifiedCachedRowAsAMiss closes the other half
+// of the unverified-identity rule, and it is the half that governs the rows that
+// already exist.
+//
+// Not writing them is only forward-looking. identity_cache is a live Postgres
+// table with a 24h TTL, so every placeholder written before that fix is still
+// there and still being served — and a cache HIT never reaches the base
+// resolver, so nothing about the fix makes those rows go away. For up to a day
+// after the deploy, the DIDs that happened to be resolved during a DNS wobble
+// keep answering handle.invalid to every caller, from a cache that will not ask
+// again. The bug looks fixed and behaves exactly as before for the identities it
+// already bit.
+//
+// So a hit that carries no usable handle has to be treated as what it actually
+// is: not an answer. Consult the base, return the verified result, and PURGE the
+// row rather than leaving it to expire — a stale entry that is read, ignored,
+// and left in place is read again by the next caller and ignored again, which
+// costs a query per resolution and keeps the wrong value discoverable by
+// anything that reads the table directly.
+//
+// This is the same shape as TestCachingResolver_PropagatesAResolutionFailure's
+// rule for an outright error — a failure must not be cached, or an account stays
+// invisible for a full TTL after the reason went away — applied to the failure
+// that arrives dressed as a success.
+func TestCachingResolver_TreatsAnUnverifiedCachedRowAsAMiss(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name   string
+		handle string
+		why    string
+	}{
+		{
+			name:   "the reserved placeholder",
+			handle: InvalidHandle,
+			why:    "written by every resolution that happened while DNS could not answer",
+		},
+		{
+			name:   "an empty handle",
+			handle: "",
+			why:    "a row that establishes no handle at all answers nothing a caller can use",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			resolver, base, cache := newCachingFixture()
+			stale := unverifiedIdentity()
+			stale.Handle = tc.handle
+			cache.entries[fixtureDID] = stale
+
+			got, err := resolver.Resolve(context.Background(), fixtureDID)
+			require.NoError(t, err)
+
+			assert.Equal(t, fixtureHandle, got.Handle,
+				"the caller was handed %q from cache: %s. A hit never reaches the base resolver, so "+
+					"these rows keep answering for the rest of their 24h TTL — the fix that stopped "+
+					"WRITING them does nothing for the ones already there", tc.handle, tc.why)
+			assert.Equal(t, 1, base.resolves,
+				"a cached row carrying no usable handle is not an answer, and must send the caller to "+
+					"the network exactly as an empty cache would")
+
+			assert.Contains(t, cache.purges, fixtureDID,
+				"the stale row was read, ignored, and left in place — so the next resolution pays for "+
+					"the same query, ignores the same value, and anything reading identity_cache "+
+					"directly still finds %q against this DID", tc.handle)
+
+			assert.Len(t, cache.sets, 1,
+				"treated as a miss means treated as a miss: the verified answer must be written back, "+
+					"or every resolution of this DID re-resolves until something else caches it")
+		})
+	}
+}
+
 func TestCachingResolver_HitIsServedWithoutTheNetworkAndSaysSo(t *testing.T) {
 	t.Parallel()
 	resolver, base, cache := newCachingFixture()

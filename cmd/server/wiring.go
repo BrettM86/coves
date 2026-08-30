@@ -229,7 +229,16 @@ func (a *application) buildIdentity() {
 	// and must NOT get it — the two resolvers need opposite answers in the same
 	// process, which is why this is an argument rather than something the
 	// identity package works out for itself.
-	identityConfig := identity.DefaultConfig(identity.PrivateHostOptions(a.allowPrivateHosts())...)
+	identityOpts := identity.PrivateHostOptions(a.allowPrivateHosts())
+	// HANDLE_WELL_KNOWN_HOSTS: the dev/CI-only redirect of the well-known leg of
+	// handle verification to the local PDS. config.Load refuses it outside dev
+	// and identity.DefaultConfig panics without the hatch above, so this line
+	// cannot open it in production; it can only forget to pass it in dev, which
+	// surfaces as every community resolving to handle.invalid.
+	if len(a.cfg.Identity.WellKnownHosts) > 0 {
+		identityOpts = append(identityOpts, identity.WithWellKnownHosts(a.cfg.Identity.WellKnownHosts))
+	}
+	identityConfig := identity.DefaultConfig(identityOpts...)
 	identityConfig.PLCURL = a.cfg.Identity.ResolverPLCURL
 	if a.cfg.Identity.CacheTTL > 0 {
 		identityConfig.CacheTTL = a.cfg.Identity.CacheTTL

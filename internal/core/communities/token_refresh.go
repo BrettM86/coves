@@ -9,6 +9,8 @@ import (
 
 	"github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/xrpc"
+
+	covesoauth "Coves/internal/atproto/oauth"
 )
 
 // refreshPDSToken exchanges a refresh token for new access and refresh tokens
@@ -48,6 +50,28 @@ func refreshPDSToken(
 	// Call com.atproto.server.refreshSession
 	output, err := atproto.ServerRefreshSession(ctx, client)
 	if err != nil {
+		// A GUARD REFUSAL IS NOT AN EXPIRED CREDENTIAL, and it is checked first
+		// because the string fallback below cannot tell them apart. A transport
+		// error names the URL it was dialling, port included, so any PDS on a
+		// port whose digits contain "401" — 401, 4010, 8401, 34013 — produces a
+		// refusal that Contains(errStr, "401") reports as a spent token. That
+		// branch does not wrap, so ErrBlockedAddress leaves the chain entirely
+		// and nothing above here can recover the real diagnosis.
+		//
+		// The two diagnoses call for OPPOSITE actions, which is what makes the
+		// confusion dangerous rather than merely untidy: "refresh token expired"
+		// tells the caller to re-authenticate with the stored password, and that
+		// is reauthenticateWithPassword — which POSTs the community's CLEARTEXT
+		// password to the very address the guard just refused. So the misreport
+		// invites a retry with a far worse payload against a host we had already
+		// decided not to talk to.
+		//
+		// Wrapped with %w: the context is worth adding, the identity must
+		// survive.
+		if errors.Is(err, covesoauth.ErrBlockedAddress) {
+			return "", "", fmt.Errorf("refusing to refresh the session for %s: %w", pdsURL, err)
+		}
+
 		// Check for expired refresh token (401 Unauthorized)
 		// Try typed error first (more reliable), fallback to string check
 		var xrpcErr *xrpc.Error

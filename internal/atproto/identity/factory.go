@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	covesoauth "Coves/internal/atproto/oauth"
@@ -39,6 +40,16 @@ type Config struct {
 	// TestTwoResolvers_OppositeRequirementsInTheSameProcess is the one
 	// assertion that notices.
 	allowPrivateHosts bool
+
+	// wellKnownHosts maps a handle suffix to the host:port that answers
+	// /.well-known/atproto-did for handles under it, instead of the handle
+	// itself. Empty for every resolver but the dev and CI ones.
+	//
+	// UNEXPORTED for the same reason httpClient is: an exported field is a
+	// verification-redirecting seam reachable as a struct literal from any
+	// package, with no option and nothing to grep for. WithWellKnownHosts is the
+	// way in, and it is gated on allowPrivateHosts.
+	wellKnownHosts map[string]string
 }
 
 // ConfigOption configures a resolver Config.
@@ -52,6 +63,38 @@ type ConfigOption func(*Config)
 // resolvers have the guard off" stays an answerable question.
 func WithPrivateHostsAllowed() ConfigOption { // coves:allow-ssrf-hatch: this IS the hatch itself; the name is the contract
 	return func(c *Config) { c.allowPrivateHosts = true }
+}
+
+// WithWellKnownHosts redirects the HTTP leg of handle verification for the
+// handle suffixes it names, to the host:port each maps to.
+//
+// DEV AND CI ONLY, and gated: it must be passed alongside
+// WithPrivateHostsAllowed or construction fails. See
+// well_known_hosts_test.go for what it is for and why the gate is there.
+// The map is COPIED with its suffixes lowercased, once, here — the single
+// normalisation point for both consumers. DNS names are case-insensitive, and
+// each consumer compares against an already-lowered hostname: the rewrite
+// transport lowers the handle before matching, and indigo normalises a handle
+// before testing it against SkipDNSDomainSuffixes. So an uppercase key matches
+// nothing in either, and normalising in only one of them is worse than in
+// neither: verification would start working while DNS stayed unskipped for that
+// namespace, so nothing would look wrong and every resolution would first wait on
+// a DNS server the hermetic stack does not have.
+//
+// Copying also means a caller mutating its map afterwards cannot change where
+// this resolver sends handle verification.
+func WithWellKnownHosts(hosts map[string]string) ConfigOption {
+	return func(c *Config) {
+		if hosts == nil {
+			c.wellKnownHosts = nil
+			return
+		}
+		lowered := make(map[string]string, len(hosts))
+		for suffix, host := range hosts {
+			lowered[strings.ToLower(suffix)] = host
+		}
+		c.wellKnownHosts = lowered
+	}
 }
 
 // withHTTPClient substitutes the client a resolver dials through.
@@ -150,6 +193,7 @@ func DefaultConfig(opts ...ConfigOption) Config {
 	for _, opt := range opts {
 		opt(&config)
 	}
+	requireWellKnownHostsGate(config)
 	// After the options, because the hatch one of them may have set is what this
 	// client is built from — and only when none of them supplied a client, so
 	// that withHTTPClient's substitution is not immediately overwritten. The two
@@ -163,6 +207,13 @@ func DefaultConfig(opts ...ConfigOption) Config {
 
 // NewResolver creates a new identity resolver with caching
 func NewResolver(db *sql.DB, config Config) Resolver {
+	// REFUSED HERE TOO, not only in DefaultConfig. A hand-built Config that
+	// applies the option directly reaches this constructor without passing
+	// through DefaultConfig's check, so a gate in one place is a gate with a way
+	// around it — the same pair withHTTPClient's defaulting branch covers, for
+	// the same reason.
+	requireWellKnownHostsGate(config)
+
 	// Apply defaults if not set
 	if config.PLCURL == "" {
 		config.PLCURL = "https://plc.directory"
@@ -182,7 +233,7 @@ func NewResolver(db *sql.DB, config Config) Resolver {
 	}
 
 	// Create base resolver using Indigo
-	base := newBaseResolver(config.PLCURL, config.httpClient)
+	base := newBaseResolverWithWellKnownHosts(config.PLCURL, config.httpClient, config.wellKnownHosts)
 
 	// Wrap with caching using PostgreSQL
 	cache := NewPostgresCache(db, config.CacheTTL)

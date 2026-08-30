@@ -862,23 +862,49 @@ func (c *PostEventConsumer) hydrateAuthorOpportunistically(ctx context.Context, 
 		log.Printf("debug: could not resolve post author %s for hydration: %v", authorDID, err)
 		return
 	}
-	// The resolver returns a bidirectionally verified handle, or the reserved
-	// "handle.invalid" when verification failed. Indexing the latter would
-	// write a placeholder into a column with a uniqueness constraint, so the
-	// second unverifiable author would collide with the first.
-	if resolved.DID != authorDID || resolved.Handle == "" || resolved.Handle == invalidHandle {
+	// identity.VerifiedHandle is the one predicate in the tree for "is this
+	// handle safe to store against this DID", and this is one of the four places
+	// that used to spell it out by hand. Two of the other three were missing the
+	// subject comparison entirely, which is why the shared form is the one this
+	// site had rather than the other way round.
+	//
+	// It answers what this site needs either way: the resolver returns a
+	// bidirectionally verified handle, or the reserved "handle.invalid" when
+	// verification failed, and indexing the latter would write a placeholder into
+	// a column with a uniqueness constraint — so the second unverifiable author
+	// would collide with the first.
+	//
+	// The two sentinels are NOT distinguished here, deliberately. Hydration is an
+	// enrichment that gives up quietly on every failure (§5.3: indexing the post
+	// is the obligation), so there is no classification for them to drive — the
+	// community consumer, which must decide between a redrive and a dead letter,
+	// is where telling them apart earns its keep.
+	verifiedHandle, err := identity.VerifiedHandle(resolved, authorDID)
+	if err != nil {
 		log.Printf("debug: not hydrating post author %s (unverified identity)", authorDID)
 		return
 	}
 
-	if err := c.userService.IndexUser(hydrateCtx, resolved.DID, resolved.Handle, resolved.PDSURL); err != nil {
+	if err := c.userService.IndexUser(hydrateCtx, resolved.DID, verifiedHandle, resolved.PDSURL); err != nil {
 		log.Printf("debug: could not hydrate post author %s: %v", authorDID, err)
 	}
 }
 
 // invalidHandle is the reserved handle atProto identity resolution reports when
 // a DID's handle cannot be bidirectionally verified.
-const invalidHandle = "handle.invalid"
+//
+// An ALIAS, not a second spelling of the literal: the identity package owns the
+// string, because that is where the predicate comparing against it lives, and two
+// independent copies of a magic constant is how one of them ends up not matching
+// what a resolver returns.
+//
+// NO PRODUCTION CODE IN THIS PACKAGE STILL READS IT. Every comparison it existed
+// for now goes through identity.VerifiedHandle, and the remaining callers are
+// this package's integration tests, which use it to seed a resolver stub and to
+// assert the placeholder never reaches communities.handle. It is kept for them —
+// deleting it would not simplify anything here, only make those tests spell out
+// a literal that must match what indigo returns.
+const invalidHandle = identity.InvalidHandle
 
 // authorHydrationTimeout bounds the opportunistic identity resolution above.
 // Short on purpose: it is an enrichment on the firehose path, so it must never

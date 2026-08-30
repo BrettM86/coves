@@ -433,25 +433,39 @@ func TestCommunityConsumer_RejectsAnyProfileRKeyButSelf(t *testing.T) {
 	})
 }
 
-// TestCommunityConsumer_KeepsTheHandleTheRecordCarries covers the legacy shape:
-// a profile record with a "handle" field in it.
+// TestCommunityConsumer_ResolvesEvenWhenTheRecordCarriesAHandle covers the
+// legacy shape — a profile record with a "handle" field in it — and says what
+// that field is now worth.
 //
-// Handles are mutable and DIDs are not, so a record should not carry one at all
-// — but records that do exist, and the consumer takes the record's word for it
-// rather than resolving. What is asserted is that it is stored verbatim, since
-// this is the string every client uses to address the community.
-func TestCommunityConsumer_KeepsTheHandleTheRecordCarries(t *testing.T) {
+// A record's handle is a CLAIM, never a value. Handles are mutable and DIDs are
+// not, so a record should not carry one at all; more to the point,
+// social.coves.community.profile does not declare the property, so no PDS on
+// the network validates it and any repo can write any string there. Records
+// that carry one still exist — this AppView's own CreateCommunity writes it, for
+// reasons tests/e2e/community_contract_test.go documents — but nothing reads it
+// as authority. The handle stored is whatever the DID's own directory entry
+// names, unconditionally; a record that disagrees is logged and otherwise
+// ignored. See the note below on why a disagreement is a warning and not a
+// refusal.
+//
+// This is the agreeing case, and the assertion carrying the fix is the call
+// count rather than the handle. When record and directory name the same string
+// the resulting row is identical whether or not resolution happened, so a
+// future refactor that reinstates the short-circuit — "the record already has a
+// handle, skip the round trip" — would leave every column correct and be
+// invisible everywhere except here, as a 0.
+//
+// TestCommunityConsumer_NeverStoresAHandleTheRepoDoesNotOwn below is the other
+// half of the same rule: what happens when they disagree.
+func TestCommunityConsumer_ResolvesEvenWhenTheRecordCarriesAHandle(t *testing.T) {
 	t.Parallel()
 
 	name := testkit.UniqueIDWithPrefix(t, "hnd")
 	communityDID := fixtures.DID(name)
 	handle := "c-" + name + "." + instanceDomain
 
-	// The resolver would answer with something else entirely. It must not be
-	// consulted: a record carrying its own handle short-circuits resolution, and
-	// this proves that rather than assuming it.
 	resolver := newStubIdentityResolver()
-	resolver.resolutions[communityDID] = "c-resolver-would-say-this." + instanceDomain
+	resolver.resolutions[communityDID] = handle
 	consumer, repo := newCommunityConsumer(t, resolver)
 	ctx := context.Background()
 
@@ -464,7 +478,223 @@ func TestCommunityConsumer_KeepsTheHandleTheRecordCarries(t *testing.T) {
 	indexed, err := repo.GetByDID(ctx, communityDID)
 	require.NoError(t, err)
 	assert.Equal(t, handle, indexed.Handle)
-	assert.Zero(t, resolver.callCount, "a record that carries a handle must not trigger PLC resolution")
+
+	assert.Equal(t, 1, resolver.callCount,
+		"the record's handle was stored without ever being checked against the DID that published it")
+	assert.Equal(t, communityDID, resolver.lastDID,
+		"the claim must be measured against the SIGNING repo's identity; asking about anything else "+
+			"checks a handle nobody has to own")
+}
+
+// TestCommunityConsumer_NeverStoresAHandleTheRepoDoesNotOwn is the namespace
+// takeover, written down.
+//
+// social.coves.community.profile does not declare a "handle" property, so no
+// PDS on the network validates one. A foreign PDS has never seen a
+// social.coves.* lexicon at all; it accepts the extra field and puts it on the
+// firehose verbatim. That makes the record's handle an ASSERTION BY THE AUTHOR
+// about a namespace the author does not necessarily own — and communities.handle
+// is UNIQUE, which is what turns an assertion into a land grab.
+//
+// The event below is the whole attack. A repo that legitimately owns
+// c-<something>.attacker.example writes a profile at rkey "self" in its OWN repo
+// claiming handle c-<name>.coves.social, and hostedBy did:web:coves.social. Every
+// gate that existed before this fix passed it: the rkey is "self", the record
+// parses, and verifyHostedByClaim measured the CLAIMED handle's domain against
+// the hostedBy domain and then against coves.social's own did.json — all of
+// which agree, because the attacker copied them from the real instance. Nothing
+// in that chain took the signing repo's DID as an input, so nothing in it could
+// tell this event apart from the real community's.
+//
+// What the row would then do is the reason this is p1 rather than a wrong field.
+// resolveScopedIdentifier (service.go) turns !name@coves.social into
+// GetByHandle("c-name.coves.social") — so the identifier in every URL, every
+// !mention and the client's subscribe button resolves to the attacker's DID, and
+// subscriptions, posts and votes addressed to it land in a repo we do not host.
+//
+// # WHAT IS ASSERTED, AND WHAT IS DELIBERATELY NOT
+//
+// The claimed handle must be UNOCCUPIED afterwards. That is the whole contract.
+// GetByHandle is the exact call resolveScopedIdentifier makes, so a row under
+// that string — held by ANY did — is the takeover; and because
+// communities.handle is UNIQUE, even an otherwise harmless row there is a
+// permanent denial of registration, since the real community's own create would
+// then hit ErrHandleTaken and be dead-lettered as permanent. Takeover and DoS
+// are the same assertion.
+//
+// The spoofing repo's OWN community may exist. It is indexed under the handle
+// the directory names for it — its real one, in its own namespace — because
+// that is what the consumer stores now: the resolved handle, never the claimed
+// one. So the attacker gets what it was always entitled to, a community at its
+// own address, and nothing at ours.
+//
+// # WHY THE EVENT IS NOT REFUSED
+//
+// An earlier version of this test asserted the stronger thing: an error, and no
+// row at all. That was implemented, and then reverted, and the reversal is worth
+// recording here because someone will propose reinstating it.
+//
+// The refusal added no security. The stored handle already comes from
+// resolution, so the claim cannot reach the column whatever it says — and
+// verifyHostedByClaim runs on the VERIFIED handle, so this very event is
+// refused in production for the honest reason: the record says
+// hostedBy did:web:coves.social while the repo resolves into
+// attacker.example, and those domains do not match. The string comparison was
+// not what stopped the attack; resolving unconditionally was.
+//
+// What it cost was a PERMANENT false positive on ordinary drift. A record is a
+// snapshot and handles are mutable, so the field goes stale the moment a
+// community renames — and this AppView's own CreateCommunity writes that field,
+// so our own communities carry one. Under the refusal, a legitimate rename made
+// a community's stored record contradict its own correct resolution, and the
+// event was dead-lettered without redrive. Dead-lettering real communities for
+// renaming is a worse failure than indexing a forgery whose forged part is
+// discarded before it reaches the database.
+//
+// So the disagreement is logged as a warning and the event proceeds. What must
+// never happen is the claimed handle being stored, and that is what this test
+// pins.
+//
+// In production this exact event is refused anyway, by verifyHostedByClaim —
+// after the bind it measures the VERIFIED handle's domain against the hostedBy
+// claim, and attacker.example is not coves.social. Every consumer built in this
+// file has verification switched off, matching CI, so what is asserted here is
+// deliberately narrower and correspondingly more precise: not "the event is
+// refused", which depends on configuration, but "the claimed handle is never
+// stored", which holds on every configuration there is.
+func TestCommunityConsumer_NeverStoresAHandleTheRepoDoesNotOwn(t *testing.T) {
+	t.Parallel()
+
+	squatted := testkit.UniqueIDWithPrefix(t, "sqt")
+	claimedHandle := "c-" + squatted + "." + instanceDomain
+
+	// The attacker's repo is not a forgery and does not need to be. It is an
+	// ordinary, well-formed atProto identity that resolves bidirectionally to a
+	// handle it genuinely owns — in a namespace that has nothing to do with
+	// ours. That is precisely what makes the record's claim a lie: the authority
+	// for this DID, asked, names a different handle.
+	attackerDID := fixtures.DID(squatted)
+	ownedHandle := "c-" + testkit.UniqueIDWithPrefix(t, "atk") + ".attacker.example"
+
+	resolver := newStubIdentityResolver()
+	resolver.resolutions[attackerDID] = ownedHandle
+	consumer, repo := newCommunityConsumer(t, resolver)
+	ctx := context.Background()
+
+	record := profileRecord(squatted)
+	record["handle"] = claimedHandle
+
+	require.NoError(t, consumer.HandleEvent(ctx,
+		profileEvent(attackerDID, "create", "self", "bafyspoofedhandle", record)),
+		"a claim the directory disagrees with is dropped, not fatal: the same disagreement is what a "+
+			"legitimate rename produces, and refusing it dead-letters real communities")
+
+	// The one that matters, and the reason this file exists. GetByHandle is the
+	// exact call resolveScopedIdentifier makes for !name@coves.social, so a row
+	// here — under ANY did — is the takeover, and a row here at all is the
+	// denial of registration.
+	_, err := repo.GetByHandle(ctx, claimedHandle)
+	assert.True(t, communities.IsNotFound(err),
+		"%q is occupied: the repo that claimed it now answers for !%s@%s, and the real community "+
+			"can never register the name, got %v", claimedHandle, squatted, instanceDomain, err)
+
+	// The attacker's own community is indexed, at the attacker's own address.
+	// Asserting this rather than leaving it unstated is what stops a future
+	// implementation from satisfying the line above by refusing the event: that
+	// was tried, and the doc comment says why it was reverted.
+	indexed, err := repo.GetByDID(ctx, attackerDID)
+	require.NoError(t, err, "the repo's own community must still be indexed")
+	assert.Equal(t, ownedHandle, indexed.Handle,
+		"the row must carry the handle the directory names for this repo, never the one it asserted")
+}
+
+// TestCommunityConsumer_NeverStoresAClaimedHandleOnUpdateEither is the same
+// contract for the path the create-side fix did not touch.
+//
+// An attacker with a community already indexed does not have to publish a new
+// profile to try this — it can EDIT the one it has, and updateCommunity is a
+// separate function that was never migrated. It still short-circuits resolution
+// when the record names a handle, still assigns that handle onto the row it
+// loaded, and never asks whether the identity behind the repo agrees. So the
+// claim reaches further on this path than on the other one.
+//
+// What stops it is one level down, and it is worth being precise about, because
+// it is not the consumer: postgresCommunityRepo.Update does not write the handle
+// column at all. Its SQL sets display name, description, facets, blobs,
+// visibility, discovery, moderation, warnings, record URI and CID, origin and
+// pds_url — and the in-memory assignment above it dies at that boundary. The
+// takeover is closed here by the schema rather than by the code that runs first.
+//
+// That is exactly why this test exists at the acceptance level, driving the real
+// repository, rather than only against the in-memory fake in the jetstream
+// package. The fake writes the whole struct, so it cannot tell the difference
+// between "the consumer refused to store the claim" and "the consumer tried and
+// the SQL declined". Only the real Update can say which, and what an operator
+// needs guaranteed is the OUTCOME: !<name>@coves.social still resolves to
+// nothing.
+//
+// The resolver assertion is the part that fails today. It is not decorative:
+// the update path writes pds_url from whatever it resolves, and BridgeTrust
+// reads that column to decide whether a community's bridged vote counts are
+// admissible — so a path that never resolves, or that believes an unverified
+// resolution, is making a trust decision from the record author's assertion.
+func TestCommunityConsumer_NeverStoresAClaimedHandleOnUpdateEither(t *testing.T) {
+	t.Parallel()
+
+	squatted := testkit.UniqueIDWithPrefix(t, "usq")
+	claimedHandle := "c-" + squatted + "." + instanceDomain
+
+	attackerDID := fixtures.DID(squatted)
+	resolvedHandle := "c-" + testkit.UniqueIDWithPrefix(t, "urs") + ".attacker.example"
+
+	resolver := newStubIdentityResolver()
+	resolver.resolutions[attackerDID] = resolvedHandle
+	consumer, repo := newCommunityConsumer(t, resolver)
+	ctx := context.Background()
+
+	// The repo earns its row honestly first, under the handle the directory
+	// names for it. Seeding through the consumer rather than through repo.Create
+	// matters: it is what makes the update below an UPDATE, instead of falling
+	// through updateCommunity's GetByDID-NotFound branch into the create path —
+	// which is already fixed and would prove nothing.
+	require.NoError(t, consumer.HandleEvent(ctx,
+		profileEvent(attackerDID, "create", "self", "bafybeforeclaim", profileRecord(squatted))))
+
+	seeded, err := repo.GetByDID(ctx, attackerDID)
+	require.NoError(t, err, "the community must be indexed before the update is meaningful")
+	require.Equal(t, resolvedHandle, seeded.Handle)
+
+	callsAfterCreate := resolver.callCount
+
+	// Now the edit that makes the claim.
+	record := profileRecord(squatted)
+	record["handle"] = claimedHandle
+	record["displayName"] = "Renamed Into Somebody Else's Namespace"
+
+	require.NoError(t, consumer.HandleEvent(ctx,
+		profileEvent(attackerDID, "update", "self", "bafyclaimedonupdate", record)),
+		"a claim the directory disagrees with is dropped, not fatal — on this path most of all, since a "+
+			"stored record's handle field goes stale on every legitimate rename")
+
+	_, err = repo.GetByHandle(ctx, claimedHandle)
+	assert.True(t, communities.IsNotFound(err),
+		"%q is occupied after a profile EDIT claimed it: !%s@%s now resolves to a repo that does not "+
+			"own the name, and the real community can never register it, got %v",
+		claimedHandle, squatted, instanceDomain, err)
+
+	updated, err := repo.GetByDID(ctx, attackerDID)
+	require.NoError(t, err, "the community must still be indexed: the claim is dropped, not the event")
+	assert.Equal(t, resolvedHandle, updated.Handle,
+		"the edit moved the row onto the handle its record asked for")
+
+	assert.Greater(t, resolver.callCount, callsAfterCreate,
+		"the update path never consulted the directory, because the record named a handle. It writes "+
+			"pds_url from what it resolves, and BridgeTrust reads that column to decide whether this "+
+			"community's bridged vote counts are admissible — so with no resolution that trust input "+
+			"comes from the record's author")
+	assert.Equal(t, attackerDID, resolver.lastDID,
+		"the resolution must be about the SIGNING repo; asking about anything else checks a handle "+
+			"nobody has to own")
 }
 
 // TestCommunityConsumer_ResolvesAMissingHandleFromPLC is the modern path: no
