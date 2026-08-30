@@ -34,6 +34,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCommentConsumer_CreateComment(t *testing.T) {
@@ -187,6 +190,110 @@ func TestCommentConsumer_CreateComment(t *testing.T) {
 		if finalCount != initialCount {
 			t.Errorf("Comment count should not increase on duplicate event. Initial: %d, Final: %d", initialCount, finalCount)
 		}
+	})
+}
+
+func TestCommentConsumer_FutureCreatedAtClamped(t *testing.T) {
+	t.Parallel()
+
+	indexComment := func(
+		t *testing.T,
+		userHandle, userDID, communityName, ownerHandle, recordCreatedAt string,
+	) (time.Time, time.Time, time.Time) {
+		t.Helper()
+		db := testkit.DB(t)
+		ctx := context.Background()
+		commentRepo := postgres.NewCommentRepository(db)
+		consumer := jetstream.NewCommentEventConsumer(commentRepo, db)
+		testUser := fixtures.User(t, db, userHandle, userDID)
+		testCommunity, err := fixtures.Community(ctx, db, communityName, ownerHandle)
+		require.NoError(t, err)
+		testPostURI := fixtures.Post(t, db, testCommunity, testUser.DID, "CreatedAt test", 0, time.Now())
+		rkey := testkit.TID()
+		uri := fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, rkey)
+		event := &jetstream.JetstreamEvent{
+			Did:  testUser.DID,
+			Kind: "commit",
+			Commit: &jetstream.CommitEvent{
+				Rev:        "test-rev",
+				Operation:  "create",
+				Collection: "social.coves.community.comment",
+				RKey:       rkey,
+				CID:        "bafy" + rkey,
+				Record: map[string]interface{}{
+					"$type":   "social.coves.community.comment",
+					"content": "CreatedAt clamp test",
+					"reply": map[string]interface{}{
+						"root": map[string]interface{}{
+							"uri": testPostURI,
+							"cid": "bafypost",
+						},
+						"parent": map[string]interface{}{
+							"uri": testPostURI,
+							"cid": "bafypost",
+						},
+					},
+					"createdAt": recordCreatedAt,
+				},
+			},
+		}
+
+		before := time.Now()
+		require.NoError(t, consumer.HandleEvent(ctx, event))
+		after := time.Now()
+		stored, err := commentRepo.GetByURI(ctx, uri)
+		require.NoError(t, err)
+		return stored.CreatedAt, before, after
+	}
+
+	t.Run("future createdAt is clamped to now", func(t *testing.T) {
+		t.Parallel()
+		storedCreatedAt, before, after := indexComment(
+			t,
+			"futclamp.test",
+			"did:plc:futclamp",
+			"futclamp",
+			"futowner.test",
+			time.Now().Add(48*time.Hour).Format(time.RFC3339),
+		)
+
+		assert.False(t, storedCreatedAt.After(after),
+			"a future-dated comment must be clamped at ingest so it cannot pin the \"new\" sort or distort hot rank")
+		assert.False(t, storedCreatedAt.Before(before.Truncate(time.Second)),
+			"the clamped timestamp must fall within the HandleEvent call bounds (second-level slack for timestamp storage rounding)")
+	})
+
+	t.Run("past createdAt is stored verbatim", func(t *testing.T) {
+		t.Parallel()
+		pastCreatedAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+		storedCreatedAt, _, _ := indexComment(
+			t,
+			"paststamp.test",
+			"did:plc:paststamp",
+			"paststamp",
+			"pastowner.test",
+			pastCreatedAt.Format(time.RFC3339),
+		)
+
+		assert.True(t, storedCreatedAt.UTC().Equal(pastCreatedAt.UTC()),
+			"a valid past createdAt must be stored verbatim")
+	})
+
+	t.Run("malformed createdAt falls back to now", func(t *testing.T) {
+		t.Parallel()
+		storedCreatedAt, before, after := indexComment(
+			t,
+			"badstamp.test",
+			"did:plc:badstamp",
+			"badstamp",
+			"badowner.test",
+			"not-a-timestamp",
+		)
+
+		assert.False(t, storedCreatedAt.After(after),
+			"a malformed createdAt must fall back to the time the comment is ingested")
+		assert.False(t, storedCreatedAt.Before(before.Truncate(time.Second)),
+			"the fallback timestamp must fall within the HandleEvent call bounds (second-level slack for timestamp storage rounding)")
 	})
 }
 

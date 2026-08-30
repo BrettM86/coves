@@ -950,8 +950,8 @@ func serializePostContent(facets []interface{}, embed map[string]interface{}, la
 	return facetsJSON, embedJSON, labelsJSON, nil
 }
 
-// parseRecordCreatedAt reads a record's author-supplied createdAt, falling back
-// to now when it does not parse.
+// parseRecordCreatedAt reads an indexed record's author-supplied createdAt,
+// falling back to now when it does not parse.
 //
 // SECURITY: future timestamps are clamped to now. created_at drives the "new"
 // sort and the hot-rank age, so a record asserting a future date (hostile or
@@ -964,7 +964,7 @@ func parseRecordCreatedAt(raw, uri string) time.Time {
 		return time.Now()
 	}
 	if now := time.Now(); createdAt.After(now) {
-		log.Printf("Warning: post %s has future createdAt %s, clamping to now", uri, raw)
+		log.Printf("Warning: record %s has future createdAt %s, clamping to now", uri, raw)
 		return now
 	}
 	return createdAt

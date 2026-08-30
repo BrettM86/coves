@@ -47,10 +47,11 @@ import (
 func commentHotRankOf(t *testing.T, env *commentEnv, uri string) float64 {
 	t.Helper()
 	var rank float64
-	require.NoError(t, env.db.QueryRowContext(env.ctx, `
-		SELECT log(greatest(2, c.score + 2)) / power(((EXTRACT(EPOCH FROM (NOW() - c.created_at)) / 3600) + 2), 1.8)
+	query := fmt.Sprintf(`
+		SELECT %s
 		FROM comments c WHERE c.uri = $1
-	`, uri).Scan(&rank))
+	`, commentHotRankSQL("c", "NOW()"))
+	require.NoError(t, env.db.QueryRowContext(env.ctx, query, uri).Scan(&rank))
 	return rank
 }
 

@@ -640,6 +640,20 @@ func (r *postgresCommentRepo) buildCommenterCursor(comment *comments.Comment) st
 	return base64.URLEncoding.EncodeToString([]byte(cursorStr))
 }
 
+// commentHotRankSQL builds the comment hot-rank SQL expression for a comments-table
+// alias and a "now" expression.
+//
+// Without the age clamp, a comment more than two hours in the future makes the
+// POWER base negative. PostgreSQL then errors with "a negative number raised to
+// a non-integer power yields a complex result", aborting the whole thread query.
+// GREATEST(age, 0) keeps the POWER base >= 2 and makes a future-dated comment rank
+// exactly like a brand-new one instead of gaining a boost.
+func commentHotRankSQL(alias, nowExpr string) string {
+	return fmt.Sprintf(
+		`LOG(GREATEST(2, %[1]s.score + 2)) / POWER(GREATEST(EXTRACT(EPOCH FROM (%[2]s - %[1]s.created_at))/3600, 0) + 2, 1.8)`,
+		alias, nowExpr)
+}
+
 // ListByParentWithHotRank retrieves direct replies to a post or comment with sorting and pagination
 // Supports three sort modes: hot (Lemmy algorithm), top (by score + timeframe), and new (by created_at)
 // Uses cursor-based pagination with composite keys for consistent ordering
@@ -664,25 +678,25 @@ func (r *postgresCommentRepo) ListByParentWithHotRank(
 
 	// Build SELECT clause - compute hot_rank for "hot" sort
 	// Hot rank formula (Lemmy algorithm):
-	// log(greatest(2, score + 2)) / power(((EXTRACT(EPOCH FROM (NOW() - created_at)) / 3600) + 2), 1.8)
+	// LOG(GREATEST(2, score + 2)) / POWER(GREATEST(age_hours, 0) + 2, 1.8)
 	//
 	// This formula:
 	// - Gives logarithmic weight to score (prevents high-score dominance)
 	// - Decays over time with power 1.8 (faster than linear, slower than quadratic)
 	// - Uses hours as time unit (3600 seconds)
-	// - Adds constants to prevent division by zero and ensure positive values
+	// - Clamps negative ages so future-dated comments cannot gain a ranking boost
 	var selectClause string
 	if sort == "hot" {
-		selectClause = `
+		selectClause = fmt.Sprintf(`
 		SELECT
 			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
 			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
 			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
 			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
-			log(greatest(2, c.score + 2)) / power(((EXTRACT(EPOCH FROM (NOW() - c.created_at)) / 3600) + 2), 1.8) as hot_rank,
+			%s as hot_rank,
 			COALESCE(u.handle, c.commenter_did) as author_handle
-		FROM comments c`
+		FROM comments c`, commentHotRankSQL("c", "NOW()"))
 	} else {
 		selectClause = `
 		SELECT
@@ -808,9 +822,10 @@ func (r *postgresCommentRepo) buildCommentSortClause(sort, timeframe string) (st
 		// any other unrecognised value this leading key is NULL for every row and the ordering
 		// collapses to score DESC — i.e. "top". ListByParentsBatch's own default arm does
 		// compute the rank, so the two halves of one thread view disagree.
-		// REACHABILITY: masked today — comment_service.go:1327-1333 rejects any sort outside
-		// {hot, top, new} before the repository is reached. Adding a fourth sort to that
-		// allow-list without updating both arms here makes it live.
+		// REACHABILITY: masked today — the sort allow-list in comment_service.go's
+		// validate/list request path rejects any sort outside {hot, top, new} before the
+		// repository is reached. Adding a fourth sort without updating both arms here
+		// makes it live.
 		// (see TestCommentRepo_UnknownSortRanksLikeTopNotLikeHot)
 		orderBy = `hot_rank DESC, c.score DESC, c.created_at DESC, c.uri DESC`
 	}
@@ -946,7 +961,7 @@ func (r *postgresCommentRepo) parseCommentCursor(cursor *string, sort string) (s
 		}
 
 		// Use computed hot_rank expression in comparison
-		hotRankExpr := `log(greatest(2, c.score + 2)) / power(((EXTRACT(EPOCH FROM (NOW() - c.created_at)) / 3600) + 2), 1.8)`
+		hotRankExpr := commentHotRankSQL("c", "NOW()")
 		filter := fmt.Sprintf(`AND ((%s < $3 OR (%s = $3 AND c.score < $4) OR (%s = $3 AND c.score = $4 AND c.created_at < $5) OR (%s = $3 AND c.score = $4 AND c.created_at = $5 AND c.uri < $6)) AND c.uri != $7)`,
 			hotRankExpr, hotRankExpr, hotRankExpr, hotRankExpr)
 		return filter, []interface{}{hotRank, score, createdAt, uri, uri}, nil
@@ -956,9 +971,10 @@ func (r *postgresCommentRepo) parseCommentCursor(cursor *string, sort string) (s
 		// unrecognised sort discards the cursor with no error, while buildCommentSortClause
 		// happily produces an ORDER BY for the same value. Page two is therefore page one,
 		// forever.
-		// REACHABILITY: masked today — comment_service.go:1327-1333 rejects any sort outside
-		// {hot, top, new} before the repository is reached. Adding a fourth sort to that
-		// allow-list without updating both arms here makes it live.
+		// REACHABILITY: masked today — the sort allow-list in comment_service.go's
+		// validate/list request path rejects any sort outside {hot, top, new} before the
+		// repository is reached. Adding a fourth sort without updating both arms here
+		// makes it live.
 		// (see TestCommentRepo_UnknownSortCursorIsSilentlyDiscarded and
 		// TestCommentRepo_UnknownSortCursorRepeatsPageOne)
 		return "", nil, nil
@@ -968,10 +984,10 @@ func (r *postgresCommentRepo) parseCommentCursor(cursor *string, sort string) (s
 // KNOWN DEFECT (issue 2026-07-31-hot-comment-cursor-truncated-to-six-decimals.md): the
 // %f verb below writes the hot rank to six decimal places, and that loses rows two ways.
 //
-// TOTAL LOSS, on old threads. The rank is
-// log10(greatest(2, score+2)) / (age_hours+2)^1.8. At score 0 it crosses 1e-6 at ~46 days
-// and rounds to "0.000000" at ~68 days; at higher scores the second crossing runs
-// ~120 days (score 5) to ~194 days (score 100). Once the cursor reads "0.000000" the
+// TOTAL LOSS, on old threads. At score 0, the rank from commentHotRankSQL crosses
+// 1e-6 at ~46 days and rounds to "0.000000" at ~68 days; at higher scores,
+// rounding to zero occurs around ~120 days (score 5) to ~194 days (score 100).
+// Once the cursor reads "0.000000" the
 // filter above asks for a rank strictly below zero, no row qualifies, and pagination
 // returns page one and then stops, silently. (Not "within a week" — at seven days the
 // rank is ~2.9e-5, about 29x above the floor.)
@@ -1200,17 +1216,6 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 	var windowOrderBy string
 	var selectClause string
 	switch sort {
-	case "hot":
-		selectClause = `
-			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
-			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
-			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
-			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
-			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
-			log(greatest(2, c.score + 2)) / power(((EXTRACT(EPOCH FROM (NOW() - c.created_at)) / 3600) + 2), 1.8) as hot_rank,
-			COALESCE(u.handle, c.commenter_did) as author_handle`
-		// CRITICAL: Must inline hot_rank formula - PostgreSQL doesn't allow SELECT aliases in window ORDER BY
-		windowOrderBy = `log(greatest(2, c.score + 2)) / power(((EXTRACT(EPOCH FROM (NOW() - c.created_at)) / 3600) + 2), 1.8) DESC, c.score DESC, c.created_at DESC`
 	case "top":
 		selectClause = `
 			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
@@ -1232,17 +1237,17 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 			COALESCE(u.handle, c.commenter_did) as author_handle`
 		windowOrderBy = `c.created_at DESC`
 	default:
-		// Default to hot
-		selectClause = `
+		// "hot", and deliberately any unrecognised sort — see the KNOWN DEFECT note in buildCommentSortClause
+		selectClause = fmt.Sprintf(`
 			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
 			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
 			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
 			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
 			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
-			log(greatest(2, c.score + 2)) / power(((EXTRACT(EPOCH FROM (NOW() - c.created_at)) / 3600) + 2), 1.8) as hot_rank,
-			COALESCE(u.handle, c.commenter_did) as author_handle`
+			%s as hot_rank,
+			COALESCE(u.handle, c.commenter_did) as author_handle`, commentHotRankSQL("c", "NOW()"))
 		// CRITICAL: Must inline hot_rank formula - PostgreSQL doesn't allow SELECT aliases in window ORDER BY
-		windowOrderBy = `log(greatest(2, c.score + 2)) / power(((EXTRACT(EPOCH FROM (NOW() - c.created_at)) / 3600) + 2), 1.8) DESC, c.score DESC, c.created_at DESC`
+		windowOrderBy = commentHotRankSQL("c", "NOW()") + ` DESC, c.score DESC, c.created_at DESC`
 	}
 
 	// Build optional viewer block filter (only when authenticated viewer is present)

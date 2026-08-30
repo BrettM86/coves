@@ -142,12 +142,7 @@ func (c *CommentEventConsumer) createComment(ctx context.Context, repoDID string
 	// Format: at://commenter_did/social.coves.community.comment/rkey
 	uri := fmt.Sprintf("at://%s/social.coves.community.comment/%s", repoDID, commit.RKey)
 
-	// Parse timestamp from record
-	createdAt, err := time.Parse(time.RFC3339, commentRecord.CreatedAt)
-	if err != nil {
-		log.Printf("Warning: Failed to parse createdAt timestamp, using current time: %v", err)
-		createdAt = time.Now()
-	}
+	createdAt := parseRecordCreatedAt(commentRecord.CreatedAt, uri)
 
 	// Serialize optional JSON fields
 	facetsJSON, embedJSON, labelsJSON, err := serializeOptionalFields(commentRecord, uri)
