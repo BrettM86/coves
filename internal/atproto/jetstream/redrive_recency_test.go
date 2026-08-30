@@ -33,33 +33,6 @@ const (
 	recencyTestCommenter = recencyTestPrefix + "commenter"
 )
 
-// recencyPostEvent builds a post commit event with an explicit Jetstream time_us.
-func recencyPostEvent(op, rkey, cid, title, content string, timeUS int64) *JetstreamEvent {
-	var record map[string]interface{}
-	if op != "delete" {
-		record = map[string]interface{}{
-			"$type":     "social.coves.community.post",
-			"community": recencyTestCommunity,
-			"author":    recencyTestAuthor,
-			"title":     title,
-			"content":   content,
-			"createdAt": "2026-03-01T00:00:00Z",
-		}
-	}
-	return &JetstreamEvent{
-		Kind:   "commit",
-		Did:    recencyTestCommunity,
-		TimeUS: timeUS,
-		Commit: &CommitEvent{
-			Operation:  op,
-			Collection: "social.coves.community.post",
-			RKey:       rkey,
-			CID:        cid,
-			Record:     record,
-		},
-	}
-}
-
 // recencyCommentEvent builds a comment commit event with an explicit Jetstream time_us.
 func recencyCommentEvent(op, rkey, cid, content, postURI, postCID string, timeUS int64) *JetstreamEvent {
 	var record map[string]interface{}
@@ -96,57 +69,10 @@ func setupRecencyFixtures(t *testing.T, db *sql.DB) *PostEventConsumer {
 
 	us := newMockUserService()
 	us.users[recencyTestAuthor] = &users.User{DID: recencyTestAuthor, Handle: "rcyauthor.test"}
-	return NewPostEventConsumer(postgres.NewPostRepository(db), postgres.NewCommunityRepository(db), us, db)
-}
-
-func TestPostConsumer_StaleRedrivenUpdate_CannotRevertNewerContent(t *testing.T) {
-	t.Parallel()
-	db := testkit.DB(t)
-
-	pc := setupRecencyFixtures(t, db)
-	ctx := context.Background()
-	uri := "at://" + recencyTestCommunity + "/social.coves.community.post/rcy1"
-
-	base := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC).UnixMicro()
-	t0, t1, t2 := base, base+1_000_000, base+2_000_000 // create, stale update v1, newer update v2
-
-	require.NoError(t, pc.HandleEvent(ctx, recencyPostEvent("create", "rcy1", "bafrcy1", "v0 title", "v0 body", t0)))
-
-	// v2 (the newer edit) is indexed first — v1 failed transiently and went to the DLQ.
-	require.NoError(t, pc.HandleEvent(ctx, recencyPostEvent("update", "rcy1", "bafrcy1v2", "v2 title", "v2 body", t2)))
-
-	readPost := func() (title, content string) {
-		require.NoError(t, db.QueryRow(`SELECT COALESCE(title,''), COALESCE(content,'') FROM posts WHERE uri=$1`, uri).Scan(&title, &content))
-		return
-	}
-	title, content := readPost()
-	require.Equal(t, "v2 title", title)
-	require.Equal(t, "v2 body", content)
-
-	// The DeadLetterRedriver now replays v1 (TimeUS T1 < T2). It must be skipped
-	// WITHOUT error (returning an error would re-dead-letter it) and must not
-	// revert the newer content.
-	err := pc.HandleEvent(ctx, recencyPostEvent("update", "rcy1", "bafrcy1v1", "v1 title", "v1 body", t1))
-	require.NoError(t, err, "stale redriven update must be skipped as success")
-	title, content = readPost()
-	assert.Equal(t, "v2 title", title, "stale redriven update must not revert title")
-	assert.Equal(t, "v2 body", content, "stale redriven update must not revert content")
-
-	// A rewind duplicate of v2 itself (equal time_us) is also skipped idempotently.
-	require.NoError(t, pc.HandleEvent(ctx, recencyPostEvent("update", "rcy1", "bafrcy1v2", "v2 title", "v2 body", t2)))
-	title, _ = readPost()
-	assert.Equal(t, "v2 title", title)
-
-	// A genuinely newer update still applies (guard never blocks live in-order events).
-	require.NoError(t, pc.HandleEvent(ctx, recencyPostEvent("update", "rcy1", "bafrcy1v3", "v3 title", "v3 body", t2+1_000_000)))
-	title, _ = readPost()
-	assert.Equal(t, "v3 title", title, "newer update must still apply")
-
-	// Backward compatibility: an event without time_us (TimeUS == 0) applies
-	// unconditionally, exactly as before the guard existed.
-	require.NoError(t, pc.HandleEvent(ctx, recencyPostEvent("update", "rcy1", "bafrcy1v4", "v4 title", "v4 body", 0)))
-	title, _ = readPost()
-	assert.Equal(t, "v4 title", title, "TimeUS=0 event applies unconditionally")
+	return NewPostEventConsumer(
+		postgres.NewPostRepository(db), postgres.NewCommunityRepository(db), us, db,
+		WithAdmissions(postgres.NewAdmissionRepository(db)),
+	)
 }
 
 func TestCommentConsumer_StaleRedrivenUpdate_CannotRevertNewerContent(t *testing.T) {
@@ -158,9 +84,12 @@ func TestCommentConsumer_StaleRedrivenUpdate_CannotRevertNewerContent(t *testing
 	ctx := context.Background()
 
 	base := time.Date(2026, 3, 1, 13, 0, 0, 0, time.UTC).UnixMicro()
-	postURI := "at://" + recencyTestCommunity + "/social.coves.community.post/rcyc1"
+	postURI := pv2URI(recencyTestAuthor, "rcyc1")
 	postCID := "bafrcyc1"
-	require.NoError(t, pc.HandleEvent(ctx, recencyPostEvent("create", "rcyc1", postCID, "thread", "body", base)))
+	require.NoError(t, pc.HandleEvent(ctx, pv2Event(
+		recencyTestAuthor, "create", "rcyc1", "", postCID, base,
+		pv2Record(recencyTestCommunity, "thread", "body"),
+	)))
 
 	uri := "at://" + recencyTestCommenter + "/social.coves.community.comment/rcycc1"
 	t0, t1, t2 := base+1_000_000, base+2_000_000, base+3_000_000

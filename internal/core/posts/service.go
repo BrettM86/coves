@@ -2034,9 +2034,25 @@ func (s *postService) deleteCommunityPost(ctx context.Context, userDID, communit
 	record, err := pdsClient.GetRecord(ctx, LegacyPostCollection, rkey)
 	if err != nil {
 		if errors.Is(err, pds.ErrNotFound) {
-			// Post already deleted or never existed - idempotent success
-			log.Printf("[POST-DELETE] Post not found on PDS (already deleted?): %s", uri)
-			return nil
+			// The PDS cannot prove authorship once the record is gone, so authorize
+			// against the indexed row before applying the local tombstone.
+			indexedPost, indexedErr := s.repo.GetRawIndexedRow(ctx, uri)
+			if indexedErr != nil {
+				if IsNotFound(indexedErr) {
+					return nil
+				}
+				return fmt.Errorf("loading the indexed row of %s before deletion: %w", uri, indexedErr)
+			}
+			if indexedPost == nil {
+				return nil
+			}
+			if indexedPost.AuthorDID != userDID {
+				log.Printf("[SECURITY] Legacy post delete authorization failed: caller=%s, indexed_author=%s, uri=%s",
+					userDID, indexedPost.AuthorDID, uri)
+				return ErrNotAuthorized
+			}
+			log.Printf("[POST-DELETE] Post not found on PDS (already deleted?): caller=%s, uri=%s", userDID, uri)
+			return s.tombstoneIndexedRow(ctx, uri)
 		}
 		if pds.IsAuthError(err) {
 			return communityCredentialFailure("fetch post", community.DID, err)
@@ -2060,9 +2076,25 @@ func (s *postService) deleteCommunityPost(ctx context.Context, userDID, communit
 	// 9. Delete record from community's PDS
 	if err := pdsClient.DeleteRecord(ctx, LegacyPostCollection, rkey); err != nil {
 		if errors.Is(err, pds.ErrNotFound) {
-			// Already deleted - idempotent success
-			log.Printf("[POST-DELETE] Post already deleted from PDS: %s", uri)
-			return nil
+			// Re-check the indexed author because the successful pre-read does not
+			// prove which row remains locally after the PDS reports it absent.
+			indexedPost, indexedErr := s.repo.GetRawIndexedRow(ctx, uri)
+			if indexedErr != nil {
+				if IsNotFound(indexedErr) {
+					return nil
+				}
+				return fmt.Errorf("loading the indexed row of %s before deletion: %w", uri, indexedErr)
+			}
+			if indexedPost == nil {
+				return nil
+			}
+			if indexedPost.AuthorDID != userDID {
+				log.Printf("[SECURITY] Legacy post delete authorization failed: caller=%s, indexed_author=%s, uri=%s",
+					userDID, indexedPost.AuthorDID, uri)
+				return ErrNotAuthorized
+			}
+			log.Printf("[POST-DELETE] Post already deleted from PDS: caller=%s, uri=%s", userDID, uri)
+			return s.tombstoneIndexedRow(ctx, uri)
 		}
 		if pds.IsAuthError(err) {
 			return communityCredentialFailure("delete post", community.DID, err)
@@ -2070,10 +2102,22 @@ func (s *postService) deleteCommunityPost(ctx context.Context, userDID, communit
 		return fmt.Errorf("failed to delete post from PDS: %w", err)
 	}
 
-	// 10. Log success (AppView will update via Jetstream consumer)
-	log.Printf("[POST-DELETE] Successfully deleted post: uri=%s, author=%s, community=%s",
-		uri, userDID, communityDID)
+	// 10. The firehose no longer ingests social.coves.community.post, so this
+	// service must tombstone the AppView row directly.
+	if err := s.tombstoneIndexedRow(ctx, uri); err != nil {
+		return err
+	}
 
+	log.Printf("[POST-DELETE] Successfully deleted post: caller=%s, uri=%s, author=%s, community=%s",
+		userDID, uri, userDID, communityDID)
+
+	return nil
+}
+
+func (s *postService) tombstoneIndexedRow(ctx context.Context, uri string) error {
+	if err := s.repo.SoftDelete(ctx, uri); err != nil {
+		return fmt.Errorf("soft-deleting the indexed row of %s: %w", uri, err)
+	}
 	return nil
 }
 

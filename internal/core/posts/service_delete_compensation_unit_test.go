@@ -100,8 +100,16 @@ func (w *recordingWithdrawer) callsFor(communityDID string) int {
 type tombstoningRepo struct {
 	mockRepository
 
+	rawIndexedRow *Post
 	softDeleted   []string
 	softDeleteErr error
+}
+
+func (r *tombstoningRepo) GetRawIndexedRow(_ context.Context, _ string) (*Post, error) {
+	if r.rawIndexedRow == nil {
+		return nil, ErrNotFound
+	}
+	return r.rawIndexedRow, nil
 }
 
 func (r *tombstoningRepo) SoftDelete(_ context.Context, uri string) error {
@@ -235,7 +243,7 @@ func newDeleteHarness(t *testing.T) *deleteHarness {
 // withCommunityService rebuilds the service over a community service, for the
 // legacy-collection route. Everything else is unchanged, so a call that reached
 // the new withdrawer would still be recorded.
-func (h *deleteHarness) withCommunityService(communityService communities.Service) {
+func (h *deleteHarness) withCommunityService(communityService communities.Service, pdsOptions ...pds.ClientOption) {
 	h.service = NewPostService(
 		h.repo, communityService, nil, nil, nil, nil, "https://pds.invalid",
 		WithAuthorRepoFactory(func(context.Context, string, *oauth.ClientSessionData) (AuthorRepo, error) {
@@ -244,6 +252,7 @@ func (h *deleteHarness) withCommunityService(communityService communities.Servic
 		WithSyncAcceptance(h.admissions, nil),
 		WithAcceptanceWithdrawal(h.withdrawer),
 		WithAdmissionPolicy(NewAllowAllAdmissionPolicyForTests()),
+		WithPDSClientOptions(pdsOptions...),
 	)
 }
 

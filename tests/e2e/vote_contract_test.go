@@ -18,18 +18,17 @@ import (
 //
 // # VOTES LIVE IN THE VOTER'S REPO, AND THAT IS THE WHOLE SHAPE OF THE DOMAIN
 //
-// Unlike a post (which lives in the community's repo) or a comment (the
-// author's), a vote's repo owner IS its subject-independent identity: the
+// Like postv2 and comments, a vote lives in its human author's repo. A vote's
+// repo owner IS its subject-independent identity: the
 // consumer takes the voter DID from the commit's repo and never reads one out of
 // the record (vote_consumer.go createVote, "Vote comes from user's
-// repository"). There is consequently no repo-ownership spoof to test here the
-// way TestPostIngestion tests one — a repo cannot forge a vote as somebody else,
-// because the repo is the identity.
+// repository"). There is consequently no repo-ownership spoof to test here: a
+// repo cannot forge a vote as somebody else, because the repo is the identity.
 //
-// What that costs is the ordering guarantee the post contract leans on. A vote
-// and its subject are necessarily in DIFFERENT repos, Jetstream parallelises
-// across repos, and so "the vote arrives after the post" is topology luck rather
-// than a protocol promise. The contract below does not pretend otherwise: it
+// A vote and its subject may be in different repos, and production cannot rely
+// on them sharing one. Jetstream parallelises across repos, so "the vote arrives
+// after the post" is topology luck rather than a protocol promise. The contract
+// below does not pretend otherwise: it
 // waits for the post to be INDEXED before writing a vote so that its own steps
 // are deterministic, and the out-of-order case is not an edge it avoids but a
 // contract of its own (see TestVoteBeforeSubjectIsCountedOnceSubjectIndexed) —
@@ -175,7 +174,7 @@ func TestVoteIngestion(t *testing.T) {
 	author := p.IndexedAccount(t, "vi")
 	voter := p.IndexedAccount(t, "vv")
 	community := indexedCommunity(t, p, "vi", author.DID)
-	post := indexedPost(t, p, community, author.DID, "vote target "+testkit.UniqueID(t))
+	post := indexedPost(t, p, community, author, "vote target "+testkit.UniqueID(t))
 
 	// The voter is deliberately NOT the author: a self-vote and a stranger's
 	// vote take the same path (the consumer has no self-vote rule), but using
@@ -297,10 +296,9 @@ func TestVoteIngestion(t *testing.T) {
 //
 // # WHY OUT-OF-ORDER IS THE ORDINARY CASE AND NOT AN EDGE
 //
-// A vote lives in the voter's repo and its subject lives in another (a post is
-// in the community's repo, a comment in its author's). Jetstream serialises a
-// single repo's commits and PARALLELISES ACROSS REPOS, so nothing orders a vote
-// against its subject. The window is small in a healthy stack and arbitrarily
+// A vote lives in the voter's repo and its subject may live in another author's
+// repo. Jetstream serialises a single repo's commits and PARALLELISES ACROSS
+// repos, so nothing orders a vote against its subject. The window is small in a healthy stack and arbitrarily
 // large in an unhealthy one — a redriven post, a consumer catching up after a
 // restart, a slow blob fetch upstream — and Phase 5's relay topology widens it
 // further. Arrival order is topology luck, so a pipeline that only counts votes
@@ -352,18 +350,18 @@ func TestVoteBeforeSubjectIsCountedOnceSubjectIndexed(t *testing.T) {
 	// votes never meet: the consumer's stale-vote cleanup keys on
 	// (voter_did, subject_uri), and a shared subject would make the second vote
 	// supersede the first.
-	warmupPost := indexedPost(t, p, community, author.DID, "vote consumer warm-up "+testkit.UniqueID(t))
+	warmupPost := indexedPost(t, p, community, author, "vote consumer warm-up "+testkit.UniqueID(t))
 	early.PutRecord(t, voteCollection, testkit.TID(), voteRecord(warmupPost, "up"))
 	awaitStats(t, p, warmupPost.URI,
 		"the early voter's repo to reach the vote consumer and be counted, before the "+
 			"out-of-order case is exercised",
 		func(s postStats) bool { return s.Upvotes == 1 })
 
-	// The post's URI is knowable before the post exists — the community's DID
+	// The post's URI is knowable before the post exists — the author's DID
 	// and an rkey this test chooses are all it is made of — which is exactly why
 	// a vote can name a subject that has not been indexed.
 	rkey := testkit.TID()
-	uri := postURI(community.DID, rkey)
+	uri := authorPostURI(author.DID, rkey)
 
 	// ---- the vote, before its subject ---------------------------------------
 	// The CID is a well-formed placeholder rather than the post's real one,
@@ -377,15 +375,13 @@ func TestVoteBeforeSubjectIsCountedOnceSubjectIndexed(t *testing.T) {
 	// ---- and now its subject, immediately -----------------------------------
 	// Nothing may go between these two writes. Every wait here is spent out of
 	// the deferred vote's redrive budget.
-	community.PutRecord(t, postCollection, rkey,
-		postRecord(community.DID, author.DID, "voted on before it existed", "the late post"))
-	p.Await(t, "the post to be indexed after the vote that names it", func() (bool, error) {
-		view, err := p.Post(context.Background(), uri)
-		if err != nil {
-			return false, err
-		}
-		return !view.NotFound, nil
-	})
+	latePost := author.PutRecord(t, postV2Collection, rkey,
+		postV2Record(community.DID, "voted on before it existed", "the late post"))
+	awaitStatus(t, p, uri, community.DID, "pending",
+		"the post to be indexed after the vote that names it")
+	community.PutRecord(t, acceptanceCollection, subjectRkey(uri), acceptanceRecord(uri, latePost.CID))
+	awaitStatus(t, p, uri, community.DID, "accepted",
+		"the late post to become visible after its community accepts it")
 
 	// ---- half one: the early vote is counted once its subject exists --------
 	stats := awaitStats(t, p, uri,
@@ -445,7 +441,7 @@ func TestVoteAPIContract(t *testing.T) {
 
 	author := p.IndexedAccount(t, "va")
 	community := indexedCommunity(t, p, "va", author.DID)
-	post := indexedPost(t, p, community, author.DID, "api contract "+testkit.UniqueID(t))
+	post := indexedPost(t, p, community, author, "api contract "+testkit.UniqueID(t))
 
 	ctx, cancel := context.WithTimeout(context.Background(), contractBudget)
 	defer cancel()

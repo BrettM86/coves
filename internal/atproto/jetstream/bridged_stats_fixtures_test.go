@@ -19,7 +19,6 @@ const (
 	bridgedTestPrefix    = "did:plc:brtest"
 	bridgedTestCommunity = "did:plc:brtestcommunity"
 	bridgedTestAuthor    = "did:plc:brtestauthor"
-	bridgedTestOther     = "did:plc:brtestotherauthor"
 	bridgedTestVoter     = "did:plc:brtestvoter"
 	bridgedTestCommenter = bridgedTestPrefix + "commenter"
 
@@ -42,11 +41,10 @@ func bridgedStatsRecord(up, down int, asOf string) map[string]interface{} {
 	}
 }
 
-func postRecord(title, content string, bridged map[string]interface{}) map[string]interface{} {
+func bridgedPostV2Record(title, content string, bridged map[string]interface{}) map[string]interface{} {
 	rec := map[string]interface{}{
-		"$type":     "social.coves.community.post",
+		"$type":     PostV2Collection,
 		"community": bridgedTestCommunity,
-		"author":    bridgedTestAuthor,
 		"title":     title,
 		"content":   content,
 		"createdAt": "2026-01-01T00:00:00Z",
@@ -76,14 +74,14 @@ func commentRecord(content, rootURI, rootCID, parentURI, parentCID string, bridg
 // TestParseRecord_BridgedStats verifies the record parsers tolerate presence/absence
 // of bridgedStats without a database.
 func TestParseRecord_BridgedStats(t *testing.T) {
-	withStats, err := parsePostRecord(postRecord("t", "c", bridgedStatsRecord(7, 2, asOfEarly)))
+	withStats, err := parseAuthorPostRecord(bridgedPostV2Record("t", "c", bridgedStatsRecord(7, 2, asOfEarly)))
 	require.NoError(t, err)
 	require.NotNil(t, withStats.BridgedStats)
 	assert.Equal(t, 7, withStats.BridgedStats.Upvotes)
 	assert.Equal(t, 2, withStats.BridgedStats.Downvotes)
 	assert.Equal(t, asOfEarly, withStats.BridgedStats.AsOf)
 
-	without, err := parsePostRecord(postRecord("t", "c", nil))
+	without, err := parseAuthorPostRecord(bridgedPostV2Record("t", "c", nil))
 	require.NoError(t, err)
 	assert.Nil(t, without.BridgedStats, "absent bridgedStats parses as nil")
 

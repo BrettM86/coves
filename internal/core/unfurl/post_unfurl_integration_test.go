@@ -393,17 +393,16 @@ func TestPostUnfurl_E2E_WithJetstream(t *testing.T) {
 
 	// Simulate Jetstream event with enhanced embed
 	jetstreamEvent := jetstream.JetstreamEvent{
-		Did:  community.DID,
+		Did:  author.DID,
 		Kind: "commit",
 		Commit: &jetstream.CommitEvent{
 			Operation:  "create",
-			Collection: "social.coves.community.post",
+			Collection: posts.PostV2Collection,
 			RKey:       rkey,
 			CID:        "bafy2bzaceunfurle2e",
 			Record: map[string]interface{}{
-				"$type":     "social.coves.community.post",
+				"$type":     posts.PostV2Collection,
 				"community": community.DID,
-				"author":    author.DID,
 				"title":     "E2E Unfurl Test Post",
 				"content":   "Testing unfurl E2E flow",
 				"embed":     enhancedEmbed,
@@ -413,12 +412,15 @@ func TestPostUnfurl_E2E_WithJetstream(t *testing.T) {
 	}
 
 	// Process through Jetstream consumer
-	consumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService, db)
+	consumer := jetstream.NewPostEventConsumer(
+		postRepo, communityRepo, userService, db,
+		jetstream.WithAdmissions(postgres.NewAdmissionRepository(db)),
+	)
 	err = consumer.HandleEvent(ctx, &jetstreamEvent)
 	require.NoError(t, err, "Failed to process Jetstream event")
 
 	// Verify post was indexed with unfurl metadata
-	uri := fmt.Sprintf("at://%s/social.coves.community.post/%s", community.DID, rkey)
+	uri := fmt.Sprintf("at://%s/%s/%s", author.DID, posts.PostV2Collection, rkey)
 	indexedPost, err := postRepo.GetRawIndexedRow(ctx, uri)
 	require.NoError(t, err, "Post should be indexed")
 

@@ -139,7 +139,7 @@ type Repository interface {
 	GetByAuthor(ctx context.Context, req GetAuthorPostsRequest) ([]*PostView, *string, error)
 
 	// SoftDelete marks a post as deleted in the AppView database
-	// Called by Jetstream consumer after post is deleted from PDS
+	// Called by the Jetstream postv2 consumer and postService.deleteCommunityPost
 	// Idempotent: Returns success if post already deleted
 	SoftDelete(ctx context.Context, uri string) error
 

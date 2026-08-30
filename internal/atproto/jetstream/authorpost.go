@@ -37,10 +37,9 @@ import (
 //     COMMUNITY's repo, so event.Did IS the community and the post is a
 //     subject the record names.
 //
-// The old community.post path (still in post_consumer.go) checks that the repo
-// DID EQUALS the record's community. Here that check splits in two opposite
-// directions, which is why these handlers are their own file rather than more
-// branches in the old ones.
+// The deprecated community-repo post collection is no longer ingested from the
+// firehose. Its existing rows stay served, are tombstoned directly by the API
+// delete path, and still accumulate vote/comment counters.
 
 // PostV2Collection is the author-repo post record of
 // docs/PRD_AUTHOR_OWNED_POSTS.md §3.1 — the §3.0 successor to the deprecated

@@ -110,9 +110,9 @@ func TestUserJourney(t *testing.T) {
 	t.Logf("journey cast: author=%s reader=%s community=%s", author.DID, reader.DID, community.DID)
 
 	// ---- 1. the author posts --------------------------------------------------
-	// Into the COMMUNITY's repo, with the community's session, because that is
-	// where post records live (post_contract_test.go opens with why).
-	post := indexedPost(t, p, community, author.DID, "journey "+testkit.UniqueID(t))
+	// The postv2 goes into the author's repo; the community's repo carries the
+	// acceptance that makes it visible.
+	post := indexedPost(t, p, community, author, "journey "+testkit.UniqueID(t))
 
 	view, err := p.Post(ctx, post.URI)
 	require.NoError(t, err)
@@ -121,8 +121,8 @@ func TestUserJourney(t *testing.T) {
 	require.Equal(t, postStats{}, view.Stats, "a fresh post starts with no votes and no comments")
 
 	// ---- 2. the reader comments on it -----------------------------------------
-	// Into the READER's own repo — a different repo from the post's, which is
-	// the first of the three this saga spans.
+	// Into the READER's own repo, distinct from both the author's post record and
+	// the community's acceptance.
 	commentRKey := testkit.TID()
 	commentURIStr := commentURI(reader.DID, commentRKey)
 	commentRec := reader.PutRecord(t, commentCollection, commentRKey,
@@ -159,8 +159,8 @@ func TestUserJourney(t *testing.T) {
 	})
 
 	// ---- 3. the reader upvotes the post ---------------------------------------
-	// A third repo: the vote lives in the VOTER's. Direction "up" on a strong
-	// reference to the post.
+	// The vote shares the reader's repo with their comment. Direction "up" on a
+	// strong reference to the post.
 	postVoteRKey := testkit.TID()
 	reader.PutRecord(t, voteCollection, postVoteRKey, voteRecord(post, "up"))
 

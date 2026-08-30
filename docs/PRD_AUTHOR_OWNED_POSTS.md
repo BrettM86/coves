@@ -770,13 +770,12 @@ relaunders a removed post, so the sequence is fixed:
    > before anyone truncates.** Do not run step 5 until this is settled.
 6. **POST-DRAIN FOLLOW-UP (separate branch, gated on
    `SELECT count(*) FROM posts WHERE split_part(uri,'/',4)='social.coves.community.post'`
-   = 0 AND fallbacks = 0):** only then remove the legacy surfaces —
-   `consumerWantedCollections` community.post entry, the post_consumer legacy
-   branch, `visiblePostsJoin`'s NULL-non-postv2-visible branch, `blobOwnerOf`
-   community fallback, `removedMarkers` legacy handling + record author-field
-   synthesis, `legacyPostCollection`, `applyRemoval`'s absent collection guard.
-   These retire together; removing ingest ahead of read (or either ahead of the
-   drain) is the vanish/relaunder bug.
+   = 0 AND fallbacks = 0):** only then remove the remaining legacy read surfaces
+   — `visiblePostsJoin`'s NULL-non-postv2-visible branch, `blobOwnerOf` community
+   fallback, `removedMarkers` legacy handling + record author-field synthesis,
+   `legacyPostCollection`, `applyRemoval`'s absent collection guard. These read
+   surfaces retire together; removing them ahead of the drain is the
+   vanish/relaunder bug. The ingestion exception is recorded in §12.
 
 **Deferred, independent of the cutover (file as issues):** orphan
 community-admissions sweep on community deletion; `community.post_count`
@@ -794,11 +793,21 @@ The 8-task build loop is complete and merged. Durable follow-ups that outlived
 the loop's throwaway tracker (file as issues; none blocks the current feature):
 
 - **Legacy drain follow-up (§11, gated):** remove the deprecated
-  `social.coves.community.post` consumer/WantedCollections/read surfaces only
-  after the prod re-materialization run confirms zero remaining records AND
-  zero fallbacks. The read-side collection-aware branches, `blobOwnerOf`
-  community fallback, `legacyPostCollection`, and `applyRemoval`'s absent
-  collection guard retire together in that branch.
+  `social.coves.community.post` read surfaces only after the prod
+  re-materialization run confirms zero remaining records AND zero fallbacks.
+  The read-side collection-aware branches, `blobOwnerOf` community fallback,
+  `legacyPostCollection`, and `applyRemoval`'s absent collection guard retire
+  together in that branch.
+
+  **Decision note (2026-08-30):** ingestion for
+  `social.coves.community.post` was retired ahead of the drain as security fix
+  P2 because the consumer trusted the record's free-text `author` claim. The
+  accepted consequence is that firehose updates and deletes for the roughly
+  12,000 existing legacy rows no longer apply: bridged score refreshes freeze,
+  while API deletes now tombstone the AppView row directly. Read surfaces
+  intentionally remain until the drain, and vote/comment counters continue to
+  update. §11's "removing ingest ahead of read is the vanish/relaunder bug"
+  warning now governs the READ half, which is unchanged until the drain.
 - **Fingerprint retype to `PostV2Record`:** deploy-sequenced to the
   writers-stopped maintenance window (`TRUNCATE post_submissions` alongside) —
   a live retype strands in-flight dedupe reservations. Ripples through

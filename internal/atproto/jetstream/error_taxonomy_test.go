@@ -33,38 +33,6 @@ func taxonomyEvent(did, collection, op, rkey string, record map[string]interface
 	}
 }
 
-func TestPostConsumer_RepoCommunityMismatch_IsPermanent(t *testing.T) {
-	// The repo-DID/community-DID security check runs before any repository access,
-	// so no DB is needed.
-	c := NewPostEventConsumer(nil, nil, nil, nil)
-	err := c.HandleEvent(context.Background(), taxonomyEvent(
-		"did:plc:evilrepo", "social.coves.community.post", "create", "p1",
-		map[string]interface{}{
-			"$type":     "social.coves.community.post",
-			"community": "did:plc:victimcommunity",
-			"author":    "did:plc:someauthor",
-			"createdAt": "2026-01-01T00:00:00Z",
-		},
-	))
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrPermanentEvent, "repo/community DID mismatch is a permanent security rejection")
-}
-
-func TestPostConsumer_MissingRequiredField_IsPermanent(t *testing.T) {
-	c := NewPostEventConsumer(nil, nil, nil, nil)
-	err := c.HandleEvent(context.Background(), taxonomyEvent(
-		"did:plc:somecommunity", "social.coves.community.post", "create", "p1",
-		map[string]interface{}{
-			"$type":     "social.coves.community.post",
-			"author":    "did:plc:someauthor",
-			"createdAt": "2026-01-01T00:00:00Z",
-			// community field missing → structurally invalid
-		},
-	))
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrPermanentEvent, "record missing required fields is permanently invalid")
-}
-
 func TestCommentConsumer_ValidationRejections_ArePermanent(t *testing.T) {
 	// Validation runs before any repository/DB access.
 	c := NewCommentEventConsumer(nil, nil)

@@ -110,9 +110,9 @@ const (
 // TestReliabilityCursorResumeIndexesWritesMadeWhileDown proves the AppView
 // resumes consumption from where it stopped rather than from the live tail.
 //
-// It carries NO ingestion marker: social.coves.community.post is proven by
-// TestPostIngestion. What is under test here is the connector's cursor, and a
-// post is merely the cheapest record whose arrival is observable.
+// It carries NO ingestion marker: social.coves.community.postv2 is proven by
+// TestAuthorPostIngestion. What is under test here is the connector's cursor,
+// and a post is merely the cheapest record whose arrival is observable.
 //
 // # THE SHAPE, AND WHY IT CANNOT FALSE-PASS
 //
@@ -143,9 +143,15 @@ func TestReliabilityCursorResumeIndexesWritesMadeWhileDown(t *testing.T) {
 	community := indexedCommunity(t, p, "cr", author.DID)
 
 	beforeRKey := testkit.TID()
-	community.PutRecord(t, postCollection, beforeRKey,
-		postRecord(community.DID, author.DID, "before the outage", "written while the AppView was up"))
-	beforeURI := postURI(community.DID, beforeRKey)
+	beforeURI := authorPostURI(author.DID, beforeRKey)
+	beforeRecord := author.PutRecord(t, postV2Collection, beforeRKey,
+		postV2Record(community.DID, "before the outage", "written while the AppView was up"))
+	awaitStatus(t, p, beforeURI, community.DID, "pending",
+		"the post written before the outage to reach admission")
+	community.PutRecord(t, acceptanceCollection, subjectRkey(beforeURI),
+		acceptanceRecord(beforeURI, beforeRecord.CID))
+	awaitStatus(t, p, beforeURI, community.DID, "accepted",
+		"the post written before the outage to be accepted")
 
 	p.Await(t, "the post written BEFORE the outage to be indexed", func() (bool, error) {
 		view, err := p.Post(context.Background(), beforeURI)
@@ -156,16 +162,27 @@ func TestReliabilityCursorResumeIndexesWritesMadeWhileDown(t *testing.T) {
 	})
 
 	duringRKey := testkit.TID()
-	duringURI := postURI(community.DID, duringRKey)
+	duringURI := authorPostURI(author.DID, duringRKey)
+	var duringCID string
 
 	control.outage(t, p, func() {
 		// The PDS and Jetstream are untouched by the outage — only the AppView
 		// is down — so this commit succeeds and sits in Jetstream's store
 		// waiting for a subscriber that can name a cursor old enough to see it.
-		community.PutRecord(t, postCollection, duringRKey,
-			postRecord(community.DID, author.DID, "during the outage",
+		record := author.PutRecord(t, postV2Collection, duringRKey,
+			postV2Record(community.DID, "during the outage",
 				"committed to the PDS while the AppView was stopped"))
+		duringCID = record.CID
 	})
+
+	// Observe pending before writing the acceptance. Otherwise replaying the
+	// acceptance could direct-fetch the post and conceal a broken postv2 cursor.
+	awaitStatus(t, p, duringURI, community.DID, "pending",
+		"the post written during the outage to be replayed from the postv2 cursor")
+	community.PutRecord(t, acceptanceCollection, subjectRkey(duringURI),
+		acceptanceRecord(duringURI, duringCID))
+	awaitStatus(t, p, duringURI, community.DID, "accepted",
+		"the replayed post to be accepted after the AppView resumed")
 
 	p.Await(t, "the post written DURING the outage to be indexed after the AppView resumed",
 		func() (bool, error) {
@@ -236,7 +253,7 @@ func TestReliabilityRewindReplaysExactlyOnce(t *testing.T) {
 
 	voter := p.IndexedAccount(t, "rw")
 	community := indexedCommunity(t, p, "rw", voter.DID)
-	post := indexedPost(t, p, community, voter.DID, "a post to vote on across a reconnect")
+	post := indexedPost(t, p, community, voter, "a post to vote on across a reconnect")
 
 	voter.CreateRecord(t, voteCollection, voteRecord(post, "up"))
 	awaitStats(t, p, post.URI, "the vote to be counted once, before the reconnect",
@@ -688,7 +705,7 @@ func TestReliabilityOverlappingFeedsDoNotDoubleIndex(t *testing.T) {
 
 	voter := p.IndexedAccount(t, "of")
 	community := indexedCommunity(t, p, "of", voter.DID)
-	post := indexedPost(t, p, community, voter.DID, "a post voted on under two feeds")
+	post := indexedPost(t, p, community, voter, "a post voted on under two feeds")
 
 	before := feedConnectorStates(t, p, votesConsumer)
 

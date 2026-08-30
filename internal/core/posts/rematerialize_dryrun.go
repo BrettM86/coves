@@ -66,6 +66,7 @@ func DryRunOf(tool *Rematerializer) *Rematerializer {
 		AuthorRepos:      dryRunAuthorRepos(tool.AuthorRepos, overlay),
 		Acceptances:      &dryRunAcceptanceWriter{overlay: overlay},
 		CommunityRepos:   dryRunCommunityRepos(tool.CommunityRepos, overlay),
+		Index:            &dryRunIndexTombstone{overlay: overlay},
 		Blobs:            &dryRunBlobClient{inner: tool.blobClient(), overlay: overlay},
 		CommunityScope:   tool.CommunityScope,
 		Progress:         tool.Progress,
@@ -87,6 +88,19 @@ func DryRunDeletes(tool *Rematerializer) (int, bool) {
 	return source.overlay.deletes, true
 }
 
+// DryRunTombstones reports how many AppView rows the tool WOULD have
+// soft-deleted. It returns 0 and false for a Rematerializer that is not a dry
+// run.
+func DryRunTombstones(tool *Rematerializer) (int, bool) {
+	index, ok := tool.Index.(*dryRunIndexTombstone)
+	if !ok {
+		return 0, false
+	}
+	index.overlay.mu.Lock()
+	defer index.overlay.mu.Unlock()
+	return len(index.overlay.tombstonedURIs), true
+}
+
 // dryRunOverlay is the in-memory store every wrapped write lands in and every
 // wrapped read falls back to. One overlay per dry run.
 type dryRunOverlay struct {
@@ -94,6 +108,7 @@ type dryRunOverlay struct {
 	ledgerRows     map[string]RematerializeLedgerRow
 	ledgerOriginal map[string]RematerializeState // the state each row stood at on disk
 	deletedURIs    map[string]bool
+	tombstonedURIs map[string]bool
 	records        map[string]*pds.RecordResponse // "did/collection/rkey" -> record
 	blobs          map[string]bool                // content-keyed marks for the rehearsal
 	deletes        int
@@ -137,6 +152,24 @@ func dryRunCID(value map[string]any) string {
 	digest := sha256.Sum256(raw)
 	encoded := strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(digest[:16]))
 	return "bafyDRYRUN" + encoded
+}
+
+// ---- index ----------------------------------------------------------------
+
+// dryRunIndexTombstone records the AppView mutation without forwarding it to
+// the real post repository.
+type dryRunIndexTombstone struct {
+	overlay *dryRunOverlay
+}
+
+func (i *dryRunIndexTombstone) SoftDelete(_ context.Context, uri string) error {
+	i.overlay.mu.Lock()
+	defer i.overlay.mu.Unlock()
+	if i.overlay.tombstonedURIs == nil {
+		i.overlay.tombstonedURIs = map[string]bool{}
+	}
+	i.overlay.tombstonedURIs[uri] = true
+	return nil
 }
 
 // ---- source ---------------------------------------------------------------

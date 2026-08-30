@@ -17,12 +17,11 @@ import (
 // A vote names its subject by AT-URI and nothing else, so the collection segment
 // of that URI is the ONLY thing that says which table the count belongs in. Both
 // post collections route to `posts` — posts.IsPostCollection is the shared
-// predicate — because the author-owned flip put new posts in a new collection
-// (social.coves.community.postv2) while every pre-flip post kept the deprecated
-// one, and both are indexed into the same table until §11's drain retires the
-// legacy NSID. A router that knows only one of them stops counting the other
-// SILENTLY: the vote row is still indexed and no error is raised, the score just
-// never moves.
+// predicate — because both kinds of row live in the same table. New posts use
+// social.coves.community.postv2; legacy ingestion has stopped, but pre-flip rows
+// persist until §11's drain. A router that knows only one collection stops
+// counting the other SILENTLY: the vote row is still indexed and no error is
+// raised, the score just never moves.
 
 // Every count mutation here matches its subject by URI ALONE. None of them
 // carries `deleted_at IS NULL` on the SUBJECT row, and that is the invariant:

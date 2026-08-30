@@ -202,6 +202,12 @@ type LegacySource interface {
 	DeleteLegacyPost(ctx context.Context, legacy LegacyPost, swapCID string) error
 }
 
+// RematerializeIndexTombstone soft-deletes one post URI in the AppView index.
+// Satisfied by the postgres PostRepository.
+type RematerializeIndexTombstone interface {
+	SoftDelete(ctx context.Context, uri string) error
+}
+
 // RematerializeLedgerRow is one row of the migration-037 ledger.
 type RematerializeLedgerRow struct {
 	OldURI    string
@@ -371,6 +377,13 @@ type Rematerializer struct {
 	Ledger      RematerializeLedger
 	AuthorRepos AuthorRepoFactory
 	Acceptances CommunityRecordWriter
+
+	// Index tombstones the OLD legacy URI in the AppView index after the legacy
+	// record is deleted and before the ledger marks the row done. The firehose no
+	// longer ingests the legacy collection, so without this the drained row would
+	// stay visible-by-construction next to its postv2 copy. Production callers
+	// must provide it; nil is tolerated by seam-only state-machine callers.
+	Index RematerializeIndexTombstone
 
 	// CommunityRepos opens the COMMUNITY's repo for READING — specifically to
 	// read the acceptance back after writing it.
@@ -795,13 +808,19 @@ func (r *Rematerializer) RematerializeOne(ctx context.Context, legacy LegacyPost
 	}
 
 	// Step 5 — done. Delete the old community.post, GUARDED by the source CID the
-	// postv2 was built from, so the PDS refuses the delete if anything landed on
-	// the record since. A delete of an already-gone record is success (the source's
-	// contract), so a resumed delete is idempotent.
+	// postv2 was built from, then tombstone its AppView row before MarkDone. The
+	// PDS refuses the delete if anything landed on the record since. A delete of an
+	// already-gone record is success (the source's contract), so a resumed run
+	// still converges the index before completing.
 	if row.State == RematerializeMigrated {
 		if verified.legacyPresent {
 			if err := r.Source.DeleteLegacyPost(ctx, legacy, row.SourceCID); err != nil {
 				return row.State, fmt.Errorf("deleting the old record %s: %w", legacy.URI, err)
+			}
+		}
+		if r.Index != nil {
+			if err := r.Index.SoftDelete(ctx, legacy.URI); err != nil {
+				return row.State, fmt.Errorf("tombstoning the legacy index row %s: %w", legacy.URI, err)
 			}
 		}
 		if err := r.Ledger.MarkDone(ctx, legacy.URI); err != nil {

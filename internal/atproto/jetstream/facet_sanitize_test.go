@@ -22,31 +22,28 @@ func TestSanitizedPostFacets(t *testing.T) {
 	content := "Hello world"
 
 	t.Run("nil facets pass through as nil", func(t *testing.T) {
-		record := &PostRecordFromJetstream{Content: &content}
-		if got := sanitizedPostFacets(record, "at://did:plc:x/social.coves.community.post/1"); got != nil {
+		if got := sanitizeFacets(nil, &content, "at://did:plc:x/social.coves.community.post/1"); got != nil {
 			t.Errorf("expected nil, got %v", got)
 		}
 	})
 
 	t.Run("nil content drops every facet and returns nil", func(t *testing.T) {
-		record := &PostRecordFromJetstream{
-			Content: nil,
-			Facets:  []interface{}{facetFixture(0, 5)},
-		}
-		if got := sanitizedPostFacets(record, "at://did:plc:x/social.coves.community.post/1"); got != nil {
+		if got := sanitizeFacets(
+			[]interface{}{facetFixture(0, 5)}, nil,
+			"at://did:plc:x/social.coves.community.post/1",
+		); got != nil {
 			t.Errorf("expected nil for facets on a post with no content, got %v", got)
 		}
 	})
 
 	t.Run("invalid facet dropped, valid kept", func(t *testing.T) {
-		record := &PostRecordFromJetstream{
-			Content: &content,
-			Facets: []interface{}{
+		got := sanitizeFacets(
+			[]interface{}{
 				facetFixture(0, 5),
 				facetFixture(0, 999), // out of range
 			},
-		}
-		got := sanitizedPostFacets(record, "at://did:plc:x/social.coves.community.post/1")
+			&content, "at://did:plc:x/social.coves.community.post/1",
+		)
 		if len(got) != 1 {
 			t.Fatalf("expected 1 surviving facet, got %d", len(got))
 		}

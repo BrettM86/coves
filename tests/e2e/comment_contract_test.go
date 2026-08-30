@@ -21,23 +21,18 @@ import (
 // social.coves.community.comment, and the client-facing surface a third-party
 // client actually reaches.
 //
-// # COMMENTS LIVE IN THE AUTHOR'S REPO, WHICH IS THE OPPOSITE OF POSTS
+// # COMMENTS AND POSTS LIVE IN THEIR AUTHORS' REPOS
 //
-// A post is written to the COMMUNITY's repo with the community's credentials
-// (post_contract_test.go opens by explaining why). A comment is not: it is
-// written to the repo of the human who wrote it, and the consumer takes the
-// commenter's identity from the repo the commit arrived in —
+// A postv2 is written to the post author's repo, while a comment is written to
+// the comment author's repo. The consumer takes the commenter's identity from
+// the repo the commit arrived in —
 // `CommenterDID: repoDID`, comment_consumer.go. The record itself names no
 // author at all.
 //
-// That inversion is why this file's ingestion write uses the AUTHOR's session
-// where the post contract used the community's, and it is also why the spoof
-// the post contract spends most of its length on has no analogue here. A post
-// record carries a `community` field that the consumer checks against the repo
-// (forge it and you are publishing as someone else); a comment record carries
-// no such field, so there is nothing to forge. The comment domain's equivalent
-// security invariant is elsewhere, in the threading references, and it is what
-// this contract's negative proves — see the hijack section of TestCommentIngestion.
+// A comment record carries no author field, so there is nothing to forge. The
+// comment domain's security invariant is instead in the threading references,
+// and it is what this contract's negative proves — see the hijack section of
+// TestCommentIngestion.
 //
 // # THE CONSUMER HAS NO MUST-EXIST GATES AT ALL (measured, not inferred)
 //
@@ -256,8 +251,8 @@ func commentRecord(root, parent strongRef, content string) map[string]any {
 	}
 }
 
-// indexedPost writes a post into a community's repo and waits for the AppView
-// to have indexed it, returning the strong reference comments hang off.
+// indexedPost writes a postv2 into its author's repo, has the community accept
+// that exact CID, and returns the strong reference comments hang off.
 //
 // The wait is not optional politeness: getComments answers 404 RootNotFound
 // until the post row exists, so a contract that commented before the post
@@ -265,25 +260,19 @@ func commentRecord(root, parent strongRef, content string) map[string]any {
 // Left here rather than in post_contract_test.go because it is what the domains
 // hanging off a post need, in the same way indexedCommunity is what the domains
 // hanging off a community need.
-func indexedPost(t *testing.T, p *pipeline, community provisionedCommunity, authorDID, title string) strongRef {
+func indexedPost(t *testing.T, p *pipeline, community provisionedCommunity, author *testkit.Account, title string) strongRef {
 	t.Helper()
 
 	rkey := testkit.TID()
-	record := community.PutRecord(t, postCollection, rkey,
-		postRecord(community.DID, authorDID, title, "a post to hang comments on"))
-	uri := postURI(community.DID, rkey)
+	uri := authorPostURI(author.DID, rkey)
+	record := author.PutRecord(t, postV2Collection, rkey,
+		postV2Record(community.DID, title, "a post to hang comments on"))
 
-	// This wait was the first to hit the 250ms-era limiter cliff (measured
-	// 23.97s healthy latency; five consecutive gate deaths) and carried its
-	// own 600ms override until task 5 made that the tier default — see
-	// contractPollInterval's HISTORY note.
-	p.Await(t, "the post these comments hang off to be indexed", func() (bool, error) {
-		view, err := p.Post(context.Background(), uri)
-		if err != nil {
-			return false, err
-		}
-		return !view.NotFound, nil
-	})
+	awaitStatus(t, p, uri, community.DID, "pending",
+		"the post these comments hang off to reach the community's admission queue")
+	community.PutRecord(t, acceptanceCollection, subjectRkey(uri), acceptanceRecord(uri, record.CID))
+	awaitStatus(t, p, uri, community.DID, "accepted",
+		"the post these comments hang off to be accepted")
 	return strongRef{URI: uri, CID: record.CID}
 }
 
@@ -359,8 +348,8 @@ func TestCommentIngestion(t *testing.T) {
 
 	author := p.IndexedAccount(t, "ci")
 	community := indexedCommunity(t, p, "ci", author.DID)
-	post := indexedPost(t, p, community, author.DID, "the thread under test")
-	elsewhere := indexedPost(t, p, community, author.DID, "the thread a hijack would move a comment to")
+	post := indexedPost(t, p, community, author, "the thread under test")
+	elsewhere := indexedPost(t, p, community, author, "the thread a hijack would move a comment to")
 
 	created := "created " + testkit.UniqueID(t)
 	updated := "updated " + testkit.UniqueID(t)
@@ -653,7 +642,7 @@ func TestCommentAPIContract(t *testing.T) {
 
 	author := p.IndexedAccount(t, "ca")
 	community := indexedCommunity(t, p, "ca", author.DID)
-	post := indexedPost(t, p, community, author.DID, "api contract thread")
+	post := indexedPost(t, p, community, author, "api contract thread")
 
 	content := "api contract " + testkit.UniqueID(t)
 	topRKey := testkit.TID()
@@ -745,7 +734,7 @@ func TestCommentAPIContract(t *testing.T) {
 		// route is gone" (testkit.IsNotFound insists on the XRPC shape), and this
 		// endpoint has TWO not-founds a client must not confuse: the post is
 		// missing, or the post is fine and the comment is not.
-		unindexedPost := postURI(community.DID, testkit.TID())
+		unindexedPost := authorPostURI(author.DID, testkit.TID())
 		_, err := p.Thread(ctx, unindexedPost, nil)
 		require.Truef(t, testkit.IsNotFound(err),
 			"a thread request for a post nobody has indexed must be an XRPC not-found, got: %v", err)

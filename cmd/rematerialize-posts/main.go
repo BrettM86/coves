@@ -3,7 +3,9 @@
 // social.coves.community.post (written into a COMMUNITY's repo under the
 // community's credentials) to an author-owned social.coves.community.postv2 in
 // the AUTHOR's repo, plus the community's acceptance that pins it, and then —
-// and only then — deletes the old record.
+// and only then — deletes the old record and directly tombstones its AppView
+// index row before marking it done. The firehose no longer ingests legacy post
+// deletes, so the tool must converge both stores itself.
 //
 // # THIS COMMAND DELETES PRODUCTION USER DATA IRREVERSIBLY
 //
@@ -43,6 +45,8 @@
 //   - a LegacySource over the real community repos: listRecords to discover the
 //     deprecated posts, getRecord for the pre-delete re-read, and a
 //     swap-guarded deleteRecord to remove them once verified.
+//   - the AppView post repository, so the old indexed row is tombstoned after
+//     the PDS delete and before the ledger reaches done.
 package main
 
 import (
@@ -73,8 +77,9 @@ import (
 
 // legacyPostCollection is the deprecated community-repo post collection the tool
 // drains — the domain's own constant, not a second spelling of the NSID: the
-// tool enumerates exactly the records the consumers still index, and a private
-// copy here would be free to disagree with them.
+// tool enumerates exactly the records the READ PATH still serves and
+// IsPostCollection still routes, and a private copy here would be free to
+// disagree with them.
 const legacyPostCollection = posts.LegacyPostCollection
 
 // listPageSize bounds each communities/records page so an instance with a large
@@ -217,6 +222,7 @@ func main() {
 		AuthorRepos:    authorFactory,
 		Acceptances:    writer,
 		CommunityRepos: repoFactory,
+		Index:          postgresRepo.NewPostRepository(db),
 		CommunityScope: *communityFilter,
 		// The blob copy's dev gate, decided HERE rather than inside the state
 		// machine, exactly as blobs.PrivateHostOptions is decided above.
@@ -264,7 +270,9 @@ func main() {
 	// sees only the error has no way to know that.
 	logCensus(report, *dryRun)
 	if deletes, isDry := posts.DryRunDeletes(tool); isDry {
-		log.Printf("rematerialize-posts: DRY RUN — %d record(s) would have been deleted; nothing was written or removed", deletes)
+		tombstones, _ := posts.DryRunTombstones(tool)
+		log.Printf("rematerialize-posts: DRY RUN — %d record(s) would have been deleted and %d AppView row(s) tombstoned; nothing was written or removed",
+			deletes, tombstones)
 	}
 
 	if runErr != nil {

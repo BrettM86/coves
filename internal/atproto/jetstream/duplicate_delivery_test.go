@@ -42,29 +42,17 @@ func setupDupFixtures(t *testing.T, db *sql.DB) (postURI, postCID string) {
 
 	us := newMockUserService()
 	us.users[dupTestAuthor] = &users.User{DID: dupTestAuthor, Handle: "dupauthor.test"}
-	pc := NewPostEventConsumer(postgres.NewPostRepository(db), postgres.NewCommunityRepository(db), us, db)
+	pc := NewPostEventConsumer(
+		postgres.NewPostRepository(db), postgres.NewCommunityRepository(db), us, db,
+		WithAdmissions(postgres.NewAdmissionRepository(db)),
+	)
 
-	postURI = "at://" + dupTestCommunity + "/social.coves.community.post/dup1"
+	postURI = pv2URI(dupTestAuthor, "dup1")
 	postCID = "bafdup1"
-	require.NoError(t, pc.HandleEvent(context.Background(), &JetstreamEvent{
-		Kind:   "commit",
-		Did:    dupTestCommunity,
-		TimeUS: time.Now().UnixMicro(),
-		Commit: &CommitEvent{
-			Operation:  "create",
-			Collection: "social.coves.community.post",
-			RKey:       "dup1",
-			CID:        postCID,
-			Record: map[string]interface{}{
-				"$type":     "social.coves.community.post",
-				"community": dupTestCommunity,
-				"author":    dupTestAuthor,
-				"title":     "dup target",
-				"content":   "body",
-				"createdAt": "2026-03-01T00:00:00Z",
-			},
-		},
-	}))
+	require.NoError(t, pc.HandleEvent(context.Background(), pv2Event(
+		dupTestAuthor, "create", "dup1", "", postCID, time.Now().UnixMicro(),
+		pv2Record(dupTestCommunity, "dup target", "body"),
+	)))
 	return postURI, postCID
 }
 

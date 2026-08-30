@@ -63,18 +63,17 @@ var consumerWantedCollections = map[string][]string{
 		"social.coves.community.subscription",
 		"social.coves.community.block",
 	},
-	// One consumer for all four post-related collections, because they decide
+	// One consumer for all three post-related collections, because they decide
 	// about each other: an acceptance is meaningless without the postv2 it
 	// pins, and both write the same admission row. Splitting them across
 	// connectors would give the two halves independent cursors and independent
 	// dead letters for one conversation.
 	//
-	// social.coves.community.post stays subscribed even though it is DEPRECATED
-	// (§3.0): the records already written to community repos keep arriving, and
-	// dropping the filter would silently stop indexing edits and deletes of
-	// every post that exists today.
+	// The deprecated community-repo post collection is retired from firehose
+	// ingestion because its consumer trusted record.author. Existing rows stay
+	// served, are tombstoned directly by the API delete path, and still accumulate
+	// vote/comment counters.
 	ConsumerPosts: {
-		"social.coves.community.post",
 		"social.coves.community.postv2",
 		"social.coves.community.acceptance",
 		"social.coves.community.removal",

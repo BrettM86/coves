@@ -394,25 +394,29 @@ func TestGetAuthorPosts_ServesAPostIndexedByTheConsumer(t *testing.T) {
 	communityDID, err := fixtures.Community(ctx, f.db, "jetstream-author-test", "owner.test")
 	require.NoError(t, err)
 
-	postConsumer := jetstream.NewPostEventConsumer(f.postRepo, f.communityRepo, f.userService, f.db)
+	admissions := postgres.NewAdmissionRepository(f.db)
+	postConsumer := jetstream.NewPostEventConsumer(
+		f.postRepo, f.communityRepo, f.userService, f.db,
+		jetstream.WithAdmissions(admissions),
+	)
 
-	// The commit comes from the COMMUNITY's repo — that is where post records
-	// live — and names the author in the record body.
+	// The postv2 commit comes from the author's repo; authorship is the event DID,
+	// while the record names only the community it was submitted to.
 	rkey := testkit.TID()
+	const cid = "bafyjetstream"
 	err = postConsumer.HandleEvent(ctx, &jetstream.JetstreamEvent{
-		Did:    communityDID,
+		Did:    author.DID,
 		TimeUS: time.Now().UnixMicro(),
 		Kind:   "commit",
 		Commit: &jetstream.CommitEvent{
 			Rev:        "test-post-rev",
 			Operation:  "create",
-			Collection: "social.coves.community.post",
+			Collection: posts.PostV2Collection,
 			RKey:       rkey,
-			CID:        "bafyjetstream",
+			CID:        cid,
 			Record: map[string]interface{}{
-				"$type":     "social.coves.community.post",
+				"$type":     posts.PostV2Collection,
 				"community": communityDID,
-				"author":    author.DID,
 				"title":     "Jetstream Indexed Post",
 				"content":   "This post was indexed via Jetstream",
 				"createdAt": time.Now().Format(time.RFC3339),
@@ -421,11 +425,23 @@ func TestGetAuthorPosts_ServesAPostIndexedByTheConsumer(t *testing.T) {
 	})
 	require.NoError(t, err, "indexing the post from the firehose")
 
+	postURI := fmt.Sprintf("at://%s/%s/%s", author.DID, posts.PostV2Collection, rkey)
+	acceptanceRkey := testkit.TID()
+	_, err = admissions.ApplyAcceptance(ctx, posts.ApplyAcceptanceCommand{
+		CommunityDID:   communityDID,
+		PostURI:        postURI,
+		AcceptanceURI:  fmt.Sprintf("at://%s/social.coves.community.acceptance/%s", communityDID, acceptanceRkey),
+		AcceptanceRkey: acceptanceRkey,
+		PinnedCID:      cid,
+		Watermark:      posts.CommunityWatermark{Rev: testkit.TID()},
+	})
+	require.NoError(t, err, "accepting the indexed post for the author feed")
+
 	feed := f.feed(t, "", url.Values{"actor": {author.DID}})
 	require.Len(t, feed.Feed, 1)
 	require.NotNil(t, feed.Feed[0].Post)
 	assert.Equal(t, "Jetstream Indexed Post", postTitle(t, feed.Feed[0].Post))
-	assert.Equal(t, fmt.Sprintf("at://%s/social.coves.community.post/%s", communityDID, rkey),
+	assert.Equal(t, postURI,
 		feed.Feed[0].Post.URI, "the served post should be the one the consumer indexed")
 }
 

@@ -14,19 +14,19 @@
 //
 // These contracts live ALONGSIDE the direct-PDS ones rather than replacing
 // them, and they carry no ingestion markers of their own: the collections are
-// the same, cmd/contract-manifest is already satisfied by post_contract_test.go,
-// comment_contract_test.go and vote_contract_test.go, and a second marker for a
-// collection would claim a second inventory entry that does not exist.
+// the same, cmd/contract-manifest is already satisfied by
+// author_post_contract_test.go, comment_contract_test.go and
+// vote_contract_test.go, and a second marker for a collection would claim a
+// second inventory entry that does not exist.
 //
 // # WHAT IS ACTUALLY FEDERATED IN EACH CASE
 //
 // Which repo a record lives in decides what "hosted remotely" can mean, and it
 // is different for each of the three:
 //
-//	post     lives in the COMMUNITY's repo → a federated post needs a federated
-//	         COMMUNITY. So the community's own repo is on pds2 and the post is
-//	         written into it. The author is a local, indexed user (see the
-//	         limit below).
+//	post     lives in the AUTHOR's repo, while its acceptance lives in the
+//	         COMMUNITY's. This contract keeps the author local and puts the
+//	         community acceptance on pds2.
 //	comment  lives in the AUTHOR's repo → a federated comment needs a federated
 //	         AUTHOR. The commenter's repo is on pds2; the post being replied to
 //	         is local.
@@ -205,10 +205,10 @@ func requireRemoteHost(t *testing.T, remote *testkit.PDS, did string) {
 	require.Equal(t, did, described.DID)
 }
 
-// TestPostFederationIngestion is the post ingestion contract on the federation
-// path: the record lives in a community repo on pds2.
+// TestPostFederationIngestion is the post admission contract on the federation
+// path: the author record is local and the accepting community repo is on pds2.
 //
-// The direct-PDS contract (TestPostIngestion) proves the consumer chain works
+// The direct-PDS contract (TestAuthorPostIngestion) proves the consumer chain works
 // for a repo on the PDS the AppView fronts. This proves the same chain when the
 // AppView has no relationship with the host at all — the record reaches it
 // through the relay, and the community it belongs to was itself discovered the
@@ -221,8 +221,8 @@ func requireRemoteHost(t *testing.T, remote *testkit.PDS, did string) {
 //
 // # ORDERING, RE-AUDITED FOR THE RELAY
 //
-// TestPostIngestion's spoof step is bounded by a later write INTO THE SAME
-// REPO, because per-repo commit order is the only ordering the path guarantees.
+// TestAuthorPostIngestion's retarget step is bounded by a later write INTO THE
+// SAME REPO, because per-repo commit order is the only ordering the path guarantees.
 // A relay does not weaken that — it merges two PDS streams into one sequence
 // while preserving each repo's own order — so that contract's bound survives
 // this topology unchanged. It is not repeated here: this contract asserts only
@@ -236,20 +236,23 @@ func TestPostFederationIngestion(t *testing.T) {
 	p := newPipeline(t)
 	remote := testkit.NewFederatedPDS(t)
 
-	// The author is LOCAL and indexed. It has to be: the post consumer requires
-	// the author to exist in `users` before it will index a post, and the
-	// package doc explains why a pds2 identity cannot get there. So this
-	// contract federates the community and the record, not the authorship —
-	// which is the shape a bridged community with local participants takes.
+	// The author is local while the community's attestation is federated, which
+	// is the shape a remotely hosted community with local participants takes.
 	author := p.IndexedAccount(t, "fpa")
 	community := federatedCommunity(t, p, remote, "fp", author.DID)
 	requireRemoteHost(t, remote, community.DID)
 
 	rkey := testkit.TID()
 	title := "federated " + testkit.UniqueID(t)
-	community.PutRecord(t, postCollection, rkey,
-		postRecord(community.DID, author.DID, title, "written into a repo on the other PDS"))
-	uri := postURI(community.DID, rkey)
+	uri := authorPostURI(author.DID, rkey)
+	record := author.PutRecord(t, postV2Collection, rkey,
+		postV2Record(community.DID, title, "accepted by a community on the other PDS"))
+	awaitStatus(t, p, uri, community.DID, "pending",
+		"the local author's post to reach the remote community's admission queue")
+	acceptRkey := subjectRkey(uri)
+	community.PutRecord(t, acceptanceCollection, acceptRkey, acceptanceRecord(uri, record.CID))
+	awaitStatus(t, p, uri, community.DID, "accepted",
+		"the remote community's acceptance to make the post visible")
 
 	observe := func(description string, accept func(postView) bool) postView {
 		t.Helper()
@@ -279,14 +282,25 @@ func TestPostFederationIngestion(t *testing.T) {
 		created.Community.Handle, remote.Endpoint.HandleDomain)
 
 	edited := "edited " + testkit.UniqueID(t)
-	community.PutRecord(t, postCollection, rkey,
-		postRecord(community.DID, author.DID, edited, "edited on the other PDS"))
+	editedRecord := author.PutRecord(t, postV2Collection, rkey,
+		postV2Record(community.DID, edited, "edited locally and re-accepted remotely"))
+	require.NotEqual(t, record.CID, editedRecord.CID,
+		"the edit must change the CID for reacceptance to be meaningful")
+	awaitStatus(t, p, uri, community.DID, "pending_reacceptance",
+		"the edit to invalidate the remote community's old CID pin")
+	hidden, err := p.Post(context.Background(), uri)
+	require.NoError(t, err)
+	require.True(t, hidden.NotFound,
+		"edited content must stay hidden until the remote community accepts its new CID")
+	community.PutRecord(t, acceptanceCollection, acceptRkey, acceptanceRecord(uri, editedRecord.CID))
+	awaitStatus(t, p, uri, community.DID, "accepted",
+		"the remote community to re-accept the edited CID")
 	updated := observe("the federated post's edit to be served", func(view postView) bool {
 		return view.Record["title"] == edited
 	})
 	require.Equal(t, uri, updated.URI)
 
-	community.DeleteExistingRecord(t, postCollection, rkey)
+	author.DeleteExistingRecord(t, postV2Collection, rkey)
 	p.Await(t, "the federated post to disappear after deletion", func() (bool, error) {
 		view, err := p.Post(context.Background(), uri)
 		if err != nil {
@@ -326,7 +340,7 @@ func TestCommentFederationIngestion(t *testing.T) {
 
 	local := p.IndexedAccount(t, "fca")
 	community := indexedCommunity(t, p, "fc", local.DID)
-	post := indexedPost(t, p, community, local.DID, "a local post for a remote commenter")
+	post := indexedPost(t, p, community, local, "a local post for a remote commenter")
 
 	commenter := remoteActor(t, remote, "fcr")
 	requireRemoteHost(t, remote, commenter.DID)
@@ -423,7 +437,7 @@ func TestVoteFederationIngestion(t *testing.T) {
 
 	local := p.IndexedAccount(t, "fva")
 	community := indexedCommunity(t, p, "fv", local.DID)
-	post := indexedPost(t, p, community, local.DID, "a local post for a remote voter")
+	post := indexedPost(t, p, community, local, "a local post for a remote voter")
 
 	voter := remoteActor(t, remote, "fvr")
 	requireRemoteHost(t, remote, voter.DID)

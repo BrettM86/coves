@@ -70,21 +70,16 @@ func setupRevFixtures(t *testing.T, db *sql.DB) (pc *PostEventConsumer, postURI,
 
 	us := newMockUserService()
 	us.users[revTestAuthor] = &users.User{DID: revTestAuthor, Handle: "revauthor.test"}
-	pc = NewPostEventConsumer(postgres.NewPostRepository(db), postgres.NewCommunityRepository(db), us, db)
+	pc = NewPostEventConsumer(
+		postgres.NewPostRepository(db), postgres.NewCommunityRepository(db), us, db,
+		WithAdmissions(postgres.NewAdmissionRepository(db)),
+	)
 
-	postURI = "at://" + revTestCommunity + "/social.coves.community.post/revpost1"
+	postURI = pv2URI(revTestAuthor, "revpost1")
 	postCID = "bafrevpost1"
-	require.NoError(t, pc.HandleEvent(context.Background(), revCommitEvent(
-		revTestCommunity, "social.coves.community.post", "create", "revpost1", revA, postCID,
-		time.Now().UnixMicro(),
-		map[string]interface{}{
-			"$type":     "social.coves.community.post",
-			"community": revTestCommunity,
-			"author":    revTestAuthor,
-			"title":     "rev target",
-			"content":   "post v1",
-			"createdAt": "2026-03-01T00:00:00Z",
-		},
+	require.NoError(t, pc.HandleEvent(context.Background(), pv2Event(
+		revTestAuthor, "create", "revpost1", revA, postCID, time.Now().UnixMicro(),
+		pv2Record(revTestCommunity, "rev target", "post v1"),
 	)))
 	return pc, postURI, postCID
 }
@@ -222,42 +217,6 @@ func TestCommentConsumer_GenuineRecreateSameRKey_StillResurrects(t *testing.T) {
 	assert.Equal(t, "second life", content)
 }
 
-// The stale-update-clobber interleaving for posts: two successive edits via
-// the fast feed, then the lagging feed replays the FIRST edit with a newer
-// time_us. The time-based recency guard passes it; only the rev gate rejects
-// it. Without the gate the content regresses until the next organic edit.
-func TestPostConsumer_StaleUpdateReplay_DoesNotClobberContent(t *testing.T) {
-	t.Parallel()
-	db := testkit.DB(t)
-
-	pc, postURI, _ := setupRevFixtures(t, db)
-	ctx := context.Background()
-	base := time.Now().UnixMicro()
-
-	update := func(rev, content string, timeUS int64) *JetstreamEvent {
-		return revCommitEvent(revTestCommunity, "social.coves.community.post", "update", "revpost1", rev, "baf"+rev,
-			timeUS, map[string]interface{}{
-				"$type":     "social.coves.community.post",
-				"community": revTestCommunity,
-				"author":    revTestAuthor,
-				"title":     "rev target",
-				"content":   content,
-				"createdAt": "2026-03-01T00:00:00Z",
-			})
-	}
-
-	// Fast feed: edit to v2, then to v3.
-	require.NoError(t, pc.HandleEvent(ctx, update(revB, "post v2", base+1_000_000)))
-	require.NoError(t, pc.HandleEvent(ctx, update(revC, "post v3", base+2_000_000)))
-
-	// Lagging feed: the v2 edit replayed with a NEWER time_us.
-	require.NoError(t, pc.HandleEvent(ctx, update(revB, "post v2", base+3_000_000)))
-
-	var content string
-	require.NoError(t, db.QueryRow(`SELECT content FROM posts WHERE uri=$1`, postURI).Scan(&content))
-	assert.Equal(t, "post v3", content, "stale update replay must not regress post content")
-}
-
 // Same interleaving for comments.
 func TestCommentConsumer_StaleUpdateReplay_DoesNotClobberContent(t *testing.T) {
 	t.Parallel()
@@ -363,79 +322,6 @@ func TestVoteConsumer_DeleteBeforeCreate_TombstoneRejectsLateCreate(t *testing.T
 	var upvotes int
 	require.NoError(t, db.QueryRow(`SELECT upvote_count FROM posts WHERE uri=$1`, postURI).Scan(&upvotes))
 	assert.Equal(t, 0, upvotes)
-}
-
-// deletePost coverage: a delete arriving for a never-indexed post (its create
-// was lost or is still in flight on the other feed) must still tombstone the
-// record's rev, so the create's late copy cannot index a post whose record no
-// longer exists on the PDS.
-func TestPostConsumer_DeleteBeforeCreate_TombstoneRejectsLateCreate(t *testing.T) {
-	t.Parallel()
-	db := testkit.DB(t)
-
-	pc, _, _ := setupRevFixtures(t, db)
-	ctx := context.Background()
-	base := time.Now().UnixMicro()
-
-	postURI := "at://" + revTestCommunity + "/social.coves.community.post/revpost2"
-
-	// Delete first (create never delivered on this feed).
-	require.NoError(t, pc.HandleEvent(ctx, revCommitEvent(
-		revTestCommunity, "social.coves.community.post", "delete", "revpost2", revB, "", base, nil)))
-
-	// The create's copy arrives later from the lagging feed — older rev,
-	// NEWER time_us.
-	require.NoError(t, pc.HandleEvent(ctx, revCommitEvent(
-		revTestCommunity, "social.coves.community.post", "create", "revpost2", revA, "bafrevpost2", base+1_000_000,
-		map[string]interface{}{
-			"$type":     "social.coves.community.post",
-			"community": revTestCommunity,
-			"author":    revTestAuthor,
-			"title":     "late create",
-			"content":   "must not be indexed",
-			"createdAt": "2026-03-01T00:00:00Z",
-		})))
-
-	var postRows int
-	require.NoError(t, db.QueryRow(`SELECT COUNT(*) FROM posts WHERE uri=$1`, postURI).Scan(&postRows))
-	assert.Equal(t, 0, postRows, "create arriving after the record's delete must not be indexed")
-}
-
-// The zombie-resurrection interleaving for posts: create → delete via the
-// fast feed, then the lagging feed replays the original create with an older
-// rev but a NEWER time_us. The tombstoned delete rev must keep the post dead.
-func TestPostConsumer_StaleCreateReplayAfterDelete_DoesNotResurrect(t *testing.T) {
-	t.Parallel()
-	db := testkit.DB(t)
-
-	// setupRevFixtures indexes revpost1 with revA / CID bafrevpost1.
-	pc, postURI, _ := setupRevFixtures(t, db)
-	ctx := context.Background()
-	base := time.Now().UnixMicro()
-
-	// Fast feed: delete the post.
-	require.NoError(t, pc.HandleEvent(ctx, revCommitEvent(
-		revTestCommunity, "social.coves.community.post", "delete", "revpost1", revB, "", base+1_000_000, nil)))
-
-	var deletedAt *time.Time
-	require.NoError(t, db.QueryRow(`SELECT deleted_at FROM posts WHERE uri=$1`, postURI).Scan(&deletedAt))
-	require.NotNil(t, deletedAt, "fixture: post soft-deleted")
-
-	// Lagging feed: the original create replayed hours later — older rev,
-	// NEWER time_us.
-	require.NoError(t, pc.HandleEvent(ctx, revCommitEvent(
-		revTestCommunity, "social.coves.community.post", "create", "revpost1", revA, "bafrevpost1", base+2_000_000,
-		map[string]interface{}{
-			"$type":     "social.coves.community.post",
-			"community": revTestCommunity,
-			"author":    revTestAuthor,
-			"title":     "rev target",
-			"content":   "post v1",
-			"createdAt": "2026-03-01T00:00:00Z",
-		})))
-
-	require.NoError(t, db.QueryRow(`SELECT deleted_at FROM posts WHERE uri=$1`, postURI).Scan(&deletedAt))
-	assert.NotNil(t, deletedAt, "stale create replay must NOT resurrect the deleted post")
 }
 
 // The user consumer's profile gating is hand-rolled (check→write→advance in

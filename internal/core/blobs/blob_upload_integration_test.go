@@ -77,11 +77,18 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 	identityResolver := identity.NewResolver(db, identityConfig)
 	userService := users.NewUserService(userRepo, identityResolver, pdsURL, nil, "")
 
-	// Create test author
-	author := fixtures.User(t, db, "blobtest.test", "did:plc:blobtest123")
+	// Create a real author account because postv2 media lives in the author's
+	// repository and must be uploaded with that account's token.
+	authorAccount := testkit.NewPDS(t).CreateAccount(t, testkit.WithHandlePrefix("blobauthor"))
+	author := fixtures.User(t, db, authorAccount.Handle, authorAccount.DID)
+	authorBlobOwner := postV2BlobOwner{pdsURL: pdsURL, accessToken: authorAccount.AccessToken}
 
 	// Create test community with PDS credentials
 	community := createTestCommunityWithBlobCredentials(t, communityRepo, "blobtest")
+	consumer := jetstream.NewPostEventConsumer(
+		postRepo, communityRepo, userService, db,
+		jetstream.WithAdmissions(postgres.NewAdmissionRepository(db)),
+	)
 
 	// Serve URLs the way production does: through the image proxy on the media
 	// hostname. The URL config is process-wide, so it is restored afterwards.
@@ -97,7 +104,7 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 		imageData := createTestPNG(t, 1, 1, color.RGBA{R: 255, G: 0, B: 0, A: 255})
 
 		// STEP 2: Upload blob to PDS
-		blobRef, err := blobService.UploadBlob(ctx, community, imageData, "image/png")
+		blobRef, err := blobService.UploadBlob(ctx, authorBlobOwner, imageData, "image/png")
 		require.NoError(t, err, "Blob upload to PDS should succeed")
 		require.NotNil(t, blobRef, "Blob reference should not be nil")
 
@@ -112,17 +119,16 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 		// STEP 3: Create post with image embed (as map for Jetstream record)
 		rkey := testkit.TID()
 		jetstreamEvent := jetstream.JetstreamEvent{
-			Did:  community.DID,
+			Did:  author.DID,
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
 				Operation:  "create",
-				Collection: "social.coves.community.post",
+				Collection: posts.PostV2Collection,
 				RKey:       rkey,
 				CID:        "bafy2bzaceblobimage001",
 				Record: map[string]interface{}{
-					"$type":     "social.coves.community.post",
+					"$type":     posts.PostV2Collection,
 					"community": community.DID,
-					"author":    author.DID,
 					"title":     "Post with Image",
 					"content":   "This post has an embedded image",
 					"embed": map[string]interface{}{
@@ -140,12 +146,11 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 		}
 
 		// STEP 4: Process through consumer
-		consumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService, db)
 		err = consumer.HandleEvent(ctx, &jetstreamEvent)
 		require.NoError(t, err, "Consumer should process image post")
 
 		// STEP 5: Verify post was indexed with blob reference
-		postURI := fmt.Sprintf("at://%s/social.coves.community.post/%s", community.DID, rkey)
+		postURI := fmt.Sprintf("at://%s/%s/%s", author.DID, posts.PostV2Collection, rkey)
 		indexedPost, err := postRepo.GetRawIndexedRow(ctx, postURI)
 		require.NoError(t, err, "Post should be indexed")
 
@@ -179,7 +184,7 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 		// This is what the feed handler would do before returning to client
 		// Build the record as the feed repos do
 		record := map[string]interface{}{
-			"$type":     "social.coves.community.post",
+			"$type":     posts.PostV2Collection,
 			"createdAt": indexedPost.CreatedAt.Format(time.RFC3339),
 		}
 		if indexedPost.Title != nil {
@@ -198,6 +203,10 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 			Community: &posts.CommunityRef{
 				DID:    community.DID,
 				PDSURL: community.PDSURL,
+			},
+			Author: &posts.AuthorView{
+				DID:    author.DID,
+				PDSURL: author.PDSURL,
 			},
 		}
 
@@ -222,8 +231,8 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 		require.True(t, hasFullsize, "image should carry a fullsize URL")
 
 		uploadedCID := blobRef.Ref["$link"]
-		assert.Contains(t, thumb, "/img/content_preview/plain/"+community.DID+"/"+uploadedCID)
-		assert.Contains(t, fullsize, "/img/content_full/plain/"+community.DID+"/"+uploadedCID)
+		assert.Contains(t, thumb, "/img/content_preview/plain/"+author.DID+"/"+uploadedCID)
+		assert.Contains(t, fullsize, "/img/content_full/plain/"+author.DID+"/"+uploadedCID)
 		assert.NotContains(t, thumb, "com.atproto.sync.getBlob",
 			"a direct PDS blob URL here would bypass the scanning CDN")
 		assert.Equal(t, "Test image", transformedImage["alt"], "alt text survives hydration")
@@ -243,7 +252,7 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 		var blobRefs []*blobs.BlobRef
 		for i, col := range colors {
 			imageData := createTestPNG(t, 2, 2, col)
-			blobRef, err := blobService.UploadBlob(ctx, community, imageData, "image/png")
+			blobRef, err := blobService.UploadBlob(ctx, authorBlobOwner, imageData, "image/png")
 			require.NoError(t, err, fmt.Sprintf("Blob upload %d should succeed", i+1))
 			blobRefs = append(blobRefs, blobRef)
 			t.Logf("✓ Uploaded image %d: CID=%v", i+1, blobRef.Ref)
@@ -261,17 +270,16 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 		// Index post via consumer
 		rkey := testkit.TID()
 		jetstreamEvent := jetstream.JetstreamEvent{
-			Did:  community.DID,
+			Did:  author.DID,
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
 				Operation:  "create",
-				Collection: "social.coves.community.post",
+				Collection: posts.PostV2Collection,
 				RKey:       rkey,
 				CID:        "bafy2bzaceblobmulti001",
 				Record: map[string]interface{}{
-					"$type":     "social.coves.community.post",
+					"$type":     posts.PostV2Collection,
 					"community": community.DID,
-					"author":    author.DID,
 					"title":     "Post with Multiple Images",
 					"content":   "This post has 3 images",
 					"embed": map[string]interface{}{
@@ -283,12 +291,11 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 			},
 		}
 
-		consumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService, db)
 		err := consumer.HandleEvent(ctx, &jetstreamEvent)
 		require.NoError(t, err, "Consumer should process multi-image post")
 
 		// Verify all images indexed
-		postURI := fmt.Sprintf("at://%s/social.coves.community.post/%s", community.DID, rkey)
+		postURI := fmt.Sprintf("at://%s/%s/%s", author.DID, posts.PostV2Collection, rkey)
 		indexedPost, err := postRepo.GetRawIndexedRow(ctx, postURI)
 		require.NoError(t, err, "Multi-image post should be indexed")
 
@@ -309,23 +316,22 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 
 		// Create thumbnail image
 		thumbData := createTestPNG(t, 10, 10, color.RGBA{R: 128, G: 128, B: 128, A: 255})
-		thumbRef, err := blobService.UploadBlob(ctx, community, thumbData, "image/png")
+		thumbRef, err := blobService.UploadBlob(ctx, authorBlobOwner, thumbData, "image/png")
 		require.NoError(t, err, "Thumbnail upload should succeed")
 
 		// Create post with external embed and thumbnail
 		rkey := testkit.TID()
 		jetstreamEvent := jetstream.JetstreamEvent{
-			Did:  community.DID,
+			Did:  author.DID,
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
 				Operation:  "create",
-				Collection: "social.coves.community.post",
+				Collection: posts.PostV2Collection,
 				RKey:       rkey,
 				CID:        "bafy2bzaceblobthumb001",
 				Record: map[string]interface{}{
-					"$type":     "social.coves.community.post",
+					"$type":     posts.PostV2Collection,
 					"community": community.DID,
-					"author":    author.DID,
 					"title":     "Post with Link Preview",
 					"content":   "Check out this link",
 					"embed": map[string]interface{}{
@@ -342,12 +348,11 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 			},
 		}
 
-		consumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService, db)
 		err = consumer.HandleEvent(ctx, &jetstreamEvent)
 		require.NoError(t, err, "Consumer should process external embed with thumbnail")
 
 		// Verify thumbnail blob indexed
-		postURI := fmt.Sprintf("at://%s/social.coves.community.post/%s", community.DID, rkey)
+		postURI := fmt.Sprintf("at://%s/%s/%s", author.DID, posts.PostV2Collection, rkey)
 		indexedPost, err := postRepo.GetRawIndexedRow(ctx, postURI)
 		require.NoError(t, err, "External embed post should be indexed")
 
@@ -367,6 +372,10 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 				DID:    community.DID,
 				PDSURL: community.PDSURL,
 			},
+			Author: &posts.AuthorView{
+				DID:    author.DID,
+				PDSURL: author.PDSURL,
+			},
 		}
 
 		posts.TransformBlobRefsToURLs(postView)
@@ -379,13 +388,21 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 		thumbURL, isString := transformedExternal["thumb"].(string)
 		require.True(t, isString, "Thumb should be hydrated into a URL string")
 
-		assert.Contains(t, thumbURL, "/img/embed_thumbnail/plain/"+community.DID+"/",
-			"Thumb should be an image proxy URL owned by the community repo")
+		assert.Contains(t, thumbURL, "/img/embed_thumbnail/plain/"+author.DID+"/",
+			"Thumb should be an image proxy URL owned by the author repo")
 		assert.NotContains(t, thumbURL, "com.atproto.sync.getBlob",
 			"a direct PDS blob URL here would bypass the scanning CDN")
 		t.Logf("✓ Thumbnail transformed to URL: %s", thumbURL)
 	})
 }
+
+type postV2BlobOwner struct {
+	pdsURL      string
+	accessToken string
+}
+
+func (o postV2BlobOwner) GetPDSURL() string         { return o.pdsURL }
+func (o postV2BlobOwner) GetPDSAccessToken() string { return o.accessToken }
 
 // TestBlobUpload_E2E_CommentWithImage tests image upload in comments
 func TestBlobUpload_E2E_CommentWithImage(t *testing.T) {

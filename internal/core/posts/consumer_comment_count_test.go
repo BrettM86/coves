@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"Coves/internal/atproto/jetstream"
+	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
@@ -22,11 +23,11 @@ import (
 // # WHY THIS IS A POST TEST
 //
 // comment_count is a column on posts, and only the post consumer can get it
-// right. Nothing orders the firehose: a comment on a post is a record in the
-// commenter's repo, the post is a record in the COMMUNITY's repo, and two repos
-// commit independently, so the AppView routinely learns about a reply before it
-// learns about the thing replied to. The comment consumer cannot increment a row
-// that does not exist yet, so it writes the comment and moves on; the post
+// right. Nothing orders the firehose: a comment and its parent postv2 live in
+// their respective authors' repos, which can commit independently, so the
+// AppView routinely learns about a reply before it learns about the thing
+// replied to. The comment consumer cannot increment a row that does not exist
+// yet, so it writes the comment and moves on; the post
 // consumer, when the post finally arrives, has to COUNT the comments already
 // indexed against that URI instead of inserting a zero
 // (internal/atproto/jetstream/post_consumer.go). That reconciliation is the
@@ -62,13 +63,15 @@ func TestPostConsumer_ReconcilesCommentCountWhenCommentsArriveFirst(t *testing.T
 	userService := users.NewUserService(userRepo, nil, testkit.Endpoints().PDS.BaseURL, nil, "")
 
 	commentConsumer := jetstream.NewCommentEventConsumer(commentRepo, db)
-	postConsumer := jetstream.NewPostEventConsumer(postRepo, communityRepo, userService, db)
+	postConsumer := jetstream.NewPostEventConsumer(
+		postRepo, communityRepo, userService, db,
+		jetstream.WithAdmissions(postgres.NewAdmissionRepository(db)),
+	)
 
 	// Both rows exist before any event is handled. The post consumer refuses a
-	// post whose community it has never indexed (it cannot verify the record
-	// came from that community's repo otherwise) and needs the author indexed to
-	// hang the post off, so seeding them is a precondition of the scenario
-	// rather than part of it.
+	// post whose community it has never indexed (there is no admission subject
+	// otherwise) and needs the author indexed to hang the post off, so seeding
+	// them is a precondition of the scenario rather than part of it.
 	testUser := fixtures.User(t, db, "reconcile.test", fixtures.DID("reconcile"))
 	testCommunity, err := fixtures.Community(ctx, db, "reconcile-community", "owner.test")
 	require.NoError(t, err, "seeding the community the posts belong to")
@@ -107,23 +110,21 @@ func TestPostConsumer_ReconcilesCommentCountWhenCommentsArriveFirst(t *testing.T
 		return fmt.Sprintf("at://%s/social.coves.community.comment/%s", testUser.DID, rkey)
 	}
 
-	// postEvent builds the commit the community's repo emits for a post. The
-	// event's Did is the COMMUNITY, not the author: that is where post records
-	// live, and the consumer's first security check compares the two.
+	// postEvent builds the commit the author's repo emits for a postv2 record.
+	// The event DID is the author and the community remains in the record body.
 	postEvent := func(rev, rkey, cid, title string) *jetstream.JetstreamEvent {
 		return &jetstream.JetstreamEvent{
-			Did:  testCommunity,
+			Did:  testUser.DID,
 			Kind: "commit",
 			Commit: &jetstream.CommitEvent{
 				Rev:        rev,
 				Operation:  "create",
-				Collection: "social.coves.community.post",
+				Collection: posts.PostV2Collection,
 				RKey:       rkey,
 				CID:        cid,
 				Record: map[string]interface{}{
-					"$type":     "social.coves.community.post",
+					"$type":     posts.PostV2Collection,
 					"community": testCommunity,
-					"author":    testUser.DID,
 					"title":     title,
 					"content":   "indexed out of order on purpose",
 					"createdAt": time.Now().Format(time.RFC3339),
@@ -133,7 +134,7 @@ func TestPostConsumer_ReconcilesCommentCountWhenCommentsArriveFirst(t *testing.T
 	}
 
 	postURIFor := func(rkey string) string {
-		return fmt.Sprintf("at://%s/social.coves.community.post/%s", testCommunity, rkey)
+		return fmt.Sprintf("at://%s/%s/%s", testUser.DID, posts.PostV2Collection, rkey)
 	}
 
 	t.Run("Single comment arrives before post", func(t *testing.T) {

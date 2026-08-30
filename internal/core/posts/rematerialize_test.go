@@ -30,6 +30,27 @@ type callLog struct {
 	events []string
 }
 
+type markDoneLoggingLedger struct {
+	posts.RematerializeLedger
+	log *callLog
+}
+
+func (l *markDoneLoggingLedger) MarkDone(ctx context.Context, uri string) error {
+	l.log.note("done:" + uri)
+	return l.RematerializeLedger.MarkDone(ctx, uri)
+}
+
+type fakeIndexTombstone struct {
+	log  *callLog
+	uris []string
+}
+
+func (f *fakeIndexTombstone) SoftDelete(_ context.Context, uri string) error {
+	f.log.note("tombstone:" + uri)
+	f.uris = append(f.uris, uri)
+	return nil
+}
+
 func (l *callLog) note(event string) {
 	if l == nil {
 		return
@@ -793,6 +814,46 @@ func TestRematerialize_HappyPath_WalksToDoneVerifyBeforeDelete(t *testing.T) {
 	assert.Equalf(t, newURI, row.NewURI, "the ledger must record the postv2 URI it wrote")
 	assert.Equalf(t, deterministicCID(wantRkey), row.NewCID, "the ledger must record the postv2 CID it pinned")
 	assert.Equal(t, wantRkey, row.NewRkey)
+}
+
+func TestRematerialize_TombstonesLegacyIndexAfterDeleteBeforeDone(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	log := &callLog{}
+	ledger := &markDoneLoggingLedger{RematerializeLedger: postgres.NewRematerializeLedger(db), log: log}
+	authors := newFakeAuthorFactory()
+	authors.repo(rematAuthorDID)
+	writer := &spyAcceptanceWriter{}
+	legacy := legacyPost(t, rematCommunityDID, rematAuthorDID)
+	source := newFakeLegacySource(legacy)
+	source.log = log
+	index := &fakeIndexTombstone{log: log}
+	tool := &posts.Rematerializer{
+		Source: source, Ledger: ledger, AuthorRepos: authors.factory(),
+		Acceptances: writer, CommunityRepos: writer.repos(), Index: index,
+	}
+
+	state, err := tool.RematerializeOne(context.Background(), legacy)
+	require.NoError(t, err)
+	require.Equal(t, posts.RematerializeDone, state)
+	require.Equal(t, []string{legacy.URI}, index.uris)
+
+	events := log.snapshot()
+	deleteAt := indexOf(events, "delete:"+legacy.URI)
+	tombstoneAt := indexOf(events, "tombstone:"+legacy.URI)
+	doneAt := indexOf(events, "done:"+legacy.URI)
+	require.NotEqual(t, -1, deleteAt)
+	require.NotEqual(t, -1, tombstoneAt)
+	require.NotEqual(t, -1, doneAt)
+	assert.Less(t, deleteAt, tombstoneAt, "the PDS delete must succeed before the AppView tombstone")
+	assert.Less(t, tombstoneAt, doneAt, "the AppView tombstone must land before MarkDone")
+
+	state, err = tool.RematerializeOne(context.Background(), legacy)
+	require.NoError(t, err)
+	assert.Equal(t, posts.RematerializeDone, state)
+	assert.Equal(t, []string{legacy.URI}, index.uris,
+		"a resumed run over a done row must not tombstone the index again")
 }
 
 func TestRematerialize_ReRun_IsAPureNoOp(t *testing.T) {

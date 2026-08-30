@@ -15,14 +15,16 @@ import (
 	"time"
 )
 
-// PostEventConsumer consumes post-related events from Jetstream
-// Handles CREATE, UPDATE, and DELETE operations for social.coves.community.post
+// PostEventConsumer consumes author-owned posts and community decisions from
+// Jetstream. The deprecated community-repo post collection is no longer
+// ingested from the firehose; its existing rows stay served, are tombstoned
+// directly by the API delete path, and still accumulate vote/comment counters.
 type PostEventConsumer struct {
 	postRepo      posts.Repository
 	communityRepo communities.Repository
 	userService   users.UserService
 	db            *sql.DB // Direct DB access for atomic count reconciliation
-	// bridgeTrust gates whether a post's community repo may assert bridgedStats.
+	// bridgeTrust gates whether a post's author repo may assert bridgedStats.
 	// nil means default-deny (bridgedStats are ignored for every post).
 	bridgeTrust *BridgeTrust
 	// identityResolver is used only when relay scheduling delivers a post
@@ -52,7 +54,7 @@ type PostEventConsumer struct {
 // PostEventConsumerOption configures optional PostEventConsumer behaviour.
 type PostEventConsumerOption func(*PostEventConsumer)
 
-// WithPostBridgeTrust installs the provenance gate that decides which community repos
+// WithPostBridgeTrust installs the provenance gate that decides which author repos
 // may assert bridgedStats on their posts. Without it, bridgedStats are default-denied.
 func WithPostBridgeTrust(bt *BridgeTrust) PostEventConsumerOption {
 	return func(c *PostEventConsumer) { c.bridgeTrust = bt }
@@ -100,17 +102,10 @@ func (c *PostEventConsumer) HandleEvent(ctx context.Context, event *JetstreamEve
 	commit := event.Commit
 
 	switch commit.Collection {
-	// The DEPRECATED community-repo post (§3.0). Here the repo DID must EQUAL
-	// the record's community; the three collections below invert that.
 	case posts.LegacyPostCollection:
-		switch commit.Operation {
-		case "create":
-			return c.createPost(ctx, event.Did, commit, event.TimeUS)
-		case "update":
-			return c.updatePost(ctx, event.Did, commit, event.TimeUS)
-		case "delete":
-			return c.deletePost(ctx, event.Did, commit)
-		}
+		uri := fmt.Sprintf("at://%s/%s/%s", event.Did, commit.Collection, commit.RKey)
+		log.Printf("dropping retired social.coves.community.post event %s: collection retired from ingestion", uri)
+		return nil
 
 	// The author-repo post: event.Did IS the author, and the community is a
 	// claim the record makes (authorpost.go).
@@ -134,9 +129,8 @@ func (c *PostEventConsumer) HandleEvent(ctx context.Context, event *JetstreamEve
 }
 
 // eventTime converts a Jetstream time_us wall-clock timestamp to a time.Time.
-// ok is false when the event carries no timestamp (TimeUS == 0 — synthetic or
-// legacy test events), in which case recency guards are bypassed and updates
-// apply unconditionally (backward compatible).
+// ok is false when the event carries no timestamp (TimeUS == 0), in which case
+// recency guards are bypassed and updates apply unconditionally.
 func eventTime(timeUS int64) (time.Time, bool) {
 	if timeUS <= 0 {
 		return time.Time{}, false
@@ -160,108 +154,11 @@ func indexedAtForEvent(timeUS int64) time.Time {
 	return time.Now()
 }
 
-// createPost indexes a new post from the firehose
-func (c *PostEventConsumer) createPost(ctx context.Context, repoDID string, commit *CommitEvent, timeUS int64) error {
-	if commit.Record == nil {
-		return fmt.Errorf("%w: post create event missing record data", ErrPermanentEvent)
-	}
-
-	// Parse the post record
-	postRecord, err := parsePostRecord(commit.Record)
-	if err != nil {
-		return fmt.Errorf("failed to parse post record: %w", err)
-	}
-
-	// SECURITY: Validate this is a legitimate post event. Returns the community row so
-	// we can check bridgedStats provenance against its resolved PDS host.
-	community, err := c.validatePostEvent(ctx, repoDID, postRecord)
-	if err != nil {
-		logPostValidationRejection("post create", err)
-		return err
-	}
-
-	// Build AT-URI for this post
-	// Format: at://community_did/social.coves.community.post/rkey
-	uri := fmt.Sprintf("at://%s/social.coves.community.post/%s", repoDID, commit.RKey)
-
-	createdAt := parseRecordCreatedAt(postRecord.CreatedAt, uri)
-
-	// Build post entity
-	post := &posts.Post{
-		URI:          uri,
-		CID:          commit.CID,
-		RKey:         commit.RKey,
-		AuthorDID:    postRecord.Author,
-		CommunityDID: postRecord.Community,
-		Title:        postRecord.Title,
-		Content:      postRecord.Content,
-		CreatedAt:    createdAt,
-		IndexedAt:    indexedAtForEvent(timeUS), // recency-guard watermark (see indexedAtForEvent)
-		// Native stats remain at 0 (no native votes yet); bridged stats applied below.
-		UpvoteCount:   0,
-		DownvoteCount: 0,
-		Score:         0,
-		CommentCount:  0,
-	}
-
-	// Apply bridge-asserted origin-platform vote aggregates if the record carries them,
-	// the community repo is a trusted bridge (provenance gate, default-deny), and the
-	// aggregate passes input hygiene. At create there are no native votes, so the
-	// inclusive score is simply the bridged delta. bridgedStats is optional (absent for
-	// natively-authored posts). The counts + asOf are applied atomically: an unparseable
-	// or out-of-hygiene aggregate is ignored WHOLE, never leaving counts with a NULL
-	// asOf (which would defeat the update-path regression guard).
-	if postRecord.BridgedStats != nil {
-		if c.bridgeTrust.TrustsPDS(community.PDSURL) {
-			if up, down, asOf, ok := validatedBridgedStats(postRecord.BridgedStats, uri); ok {
-				post.BridgedUpvoteCount = up
-				post.BridgedDownvoteCount = down
-				post.BridgedStatsAsOf = &asOf
-				post.Score = up - down
-			}
-		} else {
-			log.Printf("debug: ignoring bridgedStats on post %s from untrusted repo %s (not a trusted bridge PDS)", uri, repoDID)
-		}
-	}
-
-	// Serialize JSON fields (facets, embed, labels)
-	// Return error if any non-empty field fails to serialize (prevents silent data loss)
-	facetsJSON, embedJSON, labelsJSON, err := serializePostContent(
-		sanitizedPostFacets(postRecord, uri), postRecord.Embed, postRecord.Labels)
-	if err != nil {
-		return err
-	}
-	post.ContentFacets = nullableString(facetsJSON)
-	post.Embed = nullableString(embedJSON)
-	post.ContentLabels = nullableString(labelsJSON)
-
-	// Atomically: Rev-gate + Index post + Reconcile comment count for out-of-order arrivals
-	if _, err := c.indexPostIfRevWins(ctx, post, commit.Rev); err != nil {
-		return fmt.Errorf("failed to index post and reconcile counts: %w", err)
-	}
-
-	log.Printf("✓ Indexed post: %s (author: %s, community: %s, rkey: %s)",
-		uri, post.AuthorDID, post.CommunityDID, commit.RKey)
-	return nil
-}
-
-// deletePost handles post deletion events from Jetstream
-// Soft-deletes the post in AppView database by setting deleted_at timestamp
-func (c *PostEventConsumer) deletePost(ctx context.Context, repoDID string, commit *CommitEvent) error {
-	// Format: at://community_did/social.coves.community.post/rkey
-	_, err := c.tombstoneRecordIfRevWins(ctx,
-		fmt.Sprintf("at://%s/social.coves.community.post/%s", repoDID, commit.RKey), commit.Rev)
-	return err
-}
-
 // tombstoneRecordIfRevWins soft-deletes the post at uri under the rev gate, and
 // reports whether the deletion APPLIED.
 //
-// SOFT, never hard, whichever repo the record lived in: the row is the rev
-// gate's tombstone, the comment thread's parent, and what moderation still
-// reads. It is shared by the community-repo and author-repo delete paths
-// because a deletion is the one operation where the two are identical — the
-// URI already says whose repo it was.
+// SOFT, never hard: the row is the rev gate's tombstone, the comment thread's
+// parent, and what moderation still reads.
 //
 // The applied flag exists for the author-repo path's acceptance sweep, which
 // must fire once per deletion rather than once per DELIVERY of it: the
@@ -310,102 +207,6 @@ func (c *PostEventConsumer) tombstoneRecordIfRevWins(ctx context.Context, uri, r
 	return true, nil
 }
 
-// updatePost handles post record update events from Jetstream.
-//
-// Posts previously ignored updates; the bridge now edits post records (content and
-// especially the refreshed bridgedStats aggregate) via debounced record updates, so
-// we must fold those into the index. Every branch below is idempotent, which matters
-// because the connector logs-and-drops on error WITHOUT tracking a cursor (it live-
-// tails Jetstream): a returned error is NOT retried or replayed, so we only return an
-// error for genuinely transient infra faults and otherwise skip benign no-ops cleanly.
-// The accepted consequence for stats: if a bridgedStats update errors out, the folded
-// counts stay stale until the bridge next edits the record (which it does on every
-// stats refresh), so the desync is self-healing rather than permanent.
-//
-// Security mirrors createPost (repoDID must equal record.community; community and
-// author must exist). We additionally reject reassignment: an update may not move a
-// post to a different community or author. Reassignment, a missing stored row, and a
-// soft-deleted stored row are all skipped (logged, no error).
-func (c *PostEventConsumer) updatePost(ctx context.Context, repoDID string, commit *CommitEvent, timeUS int64) error {
-	if commit.Record == nil {
-		return fmt.Errorf("%w: post update event missing record data", ErrPermanentEvent)
-	}
-
-	postRecord, err := parsePostRecord(commit.Record)
-	if err != nil {
-		return fmt.Errorf("failed to parse post record: %w", err)
-	}
-
-	// SECURITY: identical validation to create (repo == community, community/author exist).
-	community, err := c.validatePostEvent(ctx, repoDID, postRecord)
-	if err != nil {
-		logPostValidationRejection("post update", err)
-		return err
-	}
-
-	uri := fmt.Sprintf("at://%s/social.coves.community.post/%s", repoDID, commit.RKey)
-
-	// Fetch the stored row so we can enforce immutability and run the asOf regression guard.
-	stored, found, err := c.loadStoredPost(ctx, uri)
-	if err != nil {
-		return err
-	}
-	if !found {
-		// Not indexed yet (out-of-order delivery). Jetstream will replay CREATE; skip.
-		log.Printf("Update event for non-indexed post: %s (will be indexed on CREATE)", uri)
-		return nil
-	}
-
-	// SECURITY: community and author are immutable. Reassignment is rejected (skipped).
-	if stored.communityDID != postRecord.Community || stored.authorDID != postRecord.Author {
-		log.Printf("🚨 SECURITY: Rejecting post update - community/author reassignment is not allowed: %s (stored community=%s author=%s; incoming community=%s author=%s)",
-			uri, stored.communityDID, stored.authorDID, postRecord.Community, postRecord.Author)
-		return nil
-	}
-
-	// Serialize optional JSON content fields (return on failure to avoid silent data loss).
-	facetsJSON, embedJSON, labelsJSON, err := serializePostContent(
-		sanitizedPostFacets(postRecord, uri), postRecord.Embed, postRecord.Labels)
-	if err != nil {
-		return err
-	}
-
-	// Decide the candidate bridged aggregate to hand to the atomic UPDATE. It is applied
-	// only when the record carried bridgedStats AND the community repo is a trusted
-	// bridge (provenance gate, default-deny) AND the aggregate passes input hygiene
-	// (non-negative, within the magnitude cap) AND its asOf parses. Otherwise we pass a
-	// NULL incoming asOf, which makes the SQL guard below leave the stored bridged
-	// columns untouched. The actual newer-or-equal regression comparison is done
-	// ATOMICALLY inside the UPDATE (see the CASE expressions) rather than read-here /
-	// write-later, so it cannot race a concurrent write; storedAsOf is read only to log
-	// the strictly-older case.
-	var (
-		incomingUp, incomingDown int
-		incomingAsOf             *time.Time
-	)
-	if postRecord.BridgedStats != nil {
-		if c.bridgeTrust.TrustsPDS(community.PDSURL) {
-			if up, down, asOf, ok := validatedBridgedStats(postRecord.BridgedStats, uri); ok {
-				incomingUp, incomingDown, incomingAsOf = up, down, &asOf
-			}
-		} else {
-			log.Printf("debug: ignoring bridgedStats on post %s from untrusted repo %s (not a trusted bridge PDS)", uri, repoDID)
-		}
-	}
-
-	if _, err := c.applyPostContentUpdate(ctx, postContentUpdate{
-		uri: uri, storedID: stored.id, rev: commit.Rev, cid: commit.CID,
-		title: postRecord.Title, content: postRecord.Content,
-		facets: facetsJSON, embed: embedJSON, labels: labelsJSON,
-		bridgedUpvotes: incomingUp, bridgedDownvotes: incomingDown, bridgedAsOf: incomingAsOf,
-		storedAsOf: stored.bridgedAsOf, storedDeletedAt: stored.deletedAt,
-		storedIndexedAt: stored.indexedAt, timeUS: timeUS,
-	}); err != nil {
-		return err
-	}
-	return nil
-}
-
 // storedPost is the slice of an indexed post row the write paths need: the
 // identity to update, the columns immutability is checked against, and the two
 // watermarks (bridged asOf, indexed_at) the guards compare.
@@ -436,14 +237,9 @@ func (c *PostEventConsumer) loadStoredPost(ctx context.Context, uri string) (sto
 	return stored, true, nil
 }
 
-// postContentUpdate is one already-validated edit of an indexed post.
-//
-// It exists so the community-repo and author-repo paths share ONE content
-// write. What differs between them is who may claim what — the repo/community
-// check inverts, and bridgedStats provenance keys on a different repo — and all
-// of that is settled by the caller before it gets here. What does not differ is
-// how an edit is applied: the same rev gate, the same recency guard, the same
-// atomic bridged-stats regression rule. Two copies of that would drift.
+// postContentUpdate is the update payload used only by upsertAuthorPost's
+// existing-row branch. Acceptance-triggered direct fetches insert missing rows
+// through insertAuthorPost instead.
 type postContentUpdate struct {
 	uri      string
 	storedID int64
@@ -768,136 +564,22 @@ func (c *PostEventConsumer) indexPostIfRevWins(ctx context.Context, post *posts.
 	return true, nil
 }
 
-// errValidationInfra marks a post-validation failure caused by an infrastructure fault
+// errValidationInfra marks an ingestion validation failure caused by an infrastructure fault
 // (e.g. a DB error while checking that the community or author exists) rather than a
 // policy rejection. The two are logged differently: policy rejections are security
 // events (🚨), infra faults are plain operational errors that must NOT masquerade as
 // an attack in the logs.
 var errValidationInfra = errors.New("validation infrastructure error")
 
-// logPostValidationRejection logs a validatePostEvent failure, distinguishing genuine
-// policy rejections (security-relevant) from infrastructure faults (operational). See
-// errValidationInfra.
-func logPostValidationRejection(op string, err error) {
-	if errors.Is(err, errValidationInfra) {
-		log.Printf("Error: %s could not be validated (infrastructure fault, not a rejection): %v", op, err)
-		return
-	}
-	log.Printf("🚨 SECURITY: Rejecting %s: %v", op, err)
-}
-
-// validatePostEvent performs security validation on post events and, on success,
-// returns the community row (whose resolved PDS host drives the bridgedStats
-// provenance gate). This prevents malicious actors from indexing fake posts.
-func (c *PostEventConsumer) validatePostEvent(ctx context.Context, repoDID string, post *PostRecordFromJetstream) (*communities.Community, error) {
-	// CRITICAL SECURITY CHECK:
-	// Posts MUST come from community repositories, not user repositories
-	// This prevents users from creating posts that appear to be from communities they don't control
-	//
-	// Example attack prevented:
-	//   - User creates post in their own repo (at://user_did/social.coves.community.post/xyz)
-	//   - Claims it's for community X (community field = community_did)
-	//   - Without this check, fake post would be indexed
-	//
-	// With this check:
-	//   - We verify event.Did (repo owner) == post.community (claimed community)
-	//   - Reject if mismatch
-	if repoDID != post.Community {
-		// PERMANENT: a spoofed repo can never become valid — retrying or redriving
-		// this event would reject it identically every time.
-		return nil, fmt.Errorf("%w: repository DID (%s) doesn't match community DID (%s) - posts must come from community repos",
-			ErrPermanentEvent, repoDID, post.Community)
-	}
-
-	// CRITICAL: Verify community exists in AppView.
-	// Posts MUST reference valid communities (enforced by FK constraint). If the
-	// community isn't indexed yet we reject; because the connector does not track a
-	// cursor, the post is only re-indexed if the record is re-emitted (which the bridge
-	// does on edits) rather than automatically replayed.
-	community, err := c.communityRepo.GetByDID(ctx, post.Community)
-	if err != nil {
-		if communities.IsNotFound(err) {
-			// Policy rejection - community must be indexed before posts.
-			// Deliberately NOT ErrPermanentEvent: this is an ORDERING failure (the
-			// community's create event may not have been indexed yet) — the redrive
-			// will succeed once the community arrives.
-			return nil, fmt.Errorf("community not found: %s - cannot index post before community", post.Community)
-		}
-		// Infrastructure fault (DB error): not an attack. Tag it so the caller logs it
-		// as an operational error, not a 🚨 rejection.
-		return nil, fmt.Errorf("%w: failed to verify community exists: %v", errValidationInfra, err)
-	}
-
-	// CRITICAL: Verify author exists in AppView.
-	// Every post MUST have a valid author (enforced by FK constraint). Even though posts
-	// live in community repos, they belong to specific authors.
-	_, err = c.userService.GetUserByDID(ctx, post.Author)
-	if err != nil {
-		// Use proper error type checking with errors.Is()
-		if errors.Is(err, users.ErrUserNotFound) {
-			// BigSky preserves order within a repo, not across repos. A post in
-			// a community repo can therefore arrive before actor.profile in the
-			// author's repo. Resolve and minimally index only identities hosted
-			// by an explicitly trusted bridge; unknown native users remain
-			// rejected by default.
-			if c.identityResolver != nil {
-				resolved, resolveErr := c.identityResolver.Resolve(ctx, post.Author)
-				if resolveErr != nil {
-					return nil, fmt.Errorf("%w: resolve missing post author %s: %v", errValidationInfra, post.Author, resolveErr)
-				}
-				if resolved != nil && resolved.DID == post.Author &&
-					c.bridgeTrust.TrustsPDS(resolved.PDSURL) {
-					if indexErr := c.userService.IndexUser(ctx, resolved.DID, resolved.Handle, resolved.PDSURL); indexErr != nil {
-						return nil, fmt.Errorf("%w: index trusted bridge author %s: %v", errValidationInfra, post.Author, indexErr)
-					}
-					return community, nil
-				}
-			}
-			return nil, fmt.Errorf("author not found: %s - cannot index untrusted post author", post.Author)
-		}
-		// Infrastructure fault (DB error): not an attack.
-		return nil, fmt.Errorf("%w: failed to verify author exists: %v", errValidationInfra, err)
-	}
-
-	return community, nil
-}
-
-// PostRecordFromJetstream represents a post record as received from Jetstream
-// Matches the structure written to PDS via social.coves.community.post
-type PostRecordFromJetstream struct {
-	OriginalAuthor interface{}                `json:"originalAuthor,omitempty"`
-	FederatedFrom  interface{}                `json:"federatedFrom,omitempty"`
-	Location       interface{}                `json:"location,omitempty"`
-	Title          *string                    `json:"title,omitempty"`
-	Content        *string                    `json:"content,omitempty"`
-	Embed          map[string]interface{}     `json:"embed,omitempty"`
-	Labels         *posts.SelfLabels          `json:"labels,omitempty"`
-	BridgedStats   *BridgedStatsFromJetstream `json:"bridgedStats,omitempty"`
-	Type           string                     `json:"$type"`
-	Community      string                     `json:"community"`
-	Author         string                     `json:"author"`
-	CreatedAt      string                     `json:"createdAt"`
-	Facets         []interface{}              `json:"facets,omitempty"`
-}
-
 // BridgedStatsFromJetstream is the bridge-asserted aggregate of origin-platform
 // votes carried on federated/bridged post and comment records (social.coves
-// community.post / community.comment #bridgedStats). A nil pointer means the
+// community.postv2 / community.comment #bridgedStats). A nil pointer means the
 // record carried no bridgedStats, which callers treat as "leave stored counts
 // alone" rather than "reset to zero".
 type BridgedStatsFromJetstream struct {
 	Upvotes   int    `json:"upvotes"`
 	Downvotes int    `json:"downvotes"`
 	AsOf      string `json:"asOf"`
-}
-
-// sanitizedPostFacets sanitizes the facets on a community-repo post record.
-//
-// A record-shaped wrapper over sanitizeFacets, kept because the author-repo
-// record type deliberately has no author field and so cannot be the same type:
-// the shared work is the range checking, not the unwrapping.
-func sanitizedPostFacets(postRecord *PostRecordFromJetstream, uri string) []interface{} {
-	return sanitizeFacets(postRecord.Facets, postRecord.Content, uri)
 }
 
 // sanitizeFacets drops facets whose byte ranges fall outside the post's
@@ -968,34 +650,4 @@ func parseRecordCreatedAt(raw, uri string) time.Time {
 		return now
 	}
 	return createdAt
-}
-
-// parsePostRecord converts a raw Jetstream record map to a PostRecordFromJetstream
-func parsePostRecord(record map[string]interface{}) (*PostRecordFromJetstream, error) {
-	// Marshal to JSON and back to ensure proper type conversion
-	recordJSON, err := json.Marshal(record)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal record: %w", err)
-	}
-
-	var post PostRecordFromJetstream
-	if err := json.Unmarshal(recordJSON, &post); err != nil {
-		// PERMANENT: the record's shape doesn't match the lexicon (wrong field
-		// types); replaying the identical bytes can never parse differently.
-		return nil, fmt.Errorf("%w: failed to unmarshal post record: %v", ErrPermanentEvent, err)
-	}
-
-	// Validate required fields. PERMANENT: a record missing required fields is
-	// structurally invalid forever — retries and redrives cannot fix it.
-	if post.Community == "" {
-		return nil, fmt.Errorf("%w: post record missing community field", ErrPermanentEvent)
-	}
-	if post.Author == "" {
-		return nil, fmt.Errorf("%w: post record missing author field", ErrPermanentEvent)
-	}
-	if post.CreatedAt == "" {
-		return nil, fmt.Errorf("%w: post record missing createdAt field", ErrPermanentEvent)
-	}
-
-	return &post, nil
 }

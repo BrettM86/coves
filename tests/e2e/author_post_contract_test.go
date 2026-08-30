@@ -267,8 +267,7 @@ func TestAuthorPostIngestion(t *testing.T) {
 	author.PutRecord(t, postV2Collection, rkey,
 		postV2Record(elsewhere.DID, retargeted, "aimed at a community that never received this post"))
 
-	// Bounded by a later event in the SAME repo, the way TestPostIngestion
-	// bounds its spoof: a second post by this author, committed after the
+	// Bounded by a later event in the SAME repo: a second post by this author, committed after the
 	// retarget, cannot overtake it — the PDS sequencer orders a repo's own
 	// commits and Jetstream serializes per repo. When the bystander is visible,
 	// the retarget has already been through the consumer.

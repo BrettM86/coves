@@ -49,10 +49,10 @@ func TestParseFeeds_Rejections(t *testing.T) {
 
 func TestSubscribeURL_AppendsSubscribeAndCollections(t *testing.T) {
 	got, err := SubscribeURL("ws://jetstream:6008", []string{
-		"social.coves.community.post",
+		"social.coves.community.postv2",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "ws://jetstream:6008/subscribe?wantedCollections=social.coves.community.post", got)
+	assert.Equal(t, "ws://jetstream:6008/subscribe?wantedCollections=social.coves.community.postv2", got)
 }
 
 func TestSubscribeURL_MultipleCollectionsRepeatParameter(t *testing.T) {
@@ -107,8 +107,25 @@ func TestWantedCollections_ReturnsACopy(t *testing.T) {
 
 	second, err := WantedCollections(ConsumerPosts)
 	require.NoError(t, err)
-	assert.Equal(t, "social.coves.community.post", second[0],
+	assert.Equal(t, "social.coves.community.postv2", second[0],
 		"WantedCollections must return a copy; callers must not be able to mutate the canonical table")
+}
+
+func TestWantedAndConsumedCollections_RetireLegacyPost(t *testing.T) {
+	wanted, err := WantedCollections(ConsumerPosts)
+	require.NoError(t, err)
+	consumed := ConsumedCollections()
+
+	assert.NotContains(t, wanted, "social.coves.community.post")
+	assert.NotContains(t, consumed, "social.coves.community.post")
+	for _, collection := range []string{
+		"social.coves.community.postv2",
+		"social.coves.community.acceptance",
+		"social.coves.community.removal",
+	} {
+		assert.Contains(t, wanted, collection)
+		assert.Equal(t, []string{ConsumerPosts}, consumed[collection])
+	}
 }
 
 func TestConsumedCollections_MatchesEveryConsumersFilters(t *testing.T) {
@@ -149,12 +166,12 @@ func countFilteredCollections() int {
 
 func TestConsumedCollections_ReturnsACopy(t *testing.T) {
 	first := ConsumedCollections()
-	require.NotEmpty(t, first["social.coves.community.post"])
-	first["social.coves.community.post"][0] = "mutated"
+	require.NotEmpty(t, first["social.coves.community.postv2"])
+	first["social.coves.community.postv2"][0] = "mutated"
 	delete(first, "social.coves.feed.vote")
 
 	second := ConsumedCollections()
-	assert.Equal(t, []string{ConsumerPosts}, second["social.coves.community.post"])
+	assert.Equal(t, []string{ConsumerPosts}, second["social.coves.community.postv2"])
 	assert.Equal(t, []string{ConsumerVotes}, second["social.coves.feed.vote"],
 		"the contract inventory must not be mutable through a returned map")
 }
