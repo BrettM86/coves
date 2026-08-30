@@ -4,7 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	"Coves/internal/core/users"
 )
+
+// The marker store is optional on UserRepository and reached by type assertion,
+// so nothing but this line makes the compiler check that the one implementation
+// that can answer still does. Without it, a signature drifting out of step with
+// the interface would surface as a service failing closed at runtime.
+var _ users.ErasureMarkerStore = (*postgresUserRepo)(nil)
 
 // DeletedAccountRepository reads the migration-036 erasure markers.
 //
@@ -31,6 +39,30 @@ func NewDeletedAccountRepository(db *sql.DB) *DeletedAccountRepository {
 // table exists to prevent.
 func (r *postgresUserRepo) IsAccountDeleted(ctx context.Context, did string) (bool, error) {
 	return accountIsErased(ctx, r.db, did)
+}
+
+// ReinstateAccount removes the erasure marker for a DID, and it is the marker's
+// only exit. See users.ErasureMarkerStore for why the exit is a named method
+// rather than a side effect of the users insert, and why absence is success.
+//
+// The bool reports whether a marker was actually there, which is how the caller
+// tells an account returning from erasure — rare, and the AppView reversing a
+// deletion it promised to keep — from the ordinary login that removes nothing.
+func (r *postgresUserRepo) ReinstateAccount(ctx context.Context, did string) (bool, error) {
+	result, err := r.db.ExecContext(ctx,
+		`DELETE FROM deleted_accounts WHERE did = $1`, did)
+	if err != nil {
+		return false, fmt.Errorf("removing the erasure marker for %s: %w", did, err)
+	}
+
+	// Reported rather than assumed: a driver that cannot count rows must not
+	// have this claim an account came back from erasure, or the audit log says
+	// a deletion was reversed when nothing happened.
+	cleared, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("counting the erasure markers removed for %s: %w", did, err)
+	}
+	return cleared > 0, nil
 }
 
 // IsAccountDeleted implements the same lookup for the standalone repository.

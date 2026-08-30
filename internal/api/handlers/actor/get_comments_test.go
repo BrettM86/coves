@@ -90,6 +90,18 @@ func (m *mockUserServiceForComments) IndexUser(ctx context.Context, did, handle,
 	return nil
 }
 
+// IndexAuthenticatedUser is on users.UserService and unreachable from
+// getComments; it is here so this double still satisfies the interface.
+func (m *mockUserServiceForComments) IndexAuthenticatedUser(ctx context.Context, did, handle, pdsURL string) error {
+	return nil
+}
+
+// IsAccountDeleted is on users.UserService and unreachable from getComments;
+// it is here so this double still satisfies the interface.
+func (m *mockUserServiceForComments) IsAccountDeleted(ctx context.Context, did string) (bool, error) {
+	return false, nil
+}
+
 func (m *mockUserServiceForComments) GetProfile(ctx context.Context, did string) (*users.ProfileViewDetailed, error) {
 	return nil, nil
 }

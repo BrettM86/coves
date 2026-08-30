@@ -328,8 +328,9 @@ func (a *application) buildServices(ctx context.Context) error {
 
 	// Profile backfill covers users indexed without profile data — typically
 	// because their profile firehose event was missed — by fetching
-	// social.coves.actor.profile from their PDS asynchronously during
-	// IndexUser.
+	// social.coves.actor.profile from their PDS asynchronously while the user
+	// is indexed, by either door: the firehose's IndexUser and the OAuth
+	// callback's IndexAuthenticatedUser share that tail.
 	a.userService = users.NewUserService(
 		a.userRepo,
 		a.identityResolver,

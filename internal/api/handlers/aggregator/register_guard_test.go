@@ -115,8 +115,17 @@ func guardedRegisterHandler(t *testing.T, allowPrivateHosts bool, resolvesTo str
 	t.Helper()
 
 	userService := &fakeUserService{registered: map[string]*users.User{}}
+	// THE HANDLE MUST BE guardTestDomain, and the coupling is load-bearing.
+	//
+	// Registration refuses a domain that is not the handle the DID resolves to
+	// — 403 HandleMismatch — and it refuses it BEFORE the .well-known fetch,
+	// because there is no reason to make an outbound request on behalf of a DID
+	// the AppView has not yet decided it will serve. A fixture that resolves
+	// this DID to any other name therefore never reaches the transport, and the
+	// HTTP-layer case below stops being about the SSRF guard at all: it fails on
+	// the handle instead, one gate too early.
 	resolver := &fakeIdentityResolver{identities: map[string]*identity.Identity{
-		registrantDID: {DID: registrantDID, Handle: registrantHandle, PDSURL: registrantPDS},
+		registrantDID: {DID: registrantDID, Handle: guardTestDomain, PDSURL: registrantPDS},
 	}}
 
 	// PrivateHostOptions is what production passes, so the hatch reaches the

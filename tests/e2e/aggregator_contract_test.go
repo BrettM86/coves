@@ -725,13 +725,24 @@ func TestAggregatorAuthorizationArrivingBeforeItsAggregator(t *testing.T) {
 // before it has any credential at all) and a set of key-management endpoints
 // behind RequireAuth. What is asserted here is what only the running router can
 // answer: that the NSIDs are routed, that the guarded ones are guarded, and
-// that registration really does verify domain ownership before writing
-// anything.
+// that registration refuses everything it must before it writes anything.
+//
+// # THE ORDER THE REFUSALS COME IN IS ITSELF THE CONTRACT
+//
+// Registration validates the request, then RESOLVES the DID, then requires that
+// the domain be the handle that resolution returned, and only then fetches
+// .well-known. Resolution moved in front of the fetch deliberately: there is no
+// reason to make an outbound request on behalf of a DID this AppView has not yet
+// decided it will serve, and the handle comparison needs the resolved handle
+// before it can happen at all. The two subtests below are that order made
+// visible — an unresolvable DID never reaches the handle check, and a resolvable
+// one with the wrong domain never reaches the fetch.
 //
 // Registration's SUCCESS path is not reachable here and that is by design, not
 // omission: verifyDomainOwnership fetches https://{domain}/.well-known/atproto-did,
 // and §3.7's egress-blocked network exists precisely so that nothing in this
-// tier can reach a domain on the internet. The success path is proven at T0 in
+// tier can reach a domain on the internet. The success path — and the 401 a
+// domain that fails verification answers with — are proven at T0 in
 // internal/api/handlers/aggregator against a local TLS stub.
 func TestAggregatorAPIContract(t *testing.T) {
 	p := newPipeline(t)
@@ -756,26 +767,62 @@ func TestAggregatorAPIContract(t *testing.T) {
 		}
 	})
 
-	t.Run("registration refuses a domain it cannot verify", func(t *testing.T) {
-		// The security property of the whole endpoint: anyone may call it, so
-		// the only thing standing between a caller and an aggregator identity is
-		// .well-known/atproto-did serving their DID over HTTPS.
+	t.Run("registration resolves the DID before it verifies the domain", func(t *testing.T) {
+		// A DID that exists nowhere: not in the local PLC this stack registers
+		// against, and — because it was made up rather than minted — not in the
+		// public one either. Registration cannot proceed without it, and the
+		// reason is not that the caller failed a check but that there is nothing
+		// to register: the handle and PDS URL a users row needs both come from
+		// resolution, and neither may be taken from the request body.
 		//
-		// The domain here ends in .invalid, which RFC 2606 reserves precisely so
-		// that it can never be registered or resolved — by ANY resolver, on any
-		// network. That is the mechanism, not §3.7's egress block: the two would
-		// look identical in this run and only one of them survives Phase 5, when
-		// the topology grows a second PDS and a relay and the stack's networking
-		// changes underneath this tier. Written down because "it fails because
-		// we blocked egress" is the plausible-sounding explanation, and acting
-		// on it would mean chasing this assertion the first time the network
-		// changes.
+		// 400 rather than 401 is the contract: the caller's DID is the problem,
+		// not their domain, and telling them the domain failed verification
+		// would send them to fix a file that is fine.
 		err := p.AppView.Procedure(ctx, "social.coves.aggregator.register", map[string]any{
 			"did":    "did:plc:aaaaaaaaaneveraggregator",
 			"domain": "unreachable." + testkit.UniqueID(t) + ".invalid",
 		}, nil)
-		require.Truef(t, testkit.IsStatus(err, http.StatusUnauthorized),
-			"registering an unverifiable domain must answer 401, answered: %v", err)
+		requireXRPCRefusal(t, err, http.StatusBadRequest, "DIDResolutionFailed",
+			"registering a DID no directory knows")
+	})
+
+	t.Run("registration refuses a domain that is not the DID's handle", func(t *testing.T) {
+		// THE SECURITY PROPERTY OF THE WHOLE ENDPOINT, and it takes a real
+		// identity to state.
+		//
+		// Anyone may call this route. Proving that a domain publishes a DID is
+		// necessary and is not sufficient, because publishing someone else's DID
+		// in your own .well-known is free — nothing stops an attacker serving a
+		// file containing a stranger's DID. What makes the proof mean something
+		// is the other direction: the domain must be the handle the DID itself
+		// resolves to. Both directions together are atProto's bidirectional
+		// handle verification, and only both together turn "I control this
+		// domain" into "I am this account".
+		//
+		// So this needs an account that genuinely resolves, which is why it
+		// provisions one on the stack's PDS rather than using a literal. Its DID
+		// is minted in the local PLC, the AppView resolves it there, and the
+		// domain below is one it demonstrably does not answer to.
+		aggregatorRepo := provisionAggregatorRepo(t, p, "mismatch")
+
+		err := p.AppView.Procedure(ctx, "social.coves.aggregator.register", map[string]any{
+			"did": aggregatorRepo.DID,
+			// Not this account's handle, and unregistrable by anyone: .invalid
+			// is reserved by RFC 2606 precisely so that it can never resolve, on
+			// any network, for any resolver.
+			//
+			// That reservation is now a BACKSTOP rather than the mechanism. Both
+			// refusals in this pair are decided before the .well-known fetch is
+			// attempted, so nothing here depends on the domain being unreachable
+			// — but if the ordering ever regressed, a domain that cannot exist is
+			// what keeps this test from quietly reaching out to something real.
+			// Worth writing down, because "it fails because we blocked egress" is
+			// the plausible-sounding explanation and acting on it would mean
+			// chasing this assertion the first time the network changes.
+			"domain": "notthehandle." + testkit.UniqueID(t) + ".invalid",
+		}, nil)
+		requireXRPCRefusal(t, err, http.StatusForbidden, "HandleMismatch",
+			"registering a resolvable DID against a domain that is not its handle")
 	})
 
 	t.Run("the query endpoints reject a request they cannot answer", func(t *testing.T) {

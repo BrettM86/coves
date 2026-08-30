@@ -45,13 +45,18 @@ func TestRegister_WritesTheAggregatorIntoTheUsersTable(t *testing.T) {
 	// A run-scoped DID, because the assertion below is that THIS registration
 	// created the row: a fixed literal would be satisfied by a leftover.
 	//
-	// The handle is a real-looking one under a real TLD, which is not
-	// decoration: the users service validates handle syntax on the way in and
-	// rejects the reserved TLDs (.example, .invalid, .local), so a handle that
-	// reads fine in a fake-service test fails here with a 500. That difference
-	// is most of why this test is worth a database.
+	// THE HANDLE IS THE DOMAIN. Registration requires that the domain a caller
+	// proves control of is the handle the DID resolves to, so a fixture whose
+	// two differ is refused before it ever reaches the users table — and this
+	// test is about what the table accepts. The name is one run-scoped label
+	// under example.com for two reasons at once: httptest's certificate covers
+	// example.com and *.example.com and nothing else, and the users service
+	// validates handle syntax on the way in and rejects the reserved TLDs
+	// (.example, .invalid, .local), so a handle that reads fine in a
+	// fake-service test fails here with a 500. That second difference is most
+	// of why this test is worth a database.
 	did := "did:plc:" + testkit.UniqueIDWithPrefix(t, "agg")
-	handle := "aggregator-" + testkit.UniqueID(t) + ".test.coves.dev"
+	handle := testkit.UniqueIDWithPrefix(t, "agg") + "." + stubDomain
 	pdsURL := "https://pds.example.invalid"
 
 	stub := httptest.NewTLSServer(wellKnownServing(did))
@@ -82,7 +87,7 @@ func TestRegister_WritesTheAggregatorIntoTheUsersTable(t *testing.T) {
 		// 127.0.0.1:PORT, which registration now refuses as not-a-hostname
 		// before any HTTP client is touched. stubClient pins the dial so this
 		// name reaches the stub anyway — see register_test.go.
-		Domain: stubDomain,
+		Domain: handle,
 	})
 	require.NoError(t, err)
 

@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"Coves/internal/api/reqbody"
+	coreerrors "Coves/internal/core/errors"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/identity"
@@ -151,10 +152,18 @@ type MobileOAuthStore interface {
 
 // UserIndexer is the minimal interface for indexing users after OAuth login.
 // This decouples the OAuth handler from the full UserService.
+//
+// IT ASKS FOR THE AUTHENTICATED METHOD, AND DELIBERATELY NOT FOR IndexUser.
+// This callback is the erasure marker's only exit, because it is the only place
+// that knows the account itself is present; the gated IndexUser would silently
+// do nothing for exactly the accounts this path exists to restore. See
+// users.ErasureMarkerStore for the full rationale.
 type UserIndexer interface {
-	// IndexUser creates or updates a user in the local database.
-	// This is idempotent - calling it multiple times with the same DID is safe.
-	IndexUser(ctx context.Context, did, handle, pdsURL string) error
+	// IndexAuthenticatedUser creates or updates a user in the local database
+	// and clears any erasure marker, because the account has just proven who it
+	// is. This is idempotent - calling it multiple times with the same DID is
+	// safe.
+	IndexAuthenticatedUser(ctx context.Context, did, handle, pdsURL string) error
 }
 
 // OAuthHandler handles OAuth-related HTTP endpoints
@@ -166,6 +175,47 @@ type OAuthHandler struct {
 	devResolver         *DevHandleResolver // For dev mode: resolve handles via local PDS
 	devAuthResolver     *DevAuthResolver   // For dev mode: bypass HTTPS validation for localhost OAuth
 	allowedRedirectURIs map[string]bool    // Combined allowlist for mobile + external OAuth clients
+}
+
+// indexAuthenticatedIdentity indexes the account whose login just completed,
+// and reports only the failure the caller must not shrug off.
+//
+// # WHICH FAILURES ARE SWALLOWED, AND THE ONE THAT IS NOT
+//
+// Indexing here is best-effort by design: a users row that failed to write is
+// written by the next login or the next firehose event, so failing the login
+// over it would lock somebody out of a working account for something that
+// repairs itself.
+//
+// A marker that failed to clear is the exception, and it is why this is a
+// method rather than a branch inlined at the call site. Nothing repairs it —
+// the firehose path refuses erased DIDs by design, and this call is the
+// marker's only exit — so the account would get a session, write posts, and
+// have every one of them dropped, with the only record a log line on a server.
+// A login that fails loudly is a better outcome than an account that silently
+// publishes nothing.
+//
+// The two are told apart by errors.Is on a sentinel, which survives the
+// wrapping that says which DID failed and why.
+func (h *OAuthHandler) indexAuthenticatedIdentity(ctx context.Context, did, handle, pdsURL string) error {
+	err := h.userIndexer.IndexAuthenticatedUser(ctx, did, handle, pdsURL)
+	switch {
+	case err == nil:
+		slog.Info("indexed user after OAuth login", "did", did, "handle", handle)
+		return nil
+
+	case errors.Is(err, coreerrors.ErrReinstateFailed):
+		slog.Error("refusing the login: this account was erased and its marker could not be cleared",
+			"did", did, "handle", handle, "error", err)
+		return err
+
+	default:
+		// Log but don't fail - user can still proceed with their session
+		// They'll be indexed on next login or via Jetstream identity event
+		slog.Warn("failed to index user after OAuth login",
+			"did", did, "handle", handle, "error", err)
+		return nil
+	}
 }
 
 // OAuthHandlerOption is a functional option for configuring OAuthHandler
@@ -675,6 +725,12 @@ handleVerificationPassed:
 
 	// Index user in local database after successful OAuth login
 	// This ensures users are available for profile lookups immediately after authentication
+	//
+	// This call is also the erasure marker's only exit: an account that was
+	// deleted and logs in again is reinstated here and nowhere else. Nothing
+	// else will do it later — the firehose path refuses erased DIDs by design —
+	// so when the reinstatement fails the login fails with it, rather than
+	// handing the account a session it cannot publish through.
 	if h.userIndexer != nil && verifiedHandle != "" && verifiedIdent != nil {
 		pdsURL := verifiedIdent.PDSEndpoint()
 		if pdsURL == "" {
@@ -682,13 +738,18 @@ handleVerificationPassed:
 			// We don't fallback to bsky.social since not all users are on Bluesky
 			slog.Warn("skipping user indexing: no PDS URL in identity",
 				"did", sessData.AccountDID, "handle", verifiedHandle)
-		} else if indexErr := h.userIndexer.IndexUser(ctx, sessData.AccountDID.String(), verifiedHandle, pdsURL); indexErr != nil {
-			// Log but don't fail - user can still proceed with their session
-			// They'll be indexed on next login or via Jetstream identity event
-			slog.Warn("failed to index user after OAuth login",
-				"did", sessData.AccountDID, "handle", verifiedHandle, "error", indexErr)
-		} else {
-			slog.Info("indexed user after OAuth login", "did", sessData.AccountDID, "handle", verifiedHandle)
+		} else if indexErr := h.indexAuthenticatedIdentity(ctx, sessData.AccountDID.String(), verifiedHandle, pdsURL); indexErr != nil {
+			// The same ending as any other server-side failure in this callback:
+			// mobile flows get closure inside the app, web flows a redirect, and
+			// no session is issued either way. Details stay in the server log.
+			if h.redirectMobileError(w, r, serverMobileData, "server_error", "Account could not be restored") {
+				return
+			}
+			slog.Info("returning OAuth error to web client",
+				"error", "server_error", "had_mobile_cookie", hadMobileCookie)
+			clearMobileCookies(w)
+			h.webErrorRedirect(w, r, "server_error")
+			return
 		}
 	}
 

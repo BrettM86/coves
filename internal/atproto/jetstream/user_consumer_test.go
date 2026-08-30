@@ -79,6 +79,21 @@ func (m *mockUserService) IndexUser(ctx context.Context, did, handle, pdsURL str
 	return nil
 }
 
+// IndexAuthenticatedUser is on users.UserService and unreachable from the
+// consumer: a firehose event is never an authenticated login, which is the
+// whole distinction between the two methods. It is here so this double still
+// satisfies the interface.
+func (m *mockUserService) IndexAuthenticatedUser(ctx context.Context, did, handle, pdsURL string) error {
+	return nil
+}
+
+// IsAccountDeleted is on users.UserService and unreachable from the consumer,
+// which reads the marker through the repository's ErasureMarkerStore inside
+// IndexUser; it is here so this double still satisfies the interface.
+func (m *mockUserService) IsAccountDeleted(ctx context.Context, did string) (bool, error) {
+	return false, nil
+}
+
 func (m *mockUserService) GetProfile(ctx context.Context, did string) (*users.ProfileViewDetailed, error) {
 	return nil, nil
 }

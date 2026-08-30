@@ -35,6 +35,23 @@ import (
 var (
 	ErrNotFound      = errors.New("resource not found")
 	ErrAlreadyExists = errors.New("resource already exists")
+
+	// ErrReinstateFailed marks the one indexing failure a caller must not shrug
+	// off: an authenticated account's erasure marker could not be cleared.
+	//
+	// Every other failure while indexing a login leaves the account where it
+	// already was and is repaired by the next login or firehose event. This one
+	// is not: the account authenticated, so it is entitled to come back, and
+	// until the marker goes the ingestion gate drops everything it writes. A
+	// caller that logs this and carries on hands the user a working session over
+	// an account that silently publishes nothing.
+	//
+	// IT LIVES HERE FOR THE REASON THIS PACKAGE EXISTS. The error is raised in
+	// internal/core/users and read in internal/atproto/oauth, and users already
+	// imports oauth for its HTTP transport — so a sentinel declared in users
+	// could never be referenced from the OAuth callback without an import
+	// cycle. users aliases it, exactly as six domains alias ValidationError.
+	ErrReinstateFailed = errors.New("failed to clear the account erasure marker")
 )
 
 // ValidationError reports invalid input, with the offending field named.

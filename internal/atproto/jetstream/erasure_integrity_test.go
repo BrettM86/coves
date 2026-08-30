@@ -30,10 +30,11 @@ import (
 //
 // The three below are the ones the review found, and they fail differently:
 //
-//   - The marker's EXIT is too wide. Re-registration must clear it, and does;
-//     but so does any firehose-driven index of the same DID, which is not a
-//     registration at all — it is a stranger's repo emitting a profile event
-//     for a DID this AppView was asked to forget.
+//   - The marker's EXIT is too wide. An account that genuinely comes back must
+//     be able to clear it, and can; but so could any firehose-driven index of
+//     the same DID, which is not the account coming back at all — it is a
+//     stranger's repo emitting a profile event for a DID this AppView was asked
+//     to forget.
 //   - The GATE has a survivor. postv2 events are checked; a replayed acceptance
 //     is a second door into the same admissions table.
 //   - The LOOKUP fails open. "I could not read the marker table" and "there is
@@ -91,19 +92,19 @@ func TestErasure_FirehoseIndexingDoesNotClearTheMarker(t *testing.T) {
 	// somewhere emitted a record — a bridge, a replay, an overlapping feed —
 	// and any of those can arrive months after the account was erased.
 	//
-	// The marker's exit is re-registration, and re-registration is a person
-	// deliberately signing up again through social.coves.actor.signup. Clearing
-	// it here makes the erasure undone by the very replays it exists to defend
-	// against, and undone SILENTLY: the users row reappears, the marker is
-	// gone, and the next replayed post indexes normally.
+	// The marker's exit is an authenticated login — IndexAuthenticatedUser,
+	// called after the account's own PDS has attested the DID. Clearing it here
+	// instead would make the erasure undone by the very replays it exists to
+	// defend against, and undone SILENTLY: the users row reappears, the marker
+	// is gone, and the next replayed post indexes normally.
 	err := f.userService.IndexUser(ctx, erased, "erased.test", bskySocialPDS)
 
 	var markers int
 	require.NoError(t, db.QueryRow(`SELECT count(*) FROM deleted_accounts WHERE did = $1`, erased).Scan(&markers))
 	assert.Equalf(t, 1, markers,
-		"a firehose-driven IndexUser cleared the erasure marker for %s. The marker's only exit is a genuine "+
-			"re-registration; clearing it here means any repo on the network can un-erase an account by emitting one "+
-			"record naming its DID (IndexUser returned: %v)", erased, err)
+		"a firehose-driven IndexUser cleared the erasure marker for %s. The marker's only exit is an "+
+			"authenticated login; clearing it here means any repo on the network can un-erase an account by emitting "+
+			"one record naming its DID (IndexUser returned: %v)", erased, err)
 
 	var indexed int
 	require.NoError(t, db.QueryRow(`SELECT count(*) FROM users WHERE did = $1`, erased).Scan(&indexed))
@@ -111,29 +112,75 @@ func TestErasure_FirehoseIndexingDoesNotClearTheMarker(t *testing.T) {
 		"the erased account was re-indexed from the firehose; the row the deletion removed is back")
 }
 
-func TestErasure_RegistrationStillClearsTheMarker(t *testing.T) {
+func TestErasure_AnAuthenticatedLoginIsTheMarkersExit(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	ctx := context.Background()
+	f := newErasedFixture(t, db)
+
+	// THE OTHER HALF, and it has to be pinned beside the gate test above or the
+	// fix has an obvious wrong shape available: never clearing the marker at
+	// all. A person who deletes their account and later logs back in on the same
+	// DID must be able to, and a marker left standing would make every post they
+	// write disappear with nothing to point at.
+	//
+	// WHICH CALL COUNTS IS THE POINT. The exit is a named method, and the thing
+	// it is named after is the only fact that justifies it: the account
+	// authenticated, so its own PDS attested the DID and the handle was verified
+	// in both directions. A caller reaching IndexAuthenticatedUser is saying
+	// that; a caller writing a row is not, which is why the test below pins that
+	// the bare insert changes nothing.
+	returning := fixtures.DID("returning" + testkit.UniqueID(t))
+	markAccountDeleted(t, db, returning)
+
+	require.NoError(t,
+		f.userService.IndexAuthenticatedUser(ctx, returning, "returning.test", bskySocialPDS),
+		"an account that logs back in must be able to")
+
+	var markers int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM deleted_accounts WHERE did = $1`, returning).Scan(&markers))
+	assert.Zerof(t, markers,
+		"the erasure marker for %s survived an authenticated login. This is the marker's ONLY exit, so a "+
+			"marker left here can never be removed: the account indexes and then has every post it writes "+
+			"dropped, silently and forever", returning)
+
+	var indexed int
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM users WHERE did = $1`, returning).Scan(&indexed))
+	assert.Equalf(t, 1, indexed,
+		"clearing the marker without indexing %s leaves the account un-erased and still absent, which is "+
+			"neither of the two states this call is allowed to produce", returning)
+}
+
+func TestErasure_WritingAUsersRowIsNotTheMarkersExit(t *testing.T) {
 	t.Parallel()
 
 	db := testkit.DB(t)
 	ctx := context.Background()
 	repo := postgres.NewUserRepository(db)
 
-	// THE OTHER HALF, and it has to be pinned beside the first or the fix has an
-	// obvious wrong shape available: never clearing the marker at all. A person
-	// who deletes their account and later signs up again on the same DID must be
-	// able to, and a marker left standing would make every post they write
-	// disappear with nothing to point at.
-	returning := fixtures.DID("returning" + testkit.UniqueID(t))
-	markAccountDeleted(t, db, returning)
+	// The negative that gives the test above its meaning. Both calls end in the
+	// same INSERT, so "the marker is gone after IndexAuthenticatedUser" is
+	// satisfied just as well by an insert that clears markers as a side effect —
+	// which is exactly the behaviour that made an unauthenticated registration
+	// endpoint able to un-erase any account. Only asserting that the bare insert
+	// leaves the marker standing separates the two.
+	writtenOver := fixtures.DID("insertonly" + testkit.UniqueID(t))
+	markAccountDeleted(t, db, writtenOver)
 
 	_, err := repo.Create(ctx, &users.User{
-		DID: returning, Handle: "returning.test", PDSURL: bskySocialPDS,
+		DID: writtenOver, Handle: "insertonly.test", PDSURL: bskySocialPDS,
 	})
-	require.NoError(t, err, "a deleted DID must be able to register again")
+	require.NoError(t, err,
+		"the insert itself must still succeed — the marker is not a constraint on writing rows, it is a "+
+			"record of a promise the ingestion gate keeps")
 
 	var markers int
-	require.NoError(t, db.QueryRow(`SELECT count(*) FROM deleted_accounts WHERE did = $1`, returning).Scan(&markers))
-	assert.Zero(t, markers, "a genuine registration is the marker's exit")
+	require.NoError(t, db.QueryRow(`SELECT count(*) FROM deleted_accounts WHERE did = $1`, writtenOver).Scan(&markers))
+	assert.Equalf(t, 1, markers,
+		"inserting a users row for %s cleared its erasure marker. Clearing a marker re-opens ingestion for "+
+			"content this AppView was asked to forget, and it must never happen as a side effect of writing a "+
+			"row: any caller that can cause an insert can then cause an erasure to be undone", writtenOver)
 }
 
 func TestErasure_AcceptanceForASweptAuthorIsGated(t *testing.T) {

@@ -23,42 +23,21 @@ func NewUserRepository(db *sql.DB) users.UserRepository {
 
 // Create inserts a new user into the users table.
 //
-// It also clears any migration-036 erasure marker for the DID, in the same
-// transaction, because registering IS the marker's exit. A DID that comes back
-// — the same person signing up again, or an account restored after a mistaken
-// deletion — must index normally, and a marker left standing would have the
-// ingestion gate silently drop every post the returning account writes. Both
-// service paths funnel through here (IndexUser via CreateUser, and
-// RegisterAccount), which is why the clear lives at the repository statement
-// rather than in either of them.
+// IT LEAVES ANY MIGRATION-036 ERASURE MARKER STANDING. Un-erasing an account
+// re-opens ingestion for content the AppView was asked to forget, so it is a
+// decision a caller states — ReinstateAccount, in deleted_account_repo.go — and
+// not something reachable by anything able to cause a row to be written.
+//
+// What that leaves is a state which reads oddly and is correct: a users row for
+// a DID that still has a marker, whose content the ingestion gate goes on
+// dropping, exactly as the erasure promised.
 func (r *postgresUserRepo) Create(ctx context.Context, user *users.User) (*users.User, error) {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to start transaction creating user did=%s: %w", user.DID, err)
-	}
-	defer func() {
-		if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
-			slog.Error("failed to rollback user create transaction",
-				slog.String("did", user.DID),
-				slog.String("error", err.Error()),
-			)
-		}
-	}()
-
-	// Ordered before the insert so that a failing insert — a duplicate DID or a
-	// taken handle — rolls the clear back with it. Clearing a marker for an
-	// account that did not actually re-register would silently re-open
-	// ingestion for content the AppView was asked to forget.
-	if _, err := tx.ExecContext(ctx, `DELETE FROM deleted_accounts WHERE did = $1`, user.DID); err != nil {
-		return nil, fmt.Errorf("failed to clear deletion marker for did=%s: %w", user.DID, err)
-	}
-
 	query := `
 		INSERT INTO users (did, handle, pds_url)
 		VALUES ($1, $2, $3)
 		RETURNING did, handle, pds_url, created_at, updated_at`
 
-	err = tx.QueryRowContext(ctx, query, user.DID, user.Handle, user.PDSURL).
+	err := r.db.QueryRowContext(ctx, query, user.DID, user.Handle, user.PDSURL).
 		Scan(&user.DID, &user.Handle, &user.PDSURL, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		// Check for unique constraint violations
@@ -71,10 +50,6 @@ func (r *postgresUserRepo) Create(ctx context.Context, user *users.User) (*users
 			}
 		}
 		return nil, fmt.Errorf("failed to create user: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("failed to commit user create transaction for did=%s: %w", user.DID, err)
 	}
 
 	return user, nil

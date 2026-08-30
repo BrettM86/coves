@@ -39,13 +39,17 @@ import (
 const (
 	// The aggregator under test: a DID, the handle and PDS its DID document
 	// resolves to, and a domain it will prove ownership of.
-	// The handle uses a real TLD rather than .example: the user service these
-	// tests fake validates handle syntax and rejects the reserved TLDs, so a
-	// .example handle here would model a CreateUserRequest that can never
-	// succeed against the real service (register_users_row_test.go is the test
-	// that would have caught it).
+	//
+	// THE HANDLE IS THE DOMAIN, and written as the same constant so it cannot
+	// drift. Registration requires that the domain a caller proves control of IS
+	// the handle the DID resolves to — proving some unrelated domain says nothing
+	// about the account being registered — so a fixture whose handle and domain
+	// differ does not model a registration that can succeed. The name also uses a
+	// real TLD rather than .example, because the user service these tests fake
+	// validates handle syntax and rejects the reserved TLDs
+	// (register_users_row_test.go is the test that would catch that).
 	registrantDID    = "did:plc:rssaggregator"
-	registrantHandle = "rss.aggregator.dev"
+	registrantHandle = stubDomain
 	registrantPDS    = "https://pds.example.com"
 
 	wellKnownPath = "/.well-known/atproto-did"
@@ -73,9 +77,31 @@ type fakeUserService struct {
 
 	registered map[string]*users.User
 	created    []users.CreateUserRequest
+
+	// erased names the DIDs this AppView was asked to forget, and erasedErr is
+	// what the lookup fails with when a test is about the failure rather than
+	// the answer. Both default to "nothing erased, nothing broken", which is
+	// what every fixture that is not about the erasure gate wants.
+	erased    map[string]bool
+	erasedErr error
+
+	// getErr is how a test asks for a LOOKUP that broke, as distinct from a
+	// lookup that found nothing. The default is neither: an unregistered DID
+	// answers ErrUserNotFound, which is the ordinary case.
+	getErr error
+}
+
+func (f *fakeUserService) IsAccountDeleted(_ context.Context, did string) (bool, error) {
+	if f.erasedErr != nil {
+		return false, f.erasedErr
+	}
+	return f.erased[did], nil
 }
 
 func (f *fakeUserService) GetUserByDID(_ context.Context, did string) (*users.User, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
 	if user, ok := f.registered[did]; ok {
 		return user, nil
 	}
@@ -95,13 +121,29 @@ type fakeIdentityResolver struct {
 	identity.Resolver
 
 	identities map[string]*identity.Identity
+
+	// calls records what the resolver was asked, in order, as
+	// "verb:identifier". The ORDER is the point: a cached answer and a fresh
+	// one are the same value, so the only way to tell "the handler read the
+	// directory" from "the handler read whatever it read last time" is which
+	// call came first.
+	calls []string
+
+	// purgeErr is how a test asks for a cache that could not be dropped.
+	purgeErr error
 }
 
 func (f *fakeIdentityResolver) Resolve(_ context.Context, identifier string) (*identity.Identity, error) {
+	f.calls = append(f.calls, "resolve:"+identifier)
 	if resolved, ok := f.identities[identifier]; ok {
 		return resolved, nil
 	}
 	return nil, fmt.Errorf("%s is not in the directory", identifier)
+}
+
+func (f *fakeIdentityResolver) Purge(_ context.Context, identifier string) error {
+	f.calls = append(f.calls, "purge:"+identifier)
+	return f.purgeErr
 }
 
 // registerFixture is the handler wired as cmd/server wires it, pointed at a
@@ -181,11 +223,22 @@ func (s *boundStub) fetched() []string {
 }
 
 // newRegisterFixture starts a stub domain serving wellKnown over TLS and builds
-// the handler against it.
+// the handler against it, for the aggregator the constants above describe.
 func newRegisterFixture(t *testing.T, wellKnown http.Handler) *registerFixture {
 	t.Helper()
 
-	bound := &boundStub{host: stubDomain, next: wellKnown}
+	return newRegisterFixtureOn(t, stubDomain, wellKnown)
+}
+
+// newRegisterFixtureOn is newRegisterFixture with the proven domain chosen by
+// the caller, for the tests whose registrant's handle is not stubDomain.
+//
+// The domain must be example.com or ONE label under it, because that is what
+// httptest's certificate covers — see stubDomain.
+func newRegisterFixtureOn(t *testing.T, domain string, wellKnown http.Handler) *registerFixture {
+	t.Helper()
+
+	bound := &boundStub{host: domain, next: wellKnown}
 
 	// TLS rather than plaintext because the handler builds an https:// URL and
 	// refuses to do otherwise — a domain that cannot serve HTTPS cannot prove
@@ -194,7 +247,7 @@ func newRegisterFixture(t *testing.T, wellKnown http.Handler) *registerFixture {
 	stub := httptest.NewTLSServer(bound)
 	t.Cleanup(stub.Close)
 
-	userService := &fakeUserService{registered: map[string]*users.User{}}
+	userService := &fakeUserService{registered: map[string]*users.User{}, erased: map[string]bool{}}
 	resolver := &fakeIdentityResolver{
 		identities: map[string]*identity.Identity{
 			registrantDID: {
@@ -214,7 +267,7 @@ func newRegisterFixture(t *testing.T, wellKnown http.Handler) *registerFixture {
 		handler:  handler,
 		users:    userService,
 		resolver: resolver,
-		domain:   stubDomain,
+		domain:   domain,
 		stub:     bound,
 	}
 }
@@ -389,13 +442,19 @@ func TestRegister_ProvesOwnershipOfTheDomainTheCallerNamed(t *testing.T) {
 
 // did:web is the other supported method, and it reaches registration by a
 // different branch of the format check than did:plc.
+//
+// Its domain is not stubDomain, which is the point of the separate fixture: a
+// did:web IS a domain, and that domain is the handle, so this case is the one
+// where "prove the domain your handle names" is not a coincidence of the
+// constants above but the shape of the method itself.
 func TestRegister_AcceptsDIDWeb(t *testing.T) {
-	const webDID = "did:web:aggregator.example.com"
+	const webDomain = "aggregator." + stubDomain
+	const webDID = "did:web:" + webDomain
 
-	f := newRegisterFixture(t, wellKnownServing(webDID))
+	f := newRegisterFixtureOn(t, webDomain, wellKnownServing(webDID))
 	f.resolver.identities[webDID] = &identity.Identity{
 		DID:    webDID,
-		Handle: "aggregator.example.com",
+		Handle: webDomain,
 		PDSURL: registrantPDS,
 	}
 
@@ -465,9 +524,15 @@ func TestRegister_RefusesADIDThatIsAlreadyRegistered(t *testing.T) {
 	}
 }
 
-// Domain ownership is proven but the DID itself does not resolve, so there is no
-// handle or PDS to register it under. That is the caller's problem, not a server
+// The DID does not resolve, so there is no handle to compare the domain against
+// and no PDS to register it under. That is the caller's problem, not a server
 // fault: 400, not 500.
+//
+// Resolution now runs BEFORE the .well-known fetch — the handle check it feeds
+// is what decides whether the domain is worth proving at all — so this request
+// is refused without the stub below ever being asked for anything. The stub is
+// kept because the fixture builds one either way, not because the refusal
+// depends on it.
 func TestRegister_RefusesADIDTheDirectoryDoesNotKnow(t *testing.T) {
 	const unknownDID = "did:plc:neverpublished"
 

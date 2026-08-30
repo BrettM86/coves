@@ -172,20 +172,28 @@ func TestUserRepo_Delete_MarkerIsWrittenInTheSameTransaction(t *testing.T) {
 		"fixture: the failed deletion must have rolled its content sweep back, or this test proves nothing about where the marker was written")
 }
 
-func TestUserRepo_Create_ClearsTheDeletionMarker(t *testing.T) {
+// Creating a users row does NOT clear the erasure marker.
+//
+// Clearing a marker re-opens ingestion for content the AppView was asked to
+// forget, so it has to be a decision somebody makes rather than a side effect
+// of a statement they happened to run. An INSERT that also cleared markers
+// would put that decision within reach of every caller able to cause a row to
+// be written — including an unauthenticated endpoint that asks only for a
+// domain — and nothing at any of those call sites would say so. ReinstateAccount
+// below is the only thing that removes a marker, which is what makes "who may
+// un-erase an account?" a question you can answer by reading the call sites.
+//
+// What this leaves is a state that reads oddly and is correct: a users row for
+// a DID that still has a marker. It is what an erased account's own replayed
+// profile event would produce if it ever reached Create, and the ingestion gate
+// goes on dropping that account's content, which is what the erasure promised.
+func TestUserRepo_Create_LeavesTheDeletionMarkerStanding(t *testing.T) {
 	t.Parallel()
 
 	db := testkit.DB(t)
 	ctx := context.Background()
 	requireTableExists(t, db, deletedAccountsTable)
 
-	// Re-registration is the marker's exit. A DID that comes back — the same
-	// person signing up again on the same PDS, or an account restored after a
-	// mistaken deletion — must index normally, and a marker left behind would
-	// make the AppView refuse their new posts forever with nothing to show for
-	// it. Create is the assertion point because it is the one statement both
-	// service paths funnel through: IndexUser calls CreateUser (service.go:457)
-	// and RegisterAccount ends in the same repository insert.
 	repo := NewUserRepository(db)
 
 	handle := testkit.UniqueIDWithPrefix(t, "rereg")
@@ -196,17 +204,132 @@ func TestUserRepo_Create_ClearsTheDeletionMarker(t *testing.T) {
 	var markers int
 	require.NoError(t, db.QueryRowContext(ctx,
 		`SELECT count(*) FROM deleted_accounts WHERE did = $1`, did).Scan(&markers))
-	require.Equal(t, 1, markers, "fixture: the deletion must have left a marker for the re-registration to clear")
+	require.Equal(t, 1, markers, "fixture: the deletion must have left a marker for this test to be about")
 
 	_, err := repo.Create(ctx, &users.User{
 		DID:    did,
 		Handle: handle + ".test",
 		PDSURL: testkit.Endpoints().PDS.BaseURL,
 	})
-	require.NoError(t, err, "a deleted DID must be able to register again")
+	require.NoError(t, err,
+		"the insert itself must still succeed — the marker is not a constraint on writing rows, "+
+			"it is a record of a promise the ingestion gate keeps")
+
+	require.NoError(t, db.QueryRowContext(ctx,
+		`SELECT count(*) FROM deleted_accounts WHERE did = $1`, did).Scan(&markers))
+	assert.Equalf(t, 1, markers,
+		"inserting a users row for %s cleared its erasure marker. Clearing a marker re-opens ingestion "+
+			"for content this AppView was asked to forget, and it must never happen as a side effect of "+
+			"writing a row: any caller that can cause an insert can then cause an erasure to be undone. "+
+			"Use ReinstateAccount, which says so", did)
+}
+
+// ReinstateAccount is the marker's only exit, and this is what it has to do.
+//
+// An account that genuinely comes back — the same person logging in again, an
+// account restored after a mistaken deletion — must be able to index, so the
+// marker needs an exit. What makes a named method safe where a side effect is
+// not is that a reader can find every caller and ask whether that caller knows
+// the account authenticated.
+//
+// IT REPORTS WHETHER THERE WAS ANYTHING TO REMOVE. An account returning from
+// erasure is rare and consequential — it is the AppView reversing a deletion it
+// promised to keep — and the caller is the only layer that can record it against
+// the login that caused it. A method returning only an error makes that
+// indistinguishable from the overwhelmingly common case of a login by an
+// account that was never erased.
+func TestUserRepo_ReinstateAccount_RemovesTheMarker(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	ctx := context.Background()
+	requireTableExists(t, db, deletedAccountsTable)
+
+	repo := NewUserRepository(db)
+	store, ok := repo.(users.ErasureMarkerStore)
+	require.Truef(t, ok,
+		"the PostgreSQL repository must implement users.ErasureMarkerStore: it is the only "+
+			"implementation that can, and the service type-asserts for it rather than requiring it "+
+			"of every UserRepository")
+
+	handle := testkit.UniqueIDWithPrefix(t, "reinst")
+	did := fixtures.DID(handle)
+	fixtures.User(t, db, handle+".test", did)
+	require.NoError(t, repo.Delete(ctx, did))
+
+	var markers int
+	require.NoError(t, db.QueryRowContext(ctx,
+		`SELECT count(*) FROM deleted_accounts WHERE did = $1`, did).Scan(&markers))
+	require.Equal(t, 1, markers, "fixture: the deletion must have left a marker for this test to remove")
+
+	reinstated, err := store.ReinstateAccount(ctx, did)
+	require.NoError(t, err)
+	assert.Truef(t, reinstated,
+		"reinstating the erased account %s reported that there was no marker to remove. This is the "+
+			"one call that reverses a deletion, and a caller told nothing happened cannot record that "+
+			"anything did", did)
 
 	require.NoError(t, db.QueryRowContext(ctx,
 		`SELECT count(*) FROM deleted_accounts WHERE did = $1`, did).Scan(&markers))
 	assert.Zerof(t, markers,
-		"re-registering %s left the deletion marker standing. The ingestion gate reads this table, so the account would index its profile and then have every post it writes silently dropped", did)
+		"ReinstateAccount left the marker for %s standing. It is the only exit the marker has, so a "+
+			"no-op here means an account that came back can never index again: its profile is written "+
+			"and every post it writes is dropped, silently and forever", did)
+}
+
+// Reinstating is idempotent, in both of the ways a caller can hit.
+//
+// This is not defensive padding. The callers of ReinstateAccount cannot know
+// whether a marker is there — an authenticated login carries no information
+// about whether the account was ever erased, and the overwhelmingly common case
+// is that it was not. If "there was nothing to remove" were an error, every
+// ordinary login would produce one, and the only way to avoid that would be to
+// look first, which is a second round trip and a race. So the absence of a
+// marker is a successful outcome: the account is not erased, which is what the
+// caller wanted to be true.
+func TestUserRepo_ReinstateAccount_IsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	ctx := context.Background()
+	requireTableExists(t, db, deletedAccountsTable)
+
+	store, ok := NewUserRepository(db).(users.ErasureMarkerStore)
+	require.True(t, ok, "the PostgreSQL repository must implement users.ErasureMarkerStore")
+
+	t.Run("a DID that was never erased", func(t *testing.T) {
+		// No fixtures.User and no Delete: this DID has no marker and no row,
+		// which is every login by every account that was never erased.
+		did := fixtures.DID(testkit.UniqueIDWithPrefix(t, "nevererased"))
+
+		reinstated, err := store.ReinstateAccount(ctx, did)
+		require.NoErrorf(t, err,
+			"reinstating %s, which was never erased, reported an error. Callers cannot know whether a "+
+				"marker exists without a second query and a race, so 'there was nothing to remove' has "+
+				"to be success — otherwise every ordinary login fails", did)
+		assert.Falsef(t, reinstated,
+			"reinstating %s reported that an account came back from erasure. It was never erased, and "+
+				"this is what every ordinary login looks like: a caller that logged or alerted on this "+
+				"would be reporting a reversed deletion on every sign-in", did)
+	})
+
+	t.Run("a second reinstatement of the same DID", func(t *testing.T) {
+		handle := testkit.UniqueIDWithPrefix(t, "reinst2")
+		did := fixtures.DID(handle)
+		fixtures.User(t, db, handle+".test", did)
+		require.NoError(t, NewUserRepository(db).Delete(ctx, did))
+
+		first, err := store.ReinstateAccount(ctx, did)
+		require.NoError(t, err)
+		require.Truef(t, first, "fixture: the first reinstatement of %s must be the one that removed a marker", did)
+
+		second, err := store.ReinstateAccount(ctx, did)
+		require.NoErrorf(t, err,
+			"the second reinstatement of %s failed. A retried login, or two devices logging in at "+
+				"once, both produce this call twice", did)
+		assert.Falsef(t, second,
+			"the second reinstatement of %s also reported a marker removed. Only one of these calls "+
+				"reversed anything; a caller counting them would report the same deletion coming back "+
+				"once per device", did)
+	})
 }

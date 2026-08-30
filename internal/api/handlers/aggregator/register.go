@@ -9,6 +9,7 @@ import (
 	"Coves/internal/validation"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -22,6 +23,13 @@ const (
 	// DIDs are typically ~60 characters. A 4KB limit leaves ample room for whitespace or
 	// future metadata while still preventing attackers from streaming unbounded data.
 	maxWellKnownSize = 4 * 1024 // bytes
+
+	// invalidHandleSentinel is what atProto reports for an identity whose
+	// bidirectional handle verification failed. It is a resolver's way of saying
+	// "no handle", not a handle — see the refusal in HandleRegister that reads
+	// it, and internal/atproto/identity/base_resolver.go, which passes the value
+	// through from Indigo's directory.
+	invalidHandleSentinel = "handle.invalid"
 )
 
 // ErrDomainInvalid is what a registration whose domain is not a hostname is
@@ -291,7 +299,93 @@ func (h *RegisterHandler) HandleRegister(w http.ResponseWriter, r *http.Request)
 	}
 	req.Domain = normalizedDomain
 
-	// Verify domain ownership via .well-known
+	// The identity cache is dropped before the lookup, because here the cached
+	// handle IS the credential.
+	//
+	// The resolver in front of the PLC directory caches for 24h, which is right
+	// for the reads that made it worth having — a feed hydrating a hundred
+	// authors should not make a hundred directory calls, and an hour-old handle
+	// is a cosmetic staleness. At this call site the handle decides whether the
+	// caller may register this DID at all, and handles move: an account
+	// transfers to a new domain, and whoever acquires the domain it left would
+	// satisfy both halves of the proof below until the entry expired. The
+	// endpoint is unauthenticated, so the attacker picks the moment.
+	//
+	// One extra directory call, on a route rate-limited to ten requests per ten
+	// minutes, against handing an aggregator identity to whoever the handle used
+	// to point at.
+	if err := h.identityResolver.Purge(r.Context(), req.DID); err != nil {
+		log.Printf("Registration could not drop the cached identity for DID %s: %v", req.DID, err)
+		writeError(w, http.StatusInternalServerError, "RegistrationFailed",
+			"Failed to register aggregator")
+		return
+	}
+
+	// Resolution comes before everything else for two reasons: the handle it
+	// returns is half of the ownership proof below, and until that proof holds
+	// there is no reason to make an outbound request on behalf of this DID.
+	//
+	// It also puts the AlreadyRegistered check after resolution, so a registered
+	// DID that no longer resolves answers 400 rather than 409. That is
+	// deliberate: an identity the directory cannot produce is not one this
+	// endpoint can reason about, whatever rows already exist.
+	identityInfo, err := h.identityResolver.Resolve(r.Context(), req.DID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "DIDResolutionFailed",
+			"Could not resolve DID. Please verify it exists in the PLC directory")
+		return
+	}
+
+	// A HANDLE THAT IS NOT A NAME CANNOT MATCH A DOMAIN.
+	//
+	// atProto reports an identity whose bidirectional verification failed as the
+	// literal `handle.invalid` — Indigo's directory returns that rather than an
+	// error, base_resolver passes it through, and the OAuth callback checks for
+	// it by name. So it is not a handle; it is a resolver saying it could not
+	// establish one. It is also a syntactically valid domain that a registrant
+	// can own in the only sense this endpoint checks, which is the whole hole:
+	// left to the comparison below, the one value meaning "no handle" is the one
+	// value an attacker can make the comparison agree with. The empty handle is
+	// the same failure differently spelled — a DID document with no alsoKnownAs
+	// produces it.
+	//
+	// The log names the DID and not the handle: there is no name here to record,
+	// and the caller chose the rest of the request.
+	if identityInfo.Handle == "" || identityInfo.Handle == invalidHandleSentinel {
+		log.Printf("Registration refused: the directory could not establish a handle for DID %s", req.DID)
+		writeError(w, http.StatusForbidden, "HandleMismatch",
+			"The domain must be the handle this DID resolves to")
+		return
+	}
+
+	// THE DOMAIN MUST BE THE DID'S HANDLE, not merely a domain that mentions it.
+	//
+	// The .well-known check below asks whether https://<domain>/.well-known/
+	// atproto-did serves this DID. That is a real question, and on its own it
+	// authorizes nothing: writing someone else's DID into a file on a domain you
+	// own costs nothing, so passing it proves only that the caller controls A
+	// domain naming the DID. The direction that carries the evidence is this
+	// one — the DID document names its handle, and the handle is a name only the
+	// account holder can point at themselves. Both directions together are
+	// atProto's bidirectional handle verification, and only both together turn
+	// "I control this domain" into "I am this account".
+	//
+	// EqualFold rather than ==: the domain arrives lowercased from
+	// validation.NormalizeDomain while the handle is whatever the directory
+	// stored, and DNS does not distinguish case. A case-sensitive comparison
+	// would refuse legitimate registrants with a 403 naming an attack they never
+	// attempted.
+	if !strings.EqualFold(identityInfo.Handle, req.Domain) {
+		log.Printf("Registration refused: DID %s resolves to handle %s, which is not the domain %s the caller claimed",
+			req.DID, identityInfo.Handle, req.Domain)
+		writeError(w, http.StatusForbidden, "HandleMismatch",
+			"The domain must be the handle this DID resolves to")
+		return
+	}
+
+	// Verify domain ownership via .well-known. The handle check above says the
+	// DID claims this domain; this says the domain answers for the DID, and
+	// neither alone is enough.
 	if err := h.verifyDomainOwnership(r.Context(), req.DID, req.Domain); err != nil {
 		log.Printf("Domain verification failed for DID %s, domain %s: %v", req.DID, req.Domain, err)
 		writeError(w, http.StatusUnauthorized, "DomainVerificationFailed",
@@ -299,19 +393,65 @@ func (h *RegisterHandler) HandleRegister(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Check if user already exists (before CreateUser since it's idempotent)
-	existingUser, err := h.userService.GetUserByDID(r.Context(), req.DID)
-	if err == nil && existingUser != nil {
-		writeError(w, http.StatusConflict, "AlreadyRegistered",
-			"This aggregator is already registered with this instance")
+	// THE ERASURE GATE, and it sits BEHIND the ownership proof so that it cannot
+	// be used as an oracle.
+	//
+	// Deleting an account writes a deleted_accounts marker (migration 036), and
+	// every ingestion path refuses a DID the marker names — which is what stops
+	// a replayed record rematerialising content the AppView was asked to forget.
+	// Registration would otherwise reach the repository's insert, so the refusal
+	// belongs on the domain's one unauthenticated WRITE endpoint.
+	//
+	// "AccountErased" is a fact about somebody else's account. Answered before
+	// the .well-known check, it would answer to anyone: POST a DID with a domain
+	// you own, and read 403 instead of 401 to learn this instance was asked to
+	// erase that account. Behind the proof, the only caller who can learn it is
+	// the one who already controls the handle — the account holder, from whom
+	// none of this is secret.
+	//
+	// The refusal is here rather than left to the insert because a
+	// half-succeeding registration — a users row for a DID whose content every
+	// consumer still drops — is a state nothing in the product knows how to
+	// read. Refusing outright leaves the database in a shape someone can reason
+	// about, and tells the caller something they can act on.
+	//
+	// A FAILED LOOKUP IS A 500, NOT A 403. The two mean opposite things to the
+	// caller: 403 says "you may not, and retrying will not help", while an
+	// unreadable marker table means the server does not yet know, and this
+	// caller may well be entitled to register. Treating the failure as "not
+	// erased" would register erased accounts precisely while the database was
+	// unhealthy — the worst moment, and the one nobody is watching.
+	erased, err := h.userService.IsAccountDeleted(r.Context(), req.DID)
+	if err != nil {
+		log.Printf("Registration could not read the erasure marker for DID %s: %v", req.DID, err)
+		writeError(w, http.StatusInternalServerError, "RegistrationFailed",
+			"Failed to register aggregator")
+		return
+	}
+	if erased {
+		log.Printf("Registration refused: DID %s names an account this AppView was asked to erase", req.DID)
+		writeError(w, http.StatusForbidden, "AccountErased",
+			"This account was deleted from this instance and cannot be registered")
 		return
 	}
 
-	// Resolve DID to get handle and PDS URL
-	identityInfo, err := h.identityResolver.Resolve(r.Context(), req.DID)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "DIDResolutionFailed",
-			"Could not resolve DID. Please verify it exists in the PLC directory")
+	// Check if user already exists (before CreateUser since it's idempotent).
+	//
+	// A LOOKUP THAT BROKE IS NOT A LOOKUP THAT FOUND NOTHING. ErrUserNotFound is
+	// the only error meaning "nobody has this DID"; any other means the question
+	// was never answered, and falling through to the idempotent CreateUser would
+	// drop the one guard against registering over an existing aggregator exactly
+	// while the database is unhealthy.
+	existingUser, err := h.userService.GetUserByDID(r.Context(), req.DID)
+	switch {
+	case err == nil && existingUser != nil:
+		writeError(w, http.StatusConflict, "AlreadyRegistered",
+			"This aggregator is already registered with this instance")
+		return
+	case err != nil && !errors.Is(err, users.ErrUserNotFound):
+		log.Printf("Registration could not check whether DID %s is already registered: %v", req.DID, err)
+		writeError(w, http.StatusInternalServerError, "RegistrationFailed",
+			"Failed to register aggregator")
 		return
 	}
 

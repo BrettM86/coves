@@ -3,6 +3,8 @@ package users
 import (
 	"errors"
 	"fmt"
+
+	coreerrors "Coves/internal/core/errors"
 )
 
 // Sentinel errors for common user operations
@@ -25,6 +27,12 @@ var (
 	// not a 403, so misconfiguration is observable rather than silently hidden
 	// behind "captcha failed".
 	ErrSignupTokenDisabled = errors.New("signup token endpoint not configured")
+
+	// ErrReinstateFailed is the shared sentinel for "the erasure marker could
+	// not be cleared", declared in internal/core/errors because the OAuth
+	// callback reads it and this package imports oauth. See that declaration
+	// for what makes this failure different from every other indexing failure.
+	ErrReinstateFailed = coreerrors.ErrReinstateFailed
 
 	// ErrPDSAdminUnavailable signals a transport/decode-side failure when calling
 	// the PDS admin API (network error, body read failure, malformed JSON). This

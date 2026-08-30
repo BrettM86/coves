@@ -78,6 +78,20 @@ func (m *MockUserService) IndexUser(ctx context.Context, did, handle, pdsURL str
 	return args.Error(0)
 }
 
+// IndexAuthenticatedUser is on users.UserService and unreachable from the
+// delete handler; it is here so this double still satisfies the interface.
+func (m *MockUserService) IndexAuthenticatedUser(ctx context.Context, did, handle, pdsURL string) error {
+	args := m.Called(ctx, did, handle, pdsURL)
+	return args.Error(0)
+}
+
+// IsAccountDeleted is on users.UserService and unreachable from the delete
+// handler; it is here so this double still satisfies the interface.
+func (m *MockUserService) IsAccountDeleted(ctx context.Context, did string) (bool, error) {
+	args := m.Called(ctx, did)
+	return args.Bool(0), args.Error(1)
+}
+
 func (m *MockUserService) GetProfile(ctx context.Context, did string) (*users.ProfileViewDetailed, error) {
 	args := m.Called(ctx, did)
 	if args.Get(0) == nil {

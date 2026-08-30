@@ -26,12 +26,21 @@
 -- accounts this AppView hosts either: an erasure request may name a DID whose
 -- repo lives elsewhere.
 --
--- HOW IT IS CLEARED. Re-registration. A DID that comes back — the same person
--- signing up again, or an account restored after a mistaken deletion — must
--- index normally, so the repository's user INSERT removes the marker in the
--- same transaction. A marker left standing would make the AppView accept the
--- account's profile and then silently drop every post it writes, forever,
--- with nothing anywhere explaining why.
+-- HOW IT IS CLEARED. An authenticated login, and nothing else. The OAuth
+-- callback is the only place that knows the account itself is present — its
+-- PDS attested the DID and the handle was verified in both directions — so it
+-- calls users.IndexAuthenticatedUser, which calls ReinstateAccount, which is
+-- the single statement that deletes a row from this table. An account that
+-- comes back must be able to index: a marker left standing has the AppView
+-- accept the profile and then silently drop every post, forever, with nothing
+-- anywhere explaining why.
+--
+-- The users INSERT deliberately does NOT clear the marker. It used to, and
+-- that put the decision within reach of every caller able to cause a row to be
+-- written — including an unauthenticated endpoint asking only for a domain.
+-- Un-erasing an account is a decision somebody makes, not a side effect of a
+-- statement they happened to run, so the exit has a name and its call sites
+-- can be read.
 CREATE TABLE deleted_accounts (
     -- The DID is the whole key: one marker per account, so a re-delete
     -- updates in place rather than accumulating rows the ingestion gate would

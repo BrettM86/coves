@@ -171,11 +171,13 @@ func newProfileBackfillClient(allowPrivateHosts bool, opts ...covesoauth.Option)
 // UserServiceOption configures optional behavior on the user service.
 type UserServiceOption func(*userService)
 
-// WithProfileBackfill enables best-effort profile backfill during IndexUser (see
-// profileBackfillClient). Pass nil to use NewProfileBackfillClient's GUARDED
-// client. The fetch+store runs in a detached goroutine so it never blocks
-// IndexUser callers (OAuth login, Jetstream consumers); failures are logged only
-// — run cmd/backfill-profiles to reconcile users whose backfill fetch failed.
+// WithProfileBackfill enables best-effort profile backfill while a user is
+// indexed (see profileBackfillClient) — by either door, since IndexUser and
+// IndexAuthenticatedUser share the tail that runs it. Pass nil to use
+// NewProfileBackfillClient's GUARDED client. The fetch+store runs in a detached
+// goroutine so it never blocks those callers (the OAuth callback, signup, the
+// Jetstream consumers); failures are logged only — run cmd/backfill-profiles to
+// reconcile users whose backfill fetch failed.
 //
 // # THE NIL FALLBACK GOES THROUGH THE GATE, NOT AROUND IT
 //
@@ -454,6 +456,12 @@ func (s *userService) RegisterAccount(ctx context.Context, req RegisterAccountRe
 
 	// Index the new user in local database so they're immediately available for profile lookups
 	// This is idempotent - safe to call even if user somehow already exists
+	//
+	// The GATED IndexUser is right here, despite this being a path the account
+	// itself is on: the PDS has just minted this DID, so it is new and cannot
+	// carry an erasure marker. Reinstating would be a no-op with a name that
+	// claims otherwise, and IndexAuthenticatedUser is meant to stay findable as
+	// the marker's one exit.
 	if indexErr := s.IndexUser(ctx, pdsResp.DID, pdsResp.Handle, s.defaultPDS); indexErr != nil {
 		// Log but don't fail - the account was created successfully on PDS
 		// They'll be indexed on first OAuth login if this fails
@@ -547,6 +555,85 @@ func (s *userService) mintInviteCode(ctx context.Context) (string, error) {
 	return parsed.Code, nil
 }
 
+// IsAccountDeleted reports whether a DID names an account this AppView was
+// asked to erase (migration 036).
+//
+// It exists on the service because the callers that must consult the marker are
+// handlers, and a handler holds a UserService and nothing below it. The
+// repository answers through the optional ErasureMarkerStore interface, so the
+// assertion below is how the question reaches it — and a repository that cannot
+// be asked is an error rather than a "no", because this method answers the
+// unauthenticated registration endpoint. See ErasureMarkerStore for why
+// IndexUser resolves the same ambiguity the other way.
+func (s *userService) IsAccountDeleted(ctx context.Context, did string) (bool, error) {
+	lookup, ok := s.userRepo.(ErasureMarkerStore)
+	if !ok {
+		return false, fmt.Errorf("cannot check the erasure marker for %s: %T does not implement ErasureMarkerStore", did, s.userRepo)
+	}
+
+	erased, err := lookup.IsAccountDeleted(ctx, did)
+	if err != nil {
+		// Wrapped, not swallowed: the caller decides what an unreadable marker
+		// means for its own request, and it can only do that if it is told.
+		return false, fmt.Errorf("checking the erasure marker for %s: %w", did, err)
+	}
+	return erased, nil
+}
+
+// IndexAuthenticatedUser indexes a user whose own PDS has just attested them,
+// clearing any erasure marker on the way in.
+//
+// It is a separate method from IndexUser rather than a flag on it because the
+// two callers know different things. A firehose event says some repo emitted a
+// record naming a DID, which a bridge or a replay produces without the
+// account's involvement; an OAuth callback says the account is here. Only the
+// second is grounds for undoing an erasure, so only the second reaches this
+// method. See ErasureMarkerStore for why a repository that cannot answer stops
+// the call instead of indexing anyway.
+//
+// # THE MARKER GOES FIRST
+//
+// Reinstating before indexing means a failure in between leaves an un-erased
+// account with no row — which the next login or firehose event repairs by
+// itself. The other order leaves a row the ingestion gate still refuses, and
+// nothing repairs that. Of the two ways to fail halfway, only one is
+// self-healing.
+//
+// The reinstatement is unconditional rather than guarded by a marker lookup:
+// ReinstateAccount is idempotent, and asking first would be a second round trip
+// and a race for an answer that changes nothing about what to do next.
+//
+// # ONLY THE REINSTATEMENT FAILURE CARRIES ErrReinstateFailed
+//
+// Its caller treats indexing as best-effort, which is right for a users row
+// that failed to write: the next login or firehose event writes it. A marker
+// that failed to clear has no such repair — this is its only exit — so the
+// account would get a working session and publish into a gate that drops
+// everything. The sentinel is how the caller tells those apart; putting it on
+// the indexing failure too would have logins refused over something that heals
+// itself.
+func (s *userService) IndexAuthenticatedUser(ctx context.Context, did, handle, pdsURL string) error {
+	store, ok := s.userRepo.(ErasureMarkerStore)
+	if !ok {
+		return fmt.Errorf("%w: %T cannot reinstate %s", ErrReinstateFailed, s.userRepo, did)
+	}
+
+	reinstated, err := store.ReinstateAccount(ctx, did)
+	if err != nil {
+		return fmt.Errorf("%w for %s before indexing: %w", ErrReinstateFailed, did, err)
+	}
+	if reinstated {
+		// The audit counterpart of DeleteAccount's log line: a deletion this
+		// AppView promised to keep has just been reversed, and this is the only
+		// place that record can be made. DID only — the handle and PDS belong to
+		// the login, not to the erasure.
+		slog.Info("erasure marker cleared: account reinstated after authenticated login",
+			slog.String("did", did))
+	}
+
+	return s.indexUserRecord(ctx, did, handle, pdsURL)
+}
+
 // IndexUser creates or updates a user in the local database.
 // This is idempotent and safe to call multiple times for the same user.
 // If the user exists, their handle is updated if it changed.
@@ -561,16 +648,18 @@ func (s *userService) IndexUser(ctx context.Context, did, handle, pdsURL string)
 	// bridge, a replay, an overlapping feed — and any of those can arrive months
 	// after the account was erased. Letting it through would make the erasure
 	// undone by exactly the replays the marker exists to defend against, and
-	// undone silently: the users row reappears, repo.Create clears the marker on
-	// its way past, and the next replayed post indexes normally.
+	// undone silently: the users row reappears and the next replayed post
+	// indexes normally.
 	//
-	// The marker's only exit is a genuine re-registration, which reaches the
-	// repository's insert directly rather than through here.
+	// This is not the marker's exit. IndexAuthenticatedUser is, and the
+	// difference between them is the whole design: that method is reached from
+	// the OAuth callback, where the account itself has authenticated, and this
+	// one is reached from the firehose, where nobody has.
 	//
 	// A LOOKUP FAILURE REFUSES. "I could not read the marker table" and "there
 	// is no marker" must never be the same answer, because the second one
 	// indexes.
-	if lookup, ok := s.userRepo.(ErasureLookup); ok {
+	if lookup, ok := s.userRepo.(ErasureMarkerStore); ok {
 		erased, err := lookup.IsAccountDeleted(ctx, did)
 		if err != nil {
 			return fmt.Errorf("checking the erasure marker for %s before indexing: %w", did, err)
@@ -586,6 +675,18 @@ func (s *userService) IndexUser(ctx context.Context, did, handle, pdsURL string)
 		}
 	}
 
+	return s.indexUserRecord(ctx, did, handle, pdsURL)
+}
+
+// indexUserRecord writes the users row, and is everything the two indexing
+// methods do once each has finished deciding whether it may.
+//
+// It is shared rather than copied because the decision is the only difference
+// between them: IndexUser refuses an erased DID, IndexAuthenticatedUser
+// un-erases it, and from here on the two must stay identical. A second copy of
+// this would be a second chance for one door into the users table to acquire a
+// behaviour the other lacks.
+func (s *userService) indexUserRecord(ctx context.Context, did, handle, pdsURL string) error {
 	// Try to create the user (idempotent - CreateUser returns existing user if DID exists)
 	user, err := s.CreateUser(ctx, CreateUserRequest{
 		DID:    did,
@@ -624,9 +725,9 @@ func (s *userService) IndexUser(ctx context.Context, did, handle, pdsURL string)
 // The emptiness check runs synchronously (the common no-op paths spawn nothing);
 // when a fetch is actually needed, the fetch+store runs in a detached goroutine —
 // decoupled from the caller's context via context.WithoutCancel with its own
-// profileBackfillTimeout deadline — so a slow or dead PDS never blocks the
-// IndexUser caller (OAuth login callback, Jetstream consumers) and the fetch is
-// not killed when the triggering request context ends.
+// profileBackfillTimeout deadline — so a slow or dead PDS never blocks whoever
+// asked for the index (the OAuth callback, signup, the Jetstream consumers) and
+// the fetch is not killed when the triggering request context ends.
 func (s *userService) maybeBackfillProfile(ctx context.Context, user *User) {
 	if s.profileBackfillClient == nil || user == nil {
 		return
