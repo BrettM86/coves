@@ -289,6 +289,14 @@ coves.social {
         header ?Content-Security-Policy "default-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'self'; object-src 'none'; frame-ancestors 'none'"
     }
     handle {
+        # The frontend's /api/proxy buffers request bodies in Node memory
+        # (request.blob()) with no size limit of its own, so bound them at
+        # the edge. Nothing routed here legitimately POSTs more than small
+        # JSON today (posts, comments, auth) — raise this the day a media
+        # upload path is routed through the frontend instead of the PDS.
+        request_body {
+            max_size 1MB
+        }
         reverse_proxy coves-prod-frontend:3000 {
             header_up X-Real-IP {remote_host}
             header_up X-Forwarded-For {remote_host}
