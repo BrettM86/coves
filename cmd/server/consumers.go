@@ -92,7 +92,11 @@ func startConsumers(ctx context.Context, wg *sync.WaitGroup, app *application) (
 	// The redriver replays events that failed every in-line retry against the
 	// same handlers, so a transient failure (a Postgres blip, say) self-heals
 	// instead of silently losing the event.
-	redriver := jetstream.NewDeadLetterRedriver(app.jetstreamState, handlers,
+	redriver := jetstream.NewDeadLetterRedriver(jetstream.DeadLetterRedriveStore{
+		Source:  app.jetstreamState,
+		Mutator: app.jetstreamState,
+		Pruner:  app.jetstreamState,
+	}, handlers,
 		jetstream.WithRedriveInterval(app.cfg.Jetstream.RedriveInterval))
 	wg.Add(1)
 	go func() {

@@ -14,6 +14,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	lru "github.com/hashicorp/golang-lru/v2"
@@ -21,18 +22,74 @@ import (
 	"golang.org/x/time/rate"
 )
 
+const (
+	// wellKnownVerificationTimeout bounds the limiter wait and fetch together.
+	// The HTTP client has the tighter per-fetch ceiling below.
+	wellKnownVerificationTimeout = 15 * time.Second
+
+	// wellKnownTimeout is the ceiling on one DID-document fetch. It is
+	// re-applied over the shared SSRF client's own 15s; see newWellKnownClient.
+	//
+	// It ran at 10s until the consumer trust audit (docs/CONSUMER_TRUST_AUDIT.md
+	// §1.3) priced it: the host is named by the record, so a wildcard-DNS host
+	// that accepts TCP and never answers costs the communities lane the full
+	// timeout per distinct did:web, with no cache to help until the fetch
+	// returns. A DID document is a static file behind a well-known path; a host
+	// that cannot serve it in 5s is not one the AppView should be waiting on,
+	// and a genuinely slow one gets the redrive.
+	wellKnownTimeout = 5 * time.Second
+
+	// wellKnownFailureTTL keeps repeated failures from turning into repeated
+	// outbound requests. Cache hits are marked as deferred redrives and do not
+	// consume attempts, so this TTL is independent of the configured redrive
+	// interval. It remains short so a newly published DID document is noticed.
+	wellKnownFailureTTL = time.Minute
+
+	// wellKnownInFlightTTL is how long the pre-fetch negative marker stands if
+	// the fetch never writes a result of its own (a panic, a cancelled context).
+	// Just past the overall verification ceiling: long enough to cover both the
+	// limiter queue and fetch, short enough that a lost marker does not shadow a
+	// later valid document for the ordinary failure TTL.
+	wellKnownInFlightTTL = wellKnownVerificationTimeout + time.Second
+
+	// wellKnownMaxIdleConnsPerHost is the per-host pool depth this consumer has
+	// always run with, kept because net/http's default is 2 and a federated
+	// instance is verified repeatedly.
+	wellKnownMaxIdleConnsPerHost = 10
+
+	didVerificationInFlight didVerificationOutcome = iota
+	didVerificationValid
+	didVerificationUnresolved
+	didVerificationPermanent
+)
+
+type didVerificationCacheKey struct {
+	did          string
+	handleDomain string
+}
+
+type didVerificationOutcome uint8
+
+// cachedDIDDoc represents a cached verification result with expiration.
+type cachedDIDDoc struct {
+	expiresAt time.Time
+	outcome   didVerificationOutcome
+	reason    string
+}
+
 // CommunityEventConsumer consumes community-related events from Jetstream
 type CommunityEventConsumer struct {
 	repo             communities.Repository // Repository for community operations
 	identityResolver interface {
 		Resolve(context.Context, string) (*identity.Identity, error)
 	} // For resolving handles from DIDs
-	httpClient       *http.Client                     // Shared HTTP client with connection pooling
-	didCache         *lru.Cache[string, cachedDIDDoc] // Bounded LRU cache for .well-known verification results
-	wellKnownLimiter *rate.Limiter                    // Rate limiter for .well-known fetches
-	instanceDID      string                           // DID of this Coves instance
-	skipVerification bool                             // Skip did:web verification (for dev mode)
-	revGate          *RevGate                         // Optional: cross-feed ordering guard for commit events (nil = ungated)
+	httpClient       *http.Client                                      // Shared HTTP client with connection pooling
+	didCache         *lru.Cache[didVerificationCacheKey, cachedDIDDoc] // Bounded LRU cache for .well-known verification results
+	didCacheMu       sync.Mutex                                        // Makes cache check + in-flight marker insertion atomic
+	wellKnownLimiter *rate.Limiter                                     // Rate limiter for .well-known fetches
+	instanceDID      string                                            // DID of this Coves instance
+	skipVerification bool                                              // Skip did:web verification (for dev mode)
+	revGate          *RevGate                                          // Optional: cross-feed ordering guard for commit events (nil = ungated)
 
 	// bridgeTrust decides which repos may assert an `origin` that differs from
 	// their verified handle's domain (see admitCommunityOrigin). nil is
@@ -172,18 +229,6 @@ func PrivateHostOptions(allowPrivate bool) []CommunityConsumerOption {
 	return []CommunityConsumerOption{WithPrivateHostsAllowed()} // coves:allow-ssrf-hatch: the gate helper allow-branch; its false branch returns nothing
 }
 
-const (
-	// wellKnownTimeout is the ceiling this consumer has always run the
-	// DID-document fetch under. It is re-applied over the shared SSRF client's
-	// own 15s; see newWellKnownClient.
-	wellKnownTimeout = 10 * time.Second
-
-	// wellKnownMaxIdleConnsPerHost is the per-host pool depth this consumer has
-	// always run with, kept because net/http's default is 2 and a federated
-	// instance is verified repeatedly.
-	wellKnownMaxIdleConnsPerHost = 10
-)
-
 // newWellKnownClient builds the client the DID-document fetch goes through.
 //
 // The SSRF-safe transport of internal/atproto/oauth resolves the host, refuses
@@ -204,7 +249,7 @@ const (
 //
 // EVERY SETTING THIS CONSUMER ALREADY HAD IS RE-APPLIED. The shared transport
 // carries MaxIdleConns 100 and IdleConnTimeout 90s of its own; the per-host pool
-// depth and the 10s ceiling are the two it does not, and both are restored here
+// depth and the 5s ceiling are the two it does not, and both are restored here
 // — a firehose path silently re-timed from 10s to the shared client's 15s would
 // be a second change wearing an SSRF fix's clothes, the way
 // blobs.NewBlobService, imageproxy.NewPDSFetcher and unfurl.NewService all say.
@@ -242,12 +287,6 @@ func newWellKnownClient(allowPrivateHosts bool, opts ...covesoauth.Option) *http
 	return client
 }
 
-// cachedDIDDoc represents a cached verification result with expiration
-type cachedDIDDoc struct {
-	expiresAt time.Time // When this cache entry expires
-	valid     bool      // Whether verification passed
-}
-
 // NewCommunityEventConsumer creates a new Jetstream consumer for community events
 // instanceDID: The DID of this Coves instance (for hostedBy verification)
 // skipVerification: Skip did:web verification (for dev mode)
@@ -259,12 +298,12 @@ func NewCommunityEventConsumer(repo communities.Repository, instanceDID string, 
 	// Create bounded LRU cache for DID document verification results
 	// Max 1000 entries to prevent unbounded memory growth (PR review feedback)
 	// Each entry ~100 bytes → max ~100KB memory overhead
-	cache, err := lru.New[string, cachedDIDDoc](1000)
+	cache, err := lru.New[didVerificationCacheKey, cachedDIDDoc](1000)
 	if err != nil {
 		// This should never happen with a valid size, but handle gracefully
 		log.Printf("WARNING: Failed to create DID cache (size=1000), verification will be slower: %v", err)
 		// Create minimal cache to avoid nil pointer
-		cache, fallbackErr := lru.New[string, cachedDIDDoc](1)
+		cache, fallbackErr := lru.New[didVerificationCacheKey, cachedDIDDoc](1)
 		if fallbackErr != nil {
 			// Both attempts failed - this indicates a serious issue with the LRU library
 			log.Printf("CRITICAL: Failed to create fallback DID cache (size=1): %v", fallbackErr)
@@ -970,8 +1009,9 @@ func (c *CommunityEventConsumer) verifyHostedByClaim(ctx context.Context, handle
 		return nil
 	}
 
-	// Add 15 second overall timeout to prevent slow verification from blocking consumer (PR review feedback)
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	// Bound the limiter wait and fetch together. The HTTP client applies the
+	// tighter wellKnownTimeout once a request actually starts.
+	ctx, cancel := context.WithTimeout(ctx, wellKnownVerificationTimeout)
 	defer cancel()
 
 	// Verify hostedByDID is did:web format.
@@ -1002,8 +1042,24 @@ func (c *CommunityEventConsumer) verifyHostedByClaim(ctx context.Context, handle
 	// MANDATORY bidirectional verification: DID document must claim this handle in alsoKnownAs
 	// This matches Bluesky's security requirements and prevents domain impersonation
 	if err := c.verifyDIDDocument(ctx, hostedByDID, hostedByDomain, handle); err != nil {
-		log.Printf("🚨 SECURITY: Rejecting community - bidirectional DID verification failed: %v", err)
-		return fmt.Errorf("bidirectional DID verification required: %w", err)
+		if errors.Is(err, ErrPermanentEvent) {
+			log.Printf("🚨 SECURITY: Rejecting community - bidirectional DID verification failed: %v", err)
+			return fmt.Errorf("bidirectional DID verification required: %w", err)
+		}
+		log.Printf("DID verification deferred for community handle %s: %v", handle, err)
+		// UNRESOLVED, not transient. The host being fetched is named by the
+		// record (hostedBy) and can be made to accept the connection and
+		// never answer; the fetch already costs up to wellKnownTimeout once
+		// per DID, and an in-line retry loop on top of it — against a
+		// negative cache entry, so pure sleep — would hand the record's
+		// author 4.2 seconds of this lane per distinct DID. The verification
+		// is genuinely re-attemptable (the DID document may be published
+		// after the record), which is what the redrive budget is for.
+		classified := fmt.Errorf("%w: bidirectional DID verification required: %v", ErrUnresolvedReference, err)
+		if errors.Is(err, errRedriveDeferred) {
+			return deferRedrive(classified)
+		}
+		return classified
 	}
 
 	return nil
@@ -1044,40 +1100,68 @@ func (c *CommunityEventConsumer) verifyDIDDocument(ctx context.Context, did, dom
 	// newWellKnownClient.
 	//
 	// IT RUNS BEFORE THE CACHE AND BEFORE THE RATE LIMITER, not just before the
-	// URL. The cache is keyed by DID rather than by domain, so a hit would answer
-	// for a domain nothing ever looked at; and the limiter blocks, which would
+	// URL. Malformed domains never create cache entries; and the limiter blocks, which would
 	// let a flood of malformed records spend the budget that legitimate
 	// verifications share.
 	//
 	// The refusal is NOT cached. It costs one pass over a string to recompute,
-	// and the cache key is the DID — so caching would let one bad record suppress
-	// a later good one for the same DID for the full TTL.
+	// and caching it would let one bad record suppress a later good one.
 	normalizedDomain, err := validation.NormalizeDomain(domain)
 	if err != nil {
-		return fmt.Errorf("refusing to fetch a DID document for %s: %q is not a hostname: %w",
-			did, domain, err)
+		// PERMANENT: the value is on the record and a replay carries it again.
+		return fmt.Errorf("%w: refusing to fetch a DID document for %s: %q is not a hostname: %w",
+			ErrPermanentEvent, did, domain, err)
 	}
 	// The canonical form from here on, so one domain has one spelling in the URL
 	// and in the logs.
 	domain = normalizedDomain
 
-	// Check bounded LRU cache first (thread-safe, no locks needed)
-	if cached, ok := c.didCache.Get(did); ok {
-		// Check if cache entry is still valid (not expired)
-		if time.Now().Before(cached.expiresAt) {
-			if !cached.valid {
-				return fmt.Errorf("cached verification failure for %s", did)
-			}
+	handleDomain := extractDomainFromHandle(handle)
+	handleDomain, err = validation.NormalizeDomain(handleDomain)
+	if err != nil {
+		return fmt.Errorf("%w: refusing to verify DID document %s against invalid handle %q: %v",
+			ErrPermanentEvent, did, handle, err)
+	}
+	cacheKey := didVerificationCacheKey{did: did, handleDomain: handleDomain}
+
+	// The cache lookup and in-flight insertion are one atomic operation. The
+	// LRU is thread-safe per method, but a separate Get followed by Add lets two
+	// goroutines both observe a miss and start the same attacker-controlled
+	// request.
+	if cached, ok := c.cachedDIDVerificationOrMarkInFlight(cacheKey); ok {
+		switch cached.outcome {
+		case didVerificationValid:
 			log.Printf("✓ DID document verification (cached): %s", domain)
 			return nil
+		case didVerificationPermanent:
+			return fmt.Errorf("%w: cached DID document verification failure for %s and handle domain %s: %s",
+				ErrPermanentEvent, did, handleDomain, cached.reason)
+		default:
+			return deferRedrive(fmt.Errorf("cached DID document verification pending for %s and handle domain %s: %s",
+				did, handleDomain, cached.reason))
 		}
-		// Cache entry expired - remove it to free up space for fresh entries
-		c.didCache.Remove(did)
 	}
 
+	// IN-FLIGHT MARKER. The fetch below can take the full wellKnownTimeout
+	// against a host that accepts the connection and never answers, and the
+	// host is chosen by whoever wrote the record. Only the failure was cached,
+	// and only once the fetch had returned — so every other delivery of the
+	// same DID that arrived meanwhile (the redriver runs on its own goroutine;
+	// overlapping feeds replay the same commit) started a fetch of its own,
+	// and the limiter, which bounds the RATE, queued them all behind this one.
+	// Atomically writing the negative entry before the fetch turns each of those into an
+	// immediate cache hit. A successful fetch overwrites it with the 24h
+	// positive entry below; a failed one re-stamps it with the ordinary TTL.
+
 	// Rate limit .well-known fetches to prevent DoS
-	if err := c.wellKnownLimiter.Wait(ctx); err != nil {
-		return fmt.Errorf("rate limit exceeded for .well-known fetch: %w", err)
+	waitErr := c.wellKnownLimiter.Wait(ctx)
+	// Waiting can consume most of the original marker's lifetime under load.
+	// Re-stamp on every return so it cannot expire during the fetch, and so a
+	// limiter refusal does not immediately invite another queued attempt.
+	c.cacheVerificationResult(cacheKey, didVerificationInFlight,
+		"verification request is rate-limited or in flight", wellKnownInFlightTTL)
+	if waitErr != nil {
+		return fmt.Errorf("rate limit exceeded for .well-known fetch: %w", waitErr)
 	}
 
 	// Construct .well-known URL
@@ -1086,16 +1170,14 @@ func (c *CommunityEventConsumer) verifyDIDDocument(ctx context.Context, did, dom
 	// Create HTTP request with timeout
 	req, err := http.NewRequestWithContext(ctx, "GET", didDocURL, nil)
 	if err != nil {
-		// Cache the failure
-		c.cacheVerificationResult(did, false, 5*time.Minute)
+		c.cacheVerificationResult(cacheKey, didVerificationUnresolved, err.Error(), wellKnownFailureTTL)
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
 	// Fetch DID document using shared HTTP client
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		// Cache the failure (shorter TTL for network errors)
-		c.cacheVerificationResult(did, false, 5*time.Minute)
+		c.cacheVerificationResult(cacheKey, didVerificationUnresolved, err.Error(), wellKnownFailureTTL)
 		return fmt.Errorf("failed to fetch DID document from %s: %w", didDocURL, err)
 	}
 	defer func() {
@@ -1106,8 +1188,8 @@ func (c *CommunityEventConsumer) verifyDIDDocument(ctx context.Context, did, dom
 
 	// Verify HTTP status
 	if resp.StatusCode != http.StatusOK {
-		// Cache the failure
-		c.cacheVerificationResult(did, false, 5*time.Minute)
+		reason := fmt.Sprintf("DID document returned HTTP %d", resp.StatusCode)
+		c.cacheVerificationResult(cacheKey, didVerificationUnresolved, reason, wellKnownFailureTTL)
 		return fmt.Errorf("DID document returned HTTP %d from %s", resp.StatusCode, didDocURL)
 	}
 
@@ -1117,22 +1199,20 @@ func (c *CommunityEventConsumer) verifyDIDDocument(ctx context.Context, did, dom
 		AlsoKnownAs []string `json:"alsoKnownAs"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&didDoc); err != nil {
-		// Cache the failure
-		c.cacheVerificationResult(did, false, 5*time.Minute)
+		c.cacheVerificationResult(cacheKey, didVerificationUnresolved, err.Error(), wellKnownFailureTTL)
 		return fmt.Errorf("failed to parse DID document JSON: %w", err)
 	}
 
 	// Verify DID document ID matches claimed DID
 	if didDoc.ID != did {
-		// Cache the failure
-		c.cacheVerificationResult(did, false, 5*time.Minute)
-		return fmt.Errorf("DID document ID (%s) doesn't match claimed DID (%s)", didDoc.ID, did)
+		reason := fmt.Sprintf("DID document ID %q does not match claimed DID %q", didDoc.ID, did)
+		c.cacheVerificationResult(cacheKey, didVerificationPermanent, reason, wellKnownFailureTTL)
+		return fmt.Errorf("%w: %s", ErrPermanentEvent, reason)
 	}
 
 	// SECURITY: Bidirectional verification - DID document must claim this handle
 	// Prevents impersonation where someone points DNS to another user's DID
 	// Format: handle "coves.social" or "!community@coves.social" → check for "at://coves.social"
-	handleDomain := extractDomainFromHandle(handle)
 	expectedAlias := fmt.Sprintf("at://%s", handleDomain)
 
 	found := false
@@ -1144,24 +1224,43 @@ func (c *CommunityEventConsumer) verifyDIDDocument(ctx context.Context, did, dom
 	}
 
 	if !found {
-		// Cache the failure
-		c.cacheVerificationResult(did, false, 5*time.Minute)
-		return fmt.Errorf("DID document does not claim handle domain %s in alsoKnownAs (expected %s, got %v)",
-			handleDomain, expectedAlias, didDoc.AlsoKnownAs)
+		reason := fmt.Sprintf("DID document does not claim handle domain %s in alsoKnownAs (expected %s across %d aliases)",
+			handleDomain, expectedAlias, len(didDoc.AlsoKnownAs))
+		c.cacheVerificationResult(cacheKey, didVerificationPermanent, reason, wellKnownFailureTTL)
+		return fmt.Errorf("%w: %s", ErrPermanentEvent, reason)
 	}
 
 	// Cache the success (24 hour TTL - matches Bluesky recommendations)
-	c.cacheVerificationResult(did, true, 24*time.Hour)
+	c.cacheVerificationResult(cacheKey, didVerificationValid, "", 24*time.Hour)
 
 	log.Printf("✓ DID document verified: %s", domain)
 	return nil
 }
 
-// cacheVerificationResult stores a verification result in the bounded LRU cache with the given TTL
-// The LRU cache is thread-safe and automatically evicts least-recently-used entries when full
-func (c *CommunityEventConsumer) cacheVerificationResult(did string, valid bool, ttl time.Duration) {
-	c.didCache.Add(did, cachedDIDDoc{
-		valid:     valid,
+func (c *CommunityEventConsumer) cachedDIDVerificationOrMarkInFlight(key didVerificationCacheKey) (cachedDIDDoc, bool) {
+	c.didCacheMu.Lock()
+	defer c.didCacheMu.Unlock()
+
+	if cached, ok := c.didCache.Get(key); ok {
+		if time.Now().Before(cached.expiresAt) {
+			return cached, true
+		}
+		c.didCache.Remove(key)
+	}
+	c.didCache.Add(key, cachedDIDDoc{
+		outcome:   didVerificationInFlight,
+		reason:    "verification request is in flight",
+		expiresAt: time.Now().Add(wellKnownInFlightTTL),
+	})
+	return cachedDIDDoc{}, false
+}
+
+func (c *CommunityEventConsumer) cacheVerificationResult(key didVerificationCacheKey, outcome didVerificationOutcome, reason string, ttl time.Duration) {
+	c.didCacheMu.Lock()
+	defer c.didCacheMu.Unlock()
+	c.didCache.Add(key, cachedDIDDoc{
+		outcome:   outcome,
+		reason:    reason,
 		expiresAt: time.Now().Add(ttl),
 	})
 }
@@ -1369,6 +1468,12 @@ func (c *CommunityEventConsumer) createSubscription(ctx context.Context, userDID
 		// PERMANENT: structurally invalid record — replays parse identically.
 		return fmt.Errorf("%w: subscription record missing subject field", ErrPermanentEvent)
 	}
+	// PERMANENT: a subject that is not a DID can never name a community, so it
+	// must not reach the "community not found" branch below, whose redrive
+	// budget exists for communities that have merely not arrived yet.
+	if err := requireDIDShaped("subscription subject", communityDID); err != nil {
+		return err
+	}
 
 	// Extract contentVisibility with clamping and default value
 	contentVisibility := extractContentVisibility(commit.Record)
@@ -1402,6 +1507,12 @@ func (c *CommunityEventConsumer) createSubscription(ctx context.Context, userDID
 		// Deliberately NOT ErrPermanentEvent: "community not found" here is an
 		// ORDERING failure (the community's create event may simply not have been
 		// indexed yet) — the redrive will succeed once the community arrives.
+		// ErrUnresolvedReference keeps that redrive while denying the in-line
+		// retries: a subscriber to a made-up DID would otherwise buy 4.2s of
+		// this lane per record.
+		if communities.IsNotFound(err) {
+			return fmt.Errorf("%w: failed to index subscription: %v", ErrUnresolvedReference, err)
+		}
 		return fmt.Errorf("failed to index subscription: %w", err)
 	}
 
@@ -1478,6 +1589,13 @@ func (c *CommunityEventConsumer) createBlock(ctx context.Context, userDID string
 	if !ok {
 		// PERMANENT: structurally invalid record — replays parse identically.
 		return fmt.Errorf("%w: block record missing subject field", ErrPermanentEvent)
+	}
+	// PERMANENT: community_blocks.community_did carries a CHECK constraint on
+	// DID shape (migration 009). Without this gate a non-DID subject reached
+	// the INSERT, failed the CHECK, and was classified transient — 4.2s of
+	// in-line retries plus ten redrives against a value no replay can repair.
+	if err := requireDIDShaped("block subject", communityDID); err != nil {
+		return err
 	}
 
 	// Build AT-URI for block record

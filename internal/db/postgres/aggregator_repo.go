@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
@@ -352,8 +353,38 @@ func (r *postgresAggregatorRepo) IsAggregator(ctx context.Context, did string) (
 
 // ===== Authorization CRUD Operations =====
 
-// CreateAuthorization indexes a new authorization from the firehose
+// CreateAuthorization indexes a new authorization from the firehose.
+//
+// An authorization record is keyed by (aggregator_did, community_did), but
+// the record itself is keyed by its AT-URI, and the two disagree the moment a
+// community UPDATES an existing record to name a different aggregatorDid. The
+// upsert alone then fails record_uri's UNIQUE constraint — an error no replay
+// can clear — while the OLD aggregator keeps its row and its authorization.
+// So the row that this record URI previously produced is removed first, in
+// the same transaction: the community rewrote the record, and the aggregator
+// it used to name is no longer authorized by it.
 func (r *postgresAggregatorRepo) CreateAuthorization(ctx context.Context, auth *aggregators.Authorization) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			log.Printf("Failed to rollback transaction: %v", rollbackErr)
+		}
+	}()
+
+	if auth.RecordURI != "" {
+		if _, err := tx.ExecContext(ctx, `
+			DELETE FROM aggregator_authorizations
+			WHERE record_uri = $1
+			  AND (aggregator_did, community_did) IS DISTINCT FROM ($2, $3)`,
+			auth.RecordURI, auth.AggregatorDID, auth.CommunityDID,
+		); err != nil {
+			return fmt.Errorf("failed to retire the authorization this record previously named: %w", err)
+		}
+	}
+
 	query := `
 		INSERT INTO aggregator_authorizations (
 			aggregator_did, community_did, enabled, config,
@@ -388,7 +419,7 @@ func (r *postgresAggregatorRepo) CreateAuthorization(ctx context.Context, auth *
 		disabledAt = nil
 	}
 
-	err := r.db.QueryRowContext(ctx, query,
+	err = tx.QueryRowContext(ctx, query,
 		auth.AggregatorDID,
 		auth.CommunityDID,
 		auth.Enabled,
@@ -402,13 +433,22 @@ func (r *postgresAggregatorRepo) CreateAuthorization(ctx context.Context, auth *
 		nullString(auth.RecordCID),
 	).Scan(&auth.ID)
 	if err != nil {
-		// Check for foreign key violations
-		if strings.Contains(err.Error(), "fk_aggregator") {
-			return aggregators.ErrAggregatorNotFound
+		// Foreign key violations name the missing side so the consumer can
+		// classify the refusal (see aggregators.IsNotFound).
+		if pqErr := extractPQError(err); pqErr != nil && pqErr.Code == "23503" {
+			switch pqErr.Constraint {
+			case "fk_aggregator":
+				return fmt.Errorf("%w: %v", aggregators.ErrAggregatorNotFound, err)
+			case "fk_community":
+				return fmt.Errorf("%w: %v", aggregators.ErrCommunityNotFound, err)
+			}
 		}
 		return fmt.Errorf("failed to create authorization: %w", err)
 	}
 
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
 	return nil
 }
 

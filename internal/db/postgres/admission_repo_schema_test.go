@@ -319,17 +319,19 @@ func TestMigration034_DownRestoresTheAuthorForeignKeyUnvalidated(t *testing.T) {
 		"with fk_author dropped, a federated author's post must index even though no users row exists for them")
 
 	// The expected-version parameter is the tripwire, and it has now fired
-	// seven times: migration 035 (post_submissions), 036 (deleted_accounts),
+	// eight times: migration 035 (post_submissions), 036 (deleted_accounts),
 	// 037 (the re-materialization ledger), 038 (communities.origin), 039
-	// (the (name, origin) index), 040 (the vote-drift repair) and 041 (the future
-	// comment created_at repair) all sit on top of 034, so all seven have to come
-	// off first. Rolling back explicitly,
+	// (the (name, origin) index), 040 (the vote-drift repair), 041 (the future
+	// comment created_at repair), and 042 (the dead-letter retention index) all
+	// sit on top of 034, so all eight have to come off first. Rolling back explicitly,
 	// one asserted step at a time, is what keeps the assertions below pointed at
 	// 034's Down rather than at whatever happens to be newest.
+	require.EqualValues(t, 42, testkit.MigrateDownOne(t, db, 42),
+		"042 (the dead-letter retention index) sits on top of 034 and must be rolled back first; asserting which migration came off is what stops this test drifting onto a newer one")
 	require.EqualValues(t, 41, testkit.MigrateDownOne(t, db, 41),
-		"041 (the future comment created_at repair) sits on top of 034 and must be rolled back first; asserting which migration came off is what stops this test drifting onto a newer one")
+		"041 (the future comment created_at repair) sits on top of 034 and must be rolled back next; asserting which migration came off is what stops this test drifting onto a newer one")
 	require.EqualValues(t, 40, testkit.MigrateDownOne(t, db, 40),
-		"040 (the vote-drift repair) sits on top of 034 and must be rolled back first; asserting which migration came off is what stops this test drifting onto a newer one")
+		"040 (the vote-drift repair) sits on top of 034 and must be rolled back next; asserting which migration came off is what stops this test drifting onto a newer one")
 	require.EqualValues(t, 39, testkit.MigrateDownOne(t, db, 39),
 		"039 (the communities (name, origin) index) sits on top of 034 and must be rolled back next; asserting which migration came off is what stops this test drifting onto a newer one")
 	require.EqualValues(t, 38, testkit.MigrateDownOne(t, db, 38),

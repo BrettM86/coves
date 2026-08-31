@@ -40,9 +40,9 @@ type CursorStore interface {
 // can be replayed later instead of being silently dropped.
 type DeadLetterWriter interface {
 	// AddDeadLetter stores the raw event bytes. redriveAttempts seeds the
-	// redrive budget: 0 for transient failures (the redriver retries them),
-	// MaxRedriveAttempts for permanent failures (the redriver must never
-	// touch them). Re-adding an already-captured event (same consumer,
+	// redrive budget: 0 for infrastructure failures, MaxRedriveAttempts minus
+	// UnresolvedRedriveAttempts for unresolved references, and
+	// MaxRedriveAttempts for permanent failures. Re-adding an already-captured event (same consumer,
 	// time_us, and payload) must succeed as a no-op so the cursor can
 	// advance past it.
 	AddDeadLetter(ctx context.Context, consumerName string, eventTimeUS int64, eventData []byte, handleErr string, redriveAttempts int) error
@@ -425,6 +425,9 @@ func (c *Connector) connect(ctx context.Context) error {
 //     the DLQ) but does NOT count toward eventsProcessed
 //   - permanent failure (ErrPermanentEvent) → dead-lettered already
 //     exhausted (attempts = MaxRedriveAttempts), cursor advances
+//   - unresolved reference (ErrUnresolvedReference) → no in-line retries,
+//     dead-lettered with a small redrive budget, cursor advances; the
+//     redriver converges it off the lane once the referenced record arrives
 //   - dead letter write failed       → error returned, cursor does NOT advance
 //   - unparseable JSON               → dead-lettered for forensics, cursor
 //     unaffected; on reconnect the same frame may be dead-lettered again
@@ -448,8 +451,11 @@ func (c *Connector) processMessage(ctx context.Context, message []byte) error {
 		// already exhausted: replaying a validation rejection can never
 		// succeed, so the row is kept for forensics only.
 		redriveAttempts := 0
-		if errors.Is(handleErr, ErrPermanentEvent) {
+		switch {
+		case errors.Is(handleErr, ErrPermanentEvent):
 			redriveAttempts = MaxRedriveAttempts
+		case errors.Is(handleErr, ErrUnresolvedReference):
+			redriveAttempts = MaxRedriveAttempts - UnresolvedRedriveAttempts
 		}
 		slog.Error("jetstream event failed; dead-lettering",
 			slog.String("consumer", c.name),
@@ -457,6 +463,7 @@ func (c *Connector) processMessage(ctx context.Context, message []byte) error {
 			slog.String("kind", event.Kind),
 			slog.Int64("time_us", event.TimeUS),
 			slog.Bool("permanent", redriveAttempts == MaxRedriveAttempts),
+			slog.Bool("unresolved_reference", errors.Is(handleErr, ErrUnresolvedReference)),
 			slog.String("error", handleErr.Error()))
 		c.recordError(handleErr)
 		if err := c.deadLetter(ctx, event.TimeUS, message, handleErr, redriveAttempts); err != nil {
@@ -474,7 +481,12 @@ func (c *Connector) processMessage(ctx context.Context, message []byte) error {
 
 // handleWithRetry invokes the handler, retrying transient failures in-line.
 // Errors wrapped with ErrPermanentEvent short-circuit immediately: retrying
-// a permanent rejection can never succeed.
+// a permanent rejection can never succeed. Errors wrapped with
+// ErrUnresolvedReference short-circuit too: the referenced record lives in
+// another repo, and waiting 4.2 seconds of this lane for it is exactly the
+// stall an adversary can mint for free by naming a record that does not
+// exist. Those go straight to the dead letter queue with their redrive
+// budget intact and converge on the redriver's timer instead.
 //
 // Retries block subsequent events on purpose: events within one consumer's
 // stream are ordered (a record's create precedes its update/delete), so
@@ -482,7 +494,7 @@ func (c *Connector) processMessage(ctx context.Context, message []byte) error {
 // ordering away only after all retries fail.
 func (c *Connector) handleWithRetry(ctx context.Context, event *JetstreamEvent) error {
 	err := c.handler.HandleEvent(ctx, event)
-	if err == nil || errors.Is(err, ErrPermanentEvent) {
+	if err == nil || skipsInlineRetries(err) {
 		return err
 	}
 
@@ -493,16 +505,22 @@ func (c *Connector) handleWithRetry(ctx context.Context, event *JetstreamEvent) 
 		if err = c.handler.HandleEvent(ctx, event); err == nil {
 			return nil
 		}
-		// The permanent wrapping can also appear on a later attempt (e.g. a
-		// different code path fails this time); stop retrying as soon as
-		// the failure is known permanent.
-		if errors.Is(err, ErrPermanentEvent) {
+		// The permanent or unresolved-reference wrapping can also appear on
+		// a later attempt (e.g. a different code path fails this time); stop
+		// retrying as soon as the failure is known not to be worth the lane.
+		if skipsInlineRetries(err) {
 			return err
 		}
 		log.Printf("Jetstream %s: handler retry %d/%d failed: %v",
 			c.name, attempt+1, len(c.retryDelays), err)
 	}
 	return err
+}
+
+// skipsInlineRetries reports whether a handler failure belongs to a class the
+// connector must not spend lane time retrying: see the taxonomy in errors.go.
+func skipsInlineRetries(err error) bool {
+	return errors.Is(err, ErrPermanentEvent) || errors.Is(err, ErrUnresolvedReference)
 }
 
 // deadLetter writes a failed event to the dead letter queue. A nil writer

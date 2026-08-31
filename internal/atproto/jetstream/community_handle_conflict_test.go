@@ -37,10 +37,10 @@ import (
 //
 // The consequence is not confined to the community. Posts, comments and votes
 // naming it are refused as "community not found", which the taxonomy classifies
-// TRANSIENT (correctly — it is ordinarily a delivery race), so each one burns
-// the connector's full inline retry budget before dead-lettering. A single
-// swallowed collision turns into a sustained flood of 4.2-second blocking
-// failures in three other consumers, none of which points anywhere near here.
+// UNRESOLVED (correctly — it is ordinarily a delivery race). They bypass the
+// serial lane now, but a swallowed collision still turns into a sustained
+// dead-letter and redrive flood in three other consumers, none of which points
+// anywhere near here.
 //
 // So the pin is in two halves, and both are needed: the collision must surface,
 // and the genuine replay must keep NOT surfacing. A fix that widened the error

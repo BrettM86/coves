@@ -8,11 +8,10 @@ import (
 	"time"
 )
 
-// intervalProbeQueue is a minimal DeadLetterQueue whose ListRetryable signals
-// each invocation on a buffered channel, so a test can observe how many
-// redrive passes DeadLetterRedriver.Run has started without inferring it
-// from wall-clock sleeps. Every other method is a trivial no-op: this queue
-// exists only to count passes.
+// intervalProbeQueue signals each ListRetryable call on a buffered channel, so
+// a test can observe how many redrive passes Run started without inferring it
+// from wall-clock sleeps. Its mutator and pruner methods are no-ops because no
+// rows are returned.
 type intervalProbeQueue struct {
 	passes chan struct{}
 }
@@ -21,11 +20,11 @@ func newIntervalProbeQueue() *intervalProbeQueue {
 	return &intervalProbeQueue{passes: make(chan struct{}, 16)}
 }
 
-func (q *intervalProbeQueue) AddDeadLetter(context.Context, string, int64, []byte, string, int) error {
-	return nil
+func (q *intervalProbeQueue) LatestDeadLetterID(context.Context, string) (int64, error) {
+	return 1, nil
 }
 
-func (q *intervalProbeQueue) ListRetryable(_ context.Context, _ string, _, _ int) ([]DeadLetterEvent, error) {
+func (q *intervalProbeQueue) ListRetryable(context.Context, DeadLetterPageQuery) ([]DeadLetterEvent, error) {
 	q.passes <- struct{}{}
 	return nil, nil
 }
@@ -36,8 +35,12 @@ func (q *intervalProbeQueue) MarkRedriveAttempt(context.Context, int64, string) 
 
 func (q *intervalProbeQueue) RetireDeadLetter(context.Context, int64, string) error { return nil }
 
-func (q *intervalProbeQueue) CountDeadLetters(context.Context) (map[string]int64, error) {
-	return nil, nil
+func (q *intervalProbeQueue) PruneDeadLetters(context.Context, time.Time) (int64, error) {
+	return 0, nil
+}
+
+func intervalRedriveStore(queue *intervalProbeQueue) DeadLetterRedriveStore {
+	return DeadLetterRedriveStore{Source: queue, Mutator: queue, Pruner: queue}
 }
 
 // TestDeadLetterRedriver_HonoursConfiguredInterval proves that
@@ -53,7 +56,7 @@ func (q *intervalProbeQueue) CountDeadLetters(context.Context) (map[string]int64
 func TestDeadLetterRedriver_HonoursConfiguredInterval(t *testing.T) {
 	queue := newIntervalProbeQueue()
 	handlers := map[string]EventHandler{"test-consumer": newFakeEventHandler()}
-	redriver := NewDeadLetterRedriver(queue, handlers, WithRedriveInterval(10*time.Millisecond))
+	redriver := NewDeadLetterRedriver(intervalRedriveStore(queue), handlers, WithRedriveInterval(10*time.Millisecond))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -110,7 +113,7 @@ func TestNewDeadLetterRedriver_RejectsNonPositiveInterval(t *testing.T) {
 				}
 			}()
 
-			NewDeadLetterRedriver(newIntervalProbeQueue(), handlers, WithRedriveInterval(badInterval))
+			NewDeadLetterRedriver(intervalRedriveStore(newIntervalProbeQueue()), handlers, WithRedriveInterval(badInterval))
 		})
 	}
 }

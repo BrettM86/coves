@@ -631,7 +631,7 @@ func TestAcceptanceConsumer_GenuineRecordNotFound_IsPermanentlyRefusedAfterOneFe
 		"nothing may be indexed for a subject the PDS says does not exist")
 }
 
-func TestAcceptanceConsumer_BareNotFound_StaysTransient(t *testing.T) {
+func TestAcceptanceConsumer_BareNotFound_IsUnresolved(t *testing.T) {
 	t.Parallel()
 
 	db := testkit.DB(t)
@@ -659,11 +659,13 @@ func TestAcceptanceConsumer_BareNotFound_StaysTransient(t *testing.T) {
 		"a bare 404 carries no XRPC error envelope, which means the request most likely never reached a PDS at all — a stale pds_url "+
 			"pointing at a proxy. Reading it as proof the record does not exist permanently discards a real post over a misconfigured "+
 			"hostname; users.FetchProfileRecord draws the same distinction for the same reason")
+	assert.ErrorIs(t, err, ErrUnresolvedReference,
+		"a remote fetch failure must skip the connector's in-line retry sleeps and converge on the redriver")
 
 	assert.Equal(t, 1, requests, "one event, one fetch — the connector owns retries")
 }
 
-func TestAcceptanceConsumer_PDSServerError_StaysTransient(t *testing.T) {
+func TestAcceptanceConsumer_PDSServerError_IsUnresolved(t *testing.T) {
 	t.Parallel()
 
 	db := testkit.DB(t)
@@ -687,6 +689,8 @@ func TestAcceptanceConsumer_PDSServerError_StaysTransient(t *testing.T) {
 	assert.NotErrorIs(t, err, ErrPermanentEvent,
 		"a 5xx is the author's PDS saying it is unwell, which is the definition of transient; discarding the acceptance permanently "+
 			"would lose a post because somebody else's server restarted")
+	assert.ErrorIs(t, err, ErrUnresolvedReference,
+		"an attacker-controlled PDS failure must not buy in-line retries on the posts lane")
 
 	assert.Equal(t, 1, requests, "one event, one fetch — the connector owns retries")
 }

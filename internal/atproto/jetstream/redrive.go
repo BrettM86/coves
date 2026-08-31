@@ -9,12 +9,20 @@ import (
 	"time"
 )
 
-// MaxRedriveAttempts is the redrive budget for a dead letter. Rows at or
-// above this many attempts are skipped by the redriver but remain in the
-// table for manual inspection. The connector dead-letters permanent
-// failures (ErrPermanentEvent) with attempts already at this value so the
-// redriver never touches them.
-const MaxRedriveAttempts = 10
+const (
+	// MaxRedriveAttempts is the redrive budget for infrastructure failures.
+	// Rows at or above this value are skipped by the redriver.
+	MaxRedriveAttempts = 10
+
+	// UnresolvedRedriveAttempts is the smaller budget for attacker-controlled
+	// references that may be genuine ordering races or may never exist.
+	UnresolvedRedriveAttempts = 3
+
+	// DeadLetterRetention bounds storage growth while leaving a week for
+	// inspection and recovery. Pruning uses updated_at, so every real replay
+	// attempt extends the window.
+	DeadLetterRetention = 7 * 24 * time.Hour
+)
 
 // DeadLetterEvent is a dead-lettered Jetstream event awaiting redrive.
 type DeadLetterEvent struct {
@@ -27,13 +35,27 @@ type DeadLetterEvent struct {
 	CreatedAt    time.Time
 }
 
-// DeadLetterQueue is the full dead letter store used by the redriver.
-// Connectors only need the narrower DeadLetterWriter.
-type DeadLetterQueue interface {
-	DeadLetterWriter
-	// ListRetryable returns up to limit dead letters for the consumer with
-	// fewer than maxAttempts redrive attempts, oldest first.
-	ListRetryable(ctx context.Context, consumerName string, maxAttempts, limit int) ([]DeadLetterEvent, error)
+// DeadLetterPageQuery bounds one ID-ordered redrive page within a pass.
+type DeadLetterPageQuery struct {
+	ConsumerName string
+	MaxAttempts  int
+	AfterID      int64
+	ThroughID    int64
+	Limit        int
+}
+
+// DeadLetterRedriveSource snapshots and reads replayable dead letters.
+type DeadLetterRedriveSource interface {
+	// LatestDeadLetterID returns the current high-water mark for a consumer.
+	// A redrive pass snapshots it so rows arriving during the pass wait for the
+	// next one and no row is attempted twice in one pass.
+	LatestDeadLetterID(ctx context.Context, consumerName string) (int64, error)
+	// ListRetryable returns one ID-ordered page inside a pass snapshot.
+	ListRetryable(ctx context.Context, query DeadLetterPageQuery) ([]DeadLetterEvent, error)
+}
+
+// DeadLetterRedriveMutator applies the three possible replay outcomes.
+type DeadLetterRedriveMutator interface {
 	// DeleteDeadLetter removes a successfully redriven event.
 	DeleteDeadLetter(ctx context.Context, id int64) error
 	// MarkRedriveAttempt increments the attempt counter after a failed
@@ -44,10 +66,29 @@ type DeadLetterQueue interface {
 	// RetireDeadLetter marks a dead letter as permanently exhausted in one
 	// step (attempts jump straight to MaxRedriveAttempts). Used for rows
 	// that can never succeed, e.g. unparseable payloads. The row remains
-	// for forensics and backlog counts.
+	// for forensics until the retention window expires.
 	RetireDeadLetter(ctx context.Context, id int64, reason string) error
+}
+
+// DeadLetterPruner enforces the dead-letter retention window.
+type DeadLetterPruner interface {
+	// PruneDeadLetters deletes rows whose last update is older than before.
+	PruneDeadLetters(ctx context.Context, before time.Time) (int64, error)
+}
+
+// DeadLetterCounter supplies backlog counts to operational health reporting.
+type DeadLetterCounter interface {
 	// CountDeadLetters returns the dead letter backlog per consumer.
 	CountDeadLetters(ctx context.Context) (map[string]int64, error)
+}
+
+// DeadLetterRedriveStore groups the small persistence capabilities the
+// redriver owns without forcing connectors or health reporting to depend on
+// operations they never call.
+type DeadLetterRedriveStore struct {
+	Source  DeadLetterRedriveSource
+	Mutator DeadLetterRedriveMutator
+	Pruner  DeadLetterPruner
 }
 
 // DeadLetterRedriver periodically replays dead-lettered events against the
@@ -55,7 +96,9 @@ type DeadLetterQueue interface {
 // (e.g. a Postgres blip) self-healing: the event lands in the DLQ, the
 // failure clears, and the next redrive pass indexes it.
 type DeadLetterRedriver struct {
-	queue       DeadLetterQueue
+	source      DeadLetterRedriveSource
+	mutator     DeadLetterRedriveMutator
+	pruner      DeadLetterPruner
 	handlers    map[string]EventHandler // keyed by consumer name
 	interval    time.Duration
 	batchSize   int
@@ -72,11 +115,13 @@ func WithRedriveInterval(interval time.Duration) RedriveOption {
 }
 
 // NewDeadLetterRedriver creates a redriver over the given consumers.
-// Events that exhaust maxAttempts redrives stay in the table for manual
-// inspection and are surfaced in the /health/consumers backlog counts.
-func NewDeadLetterRedriver(queue DeadLetterQueue, handlers map[string]EventHandler, opts ...RedriveOption) *DeadLetterRedriver {
+// Events that exhaust maxAttempts redrives stay in the table for the retention
+// window and are surfaced in the /health/consumers backlog counts.
+func NewDeadLetterRedriver(store DeadLetterRedriveStore, handlers map[string]EventHandler, opts ...RedriveOption) *DeadLetterRedriver {
 	r := &DeadLetterRedriver{
-		queue:       queue,
+		source:      store.Source,
+		mutator:     store.Mutator,
+		pruner:      store.Pruner,
 		handlers:    handlers,
 		interval:    5 * time.Minute,
 		batchSize:   100,
@@ -127,12 +172,27 @@ func (r *DeadLetterRedriver) redriveAll(ctx context.Context) {
 			return
 		}
 
+		throughID, err := r.source.LatestDeadLetterID(ctx, consumerName)
+		if err != nil {
+			slog.Error("jetstream dead letter redrive snapshot failed",
+				slog.String("consumer", consumerName), slog.String("error", err.Error()))
+			continue
+		}
+
 		totalRedriven, totalFailed := 0, 0
+		var afterID int64
 		for {
 			if ctx.Err() != nil {
 				return
 			}
-			redriven, failed, listed, err := r.redriveConsumer(ctx, consumerName, handler)
+			query := DeadLetterPageQuery{
+				ConsumerName: consumerName,
+				MaxAttempts:  r.maxAttempts,
+				AfterID:      afterID,
+				ThroughID:    throughID,
+				Limit:        r.batchSize,
+			}
+			redriven, failed, listed, lastID, err := r.redriveConsumer(ctx, handler, query)
 			if err != nil {
 				slog.Error("jetstream dead letter redrive pass failed",
 					slog.String("consumer", consumerName), slog.String("error", err.Error()))
@@ -140,10 +200,10 @@ func (r *DeadLetterRedriver) redriveAll(ctx context.Context) {
 			}
 			totalRedriven += redriven
 			totalFailed += failed
-			// A short batch means the retryable backlog is drained.
-			if listed < r.batchSize {
+			if listed == 0 || listed < r.batchSize || lastID >= throughID {
 				break
 			}
+			afterID = lastID
 		}
 		if totalRedriven > 0 || totalFailed > 0 {
 			slog.Info("jetstream dead letter redrive pass completed",
@@ -152,21 +212,39 @@ func (r *DeadLetterRedriver) redriveAll(ctx context.Context) {
 				slog.Int("still_failing", totalFailed))
 		}
 	}
+
+	if ctx.Err() != nil {
+		return
+	}
+	pruned, err := r.pruner.PruneDeadLetters(ctx, time.Now().Add(-DeadLetterRetention))
+	if err != nil {
+		slog.Error("failed to prune expired jetstream dead letters", slog.String("error", err.Error()))
+	} else if pruned > 0 {
+		slog.Info("pruned expired jetstream dead letters", slog.Int64("rows", pruned))
+	}
 }
 
 // redriveConsumer replays one batch of dead letters for a single consumer.
 // listed reports how many rows the batch contained so the caller can tell
 // when the backlog is drained.
-func (r *DeadLetterRedriver) redriveConsumer(ctx context.Context, consumerName string, handler EventHandler) (redriven, failed, listed int, err error) {
-	deadLetters, err := r.queue.ListRetryable(ctx, consumerName, r.maxAttempts, r.batchSize)
+func (r *DeadLetterRedriver) redriveConsumer(
+	ctx context.Context,
+	handler EventHandler,
+	query DeadLetterPageQuery,
+) (redriven, failed, listed int, lastID int64, err error) {
+	deadLetters, err := r.source.ListRetryable(ctx, query)
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, 0, query.AfterID, err
 	}
 	listed = len(deadLetters)
+	lastID = query.AfterID
+	if listed > 0 {
+		lastID = deadLetters[listed-1].ID
+	}
 
 	for _, deadLetter := range deadLetters {
 		if ctx.Err() != nil {
-			return redriven, failed, listed, nil
+			return redriven, failed, listed, lastID, nil
 		}
 
 		var event JetstreamEvent
@@ -175,7 +253,7 @@ func (r *DeadLetterRedriver) redriveConsumer(ctx context.Context, consumerName s
 			// step so they stop consuming redrive passes but remain for
 			// forensics.
 			failed++
-			if retireErr := r.queue.RetireDeadLetter(ctx, deadLetter.ID, "unparseable event: "+parseErr.Error()); retireErr != nil {
+			if retireErr := r.mutator.RetireDeadLetter(ctx, deadLetter.ID, "unparseable event: "+parseErr.Error()); retireErr != nil {
 				slog.Error("failed to retire unparseable dead letter",
 					slog.Int64("id", deadLetter.ID), slog.String("error", retireErr.Error()))
 			}
@@ -183,20 +261,32 @@ func (r *DeadLetterRedriver) redriveConsumer(ctx context.Context, consumerName s
 		}
 
 		if handleErr := handler.HandleEvent(ctx, &event); handleErr != nil {
-			// A failure caused by shutdown is not the event's fault: return
-			// without burning one of its redrive attempts.
-			if ctx.Err() != nil || errors.Is(handleErr, context.Canceled) || errors.Is(handleErr, context.DeadlineExceeded) {
-				return redriven, failed, listed, nil
+			// Only cancellation of the redriver's own context means shutdown.
+			// A handler may wrap context.DeadlineExceeded from its own bounded
+			// network call while this context remains live; that is a real replay
+			// attempt and must neither become free nor abort the rest of the page.
+			if ctx.Err() != nil {
+				return redriven, failed, listed, lastID, nil
 			}
 			failed++
-			if markErr := r.queue.MarkRedriveAttempt(ctx, deadLetter.ID, handleErr.Error()); markErr != nil {
+			if errors.Is(handleErr, ErrPermanentEvent) {
+				if retireErr := r.mutator.RetireDeadLetter(ctx, deadLetter.ID, handleErr.Error()); retireErr != nil {
+					slog.Error("failed to retire permanently rejected dead letter",
+						slog.Int64("id", deadLetter.ID), slog.String("error", retireErr.Error()))
+				}
+				continue
+			}
+			if errors.Is(handleErr, errRedriveDeferred) {
+				continue
+			}
+			if markErr := r.mutator.MarkRedriveAttempt(ctx, deadLetter.ID, handleErr.Error()); markErr != nil {
 				slog.Error("failed to mark dead letter redrive attempt",
 					slog.Int64("id", deadLetter.ID), slog.String("error", markErr.Error()))
 			}
 			continue
 		}
 
-		if deleteErr := r.queue.DeleteDeadLetter(ctx, deadLetter.ID); deleteErr != nil {
+		if deleteErr := r.mutator.DeleteDeadLetter(ctx, deadLetter.ID); deleteErr != nil {
 			// The event was indexed but the row remains; the next pass will
 			// replay it, which is safe because handlers are idempotent.
 			slog.Error("failed to delete redriven dead letter (will replay next pass)",
@@ -205,5 +295,5 @@ func (r *DeadLetterRedriver) redriveConsumer(ctx context.Context, consumerName s
 		}
 		redriven++
 	}
-	return redriven, failed, listed, nil
+	return redriven, failed, listed, lastID, nil
 }

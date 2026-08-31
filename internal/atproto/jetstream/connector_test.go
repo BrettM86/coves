@@ -31,6 +31,9 @@ type fakeEventHandler struct {
 	failuresByTimeUS     map[int64]int // remaining transient failures per time_us
 	alwaysFailTimeUS     map[int64]bool
 	permanentErrorTimeUS map[int64]bool // fail with ErrPermanentEvent
+	unresolvedRefTimeUS  map[int64]bool // fail with ErrUnresolvedReference
+	deferredRefTimeUS    map[int64]bool // unresolved, but this pass acquired no new information
+	localTimeoutTimeUS   map[int64]bool // a handler-local deadline, not redriver shutdown
 }
 
 func newFakeEventHandler() *fakeEventHandler {
@@ -39,6 +42,9 @@ func newFakeEventHandler() *fakeEventHandler {
 		failuresByTimeUS:     make(map[int64]int),
 		alwaysFailTimeUS:     make(map[int64]bool),
 		permanentErrorTimeUS: make(map[int64]bool),
+		unresolvedRefTimeUS:  make(map[int64]bool),
+		deferredRefTimeUS:    make(map[int64]bool),
+		localTimeoutTimeUS:   make(map[int64]bool),
 	}
 }
 
@@ -48,6 +54,15 @@ func (h *fakeEventHandler) HandleEvent(_ context.Context, event *JetstreamEvent)
 	h.callsByTimeUS[event.TimeUS]++
 	if h.permanentErrorTimeUS[event.TimeUS] {
 		return fmt.Errorf("%w: bad record", ErrPermanentEvent)
+	}
+	if h.unresolvedRefTimeUS[event.TimeUS] {
+		return fmt.Errorf("%w: subject not indexed", ErrUnresolvedReference)
+	}
+	if h.deferredRefTimeUS[event.TimeUS] {
+		return deferRedrive(fmt.Errorf("%w: recent lookup result is still cached", ErrUnresolvedReference))
+	}
+	if h.localTimeoutTimeUS[event.TimeUS] {
+		return fmt.Errorf("remote lookup timed out: %w", context.DeadlineExceeded)
 	}
 	if h.alwaysFailTimeUS[event.TimeUS] {
 		return errors.New("handler failure that never clears")
@@ -141,12 +156,25 @@ func (q *fakeDeadLetterQueue) AddDeadLetter(_ context.Context, consumerName stri
 	return nil
 }
 
-func (q *fakeDeadLetterQueue) ListRetryable(_ context.Context, consumerName string, maxAttempts, limit int) ([]DeadLetterEvent, error) {
+func (q *fakeDeadLetterQueue) LatestDeadLetterID(_ context.Context, consumerName string) (int64, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	var latest int64
+	for _, row := range q.rows {
+		if row.ConsumerName == consumerName && row.ID > latest {
+			latest = row.ID
+		}
+	}
+	return latest, nil
+}
+
+func (q *fakeDeadLetterQueue) ListRetryable(_ context.Context, query DeadLetterPageQuery) ([]DeadLetterEvent, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	var result []DeadLetterEvent
 	for _, row := range q.rows {
-		if row.ConsumerName == consumerName && row.Attempts < maxAttempts && len(result) < limit {
+		if row.ConsumerName == query.ConsumerName && row.Attempts < query.MaxAttempts &&
+			row.ID > query.AfterID && row.ID <= query.ThroughID && len(result) < query.Limit {
 			result = append(result, row)
 		}
 	}
@@ -193,6 +221,10 @@ func (q *fakeDeadLetterQueue) RetireDeadLetter(_ context.Context, id int64, reas
 	return nil
 }
 
+func (q *fakeDeadLetterQueue) PruneDeadLetters(context.Context, time.Time) (int64, error) {
+	return 0, nil
+}
+
 func (q *fakeDeadLetterQueue) CountDeadLetters(_ context.Context) (map[string]int64, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -213,6 +245,10 @@ func (q *fakeDeadLetterQueue) row(i int) DeadLetterEvent {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return q.rows[i]
+}
+
+func fakeRedriveStore(queue *fakeDeadLetterQueue) DeadLetterRedriveStore {
+	return DeadLetterRedriveStore{Source: queue, Mutator: queue, Pruner: queue}
 }
 
 // --- WebSocket test server ---
@@ -620,7 +656,7 @@ func TestDeadLetterRedriver(t *testing.T) {
 	mustAdd(2_000, testEventJSON(t, 2_000))
 	mustAdd(0, []byte("not json"))
 
-	redriver := NewDeadLetterRedriver(queue, map[string]EventHandler{"test-consumer": handler})
+	redriver := NewDeadLetterRedriver(fakeRedriveStore(queue), map[string]EventHandler{"test-consumer": handler})
 	redriver.redriveAll(ctx)
 
 	if handler.handledCount() != 1 {
@@ -653,6 +689,115 @@ func TestDeadLetterRedriver(t *testing.T) {
 		if got := queue.row(i).Attempts; got > redriver.maxAttempts {
 			t.Errorf("row exceeded redrive budget: %d attempts (max %d)", got, redriver.maxAttempts)
 		}
+	}
+}
+
+func TestDeadLetterRedriver_AttemptsEachRowAtMostOncePerPass(t *testing.T) {
+	ctx := context.Background()
+	queue := newFakeDeadLetterQueue()
+	handler := newFakeEventHandler()
+
+	// One more than the production batch size is the boundary that used to
+	// make redriveAll list the same still-failing first page again. Each row at
+	// the front then consumed all ten attempts in one pass before the final row
+	// was ever considered.
+	const rows = 101
+	for i := int64(1); i <= rows; i++ {
+		handler.alwaysFailTimeUS[i] = true
+		if err := queue.AddDeadLetter(ctx, "test-consumer", i, testEventJSON(t, i), "original failure", 0); err != nil {
+			t.Fatalf("failed to seed dead letter %d: %v", i, err)
+		}
+	}
+
+	redriver := NewDeadLetterRedriver(fakeRedriveStore(queue), map[string]EventHandler{"test-consumer": handler})
+	redriver.redriveAll(ctx)
+
+	for i := int64(1); i <= rows; i++ {
+		if got := handler.calls(i); got != 1 {
+			t.Errorf("dead letter %d was replayed %d times in a single redrive pass, want 1", i, got)
+		}
+	}
+	for i := 0; i < queue.rowCount(); i++ {
+		row := queue.row(i)
+		if row.Attempts != 1 {
+			t.Errorf("dead letter %d consumed %d attempts in a single redrive pass, want 1", row.ID, row.Attempts)
+		}
+	}
+}
+
+func TestDeadLetterRedriver_PermanentReplayIsRetiredImmediately(t *testing.T) {
+	ctx := context.Background()
+	queue := newFakeDeadLetterQueue()
+	handler := newFakeEventHandler()
+	handler.permanentErrorTimeUS[3_000] = true
+	if err := queue.AddDeadLetter(ctx, "test-consumer", 3_000,
+		testEventJSON(t, 3_000), "originally retryable", 0); err != nil {
+		t.Fatalf("failed to seed dead letter: %v", err)
+	}
+
+	redriver := NewDeadLetterRedriver(fakeRedriveStore(queue), map[string]EventHandler{"test-consumer": handler})
+	redriver.redriveAll(ctx)
+
+	if got := queue.rowCount(); got != 1 {
+		t.Fatalf("got %d rows after permanent replay, want 1", got)
+	}
+	if got := queue.row(0).Attempts; got != MaxRedriveAttempts {
+		t.Errorf("permanent replay left attempts=%d, want %d", got, MaxRedriveAttempts)
+	}
+	if got := handler.calls(3_000); got != 1 {
+		t.Errorf("permanent replay was attempted %d times, want 1", got)
+	}
+}
+
+func TestDeadLetterRedriver_DeferredReplayDoesNotConsumeAttempt(t *testing.T) {
+	ctx := context.Background()
+	queue := newFakeDeadLetterQueue()
+	handler := newFakeEventHandler()
+	handler.deferredRefTimeUS[4_000] = true
+	if err := queue.AddDeadLetter(ctx, "test-consumer", 4_000,
+		testEventJSON(t, 4_000), "unresolved reference", MaxRedriveAttempts-UnresolvedRedriveAttempts); err != nil {
+		t.Fatalf("failed to seed dead letter: %v", err)
+	}
+
+	redriver := NewDeadLetterRedriver(fakeRedriveStore(queue), map[string]EventHandler{"test-consumer": handler})
+	redriver.redriveAll(ctx)
+
+	if got := queue.row(0).Attempts; got != MaxRedriveAttempts-UnresolvedRedriveAttempts {
+		t.Errorf("cached replay consumed an attempt: got %d, want %d", got, MaxRedriveAttempts-UnresolvedRedriveAttempts)
+	}
+	if got := handler.calls(4_000); got != 1 {
+		t.Errorf("deferred replay was invoked %d times in one pass, want 1", got)
+	}
+}
+
+func TestDeadLetterRedriver_HandlerTimeoutConsumesAttemptAndDoesNotAbortPage(t *testing.T) {
+	ctx := context.Background()
+	queue := newFakeDeadLetterQueue()
+	handler := newFakeEventHandler()
+	handler.localTimeoutTimeUS[5_000] = true
+	if err := queue.AddDeadLetter(ctx, "test-consumer", 5_000,
+		testEventJSON(t, 5_000), "remote lookup timed out", 0); err != nil {
+		t.Fatalf("failed to seed timed-out dead letter: %v", err)
+	}
+	if err := queue.AddDeadLetter(ctx, "test-consumer", 6_000,
+		testEventJSON(t, 6_000), "original failure", 0); err != nil {
+		t.Fatalf("failed to seed healthy dead letter: %v", err)
+	}
+
+	redriver := NewDeadLetterRedriver(fakeRedriveStore(queue), map[string]EventHandler{"test-consumer": handler})
+	redriver.redriveAll(ctx)
+
+	if got := handler.calls(5_000); got != 1 {
+		t.Errorf("timed-out replay was attempted %d times, want 1", got)
+	}
+	if got := handler.calls(6_000); got != 1 {
+		t.Errorf("later replay was attempted %d times, want 1", got)
+	}
+	if got := queue.rowCount(); got != 1 {
+		t.Fatalf("got %d rows after replay, want only the timed-out row", got)
+	}
+	if row := queue.row(0); row.EventTimeUS != 5_000 || row.Attempts != 1 {
+		t.Errorf("timed-out row = (time_us=%d, attempts=%d), want (5000, 1)", row.EventTimeUS, row.Attempts)
 	}
 }
 
@@ -694,12 +839,88 @@ func TestConnector_PermanentFailureSkipsRetriesAndExhaustsRedrive(t *testing.T) 
 	if row.Attempts != MaxRedriveAttempts {
 		t.Errorf("expected permanent dead letter inserted with attempts %d, got %d", MaxRedriveAttempts, row.Attempts)
 	}
-	retryable, err := deadLetters.ListRetryable(context.Background(), "test-consumer", MaxRedriveAttempts, 100)
+	latest, err := deadLetters.LatestDeadLetterID(context.Background(), "test-consumer")
+	if err != nil {
+		t.Fatalf("LatestDeadLetterID failed: %v", err)
+	}
+	retryable, err := deadLetters.ListRetryable(context.Background(), DeadLetterPageQuery{
+		ConsumerName: "test-consumer",
+		MaxAttempts:  MaxRedriveAttempts,
+		ThroughID:    latest,
+		Limit:        100,
+	})
 	if err != nil {
 		t.Fatalf("ListRetryable failed: %v", err)
 	}
 	if len(retryable) != 0 {
 		t.Errorf("expected redriver to skip exhausted permanent dead letter, got %d retryable rows", len(retryable))
+	}
+}
+
+// TestConnector_UnresolvedReferenceSkipsRetriesButKeepsRedriveBudget pins the
+// third class of the error taxonomy (errors.go). An event that names a record
+// this AppView has not indexed must cost the lane exactly ONE handler call:
+// the record lives in another repo and no amount of in-line waiting brings
+// it, while the wait itself is a free stall any repo on the network can mint
+// (docs/CONSUMER_TRUST_AUDIT.md §1.3). Unlike a permanent rejection, though,
+// the row keeps a bounded redrive budget, because the ordering case is real —
+// BigSky preserves order within a repo, not across repos — and the
+// timer-driven redriver is where it converges.
+func TestConnector_UnresolvedReferenceSkipsRetriesButKeepsBoundedRedriveBudget(t *testing.T) {
+	events := [][]byte{
+		testEventJSON(t, 15_000), // references an unindexed record
+		testEventJSON(t, 16_000), // healthy
+	}
+	server := newJetstreamTestServer(t, events)
+	handler := newFakeEventHandler()
+	handler.unresolvedRefTimeUS[15_000] = true
+	cursorStore := newFakeCursorStore()
+	deadLetters := newFakeDeadLetterQueue()
+
+	connector := NewConnector("test-consumer", server.wsURL(), handler,
+		fastConnectorOptions(WithCursorStore(cursorStore), WithDeadLetterWriter(deadLetters))...)
+	startConnector(t, connector)
+
+	waitFor(t, 2*time.Second, "unresolved event dead-lettered", func() bool {
+		return deadLetters.rowCount() == 1
+	})
+	waitFor(t, 2*time.Second, "healthy event still handled", func() bool {
+		return handler.handledCount() == 1
+	})
+	waitFor(t, 2*time.Second, "cursor advanced past unresolved event", func() bool {
+		return cursorStore.get("test-consumer") == 16_000
+	})
+
+	// Off the lane: exactly one handler invocation, no in-line retries.
+	if got := handler.calls(15_000); got != 1 {
+		t.Errorf("unresolved reference must not be retried in-line: got %d handler invocations", got)
+	}
+
+	// But NOT retired: the redriver must still see it.
+	row := deadLetters.row(0)
+	if row.EventTimeUS != 15_000 {
+		t.Fatalf("expected dead letter time_us 15000, got %d", row.EventTimeUS)
+	}
+	wantAttempts := MaxRedriveAttempts - UnresolvedRedriveAttempts
+	if row.Attempts != wantAttempts {
+		t.Errorf("expected unresolved dead letter inserted with attempts %d (%d redrives remain), got %d",
+			wantAttempts, UnresolvedRedriveAttempts, row.Attempts)
+	}
+	latest, err := deadLetters.LatestDeadLetterID(context.Background(), "test-consumer")
+	if err != nil {
+		t.Fatalf("LatestDeadLetterID failed: %v", err)
+	}
+	retryable, err := deadLetters.ListRetryable(context.Background(), DeadLetterPageQuery{
+		ConsumerName: "test-consumer",
+		MaxAttempts:  MaxRedriveAttempts,
+		ThroughID:    latest,
+		Limit:        100,
+	})
+	if err != nil {
+		t.Fatalf("ListRetryable failed: %v", err)
+	}
+	if len(retryable) != 1 {
+		t.Errorf("expected the redriver to pick up the unresolved dead letter, got %d retryable rows", len(retryable))
 	}
 }
 

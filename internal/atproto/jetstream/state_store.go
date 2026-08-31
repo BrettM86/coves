@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // PostgresStateStore persists Jetstream consumer state: per-consumer cursors
@@ -22,8 +23,12 @@ func NewPostgresStateStore(db *sql.DB) *PostgresStateStore {
 
 // Compile-time interface satisfaction checks
 var (
-	_ CursorStore     = (*PostgresStateStore)(nil)
-	_ DeadLetterQueue = (*PostgresStateStore)(nil)
+	_ CursorStore              = (*PostgresStateStore)(nil)
+	_ DeadLetterCounter        = (*PostgresStateStore)(nil)
+	_ DeadLetterPruner         = (*PostgresStateStore)(nil)
+	_ DeadLetterRedriveMutator = (*PostgresStateStore)(nil)
+	_ DeadLetterRedriveSource  = (*PostgresStateStore)(nil)
+	_ DeadLetterWriter         = (*PostgresStateStore)(nil)
 )
 
 // GetCursor returns the persisted cursor for the consumer, or 0 if none exists.
@@ -61,8 +66,9 @@ func (s *PostgresStateStore) SaveCursor(ctx context.Context, consumerName string
 
 // AddDeadLetter stores a failed event for later redrive. eventData is stored
 // as raw bytes (BYTEA) so byte-corrupt frames are capturable. redriveAttempts
-// seeds the redrive budget: 0 for transient failures (the redriver retries
-// them), MaxRedriveAttempts for permanent failures (kept for forensics only).
+// seeds the redrive budget: 0 for infrastructure failures, a partially spent
+// budget for unresolved references, and MaxRedriveAttempts for permanent
+// failures.
 // Re-adding an already-captured event (same consumer, time_us, and payload —
 // e.g. a poison event replayed by the reconnect rewind) hits the dedup index
 // and is a no-op success: the event is safely captured, so the cursor may
@@ -80,19 +86,34 @@ func (s *PostgresStateStore) AddDeadLetter(ctx context.Context, consumerName str
 	return nil
 }
 
-// ListRetryable returns up to limit dead letters for the consumer that have
-// not exhausted their redrive attempts, oldest first.
-func (s *PostgresStateStore) ListRetryable(ctx context.Context, consumerName string, maxAttempts, limit int) ([]DeadLetterEvent, error) {
+// LatestDeadLetterID returns the ID high-water mark for one consumer.
+func (s *PostgresStateStore) LatestDeadLetterID(ctx context.Context, consumerName string) (int64, error) {
+	var id int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(id), 0) FROM jetstream_dead_letters WHERE consumer_name = $1`,
+		consumerName,
+	).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("failed to snapshot jetstream dead letters for %s: %w", consumerName, err)
+	}
+	return id, nil
+}
+
+// ListRetryable returns one ID-ordered page inside a redrive pass snapshot.
+func (s *PostgresStateStore) ListRetryable(
+	ctx context.Context,
+	query DeadLetterPageQuery,
+) ([]DeadLetterEvent, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, consumer_name, event_time_us, event_data, last_error, attempts, created_at
 		FROM jetstream_dead_letters
-		WHERE consumer_name = $1 AND attempts < $2
+		WHERE consumer_name = $1 AND attempts < $2 AND id > $3 AND id <= $4
 		ORDER BY id ASC
-		LIMIT $3`,
-		consumerName, maxAttempts, limit,
+		LIMIT $5`,
+		query.ConsumerName, query.MaxAttempts, query.AfterID, query.ThroughID, query.Limit,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list jetstream dead letters for %s: %w", consumerName, err)
+		return nil, fmt.Errorf("failed to list jetstream dead letters for %s: %w", query.ConsumerName, err)
 	}
 	defer func() {
 		_ = rows.Close() // iteration errors surface via rows.Err()
@@ -146,8 +167,8 @@ func (s *PostgresStateStore) MarkRedriveAttempt(ctx context.Context, id int64, h
 
 // RetireDeadLetter marks a dead letter as permanently exhausted in one step
 // (attempts jump straight to MaxRedriveAttempts) so it stops consuming
-// redrive passes. The row remains in the table for forensics and is still
-// included in the CountDeadLetters backlog.
+// redrive passes. The row remains in the table for forensics until retention
+// pruning and is included in CountDeadLetters meanwhile.
 func (s *PostgresStateStore) RetireDeadLetter(ctx context.Context, id int64, reason string) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE jetstream_dead_letters
@@ -159,6 +180,20 @@ func (s *PostgresStateStore) RetireDeadLetter(ctx context.Context, id int64, rea
 		return fmt.Errorf("failed to retire jetstream dead letter %d: %w", id, err)
 	}
 	return nil
+}
+
+// PruneDeadLetters deletes rows outside the operational retention window.
+func (s *PostgresStateStore) PruneDeadLetters(ctx context.Context, before time.Time) (int64, error) {
+	result, err := s.db.ExecContext(ctx,
+		`DELETE FROM jetstream_dead_letters WHERE updated_at < $1`, before)
+	if err != nil {
+		return 0, fmt.Errorf("failed to prune jetstream dead letters older than %s: %w", before.UTC().Format(time.RFC3339), err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("failed to count pruned jetstream dead letters: %w", err)
+	}
+	return rows, nil
 }
 
 // CountDeadLetters returns the dead letter backlog per consumer.

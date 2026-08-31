@@ -439,7 +439,13 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 				log.Printf("Dropped vote on erased account's subject: %s (%s on %s)", vote.URI, vote.Direction, vote.SubjectURI)
 				return false, nil
 			}
-			return false, fmt.Errorf("vote subject not indexed: %s - cannot count vote before its subject", vote.SubjectURI)
+			// UNRESOLVED REFERENCE, not a plain transient error: the subject
+			// lives in another repo, so no in-line retry on this lane can bring
+			// it, and a voter who names a subject that does not exist must not
+			// be able to buy a 4.2s stall per vote. The redriver converges the
+			// genuine early-arrival case off the lane.
+			return false, fmt.Errorf("%w: vote subject not indexed: %s - cannot count vote before its subject",
+				ErrUnresolvedReference, vote.SubjectURI)
 		}
 		if err != nil {
 			return false, fmt.Errorf("failed to verify vote subject exists: %w", err)

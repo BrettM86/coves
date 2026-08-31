@@ -25,13 +25,14 @@ import (
 // one.
 //
 // The consumer cannot count such a vote when it arrives: there is no row to
-// count it on. Its only correct move is to refuse the event TRANSIENTLY and
-// persist nothing, so the dead letter redriver replays it once the subject
+// count it on. Its only correct move is to refuse the event as an UNRESOLVED
+// REFERENCE and persist nothing, so the connector skips in-line retries and
+// the dead letter redriver replays it once the subject
 // lands — the shape post_consumer.go already uses for a post whose community it
 // has not seen, and createSubscription for a subscription to an unknown
 // community.
 //
-// # WHY THE REFUSAL MUST BE TRANSIENT AND NOT PERMANENT
+// # WHY THE REFUSAL MUST BE UNRESOLVED AND NOT PERMANENT
 //
 // ErrPermanentEvent means "a replay would fail identically", and it retires the
 // event. That is true of every other rejection on this path — a malformed
@@ -195,9 +196,13 @@ func TestVoteConsumer_SubjectNotIndexed_RefusesTransientlyAndPersistsNothing(t *
 				"a vote naming a subject with no row must be REFUSED, not accepted: accepting it "+
 					"indexes a vote whose count update matches zero rows, and nothing ever revisits it")
 			assert.False(t, errors.Is(err, ErrPermanentEvent),
-				"the refusal must be TRANSIENT so the dead letter redriver replays it once the "+
+				"the refusal must stay redrivable so the dead letter redriver replays it once the "+
 					"subject is indexed — ErrPermanentEvent retires the event and loses the vote as "+
 					"surely as counting it on nothing does. Got: %v", err)
+			assert.True(t, errors.Is(err, ErrUnresolvedReference),
+				"the refusal must be an UNRESOLVED REFERENCE: the subject lives in another repo, so "+
+					"the connector must not spend 4.2s of the votes lane on in-line retries a voter can "+
+					"trigger at will by naming a subject that does not exist. Got: %v", err)
 
 			exists, _ := voteRowState(t, db, incomingURI)
 			assert.False(t, exists,
@@ -297,8 +302,8 @@ func TestVoteConsumer_MalformedSubjectURI_IsRejectedPermanently(t *testing.T) {
 
 			require.Error(t, err, "a vote whose subject URI is not a record URI must be refused")
 			assert.True(t, errors.Is(err, ErrPermanentEvent),
-				"the refusal must be PERMANENT: %q can never name an indexed record, so the transient "+
-					"refusal the absent-subject gate returns buys ten redrives and a permanent dead "+
+				"the refusal must be PERMANENT: %q can never name an indexed record, so the unresolved "+
+					"refusal the absent-subject gate returns buys pointless redrives and a dead "+
 					"letter for a verdict the payload alone already settles. Got: %v", malformed.uri, err)
 
 			exists, _ := voteRowState(t, db, voteURI)
@@ -684,7 +689,7 @@ func requireNoCountsAnywhere(t *testing.T, db *sql.DB) {
 // The gate's two outcomes both presuppose a table. "Refuse until the subject is
 // indexed" is a promise that indexing will eventually happen, and no consumer
 // will ever index an app.bsky.feed.post into this database — so a refusal here
-// is not a deferral, it is ten redrives and a dead letter per vote, forever,
+// is not a deferral, it is a bounded set of pointless redrives per vote,
 // for a condition that is permanent by construction. "Drop it" is equally wrong
 // in the other direction: it would silently discard the vote.
 //
@@ -847,7 +852,7 @@ func TestVoteConsumer_SubjectInErasedAccount(t *testing.T) {
 			consumer.HandleEvent(ctx, erasedSubjectVoteEvent(erasedSubjectVoter, "erasedvote", voteRev, subjectURI)),
 			"a vote naming an erased account's post must be DROPPED, not refused. The subject is "+
 				"never arriving — the post consumer's own erasure gate guarantees it — so a "+
-				"transient refusal buys ten redrives and a permanent dead letter for a condition "+
+				"redrivable refusal buys pointless attempts and a dead letter for a condition "+
 				"that was decided when the account was deleted")
 
 		exists, _ := voteRowState(t, db, voteURI)

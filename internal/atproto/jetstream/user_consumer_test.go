@@ -29,6 +29,9 @@ type mockUserService struct {
 	shouldFailGet bool
 	getError      error
 	updateError   error
+	// updateHandleError is returned by UpdateHandle when set, so the identity
+	// path's classification of handle failures can be pinned without a DB.
+	updateHandleError error
 }
 
 func newMockUserService() *mockUserService {
@@ -59,6 +62,9 @@ func (m *mockUserService) GetUserByHandle(ctx context.Context, handle string) (*
 }
 
 func (m *mockUserService) UpdateHandle(ctx context.Context, did, newHandle string) (*users.User, error) {
+	if m.updateHandleError != nil {
+		return nil, m.updateHandleError
+	}
 	return nil, nil
 }
 

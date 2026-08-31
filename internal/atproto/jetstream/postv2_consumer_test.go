@@ -251,7 +251,7 @@ func TestPostV2Consumer_UnknownAuthorIndexesAnyway(t *testing.T) {
 	assert.Equal(t, posts.AdmissionStatusPending, admission.Status)
 }
 
-func TestPostV2Consumer_UnknownCommunity_IsRedrivable(t *testing.T) {
+func TestPostV2Consumer_UnknownCommunity_IsUnresolvedAndRedrivable(t *testing.T) {
 	t.Parallel()
 
 	db := testkit.DB(t)
@@ -274,7 +274,9 @@ func TestPostV2Consumer_UnknownCommunity_IsRedrivable(t *testing.T) {
 	// discard every post that merely arrived early, with the redrive that would
 	// have fixed it already spent.
 	assert.NotErrorIs(t, err, ErrPermanentEvent,
-		"community-not-found is an ordering failure and must stay transient so the redrive succeeds once the community arrives")
+		"community-not-found is an ordering failure and must stay redrivable once the community arrives")
+	assert.ErrorIs(t, err, ErrUnresolvedReference,
+		"the ordering failure must bypass in-line retries and move directly to the redriver")
 
 	assert.Zero(t, countRows(t, db, `SELECT count(*) FROM posts WHERE uri = $1`, pv2URI(pv2Author, rkey)),
 		"the refused post must not have been indexed")

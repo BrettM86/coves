@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"Coves/internal/core/userblocks"
+	"Coves/internal/core/users"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,8 +16,8 @@ import (
 // DeadLetterRedriver: PERMANENT rejections (structurally invalid records,
 // security policy violations) are wrapped with ErrPermanentEvent so they are
 // dead-lettered without retries and never redriven, while ORDERING-dependent
-// failures ("community not found") stay TRANSIENT so the redrive can succeed
-// once the missing dependency arrives.
+// failures ("community not found") are UNRESOLVED: off the serial lane but
+// redrivable once the missing dependency arrives.
 
 func taxonomyEvent(did, collection, op, rkey string, record map[string]interface{}) *JetstreamEvent {
 	return &JetstreamEvent{
@@ -200,6 +201,7 @@ func TestUserConsumer_ValidationRejections_ArePermanent(t *testing.T) {
 		validRecord := map[string]interface{}{
 			"subject": "did:plc:blocked", "createdAt": "2026-01-01T00:00:00Z",
 		}
+		unsupportedDID := "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
 
 		for _, tc := range []struct {
 			name       string
@@ -216,7 +218,12 @@ func TestUserConsumer_ValidationRejections_ArePermanent(t *testing.T) {
 			{name: "invalid blocked DID", blockerDID: "did:plc:blocker",
 				operation: "create", rkey: "b1",
 				record: map[string]interface{}{"subject": "not-a-did", "createdAt": "2026-01-01T00:00:00Z"}},
+			{name: "unsupported blocked DID method", blockerDID: "did:plc:blocker",
+				operation: "create", rkey: "b1",
+				record: map[string]interface{}{"subject": unsupportedDID, "createdAt": "2026-01-01T00:00:00Z"}},
 			{name: "invalid blocker DID", blockerDID: "not-a-did",
+				operation: "create", rkey: "b1", record: validRecord},
+			{name: "unsupported blocker DID method", blockerDID: unsupportedDID,
 				operation: "create", rkey: "b1", record: validRecord},
 			// Without an rkey the consumer cannot build the record's AT-URI, and
 			// the URI is the only key the unblock path has to find the row by.
@@ -266,4 +273,108 @@ func (failingUserBlockRepoStub) IsBlocked(ctx context.Context, blockerDID, block
 
 func (failingUserBlockRepoStub) AreBlocked(ctx context.Context, blockerDID string, blockedDIDs []string) (map[string]bool, error) {
 	panic("AreBlocked must not be reached for a permanently invalid event")
+}
+
+// The gates below exist because of docs/CONSUMER_TRUST_AUDIT.md §1.3: each of
+// these values used to fall through to a lookup or an INSERT whose failure was
+// classified transient, so a record carrying a non-DID where a DID belongs
+// bought 4.2s of in-line retries plus ten redrives against a value no replay
+// can repair. They must be refused BEFORE any repository access — which is
+// also why every consumer here is built without one — and refused permanently.
+
+func TestCommunityConsumer_NonDIDReferences_ArePermanent(t *testing.T) {
+	c := NewCommunityEventConsumer(nil, "did:web:coves.social", true, nil)
+	ctx := context.Background()
+
+	t.Run("subscription subject", func(t *testing.T) {
+		err := c.HandleEvent(ctx, taxonomyEvent("did:plc:subscriber", "social.coves.community.subscription", "create", "s1",
+			map[string]interface{}{"subject": "example.com", "createdAt": "2026-01-01T00:00:00Z"}))
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrPermanentEvent,
+			"a subscription subject that is not a DID can never resolve to a community; the FK-not-found "+
+				"branch (unresolved, redriven) must never see it")
+		assert.NotErrorIs(t, err, ErrUnresolvedReference)
+	})
+
+	t.Run("block subject", func(t *testing.T) {
+		err := c.HandleEvent(ctx, taxonomyEvent("did:plc:blocker", "social.coves.community.block", "create", "b1",
+			map[string]interface{}{"subject": "example.com", "createdAt": "2026-01-01T00:00:00Z"}))
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrPermanentEvent,
+			"community_blocks.community_did carries a DID-shape CHECK (migration 009); a non-DID subject "+
+				"used to reach the INSERT, fail the CHECK, and be retried as if the constraint might change")
+	})
+
+	t.Run("block subject with unsupported DID method", func(t *testing.T) {
+		err := c.HandleEvent(ctx, taxonomyEvent("did:plc:blocker", "social.coves.community.block", "create", "b1",
+			map[string]interface{}{
+				"subject":   "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+				"createdAt": "2026-01-01T00:00:00Z",
+			}))
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrPermanentEvent,
+			"syntax.ParseDID accepts did:key, but migration 009 accepts only did:plc and did:web")
+		assert.NotErrorIs(t, err, ErrUnresolvedReference)
+	})
+}
+
+func TestAggregatorConsumer_NonDIDAggregator_IsPermanent(t *testing.T) {
+	c := NewAggregatorEventConsumer(nil)
+	err := c.HandleEvent(context.Background(), taxonomyEvent("did:plc:realcommunity", "social.coves.aggregator.authorization", "create", "a1",
+		map[string]interface{}{
+			"aggregatorDid": "rss-bot",
+			"communityDid":  "did:plc:realcommunity",
+			"createdBy":     "did:plc:mod",
+			"createdAt":     "2026-01-01T00:00:00Z",
+			"enabled":       true,
+		}))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrPermanentEvent,
+		"an aggregatorDid that is not a DID can never satisfy fk_aggregator; it must be retired on the "+
+			"payload, not redriven ten times")
+}
+
+// The handle on an identity event is asserted by the relay, so its value is
+// chosen upstream of this AppView. Both of its failure modes used to surface as
+// plain transient errors: 4.2s of lane per event, forever, for a handle that
+// either can never be accepted or is held by someone else.
+func TestUserConsumer_IdentityHandleFailures_AreClassified(t *testing.T) {
+	ctx := context.Background()
+	identityEvent := func() *JetstreamEvent {
+		return &JetstreamEvent{
+			Kind:   "identity",
+			Did:    "did:plc:knownuser",
+			TimeUS: time.Now().UnixMicro(),
+			Identity: &IdentityEvent{
+				Did:    "did:plc:knownuser",
+				Handle: "renamed.test",
+			},
+		}
+	}
+
+	t.Run("a handle this AppView rejects is permanent", func(t *testing.T) {
+		svc := newMockUserService()
+		svc.users["did:plc:knownuser"] = &users.User{DID: "did:plc:knownuser", Handle: "old.test"}
+		svc.updateHandleError = &users.InvalidHandleError{Handle: "renamed.test", Reason: "reserved namespace"}
+		consumer := NewUserEventConsumer(svc, &mockIdentityResolverForUser{})
+
+		err := consumer.HandleEvent(ctx, identityEvent())
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrPermanentEvent,
+			"the replay carries the same handle and fails the same rule; retrying it is pure lane time")
+	})
+
+	t.Run("a handle held by another row is an unresolved reference", func(t *testing.T) {
+		svc := newMockUserService()
+		svc.users["did:plc:knownuser"] = &users.User{DID: "did:plc:knownuser", Handle: "old.test"}
+		svc.updateHandleError = users.ErrHandleAlreadyTaken
+		consumer := NewUserEventConsumer(svc, &mockIdentityResolverForUser{})
+
+		err := consumer.HandleEvent(ctx, identityEvent())
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrUnresolvedReference,
+			"the incumbent may release the handle (its own identity event is in flight), so the redrive "+
+				"stays — but the lane must not wait 4.2s for it per event")
+		assert.NotErrorIs(t, err, ErrPermanentEvent)
+	})
 }

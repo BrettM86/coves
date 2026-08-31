@@ -308,13 +308,13 @@ func TestAdmission_RetargetToAnUnknownCommunityIsAWholeEventSkip(t *testing.T) {
 	//
 	//   - community immutability (§3.1): discard the WHOLE event, silently, and
 	//     never look at anything else it says;
-	//   - unknown community (§5.3): a transient failure, because the community's
+	//   - unknown community (§5.3): an unresolved reference, because the community's
 	//     own profile event may simply not have arrived yet.
 	//
 	// Immutability has to outrank it, and the reason is not aesthetic. The
-	// unknown-community branch is TRANSIENT, so a retarget naming a nonexistent
-	// DID would dead-letter and redrive ten times, blocking ~4.2 seconds inline
-	// on each delivery — and it can never succeed, because even once that
+	// unknown-community branch is UNRESOLVED, so a retarget naming a nonexistent
+	// DID would still consume its bounded redrive budget — and it can never
+	// succeed, because even once that
 	// community exists the event is still an illegal retarget. An author can
 	// mint that load at will by editing one field.
 	require.NoErrorf(t, f.consumer.HandleEvent(ctx, pv2Event(

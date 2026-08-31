@@ -8,7 +8,10 @@ import (
 
 // Domain errors
 var (
-	ErrAggregatorNotFound     = errors.New("aggregator not found")
+	ErrAggregatorNotFound = errors.New("aggregator not found")
+	// ErrCommunityNotFound reports that an authorization's community has not
+	// been indexed yet.
+	ErrCommunityNotFound      = errors.New("community not found")
 	ErrAuthorizationNotFound  = errors.New("authorization not found")
 	ErrNotAuthorized          = errors.New("aggregator not authorized for this community")
 	ErrAlreadyAuthorized      = errors.New("aggregator already authorized for this community")
@@ -41,6 +44,7 @@ func NewValidationError(field, message string) error {
 // Error classification helpers for handlers to map to HTTP status codes
 func IsNotFound(err error) bool {
 	return errors.Is(err, ErrAggregatorNotFound) ||
+		errors.Is(err, ErrCommunityNotFound) ||
 		errors.Is(err, ErrAuthorizationNotFound) ||
 		errors.Is(err, ErrAPIKeyNotFound)
 }

@@ -441,3 +441,63 @@ func TestAggregatorRepo_AuthorizationRoundTripsTheDisableAuditTrail(t *testing.T
 	assert.Nil(t, indexed.DisabledAt)
 	assert.Empty(t, indexed.DisabledBy)
 }
+
+// An authorization record is keyed by (aggregator_did, community_did) in the
+// table but by its AT-URI on the wire, and the two disagree the moment a
+// community UPDATES an existing record to name a different aggregatorDid.
+// Before this test the upsert alone hit record_uri's UNIQUE constraint — an
+// error no redrive could clear, classified transient, so the consumer stalled
+// 4.2s in-line and ten more times on the redriver — while the OLD aggregator
+// kept the row and stayed authorized (docs/CONSUMER_TRUST_AUDIT.md §1.3).
+func TestAggregatorRepo_CreateAuthorizationRetargetsTheRecordURI(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+
+	repo := NewAggregatorRepository(db)
+	ctx := context.Background()
+
+	firstAggregator := indexAggregator(t, repo, "First Aggregator")
+	secondAggregator := indexAggregator(t, repo, "Second Aggregator")
+	communityDID := indexAuthorizingCommunity(t, db)
+
+	original := enabledAuthorization(t, firstAggregator, communityDID)
+	require.NoError(t, repo.CreateAuthorization(ctx, original))
+
+	// Same record URI (same rkey in the community's repo), rewritten to name
+	// the second aggregator.
+	retargeted := enabledAuthorization(t, secondAggregator, communityDID)
+	retargeted.RecordURI = original.RecordURI
+	retargeted.RecordCID = "bafyretargeted"
+	require.NoError(t, repo.CreateAuthorization(ctx, retargeted),
+		"the rewritten record must index; the record_uri UNIQUE constraint must not be reachable from a legitimate update")
+
+	_, err := repo.GetAuthorization(ctx, firstAggregator, communityDID)
+	assert.ErrorIs(t, err, aggregators.ErrAuthorizationNotFound,
+		"the aggregator the record no longer names must lose its authorization")
+
+	current, err := repo.GetAuthorization(ctx, secondAggregator, communityDID)
+	require.NoError(t, err)
+	assert.Equal(t, original.RecordURI, current.RecordURI)
+	assert.Equal(t, "bafyretargeted", current.RecordCID)
+
+	authorizations, err := repo.ListAuthorizationsForCommunity(ctx, communityDID, false, 10, 0)
+	require.NoError(t, err)
+	assert.Len(t, authorizations, 1, "one record, one authorization")
+}
+
+// The other half of the same site: an authorization whose community this
+// AppView has not indexed must surface as a NOT-FOUND the consumer can
+// classify, not as a raw foreign-key error it has to treat as infrastructure.
+func TestAggregatorRepo_CreateAuthorizationForUnknownCommunityIsNotFound(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+
+	repo := NewAggregatorRepository(db)
+	aggregatorDID := indexAggregator(t, repo, "Orphan Aggregator")
+
+	err := repo.CreateAuthorization(context.Background(),
+		enabledAuthorization(t, aggregatorDID, "did:plc:"+testkit.UniqueID(t)))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, aggregators.ErrCommunityNotFound)
+	assert.True(t, aggregators.IsNotFound(err))
+}

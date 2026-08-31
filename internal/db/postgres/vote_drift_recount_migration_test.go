@@ -75,14 +75,15 @@ func TestMigration040_RecountsVoteDriftAndSweepsLegacyOrphans(t *testing.T) {
 	db := testkit.DB(t)
 	ctx := context.Background()
 
-	// Roll 041 and 040 off, seed the pre-repair state, then roll them back on: the
+	// Roll 042, 041, and 040 off, seed the pre-repair state, then roll them back on: the
 	// migration has to find drifted rows already present, which is the whole
 	// point of a repair migration and cannot be observed by seeding after it has
 	// run. Asserting the version that came off is the tripwire that keeps this
-	// pointed at 040. It has now fired once: 041 (the future comment created_at
-	// repair) sits on top of 040 and must come off first.
+	// pointed at 040 when later migrations land.
+	require.EqualValues(t, 42, testkit.MigrateDownOne(t, db, 42),
+		"042 (the dead-letter retention index) sits on top of 041 and must be rolled back first")
 	require.EqualValues(t, 41, testkit.MigrateDownOne(t, db, 41),
-		"041 (the future comment created_at repair) sits on top of 040 and must be rolled back first; asserting which migration came off is what stops this test drifting onto a newer one")
+		"041 (the future comment created_at repair) sits on top of 040 and must be rolled back next")
 	require.EqualValues(t, 40, testkit.MigrateDownOne(t, db, 40),
 		"this test seeds the state migration 040 repairs; rolling back a different migration would seed against the wrong schema")
 

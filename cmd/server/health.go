@@ -176,7 +176,7 @@ func withAcceptanceQueue(queue acceptanceQueueReporter) consumerHealthOption {
 	return func(c *consumerHealthConfig) { c.acceptanceQueue = queue }
 }
 
-func consumerHealthHandler(connectors []*jetstream.Connector, deadLetterQueue jetstream.DeadLetterQueue, opts ...consumerHealthOption) http.HandlerFunc {
+func consumerHealthHandler(connectors []*jetstream.Connector, deadLetterQueue jetstream.DeadLetterCounter, opts ...consumerHealthOption) http.HandlerFunc {
 	var cfg consumerHealthConfig
 	for _, opt := range opts {
 		opt(&cfg)

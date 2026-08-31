@@ -13,7 +13,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -510,10 +509,11 @@ func TestPrivateHostOptions_BindTheGateToTheConstructor(t *testing.T) {
 //
 // # THE TIMEOUT
 //
-// NewSSRFSafeHTTPClient ships a 15s ceiling of its own and this consumer has
-// always run on 10s. Adopting the shared client without restoring the caller's
-// value LOOSENS every .well-known fetch by five seconds — a change nobody asked
-// for, arriving as part of an SSRF fix, on a firehose path where a slow remote
+// NewSSRFSafeHTTPClient ships a 15s ceiling of its own and this consumer runs
+// on wellKnownTimeout (5s since the consumer trust audit; 10s before it).
+// Adopting the shared client without restoring the caller's value LOOSENS
+// every .well-known fetch to the shared ceiling — a change nobody asked for,
+// arriving as part of an SSRF fix, on a firehose path where a slow remote
 // host holds up event processing. blobs.NewBlobService,
 // imageproxy.NewPDSFetcher and unfurl.NewService all restore their own for the
 // same reason.
@@ -582,11 +582,11 @@ func TestNewCommunityEventConsumer_BuildsAGuardedClientWithItsSettingsPreserved(
 
 		require.NotNil(t, consumer.httpClient, "the consumer must hold an HTTP client")
 
-		assert.Equalf(t, 10*time.Second, consumer.httpClient.Timeout,
-			"the .well-known client runs on a %v timeout instead of the 10s this consumer has always "+
-				"used. The shared SSRF client ships a 15s ceiling, so a call site that adopts it without "+
-				"re-applying its own value silently re-times every federated verification",
-			consumer.httpClient.Timeout)
+		assert.Equalf(t, wellKnownTimeout, consumer.httpClient.Timeout,
+			"the .well-known client runs on a %v timeout instead of wellKnownTimeout (%v). The shared "+
+				"SSRF client ships a 15s ceiling, so a call site that adopts it without re-applying its "+
+				"own value silently re-times every federated verification",
+			consumer.httpClient.Timeout, wellKnownTimeout)
 
 		// A TYPE CHECK AND NOTHING MORE. It catches "the conversion never
 		// happened"; it is blind to which way the hatch is set, which is why the

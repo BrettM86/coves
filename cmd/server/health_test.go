@@ -20,31 +20,11 @@ func (noopEventHandler) HandleEvent(ctx context.Context, event *jetstream.Jetstr
 	return nil
 }
 
-// fakeDeadLetterQueue satisfies jetstream.DeadLetterQueue with canned data so
-// the health handler can be exercised without Postgres.
+// fakeDeadLetterQueue supplies canned backlog counts so the health handler can
+// be exercised without Postgres.
 type fakeDeadLetterQueue struct {
 	backlogs map[string]int64
 	countErr error
-}
-
-func (f *fakeDeadLetterQueue) AddDeadLetter(ctx context.Context, consumerName string, eventTimeUS int64, eventData []byte, handleErr string, redriveAttempts int) error {
-	return nil
-}
-
-func (f *fakeDeadLetterQueue) RetireDeadLetter(ctx context.Context, id int64, reason string) error {
-	return nil
-}
-
-func (f *fakeDeadLetterQueue) ListRetryable(ctx context.Context, consumerName string, maxAttempts, limit int) ([]jetstream.DeadLetterEvent, error) {
-	return nil, nil
-}
-
-func (f *fakeDeadLetterQueue) DeleteDeadLetter(ctx context.Context, id int64) error {
-	return nil
-}
-
-func (f *fakeDeadLetterQueue) MarkRedriveAttempt(ctx context.Context, id int64, handleErr string) error {
-	return nil
 }
 
 func (f *fakeDeadLetterQueue) CountDeadLetters(ctx context.Context) (map[string]int64, error) {
@@ -235,7 +215,7 @@ func newTestConnectors(names ...string) []*jetstream.Connector {
 	return connectors
 }
 
-func serveConsumerHealth(t *testing.T, connectors []*jetstream.Connector, queue jetstream.DeadLetterQueue) (*httptest.ResponseRecorder, consumerHealthResponse) {
+func serveConsumerHealth(t *testing.T, connectors []*jetstream.Connector, queue jetstream.DeadLetterCounter) (*httptest.ResponseRecorder, consumerHealthResponse) {
 	t.Helper()
 	handler := consumerHealthHandler(connectors, queue)
 	recorder := httptest.NewRecorder()

@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
-	"strings"
 	"time"
 )
 
@@ -212,6 +211,21 @@ func (c *UserEventConsumer) handleIdentityEvent(ctx context.Context, event *Jets
 		// This prevents race condition where cache gets refilled with stale data
 		_, updateErr := c.userService.UpdateHandle(ctx, did, handle)
 		if updateErr != nil {
+			// The handle is relay-asserted, so its value is chosen upstream of
+			// this AppView and a plain transient error here is a free stall per
+			// identity event. Sort it:
+			var invalidHandle *users.InvalidHandleError
+			switch {
+			case errors.As(updateErr, &invalidHandle):
+				// PERMANENT: the asserted handle fails this AppView's handle
+				// rules, and a replay carries the same handle.
+				return fmt.Errorf("%w: failed to update handle: %v", ErrPermanentEvent, updateErr)
+			case errors.Is(updateErr, users.ErrHandleAlreadyTaken):
+				// UNRESOLVED: another row holds the handle. The incumbent may
+				// release it (its own identity event is in flight), so the
+				// redrive stays; the lane does not wait for it.
+				return fmt.Errorf("%w: failed to update handle: %v", ErrUnresolvedReference, updateErr)
+			}
 			return fmt.Errorf("failed to update handle: %w", updateErr)
 		}
 
@@ -479,9 +493,9 @@ func (c *UserEventConsumer) createUserBlock(ctx context.Context, userDID string,
 	// The rejections below are PERMANENT (ErrPermanentEvent): they depend only on
 	// the immutable event payload, so retries and redrives would fail identically.
 
-	// Validate userDID format (untrusted firehose data)
-	if !strings.HasPrefix(userDID, "did:") {
-		return fmt.Errorf("%w: invalid blocker DID format from firehose: %s", ErrPermanentEvent, userDID)
+	// Validate userDID format and method (untrusted firehose data).
+	if err := requireDIDShaped("user block blocker", userDID); err != nil {
+		return err
 	}
 
 	// Extract blocked user DID from record's subject field
@@ -490,9 +504,9 @@ func (c *UserEventConsumer) createUserBlock(ctx context.Context, userDID string,
 		return fmt.Errorf("%w: user block record missing subject field", ErrPermanentEvent)
 	}
 
-	// Validate blockedDID format (untrusted firehose data)
-	if !strings.HasPrefix(blockedDID, "did:") {
-		return fmt.Errorf("%w: invalid blocked DID format from firehose: %s", ErrPermanentEvent, blockedDID)
+	// Validate blockedDID format and method (untrusted firehose data).
+	if err := requireDIDShaped("user block subject", blockedDID); err != nil {
+		return err
 	}
 
 	// Validate rkey is non-empty before building AT-URI

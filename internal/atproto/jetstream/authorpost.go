@@ -280,12 +280,14 @@ func (f *DirectPostFetcher) FetchPost(ctx context.Context, postURI string) (*Fet
 	if f.resolver == nil {
 		return nil, fmt.Errorf("cannot fetch %s: no identity resolver is wired", postURI)
 	}
+	fetchCtx, cancel := context.WithTimeout(ctx, fetchTimeout)
+	defer cancel()
 
 	// The PDS is resolved from the DID document rather than taken from anything
 	// the acceptance record said. The record names a subject; where that
 	// subject's repo lives is a fact about the DID, and letting a record assert
 	// it would let the record choose the host this request goes to.
-	resolved, err := f.resolver.Resolve(ctx, repoDID)
+	resolved, err := f.resolver.Resolve(fetchCtx, repoDID)
 	if err != nil {
 		return nil, fmt.Errorf("resolving the repo of %s: %w", postURI, err)
 	}
@@ -311,9 +313,6 @@ func (f *DirectPostFetcher) FetchPost(ctx context.Context, postURI string) (*Fet
 	endpoint := strings.TrimSuffix(resolved.PDSURL, "/") + "/xrpc/com.atproto.sync.getRecord?did=" +
 		url.QueryEscape(repoDID) + "&collection=" + url.QueryEscape(collection) +
 		"&rkey=" + url.QueryEscape(rkey)
-
-	fetchCtx, cancel := context.WithTimeout(ctx, fetchTimeout)
-	defer cancel()
 
 	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -343,11 +342,11 @@ func (f *DirectPostFetcher) FetchPost(ctx context.Context, postURI string) (*Fet
 			detail = detail[:maxFetchErrorDetailBytes]
 		}
 		// THE CLASSIFICATION IS THE EXPENSIVE PART OF THIS FUNCTION. The
-		// connector reads the returned error's shape: ErrPermanentEvent is
-		// dead-lettered with its redrive budget already spent, and anything
-		// else costs three inline retries (~4.2s of a blocked lane that also
-		// carries posts) plus ten redrives. So a non-200 has to be sorted, not
-		// merely reported.
+		// caller reads the returned error's shape: ErrPermanentEvent is passed
+		// through and dead-lettered already exhausted; other remote failures are
+		// wrapped as ErrUnresolvedReference, skip in-line retries, and receive the
+		// smaller unresolved-reference redrive budget. So a non-200 has to be
+		// sorted, not merely reported.
 		//
 		// A GENUINE XRPC RecordNotFound is a definite fact about the repo: the
 		// PDS was reached, understood the question, and answered that the
@@ -462,6 +461,12 @@ func parseAuthorPostRecord(record map[string]interface{}) (*AuthorPostRecord, er
 	// record without one names no admission subject at all.
 	if parsed.Community == "" {
 		return nil, fmt.Errorf("%w: postv2 record missing community field", ErrPermanentEvent)
+	}
+	// PERMANENT too: a community that is not even DID-shaped can never be
+	// indexed, so the "unknown community" refusal below (which keeps a redrive
+	// budget for the genuine early-arrival case) must never see it.
+	if err := requireDIDShaped("postv2 community", parsed.Community); err != nil {
+		return nil, err
 	}
 	if parsed.CreatedAt == "" {
 		return nil, fmt.Errorf("%w: postv2 record missing createdAt field", ErrPermanentEvent)
@@ -689,12 +694,12 @@ func (c *PostEventConsumer) upsertAuthorPost(ctx context.Context, authorDID stri
 	//
 	// Two rules meet when the retarget names a community nobody has indexed, and
 	// only one of them can go first. The unknown-community branch below is
-	// TRANSIENT — correctly, since a community's own profile event may simply
-	// not have arrived — so checking it first would turn an illegal retarget
-	// into a retryable failure that can NEVER succeed: it dead-letters, redrives
-	// ten times, blocks ~4.2s inline on each delivery, and is still an illegal
-	// retarget once that community exists. An author could mint that load at
-	// will by editing one field.
+	// RETRYABLE (an unresolved reference, redriven off the lane) — correctly,
+	// since a community's own profile event may simply not have arrived — so
+	// checking it first would turn an illegal retarget into a retryable failure
+	// that can NEVER succeed: it dead-letters, spends its bounded off-lane
+	// budget, and is still an illegal retarget once that community exists. An
+	// author could mint that load at will by editing one field.
 	//
 	// A skip, not an error: an invalid record from a stranger's repo is not an
 	// infrastructure failure.
@@ -711,11 +716,16 @@ func (c *PostEventConsumer) upsertAuthorPost(ctx context.Context, authorDID stri
 	// across repos, so a post can genuinely arrive before the community's own
 	// profile event. Marking this permanent would discard every post that
 	// merely arrived early, with the redrive that would have fixed it already
-	// spent.
+	// spent. But not a plain transient error either: the community's profile
+	// will not arrive in the next 4.2 seconds of THIS lane, and an author who
+	// names a community that does not exist must not be able to stall the
+	// lane for that long per post. ErrUnresolvedReference skips the in-line
+	// retries and leaves the redrive budget for the redriver.
 	if _, err := c.communityRepo.GetByDID(ctx, record.Community); err != nil {
 		if communities.IsNotFound(err) {
 			log.Printf("Error: cannot index %s before its community %s is indexed", uri, record.Community)
-			return fmt.Errorf("community not found: %s - cannot index post before community", record.Community)
+			return fmt.Errorf("%w: community not found: %s - cannot index post before community",
+				ErrUnresolvedReference, record.Community)
 		}
 		return fmt.Errorf("%w: failed to verify community %s exists: %v", errValidationInfra, record.Community, err)
 	}
@@ -1202,9 +1212,19 @@ func (c *PostEventConsumer) convergeOnAcceptedSubject(
 
 	fetched, err := c.postFetcher.FetchPost(ctx, decision.Subject.URI)
 	if err != nil {
-		// Transient: a PDS that is down, slow, or briefly unreachable is the
-		// ordinary case, and the redrive is what it is for.
-		return fmt.Errorf("fetching the accepted post %s directly: %w", decision.Subject.URI, err)
+		// The fetcher has already sorted definite answers (the PDS was reached
+		// and said the record does not exist) as permanent; those pass through.
+		if errors.Is(err, ErrPermanentEvent) {
+			return fmt.Errorf("fetching the accepted post %s directly: %w", decision.Subject.URI, err)
+		}
+		// Everything else — a PDS that is down, slow, or briefly unreachable —
+		// is the ordinary case the redrive is for. But the PDS being dialled
+		// is chosen by whoever wrote the subject's DID document, so this is
+		// an UNRESOLVED reference rather than a transient fault: retrying
+		// in-line would multiply a slow host's timeout by the retry count, on
+		// this lane, per acceptance naming it.
+		return fmt.Errorf("%w: fetching the accepted post %s directly: %v",
+			ErrUnresolvedReference, decision.Subject.URI, err)
 	}
 
 	// THE CID CHECK IS WHAT MAKES THE FETCH TRUSTWORTHY AT ALL. Without it the

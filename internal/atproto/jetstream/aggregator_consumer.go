@@ -4,6 +4,7 @@ import (
 	"Coves/internal/core/aggregators"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -194,7 +195,7 @@ func (c *AggregatorEventConsumer) deleteAggregator(ctx context.Context, did stri
 	// Delete from database (cascade deletes authorizations and posts via FK)
 	if err := c.repo.DeleteAggregator(ctx, did); err != nil {
 		// Log but don't fail if not found (idempotent delete)
-		if aggregators.IsNotFound(err) {
+		if errors.Is(err, aggregators.ErrAggregatorNotFound) {
 			log.Printf("[AGGREGATOR-CONSUMER] Aggregator not found for deletion: %s (already deleted?)", did)
 			return nil
 		}
@@ -275,6 +276,15 @@ func (c *AggregatorEventConsumer) upsertAuthorization(ctx context.Context, commu
 
 	// Create or update in database
 	if err := c.repo.CreateAuthorization(ctx, auth); err != nil {
+		// The authorization references two rows this AppView may not hold:
+		// the aggregator (any DID the record names) and the community (the
+		// repo itself, which any user repo can impersonate by writing this
+		// collection). Both are UNRESOLVED, not transient: neither arrives
+		// on this lane in the next 4.2 seconds, and a fabricated one never
+		// arrives at all. The redriver converges the genuine case.
+		if errors.Is(err, aggregators.ErrAggregatorNotFound) || errors.Is(err, aggregators.ErrCommunityNotFound) {
+			return fmt.Errorf("%w: failed to index authorization: %v", ErrUnresolvedReference, err)
+		}
 		return fmt.Errorf("failed to index authorization: %w", err)
 	}
 
@@ -369,6 +379,9 @@ func parseAggregatorAuthorization(record interface{}) (*AggregatorAuthorizationR
 	// Validate required fields per lexicon. PERMANENT: structurally invalid forever.
 	if auth.Aggregator == "" {
 		return nil, fmt.Errorf("%w: aggregatorDid is required", ErrPermanentEvent)
+	}
+	if err := requireDIDShaped("aggregatorDid", auth.Aggregator); err != nil {
+		return nil, err
 	}
 	if auth.CommunityDid == "" {
 		return nil, fmt.Errorf("%w: communityDid is required", ErrPermanentEvent)
