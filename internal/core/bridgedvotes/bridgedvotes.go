@@ -66,9 +66,14 @@ type Store interface {
 	// DistinctCommunityPDSURLs returns every distinct non-empty communities.pds_url.
 	DistinctCommunityPDSURLs(ctx context.Context) ([]string, error)
 	// ApplyAggregate folds one aggregate into its row under the asOf >= guard,
-	// recomputing score in the same statement. Deleted/absent rows are a no-op
-	// success; a zero AsOf is ErrMissingAsOf.
-	ApplyAggregate(ctx context.Context, agg Aggregate) error
+	// recomputing score in the same statement, and reports whether a row was
+	// written. The guard compares at millisecond precision: the bridge's
+	// aggregate channel serializes updatedAt to milliseconds while its record
+	// stamps carry microseconds, so the same instant would otherwise lose by a
+	// fraction of a millisecond and the poller could never re-apply it. false
+	// with a nil error is a deleted or absent row, or a stored stamp newer than
+	// this one; a zero AsOf is ErrMissingAsOf.
+	ApplyAggregate(ctx context.Context, agg Aggregate) (applied bool, err error)
 	// MarkPolled advances bridged_polled_at for every named uri (posts and comments).
 	MarkPolled(ctx context.Context, uris []string) error
 }
@@ -99,8 +104,13 @@ type Report struct {
 	Candidates int
 	// Fetched is how many aggregates the bridges returned and the client accepted.
 	Fetched int
-	// Applied is how many accepted aggregates the store was asked to fold.
+	// Applied is how many accepted aggregates the store actually wrote.
 	Applied int
+	// Stale is how many accepted aggregates the store declined because the
+	// subject was gone or already carried a newer stamp. A steady trickle is
+	// the record-stamp channel arriving first; a sustained majority means the
+	// two channels disagree about time.
+	Stale int
 	// Marked is how many subjects advanced their poll watermark.
 	Marked int
 	// PoisonMarked is how many of Marked advanced because their batch failed

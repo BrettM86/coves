@@ -235,10 +235,15 @@ func (p *Poller) sweepHost(ctx context.Context, host TrustedHost, uris []string,
 		report.Fetched += len(aggregates)
 
 		for _, aggregate := range aggregates {
-			if err := p.store.ApplyAggregate(ctx, aggregate); err != nil {
+			applied, err := p.store.ApplyAggregate(ctx, aggregate)
+			if err != nil {
 				return []error{fmt.Errorf("apply bridged vote aggregate for %q: %w", aggregate.URI, err)}, true
 			}
-			report.Applied++
+			if applied {
+				report.Applied++
+			} else {
+				report.Stale++
+			}
 		}
 		// Advance every attempted URI, including subjects omitted by the bridge,
 		// so absent aggregates cannot monopolize the oldest rotation slots.

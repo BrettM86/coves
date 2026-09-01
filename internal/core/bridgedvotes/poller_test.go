@@ -35,6 +35,9 @@ type sweepStore struct {
 	applyErr     error
 	markErr      error
 	distinctErr  error
+	// staleURIs makes ApplyAggregate report those subjects as declined by the
+	// store's asOf guard, the way a row already carrying a newer stamp is.
+	staleURIs map[string]struct{}
 	// selectErrByStoredHost fails SelectCandidates when the filter names that
 	// stored host, so one host's selection can fail while another's succeeds.
 	selectErrByStoredHost map[string]error
@@ -107,11 +110,17 @@ func (s *sweepStore) DistinctCommunityPDSURLs(context.Context) ([]string, error)
 	return append([]string(nil), s.distinctURLs...), nil
 }
 
-func (s *sweepStore) ApplyAggregate(_ context.Context, aggregate bridgedvotes.Aggregate) error {
+func (s *sweepStore) ApplyAggregate(_ context.Context, aggregate bridgedvotes.Aggregate) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.applied = append(s.applied, aggregate)
-	return s.applyErr
+	if s.applyErr != nil {
+		return false, s.applyErr
+	}
+	if _, stale := s.staleURIs[aggregate.URI]; stale {
+		return false, nil
+	}
+	return true, nil
 }
 
 func (s *sweepStore) MarkPolled(_ context.Context, uris []string) error {
@@ -1168,4 +1177,31 @@ func TestSweepCanceledPoisonMarkKeepsFetchFailureVisible(t *testing.T) {
 	require.Contains(t, err.Error(), "400",
 		"the permanent fetch failure must not be discarded along with the canceled mark that followed it")
 	require.False(t, errors.Is(err, context.Canceled))
+}
+
+func TestSweepReportSeparatesStaleFromApplied(t *testing.T) {
+	t.Parallel()
+
+	const updatedAt = "2026-08-31T02:04:01.080Z"
+	prefix := "at://did:plc:sweepstale/social.coves.community.postv2/"
+	bridge := &sweepBridge{aggregates: map[string]sweepServedAggregate{
+		prefix + "000": {URI: prefix + "000", Upvotes: 1, Downvotes: 0, UpdatedAt: updatedAt},
+		prefix + "001": {URI: prefix + "001", Upvotes: 2, Downvotes: 0, UpdatedAt: updatedAt},
+		prefix + "002": {URI: prefix + "002", Upvotes: 3, Downvotes: 0, UpdatedAt: updatedAt},
+	}}
+	server := httptest.NewServer(bridge)
+	t.Cleanup(server.Close)
+	storedURL := server.URL + "/"
+	store := &sweepStore{
+		distinctURLs: []string{storedURL},
+		candidates:   sweepCandidatesForHost(storedURL, "sweepstale", 3),
+		staleURIs:    map[string]struct{}{prefix + "001": {}, prefix + "002": {}},
+	}
+	poller := newSweepPoller(t, store, server.Client(), []string{server.URL}, bridgedvotes.Options{SweepCap: 10})
+
+	report := sweepOK(t, poller)
+	require.Equal(t, 3, report.Fetched)
+	require.Equal(t, 1, report.Applied, "only rows the store actually wrote count as applied")
+	require.Equal(t, 2, report.Stale, "declined rows are reported, not silently folded into applied")
+	require.Equal(t, 3, report.Marked, "a stale aggregate still advances its subject's watermark")
 }

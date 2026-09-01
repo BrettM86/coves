@@ -200,6 +200,7 @@ func startBridgedVotePollJob(ctx context.Context, wg *sync.WaitGroup, poller bri
 				"candidates", report.Candidates,
 				"fetched", report.Fetched,
 				"applied", report.Applied,
+				"stale", report.Stale,
 				"marked", report.Marked,
 				"poison_marked", report.PoisonMarked,
 			)

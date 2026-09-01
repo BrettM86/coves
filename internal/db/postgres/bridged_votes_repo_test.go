@@ -266,9 +266,9 @@ func TestBridgedVotesRepository_ApplyAggregateFirstApply(t *testing.T) {
 			fixture := seedApplyAggregateFixture(t, ctx, db)
 			uri := test.uri(fixture)
 
-			require.NoError(t, NewBridgedVotesRepository(db).ApplyAggregate(ctx, bridgedvotes.Aggregate{
+			requireApplyAggregate(t, ctx, db, true, bridgedvotes.Aggregate{
 				URI: uri, Upvotes: 5, Downvotes: 2, AsOf: t1,
-			}))
+			})
 			requireAggregateStats(t, ctx, db, test.table, uri, expectedAggregateStats{
 				nativeUp: 3, nativeDown: 1, bridgedUp: 5, bridgedDown: 2, score: 5, asOf: &t1,
 			})
@@ -286,9 +286,9 @@ func TestBridgedVotesRepository_ApplyAggregateNewerAsOfOverwrites(t *testing.T) 
 	t2 := t1.Add(time.Minute)
 	seedStoredAggregate(t, ctx, db, "posts", fixture.postURI, 5, 2, t1)
 
-	require.NoError(t, NewBridgedVotesRepository(db).ApplyAggregate(ctx, bridgedvotes.Aggregate{
+	requireApplyAggregate(t, ctx, db, true, bridgedvotes.Aggregate{
 		URI: fixture.postURI, Upvotes: 7, Downvotes: 2, AsOf: t2,
-	}))
+	})
 	requireAggregateStats(t, ctx, db, "posts", fixture.postURI, expectedAggregateStats{
 		nativeUp: 3, nativeDown: 1, bridgedUp: 7, bridgedDown: 2, score: 7, asOf: &t2,
 	})
@@ -303,9 +303,9 @@ func TestBridgedVotesRepository_ApplyAggregateEqualAsOfReapplies(t *testing.T) {
 	t2 := time.Date(2026, 8, 31, 2, 5, 1, 80_000_000, time.UTC)
 	seedStoredAggregate(t, ctx, db, "posts", fixture.postURI, 7, 2, t2)
 
-	require.NoError(t, NewBridgedVotesRepository(db).ApplyAggregate(ctx, bridgedvotes.Aggregate{
+	requireApplyAggregate(t, ctx, db, true, bridgedvotes.Aggregate{
 		URI: fixture.postURI, Upvotes: 7, Downvotes: 2, AsOf: t2,
-	}))
+	})
 	requireAggregateStats(t, ctx, db, "posts", fixture.postURI, expectedAggregateStats{
 		nativeUp: 3, nativeDown: 1, bridgedUp: 7, bridgedDown: 2, score: 7, asOf: &t2,
 	})
@@ -321,9 +321,9 @@ func TestBridgedVotesRepository_ApplyAggregateStaleAsOfIsNoOp(t *testing.T) {
 	t0 := t1.Add(-time.Minute)
 	seedStoredAggregate(t, ctx, db, "posts", fixture.postURI, 5, 2, t1)
 
-	require.NoError(t, NewBridgedVotesRepository(db).ApplyAggregate(ctx, bridgedvotes.Aggregate{
+	requireApplyAggregate(t, ctx, db, false, bridgedvotes.Aggregate{
 		URI: fixture.postURI, Upvotes: 99, Downvotes: 41, AsOf: t0,
-	}))
+	})
 	requireAggregateStats(t, ctx, db, "posts", fixture.postURI, expectedAggregateStats{
 		nativeUp: 3, nativeDown: 1, bridgedUp: 5, bridgedDown: 2, score: 5, asOf: &t1,
 	})
@@ -337,9 +337,9 @@ func TestBridgedVotesRepository_ApplyAggregateDeletedRowIsNoOpSuccess(t *testing
 	fixture := seedApplyAggregateFixture(t, ctx, db)
 	t1 := time.Date(2026, 8, 31, 2, 4, 1, 80_000_000, time.UTC)
 
-	require.NoError(t, NewBridgedVotesRepository(db).ApplyAggregate(ctx, bridgedvotes.Aggregate{
+	requireApplyAggregate(t, ctx, db, false, bridgedvotes.Aggregate{
 		URI: fixture.deletedPostURI, Upvotes: 5, Downvotes: 2, AsOf: t1,
-	}))
+	})
 	requireAggregateStats(t, ctx, db, "posts", fixture.deletedPostURI, expectedAggregateStats{
 		nativeUp: 3, nativeDown: 1, bridgedUp: 0, bridgedDown: 0, score: 2,
 	})
@@ -353,10 +353,10 @@ func TestBridgedVotesRepository_ApplyAggregateAbsentRowIsNoOpSuccess(t *testing.
 	seedApplyAggregateFixture(t, ctx, db)
 	t1 := time.Date(2026, 8, 31, 2, 4, 1, 80_000_000, time.UTC)
 
-	require.NoError(t, NewBridgedVotesRepository(db).ApplyAggregate(ctx, bridgedvotes.Aggregate{
+	requireApplyAggregate(t, ctx, db, false, bridgedvotes.Aggregate{
 		URI:     "at://did:plc:missing/social.coves.community.postv2/not-indexed",
 		Upvotes: 5, Downvotes: 2, AsOf: t1,
-	}))
+	})
 }
 
 func TestBridgedVotesRepository_ApplyAggregateZeroAsOfIsAnError(t *testing.T) {
@@ -369,10 +369,11 @@ func TestBridgedVotesRepository_ApplyAggregateZeroAsOfIsAnError(t *testing.T) {
 	// Counts and their stamp form one atomic validated trio. The client never
 	// produces a zero AsOf, so one reaching the store is a caller bug and must
 	// surface as an error rather than a silent no-op that marks the subject polled.
-	err := NewBridgedVotesRepository(db).ApplyAggregate(ctx, bridgedvotes.Aggregate{
+	applied, err := NewBridgedVotesRepository(db).ApplyAggregate(ctx, bridgedvotes.Aggregate{
 		URI: fixture.postURI, Upvotes: 5, Downvotes: 2,
 	})
 	require.ErrorIs(t, err, bridgedvotes.ErrMissingAsOf)
+	require.False(t, applied)
 	requireAggregateStats(t, ctx, db, "posts", fixture.postURI, expectedAggregateStats{
 		nativeUp: 3, nativeDown: 1, bridgedUp: 0, bridgedDown: 0, score: 2,
 	})
@@ -566,9 +567,9 @@ func TestBridgedVotesRepository_ApplyAggregateCommentNewerAsOfOverwrites(t *test
 	t2 := t1.Add(time.Minute)
 	seedStoredAggregate(t, ctx, db, "comments", fixture.commentURI, 5, 2, t1)
 
-	require.NoError(t, NewBridgedVotesRepository(db).ApplyAggregate(ctx, bridgedvotes.Aggregate{
+	requireApplyAggregate(t, ctx, db, true, bridgedvotes.Aggregate{
 		URI: fixture.commentURI, Upvotes: 7, Downvotes: 2, AsOf: t2,
-	}))
+	})
 	requireAggregateStats(t, ctx, db, "comments", fixture.commentURI, expectedAggregateStats{
 		nativeUp: 3, nativeDown: 1, bridgedUp: 7, bridgedDown: 2, score: 7, asOf: &t2,
 	})
@@ -583,9 +584,9 @@ func TestBridgedVotesRepository_ApplyAggregateCommentEqualAsOfReapplies(t *testi
 	t2 := time.Date(2026, 8, 31, 2, 5, 1, 80_000_000, time.UTC)
 	seedStoredAggregate(t, ctx, db, "comments", fixture.commentURI, 7, 2, t2)
 
-	require.NoError(t, NewBridgedVotesRepository(db).ApplyAggregate(ctx, bridgedvotes.Aggregate{
+	requireApplyAggregate(t, ctx, db, true, bridgedvotes.Aggregate{
 		URI: fixture.commentURI, Upvotes: 7, Downvotes: 2, AsOf: t2,
-	}))
+	})
 	requireAggregateStats(t, ctx, db, "comments", fixture.commentURI, expectedAggregateStats{
 		nativeUp: 3, nativeDown: 1, bridgedUp: 7, bridgedDown: 2, score: 7, asOf: &t2,
 	})
@@ -601,9 +602,9 @@ func TestBridgedVotesRepository_ApplyAggregateCommentStaleAsOfIsNoOp(t *testing.
 	t0 := t1.Add(-time.Minute)
 	seedStoredAggregate(t, ctx, db, "comments", fixture.commentURI, 5, 2, t1)
 
-	require.NoError(t, NewBridgedVotesRepository(db).ApplyAggregate(ctx, bridgedvotes.Aggregate{
+	requireApplyAggregate(t, ctx, db, false, bridgedvotes.Aggregate{
 		URI: fixture.commentURI, Upvotes: 99, Downvotes: 41, AsOf: t0,
-	}))
+	})
 	requireAggregateStats(t, ctx, db, "comments", fixture.commentURI, expectedAggregateStats{
 		nativeUp: 3, nativeDown: 1, bridgedUp: 5, bridgedDown: 2, score: 5, asOf: &t1,
 	})
@@ -648,4 +649,61 @@ func seedNeverPolledCandidateOrder(t *testing.T, ctx context.Context, db *sql.DB
 	require.NoError(t, err, "seed never-polled ordering posts")
 
 	return fixture
+}
+
+// requireApplyAggregate applies agg and asserts whether the store reports a
+// write: the poller's sweep report counts applied and stale separately, so the
+// boolean is part of the contract, not a convenience.
+func requireApplyAggregate(t *testing.T, ctx context.Context, db *sql.DB, wantApplied bool, agg bridgedvotes.Aggregate) {
+	t.Helper()
+	applied, err := NewBridgedVotesRepository(db).ApplyAggregate(ctx, agg)
+	require.NoError(t, err)
+	require.Equal(t, wantApplied, applied, "applied for %s", agg.URI)
+}
+
+// The bridge stamps records with microsecond asOf values but serializes the
+// aggregate endpoint's updatedAt to milliseconds, so the SAME sampling instant
+// reaches the poller up to 999 µs older than what the record channel stored.
+// In production this made 1351 of 1380 aggregates per sweep lose the guard.
+// The guard compares at millisecond precision so an equal instant stays
+// idempotent across both channels, while a stamp a full millisecond newer
+// still wins.
+func TestBridgedVotesRepository_ApplyAggregateGuardComparesAtMillisecondPrecision(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		table       string
+		uri         func(applyAggregateFixture) string
+		storedAhead time.Duration
+		wantApplied bool
+	}{
+		{name: "post stored 961µs ahead applies", table: "posts", uri: func(f applyAggregateFixture) string { return f.postURI }, storedAhead: 961 * time.Microsecond, wantApplied: true},
+		{name: "comment stored 999µs ahead applies", table: "comments", uri: func(f applyAggregateFixture) string { return f.commentURI }, storedAhead: 999 * time.Microsecond, wantApplied: true},
+		{name: "post stored 1ms ahead is stale", table: "posts", uri: func(f applyAggregateFixture) string { return f.postURI }, storedAhead: time.Millisecond, wantApplied: false},
+		{name: "comment stored 1500µs ahead is stale", table: "comments", uri: func(f applyAggregateFixture) string { return f.commentURI }, storedAhead: 1500 * time.Microsecond, wantApplied: false},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			db := testkit.DB(t)
+			ctx := context.Background()
+			fixture := seedApplyAggregateFixture(t, ctx, db)
+			uri := test.uri(fixture)
+			incoming := time.Date(2026, 8, 31, 2, 4, 1, 80_000_000, time.UTC)
+			stored := incoming.Add(test.storedAhead)
+			seedStoredAggregate(t, ctx, db, test.table, uri, 5, 2, stored)
+
+			requireApplyAggregate(t, ctx, db, test.wantApplied, bridgedvotes.Aggregate{
+				URI: uri, Upvotes: 6, Downvotes: 2, AsOf: incoming,
+			})
+			want := expectedAggregateStats{nativeUp: 3, nativeDown: 1, bridgedUp: 5, bridgedDown: 2, score: 5, asOf: &stored}
+			if test.wantApplied {
+				want = expectedAggregateStats{nativeUp: 3, nativeDown: 1, bridgedUp: 6, bridgedDown: 2, score: 6, asOf: &incoming}
+			}
+			requireAggregateStats(t, ctx, db, test.table, uri, want)
+		})
+	}
 }

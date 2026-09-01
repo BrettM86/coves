@@ -118,74 +118,59 @@ func (r *BridgedVotesRepository) DistinctCommunityPDSURLs(ctx context.Context) (
 }
 
 // ApplyAggregate implements bridgedvotes.Store: it applies a non-regressing bridged tally to its post or comment.
-func (r *BridgedVotesRepository) ApplyAggregate(ctx context.Context, agg bridgedvotes.Aggregate) error {
+func (r *BridgedVotesRepository) ApplyAggregate(ctx context.Context, agg bridgedvotes.Aggregate) (bool, error) {
 	if agg.AsOf.IsZero() {
 		// The client never produces one (ParseAsOf rejects the zero time), so
 		// this is a caller bug, and a silent success would let counts land
 		// without the sampling instant the >= guard depends on.
-		return fmt.Errorf("apply bridged vote aggregate to %q: %w", agg.URI, bridgedvotes.ErrMissingAsOf)
+		return false, fmt.Errorf("apply bridged vote aggregate to %q: %w", agg.URI, bridgedvotes.ErrMissingAsOf)
 	}
 
 	// Jetstream record stamps and this poller race through the same bridged columns.
 	// Keeping the >= guard, count replacement, and score recomputation in one UPDATE
 	// prevents a read-then-write race from letting an older aggregate overwrite a newer
 	// one or recomputing score from counts that did not win the guard.
-	result, err := r.db.ExecContext(ctx, `
-		UPDATE posts
-		SET bridged_upvote_count = $2,
-			bridged_downvote_count = $3,
-			bridged_stats_as_of = $4,
-			score = (upvote_count + $2) - (downvote_count + $3)
-		WHERE uri = $1
-			AND deleted_at IS NULL
-			AND (bridged_stats_as_of IS NULL OR $4 >= bridged_stats_as_of)
-	`, agg.URI, agg.Upvotes, agg.Downvotes, agg.AsOf)
-	if err != nil {
-		return fmt.Errorf("failed to apply bridged vote aggregate to post: %w", err)
+	//
+	// The guard truncates both sides to milliseconds. The bridge serializes the
+	// aggregate channel's updatedAt to milliseconds and its record stamps to
+	// microseconds, so the same sampling instant arrives here up to 999 µs
+	// "older" than what the record channel stored. Comparing at the coarser
+	// precision keeps an equal instant idempotent across both channels, which
+	// is the contract; a genuinely older aggregate still loses.
+	for _, table := range []string{"posts", "comments"} {
+		result, err := r.db.ExecContext(ctx, `
+			UPDATE `+table+`
+			SET bridged_upvote_count = $2,
+				bridged_downvote_count = $3,
+				bridged_stats_as_of = $4,
+				score = (upvote_count + $2) - (downvote_count + $3)
+			WHERE uri = $1
+				AND deleted_at IS NULL
+				AND (bridged_stats_as_of IS NULL
+					OR date_trunc('milliseconds', $4::timestamptz) >= date_trunc('milliseconds', bridged_stats_as_of))
+		`, agg.URI, agg.Upvotes, agg.Downvotes, agg.AsOf)
+		if err != nil {
+			return false, fmt.Errorf("failed to apply bridged vote aggregate to %s: %w", table, err)
+		}
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			return false, fmt.Errorf("failed to check bridged vote %s aggregate result: %w", table, err)
+		}
+		if rowsAffected > 0 {
+			return true, nil
+		}
 	}
 
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to check bridged vote post aggregate result: %w", err)
-	}
-	if rowsAffected > 0 {
-		return nil
-	}
-
-	commentResult, err := r.db.ExecContext(ctx, `
-		UPDATE comments
-		SET bridged_upvote_count = $2,
-			bridged_downvote_count = $3,
-			bridged_stats_as_of = $4,
-			score = (upvote_count + $2) - (downvote_count + $3)
-		WHERE uri = $1
-			AND deleted_at IS NULL
-			AND (bridged_stats_as_of IS NULL OR $4 >= bridged_stats_as_of)
-	`, agg.URI, agg.Upvotes, agg.Downvotes, agg.AsOf)
-	if err != nil {
-		return fmt.Errorf("failed to apply bridged vote aggregate to comment: %w", err)
-	}
-	commentRowsAffected, err := commentResult.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to check bridged vote comment aggregate result: %w", err)
-	}
-	if commentRowsAffected == 0 {
-		// The poller selected this subject as existing and non-deleted moments
-		// ago, so zero rows in both tables is almost always the stale-guard
-		// case: a stored bridged_stats_as_of newer than what the bridge just
-		// served. Once is a race with a Jetstream stamp; a sustained stream on
-		// one URI is a stored stamp that will never be beaten, and Warn is the
-		// level production actually emits.
-		slog.Warn("bridged vote aggregate matched no writable subject",
-			"uri", agg.URI,
-			"incoming_as_of", agg.AsOf,
-		)
-	}
-
-	// A subject may disappear after selection, and stale asOf values are expected to
-	// lose the guard. Neither case may wedge the sweep, so zero matches in both tables
-	// are a successful no-op just like a bridge response that omits a subject.
-	return nil
+	// The poller selected this subject as existing and non-deleted moments ago,
+	// so zero rows in both tables is the stale-guard case: a stored stamp newer
+	// than what the bridge just served, usually the record channel arriving
+	// first. That is expected in the steady state and is counted in the sweep
+	// report rather than logged per subject; the per-URI detail stays at debug.
+	slog.Debug("bridged vote aggregate matched no writable subject",
+		"uri", agg.URI,
+		"incoming_as_of", agg.AsOf,
+	)
+	return false, nil
 }
 
 // MarkPolled implements bridgedvotes.Store: it advances rotation watermarks for every attempted subject.
