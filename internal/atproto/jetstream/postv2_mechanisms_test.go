@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/core/bridgedvotes"
 	"Coves/internal/core/posts"
 	"Coves/internal/db/postgres"
 	"Coves/tests/testkit"
@@ -489,6 +490,8 @@ func TestPostV2Mechanisms_BridgedStats_InvalidAggregateIgnoredWhole(t *testing.T
 		"negative count": bridgedStatsRecord(-1, 9, asOfEarly),
 		"absurd count":   bridgedStatsRecord(maxBridgedCount+1, 9, asOfEarly),
 		"invalid asOf":   bridgedStatsRecord(9, 4, "not-a-timestamp"),
+		"zero asOf":      bridgedStatsRecord(9, 4, "0001-01-01T00:00:00Z"),
+		"future asOf":    bridgedStatsRecord(9, 4, time.Now().Add(bridgedvotes.MaxAsOfSkew+time.Hour).UTC().Format(time.RFC3339)),
 	}
 	for name, stats := range cases {
 		t.Run(name, func(t *testing.T) {

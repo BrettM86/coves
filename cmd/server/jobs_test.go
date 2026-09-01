@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"Coves/internal/core/bridgedvotes"
 	"Coves/tests/testkit"
+
+	"github.com/stretchr/testify/require"
 )
 
 // The reason recovery lives per cycle rather than around the whole goroutine:
@@ -224,4 +228,101 @@ func TestRunGuarded_ContainsRuntimePanics(t *testing.T) {
 		var b *box
 		_ = b.n
 	})
+}
+
+type bridgedVoteSweeperFake struct {
+	calls atomic.Int64
+	err   error
+}
+
+func (f *bridgedVoteSweeperFake) Sweep(context.Context) (bridgedvotes.Report, error) {
+	f.calls.Add(1)
+	return bridgedvotes.Report{}, f.err
+}
+
+func TestStartBridgedVotePollJob_GuardsInvalidInputs(t *testing.T) {
+	tests := []struct {
+		name     string
+		poller   bridgedVoteSweeper
+		interval time.Duration
+	}{
+		{name: "nil poller", interval: time.Second},
+		{name: "zero interval", poller: &bridgedVoteSweeperFake{}},
+		{name: "negative interval", poller: &bridgedVoteSweeperFake{}, interval: -time.Second},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			var wg sync.WaitGroup
+			startBridgedVotePollJob(context.Background(), &wg, test.poller, test.interval)
+
+			done := waitForBridgedVoteJob(&wg)
+			require.Eventually(t, func() bool {
+				select {
+				case <-done:
+					return true
+				default:
+					return false
+				}
+			}, time.Second, time.Millisecond, "guarded job must not increment the WaitGroup")
+			if fake, ok := test.poller.(*bridgedVoteSweeperFake); ok {
+				require.Zero(t, fake.calls.Load())
+			}
+		})
+	}
+}
+
+func TestStartBridgedVotePollJob_RunsRepeatedlyAndStopsOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var wg sync.WaitGroup
+	fake := &bridgedVoteSweeperFake{}
+
+	startBridgedVotePollJob(ctx, &wg, fake, 20*time.Millisecond)
+	require.Eventually(t, func() bool {
+		return fake.calls.Load() >= 2
+	}, 2*time.Second, 5*time.Millisecond, "bridged vote Sweep must run repeatedly")
+
+	cancel()
+	done := waitForBridgedVoteJob(&wg)
+	require.Eventually(t, func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}, time.Second, time.Millisecond, "bridged vote job must stop after cancellation")
+}
+
+func TestStartBridgedVotePollJob_SweepErrorsDoNotKillJob(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var wg sync.WaitGroup
+	fake := &bridgedVoteSweeperFake{err: errors.New("bridge unavailable")}
+
+	startBridgedVotePollJob(ctx, &wg, fake, 20*time.Millisecond)
+	require.Eventually(t, func() bool {
+		return fake.calls.Load() >= 2
+	}, 2*time.Second, 5*time.Millisecond, "a Sweep error must not stop later ticker cycles")
+
+	cancel()
+	done := waitForBridgedVoteJob(&wg)
+	require.Eventually(t, func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}, time.Second, time.Millisecond, "errored bridged vote job must still stop on cancellation")
+}
+
+func waitForBridgedVoteJob(wg *sync.WaitGroup) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	return done
 }

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"Coves/internal/core/bridgedvotes"
 	"Coves/internal/core/imageproxy"
 )
 
@@ -267,6 +268,23 @@ type InstanceConfig struct {
 	// community consumer. Dev-only: it is what stops a community record from
 	// claiming to be hosted by a domain it does not control.
 	SkipDIDWebVerification bool
+
+	// BridgedVotePollInterval is how often the bridged-vote poller sweeps the
+	// trusted bridges' vote-aggregate side channel. It must be positive: unlike
+	// its two siblings below, zero does not mean "poller default", and the
+	// poller has no disabled state of its own — an instance that should not
+	// poll leaves TRUSTED_BRIDGE_PDS_HOSTS unset. Validate enforces this so a
+	// typo fails the boot instead of leaving a job that logs "configured" and
+	// never runs.
+	BridgedVotePollInterval time.Duration
+
+	// BridgedVotePollLookback bounds sweep candidates by created_at. Zero means
+	// the poller's own default applies (single source of truth for the value).
+	BridgedVotePollLookback time.Duration
+
+	// BridgedVotePollSweepCap bounds subjects polled per sweep. Zero means the
+	// poller's own default applies.
+	BridgedVotePollSweepCap int
 }
 
 // PDSConfig holds the settings for this instance's own PDS account, used to
@@ -788,6 +806,18 @@ func (c *Config) loadInstance() error {
 	if err != nil {
 		return err
 	}
+	bridgedVotePollInterval, err := durationVar("BRIDGED_VOTE_POLL_INTERVAL", 5*time.Minute)
+	if err != nil {
+		return err
+	}
+	bridgedVotePollLookback, err := durationVar("BRIDGED_VOTE_POLL_LOOKBACK", 0)
+	if err != nil {
+		return err
+	}
+	bridgedVotePollSweepCap, err := intVar("BRIDGED_VOTE_POLL_SWEEP_CAP", 0)
+	if err != nil {
+		return err
+	}
 
 	did := stringVar("INSTANCE_DID", "did:web:coves.social")
 
@@ -807,6 +837,9 @@ func (c *Config) loadInstance() error {
 		AllowedCommunityCreators: csvVar("COMMUNITY_CREATORS"),
 		TrustedBridgePDSHosts:    csvVar("TRUSTED_BRIDGE_PDS_HOSTS"),
 		SkipDIDWebVerification:   skipDIDWeb,
+		BridgedVotePollInterval:  bridgedVotePollInterval,
+		BridgedVotePollLookback:  bridgedVotePollLookback,
+		BridgedVotePollSweepCap:  bridgedVotePollSweepCap,
 	}
 	return nil
 }
@@ -1022,6 +1055,37 @@ func (c *Config) Validate() error {
 		problems = append(problems, fmt.Sprintf(
 			"ACCEPTANCE_QUEUE_INTERVAL cannot be negative (got %s); use 0 to disable the acceptance queue driver",
 			c.Submissions.AcceptanceQueueInterval))
+	}
+	// The bridged-vote poller. Trusted hosts are validated whether or not the
+	// poller will run, because the same list is BridgeTrust's provenance gate
+	// for record-stamped bridgedStats: a value BridgeTrust would tolerate but
+	// the poller would refuse must fail here, where it reads as a config
+	// error, not inside wiring where it reads as a crash.
+	for _, host := range c.Instance.TrustedBridgePDSHosts {
+		if _, err := bridgedvotes.ParseTrustedHost(host); err != nil {
+			problems = append(problems, fmt.Sprintf(
+				"TRUSTED_BRIDGE_PDS_HOSTS: %v (scheme + host only, e.g. https://tdpl.io)", err))
+		}
+	}
+	// The interval is held to its rule only when the poller will actually run.
+	// A hand-assembled Config with no trust list has no poller to misconfigure,
+	// and Load always supplies the 5-minute default, so reaching this with a
+	// trust list set means an operator wrote a value that is not an interval.
+	if len(c.Instance.TrustedBridgePDSHosts) > 0 && c.Instance.BridgedVotePollInterval <= 0 {
+		problems = append(problems, fmt.Sprintf(
+			"BRIDGED_VOTE_POLL_INTERVAL must be greater than 0 (got %s); "+
+				"the poller has no disabled state — leave TRUSTED_BRIDGE_PDS_HOSTS unset to run without it",
+			c.Instance.BridgedVotePollInterval))
+	}
+	if c.Instance.BridgedVotePollLookback < 0 {
+		problems = append(problems, fmt.Sprintf(
+			"BRIDGED_VOTE_POLL_LOOKBACK cannot be negative (got %s); use 0 for the poller's default",
+			c.Instance.BridgedVotePollLookback))
+	}
+	if c.Instance.BridgedVotePollSweepCap < 0 {
+		problems = append(problems, fmt.Sprintf(
+			"BRIDGED_VOTE_POLL_SWEEP_CAP cannot be negative (got %d); use 0 for the poller's default",
+			c.Instance.BridgedVotePollSweepCap))
 	}
 	// REDRIVE_INTERVAL is checked in loadJetstream instead of here; see the note
 	// there for why the environment's value and a hand-assembled Config cannot be

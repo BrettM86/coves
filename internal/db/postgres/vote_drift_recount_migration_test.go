@@ -80,6 +80,8 @@ func TestMigration040_RecountsVoteDriftAndSweepsLegacyOrphans(t *testing.T) {
 	// point of a repair migration and cannot be observed by seeding after it has
 	// run. Asserting the version that came off is the tripwire that keeps this
 	// pointed at 040 when later migrations land.
+	require.EqualValues(t, 43, testkit.MigrateDownOne(t, db, 43),
+		"043 (the bridged-vote poll watermark) sits on top and must be rolled back first")
 	require.EqualValues(t, 42, testkit.MigrateDownOne(t, db, 42),
 		"042 (the dead-letter retention index) sits on top of 041 and must be rolled back first")
 	require.EqualValues(t, 41, testkit.MigrateDownOne(t, db, 41),

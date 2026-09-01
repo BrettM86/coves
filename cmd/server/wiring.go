@@ -11,6 +11,7 @@ import (
 	"Coves/internal/core/aggregators"
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/blueskypost"
+	"Coves/internal/core/bridgedvotes"
 	"Coves/internal/core/comments"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/communityFeeds"
@@ -141,6 +142,9 @@ type application struct {
 	revGate        *jetstream.RevGate
 	bridgeTrust    *jetstream.BridgeTrust
 
+	// bridgedVotePoller is nil unless TRUSTED_BRIDGE_PDS_HOSTS is set.
+	bridgedVotePoller *bridgedvotes.Poller
+
 	// imageProxyHandler is nil when the image proxy is disabled.
 	imageProxyHandler *imageproxyhandlers.Handler
 	// stopImageProxyCleanup halts the disk cache eviction job. Never nil.
@@ -186,6 +190,9 @@ func buildApplication(ctx context.Context, cfg *config.Config, db *sql.DB) (app 
 		return nil, err
 	}
 	app.buildJetstreamInfrastructure()
+	if err = app.buildBridgedVotePoller(); err != nil {
+		return nil, err
+	}
 	return app, nil
 }
 
@@ -870,19 +877,10 @@ func (a *application) buildJetstreamInfrastructure() {
 	// Cursors let each consumer resume from its last processed event after a
 	// restart instead of silently losing the gap; the dead letter queue
 	// captures events that fail every in-line retry so the redriver can
-	// replay them once the underlying failure clears.
+	// replay them once the cause is fixed.
 	a.jetstreamState = jetstream.NewPostgresStateStore(a.db)
-
-	// The rev gate is the per-record ordering guard that makes it safe to run
-	// every consumer against multiple Jetstream feeds carrying the same repos
-	// (see rev_gate.go and migration 033).
 	a.revGate = jetstream.NewRevGate(a.db)
 
-	// Provenance gate for bridge-asserted vote aggregates. Only repos hosted
-	// on a trusted bridge PDS may inflate their displayed counts via
-	// bridgedStats; every native repo is default-denied so it cannot
-	// self-assert them. Empty means bridgedStats are ignored everywhere,
-	// which is the right default for a deployment with no bridge.
 	a.bridgeTrust = jetstream.NewBridgeTrust(a.cfg.Instance.TrustedBridgePDSHosts)
 	if len(a.cfg.Instance.TrustedBridgePDSHosts) > 0 {
 		slog.Info("bridgedStats provenance configured",
@@ -890,4 +888,36 @@ func (a *application) buildJetstreamInfrastructure() {
 	} else {
 		slog.Info("no trusted bridge PDS hosts configured; bridgedStats will be ignored")
 	}
+}
+
+// buildBridgedVotePoller constructs the poller under the same non-empty guard
+// as BridgeTrust. The trust list is both the authorization boundary for
+// bridgedStats and the poller's only source of network destinations, so an
+// unconfigured deployment must never turn community metadata in the database
+// into outbound traffic. A bridge is third-party infrastructure, not the
+// operator's own PDS, so it dials through the SSRF-guarded client like every
+// other outbound fetch; the private-host hatch follows allowPrivateHosts.
+func (a *application) buildBridgedVotePoller() error {
+	hosts := a.cfg.Instance.TrustedBridgePDSHosts
+	if len(hosts) == 0 {
+		return nil
+	}
+
+	client := bridgedvotes.NewClient(
+		oauth.NewSSRFSafeHTTPClient(oauth.PrivateAddressOptions(a.allowPrivateHosts())...))
+	poller, err := bridgedvotes.NewPoller(
+		postgresRepo.NewBridgedVotesRepository(a.db), client, hosts, bridgedvotes.Options{
+			Lookback: a.cfg.Instance.BridgedVotePollLookback,
+			SweepCap: a.cfg.Instance.BridgedVotePollSweepCap,
+		})
+	if err != nil {
+		// NewPoller's message already names the stage and the offending host.
+		return err
+	}
+	a.bridgedVotePoller = poller
+	slog.Info("bridged vote poller configured",
+		"trusted_bridge_hosts", len(hosts),
+		"interval", a.cfg.Instance.BridgedVotePollInterval,
+	)
+	return nil
 }

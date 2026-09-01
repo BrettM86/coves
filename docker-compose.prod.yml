@@ -133,6 +133,14 @@ services:
       # be accepted. Example: https://tdpl.io
       TRUSTED_BRIDGE_PDS_HOSTS: ${TRUSTED_BRIDGE_PDS_HOSTS:-}
 
+      # Bridged-vote poller tuning (active only when TRUSTED_BRIDGE_PDS_HOSTS is
+      # set). Passed through explicitly: a variable only present in .env is
+      # invisible to the container, so setting it there without these lines
+      # silently has no effect.
+      BRIDGED_VOTE_POLL_INTERVAL: ${BRIDGED_VOTE_POLL_INTERVAL:-}
+      BRIDGED_VOTE_POLL_LOOKBACK: ${BRIDGED_VOTE_POLL_LOOKBACK:-}
+      BRIDGED_VOTE_POLL_SWEEP_CAP: ${BRIDGED_VOTE_POLL_SWEEP_CAP:-}
+
       # Image proxy configuration (on-the-fly resizing with disk cache).
       # The base URL is the hostname every Coves image URL is built from; it is
       # the media hostname, not the AppView apex, because only that hostname is

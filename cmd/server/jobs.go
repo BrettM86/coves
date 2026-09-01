@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"Coves/internal/core/bridgedvotes"
 	"Coves/internal/core/posts"
 )
 
@@ -137,6 +138,76 @@ type expiringTokenRefresher interface {
 // PDS or a database behind it.
 type acceptanceQueuePass interface {
 	RunPass(ctx context.Context) (posts.PassReport, error)
+}
+
+// bridgedVoteSweeper is the seam startBridgedVotePollJob drives: one poll cycle
+// against the bridge's vote-aggregate side channel. *bridgedvotes.Poller
+// satisfies it.
+type bridgedVoteSweeper interface {
+	Sweep(ctx context.Context) (bridgedvotes.Report, error)
+}
+
+// startBridgedVotePollJob runs the bridged-vote poller on an interval. Bridge
+// outages are transient: a failed sweep is logged and the next tick retries.
+// runGuarded deadline-bounds each sweep at the interval so a stalled bridge
+// cannot permanently stop the rotation.
+//
+// The guard is defensive only: config.Validate rejects a non-positive interval
+// and main.go checks the concrete poller for nil, so reaching the early return
+// means one of those was bypassed, which is worth a line in the log.
+func startBridgedVotePollJob(ctx context.Context, wg *sync.WaitGroup, poller bridgedVoteSweeper, interval time.Duration) {
+	if poller == nil || interval <= 0 {
+		slog.Warn("bridged vote poll job not started",
+			"poller_present", poller != nil,
+			"interval", interval,
+		)
+		return
+	}
+
+	runTicker(ctx, wg, "bridged-vote-poll", interval, func(ctx context.Context) {
+		report, err := poller.Sweep(ctx)
+		if err != nil {
+			// Cancellation alone is shutdown; joinSweepErrors guarantees a real
+			// fault joined with a canceled leaf does not classify as canceled.
+			if !errors.Is(err, context.Canceled) {
+				slog.Error("bridged vote poll sweep failed",
+					"error", err,
+					"matched_hosts", report.MatchedHosts,
+					"failed_hosts", report.FailedHosts,
+					"candidates", report.Candidates,
+					"applied", report.Applied,
+					"marked", report.Marked,
+				)
+			}
+			return
+		}
+
+		// Three quiet outcomes need telling apart. A sweep that found no
+		// bridged community at all is the normal state of a fresh instance
+		// and logs at debug. One that saw stored community hosts and matched
+		// none of them to the trust list is the misconfiguration this poller
+		// cannot otherwise surface: identity resolution stored one URL form,
+		// the operator configured another, and every sweep returns nil.
+		switch {
+		case report.MatchedHosts == 0 && report.StoredHosts > 0:
+			slog.Warn("bridged vote poll matched no community PDS URL to a trusted bridge host",
+				"trusted_hosts", report.TrustedHosts,
+				"stored_hosts", report.StoredHosts,
+			)
+		case report.Candidates > 0 || report.PoisonMarked > 0:
+			slog.Info("bridged vote poll sweep completed",
+				"matched_hosts", report.MatchedHosts,
+				"candidates", report.Candidates,
+				"fetched", report.Fetched,
+				"applied", report.Applied,
+				"marked", report.Marked,
+				"poison_marked", report.PoisonMarked,
+			)
+		default:
+			slog.Debug("bridged vote poll sweep found nothing to poll",
+				"matched_hosts", report.MatchedHosts)
+		}
+	})
 }
 
 // startAcceptanceQueueJob walks the undecided admission backlog on an interval.

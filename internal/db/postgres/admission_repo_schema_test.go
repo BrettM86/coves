@@ -326,6 +326,8 @@ func TestMigration034_DownRestoresTheAuthorForeignKeyUnvalidated(t *testing.T) {
 	// sit on top of 034, so all eight have to come off first. Rolling back explicitly,
 	// one asserted step at a time, is what keeps the assertions below pointed at
 	// 034's Down rather than at whatever happens to be newest.
+	require.EqualValues(t, 43, testkit.MigrateDownOne(t, db, 43),
+		"043 (the bridged-vote poll watermark) sits on top and must be rolled back first")
 	require.EqualValues(t, 42, testkit.MigrateDownOne(t, db, 42),
 		"042 (the dead-letter retention index) sits on top of 034 and must be rolled back first; asserting which migration came off is what stops this test drifting onto a newer one")
 	require.EqualValues(t, 41, testkit.MigrateDownOne(t, db, 41),

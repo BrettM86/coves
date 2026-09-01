@@ -41,6 +41,13 @@ const (
 
 func trustingBridge() *BridgeTrust { return NewBridgeTrust([]string{trustedBridgePDS}) }
 
+func TestBridgeTrust_NormalizesDefaultHTTPSPort(t *testing.T) {
+	t.Parallel()
+
+	trust := NewBridgeTrust([]string{"https://bridge.example"})
+	require.True(t, trust.TrustsPDS("https://Bridge.Example:443/"))
+}
+
 func TestAdmitCommunityOrigin(t *testing.T) {
 	t.Parallel()
 

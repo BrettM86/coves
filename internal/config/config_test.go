@@ -650,7 +650,7 @@ func TestLoad_CSVListsAreTrimmed(t *testing.T) {
 	clearEnv(t)
 	prodEnv(t)
 	t.Setenv("COMMUNITY_CREATORS", " did:plc:one , did:plc:two ,, ")
-	t.Setenv("TRUSTED_BRIDGE_PDS_HOSTS", "bridge.example.com")
+	t.Setenv("TRUSTED_BRIDGE_PDS_HOSTS", "https://bridge.example.com")
 
 	cfg, err := Load()
 	if err != nil {

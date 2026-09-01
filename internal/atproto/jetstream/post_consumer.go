@@ -2,6 +2,7 @@ package jetstream
 
 import (
 	"Coves/internal/atproto/identity"
+	"Coves/internal/core/bridgedvotes"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/richtext"
@@ -417,9 +418,13 @@ func (c *PostEventConsumer) applyPostContentUpdate(ctx context.Context, in postC
 // parseBridgedAsOf parses a bridgedStats.asOf timestamp, logging (and returning the
 // error) on failure so callers can decide to skip applying the aggregate.
 func parseBridgedAsOf(asOf, uri string) (time.Time, error) {
-	t, err := time.Parse(time.RFC3339, asOf)
+	// bridgedvotes.ParseAsOf is the shared rule for both ingestion channels: it
+	// rejects the zero time and any stamp more than MaxAsOfSkew ahead of this
+	// clock, because a far-future asOf would win the >= guard once and then make
+	// every later honest aggregate lose it, from either channel, until repaired.
+	t, err := bridgedvotes.ParseAsOf(asOf, time.Now())
 	if err != nil {
-		log.Printf("Warning: failed to parse bridgedStats.asOf %q for %s: %v", asOf, uri, err)
+		log.Printf("Warning: rejecting bridgedStats.asOf %q for %s: %v", asOf, uri, err)
 		return time.Time{}, err
 	}
 	return t, nil

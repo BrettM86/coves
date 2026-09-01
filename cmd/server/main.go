@@ -102,6 +102,13 @@ func run() error {
 		startAcceptanceQueueJob(backgroundCtx, &backgroundWG,
 			app.acceptanceQueue, cfg.Submissions.AcceptanceQueueInterval)
 	}
+	// Like the acceptance driver above, this concrete pointer must be checked
+	// before conversion to bridgedVoteSweeper: a nil *Poller inside that
+	// interface would pass the job's nil guard and panic on its first sweep.
+	if app.bridgedVotePoller != nil {
+		startBridgedVotePollJob(backgroundCtx, &backgroundWG,
+			app.bridgedVotePoller, cfg.Instance.BridgedVotePollInterval)
+	}
 
 	consumers, err := startConsumers(backgroundCtx, &backgroundWG, app)
 	if err != nil {

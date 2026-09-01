@@ -1,18 +1,15 @@
 package jetstream
 
 import (
+	"Coves/internal/core/bridgedvotes"
 	"log"
-	"net/url"
-	"strings"
 	"time"
 )
 
-// maxBridgedCount mirrors the tidepool bridge's own MaxSeededCount ceiling
-// (1,000,000). A bridgedStats aggregate asserting a count above this is treated as
-// malformed/hostile and the entire aggregate is ignored — it is far larger than any
-// plausible origin-platform post score and is the shape a score-inflation attack
-// takes. Keep this in sync with the bridge if it ever raises MaxSeededCount.
-const maxBridgedCount = 1_000_000
+// maxBridgedCount aliases the shared ceiling both ingestion channels enforce on a
+// bridge-asserted count; see bridgedvotes.MaxBridgedCount for the rationale and
+// the tidepool constant it chases.
+const maxBridgedCount = bridgedvotes.MaxBridgedCount
 
 // BridgeTrust is the provenance gate for bridge-asserted vote aggregates
 // (bridgedStats). bridgedStats let a record declare origin-platform vote counts that
@@ -73,20 +70,11 @@ func (b *BridgeTrust) TrustsPDS(pdsURL string) bool {
 	return ok
 }
 
-// normalizePDSHost reduces a PDS URL to a stable scheme+host comparison key so that
-// "https://Bridge.Example/", "https://bridge.example" and "https://bridge.example:443"
-// compare consistently. Values that do not parse as a URL with a host fall back to the
-// trimmed, lowercased, trailing-slash-stripped string so a plain host in config still
-// matches an identically-formatted stored value.
+// normalizePDSHost delegates to bridgedvotes.NormalizeHost, the shared trust and
+// polling comparison rule. It lowercases scheme+host, removes matching default
+// HTTP(S) ports and tolerantly normalizes schemeless stored values.
 func normalizePDSHost(raw string) string {
-	s := strings.TrimSpace(raw)
-	if s == "" {
-		return ""
-	}
-	if u, err := url.Parse(s); err == nil && u.Host != "" {
-		return strings.ToLower(u.Scheme + "://" + u.Host)
-	}
-	return strings.ToLower(strings.TrimRight(s, "/"))
+	return bridgedvotes.NormalizeHost(raw)
 }
 
 // validatedBridgedStats applies input hygiene to a bridgedStats aggregate and parses
