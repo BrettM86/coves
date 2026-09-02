@@ -388,16 +388,18 @@ const contractPollInterval = 600 * time.Millisecond
 // five seconds, it just stops asking four times a second.
 const contractHoldPollInterval = time.Second
 
-// withReadCadence slows a wait to a poll rate that fits inside a 20-per-minute
-// endpoint's budget, for the ONE endpoint in the product that has one.
+// withReadCadence slows a wait to a poll rate that fits inside the dedicated
+// budgets on the two endpoints that have stricter per-route caps.
 //
-// # THE TIER HAS TWO RATE LIMITERS, NOT ONE
+// # THE TIER HAS THREE RATE LIMITERS, NOT ONE
 //
 // Everything reachable here is bounded by the global 100/minute-per-IP limiter,
 // and contractPollInterval's arithmetic is written against that. But
 // social.coves.community.comment.getComments carries a second, much tighter cap
 // of its own — commentQueryRateLimit, 20 per minute (cmd/server/routes.go) —
 // because a nested tree query fans out across the whole comment tree.
+// social.coves.feed.searchPosts is the other capped endpoint: full-text search is
+// the most expensive read on the box, so postSearch allows 30 per minute per IP.
 //
 // At the default 250ms, poll 21 of a single wait lands about five seconds in.
 // So a delivery that is slow but perfectly healthy — a loaded machine, a
@@ -414,9 +416,11 @@ const contractHoldPollInterval = time.Second
 // poll and the slower cadence costs nothing; what it buys is that an unhealthy
 // one reports the timeout it actually is.
 //
-// Apply it to waits that poll getComments, and ONLY those: every other endpoint
-// sits under the global limiter alone, where 250ms is both affordable and worth
-// paying for the tighter failure detection.
+// Apply it to waits that poll getComments or social.coves.feed.searchPosts, and
+// ONLY those: every other endpoint sits under the global limiter alone, where
+// contractPollInterval is both affordable and worth paying for the tighter
+// failure detection. Holds already uses a one-second cadence and spends only
+// five reads over its fixed window, so it needs no separate option.
 func withReadCadence() testkit.WaitOption {
 	return testkit.WithPollInterval(contractCappedReadInterval)
 }
@@ -553,10 +557,12 @@ func (p *pipeline) explainRateLimit(probe testkit.Probe) testkit.Probe {
 					"and %s while holding). Which limiter it was decides what to do: the GLOBAL one is "+
 					"100/minute and means the wait had already run long enough that the pipeline was not "+
 					"going to deliver — treat it as the timeout it is and read the consumer health below. "+
-					"But social.coves.community.comment.getComments carries its OWN cap of 20/minute "+
-					"(commentQueryRateLimit, cmd/server/routes.go), which a healthy contract can reach "+
-					"simply by observing a long arc — if that is the endpoint being polled here, see "+
-					"pipeline.FreshReadQuota: %w",
+					"But two endpoints carry their OWN tighter caps that a healthy contract can reach "+
+					"simply by observing a long arc: social.coves.community.comment.getComments at "+
+					"20/minute (commentQueryRateLimit, cmd/server/routes.go) and "+
+					"social.coves.feed.searchPosts at 30/minute (postSearchRateLimit, "+
+					"internal/api/routes/communityFeed.go) — if one of those is the endpoint being "+
+					"polled here, see pipeline.FreshReadQuota: %w",
 				p.clientIP, contractPollInterval, contractHoldPollInterval, err)
 		}
 		return done, err

@@ -628,6 +628,54 @@ Already exists, matches our implementation:
 
 ---
 
+## Post Search: `social.coves.feed.searchPosts`
+
+Full-text search over visible posts. Cross-community by default; pass
+`community` to scope it to one community (the community page's Search tab
+always does). Design and rationale: `docs/PRD_POST_SEARCH.md`.
+
+```
+GET /xrpc/social.coves.feed.searchPosts?q=rust&community=gaming&sort=relevance&limit=15
+```
+
+| Param | Required | Notes |
+|---|---|---|
+| `q` | yes | 1..500 bytes after trimming. `websearch_to_tsquery` syntax: `"quoted phrase"`, `-negation`, `OR`. |
+| `community` | no | DID, handle, `name@origin`, or bare local name. Omit to search every community. |
+| `sort` | no | `relevance` (default), `new`, `top`. `hot` is rejected. |
+| `timeframe` | no | Default `all` (unlike `getCommunity`, which defaults `top` to `day`). Only applied when `sort=top`, as in `getCommunity`. |
+| `limit` | no | 1..50, default 15 when omitted. Non-numeric, or supplied and below 1, is a 400. |
+| `cursor` | no | Opaque, HMAC-signed. |
+
+Output is `{feed: [feedViewPost], cursor?}`, the same shape as every other
+`feed.*` query, so clients reuse their feed parsers.
+
+What the read path guarantees:
+
+- **Visibility is the shared predicate.** The query goes through
+  `visiblePostsJoin` (`post_visibility.go`) and the viewer's author blocks,
+  exactly like `getDiscover` and `getCommunity`: the public sees accepted
+  posts only; an author sees their own pending post.
+- **Index.** `posts.search_vector` is a stored generated `tsvector`
+  (title weighted A, content weighted B, `english`) with a partial GIN index
+  (migration 044). Ranking is `ts_rank_cd(..., 1)`.
+- **Degenerate queries return nothing, never everything.** A stopword-only
+  query parses to an empty tsquery; a negation-only query (`-rust`) would
+  match the whole corpus. Both are refused in SQL via `querytree(...) NOT IN
+  ('', 'T')`.
+- **Cursors are bound to their result set.** Every search cursor is a signed
+  `search::<scope hash>::<position>` envelope; the hash covers `q`, the
+  resolved community (or none), the sort, and, for `top`, the timeframe.
+  Replaying a cursor with any of those changed is an `InvalidCursor` error.
+- **Viewer blocks.** Author blocks apply always. Community blocks apply when
+  `community` is omitted (aggregate surface, like Discover) and not when the
+  request names a community (explicit surface, like `getCommunity`).
+- **Rate limit.** The route sits behind a named `postSearch` limiter
+  (30/min per client IP) on top of the global cap.
+
+Known gap inherited from the other feeds, tracked in the central issues
+backlog: community `visibility` is not enforced on any read path.
+
 ## Migration Path
 
 ### Alpha → Beta: Adding Feed Generators

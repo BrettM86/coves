@@ -247,6 +247,10 @@ var declaredRoutes = []declaredRoute{
 
 	// RegisterCommunityFeedRoutes / Timeline / Discover / Actor — the read tier.
 	{http.MethodGet, "/xrpc/social.coves.communityFeed.getCommunity", authOptional, 0, false},
+	// searchPosts is registered under its lexicon NSID (feed.*), not the drifted
+	// communityFeed.* name, and carries its own 30/min limiter: full-text search
+	// is the most expensive read on the box.
+	{http.MethodGet, "/xrpc/social.coves.feed.searchPosts", authOptional, 30, false},
 	// getTimeline is the one feed that is NOT public: it is the personalised
 	// fan-out over the caller's subscriptions, so an anonymous caller has no
 	// timeline to serve. It is also why the timeline's behaviour is unreachable

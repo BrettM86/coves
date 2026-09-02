@@ -93,10 +93,16 @@ goat lex publish \
 # community/rules.json and community/moderator.json share the community DNS
 # authority, so exclude them by unpublishing if swept in:
 goat lex unpublish social.coves.community.rules social.coves.community.moderator
+# Retired schemas: the sweep only publishes what is on disk, so a schema whose
+# file was deleted stays live on the network until it is explicitly unpublished.
+# social.coves.community.post.search was published by the 2026-07 sweep, never
+# served, and deleted in favour of social.coves.feed.searchPosts (2026-09-01):
+goat lex unpublish social.coves.community.post.search
 
 # 3. Verify resolution end-to-end
 goat lex check-dns internal/atproto/lexicon/social/coves
 goat lex resolve social.coves.community.post
+goat lex resolve social.coves.community.post.search   # must FAIL once unpublished
 goat lex status internal/atproto/lexicon/social/coves
 ```
 

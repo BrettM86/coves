@@ -55,7 +55,12 @@ type recordingFeedRepo struct {
 	cursor *string
 	err    error
 
-	requests []communityFeeds.GetCommunityFeedRequest
+	searchFeed   []*communityFeeds.FeedViewPost
+	searchCursor *string
+	searchErr    error
+
+	requests       []communityFeeds.GetCommunityFeedRequest
+	searchRequests []communityFeeds.SearchPostsRequest
 }
 
 func (r *recordingFeedRepo) GetCommunityFeed(_ context.Context, req communityFeeds.GetCommunityFeedRequest) ([]*communityFeeds.FeedViewPost, *string, error) {
@@ -66,6 +71,16 @@ func (r *recordingFeedRepo) GetCommunityFeed(_ context.Context, req communityFee
 		return nil, nil, r.err
 	}
 	return r.feed, r.cursor, nil
+}
+
+func (r *recordingFeedRepo) SearchPosts(_ context.Context, req communityFeeds.SearchPostsRequest) ([]*communityFeeds.FeedViewPost, *string, error) {
+	r.mu.Lock()
+	r.searchRequests = append(r.searchRequests, req)
+	r.mu.Unlock()
+	if r.searchErr != nil {
+		return nil, nil, r.searchErr
+	}
+	return r.searchFeed, r.searchCursor, nil
 }
 
 // only returns the single request the repository received, or fails the test
@@ -86,6 +101,23 @@ func (r *recordingFeedRepo) callCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.requests)
+}
+
+func (r *recordingFeedRepo) onlySearch(t *testing.T) communityFeeds.SearchPostsRequest {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.searchRequests) != 1 {
+		t.Fatalf("expected the repository to be asked to search exactly once, got %d call(s): %+v",
+			len(r.searchRequests), r.searchRequests)
+	}
+	return r.searchRequests[0]
+}
+
+func (r *recordingFeedRepo) searchCallCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.searchRequests)
 }
 
 // recordingCommunityService is a communities.Service that answers only

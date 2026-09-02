@@ -198,10 +198,12 @@ func TestRematerializeLedgerMigration_RollsBack(t *testing.T) {
 	// top of 037 and come off first, one asserted step at a time. Asserting which
 	// migration rolled back is what keeps this pointed at 037's Down rather than
 	// drifting onto a newer one later.
+	require.EqualValues(t, 44, testkit.MigrateDownOne(t, db, 44),
+		"044 (the posts search vector column and index) sits on top of 043 and must be rolled back first")
 	require.EqualValues(t, 43, testkit.MigrateDownOne(t, db, 43),
-		"043 (the bridged-vote poll watermark) sits on top and must be rolled back first")
+		"043 (the bridged-vote poll watermark) sits on top of 042 and must be rolled back next")
 	require.EqualValues(t, 42, testkit.MigrateDownOne(t, db, 42),
-		"042 (the dead-letter retention index) sits on top of 041 and must be rolled back first")
+		"042 (the dead-letter retention index) sits on top of 041 and must be rolled back next")
 	require.EqualValues(t, 41, testkit.MigrateDownOne(t, db, 41),
 		"041 (the future comment created_at repair) sits on top of 040 and must be rolled back next")
 	require.EqualValues(t, 40, testkit.MigrateDownOne(t, db, 40),

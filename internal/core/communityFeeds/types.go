@@ -17,6 +17,20 @@ type GetCommunityFeedRequest struct {
 	Limit     int     `json:"limit"`
 }
 
+// SearchPostsRequest represents input for social.coves.feed.searchPosts.
+// Community is a community identifier (DID, handle, name@origin, or bare local
+// name) at the Service boundary; the service replaces it with the resolved DID
+// before the Repository sees it. Empty means search every community.
+type SearchPostsRequest struct {
+	Cursor    *string `json:"cursor,omitempty"`
+	Query     string  `json:"q"`
+	Community string  `json:"community,omitempty"`
+	ViewerDID string  `json:"-"` // Optional: authenticated viewer's DID for visibility and block filtering
+	Sort      string  `json:"sort"`
+	Timeframe string  `json:"timeframe"`
+	Limit     int     `json:"limit"`
+}
+
 // FeedResponse represents paginated feed output
 // Matches social.coves.communityFeed.getCommunity lexicon output
 type FeedResponse struct {

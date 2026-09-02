@@ -7,9 +7,11 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
+	"Coves/internal/core/communityFeeds"
 	"Coves/internal/core/posts"
 )
 
@@ -21,12 +23,15 @@ import (
 // is why both go through hotRankSQL.
 var feedHotRankExpression = hotRankSQL("p", "NOW()")
 
+const cursorDelimiter = "::"
+
 // feedSortClauses whitelists ORDER BY clauses for all post feeds
-// (discover, timeline, community), preventing SQL injection via dynamic ORDER BY
+// (discover, timeline, community, search), preventing SQL injection via dynamic ORDER BY
 var feedSortClauses = map[string]string{
-	"hot": feedHotRankExpression + ` DESC, p.created_at DESC, p.uri DESC`,
-	"top": `p.score DESC, p.created_at DESC, p.uri DESC`,
-	"new": `p.created_at DESC, p.uri DESC`,
+	"hot":       feedHotRankExpression + ` DESC, p.created_at DESC, p.uri DESC`,
+	"relevance": `hot_rank DESC, p.created_at DESC, p.uri DESC`,
+	"top":       `p.score DESC, p.created_at DESC, p.uri DESC`,
+	"new":       `p.created_at DESC, p.uri DESC`,
 }
 
 // feedRepoBase contains shared logic for the discover, timeline, and community
@@ -139,6 +144,38 @@ func (r *feedRepoBase) buildTimeFilter(timeframe string) string {
 	return fmt.Sprintf("AND p.created_at > NOW() - INTERVAL '%s'", interval)
 }
 
+func (r *feedRepoBase) signCursorPayload(payload string) string {
+	mac := hmac.New(sha256.New, []byte(r.cursorSecret))
+	mac.Write([]byte(payload))
+	signature := hex.EncodeToString(mac.Sum(nil))
+	signed := payload + cursorDelimiter + signature
+	return base64.StdEncoding.EncodeToString([]byte(signed))
+}
+
+func (r *feedRepoBase) verifyCursorPayload(cursor string) (string, error) {
+	decoded, err := base64.StdEncoding.DecodeString(cursor)
+	if err != nil {
+		return "", fmt.Errorf("invalid cursor encoding: %w", err)
+	}
+
+	signed := string(decoded)
+	signatureSeparator := strings.LastIndex(signed, cursorDelimiter)
+	if signatureSeparator <= 0 || signatureSeparator+len(cursorDelimiter) == len(signed) {
+		return "", fmt.Errorf("invalid cursor format")
+	}
+
+	payload := signed[:signatureSeparator]
+	signature := signed[signatureSeparator+len(cursorDelimiter):]
+	expectedMAC := hmac.New(sha256.New, []byte(r.cursorSecret))
+	expectedMAC.Write([]byte(payload))
+	expectedSignature := hex.EncodeToString(expectedMAC.Sum(nil))
+	if !hmac.Equal([]byte(signature), []byte(expectedSignature)) {
+		return "", fmt.Errorf("invalid cursor signature")
+	}
+
+	return payload, nil
+}
+
 // parseCursor decodes and validates pagination cursor
 // paramOffset is the starting parameter number for cursor values
 // ($2 for discover, $3 for timeline and community feed)
@@ -147,32 +184,15 @@ func (r *feedRepoBase) parseCursor(cursor *string, sort string, paramOffset int)
 		return "", nil, nil
 	}
 
-	// Decode base64 cursor
-	decoded, err := base64.StdEncoding.DecodeString(*cursor)
+	payload, err := r.verifyCursorPayload(*cursor)
 	if err != nil {
-		return "", nil, fmt.Errorf("invalid cursor encoding")
+		return "", nil, err
 	}
+	return r.parseCursorPayload(payload, sort, paramOffset)
+}
 
-	// Parse cursor: payload::signature
-	parts := strings.Split(string(decoded), "::")
-	if len(parts) < 2 {
-		return "", nil, fmt.Errorf("invalid cursor format")
-	}
-
-	// Verify HMAC signature
-	signatureHex := parts[len(parts)-1]
-	payload := strings.Join(parts[:len(parts)-1], "::")
-
-	expectedMAC := hmac.New(sha256.New, []byte(r.cursorSecret))
-	expectedMAC.Write([]byte(payload))
-	expectedSignature := hex.EncodeToString(expectedMAC.Sum(nil))
-
-	if !hmac.Equal([]byte(signatureHex), []byte(expectedSignature)) {
-		return "", nil, fmt.Errorf("invalid cursor signature")
-	}
-
-	// Parse payload based on sort type
-	payloadParts := strings.Split(payload, "::")
+func (r *feedRepoBase) parseCursorPayload(payload, sort string, paramOffset int) (string, []interface{}, error) {
+	payloadParts := strings.Split(payload, cursorDelimiter)
 
 	switch sort {
 	case "new":
@@ -311,14 +331,16 @@ func (r *feedRepoBase) parseCursor(cursor *string, sort string, paramOffset int)
 // SECURITY: Cursor is signed with HMAC-SHA256 to prevent manipulation
 // queryTime is the timestamp when the query was executed, used for stable hot_rank comparison
 func (r *feedRepoBase) buildCursor(post *posts.PostView, sort string, hotRank float64, queryTime time.Time) string {
+	return r.signCursorPayload(r.buildCursorPayload(post, sort, hotRank, queryTime))
+}
+
+func (r *feedRepoBase) buildCursorPayload(post *posts.PostView, sort string, hotRank float64, queryTime time.Time) string {
 	var payload string
-	// Use :: as delimiter following Bluesky convention
-	const delimiter = "::"
 
 	switch sort {
 	case "new":
 		// Format: timestamp::uri
-		payload = fmt.Sprintf("%s%s%s", post.CreatedAt.Format(time.RFC3339Nano), delimiter, post.URI)
+		payload = fmt.Sprintf("%s%s%s", post.CreatedAt.Format(time.RFC3339Nano), cursorDelimiter, post.URI)
 
 	case "top":
 		// Format: score::timestamp::uri
@@ -326,34 +348,122 @@ func (r *feedRepoBase) buildCursor(post *posts.PostView, sort string, hotRank fl
 		if post.Stats != nil {
 			score = post.Stats.Score
 		}
-		payload = fmt.Sprintf("%d%s%s%s%s", score, delimiter, post.CreatedAt.Format(time.RFC3339Nano), delimiter, post.URI)
+		payload = fmt.Sprintf("%d%s%s%s%s", score, cursorDelimiter, post.CreatedAt.Format(time.RFC3339Nano), cursorDelimiter, post.URI)
 
 	case "hot":
 		// Format: created_at::uri::cursor_timestamp
 		// CRITICAL: Include cursor_timestamp for stable hot_rank comparison across requests
 		// NOTE: We don't store hot_rank in the cursor - we use the post's URI to look it up
 		// This avoids floating-point precision issues between cursor storage and comparison
-		payload = fmt.Sprintf("%s%s%s%s%s", post.CreatedAt.Format(time.RFC3339Nano), delimiter, post.URI, delimiter, queryTime.Format(time.RFC3339Nano))
+		payload = fmt.Sprintf("%s%s%s%s%s", post.CreatedAt.Format(time.RFC3339Nano), cursorDelimiter, post.URI, cursorDelimiter, queryTime.Format(time.RFC3339Nano))
 
 	default:
 		payload = post.URI
 	}
 
-	// Sign the payload with HMAC-SHA256
-	mac := hmac.New(sha256.New, []byte(r.cursorSecret))
-	mac.Write([]byte(payload))
-	signature := hex.EncodeToString(mac.Sum(nil))
+	return payload
+}
 
-	// Append signature to payload
-	signed := payload + delimiter + signature
+func (r *feedRepoBase) parseSearchCursor(cursor *string, req communityFeeds.SearchPostsRequest, paramOffset int, rankExpression string) (string, []interface{}, error) {
+	if cursor == nil || *cursor == "" {
+		return "", nil, nil
+	}
 
-	return base64.StdEncoding.EncodeToString([]byte(signed))
+	payload, err := r.verifyCursorPayload(*cursor)
+	if err != nil {
+		return "", nil, fmt.Errorf("invalid search cursor signature: %w", communityFeeds.ErrInvalidCursor)
+	}
+
+	envelope := strings.SplitN(payload, cursorDelimiter, 3)
+	if len(envelope) != 3 || envelope[0] != "search" {
+		return "", nil, fmt.Errorf("invalid search cursor envelope: %w", communityFeeds.ErrInvalidCursor)
+	}
+	if envelope[1] != postSearchScopeHash(req) {
+		return "", nil, fmt.Errorf("search cursor result set mismatch: %w", communityFeeds.ErrInvalidCursor)
+	}
+
+	if req.Sort == "new" || req.Sort == "top" {
+		filter, values, err := r.parseCursorPayload(envelope[2], req.Sort, paramOffset)
+		if err != nil {
+			return "", nil, fmt.Errorf("invalid search cursor position: %w", communityFeeds.ErrInvalidCursor)
+		}
+		return filter, values, nil
+	}
+
+	return parseRelevanceCursorPayload(envelope[2], paramOffset, rankExpression)
+}
+
+func parseRelevanceCursorPayload(payload string, paramOffset int, rankExpression string) (string, []interface{}, error) {
+	parts := strings.Split(payload, cursorDelimiter)
+	if len(parts) != 3 {
+		return "", nil, fmt.Errorf("invalid relevance cursor format: %w", communityFeeds.ErrInvalidCursor)
+	}
+
+	rank, err := strconv.ParseFloat(parts[0], 64)
+	if err != nil {
+		return "", nil, fmt.Errorf("invalid relevance cursor rank: %w", communityFeeds.ErrInvalidCursor)
+	}
+	createdAt, err := time.Parse(time.RFC3339Nano, parts[1])
+	if err != nil {
+		return "", nil, fmt.Errorf("invalid relevance cursor timestamp: %w", communityFeeds.ErrInvalidCursor)
+	}
+	if !strings.HasPrefix(parts[2], "at://") {
+		return "", nil, fmt.Errorf("invalid relevance cursor URI: %w", communityFeeds.ErrInvalidCursor)
+	}
+
+	// ts_rank_cd returns float4; lib/pq's extra_float_digits=2 round-trips that
+	// value exactly, and ::real restores the identical float4 for safe equality.
+	filter := fmt.Sprintf(`AND (
+			%s < $%d::real
+			OR (%s = $%d::real AND p.created_at < $%d)
+			OR (%s = $%d::real AND p.created_at = $%d AND p.uri < $%d)
+		)`, rankExpression, paramOffset,
+		rankExpression, paramOffset, paramOffset+1,
+		rankExpression, paramOffset, paramOffset+1, paramOffset+2)
+	return filter, []interface{}{rank, createdAt, parts[2]}, nil
+}
+
+func (r *feedRepoBase) buildSearchCursor(req communityFeeds.SearchPostsRequest, post *posts.PostView, rank float64) string {
+	var innerPayload string
+	if req.Sort == "new" || req.Sort == "top" {
+		innerPayload = r.buildCursorPayload(post, req.Sort, rank, time.Now())
+	} else {
+		innerPayload = buildRelevanceCursorPayload(post, rank)
+	}
+
+	payload := strings.Join([]string{"search", postSearchScopeHash(req), innerPayload}, cursorDelimiter)
+	return r.signCursorPayload(payload)
+}
+
+func buildRelevanceCursorPayload(post *posts.PostView, rank float64) string {
+	return strings.Join([]string{
+		strconv.FormatFloat(rank, 'g', -1, 64),
+		post.CreatedAt.Format(time.RFC3339Nano),
+		post.URI,
+	}, cursorDelimiter)
+}
+
+func postSearchScopeHash(req communityFeeds.SearchPostsRequest) string {
+	timeframe := ""
+	if req.Sort == "top" {
+		timeframe = req.Timeframe
+	}
+
+	hash := sha256.New()
+	for _, value := range []string{req.Query, req.Community, req.Sort, timeframe} {
+		hash.Write([]byte(strconv.Itoa(len(value))))
+		hash.Write([]byte{':'})
+		hash.Write([]byte(value))
+	}
+	sum := hash.Sum(nil)
+	return hex.EncodeToString(sum[:8])
 }
 
 // feedPostSelectClause builds the SELECT ... FROM posts p clause shared by the
 // community, timeline, and discover feed queries. It is postViewSelectColumns (the
 // single source of truth for PostView hydration, see post_repo.go) plus a hot_rank
-// column: pass feedHotRankExpression for hot sort, or "NULL::numeric" for other sorts.
+// column: pass feedHotRankExpression for hot sort, the search relevance rank,
+// or "NULL::numeric" for other sorts.
 func feedPostSelectClause(hotRankExpr string) string {
 	return `
 		SELECT` + postViewSelectColumns + `,
@@ -371,7 +481,7 @@ func (r *feedRepoBase) scanFeedPost(rows *sql.Rows) (*posts.PostView, float64, e
 		return nil, 0, err
 	}
 
-	// hot_rank is NULL for non-hot sorts
+	// hot_rank is NULL for ordinary non-hot feeds; search reuses it for relevance.
 	hotRankValue := 0.0
 	if hotRank.Valid {
 		hotRankValue = hotRank.Float64

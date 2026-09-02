@@ -461,19 +461,19 @@ CREATE INDEX idx_votes_voter_subject ON votes(voter_did, subject_uri) WHERE dele
 - [ ] **AppView Query:** Endpoint to fetch user's saved posts
 
 ### Post Search
-- [x] Lexicon: `social.coves.community.post.search` ✅
-- [ ] **Search Parameters:**
-  - Query string (q)
-  - Filter by community
-  - Filter by author
-  - Filter by post type
-  - Filter by tags
-  - Sort: relevance, new, top
-  - Timeframe: hour, day, week, month, year, all
-- [ ] **Implementation:**
-  - PostgreSQL full-text search (tsvector on title + content)
-  - Relevance ranking algorithm
-  - Pagination with cursor
+- [x] Lexicon: `social.coves.feed.searchPosts` ✅ (replaces the never-implemented `social.coves.community.post.search`; see docs/PRD_POST_SEARCH.md)
+- **Search Parameters:**
+  - [x] Query string (q) ✅
+  - [x] Filter by community (optional; omitted = cross-community) ✅
+  - [ ] Filter by author
+  - [ ] Filter by post type
+  - [ ] Filter by tags
+  - [x] Sort: relevance, new, top ✅
+  - [x] Timeframe: hour, day, week, month, year, all (applies to `top`) ✅
+- **Implementation:**
+  - [x] PostgreSQL full-text search (stored tsvector on title + content, GIN) ✅
+  - [x] Relevance ranking (`ts_rank_cd`, title weighted above body) ✅
+  - [x] Pagination with signed, result-set-bound cursors ✅
 
 ### Edit History
 - [ ] **Track Edits:** Store edit history in AppView (not in atProto record)

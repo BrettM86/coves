@@ -55,16 +55,7 @@ func (h *GetCommunityHandler) HandleGetCommunity(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// Populate viewer vote state if authenticated
-	common.PopulateViewerVoteState(r.Context(), r, h.voteService, response.Feed)
-
-	// Transform blob refs to URLs and resolve post embeds for all posts
-	for _, feedPost := range response.Feed {
-		if feedPost.Post != nil {
-			posts.TransformBlobRefsToURLs(feedPost.Post)
-			posts.TransformPostEmbeds(r.Context(), feedPost.Post, h.blueskyService)
-		}
-	}
+	processFeedPosts(r, response.Feed, h.voteService, h.blueskyService)
 
 	// Return feed
 	w.Header().Set("Content-Type", "application/json")
@@ -72,6 +63,16 @@ func (h *GetCommunityHandler) HandleGetCommunity(w http.ResponseWriter, r *http.
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		// Log encoding errors but don't return error response (headers already sent)
 		log.Printf("ERROR: Failed to encode feed response: %v", err)
+	}
+}
+
+func processFeedPosts(r *http.Request, feed []*communityFeeds.FeedViewPost, voteService votes.Service, blueskyService blueskypost.Service) {
+	common.PopulateViewerVoteState(r.Context(), r, voteService, feed)
+	for _, feedPost := range feed {
+		if feedPost.Post != nil {
+			posts.TransformBlobRefsToURLs(feedPost.Post)
+			posts.TransformPostEmbeds(r.Context(), feedPost.Post, blueskyService)
+		}
 	}
 }
 

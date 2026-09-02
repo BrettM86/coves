@@ -15,6 +15,10 @@ import (
 type fakeCommunityFeedService struct {
 	got     *communityFeeds.GetCommunityFeedRequest
 	callErr error
+
+	searchGot      *communityFeeds.SearchPostsRequest
+	searchResponse *communityFeeds.FeedResponse
+	searchErr      error
 }
 
 func (f *fakeCommunityFeedService) GetCommunityFeed(
@@ -25,6 +29,18 @@ func (f *fakeCommunityFeedService) GetCommunityFeed(
 	f.got = &captured
 	if f.callErr != nil {
 		return nil, f.callErr
+	}
+	return &communityFeeds.FeedResponse{Feed: []*communityFeeds.FeedViewPost{}}, nil
+}
+
+func (f *fakeCommunityFeedService) SearchPosts(_ context.Context, req communityFeeds.SearchPostsRequest) (*communityFeeds.FeedResponse, error) {
+	captured := req
+	f.searchGot = &captured
+	if f.searchErr != nil {
+		return nil, f.searchErr
+	}
+	if f.searchResponse != nil {
+		return f.searchResponse, nil
 	}
 	return &communityFeeds.FeedResponse{Feed: []*communityFeeds.FeedViewPost{}}, nil
 }

@@ -58,6 +58,13 @@ import (
 // what a post record is called.
 const PostV2Collection = posts.PostV2Collection
 
+// MaxPostTitleBytes and MaxPostContentBytes mirror the postv2 lexicon and the
+// local write API caps in internal/core/posts/service.go.
+const (
+	MaxPostTitleBytes   = 3000
+	MaxPostContentBytes = 100000
+)
+
 // DeletedAccountLookup reports whether a DID names an account this AppView was
 // asked to erase (migration 036, PRD rev 2.7).
 //
@@ -454,6 +461,12 @@ func parseAuthorPostRecord(record map[string]interface{}) (*AuthorPostRecord, er
 		// PERMANENT: the record's shape doesn't match the lexicon (wrong field
 		// types); replaying the identical bytes can never parse differently.
 		return nil, fmt.Errorf("%w: failed to unmarshal postv2 record: %v", ErrPermanentEvent, err)
+	}
+	if parsed.Title != nil && len(*parsed.Title) > MaxPostTitleBytes {
+		return nil, fmt.Errorf("%w: title exceeds maximum length (%d bytes): got %d bytes", ErrPermanentEvent, MaxPostTitleBytes, len(*parsed.Title))
+	}
+	if parsed.Content != nil && len(*parsed.Content) > MaxPostContentBytes {
+		return nil, fmt.Errorf("%w: content exceeds maximum length (%d bytes): got %d bytes", ErrPermanentEvent, MaxPostContentBytes, len(*parsed.Content))
 	}
 
 	// PERMANENT for the same reason: a record missing a required field is
