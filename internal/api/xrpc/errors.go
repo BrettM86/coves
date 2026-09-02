@@ -1,6 +1,7 @@
 package xrpc
 
 import (
+	"bytes"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -10,6 +11,24 @@ import (
 type Error struct {
 	Error   string `json:"error"`
 	Message string `json:"message"`
+}
+
+// WriteJSON encodes the response to a buffer before writing headers and body.
+// This avoids sending a successful status with a broken or empty body if
+// encoding fails.
+func WriteJSON(w http.ResponseWriter, status int, value any) {
+	var buffer bytes.Buffer
+	if err := json.NewEncoder(&buffer).Encode(value); err != nil {
+		slog.Error("failed to encode XRPC JSON response", "error", err)
+		WriteError(w, http.StatusInternalServerError, "InternalServerError", "An internal error occurred")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if _, err := w.Write(buffer.Bytes()); err != nil {
+		slog.Warn("failed to write XRPC JSON response", "error", err, "status", status)
+	}
 }
 
 // WriteError writes an XRPC error response with the given status code.

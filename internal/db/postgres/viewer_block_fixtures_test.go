@@ -12,19 +12,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Shared seeding for the four viewer-block filter suites.
+// Shared seeding for the viewer-block filter suites.
 //
-// User blocks are enforced in SQL, once per read path: feed_repo.go,
-// discover_repo.go, timeline_repo.go and comment_repo.go each carry their own
-// NOT EXISTS subquery against user_blocks, and each builds its parameter index
-// differently (the community feed's viewer is $3+, discover's is $2+, the
-// timeline reuses $1). There is no shared helper to test, so there is one suite
-// per query — feed_repo_block_test.go, discover_repo_block_test.go,
-// timeline_repo_block_test.go, comment_repo_block_test.go — and this file holds
-// what they all need to set up.
+// Viewer blocks are enforced in SQL, once per read path. The three post feeds
+// (feed_repo.go, discover_repo.go, timeline_repo.go) render their clauses
+// through viewerBlockFilters in viewer_block_filter.go, but each binds the
+// viewer at a different parameter index (the community feed's viewer is $3+,
+// discover's is $2+, the timeline reuses $1) and only the aggregate feeds apply
+// community blocks; comment_repo.go still carries its own author-block clause on
+// c.commenter_did. A helper cannot prove it was spliced into the right slot of
+// the right query, so there is one suite per query — feed_repo_block_test.go,
+// discover_repo_block_test.go, timeline_repo_block_test.go,
+// comment_repo_block_test.go, plus community_block_enforcement_test.go for the
+// cross-surface community-block contract — and this file holds what they all
+// need to set up.
 //
-// They come from tests/integration/userblock_enforcement_test.go, which proved
-// all four against the same shared database.
+// The fixtures descend from the since-deleted
+// tests/integration/userblock_enforcement_test.go, which proved the four
+// author-block suites against one shared database before T1 moved in-package.
 
 // blockFilterCast is the three parties every filter suite needs: the viewer who
 // blocks, the author they block, and a third party who must stay visible.
@@ -69,6 +74,23 @@ func insertUserBlock(t *testing.T, db *sql.DB, blockerDID, blockedDID string) {
 		"at://"+blockerDID+"/social.coves.actor.block/"+blockedDID,
 		"bafyblock"+blockedDID)
 	require.NoError(t, err, "indexing the block")
+}
+
+// insertCommunityBlock indexes user → community, as the firehose consumer would.
+//
+// It writes the row directly rather than through NewCommunityBlockRepository:
+// what is under test is the reading query, and going through the writing one
+// would make a filter suite fail when the block repository breaks.
+func insertCommunityBlock(t *testing.T, db *sql.DB, userDID, communityDID string) {
+	t.Helper()
+
+	_, err := db.ExecContext(context.Background(), `
+		INSERT INTO community_blocks (user_did, community_did, record_uri, record_cid)
+		VALUES ($1, $2, $3, $4)
+	`, userDID, communityDID,
+		"at://"+userDID+"/social.coves.community.block/"+communityDID,
+		"bafyblock"+communityDID)
+	require.NoError(t, err, "indexing the community block")
 }
 
 // seedFilterablePost inserts one post by authorDID in communityDID and returns

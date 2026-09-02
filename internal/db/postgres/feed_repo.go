@@ -55,9 +55,14 @@ func (r *postgresFeedRepo) GetCommunityFeed(ctx context.Context, req communityFe
 
 	// The viewer block filter reuses that same viewer parameter; it is only
 	// meaningful for an authenticated viewer and absent for the public.
+	//
+	// explicitSurface: this is the community's OWN feed, an explicit request for
+	// the place, so a community block (an aggregate-feed mute) does not apply
+	// here while an author block still does. Pinned by
+	// TestCommunityFeedRepo_CommunityBlockIsNotApplied.
 	var viewerFilter string
 	if req.ViewerDID != "" {
-		viewerFilter = fmt.Sprintf("AND NOT EXISTS (SELECT 1 FROM user_blocks WHERE blocker_did = $%d AND blocked_did = p.author_did)", visibilityParam)
+		viewerFilter = viewerBlockFilters(visibilityParam, explicitSurface)
 	}
 
 	query := fmt.Sprintf(`

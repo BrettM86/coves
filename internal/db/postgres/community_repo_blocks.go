@@ -111,11 +111,13 @@ func (r *postgresCommunityRepo) GetBlockByURI(ctx context.Context, recordURI str
 
 // ListBlockedCommunities retrieves all communities blocked by a user
 func (r *postgresCommunityRepo) ListBlockedCommunities(ctx context.Context, userDID string, limit, offset int) ([]*communities.CommunityBlock, error) {
+	// blocked_at comes from record createdAt and is often second-resolution, so
+	// id breaks ties to keep offset pages from duplicating or skipping blocks.
 	query := `
 		SELECT id, user_did, community_did, blocked_at, record_uri, record_cid
 		FROM community_blocks
 		WHERE user_did = $1
-		ORDER BY blocked_at DESC
+		ORDER BY blocked_at DESC, id DESC
 		LIMIT $2 OFFSET $3`
 
 	rows, err := r.db.QueryContext(ctx, query, userDID, limit, offset)

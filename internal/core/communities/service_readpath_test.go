@@ -185,6 +185,32 @@ func TestService_LimitClamping(t *testing.T) {
 	}
 }
 
+func TestService_GetBlockedCommunities_ClampsNegativeOffset(t *testing.T) {
+	t.Parallel()
+
+	// PostgreSQL rejects a negative OFFSET, so forwarding one would turn a bad
+	// query parameter into a 500 from the new endpoint. The user-block service
+	// already clamps this boundary; community blocks must do the same.
+	for _, tc := range []struct {
+		name       string
+		asked      int
+		wantOffset int
+	}{
+		{name: "negative becomes zero", asked: -1, wantOffset: 0},
+		{name: "positive is preserved", asked: 3, wantOffset: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service, repo, _ := seededService(t)
+			_, err := service.GetBlockedCommunities(context.Background(), readerDID, 10, tc.asked)
+			require.NoError(t, err)
+			call, err := repo.onlyCallTo("ListBlockedCommunities")
+			require.NoError(t, err)
+			assert.Equal(t, []any{readerDID, 10, tc.wantOffset}, call.args,
+				"negative offsets must be clamped before the repository builds LIMIT $2 OFFSET $3")
+		})
+	}
+}
+
 func TestService_IdentifierTakingReadsResolveBeforeQuerying(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

@@ -162,15 +162,17 @@ type BlockedAuthor struct {
 // This keeps get-by-URI (permalink/cold-load) consistent with feed/timeline block
 // filtering. Matches social.coves.community.post.get#blockedPost.
 //
-// blockedBy is always "author" today: community blocks are not enforced on any read path
-// yet, and moderator removals already surface as notFoundPost (soft-deleted rows are
-// absent from the repo fetch).
-//
-// KNOWN DEFECT, not a design choice: community blocks are indexed and then read by nobody
-// (issue 2026-07-29-community-blocks-indexed-but-never-enforced). When that is fixed this
-// is the second place it surfaces — the union member already has room for a "community"
-// value — so do not "tidy" this comment into a claim that author is the only case there
-// can be.
+// blockedBy is always "author", and that IS a design choice: a community block
+// (social.coves.community.block) is a mute of the AGGREGATE surfaces — Discover and
+// the subscribed timeline today, cross-community search when it lands — enforced by
+// viewerBlockFilters(…, aggregateSurface) in internal/db/postgres. Opening the
+// community itself, a post permalink, or its comment thread is an explicit request and
+// is honoured (Reddit/Lemmy semantics), so post.get never emits a "community" marker.
+// The author feed (actor.getPosts, GetByAuthor) is likewise an explicit request for
+// that author and applies neither block kind today. Moderator removals surface as
+// notFoundPost / removedPost, not here. The union member keeps room for a "community"
+// value in case that product decision is ever reversed; do not add it without a read
+// path that emits it.
 type BlockedPost struct {
 	URI       string         `json:"uri"`
 	Blocked   bool           `json:"blocked"` // Always true (const per lexicon); discriminates the union on the wire

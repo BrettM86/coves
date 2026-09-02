@@ -112,6 +112,49 @@ func TestCommunityRepo_ListBlockedCommunities(t *testing.T) {
 	})
 }
 
+func TestCommunityRepo_ListBlockedCommunities_StablePagesOnEqualTimestamps(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	repo := NewCommunityRepository(db)
+	ctx := context.Background()
+	const userDID = "did:plc:blockstablepages"
+
+	// blocked_at comes from the record's createdAt and is often only precise to
+	// the second. ORDER BY blocked_at alone is unstable on ties, so offset pages
+	// can duplicate one row and skip another unless a unique tie-breaker is used.
+	var want []string
+	for _, name := range []string{"stablealpha", "stablebravo", "stablecharlie", "stabledelta"} {
+		community := blockableCommunity(t, repo, name)
+		want = append(want, community.DID)
+		_, err := db.ExecContext(ctx, `
+			INSERT INTO community_blocks
+				(user_did, community_did, blocked_at, record_uri, record_cid)
+			VALUES
+				($1, $2, TIMESTAMPTZ '2026-01-02 03:04:05+00', $3, $4)
+		`, userDID, community.DID,
+			"at://"+userDID+"/social.coves.community.block/"+name,
+			"bafy"+name)
+		require.NoErrorf(t, err, "indexing equal-timestamp block %s", name)
+	}
+
+	first, err := repo.ListBlockedCommunities(ctx, userDID, 2, 0)
+	require.NoError(t, err)
+	require.Len(t, first, 2)
+	second, err := repo.ListBlockedCommunities(ctx, userDID, 2, 2)
+	require.NoError(t, err)
+	require.Len(t, second, 2)
+
+	seen := []string{
+		first[0].CommunityDID,
+		first[1].CommunityDID,
+		second[0].CommunityDID,
+		second[1].CommunityDID,
+	}
+	assert.ElementsMatch(t, want, seen,
+		"equal blocked_at values made offset pagination duplicate or skip a community; the query needs a unique tie-breaker")
+}
+
 func TestCommunityRepo_IsBlocked(t *testing.T) {
 	t.Parallel()
 

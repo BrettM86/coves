@@ -1,10 +1,7 @@
 package userblock
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -90,7 +87,7 @@ func (h *BlockHandler) HandleBlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, blockResponse{
+	xrpc.WriteJSON(w, http.StatusOK, blockResponse{
 		Block: blockRecord{
 			RecordURI: result.RecordURI,
 			RecordCID: result.RecordCID,
@@ -125,7 +122,7 @@ func (h *BlockHandler) HandleUnblock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, unblockResponse{Success: true})
+	xrpc.WriteJSON(w, http.StatusOK, unblockResponse{Success: true})
 }
 
 // HandleGetBlocked returns the list of users blocked by the authenticated user
@@ -176,21 +173,5 @@ func (h *BlockHandler) HandleGetBlocked(w http.ResponseWriter, r *http.Request) 
 		})
 	}
 
-	writeJSON(w, http.StatusOK, blockedUsersResponse{Blocks: entries})
-}
-
-// writeJSON encodes the response to a buffer first, then writes headers and body.
-// This avoids sending a 200 status with a broken/empty body if encoding fails.
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(v); err != nil {
-		slog.Error("Failed to encode response", "error", err)
-		writeError(w, http.StatusInternalServerError, "InternalServerError", "An internal error occurred")
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if _, err := w.Write(buf.Bytes()); err != nil {
-		slog.Error("Failed to write response", "error", err)
-	}
+	xrpc.WriteJSON(w, http.StatusOK, blockedUsersResponse{Blocks: entries})
 }

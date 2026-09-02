@@ -1112,6 +1112,9 @@ func (s *communityService) GetBlockedCommunities(ctx context.Context, userDID st
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
+	if offset < 0 {
+		offset = 0
+	}
 
 	return s.repo.ListBlockedCommunities(ctx, userDID, limit, offset)
 }

@@ -52,6 +52,9 @@ func RegisterCommunityRoutes(r chi.Router, service communities.Service, repo com
 	// social.coves.community.unblockCommunity - unblock a community
 	r.With(authMiddleware.RequireAuth).Post("/xrpc/social.coves.community.unblockCommunity", blockHandler.HandleUnblock)
 
+	// social.coves.community.getBlockedCommunities - list the authenticated user's community blocks
+	r.With(authMiddleware.RequireAuth).Get("/xrpc/social.coves.community.getBlockedCommunities", blockHandler.HandleGetBlocked)
+
 	// TODO: Add delete handler when implemented
 	// r.With(authMiddleware.RequireAuth).Post("/xrpc/social.coves.community.delete", deleteHandler.HandleDelete)
 }

@@ -201,6 +201,7 @@ func (m *OAuthAuthMiddleware) OptionalAuth(next http.Handler) http.Handler {
 		// Try to authenticate (don't write errors, just continue without user context on failure)
 		sealedSession, err := m.unsealer.UnsealSession(token)
 		if err != nil {
+			log.Printf("[AUTH_WARNING] Optional auth: could not unseal session token: %v", err)
 			next.ServeHTTP(w, r)
 			return
 		}

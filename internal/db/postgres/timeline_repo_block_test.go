@@ -81,3 +81,72 @@ func TestTimelineRepo_ViewerBlockFiltering(t *testing.T) {
 	assert.ElementsMatch(t, []string{thirdPartyPost}, read(t),
 		"the blocked author's post must leave the timeline and the third party's must stay")
 }
+
+func TestTimelineRepo_CommunityBlockFiltering(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	ctx := context.Background()
+	cast := seedBlockFilterCast(t, db, "tlcommunity")
+
+	const (
+		blockedCommunityDID = "did:plc:blktlcommunityx"
+		visibleCommunityDID = "did:plc:blktlcommunityy"
+	)
+	createTestCommunity(t, db, blockedCommunityDID, "c-blktlcommunityx.coves.social", cast.viewer)
+	createTestCommunity(t, db, visibleCommunityDID, "c-blktlcommunityy.coves.social", cast.viewer)
+	for _, userDID := range []string{cast.viewer, cast.thirdParty} {
+		subscribeToCommunity(t, db, userDID, blockedCommunityDID)
+		subscribeToCommunity(t, db, userDID, visibleCommunityDID)
+	}
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	blockedCommunityPost := seedFilterablePost(t, db, blockedCommunityDID, cast.thirdParty, "tlcommunityblocked", base)
+	viewerPostInBlockedCommunity := seedFilterablePost(t, db, blockedCommunityDID, cast.viewer, "tlcommunityviewer", base.Add(time.Hour))
+	visibleCommunityPost := seedFilterablePost(t, db, visibleCommunityDID, cast.thirdParty, "tlcommunityvisible", base.Add(2*time.Hour))
+	allPosts := []string{blockedCommunityPost, viewerPostInBlockedCommunity, visibleCommunityPost}
+
+	repo := NewTimelineRepository(db, "test-secret")
+	read := func(t *testing.T, userDID string) []string {
+		t.Helper()
+		feed, _, err := repo.GetTimeline(ctx, timeline.GetTimelineRequest{
+			UserDID: userDID,
+			Sort:    "new",
+			Limit:   50,
+		})
+		require.NoError(t, err)
+		return timelineURIs(feed)
+	}
+
+	require.ElementsMatch(t, allPosts, read(t, cast.viewer),
+		"the viewer must see every fixture post in the subscribed timeline before blocking a community")
+
+	insertCommunityBlock(t, db, cast.viewer, blockedCommunityDID)
+
+	t.Run("the subscriber stops seeing the blocked community although still subscribed", func(t *testing.T) {
+		// Blocking does not unsubscribe the viewer, so the subscription and block
+		// coexist. The block must win when the subscribed timeline is read.
+		assert.ElementsMatch(t, []string{visibleCommunityPost}, read(t, cast.viewer),
+			"the community block must remove the muted community even while its subscription remains")
+	})
+
+	t.Run("the viewer's own post in the blocked community is hidden too", func(t *testing.T) {
+		assert.NotContains(t, read(t, cast.viewer), viewerPostInBlockedCommunity,
+			"the viewer's own post must not bypass a mute of its community")
+	})
+
+	t.Run("another subscriber is unaffected", func(t *testing.T) {
+		assert.ElementsMatch(t, allPosts, read(t, cast.thirdParty),
+			"community blocks are viewer-scoped and must not change another subscriber's timeline")
+	})
+
+	t.Run("deleting the block restores visibility", func(t *testing.T) {
+		_, err := db.ExecContext(ctx, `
+			DELETE FROM community_blocks
+			WHERE user_did = $1 AND community_did = $2
+		`, cast.viewer, blockedCommunityDID)
+		require.NoError(t, err, "deleting the indexed community block")
+		assert.ElementsMatch(t, allPosts, read(t, cast.viewer),
+			"deleting a community block must restore timeline visibility from live database state")
+	})
+}

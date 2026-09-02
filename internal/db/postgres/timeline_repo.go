@@ -62,12 +62,12 @@ func (r *postgresTimelineRepo) GetTimeline(ctx context.Context, req timeline.Get
 			AND p.deleted_at IS NULL
 			AND %s
 			-- Intentional $1 reuse: the viewer's DID (cs.user_did) is also the blocker for block filtering
-			AND NOT EXISTS (SELECT 1 FROM user_blocks WHERE blocker_did = $1 AND blocked_did = p.author_did)
+			%s
 			%s
 			%s
 		ORDER BY %s
 		LIMIT $2
-	`, selectClause, visJoin, visWhere, timeFilter, cursorFilter, orderBy)
+	`, selectClause, visJoin, visWhere, viewerBlockFilters(1, aggregateSurface), timeFilter, cursorFilter, orderBy)
 
 	// Prepare query arguments
 	args := []interface{}{req.UserDID, req.Limit + 1} // +1 to check for next page

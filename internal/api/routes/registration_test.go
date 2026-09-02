@@ -173,6 +173,10 @@ var declaredRoutes = []declaredRoute{
 	{http.MethodPost, "/xrpc/social.coves.community.unsubscribe", authRequired, 0, false},
 	{http.MethodPost, "/xrpc/social.coves.community.blockCommunity", authRequired, 0, false},
 	{http.MethodPost, "/xrpc/social.coves.community.unblockCommunity", authRequired, 0, false},
+	// Reading community blocks is authenticated because this list is scoped to
+	// the caller's DID, not because the records are secret: each is public in the
+	// user's repo, but there is no public form of "my blocks".
+	{http.MethodGet, "/xrpc/social.coves.community.getBlockedCommunities", authRequired, 0, false},
 
 	// RegisterPostRoutes — social.coves.community.post.*
 	// The three writes take DualAuthMiddleware in production (OAuth users OR

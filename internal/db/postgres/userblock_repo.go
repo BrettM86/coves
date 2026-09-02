@@ -128,7 +128,7 @@ func (r *postgresUserBlockRepo) ListBlockedUsers(ctx context.Context, blockerDID
 		SELECT id, blocker_did, blocked_did, blocked_at, record_uri, record_cid
 		FROM user_blocks
 		WHERE blocker_did = $1
-		ORDER BY blocked_at DESC
+		ORDER BY blocked_at DESC, id DESC
 		LIMIT $2 OFFSET $3`
 
 	rows, err := r.db.QueryContext(ctx, query, blockerDID, limit, offset)

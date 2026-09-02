@@ -57,7 +57,7 @@ func (r *postgresDiscoverRepo) GetDiscover(ctx context.Context, req discover.Get
 	// for an authenticated viewer, absent for the public.
 	var viewerFilter string
 	if req.ViewerDID != "" {
-		viewerFilter = fmt.Sprintf("AND NOT EXISTS (SELECT 1 FROM user_blocks WHERE blocker_did = $%d AND blocked_did = p.author_did)", visibilityParam)
+		viewerFilter = viewerBlockFilters(visibilityParam, aggregateSurface)
 	}
 
 	// No subscription filter - show ALL posts from ALL communities

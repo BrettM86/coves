@@ -19,27 +19,26 @@ import (
 // social.coves.actor.block (user blocks user) and social.coves.community.block
 // (user blocks community), plus the auth boundary of the block endpoints.
 //
-// # BOTH BLOCK COLLECTIONS ARE INVISIBLE TO AN UNAUTHENTICATED READER, BY DESIGN
+// # APPVIEW BLOCK SURFACES REQUIRE AN AUTHENTICATED VIEWER, BY DESIGN
 //
-// Every other contract in this package watches a record appear on a serving
-// endpoint. Neither of these can, and the reason is not an oversight in the
-// tests — it is what a block IS. A block is private state about one viewer, so
-// every surface that reveals one is scoped to that viewer's session:
+// The records themselves are public in the user's repo, as their lexicons say.
+// The AppView surfaces that list or apply them are nevertheless scoped to a
+// viewer's session, so an unauthenticated T2 client cannot observe their effect:
 //
 //   - social.coves.actor.getBlockedUsers is behind RequireAuth
-//     (internal/api/routes/userblock.go:25).
+//     (RegisterUserBlockRoutes).
 //   - actor.getProfile hydrates viewer.blocking only when a session names the
-//     viewer (internal/api/routes/user.go:161-174).
-//   - The feed, discover, timeline and comment queries filter blocked authors
-//     only when the request carries a ViewerDID, which the handlers take from
-//     the session (feed_repo.go:52, discover_repo.go:50, timeline_repo.go:55,
-//     comment_repo.go:659). With no viewer they deliberately return everything.
+//     viewer (RegisterUserRoutesWithOptions).
+//   - The community feed, Discover and comment queries filter blocked authors
+//     only when the request carries a ViewerDID. The timeline always has a
+//     viewer because it is defined by that viewer's subscriptions. The post
+//     feeds share viewerBlockFilters; comments carry the equivalent author-only
+//     predicate. With no viewer, public reads deliberately return everything.
 //   - social.coves.community.post.get replaces a blocked author's post with a
-//     blockedPost union member, again only for a viewer
-//     (internal/core/posts/service.go:741).
-//   - community.block has NO read surface at all: there is no
-//     getBlockedCommunities route, and nothing in the product filters on the
-//     community_blocks table (see the note at the end of this comment).
+//     blockedPost union member, again only for a viewer (applyViewerBlocks).
+//   - social.coves.community.getBlockedCommunities is behind RequireAuth
+//     (RegisterCommunityRoutes). Discover and the timeline apply the
+//     community_blocks mute only for a viewer (viewerBlockFilters).
 //
 // §3.4b's standing limitation then closes the door: nothing outside the browser
 // OAuth callback mints a session RequireAuth accepts, so this tier cannot hold
@@ -52,7 +51,7 @@ import (
 //
 // The AppView reports on its own consumers at /health/consumers — connection
 // state, cursor, events processed and events dead-lettered, per consumer
-// (cmd/server/health.go). That endpoint is public, and §3.4c already treats it
+// (cmd/server/health.go). That endpoint is public, and §3.4b already treats it
 // as an observation surface for the reliability suite. Two facts about a block
 // commit are visible through it, and together they are worth more than they
 // look:
@@ -72,11 +71,11 @@ import (
 //     enough to matter: a consumer that ignored the collection entirely would
 //     also show "processed, no failures". So each contract also writes a
 //     MALFORMED block — one with no subject — and requires the dead-letter
-//     counter to move by exactly one. That can only happen inside the block
-//     handler's own validation (user_consumer.go:488-491,
-//     community_consumer.go:791-794). For actor.block it proves something
+//     counter to move by exactly one. That can only happen inside the consumer's
+//     block handlers ((*UserEventConsumer).handleUserBlock and
+//     (*CommunityEventConsumer).handleBlock). For actor.block it proves something
 //     further, which is the part most likely to rot: handleUserBlock returns
-//     early, silently, when userBlockRepo is nil (user_consumer.go:448-453) —
+//     early, silently, when userBlockRepo is nil —
 //     BEFORE parsing. A dead letter is therefore proof that cmd/server actually
 //     wired the block repository into the consumer, which is the exact kind of
 //     wiring §3.4's whole "the AppView container consumes" design exists to
@@ -97,33 +96,35 @@ import (
 // check never covers them and nobody is told when the ingestion path for a
 // block breaks. What these contracts do catch is the whole class the manifest
 // exists for: a collection dropped from consumerWantedCollections (which
-// happened to community.block once already — feeds.go:51-55 records that its
-// handler worked for months while no subscribe URL ever asked for the
+// happened to community.block once already — its handler worked for months
+// while consumerWantedCollections made no subscribe URL ask for the
 // collection), a consumer that stops being wired into cmd/server, a repository
 // left nil, a parse that starts rejecting valid records. Every one of those is
 // invisible to the T1 tests, which build their own consumer.
 //
-// # KNOWN PRODUCT GAP, FOUND WRITING THIS
+// # WHERE COMMUNITY-BLOCK ENFORCEMENT IS PROVEN
 //
-// community.block indexes a row that nothing ever reads. The table is written
-// by the consumer, read back by its own repository methods, and cascade-deleted
-// when an account is deleted — and that is all: no feed, discover, timeline,
-// comment or post query mentions community_blocks, and communities.Service's
-// GetBlockedCommunities and IsBlocked have no HTTP route. Blocking a community
-// today hides nothing from anybody. Filed as
-// 2026-07-29-community-blocks-indexed-but-never-enforced, and deliberately NOT
-// asserted here: a test pinning "a blocked community's posts are still served"
-// would be pinning the bug. What this contract asserts is the half that works —
-// the record is indexed faithfully — which is also what the fix will build on.
+// Writing this contract found that community.block indexed a row nothing read
+// (issue 2026-07-29-community-blocks-indexed-but-never-enforced). That is fixed:
+// a community block is a mute of the AGGREGATE feeds — Discover and the
+// subscribed timeline hide every post in the blocked community, while the
+// community's own feed, post permalinks and comment threads stay reachable as
+// explicit requests — and social.coves.community.getBlockedCommunities serves
+// the caller's list back. All of it is viewer-scoped, so none of it is
+// observable from this tier (§3.4b); it is proven at T1 in internal/db/postgres
+// (community_block_enforcement_test.go and the per-read-path
+// *_repo_block_test.go suites) and at T0 in internal/api/handlers/community.
+// What this contract asserts is the ingestion half those suites build on: the
+// record is indexed faithfully.
 const (
 	actorBlockCollection     = "social.coves.actor.block"
 	communityBlockCollection = "social.coves.community.block"
 )
 
-// blockRecord builds a block record in the shape both block services write it
-// (userblocks/service.go:114, communities/service.go:942): a subject and a
-// timestamp, nothing else. Both collections share the shape, which is why one
-// builder serves both.
+// blockRecord builds a block record in the shape (*userBlockService).BlockUser
+// and (*communityService).BlockCommunity write it: a subject and a timestamp,
+// nothing else. Both collections share the shape, which is why one builder
+// serves both.
 func blockRecord(collection, subjectDID string) map[string]any {
 	return map[string]any{
 		"$type":     collection,
@@ -332,8 +333,8 @@ func TestActorBlockIngestion(t *testing.T) {
 
 	// ---- unblock -------------------------------------------------------------
 	// A delete commit carries no record body, so the consumer resolves the
-	// block by the URI it reconstructs from repo DID, collection and rkey
-	// (user_consumer.go:539). A mismatch there would make every unblock a
+	// block by the URI (*UserEventConsumer).deleteUserBlock reconstructs from
+	// repo DID, collection and rkey. A mismatch there would make every unblock a
 	// silent no-op — the handler treats "no such block" as success — so what
 	// this step can see from outside is only that the commit was taken. The row
 	// really disappearing is asserted at T1, where the rows are visible.
@@ -346,7 +347,7 @@ func TestActorBlockIngestion(t *testing.T) {
 	// (internal/api/routes/userblock.go), listed together for the reason
 	// TestCommunityAPIContract gives: a handler test cannot see a route that was
 	// registered without its middleware, and for THIS domain that mistake would
-	// publish one user's private block list to anyone who asked.
+	// expose a caller-scoped list without requiring a caller.
 	//
 	// The read endpoint is here too, unlike in the other contracts' matrices,
 	// because getBlockedUsers being authenticated is not incidental — it is the
@@ -367,7 +368,7 @@ func TestActorBlockIngestion(t *testing.T) {
 	err = p.AppView.Query(ctx, "social.coves.actor.getBlockedUsers", nil, nil)
 	require.Truef(t, testkit.IsStatus(err, http.StatusUnauthorized),
 		"social.coves.actor.getBlockedUsers must answer 401 to a client with no session — it serves "+
-			"one user's private block list and there is no public form of it. Answered: %v", err)
+			"the caller's list and there is no public form of 'my blocks'. Answered: %v", err)
 }
 
 // awaitDisplayName waits until getProfile serves displayName for actor.
@@ -390,13 +391,13 @@ func awaitDisplayName(t *testing.T, p *pipeline, actorDID, displayName, descript
 //
 // coves:ingestion-contract social.coves.community.block
 //
-// The record lives in the USER's repo and names a community as its subject
-// (communities/service.go:942) — it is a reader hiding a place, not a moderator
-// banning a person, and the direction is worth stating because the collection's
-// name suggests the opposite. It is consumed by the COMMUNITIES consumer, which
-// is why this contract measures a different counter from its sibling above and
-// bounds its windows with a different visible record: a subscription, whose
-// subscriber count community.get serves.
+// The record (*communityService).BlockCommunity writes lives in the USER's repo
+// and names a community as its subject — it is a reader hiding a place, not a
+// moderator banning a person, and the direction is worth stating because the
+// collection's name suggests the opposite. It is consumed by the COMMUNITIES
+// consumer, which is why this contract measures a different counter from its
+// sibling above and bounds its windows with a different visible record: a
+// subscription, whose subscriber count community.get serves.
 //
 //	block            → the communities consumer takes the commit without failing
 //	malformed block  → the communities consumer REJECTS it, proving it parses

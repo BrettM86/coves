@@ -472,6 +472,14 @@ func TestCommunityAPIContract(t *testing.T) {
 			require.Truef(t, testkit.IsStatus(err, http.StatusUnauthorized),
 				"%s must answer 401 to a client with no session, answered: %v", endpoint.nsid, err)
 		}
+
+		// getBlockedCommunities is the query-shaped member of the same RequireAuth
+		// family; Procedure would probe the wrong HTTP method and miss its route.
+		for _, nsid := range []string{"social.coves.community.getBlockedCommunities"} {
+			err := p.AppView.Query(ctx, nsid, url.Values{}, nil)
+			require.Truef(t, testkit.IsStatus(err, http.StatusUnauthorized),
+				"%s must answer 401 to a client with no session, answered: %v", nsid, err)
+		}
 	})
 
 	t.Run("a client reads the community by every identifier form", func(t *testing.T) {

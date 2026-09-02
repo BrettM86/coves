@@ -29,7 +29,7 @@
           "properties": {
             "posts": {
               "type": "array",
-              "description": "Array of post views. May include notFound/blocked entries for missing posts.",
+              "description": "Array of post views. May include notFound, blocked, or removed entries for posts that cannot be shown.",
               "items": {
                 "type": "union",
                 "refs": [

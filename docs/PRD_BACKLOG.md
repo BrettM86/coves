@@ -398,24 +398,19 @@ if err != nil {
 
 ---
 
-### Community Blocking
-**Added:** 2025-10-15 | **Effort:** 1 day | **Priority:** ALPHA BLOCKER
+### Community Blocking — RESOLVED 2026-09-01
+**Added:** 2025-10-15 | **Effort:** 1 day | **Priority:** was ALPHA BLOCKER
 
-**Problem:** Users have no way to block unwanted communities from their feeds.
+**Problem (was):** Users had no way to block unwanted communities from their feeds. The write path (record, consumer, repository, block/unblock endpoints) shipped 2025-10-16, but nothing read `community_blocks` on any serving path until 2026-09-01.
 
-**Solution:**
-1. **Lexicon:** Extend `social.coves.actor.block` to support community DIDs (currently user-only)
-2. **Service:** Implement `BlockCommunity(userDID, communityDID)` and `UnblockCommunity()`
-3. **Handlers:** Add XRPC endpoints `social.coves.community.block` and `unblock`
-4. **Repository:** Add methods to track blocked communities
-5. **Feed:** Filter blocked communities from feed queries (beta work)
+**Shipped shape** (differs from the original sketch):
+1. **Lexicon:** a separate `social.coves.community.block` record in the USER's repo (not an extension of `actor.block`), plus `social.coves.community.getBlockedCommunities` (query, auth required, cursor-paginated).
+2. **Enforcement:** a community block is an AGGREGATE-FEED MUTE (Reddit/Lemmy semantics). Discover and the subscribed timeline hide every post in the blocked community, any author; the community's own feed, post permalinks and comment threads are explicit requests and stay reachable. Cross-community search must call the same helper (`viewerBlockFilters(…, aggregateSurface)` in `internal/db/postgres/viewer_block_filter.go`).
+3. **Not done:** `viewer.blocked` on communityView for client initial state (backlog issue `2026-09-01-community-view-lacks-viewer-blocked-state`).
 
 **Code:**
-- Lexicon: [actor/block.json](../internal/atproto/lexicon/social/coves/actor/block.json) - Currently only supports user DIDs
-- Service: New methods needed
-- Handlers: New files needed
-
-**Impact:** Users can't avoid unwanted content without blocking
+- Lexicon: [community/block.json](../internal/atproto/lexicon/social/coves/community/block.json), [community/getBlockedCommunities.json](../internal/atproto/lexicon/social/coves/community/getBlockedCommunities.json)
+- Enforcement: `internal/db/postgres/viewer_block_filter.go`; tests in `internal/db/postgres/community_block_enforcement_test.go` and the per-read-path `*_repo_block_test.go` suites
 
 ---
 

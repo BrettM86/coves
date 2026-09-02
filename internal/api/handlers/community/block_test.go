@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -13,12 +15,15 @@ import (
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // blockTestService implements communities.Service for block handler tests
 type blockTestService struct {
-	blockFunc   func(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string) (*communities.CommunityBlock, error)
-	unblockFunc func(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string) error
+	blockFunc      func(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string) (*communities.CommunityBlock, error)
+	unblockFunc    func(ctx context.Context, session *oauth.ClientSessionData, communityIdentifier string) error
+	getBlockedFunc func(ctx context.Context, userDID string, limit, offset int) ([]*communities.CommunityBlock, error)
 }
 
 func (m *blockTestService) CreateCommunity(ctx context.Context, req communities.CreateCommunityRequest) (*communities.Community, error) {
@@ -82,6 +87,9 @@ func (m *blockTestService) UnblockCommunity(ctx context.Context, session *oauth.
 }
 
 func (m *blockTestService) GetBlockedCommunities(ctx context.Context, userDID string, limit, offset int) ([]*communities.CommunityBlock, error) {
+	if m.getBlockedFunc != nil {
+		return m.getBlockedFunc(ctx, userDID, limit, offset)
+	}
 	return nil, nil
 }
 
@@ -517,4 +525,208 @@ func TestBlockHandler_InvalidJSON(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("Expected status 400, got %d", w.Code)
 	}
+}
+
+func TestBlockHandler_HandleGetBlocked(t *testing.T) {
+	const (
+		callerDID = "did:plc:communityblockcaller"
+		endpoint  = "/xrpc/social.coves.community.getBlockedCommunities"
+	)
+
+	authenticatedRequest := func(method, target string) *http.Request {
+		req := httptest.NewRequest(method, target, nil)
+		session := createBlockTestOAuthSession(callerDID)
+		return req.WithContext(context.WithValue(req.Context(), middleware.OAuthSessionKey, session))
+	}
+
+	t.Run("returns the caller's blocked communities", func(t *testing.T) {
+		blockedAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+		var gotDID string
+		var gotLimit, gotOffset int
+		handler := NewBlockHandler(&blockTestService{
+			getBlockedFunc: func(_ context.Context, userDID string, limit, offset int) ([]*communities.CommunityBlock, error) {
+				gotDID, gotLimit, gotOffset = userDID, limit, offset
+				return []*communities.CommunityBlock{
+					{
+						CommunityDID: "did:plc:blockedcommunity1",
+						RecordURI:    "at://" + userDID + "/social.coves.community.block/3lblock1",
+						RecordCID:    "bafycommunityblock1",
+						BlockedAt:    blockedAt,
+					},
+					{
+						CommunityDID: "did:plc:blockedcommunity2",
+						RecordURI:    "at://" + userDID + "/social.coves.community.block/3lblock2",
+						RecordCID:    "bafycommunityblock2",
+						BlockedAt:    blockedAt.Add(time.Hour),
+					},
+				}, nil
+			},
+		})
+
+		w := httptest.NewRecorder()
+		handler.HandleGetBlocked(w, authenticatedRequest(http.MethodGet,
+			endpoint+"?userDID=did:plc:not-the-caller"))
+
+		assert.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+		assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
+		assert.Equal(t, callerDID, gotDID,
+			"the block list belongs to the authenticated session, never a DID supplied in the query string")
+		assert.Equal(t, 50, gotLimit)
+		assert.Equal(t, 0, gotOffset)
+		assert.JSONEq(t, `{"blocks":[
+			{"communityDid":"did:plc:blockedcommunity1","recordUri":"at://`+callerDID+`/social.coves.community.block/3lblock1","recordCid":"bafycommunityblock1","blockedAt":"2026-01-02T03:04:05Z"},
+			{"communityDid":"did:plc:blockedcommunity2","recordUri":"at://`+callerDID+`/social.coves.community.block/3lblock2","recordCid":"bafycommunityblock2","blockedAt":"2026-01-02T04:04:05Z"}
+		]}`, w.Body.String())
+	})
+
+	t.Run("passes limit and the cursor's offset through", func(t *testing.T) {
+		var gotLimit, gotOffset int
+		handler := NewBlockHandler(&blockTestService{
+			getBlockedFunc: func(_ context.Context, _ string, limit, offset int) ([]*communities.CommunityBlock, error) {
+				gotLimit, gotOffset = limit, offset
+				return nil, nil
+			},
+		})
+
+		w := httptest.NewRecorder()
+		handler.HandleGetBlocked(w, authenticatedRequest(http.MethodGet, endpoint+"?limit=7&cursor=3"))
+
+		assert.Equal(t, 7, gotLimit)
+		assert.Equal(t, 3, gotOffset)
+	})
+
+	t.Run("an empty list serialises as an empty array, not null", func(t *testing.T) {
+		handler := NewBlockHandler(&blockTestService{
+			getBlockedFunc: func(context.Context, string, int, int) ([]*communities.CommunityBlock, error) {
+				return nil, nil
+			},
+		})
+
+		w := httptest.NewRecorder()
+		handler.HandleGetBlocked(w, authenticatedRequest(http.MethodGet, endpoint))
+
+		assert.JSONEq(t, `{"blocks":[]}`, w.Body.String())
+		assert.NotContains(t, w.Body.String(), "null",
+			"clients must receive an iterable empty array, not a JSON null")
+	})
+
+	t.Run("rejects a non-integer limit with 400 InvalidRequest", func(t *testing.T) {
+		handler := NewBlockHandler(&blockTestService{})
+		w := httptest.NewRecorder()
+		handler.HandleGetBlocked(w, authenticatedRequest(http.MethodGet, endpoint+"?limit=abc"))
+
+		assert.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
+		assert.Contains(t, w.Body.String(), `"error":"InvalidRequest"`)
+	})
+
+	t.Run("rejects out-of-range values with 400 InvalidRequest", func(t *testing.T) {
+		// The lexicon promises 1..100. Silently rewriting an invalid limit also
+		// corrupts cursor arithmetic: limit=101 returning 50 rows makes a client
+		// advance as though row 51 had been served and skip it permanently.
+		for _, limit := range []string{"0", "101", "-5"} {
+			t.Run("limit "+limit, func(t *testing.T) {
+				calls := 0
+				handler := NewBlockHandler(&blockTestService{
+					getBlockedFunc: func(context.Context, string, int, int) ([]*communities.CommunityBlock, error) {
+						calls++
+						return nil, nil
+					},
+				})
+				w := httptest.NewRecorder()
+				handler.HandleGetBlocked(w, authenticatedRequest(http.MethodGet, endpoint+"?limit="+limit))
+
+				assert.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
+				assert.Contains(t, w.Body.String(), `"error":"InvalidRequest"`)
+				assert.Zero(t, calls, "invalid pagination must be rejected before querying the service")
+			})
+		}
+	})
+
+	t.Run("rejects a malformed cursor", func(t *testing.T) {
+		for _, cursor := range []string{"abc", "-1"} {
+			t.Run("cursor "+cursor, func(t *testing.T) {
+				calls := 0
+				handler := NewBlockHandler(&blockTestService{
+					getBlockedFunc: func(context.Context, string, int, int) ([]*communities.CommunityBlock, error) {
+						calls++
+						return nil, nil
+					},
+				})
+				w := httptest.NewRecorder()
+				handler.HandleGetBlocked(w, authenticatedRequest(http.MethodGet, endpoint+"?cursor="+cursor))
+
+				assert.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
+				assert.Contains(t, w.Body.String(), `"error":"InvalidRequest"`)
+				assert.Zero(t, calls, "an invalid cursor must be rejected before querying the service")
+			})
+		}
+	})
+
+	t.Run("returns a next cursor only when the page is full", func(t *testing.T) {
+		for _, tc := range []struct {
+			name       string
+			blockCount int
+			wantCursor bool
+		}{
+			{name: "full page", blockCount: 2, wantCursor: true},
+			{name: "partial page", blockCount: 1, wantCursor: false},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				var gotOffset int
+				handler := NewBlockHandler(&blockTestService{
+					getBlockedFunc: func(_ context.Context, userDID string, _ int, offset int) ([]*communities.CommunityBlock, error) {
+						gotOffset = offset
+						blocks := make([]*communities.CommunityBlock, tc.blockCount)
+						for i := range blocks {
+							blocks[i] = &communities.CommunityBlock{
+								UserDID:      userDID,
+								CommunityDID: fmt.Sprintf("did:plc:cursorcommunity%d", i),
+							}
+						}
+						return blocks, nil
+					},
+				})
+				w := httptest.NewRecorder()
+				handler.HandleGetBlocked(w, authenticatedRequest(http.MethodGet, endpoint+"?limit=2&cursor=4"))
+
+				require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+				assert.Equal(t, 4, gotOffset)
+				var response map[string]json.RawMessage
+				require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+				cursor, present := response["cursor"]
+				if tc.wantCursor {
+					require.True(t, present, "a full page must advertise the possible next page")
+					assert.JSONEq(t, `"6"`, string(cursor))
+				} else {
+					assert.False(t, present,
+						"the cursor key must be omitted when the short page proves there is no next page")
+				}
+			})
+		}
+	})
+
+	t.Run("requires authentication", func(t *testing.T) {
+		handler := NewBlockHandler(&blockTestService{})
+		w := httptest.NewRecorder()
+		handler.HandleGetBlocked(w, httptest.NewRequest(http.MethodGet, endpoint, nil))
+
+		assert.Equal(t, http.StatusUnauthorized, w.Code, "body: %s", w.Body.String())
+		assert.Contains(t, w.Body.String(), `"error":"AuthRequired"`)
+	})
+
+	t.Run("a service failure is a 500 without internal detail", func(t *testing.T) {
+		internalErr := errors.New("database password leaked")
+		handler := NewBlockHandler(&blockTestService{
+			getBlockedFunc: func(context.Context, string, int, int) ([]*communities.CommunityBlock, error) {
+				return nil, internalErr
+			},
+		})
+
+		w := httptest.NewRecorder()
+		handler.HandleGetBlocked(w, authenticatedRequest(http.MethodGet, endpoint))
+
+		assert.Equal(t, http.StatusInternalServerError, w.Code, "body: %s", w.Body.String())
+		assert.NotContains(t, w.Body.String(), internalErr.Error(),
+			"an internal service error must not be exposed to the client")
+	})
 }

@@ -86,3 +86,47 @@ func TestCommunityFeedRepo_ViewerBlockFiltering(t *testing.T) {
 		assert.ElementsMatch(t, []string{blockedPost, thirdPartyPost, viewerPost}, read(t, ""))
 	})
 }
+
+// TestCommunityFeedRepo_CommunityBlockIsNotApplied pins the product decision
+// that community blocks mute aggregate surfaces: Discover, the subscribed
+// timeline, and search when it follows. Under Reddit/Lemmy semantics, opening
+// the community itself is an explicit request that is honored; post permalinks
+// and comment threads stay reachable for the same reason.
+func TestCommunityFeedRepo_CommunityBlockIsNotApplied(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	ctx := context.Background()
+	cast := seedBlockFilterCast(t, db, "feedcommunity")
+
+	const communityDID = "did:plc:blkfeedcommunitypin"
+	createTestCommunity(t, db, communityDID, "c-blkfeedcommunitypin.coves.social", cast.viewer)
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	thirdPartyPost := seedFilterablePost(t, db, communityDID, cast.thirdParty, "feedcommunitythird", base)
+	viewerPost := seedFilterablePost(t, db, communityDID, cast.viewer, "feedcommunityviewer", base.Add(time.Hour))
+
+	repo := NewCommunityFeedRepository(db, "test-secret")
+	read := func(t *testing.T) []string {
+		t.Helper()
+		feed, _, err := repo.GetCommunityFeed(ctx, communityFeeds.GetCommunityFeedRequest{
+			Community: communityDID,
+			ViewerDID: cast.viewer,
+			Sort:      "new",
+			Limit:     50,
+		})
+		require.NoError(t, err)
+		return communityFeedURIs(feed)
+	}
+
+	insertCommunityBlock(t, db, cast.viewer, communityDID)
+
+	assert.ElementsMatch(t, []string{thirdPartyPost, viewerPost}, read(t),
+		"the aggregate-feed community-block clause has leaked into the community's own feed")
+
+	t.Run("author blocks still apply independently", func(t *testing.T) {
+		insertUserBlock(t, db, cast.viewer, cast.thirdParty)
+		assert.ElementsMatch(t, []string{viewerPost}, read(t),
+			"an author block must still filter the explicit community feed independently of the community mute")
+	})
+}

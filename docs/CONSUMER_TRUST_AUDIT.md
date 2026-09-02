@@ -290,8 +290,13 @@ Handlers (all p3; the write surface is in good shape):
   client bypasses.
 - No moderator removal path for comments: `DeletionReasonModerator` has no
   writer anywhere. Makes §1.1 and §1.4 un-remediable by mods.
-- `community_blocks` has no read-path consumer; indexed community blocks do
-  nothing to feeds.
+- ~~`community_blocks` has no read-path consumer; indexed community blocks do
+  nothing to feeds.~~ Fixed 2026-09-01: `viewerBlockFilters` (internal/db/
+  postgres/viewer_block_filter.go) applies community blocks on the aggregate
+  surfaces only — Discover and the subscribed timeline — by design; the
+  community's own feed, permalinks and comment threads are explicit reads and
+  stay unfiltered. `social.coves.community.getBlockedCommunities` serves the
+  caller's list.
 - Deleting an aggregator service/authorization does not touch already-admitted
   posts.
 

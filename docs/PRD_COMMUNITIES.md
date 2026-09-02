@@ -117,15 +117,16 @@ Hosted By:   did:web:coves.social (instance manages credentials)
 ## ⚠️ Alpha Blockers (Must Complete Before Alpha Launch)
 
 ### Critical Missing Features
-- [x] **Community Blocking:** ✅ COMPLETE - Users can block communities from their feeds
-  - ✅ Lexicon: `social.coves.community.block` record type implemented
+- [x] **Community Blocking:** ✅ COMPLETE - Users can block communities from their aggregate feeds
+  - ✅ Lexicon: `social.coves.community.block` record type; `social.coves.community.getBlockedCommunities` query
   - ✅ Service: `BlockCommunity()` / `UnblockCommunity()` / `GetBlockedCommunities()` / `IsBlocked()`
-  - ✅ Handlers: Block/unblock endpoints implemented
+  - ✅ Handlers: blockCommunity / unblockCommunity / getBlockedCommunities
   - ✅ Repository: Full blocking methods with indexing
   - ✅ Jetstream Consumer: Real-time indexing of block events
-  - ✅ Integration tests: Comprehensive coverage
-  - **Completed:** 2025-10-16
-  - **Impact:** Users can now hide unwanted communities from their feeds
+  - ✅ Feed enforcement: Discover and the subscribed timeline hide every post in a blocked community (`viewerBlockFilters`, `internal/db/postgres/viewer_block_filter.go`). The community's own feed, permalinks and comment threads are explicit requests and stay reachable — Reddit/Lemmy mute semantics, by decision.
+  - ✅ Integration tests: per-read-path T1 suites plus a cross-surface acceptance test
+  - **Completed:** write path 2025-10-16; feed enforcement and the list endpoint 2026-09-01 (the write path shipped with no read-path consumer for eleven months — see `docs/CONSUMER_TRUST_AUDIT.md`)
+  - **Open:** `viewer.blocked` on communityView for client initial toggle state
 
 ### ✅ Critical Infrastructure - RESOLVED (2025-10-16)
 - [x] **✅ Subscription Indexing & ContentVisibility - COMPLETE**
