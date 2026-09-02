@@ -121,9 +121,12 @@ func newProxyServer(t *testing.T, resolver identity.Resolver, fetchTimeout time.
 	cache, err := imageproxycore.NewDiskCache(cacheDir, 1, 0)
 	require.NoError(t, err, "creating the disk cache")
 
+	processor, err := imageproxycore.NewProcessor(imageproxycore.DefaultMaxSourceMegapixels)
+	require.NoError(t, err, "creating the image processor")
+
 	service, err := imageproxycore.NewService(
 		cache,
-		imageproxycore.NewProcessor(),
+		processor,
 		// The hatch, for the same reason the T0 fixtures in
 		// core/imageproxy/fetcher_test.go carry it: every PDS these tests point
 		// at is an httptest server or the CI stack's own PDS, and both listen on
@@ -133,11 +136,15 @@ func newProxyServer(t *testing.T, resolver identity.Resolver, fetchTimeout time.
 		// without this option and assert the listener is never reached.
 		imageproxycore.NewPDSFetcher(fetchTimeout, 10, imageproxycore.WithPrivateHostsAllowed()),
 		imageproxycore.Config{
-			Enabled:         true,
-			CachePath:       cacheDir,
-			CacheMaxGB:      1,
-			FetchTimeout:    fetchTimeout,
-			MaxSourceSizeMB: 10,
+			Enabled:                true,
+			CachePath:              cacheDir,
+			CacheMaxGB:             1,
+			FetchTimeout:           fetchTimeout,
+			MaxSourceSizeMB:        10,
+			MaxSourceMegapixels:    50,
+			MaxConcurrentProcesses: 4,
+			ProcessQueueWait:       5 * time.Second,
+			MaxInFlightRequests:    64,
 		},
 	)
 	require.NoError(t, err, "creating the imageproxy service")

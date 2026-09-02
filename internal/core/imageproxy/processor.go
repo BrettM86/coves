@@ -2,10 +2,12 @@ package imageproxy
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	"image/jpeg"
-	_ "image/png" // Register PNG decoder
+	"image/png"
+	"io"
 
 	"github.com/disintegration/imaging"
 	_ "golang.org/x/image/webp" // Register WebP decoder
@@ -18,12 +20,47 @@ type Processor interface {
 	Process(data []byte, preset Preset) ([]byte, error)
 }
 
-// ImageProcessor implements the Processor interface using the imaging library.
-type ImageProcessor struct{}
+// DefaultMaxSourceMegapixels is the default upper bound on the pixel count
+// (width × height) of a source image the processor will agree to decode.
+const DefaultMaxSourceMegapixels = 50
 
-// NewProcessor creates a new ImageProcessor instance.
-func NewProcessor() Processor {
-	return &ImageProcessor{}
+// MaxSourceMegapixelsCeiling is the largest budget an operator may configure.
+// It exists so a typo in an env var (an extra zero, a value meant as pixels)
+// cannot silently re-open the OOM the budget closes: at the ceiling the
+// ~19 B/px worst case is already ~19 GB per request, so anything above it is
+// a misconfiguration rather than a choice. It also keeps the int64
+// megapixel-to-pixel multiplication far from overflow.
+const MaxSourceMegapixelsCeiling = 1000
+
+// pixelsPerMegapixel converts the operator-facing megapixel budget into the
+// raw pixel count the processor compares declared dimensions against.
+const pixelsPerMegapixel int64 = 1_000_000
+
+// ImageProcessor implements the Processor interface using the imaging library.
+type ImageProcessor struct {
+	// maxSourceMegapixels is the budget as the operator stated it, kept for
+	// error messages so a refusal reads in the same unit the config uses.
+	maxSourceMegapixels int
+
+	// maxSourcePixels is the largest width × height this processor will
+	// decode, held as int64 so the comparison cannot overflow on the
+	// dimensions an attacker-controlled header may declare.
+	maxSourcePixels int64
+}
+
+// NewProcessor creates a new ImageProcessor instance bounded to sources of at
+// most maxSourceMegapixels. The budget must lie in 1..MaxSourceMegapixelsCeiling:
+// zero would reject every image, a negative value has no meaning as a cap, and
+// anything above the ceiling is a misconfiguration (see the const's comment).
+func NewProcessor(maxSourceMegapixels int) (Processor, error) {
+	if maxSourceMegapixels <= 0 || maxSourceMegapixels > MaxSourceMegapixelsCeiling {
+		return nil, fmt.Errorf("%w: got %d, want 1..%d",
+			ErrInvalidMaxSourceMegapixels, maxSourceMegapixels, MaxSourceMegapixelsCeiling)
+	}
+	return &ImageProcessor{
+		maxSourceMegapixels: maxSourceMegapixels,
+		maxSourcePixels:     int64(maxSourceMegapixels) * pixelsPerMegapixel,
+	}, nil
 }
 
 // Process transforms the input image data according to the preset configuration.
@@ -35,19 +72,51 @@ func (p *ImageProcessor) Process(data []byte, preset Preset) ([]byte, error) {
 		return nil, fmt.Errorf("%w: empty image data", ErrUnsupportedFormat)
 	}
 
-	// Decode the source image
-	img, format, err := image.Decode(bytes.NewReader(data))
+	// Read only the header first. The dimensions an image DECLARES decide how
+	// much memory image.Decode allocates before it has verified a single pixel:
+	// image/png sizes the full frame (4 B/px for 8-bit RGBA, 8 B/px for 16-bit)
+	// in readImagePass before reading a byte of IDAT, so a header-only file
+	// declaring 12000×12000 costs ~576 MB inside the decoder itself, from a few
+	// dozen attacker-controlled bytes. The budget therefore has to be enforced
+	// on the header, never on the decoded result.
+	header, format, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
-		// Determine if this is a format issue or a corruption issue
-		if isUnsupportedFormatError(err) {
-			return nil, fmt.Errorf("%w: %v", ErrUnsupportedFormat, err)
-		}
-		return nil, fmt.Errorf("%w: failed to decode image: %v", ErrProcessingFailed, err)
+		return nil, classifyDecodeError(err)
 	}
 
-	// Validate that we decoded a supported format
+	// Any package in the binary that imports image/gif (or another decoder)
+	// registers it process-wide, so this allowlist is what keeps the proxy to
+	// the three formats it budgets for. Decode below sees the same registry, so
+	// one check covers both calls.
 	if format != "jpeg" && format != "png" && format != "webp" {
 		return nil, fmt.Errorf("%w: format %s", ErrUnsupportedFormat, format)
+	}
+
+	// image/jpeg and x/image/webp hand back a zero side with a nil error and
+	// leave the judgement to the caller; a zero-area image is malformed input,
+	// not a failure of ours.
+	if header.Width <= 0 || header.Height <= 0 {
+		return nil, fmt.Errorf("%w: declared dimensions %dx%d", ErrUnsupportedFormat, header.Width, header.Height)
+	}
+
+	// Cost model the budget is sized against. The worst case is a progressive
+	// 4:4:4 JPEG at ~19 B/px: image/jpeg holds three int32 coefficient buffers
+	// (3 × 4 B/px) alongside the 3 B/px YCbCr frame until EOI, and cover fit
+	// then pays a further 4 B/px when imaging copies the frame for its crop
+	// (contain fit allocates only the destination). At the 50 MP default that
+	// is ~950 MB per request and ~3.8 GB across the default 4 slots; that is
+	// the number the slot count must be read against. int64 arithmetic so two
+	// 16-bit sides cannot overflow the comparison.
+	declaredPixels := int64(header.Width) * int64(header.Height)
+	if declaredPixels > p.maxSourcePixels {
+		return nil, fmt.Errorf("%w: %dx%d exceeds the %d-megapixel budget",
+			ErrImageTooManyPixels, header.Width, header.Height, p.maxSourceMegapixels)
+	}
+
+	// Decode the source image from a fresh reader; DecodeConfig consumed the header.
+	img, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, classifyDecodeError(err)
 	}
 
 	// Process the image based on fit mode
@@ -104,14 +173,37 @@ func processContain(img image.Image, maxWidth, maxHeight int) image.Image {
 	return imaging.Resize(img, newWidth, newHeight, imaging.Lanczos)
 }
 
-// isUnsupportedFormatError checks if the error indicates an unsupported image format.
-func isUnsupportedFormatError(err error) bool {
-	if err == nil {
-		return false
+// classifyDecodeError maps an error from image.DecodeConfig or image.Decode
+// onto this package's sentinels. Anything the decoders report about the BYTES
+// (unknown format, truncation, bad CRC, impossible dimensions, missing pixel
+// data) is the caller's malformed input and becomes ErrUnsupportedFormat, so
+// the handler answers 400 and a stranger uploading garbage cannot page anyone
+// through the 500-rate alert. Only errors outside that set are ours.
+//
+// Classification is by TYPE, not by message text: the decoders' strings differ
+// per case and are not part of their API. x/image/webp returns plain errors,
+// so its truncations arrive as the io sentinels.
+func classifyDecodeError(err error) error {
+	if isMalformedInputError(err) {
+		return fmt.Errorf("%w: %v", ErrUnsupportedFormat, err)
 	}
-	errStr := err.Error()
-	return errStr == "image: unknown format" ||
-		errStr == "invalid JPEG format: missing SOI marker" ||
-		errStr == "invalid JPEG format: short segment" ||
-		bytes.Contains([]byte(errStr), []byte("unknown format"))
+	return fmt.Errorf("%w: failed to decode image: %v", ErrProcessingFailed, err)
+}
+
+// isMalformedInputError reports whether err is one of the error kinds the
+// registered decoders use to describe bad input rather than an internal fault.
+func isMalformedInputError(err error) bool {
+	if errors.Is(err, image.ErrFormat) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		return true
+	}
+	var (
+		pngFormat       png.FormatError
+		pngUnsupported  png.UnsupportedError
+		jpegFormat      jpeg.FormatError
+		jpegUnsupported jpeg.UnsupportedError
+	)
+	return errors.As(err, &pngFormat) ||
+		errors.As(err, &pngUnsupported) ||
+		errors.As(err, &jpegFormat) ||
+		errors.As(err, &jpegUnsupported)
 }

@@ -842,9 +842,14 @@ func (a *application) buildImageProxy() error {
 	}
 	a.stopImageProxyCleanup = cache.StartCleanupJob(cfg.CleanupInterval)
 
+	processor, err := imageproxy.NewProcessor(cfg.MaxSourceMegapixels)
+	if err != nil {
+		return fmt.Errorf("creating image proxy processor: %w", err)
+	}
+
 	service, err := imageproxy.NewService(
 		cache,
-		imageproxy.NewProcessor(),
+		processor,
 		// The SSRF hatch is open only in dev, where the PDS runs on the
 		// developer's own machine. In production this fetch dials whatever
 		// address a DID document's serviceEndpoint names, over a public route
@@ -869,6 +874,10 @@ func (a *application) buildImageProxy() error {
 		"cleanup_interval", cfg.CleanupInterval,
 		"fetch_timeout", cfg.FetchTimeout,
 		"max_source_size_mb", cfg.MaxSourceSizeMB,
+		"max_source_megapixels", cfg.MaxSourceMegapixels,
+		"max_concurrent_processes", cfg.MaxConcurrentProcesses,
+		"process_queue_wait", cfg.ProcessQueueWait,
+		"max_in_flight_requests", cfg.MaxInFlightRequests,
 	)
 	return nil
 }

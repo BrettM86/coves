@@ -17,10 +17,35 @@ var (
 	ErrInvalidFetchTimeout = errors.New("FetchTimeout must be positive")
 	// ErrInvalidMaxSourceSize is returned when MaxSourceSizeMB is not positive
 	ErrInvalidMaxSourceSize = errors.New("MaxSourceSizeMB must be positive")
+	// ErrInvalidMaxSourceMegapixels is returned when MaxSourceMegapixels is not positive
+	ErrInvalidMaxSourceMegapixels = errors.New("MaxSourceMegapixels must be positive")
+	// ErrInvalidMaxConcurrentProcesses is returned when MaxConcurrentProcesses is not positive
+	ErrInvalidMaxConcurrentProcesses = errors.New("MaxConcurrentProcesses must be positive")
+	// ErrInvalidProcessQueueWait is returned when ProcessQueueWait is not positive
+	ErrInvalidProcessQueueWait = errors.New("ProcessQueueWait must be positive")
+	// ErrInvalidMaxInFlightRequests is returned when MaxInFlightRequests is not positive
+	ErrInvalidMaxInFlightRequests = errors.New("MaxInFlightRequests must be positive")
 	// ErrMissingCachePath is returned when CachePath is empty while Enabled is true
 	ErrMissingCachePath = errors.New("CachePath is required when proxy is enabled")
 	// ErrInvalidCacheTTL is returned when CacheTTLDays is negative
 	ErrInvalidCacheTTL = errors.New("CacheTTLDays cannot be negative")
+)
+
+// Processing budget defaults. DefaultMaxSourceMegapixels lives next to the
+// processor that enforces it; these two bound the service around it.
+const (
+	// DefaultMaxConcurrentProcesses caps how many decodes run at once so a
+	// burst of worst-case images cannot multiply the per-request memory cost
+	// past what the host can absorb.
+	DefaultMaxConcurrentProcesses = 4
+
+	// DefaultProcessQueueWait is how long a request may wait for a free
+	// processing slot before the service refuses it as busy.
+	DefaultProcessQueueWait = 5 * time.Second
+
+	// DefaultMaxInFlightRequests caps how many cache-miss requests may be
+	// past the cache check at once; see Config.MaxInFlightRequests.
+	DefaultMaxInFlightRequests = 64
 )
 
 // Config holds the configuration for the image proxy service.
@@ -56,39 +81,26 @@ type Config struct {
 
 	// MaxSourceSizeMB is the maximum allowed size for source images in megabytes.
 	MaxSourceSizeMB int
-}
 
-// NewConfig creates a new Config with the provided values and validates it.
-// This is the recommended way to create a Config, as it ensures all invariants are satisfied.
-// Use DefaultConfig() or ConfigFromEnv() for convenient config creation with sensible defaults.
-func NewConfig(
-	enabled bool,
-	baseURL string,
-	cachePath string,
-	cacheMaxGB int,
-	cacheTTLDays int,
-	cleanupInterval time.Duration,
-	cdnURL string,
-	fetchTimeout time.Duration,
-	maxSourceSizeMB int,
-) (Config, error) {
-	cfg := Config{
-		Enabled:         enabled,
-		BaseURL:         baseURL,
-		CachePath:       cachePath,
-		CacheMaxGB:      cacheMaxGB,
-		CacheTTLDays:    cacheTTLDays,
-		CleanupInterval: cleanupInterval,
-		CDNURL:          cdnURL,
-		FetchTimeout:    fetchTimeout,
-		MaxSourceSizeMB: maxSourceSizeMB,
-	}
+	// MaxSourceMegapixels is the maximum pixel count (width × height, in
+	// millions) a source image may declare before the processor refuses to
+	// decode it.
+	MaxSourceMegapixels int
 
-	if err := cfg.Validate(); err != nil {
-		return Config{}, err
-	}
+	// MaxConcurrentProcesses is the number of image decodes allowed in flight
+	// at once across the whole service.
+	MaxConcurrentProcesses int
 
-	return cfg, nil
+	// ProcessQueueWait is the longest a request waits for a processing slot
+	// before it is refused.
+	ProcessQueueWait time.Duration
+
+	// MaxInFlightRequests caps the cold, cache-miss requests admitted past the
+	// cache check at once. Each one holds up to MaxSourceSizeMB of fetched
+	// blob while it waits for a decode slot, so without this cap the queue in
+	// front of the decode semaphore is itself an unbounded memory sink. Excess
+	// requests are refused as busy.
+	MaxInFlightRequests int
 }
 
 // Validate checks the configuration for invalid values.
@@ -105,6 +117,21 @@ func (c Config) Validate() error {
 	}
 	if c.MaxSourceSizeMB <= 0 {
 		return fmt.Errorf("%w: got %d", ErrInvalidMaxSourceSize, c.MaxSourceSizeMB)
+	}
+	// The ceiling is checked here as well as in NewProcessor so a bad env value
+	// is refused at boot rather than when the first image arrives.
+	if c.MaxSourceMegapixels <= 0 || c.MaxSourceMegapixels > MaxSourceMegapixelsCeiling {
+		return fmt.Errorf("%w: got %d, want 1..%d",
+			ErrInvalidMaxSourceMegapixels, c.MaxSourceMegapixels, MaxSourceMegapixelsCeiling)
+	}
+	if c.MaxConcurrentProcesses <= 0 {
+		return fmt.Errorf("%w: got %d", ErrInvalidMaxConcurrentProcesses, c.MaxConcurrentProcesses)
+	}
+	if c.ProcessQueueWait <= 0 {
+		return fmt.Errorf("%w: got %v", ErrInvalidProcessQueueWait, c.ProcessQueueWait)
+	}
+	if c.MaxInFlightRequests <= 0 {
+		return fmt.Errorf("%w: got %d", ErrInvalidMaxInFlightRequests, c.MaxInFlightRequests)
 	}
 	if c.CacheTTLDays < 0 {
 		return fmt.Errorf("%w: got %d", ErrInvalidCacheTTL, c.CacheTTLDays)
@@ -133,6 +160,11 @@ func DefaultConfig() Config {
 		CDNURL:          "",
 		FetchTimeout:    30 * time.Second,
 		MaxSourceSizeMB: 10,
+
+		MaxSourceMegapixels:    DefaultMaxSourceMegapixels,
+		MaxConcurrentProcesses: DefaultMaxConcurrentProcesses,
+		ProcessQueueWait:       DefaultProcessQueueWait,
+		MaxInFlightRequests:    DefaultMaxInFlightRequests,
 	}
 }
 
@@ -149,6 +181,13 @@ func DefaultConfig() Config {
 //   - IMAGE_PROXY_CDN_URL: optional CDN URL prefix (default: "")
 //   - IMAGE_PROXY_FETCH_TIMEOUT_SECONDS: PDS fetch timeout in seconds (default: 30)
 //   - IMAGE_PROXY_MAX_SOURCE_SIZE_MB: max source image size in MB (default: 10)
+//   - IMAGE_PROXY_MAX_SOURCE_MEGAPIXELS: max declared source pixel count in megapixels (default: 50)
+//   - IMAGE_PROXY_MAX_CONCURRENT_PROCESSES: max image decodes in flight at once (default: 4)
+//   - IMAGE_PROXY_MAX_IN_FLIGHT_REQUESTS: max cache-miss requests admitted at once (default: 64).
+//     It bounds how many fetched blobs can be held in memory waiting for a decode slot.
+//
+// ProcessQueueWait is deliberately not configurable: it is coupled to the
+// handler's Retry-After and to how long a waiter may hold a fetched blob.
 func ConfigFromEnv() Config {
 	cfg := DefaultConfig()
 
@@ -225,6 +264,66 @@ func ConfigFromEnv() Config {
 				"default", cfg.MaxSourceSizeMB,
 				"error", err,
 			)
+		}
+	}
+
+	if v := os.Getenv("IMAGE_PROXY_MAX_SOURCE_MEGAPIXELS"); v != "" {
+		n, err := strconv.Atoi(v)
+		switch {
+		case err != nil:
+			slog.Warn("[IMAGE-PROXY] invalid IMAGE_PROXY_MAX_SOURCE_MEGAPIXELS value, using default",
+				"value", v,
+				"default", cfg.MaxSourceMegapixels,
+				"error", err,
+			)
+		case n <= 0:
+			slog.Warn("[IMAGE-PROXY] invalid IMAGE_PROXY_MAX_SOURCE_MEGAPIXELS value, using default",
+				"value", v,
+				"default", cfg.MaxSourceMegapixels,
+				"reason", "must be a positive integer",
+			)
+		default:
+			cfg.MaxSourceMegapixels = n
+		}
+	}
+
+	if v := os.Getenv("IMAGE_PROXY_MAX_CONCURRENT_PROCESSES"); v != "" {
+		n, err := strconv.Atoi(v)
+		switch {
+		case err != nil:
+			slog.Warn("[IMAGE-PROXY] invalid IMAGE_PROXY_MAX_CONCURRENT_PROCESSES value, using default",
+				"value", v,
+				"default", cfg.MaxConcurrentProcesses,
+				"error", err,
+			)
+		case n <= 0:
+			slog.Warn("[IMAGE-PROXY] invalid IMAGE_PROXY_MAX_CONCURRENT_PROCESSES value, using default",
+				"value", v,
+				"default", cfg.MaxConcurrentProcesses,
+				"reason", "must be a positive integer",
+			)
+		default:
+			cfg.MaxConcurrentProcesses = n
+		}
+	}
+
+	if v := os.Getenv("IMAGE_PROXY_MAX_IN_FLIGHT_REQUESTS"); v != "" {
+		n, err := strconv.Atoi(v)
+		switch {
+		case err != nil:
+			slog.Warn("[IMAGE-PROXY] invalid IMAGE_PROXY_MAX_IN_FLIGHT_REQUESTS value, using default",
+				"value", v,
+				"default", cfg.MaxInFlightRequests,
+				"error", err,
+			)
+		case n <= 0:
+			slog.Warn("[IMAGE-PROXY] invalid IMAGE_PROXY_MAX_IN_FLIGHT_REQUESTS value, using default",
+				"value", v,
+				"default", cfg.MaxInFlightRequests,
+				"reason", "must be a positive integer",
+			)
+		default:
+			cfg.MaxInFlightRequests = n
 		}
 	}
 

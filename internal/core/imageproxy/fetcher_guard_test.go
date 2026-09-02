@@ -540,12 +540,16 @@ func TestImageProxyService_GetImage_RefusesAPrivateAddressOnAColdCache(t *testin
 			"ever calling the fetcher and this whole case would pass without exercising the guard",
 		preset, did, cid)
 
-	service, err := NewService(cache, NewProcessor(), NewPDSFetcher(5*time.Second, 10), Config{
-		Enabled:         true,
-		CachePath:       t.TempDir(),
-		CacheMaxGB:      1,
-		FetchTimeout:    5 * time.Second,
-		MaxSourceSizeMB: 10,
+	service, err := NewService(cache, newTestProcessor(t), NewPDSFetcher(5*time.Second, 10), Config{
+		Enabled:                true,
+		CachePath:              t.TempDir(),
+		CacheMaxGB:             1,
+		FetchTimeout:           5 * time.Second,
+		MaxSourceSizeMB:        10,
+		MaxSourceMegapixels:    50,
+		MaxConcurrentProcesses: 4,
+		ProcessQueueWait:       5 * time.Second,
+		MaxInFlightRequests:    64,
 	})
 	require.NoError(t, err, "creating the image proxy service")
 

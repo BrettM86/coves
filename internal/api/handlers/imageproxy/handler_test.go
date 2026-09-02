@@ -1,11 +1,17 @@
 package imageproxy
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -733,6 +739,28 @@ func TestHandler_HandleImage_ErrorsAreNeverCacheable(t *testing.T) {
 			resolver:   resolverForPDS("https://pds.example.com"),
 			wantStatus: http.StatusInternalServerError,
 		},
+		{
+			name:   "processor busy",
+			params: map[string]string{"preset": "avatar", "did": validTestDID, "cid": validTestCID},
+			service: &mockService{
+				getImageFunc: func(ctx context.Context, preset, did, cid, pdsURL string) ([]byte, error) {
+					return nil, imageproxy.ErrProcessorBusy
+				},
+			},
+			resolver:   resolverForPDS("https://pds.example.com"),
+			wantStatus: http.StatusServiceUnavailable,
+		},
+		{
+			name:   "too many pixels",
+			params: map[string]string{"preset": "avatar", "did": validTestDID, "cid": validTestCID},
+			service: &mockService{
+				getImageFunc: func(ctx context.Context, preset, did, cid, pdsURL string) ([]byte, error) {
+					return nil, imageproxy.ErrImageTooManyPixels
+				},
+			},
+			resolver:   resolverForPDS("https://pds.example.com"),
+			wantStatus: http.StatusBadRequest,
+		},
 	}
 
 	for _, tt := range tests {
@@ -772,4 +800,206 @@ func resolverForPDS(pdsURL string) *mockIdentityResolver {
 			}, nil
 		},
 	}
+}
+
+// TestHandler_HandleImage_ProcessorBusy_Returns503 pins the wire shape of load
+// shedding. ErrProcessorBusy means every decode slot was taken for the whole
+// queue wait; that is a capacity condition, not a fault in the request or the
+// server, so it is a 503 with a Retry-After the CDN and clients can honour
+// rather than a 500 that reads as a bug and invites an immediate retry storm.
+// Retry-After is fixed at 5 seconds: long enough for in-flight decodes to
+// drain, short enough that a real user's avatar still appears.
+func TestHandler_HandleImage_ProcessorBusy_Returns503(t *testing.T) {
+	testPDSURL := "https://pds.example.com"
+
+	mockSvc := &mockService{
+		getImageFunc: func(ctx context.Context, preset, did, cid, pdsURL string) ([]byte, error) {
+			return nil, fmt.Errorf("%w: waited 5s", imageproxy.ErrProcessorBusy)
+		},
+	}
+
+	mockResolver := &mockIdentityResolver{
+		resolveDIDFunc: func(ctx context.Context, did string) (*identity.DIDDocument, error) {
+			return &identity.DIDDocument{
+				DID: did,
+				Service: []identity.Service{
+					{
+						ID:              "#atproto_pds",
+						Type:            "AtprotoPersonalDataServer",
+						ServiceEndpoint: testPDSURL,
+					},
+				},
+			}, nil
+		},
+	}
+
+	handler := NewHandler(mockSvc, mockResolver)
+
+	req := createTestRequest(http.MethodGet, "/img/avatar/plain/"+validTestDID+"/"+validTestCID, map[string]string{
+		"preset": "avatar",
+		"did":    validTestDID,
+		"cid":    validTestCID,
+	})
+
+	w := httptest.NewRecorder()
+	handler.HandleImage(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("Expected status 503, got %d. Body: %s", w.Code, w.Body.String())
+	}
+	// Retry-After must track the queue wait the service actually enforced,
+	// not a literal that can drift from it.
+	wantRetryAfter := strconv.Itoa(int(imageproxy.DefaultProcessQueueWait / time.Second))
+	if got := w.Header().Get("Retry-After"); got != wantRetryAfter {
+		t.Errorf("Expected Retry-After %q (DefaultProcessQueueWait in seconds), got %q", wantRetryAfter, got)
+	}
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Expected Cache-Control %q, got %q", "no-store", got)
+	}
+	if got := w.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Errorf("Expected Content-Type %q, got %q", "text/plain; charset=utf-8", got)
+	}
+	body := w.Body.String()
+	if body == "" {
+		t.Error("Expected a plain-text body explaining the refusal, got empty body")
+	}
+	if strings.Contains(body, "internal server error") {
+		t.Errorf("Body must not present load shedding as an internal failure, got %q", body)
+	}
+}
+
+// TestHandler_HandleImage_TooManyPixels_Returns400: a header that declares
+// more pixels than the budget is the client's bytes, so it is a 400. The body
+// is deliberately the same as the byte cap's: the two limits guard different
+// resources internally, but a client is told only that the image is too large,
+// and the distinction lives in the log line, not the response.
+func TestHandler_HandleImage_TooManyPixels_Returns400(t *testing.T) {
+	mockSvc := &mockService{
+		getImageFunc: func(ctx context.Context, preset, did, cid, pdsURL string) ([]byte, error) {
+			return nil, fmt.Errorf("%w: 12000x12000 exceeds the 50-megapixel budget", imageproxy.ErrImageTooManyPixels)
+		},
+	}
+	handler := NewHandler(mockSvc, resolverForPDS("https://pds.example.com"))
+
+	req := createTestRequest(http.MethodGet, "/img/avatar/plain/"+validTestDID+"/"+validTestCID, map[string]string{
+		"preset": "avatar",
+		"did":    validTestDID,
+		"cid":    validTestCID,
+	})
+	w := httptest.NewRecorder()
+	handler.HandleImage(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("Expected status 400, got %d. Body: %s", w.Code, w.Body.String())
+	}
+	if got := w.Body.String(); got != "image too large" {
+		t.Errorf("Expected body %q (same wording as the byte cap, on purpose), got %q", "image too large", got)
+	}
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Expected Cache-Control %q, got %q", "no-store", got)
+	}
+}
+
+// captureHandlerLogs routes the process-wide slog default into a buffer for
+// the duration of the test. It restores the previous logger in Cleanup, and
+// because the default logger is global the calling test must not be parallel.
+func captureHandlerLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return &buf
+}
+
+// logLinesAtLevel returns the captured lines carrying the given slog level.
+func logLinesAtLevel(logs string, level string) []string {
+	var lines []string
+	for _, line := range strings.Split(logs, "\n") {
+		if strings.Contains(line, "level="+level) {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// TestHandler_HandleImage_SecurityLogging pins what the handler writes to the
+// log for the three outcomes an operator has to tell apart after the fact.
+// A pixel-budget refusal is a security event: it is the signature of a
+// decompression bomb, so it is logged at WARN with enough to find the repo and
+// the blob (preset, DID, CID) and the declared size. A processing failure is
+// our fault and is logged at ERROR with the underlying error. Load shedding is
+// logged by the service that counted it, and a second line here would double
+// every busy refusal in the log during exactly the burst that makes logs
+// expensive.
+func TestHandler_HandleImage_SecurityLogging(t *testing.T) {
+	newHandlerReturning := func(err error) *Handler {
+		return NewHandler(&mockService{
+			getImageFunc: func(ctx context.Context, preset, did, cid, pdsURL string) ([]byte, error) {
+				return nil, err
+			},
+		}, resolverForPDS("https://pds.example.com"))
+	}
+	newRequest := func() *http.Request {
+		return createTestRequest(http.MethodGet, "/img/avatar/plain/"+validTestDID+"/"+validTestCID, map[string]string{
+			"preset": "avatar",
+			"did":    validTestDID,
+			"cid":    validTestCID,
+		})
+	}
+
+	t.Run("too many pixels is a WARN naming the blob and its declared size", func(t *testing.T) {
+		logs := captureHandlerLogs(t)
+		handler := newHandlerReturning(fmt.Errorf("%w: 12000x12000 exceeds the 50-megapixel budget", imageproxy.ErrImageTooManyPixels))
+
+		handler.HandleImage(httptest.NewRecorder(), newRequest())
+
+		warnings := logLinesAtLevel(logs.String(), "WARN")
+		if len(warnings) == 0 {
+			t.Fatalf("expected a WARN line for a pixel-budget refusal, got none. All output:\n%s", logs.String())
+		}
+		found := false
+		for _, line := range warnings {
+			if strings.Contains(line, "avatar") && strings.Contains(line, validTestDID) &&
+				strings.Contains(line, validTestCID) && strings.Contains(line, "12000x12000") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected a WARN line containing the preset, DID, CID and \"12000x12000\", got:\n%s", strings.Join(warnings, "\n"))
+		}
+	})
+
+	t.Run("processing failure is an ERROR carrying the underlying error", func(t *testing.T) {
+		logs := captureHandlerLogs(t)
+		underlying := "failed to decode image: png: invalid format: bad filter"
+		handler := newHandlerReturning(fmt.Errorf("%w: %s", imageproxy.ErrProcessingFailed, underlying))
+
+		handler.HandleImage(httptest.NewRecorder(), newRequest())
+
+		errorLines := logLinesAtLevel(logs.String(), "ERROR")
+		if len(errorLines) == 0 {
+			t.Fatalf("expected an ERROR line for a processing failure, got none. All output:\n%s", logs.String())
+		}
+		found := false
+		for _, line := range errorLines {
+			if strings.Contains(line, underlying) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected an ERROR line containing %q, got:\n%s", underlying, strings.Join(errorLines, "\n"))
+		}
+	})
+
+	t.Run("processor busy produces no handler log line", func(t *testing.T) {
+		logs := captureHandlerLogs(t)
+		handler := newHandlerReturning(fmt.Errorf("%w: waited 5s", imageproxy.ErrProcessorBusy))
+
+		handler.HandleImage(httptest.NewRecorder(), newRequest())
+
+		if got := strings.TrimSpace(logs.String()); got != "" {
+			t.Errorf("expected no handler log output for load shedding (the service logs and counts it), got:\n%s", got)
+		}
+	})
 }

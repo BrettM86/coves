@@ -155,6 +155,15 @@ services:
       IMAGE_PROXY_CACHE_MAX_GB: ${IMAGE_PROXY_CACHE_MAX_GB:-10}
       IMAGE_PROXY_FETCH_TIMEOUT_SECONDS: ${IMAGE_PROXY_FETCH_TIMEOUT_SECONDS:-30}
       IMAGE_PROXY_MAX_SOURCE_SIZE_MB: ${IMAGE_PROXY_MAX_SOURCE_SIZE_MB:-10}
+      # Decode-cost bounds (SECURITY_AUDIT_2026-09-01 §1.1): a source image's
+      # declared pixel count is refused above the megapixel budget before any
+      # decode allocation; decodes run in a fixed number of slots; cold requests
+      # (each holding a fetched blob of up to MAX_SOURCE_SIZE_MB) are admitted
+      # up to the in-flight cap. All three must be passed through here, the
+      # container sees no env_file.
+      IMAGE_PROXY_MAX_SOURCE_MEGAPIXELS: ${IMAGE_PROXY_MAX_SOURCE_MEGAPIXELS:-50}
+      IMAGE_PROXY_MAX_CONCURRENT_PROCESSES: ${IMAGE_PROXY_MAX_CONCURRENT_PROCESSES:-4}
+      IMAGE_PROXY_MAX_IN_FLIGHT_REQUESTS: ${IMAGE_PROXY_MAX_IN_FLIGHT_REQUESTS:-64}
       # Acknowledges serving media straight from PDS blob endpoints. Only
       # consulted when IMAGE_PROXY_ENABLED=false, where it is required for the
       # server to start.

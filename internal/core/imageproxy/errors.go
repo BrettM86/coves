@@ -39,11 +39,30 @@ var (
 	// ErrUnsupportedFormat is returned when the source image format cannot be processed.
 	ErrUnsupportedFormat = errors.New("unsupported image format")
 
-	// ErrImageTooLarge is returned when the source image exceeds the maximum allowed size.
+	// ErrImageTooLarge is returned by the fetcher when the source blob exceeds
+	// the byte cap.
 	ErrImageTooLarge = errors.New("source image exceeds size limit")
+
+	// ErrImageTooManyPixels is returned when the dimensions an image header
+	// declares multiply to more than the processor's pixel budget. It is
+	// distinct from ErrImageTooLarge, which is the fetcher's cap on BYTES: a
+	// 47-byte file can declare a 12000×12000 frame, so the two limits guard
+	// different resources and a log line has to say which one tripped. On
+	// the wire both are the same 400; the client did nothing different.
+	ErrImageTooManyPixels = errors.New("source image declares more pixels than the budget allows")
 
 	// ErrProcessingFailed is returned when image processing fails for any reason.
 	ErrProcessingFailed = errors.New("image processing failed")
+
+	// ErrProcessorBusy is returned when every processing slot is occupied and
+	// the request could not obtain one within the configured queue wait, or
+	// its context ended while it was waiting. Decoding is the one step whose
+	// memory cost is set by a header the caller controls, independent of the
+	// byte count the fetcher already capped: a few dozen bytes can demand
+	// hundreds of megabytes. That amplification is why decoding alone is
+	// bounded by a fixed number of slots; a refusal here is load shedding,
+	// not a fault in the image.
+	ErrProcessorBusy = errors.New("image processor is at capacity")
 
 	// ErrNilDependency is returned when a required dependency is nil.
 	ErrNilDependency = errors.New("required dependency is nil")

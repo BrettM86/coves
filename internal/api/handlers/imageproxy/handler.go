@@ -8,12 +8,21 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/imageproxy"
 )
+
+// processorBusyRetryAfterSeconds is the Retry-After the handler advertises when
+// the service sheds load. It is derived from imageproxy.DefaultProcessQueueWait
+// rather than restated: a client that retries sooner than the queue wait
+// re-joins the same full queue it was just turned away from and only adds to
+// the pressure being shed, so the two must never drift apart.
+var processorBusyRetryAfterSeconds = strconv.Itoa(int(imageproxy.DefaultProcessQueueWait / time.Second))
 
 // Service defines the interface for the image proxy service.
 // This interface is implemented by the imageproxy package's service layer.
@@ -110,7 +119,7 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 	// Fetch and process the image
 	imageData, err := h.service.GetImage(r.Context(), preset, did, cid, pdsURL)
 	if err != nil {
-		handleServiceError(w, err)
+		handleServiceError(w, err, preset, did, cid)
 		return
 	}
 
@@ -145,7 +154,17 @@ func getPDSEndpoint(doc *identity.DIDDocument) string {
 }
 
 // handleServiceError converts service errors to appropriate HTTP responses.
-func handleServiceError(w http.ResponseWriter, err error) {
+//
+// Only some branches log, and the level says whose problem it is. A pixel
+// budget refusal is logged at WARN with the blob's identity: it is the
+// signature of a decompression bomb, so an operator needs to be able to find
+// the repo and the blob afterwards. A processing failure is logged at ERROR
+// with the underlying error because it is our fault. An SSRF refusal is logged
+// at WARN because the response deliberately hides it. Load shedding is NOT
+// logged here: the service already logs it once with the counter, and a
+// second line per shed request would be the flood logging itself. The
+// remaining branches are ordinary client errors and stay quiet.
+func handleServiceError(w http.ResponseWriter, err error, preset, did, cid string) {
 	switch {
 	case errors.Is(err, imageproxy.ErrPDSNotFound):
 		writeErrorResponse(w, http.StatusNotFound, "blob not found")
@@ -177,8 +196,31 @@ func handleServiceError(w http.ResponseWriter, err error) {
 		writeErrorResponse(w, http.StatusBadRequest, "unsupported image format")
 	case errors.Is(err, imageproxy.ErrImageTooLarge):
 		writeErrorResponse(w, http.StatusBadRequest, "image too large")
+	// Same body as the byte cap on purpose: the log line, not the response,
+	// is what tells the two apart. There is no oracle concern, the dimensions
+	// are the caller's own bytes.
+	case errors.Is(err, imageproxy.ErrImageTooManyPixels):
+		slog.Warn("[IMAGE-PROXY] refused source image over pixel budget",
+			"preset", preset,
+			"did", did,
+			"cid", cid,
+			"error", err,
+		)
+		writeErrorResponse(w, http.StatusBadRequest, "image too large")
 	case errors.Is(err, imageproxy.ErrProcessingFailed):
+		slog.Error("[IMAGE-PROXY] image processing failed",
+			"preset", preset,
+			"did", did,
+			"cid", cid,
+			"error", err,
+		)
 		writeErrorResponse(w, http.StatusInternalServerError, "image processing failed")
+	// Load shedding is expected behaviour under a burst, not a fault, so it is
+	// not logged as an error and must never be cached. The header must be set
+	// before writeErrorResponse commits the status line.
+	case errors.Is(err, imageproxy.ErrProcessorBusy):
+		w.Header().Set("Retry-After", processorBusyRetryAfterSeconds)
+		writeErrorResponse(w, http.StatusServiceUnavailable, "image processor busy, retry later")
 	default:
 		slog.Error("[IMAGE-PROXY] unhandled service error",
 			"error", err,
