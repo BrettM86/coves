@@ -21,7 +21,8 @@
 #                           working tree first. Without it a kept stack keeps
 #                           serving the binary it started with, which is the one
 #                           way this loop can grade the wrong code.
-#   COVES_CI_PROJECT        Compose project name (default coves-ci)
+#   COVES_CI_PROJECT        Compose project name (default derived from the
+#                           checkout dir, see scripts/lib/ci-stack.sh)
 #   COVES_CI_TEST_TIMEOUT   go test -timeout (default 1800s)
 set -euo pipefail
 

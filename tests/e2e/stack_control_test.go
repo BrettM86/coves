@@ -52,10 +52,11 @@ import (
 //
 // The directory is suffixed with the compose project name, because two stacks
 // from one checkout must not share a channel (COVES_CI_PROJECT exists to allow
-// exactly that). This constant carries the DEFAULT project, matching
-// scripts/lib/ci-stack.sh and docker-compose.ci.yml; under any other project the
-// environment variable is the only correct answer, which is why the three
-// spellings of this path are worth keeping in step.
+// exactly that, and scripts/lib/ci-stack.sh now derives a distinct project per
+// worktree by default). This constant carries the hand-run FALLBACK project,
+// matching docker-compose.ci.yml's own `${COVES_CI_PROJECT:-coves-ci}`; under
+// any real run the environment variable is the only correct answer, which is
+// why the spellings of this path are worth keeping in step.
 const defaultStackControlDir = "/src/.ci-out/stack-control-coves-ci"
 
 // stackControlTimeout bounds one verb, end to end: the watcher's poll latency,

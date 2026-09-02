@@ -39,7 +39,42 @@ COMPOSE_FILE=docker-compose.ci.yml
 # Overlay for the ONE scenario that needs a differently-configured AppView; see
 # the file's own header and stack_control_run_verb below.
 COMPOSE_FILE_TWO_FEED=docker-compose.ci.two-feed.yml
-PROJECT=${COVES_CI_PROJECT:-coves-ci}
+# ci_project_for_checkout derives the Compose project name from a checkout
+# directory's basename: "coves" -> coves-ci, "coves-<suffix>" -> coves-ci-<suffix>,
+# anything else -> coves-ci-<basename>. Lowercased and squeezed to the
+# characters Compose accepts (lowercase alphanumerics, "-" and "_", leading
+# alphanumeric).
+#
+# WHY A DERIVED DEFAULT: every worktree used to fall back to the one literal
+# "coves-ci", so two sessions running `make ci` or `make test-e2e` from
+# different worktrees shared one stack — one run's bring-up restarted the
+# other's AppView mid-suite (bogus e2e failures) and one run's teardown
+# removed the other's containers (2026-09-01, three sessions at once). The
+# stack was already fully project-scoped (unnamed network and state volumes,
+# no host ports, project-suffixed control channel); only the default name was
+# shared. Deriving it from the checkout makes concurrent worktrees isolated by
+# construction. COVES_CI_PROJECT still overrides it.
+ci_project_for_checkout() {
+    local base suffix
+    base=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]+/-/g; s/^[^a-z0-9]+//; s/-+$//')
+    case "$base" in
+        coves) suffix="" ;;
+        coves-*) suffix=${base#coves-} ;;
+        *) suffix=$base ;;
+    esac
+    if [[ -z $suffix ]]; then
+        printf 'coves-ci'
+    else
+        printf 'coves-ci-%s' "$suffix"
+    fi
+}
+
+PROJECT=${COVES_CI_PROJECT:-$(ci_project_for_checkout "$(basename "$REPO_ROOT")")}
+# Exported so docker-compose.ci.yml's `${COVES_CI_PROJECT:-coves-ci}`
+# interpolations (the runner image tag, COVES_STACK_CONTROL_DIR) and the runner
+# container's own view of the name resolve to THIS project, not the literal
+# fallback they carry for hand-run compose commands.
+export COVES_CI_PROJECT="$PROJECT"
 OUT_DIR="$REPO_ROOT/.ci-out"
 
 # Named so the volumes match docker-compose.ci.yml's external declarations.
@@ -61,6 +96,10 @@ warn() { printf "${YELLOW}  ⚠ %s${RESET}\n" "$1"; }
 fail() { printf "${RED}  ✗ %s${RESET}\n" "$1" >&2; }
 
 compose() { docker compose -f "$COMPOSE_FILE" -p "$PROJECT" "$@"; }
+
+# Said once per run so a log makes clear which stack it drove — the name is
+# derived from the checkout and two worktrees' logs otherwise look identical.
+printf "${CYAN}▶ Compose project: %s${RESET}\n" "$PROJECT"
 
 # ---------------------------------------------------------------------------
 # Architecture

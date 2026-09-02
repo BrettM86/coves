@@ -598,6 +598,11 @@ services:
       # so a gap in it should say "module lookup disabled by GOPROXY=off"
       # instead of surfacing as a DNS failure that reads like broken networking.
       GOPROXY: "off"
+      # The project name this stack runs under, for the e2e tests that print
+      # copy-pasteable `docker compose -p <project>` commands in their failure
+      # output. scripts/lib/ci-stack.sh derives and exports it; the literal
+      # fallback is only for a compose command run by hand.
+      COVES_CI_PROJECT: ${COVES_CI_PROJECT:-coves-ci}
       # Where the pipeline tier's reliability scenarios ask the HOST to restart
       # or reconfigure the AppView, which nothing inside this network namespace
       # can do for itself. The directory is inside the bind-mounted checkout

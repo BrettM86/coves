@@ -294,9 +294,12 @@ func (p *probeT) record(format string, args ...any) {
 	}
 }
 
-// ciProjectName mirrors scripts/lib/ci-stack.sh's default so the reconcile
-// command above is copy-pasteable in the common case and correct in the
-// uncommon one.
+// ciProjectName reads the project the stack actually runs under, which
+// docker-compose.ci.yml passes into the runner from the value
+// scripts/lib/ci-stack.sh derives from the checkout directory (coves-ci for
+// the main checkout, coves-ci-<suffix> for a worktree). The literal is only
+// reached in a hand-run container, and it matches the compose file's own
+// fallback so the reconcile command above stays copy-pasteable there too.
 func ciProjectName() string {
 	if project := os.Getenv("COVES_CI_PROJECT"); project != "" {
 		return project

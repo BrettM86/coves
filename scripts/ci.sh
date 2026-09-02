@@ -28,7 +28,10 @@
 # an agent can run it unattended.
 #
 # Environment overrides:
-#   COVES_CI_PROJECT      Compose project name (default coves-ci)
+#   COVES_CI_PROJECT      Compose project name (default derived from the
+#                         checkout dir: coves-ci for the main checkout,
+#                         coves-ci-<suffix> for a worktree named coves-<suffix>,
+#                         so concurrent worktrees never share a stack)
 #   COVES_CI_KEEP_STACK   1 to leave the stack running for debugging
 #   COVES_CI_ALLOW_STALE  true to downgrade stale-allowlist entries to warnings
 set -euo pipefail
