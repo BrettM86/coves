@@ -3,6 +3,7 @@
 package jetstream
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"fmt"
 	"testing"
@@ -87,7 +88,7 @@ func TestCommunityConsumer_HandleTakenByAnotherDID_IsAPermanentRefusal(t *testin
 	// skipVerification: the hostedBy/handle-domain check is a different security
 	// property with its own tests, and leaving it on would reject these events
 	// before the conflict path is ever reached.
-	consumer := NewCommunityEventConsumer(postgres.NewCommunityRepository(db), "did:web:test.local", true, nil)
+	consumer := NewCommunityEventConsumer(postgres.NewCommunityRepository(db, credentialciphertest.Fixed()), "did:web:test.local", true, nil)
 
 	suffix := testkit.UniqueID(t)
 	contested := fmt.Sprintf("c-first%s.test.local", suffix)
@@ -130,7 +131,7 @@ func TestCommunityConsumer_SameDIDReplay_StaysSilent(t *testing.T) {
 
 	db := testkit.DB(t)
 	ctx := context.Background()
-	consumer := NewCommunityEventConsumer(postgres.NewCommunityRepository(db), "did:web:test.local", true, nil)
+	consumer := NewCommunityEventConsumer(postgres.NewCommunityRepository(db, credentialciphertest.Fixed()), "did:web:test.local", true, nil)
 
 	suffix := testkit.UniqueID(t)
 	handle := fmt.Sprintf("c-replay%s.test.local", suffix)
@@ -169,7 +170,7 @@ func TestCommunityConsumer_UnverifiableHandle_IsNotStored(t *testing.T) {
 	resolver := &mockIdentityResolverForUser{identities: map[string]*identity.Identity{
 		did: {DID: did, Handle: invalidHandle, PDSURL: "https://pds.example.invalid"},
 	}}
-	consumer := NewCommunityEventConsumer(postgres.NewCommunityRepository(db), "did:web:test.local", true, resolver)
+	consumer := NewCommunityEventConsumer(postgres.NewCommunityRepository(db, credentialciphertest.Fixed()), "did:web:test.local", true, resolver)
 
 	event := communityProfileEvent(did, "", "unverified", "3lunverified")
 	delete(event.Commit.Record, "handle")

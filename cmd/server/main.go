@@ -7,6 +7,7 @@ import (
 	"Coves/internal/atproto/oauth"
 	"Coves/internal/config"
 	"Coves/internal/core/users"
+	"Coves/internal/crypto/credentialcipher"
 	"Coves/internal/observability"
 	"context"
 	"errors"
@@ -44,6 +45,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	credentialCipher, err := credentialcipher.NewFromBase64(cfg.EncryptionKey)
+	if err != nil {
+		return fmt.Errorf("initializing credential cipher: %w", err)
+	}
 	logStartupWarnings(cfg)
 
 	// Signal handling is installed first so a Ctrl-C during the slower parts
@@ -51,7 +56,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	db, err := openDatabase(ctx, cfg.Database)
+	db, err := openDatabase(ctx, cfg.Database, credentialCipher, cfg.EncryptionKeyGenerated)
 	if err != nil {
 		return err
 	}
@@ -74,7 +79,7 @@ func run() error {
 		}
 	}()
 
-	app, err := buildApplication(ctx, cfg, db)
+	app, err := buildApplication(ctx, cfg, db, credentialCipher)
 	if err != nil {
 		return err
 	}
@@ -273,6 +278,10 @@ func logStartupWarnings(cfg *config.Config) {
 	if cfg.OAuth.SealSecretGenerated {
 		slog.Warn("OAUTH_SEAL_SECRET is unset: generated a random seal secret, " +
 			"so every restart signs out all users")
+	}
+	if cfg.EncryptionKeyGenerated {
+		slog.Warn("ENCRYPTION_KEY is unset: generated a random credential encryption key, " +
+			"so stored credentials will not survive a restart")
 	}
 
 	// Signup stays gated by the PDS's own PDS_INVITE_REQUIRED, so missing

@@ -3,6 +3,7 @@
 package jetstream
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
 	"testing"
@@ -59,7 +60,7 @@ func indexAuthorOwnedPost(t *testing.T, db *sql.DB) (postURI, postCID string) {
 
 	consumer := NewPostEventConsumer(
 		postgres.NewPostRepository(db),
-		postgres.NewCommunityRepository(db),
+		postgres.NewCommunityRepository(db, credentialciphertest.Fixed()),
 		userService,
 		db,
 		WithAdmissions(postgres.NewAdmissionRepository(db)),

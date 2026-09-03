@@ -25,6 +25,7 @@ import (
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/comments"
 	"Coves/internal/core/users"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
@@ -352,7 +353,7 @@ func TestCommentVote_ViewerState(t *testing.T) {
 	voteRepo := postgres.NewVoteRepository(db)
 	postRepo := postgres.NewPostRepository(db)
 	userRepo := postgres.NewUserRepository(db)
-	communityRepo := postgres.NewCommunityRepository(db)
+	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	userService := users.NewUserService(userRepo, nil, testkit.Endpoints().PDS.BaseURL, nil, "")
 
 	voteConsumer := jetstream.NewVoteEventConsumer(voteRepo, userService, db)

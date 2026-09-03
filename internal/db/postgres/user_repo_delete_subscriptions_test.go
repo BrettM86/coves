@@ -3,6 +3,7 @@
 package postgres
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"sync"
 	"testing"
@@ -29,7 +30,7 @@ func TestUserRepo_Delete_ConcurrentDeletionsSharingCommunitiesDoNotDeadlock(t *t
 
 	db := testkit.DB(t)
 	ctx := context.Background()
-	communityRepo := NewCommunityRepository(db)
+	communityRepo := NewCommunityRepository(db, credentialciphertest.Fixed())
 	userRepo := NewUserRepository(db)
 
 	const communityCount = 6

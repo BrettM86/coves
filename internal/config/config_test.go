@@ -20,6 +20,10 @@ import (
 // bytes, which is what oauth.NewOAuthClient requires.
 var validSealSecret = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0xA5}, 32))
 
+// validEncryptionKey is a well-formed ENCRYPTION_KEY: standard base64 of the
+// 32 raw bytes required by AES-256.
+var validEncryptionKey = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x5A}, 32))
+
 // prodEnv is the minimum set of variables a production configuration must
 // provide. Tests start from this and mutate one thing at a time so each case
 // asserts about exactly one rule.
@@ -28,6 +32,7 @@ func prodEnv(t *testing.T) {
 	t.Setenv("IS_DEV_ENV", "false")
 	t.Setenv("DATABASE_URL", "postgres://u:p@db:5432/coves?sslmode=disable")
 	t.Setenv("OAUTH_SEAL_SECRET", validSealSecret)
+	t.Setenv("ENCRYPTION_KEY", validEncryptionKey)
 	t.Setenv("CURSOR_SECRET", "a-real-cursor-secret-long-enough")
 	t.Setenv("JETSTREAM_FEEDS", "bsky=wss://jetstream2.us-east.bsky.network")
 	t.Setenv("INSTANCE_DID", "did:web:coves.social")
@@ -160,7 +165,7 @@ func TestLoad_UnsetIsDevEnvMeansProduction(t *testing.T) {
 	if err == nil {
 		t.Fatal("Load() succeeded with IS_DEV_ENV unset; an unset value must mean production")
 	}
-	for _, want := range []string{"OAUTH_SEAL_SECRET", "CURSOR_SECRET", "JETSTREAM_FEEDS"} {
+	for _, want := range []string{"OAUTH_SEAL_SECRET", "ENCRYPTION_KEY", "CURSOR_SECRET", "JETSTREAM_FEEDS"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error should mention %s; got:\n%s", want, err.Error())
 		}
@@ -249,6 +254,7 @@ func TestLoad_RejectsDocumentedPlaceholderSecrets(t *testing.T) {
 	}{
 		{"CURSOR_SECRET", "CHANGE_ME_CURSOR_SECRET"},
 		{"OAUTH_SEAL_SECRET", "CHANGE_ME_BASE64_32_BYTES"},
+		{"ENCRYPTION_KEY", "CHANGE_ME_BASE64_ENCODED_KEY"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.key, func(t *testing.T) {
@@ -357,6 +363,7 @@ func TestLoad_ProductionRequiresSecrets(t *testing.T) {
 		wantText string
 	}{
 		{"missing seal secret", "OAUTH_SEAL_SECRET", "OAUTH_SEAL_SECRET is required"},
+		{"missing encryption key", "ENCRYPTION_KEY", "ENCRYPTION_KEY is required"},
 		{"missing cursor secret", "CURSOR_SECRET", "CURSOR_SECRET is required"},
 		{"missing jetstream feeds", "JETSTREAM_FEEDS", "JETSTREAM_FEEDS is required"},
 	}
@@ -638,7 +645,7 @@ func TestValidate_ReportsAllProblems(t *testing.T) {
 		t.Fatal("Validate() returned nil for an invalid production config")
 	}
 	for _, want := range []string{
-		"INSTANCE_DOMAIN", "OAUTH_SEAL_SECRET", "CURSOR_SECRET", "JETSTREAM_FEEDS",
+		"INSTANCE_DOMAIN", "OAUTH_SEAL_SECRET", "ENCRYPTION_KEY", "CURSOR_SECRET", "JETSTREAM_FEEDS",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error should mention %s; got:\n%s", want, err.Error())

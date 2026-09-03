@@ -21,6 +21,7 @@
 package community_test
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -205,7 +206,7 @@ func TestCommunityGet_ViewerState(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repo := postgres.NewCommunityRepository(db)
+	repo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	// Two communities so that "subscribed" and "not subscribed" are answered
 	// from the same database state: a handler that hardcoded either answer
 	// would fail one of the two subtests.
@@ -278,7 +279,7 @@ func TestCommunityList_ViewerState(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repo := postgres.NewCommunityRepository(db)
+	repo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	communityDIDs := seedCommunities(t, repo, "listviewer", 3)
 
 	viewerDID := fixtures.DID("listviewer" + testkit.UniqueID(t))

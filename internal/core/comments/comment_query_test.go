@@ -6,6 +6,7 @@ import (
 	commentsAPI "Coves/internal/api/handlers/comments"
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/comments"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
@@ -1242,7 +1243,7 @@ func setupCommentService(db *sql.DB) comments.Service {
 	commentRepo := postgres.NewCommentRepository(db)
 	postRepo := postgres.NewPostRepository(db)
 	userRepo := postgres.NewUserRepository(db)
-	communityRepo := postgres.NewCommunityRepository(db)
+	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	// Use factory constructor with nil factory - these tests only use the read path (GetComments)
 	return comments.NewCommentServiceWithPDSFactory(commentRepo, userRepo, postRepo, communityRepo, nil, nil)
 }
@@ -1329,7 +1330,7 @@ func setupCommentServiceAdapter(db *sql.DB) *testCommentServiceAdapter {
 	commentRepo := postgres.NewCommentRepository(db)
 	postRepo := postgres.NewPostRepository(db)
 	userRepo := postgres.NewUserRepository(db)
-	communityRepo := postgres.NewCommunityRepository(db)
+	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	// Use factory constructor with nil factory - these tests only use the read path (GetComments)
 	service := comments.NewCommentServiceWithPDSFactory(commentRepo, userRepo, postRepo, communityRepo, nil, nil)
 	return &testCommentServiceAdapter{service: service}

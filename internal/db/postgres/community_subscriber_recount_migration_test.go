@@ -3,6 +3,7 @@
 package postgres
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
 	"testing"
@@ -21,11 +22,13 @@ func TestMigration045RecountsAndMaintainsCommunitySubscribers(t *testing.T) {
 	t.Parallel()
 
 	db := testkit.DB(t)
+	require.EqualValues(t, 46, testkit.MigrateDownOne(t, db, 46),
+		"046 (drop encryption_keys) sits on top of 045 and must be rolled back first")
 	require.EqualValues(t, 45, testkit.MigrateDownOne(t, db, 45),
 		"this test seeds the record-asserted state migration 045 repairs")
 
 	ctx := context.Background()
-	repo := NewCommunityRepository(db)
+	repo := NewCommunityRepository(db, credentialciphertest.Fixed())
 
 	// Down uses IF EXISTS throughout, so a misnamed object would roll back
 	// "successfully" and leave the trigger live. Prove it is actually gone.

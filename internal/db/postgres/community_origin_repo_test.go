@@ -3,6 +3,7 @@
 package postgres_test
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"fmt"
 	"testing"
@@ -25,7 +26,7 @@ func TestCommunityRepo_OriginRoundTrip(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 	ctx := context.Background()
-	repo := postgres.NewCommunityRepository(db)
+	repo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 
 	suffix := testkit.UniqueID(t)
 	name := fmt.Sprintf("originrt%s", suffix)
@@ -90,7 +91,7 @@ func TestCommunityRepo_GetByNameAndOrigin(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 	ctx := context.Background()
-	repo := postgres.NewCommunityRepository(db)
+	repo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 
 	suffix := testkit.UniqueID(t)
 	name := "pair" + suffix
@@ -152,7 +153,7 @@ func TestCommunityRepo_GetByNameAndOriginIgnoresNameCase(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 	ctx := context.Background()
-	repo := postgres.NewCommunityRepository(db)
+	repo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 
 	suffix := testkit.UniqueID(t)
 	did := "did:plc:mixedcase" + suffix

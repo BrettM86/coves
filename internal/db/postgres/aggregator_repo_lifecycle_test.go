@@ -3,6 +3,7 @@
 package postgres
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
 	"testing"
@@ -93,7 +94,7 @@ func TestAggregatorRepo_UpdateAggregator(t *testing.T) {
 	t.Run("replaces every declared field", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did := indexAggregator(t, repo, "Original Name")
 		declaredAt := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Microsecond)
@@ -134,7 +135,7 @@ func TestAggregatorRepo_UpdateAggregator(t *testing.T) {
 	t.Run("does not touch the trigger-maintained stats", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did := indexAggregator(t, repo, "Established")
 		communityDID := indexAuthorizingCommunity(t, db)
@@ -162,7 +163,7 @@ func TestAggregatorRepo_UpdateAggregator(t *testing.T) {
 	t.Run("an omitted optional field is cleared, not preserved", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did := "did:plc:" + testkit.UniqueID(t)
 		require.NoError(t, repo.CreateAggregator(ctx, &aggregators.Aggregator{
@@ -192,7 +193,7 @@ func TestAggregatorRepo_UpdateAggregator(t *testing.T) {
 	t.Run("updates one aggregator", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		subject := indexAggregator(t, repo, "Subject")
 		bystander := indexAggregator(t, repo, "Bystander")
@@ -212,7 +213,7 @@ func TestAggregatorRepo_UpdateAggregator(t *testing.T) {
 	t.Run("reports an aggregator the AppView never indexed", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did := "did:plc:" + testkit.UniqueID(t)
 		err := repo.UpdateAggregator(ctx, &aggregators.Aggregator{
@@ -232,7 +233,7 @@ func TestAggregatorRepo_UpdateAggregator(t *testing.T) {
 	t.Run("refuses to claim another aggregator's record URI", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		first := indexAggregator(t, repo, "First")
 		second := indexAggregator(t, repo, "Second")
@@ -261,7 +262,7 @@ func TestAggregatorRepo_DeleteAggregator(t *testing.T) {
 	t.Run("takes the authorizations and the post ledger with it", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did := indexAggregator(t, repo, "Withdrawn")
 		communityDID := indexAuthorizingCommunity(t, db)
@@ -294,7 +295,7 @@ func TestAggregatorRepo_DeleteAggregator(t *testing.T) {
 	t.Run("deletes one aggregator", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		doomed := indexAggregator(t, repo, "Doomed")
 		spared := indexAggregator(t, repo, "Spared")
@@ -312,7 +313,7 @@ func TestAggregatorRepo_DeleteAggregator(t *testing.T) {
 	t.Run("reports a delete that matched nothing", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did := indexAggregator(t, repo, "Once")
 		require.NoError(t, repo.DeleteAggregator(ctx, did))
@@ -336,7 +337,7 @@ func TestAggregatorRepo_ListAggregators(t *testing.T) {
 	seed := func(t *testing.T) (aggregators.Repository, map[string]string) {
 		t.Helper()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		byName := map[string]string{}
 		for _, spec := range []struct {
@@ -415,7 +416,7 @@ func TestAggregatorRepo_ListAggregators(t *testing.T) {
 	t.Run("hydrates the fields the directory renders", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did := "did:plc:" + testkit.UniqueID(t)
 		schema := []byte(`{"type":"object","properties":{"feedUrl":{"type":"string"}}}`)
@@ -445,7 +446,7 @@ func TestAggregatorRepo_ListAggregators(t *testing.T) {
 	t.Run("an installation with no aggregators returns nil rather than an empty slice", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		listed, err := repo.ListAggregators(ctx, 10, 0)
 		require.NoError(t, err)
@@ -468,7 +469,7 @@ func TestAggregatorRepo_GetAggregatorsByDIDs(t *testing.T) {
 	t.Run("returns exactly the aggregators asked for", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		wanted := indexAggregator(t, repo, "Wanted")
 		alsoWanted := indexAggregator(t, repo, "Also Wanted")
@@ -488,7 +489,7 @@ func TestAggregatorRepo_GetAggregatorsByDIDs(t *testing.T) {
 	t.Run("silently omits DIDs it has never seen", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		known := indexAggregator(t, repo, "Known")
 		fetched, err := repo.GetAggregatorsByDIDs(ctx, []string{known, "did:plc:" + testkit.UniqueID(t)})
@@ -501,7 +502,7 @@ func TestAggregatorRepo_GetAggregatorsByDIDs(t *testing.T) {
 	t.Run("a DID asked for twice comes back once", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did := indexAggregator(t, repo, "Repeated")
 		fetched, err := repo.GetAggregatorsByDIDs(ctx, []string{did, did, did})
@@ -512,7 +513,7 @@ func TestAggregatorRepo_GetAggregatorsByDIDs(t *testing.T) {
 	t.Run("an empty request is answered without a query", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		fetched, err := repo.GetAggregatorsByDIDs(ctx, nil)
 		require.NoError(t, err)
@@ -527,7 +528,7 @@ func TestAggregatorRepo_GetAggregatorsByDIDs(t *testing.T) {
 	t.Run("a request that matches nothing returns nil rather than an empty slice", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		fetched, err := repo.GetAggregatorsByDIDs(ctx, []string{"did:plc:" + testkit.UniqueID(t)})
 		require.NoError(t, err)
@@ -541,7 +542,7 @@ func TestAggregatorRepo_GetAggregatorsByDIDs(t *testing.T) {
 	t.Run("hydrates nullable fields and the config schema", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		schema := []byte(`{"type":"object","required":["feedUrl"]}`)
 		did := "did:plc:" + testkit.UniqueID(t)
@@ -586,7 +587,7 @@ func TestAggregatorRepo_GetAuthorizationByURI(t *testing.T) {
 	t.Run("resolves the record a delete event names", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		aggregatorDID := indexAggregator(t, repo, "Authorized")
 		communityDID := indexAuthorizingCommunity(t, db)
@@ -609,7 +610,7 @@ func TestAggregatorRepo_GetAuthorizationByURI(t *testing.T) {
 	t.Run("carries the revocation audit trail", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		aggregatorDID := indexAggregator(t, repo, "Revoked")
 		communityDID := indexAuthorizingCommunity(t, db)
@@ -631,7 +632,7 @@ func TestAggregatorRepo_GetAuthorizationByURI(t *testing.T) {
 	t.Run("finds the one record with that URI and no other", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		aggregatorDID := indexAggregator(t, repo, "Multi")
 		first := indexAuthorizingCommunity(t, db)
@@ -650,7 +651,7 @@ func TestAggregatorRepo_GetAuthorizationByURI(t *testing.T) {
 	t.Run("reports a URI nothing indexed", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		found, err := repo.GetAuthorizationByURI(ctx,
 			"at://did:plc:"+testkit.UniqueID(t)+"/"+aggregatorAuthorizationCollection+"/missing")
@@ -663,7 +664,7 @@ func TestAggregatorRepo_GetAuthorizationByURI(t *testing.T) {
 	t.Run("an empty URI matches nothing", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		aggregatorDID := indexAggregator(t, repo, "Present")
 		communityDID := indexAuthorizingCommunity(t, db)
@@ -684,7 +685,7 @@ func TestAggregatorRepo_UpdateAuthorization(t *testing.T) {
 	t.Run("disabling stops the aggregator being authorized", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		aggregatorDID := indexAggregator(t, repo, "Disabled Soon")
 		communityDID := indexAuthorizingCommunity(t, db)
@@ -718,7 +719,7 @@ func TestAggregatorRepo_UpdateAuthorization(t *testing.T) {
 	t.Run("re-enabling restores access", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		aggregatorDID := indexAggregator(t, repo, "Reinstated")
 		communityDID := indexAuthorizingCommunity(t, db)
@@ -743,7 +744,7 @@ func TestAggregatorRepo_UpdateAuthorization(t *testing.T) {
 	t.Run("rewrites the community's configuration", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		aggregatorDID := indexAggregator(t, repo, "Reconfigured")
 		communityDID := indexAuthorizingCommunity(t, db)
@@ -769,7 +770,7 @@ func TestAggregatorRepo_UpdateAuthorization(t *testing.T) {
 	t.Run("updates the named pair only", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		aggregatorDID := indexAggregator(t, repo, "Shared")
 		subject := indexAuthorizingCommunity(t, db)
@@ -791,7 +792,7 @@ func TestAggregatorRepo_UpdateAuthorization(t *testing.T) {
 	t.Run("reports a pair that was never authorized", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		aggregatorDID := indexAggregator(t, repo, "Unauthorized")
 		communityDID := indexAuthorizingCommunity(t, db)
@@ -810,7 +811,7 @@ func TestAggregatorRepo_UpdateAuthorization(t *testing.T) {
 	t.Run("an update with no author fails on the constraint rather than on validation", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		aggregatorDID := indexAggregator(t, repo, "Authorless")
 		communityDID := indexAuthorizingCommunity(t, db)
@@ -844,7 +845,7 @@ func TestAggregatorRepo_DeleteAuthorizationByURI(t *testing.T) {
 	t.Run("withdraws the permission the record granted", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		aggregatorDID := indexAggregator(t, repo, "Deauthorized")
 		communityDID := indexAuthorizingCommunity(t, db)
@@ -875,7 +876,7 @@ func TestAggregatorRepo_DeleteAuthorizationByURI(t *testing.T) {
 	t.Run("deletes the one record named", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		aggregatorDID := indexAggregator(t, repo, "Partially Deauthorized")
 		doomedCommunity := indexAuthorizingCommunity(t, db)
@@ -895,7 +896,7 @@ func TestAggregatorRepo_DeleteAuthorizationByURI(t *testing.T) {
 	t.Run("reports a delete that matched nothing", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		aggregatorDID := indexAggregator(t, repo, "Replayed")
 		communityDID := indexAuthorizingCommunity(t, db)
@@ -930,7 +931,7 @@ func TestAggregatorRepo_ListAuthorizationsForAggregator(t *testing.T) {
 	seed := func(t *testing.T) aggregatorGrantFixture {
 		t.Helper()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		fixture := aggregatorGrantFixture{repo: repo}
 		fixture.subject = indexAggregator(t, repo, "Subject")
@@ -1013,7 +1014,7 @@ func TestAggregatorRepo_ListAuthorizationsForAggregator(t *testing.T) {
 	t.Run("an aggregator nobody has authorized lists nothing", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did := indexAggregator(t, repo, "Unwanted")
 		listed, err := repo.ListAuthorizationsForAggregator(ctx, did, false, 10, 0)
@@ -1048,7 +1049,7 @@ func TestAggregatorRepo_GetRecentPosts(t *testing.T) {
 	seed := func(t *testing.T) aggregatorLedgerFixture {
 		t.Helper()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 		now := time.Now().UTC()
 
 		fixture := aggregatorLedgerFixture{repo: repo}

@@ -5,6 +5,7 @@ package postgres
 import (
 	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/tests/testkit"
 	"context"
 	"database/sql"
@@ -139,7 +140,7 @@ func namesOf(listed []*communities.Community) []string {
 func seedSortFixture(t *testing.T, db *sql.DB) communities.Repository {
 	t.Helper()
 
-	repo := NewCommunityRepository(db)
+	repo := NewCommunityRepository(db, credentialciphertest.Fixed())
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	seedListableCommunity(t, db, repo, "alpha", "public", 1, 30, base)
 	seedListableCommunity(t, db, repo, "bravo", "public", 30, 1, base.Add(time.Hour))
@@ -206,7 +207,7 @@ func TestCommunityRepo_ListVisibilityFilter(t *testing.T) {
 	t.Parallel()
 
 	db := testkit.DB(t)
-	repo := NewCommunityRepository(db)
+	repo := NewCommunityRepository(db, credentialciphertest.Fixed())
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	public := seedListableCommunity(t, db, repo, "openone", "public", 5, 5, base)

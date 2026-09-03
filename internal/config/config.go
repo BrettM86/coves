@@ -25,6 +25,9 @@ const (
 	// sealSecretBytes is the decoded length oauth.NewOAuthClient requires of
 	// OAUTH_SEAL_SECRET.
 	sealSecretBytes = 32
+	// encryptionKeyBytes is the decoded length AES-256 requires of
+	// ENCRYPTION_KEY.
+	encryptionKeyBytes = 32
 
 	// minSecretLength is the shortest value accepted for a production secret
 	// that is used directly as key material rather than decoded.
@@ -122,6 +125,16 @@ type Config struct {
 	// CursorSecret is the HMAC key that signs pagination cursors, preventing
 	// clients from forging or tampering with them.
 	CursorSecret string
+
+	// EncryptionKey is the base64-encoded 32-byte AES-256 key that seals
+	// stored credentials (community PDS credentials, aggregator OAuth
+	// sessions). It lives in the environment, never in the database.
+	EncryptionKey string
+
+	// EncryptionKeyGenerated reports that EncryptionKey was randomly generated
+	// because ENCRYPTION_KEY was unset in dev. Credentials sealed under a
+	// generated key do not survive a restart.
+	EncryptionKeyGenerated bool
 }
 
 // DatabaseConfig holds the AppView PostgreSQL connection and pool settings.
@@ -461,6 +474,17 @@ func Load() (*Config, error) {
 	}
 	if err := cfg.loadOAuth(); err != nil {
 		return nil, err
+	}
+	cfg.EncryptionKey = lookup("ENCRYPTION_KEY")
+	if cfg.EncryptionKey == "" && cfg.IsDevEnv {
+		// Dev convenience only. A generated key cannot decrypt credentials after
+		// a restart, so production requires an operator-provided key.
+		randomBytes := make([]byte, encryptionKeyBytes)
+		if _, err := rand.Read(randomBytes); err != nil {
+			return nil, fmt.Errorf("generating dev encryption key: %w", err)
+		}
+		cfg.EncryptionKey = base64.StdEncoding.EncodeToString(randomBytes)
+		cfg.EncryptionKeyGenerated = true
 	}
 	if err := cfg.loadInstance(); err != nil {
 		return nil, err
@@ -1096,6 +1120,27 @@ func (c *Config) Validate() error {
 	// query substitutes its own page for a non-positive limit and clamps an
 	// over-large one, so the bound exists whatever this value is, and the worst
 	// an omission costs is a different page size.
+
+	switch {
+	case c.EncryptionKey == "" && !c.IsDevEnv:
+		problems = append(problems, "ENCRYPTION_KEY is required in production")
+	case c.EncryptionKey == "":
+		// An unset key is allowed only in a hand-assembled dev Config. Load
+		// generates one before validation.
+	case !c.IsDevEnv && isPlaceholder(c.EncryptionKey):
+		problems = append(problems, "ENCRYPTION_KEY is still set to a documented "+
+			"placeholder value; generate one with: openssl rand -base64 32")
+	default:
+		decoded, err := base64.StdEncoding.DecodeString(c.EncryptionKey)
+		if err != nil {
+			problems = append(problems, "ENCRYPTION_KEY must be base64: "+err.Error())
+		} else if len(decoded) != encryptionKeyBytes {
+			problems = append(problems, fmt.Sprintf(
+				"ENCRYPTION_KEY must decode to %d bytes, got %d; "+
+					"generate one with: openssl rand -base64 %d",
+				encryptionKeyBytes, len(decoded), encryptionKeyBytes))
+		}
+	}
 
 	if !c.IsDevEnv {
 		switch {

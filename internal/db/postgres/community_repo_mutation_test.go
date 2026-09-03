@@ -3,6 +3,7 @@
 package postgres
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"strings"
 	"testing"
@@ -44,7 +45,7 @@ var seededUpdatedAt = time.Date(2024, 3, 4, 5, 6, 7, 0, time.UTC)
 // an update can be shown to change what it means to and nothing else.
 func updatableCommunity(t *testing.T) (communities.Repository, *communities.Community) {
 	t.Helper()
-	repo := NewCommunityRepository(testkit.DB(t))
+	repo := NewCommunityRepository(testkit.DB(t), credentialciphertest.Fixed())
 	id := testkit.UniqueID(t)
 
 	community, err := repo.Create(context.Background(), &communities.Community{
@@ -243,7 +244,7 @@ func TestCommunityRepo_UpdateCredentialsReportsAnAbsentCommunity(t *testing.T) {
 	// that matters to the token-refresh loop: a refresh for a community that is
 	// no longer indexed must fail loudly, because the refresh token it just
 	// spent is single-use and the old one is already revoked.
-	repo := NewCommunityRepository(testkit.DB(t))
+	repo := NewCommunityRepository(testkit.DB(t), credentialciphertest.Fixed())
 
 	err := repo.UpdateCredentials(context.Background(), "did:plc:nosuchcommunity0000", "access", "refresh")
 	require.ErrorIs(t, err, communities.ErrCommunityNotFound,
@@ -314,7 +315,7 @@ func TestCommunityRepo_Search(t *testing.T) {
 	// which is why these are seeded into a per-test clone and named plainly.
 	seed := func(t *testing.T) communities.Repository {
 		t.Helper()
-		repo := NewCommunityRepository(testkit.DB(t))
+		repo := NewCommunityRepository(testkit.DB(t), credentialciphertest.Fixed())
 		for _, fixture := range []struct {
 			name, description, visibility string
 			members                       int
@@ -463,7 +464,7 @@ func TestCommunityRepo_Search(t *testing.T) {
 func TestCommunityRepo_SearchTotalCountsRowsTheResultsExclude(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	repo := NewCommunityRepository(testkit.DB(t))
+	repo := NewCommunityRepository(testkit.DB(t), credentialciphertest.Fixed())
 
 	// "art" appears inside this description, so ILIKE matches. Against a
 	// description this long the trigram similarity of a three-character query
@@ -519,7 +520,7 @@ func communityNames(list []*communities.Community) []string {
 func TestCommunityRepo_SearchIsNotSQLInjectable(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	repo := NewCommunityRepository(testkit.DB(t))
+	repo := NewCommunityRepository(testkit.DB(t), credentialciphertest.Fixed())
 
 	id := testkit.UniqueID(t)
 	_, err := repo.Create(ctx, &communities.Community{

@@ -7,6 +7,7 @@ import (
 	"Coves/internal/core/comments"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/users"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
@@ -303,7 +304,7 @@ func TestConcurrentCommenting_MultipleUsersOnSamePost(t *testing.T) {
 	commentRepo := postgres.NewCommentRepository(db)
 	postRepo := postgres.NewPostRepository(db)
 	userRepo := postgres.NewUserRepository(db)
-	communityRepo := postgres.NewCommunityRepository(db)
+	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	commentConsumer := jetstream.NewCommentEventConsumer(commentRepo, db)
 
 	fixedTime := time.Date(2025, 11, 16, 12, 0, 0, 0, time.UTC)
@@ -544,7 +545,7 @@ func TestConcurrentCommunityCreation_DuplicateHandle(t *testing.T) {
 	db := testkit.DB(t)
 
 	ctx := context.Background()
-	repo := postgres.NewCommunityRepository(db)
+	repo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 
 	t.Run("Concurrent creation with same handle should fail", func(t *testing.T) {
 		const numAttempts = 10
@@ -678,7 +679,7 @@ func TestConcurrentSubscription_RaceConditions(t *testing.T) {
 	db := testkit.DB(t)
 
 	ctx := context.Background()
-	communityRepo := postgres.NewCommunityRepository(db)
+	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	// did:web verification is skipped: these events are synthesised locally and
 	// there is no PLC directory in this package's infrastructure floor.
 	consumer := jetstream.NewCommunityEventConsumer(communityRepo, "did:web:coves.local", true, nil)

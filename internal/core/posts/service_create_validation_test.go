@@ -3,6 +3,7 @@
 package posts_test
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"fmt"
 	"strings"
@@ -54,7 +55,7 @@ func TestService_CreateResolvesTheCommunityAndValidatesTheRequest(t *testing.T) 
 	pdsURL := testkit.Endpoints().PDS.BaseURL
 
 	userRepo := postgres.NewUserRepository(db)
-	communityRepo := postgres.NewCommunityRepository(db)
+	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	postRepo := postgres.NewPostRepository(db)
 
 	resolver := identity.NewResolver(db, identity.DefaultConfig())

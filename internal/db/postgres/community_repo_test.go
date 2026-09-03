@@ -4,6 +4,7 @@ package postgres
 
 import (
 	"Coves/internal/core/communities"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/tests/testkit"
 	"context"
 	"fmt"
@@ -34,7 +35,7 @@ func TestCommunityRepository_Create(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repo := NewCommunityRepository(db)
+	repo := NewCommunityRepository(db, credentialciphertest.Fixed())
 	ctx := context.Background()
 
 	t.Run("creates community successfully", func(t *testing.T) {
@@ -171,7 +172,7 @@ func TestCommunityRepository_GetByDID(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repo := NewCommunityRepository(db)
+	repo := NewCommunityRepository(db, credentialciphertest.Fixed())
 	ctx := context.Background()
 
 	t.Run("retrieves existing community", func(t *testing.T) {
@@ -224,7 +225,7 @@ func TestCommunityRepository_GetByHandle(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repo := NewCommunityRepository(db)
+	repo := NewCommunityRepository(db, credentialciphertest.Fixed())
 	ctx := context.Background()
 
 	t.Run("retrieves community by handle", func(t *testing.T) {
@@ -266,7 +267,7 @@ func TestCommunityRepository_Subscriptions(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repo := NewCommunityRepository(db)
+	repo := NewCommunityRepository(db, credentialciphertest.Fixed())
 	ctx := context.Background()
 
 	// One community for every subscription case below.
@@ -423,7 +424,7 @@ func TestCommunityRepository_List(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repo := NewCommunityRepository(db)
+	repo := NewCommunityRepository(db, credentialciphertest.Fixed())
 	ctx := context.Background()
 
 	t.Run("lists communities with pagination", func(t *testing.T) {
@@ -513,7 +514,7 @@ func TestCommunityRepository_GetSubscribedCommunityDIDs(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repo := NewCommunityRepository(db)
+	repo := NewCommunityRepository(db, credentialciphertest.Fixed())
 	ctx := context.Background()
 
 	// Three communities so the assertions can distinguish "subscribed",

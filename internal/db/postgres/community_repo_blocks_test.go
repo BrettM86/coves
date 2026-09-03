@@ -4,6 +4,7 @@ package postgres
 
 import (
 	"Coves/internal/core/communities"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/tests/testkit"
 	"context"
 	"testing"
@@ -67,7 +68,7 @@ func blockCommunity(t *testing.T, repo communities.Repository, userDID string, c
 func TestCommunityRepo_ListBlockedCommunities(t *testing.T) {
 	t.Parallel()
 
-	repo := NewCommunityRepository(testkit.DB(t))
+	repo := NewCommunityRepository(testkit.DB(t), credentialciphertest.Fixed())
 	ctx := context.Background()
 	userDID := "did:plc:blocklister"
 
@@ -116,7 +117,7 @@ func TestCommunityRepo_ListBlockedCommunities_StablePagesOnEqualTimestamps(t *te
 	t.Parallel()
 
 	db := testkit.DB(t)
-	repo := NewCommunityRepository(db)
+	repo := NewCommunityRepository(db, credentialciphertest.Fixed())
 	ctx := context.Background()
 	const userDID = "did:plc:blockstablepages"
 
@@ -158,7 +159,7 @@ func TestCommunityRepo_ListBlockedCommunities_StablePagesOnEqualTimestamps(t *te
 func TestCommunityRepo_IsBlocked(t *testing.T) {
 	t.Parallel()
 
-	repo := NewCommunityRepository(testkit.DB(t))
+	repo := NewCommunityRepository(testkit.DB(t), credentialciphertest.Fixed())
 	ctx := context.Background()
 
 	t.Run("false when no block exists", func(t *testing.T) {
@@ -197,7 +198,7 @@ func TestCommunityRepo_IsBlocked(t *testing.T) {
 func TestCommunityRepo_GetBlock(t *testing.T) {
 	t.Parallel()
 
-	repo := NewCommunityRepository(testkit.DB(t))
+	repo := NewCommunityRepository(testkit.DB(t), credentialciphertest.Fixed())
 	ctx := context.Background()
 	userDID := "did:plc:getblockuser"
 	community := blockableCommunity(t, repo, "getblock")

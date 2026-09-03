@@ -3,6 +3,7 @@
 package jetstream
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -81,7 +82,7 @@ func newAccFixture(t *testing.T, db *sql.DB, opts ...PostEventConsumerOption) ac
 	return accFixture{
 		consumer: NewPostEventConsumer(
 			postgres.NewPostRepository(db),
-			postgres.NewCommunityRepository(db),
+			postgres.NewCommunityRepository(db, credentialciphertest.Fixed()),
 			us,
 			db,
 			wired...,
@@ -370,7 +371,7 @@ func newRealRepoFixture(t *testing.T, db *sql.DB) *realRepoFixture {
 
 	admissions := postgres.NewAdmissionRepository(db)
 	consumer := NewPostEventConsumer(
-		postgres.NewPostRepository(db), postgres.NewCommunityRepository(db),
+		postgres.NewPostRepository(db), postgres.NewCommunityRepository(db, credentialciphertest.Fixed()),
 		newMockUserService(), db,
 		WithAdmissions(admissions),
 		WithDeletedAccounts(postgres.NewDeletedAccountRepository(db)),

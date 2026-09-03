@@ -3,6 +3,7 @@
 package postgres
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"fmt"
 	"testing"
@@ -35,7 +36,7 @@ func TestHostedCommunityDIDs_SelectsOnlyCommunitiesWithStoredCredentials(t *test
 	db := testkit.DB(t)
 	ctx := context.Background()
 
-	repo := NewCommunityRepository(db)
+	repo := NewCommunityRepository(db, credentialciphertest.Fixed())
 	id := testkit.UniqueID(t)
 
 	hostedDID := "did:plc:hosted" + id
@@ -94,7 +95,7 @@ func TestHostedCommunityDIDs_ReturnsIdentifiersOnlyNeverSecrets(t *testing.T) {
 	db := testkit.DB(t)
 	ctx := context.Background()
 
-	repo := NewCommunityRepository(db)
+	repo := NewCommunityRepository(db, credentialciphertest.Fixed())
 	id := testkit.UniqueID(t)
 	did := "did:plc:secret" + id
 	secret := "refresh-token-that-must-not-escape-" + id

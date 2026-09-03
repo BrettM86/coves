@@ -3,6 +3,7 @@
 package jetstream
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
 	"testing"
@@ -71,7 +72,7 @@ func setupRevFixtures(t *testing.T, db *sql.DB) (pc *PostEventConsumer, postURI,
 	us := newMockUserService()
 	us.users[revTestAuthor] = &users.User{DID: revTestAuthor, Handle: "revauthor.test"}
 	pc = NewPostEventConsumer(
-		postgres.NewPostRepository(db), postgres.NewCommunityRepository(db), us, db,
+		postgres.NewPostRepository(db), postgres.NewCommunityRepository(db, credentialciphertest.Fixed()), us, db,
 		WithAdmissions(postgres.NewAdmissionRepository(db)),
 	)
 
@@ -374,7 +375,7 @@ func TestCommunityConsumer_StaleSubscribeReplayAfterUnsubscribe_DoesNotResubscri
 	insertBridgedUser(t, db, revTestAuthor, "revauthor.test")
 	insertBridgedCommunity(t, db, revTestCommunity, "revcommunity.test", revTestAuthor)
 
-	cec := NewCommunityEventConsumer(postgres.NewCommunityRepository(db), "did:web:test.local", true, nil,
+	cec := NewCommunityEventConsumer(postgres.NewCommunityRepository(db, credentialciphertest.Fixed()), "did:web:test.local", true, nil,
 		WithCommunityRevGate(NewRevGate(db)))
 	ctx := context.Background()
 	base := time.Now().UnixMicro()

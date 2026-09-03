@@ -25,6 +25,7 @@
 package imageproxy_test
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"image/color"
 	"net/http"
@@ -71,7 +72,7 @@ func TestImageProxy_EmittedURLsAreFetchable(t *testing.T) {
 	// rather than a row insert.
 	handleDomain := endpoints.PDS.HandleDomain
 	communityService := communities.NewCommunityServiceWithPDSFactory(
-		postgres.NewCommunityRepository(db),
+		postgres.NewCommunityRepository(db, credentialciphertest.Fixed()),
 		endpoints.PDS.BaseURL,
 		fixtures.InstanceDID(),
 		handleDomain,

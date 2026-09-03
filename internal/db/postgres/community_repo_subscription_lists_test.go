@@ -3,6 +3,7 @@
 package postgres
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"testing"
 	"time"
@@ -45,7 +46,7 @@ type subscriptionFixture struct {
 func newSubscriptionFixture(t *testing.T) subscriptionFixture {
 	t.Helper()
 	ctx := context.Background()
-	repo := NewCommunityRepository(testkit.DB(t))
+	repo := NewCommunityRepository(testkit.DB(t), credentialciphertest.Fixed())
 	id := testkit.UniqueID(t)
 
 	seedCommunity := func(name string) *communities.Community {

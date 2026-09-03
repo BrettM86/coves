@@ -3,6 +3,7 @@
 package jetstream
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
 	"errors"
@@ -63,7 +64,7 @@ func newErasedFixture(t *testing.T, db *sql.DB, opts ...PostEventConsumerOption)
 
 	return erasedFixture{
 		consumer: NewPostEventConsumer(
-			postgres.NewPostRepository(db), postgres.NewCommunityRepository(db),
+			postgres.NewPostRepository(db), postgres.NewCommunityRepository(db, credentialciphertest.Fixed()),
 			newMockUserService(), db, wired...),
 		userService: users.NewUserService(postgres.NewUserRepository(db), nil, bskySocialPDS, nil, ""),
 		admissions:  admissions,

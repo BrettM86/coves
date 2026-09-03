@@ -4,6 +4,7 @@ package postgres
 
 import (
 	"Coves/internal/core/communities"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/tests/testkit"
 	"context"
 	"fmt"
@@ -15,11 +16,11 @@ import (
 //
 // A community in the V2 model owns a PDS account, and the repository is the only
 // place its password and its access and refresh tokens are encrypted and
-// decrypted: Create wraps them in pgp_sym_encrypt() with the row from
-// encryption_keys, and the read paths unwrap them with pgp_sym_decrypt(). Both
-// halves are SQL, so the round trip cannot be proven anywhere but against a real
-// database with pgcrypto and a seeded key — which is why this suite lives beside
-// community_repo.go rather than in internal/core/communities.
+// decrypted: Create seals them with the app-side AES-256-GCM credential cipher
+// before the INSERT, and the read paths open them after the SELECT. The key stays
+// in the process, and each value is bound to its table, column, and community DID,
+// so the storage boundary is why this suite lives beside community_repo.go rather
+// than in internal/core/communities.
 //
 // The load-bearing assertion is the one that reads the ciphertext columns
 // directly. A repository that stored the tokens in plaintext would pass every
@@ -34,7 +35,7 @@ func TestCommunityRepository_CredentialPersistence(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repo := NewCommunityRepository(db)
+	repo := NewCommunityRepository(db, credentialciphertest.Fixed())
 	ctx := context.Background()
 
 	t.Run("persists PDS credentials on create", func(t *testing.T) {
@@ -132,8 +133,8 @@ func TestCommunityRepository_CredentialPersistence(t *testing.T) {
 		}
 		// The password is the column this file's siblings care most about, and it
 		// was the one missing from this list. It goes through the same
-		// pgp_sym_encrypt/pgp_sym_decrypt pair as the tokens above but is read on
-		// a different path — EnsureFreshToken falls back to it to open a new
+		// app-side credential cipher as the tokens above but is read on a different
+		// path — EnsureFreshToken falls back to it to open a new
 		// session when the refresh token has expired — so a firehose-indexed
 		// community giving back ciphertext, or an error, instead of "" would
 		// surface there rather than here.
@@ -154,7 +155,7 @@ func TestCommunityRepository_EncryptedCredentials(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repo := NewCommunityRepository(db)
+	repo := NewCommunityRepository(db, credentialciphertest.Fixed())
 	ctx := context.Background()
 
 	t.Run("credentials are encrypted in database", func(t *testing.T) {
@@ -275,7 +276,7 @@ func TestCommunityRepository_V2OwnershipModel(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repo := NewCommunityRepository(db)
+	repo := NewCommunityRepository(db, credentialciphertest.Fixed())
 	ctx := context.Background()
 
 	t.Run("V2 communities are self-owned", func(t *testing.T) {

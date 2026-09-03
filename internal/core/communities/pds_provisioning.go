@@ -145,7 +145,7 @@ func (p *PDSAccountProvisioner) ProvisionCommunityAccount(
 	// CRITICAL: The password MUST be encrypted (not hashed) before database storage
 	// We need to recover the plaintext password to call com.atproto.server.createSession
 	// when access/refresh tokens expire (90-day window on refresh tokens)
-	// The repository layer handles encryption using pgp_sym_encrypt()
+	// The repository layer seals it with the application credential cipher.
 	return &CommunityPDSAccount{
 		DID:            output.Did,        // The community's DID (PDS-generated)
 		Handle:         output.Handle,     // e.g., gaming.community.coves.social

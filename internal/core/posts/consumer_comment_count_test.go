@@ -3,6 +3,7 @@
 package posts_test
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"fmt"
 	"testing"
@@ -54,7 +55,7 @@ func TestPostConsumer_ReconcilesCommentCountWhenCommentsArriveFirst(t *testing.T
 
 	postRepo := postgres.NewPostRepository(db)
 	commentRepo := postgres.NewCommentRepository(db)
-	communityRepo := postgres.NewCommunityRepository(db)
+	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	userRepo := postgres.NewUserRepository(db)
 	// A nil identity resolver is deliberate: the post consumer only asks the user
 	// service about authors it has not seen, and every author here is seeded

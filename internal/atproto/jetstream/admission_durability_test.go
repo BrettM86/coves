@@ -3,6 +3,7 @@
 package jetstream
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 
 	"errors"
@@ -161,7 +162,7 @@ func TestAdmission_ConvergeMustNotRegressTheEvaluatedCID(t *testing.T) {
 	// live in different repos, Jetstream parallelises across repos, and the
 	// fetch exists precisely because the post's own event had not arrived yet.
 	f.consumer = NewPostEventConsumer(
-		postgres.NewPostRepository(db), postgres.NewCommunityRepository(db),
+		postgres.NewPostRepository(db), postgres.NewCommunityRepository(db, credentialciphertest.Fixed()),
 		newMockUserService(), db,
 		WithAdmissions(f.admissions),
 		WithDeletedAccounts(postgres.NewDeletedAccountRepository(db)),
@@ -210,7 +211,7 @@ func TestAdmission_SurvivesAFailedUpsertAcrossRedelivery(t *testing.T) {
 	}
 	f := newAccFixture(t, db)
 	f.consumer = NewPostEventConsumer(
-		postgres.NewPostRepository(db), postgres.NewCommunityRepository(db),
+		postgres.NewPostRepository(db), postgres.NewCommunityRepository(db, credentialciphertest.Fixed()),
 		newMockUserService(), db,
 		WithAdmissions(flaky),
 		WithDeletedAccounts(postgres.NewDeletedAccountRepository(db)),
@@ -342,7 +343,7 @@ func TestAdmission_FailedWithdrawalIsRetriedOnRedelivery(t *testing.T) {
 	sweep := &flakyDeleter{failures: 1, err: errors.New("the community's PDS is briefly unreachable")}
 	f := newAccFixture(t, db)
 	f.consumer = NewPostEventConsumer(
-		postgres.NewPostRepository(db), postgres.NewCommunityRepository(db),
+		postgres.NewPostRepository(db), postgres.NewCommunityRepository(db, credentialciphertest.Fixed()),
 		newMockUserService(), db,
 		WithAdmissions(f.admissions),
 		WithDeletedAccounts(postgres.NewDeletedAccountRepository(db)),

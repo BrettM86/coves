@@ -3,6 +3,7 @@
 package jetstream
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
 	"testing"
@@ -43,7 +44,7 @@ func setupDupFixtures(t *testing.T, db *sql.DB) (postURI, postCID string) {
 	us := newMockUserService()
 	us.users[dupTestAuthor] = &users.User{DID: dupTestAuthor, Handle: "dupauthor.test"}
 	pc := NewPostEventConsumer(
-		postgres.NewPostRepository(db), postgres.NewCommunityRepository(db), us, db,
+		postgres.NewPostRepository(db), postgres.NewCommunityRepository(db, credentialciphertest.Fixed()), us, db,
 		WithAdmissions(postgres.NewAdmissionRepository(db)),
 	)
 
@@ -205,7 +206,7 @@ func TestAggregatorConsumer_DuplicateDelivery_LeavesTheTriggerStatsAlone(t *test
 	insertBridgedUser(t, db, dupTestAuthor, "dupauthor.test")
 	insertBridgedCommunity(t, db, dupTestCommunity, "dupcommunity.test", dupTestAuthor)
 
-	ac := NewAggregatorEventConsumer(postgres.NewAggregatorRepository(db))
+	ac := NewAggregatorEventConsumer(postgres.NewAggregatorRepository(db, credentialciphertest.Fixed()))
 	ctx := context.Background()
 
 	declaration := &JetstreamEvent{

@@ -3,6 +3,7 @@
 package jetstream
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
 	"testing"
@@ -65,7 +66,7 @@ func newPostV2BridgedFixture(t *testing.T, db *sql.DB, authorPDS, communityPDS s
 	f.users.users[pv2Author].PDSURL = authorPDS
 	f.consumer = NewPostEventConsumer(
 		postgres.NewPostRepository(db),
-		postgres.NewCommunityRepository(db),
+		postgres.NewCommunityRepository(db, credentialciphertest.Fixed()),
 		f.users,
 		db,
 		WithAdmissions(f.admissions),

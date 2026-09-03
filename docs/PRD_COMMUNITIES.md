@@ -40,7 +40,7 @@ Hosted By:   did:web:coves.social (instance manages credentials)
 - [x] **PDS Account Provisioning:** Automatic account creation for each community
 - [x] **Credential Management:** Secure storage of community PDS credentials
 - [x] **Token Refresh:** Automatic refresh of expired access tokens (completed 2025-10-17)
-- [x] **Encryption at Rest:** PostgreSQL pgcrypto for sensitive credentials
+- [x] **Encryption at Rest:** application-side AES-256-GCM for sensitive credentials, key from `ENCRYPTION_KEY` (see docs/CREDENTIAL_ENCRYPTION.md)
 - [x] **Write-Forward Pattern:** Service → PDS → Firehose → AppView
 - [x] **Jetstream Consumer:** Real-time indexing from firehose
 - [x] **V2 Validation:** Strict rkey="self" enforcement (no V1 compatibility)
@@ -60,7 +60,7 @@ Hosted By:   did:web:coves.social (instance manages credentials)
 - [x] **Subscriptions Table:** Lightweight feed following
 - [x] **Memberships Table:** Active participation tracking
 - [x] **Moderation Table:** Local moderation actions
-- [x] **Encryption Keys Table:** Secure key management for pgcrypto
+- [x] **Key outside the database:** the credential key lives in the AppView environment, not in a table beside the ciphertext (migration 046 dropped `encryption_keys`)
 - [x] **Indexes:** Optimized for search, visibility filtering, and lookups
 
 ### Service Layer
@@ -349,7 +349,7 @@ Communities can define content posting restrictions via the `contentRules` objec
 **Impact:** Communities can now be updated after creation (credentials survive restarts)
 
 **Issue:** Credentials stored in plaintext in PostgreSQL
-**Fix:** Added pgcrypto encryption for access/refresh tokens
+**Fix:** Added pgcrypto encryption for access/refresh tokens (superseded 2026-09 by application-side AES-256-GCM with the key held outside the database; see docs/CREDENTIAL_ENCRYPTION.md)
 **Impact:** Database compromise no longer exposes active tokens
 
 **Issue:** UpdateCommunity used instance credentials instead of community credentials
@@ -494,7 +494,7 @@ profile record cannot supply it.
 ### 2025-10-10: V2 Architecture Completed
 - Migrated from instance-owned to community-owned repositories
 - Each community now has own PDS account
-- Credentials encrypted at rest using pgcrypto
+- Credentials encrypted at rest with application-side AES-256-GCM; the key is never stored in the database
 - Strict V2 enforcement (no V1 compatibility)
 
 ### 2025-10-08: DID Architecture & atProto Compliance

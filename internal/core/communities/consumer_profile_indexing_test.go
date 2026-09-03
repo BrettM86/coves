@@ -6,6 +6,7 @@ import (
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/communities"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
@@ -102,7 +103,7 @@ func newCommunityConsumer(t *testing.T, resolver *stubIdentityResolver) (
 ) {
 	t.Helper()
 
-	repo := postgres.NewCommunityRepository(testkit.DB(t))
+	repo := postgres.NewCommunityRepository(testkit.DB(t), credentialciphertest.Fixed())
 	if resolver == nil {
 		// A typed nil in an interface parameter is not nil, and the consumer
 		// branches on the interface being nil to decide whether it is in

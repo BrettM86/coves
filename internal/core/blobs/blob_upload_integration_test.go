@@ -9,6 +9,7 @@ import (
 	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
@@ -55,7 +56,7 @@ func TestBlobUpload_E2E_PostWithImages(t *testing.T) {
 	ctx := context.Background()
 
 	// Setup repositories
-	communityRepo := postgres.NewCommunityRepository(db)
+	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	postRepo := postgres.NewPostRepository(db)
 	userRepo := postgres.NewUserRepository(db)
 
@@ -419,7 +420,7 @@ func TestBlobUpload_E2E_CommentWithImage(t *testing.T) {
 	ctx := context.Background()
 
 	// Setup repositories
-	communityRepo := postgres.NewCommunityRepository(db)
+	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	commentRepo := postgres.NewCommentRepository(db)
 
 	// Setup services (pdsURL already declared in health check above)
@@ -574,7 +575,7 @@ func TestBlobUpload_Validation(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	communityRepo := postgres.NewCommunityRepository(db)
+	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	blobService := blobs.NewBlobService(testkit.Endpoints().PDS.BaseURL, blobs.PrivateHostOptions(true)...)
 	community := createTestCommunityWithBlobCredentials(t, communityRepo, "validation")
 	ctx := context.Background()

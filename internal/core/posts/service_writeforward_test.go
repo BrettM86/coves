@@ -3,6 +3,7 @@
 package posts_test
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
 	"fmt"
@@ -312,7 +313,7 @@ func newPostFixture(t *testing.T) *postFixture {
 
 	db := testkit.DB(t)
 	pdsServer := testkit.NewPDS(t)
-	communityRepo := postgres.NewCommunityRepository(db)
+	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 
 	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,

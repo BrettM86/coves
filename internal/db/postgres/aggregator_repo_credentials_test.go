@@ -3,6 +3,7 @@
 package postgres
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -42,13 +43,12 @@ import (
 //     UPDATE … WHERE did = $1, and the cost of a missing predicate is one bot
 //     holding another bot's PDS session.
 //
-// The OAuth tokens and the DPoP private key are encrypted at rest by Postgres
-// (pgp_sym_encrypt against the key seeded by migration 006, moved to these
-// columns by 025). That makes the encryption part of the SQL rather than part
-// of any Go code, which in turn makes a repository test the only place it is
-// exercised at all — a mocked repository stores plaintext strings and proves
-// nothing. Where it matters, the ciphertext column is read directly to confirm
-// the plaintext is not sitting in it.
+// The repository encrypts the OAuth tokens and DPoP private key with the
+// app-side AES-256-GCM credential cipher before writing their BYTEA columns.
+// The key stays in the process, and each value is bound to its table, column,
+// and aggregator DID. A mocked repository stores plaintext strings and proves
+// nothing about that boundary, so the ciphertext is read directly where it
+// matters to confirm the plaintext is not sitting in the database.
 
 // aggregatorAPIKeyHash returns a value shaped like what the middleware actually
 // stores: the hex SHA-256 of the presented key, which is exactly the 64
@@ -117,7 +117,7 @@ func TestAggregatorRepo_SetAPIKey(t *testing.T) {
 	t.Run("stores the whole OAuth session behind the key", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did := indexAggregator(t, repo, "Fresh Aggregator")
 		expires := time.Now().UTC().Add(90 * time.Minute).Truncate(time.Microsecond)
@@ -133,7 +133,7 @@ func TestAggregatorRepo_SetAPIKey(t *testing.T) {
 		assert.Equal(t, keyHash, creds.APIKeyHash)
 		assert.Equal(t, session.AccessToken, creds.OAuthAccessToken,
 			"the access token is what signs the write to the aggregator's PDS; a token that does not "+
-				"survive the round trip through pgp_sym_encrypt leaves the bot authenticated to Coves "+
+				"survive the round trip through the credential cipher leaves the bot authenticated to Coves "+
 				"and unable to write anywhere")
 		assert.Equal(t, session.RefreshToken, creds.OAuthRefreshToken)
 		assert.Equal(t, session.PDSURL, creds.OAuthPDSURL)
@@ -156,7 +156,7 @@ func TestAggregatorRepo_SetAPIKey(t *testing.T) {
 		assert.True(t, creds.HasActiveAPIKey())
 	})
 
-	// The three sensitive columns are BYTEA holding pgp_sym_encrypt output. If a
+	// The three sensitive columns are BYTEA holding versioned AES-GCM output. If a
 	// future migration or a refactor made them plain text, every assertion above
 	// would still pass — the round trip would simply be an identity function —
 	// and a database backup would carry every aggregator's PDS credentials in
@@ -164,7 +164,7 @@ func TestAggregatorRepo_SetAPIKey(t *testing.T) {
 	t.Run("keeps the secrets out of the clear in the row itself", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did := indexAggregator(t, repo, "Encrypted Aggregator")
 		session := aggregatorOAuthSession("cipher", time.Now().Add(time.Hour))
@@ -187,7 +187,7 @@ func TestAggregatorRepo_SetAPIKey(t *testing.T) {
 	t.Run("an absent token is NULL, not encrypted emptiness", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did := indexAggregator(t, repo, "Tokenless Aggregator")
 		session := aggregatorOAuthSession("sparse", time.Now().Add(time.Hour))
@@ -215,7 +215,7 @@ func TestAggregatorRepo_SetAPIKey(t *testing.T) {
 	t.Run("a new key supersedes the old one", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did := indexAggregator(t, repo, "Rekeyed Aggregator")
 		leaked := aggregatorAPIKeyHash(t, "leaked-key")
@@ -246,7 +246,7 @@ func TestAggregatorRepo_SetAPIKey(t *testing.T) {
 	t.Run("re-keying clears an earlier revocation", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did, _ := aggregatorWithAPIKey(t, repo, "revived", time.Now().Add(time.Hour))
 		require.NoError(t, repo.RevokeAPIKey(ctx, did))
@@ -267,7 +267,7 @@ func TestAggregatorRepo_SetAPIKey(t *testing.T) {
 	t.Run("writes to one aggregator only", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		subject := indexAggregator(t, repo, "Subject")
 		bystander, bystanderHash := aggregatorWithAPIKey(t, repo, "bystander", time.Now().Add(time.Hour))
@@ -285,7 +285,7 @@ func TestAggregatorRepo_SetAPIKey(t *testing.T) {
 	t.Run("reports an aggregator the AppView never indexed", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		err := repo.SetAPIKey(ctx, "did:plc:"+testkit.UniqueID(t), "cvs_ghost",
 			aggregatorAPIKeyHash(t, "ghost-key"), aggregatorOAuthSession("ghost", time.Now().Add(time.Hour)))
@@ -302,7 +302,7 @@ func TestAggregatorRepo_GetByAPIKeyHash(t *testing.T) {
 	t.Run("answers with the aggregator that owns the hash and no other", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		firstDID, firstHash := aggregatorWithAPIKey(t, repo, "first", time.Now().Add(time.Hour))
 		secondDID, secondHash := aggregatorWithAPIKey(t, repo, "second", time.Now().Add(time.Hour))
@@ -326,7 +326,7 @@ func TestAggregatorRepo_GetByAPIKeyHash(t *testing.T) {
 	t.Run("a hash nobody holds is an error, not an empty aggregator", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 		aggregatorWithAPIKey(t, repo, "legit", time.Now().Add(time.Hour))
 
 		guessed, err := repo.GetByAPIKeyHash(ctx, aggregatorAPIKeyHash(t, "a-key-nobody-issued"))
@@ -342,7 +342,7 @@ func TestAggregatorRepo_GetByAPIKeyHash(t *testing.T) {
 	t.Run("an empty hash matches nobody, including aggregators with no key", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 		indexAggregator(t, repo, "Never Completed OAuth")
 
 		_, err := repo.GetByAPIKeyHash(ctx, "")
@@ -352,7 +352,7 @@ func TestAggregatorRepo_GetByAPIKeyHash(t *testing.T) {
 	t.Run("a revoked key stops authenticating", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did, keyHash := aggregatorWithAPIKey(t, repo, "doomed", time.Now().Add(time.Hour))
 		before, err := repo.GetByAPIKeyHash(ctx, keyHash)
@@ -375,7 +375,7 @@ func TestAggregatorRepo_GetByAPIKeyHash(t *testing.T) {
 	t.Run("distinguishes a revoked key from an unknown one", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did, keyHash := aggregatorWithAPIKey(t, repo, "classify", time.Now().Add(time.Hour))
 		require.NoError(t, repo.RevokeAPIKey(ctx, did))
@@ -396,7 +396,7 @@ func TestAggregatorRepo_GetCredentialsByAPIKeyHash(t *testing.T) {
 	t.Run("hands the owner's session to the authenticated caller", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		mineDID, mineHash := aggregatorWithAPIKey(t, repo, "mine", time.Now().Add(time.Hour))
 		aggregatorWithAPIKey(t, repo, "theirs", time.Now().Add(time.Hour))
@@ -420,7 +420,7 @@ func TestAggregatorRepo_GetCredentialsByAPIKeyHash(t *testing.T) {
 	t.Run("an unknown hash is an invalid key rather than a missing aggregator", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 		aggregatorWithAPIKey(t, repo, "present", time.Now().Add(time.Hour))
 
 		creds, err := repo.GetCredentialsByAPIKeyHash(ctx, aggregatorAPIKeyHash(t, "forged"))
@@ -431,7 +431,7 @@ func TestAggregatorRepo_GetCredentialsByAPIKeyHash(t *testing.T) {
 	t.Run("withholds the session when the key is revoked", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did, keyHash := aggregatorWithAPIKey(t, repo, "cancelled", time.Now().Add(time.Hour))
 		require.NoError(t, repo.RevokeAPIKey(ctx, did))
@@ -451,7 +451,7 @@ func TestAggregatorRepo_RevokeAPIKey(t *testing.T) {
 	t.Run("revokes only the aggregator named", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		targetDID, _ := aggregatorWithAPIKey(t, repo, "target", time.Now().Add(time.Hour))
 		_, bystanderHash := aggregatorWithAPIKey(t, repo, "spared", time.Now().Add(time.Hour))
@@ -471,7 +471,7 @@ func TestAggregatorRepo_RevokeAPIKey(t *testing.T) {
 	t.Run("reports an aggregator that has no key to revoke", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		keyless := indexAggregator(t, repo, "Keyless")
 		assert.ErrorIs(t, repo.RevokeAPIKey(ctx, keyless), aggregators.ErrAggregatorNotFound)
@@ -485,7 +485,7 @@ func TestAggregatorRepo_RevokeAPIKey(t *testing.T) {
 	t.Run("a repeated revocation rewrites when the key was withdrawn", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did, _ := aggregatorWithAPIKey(t, repo, "twice", time.Now().Add(time.Hour))
 		require.NoError(t, repo.RevokeAPIKey(ctx, did))
@@ -525,7 +525,7 @@ func TestAggregatorRepo_UpdateAPIKeyLastUsed(t *testing.T) {
 	t.Run("moves the timestamp forward", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did, _ := aggregatorWithAPIKey(t, repo, "active", time.Now().Add(time.Hour))
 
@@ -558,7 +558,7 @@ func TestAggregatorRepo_UpdateAPIKeyLastUsed(t *testing.T) {
 	t.Run("leaves the credential itself alone", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did, keyHash := aggregatorWithAPIKey(t, repo, "audited", time.Now().Add(time.Hour))
 		require.NoError(t, repo.UpdateAPIKeyLastUsed(ctx, did))
@@ -577,7 +577,7 @@ func TestAggregatorRepo_UpdateAPIKeyLastUsed(t *testing.T) {
 	t.Run("touches one aggregator", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did, _ := aggregatorWithAPIKey(t, repo, "user", time.Now().Add(time.Hour))
 		idle, _ := aggregatorWithAPIKey(t, repo, "idle", time.Now().Add(time.Hour))
@@ -593,7 +593,7 @@ func TestAggregatorRepo_UpdateAPIKeyLastUsed(t *testing.T) {
 	t.Run("reports a DID nothing indexed", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		assert.ErrorIs(t, repo.UpdateAPIKeyLastUsed(ctx, "did:plc:"+testkit.UniqueID(t)),
 			aggregators.ErrAggregatorNotFound)
@@ -611,7 +611,7 @@ func TestAggregatorRepo_UpdateOAuthTokens(t *testing.T) {
 	t.Run("replaces both tokens and the expiry", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did, _ := aggregatorWithAPIKey(t, repo, "refreshed", time.Now().Add(time.Minute))
 		renewedUntil := time.Now().UTC().Add(6 * time.Hour).Truncate(time.Microsecond)
@@ -633,7 +633,7 @@ func TestAggregatorRepo_UpdateOAuthTokens(t *testing.T) {
 	t.Run("re-encrypts rather than storing the new token in the clear", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did, _ := aggregatorWithAPIKey(t, repo, "reciphered", time.Now().Add(time.Minute))
 		require.NoError(t, repo.UpdateOAuthTokens(ctx, did, "post-refresh-access", "post-refresh-refresh",
@@ -650,7 +650,7 @@ func TestAggregatorRepo_UpdateOAuthTokens(t *testing.T) {
 	t.Run("leaves the rest of the session intact", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did, keyHash := aggregatorWithAPIKey(t, repo, "partial", time.Now().Add(time.Minute))
 		require.NoError(t, repo.UpdateOAuthTokens(ctx, did, "a", "r", time.Now().Add(time.Hour)))
@@ -671,7 +671,7 @@ func TestAggregatorRepo_UpdateOAuthTokens(t *testing.T) {
 	t.Run("refreshes one aggregator's session", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did, _ := aggregatorWithAPIKey(t, repo, "renewer", time.Now().Add(time.Minute))
 		other, _ := aggregatorWithAPIKey(t, repo, "sleeper", time.Now().Add(time.Minute))
@@ -688,7 +688,7 @@ func TestAggregatorRepo_UpdateOAuthTokens(t *testing.T) {
 	t.Run("reports a DID nothing indexed", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		err := repo.UpdateOAuthTokens(ctx, "did:plc:"+testkit.UniqueID(t), "a", "r", time.Now().Add(time.Hour))
 		assert.ErrorIs(t, err, aggregators.ErrAggregatorNotFound,
@@ -704,7 +704,7 @@ func TestAggregatorRepo_UpdateOAuthNonces(t *testing.T) {
 	t.Run("records the nonce each server last issued", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did, _ := aggregatorWithAPIKey(t, repo, "nonced", time.Now().Add(time.Hour))
 		require.NoError(t, repo.UpdateOAuthNonces(ctx, did, "fresh-authserver", "fresh-pds"))
@@ -722,7 +722,7 @@ func TestAggregatorRepo_UpdateOAuthNonces(t *testing.T) {
 	t.Run("an empty nonce keeps the stored one", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did, _ := aggregatorWithAPIKey(t, repo, "halfnonce", time.Now().Add(time.Hour))
 
@@ -744,7 +744,7 @@ func TestAggregatorRepo_UpdateOAuthNonces(t *testing.T) {
 	t.Run("does not disturb the tokens or the key", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did, keyHash := aggregatorWithAPIKey(t, repo, "intact", time.Now().Add(time.Hour))
 		require.NoError(t, repo.UpdateOAuthNonces(ctx, did, "n1", "n2"))
@@ -762,7 +762,7 @@ func TestAggregatorRepo_UpdateOAuthNonces(t *testing.T) {
 	t.Run("touches one aggregator", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did, _ := aggregatorWithAPIKey(t, repo, "talker", time.Now().Add(time.Hour))
 		other, _ := aggregatorWithAPIKey(t, repo, "quiet", time.Now().Add(time.Hour))
@@ -780,7 +780,7 @@ func TestAggregatorRepo_UpdateOAuthNonces(t *testing.T) {
 	t.Run("reports a DID nothing indexed", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		assert.ErrorIs(t, repo.UpdateOAuthNonces(ctx, "did:plc:"+testkit.UniqueID(t), "a", "p"),
 			aggregators.ErrAggregatorNotFound)
@@ -798,7 +798,7 @@ func TestAggregatorRepo_GetAggregatorCredentials(t *testing.T) {
 	t.Run("an aggregator with no key yields empty credentials, not an error", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did := indexAggregator(t, repo, "Unenrolled")
 		creds, err := repo.GetAggregatorCredentials(ctx, did)
@@ -822,7 +822,7 @@ func TestAggregatorRepo_GetAggregatorCredentials(t *testing.T) {
 	t.Run("returns revoked credentials rather than refusing them", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		did, keyHash := aggregatorWithAPIKey(t, repo, "shownrevoked", time.Now().Add(time.Hour))
 		require.NoError(t, repo.RevokeAPIKey(ctx, did))
@@ -838,7 +838,7 @@ func TestAggregatorRepo_GetAggregatorCredentials(t *testing.T) {
 	t.Run("reports a DID nothing indexed", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 		creds, err := repo.GetAggregatorCredentials(ctx, "did:plc:"+testkit.UniqueID(t))
 		require.ErrorIs(t, err, aggregators.ErrAggregatorNotFound)
@@ -872,7 +872,7 @@ func TestAggregatorRepo_ListAggregatorsNeedingTokenRefresh(t *testing.T) {
 	seed := func(t *testing.T) aggregatorRefreshCohort {
 		t.Helper()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 		now := time.Now()
 
 		cohort := aggregatorRefreshCohort{repo: repo}
@@ -1002,7 +1002,7 @@ func TestAggregatorRepo_ListAggregatorsNeedingTokenRefresh(t *testing.T) {
 	t.Run("an installation with nothing due lists nothing", func(t *testing.T) {
 		t.Parallel()
 		db := testkit.DB(t)
-		repo := NewAggregatorRepository(db)
+		repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 		indexAggregator(t, repo, "Idle")
 
 		due, err := repo.ListAggregatorsNeedingTokenRefresh(ctx, 0)

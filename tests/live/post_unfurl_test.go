@@ -9,6 +9,7 @@ import (
 	"Coves/internal/core/posts"
 	"Coves/internal/core/unfurl"
 	"Coves/internal/core/users"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/testkit"
 	"context"
@@ -195,7 +196,7 @@ func TestPostUnfurl_UserProvidedMetadata(t *testing.T) {
 
 	// Setup
 	userRepo := postgres.NewUserRepository(db)
-	communityRepo := postgres.NewCommunityRepository(db)
+	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	postRepo := postgres.NewPostRepository(db)
 	unfurlRepo := unfurl.NewRepository(db)
 

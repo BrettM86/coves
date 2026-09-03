@@ -3,6 +3,7 @@
 package jetstream
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
 	"testing"
@@ -95,7 +96,7 @@ func setupCommentThread(t *testing.T, db *sql.DB) (postURI, postCID string) {
 	insertBridgedCommunity(t, db, bridgedTestCommunity, "brcommunity.test", bridgedTestAuthor)
 
 	pc := NewPostEventConsumer(
-		postgres.NewPostRepository(db), postgres.NewCommunityRepository(db), newMockUserService(), db,
+		postgres.NewPostRepository(db), postgres.NewCommunityRepository(db, credentialciphertest.Fixed()), newMockUserService(), db,
 		WithAdmissions(postgres.NewAdmissionRepository(db)),
 	)
 	const rkey = "cthread"

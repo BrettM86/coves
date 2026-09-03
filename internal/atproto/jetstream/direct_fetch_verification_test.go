@@ -3,6 +3,7 @@
 package jetstream
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -81,7 +82,7 @@ func TestDirectFetch_RecomputesTheCIDFromARealRepo(t *testing.T) {
 	fetcher := NewDirectPostFetcher(pinnedResolver(author.DID, pdsServer.URL()),
 		PrivatePostFetcherOptions(true)...)
 	consumer := NewPostEventConsumer(
-		postgres.NewPostRepository(db), postgres.NewCommunityRepository(db),
+		postgres.NewPostRepository(db), postgres.NewCommunityRepository(db, credentialciphertest.Fixed()),
 		newMockUserService(), db,
 		WithAdmissions(postgres.NewAdmissionRepository(db)),
 		WithDeletedAccounts(postgres.NewDeletedAccountRepository(db)),

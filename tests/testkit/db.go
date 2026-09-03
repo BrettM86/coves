@@ -883,13 +883,13 @@ func newCloneName() string { return newSweepableName(ClonePrefix) }
 // DB returns a private, fully migrated Postgres database for this test.
 //
 // The database is a clone of the migrated template, so it starts with the
-// production schema and exactly the rows the migrations seed — which is not
-// none: 006 and 025 insert encryption keys, and code that decrypts community
-// or aggregator credentials depends on them being there. "Empty" means no rows
-// from any other test. It is dropped when the test finishes; nothing
-// the test writes is visible to any other test, and no cleanup code is needed
-// (or wanted — an explicit DELETE in a test body is a sign the test is still
-// assuming a shared database).
+// production schema at its latest migration. Credential keys are not seeded:
+// the AES-256-GCM key belongs to the application process, and migration 046
+// removes the legacy encryption_keys table. "Empty" means no application rows
+// from any other test. It is dropped when the test finishes; nothing the test
+// writes is visible to any other test, and no cleanup code is needed (or wanted
+// — an explicit DELETE in a test body is a sign the test is still assuming a
+// shared database).
 //
 // A missing or unreachable Postgres fails the test. Tests do not skip on absent
 // infrastructure: if the suite was invoked, the infrastructure was requested.

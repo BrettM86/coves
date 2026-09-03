@@ -18,6 +18,8 @@ func TestMigration041_ClampsFutureCommentCreatedAt(t *testing.T) {
 	t.Parallel()
 
 	db := testkit.DB(t)
+	require.EqualValues(t, 46, testkit.MigrateDownOne(t, db, 46),
+		"046 (drop encryption_keys) sits on top of 045 and must be rolled back first")
 	require.EqualValues(t, 45, testkit.MigrateDownOne(t, db, 45),
 		"045 (the community subscriber recount) sits on top of 044 and must be rolled back first")
 	require.EqualValues(t, 44, testkit.MigrateDownOne(t, db, 44),

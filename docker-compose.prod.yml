@@ -109,7 +109,7 @@ services:
       ENV: production
       LOG_LEVEL: info
 
-      # Encryption key for community credentials
+      # AES-256-GCM key sealing stored credentials in the AppView process; never stored in the database
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
 
       # Cursor encryption for pagination

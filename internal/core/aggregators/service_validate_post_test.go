@@ -3,6 +3,7 @@
 package aggregators_test
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"testing"
 	"time"
@@ -50,7 +51,7 @@ func newPostValidation(t *testing.T) *postValidation {
 
 	db := testkit.DB(t)
 	ctx := context.Background()
-	repo := postgres.NewAggregatorRepository(db)
+	repo := postgres.NewAggregatorRepository(db, credentialciphertest.Fixed())
 
 	aggregatorDID := "did:plc:" + testkit.UniqueID(t)
 	require.NoError(t, repo.CreateAggregator(ctx, &aggregators.Aggregator{
@@ -64,7 +65,7 @@ func newPostValidation(t *testing.T) *postValidation {
 
 	name := testkit.UniqueID(t)
 	communityDID := "did:plc:" + name
-	_, err := postgres.NewCommunityRepository(db).Create(ctx, &communities.Community{
+	_, err := postgres.NewCommunityRepository(db, credentialciphertest.Fixed()).Create(ctx, &communities.Community{
 		DID:         communityDID,
 		Handle:      "c-" + name + ".coves.social",
 		Name:        name,

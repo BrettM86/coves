@@ -26,6 +26,7 @@
 package imageproxy_test
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"fmt"
 	"image/color"
@@ -85,7 +86,7 @@ func provisionCommunityAvatar(t *testing.T, width, height int, fill color.Color)
 	// provisioner builds the community's handle as c-{name}.{domain}.
 	handleDomain := endpoints.PDS.HandleDomain
 	communityService := communities.NewCommunityServiceWithPDSFactory(
-		postgres.NewCommunityRepository(db),
+		postgres.NewCommunityRepository(db, credentialciphertest.Fixed()),
 		endpoints.PDS.BaseURL,
 		fixtures.InstanceDID(),
 		handleDomain,

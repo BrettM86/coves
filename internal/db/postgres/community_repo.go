@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"Coves/internal/core/communities"
+	"Coves/internal/crypto/credentialcipher"
 	"context"
 	"database/sql"
 	"errors"
@@ -32,12 +33,16 @@ var (
 )
 
 type postgresCommunityRepo struct {
-	db *sql.DB
+	db     *sql.DB
+	cipher *credentialcipher.Cipher
 }
 
 // NewCommunityRepository creates a new PostgreSQL community repository
-func NewCommunityRepository(db *sql.DB) communities.Repository {
-	return &postgresCommunityRepo{db: db}
+func NewCommunityRepository(db *sql.DB, cipher *credentialcipher.Cipher) communities.Repository {
+	if cipher == nil {
+		panic("NewCommunityRepository: credential cipher is required")
+	}
+	return &postgresCommunityRepo{db: db, cipher: cipher}
 }
 
 // Create inserts a new community into the communities table
@@ -50,6 +55,22 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 	// subscriber_count is deliberately absent: it is derived from indexed
 	// subscription relationships and every newly materialized community starts
 	// at the database default of zero.
+	passwordCiphertext, err := encryptOptionalCredential(
+		r.cipher, community.PDSPassword, communityPDSPasswordCredentialContext(community.DID))
+	if err != nil {
+		return nil, fmt.Errorf("failed to encrypt community PDS password: %w", err)
+	}
+	accessTokenCiphertext, err := encryptOptionalCredential(
+		r.cipher, community.PDSAccessToken, communityPDSAccessTokenCredentialContext(community.DID))
+	if err != nil {
+		return nil, fmt.Errorf("failed to encrypt community PDS access token: %w", err)
+	}
+	refreshTokenCiphertext, err := encryptOptionalCredential(
+		r.cipher, community.PDSRefreshToken, communityPDSRefreshTokenCredentialContext(community.DID))
+	if err != nil {
+		return nil, fmt.Errorf("failed to encrypt community PDS refresh token: %w", err)
+	}
+
 	query := `
 		INSERT INTO communities (
 			did, handle, name, display_name, description, description_facets,
@@ -62,11 +83,7 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 			record_uri, record_cid, origin
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-			$12,
-			CASE WHEN $13 != '' THEN pgp_sym_encrypt($13, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1)) ELSE NULL END,
-			CASE WHEN $14 != '' THEN pgp_sym_encrypt($14, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1)) ELSE NULL END,
-			CASE WHEN $15 != '' THEN pgp_sym_encrypt($15, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1)) ELSE NULL END,
-			$16,
+			$12, $13, $14, $15, $16,
 			$17, $18, $19, $20,
 			$21, $22, $23, $24, $25, $26, $27, $28, $29
 		)
@@ -80,7 +97,7 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 		descFacets = nil
 	}
 
-	err := r.db.QueryRowContext(ctx, query,
+	err = r.db.QueryRowContext(ctx, query,
 		community.DID,
 		community.Handle, // Always non-empty - constructed by AppView consumer
 		community.Name,
@@ -94,9 +111,9 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 		community.HostedByDID,
 		// V2.0: PDS credentials for community account (encrypted at rest)
 		nullString(community.PDSEmail),
-		nullString(community.PDSPassword),     // Encrypted by pgp_sym_encrypt
-		nullString(community.PDSAccessToken),  // Encrypted by pgp_sym_encrypt
-		nullString(community.PDSRefreshToken), // Encrypted by pgp_sym_encrypt
+		passwordCiphertext,
+		accessTokenCiphertext,
+		refreshTokenCiphertext,
 		nullString(community.PDSURL),
 		// V2.0: No key columns - PDS manages all keys
 		community.Visibility,
@@ -139,22 +156,8 @@ func (r *postgresCommunityRepo) GetByDID(ctx context.Context, did string) (*comm
 	query := `
 		SELECT id, did, handle, name, display_name, description, description_facets,
 			avatar_cid, banner_cid, owner_did, created_by_did, hosted_by_did,
-			pds_email,
-			CASE
-				WHEN pds_password_encrypted IS NOT NULL
-				THEN pgp_sym_decrypt(pds_password_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
-				ELSE NULL
-			END as pds_password,
-			CASE
-				WHEN pds_access_token_encrypted IS NOT NULL
-				THEN pgp_sym_decrypt(pds_access_token_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
-				ELSE NULL
-			END as pds_access_token,
-			CASE
-				WHEN pds_refresh_token_encrypted IS NOT NULL
-				THEN pgp_sym_decrypt(pds_refresh_token_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
-				ELSE NULL
-			END as pds_refresh_token,
+			pds_email, pds_password_encrypted,
+			pds_access_token_encrypted, pds_refresh_token_encrypted,
 			pds_url,
 			visibility, allow_external_discovery, moderation_type, content_warnings,
 			member_count, subscriber_count, ` + communityPostCountUnqualified + ` AS post_count,
@@ -165,7 +168,8 @@ func (r *postgresCommunityRepo) GetByDID(ctx context.Context, did string) (*comm
 
 	var displayName, description, avatarCID, bannerCID, moderationType sql.NullString
 	var federatedFrom, federatedID, recordURI, recordCID sql.NullString
-	var pdsEmail, pdsPassword, pdsAccessToken, pdsRefreshToken, pdsURL, origin sql.NullString
+	var pdsEmail, pdsURL, origin sql.NullString
+	var pdsPasswordCiphertext, pdsAccessTokenCiphertext, pdsRefreshTokenCiphertext []byte
 	var descFacets []byte
 	var contentWarnings []string
 
@@ -174,8 +178,7 @@ func (r *postgresCommunityRepo) GetByDID(ctx context.Context, did string) (*comm
 		&displayName, &description, &descFacets,
 		&avatarCID, &bannerCID,
 		&community.OwnerDID, &community.CreatedByDID, &community.HostedByDID,
-		// V2.0: PDS credentials (decrypted from pgp_sym_encrypt)
-		&pdsEmail, &pdsPassword, &pdsAccessToken, &pdsRefreshToken, &pdsURL,
+		&pdsEmail, &pdsPasswordCiphertext, &pdsAccessTokenCiphertext, &pdsRefreshTokenCiphertext, &pdsURL,
 		&community.Visibility, &community.AllowExternalDiscovery,
 		&moderationType, pq.Array(&contentWarnings),
 		&community.MemberCount, &community.SubscriberCount, &community.PostCount,
@@ -191,15 +194,28 @@ func (r *postgresCommunityRepo) GetByDID(ctx context.Context, did string) (*comm
 		return nil, fmt.Errorf("failed to get community by DID: %w", err)
 	}
 
+	community.PDSPassword, err = decryptOptionalCredential(
+		r.cipher, pdsPasswordCiphertext, communityPDSPasswordCredentialContext(community.DID))
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt community PDS password for DID %s: %w", community.DID, err)
+	}
+	community.PDSAccessToken, err = decryptOptionalCredential(
+		r.cipher, pdsAccessTokenCiphertext, communityPDSAccessTokenCredentialContext(community.DID))
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt community PDS access token for DID %s: %w", community.DID, err)
+	}
+	community.PDSRefreshToken, err = decryptOptionalCredential(
+		r.cipher, pdsRefreshTokenCiphertext, communityPDSRefreshTokenCredentialContext(community.DID))
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt community PDS refresh token for DID %s: %w", community.DID, err)
+	}
+
 	// Map nullable fields
 	community.DisplayName = displayName.String
 	community.Description = description.String
 	community.AvatarCID = avatarCID.String
 	community.BannerCID = bannerCID.String
 	community.PDSEmail = pdsEmail.String
-	community.PDSPassword = pdsPassword.String
-	community.PDSAccessToken = pdsAccessToken.String
-	community.PDSRefreshToken = pdsRefreshToken.String
 	community.PDSURL = pdsURL.String
 	// V2.0: No key fields - PDS manages all keys
 	community.RotationKeyPEM = "" // Empty - PDS-managed
@@ -414,17 +430,26 @@ func (r *postgresCommunityRepo) Update(ctx context.Context, community *communiti
 // CRITICAL: Both tokens must be updated together because refresh tokens are single-use
 // After a successful token refresh, the old refresh token is immediately revoked by the PDS
 func (r *postgresCommunityRepo) UpdateCredentials(ctx context.Context, did, accessToken, refreshToken string) error {
+	accessTokenCiphertext, err := r.cipher.Encrypt(accessToken, communityPDSAccessTokenCredentialContext(did))
+	if err != nil {
+		return fmt.Errorf("failed to encrypt community PDS access token: %w", err)
+	}
+	refreshTokenCiphertext, err := r.cipher.Encrypt(refreshToken, communityPDSRefreshTokenCredentialContext(did))
+	if err != nil {
+		return fmt.Errorf("failed to encrypt community PDS refresh token: %w", err)
+	}
+
 	query := `
 		UPDATE communities
 		SET
-			pds_access_token_encrypted = pgp_sym_encrypt($2, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1)),
-			pds_refresh_token_encrypted = pgp_sym_encrypt($3, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1)),
+			pds_access_token_encrypted = $2,
+			pds_refresh_token_encrypted = $3,
 			updated_at = NOW()
 		WHERE did = $1
 		RETURNING did`
 
 	var returnedDID string
-	err := r.db.QueryRowContext(ctx, query, did, accessToken, refreshToken).Scan(&returnedDID)
+	err = r.db.QueryRowContext(ctx, query, did, accessTokenCiphertext, refreshTokenCiphertext).Scan(&returnedDID)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return communities.ErrCommunityNotFound

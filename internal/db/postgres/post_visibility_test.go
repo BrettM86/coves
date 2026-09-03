@@ -3,6 +3,7 @@
 package postgres
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
 	"testing"
@@ -479,9 +480,9 @@ func TestProfileStatsVisibility_PostCountExcludesNonAccepted(t *testing.T) {
 // that a reviewer showed could each be deleted from that copy with no test
 // noticing:
 //
-//	1. the collection check   — drop it and a failed-seed postv2 counts
-//	2. the pinned-CID equality — drop it and a §5.5 drifted post counts
-//	3. the community join half — drop it and another community's acceptance counts
+//  1. the collection check   — drop it and a failed-seed postv2 counts
+//  2. the pinned-CID equality — drop it and a §5.5 drifted post counts
+//  3. the community join half — drop it and another community's acceptance counts
 //
 // The count now calls visiblePostsJoin, so a copy cannot drift; this is the
 // assertion that says so out loud, and it is the one that fails if anyone
@@ -691,7 +692,7 @@ func TestGetCommentsVisibility_HeaderIsAdmissionAndDeleteAware(t *testing.T) {
 		NewCommentRepository(db),
 		NewUserRepository(db),
 		NewPostRepository(db),
-		NewCommunityRepository(db),
+		NewCommunityRepository(db, credentialciphertest.Fixed()),
 		nil, nil,
 	)
 
@@ -827,7 +828,7 @@ func TestCommunityPostCountVisibility_MatchesWhatTheFeedRenders(t *testing.T) {
 		"the fixture no longer means what this test says it means: expected exactly the accepted postv2 and the "+
 			"legacy post to be publicly visible, got %v", visible)
 
-	got, err := NewCommunityRepository(db).GetByDID(ctx, community)
+	got, err := NewCommunityRepository(db, credentialciphertest.Fixed()).GetByDID(ctx, community)
 	require.NoError(t, err)
 	assert.Equalf(t, len(visible), got.PostCount,
 		"community.postCount (%d) disagrees with what the community feed serves (%d posts: %v). It must be the SAME "+
@@ -849,7 +850,7 @@ func TestCommunityPostCountVisibility_MatchesWhatTheFeedRenders(t *testing.T) {
 // wire value rather than about a query the test wrote itself.
 func communityPostCount(t *testing.T, ctx context.Context, db *sql.DB, communityDID string) int {
 	t.Helper()
-	community, err := NewCommunityRepository(db).GetByDID(ctx, communityDID)
+	community, err := NewCommunityRepository(db, credentialciphertest.Fixed()).GetByDID(ctx, communityDID)
 	require.NoError(t, err)
 	return community.PostCount
 }
@@ -1087,7 +1088,7 @@ func TestCommunityListVisibility_ActiveSortOrdersByVisiblePosts(t *testing.T) {
 		seedVisibilityAdmission(t, db, quiet, uri, posts.AdmissionStatusPending, "", "")
 	}
 
-	listed, err := NewCommunityRepository(db).List(ctx, communities.ListCommunitiesRequest{
+	listed, err := NewCommunityRepository(db, credentialciphertest.Fixed()).List(ctx, communities.ListCommunitiesRequest{
 		Sort: "active", Limit: 100,
 	})
 	require.NoError(t, err)
@@ -1203,7 +1204,7 @@ func TestActorCommentsVisibility_RootIsReferenceOnly(t *testing.T) {
 	require.NoError(t, err)
 
 	service := comments.NewCommentServiceWithPDSFactory(
-		NewCommentRepository(db), NewUserRepository(db), NewPostRepository(db), NewCommunityRepository(db), nil, nil,
+		NewCommentRepository(db), NewUserRepository(db), NewPostRepository(db), NewCommunityRepository(db, credentialciphertest.Fixed()), nil, nil,
 	)
 
 	resp, err := service.GetActorComments(ctx, &comments.GetActorCommentsRequest{ActorDID: actor, Limit: 50})

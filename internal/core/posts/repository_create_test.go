@@ -3,6 +3,7 @@
 package posts_test
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"fmt"
 	"testing"
@@ -40,7 +41,7 @@ func TestPostRepository_CreateIndexesEachPostOnce(t *testing.T) {
 	pdsURL := testkit.Endpoints().PDS.BaseURL
 
 	userRepo := postgres.NewUserRepository(db)
-	communityRepo := postgres.NewCommunityRepository(db)
+	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	postRepo := postgres.NewPostRepository(db)
 
 	// A post row references both, so both have to exist before one can be

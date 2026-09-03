@@ -24,6 +24,7 @@ import (
 	"Coves/internal/core/userblocks"
 	"Coves/internal/core/users"
 	"Coves/internal/core/votes"
+	"Coves/internal/crypto/credentialcipher"
 	"Coves/internal/notify/telegram"
 	"context"
 	"database/sql"
@@ -80,8 +81,9 @@ const (
 // then read-only. It exists so the wiring can be split across focused
 // functions without threading a dozen parameters through each one.
 type application struct {
-	cfg *config.Config
-	db  *sql.DB
+	cfg              *config.Config
+	db               *sql.DB
+	credentialCipher *credentialcipher.Cipher
 
 	// Identity and authentication
 	identityResolver identity.Resolver
@@ -164,10 +166,16 @@ type application struct {
 // and asking the caller to Close it would invert that convention, and would
 // become a nil dereference during an already-failing boot the first time
 // anyone added a plain `return nil, err` below.
-func buildApplication(ctx context.Context, cfg *config.Config, db *sql.DB) (app *application, err error) {
+func buildApplication(
+	ctx context.Context,
+	cfg *config.Config,
+	db *sql.DB,
+	credentialCipher *credentialcipher.Cipher,
+) (app *application, err error) {
 	app = &application{
 		cfg:                   cfg,
 		db:                    db,
+		credentialCipher:      credentialCipher,
 		stopImageProxyCleanup: func() {},
 	}
 
@@ -324,12 +332,12 @@ func oauthScopes() []string {
 
 func (a *application) buildRepositories() {
 	a.userRepo = postgresRepo.NewUserRepository(a.db)
-	a.communityRepo = postgresRepo.NewCommunityRepository(a.db)
+	a.communityRepo = postgresRepo.NewCommunityRepository(a.db, a.credentialCipher)
 	a.postRepo = postgresRepo.NewPostRepository(a.db)
 	a.voteRepo = postgresRepo.NewVoteRepository(a.db)
 	a.commentRepo = postgresRepo.NewCommentRepository(a.db)
 	a.userBlockRepo = postgresRepo.NewUserBlockRepository(a.db)
-	a.aggregatorRepo = postgresRepo.NewAggregatorRepository(a.db)
+	a.aggregatorRepo = postgresRepo.NewAggregatorRepository(a.db, a.credentialCipher)
 	a.admissionRepo = postgresRepo.NewAdmissionRepository(a.db)
 }
 

@@ -50,6 +50,7 @@
 package main
 
 import (
+	"Coves/internal/crypto/credentialcipher"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -123,6 +124,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("rematerialize-posts: loading config: %v", err)
 	}
+	if cfg.EncryptionKeyGenerated {
+		// A maintenance tool has no use for a per-process key: every community
+		// credential it reads was sealed under the server's persistent key, so
+		// a generated one turns every row into an authentication failure.
+		log.Fatal("rematerialize-posts: ENCRYPTION_KEY is unset; set it to the AppView's key before running")
+	}
+	credentialCipher, err := credentialcipher.NewFromBase64(cfg.EncryptionKey)
+	if err != nil {
+		log.Fatalf("rematerialize-posts: initializing credential cipher: %v", err)
+	}
 
 	db, err := openDatabase(cfg)
 	if err != nil {
@@ -183,7 +194,7 @@ func main() {
 	provisioner := communities.NewPDSAccountProvisioner(
 		cfg.Instance.Domain, cfg.PDS.URL, communityPDSOptions...)
 	communityService := communities.NewCommunityService(
-		postgresRepo.NewCommunityRepository(db),
+		postgresRepo.NewCommunityRepository(db, credentialCipher),
 		cfg.PDS.URL,
 		cfg.Instance.DID,
 		cfg.Instance.Domain,

@@ -4,6 +4,7 @@ package postgres
 
 import (
 	"Coves/internal/core/aggregators"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/tests/testkit"
 	"context"
 	"database/sql"
@@ -87,7 +88,7 @@ func TestAggregatorRepo_CreateRoundTripsTheServiceDeclaration(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repo := NewAggregatorRepository(db)
+	repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 	ctx := context.Background()
 
 	did := "did:plc:" + testkit.UniqueID(t)
@@ -144,7 +145,7 @@ func TestAggregatorRepo_CreateUpsertsTheDeclarationWithoutLosingStats(t *testing
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repo := NewAggregatorRepository(db)
+	repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 	ctx := context.Background()
 
 	aggregatorDID := indexAggregator(t, repo, "Original Name")
@@ -179,7 +180,7 @@ func TestAggregatorRepo_IsAggregator(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repo := NewAggregatorRepository(db)
+	repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 	ctx := context.Background()
 
 	aggregatorDID := indexAggregator(t, repo, "Declared")
@@ -199,7 +200,7 @@ func TestAggregatorRepo_CreateAuthorizationRoundTrips(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repo := NewAggregatorRepository(db)
+	repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 	ctx := context.Background()
 
 	aggregatorDID := indexAggregator(t, repo, "RSS Feed Aggregator")
@@ -234,7 +235,7 @@ func TestAggregatorRepo_CreateAuthorizationUpsertsPerCommunity(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repo := NewAggregatorRepository(db)
+	repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 	ctx := context.Background()
 
 	aggregatorDID := indexAggregator(t, repo, "RSS Feed Aggregator")
@@ -265,7 +266,7 @@ func TestAggregatorRepo_IsAuthorized(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repo := NewAggregatorRepository(db)
+	repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 	ctx := context.Background()
 
 	aggregatorDID := indexAggregator(t, repo, "RSS Feed Aggregator")
@@ -305,7 +306,7 @@ func TestAggregatorRepo_CountsRecentPostsForRateLimiting(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repo := NewAggregatorRepository(db)
+	repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 	ctx := context.Background()
 
 	aggregatorDID := indexAggregator(t, repo, "RSS Feed Aggregator")
@@ -339,7 +340,7 @@ func TestAggregatorRepo_CommunitiesUsingTracksEnabledAuthorizations(t *testing.T
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repo := NewAggregatorRepository(db)
+	repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 	ctx := context.Background()
 
 	aggregatorDID := indexAggregator(t, repo, "Widely Used Aggregator")
@@ -379,7 +380,7 @@ func TestAggregatorRepo_PostsCreatedCountsEveryTrackedPostOnce(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repo := NewAggregatorRepository(db)
+	repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 	ctx := context.Background()
 
 	aggregatorDID := indexAggregator(t, repo, "Prolific Aggregator")
@@ -410,7 +411,7 @@ func TestAggregatorRepo_AuthorizationRoundTripsTheDisableAuditTrail(t *testing.T
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repo := NewAggregatorRepository(db)
+	repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 	ctx := context.Background()
 
 	aggregatorDID := indexAggregator(t, repo, "RSS Feed Aggregator")
@@ -453,7 +454,7 @@ func TestAggregatorRepo_CreateAuthorizationRetargetsTheRecordURI(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repo := NewAggregatorRepository(db)
+	repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 	ctx := context.Background()
 
 	firstAggregator := indexAggregator(t, repo, "First Aggregator")
@@ -492,7 +493,7 @@ func TestAggregatorRepo_CreateAuthorizationForUnknownCommunityIsNotFound(t *test
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repo := NewAggregatorRepository(db)
+	repo := NewAggregatorRepository(db, credentialciphertest.Fixed())
 	aggregatorDID := indexAggregator(t, repo, "Orphan Aggregator")
 
 	err := repo.CreateAuthorization(context.Background(),

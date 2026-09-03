@@ -26,12 +26,13 @@ import (
 // a database dump would otherwise be a set of live logins to every community
 // this instance hosts.
 //
-// pgcrypto's pgp_sym_encrypt is what reconciles the two, applied in the
-// repository's SQL rather than in Go. Nothing in the type system says so: the
-// Community struct carries a plain string on both sides of the write, and a
-// repository that quietly stopped encrypting would still round-trip perfectly.
-// The only way to see the difference is to read the column directly, which is
-// why these tests hold the database handle as well as the service.
+// The app-side AES-256-GCM credential cipher reconciles the two, applied by the
+// repository before values enter SQL and after they leave it. Nothing in the
+// type system says so: the Community struct carries a plain string on both sides
+// of the write, and a repository that quietly stopped encrypting would still
+// round-trip perfectly. The only way to see the difference is to read the column
+// directly, which is why these tests hold the database handle as well as the
+// service.
 //
 // # WHAT IS ASSERTED ELSEWHERE
 //

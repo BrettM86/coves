@@ -42,8 +42,9 @@ import (
 // The credential column is written directly rather than through
 // UpdateCredentials, and the value is not a real token, because the query's
 // question is PRESENCE and nothing decrypts it here. Going through
-// UpdateCredentials would drag in the encryption_keys row and pgp_sym_encrypt to
-// prove something about a predicate that only reads IS NOT NULL.
+// UpdateCredentials would drag in the app-side credential cipher and generate a
+// real encrypted value to prove something about a predicate that only reads IS
+// NOT NULL.
 func hostedCommunity(t *testing.T, db *sql.DB, name string) string {
 	t.Helper()
 

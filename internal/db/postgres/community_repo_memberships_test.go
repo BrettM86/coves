@@ -3,6 +3,7 @@
 package postgres
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
 	"testing"
@@ -55,7 +56,7 @@ func memberOf(t *testing.T) (communities.Repository, *communities.Community) {
 func memberOfWithDB(t *testing.T) (communities.Repository, *sql.DB, *communities.Community) {
 	t.Helper()
 	db := testkit.DB(t)
-	repo := NewCommunityRepository(db)
+	repo := NewCommunityRepository(db, credentialciphertest.Fixed())
 	id := testkit.UniqueID(t)
 	community, err := repo.Create(context.Background(), &communities.Community{
 		DID:          "did:plc:mem" + id,
@@ -621,7 +622,7 @@ func TestCommunityRepo_Counters(t *testing.T) {
 func TestCommunityRepo_CountersOnAnAbsentCommunityAreSilent(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	repo := NewCommunityRepository(testkit.DB(t))
+	repo := NewCommunityRepository(testkit.DB(t), credentialciphertest.Fixed())
 	absent := "did:plc:neverindexed0000000"
 
 	for name, increment := range map[string]func(context.Context, string) error{

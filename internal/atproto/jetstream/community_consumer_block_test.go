@@ -3,6 +3,7 @@
 package jetstream
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"testing"
 	"time"
@@ -66,7 +67,7 @@ func blockEvent(userDID, rkey, operation, subject string) *JetstreamEvent {
 func newCommunityBlockConsumer(t *testing.T) (*CommunityEventConsumer, communities.Repository) {
 	t.Helper()
 
-	repo := postgres.NewCommunityRepository(testkit.DB(t))
+	repo := postgres.NewCommunityRepository(testkit.DB(t), credentialciphertest.Fixed())
 	return NewCommunityEventConsumer(repo, "did:web:coves.social", true, nil), repo
 }
 

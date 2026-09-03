@@ -662,7 +662,7 @@ Create shared `http.Client` with connection pooling instead of new client per re
 ### Architecture Decision Records (ADRs)
 **Added:** 2025-10-11 | **Effort:** Ongoing
 
-Document: did:plc choice, pgcrypto encryption, Jetstream vs firehose, write-forward pattern, single handle field.
+Document: did:plc choice, application-side credential encryption (done: docs/CREDENTIAL_ENCRYPTION.md), Jetstream vs firehose, write-forward pattern, single handle field.
 
 ---
 

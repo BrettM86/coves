@@ -3,6 +3,7 @@
 package posts_test
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"fmt"
 	"testing"
@@ -74,7 +75,7 @@ func newAggregatorFixture(t *testing.T) *aggregatorFixture {
 	base := newPostFixture(t)
 	ctx := context.Background()
 
-	index := postgres.NewAggregatorRepository(base.db)
+	index := postgres.NewAggregatorRepository(base.db, credentialciphertest.Fixed())
 	aggregatorAccount := base.authorRepos.register(
 		base.pds.CreateAccount(t, testkit.WithHandlePrefix("ag")))
 	aggregatorDID := aggregatorAccount.DID

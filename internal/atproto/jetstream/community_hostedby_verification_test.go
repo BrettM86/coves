@@ -3,6 +3,7 @@
 package jetstream
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"fmt"
 	"net/http"
@@ -57,7 +58,7 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repo := postgres.NewCommunityRepository(db)
+	repo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	ctx := context.Background()
 
 	t.Run("rejects community with mismatched hostedBy domain", func(t *testing.T) {
@@ -289,7 +290,7 @@ func TestBidirectionalDIDVerification(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repo := postgres.NewCommunityRepository(db)
+	repo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	ctx := context.Background()
 
 	t.Run("indexes a community whose domain serves a DID document with alsoKnownAs", func(t *testing.T) {
@@ -437,7 +438,7 @@ func TestExtractDomainFromHandle(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
-	repo := postgres.NewCommunityRepository(db)
+	repo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	ctx := context.Background()
 
 	testCases := []struct {

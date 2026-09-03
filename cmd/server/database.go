@@ -2,7 +2,9 @@ package main
 
 import (
 	"Coves/internal/config"
+	"Coves/internal/crypto/credentialcipher"
 	"Coves/internal/db/migrations"
+	postgresRepo "Coves/internal/db/postgres"
 	"context"
 	"database/sql"
 	"fmt"
@@ -22,8 +24,13 @@ import (
 // a slow one.
 //
 // The caller owns the returned pool and must Close it.
-func openDatabase(ctx context.Context, cfg config.DatabaseConfig) (*sql.DB, error) {
-	if err := runMigrations(ctx, cfg); err != nil {
+func openDatabase(
+	ctx context.Context,
+	cfg config.DatabaseConfig,
+	cipher *credentialcipher.Cipher,
+	keyIsEphemeral bool,
+) (*sql.DB, error) {
+	if err := runMigrations(ctx, cfg, cipher, keyIsEphemeral); err != nil {
 		return nil, err
 	}
 
@@ -67,9 +74,17 @@ func openDatabase(ctx context.Context, cfg config.DatabaseConfig) (*sql.DB, erro
 }
 
 // runMigrations applies pending migrations on a short-lived connection that
-// carries no statement timeout. Migrations are embedded in the binary, so this
-// does not depend on the process's working directory.
-func runMigrations(ctx context.Context, cfg config.DatabaseConfig) error {
+// carries no statement timeout. Before goose runs, legacy credentials are
+// resealed with the application cipher because migration 046 refuses to drop
+// their database-held key while any remain. On a fresh database the legacy key
+// table does not exist yet, so the pass is a no-op. Migrations are embedded in the
+// binary, so this does not depend on the process's working directory.
+func runMigrations(
+	ctx context.Context,
+	cfg config.DatabaseConfig,
+	cipher *credentialcipher.Cipher,
+	keyIsEphemeral bool,
+) error {
 	dsn, err := cfg.MigrationDSN()
 	if err != nil {
 		return fmt.Errorf("building migration DSN: %w", err)
@@ -91,6 +106,17 @@ func runMigrations(ctx context.Context, cfg config.DatabaseConfig) error {
 
 	if err := db.PingContext(ctx); err != nil {
 		return fmt.Errorf("pinging database for migrations: %w", err)
+	}
+
+	report, err := postgresRepo.ReencryptLegacyCredentials(ctx, db, cipher, keyIsEphemeral)
+	if err != nil {
+		return fmt.Errorf("re-encrypting legacy database credentials: %w", err)
+	}
+	if report.CommunitiesRewritten > 0 || report.AggregatorsRewritten > 0 {
+		slog.Info("legacy database credentials re-encrypted with the application cipher",
+			"communities_rewritten", report.CommunitiesRewritten,
+			"aggregators_rewritten", report.AggregatorsRewritten,
+		)
 	}
 
 	if err := goose.SetDialect("postgres"); err != nil {

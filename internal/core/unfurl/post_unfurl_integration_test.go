@@ -10,6 +10,7 @@ import (
 	"Coves/internal/core/posts"
 	"Coves/internal/core/unfurl"
 	"Coves/internal/core/users"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
@@ -35,7 +36,7 @@ func TestPostUnfurl_UnsupportedURL(t *testing.T) {
 
 	// Setup services
 	userRepo := postgres.NewUserRepository(db)
-	communityRepo := postgres.NewCommunityRepository(db)
+	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	postRepo := postgres.NewPostRepository(db)
 
 	identityConfig := identity.DefaultConfig()
@@ -131,7 +132,7 @@ func TestPostUnfurl_MissingEmbedType(t *testing.T) {
 
 	// Setup
 	userRepo := postgres.NewUserRepository(db)
-	communityRepo := postgres.NewCommunityRepository(db)
+	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	postRepo := postgres.NewPostRepository(db)
 	unfurlRepo := unfurl.NewRepository(db)
 
@@ -296,7 +297,7 @@ func TestPostUnfurl_E2E_WithJetstream(t *testing.T) {
 
 	// Setup repositories
 	userRepo := postgres.NewUserRepository(db)
-	communityRepo := postgres.NewCommunityRepository(db)
+	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	postRepo := postgres.NewPostRepository(db)
 	unfurlRepo := unfurl.NewRepository(db)
 

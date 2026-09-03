@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"Coves/internal/core/aggregators"
+	"Coves/internal/crypto/credentialcipher"
 	"context"
 	"database/sql"
 	"errors"
@@ -12,12 +13,16 @@ import (
 )
 
 type postgresAggregatorRepo struct {
-	db *sql.DB
+	db     *sql.DB
+	cipher *credentialcipher.Cipher
 }
 
 // NewAggregatorRepository creates a new PostgreSQL aggregator repository
-func NewAggregatorRepository(db *sql.DB) aggregators.Repository {
-	return &postgresAggregatorRepo{db: db}
+func NewAggregatorRepository(db *sql.DB, cipher *credentialcipher.Cipher) aggregators.Repository {
+	if cipher == nil {
+		panic("NewAggregatorRepository: credential cipher is required")
+	}
+	return &postgresAggregatorRepo{db: db, cipher: cipher}
 }
 
 // ===== Aggregator CRUD Operations =====
@@ -879,21 +884,37 @@ func (r *postgresAggregatorRepo) GetByAPIKeyHash(ctx context.Context, keyHash st
 
 // SetAPIKey stores API key credentials and OAuth session for an aggregator
 // This is called after successful OAuth flow to generate the API key
-// SECURITY: OAuth tokens and DPoP private key are encrypted at rest using pgp_sym_encrypt
+// SECURITY: OAuth tokens and the DPoP private key are encrypted before storage.
 func (r *postgresAggregatorRepo) SetAPIKey(ctx context.Context, did, keyPrefix, keyHash string, oauthCreds *aggregators.OAuthCredentials) error {
+	accessTokenCiphertext, err := encryptOptionalCredential(
+		r.cipher, oauthCreds.AccessToken, aggregatorOAuthAccessTokenCredentialContext(did))
+	if err != nil {
+		return fmt.Errorf("failed to encrypt aggregator OAuth access token: %w", err)
+	}
+	refreshTokenCiphertext, err := encryptOptionalCredential(
+		r.cipher, oauthCreds.RefreshToken, aggregatorOAuthRefreshTokenCredentialContext(did))
+	if err != nil {
+		return fmt.Errorf("failed to encrypt aggregator OAuth refresh token: %w", err)
+	}
+	dpopPrivateKeyCiphertext, err := encryptOptionalCredential(
+		r.cipher, oauthCreds.DPoPPrivateKeyMultibase, aggregatorOAuthDPoPPrivateKeyCredentialContext(did))
+	if err != nil {
+		return fmt.Errorf("failed to encrypt aggregator OAuth DPoP private key: %w", err)
+	}
+
 	query := `
 		UPDATE aggregators SET
 			api_key_prefix = $2,
 			api_key_hash = $3,
 			api_key_created_at = NOW(),
 			api_key_revoked_at = NULL,
-			oauth_access_token_encrypted = CASE WHEN $4 != '' THEN pgp_sym_encrypt($4, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1)) ELSE NULL END,
-			oauth_refresh_token_encrypted = CASE WHEN $5 != '' THEN pgp_sym_encrypt($5, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1)) ELSE NULL END,
+			oauth_access_token_encrypted = $4,
+			oauth_refresh_token_encrypted = $5,
 			oauth_token_expires_at = $6,
 			oauth_pds_url = $7,
 			oauth_auth_server_iss = $8,
 			oauth_auth_server_token_endpoint = $9,
-			oauth_dpop_private_key_encrypted = CASE WHEN $10 != '' THEN pgp_sym_encrypt($10, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1)) ELSE NULL END,
+			oauth_dpop_private_key_encrypted = $10,
 			oauth_dpop_authserver_nonce = $11,
 			oauth_dpop_pds_nonce = $12
 		WHERE did = $1`
@@ -902,13 +923,13 @@ func (r *postgresAggregatorRepo) SetAPIKey(ctx context.Context, did, keyPrefix, 
 		did,
 		keyPrefix,
 		keyHash,
-		oauthCreds.AccessToken,
-		oauthCreds.RefreshToken,
+		accessTokenCiphertext,
+		refreshTokenCiphertext,
 		oauthCreds.TokenExpiresAt,
 		oauthCreds.PDSURL,
 		oauthCreds.AuthServerIss,
 		oauthCreds.AuthServerTokenEndpoint,
-		oauthCreds.DPoPPrivateKeyMultibase,
+		dpopPrivateKeyCiphertext,
 		oauthCreds.DPoPAuthServerNonce,
 		oauthCreds.DPoPPDSNonce,
 	)
@@ -929,16 +950,25 @@ func (r *postgresAggregatorRepo) SetAPIKey(ctx context.Context, did, keyPrefix, 
 
 // UpdateOAuthTokens updates OAuth tokens after a refresh operation
 // Called after successfully refreshing an expired access token
-// SECURITY: OAuth tokens are encrypted at rest using pgp_sym_encrypt
+// SECURITY: OAuth tokens are encrypted before storage.
 func (r *postgresAggregatorRepo) UpdateOAuthTokens(ctx context.Context, did, accessToken, refreshToken string, expiresAt time.Time) error {
+	accessTokenCiphertext, err := r.cipher.Encrypt(accessToken, aggregatorOAuthAccessTokenCredentialContext(did))
+	if err != nil {
+		return fmt.Errorf("failed to encrypt aggregator OAuth access token: %w", err)
+	}
+	refreshTokenCiphertext, err := r.cipher.Encrypt(refreshToken, aggregatorOAuthRefreshTokenCredentialContext(did))
+	if err != nil {
+		return fmt.Errorf("failed to encrypt aggregator OAuth refresh token: %w", err)
+	}
+
 	query := `
 		UPDATE aggregators SET
-			oauth_access_token_encrypted = pgp_sym_encrypt($2, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1)),
-			oauth_refresh_token_encrypted = pgp_sym_encrypt($3, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1)),
+			oauth_access_token_encrypted = $2,
+			oauth_refresh_token_encrypted = $3,
 			oauth_token_expires_at = $4
 		WHERE did = $1`
 
-	result, err := r.db.ExecContext(ctx, query, did, accessToken, refreshToken, expiresAt)
+	result, err := r.db.ExecContext(ctx, query, did, accessTokenCiphertext, refreshTokenCiphertext, expiresAt)
 	if err != nil {
 		return fmt.Errorf("failed to update OAuth tokens: %w", err)
 	}
@@ -1039,32 +1069,20 @@ func (r *postgresAggregatorRepo) GetAggregatorCredentials(ctx context.Context, d
 		SELECT
 			did,
 			api_key_prefix, api_key_hash, api_key_created_at, api_key_revoked_at, api_key_last_used_at,
-			CASE
-				WHEN oauth_access_token_encrypted IS NOT NULL
-				THEN pgp_sym_decrypt(oauth_access_token_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
-				ELSE NULL
-			END as oauth_access_token,
-			CASE
-				WHEN oauth_refresh_token_encrypted IS NOT NULL
-				THEN pgp_sym_decrypt(oauth_refresh_token_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
-				ELSE NULL
-			END as oauth_refresh_token,
+			oauth_access_token_encrypted, oauth_refresh_token_encrypted,
 			oauth_token_expires_at,
 			oauth_pds_url, oauth_auth_server_iss, oauth_auth_server_token_endpoint,
-			CASE
-				WHEN oauth_dpop_private_key_encrypted IS NOT NULL
-				THEN pgp_sym_decrypt(oauth_dpop_private_key_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
-				ELSE NULL
-			END as oauth_dpop_private_key_multibase,
+			oauth_dpop_private_key_encrypted,
 			oauth_dpop_authserver_nonce, oauth_dpop_pds_nonce
 		FROM aggregators
 		WHERE did = $1`
 
 	creds := &aggregators.AggregatorCredentials{}
 	var apiKeyPrefix, apiKeyHash sql.NullString
-	var oauthAccessToken, oauthRefreshToken sql.NullString
+	var oauthAccessTokenCiphertext, oauthRefreshTokenCiphertext []byte
 	var oauthPDSURL, oauthAuthServerIss, oauthAuthServerTokenEndpoint sql.NullString
-	var oauthDPoPPrivateKey, oauthDPoPAuthServerNonce, oauthDPoPPDSNonce sql.NullString
+	var oauthDPoPPrivateKeyCiphertext []byte
+	var oauthDPoPAuthServerNonce, oauthDPoPPDSNonce sql.NullString
 	var apiKeyCreatedAt, apiKeyRevokedAt, apiKeyLastUsed, oauthTokenExpiresAt sql.NullTime
 
 	err := r.db.QueryRowContext(ctx, query, did).Scan(
@@ -1074,13 +1092,13 @@ func (r *postgresAggregatorRepo) GetAggregatorCredentials(ctx context.Context, d
 		&apiKeyCreatedAt,
 		&apiKeyRevokedAt,
 		&apiKeyLastUsed,
-		&oauthAccessToken,
-		&oauthRefreshToken,
+		&oauthAccessTokenCiphertext,
+		&oauthRefreshTokenCiphertext,
 		&oauthTokenExpiresAt,
 		&oauthPDSURL,
 		&oauthAuthServerIss,
 		&oauthAuthServerTokenEndpoint,
-		&oauthDPoPPrivateKey,
+		&oauthDPoPPrivateKeyCiphertext,
 		&oauthDPoPAuthServerNonce,
 		&oauthDPoPPDSNonce,
 	)
@@ -1091,16 +1109,17 @@ func (r *postgresAggregatorRepo) GetAggregatorCredentials(ctx context.Context, d
 	if err != nil {
 		return nil, fmt.Errorf("failed to get aggregator credentials: %w", err)
 	}
+	if err := r.decryptOAuthCredentials(
+		creds, oauthAccessTokenCiphertext, oauthRefreshTokenCiphertext, oauthDPoPPrivateKeyCiphertext); err != nil {
+		return nil, fmt.Errorf("failed to get aggregator credentials: %w", err)
+	}
 
 	// Map nullable string fields
 	creds.APIKeyPrefix = apiKeyPrefix.String
 	creds.APIKeyHash = apiKeyHash.String
-	creds.OAuthAccessToken = oauthAccessToken.String
-	creds.OAuthRefreshToken = oauthRefreshToken.String
 	creds.OAuthPDSURL = oauthPDSURL.String
 	creds.OAuthAuthServerIss = oauthAuthServerIss.String
 	creds.OAuthAuthServerTokenEndpoint = oauthAuthServerTokenEndpoint.String
-	creds.OAuthDPoPPrivateKeyMultibase = oauthDPoPPrivateKey.String
 	creds.OAuthDPoPAuthServerNonce = oauthDPoPAuthServerNonce.String
 	creds.OAuthDPoPPDSNonce = oauthDPoPPDSNonce.String
 
@@ -1133,32 +1152,20 @@ func (r *postgresAggregatorRepo) GetCredentialsByAPIKeyHash(ctx context.Context,
 		SELECT
 			did,
 			api_key_prefix, api_key_hash, api_key_created_at, api_key_revoked_at, api_key_last_used_at,
-			CASE
-				WHEN oauth_access_token_encrypted IS NOT NULL
-				THEN pgp_sym_decrypt(oauth_access_token_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
-				ELSE NULL
-			END as oauth_access_token,
-			CASE
-				WHEN oauth_refresh_token_encrypted IS NOT NULL
-				THEN pgp_sym_decrypt(oauth_refresh_token_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
-				ELSE NULL
-			END as oauth_refresh_token,
+			oauth_access_token_encrypted, oauth_refresh_token_encrypted,
 			oauth_token_expires_at,
 			oauth_pds_url, oauth_auth_server_iss, oauth_auth_server_token_endpoint,
-			CASE
-				WHEN oauth_dpop_private_key_encrypted IS NOT NULL
-				THEN pgp_sym_decrypt(oauth_dpop_private_key_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
-				ELSE NULL
-			END as oauth_dpop_private_key_multibase,
+			oauth_dpop_private_key_encrypted,
 			oauth_dpop_authserver_nonce, oauth_dpop_pds_nonce
 		FROM aggregators
 		WHERE api_key_hash = $1`
 
 	creds := &aggregators.AggregatorCredentials{}
 	var apiKeyPrefix, apiKeyHash sql.NullString
-	var oauthAccessToken, oauthRefreshToken sql.NullString
+	var oauthAccessTokenCiphertext, oauthRefreshTokenCiphertext []byte
 	var oauthPDSURL, oauthAuthServerIss, oauthAuthServerTokenEndpoint sql.NullString
-	var oauthDPoPPrivateKey, oauthDPoPAuthServerNonce, oauthDPoPPDSNonce sql.NullString
+	var oauthDPoPPrivateKeyCiphertext []byte
+	var oauthDPoPAuthServerNonce, oauthDPoPPDSNonce sql.NullString
 	var apiKeyCreatedAt, apiKeyRevokedAt, apiKeyLastUsed, oauthTokenExpiresAt sql.NullTime
 
 	err := r.db.QueryRowContext(ctx, query, keyHash).Scan(
@@ -1168,13 +1175,13 @@ func (r *postgresAggregatorRepo) GetCredentialsByAPIKeyHash(ctx context.Context,
 		&apiKeyCreatedAt,
 		&apiKeyRevokedAt,
 		&apiKeyLastUsed,
-		&oauthAccessToken,
-		&oauthRefreshToken,
+		&oauthAccessTokenCiphertext,
+		&oauthRefreshTokenCiphertext,
 		&oauthTokenExpiresAt,
 		&oauthPDSURL,
 		&oauthAuthServerIss,
 		&oauthAuthServerTokenEndpoint,
-		&oauthDPoPPrivateKey,
+		&oauthDPoPPrivateKeyCiphertext,
 		&oauthDPoPAuthServerNonce,
 		&oauthDPoPPDSNonce,
 	)
@@ -1185,16 +1192,17 @@ func (r *postgresAggregatorRepo) GetCredentialsByAPIKeyHash(ctx context.Context,
 	if err != nil {
 		return nil, fmt.Errorf("failed to get credentials by API key hash: %w", err)
 	}
+	if err := r.decryptOAuthCredentials(
+		creds, oauthAccessTokenCiphertext, oauthRefreshTokenCiphertext, oauthDPoPPrivateKeyCiphertext); err != nil {
+		return nil, fmt.Errorf("failed to get credentials by API key hash: %w", err)
+	}
 
 	// Map nullable string fields
 	creds.APIKeyPrefix = apiKeyPrefix.String
 	creds.APIKeyHash = apiKeyHash.String
-	creds.OAuthAccessToken = oauthAccessToken.String
-	creds.OAuthRefreshToken = oauthRefreshToken.String
 	creds.OAuthPDSURL = oauthPDSURL.String
 	creds.OAuthAuthServerIss = oauthAuthServerIss.String
 	creds.OAuthAuthServerTokenEndpoint = oauthAuthServerTokenEndpoint.String
-	creds.OAuthDPoPPrivateKeyMultibase = oauthDPoPPrivateKey.String
 	creds.OAuthDPoPAuthServerNonce = oauthDPoPAuthServerNonce.String
 	creds.OAuthDPoPPDSNonce = oauthDPoPPDSNonce.String
 
@@ -1243,23 +1251,10 @@ func (r *postgresAggregatorRepo) ListAggregatorsNeedingTokenRefresh(ctx context.
 		SELECT
 			did,
 			api_key_prefix, api_key_hash, api_key_created_at, api_key_revoked_at, api_key_last_used_at,
-			CASE
-				WHEN oauth_access_token_encrypted IS NOT NULL
-				THEN pgp_sym_decrypt(oauth_access_token_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
-				ELSE NULL
-			END as oauth_access_token,
-			CASE
-				WHEN oauth_refresh_token_encrypted IS NOT NULL
-				THEN pgp_sym_decrypt(oauth_refresh_token_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
-				ELSE NULL
-			END as oauth_refresh_token,
+			oauth_access_token_encrypted, oauth_refresh_token_encrypted,
 			oauth_token_expires_at,
 			oauth_pds_url, oauth_auth_server_iss, oauth_auth_server_token_endpoint,
-			CASE
-				WHEN oauth_dpop_private_key_encrypted IS NOT NULL
-				THEN pgp_sym_decrypt(oauth_dpop_private_key_encrypted, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1))
-				ELSE NULL
-			END as oauth_dpop_private_key_multibase,
+			oauth_dpop_private_key_encrypted,
 			oauth_dpop_authserver_nonce, oauth_dpop_pds_nonce
 		FROM aggregators
 		WHERE api_key_hash IS NOT NULL
@@ -1277,9 +1272,10 @@ func (r *postgresAggregatorRepo) ListAggregatorsNeedingTokenRefresh(ctx context.
 	for rows.Next() {
 		creds := &aggregators.AggregatorCredentials{}
 		var apiKeyPrefix, apiKeyHash sql.NullString
-		var oauthAccessToken, oauthRefreshToken sql.NullString
+		var oauthAccessTokenCiphertext, oauthRefreshTokenCiphertext []byte
 		var oauthPDSURL, oauthAuthServerIss, oauthAuthServerTokenEndpoint sql.NullString
-		var oauthDPoPPrivateKey, oauthDPoPAuthServerNonce, oauthDPoPPDSNonce sql.NullString
+		var oauthDPoPPrivateKeyCiphertext []byte
+		var oauthDPoPAuthServerNonce, oauthDPoPPDSNonce sql.NullString
 		var apiKeyCreatedAt, apiKeyRevokedAt, apiKeyLastUsed, oauthTokenExpiresAt sql.NullTime
 
 		err := rows.Scan(
@@ -1289,29 +1285,30 @@ func (r *postgresAggregatorRepo) ListAggregatorsNeedingTokenRefresh(ctx context.
 			&apiKeyCreatedAt,
 			&apiKeyRevokedAt,
 			&apiKeyLastUsed,
-			&oauthAccessToken,
-			&oauthRefreshToken,
+			&oauthAccessTokenCiphertext,
+			&oauthRefreshTokenCiphertext,
 			&oauthTokenExpiresAt,
 			&oauthPDSURL,
 			&oauthAuthServerIss,
 			&oauthAuthServerTokenEndpoint,
-			&oauthDPoPPrivateKey,
+			&oauthDPoPPrivateKeyCiphertext,
 			&oauthDPoPAuthServerNonce,
 			&oauthDPoPPDSNonce,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan aggregator credentials: %w", err)
 		}
+		if err := r.decryptOAuthCredentials(
+			creds, oauthAccessTokenCiphertext, oauthRefreshTokenCiphertext, oauthDPoPPrivateKeyCiphertext); err != nil {
+			return nil, fmt.Errorf("failed to decrypt aggregator credentials needing token refresh: %w", err)
+		}
 
 		// Map nullable string fields
 		creds.APIKeyPrefix = apiKeyPrefix.String
 		creds.APIKeyHash = apiKeyHash.String
-		creds.OAuthAccessToken = oauthAccessToken.String
-		creds.OAuthRefreshToken = oauthRefreshToken.String
 		creds.OAuthPDSURL = oauthPDSURL.String
 		creds.OAuthAuthServerIss = oauthAuthServerIss.String
 		creds.OAuthAuthServerTokenEndpoint = oauthAuthServerTokenEndpoint.String
-		creds.OAuthDPoPPrivateKeyMultibase = oauthDPoPPrivateKey.String
 		creds.OAuthDPoPAuthServerNonce = oauthDPoPAuthServerNonce.String
 		creds.OAuthDPoPPDSNonce = oauthDPoPPDSNonce.String
 
@@ -1344,6 +1341,29 @@ func (r *postgresAggregatorRepo) ListAggregatorsNeedingTokenRefresh(ctx context.
 }
 
 // ===== Helper Functions =====
+
+func (r *postgresAggregatorRepo) decryptOAuthCredentials(
+	credentials *aggregators.AggregatorCredentials,
+	accessTokenCiphertext, refreshTokenCiphertext, dpopPrivateKeyCiphertext []byte,
+) error {
+	var err error
+	credentials.OAuthAccessToken, err = decryptOptionalCredential(
+		r.cipher, accessTokenCiphertext, aggregatorOAuthAccessTokenCredentialContext(credentials.DID))
+	if err != nil {
+		return fmt.Errorf("decrypt OAuth access token for DID %s: %w", credentials.DID, err)
+	}
+	credentials.OAuthRefreshToken, err = decryptOptionalCredential(
+		r.cipher, refreshTokenCiphertext, aggregatorOAuthRefreshTokenCredentialContext(credentials.DID))
+	if err != nil {
+		return fmt.Errorf("decrypt OAuth refresh token for DID %s: %w", credentials.DID, err)
+	}
+	credentials.OAuthDPoPPrivateKeyMultibase, err = decryptOptionalCredential(
+		r.cipher, dpopPrivateKeyCiphertext, aggregatorOAuthDPoPPrivateKeyCredentialContext(credentials.DID))
+	if err != nil {
+		return fmt.Errorf("decrypt OAuth DPoP private key for DID %s: %w", credentials.DID, err)
+	}
+	return nil
+}
 
 // scanAuthorizations is a helper to scan multiple authorization rows
 func scanAuthorizations(rows *sql.Rows) ([]*aggregators.Authorization, error) {

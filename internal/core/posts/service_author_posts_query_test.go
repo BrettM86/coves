@@ -3,6 +3,7 @@
 package posts_test
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -84,7 +85,7 @@ func newAuthorPostsFixture(t *testing.T) *authorPostsFixture {
 
 	postRepo := postgres.NewPostRepository(db)
 	userRepo := postgres.NewUserRepository(db)
-	communityRepo := postgres.NewCommunityRepository(db)
+	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	voteRepo := postgres.NewVoteRepository(db)
 
 	resolver := identity.NewResolver(db, identity.DefaultConfig())

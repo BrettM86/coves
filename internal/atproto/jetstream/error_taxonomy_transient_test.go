@@ -3,6 +3,7 @@
 package jetstream
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"testing"
 
@@ -29,7 +30,7 @@ func TestCommunityConsumer_SubscriptionCommunityNotFound_IsUnresolved(t *testing
 		subscriber     = "did:plc:jstaxsubscriber"
 	)
 
-	c := NewCommunityEventConsumer(postgres.NewCommunityRepository(db), "did:web:test.local", true, nil)
+	c := NewCommunityEventConsumer(postgres.NewCommunityRepository(db, credentialciphertest.Fixed()), "did:web:test.local", true, nil)
 	err := c.HandleEvent(context.Background(), taxonomyEvent(
 		subscriber, "social.coves.community.subscription", "create", "s1",
 		map[string]interface{}{
@@ -50,7 +51,7 @@ func TestPostV2Consumer_NonDIDCommunity_IsPermanent(t *testing.T) {
 	// fires before the first repository access.
 	t.Parallel()
 	db := testkit.DB(t)
-	c := NewPostEventConsumer(postgres.NewPostRepository(db), postgres.NewCommunityRepository(db), newMockUserService(), db,
+	c := NewPostEventConsumer(postgres.NewPostRepository(db), postgres.NewCommunityRepository(db, credentialciphertest.Fixed()), newMockUserService(), db,
 		WithAdmissions(postgres.NewAdmissionRepository(db)))
 	err := c.HandleEvent(context.Background(), taxonomyEvent(
 		"did:plc:someauthor", PostV2Collection, "create", "p1",

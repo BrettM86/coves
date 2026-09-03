@@ -3,6 +3,7 @@
 package jetstream
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
 	"errors"
@@ -76,7 +77,7 @@ func newPV2Fixture(t *testing.T, db *sql.DB) pv2Fixture {
 	admissions := postgres.NewAdmissionRepository(db)
 	consumer := NewPostEventConsumer(
 		postgres.NewPostRepository(db),
-		postgres.NewCommunityRepository(db),
+		postgres.NewCommunityRepository(db, credentialciphertest.Fixed()),
 		us,
 		db,
 		WithAdmissions(admissions),
@@ -502,7 +503,7 @@ func TestPostV2Consumer_Delete_WithdrawsTheHostedCommunitysAcceptance(t *testing
 	f := newPV2Fixture(t, db)
 	f.consumer = NewPostEventConsumer(
 		postgres.NewPostRepository(db),
-		postgres.NewCommunityRepository(db),
+		postgres.NewCommunityRepository(db, credentialciphertest.Fixed()),
 		f.users,
 		db,
 		WithAdmissions(f.admissions),
@@ -558,7 +559,7 @@ func TestPostV2Consumer_Delete_DoesNotSweepWhenNoAcceptanceStands(t *testing.T) 
 	f := newPV2Fixture(t, db)
 	f.consumer = NewPostEventConsumer(
 		postgres.NewPostRepository(db),
-		postgres.NewCommunityRepository(db),
+		postgres.NewCommunityRepository(db, credentialciphertest.Fixed()),
 		f.users,
 		db,
 		WithAdmissions(f.admissions),
@@ -598,7 +599,7 @@ func TestPostV2Consumer_Delete_SurvivesAFailedSweep(t *testing.T) {
 	f := newPV2Fixture(t, db)
 	f.consumer = NewPostEventConsumer(
 		postgres.NewPostRepository(db),
-		postgres.NewCommunityRepository(db),
+		postgres.NewCommunityRepository(db, credentialciphertest.Fixed()),
 		f.users,
 		db,
 		WithAdmissions(f.admissions),

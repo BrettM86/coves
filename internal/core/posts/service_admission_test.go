@@ -3,6 +3,7 @@
 package posts_test
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
 	"fmt"
@@ -127,7 +128,7 @@ func newAdmissionFixture(t *testing.T) *admissionFixture {
 					Limits: limits,
 					Now:    clock.Now,
 				}))...),
-		repo:   postgres.NewCommunityRepository(base.db),
+		repo:   postgres.NewCommunityRepository(base.db, credentialciphertest.Fixed()),
 		clock:  clock,
 		limits: limits,
 	}

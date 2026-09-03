@@ -8,6 +8,7 @@ import (
 	"Coves/internal/core/communities"
 	"Coves/internal/core/communityFeeds"
 	"Coves/internal/core/posts"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
@@ -62,7 +63,7 @@ const feedCursorSecret = "test-cursor-secret"
 // reasons that have nothing to do with ordering.
 func newCommunityFeedHandler(db *sql.DB) *communityFeed.GetCommunityHandler {
 	communityService := communities.NewCommunityServiceWithPDSFactory(
-		postgres.NewCommunityRepository(db),
+		postgres.NewCommunityRepository(db, credentialciphertest.Fixed()),
 		testkit.Endpoints().PDS.BaseURL,
 		fixtures.InstanceDID(),
 		testkit.Endpoints().PDS.HandleDomain,

@@ -3,6 +3,7 @@
 package jetstream
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
 	"testing"
@@ -70,7 +71,7 @@ func setupRecencyFixtures(t *testing.T, db *sql.DB) *PostEventConsumer {
 	us := newMockUserService()
 	us.users[recencyTestAuthor] = &users.User{DID: recencyTestAuthor, Handle: "rcyauthor.test"}
 	return NewPostEventConsumer(
-		postgres.NewPostRepository(db), postgres.NewCommunityRepository(db), us, db,
+		postgres.NewPostRepository(db), postgres.NewCommunityRepository(db, credentialciphertest.Fixed()), us, db,
 		WithAdmissions(postgres.NewAdmissionRepository(db)),
 	)
 }

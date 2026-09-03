@@ -3,6 +3,7 @@
 package post_test
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"database/sql"
 	"os"
 	"testing"
@@ -66,7 +67,7 @@ func newCreateStack(t *testing.T, db *sql.DB) createStack {
 	t.Helper()
 
 	pdsURL := testkit.Endpoints().PDS.BaseURL
-	communityRepo := postgres.NewCommunityRepository(db)
+	communityRepo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	communityService := communities.NewCommunityServiceWithPDSFactory(
 		communityRepo,
 		pdsURL,

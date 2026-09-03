@@ -6,6 +6,7 @@ import (
 	"Coves/internal/atproto/pds"
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/communities"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/testkit"
 	"context"
@@ -82,7 +83,7 @@ func newCommunityServiceWithDatabase(t *testing.T) (
 	t.Helper()
 
 	db := testkit.DB(t)
-	repo := postgres.NewCommunityRepository(db)
+	repo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
 	pdsServer := testkit.NewPDS(t)
 	service := communities.NewCommunityServiceWithPDSFactory(
 		repo,

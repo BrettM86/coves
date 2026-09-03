@@ -3,6 +3,7 @@
 package jetstream
 
 import (
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
 	"testing"
@@ -32,7 +33,7 @@ func newPostV2HydrationFixture(
 	)
 	f.consumer = NewPostEventConsumer(
 		postgres.NewPostRepository(db),
-		postgres.NewCommunityRepository(db),
+		postgres.NewCommunityRepository(db, credentialciphertest.Fixed()),
 		userService,
 		db,
 		WithAdmissions(f.admissions),
