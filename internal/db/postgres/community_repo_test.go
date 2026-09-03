@@ -68,6 +68,38 @@ func TestCommunityRepository_Create(t *testing.T) {
 		}
 	})
 
+	t.Run("starts derived subscriber count at zero", func(t *testing.T) {
+		id := testkit.UniqueID(t)
+		community := &communities.Community{
+			DID:             "did:plc:derivedcount" + id,
+			Handle:          fmt.Sprintf("c-derived-count-%s.coves.local", id),
+			Name:            "derived-count",
+			OwnerDID:        "did:plc:derivedcount" + id,
+			CreatedByDID:    "did:plc:user123",
+			HostedByDID:     "did:web:coves.local",
+			Visibility:      "public",
+			SubscriberCount: 2_000_000_000,
+			CreatedAt:       time.Now(),
+			UpdatedAt:       time.Now(),
+		}
+
+		created, err := repo.Create(ctx, community)
+		if err != nil {
+			t.Fatalf("Failed to create community: %v", err)
+		}
+		if created.SubscriberCount != 0 {
+			t.Fatalf("Expected derived subscriber count to start at zero, got %d", created.SubscriberCount)
+		}
+
+		stored, err := repo.GetByDID(ctx, community.DID)
+		if err != nil {
+			t.Fatalf("Failed to reload community: %v", err)
+		}
+		if stored.SubscriberCount != 0 {
+			t.Errorf("Expected stored subscriber count to start at zero, got %d", stored.SubscriberCount)
+		}
+	})
+
 	t.Run("returns error for duplicate DID", func(t *testing.T) {
 		id := testkit.UniqueID(t)
 		communityDID := "did:plc:test" + id
@@ -255,6 +287,23 @@ func TestCommunityRepository_Subscriptions(t *testing.T) {
 	if _, err := repo.Create(ctx, community); err != nil {
 		t.Fatalf("Failed to create community: %v", err)
 	}
+	assertCountMatchesRelationships := func(t *testing.T) {
+		t.Helper()
+		var stored, relationships int
+		if err := db.QueryRowContext(ctx,
+			`SELECT subscriber_count FROM communities WHERE did = $1`, communityDID,
+		).Scan(&stored); err != nil {
+			t.Fatalf("Failed to read stored subscriber count: %v", err)
+		}
+		if err := db.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM community_subscriptions WHERE community_did = $1`, communityDID,
+		).Scan(&relationships); err != nil {
+			t.Fatalf("Failed to count subscription relationships: %v", err)
+		}
+		if stored != relationships {
+			t.Fatalf("Stored subscriber count %d does not match %d indexed relationships", stored, relationships)
+		}
+	}
 
 	t.Run("creates subscription successfully", func(t *testing.T) {
 		sub := &communities.Subscription{
@@ -272,6 +321,7 @@ func TestCommunityRepository_Subscriptions(t *testing.T) {
 		if created.ID == 0 {
 			t.Error("Expected non-zero subscription ID")
 		}
+		assertCountMatchesRelationships(t)
 	})
 
 	t.Run("prevents duplicate subscriptions", func(t *testing.T) {
@@ -291,6 +341,53 @@ func TestCommunityRepository_Subscriptions(t *testing.T) {
 		if err != communities.ErrSubscriptionAlreadyExists {
 			t.Errorf("Expected ErrSubscriptionAlreadyExists, got: %v", err)
 		}
+		assertCountMatchesRelationships(t)
+	})
+
+	t.Run("replay under a new rkey re-points the record without moving the count", func(t *testing.T) {
+		// The consumer's idempotency lives in ON CONFLICT DO UPDATE, which only
+		// touches record_uri/record_cid. The trigger fires on INSERT, DELETE,
+		// and UPDATE OF community_did, so a replay must not reach it. Adding
+		// community_did to the conflict SET list would double-count every
+		// firehose replay; this is the T1 pin against that.
+		userDID := "did:plc:replay-sub"
+		first := &communities.Subscription{
+			UserDID: userDID, CommunityDID: communityDID, ContentVisibility: 3,
+			SubscribedAt: time.Now(),
+			RecordURI:    "at://" + userDID + "/social.coves.community.subscription/rkey1",
+			RecordCID:    "bafyfirst",
+		}
+		if _, err := repo.SubscribeWithCount(ctx, first); err != nil {
+			t.Fatalf("First SubscribeWithCount failed: %v", err)
+		}
+		var before int
+		if err := db.QueryRowContext(ctx,
+			`SELECT subscriber_count FROM communities WHERE did = $1`, communityDID).Scan(&before); err != nil {
+			t.Fatalf("Failed to read count: %v", err)
+		}
+
+		second := *first
+		second.RecordURI = "at://" + userDID + "/social.coves.community.subscription/rkey2"
+		second.RecordCID = "bafysecond"
+		if _, err := repo.SubscribeWithCount(ctx, &second); err != nil {
+			t.Fatalf("Replay SubscribeWithCount failed: %v", err)
+		}
+
+		var after int
+		var storedURI string
+		if err := db.QueryRowContext(ctx,
+			`SELECT c.subscriber_count, s.record_uri FROM communities c
+			 JOIN community_subscriptions s ON s.community_did = c.did
+			 WHERE c.did = $1 AND s.user_did = $2`, communityDID, userDID).Scan(&after, &storedURI); err != nil {
+			t.Fatalf("Failed to read replayed row: %v", err)
+		}
+		if after != before {
+			t.Errorf("Replay moved subscriber_count from %d to %d", before, after)
+		}
+		if storedURI != second.RecordURI {
+			t.Errorf("Replay must re-point record_uri to the newer record, got %s", storedURI)
+		}
+		assertCountMatchesRelationships(t)
 	})
 
 	t.Run("unsubscribes successfully", func(t *testing.T) {
@@ -318,6 +415,7 @@ func TestCommunityRepository_Subscriptions(t *testing.T) {
 		if err != communities.ErrSubscriptionNotFound {
 			t.Errorf("Expected ErrSubscriptionNotFound after unsubscribe, got: %v", err)
 		}
+		assertCountMatchesRelationships(t)
 	})
 }
 

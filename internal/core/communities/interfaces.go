@@ -31,9 +31,9 @@ type Repository interface {
 
 	// Subscriptions (lightweight feed follows)
 	Subscribe(ctx context.Context, subscription *Subscription) (*Subscription, error)
-	SubscribeWithCount(ctx context.Context, subscription *Subscription) (*Subscription, error) // Atomic: subscribe + increment count
+	SubscribeWithCount(ctx context.Context, subscription *Subscription) (*Subscription, error) // Idempotent for indexed record replay
 	Unsubscribe(ctx context.Context, userDID, communityDID string) error
-	UnsubscribeWithCount(ctx context.Context, userDID, communityDID string) error // Atomic: unsubscribe + decrement count
+	UnsubscribeWithCount(ctx context.Context, userDID, communityDID string) error // Idempotent for indexed record replay
 	GetSubscription(ctx context.Context, userDID, communityDID string) (*Subscription, error)
 	GetSubscriptionByURI(ctx context.Context, recordURI string) (*Subscription, error) // For Jetstream delete operations
 	ListSubscriptions(ctx context.Context, userDID string, limit, offset int) ([]*Subscription, error)
@@ -61,8 +61,6 @@ type Repository interface {
 	// Statistics
 	IncrementMemberCount(ctx context.Context, communityDID string) error
 	DecrementMemberCount(ctx context.Context, communityDID string) error
-	IncrementSubscriberCount(ctx context.Context, communityDID string) error
-	DecrementSubscriberCount(ctx context.Context, communityDID string) error
 	IncrementPostCount(ctx context.Context, communityDID string) error
 }
 

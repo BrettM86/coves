@@ -38,8 +38,8 @@ func (r *postgresCommunityRepo) Subscribe(ctx context.Context, subscription *com
 	return subscription, nil
 }
 
-// SubscribeWithCount atomically creates subscription and increments subscriber count
-// This is idempotent - safe for Jetstream replays
+// SubscribeWithCount idempotently creates a subscription. The database trigger
+// maintains subscriber_count in the same transaction as the row mutation.
 func (r *postgresCommunityRepo) SubscribeWithCount(ctx context.Context, subscription *communities.Subscription) (*communities.Subscription, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -59,16 +59,13 @@ func (r *postgresCommunityRepo) SubscribeWithCount(ctx context.Context, subscrip
 	// to the newest record means the redriven delete of the OLD record URI no
 	// longer matches the row (the consumer looks it up by record_uri) and is
 	// skipped, instead of tearing down a valid newer subscription.
-	// (xmax = 0) distinguishes a fresh insert (count must be incremented) from
-	// a conflict-update (row already existed; count unchanged).
 	query := `
 		INSERT INTO community_subscriptions (user_did, community_did, subscribed_at, record_uri, record_cid, content_visibility)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (user_did, community_did) DO UPDATE
 		SET record_uri = EXCLUDED.record_uri, record_cid = EXCLUDED.record_cid
-		RETURNING id, subscribed_at, content_visibility, (xmax = 0) AS inserted`
+		RETURNING id, subscribed_at, content_visibility`
 
-	var inserted bool
 	err = tx.QueryRowContext(ctx, query,
 		subscription.UserDID,
 		subscription.CommunityDID,
@@ -76,33 +73,13 @@ func (r *postgresCommunityRepo) SubscribeWithCount(ctx context.Context, subscrip
 		nullString(subscription.RecordURI),
 		nullString(subscription.RecordCID),
 		subscription.ContentVisibility,
-	).Scan(&subscription.ID, &subscription.SubscribedAt, &subscription.ContentVisibility, &inserted)
+	).Scan(&subscription.ID, &subscription.SubscribedAt, &subscription.ContentVisibility)
 
 	if err != nil {
 		if strings.Contains(err.Error(), "foreign key") {
 			return nil, communities.ErrCommunityNotFound
 		}
 		return nil, fmt.Errorf("failed to create subscription: %w", err)
-	}
-
-	// Subscription already existed (idempotent replay or re-subscribe under a
-	// new rkey): record pointer refreshed above, count stays as-is.
-	if !inserted {
-		if commitErr := tx.Commit(); commitErr != nil {
-			return nil, fmt.Errorf("failed to commit transaction: %w", commitErr)
-		}
-		return subscription, nil
-	}
-
-	// Increment subscriber count only if insert succeeded
-	incrementQuery := `
-		UPDATE communities
-		SET subscriber_count = subscriber_count + 1, updated_at = NOW()
-		WHERE did = $1`
-
-	_, err = tx.ExecContext(ctx, incrementQuery, subscription.CommunityDID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to increment subscriber count: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -133,8 +110,9 @@ func (r *postgresCommunityRepo) Unsubscribe(ctx context.Context, userDID, commun
 	return nil
 }
 
-// UnsubscribeWithCount atomically removes subscription and decrements subscriber count
-// This is idempotent - safe for Jetstream replays
+// UnsubscribeWithCount idempotently removes a subscription. The database
+// trigger maintains subscriber_count in the same transaction as the row
+// mutation.
 func (r *postgresCommunityRepo) UnsubscribeWithCount(ctx context.Context, userDID, communityDID string) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -164,17 +142,6 @@ func (r *postgresCommunityRepo) UnsubscribeWithCount(ctx context.Context, userDI
 			return fmt.Errorf("failed to commit transaction: %w", commitErr)
 		}
 		return nil
-	}
-
-	// Decrement subscriber count only if delete succeeded
-	decrementQuery := `
-		UPDATE communities
-		SET subscriber_count = GREATEST(0, subscriber_count - 1), updated_at = NOW()
-		WHERE did = $1`
-
-	_, err = tx.ExecContext(ctx, decrementQuery, communityDID)
-	if err != nil {
-		return fmt.Errorf("failed to decrement subscriber count: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {

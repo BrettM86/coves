@@ -671,8 +671,8 @@ func TestConcurrentCommunityCreation_DuplicateHandle(t *testing.T) {
 
 // TestConcurrentSubscription_RaceConditions drives subscription commits at one
 // community at once. subscriber_count is the counter most visible to users and
-// the one most exposed: SubscribeWithCount and UnsubscribeWithCount adjust it
-// alongside a hard insert and a hard delete of the subscription row.
+// the one most exposed: a database trigger adjusts it alongside every hard
+// insert and hard delete of a subscription row.
 func TestConcurrentSubscription_RaceConditions(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)

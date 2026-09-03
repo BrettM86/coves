@@ -518,14 +518,6 @@ func (m *mockCommunityRepo) DecrementMemberCount(ctx context.Context, communityD
 	return nil
 }
 
-func (m *mockCommunityRepo) IncrementSubscriberCount(ctx context.Context, communityDID string) error {
-	return nil
-}
-
-func (m *mockCommunityRepo) DecrementSubscriberCount(ctx context.Context, communityDID string) error {
-	return nil
-}
-
 func (m *mockCommunityRepo) IncrementPostCount(ctx context.Context, communityDID string) error {
 	return nil
 }

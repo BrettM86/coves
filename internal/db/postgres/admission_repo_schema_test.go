@@ -319,17 +319,19 @@ func TestMigration034_DownRestoresTheAuthorForeignKeyUnvalidated(t *testing.T) {
 		"with fk_author dropped, a federated author's post must index even though no users row exists for them")
 
 	// The expected-version parameter is the tripwire, and it has now fired
-	// ten times: migration 035 (post_submissions), 036 (deleted_accounts),
+	// eleven times: migration 035 (post_submissions), 036 (deleted_accounts),
 	// 037 (the re-materialization ledger), 038 (communities.origin), 039
 	// (the (name, origin) index), 040 (the vote-drift repair), 041 (the future
 	// comment created_at repair), 042 (the dead-letter retention index), 043
-	// (the bridged-vote poll watermark), and 044 (the posts search vector) all
-	// sit on top of 034, so all ten have to
+	// (the bridged-vote poll watermark), 044 (the posts search vector), and 045
+	// (the community subscriber recount) all sit on top of 034, so all eleven have to
 	// come off first. Rolling back explicitly,
 	// one asserted step at a time, is what keeps the assertions below pointed at
 	// 034's Down rather than at whatever happens to be newest.
+	require.EqualValues(t, 45, testkit.MigrateDownOne(t, db, 45),
+		"045 (the community subscriber recount) sits on top of 044 and must be rolled back first")
 	require.EqualValues(t, 44, testkit.MigrateDownOne(t, db, 44),
-		"044 (the posts search vector column and index) sits on top of 043 and must be rolled back first")
+		"044 (the posts search vector column and index) sits on top of 043 and must be rolled back next")
 	require.EqualValues(t, 43, testkit.MigrateDownOne(t, db, 43),
 		"043 (the bridged-vote poll watermark) sits on top of 042 and must be rolled back next")
 	require.EqualValues(t, 42, testkit.MigrateDownOne(t, db, 42),

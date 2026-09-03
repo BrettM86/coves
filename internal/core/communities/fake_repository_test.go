@@ -391,16 +391,6 @@ func (f *fakeCommunityRepo) DecrementMemberCount(_ context.Context, communityDID
 	return f.err
 }
 
-func (f *fakeCommunityRepo) IncrementSubscriberCount(_ context.Context, communityDID string) error {
-	f.record("IncrementSubscriberCount", communityDID)
-	return f.err
-}
-
-func (f *fakeCommunityRepo) DecrementSubscriberCount(_ context.Context, communityDID string) error {
-	f.record("DecrementSubscriberCount", communityDID)
-	return f.err
-}
-
 func (f *fakeCommunityRepo) IncrementPostCount(_ context.Context, communityDID string) error {
 	f.record("IncrementPostCount", communityDID)
 	return f.err

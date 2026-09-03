@@ -786,9 +786,8 @@ func TestCommunityConsumer_RefusesAProfileWhoseHandleCannotBeBuilt(t *testing.T)
 // collection this consumer owns, and the aggregate it maintains.
 //
 // The subscriber count is denormalised onto the community row because every
-// listing renders it, so it is only ever correct if this path maintains it. A
-// subscription indexed without the increment is invisible until someone
-// recounts.
+// listing renders it. A database trigger derives it from each indexed
+// subscription relationship, regardless of which repository path wrote it.
 func TestCommunityConsumer_IndexesASubscriptionAndCountsIt(t *testing.T) {
 	t.Parallel()
 

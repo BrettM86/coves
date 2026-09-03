@@ -281,3 +281,43 @@ func TestCommunityConsumer_SubscriptionAndBlockIgnoreUpdates(t *testing.T) {
 				"means anything that did would panic)", collection)
 	}
 }
+
+// TestCreateCommunityIgnoresRecordAssertedSubscriberCount verifies that an
+// undeclared profile field cannot seed the AppView-derived aggregate.
+func TestCreateCommunityIgnoresRecordAssertedSubscriberCount(t *testing.T) {
+	t.Parallel()
+
+	repo := newOriginRepo()
+	consumer := NewCommunityEventConsumer(repo, originTestInstance, true, nil)
+
+	const did = "did:plc:forgedsubscribercount"
+	commit := profileCommit("create", "forged", "", map[string]interface{}{
+		"subscriberCount": float64(2_000_000_000),
+	})
+
+	require.NoError(t, consumer.createCommunity(context.Background(), did, commit))
+	require.Contains(t, repo.byDID, did)
+	assert.Zero(t, repo.byDID[did].SubscriberCount,
+		"subscriberCount is AppView-derived state; a community profile must not seed it")
+}
+
+// TestUpdateCommunityIgnoresRecordAssertedSubscriberCount is the update-path
+// twin: a profile edit carrying the undeclared field must leave the stored,
+// relationship-derived value exactly where it was.
+func TestUpdateCommunityIgnoresRecordAssertedSubscriberCount(t *testing.T) {
+	t.Parallel()
+
+	repo := newOriginRepo()
+	consumer := NewCommunityEventConsumer(repo, originTestInstance, true, nil)
+
+	const did = "did:plc:forgedupdatecount"
+	seedCommunity(repo, did, nativeHandle, "")
+	repo.byDID[did].SubscriberCount = 7
+
+	commit := profileCommit("update", "nba", "", map[string]interface{}{
+		"subscriberCount": float64(2_000_000_000),
+	})
+	require.NoError(t, consumer.updateCommunity(context.Background(), did, commit))
+	assert.Equal(t, 7, repo.byDID[did].SubscriberCount,
+		"a profile update must not touch the AppView-derived subscriber count")
+}

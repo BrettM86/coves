@@ -8,6 +8,7 @@ import (
 	"Coves/tests/testkit"
 	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 	"time"
 
@@ -30,12 +31,15 @@ import (
 // The handler's half — which sort names are accepted, what an unknown one
 // answers — is internal/api/handlers/community's list_test.go.
 
-// seedListableCommunity inserts one community with the counts and creation time
+// seedListableCommunity inserts one community with the relationships and creation time
 // a sort case needs.
 //
 // It writes through the repository rather than raw SQL so the row goes in the
 // same way the consumer puts it there, and so a schema change breaks this in the
 // same place it breaks production.
+//
+// `subscribers` seeds real subscription rows through the same atomic operation
+// the consumer uses. A community profile cannot supply that derived count.
 //
 // `posts` seeds that many REAL, publicly visible posts — accepted postv2 rows —
 // rather than a number in the community's post_count column. The served
@@ -57,17 +61,25 @@ func seedListableCommunity(t *testing.T, db *sql.DB, repo communities.Repository
 		HostedByDID:            "did:web:coves.social",
 		Visibility:             visibility,
 		AllowExternalDiscovery: true,
-		SubscriberCount:        subscribers,
 		// Deliberately NOT `posts`: nothing serves this column any more, and
 		// leaving it at zero is what proves the sort reads the live count.
 		PostCount: 0,
-		CreatedAt:              createdAt,
-		UpdatedAt:              createdAt,
-		RecordURI:              "at://did:plc:list" + name + "/social.coves.community.profile/self",
+		CreatedAt: createdAt,
+		UpdatedAt: createdAt,
+		RecordURI: "at://did:plc:list" + name + "/social.coves.community.profile/self",
 	}
 
 	stored, err := repo.Create(context.Background(), community)
 	require.NoErrorf(t, err, "seeding community %s", name)
+	for i := 0; i < subscribers; i++ {
+		_, err = repo.SubscribeWithCount(context.Background(), &communities.Subscription{
+			UserDID:           fmt.Sprintf("did:plc:list%s%03d", name, i),
+			CommunityDID:      stored.DID,
+			SubscribedAt:      createdAt,
+			ContentVisibility: 3,
+		})
+		require.NoErrorf(t, err, "seeding subscriber %d for community %s", i, name)
+	}
 	seedVisibleCommunityPosts(t, db, stored.DID, name, posts, createdAt)
 	stored.PostCount = posts
 	return stored

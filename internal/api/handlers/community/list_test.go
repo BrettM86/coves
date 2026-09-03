@@ -197,12 +197,6 @@ func (r *listTestRepo) IncrementMemberCount(ctx context.Context, communityDID st
 func (r *listTestRepo) DecrementMemberCount(ctx context.Context, communityDID string) error {
 	return nil
 }
-func (r *listTestRepo) IncrementSubscriberCount(ctx context.Context, communityDID string) error {
-	return nil
-}
-func (r *listTestRepo) DecrementSubscriberCount(ctx context.Context, communityDID string) error {
-	return nil
-}
 func (r *listTestRepo) IncrementPostCount(ctx context.Context, communityDID string) error {
 	return nil
 }

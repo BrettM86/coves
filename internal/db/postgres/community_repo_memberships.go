@@ -251,24 +251,6 @@ func (r *postgresCommunityRepo) DecrementMemberCount(ctx context.Context, commun
 	return nil
 }
 
-func (r *postgresCommunityRepo) IncrementSubscriberCount(ctx context.Context, communityDID string) error {
-	query := `UPDATE communities SET subscriber_count = subscriber_count + 1 WHERE did = $1`
-	_, err := r.db.ExecContext(ctx, query, communityDID)
-	if err != nil {
-		return fmt.Errorf("failed to increment subscriber count: %w", err)
-	}
-	return nil
-}
-
-func (r *postgresCommunityRepo) DecrementSubscriberCount(ctx context.Context, communityDID string) error {
-	query := `UPDATE communities SET subscriber_count = GREATEST(0, subscriber_count - 1) WHERE did = $1`
-	_, err := r.db.ExecContext(ctx, query, communityDID)
-	if err != nil {
-		return fmt.Errorf("failed to decrement subscriber count: %w", err)
-	}
-	return nil
-}
-
 // IncrementPostCount advances the STORED communities.post_count column.
 //
 // VESTIGIAL, AND NOTHING READS WHAT IT WRITES. It has had no production caller

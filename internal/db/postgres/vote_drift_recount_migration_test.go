@@ -75,13 +75,15 @@ func TestMigration040_RecountsVoteDriftAndSweepsLegacyOrphans(t *testing.T) {
 	db := testkit.DB(t)
 	ctx := context.Background()
 
-	// Roll 042, 041, and 040 off, seed the pre-repair state, then roll them back on: the
+	// Roll the newer migrations and 040 off, seed the pre-repair state, then roll them back on: the
 	// migration has to find drifted rows already present, which is the whole
 	// point of a repair migration and cannot be observed by seeding after it has
 	// run. Asserting the version that came off is the tripwire that keeps this
 	// pointed at 040 when later migrations land.
+	require.EqualValues(t, 45, testkit.MigrateDownOne(t, db, 45),
+		"045 (the community subscriber recount) sits on top of 044 and must be rolled back first")
 	require.EqualValues(t, 44, testkit.MigrateDownOne(t, db, 44),
-		"044 (the posts search vector column and index) sits on top of 043 and must be rolled back first")
+		"044 (the posts search vector column and index) sits on top of 043 and must be rolled back next")
 	require.EqualValues(t, 43, testkit.MigrateDownOne(t, db, 43),
 		"043 (the bridged-vote poll watermark) sits on top of 042 and must be rolled back next")
 	require.EqualValues(t, 42, testkit.MigrateDownOne(t, db, 42),

@@ -741,7 +741,6 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 		ModerationType:         profile.ModerationType,
 		ContentWarnings:        profile.ContentWarnings,
 		MemberCount:            profile.MemberCount,
-		SubscriberCount:        profile.SubscriberCount,
 		FederatedFrom:          profile.FederatedFrom,
 		FederatedID:            profile.FederatedID,
 		CreatedAt:              profile.CreatedAt,
@@ -1494,8 +1493,9 @@ func (c *CommunityEventConsumer) createSubscription(ctx context.Context, userDID
 		RecordCID:         commit.CID,
 	}
 
-	// Use transactional method to ensure subscription and count are atomically updated
-	// This is idempotent - safe for Jetstream replays
+	// Idempotent for Jetstream replays: a conflict on (user, community) updates
+	// the stored record pointer instead of erroring. subscriber_count is
+	// maintained by a database trigger on community_subscriptions, not here.
 	_, err := c.repo.SubscribeWithCount(ctx, subscription)
 	if err != nil {
 		// If already exists, that's fine (idempotency)
@@ -1546,8 +1546,9 @@ func (c *CommunityEventConsumer) deleteSubscription(ctx context.Context, userDID
 		return fmt.Errorf("failed to find subscription for deletion: %w", err)
 	}
 
-	// Use transactional method to ensure unsubscribe and count are atomically updated
-	// This is idempotent - safe for Jetstream replays
+	// Idempotent for Jetstream replays: a missing row is not an error.
+	// subscriber_count is maintained by a database trigger on
+	// community_subscriptions, not here.
 	err = c.repo.UnsubscribeWithCount(ctx, userDID, subscription.CommunityDID)
 	if err != nil {
 		if communities.IsNotFound(err) {
@@ -1699,7 +1700,6 @@ type CommunityProfile struct {
 	ContentWarnings   []string               `json:"contentWarnings"`
 	DescriptionFacets []interface{}          `json:"descriptionFacets"`
 	MemberCount       int                    `json:"memberCount"`
-	SubscriberCount   int                    `json:"subscriberCount"`
 	Federation        FederationConfig       `json:"federation"`
 }
 

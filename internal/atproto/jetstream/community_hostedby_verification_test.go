@@ -92,9 +92,8 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 					"federation": map[string]interface{}{
 						"allowExternalDiscovery": true,
 					},
-					"memberCount":     0,
-					"subscriberCount": 0,
-					"createdAt":       time.Now().Format(time.RFC3339),
+					"memberCount": 0,
+					"createdAt":   time.Now().Format(time.RFC3339),
 				},
 			},
 		}
@@ -147,9 +146,8 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 					"federation": map[string]interface{}{
 						"allowExternalDiscovery": true,
 					},
-					"memberCount":     0,
-					"subscriberCount": 0,
-					"createdAt":       time.Now().Format(time.RFC3339),
+					"memberCount": 0,
+					"createdAt":   time.Now().Format(time.RFC3339),
 				},
 			},
 		}
@@ -201,9 +199,8 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 					"federation": map[string]interface{}{
 						"allowExternalDiscovery": true,
 					},
-					"memberCount":     0,
-					"subscriberCount": 0,
-					"createdAt":       time.Now().Format(time.RFC3339),
+					"memberCount": 0,
+					"createdAt":   time.Now().Format(time.RFC3339),
 				},
 			},
 		}
@@ -254,9 +251,8 @@ func TestHostedByVerification_DomainMatching(t *testing.T) {
 					"federation": map[string]interface{}{
 						"allowExternalDiscovery": true,
 					},
-					"memberCount":     0,
-					"subscriberCount": 0,
-					"createdAt":       time.Now().Format(time.RFC3339),
+					"memberCount": 0,
+					"createdAt":   time.Now().Format(time.RFC3339),
 				},
 			},
 		}
@@ -344,9 +340,8 @@ func TestBidirectionalDIDVerification(t *testing.T) {
 					"federation": map[string]interface{}{
 						"allowExternalDiscovery": true,
 					},
-					"memberCount":     0,
-					"subscriberCount": 0,
-					"createdAt":       time.Now().Format(time.RFC3339),
+					"memberCount": 0,
+					"createdAt":   time.Now().Format(time.RFC3339),
 				},
 			},
 		}
@@ -412,9 +407,8 @@ func TestBidirectionalDIDVerification(t *testing.T) {
 					"federation": map[string]interface{}{
 						"allowExternalDiscovery": true,
 					},
-					"memberCount":     0,
-					"subscriberCount": 0,
-					"createdAt":       time.Now().Format(time.RFC3339),
+					"memberCount": 0,
+					"createdAt":   time.Now().Format(time.RFC3339),
 				},
 			},
 		}
@@ -537,9 +531,8 @@ func TestExtractDomainFromHandle(t *testing.T) {
 						"federation": map[string]interface{}{
 							"allowExternalDiscovery": true,
 						},
-						"memberCount":     0,
-						"subscriberCount": 0,
-						"createdAt":       time.Now().Format(time.RFC3339),
+						"memberCount": 0,
+						"createdAt":   time.Now().Format(time.RFC3339),
 					},
 				},
 			}

@@ -17,9 +17,9 @@ import (
 )
 
 // community_repo_memberships.go against real SQL: memberships, moderation
-// actions, and the five counter mutators.
+// actions, and the three remaining manual counter mutators.
 //
-// All eleven functions in that file were at zero coverage before this one, and
+// All nine functions in that file were at zero coverage before this one, and
 // they are not equally harmless. Three groups, in increasing order of how badly
 // a mistake would show:
 //
@@ -30,9 +30,9 @@ import (
 //     community it has delisted or quarantined. The action column is a CHECK
 //     constraint, and a value that slips past it is a moderation signal no peer
 //     knows how to interpret.
-//   - The counters are the numbers a client renders. They are unconditional
-//     UPDATEs, so they are also where the sharpest surprise in this file lives —
-//     see TestCommunityRepo_CountersOnAnAbsentCommunityAreSilent.
+//   - The manual member and post counters are numbers a client renders. They are
+//     unconditional UPDATEs, so they are also where the sharpest surprise in
+//     this file lives — see TestCommunityRepo_CountersOnAnAbsentCommunityAreSilent.
 //
 // Every membership row has a foreign key to communities(did) ON DELETE CASCADE,
 // so each test seeds a real community first. That is not ceremony: the FK is
@@ -504,19 +504,26 @@ func TestCommunityRepo_Counters(t *testing.T) {
 		t.Parallel()
 		repo, db, community := memberOfWithDB(t)
 
+		// One real subscription, so the subscriber assertions below check that
+		// the manual counters leave a non-zero derived value alone rather than
+		// passing vacuously against an empty community.
+		_, err := repo.SubscribeWithCount(ctx, &communities.Subscription{
+			UserDID: "did:plc:counterwitness", CommunityDID: community.DID,
+			ContentVisibility: 3, SubscribedAt: time.Now(),
+		})
+		require.NoError(t, err)
+
 		require.NoError(t, repo.IncrementMemberCount(ctx, community.DID))
 		members, subscribers, posts := countsOf(t, repo, community.DID)
 		assert.Equal(t, 1, members)
-		assert.Zero(t, subscribers, "incrementing members moved the subscriber count")
+		assert.Equal(t, 1, subscribers, "incrementing members moved the subscriber count")
 		assert.Zero(t, posts)
 		assert.Zero(t, storedPostCount(t, db, community.DID), "incrementing members moved the post count column")
 
-		require.NoError(t, repo.IncrementSubscriberCount(ctx, community.DID))
-		require.NoError(t, repo.IncrementSubscriberCount(ctx, community.DID))
 		require.NoError(t, repo.IncrementPostCount(ctx, community.DID))
 		members, subscribers, posts = countsOf(t, repo, community.DID)
 		assert.Equal(t, 1, members)
-		assert.Equal(t, 2, subscribers)
+		assert.Equal(t, 1, subscribers, "manual counters moved the relationship-derived subscriber count")
 		assert.Equal(t, 1, storedPostCount(t, db, community.DID),
 			"IncrementPostCount must still move its own column and only its own column")
 
@@ -538,25 +545,20 @@ func TestCommunityRepo_Counters(t *testing.T) {
 		require.NoError(t, repo.IncrementMemberCount(ctx, community.DID))
 		require.NoError(t, repo.IncrementMemberCount(ctx, community.DID))
 		require.NoError(t, repo.DecrementMemberCount(ctx, community.DID))
-		require.NoError(t, repo.IncrementSubscriberCount(ctx, community.DID))
-		require.NoError(t, repo.DecrementSubscriberCount(ctx, community.DID))
 
 		members, subscribers, _ := countsOf(t, repo, community.DID)
 		assert.Equal(t, 1, members)
 		assert.Zero(t, subscribers)
 	})
 
-	// GREATEST(0, …) is the reason a duplicate unsubscribe cannot drive a
-	// community to "-1 subscribers". The firehose delivers at-least-once and
-	// the consumer's decrement is not idempotent, so this floor is load-bearing
-	// rather than defensive.
+	// GREATEST(0, …) prevents the remaining manual member counter from going
+	// negative. Subscriber counts are maintained from relationship rows instead.
 	t.Run("decrements floor at zero instead of going negative", func(t *testing.T) {
 		t.Parallel()
 		repo, community := memberOf(t)
 
 		require.NoError(t, repo.DecrementMemberCount(ctx, community.DID))
 		require.NoError(t, repo.DecrementMemberCount(ctx, community.DID))
-		require.NoError(t, repo.DecrementSubscriberCount(ctx, community.DID))
 
 		members, subscribers, _ := countsOf(t, repo, community.DID)
 		assert.Zero(t, members, "a member count below zero renders as '-1 members' and breaks every "+
@@ -592,19 +594,19 @@ func TestCommunityRepo_Counters(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		require.NoError(t, repo.IncrementSubscriberCount(ctx, first.DID))
+		require.NoError(t, repo.IncrementMemberCount(ctx, first.DID))
 
-		_, subscribers, _ := countsOf(t, repo, second.DID)
-		assert.Zero(t, subscribers, "a subscription to one community moved another's count")
+		members, _, _ := countsOf(t, repo, second.DID)
+		assert.Zero(t, members, "a member increment for one community moved another's count")
 	})
 }
 
 // TestCommunityRepo_CountersOnAnAbsentCommunityAreSilent pins the sharpest
 // behaviour in this file.
 //
-// All five counters are bare UPDATE … WHERE did = $1 with no RowsAffected
-// check, so incrementing a community the AppView has never indexed matches zero
-// rows and returns nil. The caller is told the count went up.
+// All three remaining manual counters are bare UPDATE … WHERE did = $1 with no
+// RowsAffected check, so incrementing a community the AppView has never indexed
+// matches zero rows and returns nil. The caller is told the count went up.
 //
 // This is not (today) a defect on its own: every caller is a firehose consumer
 // that has already resolved the community, and the sibling consumers gate on
@@ -623,11 +625,9 @@ func TestCommunityRepo_CountersOnAnAbsentCommunityAreSilent(t *testing.T) {
 	absent := "did:plc:neverindexed0000000"
 
 	for name, increment := range map[string]func(context.Context, string) error{
-		"IncrementMemberCount":     repo.IncrementMemberCount,
-		"DecrementMemberCount":     repo.DecrementMemberCount,
-		"IncrementSubscriberCount": repo.IncrementSubscriberCount,
-		"DecrementSubscriberCount": repo.DecrementSubscriberCount,
-		"IncrementPostCount":       repo.IncrementPostCount,
+		"IncrementMemberCount": repo.IncrementMemberCount,
+		"DecrementMemberCount": repo.DecrementMemberCount,
+		"IncrementPostCount":   repo.IncrementPostCount,
 	} {
 		assert.NoErrorf(t, increment(ctx, absent),
 			"IF THIS FAILED, %s learned to report that it matched no rows. That is an improvement — "+
@@ -655,8 +655,20 @@ func TestCommunityRepo_DeletingACommunityTakesItsMembershipsWithIt(t *testing.T)
 		InstanceDID: "did:web:coves.social", CreatedAt: time.Now().UTC(),
 	})
 	require.NoError(t, err)
+	// A live subscription: its cascade fires the AFTER DELETE subscriber-count
+	// trigger against a communities row that is already gone. The trigger must
+	// treat that as a no-op, or no community with subscribers could be deleted.
+	_, err = repo.SubscribeWithCount(ctx, &communities.Subscription{
+		UserDID: userDID, CommunityDID: community.DID, ContentVisibility: 3, SubscribedAt: time.Now(),
+	})
+	require.NoError(t, err)
 
-	require.NoError(t, repo.Delete(ctx, community.DID))
+	require.NoError(t, repo.Delete(ctx, community.DID),
+		"deleting a community with subscribers must survive the cascade through the count trigger")
+
+	_, err = repo.GetSubscription(ctx, userDID, community.DID)
+	assert.ErrorIs(t, err, communities.ErrSubscriptionNotFound,
+		"the subscription must cascade away with its community")
 
 	_, err = repo.GetMembership(ctx, userDID, community.DID)
 	assert.ErrorIs(t, err, communities.ErrMembershipNotFound,

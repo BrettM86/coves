@@ -192,14 +192,18 @@ func TestRematerializeLedgerMigration_RollsBack(t *testing.T) {
 	db := testkit.DB(t)
 	requireTableExists(t, db, rematerializeLedgerTable)
 
-	// The expected-version tripwire: 042 (the dead-letter retention index), 041
+	// The expected-version tripwire: 045 (the community subscriber recount),
+	// 044 (the posts search vector), 043 (the bridged-vote poll watermark),
+	// 042 (the dead-letter retention index), 041
 	// (the future comment created_at repair), 040 (the vote-drift repair), 039
 	// (the communities (name, origin) index), and 038 (communities.origin) sit on
 	// top of 037 and come off first, one asserted step at a time. Asserting which
 	// migration rolled back is what keeps this pointed at 037's Down rather than
 	// drifting onto a newer one later.
+	require.EqualValues(t, 45, testkit.MigrateDownOne(t, db, 45),
+		"045 (the community subscriber recount) sits on top of 044 and must be rolled back first")
 	require.EqualValues(t, 44, testkit.MigrateDownOne(t, db, 44),
-		"044 (the posts search vector column and index) sits on top of 043 and must be rolled back first")
+		"044 (the posts search vector column and index) sits on top of 043 and must be rolled back next")
 	require.EqualValues(t, 43, testkit.MigrateDownOne(t, db, 43),
 		"043 (the bridged-vote poll watermark) sits on top of 042 and must be rolled back next")
 	require.EqualValues(t, 42, testkit.MigrateDownOne(t, db, 42),

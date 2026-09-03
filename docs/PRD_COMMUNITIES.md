@@ -137,7 +137,7 @@ Hosted By:   did:web:coves.social (instance manages credentials)
     2. ✅ Implemented ContentVisibility (1-5 slider) across all layers (handler, service, consumer, repository)
     3. ✅ Production Jetstream consumer now running ([cmd/server/main.go:220-243](cmd/server/main.go#L220-L243))
     4. ✅ Migration 008 adds `content_visibility` column with defaults and constraints
-    5. ✅ Atomic subscriber count updates (SubscribeWithCount/UnsubscribeWithCount)
+    5. ✅ Subscriber count materialized atomically from indexed subscription rows
     6. ✅ DELETE operations properly handled (unsubscribe indexing)
     7. ✅ Idempotent operations (safe for Jetstream event replays)
     8. ✅ atProto naming compliance: singular namespace + `subject` field
@@ -398,14 +398,18 @@ Communities can define content posting restrictions via the `contentRules` objec
   - `minImages` / `maxImages` - Image count constraints
   - `allowFederated` - Whether federated posts allowed
 - `memberCount` - Cached count
-- `subscriberCount` - Cached count
 
 ### `social.coves.community.subscription`
-**Status:** ✅ Schema exists, consumer TODO
+**Status:** ✅ Schema exists, consumer implemented (create + delete; updates ignored)
 
 **Fields:**
-- `community` - DID of community being subscribed to
-- `subscribedAt` - Timestamp
+- `subject` - DID of community being subscribed to
+- `createdAt` - Timestamp
+- `contentVisibility` - Optional feed visibility level
+- `endedAt` - Optional, reserved
+
+The AppView derives `subscriberCount` from indexed subscription rows; the
+profile record cannot supply it.
 
 ### `social.coves.post` (Community Extension)
 **Status:** ⏳ TODO

@@ -30,20 +30,16 @@ import (
 // A subscription moves two numbers, maintained in two completely different
 // ways, and asserting both is what makes this contract more than a round-trip:
 //
-//   - social.coves.community.get's subscriberCount is a STORED COLUMN.
-//     SubscribeWithCount does `UPDATE communities SET subscriber_count =
-//     subscriber_count + 1` in the same transaction as the row insert, and
-//     UnsubscribeWithCount decrements it with a GREATEST(0, …) floor.
+//   - social.coves.community.get's subscriberCount is a STORED COLUMN maintained
+//     by a database trigger on community_subscriptions. Inserts increment it and
+//     deletes decrement it with a GREATEST(0, …) floor in the same transaction.
 //   - social.coves.actor.getProfile's stats.communityCount is a LIVE COUNT(*)
 //     over community_subscriptions (user_repo.go).
 //
-// A stored counter and a recomputed one can drift apart, and the stored one is
-// the one that can be wrong: a missed increment, a double decrement, or an
-// unsubscribe that removes the row without adjusting the column all leave the
-// COUNT(*) correct and the column silently off. The floor at zero then hides
-// the drift from anyone reading the number alone. Checking the two together is
-// the cheapest possible detector for that whole class, and it costs one extra
-// request.
+// The trigger makes every database mutation maintain the stored count, including
+// account-deletion cleanup and repository paths outside the consumer. Checking
+// it against the live per-user COUNT(*) still detects any regression in that
+// invariant, and it costs one extra request.
 //
 // # THE FAN-OUT THIS CONTRACT CANNOT REACH, STATED PLAINLY
 //
@@ -187,10 +183,10 @@ func TestCommunitySubscriptionIngestion(t *testing.T) {
 	// ---- a second subscription record, new rkey ------------------------------
 	// The idempotency case that matters, and the one no test in the tree covered
 	// before this: SubscribeWithCount's ON CONFLICT keys on (user_did,
-	// community_did), NOT on the record URI, and it decides whether to increment
-	// from the `xmax = 0` discriminator — "did this statement actually insert a
-	// row". So a second record for the same community re-points the stored
-	// record_uri at the newer record and does not touch the count.
+	// community_did), NOT on the record URI. A second record for the same
+	// community updates the existing row rather than inserting one, so the
+	// insert/delete trigger does not touch the count. The update re-points the
+	// stored record_uri at the newer record.
 	//
 	// Why a client produces one at all: nothing stops a user subscribing from
 	// two devices, and nothing in atProto makes an rkey a natural key. The

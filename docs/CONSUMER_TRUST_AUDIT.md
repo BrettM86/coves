@@ -322,16 +322,26 @@ Handlers (all p3; the write surface is in good shape):
   from the stored row; comments deliberately never decrement).
 - **Vote uniqueness** on `(voter_did, subject_uri)` in code and by partial
   unique index; rkey freedom cannot inflate counts.
-- **Subscription counts** gated on fresh insert (`xmax = 0`), FK blocks
-  phantoms, decrement floored.
+- **Subscription counts** are AppView-derived: profile records cannot seed the
+  stored value; migration 045 rebuilds it from `community_subscriptions`, and a
+  database trigger maintains it on insert, delete, and community re-pointing
+  (`UPDATE OF community_did`), which also covers account-deletion cascades.
+  Replay updates (`ON CONFLICT` refreshing `record_uri`/`record_cid`) do not
+  fire it, so the count is unchanged by design. FK blocks phantoms; the
+  decrement is floored and logs a warning when it fires from zero.
 - **Bridge trust** provenance is always the PDS endpoint from resolving
   `event.Did`, never a record field.
 - **SSRF transport** (`oauth/transport.go`): resolve-once + dial vetted IPs
   (rebinding), IPv6 embedded forms, redirects capped and re-guarded, 32 MiB
   body cap, `NormalizeDomain` before URL build. Untested at the community call
   site: redirect-to-private, oversize `did.json`.
-- **Undeclared-field passthrough**: every consumer decodes a fixed set of
-  lexicon-declared keys; only the community `handle` was undeclared.
+- **Undeclared-field passthrough**: every consumer decodes a fixed set of keys.
+  Community `subscriberCount` is ignored. The community consumer still decodes
+  these keys absent from the profile lexicon: `handle`, `atprotoHandle`,
+  `memberCount`, `federatedFrom`, `federatedId`, and
+  `federation.allowExternalDiscovery`. `memberCount` is the same
+  self-asserted-aggregate class as the fixed `subscriberCount` and is still
+  record-seeded at create; it remains an open finding, not a verified one.
 - **Handlers**: `RequireAuth` = sealed AES-GCM token + DB session lookup +
   `AccountDID` match; body `createdByDid`/`hostedByDid`/`authorDid` rejected
   when present; update/delete authorize on the URI authority vs session DID

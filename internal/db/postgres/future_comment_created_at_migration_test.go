@@ -18,8 +18,10 @@ func TestMigration041_ClampsFutureCommentCreatedAt(t *testing.T) {
 	t.Parallel()
 
 	db := testkit.DB(t)
+	require.EqualValues(t, 45, testkit.MigrateDownOne(t, db, 45),
+		"045 (the community subscriber recount) sits on top of 044 and must be rolled back first")
 	require.EqualValues(t, 44, testkit.MigrateDownOne(t, db, 44),
-		"044 (the posts search vector column and index) sits on top of 043 and must be rolled back first")
+		"044 (the posts search vector column and index) sits on top of 043 and must be rolled back next")
 	require.EqualValues(t, 43, testkit.MigrateDownOne(t, db, 43),
 		"043 (the bridged-vote poll watermark) sits on top of 042 and must be rolled back next")
 	require.EqualValues(t, 42, testkit.MigrateDownOne(t, db, 42),

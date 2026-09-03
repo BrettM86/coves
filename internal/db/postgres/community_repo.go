@@ -47,6 +47,9 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 		return nil, fmt.Errorf("handle is required (should be constructed by consumer before insert)")
 	}
 
+	// subscriber_count is deliberately absent: it is derived from indexed
+	// subscription relationships and every newly materialized community starts
+	// at the database default of zero.
 	query := `
 		INSERT INTO communities (
 			did, handle, name, display_name, description, description_facets,
@@ -54,7 +57,7 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 			pds_email, pds_password_encrypted,
 			pds_access_token_encrypted, pds_refresh_token_encrypted, pds_url,
 			visibility, allow_external_discovery, moderation_type, content_warnings,
-			member_count, subscriber_count, post_count,
+			member_count, post_count,
 			federated_from, federated_id, created_at, updated_at,
 			record_uri, record_cid, origin
 		) VALUES (
@@ -65,9 +68,9 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 			CASE WHEN $15 != '' THEN pgp_sym_encrypt($15, (SELECT encode(key_data, 'hex') FROM encryption_keys WHERE id = 1)) ELSE NULL END,
 			$16,
 			$17, $18, $19, $20,
-			$21, $22, $23, $24, $25, $26, $27, $28, $29, $30
+			$21, $22, $23, $24, $25, $26, $27, $28, $29
 		)
-		RETURNING id, created_at, updated_at`
+		RETURNING id, subscriber_count, created_at, updated_at`
 
 	// Handle JSONB field - use sql.NullString with valid JSON or NULL
 	var descFacets interface{}
@@ -101,7 +104,6 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 		nullString(community.ModerationType),
 		pq.Array(community.ContentWarnings),
 		community.MemberCount,
-		community.SubscriberCount,
 		community.PostCount,
 		nullString(community.FederatedFrom),
 		nullString(community.FederatedID),
@@ -110,7 +112,7 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 		nullString(community.RecordURI),
 		nullString(community.RecordCID),
 		nullString(community.Origin),
-	).Scan(&community.ID, &community.CreatedAt, &community.UpdatedAt)
+	).Scan(&community.ID, &community.SubscriberCount, &community.CreatedAt, &community.UpdatedAt)
 	if err != nil {
 		// Check for unique constraint violations
 		if strings.Contains(err.Error(), "duplicate key") {

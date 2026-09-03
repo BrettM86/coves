@@ -1060,6 +1060,12 @@ func TestAccountDeletion_Integration(t *testing.T) {
 			t.Fatalf("Failed to insert subscription: %v", err)
 		}
 
+		var subscriberCount int
+		err = db.QueryRow(`SELECT subscriber_count FROM communities WHERE did = $1`, testCommunityDID).Scan(&subscriberCount)
+		if err != nil || subscriberCount != 1 {
+			t.Fatalf("Expected subscription relationship to materialize count 1, got %d (err: %v)", subscriberCount, err)
+		}
+
 		// Community membership
 		_, err = db.Exec(`
 			INSERT INTO community_memberships (user_did, community_did, reputation_score, contribution_count, is_banned, is_moderator, joined_at, last_active_at)
@@ -1196,6 +1202,14 @@ func TestAccountDeletion_Integration(t *testing.T) {
 		}
 		if count != 0 {
 			t.Errorf("Expected 0 subscriptions after deletion, got %d", count)
+		}
+
+		err = db.QueryRow(`SELECT subscriber_count FROM communities WHERE did = $1`, testCommunityDID).Scan(&count)
+		if err != nil {
+			t.Fatalf("Error checking subscriber count: %v", err)
+		}
+		if count != 0 {
+			t.Errorf("Expected subscriber count 0 after account deletion, got %d", count)
 		}
 
 		// Check membership deleted

@@ -333,6 +333,20 @@ func (r *postgresUserRepo) Delete(ctx context.Context, did string) error {
 	}
 
 	// 3. Delete community subscriptions (explicit DELETE)
+	//
+	// The subscriber-count trigger updates one communities row per deleted
+	// subscription, so this transaction ends up holding a row lock on every
+	// community the account subscribed to. Two deletions of accounts that
+	// share communities, or a deletion racing a subscribe on a busy
+	// community, would otherwise acquire those rows in heap order and could
+	// deadlock. Taking the locks up front in DID order serializes them.
+	if _, err := tx.ExecContext(ctx, `
+		SELECT 1 FROM communities
+		WHERE did IN (SELECT community_did FROM community_subscriptions WHERE user_did = $1)
+		ORDER BY did
+		FOR NO KEY UPDATE`, did); err != nil {
+		return fmt.Errorf("failed to lock subscribed communities for did=%s: %w", did, err)
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM community_subscriptions WHERE user_did = $1`, did); err != nil {
 		return fmt.Errorf("failed to delete community_subscriptions for did=%s: %w", did, err)
 	}

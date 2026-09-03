@@ -377,7 +377,7 @@ if err != nil {
 - ✅ Store in subscription record on PDS (`social.coves.community.subscription`)
 - ✅ Migration 008 adds `content_visibility` column to database with CHECK constraint
 - ✅ Clamping at all layers (handler, service, consumer) for defense in depth
-- ✅ Atomic subscriber count updates (SubscribeWithCount/UnsubscribeWithCount)
+- ✅ Subscriber count materialized atomically from indexed subscription rows
 - ✅ Idempotent operations (safe for Jetstream event replays)
 - ✅ Fixed critical collection name bug (was using wrong namespace)
 - ✅ Production Jetstream consumer now running
