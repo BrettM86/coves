@@ -95,7 +95,7 @@ func main() {
 					fmt.Printf("UNPARSEABLE %s: %v\n", record.URI, err)
 					continue
 				}
-				if err := lexicon.ValidateRecord(&catalog, parsed, collection, lexicon.AllowLenientDatetime); err != nil {
+				if err := lexicon.ValidateRecord(catalog, parsed, collection, lexicon.AllowLenientDatetime); err != nil {
 					failures++
 					fmt.Printf("INVALID %s: %v\n", record.URI, err)
 				}

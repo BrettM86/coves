@@ -2,7 +2,7 @@
 # Builds a minimal production image for the Go server
 
 # Stage 1: Build
-FROM golang:1.26.7-alpine3.24 AS builder
+FROM golang:1.26.8-alpine3.24 AS builder
 
 # Install build dependencies
 RUN apk add --no-cache git ca-certificates tzdata

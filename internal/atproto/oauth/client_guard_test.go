@@ -56,7 +56,7 @@ import (
 // real network.
 //
 // NOT A REAL DID, DELIBERATELY. The mutation these tests exist to catch —
-// deleting `clientApp.Dir = &cacheDir` — hands resolution back to indigo's
+// deleting `clientApp.Dir = cacheDir` — hands resolution back to indigo's
 // DefaultDirectory, which is pointed at the public plc.directory. A well-known
 // DID would then RESOLVE, on any machine with egress, and a test asserting only
 // "an error came back" would flip from failing to passing depending on whose
@@ -536,7 +536,7 @@ func TestOAuthClientApp_DirRefusesAWellFormedHostThatResolvesPrivate(t *testing.
 }
 
 // TestOAuthClientApp_DirIsTheConfiguredDirectory pins the OTHER assignment,
-// `clientApp.Dir = &cacheDir`, and it is the only case here that can.
+// `clientApp.Dir = cacheDir`, and it is the only case here that can.
 //
 // Deleting that line does not produce a broken directory. It produces indigo's
 // DefaultDirectory — a real, working, UNGUARDED directory pointed at the public
@@ -568,7 +568,7 @@ func TestOAuthClientApp_DirIsTheConfiguredDirectory(t *testing.T) {
 	assert.Equalf(t, int64(1), plc.requests.Load(),
 		"the configured PLC was reached %d times rather than once. Zero means resolution went "+
 			"somewhere this test did not configure — which is exactly what deleting `clientApp.Dir = "+
-			"&cacheDir` does: indigo's DefaultDirectory answers instead, against the public "+
+			"cacheDir` does: indigo's DefaultDirectory answers instead, against the public "+
 			"plc.directory, unguarded", plc.requests.Load())
 	assert.Equal(t, clientGuardTestDID, ident.DID.String(),
 		"the identity must be the one the configured directory served")

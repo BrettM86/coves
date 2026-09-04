@@ -60,7 +60,6 @@ import (
 // survive the delegation — it asserts the same thing before and after
 // `normalizeDomain` becomes a call into the shared package.
 
-
 // recordingTransport answers nothing and remembers whether it was asked to.
 //
 // A RoundTripper rather than a dialer, because RoundTrip is the earliest moment

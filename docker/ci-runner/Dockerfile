@@ -6,7 +6,7 @@
 # The Go module and build caches are NOT baked in — they are mounted as named
 # volumes by docker-compose.ci.yml, which is what keeps a warm run fast while
 # still letting `make ci-clean` discard them.
-FROM golang:1.26.7-alpine3.24
+FROM golang:1.26.8-alpine3.24
 
 # git: the go toolchain shells out to it for module operations.
 # curl: readiness probing from scripts/ci-runner.sh — notably for Jetstream,

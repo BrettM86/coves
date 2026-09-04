@@ -370,7 +370,7 @@ func TestValidateRecord(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := lexicon.ValidateRecord(&catalog, tt.recordData, tt.recordType, lexicon.AllowLenientDatetime)
+			err := lexicon.ValidateRecord(catalog, tt.recordData, tt.recordType, lexicon.AllowLenientDatetime)
 
 			if tt.shouldFail {
 				if err == nil {
@@ -408,13 +408,13 @@ func TestValidateRecordWithStrictMode(t *testing.T) {
 	}
 
 	// Should fail with strict validation
-	err := lexicon.ValidateRecord(&catalog, recordData, "social.coves.actor.profile", lexicon.StrictRecursiveValidation)
+	err := lexicon.ValidateRecord(catalog, recordData, "social.coves.actor.profile", lexicon.StrictRecursiveValidation)
 	if err == nil {
 		t.Error("Expected strict validation to fail on datetime without timezone")
 	}
 
 	// Should pass with lenient datetime validation
-	err = lexicon.ValidateRecord(&catalog, recordData, "social.coves.actor.profile", lexicon.AllowLenientDatetime)
+	err = lexicon.ValidateRecord(catalog, recordData, "social.coves.actor.profile", lexicon.AllowLenientDatetime)
 	if err != nil {
 		t.Errorf("Expected lenient validation to pass, got error: %v", err)
 	}

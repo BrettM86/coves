@@ -224,7 +224,7 @@ func NewOAuthClient(config *OAuthConfig, store oauth.ClientAuthStore, opts ...cl
 	// Wrap in cache directory for better performance
 	// Use pointer since CacheDirectory methods have pointer receivers
 	cacheDir := identity.NewCacheDirectory(baseDir, 100_000, time.Hour*24, time.Minute*2, time.Minute*5)
-	clientApp.Dir = &cacheDir
+	clientApp.Dir = cacheDir
 	slog.Info("OAuth client directory configured",
 		"plc_url", config.PLCURL,
 		"allow_private_ips", config.AllowPrivateIPs)

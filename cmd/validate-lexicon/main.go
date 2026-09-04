@@ -39,19 +39,19 @@ func main() {
 
 	// Load all schemas from the directory
 	fmt.Printf("Loading schemas from: %s\n", *schemaPath)
-	if err := loadSchemasWithDebug(&catalog, *schemaPath, *verbose); err != nil {
+	if err := loadSchemasWithDebug(catalog, *schemaPath, *verbose); err != nil {
 		log.Fatalf("Failed to load schemas: %v", err)
 	}
 
 	fmt.Printf("✅ Successfully loaded schemas from %s\n", *schemaPath)
 
 	// Validate schema structure by trying to resolve some known schemas
-	if err := validateSchemaStructure(&catalog, *schemaPath, *verbose); err != nil {
+	if err := validateSchemaStructure(catalog, *schemaPath, *verbose); err != nil {
 		log.Fatalf("Schema validation failed: %v", err)
 	}
 
 	// Validate cross-references between schemas
-	if err := validateCrossReferences(&catalog, *verbose); err != nil {
+	if err := validateCrossReferences(catalog, *verbose); err != nil {
 		log.Fatalf("Cross-reference validation failed: %v", err)
 	}
 
@@ -62,7 +62,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to extract schema IDs: %v", err)
 		}
-		if err := validateTestData(&catalog, *testDataPath, *verbose, *strict, allSchemas); err != nil {
+		if err := validateTestData(catalog, *testDataPath, *verbose, *strict, allSchemas); err != nil {
 			log.Fatalf("Test data validation failed: %v", err)
 		}
 	} else {

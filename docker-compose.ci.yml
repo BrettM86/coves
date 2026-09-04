@@ -218,10 +218,10 @@ services:
       postgres-plc:
         condition: service_healthy
 
-  # Pinned by digest rather than the dev stack's :latest tag.
-  # sha256:1fa8bbce… resolved 2026-07-28 from ghcr.io/bluesky-social/pds:latest.
+  # Pinned to the same PDS release and digest as production.
+  # sha256:d95725b2… is ghcr.io/bluesky-social/pds:0.4.5027.
   pds:
-    image: ghcr.io/bluesky-social/pds@sha256:1fa8bbceabb65d8e1710749b1ea92c1c20a7489ca38da4a0a5f64c0c10a70c29
+    image: ghcr.io/bluesky-social/pds:0.4.5027@sha256:d95725b24dbe53af9d91dc69750556931ebed6c396f2cfa42b221434db642f12
     network_mode: "service:netns"
     environment:
       PDS_HOSTNAME: localhost
@@ -276,7 +276,7 @@ services:
   #     sharing a rotation key would mean either could rewrite the other's
   #     identities, which is not the topology being modelled.
   pds2:
-    image: ghcr.io/bluesky-social/pds@sha256:1fa8bbceabb65d8e1710749b1ea92c1c20a7489ca38da4a0a5f64c0c10a70c29
+    image: ghcr.io/bluesky-social/pds:0.4.5027@sha256:d95725b24dbe53af9d91dc69750556931ebed6c396f2cfa42b221434db642f12
     network_mode: "service:netns"
     environment:
       PDS_HOSTNAME: localhost
@@ -434,9 +434,10 @@ services:
       pds2:
         condition: service_healthy
 
-  # Same SHA tag the dev stack pins.
+  # Latest compatible jetstream-legacy main SHA; current Jetstream v2 uses a
+  # different configuration contract and is a separate migration.
   jetstream:
-    image: ghcr.io/bluesky-social/jetstream:sha-306e463693365e21a5ffd3ec051a5a7920000214
+    image: ghcr.io/bluesky-social/jetstream:sha-8a65de4eda28bed1cafcbcf25b0cd46ac6f2148b
     network_mode: "service:netns"
     # Jetstream EXITS when its upstream websocket dies — measured on this stack
     # by stopping the relay, which left a stopped Jetstream behind and every

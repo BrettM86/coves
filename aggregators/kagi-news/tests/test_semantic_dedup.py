@@ -5,7 +5,7 @@ Tests the SemanticDeduplicator with mocked Anthropic API responses.
 """
 import pytest
 from unittest.mock import Mock, MagicMock, patch
-import httpx
+import httpx2 as httpx
 
 import anthropic
 from src.semantic_dedup import SemanticDeduplicator, REPORT_DUPLICATES_TOOL

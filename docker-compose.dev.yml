@@ -128,7 +128,9 @@ services:
   #   - Jetstream converts to clean JSON - easy to consume
   #   - Same format as production Bluesky Jetstream
   jetstream:
-    image: ghcr.io/bluesky-social/jetstream:sha-306e463693365e21a5ffd3ec051a5a7920000214
+    # Latest compatible jetstream-legacy main SHA; current Jetstream v2 uses a
+    # different configuration contract and is a separate migration.
+    image: ghcr.io/bluesky-social/jetstream:sha-8a65de4eda28bed1cafcbcf25b0cd46ac6f2148b
     container_name: coves-dev-jetstream
     ports:
       - "6008:6008"  # Jetstream WebSocket endpoint

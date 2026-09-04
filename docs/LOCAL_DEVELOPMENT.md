@@ -82,9 +82,12 @@ Your Production PDS (:3000) ← Runs independently
 ## Prerequisites
 
 - **Docker & Docker Compose** - For running containerized services
-- **Go 1.22+** - For building the Coves AppView
+- **Go 1.26.8** - For building the Coves AppView and its pinned development tools
 - **PostgreSQL client** (optional) - For database inspection
 - **Make** (optional but recommended) - For convenient commands
+
+`make lint` runs the repository-pinned golangci-lint version through the Go
+toolchain, so no separate system-wide linter installation is required.
 
 ## Setup Instructions
 

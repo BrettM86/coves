@@ -53,9 +53,9 @@ var invalidFixtureExpectedErrors = map[string]string{
 	// coin-flip flake that passed three CI runs on luck before failing.
 	// Invalid fixtures must have exactly one violation for exactly this
 	// reason.
-	"tribunal-vote-invalid-decision.json":     "enum",
-	"vote-invalid-option.json":                "enum",
-	"wiki-invalid-slug.json":                  "length outside specified range",
+	"tribunal-vote-invalid-decision.json": "enum",
+	"vote-invalid-option.json":            "enum",
+	"wiki-invalid-slug.json":              "length outside specified range",
 }
 
 // expectedFixtureFamilies is the closed list of top-level fixture directories
@@ -87,7 +87,7 @@ func loadFixtureCatalog(t *testing.T) *lexicon.BaseCatalog {
 	if err := catalog.LoadDirectory(lexiconDir); err != nil {
 		t.Fatalf("Failed to load lexicon schemas from %s: %v", lexiconDir, err)
 	}
-	return &catalog
+	return catalog
 }
 
 // decodeFixture parses a fixture the way cmd/validate-lexicon does: numbers are

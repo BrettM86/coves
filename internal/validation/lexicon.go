@@ -29,7 +29,7 @@ func NewLexiconValidator(schemaPath string, strict bool) (*LexiconValidator, err
 	}
 
 	return &LexiconValidator{
-		catalog: &catalog,
+		catalog: catalog,
 		flags:   flags,
 	}, nil
 }

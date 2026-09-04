@@ -152,4 +152,3 @@ func visiblePostCountSubquery(communityExpr string) string {
 				AND p.deleted_at IS NULL
 				AND ` + whereSQL + `)`
 }
-

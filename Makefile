@@ -10,6 +10,9 @@ GREEN := \033[32m
 YELLOW := \033[33m
 RED := \033[31m
 
+GOLANGCI_LINT_VERSION := v2.13.2
+GOLANGCI_LINT := GOTOOLCHAIN=go1.26.8 go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+
 # Load test database configuration from .env.dev
 include .env.dev
 export
@@ -338,12 +341,12 @@ fmt-check: ## Check if Go code is properly formatted
 
 lint: fmt-check ## Run golangci-lint on the codebase (includes format check)
 	@echo "$(GREEN)Running linter...$(RESET)"
-	@golangci-lint run ./cmd/... ./internal/... ./tests/...
+	@$(GOLANGCI_LINT) run ./cmd/... ./internal/... ./tests/...
 	@echo "$(GREEN)✓ Linting complete$(RESET)"
 
 lint-fix: ## Run golangci-lint and auto-fix issues
 	@echo "$(GREEN)Running linter with auto-fix...$(RESET)"
-	@golangci-lint run --fix ./cmd/... ./internal/... ./tests/...
+	@$(GOLANGCI_LINT) run --fix ./cmd/... ./internal/... ./tests/...
 	@gofmt -w ./cmd ./internal ./tests
 	@echo "$(GREEN)✓ Linting complete$(RESET)"
 
