@@ -26,6 +26,11 @@ var (
 	// ErrUnauthorized is returned when a user lacks permission for an action
 	ErrUnauthorized = errors.New("unauthorized")
 
+	// ErrCommunityBlockScopeRequired means the OAuth session predates the
+	// community-block grant. The session is otherwise valid, but the user must
+	// authorize a new one before block records can be created or deleted.
+	ErrCommunityBlockScopeRequired = errors.New("community block OAuth scope required")
+
 	// ErrSubscriptionAlreadyExists is returned when user is already subscribed
 	ErrSubscriptionAlreadyExists = errors.New("already subscribed to this community")
 

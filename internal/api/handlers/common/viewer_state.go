@@ -6,6 +6,7 @@ import (
 	"Coves/internal/core/posts"
 	"Coves/internal/core/votes"
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 )
@@ -107,8 +108,45 @@ func PopulateCommunityViewerState(
 	// Populate viewer state on each community
 	for _, c := range communityList {
 		isSubscribed := subscribed[c.DID]
-		c.Viewer = &communities.CommunityViewerState{
-			Subscribed: &isSubscribed,
+		if c.Viewer == nil {
+			c.Viewer = &communities.CommunityViewerState{}
 		}
+		c.Viewer.Subscribed = &isSubscribed
 	}
+}
+
+// PopulateCommunityBlockState enriches one community with the authenticated
+// viewer's aggregate-feed block preference. The get endpoint calls this for a
+// single community; list endpoints deliberately do not fan out into one query
+// per row and clients that need the full list use getBlockedCommunities.
+//
+// Unlike cosmetic viewer-state enrichment, a lookup failure is fatal for the
+// single-community endpoint. Omitting blocked would make clients interpret an
+// unknown value as false and offer a second block write for an already-blocked
+// community.
+func PopulateCommunityBlockState(
+	ctx context.Context,
+	r *http.Request,
+	repo communities.Repository,
+	community *communities.Community,
+) error {
+	if repo == nil || community == nil {
+		return nil
+	}
+
+	userDID := middleware.GetUserDID(r)
+	if userDID == "" {
+		return nil
+	}
+
+	blocked, err := repo.IsBlocked(ctx, userDID, community.DID)
+	if err != nil {
+		return fmt.Errorf("get community block state: %w", err)
+	}
+
+	if community.Viewer == nil {
+		community.Viewer = &communities.CommunityViewerState{}
+	}
+	community.Viewer.Blocked = &blocked
+	return nil
 }

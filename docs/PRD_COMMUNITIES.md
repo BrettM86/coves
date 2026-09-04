@@ -126,7 +126,7 @@ Hosted By:   did:web:coves.social (instance manages credentials)
   - ✅ Feed enforcement: Discover and the subscribed timeline hide every post in a blocked community (`viewerBlockFilters`, `internal/db/postgres/viewer_block_filter.go`). The community's own feed, permalinks and comment threads are explicit requests and stay reachable — Reddit/Lemmy mute semantics, by decision.
   - ✅ Integration tests: per-read-path T1 suites plus a cross-surface acceptance test
   - **Completed:** write path 2025-10-16; feed enforcement and the list endpoint 2026-09-01 (the write path shipped with no read-path consumer for eleven months — see `docs/CONSUMER_TRUST_AUDIT.md`)
-  - **Open:** `viewer.blocked` on communityView for client initial toggle state
+  - ✅ Viewer state: authenticated single-community reads include `viewer.blocked` for the client’s initial toggle state
 
 ### ✅ Critical Infrastructure - RESOLVED (2025-10-16)
 - [x] **✅ Subscription Indexing & ContentVisibility - COMPLETE**

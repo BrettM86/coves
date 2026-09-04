@@ -1,6 +1,7 @@
 package community
 
 import (
+	"Coves/internal/api/middleware"
 	"Coves/internal/core/communities"
 	"context"
 	"encoding/json"
@@ -44,6 +45,23 @@ func (s *getTestService) GetCommunity(ctx context.Context, identifier string) (*
 // implements the interface as a no-op, which is what an unauthenticated request
 // needs — viewer state for a request with no user is nil either way.
 func getTestRepo() communities.Repository { return &listTestRepo{} }
+
+type failingBlockStateRepo struct {
+	communities.Repository
+	err error
+}
+
+func (r *failingBlockStateRepo) GetSubscribedCommunityDIDs(
+	context.Context,
+	string,
+	[]string,
+) (map[string]bool, error) {
+	return map[string]bool{}, nil
+}
+
+func (r *failingBlockStateRepo) IsBlocked(context.Context, string, string) (bool, error) {
+	return false, r.err
+}
 
 func newGetHandler(t *testing.T, get func(ctx context.Context, identifier string) (*communities.Community, error)) *GetHandler {
 	t.Helper()
@@ -135,6 +153,34 @@ func TestGetHandler_ServiceFailureIsNotA404(t *testing.T) {
 		"/xrpc/social.coves.community.get?community=did:plc:abc123", nil))
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestGetHandler_BlockStateFailureIsNotRenderedAsUnblocked(t *testing.T) {
+	t.Parallel()
+
+	repositoryFailure := errors.New("community block lookup failed")
+	repo := &failingBlockStateRepo{Repository: getTestRepo(), err: repositoryFailure}
+	handler := NewGetHandler(&getTestService{
+		mockCommunityService: &mockCommunityService{},
+		get: func(context.Context, string) (*communities.Community, error) {
+			return &communities.Community{
+				DID:    "did:plc:abc123",
+				Handle: "c-gaming.coves.social",
+				Name:   "gaming",
+				Viewer: nil,
+			}, nil
+		},
+	}, repo)
+
+	req := httptest.NewRequest(http.MethodGet,
+		"/xrpc/social.coves.community.get?community=did:plc:abc123", nil)
+	req = req.WithContext(middleware.SetTestUserDID(req.Context(), "did:plc:viewer"))
+	w := httptest.NewRecorder()
+	handler.HandleGet(w, req)
+
+	require.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Equal(t, "InternalServerError", decodeXRPCError(t, w).Error)
+	assert.NotContains(t, w.Body.String(), repositoryFailure.Error())
 }
 
 func TestGetHandler_ServesTheDetailedView(t *testing.T) {

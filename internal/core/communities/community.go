@@ -99,6 +99,8 @@ type Community struct {
 type CommunityViewerState struct {
 	Subscribed *bool `json:"subscribed,omitempty"`
 	Member     *bool `json:"member,omitempty"`
+	// Blocked reports whether the viewer hides this community from aggregate feeds.
+	Blocked *bool `json:"blocked,omitempty"`
 }
 
 // CommunityView is the API view for community lists

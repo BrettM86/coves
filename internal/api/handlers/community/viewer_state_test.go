@@ -137,6 +137,7 @@ func (s *repositoryBackedService) EnsureFreshToken(_ context.Context, community 
 // "false" and the unauthenticated cases below would pass no matter what.
 type viewerEnvelope struct {
 	Subscribed *bool `json:"subscribed"`
+	Blocked    *bool `json:"blocked"`
 }
 
 // authenticatedAs builds a router that runs the handler behind middleware which
@@ -153,6 +154,22 @@ func authenticatedAs(userDID, pattern string, handler http.HandlerFunc) chi.Rout
 	}
 	router.Get(pattern, handler)
 	return router
+}
+
+// block records userDID's aggregate-feed preference for communityDID.
+func block(t *testing.T, repo communities.Repository, userDID, communityDID string) {
+	t.Helper()
+
+	id := testkit.UniqueID(t)
+	if _, err := repo.BlockCommunity(context.Background(), &communities.CommunityBlock{
+		UserDID:      userDID,
+		CommunityDID: communityDID,
+		RecordURI:    "at://" + userDID + "/social.coves.community.block/" + id,
+		RecordCID:    "bafy" + id,
+		BlockedAt:    time.Now(),
+	}); err != nil {
+		t.Fatalf("blocking community %s for %s: %v", communityDID, userDID, err)
+	}
 }
 
 // seedCommunities inserts count communities and returns their DIDs.
@@ -200,20 +217,21 @@ func subscribe(t *testing.T, repo communities.Repository, userDID, communityDID 
 }
 
 // TestCommunityGet_ViewerState covers social.coves.community.get: the response
-// carries viewer.subscribed for an authenticated caller, and carries no viewer
-// object at all for an anonymous one.
+// carries viewer.subscribed and viewer.blocked for an authenticated caller,
+// and carries no viewer object at all for an anonymous one.
 func TestCommunityGet_ViewerState(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
 
 	repo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
-	// Two communities so that "subscribed" and "not subscribed" are answered
-	// from the same database state: a handler that hardcoded either answer
-	// would fail one of the two subtests.
-	communityDIDs := seedCommunities(t, repo, "getviewer", 2)
+	// Three communities keep subscription and block state independent: one is
+	// subscribed only, one is blocked only, and one has neither relationship.
+	// A handler deriving blocked from the subscription row fails this matrix.
+	communityDIDs := seedCommunities(t, repo, "getviewer", 3)
 
 	viewerDID := fixtures.DID("getviewer" + testkit.UniqueID(t))
 	subscribe(t, repo, viewerDID, communityDIDs[0])
+	block(t, repo, viewerDID, communityDIDs[1])
 
 	handler := community.NewGetHandler(&repositoryBackedService{repo: repo}, repo)
 
@@ -247,9 +265,12 @@ func TestCommunityGet_ViewerState(t *testing.T) {
 		if !*viewer.Subscribed {
 			t.Errorf("expected viewer.subscribed=true for subscribed community %s", communityDIDs[0])
 		}
+		if viewer.Blocked == nil || *viewer.Blocked {
+			t.Errorf("expected viewer.blocked=false for subscribed-only community %s, got %+v", communityDIDs[0], viewer)
+		}
 	})
 
-	t.Run("authenticated non-subscriber sees viewer.subscribed=false", func(t *testing.T) {
+	t.Run("authenticated blocked non-subscriber sees independent viewer state", func(t *testing.T) {
 		router := authenticatedAs(viewerDID, "/xrpc/social.coves.community.get", handler.HandleGet)
 
 		viewer := get(t, router, communityDIDs[1])
@@ -258,6 +279,21 @@ func TestCommunityGet_ViewerState(t *testing.T) {
 		}
 		if *viewer.Subscribed {
 			t.Errorf("expected viewer.subscribed=false for unsubscribed community %s", communityDIDs[1])
+		}
+		if viewer.Blocked == nil || !*viewer.Blocked {
+			t.Errorf("expected viewer.blocked=true for blocked-but-unsubscribed community %s, got %+v", communityDIDs[1], viewer)
+		}
+	})
+
+	t.Run("authenticated viewer sees false for both absent relationships", func(t *testing.T) {
+		router := authenticatedAs(viewerDID, "/xrpc/social.coves.community.get", handler.HandleGet)
+
+		viewer := get(t, router, communityDIDs[2])
+		if viewer == nil || viewer.Subscribed == nil || viewer.Blocked == nil {
+			t.Fatalf("expected populated viewer state, got %+v", viewer)
+		}
+		if *viewer.Subscribed || *viewer.Blocked {
+			t.Errorf("expected subscribed=false and blocked=false for community %s, got %+v", communityDIDs[2], viewer)
 		}
 	})
 

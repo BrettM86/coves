@@ -406,7 +406,7 @@ if err != nil {
 **Shipped shape** (differs from the original sketch):
 1. **Lexicon:** a separate `social.coves.community.block` record in the USER's repo (not an extension of `actor.block`), plus `social.coves.community.getBlockedCommunities` (query, auth required, cursor-paginated).
 2. **Enforcement:** a community block is an AGGREGATE-FEED MUTE (Reddit/Lemmy semantics). Discover and the subscribed timeline hide every post in the blocked community, any author; the community's own feed, post permalinks and comment threads are explicit requests and stay reachable. Cross-community search must call the same helper (`viewerBlockFilters(…, aggregateSurface)` in `internal/db/postgres/viewer_block_filter.go`).
-3. **Not done:** `viewer.blocked` on communityView for client initial state (backlog issue `2026-09-01-community-view-lacks-viewer-blocked-state`).
+3. **Viewer state:** authenticated single-community reads include `viewer.blocked`, allowing clients to render the correct initial block action. List reads retain their batched subscription-only viewer state; the dedicated blocked-communities query supplies the management list without an N+1 block lookup in the AppView.
 
 **Code:**
 - Lexicon: [community/block.json](../internal/atproto/lexicon/social/coves/community/block.json), [community/getBlockedCommunities.json](../internal/atproto/lexicon/social/coves/community/getBlockedCommunities.json)

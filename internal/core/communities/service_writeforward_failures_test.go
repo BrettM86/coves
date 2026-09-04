@@ -100,7 +100,11 @@ func userSession(t *testing.T) *oauth.ClientSessionData {
 	t.Helper()
 	did, err := syntax.ParseDID(subscriberDID)
 	require.NoError(t, err)
-	return &oauth.ClientSessionData{AccountDID: did, AccessToken: "test-access-token"}
+	return &oauth.ClientSessionData{
+		AccountDID:  did,
+		AccessToken: "test-access-token",
+		Scopes:      []string{communities.CommunityBlockOAuthScope},
+	}
 }
 
 // writeForwardService wires the service to a fake repository and a fake PDS
@@ -136,6 +140,52 @@ func unbuildableClientService(t *testing.T, cause error) (communities.Service, *
 		func(context.Context, *oauth.ClientSessionData) (pds.Client, error) { return nil, cause }, nil,
 		communities.PrivateHostOptions(true)...)
 	return service, repo
+}
+
+func TestCommunityBlockWrites_RequireCurrentOAuthScope(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	tests := []struct {
+		name string
+		run  func(communities.Service, *oauth.ClientSessionData) error
+	}{
+		{
+			name: "block",
+			run: func(service communities.Service, session *oauth.ClientSessionData) error {
+				_, err := service.BlockCommunity(ctx, session, seededCommunityDID)
+				return err
+			},
+		},
+		{
+			name: "unblock",
+			run: func(service communities.Service, session *oauth.ClientSessionData) error {
+				return service.UnblockCommunity(ctx, session, seededCommunityDID)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			service, repo, userPDS := writeForwardService(t)
+			session := userSession(t)
+			// This is the shape of a stored session minted before the community
+			// block scope was deployed. A partial create-only grant is also not
+			// enough because the same UI must be able to undo the block.
+			session.Scopes = []string{
+				"atproto",
+				"repo:social.coves.community.block?action=create",
+			}
+
+			err := tt.run(service, session)
+
+			require.ErrorIs(t, err, communities.ErrCommunityBlockScopeRequired)
+			assert.Empty(t, userPDS.created)
+			assert.Empty(t, userPDS.deleted)
+			assert.Empty(t, repo.calls, "scope rejection must happen before any repository work")
+		})
+	}
 }
 
 func TestSubscribeToCommunity_Failures(t *testing.T) {

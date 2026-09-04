@@ -69,6 +69,12 @@ type communityService struct {
 }
 
 const (
+	// CommunityBlockOAuthScope is the complete grant needed by the reversible
+	// community-block UI. Keeping the requested and enforced token identical
+	// prevents a scope rollout from accepting sessions that can block but cannot
+	// unblock (or vice versa).
+	CommunityBlockOAuthScope = "repo:social.coves.community.block?action=create&action=delete"
+
 	// Maximum recommended size for mutex cache (warning threshold, not hard limit)
 	// At 10,000 entries × 16 bytes = ~160KB memory (negligible overhead)
 	// Map can grow larger in production - even 100,000 entries = 1.6MB is acceptable
@@ -989,6 +995,9 @@ func (s *communityService) BlockCommunity(ctx context.Context, session *oauth.Cl
 	if session == nil {
 		return nil, NewValidationError("session", "required")
 	}
+	if !hasCommunityBlockOAuthScope(session) {
+		return nil, ErrCommunityBlockScopeRequired
+	}
 
 	userDID := session.AccountDID.String()
 
@@ -1069,6 +1078,9 @@ func (s *communityService) UnblockCommunity(ctx context.Context, session *oauth.
 	if session == nil {
 		return NewValidationError("session", "required")
 	}
+	if !hasCommunityBlockOAuthScope(session) {
+		return ErrCommunityBlockScopeRequired
+	}
 
 	userDID := session.AccountDID.String()
 
@@ -1105,6 +1117,21 @@ func (s *communityService) UnblockCommunity(ctx context.Context, session *oauth.
 	}
 
 	return nil
+}
+
+// hasCommunityBlockOAuthScope distinguishes sessions minted before community
+// blocking was added from a PDS authorization failure. OAuth scope tokens are
+// opaque strings, so the grant must match exactly rather than by substring.
+func hasCommunityBlockOAuthScope(session *oauth.ClientSessionData) bool {
+	if session == nil {
+		return false
+	}
+	for _, scope := range session.Scopes {
+		if scope == CommunityBlockOAuthScope {
+			return true
+		}
+	}
+	return false
 }
 
 // GetBlockedCommunities queries AppView DB for user's blocks

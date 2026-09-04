@@ -23,7 +23,7 @@ func RegisterCommunityRoutes(r chi.Router, service communities.Service, repo com
 
 	// Query endpoints (GET) - public access, optional auth for viewer state
 	// social.coves.community.get - get a single community by identifier
-	// Uses OptionalAuth to populate viewer.subscribed when authenticated
+	// Uses OptionalAuth to populate viewer.subscribed and viewer.blocked when authenticated
 	r.With(authMiddleware.OptionalAuth).Get("/xrpc/social.coves.community.get", getHandler.HandleGet)
 
 	// social.coves.community.list - list communities with filters

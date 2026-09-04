@@ -45,8 +45,14 @@ func (h *GetHandler) HandleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Populate viewer state (viewer.subscribed) if authenticated
+	// Populate viewer state if authenticated. Subscription and block state are
+	// independent preferences and are both needed to render the community's
+	// actions correctly on first paint.
 	common.PopulateCommunityViewerState(r.Context(), r, h.repo, []*communities.Community{community})
+	if err := common.PopulateCommunityBlockState(r.Context(), r, h.repo, community); err != nil {
+		handleServiceError(w, err)
+		return
+	}
 
 	// Convert to detailed view for API response
 	view := community.ToCommunityViewDetailed()

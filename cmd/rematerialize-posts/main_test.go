@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"Coves/internal/atproto/pds"
+	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
 
 	"github.com/stretchr/testify/assert"
@@ -334,6 +335,7 @@ func serverOAuthScopesForComparison() []string {
 		"repo:social.coves.actor.profile?action=create&action=update&action=delete",
 		"repo:social.coves.feed.vote?action=create&action=delete",
 		"repo:social.coves.actor.block?action=create&action=delete",
+		communities.CommunityBlockOAuthScope,
 	}
 }
 

@@ -88,6 +88,7 @@ func newWriteForwardFixture(t *testing.T) *writeForwardFixture {
 			SessionID:   "write-forward-test",
 			HostURL:     pdsServer.URL(),
 			AccessToken: user.AccessToken,
+			Scopes:      []string{communities.CommunityBlockOAuthScope},
 		},
 		community: community,
 	}

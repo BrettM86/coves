@@ -1,6 +1,7 @@
 package main
 
 import (
+	"Coves/internal/core/communities"
 	"strings"
 	"testing"
 
@@ -34,6 +35,21 @@ func scopeFor(scopes []string, collection string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func TestOAuthScopes_GrantCommunityBlockCreateDelete(t *testing.T) {
+	scopes := oauthScopes()
+
+	communityBlock, ok := scopeFor(scopes, "social.coves.community.block")
+	require.Truef(t, ok,
+		"oauthScopes() grants no repo:social.coves.community.block scope. BlockCommunity and UnblockCommunity write this collection through the viewer's OAuth session, so a scope-enforcing PDS refuses both operations. Scopes: %v", scopes)
+	assert.Equal(t, communities.CommunityBlockOAuthScope, communityBlock,
+		"the server must request the exact scope the write service later enforces")
+
+	for _, action := range []string{"action=create", "action=delete"} {
+		assert.Containsf(t, communityBlock, action,
+			"the community-block scope must grant %s: blocking creates the record and unblocking deletes it", action)
+	}
 }
 
 func TestOAuthScopes_GrantPostV2CreateUpdateDelete(t *testing.T) {

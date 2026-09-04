@@ -21,6 +21,8 @@ var errorMapper = xrpc.NewMapper("community",
 
 	xrpc.Sentinel(communities.ErrUnauthorized, http.StatusForbidden,
 		"Forbidden", "You do not have permission to perform this action"),
+	xrpc.Sentinel(communities.ErrCommunityBlockScopeRequired, http.StatusForbidden,
+		"OAuthScopeRequired", "Sign out and back in to authorize community blocking."),
 	xrpc.Sentinel(communities.ErrMemberBanned, http.StatusForbidden,
 		"Blocked", "You are blocked from this community"),
 	// communities.ErrAmbiguousCommunity (name@origin matching more than one

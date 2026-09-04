@@ -829,5 +829,6 @@ func oauthScopes() []string {
 		"repo:social.coves.actor.profile?action=create&action=update&action=delete",
 		"repo:social.coves.feed.vote?action=create&action=delete",
 		"repo:social.coves.actor.block?action=create&action=delete",
+		communities.CommunityBlockOAuthScope,
 	}
 }

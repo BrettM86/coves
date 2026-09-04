@@ -50,6 +50,12 @@ func TestCommunityErrorCodes(t *testing.T) {
 			wantCode:   "Forbidden",
 		},
 		{
+			name:       "stored session predates community block scope",
+			err:        fmt.Errorf("service: %w", communities.ErrCommunityBlockScopeRequired),
+			wantStatus: http.StatusForbidden,
+			wantCode:   "OAuthScopeRequired",
+		},
+		{
 			name:       "banned member",
 			err:        fmt.Errorf("service: %w", communities.ErrMemberBanned),
 			wantStatus: http.StatusForbidden,
@@ -128,6 +134,25 @@ func TestCommunityPDSErrors(t *testing.T) {
 			handleServiceError(rec, tt.err)
 			assertXRPCError(t, rec, tt.wantStatus, tt.wantCode)
 		})
+	}
+}
+
+func TestCommunityBlockScopeErrorIsActionable(t *testing.T) {
+	rec := httptest.NewRecorder()
+	handleServiceError(rec, communities.ErrCommunityBlockScopeRequired)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	var body xrpc.Error
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body is not valid JSON: %v", err)
+	}
+	if body.Error != "OAuthScopeRequired" {
+		t.Errorf("code = %q, want OAuthScopeRequired", body.Error)
+	}
+	if !strings.Contains(body.Message, "Sign out and back in") {
+		t.Errorf("message %q is not actionable; an existing session cannot acquire a new scope without reauthorization", body.Message)
 	}
 }
 
