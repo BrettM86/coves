@@ -57,6 +57,8 @@ Thumbs.db
 
 # Local-only Claude Code commands (contains prod host references)
 .claude/commands/deploy.md
+# Portable copy of the same command for Codex/OpenCode
+.agents/skills/deploy/
 
 # Internal planning / AI-builder docs — kept locally, not published
 /PRD.md
