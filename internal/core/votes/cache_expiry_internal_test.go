@@ -42,36 +42,8 @@ func expire(t *testing.T, c *VoteCache, userDID string) {
 	c.expiry[userDID] = time.Now().Add(-time.Minute)
 }
 
-// TestVoteCacheStaleMapSurvivesExpiryAndIsRevivedByTheNextVote pins a KNOWN
-// DEFECT.
-//
-// Expiry does not drop a user's votes, only their deadline: c.votes[userDID]
-// stays in the map. SetVote and RemoveVote then both write
-// c.expiry[userDID] = now + ttl unconditionally, so the FIRST vote action after
-// a lapse republishes the whole stale map as fresh for another full TTL,
-// without anyone having re-read the repository.
-//
-// The service normally hides this, because CreateVote re-populates from the PDS
-// whenever IsCached is false and the populate happens before the SetVote. The
-// gap is the fallback: a populate that fails for any reason other than
-// authorization is logged as a warning and the service continues down the
-// direct-pagination path (service_impl.go findExistingVoteWithCache). If that
-// second read succeeds — a transient failure, which is the only kind that
-// behaves this way — the vote is written and SetVote revives the stale map.
-//
-// The consequence is not a stale render. The cache is what CreateVote's toggle
-// decision is made from, so an entry that outlived the repository makes the
-// service delete an rkey that is not there any more; the PDS answers a missing
-// rkey with success, and the user's second tap — meant to cast a vote — is
-// reported as having withdrawn one.
-//
-// Filed: ~/Code/claude-skills/issues/2026-07-30-vote-cache-expiry-revived-by-next-vote.md
-//
-// IF THIS TEST FAILED, the defect is FIXED: either expiry now drops the votes
-// as well as the deadline, or SetVote/RemoveVote no longer extend the deadline
-// of a lapsed user. Delete the pin and the KNOWN DEFECT note in cache.go, and
-// assert the corrected behaviour instead.
-func TestVoteCacheStaleMapSurvivesExpiryAndIsRevivedByTheNextVote(t *testing.T) {
+// A successful fallback write must not certify the stale cache as complete.
+func TestVoteCacheFallbackWriteDoesNotReviveExpiredVotes(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -107,30 +79,33 @@ func TestVoteCacheStaleMapSurvivesExpiryAndIsRevivedByTheNextVote(t *testing.T) 
 	require.Equal(t, 2, repo.listCalls, "the fallback read is what makes this reachable; without it the "+
 		"whole request fails and nothing is revived")
 
-	// THE PIN. Nothing re-read the repository successfully into the cache, yet
-	// the user is cached again and the hour-old entry is being served.
-	// Asserted as one tuple so that whichever half of the fix lands — sweeping
-	// the votes on lapse, or refusing to extend a lapsed deadline — this is the
-	// assertion that fails, and it names the issue when it does.
-	revived := cache.GetVote(voterDID, oldPost)
-	require.Equal(t,
-		[]any{true, "3kgone"},
-		[]any{cache.IsCached(voterDID), rkeyOfVote(revived)},
-		"expected the lapsed user to be cached again and the hour-old entry to be served (pinning "+
-			"known defect 2026-07-30-vote-cache-expiry-revived-by-next-vote: expiry drops the "+
-			"deadline but never c.votes[userDID], and SetVote extends the deadline unconditionally, "+
-			"so one vote after a lapse republishes the whole stale map for another full TTL. "+
-			"IF THIS FAILED, the defect is FIXED — invert this step to expect {false, \"\"} and "+
-			"close the issue)")
+	require.False(t, cache.IsCached(voterDID))
+	require.Nil(t, cache.GetVote(voterDID, oldPost))
+	require.Nil(t, cache.GetVotesForUser(voterDID))
 }
 
-// rkeyOfVote renders a possibly-absent cache entry as a comparable value, so the
-// pin above can assert presence and identity in one comparison.
-func rkeyOfVote(vote *CachedVote) string {
-	if vote == nil {
-		return ""
+func TestVoteCacheExpiredAccessDiscardsMap(t *testing.T) {
+	for _, action := range []string{"get all", "get subjects", "is cached", "set", "remove"} {
+		t.Run(action, func(t *testing.T) {
+			cache := NewVoteCache(time.Hour, nil)
+			cache.SetVotesForUser("viewer", map[string]*CachedVote{"old": {Direction: "up"}})
+			expire(t, cache, "viewer")
+			switch action {
+			case "get all":
+				require.Nil(t, cache.GetVotesForUser("viewer"))
+			case "get subjects":
+				require.Nil(t, cache.getVotesForSubjects("viewer", []string{"old"}))
+			case "is cached":
+				require.False(t, cache.IsCached("viewer"))
+			case "set":
+				cache.SetVote("viewer", "new", &CachedVote{Direction: "down"})
+			case "remove":
+				cache.RemoveVote("viewer", "old")
+			}
+			require.NotContains(t, cache.votes, "viewer")
+			require.NotContains(t, cache.expiry, "viewer")
+		})
 	}
-	return vote.RKey
 }
 
 // blippingPDS answers the first ListRecords with a transient failure and every

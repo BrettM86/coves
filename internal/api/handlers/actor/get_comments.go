@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"Coves/internal/api/handlers/common"
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/comments"
 	"Coves/internal/core/users"
@@ -179,48 +180,10 @@ func (h *GetCommentsHandler) resolveActor(r *http.Request, actor string) (string
 
 // populateViewerVoteState enriches comment views with the authenticated user's vote state
 func (h *GetCommentsHandler) populateViewerVoteState(r *http.Request, response *comments.GetActorCommentsResponse) {
-	if h.voteService == nil || response == nil || len(response.Comments) == 0 {
+	if response == nil {
 		return
 	}
-
-	session := middleware.GetOAuthSession(r)
-	if session == nil {
-		return
-	}
-
-	userDID := middleware.GetUserDID(r)
-	if userDID == "" {
-		return
-	}
-
-	// Ensure vote cache is populated from PDS
-	if err := h.voteService.EnsureCachePopulated(r.Context(), session); err != nil {
-		log.Printf("Warning: failed to populate vote cache for actor comments: %v", err)
-		return
-	}
-
-	// Collect comment URIs to batch lookup
-	commentURIs := make([]string, 0, len(response.Comments))
-	for _, comment := range response.Comments {
-		if comment != nil {
-			commentURIs = append(commentURIs, comment.URI)
-		}
-	}
-
-	// Get viewer votes for all comments
-	viewerVotes := h.voteService.GetViewerVotesForSubjects(userDID, commentURIs)
-
-	// Populate viewer state on each comment
-	for _, comment := range response.Comments {
-		if comment != nil {
-			if vote, exists := viewerVotes[comment.URI]; exists {
-				comment.Viewer = &comments.CommentViewerState{
-					Vote:    &vote.Direction,
-					VoteURI: &vote.URI,
-				}
-			}
-		}
-	}
+	common.PopulateCommentViewerVoteState(r, h.voteService, response.Comments)
 }
 
 // handleCommentServiceError maps service errors to HTTP responses

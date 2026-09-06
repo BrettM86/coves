@@ -94,17 +94,14 @@ func TestVoteCache_StoresAndServesAUsersVotes(t *testing.T) {
 			"be answered from an empty map without anyone fetching their repo")
 }
 
-func TestVoteCache_SetVoteSeedsAUserWithNoEntryYet(t *testing.T) {
+func TestVoteCache_SetVoteDoesNotEstablishCompleteness(t *testing.T) {
 	t.Parallel()
 	cache := votes.NewVoteCache(longTTL, nil)
 
-	// SetVote is what CreateVote calls after a successful write. It has to work
-	// on a user whose map does not exist yet, because the populate step is
-	// allowed to fail and fall through to the PDS-pagination path.
 	cache.SetVote(cacheUserDID, testSubject, cachedVote("down", "3kbbb"))
 
-	require.True(t, cache.IsCached(cacheUserDID))
-	require.Equal(t, "down", cache.GetVote(cacheUserDID, testSubject).Direction)
+	require.False(t, cache.IsCached(cacheUserDID))
+	require.Nil(t, cache.GetVotesForUser(cacheUserDID))
 }
 
 func TestVoteCache_RemoveVoteDropsOnlyThatSubject(t *testing.T) {
@@ -156,13 +153,9 @@ func TestVoteCache_InvalidateForgetsTheUserEntirely(t *testing.T) {
 	assert.False(t, cache.IsCached(cacheUserDID))
 	assert.Nil(t, cache.GetVotesForUser(cacheUserDID))
 
-	// Invalidate is the only operation that drops the stored votes as well as
-	// the deadline. Expiry alone leaves the map in place — see
-	// cache_expiry_internal_test.go for why that difference matters.
 	cache.SetVote(cacheUserDID, testSubject, cachedVote("up", "3keee"))
-	assert.Len(t, cache.GetVotesForUser(cacheUserDID), 1,
-		"an invalidated user starts from nothing: the votes cached before the invalidation must not "+
-			"come back when the user votes again")
+	assert.Nil(t, cache.GetVotesForUser(cacheUserDID),
+		"a single write after invalidation cannot establish a complete cache")
 
 	assert.True(t, cache.IsCached(cacheOtherDID),
 		"invalidating one user must not evict another")

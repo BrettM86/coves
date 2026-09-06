@@ -16,6 +16,7 @@ import (
 	"Coves/internal/core/votes"
 
 	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
+	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 
 // mockCommentService implements a comment service interface for testing
@@ -818,5 +819,22 @@ func TestGetCommentsHandler_DeletedComment_NilRecord(t *testing.T) {
 	// Verify author info is still present (for attribution even on deleted comments)
 	if deletedComment.Author == nil || deletedComment.Author.DID != "did:plc:testuser" {
 		t.Error("Expected deleted comment to retain author information")
+	}
+}
+
+func TestActorComments_CachedAbsenceClearsIndexedVote(t *testing.T) {
+	const viewer = "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa"
+	const subject = "at://did:plc:bbbbbbbbbbbbbbbbbbbbbbbb/social.coves.community.comment/reply"
+	up, oldURI := "up", "at://"+viewer+"/social.coves.feed.vote/old"
+	cache := votes.NewVoteCache(time.Hour, nil)
+	cache.SetVotesForUser(viewer, map[string]*votes.CachedVote{})
+	handler := NewGetCommentsHandler(nil, nil, votes.NewServiceWithPDSFactory(nil, cache, nil, nil))
+	response := &comments.GetActorCommentsResponse{Comments: []*comments.CommentView{nil, {URI: subject, Viewer: &comments.CommentViewerState{Vote: &up, VoteURI: &oldURI}}}}
+	request := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.actor.getComments", nil)
+	request = request.WithContext(middleware.SetTestOAuthSession(middleware.SetTestUserDID(request.Context(), viewer), &oauthlib.ClientSessionData{AccountDID: syntax.DID(viewer)}))
+	handler.populateViewerVoteState(request, response)
+	state := response.Comments[1].Viewer
+	if state != nil && (state.Vote != nil || state.VoteURI != nil) {
+		t.Fatal("confirmed absence in cache must clear the indexed vote and record URI")
 	}
 }

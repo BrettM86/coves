@@ -51,12 +51,15 @@ type Service interface {
 	EnsureCachePopulated(ctx context.Context, session *oauthlib.ClientSessionData) error
 
 	// GetViewerVote returns the viewer's vote for a specific subject, or nil if not voted.
+	// Nil does not distinguish an unavailable cache from a confirmed absent vote.
 	// Returns from cache if available, otherwise returns nil (caller should ensure cache is populated).
 	GetViewerVote(userDID, subjectURI string) *CachedVote
 
 	// GetViewerVotesForSubjects returns the viewer's votes for multiple subjects.
 	// Returns a map of subjectURI -> CachedVote for subjects the user has voted on.
-	// This is efficient for batch lookups when rendering feeds.
+	// Nil means the cache is unavailable (missing, expired, or disabled).
+	// A non-nil map confirms absence for subjects without an entry.
+	// The returned map and votes are an independent snapshot.
 	GetViewerVotesForSubjects(userDID string, subjectURIs []string) map[string]*CachedVote
 }
 

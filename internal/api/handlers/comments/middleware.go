@@ -10,7 +10,7 @@ import (
 //
 // Usage in router setup:
 //
-//	commentHandler := comments.NewGetCommentsHandler(commentService)
+//	commentHandler := comments.NewGetCommentsHandler(commentService, voteService)
 //	router.Handle("/xrpc/social.coves.feed.getComments",
 //	    comments.OptionalAuthMiddleware(authMiddleware, commentHandler.HandleGetComments))
 //

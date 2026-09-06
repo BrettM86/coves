@@ -121,7 +121,7 @@ func registerXRPCRoutes(r chi.Router, app *application) {
 func registerCommentQueryRoute(r chi.Router, app *application) {
 	limiter := middleware.NewNamedRateLimiter("commentQuery",
 		commentQueryRateLimit, commentQueryRateWindow)
-	handler := commentsAPI.NewGetCommentsHandler(commentsAPI.NewServiceAdapter(app.commentService))
+	handler := commentsAPI.NewGetCommentsHandler(commentsAPI.NewServiceAdapter(app.commentService), app.voteService)
 
 	r.Handle(
 		"/xrpc/social.coves.community.comment.getComments",

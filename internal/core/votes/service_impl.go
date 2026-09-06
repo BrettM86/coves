@@ -476,21 +476,8 @@ func (s *voteService) GetViewerVote(userDID, subjectURI string) *CachedVote {
 
 // GetViewerVotesForSubjects returns the viewer's votes for multiple subjects.
 func (s *voteService) GetViewerVotesForSubjects(userDID string, subjectURIs []string) map[string]*CachedVote {
-	result := make(map[string]*CachedVote)
 	if s.cache == nil {
-		return result
+		return nil
 	}
-
-	allVotes := s.cache.GetVotesForUser(userDID)
-	if allVotes == nil {
-		return result
-	}
-
-	for _, uri := range subjectURIs {
-		if vote, exists := allVotes[uri]; exists {
-			result[uri] = vote
-		}
-	}
-
-	return result
+	return s.cache.getVotesForSubjects(userDID, subjectURIs)
 }

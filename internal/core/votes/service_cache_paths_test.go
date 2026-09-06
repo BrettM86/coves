@@ -537,26 +537,26 @@ func TestViewerVoteLookups(t *testing.T) {
 		assert.NotContains(t, got, unvoted)
 	})
 
-	t.Run("an unknown user is empty rather than nil", func(t *testing.T) {
+	t.Run("an unknown user has unavailable vote state", func(t *testing.T) {
 		t.Parallel()
 		svc := populated(t)
 
 		got := svc.GetViewerVotesForSubjects(cacheOtherDID, []string{testSubject})
-		require.NotNil(t, got, "callers range over this map without a nil check")
+		require.Nil(t, got, "unavailable cache must not be mistaken for confirmed absence")
 		require.Empty(t, got)
 	})
 
-	t.Run("a service with no cache answers empty rather than panicking", func(t *testing.T) {
+	t.Run("a service with no cache has unavailable vote state", func(t *testing.T) {
 		t.Parallel()
 		svc := newService(t, newFakePDS(t, testVoterDID), nil)
 
 		assert.Nil(t, svc.GetViewerVote(testVoterDID, testSubject))
 		got := svc.GetViewerVotesForSubjects(testVoterDID, []string{testSubject})
-		require.NotNil(t, got)
+		require.Nil(t, got)
 		assert.Empty(t, got)
 	})
 
-	t.Run("an expired cache reports no votes at all", func(t *testing.T) {
+	t.Run("an expired cache reports unavailable state", func(t *testing.T) {
 		t.Parallel()
 		cache := votes.NewVoteCache(expiredTTL, nil)
 		cache.SetVotesForUser(testVoterDID, map[string]*votes.CachedVote{
@@ -566,9 +566,31 @@ func TestViewerVoteLookups(t *testing.T) {
 
 		// Neither lookup populates — they are the read side, and the write side
 		// (EnsureCachePopulated) is what a handler is expected to have called.
-		// So a lapsed cache renders every arrow un-pressed rather than raising:
-		// worth knowing, because it is silent.
+		// A lapsed cache must not be interpreted as confirmed absence: callers
+		// can preserve indexed state instead of clearing the selected arrow.
 		assert.Nil(t, svc.GetViewerVote(testVoterDID, testSubject))
-		assert.Empty(t, svc.GetViewerVotesForSubjects(testVoterDID, []string{testSubject}))
+		assert.Nil(t, svc.GetViewerVotesForSubjects(testVoterDID, []string{testSubject}))
 	})
+}
+
+func TestViewerVoteLookups_ConfirmedAbsenceIsAvailable(t *testing.T) {
+	cache := votes.NewVoteCache(longTTL, nil)
+	cache.SetVotesForUser(testVoterDID, map[string]*votes.CachedVote{})
+	service := newService(t, newFakePDS(t, testVoterDID), cache)
+	result := service.GetViewerVotesForSubjects(testVoterDID, []string{testSubject})
+	require.NotNil(t, result, "a populated cache with no votes confirms absence")
+	require.Empty(t, result)
+	cache.Invalidate(testVoterDID)
+	require.Nil(t, service.GetViewerVotesForSubjects(testVoterDID, []string{testSubject}), "invalidated state is unknown")
+}
+
+func TestViewerVoteLookups_ReturnsIndependentSnapshot(t *testing.T) {
+	cache := votes.NewVoteCache(longTTL, nil)
+	cache.SetVotesForUser(testVoterDID, map[string]*votes.CachedVote{testSubject: {Direction: "up", URI: "original"}})
+	service := newService(t, newFakePDS(t, testVoterDID), cache)
+	snapshot := service.GetViewerVotesForSubjects(testVoterDID, []string{testSubject})
+	snapshot[testSubject].Direction = "down"
+	require.Equal(t, "up", service.GetViewerVotesForSubjects(testVoterDID, []string{testSubject})[testSubject].Direction, "rendering a snapshot must not mutate the cache")
+	cache.RemoveVote(testVoterDID, testSubject)
+	require.Equal(t, "original", snapshot[testSubject].URI)
 }

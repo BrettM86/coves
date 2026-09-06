@@ -44,34 +44,64 @@ func NewVoteCache(ttl time.Duration, logger *slog.Logger) *VoteCache {
 // GetVotesForUser returns all cached votes for a user.
 // Returns nil if cache is empty or expired for this user.
 func (c *VoteCache) GetVotesForUser(userDID string) map[string]*CachedVote {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-	// Check if cache exists and is not expired
-	expiry, exists := c.expiry[userDID]
-	if !exists || time.Now().After(expiry) {
+	if !c.isCachedLocked(userDID) {
 		return nil
 	}
 
-	return c.votes[userDID]
+	result := make(map[string]*CachedVote, len(c.votes[userDID]))
+	for subject, vote := range c.votes[userDID] {
+		snapshot := *vote
+		result[subject] = &snapshot
+	}
+	return result
+}
+
+// getVotesForSubjects takes a consistent snapshot under the cache lock.
+// Nil means unavailable; a non-nil empty map confirms no votes for these subjects.
+func (c *VoteCache) getVotesForSubjects(userDID string, subjectURIs []string) map[string]*CachedVote {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.isCachedLocked(userDID) {
+		return nil
+	}
+
+	result := make(map[string]*CachedVote)
+	for _, uri := range subjectURIs {
+		if vote := c.votes[userDID][uri]; vote != nil {
+			snapshot := *vote
+			result[uri] = &snapshot
+		}
+	}
+	return result
 }
 
 // GetVote returns the cached vote for a specific subject, or nil if not found/expired
 func (c *VoteCache) GetVote(userDID, subjectURI string) *CachedVote {
-	votes := c.GetVotesForUser(userDID)
-	if votes == nil {
-		return nil
-	}
-	return votes[subjectURI]
+	return c.getVotesForSubjects(userDID, []string{subjectURI})[subjectURI]
 }
 
 // IsCached returns true if the user's votes are cached and not expired
 func (c *VoteCache) IsCached(userDID string) bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
+	return c.isCachedLocked(userDID)
+}
+
+// isCachedLocked requires the write lock. Only full population establishes a
+// deadline; any access after that deadline discards the stale snapshot.
+func (c *VoteCache) isCachedLocked(userDID string) bool {
 	expiry, exists := c.expiry[userDID]
-	return exists && time.Now().Before(expiry)
+	if exists && time.Now().Before(expiry) {
+		return true
+	}
+	delete(c.votes, userDID)
+	delete(c.expiry, userDID)
+	return false
 }
 
 // SetVotesForUser replaces all cached votes for a user
@@ -88,25 +118,18 @@ func (c *VoteCache) SetVotesForUser(userDID string, votes map[string]*CachedVote
 		"expires_at", c.expiry[userDID])
 }
 
-// SetVote adds or updates a single vote in the cache
+// SetVote updates a complete, unexpired cache. A single write cannot populate it.
 func (c *VoteCache) SetVote(userDID, subjectURI string, vote *CachedVote) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if !c.isCachedLocked(userDID) {
+		return
+	}
 	if c.votes[userDID] == nil {
 		c.votes[userDID] = make(map[string]*CachedVote)
 	}
-
 	c.votes[userDID][subjectURI] = vote
-
-	// KNOWN DEFECT — this line reads as "active users keep their cache fresh"
-	// and does the opposite when the user's deadline has already lapsed.
-	// Expiry never drops c.votes[userDID], so extending the deadline
-	// unconditionally republishes an arbitrarily old map as current for another
-	// full TTL. Reachable when a cache populate fails transiently and the
-	// service's pagination fallback succeeds behind it. See
-	// ~/Code/claude-skills/issues/2026-07-30-vote-cache-expiry-revived-by-next-vote.md,
-	// pinned by TestVoteCacheStaleMapSurvivesExpiryAndIsRevivedByTheNextVote.
 	c.expiry[userDID] = time.Now().Add(c.ttl)
 
 	c.logger.Debug("vote cached",
@@ -120,19 +143,15 @@ func (c *VoteCache) RemoveVote(userDID, subjectURI string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.votes[userDID] != nil {
-		delete(c.votes[userDID], subjectURI)
-
-		// KNOWN DEFECT — same revival hazard as SetVote above: a lapsed user's
-		// stale map is republished as fresh. Note also that the guard tests
-		// c.votes, which expiry does not clear, so this branch is taken for a
-		// user whose cache lapsed long ago.
-		c.expiry[userDID] = time.Now().Add(c.ttl)
-
-		c.logger.Debug("vote removed from cache",
-			"user", userDID,
-			"subject", subjectURI)
+	if !c.isCachedLocked(userDID) {
+		return
 	}
+	delete(c.votes[userDID], subjectURI)
+	c.expiry[userDID] = time.Now().Add(c.ttl)
+
+	c.logger.Debug("vote removed from cache",
+		"user", userDID,
+		"subject", subjectURI)
 }
 
 // Invalidate removes all cached votes for a user

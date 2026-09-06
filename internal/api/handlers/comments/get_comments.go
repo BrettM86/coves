@@ -3,8 +3,10 @@
 package comments
 
 import (
+	"Coves/internal/api/handlers/common"
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/comments"
+	"Coves/internal/core/votes"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -15,7 +17,8 @@ import (
 
 // GetCommentsHandler handles comment retrieval for posts
 type GetCommentsHandler struct {
-	service Service
+	service     Service
+	voteService votes.Service
 }
 
 // Service defines the interface for comment business logic
@@ -38,9 +41,10 @@ type GetCommentsRequest struct {
 }
 
 // NewGetCommentsHandler creates a new handler for fetching comments
-func NewGetCommentsHandler(service Service) *GetCommentsHandler {
+func NewGetCommentsHandler(service Service, voteService votes.Service) *GetCommentsHandler {
 	return &GetCommentsHandler{
-		service: service,
+		service:     service,
+		voteService: voteService,
 	}
 }
 
@@ -162,6 +166,8 @@ func (h *GetCommentsHandler) HandleGetComments(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	h.populateViewerVoteState(r, resp)
+
 	// 11. Return JSON response
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -177,4 +183,25 @@ func ptrOrNil(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// populateViewerVoteState includes every returned reply, including subtree queries.
+func (h *GetCommentsHandler) populateViewerVoteState(r *http.Request, response *comments.GetCommentsResponse) {
+	if response == nil || h.voteService == nil {
+		return
+	}
+	var views []*comments.CommentView
+	pending := append([]*comments.ThreadViewComment(nil), response.Comments...)
+	for len(pending) > 0 {
+		node := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if node == nil {
+			continue
+		}
+		if node.Comment != nil {
+			views = append(views, node.Comment)
+		}
+		pending = append(pending, node.Replies...)
+	}
+	common.PopulateCommentViewerVoteState(r, h.voteService, views)
 }

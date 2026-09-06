@@ -61,7 +61,7 @@ func getComments(t *testing.T, query string) (*httptest.ResponseRecorder, *fakeC
 	svc := &fakeCommentService{}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.community.comment.getComments?"+query, nil)
-	NewGetCommentsHandler(svc).HandleGetComments(rec, req)
+	NewGetCommentsHandler(svc, nil).HandleGetComments(rec, req)
 	return rec, svc
 }
 
@@ -264,7 +264,7 @@ func TestGetComments_ViewerDIDComesFromTheAuthMiddleware(t *testing.T) {
 			"/xrpc/social.coves.community.comment.getComments?post="+testPostURI, nil)
 		req = req.WithContext(context.WithValue(req.Context(), middleware.UserDIDKey, viewer))
 
-		NewGetCommentsHandler(svc).HandleGetComments(rec, req)
+		NewGetCommentsHandler(svc, nil).HandleGetComments(rec, req)
 
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
@@ -289,7 +289,7 @@ func TestGetComments_RejectsNonGET(t *testing.T) {
 			req := httptest.NewRequest(method,
 				"/xrpc/social.coves.community.comment.getComments?post="+testPostURI, nil)
 
-			NewGetCommentsHandler(svc).HandleGetComments(rec, req)
+			NewGetCommentsHandler(svc, nil).HandleGetComments(rec, req)
 
 			if rec.Code != http.StatusMethodNotAllowed {
 				t.Errorf("status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
@@ -326,7 +326,7 @@ func TestGetComments_ServiceErrorsKeepTheirCodes(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet,
 				"/xrpc/social.coves.community.comment.getComments?post="+testPostURI, nil)
 
-			NewGetCommentsHandler(svc).HandleGetComments(rec, req)
+			NewGetCommentsHandler(svc, nil).HandleGetComments(rec, req)
 			assertXRPCError(t, rec, tt.wantStatus, tt.wantCode)
 		})
 	}
@@ -372,7 +372,7 @@ func TestGetComments_UnmappedValidationErrorIs500(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet,
 		"/xrpc/social.coves.community.comment.getComments?post=not-an-at-uri", nil)
 
-	NewGetCommentsHandler(svc).HandleGetComments(rec, req)
+	NewGetCommentsHandler(svc, nil).HandleGetComments(rec, req)
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500: an error the mapper cannot classify must still produce a "+

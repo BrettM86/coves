@@ -1173,7 +1173,7 @@ func TestCommentQuery_ParentRkeyHTTPHandler(t *testing.T) {
 	commentRkey := strings.Split(commentURI, "/")[4]
 
 	// Use the real XRPC handler + service adapter (same wiring as cmd/server/main.go)
-	handler := commentsAPI.NewGetCommentsHandler(commentsAPI.NewServiceAdapter(setupCommentService(db)))
+	handler := commentsAPI.NewGetCommentsHandler(commentsAPI.NewServiceAdapter(setupCommentService(db)), nil)
 
 	t.Run("Subtree via parentRkey", func(t *testing.T) {
 		req := httptest.NewRequest("GET",
