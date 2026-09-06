@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bluesky-social/indigo/atproto/atclient"
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 
@@ -17,12 +18,21 @@ import (
 
 const (
 	// voteCollection is the AT Protocol collection for vote records
-	voteCollection = "social.coves.feed.vote"
+	voteCollection                 = "social.coves.feed.vote"
+	voteReconciliationTimeout      = 5 * time.Second
+	voteReconciliationPollInterval = 500 * time.Millisecond
 )
 
-// PDSClientFactory creates PDS clients from session data.
+// PDSClient requires the repository operations used by vote writes, including
+// atomic replacement. Factories cannot supply a single-write-only client.
+type PDSClient interface {
+	pds.Client
+	ApplyWrites(context.Context, []pds.Write, string) (*pds.ApplyWritesResult, error)
+}
+
+// PDSClientFactory creates batch-capable PDS clients from session data.
 // Used to allow injection of different auth mechanisms (OAuth for production, password for tests).
-type PDSClientFactory func(ctx context.Context, session *oauth.ClientSessionData) (pds.Client, error)
+type PDSClientFactory func(ctx context.Context, session *oauth.ClientSessionData) (PDSClient, error)
 
 // voteService implements the Service interface for vote operations
 type voteService struct {
@@ -65,7 +75,7 @@ func NewServiceWithPDSFactory(repo Repository, cache *VoteCache, logger *slog.Lo
 // getPDSClient creates a PDS client from an OAuth session.
 // If a custom factory was provided (for testing), uses that.
 // Otherwise, uses DPoP authentication via indigo's APIClient for proper OAuth token handling.
-func (s *voteService) getPDSClient(ctx context.Context, session *oauth.ClientSessionData) (pds.Client, error) {
+func (s *voteService) getPDSClient(ctx context.Context, session *oauth.ClientSessionData) (PDSClient, error) {
 	// Use custom factory if provided (e.g., for testing with password auth)
 	if s.pdsClientFactory != nil {
 		return s.pdsClientFactory(ctx, session)
@@ -268,7 +278,7 @@ func (s *voteService) DeleteVote(ctx context.Context, session *oauth.ClientSessi
 }
 
 // writeVoteRecord writes a vote, replacing an existing direction in one commit.
-func (s *voteService) writeVoteRecord(ctx context.Context, pdsClient pds.Client, req CreateVoteRequest, existing *existingVote) (string, string, error) {
+func (s *voteService) writeVoteRecord(ctx context.Context, pdsClient PDSClient, req CreateVoteRequest, existing *existingVote) (string, string, error) {
 	// Generate TID for the record key
 	tid := syntax.NewTIDNow(0)
 
@@ -295,54 +305,125 @@ func (s *voteService) writeVoteRecord(ctx context.Context, pdsClient pds.Client,
 	return uri, cid, nil
 }
 
-// voteBatchWriter is the part of the PDS commit API needed for replacement.
-type voteBatchWriter interface {
-	ApplyWrites(context.Context, []pds.Write, string) (*pds.ApplyWritesResult, error)
-}
-
-func (s *voteService) replaceVoteRecord(ctx context.Context, client pds.Client, oldRKey, newRKey string, record VoteRecord) (string, string, error) {
-	writer, ok := client.(voteBatchWriter)
-	if !ok {
-		return "", "", fmt.Errorf("PDS client does not support atomic vote replacement")
-	}
-
+func (s *voteService) replaceVoteRecord(ctx context.Context, client PDSClient, oldRKey, newRKey string, record VoteRecord) (string, string, error) {
 	// Votes remain immutable: the consumer indexes create/delete events, not
 	// updates. A single batch prevents a refused create from deleting the vote.
-	result, err := writer.ApplyWrites(ctx, []pds.Write{
+	result, err := client.ApplyWrites(ctx, []pds.Write{
 		{Op: pds.WriteOpDelete, Collection: voteCollection, RKey: oldRKey},
 		{Op: pds.WriteOpCreate, Collection: voteCollection, RKey: newRKey, Record: record},
 	}, "")
+	expectedURI := "at://" + client.DID() + "/" + voteCollection + "/" + newRKey
 	if err == nil {
-		return result.Results[1].URI, result.Results[1].CID, nil
+		if result != nil && len(result.Results) == 2 &&
+			result.Results[1].URI == expectedURI && result.Results[1].CID != "" {
+			return result.Results[1].URI, result.Results[1].CID, nil
+		}
+		// A malformed success is an unknown write outcome, not a toggle-off.
+		err = fmt.Errorf("PDS returned an invalid vote replacement result")
 	}
 
-	// The PDS may have committed before its response was lost. Read the exact
-	// replacement key instead of retrying a toggle. Detach from an expired
-	// request, but bound the extra read so an unavailable PDS cannot hang it.
-	reconcileContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	if definitiveVoteRefusal(err) {
+		// State conflicts can expose a stale key. Other refusals leave the
+		// snapshot usable and must not add reads to an unauthorized/limited PDS.
+		if s.cache != nil && (errors.Is(err, pds.ErrNotFound) ||
+			errors.Is(err, pds.ErrConflict) || errors.Is(err, pds.ErrSwapConflict)) {
+			s.cache.Invalidate(client.DID())
+		}
+		return "", "", fmt.Errorf("atomic vote replacement refused: %w", err)
+	}
+
+	// A timed-out batch may still be committing when the first read runs.
+	// Poll only its exact key; replaying a toggle could reverse the user's vote.
+	// Cancellation is detached so a client deadline does not cancel recovery.
+	reconcileContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), voteReconciliationTimeout)
 	defer cancel()
-	stored, readErr := client.GetRecord(reconcileContext, voteCollection, newRKey)
-	if readErr == nil && stored != nil {
-		subject, validSubject := stored.Value["subject"].(map[string]any)
-		expectedURI := "at://" + client.DID() + "/" + voteCollection + "/" + newRKey
-		if validSubject && stored.URI == expectedURI && stored.CID != "" &&
-			stored.Value["$type"] == record.Type &&
-			stored.Value["direction"] == record.Direction &&
-			subject["uri"] == record.Subject.URI && subject["cid"] == record.Subject.CID &&
-			stored.Value["createdAt"] == record.CreatedAt {
-			return stored.URI, stored.CID, nil
+	ticker := time.NewTicker(voteReconciliationPollInterval)
+	defer ticker.Stop()
+	var readErr error
+	reason := "read_failed"
+	for {
+		if reconcileContext.Err() != nil {
+			readErr = reconcileContext.Err()
+			reason = "deadline_exceeded"
+			break
+		}
+		var stored *pds.RecordResponse
+		stored, readErr = client.GetRecord(reconcileContext, voteCollection, newRKey)
+		if readErr == nil {
+			reason = record.reconciliationMismatch(stored, expectedURI)
+			if reason == "" {
+				s.logger.Warn("recovered vote replacement after lost response",
+					"old_rkey", oldRKey, "new_rkey", newRKey, "batch_error", err)
+				return stored.URI, stored.CID, nil
+			}
+			break
+		}
+		// A missing GET result is still ambiguous while the batch is running.
+		// A refused GET must stop polling, especially for auth or rate limits.
+		if !errors.Is(readErr, pds.ErrNotFound) && definitiveVoteRefusal(readErr) {
+			break
+		}
+		select {
+		case <-reconcileContext.Done():
+		case <-ticker.C:
 		}
 	}
 
-	// Absence is not proof a timed-out write cannot still commit. Discard the
-	// snapshot so the next request reloads the PDS, including a stale old key.
+	// The bounded read cannot rule out a still-running commit. The next
+	// request must reload state instead of serving the old cached vote.
 	if s.cache != nil {
 		s.cache.Invalidate(client.DID())
 	}
-	if readErr != nil && !errors.Is(readErr, pds.ErrNotFound) {
-		s.logger.Warn("failed to reconcile vote replacement", "error", readErr)
-	}
+	s.logger.Warn("failed to reconcile vote replacement",
+		"old_rkey", oldRKey, "new_rkey", newRKey, "batch_error", err,
+		"reason", reason, "error", readErr)
 	return "", "", fmt.Errorf("atomic vote replacement failed: %w", err)
+}
+
+// definitiveVoteRefusal excludes responses that could conceal a committed write.
+func definitiveVoteRefusal(err error) bool {
+	if pds.IsAuthError(err) || errors.Is(err, pds.ErrBadRequest) ||
+		errors.Is(err, pds.ErrRateLimited) || errors.Is(err, pds.ErrPayloadTooLarge) ||
+		errors.Is(err, pds.ErrNotFound) || errors.Is(err, pds.ErrConflict) || errors.Is(err, pds.ErrSwapConflict) {
+		return true
+	}
+	// Unclassified API errors retain their original status in the PDS wrapper.
+	var apiError *atclient.APIError
+	return errors.As(err, &apiError) && apiError.StatusCode >= 400 &&
+		apiError.StatusCode < 500 && apiError.StatusCode != 408
+}
+
+// reconciliationMismatch reports a field name, never untrusted record contents.
+func (record VoteRecord) reconciliationMismatch(stored *pds.RecordResponse, expectedURI string) string {
+	if stored == nil {
+		return "record"
+	}
+	if stored.URI != expectedURI {
+		return "uri"
+	}
+	if stored.CID == "" {
+		return "cid"
+	}
+	if stored.Value["$type"] != record.Type {
+		return "type"
+	}
+	if stored.Value["direction"] != record.Direction {
+		return "direction"
+	}
+	subject, ok := stored.Value["subject"].(map[string]any)
+	if !ok {
+		return "subject"
+	}
+	if subject["uri"] != record.Subject.URI {
+		return "subject_uri"
+	}
+	if subject["cid"] != record.Subject.CID {
+		return "subject_cid"
+	}
+	if stored.Value["createdAt"] != record.CreatedAt {
+		return "created_at"
+	}
+	return ""
 }
 
 // existingVote represents a vote record found on the PDS

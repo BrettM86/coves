@@ -318,13 +318,21 @@ func SingleUserOAuthMiddleware(userDID string) (*middleware.OAuthAuthMiddleware,
 // tests hold a password-session token instead, and this is the seam that lets
 // the same service code use it.
 func PasswordAuthPDSClientFactory() votes.PDSClientFactory {
-	return func(_ context.Context, session *oauthlib.ClientSessionData) (pds.Client, error) {
+	return func(_ context.Context, session *oauthlib.ClientSessionData) (votes.PDSClient, error) {
 		if session.AccessToken == "" {
 			return nil, fmt.Errorf("session has no access token")
 		}
 		if session.HostURL == "" {
 			return nil, fmt.Errorf("session has no host URL")
 		}
-		return pds.NewFromAccessToken(session.HostURL, session.AccountDID.String(), session.AccessToken, pds.PrivateHostOptions(true)...)
+		client, err := pds.NewFromAccessToken(session.HostURL, session.AccountDID.String(), session.AccessToken, pds.PrivateHostOptions(true)...)
+		if err != nil {
+			return nil, err
+		}
+		voteClient, ok := client.(votes.PDSClient)
+		if !ok {
+			return nil, fmt.Errorf("password-authenticated PDS client does not support atomic vote replacement")
+		}
+		return voteClient, nil
 	}
 }

@@ -72,6 +72,8 @@ type fakePDS struct {
 	getErr            error
 	getCalls          int
 	getTransform      func(*pds.RecordResponse)
+	getHook           func(context.Context, string) error
+	batchResult       func(*pds.ApplyWritesResult) *pds.ApplyWritesResult
 
 	// pageSize splits ListRecords into pages of this many records when it is
 	// positive. Both the cache's populate loop and the service's pagination
@@ -210,6 +212,8 @@ func (f *fakePDS) ApplyWrites(_ context.Context, writes []pds.Write, swapCommit 
 	require.NotEqual(f.t, writes[0].RKey, writes[1].RKey)
 	_, err := syntax.ParseTID(writes[1].RKey)
 	require.NoError(f.t, err)
+	// Batch faults take precedence over legacy delete/create faults.
+	// commitBeforeError and afterBatch simulate a committed write with a lost reply.
 	failure := f.batchErr
 	if failure == nil {
 		failure = f.deleteErr
@@ -234,10 +238,14 @@ func (f *fakePDS) ApplyWrites(_ context.Context, writes []pds.Write, swapCommit 
 	if failure != nil {
 		return nil, failure
 	}
-	return &pds.ApplyWritesResult{Results: []pds.WriteResult{
+	result := &pds.ApplyWritesResult{Results: []pds.WriteResult{
 		{Op: pds.WriteOpDelete},
 		{Op: pds.WriteOpCreate, URI: "at://" + f.did + "/social.coves.feed.vote/" + writes[1].RKey, CID: "bafycid" + writes[1].RKey},
-	}}, nil
+	}}
+	if f.batchResult != nil {
+		result = f.batchResult(result)
+	}
+	return result, nil
 }
 
 func (f *fakePDS) GetRecord(ctx context.Context, collection, rkey string) (*pds.RecordResponse, error) {
@@ -245,6 +253,11 @@ func (f *fakePDS) GetRecord(ctx context.Context, collection, rkey string) (*pds.
 	require.NoError(f.t, ctx.Err(), "reconciliation must survive the original request deadline")
 	_, bounded := ctx.Deadline()
 	require.True(f.t, bounded, "reconciliation must have a bounded deadline")
+	if f.getHook != nil {
+		if err := f.getHook(ctx, rkey); err != nil {
+			return nil, err
+		}
+	}
 	if f.getErr != nil {
 		return nil, f.getErr
 	}
@@ -290,7 +303,7 @@ func voter(t *testing.T, did string) *oauth.ClientSessionData {
 func newService(t *testing.T, fake *fakePDS, cache *votes.VoteCache) votes.Service {
 	t.Helper()
 	return votes.NewServiceWithPDSFactory(nil, cache, nil,
-		func(context.Context, *oauth.ClientSessionData) (pds.Client, error) { return fake, nil })
+		func(context.Context, *oauth.ClientSessionData) (votes.PDSClient, error) { return fake, nil })
 }
 
 const (

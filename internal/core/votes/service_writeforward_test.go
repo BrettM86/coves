@@ -22,18 +22,17 @@ func TestMain(m *testing.M) { os.Exit(testkit.Main(m, testkit.RequirePDS)) }
 // faultingVotePDS forwards every write to the real PDS. A duplicate create
 // forces a real transaction rejection; a lost reply happens only after commit.
 type faultingVotePDS struct {
-	pds.Client
+	pds.CommitClient
 	reject    bool
 	loseReply bool
 }
 
 func (c *faultingVotePDS) ApplyWrites(ctx context.Context, writes []pds.Write, swap string) (*pds.ApplyWritesResult, error) {
 	if c.reject {
-		writes = append(writes, writes[1])
+		// Copy before injecting a duplicate so this fault never mutates the service slice.
+		writes = append(append([]pds.Write(nil), writes...), writes[1])
 	}
-	result, err := c.Client.(interface {
-		ApplyWrites(context.Context, []pds.Write, string) (*pds.ApplyWritesResult, error)
-	}).ApplyWrites(ctx, writes, swap)
+	result, err := c.CommitClient.ApplyWrites(ctx, writes, swap)
 	if err == nil && c.loseReply {
 		return nil, context.DeadlineExceeded
 	}
@@ -45,9 +44,11 @@ func TestVoteDirectionReplacementOnRealPDS(t *testing.T) {
 	account := server.CreateAccount(t, testkit.WithHandlePrefix("vat"))
 	client, err := pds.NewFromAccessToken(server.URL(), account.DID, account.AccessToken, pds.PrivateHostOptions(true)...)
 	require.NoError(t, err)
-	proxy := &faultingVotePDS{Client: client}
+	commitClient, ok := client.(pds.CommitClient)
+	require.True(t, ok, "the real PDS client must expose atomic commits")
+	proxy := &faultingVotePDS{CommitClient: commitClient}
 	cache := votes.NewVoteCache(time.Hour, nil)
-	service := votes.NewServiceWithPDSFactory(nil, cache, nil, func(context.Context, *oauth.ClientSessionData) (pds.Client, error) { return proxy, nil })
+	service := votes.NewServiceWithPDSFactory(nil, cache, nil, func(context.Context, *oauth.ClientSessionData) (votes.PDSClient, error) { return proxy, nil })
 	did, err := syntax.ParseDID(account.DID)
 	require.NoError(t, err)
 	session := &oauth.ClientSessionData{AccountDID: did, AccessToken: account.AccessToken}

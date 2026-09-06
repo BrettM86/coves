@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/stretchr/testify/assert"
@@ -135,28 +137,31 @@ func TestFindExistingVote_CacheIsUpdatedInPlaceByEveryOutcome(t *testing.T) {
 
 func TestCreateVote_FailedDirectionChangePreservesOriginalVote(t *testing.T) {
 	t.Parallel()
-	fake := newFakePDS(t, testVoterDID)
-	cache := votes.NewVoteCache(longTTL, nil)
-	svc := newService(t, fake, cache)
-	ctx := context.Background()
-	up, err := svc.CreateVote(ctx, voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "up"})
-	require.NoError(t, err)
-	oldKey := fake.creates()[0]
-	fake.createErr = errors.New("pds refused the create")
-	_, err = svc.CreateVote(ctx, voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "down"})
-	require.Error(t, err)
-	require.Len(t, fake.records, 1, "a rejected replacement must leave the original PDS vote intact")
-	require.Equal(t, "up", fake.records[oldKey].Direction)
-	if cached := cache.GetVote(testVoterDID, testSubject); cached != nil {
-		require.Equal(t, up.URI, cached.URI)
-	}
-	fake.createErr = nil
-	down, err := svc.CreateVote(ctx, voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "down"})
-	require.NoError(t, err)
-	require.NotEmpty(t, down.URI)
-	require.NotEqual(t, up.URI, down.URI)
-	require.Len(t, fake.records, 1)
-	require.Equal(t, "down", cache.GetVote(testVoterDID, testSubject).Direction)
+	synctest.Test(t, func(t *testing.T) {
+		fake := newFakePDS(t, testVoterDID)
+		cache := votes.NewVoteCache(longTTL, nil)
+		svc := newService(t, fake, cache)
+		ctx := context.Background()
+		up, err := svc.CreateVote(ctx, voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "up"})
+		require.NoError(t, err)
+		<-time.After(time.Microsecond) // Distinct TIDs under the virtual clock.
+		oldKey := fake.creates()[0]
+		fake.createErr = errors.New("pds refused the create")
+		_, err = svc.CreateVote(ctx, voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "down"})
+		require.Error(t, err)
+		require.Len(t, fake.records, 1, "a rejected replacement must leave the original PDS vote intact")
+		require.Equal(t, "up", fake.records[oldKey].Direction)
+		require.False(t, cache.IsCached(testVoterDID), "an ambiguous refusal must discard the snapshot")
+		listed := fake.listCalls
+		fake.createErr = nil
+		down, err := svc.CreateVote(ctx, voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "down"})
+		require.NoError(t, err)
+		require.NotEmpty(t, down.URI)
+		require.NotEqual(t, up.URI, down.URI)
+		require.Greater(t, fake.listCalls, listed, "retry must reload authoritative state")
+		require.Len(t, fake.records, 1)
+		require.Equal(t, "down", cache.GetVote(testVoterDID, testSubject).Direction)
+	})
 }
 
 func TestCreateVote_DirectionChangeReconcilesLostResponse(t *testing.T) {
@@ -186,46 +191,50 @@ func TestCreateVote_DirectionChangeUncertainReconciliationInvalidatesCache(t *te
 	t.Parallel()
 	for _, mismatch := range []string{"unavailable", "subject", "direction", "uri", "empty cid", "subject cid", "type", "created at"} {
 		t.Run(mismatch, func(t *testing.T) {
-			fake := newFakePDS(t, testVoterDID)
-			cache := votes.NewVoteCache(longTTL, nil)
-			svc := newService(t, fake, cache)
-			_, err := svc.CreateVote(context.Background(), voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "up"})
-			require.NoError(t, err)
-			fake.batchErr = context.DeadlineExceeded
-			fake.commitBeforeError = true
-			switch mismatch {
-			case "unavailable":
-				fake.getErr = errors.New("PDS read unavailable")
-			case "subject":
-				fake.getTransform = func(r *pds.RecordResponse) {
-					r.Value["subject"] = map[string]any{"uri": "at://did:plc:other/social.coves.community.post/other", "cid": testSubjectCI}
-				}
-			case "direction":
-				fake.getTransform = func(r *pds.RecordResponse) { r.Value["direction"] = "up" }
-			case "uri":
-				fake.getTransform = func(r *pds.RecordResponse) { r.URI = "at://" + testVoterDID + "/social.coves.feed.vote/another" }
-			case "empty cid":
-				fake.getTransform = func(r *pds.RecordResponse) { r.CID = "" }
-			case "subject cid":
-				fake.getTransform = func(r *pds.RecordResponse) { r.Value["subject"].(map[string]any)["cid"] = "different" }
-			case "type":
-				fake.getTransform = func(r *pds.RecordResponse) { r.Value["$type"] = "social.coves.feed.other" }
-			case "created at":
-				fake.getTransform = func(r *pds.RecordResponse) { r.Value["createdAt"] = "different" }
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				fake := newFakePDS(t, testVoterDID)
+				cache := votes.NewVoteCache(longTTL, nil)
+				svc := newService(t, fake, cache)
+				_, err := svc.CreateVote(context.Background(), voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "up"})
+				require.NoError(t, err)
+				<-time.After(time.Microsecond) // Distinct TIDs under the virtual clock.
+				fake.batchErr = context.DeadlineExceeded
+				fake.commitBeforeError = true
+				switch mismatch {
+				case "unavailable":
+					fake.getErr = errors.New("PDS read unavailable")
+				case "subject":
+					fake.getTransform = func(r *pds.RecordResponse) {
+						r.Value["subject"] = map[string]any{"uri": "at://did:plc:other/social.coves.community.post/other", "cid": testSubjectCI}
+					}
+				case "direction":
+					fake.getTransform = func(r *pds.RecordResponse) { r.Value["direction"] = "up" }
+				case "uri":
+					fake.getTransform = func(r *pds.RecordResponse) { r.URI = "at://" + testVoterDID + "/social.coves.feed.vote/another" }
+				case "empty cid":
+					fake.getTransform = func(r *pds.RecordResponse) { r.CID = "" }
+				case "subject cid":
+					fake.getTransform = func(r *pds.RecordResponse) { r.Value["subject"].(map[string]any)["cid"] = "different" }
+				case "type":
+					fake.getTransform = func(r *pds.RecordResponse) { r.Value["$type"] = "social.coves.feed.other" }
+				case "created at":
+					fake.getTransform = func(r *pds.RecordResponse) { r.Value["createdAt"] = "different" }
 
-			}
-			_, err = svc.CreateVote(context.Background(), voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "down"})
-			require.Error(t, err, "uncertain or mismatched state must not be reported as success")
-			require.False(t, cache.IsCached(testVoterDID), "unknown PDS state must invalidate the complete cache")
-			listed := fake.listCalls
-			fake.batchErr = nil
-			fake.getErr = nil
-			fake.getTransform = nil
-			response, err := svc.CreateVote(context.Background(), voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "down"})
-			require.NoError(t, err)
-			require.Greater(t, fake.listCalls, listed, "the next tap must reload authoritative PDS state")
-			require.Empty(t, response.URI, "the committed downvote must toggle off")
-			require.Empty(t, fake.records)
+				}
+				_, err = svc.CreateVote(context.Background(), voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "down"})
+				require.Error(t, err, "uncertain or mismatched state must not be reported as success")
+				require.False(t, cache.IsCached(testVoterDID), "unknown PDS state must invalidate the complete cache")
+				listed := fake.listCalls
+				fake.batchErr = nil
+				fake.getErr = nil
+				fake.getTransform = nil
+				response, err := svc.CreateVote(context.Background(), voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "down"})
+				require.NoError(t, err)
+				require.Greater(t, fake.listCalls, listed, "the next tap must reload authoritative PDS state")
+				require.Empty(t, response.URI, "the committed downvote must toggle off")
+				require.Empty(t, fake.records)
+			})
 		})
 	}
 }
@@ -348,10 +357,11 @@ func TestVoteService_ErrorTaxonomy(t *testing.T) {
 			votes.CreateVoteRequest{Subject: subject(), Direction: "up"})
 		require.NoError(t, err)
 
-		fake.deleteErr = pds.ErrForbidden
+		fake.batchErr = pds.ErrForbidden
 		_, err = svc.CreateVote(ctx, voter(t, testVoterDID),
 			votes.CreateVoteRequest{Subject: subject(), Direction: "down"})
 		require.ErrorIs(t, err, votes.ErrNotAuthorized)
+		require.Equal(t, 1, fake.batchCalls)
 		require.Len(t, fake.creates(), 1,
 			"a direction change whose delete was refused must not create the replacement: the repo would "+
 				"then hold both directions for one subject")
@@ -402,7 +412,7 @@ func TestVoteService_ErrorTaxonomy(t *testing.T) {
 	t.Run("a PDS client that cannot be built fails the request", func(t *testing.T) {
 		t.Parallel()
 		svc := votes.NewServiceWithPDSFactory(nil, nil, nil,
-			func(context.Context, *oauth.ClientSessionData) (pds.Client, error) {
+			func(context.Context, *oauth.ClientSessionData) (votes.PDSClient, error) {
 				return nil, errors.New("dpop key rotated")
 			})
 
@@ -514,7 +524,7 @@ func TestEnsureCachePopulated(t *testing.T) {
 	t.Run("reports a session it cannot build a client for", func(t *testing.T) {
 		t.Parallel()
 		svc := votes.NewServiceWithPDSFactory(nil, votes.NewVoteCache(longTTL, nil), nil,
-			func(context.Context, *oauth.ClientSessionData) (pds.Client, error) {
+			func(context.Context, *oauth.ClientSessionData) (votes.PDSClient, error) {
 				return nil, errors.New("session store unreachable")
 			})
 
@@ -619,22 +629,4 @@ func TestViewerVoteLookups_ReturnsIndependentSnapshot(t *testing.T) {
 	require.Equal(t, "up", service.GetViewerVotesForSubjects(testVoterDID, []string{testSubject})[testSubject].Direction, "rendering a snapshot must not mutate the cache")
 	cache.RemoveVote(testVoterDID, testSubject)
 	require.Equal(t, "original", snapshot[testSubject].URI)
-}
-
-// Embedding only Client deliberately hides the fake's batch capability.
-type singleWriteVotePDS struct{ pds.Client }
-
-func TestCreateVote_DirectionChangeWithoutBatchSupportPreservesVote(t *testing.T) {
-	fake := newFakePDS(t, testVoterDID)
-	cache := votes.NewVoteCache(longTTL, nil)
-	service := votes.NewServiceWithPDSFactory(nil, cache, nil, func(context.Context, *oauth.ClientSessionData) (pds.Client, error) {
-		return singleWriteVotePDS{Client: fake}, nil
-	})
-	up, err := service.CreateVote(context.Background(), voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "up"})
-	require.NoError(t, err)
-	_, err = service.CreateVote(context.Background(), voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "down"})
-	require.Error(t, err)
-	require.Empty(t, fake.deletes(), "unsupported batching must fail before any deletion")
-	require.Len(t, fake.records, 1)
-	require.Equal(t, up.URI, cache.GetVote(testVoterDID, testSubject).URI)
 }

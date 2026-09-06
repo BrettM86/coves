@@ -14,6 +14,7 @@ import (
 //   - Queries user's PDS directly via com.atproto.repo.listRecords to check existing votes
 //     (avoids eventual consistency issues with AppView database)
 //   - Creates/deletes vote records via com.atproto.repo.createRecord/deleteRecord
+//   - Replaces directions atomically via com.atproto.repo.applyWrites
 //   - AppView indexes resulting records from Jetstream firehose for aggregate counts
 type Service interface {
 	// CreateVote creates a new vote or toggles off an existing vote

@@ -66,9 +66,9 @@ func TestVoteCacheFallbackWriteDoesNotReviveExpiredVotes(t *testing.T) {
 
 	// The user votes on a different post. The populate attempt hits a blip; the
 	// pagination fallback right behind it succeeds, so the vote is written.
-	repo := &blippingPDS{did: voterDID, failFirstList: true}
+	repo := &blippingPDS{t: t, did: voterDID, failFirstList: true}
 	service := NewServiceWithPDSFactory(nil, cache, nil,
-		func(context.Context, *oauth.ClientSessionData) (pds.Client, error) { return repo, nil })
+		func(context.Context, *oauth.ClientSessionData) (PDSClient, error) { return repo, nil })
 
 	did, err := syntax.ParseDID(voterDID)
 	require.NoError(t, err)
@@ -114,6 +114,7 @@ func TestVoteCacheExpiredAccessDiscardsMap(t *testing.T) {
 // a fake that always fails fails both and the request never gets far enough to
 // write anything.
 type blippingPDS struct {
+	t             *testing.T
 	did           string
 	listCalls     int
 	failFirstList bool
@@ -145,4 +146,9 @@ func (p *blippingPDS) PutRecord(context.Context, string, string, any, string) (s
 
 func (p *blippingPDS) UploadBlob(context.Context, []byte, string) (*blobs.BlobRef, error) {
 	panic("the vote service does not upload blobs")
+}
+
+func (p *blippingPDS) ApplyWrites(context.Context, []pds.Write, string) (*pds.ApplyWritesResult, error) {
+	p.t.Fatal("an empty vote repository cannot require atomic replacement")
+	return nil, nil
 }

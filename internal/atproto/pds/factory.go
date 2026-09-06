@@ -15,7 +15,7 @@ import (
 	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 
-// NewFromOAuthSession creates a PDS client from an OAuth session.
+// NewFromOAuthSession creates a commit-capable PDS client from an OAuth session.
 // This uses DPoP authentication - the correct method for OAuth tokens.
 //
 // The oauthClient is used to resume the session and get a properly configured
@@ -53,7 +53,7 @@ import (
 // deleting that line fails no test. Fencing it means standing up oauth.NewClient
 // with a config, which belongs in internal/atproto/oauth's own tests. That is a
 // known gap, recorded here rather than assumed away.
-func NewFromOAuthSession(ctx context.Context, oauthClient *oauth.ClientApp, sessionData *oauth.ClientSessionData) (Client, error) {
+func NewFromOAuthSession(ctx context.Context, oauthClient *oauth.ClientApp, sessionData *oauth.ClientSessionData) (CommitClient, error) {
 	if oauthClient == nil {
 		return nil, fmt.Errorf("oauthClient is required")
 	}

@@ -94,7 +94,7 @@ func TestGetComments_CachedViewerVotes(t *testing.T) {
 			if scenario.loneVote {
 				client.err = errors.New("PDS unavailable")
 			}
-			factory := func(context.Context, *oauthlib.ClientSessionData) (pds.Client, error) { return client, nil }
+			factory := func(context.Context, *oauthlib.ClientSessionData) (votes.PDSClient, error) { return client, nil }
 			reader := &commentVoteReader{Service: votes.NewServiceWithPDSFactory(nil, cache, nil, factory), populationError: scenario.populationError}
 			request := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.community.comment.getComments?post="+testPostURI+"&parentRkey=root&viewerDID=did:plc:other", nil)
 			if !scenario.anonymous {
@@ -146,7 +146,7 @@ func TestGetComments_CachedViewerVotes(t *testing.T) {
 
 // Only ListRecords is used by this read handler; embedded methods fail if called.
 type commentVotePDS struct {
-	pds.Client
+	votes.PDSClient
 	viewer string
 	seed   map[string]*votes.CachedVote
 	err    error
