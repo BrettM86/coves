@@ -515,3 +515,52 @@ func feedStats(t *testing.T, p *pipeline, communityDID, postURI string) postStat
 		"not be compared with post.get's", postURI, communityDID, len(feed.Feed))
 	return postStats{}
 }
+
+// A replacement's delete and create share a repo revision. Both operations
+// must reach the consumer, including when voting on a comment.
+func TestAtomicVoteDirectionReplacementIngestion(t *testing.T) {
+	p := newPipeline(t)
+	author := p.IndexedAccount(t, "vba")
+	voter := p.IndexedAccount(t, "vbv")
+	community := indexedCommunity(t, p, "vb", author.DID)
+	post := indexedPost(t, p, community, author, "atomic vote replacement")
+	comment := author.PutRecord(t, commentCollection, testkit.TID(), commentRecord(post, post, "vote target"))
+	commentSubject := strongRef{URI: comment.URI, CID: comment.CID}
+	p.Await(t, "comment to be indexed", func() (bool, error) {
+		thread, err := p.Thread(context.Background(), post.URI, nil)
+		_, found := thread.find(comment.URI)
+		return found, err
+	})
+	for _, target := range []struct {
+		name    string
+		subject strongRef
+	}{{"post", post}, {"comment", commentSubject}} {
+		t.Run(target.name, func(t *testing.T) {
+			observe := func(up, down, score int) (bool, error) {
+				if target.name == "post" {
+					view, err := p.Post(context.Background(), post.URI)
+					return view.Stats.Upvotes == up && view.Stats.Downvotes == down && view.Stats.Score == score, err
+				}
+				thread, err := p.Thread(context.Background(), post.URI, nil)
+				node, found := thread.find(comment.URI)
+				return found && node.Comment.Stats.Upvotes == up && node.Comment.Stats.Downvotes == down && node.Comment.Stats.Score == score, err
+			}
+			oldKey := testkit.TID()
+			voter.PutRecord(t, voteCollection, oldKey, voteRecord(target.subject, "up"))
+			p.Await(t, "initial upvote", func() (bool, error) { return observe(1, 0, 1) })
+			newKey := testkit.TID()
+			ctx, cancel := context.WithTimeout(context.Background(), contractBudget)
+			defer cancel()
+			require.NoError(t, voter.XRPC().Procedure(ctx, "com.atproto.repo.applyWrites", map[string]any{
+				"repo": voter.DID, "validate": false, "writes": []map[string]any{
+					{"$type": "com.atproto.repo.applyWrites#delete", "collection": voteCollection, "rkey": oldKey},
+					{"$type": "com.atproto.repo.applyWrites#create", "collection": voteCollection, "rkey": newKey, "value": voteRecord(target.subject, "down")},
+				},
+			}, nil))
+			p.Await(t, "atomic direction replacement to reach counts", func() (bool, error) { return observe(0, 1, -1) })
+			p.Holds(t, "replacement count remains stable", func() (bool, error) { return observe(0, 1, -1) })
+			voter.DeleteExistingRecord(t, voteCollection, newKey)
+			p.Await(t, "replacement withdrawal to clear counts", func() (bool, error) { return observe(0, 0, 0) })
+		})
+	}
+}

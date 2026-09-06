@@ -171,36 +171,10 @@ func (s *voteService) CreateVote(ctx context.Context, session *oauth.ClientSessi
 				CID: "",
 			}, nil
 		}
-
-		// Different direction - delete old vote first, then create new one
-		//
-		// KNOWN DEFECT — unlike the toggle-off branch above, this delete is NOT
-		// followed by a cache removal; the cache is only corrected after the
-		// create below succeeds. A create that fails in between leaves the cache
-		// naming a record the PDS no longer has, and the user's next tap is
-		// answered from it as a withdrawal. See
-		// ~/Code/claude-skills/issues/2026-07-23-vote-cache-desync-direction-switch.md,
-		// pinned by TestCreateVote_FailedDirectionChangeStrandsTheCache.
-		if err := pdsClient.DeleteRecord(ctx, voteCollection, existing.RKey); err != nil {
-			s.logger.Error("failed to delete existing vote on PDS",
-				"error", err,
-				"voter", session.AccountDID,
-				"rkey", existing.RKey)
-			if pds.IsAuthError(err) {
-				return nil, fmt.Errorf("%w: %w", ErrNotAuthorized, err)
-			}
-			return nil, fmt.Errorf("failed to delete existing vote: %w", err)
-		}
-
-		s.logger.Info("deleted existing vote before creating new direction",
-			"voter", session.AccountDID,
-			"subject", req.Subject.URI,
-			"old_direction", existing.Direction,
-			"new_direction", req.Direction)
 	}
 
-	// Create new vote
-	uri, cid, err := s.createVoteRecord(ctx, pdsClient, req)
+	// Write a first vote or atomically replace an opposite-direction vote.
+	uri, cid, err := s.writeVoteRecord(ctx, pdsClient, req, existing)
 	if err != nil {
 		s.logger.Error("failed to create vote on PDS",
 			"error", err,
@@ -293,8 +267,8 @@ func (s *voteService) DeleteVote(ctx context.Context, session *oauth.ClientSessi
 	return nil
 }
 
-// createVoteRecord writes a vote record to the user's PDS using PDSClient
-func (s *voteService) createVoteRecord(ctx context.Context, pdsClient pds.Client, req CreateVoteRequest) (string, string, error) {
+// writeVoteRecord writes a vote, replacing an existing direction in one commit.
+func (s *voteService) writeVoteRecord(ctx context.Context, pdsClient pds.Client, req CreateVoteRequest, existing *existingVote) (string, string, error) {
 	// Generate TID for the record key
 	tid := syntax.NewTIDNow(0)
 
@@ -309,12 +283,66 @@ func (s *voteService) createVoteRecord(ctx context.Context, pdsClient pds.Client
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 
+	if existing != nil {
+		return s.replaceVoteRecord(ctx, pdsClient, existing.RKey, tid.String(), record)
+	}
+
 	uri, cid, err := pdsClient.CreateRecord(ctx, voteCollection, tid.String(), record)
 	if err != nil {
 		return "", "", fmt.Errorf("createRecord failed: %w", err)
 	}
 
 	return uri, cid, nil
+}
+
+// voteBatchWriter is the part of the PDS commit API needed for replacement.
+type voteBatchWriter interface {
+	ApplyWrites(context.Context, []pds.Write, string) (*pds.ApplyWritesResult, error)
+}
+
+func (s *voteService) replaceVoteRecord(ctx context.Context, client pds.Client, oldRKey, newRKey string, record VoteRecord) (string, string, error) {
+	writer, ok := client.(voteBatchWriter)
+	if !ok {
+		return "", "", fmt.Errorf("PDS client does not support atomic vote replacement")
+	}
+
+	// Votes remain immutable: the consumer indexes create/delete events, not
+	// updates. A single batch prevents a refused create from deleting the vote.
+	result, err := writer.ApplyWrites(ctx, []pds.Write{
+		{Op: pds.WriteOpDelete, Collection: voteCollection, RKey: oldRKey},
+		{Op: pds.WriteOpCreate, Collection: voteCollection, RKey: newRKey, Record: record},
+	}, "")
+	if err == nil {
+		return result.Results[1].URI, result.Results[1].CID, nil
+	}
+
+	// The PDS may have committed before its response was lost. Read the exact
+	// replacement key instead of retrying a toggle. Detach from an expired
+	// request, but bound the extra read so an unavailable PDS cannot hang it.
+	reconcileContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	stored, readErr := client.GetRecord(reconcileContext, voteCollection, newRKey)
+	if readErr == nil && stored != nil {
+		subject, validSubject := stored.Value["subject"].(map[string]any)
+		expectedURI := "at://" + client.DID() + "/" + voteCollection + "/" + newRKey
+		if validSubject && stored.URI == expectedURI && stored.CID != "" &&
+			stored.Value["$type"] == record.Type &&
+			stored.Value["direction"] == record.Direction &&
+			subject["uri"] == record.Subject.URI && subject["cid"] == record.Subject.CID &&
+			stored.Value["createdAt"] == record.CreatedAt {
+			return stored.URI, stored.CID, nil
+		}
+	}
+
+	// Absence is not proof a timed-out write cannot still commit. Discard the
+	// snapshot so the next request reloads the PDS, including a stale old key.
+	if s.cache != nil {
+		s.cache.Invalidate(client.DID())
+	}
+	if readErr != nil && !errors.Is(readErr, pds.ErrNotFound) {
+		s.logger.Warn("failed to reconcile vote replacement", "error", readErr)
+	}
+	return "", "", fmt.Errorf("atomic vote replacement failed: %w", err)
 }
 
 // existingVote represents a vote record found on the PDS

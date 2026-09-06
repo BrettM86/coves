@@ -133,75 +133,101 @@ func TestFindExistingVote_CacheIsUpdatedInPlaceByEveryOutcome(t *testing.T) {
 	})
 }
 
-// TestCreateVote_FailedDirectionChangeStrandsTheCache pins a KNOWN DEFECT that
-// was filed on 2026-07-23 and had no test until now.
-//
-// A direction change is delete-old then create-new, and the cache is only
-// corrected after the create succeeds. If the create fails in between — a PDS
-// error, an expired token, a dropped connection — the record is gone from the
-// repository and the cache still holds it, with the old direction and the old
-// rkey. The toggle-off path does not have this problem: it removes the entry
-// immediately after its delete.
-//
-// The second half of this test is the part that makes it worth having. A
-// stranded entry is not merely stale: the user's next tap on the same arrow is
-// answered from it, the service deletes an rkey the PDS no longer has, the PDS
-// reports success for a missing rkey, and the user is told they withdrew a vote
-// they were trying to cast. They now have no vote at all and no error to
-// explain it.
-//
-// Filed: ~/Code/claude-skills/issues/2026-07-23-vote-cache-desync-direction-switch.md
-//
-// IF THIS TEST FAILED, the defect is FIXED — the direction-change path now
-// removes the cache entry alongside its delete. Delete the pin and assert
-// instead that the follow-up tap creates a vote rather than reporting a
-// withdrawal.
-func TestCreateVote_FailedDirectionChangeStrandsTheCache(t *testing.T) {
+func TestCreateVote_FailedDirectionChangePreservesOriginalVote(t *testing.T) {
 	t.Parallel()
 	fake := newFakePDS(t, testVoterDID)
 	cache := votes.NewVoteCache(longTTL, nil)
 	svc := newService(t, fake, cache)
 	ctx := context.Background()
-
-	_, err := svc.CreateVote(ctx, voter(t, testVoterDID),
-		votes.CreateVoteRequest{Subject: subject(), Direction: "up"})
+	up, err := svc.CreateVote(ctx, voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "up"})
 	require.NoError(t, err)
-	strandedRKey := fake.creates()[0]
-
-	// The switch to "down": the delete lands, the create does not.
+	oldKey := fake.creates()[0]
 	fake.createErr = errors.New("pds refused the create")
-	_, err = svc.CreateVote(ctx, voter(t, testVoterDID),
-		votes.CreateVoteRequest{Subject: subject(), Direction: "down"})
+	_, err = svc.CreateVote(ctx, voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "down"})
 	require.Error(t, err)
-	require.Empty(t, fake.records, "the old record really is gone from the repository")
-
-	stranded := cache.GetVote(testVoterDID, testSubject)
-	strandedIn := ""
-	if stranded != nil {
-		strandedIn = stranded.RKey
+	require.Len(t, fake.records, 1, "a rejected replacement must leave the original PDS vote intact")
+	require.Equal(t, "up", fake.records[oldKey].Direction)
+	if cached := cache.GetVote(testVoterDID, testSubject); cached != nil {
+		require.Equal(t, up.URI, cached.URI)
 	}
-	require.Equal(t, strandedRKey, strandedIn,
-		"expected the cache to still name the deleted record (pinning known defect "+
-			"2026-07-23-vote-cache-desync-direction-switch: the direction-change branch deletes the "+
-			"old record without removing the cache entry, and only corrects the cache after the "+
-			"create succeeds. IF THIS FAILED, the defect is FIXED — invert this step to expect an "+
-			"empty cache and close the issue)")
-
-	// The user taps "up" again. There is no vote anywhere, so this should cast
-	// one; instead the stale entry makes it read as a withdrawal.
 	fake.createErr = nil
-	response, err := svc.CreateVote(ctx, voter(t, testVoterDID),
-		votes.CreateVoteRequest{Subject: subject(), Direction: "up"})
+	down, err := svc.CreateVote(ctx, voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "down"})
 	require.NoError(t, err)
-	require.Empty(t, response.URI,
-		"expected the follow-up tap to be reported as a withdrawal of a vote that does not exist "+
-			"(pinning known defect 2026-07-23-vote-cache-desync-direction-switch. IF THIS FAILED, "+
-			"the defect is FIXED — the tap now creates a vote; assert the returned URI here, drop "+
-			"the rest of this pin and close the issue)")
-	require.Equal(t, []string{strandedRKey, strandedRKey}, fake.deletes(),
-		"the service deleted the same already-absent rkey a second time; a real PDS answers a missing "+
-			"rkey with success, which is why nothing surfaces")
-	require.Empty(t, fake.records, "and the user ends up with no vote at all")
+	require.NotEmpty(t, down.URI)
+	require.NotEqual(t, up.URI, down.URI)
+	require.Len(t, fake.records, 1)
+	require.Equal(t, "down", cache.GetVote(testVoterDID, testSubject).Direction)
+}
+
+func TestCreateVote_DirectionChangeReconcilesLostResponse(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDS(t, testVoterDID)
+	cache := votes.NewVoteCache(longTTL, nil)
+	svc := newService(t, fake, cache)
+	_, err := svc.CreateVote(context.Background(), voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "up"})
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fake.batchErr = context.DeadlineExceeded
+	fake.commitBeforeError = true
+	fake.afterBatch = cancel
+	down, err := svc.CreateVote(ctx, voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "down"})
+	require.NoError(t, err, "a replacement found on the PDS committed despite the lost response")
+	require.Positive(t, fake.getCalls)
+	require.NotEmpty(t, down.CID)
+	cached := cache.GetVote(testVoterDID, testSubject)
+	require.NotNil(t, cached)
+	require.Equal(t, down.URI, cached.URI)
+	require.Equal(t, "down", cached.Direction)
+	require.Len(t, fake.records, 1)
+}
+
+func TestCreateVote_DirectionChangeUncertainReconciliationInvalidatesCache(t *testing.T) {
+	t.Parallel()
+	for _, mismatch := range []string{"unavailable", "subject", "direction", "uri", "empty cid", "subject cid", "type", "created at"} {
+		t.Run(mismatch, func(t *testing.T) {
+			fake := newFakePDS(t, testVoterDID)
+			cache := votes.NewVoteCache(longTTL, nil)
+			svc := newService(t, fake, cache)
+			_, err := svc.CreateVote(context.Background(), voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "up"})
+			require.NoError(t, err)
+			fake.batchErr = context.DeadlineExceeded
+			fake.commitBeforeError = true
+			switch mismatch {
+			case "unavailable":
+				fake.getErr = errors.New("PDS read unavailable")
+			case "subject":
+				fake.getTransform = func(r *pds.RecordResponse) {
+					r.Value["subject"] = map[string]any{"uri": "at://did:plc:other/social.coves.community.post/other", "cid": testSubjectCI}
+				}
+			case "direction":
+				fake.getTransform = func(r *pds.RecordResponse) { r.Value["direction"] = "up" }
+			case "uri":
+				fake.getTransform = func(r *pds.RecordResponse) { r.URI = "at://" + testVoterDID + "/social.coves.feed.vote/another" }
+			case "empty cid":
+				fake.getTransform = func(r *pds.RecordResponse) { r.CID = "" }
+			case "subject cid":
+				fake.getTransform = func(r *pds.RecordResponse) { r.Value["subject"].(map[string]any)["cid"] = "different" }
+			case "type":
+				fake.getTransform = func(r *pds.RecordResponse) { r.Value["$type"] = "social.coves.feed.other" }
+			case "created at":
+				fake.getTransform = func(r *pds.RecordResponse) { r.Value["createdAt"] = "different" }
+
+			}
+			_, err = svc.CreateVote(context.Background(), voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "down"})
+			require.Error(t, err, "uncertain or mismatched state must not be reported as success")
+			require.False(t, cache.IsCached(testVoterDID), "unknown PDS state must invalidate the complete cache")
+			listed := fake.listCalls
+			fake.batchErr = nil
+			fake.getErr = nil
+			fake.getTransform = nil
+			response, err := svc.CreateVote(context.Background(), voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "down"})
+			require.NoError(t, err)
+			require.Greater(t, fake.listCalls, listed, "the next tap must reload authoritative PDS state")
+			require.Empty(t, response.URI, "the committed downvote must toggle off")
+			require.Empty(t, fake.records)
+		})
+	}
 }
 
 func TestFindExistingVote_FallsBackToPaginationWhenTheCacheCannotBePopulated(t *testing.T) {
@@ -593,4 +619,22 @@ func TestViewerVoteLookups_ReturnsIndependentSnapshot(t *testing.T) {
 	require.Equal(t, "up", service.GetViewerVotesForSubjects(testVoterDID, []string{testSubject})[testSubject].Direction, "rendering a snapshot must not mutate the cache")
 	cache.RemoveVote(testVoterDID, testSubject)
 	require.Equal(t, "original", snapshot[testSubject].URI)
+}
+
+// Embedding only Client deliberately hides the fake's batch capability.
+type singleWriteVotePDS struct{ pds.Client }
+
+func TestCreateVote_DirectionChangeWithoutBatchSupportPreservesVote(t *testing.T) {
+	fake := newFakePDS(t, testVoterDID)
+	cache := votes.NewVoteCache(longTTL, nil)
+	service := votes.NewServiceWithPDSFactory(nil, cache, nil, func(context.Context, *oauth.ClientSessionData) (pds.Client, error) {
+		return singleWriteVotePDS{Client: fake}, nil
+	})
+	up, err := service.CreateVote(context.Background(), voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "up"})
+	require.NoError(t, err)
+	_, err = service.CreateVote(context.Background(), voter(t, testVoterDID), votes.CreateVoteRequest{Subject: subject(), Direction: "down"})
+	require.Error(t, err)
+	require.Empty(t, fake.deletes(), "unsupported batching must fail before any deletion")
+	require.Len(t, fake.records, 1)
+	require.Equal(t, up.URI, cache.GetVote(testVoterDID, testSubject).URI)
 }

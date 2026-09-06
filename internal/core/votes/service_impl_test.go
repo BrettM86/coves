@@ -58,23 +58,20 @@ type fakePDS struct {
 	// records is the repo's contents, keyed by rkey.
 	records map[string]votes.VoteRecord
 
-	// ops is ONE ordered log of every write, because the interesting claim in
-	// this file is a claim about SEQUENCE: a direction change must delete the
-	// old record before creating the new one, or there is a window in which the
-	// repo holds two live votes for one subject and the consumer's stale-vote
-	// cleanup decides arbitrarily which survives.
-	//
-	// It was two slices (created []string, deleted []string) in the first draft,
-	// which cannot express interleaving at all — the ordering comment sat above
-	// three final-state assertions that would pass just as happily with the
-	// calls reversed. Review caught it. One log, so the assertion can be the one
-	// the comment claims.
+	// ops records committed writes; batchCalls distinguishes atomic replacements.
 	ops []voteOp
 
 	// createErr, deleteErr and listErr let a test drive the failure branches.
-	createErr error
-	deleteErr error
-	listErr   error
+	createErr         error
+	deleteErr         error
+	listErr           error
+	batchErr          error
+	batchCalls        int
+	commitBeforeError bool
+	afterBatch        func()
+	getErr            error
+	getCalls          int
+	getTransform      func(*pds.RecordResponse)
 
 	// pageSize splits ListRecords into pages of this many records when it is
 	// positive. Both the cache's populate loop and the service's pagination
@@ -204,9 +201,64 @@ func (f *fakePDS) ListRecords(_ context.Context, collection string, _ int, curso
 func (f *fakePDS) DID() string     { return f.did }
 func (f *fakePDS) HostURL() string { return "https://pds.invalid" }
 
-func (f *fakePDS) GetRecord(context.Context, string, string) (*pds.RecordResponse, error) {
-	f.t.Fatal("the vote service called GetRecord, which it did not before: add coverage for the new path")
-	return nil, nil
+func (f *fakePDS) ApplyWrites(_ context.Context, writes []pds.Write, swapCommit string) (*pds.ApplyWritesResult, error) {
+	f.batchCalls++
+	require.Empty(f.t, swapCommit)
+	require.Len(f.t, writes, 2)
+	require.Equal(f.t, pds.WriteOpDelete, writes[0].Op)
+	require.Equal(f.t, pds.WriteOpCreate, writes[1].Op)
+	require.NotEqual(f.t, writes[0].RKey, writes[1].RKey)
+	_, err := syntax.ParseTID(writes[1].RKey)
+	require.NoError(f.t, err)
+	failure := f.batchErr
+	if failure == nil {
+		failure = f.deleteErr
+	}
+	if failure == nil {
+		failure = f.createErr
+	}
+	if failure != nil && !f.commitBeforeError {
+		return nil, failure
+	}
+	for _, write := range writes {
+		require.Equal(f.t, "social.coves.feed.vote", write.Collection)
+	}
+	record, ok := writes[1].Record.(votes.VoteRecord)
+	require.True(f.t, ok)
+	delete(f.records, writes[0].RKey)
+	f.records[writes[1].RKey] = record
+	f.ops = append(f.ops, voteOp{kind: "delete", rkey: writes[0].RKey}, voteOp{kind: "create", rkey: writes[1].RKey})
+	if f.afterBatch != nil {
+		f.afterBatch()
+	}
+	if failure != nil {
+		return nil, failure
+	}
+	return &pds.ApplyWritesResult{Results: []pds.WriteResult{
+		{Op: pds.WriteOpDelete},
+		{Op: pds.WriteOpCreate, URI: "at://" + f.did + "/social.coves.feed.vote/" + writes[1].RKey, CID: "bafycid" + writes[1].RKey},
+	}}, nil
+}
+
+func (f *fakePDS) GetRecord(ctx context.Context, collection, rkey string) (*pds.RecordResponse, error) {
+	f.getCalls++
+	require.NoError(f.t, ctx.Err(), "reconciliation must survive the original request deadline")
+	_, bounded := ctx.Deadline()
+	require.True(f.t, bounded, "reconciliation must have a bounded deadline")
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	record, exists := f.records[rkey]
+	if !exists {
+		return nil, pds.ErrNotFound
+	}
+	result := &pds.RecordResponse{URI: "at://" + f.did + "/" + collection + "/" + rkey, CID: "bafycid" + rkey,
+		Value: map[string]any{"$type": record.Type, "direction": record.Direction,
+			"subject": map[string]any{"uri": record.Subject.URI, "cid": record.Subject.CID}, "createdAt": record.CreatedAt}}
+	if f.getTransform != nil {
+		f.getTransform(result)
+	}
+	return result, nil
 }
 
 func (f *fakePDS) PutRecord(context.Context, string, string, any, string) (string, string, error) {
@@ -334,6 +386,7 @@ func TestCreateVote_DifferentDirectionReplacesUnderANewRKey(t *testing.T) {
 		votes.CreateVoteRequest{Subject: subject(), Direction: "down"})
 	require.NoError(t, err)
 
+	require.Equal(t, 1, fake.batchCalls, "direction replacement must be one atomic PDS batch")
 	require.Equal(t, []string{oldRKey}, fake.deletes(),
 		"changing direction must remove the old record, not leave two votes in the repo")
 	require.Len(t, fake.creates(), 2)
