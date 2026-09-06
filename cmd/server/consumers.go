@@ -97,7 +97,9 @@ func startConsumers(ctx context.Context, wg *sync.WaitGroup, app *application) (
 		Mutator: app.jetstreamState,
 		Pruner:  app.jetstreamState,
 	}, handlers,
-		jetstream.WithRedriveInterval(app.cfg.Jetstream.RedriveInterval))
+		jetstream.WithRedriveInterval(app.cfg.Jetstream.RedriveInterval),
+		// This makes REDRIVE_INTERVAL > IDENTITY_NEGATIVE_CACHE_TTL hold per row, not only per tick.
+		jetstream.WithRedriveMinimumAge(app.cfg.Identity.NegativeCacheTTL))
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

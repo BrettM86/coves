@@ -223,8 +223,12 @@ func TestAcceptanceConsumer_FromANonCommunityRepo_IsRefusedAndRedrivable(t *test
 	// community's first acceptance can genuinely outrun its own profile event.
 	// Marking this permanent would spend the redrive budget that resolves the
 	// race and discard a legitimate decision.
+	assert.ErrorIs(t, err, ErrUnresolvedReference,
+		"an unindexed community repo is an ordering failure; the redrive resolves it once the community profile arrives. "+
+			"It must be the bounded unresolved-reference class, not a plain error: any repo can mint these, and a plain "+
+			"error buys ~4.2s of in-line lane time plus ten redrives per fabricated event (audit 2026-09-01 §1.3)")
 	assert.NotErrorIs(t, err, ErrPermanentEvent,
-		"an unindexed community repo is an ordering failure; the redrive resolves it once the community profile arrives")
+		"the community profile may still arrive, so the row must keep its redrive budget")
 
 	assert.Zero(t, countRows(t, db,
 		`SELECT count(*) FROM community_post_admissions WHERE post_uri = $1 AND community_did = $2`, uri, accOutsider),

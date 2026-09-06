@@ -32,6 +32,9 @@ func TestRedriveIntervalConfig(t *testing.T) {
 	t.Run("parses an explicit duration", func(t *testing.T) {
 		clearEnv(t)
 		t.Setenv("IS_DEV_ENV", "true")
+		// The loader requires REDRIVE_INTERVAL to exceed IDENTITY_NEGATIVE_CACHE_TTL
+		// (default 90s); a 5s interval is only valid with a shorter negative TTL.
+		t.Setenv("IDENTITY_NEGATIVE_CACHE_TTL", "1s")
 		t.Setenv("REDRIVE_INTERVAL", "5s")
 
 		cfg, err := Load()

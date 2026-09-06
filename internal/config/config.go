@@ -221,6 +221,12 @@ type IdentityConfig struct {
 	// use the resolver default.
 	CacheTTL time.Duration
 
+	// NegativeCacheTTL bounds process-local caching of failed or unverified DID
+	// resolutions. It must stay below RedriveInterval: a redrive served from the
+	// negative cache burns one of only UnresolvedRedriveAttempts without reaching
+	// the network to observe recovery.
+	NegativeCacheTTL time.Duration
+
 	// WellKnownHosts redirects the HTTP leg of handle verification, mapping a
 	// handle suffix to the host:port that answers /.well-known/atproto-did for
 	// it. Read from HANDLE_WELL_KNOWN_HOSTS.
@@ -637,6 +643,16 @@ func (c *Config) loadIdentity() error {
 	if err != nil {
 		return err
 	}
+	negativeCacheTTL, err := durationVar("IDENTITY_NEGATIVE_CACHE_TTL", 90*time.Second)
+	if err != nil {
+		return err
+	}
+	// Rejected here rather than in Validate for the same reason as
+	// REDRIVE_INTERVAL: only a value loaded from the environment can be required
+	// when hand-assembled Config values use zero to mean unspecified.
+	if negativeCacheTTL <= 0 {
+		return fmt.Errorf("IDENTITY_NEGATIVE_CACHE_TTL must be greater than 0 (got %s)", negativeCacheTTL)
+	}
 
 	plcURL := stringVar("PLC_DIRECTORY_URL", "https://plc.directory")
 
@@ -654,10 +670,11 @@ func (c *Config) loadIdentity() error {
 	}
 
 	c.Identity = IdentityConfig{
-		PLCURL:         plcURL,
-		ResolverPLCURL: resolverPLCURL,
-		CacheTTL:       cacheTTL,
-		WellKnownHosts: wellKnownHosts,
+		PLCURL:           plcURL,
+		ResolverPLCURL:   resolverPLCURL,
+		CacheTTL:         cacheTTL,
+		NegativeCacheTTL: negativeCacheTTL,
+		WellKnownHosts:   wellKnownHosts,
 	}
 	return nil
 }
@@ -897,6 +914,10 @@ func (c *Config) loadJetstream() error {
 	if redriveInterval <= 0 {
 		return fmt.Errorf("REDRIVE_INTERVAL must be greater than 0 (got %s); "+
 			"the dead letter redriver cannot be disabled", redriveInterval)
+	}
+	if redriveInterval <= c.Identity.NegativeCacheTTL {
+		return fmt.Errorf("REDRIVE_INTERVAL (%s) must be greater than IDENTITY_NEGATIVE_CACHE_TTL (%s); "+
+			"each unresolved redrive must reach the identity network", redriveInterval, c.Identity.NegativeCacheTTL)
 	}
 
 	c.Jetstream = JetstreamConfig{

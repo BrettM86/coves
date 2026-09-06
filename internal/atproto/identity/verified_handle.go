@@ -12,7 +12,9 @@ const InvalidHandle = "handle.invalid"
 
 var (
 	// ErrHandleUnverified says the resolution established no handle for the
-	// subject. TRANSIENT at every call site.
+	// subject. Never permanent: the directory may verify the handle later.
+	// Firehose consumers classify it jetstream.ErrUnresolvedReference (bounded
+	// redrives, no in-line retries); interactive callers surface it as-is.
 	ErrHandleUnverified = errors.New("identity resolution did not establish a verified handle")
 
 	// ErrIdentitySubjectMismatch says the resolution answered about a different

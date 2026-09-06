@@ -326,9 +326,12 @@ func (c *UserEventConsumer) handleProfileCommit(ctx context.Context, event *Jets
 			if c.identityResolver == nil {
 				return nil
 			}
-			resolved, resolveErr := c.identityResolver.Resolve(ctx, event.Did)
+			resolveCtx, cancel := context.WithTimeout(ctx, identityResolveTimeout)
+			defer cancel()
+			resolved, resolveErr := c.identityResolver.Resolve(resolveCtx, event.Did)
 			if resolveErr != nil {
-				return fmt.Errorf("failed to resolve unknown profile identity %s: %w", event.Did, resolveErr)
+				return fmt.Errorf("%w: failed to resolve unknown profile identity %s: %w",
+					ErrUnresolvedReference, event.Did, resolveErr)
 			}
 			if resolved == nil || resolved.DID != event.Did || !c.bridgeTrust.TrustsPDS(resolved.PDSURL) {
 				return nil

@@ -99,19 +99,26 @@ func (s *PostgresStateStore) LatestDeadLetterID(ctx context.Context, consumerNam
 	return id, nil
 }
 
-// ListRetryable returns one ID-ordered page inside a redrive pass snapshot.
+// ListRetryable returns one ID-ordered page inside a redrive pass snapshot,
+// optionally excluding rows updated more recently than MinimumAge.
 func (s *PostgresStateStore) ListRetryable(
 	ctx context.Context,
 	query DeadLetterPageQuery,
 ) ([]DeadLetterEvent, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, consumer_name, event_time_us, event_data, last_error, attempts, created_at
+	statement := `
+		SELECT id, consumer_name, event_time_us, event_data, last_error, attempts, created_at, updated_at
 		FROM jetstream_dead_letters
-		WHERE consumer_name = $1 AND attempts < $2 AND id > $3 AND id <= $4
+		WHERE consumer_name = $1 AND attempts < $2 AND id > $3 AND id <= $4`
+	arguments := []any{query.ConsumerName, query.MaxAttempts, query.AfterID, query.ThroughID, query.Limit}
+	if query.MinimumAge > 0 {
+		statement += ` AND updated_at <= $6`
+		arguments = append(arguments, time.Now().Add(-query.MinimumAge))
+	}
+	statement += `
 		ORDER BY id ASC
-		LIMIT $5`,
-		query.ConsumerName, query.MaxAttempts, query.AfterID, query.ThroughID, query.Limit,
-	)
+		LIMIT $5`
+
+	rows, err := s.db.QueryContext(ctx, statement, arguments...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list jetstream dead letters for %s: %w", query.ConsumerName, err)
 	}
@@ -130,6 +137,7 @@ func (s *PostgresStateStore) ListRetryable(
 			&deadLetter.LastError,
 			&deadLetter.Attempts,
 			&deadLetter.CreatedAt,
+			&deadLetter.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan jetstream dead letter: %w", err)
 		}

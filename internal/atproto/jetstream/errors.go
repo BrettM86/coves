@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
+	"time"
 )
 
 // Canonical consumer names. These key the persisted rows in
@@ -67,16 +68,21 @@ const (
 // exhausted, kept only for forensics.
 var ErrPermanentEvent = errors.New("permanent event failure")
 
-// ErrUnresolvedReference marks a handler failure as an ordering failure: the
-// event is well-formed but references a record this AppView has not indexed.
-// Consumers wrap such refusals with this sentinel:
+// ErrUnresolvedReference marks a handler failure whose well-formed event names
+// a record this AppView has not indexed or an identity the directory could not
+// establish. Verification may converge when DNS or PLC propagates, or never for
+// a fabricated did:web. Consumers wrap such refusals with this sentinel:
 //
 //	return fmt.Errorf("%w: vote subject %s is not indexed", jetstream.ErrUnresolvedReference, uri)
 //
-// The connector skips the in-line retries (the lane must not wait on another
-// repo's delivery) and dead-letters the event with a bounded redrive budget so
-// the redriver can replay genuine ordering races without giving fabricated
-// references the infrastructure-failure budget.
+// The connector skips the in-line retries and dead-letters the event with a
+// bounded redrive budget so the redriver can replay genuine ordering or
+// verification races without giving fabricated references the infrastructure-
+// failure budget. The tradeoff is that a genuine PLC outage gives community
+// creates and unknown-DID profile creates UnresolvedRedriveAttempts times the
+// redrive interval to converge instead of the full budget; in-line retries were
+// never useful for an outage, and the emitting repo decides how often the
+// resolve fires, so the budget must not scale with its choices.
 //
 // Use it ONLY for references that are syntactically valid. A subject that is
 // not DID-shaped, a URI that names the wrong collection, a value a CHECK
@@ -124,3 +130,14 @@ func requireDIDShaped(field, value string) error {
 	}
 	return nil
 }
+
+// identityResolveTimeout bounds one identity resolution triggered by an
+// attacker-reachable firehose event (community create and update, unknown-DID
+// profile create, author hydration). The identity HTTP client already has a
+// 10-second timeout, so this halves the worst case rather than creating the only
+// bound. See docs/SECURITY_AUDIT_2026-09-01.md §1.3.
+const identityResolveTimeout = 5 * time.Second
+
+// authorHydrationTimeout shares the identity resolution ceiling so equivalent
+// attacker-triggered lookups cannot drift to different limits.
+const authorHydrationTimeout = identityResolveTimeout

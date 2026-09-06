@@ -258,6 +258,7 @@ func (a *application) buildIdentity() {
 	if a.cfg.Identity.CacheTTL > 0 {
 		identityConfig.CacheTTL = a.cfg.Identity.CacheTTL
 	}
+	identityConfig.NegativeCacheTTL = a.cfg.Identity.NegativeCacheTTL
 	a.identityResolver = identity.NewResolver(a.db, identityConfig)
 
 	// The same expression the hatch above was derived from, not a second read of
@@ -456,6 +457,7 @@ func (a *application) buildServices(ctx context.Context) error {
 	// closed in ff901a5 was GET-only.)
 	productionPLCConfig := identity.DefaultConfig()
 	productionPLCConfig.PLCURL = "https://plc.directory"
+	productionPLCConfig.NegativeCacheTTL = a.cfg.Identity.NegativeCacheTTL
 	productionPLCResolver := identity.NewResolver(a.db, productionPLCConfig)
 
 	a.blueskyService = blueskypost.NewService(

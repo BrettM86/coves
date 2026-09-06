@@ -15,6 +15,10 @@ type Config struct {
 	PLCURL   string
 	CacheTTL time.Duration
 
+	// NegativeCacheTTL bounds process-local caching of failed or unverified DID
+	// resolutions. Zero uses DefaultNegativeCacheTTL.
+	NegativeCacheTTL time.Duration
+
 	// httpClient is the client every resolver built from this config dials
 	// through. UNEXPORTED, because an exported one is a guard-replacing seam
 	// with nothing left to grep for: `identity.Config{HTTPClient: unguarded}`
@@ -237,7 +241,7 @@ func NewResolver(db *sql.DB, config Config) Resolver {
 
 	// Wrap with caching using PostgreSQL
 	cache := NewPostgresCache(db, config.CacheTTL)
-	caching := newCachingResolver(base, cache)
+	caching := newCachingResolverWithClock(base, cache, config.NegativeCacheTTL, time.Now)
 
 	// Future: could add rate limiting here if needed
 	// if config.MaxConcurrent > 0 {

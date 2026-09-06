@@ -136,11 +136,15 @@ func (m *mockUserService) DeleteAccount(ctx context.Context, did string) error {
 
 // mockIdentityResolverForUser is a test double for identity.Resolver
 type mockIdentityResolverForUser struct {
-	identities map[string]*identity.Identity
-	resolveErr error
+	identities  map[string]*identity.Identity
+	resolveErr  error
+	calls       int
+	capturedCtx context.Context
 }
 
 func (m *mockIdentityResolverForUser) Resolve(ctx context.Context, identifier string) (*identity.Identity, error) {
+	m.calls++
+	m.capturedCtx = ctx
 	if m.resolveErr != nil {
 		return nil, m.resolveErr
 	}
@@ -735,6 +739,59 @@ func TestUserConsumer_HandleProfileCommit(t *testing.T) {
 		if call.BannerCID != nil {
 			t.Errorf("Expected nil banner CID for invalid structure, got %v", call.BannerCID)
 		}
+	})
+}
+
+func TestUserConsumer_UnknownProfileResolutionClassification(t *testing.T) {
+	t.Parallel()
+
+	const did = "did:plc:unknownprofileclassification"
+	profileEvent := func() *JetstreamEvent {
+		return &JetstreamEvent{
+			Did:    did,
+			Kind:   "commit",
+			TimeUS: time.Now().UnixMicro(),
+			Commit: &CommitEvent{
+				Rev:        "3lunknownprofile",
+				Operation:  "create",
+				Collection: CovesProfileCollection,
+				RKey:       "self",
+				CID:        "bafyunknownprofile",
+				Record:     map[string]interface{}{"displayName": "Unknown Profile"},
+			},
+		}
+	}
+
+	t.Run("resolution failure is unresolved", func(t *testing.T) {
+		t.Parallel()
+
+		resolver := &mockIdentityResolverForUser{resolveErr: errors.New("identity directory unavailable")}
+		consumer := NewUserEventConsumer(newMockUserService(), resolver)
+		err := consumer.HandleEvent(context.Background(), profileEvent())
+
+		require.Error(t, err, "the unknown profile cannot be classified without resolving its identity")
+		assert.ErrorIs(t, err, ErrUnresolvedReference,
+			"the profile may become resolvable later, but attacker-created unknown DIDs must not buy in-line retries on the serial lane")
+		assert.NotErrorIs(t, err, ErrPermanentEvent,
+			"a temporary resolver failure says nothing permanent about the profile event")
+	})
+
+	t.Run("untrusted resolved identity is ignored", func(t *testing.T) {
+		t.Parallel()
+
+		service := newMockUserService()
+		resolver := &mockIdentityResolverForUser{identities: map[string]*identity.Identity{
+			did: {DID: did, Handle: "unknown.example.net", PDSURL: untrustedPDS},
+		}}
+		consumer := NewUserEventConsumer(service, resolver,
+			WithUserBridgeTrust(NewBridgeTrust([]string{trustedBridgePDS})))
+
+		require.NoError(t, consumer.HandleEvent(context.Background(), profileEvent()),
+			"an identity on an untrusted PDS is outside bridge discovery policy, not a malformed event")
+		assert.Equal(t, 1, resolver.calls,
+			"the profile must be ignored because its resolved PDS is untrusted, not because identity resolution was skipped")
+		assert.NotContains(t, service.users, did,
+			"unknown native profiles must not let the firehose turn this AppView into an index of the whole network")
 	})
 }
 

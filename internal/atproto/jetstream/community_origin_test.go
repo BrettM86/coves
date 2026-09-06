@@ -103,7 +103,9 @@ func TestAdmitCommunityOrigin(t *testing.T) {
 // calling that is not modelled here panics rather than silently passing.
 type originRepo struct {
 	communities.Repository
-	byDID map[string]*communities.Community
+	byDID         map[string]*communities.Community
+	getByDIDCalls int
+	getByDIDErr   error
 }
 
 func newOriginRepo() *originRepo {
@@ -120,6 +122,10 @@ func (r *originRepo) Create(_ context.Context, c *communities.Community) (*commu
 }
 
 func (r *originRepo) GetByDID(_ context.Context, did string) (*communities.Community, error) {
+	r.getByDIDCalls++
+	if r.getByDIDErr != nil {
+		return nil, r.getByDIDErr
+	}
 	c, ok := r.byDID[did]
 	if !ok {
 		return nil, communities.ErrCommunityNotFound

@@ -143,6 +143,7 @@ func (q *fakeDeadLetterQueue) AddDeadLetter(_ context.Context, consumerName stri
 			return nil
 		}
 	}
+	now := time.Now()
 	q.rows = append(q.rows, DeadLetterEvent{
 		ID:           q.nextID,
 		ConsumerName: consumerName,
@@ -150,7 +151,8 @@ func (q *fakeDeadLetterQueue) AddDeadLetter(_ context.Context, consumerName stri
 		EventData:    append([]byte(nil), eventData...),
 		LastError:    handleErr,
 		Attempts:     redriveAttempts,
-		CreatedAt:    time.Now(),
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	})
 	q.nextID++
 	return nil
@@ -172,9 +174,11 @@ func (q *fakeDeadLetterQueue) ListRetryable(_ context.Context, query DeadLetterP
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	var result []DeadLetterEvent
+	minimumUpdatedAt := time.Now().Add(-query.MinimumAge)
 	for _, row := range q.rows {
 		if row.ConsumerName == query.ConsumerName && row.Attempts < query.MaxAttempts &&
-			row.ID > query.AfterID && row.ID <= query.ThroughID && len(result) < query.Limit {
+			row.ID > query.AfterID && row.ID <= query.ThroughID && len(result) < query.Limit &&
+			(query.MinimumAge <= 0 || !row.UpdatedAt.After(minimumUpdatedAt)) {
 			result = append(result, row)
 		}
 	}
@@ -200,6 +204,7 @@ func (q *fakeDeadLetterQueue) MarkRedriveAttempt(_ context.Context, id int64, ha
 		if q.rows[i].ID == id {
 			q.rows[i].Attempts++
 			q.rows[i].LastError = handleErr
+			q.rows[i].UpdatedAt = time.Now()
 			return nil
 		}
 	}
@@ -215,6 +220,7 @@ func (q *fakeDeadLetterQueue) RetireDeadLetter(_ context.Context, id int64, reas
 				q.rows[i].Attempts = MaxRedriveAttempts
 			}
 			q.rows[i].LastError = reason
+			q.rows[i].UpdatedAt = time.Now()
 			return nil
 		}
 	}

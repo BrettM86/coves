@@ -33,6 +33,9 @@ type DeadLetterEvent struct {
 	LastError    string
 	Attempts     int
 	CreatedAt    time.Time
+	// UpdatedAt is the time of the row's last redrive attempt (its insertion
+	// time until the first attempt).
+	UpdatedAt time.Time
 }
 
 // DeadLetterPageQuery bounds one ID-ordered redrive page within a pass.
@@ -42,6 +45,9 @@ type DeadLetterPageQuery struct {
 	AfterID      int64
 	ThroughID    int64
 	Limit        int
+	// MinimumAge excludes rows whose UpdatedAt is newer than now minus this
+	// duration. Zero means no age filter.
+	MinimumAge time.Duration
 }
 
 // DeadLetterRedriveSource snapshots and reads replayable dead letters.
@@ -103,6 +109,7 @@ type DeadLetterRedriver struct {
 	interval    time.Duration
 	batchSize   int
 	maxAttempts int
+	minimumAge  time.Duration
 }
 
 // RedriveOption configures optional DeadLetterRedriver behaviour.
@@ -112,6 +119,13 @@ type RedriveOption func(*DeadLetterRedriver)
 // constructor's five-minute default.
 func WithRedriveInterval(interval time.Duration) RedriveOption {
 	return func(r *DeadLetterRedriver) { r.interval = interval }
+}
+
+// WithRedriveMinimumAge makes a pass skip rows attempted or inserted within
+// the last age, so a redrive never re-asks a question whose answer is still
+// held by the identity negative cache.
+func WithRedriveMinimumAge(age time.Duration) RedriveOption {
+	return func(r *DeadLetterRedriver) { r.minimumAge = age }
 }
 
 // NewDeadLetterRedriver creates a redriver over the given consumers.
@@ -191,6 +205,7 @@ func (r *DeadLetterRedriver) redriveAll(ctx context.Context) {
 				AfterID:      afterID,
 				ThroughID:    throughID,
 				Limit:        r.batchSize,
+				MinimumAge:   r.minimumAge,
 			}
 			redriven, failed, listed, lastID, err := r.redriveConsumer(ctx, handler, query)
 			if err != nil {

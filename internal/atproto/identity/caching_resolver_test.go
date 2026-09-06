@@ -100,6 +100,7 @@ func (c *recordingCache) Purge(_ context.Context, identifier string) error {
 // values and counts how often it was consulted, which is the only way to say
 // "the cache was used" rather than "the cache produced the same answer".
 type countingResolver struct {
+	mu       sync.Mutex
 	identity *Identity
 	doc      *DIDDocument
 	err      error
@@ -110,6 +111,8 @@ type countingResolver struct {
 }
 
 func (r *countingResolver) Resolve(context.Context, string) (*Identity, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.resolves++
 	if r.err != nil {
 		return nil, r.err
@@ -128,6 +131,8 @@ func (r *countingResolver) ResolveHandle(ctx context.Context, handle string) (st
 }
 
 func (r *countingResolver) ResolveDID(context.Context, string) (*DIDDocument, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.resolveDIDs++
 	if r.err != nil {
 		return nil, r.err
@@ -136,8 +141,23 @@ func (r *countingResolver) ResolveDID(context.Context, string) (*DIDDocument, er
 }
 
 func (r *countingResolver) Purge(_ context.Context, identifier string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.purges = append(r.purges, identifier)
 	return nil
+}
+
+func (r *countingResolver) resolveCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.resolves
+}
+
+func (r *countingResolver) setResolveResult(identity *Identity, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.identity = identity
+	r.err = err
 }
 
 func freshIdentity() *Identity {
@@ -196,23 +216,14 @@ func unverifiedIdentity() *Identity {
 //
 // InvalidHandle is not a fact about an identity. It is a fact about the NETWORK
 // at the instant of the lookup: DNS was slow, the TXT record had not propagated,
-// the resolver had no egress. Caching it converts a momentary condition into a
-// stored one, and IDENTITY_CACHE_TTL is 24h in .env.ci — so a single transient
-// DNS failure pins a DID as unverifiable for a day, for every caller, with no
-// way to notice and nothing to purge unless someone thinks to.
+// the resolver had no egress. It must never enter the 24h Postgres cache, but a
+// bounded process-local negative entry avoids repeating the same attacker-driven
+// lookup during a short redrive window.
 //
-// The consumer already treats an unverified handle as TRANSIENT and expects the
-// redrive to succeed (identity.ErrHandleUnverified is classified that way at
-// every call site). A cache that memoises the failure makes that expectation
-// false: every retry inside the TTL gets the same stored placeholder without a
-// single network call, so the event can never recover and eventually exhausts
-// its redrive budget.
-//
-// This is the same rule TestCachingResolver_PropagatesAResolutionFailure states
-// for an outright error — a failed resolution must not be cached, or an account
-// stays invisible for a full TTL after the reason went away. A handle.invalid
-// result is that failure wearing a success's clothes.
-func TestCachingResolver_DoesNotCacheAnUnverifiedIdentity(t *testing.T) {
+// The short entry still has cache semantics: repeated callers get independent
+// values labelled MethodCache. Once DefaultNegativeCacheTTL passes, resolution
+// reaches the network again so DNS recovery can become visible.
+func TestCachingResolver_KeepsAnUnverifiedIdentityOutOfPostgresButNegativeCachesIt(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
@@ -234,25 +245,40 @@ func TestCachingResolver_DoesNotCacheAnUnverifiedIdentity(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			resolver, base, cache := newCachingFixture()
+			_, base, cache := newCachingFixture()
+			clock := time.Date(2026, time.September, 2, 0, 0, 0, 0, time.UTC)
+			resolver := newCachingResolverWithClock(base, cache, DefaultNegativeCacheTTL, func() time.Time {
+				return clock
+			})
 			unverified := unverifiedIdentity()
 			unverified.Handle = tc.handle
 			base.identity = unverified
 
-			got, err := resolver.Resolve(context.Background(), fixtureDID)
+			first, err := resolver.Resolve(context.Background(), fixtureDID)
 			require.NoError(t, err, "an unverifiable handle is not a resolution error: %s", tc.why)
-			assert.Equal(t, tc.handle, got.Handle, "the caller still gets the answer, unchanged")
+			assert.Equal(t, tc.handle, first.Handle, "the caller still gets the answer, unchanged")
 
 			assert.Empty(t, cache.sets,
 				"the unverified result was written to a cache with a 24h TTL: one transient DNS failure "+
 					"now pins this DID as unverifiable for a day, and the transient classification every "+
 					"caller applies to it becomes a lie")
 
+			second, err := resolver.Resolve(context.Background(), fixtureDID)
+			require.NoError(t, err)
+			require.Equal(t, 1, base.resolveCount(),
+				"within DefaultNegativeCacheTTL the same unresolved DID must not repeat an attacker-controlled network lookup")
+			assert.NotSame(t, first, second,
+				"negative-cache callers must not share a mutable identity pointer across goroutines")
+			assert.Equal(t, MethodCache, second.Method,
+				"the caller must be able to distinguish the short-lived negative-cache answer from fresh resolution")
+			assert.Equal(t, tc.handle, second.Handle, "the negative cache must preserve the unverified result")
+			assert.Empty(t, cache.sets, "the 24h Postgres cache must never learn an unverified identity")
+
+			clock = clock.Add(DefaultNegativeCacheTTL + time.Nanosecond)
 			_, err = resolver.Resolve(context.Background(), fixtureDID)
 			require.NoError(t, err)
-			assert.Equal(t, 2, base.resolves,
-				"the second resolution was served from cache. Nothing about the identity changed — only "+
-					"the network did — so the next attempt must be allowed to reach it")
+			assert.Equal(t, 2, base.resolveCount(),
+				"after the short negative TTL, DNS must be consulted again so a newly verified handle can recover")
 		})
 	}
 }
@@ -404,16 +430,16 @@ func TestCachingResolver_ADegradedCacheIsNotAnOutage(t *testing.T) {
 func TestCachingResolver_PropagatesAResolutionFailure(t *testing.T) {
 	t.Parallel()
 	resolver, base, cache := newCachingFixture()
-	base.err = &ErrNotFound{Identifier: fixtureHandle, Reason: "no such handle"}
+	base.err = &ErrNotFound{Identifier: fixtureDID, Reason: "no such DID"}
 
-	_, err := resolver.Resolve(context.Background(), fixtureHandle)
+	_, err := resolver.Resolve(context.Background(), fixtureDID)
 	var notFound *ErrNotFound
 	require.ErrorAs(t, err, &notFound,
 		"the base resolver's taxonomy must survive the wrapper: a caller that routes 404 versus 502 "+
 			"reads the error it gets from THIS resolver")
 	assert.Empty(t, cache.sets,
-		"a failed resolution must not be cached. A negative entry would keep an account invisible for "+
-			"a full TTL after the reason it failed went away")
+		"the 24h Postgres cache must not store a failed resolution; the in-memory negative cache holds "+
+			"this DID only for DefaultNegativeCacheTTL")
 }
 
 func TestCachingResolver_ResolveHandle(t *testing.T) {

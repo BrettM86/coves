@@ -449,12 +449,13 @@ func (c *CommunityEventConsumer) handleCommunityProfile(ctx context.Context, did
 //
 // # THE THREE OUTCOMES, AND WHY THEY ARE DISTINGUISHABLE
 //
-//   - The directory could not be reached. Transient by nature — it may answer
-//     next time.
+//   - The directory could not be reached. On create this is an unresolved
+//     reference: it may answer next time, but the emitting repo must not buy
+//     in-line retries on the serial lane.
 //   - identity.ErrHandleUnverified: the lookup succeeded but established no
 //     handle (empty, or the reserved handle.invalid placeholder that resolution
-//     reports as a SUCCESS), or returned no identity at all. Also a fact about
-//     the RESOLUTION, so also transient.
+//     reports as a SUCCESS), or returned no identity at all. This is likewise an
+//     unresolved reference on create.
 //   - identity.ErrIdentitySubjectMismatch: the answer is about somebody else.
 //     Wrapped in ErrPermanentEvent here rather than at the call sites, because
 //     it is permanent for the same reason on both — a contradiction reproduces
@@ -463,11 +464,11 @@ func (c *CommunityEventConsumer) handleCommunityProfile(ctx context.Context, did
 //     cache, so a stale or mis-keyed row handing back a well-formed identity for
 //     the wrong subject is the realistic way this arrives.
 //
-// The callers classify the first two OPPOSITELY, which is why they are returned
-// distinguishably rather than collapsed: on create there is no handle to index
-// under, so it rejects; on update a verified handle is already stored from the
-// create that made the row, so a directory that cannot answer right now says
-// nothing about that community and the edit proceeds.
+// The callers handle the first two differently by operation: on create there is
+// no handle to index under, so the bounded unresolved-redrive budget preserves
+// recovery without in-line retries; on update a verified handle is already
+// stored from the create that made the row, so a directory that cannot answer
+// right now says nothing about that community and the edit proceeds.
 //
 // The identity is returned even alongside an error, so a caller that tolerates
 // the failure can still hand what came back to admitRecordOrigin — which applies
@@ -476,7 +477,9 @@ func (c *CommunityEventConsumer) handleCommunityProfile(ctx context.Context, did
 func (c *CommunityEventConsumer) resolveVerifiedHandle(ctx context.Context, did string) (*identity.Identity, string, error) {
 	// NO FALLBACK - if PLC is down, we fail and backfill later
 	// This prevents storing incorrect handles in federated scenarios
-	resolved, err := c.identityResolver.Resolve(ctx, did)
+	resolveCtx, cancel := context.WithTimeout(ctx, identityResolveTimeout)
+	defer cancel()
+	resolved, err := c.identityResolver.Resolve(resolveCtx, did)
 	if err != nil {
 		// A MALFORMED IDENTIFIER can never succeed on redrive, so it is the one
 		// resolver failure that is permanent. identity.ErrInvalidIdentifier means
@@ -486,17 +489,18 @@ func (c *CommunityEventConsumer) resolveVerifiedHandle(ctx context.Context, did 
 		// already answered, and a repo emitting malformed DIDs decides how many
 		// times we ask.
 		//
-		// Every OTHER resolver failure stays transient, and that half matters as
-		// much: a directory that is unreachable this instant is exactly what the
-		// redrive exists to repair, and classifying those permanent would
-		// dead-letter every community that happened to arrive during a PLC
-		// outage, silently and for good.
+		// Every OTHER resolver failure is unresolved. The emitting repo decides
+		// how often this path fires, so a plain transient error would grant it
+		// in-line retries on the serial lane. The unresolved budget denies those
+		// retries while retaining UnresolvedRedriveAttempts chances for a genuine
+		// PLC outage to converge.
 		var invalidIdentifier *identity.ErrInvalidIdentifier
 		if errors.As(err, &invalidIdentifier) {
 			return nil, "", fmt.Errorf("%w: resolving community %s: %w (the identifier is malformed, so no "+
 				"redrive can turn this into a success)", ErrPermanentEvent, did, err)
 		}
-		return nil, "", fmt.Errorf("failed to resolve handle from PLC for %s: %w (no fallback - will retry during backfill)", did, err)
+		return nil, "", fmt.Errorf("%w: failed to resolve handle from PLC for %s: %w (no fallback - will retry during backfill)",
+			ErrUnresolvedReference, did, err)
 	}
 
 	verifiedHandle, err := identity.VerifiedHandle(resolved, did)
@@ -506,9 +510,9 @@ func (c *CommunityEventConsumer) resolveVerifiedHandle(ctx context.Context, did 
 				"and its handle must not be indexed under this DID)",
 				ErrPermanentEvent, did, err, resolved.DID)
 		}
-		return resolved, "", fmt.Errorf("resolving the handle of community %s: %w — an empty handle or the reserved %q "+
+		return resolved, "", fmt.Errorf("%w: resolving the handle of community %s: %w — an empty handle or the reserved %q "+
 			"placeholder must never be stored in a unique column (retryable — the directory may verify it later)",
-			did, err, identity.InvalidHandle)
+			ErrUnresolvedReference, did, err, identity.InvalidHandle)
 	}
 
 	return resolved, verifiedHandle, nil
@@ -1288,7 +1292,9 @@ func (c *CommunityEventConsumer) admitRecordOrigin(ctx context.Context, did stri
 	}
 
 	if resolved == nil && c.identityResolver != nil {
-		id, err := c.identityResolver.Resolve(ctx, did)
+		resolveCtx, cancel := context.WithTimeout(ctx, identityResolveTimeout)
+		defer cancel()
+		id, err := c.identityResolver.Resolve(resolveCtx, did)
 		if err != nil {
 			log.Printf("WARNING: dropping origin %q on community %s: could not resolve the repo's identity to check it (%v); indexing without it", profile.Origin, did, err)
 			return "", fallbackPDSURL

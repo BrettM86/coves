@@ -66,12 +66,14 @@ type countingResolver struct {
 	// pdsURL is what the directory says this repo's PDS is. Empty means
 	// untrustedPDS, so the cases that do not care about the PDS read the same
 	// as they always did.
-	pdsURL string
-	calls  int
+	pdsURL      string
+	calls       int
+	capturedCtx context.Context
 }
 
-func (c *countingResolver) Resolve(_ context.Context, did string) (*identity.Identity, error) {
+func (c *countingResolver) Resolve(ctx context.Context, did string) (*identity.Identity, error) {
 	c.calls++
+	c.capturedCtx = ctx
 	pdsURL := c.pdsURL
 	if pdsURL == "" {
 		pdsURL = untrustedPDS
@@ -192,11 +194,10 @@ func TestCommunityProfile_ChecksTheRecordKeyBeforeResolving(t *testing.T) {
 // TestCreateCommunity_ClassifiesAResolverFailureByItsKind is the redrive
 // question: can this event ever succeed if we try again?
 //
-// Every resolver failure is currently answered "yes" — the error is returned
-// unwrapped, and the connector treats anything without ErrPermanentEvent as
-// transient. For a directory that is down that is exactly right, and it must
-// stay right: an outage must not dead-letter the communities that happened to
-// arrive during it.
+// Resolver failures that may recover stay redrivable, but they are unresolved
+// references rather than infrastructure failures. A hostile repo chooses how
+// often its DID is resolved, so in-line retries would hand it serial lane time;
+// the bounded redrive budget preserves genuine recovery without that cost.
 //
 // identity.ErrInvalidIdentifier is a different animal wearing the same coat. It
 // means the string handed to the resolver is not a well-formed handle or DID at
@@ -238,27 +239,68 @@ func TestCreateCommunity_ClassifiesAResolverFailureByItsKind(t *testing.T) {
 		assert.Nil(t, repo.byDID[did])
 	})
 
-	t.Run("a resolution failure stays retryable", func(t *testing.T) {
-		t.Parallel()
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "a resolution failure stays retryable", err: &identity.ErrResolutionFailed{
+			Identifier: "did:plc:directorydown", Reason: "connection refused"}},
+		{name: "a not found result stays retryable", err: &identity.ErrNotFound{
+			Identifier: "did:plc:notfoundyet", Reason: "directory has not observed the DID"}},
+		{name: "a resolution deadline stays retryable", err: context.DeadlineExceeded},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-		repo := newOriginRepo()
-		const did = "did:plc:directorydown"
-		resolver := &erroringResolver{err: &identity.ErrResolutionFailed{
-			Identifier: did,
-			Reason:     "connection refused",
-		}}
-		consumer := NewCommunityEventConsumer(repo, originTestInstance, true, resolver)
+			repo := newOriginRepo()
+			const did = "did:plc:retryableresolution"
+			resolver := &erroringResolver{err: tc.err}
+			consumer := NewCommunityEventConsumer(repo, originTestInstance, true, resolver)
 
-		err := consumer.createCommunity(context.Background(), did,
-			profileCommit("create", "nba", "", nil))
+			err := consumer.createCommunity(context.Background(), did,
+				profileCommit("create", "nba", "", nil))
 
-		require.Error(t, err, "a community whose handle could not be established must not be indexed")
-		assert.NotErrorIs(t, err, ErrPermanentEvent,
-			"the directory being unreachable is a fact about the network at this instant, and the "+
-				"redrive is what repairs it. Dead-lettering here loses every community that arrived "+
-				"during a PLC outage, permanently and silently")
-		assert.Nil(t, repo.byDID[did])
-	})
+			require.Error(t, err, "a community whose handle could not be established must not be indexed")
+			assert.ErrorIs(t, err, ErrUnresolvedReference,
+				"a hostile repo decides how often its identity is resolved; unresolved keeps three redrives but denies it in-line lane retries")
+			assert.NotErrorIs(t, err, ErrPermanentEvent,
+				"the directory may recover or observe the DID later, so bounded classification must not drop the community permanently")
+			assert.Nil(t, repo.byDID[did])
+		})
+	}
+}
+
+func TestCreateCommunity_UnverifiedHandlesAreUnresolvedReferences(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		resolver interface {
+			Resolve(context.Context, string) (*identity.Identity, error)
+		}
+	}{
+		{name: "reserved invalid handle", resolver: &countingResolver{handle: identity.InvalidHandle}},
+		{name: "empty handle", resolver: &countingResolver{handle: ""}},
+		{name: "nil identity", resolver: nilResolver{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			repo := newOriginRepo()
+			consumer := NewCommunityEventConsumer(repo, originTestInstance, true, tc.resolver)
+			err := consumer.HandleEvent(context.Background(), &JetstreamEvent{
+				Did:    "did:plc:unverifiedhandle",
+				Kind:   "commit",
+				Commit: profileCommit("create", "unverified", "", nil),
+			})
+
+			require.Error(t, err, "a community cannot be indexed until resolution establishes a handle")
+			assert.ErrorIs(t, err, ErrUnresolvedReference,
+				"an unverified handle may converge after DNS recovers, but attacker-created profiles must not buy in-line retries on the serial lane")
+			assert.NotErrorIs(t, err, ErrPermanentEvent,
+				"the directory may verify this same DID on redrive, so the profile must not be retired permanently")
+		})
+	}
 }
 
 // TestUpdateCommunity_ClassifiesAResolverFailureByItsKind is the same question

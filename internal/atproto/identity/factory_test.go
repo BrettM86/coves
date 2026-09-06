@@ -100,3 +100,25 @@ func TestNewResolver_HonoursAnExplicitConfiguration(t *testing.T) {
 	assert.Equal(t, 3*time.Second, dir.HTTPClient.Timeout)
 	assert.Equal(t, 90*time.Second, caching.cache.(*postgresCache).ttl)
 }
+
+func TestNewResolver_ConfiguresNegativeCacheTTL(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ttl  time.Duration
+		want time.Duration
+	}{
+		{name: "explicit duration", ttl: 30 * time.Second, want: 30 * time.Second},
+		{name: "zero uses the resolver default", ttl: 0, want: DefaultNegativeCacheTTL},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := DefaultConfig()
+			config.NegativeCacheTTL = tc.ttl
+
+			resolver := NewResolver(nil, config)
+			caching, ok := resolver.(*cachingResolver)
+			require.True(t, ok, "NewResolver must retain the caching wrapper that owns the process-local negative cache")
+			assert.Equal(t, tc.want, caching.negativeTTL,
+				"the factory must carry the configured negative TTL into the resolver rather than silently using its default")
+		})
+	}
+}

@@ -2,21 +2,27 @@ package identity
 
 import (
 	"context"
+	"errors"
 	"log"
+	"sync"
+	"time"
 )
 
 // cachingResolver wraps a base resolver with caching
 type cachingResolver struct {
 	base  Resolver
 	cache IdentityCache
+
+	negativeTTL     time.Duration
+	now             func() time.Time
+	negativeMu      sync.Mutex
+	negativeEntries map[string]negativeCacheEntry
+	negativeOrder   []string
 }
 
 // newCachingResolver creates a new caching resolver
 func newCachingResolver(base Resolver, cache IdentityCache) Resolver {
-	return &cachingResolver{
-		base:  base,
-		cache: cache,
-	}
+	return newCachingResolverWithClock(base, cache, DefaultNegativeCacheTTL, time.Now)
 }
 
 // Resolve resolves a handle or DID to complete identity information
@@ -53,9 +59,16 @@ func (r *cachingResolver) Resolve(ctx context.Context, identifier string) (*Iden
 		}
 	}
 
+	if identity, found, err := r.getNegative(identifier); found {
+		return identity, err
+	}
+
 	// Cache miss - resolve using base resolver
 	identity, err := r.base.Resolve(ctx, identifier)
 	if err != nil {
+		if !errors.Is(ctx.Err(), context.Canceled) {
+			r.storeNegative(identifier, nil, err)
+		}
 		return nil, err
 	}
 
@@ -80,6 +93,8 @@ func (r *cachingResolver) Resolve(ctx context.Context, identifier string) (*Iden
 		if cacheErr := r.cache.Set(ctx, identity); cacheErr != nil {
 			log.Printf("Warning: failed to cache identity for %s: %v", identifier, cacheErr)
 		}
+	} else {
+		r.storeNegative(identifier, identity, nil)
 	}
 
 	return identity, nil
@@ -119,6 +134,8 @@ func (r *cachingResolver) ResolveDID(ctx context.Context, did string) (*DIDDocum
 
 // Purge removes an identifier from the cache and propagates to base
 func (r *cachingResolver) Purge(ctx context.Context, identifier string) error {
+	r.deleteNegative(identifier)
+
 	// Purge from cache
 	if err := r.cache.Purge(ctx, identifier); err != nil {
 		return err

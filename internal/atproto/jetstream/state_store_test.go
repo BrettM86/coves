@@ -255,6 +255,51 @@ func TestPostgresStateStore_RedriveSnapshotExcludesNewArrivals(t *testing.T) {
 	assert.Equal(t, int64(3), next[0].EventTimeUS)
 }
 
+func TestPostgresStateStore_MinimumAgeFiltersRecentDeadLetters(t *testing.T) {
+	t.Parallel()
+
+	db := testkit.DB(t)
+	store := NewPostgresStateStore(db)
+	ctx := context.Background()
+	const consumer = "statestore-test-minimum-age"
+
+	require.NoError(t, store.AddDeadLetter(ctx, consumer, 21_000,
+		[]byte(`{"kind":"commit","time_us":21000}`), "aged failure", 0))
+	require.NoError(t, store.AddDeadLetter(ctx, consumer, 22_000,
+		[]byte(`{"kind":"commit","time_us":22000}`), "fresh failure", 0))
+
+	initial, err := store.ListRetryable(ctx, allRetryableDeadLetters(consumer, MaxRedriveAttempts))
+	require.NoError(t, err)
+	require.Len(t, initial, 2, "the fixture needs one row to age and one to leave fresh")
+	_, err = db.ExecContext(ctx, `
+		UPDATE jetstream_dead_letters
+		SET updated_at = NOW() - INTERVAL '10 minutes'
+		WHERE id = $1`, initial[0].ID)
+	require.NoError(t, err)
+
+	allRows, err := store.ListRetryable(ctx, allRetryableDeadLetters(consumer, MaxRedriveAttempts))
+	require.NoError(t, err)
+	require.Len(t, allRows, 2, "MinimumAge zero must preserve the existing list-all default")
+	assert.NotZero(t, allRows[0].UpdatedAt,
+		"the redriver's age decision needs the row timestamp returned by Postgres, not a zero-value event")
+	assert.NotZero(t, allRows[1].UpdatedAt,
+		"fresh rows also need UpdatedAt populated so callers can explain why they were deferred")
+
+	agedRows, err := store.ListRetryable(ctx, DeadLetterPageQuery{
+		ConsumerName: consumer,
+		MaxAttempts:  MaxRedriveAttempts,
+		ThroughID:    1<<63 - 1,
+		Limit:        100,
+		MinimumAge:   5 * time.Minute,
+	})
+	require.NoError(t, err)
+	if assert.Len(t, agedRows, 1,
+		"a row attempted within five minutes must not burn another redrive while its identity failure is still negatively cached") {
+		assert.Equal(t, initial[0].ID, agedRows[0].ID, "only the ten-minute-old row is eligible")
+		assert.NotZero(t, agedRows[0].UpdatedAt, "the filtered result must retain its database timestamp")
+	}
+}
+
 func TestPostgresStateStore_PrunesRowsOutsideRetentionWindow(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)

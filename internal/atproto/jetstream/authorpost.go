@@ -928,11 +928,6 @@ func (c *PostEventConsumer) hydrateAuthorOpportunistically(ctx context.Context, 
 // a literal that must match what indigo returns.
 const invalidHandle = identity.InvalidHandle
 
-// authorHydrationTimeout bounds the opportunistic identity resolution above.
-// Short on purpose: it is an enrichment on the firehose path, so it must never
-// become the reason events back up.
-const authorHydrationTimeout = 5 * time.Second
-
 // trustedBridgedStats returns the bridged aggregate to apply for an author-repo
 // post, or a nil asOf meaning "leave the stored bridged columns alone".
 //
@@ -1073,14 +1068,14 @@ func (c *PostEventConsumer) handleCommunityDecisionEvent(ctx context.Context, ev
 
 	if _, err := c.communityRepo.GetByDID(ctx, communityDID); err != nil {
 		if communities.IsNotFound(err) {
-			// Transient, and the reason is delivery order rather than leniency:
-			// a community's first acceptance can genuinely outrun its own
-			// profile event, and marking this permanent would spend the redrive
-			// budget that resolves the race and discard a real decision.
+			// This is an unresolved reference caused by delivery order rather
+			// than leniency: a community's first acceptance can genuinely outrun
+			// its own profile event. The bounded redrive budget can resolve that
+			// race without giving attacker-reachable input in-line retries.
 			log.Printf("🚨 SECURITY: refusing %s from %s - not an indexed community repo",
 				commit.Collection, communityDID)
-			return fmt.Errorf("community not found: %s - cannot apply a %s from a repo that is not an indexed community",
-				communityDID, commit.Collection)
+			return fmt.Errorf("%w: community not found: %s - cannot apply a %s from a repo that is not an indexed community",
+				ErrUnresolvedReference, communityDID, commit.Collection)
 		}
 		return fmt.Errorf("%w: failed to verify community %s exists: %v", errValidationInfra, communityDID, err)
 	}
