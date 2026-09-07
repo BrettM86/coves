@@ -989,7 +989,7 @@ const (
 func normalizeAndValidatePostContent(post postContent) error {
 	// Global content limits (from lexicon)
 	const (
-		maxContentLength = 100000 // 100k characters - matches the postv2 lexicon
+		maxContentLength = 500000 // 500k bytes - matches the postv2 lexicon
 		maxTitleLength   = 3000   // 3k bytes
 	)
 

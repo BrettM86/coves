@@ -16,6 +16,29 @@ knownValues). Anything breaking-shaped needs a new NSID.
   live bridge content and clients.
 - **`updateProfile` input takes `bio`; the record stores `description`.** Wire
   truth on both sides.
+- **Post body cap is 50,000 graphemes / 500,000 bytes** (decided 2026-09-07,
+  set on `postv2` before its first publish and raised on `post.create` /
+  `post.update`). Matches Lemmy's 50k post-body limit, the platform we bridge
+  from; the old 10k cap was the comment tier and rejected ~100 live kagi-news
+  digests. `internal/core/posts/service.go` mirrors the byte cap.
+
+## Accepted evolution-rule exceptions
+
+`goat lex breaking` flags these on every run. They were accepted 2026-09-07
+because the published schema described something the AppView never served or
+had already stopped accepting; the local schema is the wire truth. Do not add
+to this list without the same justification.
+
+- **`community` query parameter** on `community.get`, `getMembers`,
+  `getSubscribers`, `subscribe`, `unsubscribe`, `post.create`,
+  `feed.getCommunity`, `aggregator.listForCommunity`: dropped
+  `format: at-identifier` for a plain string so `name@origin` and bare names
+  resolve. Loosens input only; old inputs stay valid.
+- **`embed.external#viewExternal.images[]`** ref moved from `images#image`
+  (blob) to `images#viewImage` (URLs), which is what `projectExternal` has
+  served since the media work.
+- **`content` cap** on `post.create` / `post.update` raised 10k→50k graphemes
+  (see above). Loosens input only.
 
 ## What is published vs held back
 
@@ -108,4 +131,5 @@ goat lex status internal/atproto/lexicon/social/coves
 
 Record updates use the same `goat lex publish --update` — records are keyed by
 NSID and overwritten in place. Run `goat lex breaking` + `goat lex diff` first,
-always.
+always. Anything `breaking` flags that is not in the accepted-exceptions list
+above needs a new NSID, not an `--update`.
