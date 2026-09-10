@@ -38,8 +38,15 @@ func (e *ErrCacheMiss) Error() string {
 type ErrResolutionFailed struct {
 	Identifier string
 	Reason     string
+	// Err is the underlying failure, when there is one. Reason is the text a
+	// human reads; Err is what errors.Is and errors.As match on, so a caller
+	// can still recognise a cancelled context or an upstream sentinel through
+	// this wrapper instead of re-reading Reason as a string.
+	Err error
 }
 
 func (e *ErrResolutionFailed) Error() string {
 	return fmt.Sprintf("resolution failed for %s: %s", e.Identifier, e.Reason)
 }
+
+func (e *ErrResolutionFailed) Unwrap() error { return e.Err }

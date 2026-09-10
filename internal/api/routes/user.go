@@ -73,6 +73,12 @@ func RegisterUserRoutesWithOptions(r chi.Router, service users.UserService, auth
 	// social.coves.actor.getProfile - query endpoint (public, OptionalAuth for viewer state)
 	r.With(authMiddleware.OptionalAuth).Get("/xrpc/social.coves.actor.getProfile", h.GetProfile)
 
+	// com.atproto.identity.resolveHandle - query endpoint (public, unauthenticated).
+	// Part of the atProto identity contract rather than social.coves.*, so it
+	// carries no auth middleware and no dedicated rate limiter.
+	resolveHandleHandler := user.NewResolveHandleHandler(service)
+	r.Get("/xrpc/com.atproto.identity.resolveHandle", resolveHandleHandler.HandleResolveHandle)
+
 	// social.coves.actor.signup - procedure endpoint (public)
 	r.Post("/xrpc/social.coves.actor.signup", h.Signup)
 

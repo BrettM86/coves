@@ -151,6 +151,21 @@ var declaredRoutes = []declaredRoute{
 	// RegisterUserRoutesWithOptions — social.coves.actor.*
 	{http.MethodGet, "/api/me", authRequired, 0, false},
 	{http.MethodGet, "/xrpc/social.coves.actor.getProfile", authOptional, 0, false},
+	// com.atproto.identity.resolveHandle is the one route on this AppView under
+	// the com.atproto.* namespace rather than social.coves.*: it is the standard
+	// atProto handle-to-DID query, and clients expect it at that exact path.
+	// authNone, unlike getProfile beside it, because the answer is a property of
+	// the network's identity layer and not of the caller — there is no viewer
+	// state to personalise, so recognising a session would buy nothing.
+	//
+	// No limiter of its own, which is a weaker claim than the 0 makes it look.
+	// A handle this AppView has indexed is answered from Postgres and is as
+	// cheap as any other read. A handle it has NOT indexed falls through to
+	// external resolution: one DNS query plus an HTTPS fetch against a host the
+	// unauthenticated caller chose. The global 100/min per-IP cap is currently
+	// the only thing bounding that, and it is the reason this line is worth
+	// revisiting rather than a statement that the route is free.
+	{http.MethodGet, "/xrpc/com.atproto.identity.resolveHandle", authNone, 0, false},
 	{http.MethodPost, "/xrpc/social.coves.actor.signup", authNone, 0, false},
 	// The bot gate in front of account creation. Its budget is the whole
 	// mechanism: a Turnstile token buys one PDS invite code, so the cost of

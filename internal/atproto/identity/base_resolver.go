@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -11,9 +12,18 @@ import (
 	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 
+// resolvingDirectory is the directory this resolver needs: Indigo's Directory
+// for DID lookups, plus its Resolver for the handle-to-DID leg, which Resolve
+// drives itself rather than through Directory.LookupHandle. See lookupHandle
+// for why.
+type resolvingDirectory interface {
+	indigoIdentity.Directory
+	indigoIdentity.Resolver
+}
+
 // baseResolver implements Resolver using Indigo's identity resolution
 type baseResolver struct {
-	directory indigoIdentity.Directory
+	directory resolvingDirectory
 }
 
 // newBaseResolver creates a new base resolver using Indigo
@@ -75,23 +85,34 @@ func (r *baseResolver) Resolve(ctx context.Context, identifier string) (*Identit
 		}
 	}
 
-	// Resolve using Indigo's directory
-	ident, err := r.directory.Lookup(ctx, atID)
+	// Resolve using Indigo's directory. A handle takes our own three-step
+	// chain; a DID goes straight through.
+	var ident *indigoIdentity.Identity
+	if handle, handleErr := atID.AsHandle(); handleErr == nil {
+		ident, err = r.lookupHandle(ctx, handle)
+	} else {
+		ident, err = r.directory.Lookup(ctx, atID)
+	}
 	if err != nil {
-		// Check if it's a "not found" error
-		errStr := err.Error()
-		if strings.Contains(errStr, "not found") ||
-			strings.Contains(errStr, "NoRecordsFound") ||
-			strings.Contains(errStr, "404") {
+		// Absence is decided by Indigo's own sentinels, never by the error
+		// text. Matching text was wrong in both directions: an outage message
+		// naming a host like dev404.example.com contains "404", and any
+		// breakage whose message happens to say "not found" read as an
+		// absence. Both mistakes point the same way — an outage reported as a
+		// missing account, then cached as one, leaving a real account
+		// invisible after the outage ends. Anything unrecognised is breakage.
+		if errors.Is(err, indigoIdentity.ErrHandleNotFound) ||
+			errors.Is(err, indigoIdentity.ErrDIDNotFound) {
 			return nil, &ErrNotFound{
 				Identifier: identifier,
-				Reason:     errStr,
+				Reason:     err.Error(),
 			}
 		}
 
 		return nil, &ErrResolutionFailed{
 			Identifier: identifier,
-			Reason:     errStr,
+			Reason:     err.Error(),
+			Err:        err,
 		}
 	}
 
@@ -105,6 +126,50 @@ func (r *baseResolver) Resolve(ctx context.Context, identifier string) (*Identit
 		ResolvedAt: time.Now().UTC(),
 		Method:     MethodHTTPS, // Default - Indigo doesn't expose which method was used
 	}, nil
+}
+
+// lookupHandle is Indigo's BaseDirectory.LookupHandle — resolve the handle to
+// a DID, fetch that DID's document, check the document declares the handle
+// back — with the one hole in it closed.
+//
+// Indigo's ResolveHandle runs a DNS leg and a well-known leg and ends by
+// returning the more helpful of their two errors. A stack that lists its handle
+// domain in SkipDNSDomainSuffixes, as dev and CI both do, never runs the DNS
+// leg, so its error stays nil; an unregistered handle then comes back as an
+// empty DID with NO error at all. Indigo hands that empty string to ResolveDID,
+// which answers "DID method not supported: " — a message carrying no sentinel,
+// which this package must classify as breakage. The result was a 502 at the API
+// boundary for every mistyped handle on those stacks.
+//
+// An empty DID means the handle resolved to nothing, whatever the error slot
+// says, so it is reported as the absence it is.
+func (r *baseResolver) lookupHandle(ctx context.Context, handle syntax.Handle) (*indigoIdentity.Identity, error) {
+	handle = handle.Normalize()
+
+	did, err := r.directory.ResolveHandle(ctx, handle)
+	if err != nil {
+		return nil, err
+	}
+	if did == "" {
+		return nil, fmt.Errorf("%w: %s", indigoIdentity.ErrHandleNotFound, handle)
+	}
+
+	ident, err := r.directory.LookupDID(ctx, did)
+	if err != nil {
+		return nil, err
+	}
+
+	// The handle stays bidirectionally verified: the DID document has to claim
+	// it back, or the pair is a mismatch rather than an identity.
+	declared, err := ident.DeclaredHandle()
+	if err != nil {
+		return nil, fmt.Errorf("could not verify handle/DID match: %w", err)
+	}
+	if declared != handle {
+		return nil, fmt.Errorf("%w: %s != %s", indigoIdentity.ErrHandleMismatch, declared, handle)
+	}
+	ident.Handle = declared
+	return ident, nil
 }
 
 // ResolveHandle specifically resolves a handle to DID and PDS URL
@@ -132,6 +197,7 @@ func (r *baseResolver) ResolveDID(ctx context.Context, didStr string) (*DIDDocum
 		return nil, &ErrResolutionFailed{
 			Identifier: didStr,
 			Reason:     err.Error(),
+			Err:        err,
 		}
 	}
 
