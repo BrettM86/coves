@@ -315,6 +315,7 @@ var declaredRoutes = []declaredRoute{
 
 	// RegisterWebRoutes — the browser-facing pages.
 	{http.MethodGet, "/", authNone, 0, false},
+	{http.MethodHead, "/", authNone, 0, false},
 	{http.MethodGet, "/delete-account", authNone, 0, false},
 	{http.MethodHead, "/delete-account", authNone, 0, false},
 	{http.MethodPost, "/delete-account", authNone, 0, false},

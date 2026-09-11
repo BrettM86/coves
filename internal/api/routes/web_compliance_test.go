@@ -17,7 +17,7 @@ func TestWebCompliancePagesSupportHEAD(t *testing.T) {
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
 
-	for _, path := range []string{"/privacy", "/delete-account", "/delete-account/success", "/safety/child-safety"} {
+	for _, path := range []string{"/", "/privacy", "/delete-account", "/delete-account/success", "/safety/child-safety"} {
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
 			var contentType string
@@ -63,7 +63,7 @@ func TestWebCompliancePOSTMethodsRemainRestricted(t *testing.T) {
 	t.Parallel()
 	router := chi.NewRouter()
 	RegisterWebRoutes(router, nil, nil, "")
-	for _, path := range []string{"/privacy", "/safety/child-safety", "/delete-account/success"} {
+	for _, path := range []string{"/", "/privacy", "/safety/child-safety", "/delete-account/success"} {
 		response := httptest.NewRecorder()
 		router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, nil))
 		if response.Code != http.StatusMethodNotAllowed {

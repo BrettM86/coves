@@ -28,6 +28,7 @@ func RegisterWebRoutes(r chi.Router, oauthClient *oauth.OAuthClient, userService
 
 	// Landing page
 	r.Get("/", handlers.LandingHandler)
+	r.Head("/", handlers.LandingHandler)
 
 	// Account deletion flow
 	r.Get("/delete-account", handlers.DeleteAccountPageHandler)
