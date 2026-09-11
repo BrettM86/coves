@@ -31,14 +31,18 @@ func RegisterWebRoutes(r chi.Router, oauthClient *oauth.OAuthClient, userService
 
 	// Account deletion flow
 	r.Get("/delete-account", handlers.DeleteAccountPageHandler)
+	r.Head("/delete-account", handlers.DeleteAccountPageHandler)
 	r.Post("/delete-account", handlers.DeleteAccountSubmitHandler)
 	r.Get("/delete-account/success", handlers.DeleteAccountSuccessHandler)
+	r.Head("/delete-account/success", handlers.DeleteAccountSuccessHandler)
 
 	// Legal pages
 	r.Get("/privacy", handlers.PrivacyHandler)
+	r.Head("/privacy", handlers.PrivacyHandler)
 
 	// Safety pages
 	r.Get("/safety/child-safety", handlers.ChildSafetyHandler)
+	r.Head("/safety/child-safety", handlers.ChildSafetyHandler)
 
 	// Mobile Turnstile widget host page. Loaded by the Flutter WebView during
 	// signup; success callback posts the token back via the "Turnstile" JS

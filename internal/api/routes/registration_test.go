@@ -316,10 +316,14 @@ var declaredRoutes = []declaredRoute{
 	// RegisterWebRoutes — the browser-facing pages.
 	{http.MethodGet, "/", authNone, 0, false},
 	{http.MethodGet, "/delete-account", authNone, 0, false},
+	{http.MethodHead, "/delete-account", authNone, 0, false},
 	{http.MethodPost, "/delete-account", authNone, 0, false},
 	{http.MethodGet, "/delete-account/success", authNone, 0, false},
+	{http.MethodHead, "/delete-account/success", authNone, 0, false},
 	{http.MethodGet, "/privacy", authNone, 0, false},
+	{http.MethodHead, "/privacy", authNone, 0, false},
 	{http.MethodGet, "/safety/child-safety", authNone, 0, false},
+	{http.MethodHead, "/safety/child-safety", authNone, 0, false},
 	{http.MethodGet, "/m/turnstile.html", authNone, 0, false},
 	{http.MethodGet, "/static/*", authNone, 0, false},
 
