@@ -12,6 +12,8 @@ set -euo pipefail
 OUT_DIR=${COVES_CI_OUT_DIR:-/src/.ci-out}
 RAW="$OUT_DIR/gotest.json"
 SUMMARY="$OUT_DIR/summary.json"
+DEV_RAW="$OUT_DIR/gotest-dev-oauth.json"
+DEV_SUMMARY="$OUT_DIR/summary-dev-oauth.json"
 ALLOWLIST=${COVES_CI_ALLOWLIST:-/src/tests/ci/allowed_skips.txt}
 TEST_TIMEOUT=${COVES_CI_TEST_TIMEOUT:-1800s}
 
@@ -59,6 +61,8 @@ wait_for_stack
 echo "▶ Type-checking every tag set (nothing is executed)..."
 go vet ./...
 echo "  ✓ untagged (unit tier)"
+go vet -tags dev ./...
+echo "  ✓ -tags dev"
 go vet -tags integration ./...
 echo "  ✓ -tags integration"
 go vet -tags e2e ./tests/e2e/...
@@ -194,6 +198,11 @@ go test -json -tags integration $TEST_FLAGS -count=1 -timeout "$TEST_TIMEOUT" \
     ./cmd/... ./internal/... ./tests/... \
     >>"$RAW" 2>&1
 integration_status=$?
+# Keep this stream separate: ci-report keys by package/test, so a second
+# build of the same package must not overwrite an earlier test outcome.
+go test -json -tags dev -count=1 -timeout "$TEST_TIMEOUT" \
+    ./internal/atproto/oauth >"$DEV_RAW" 2>&1
+dev_status=$?
 run_pipeline_tier -json >>"$RAW" 2>&1
 e2e_status=$?
 set -e
@@ -223,6 +232,8 @@ set +e
     -allow-stale "${COVES_CI_ALLOW_STALE:-false}" \
     <"$RAW"
 report_status=$?
+/tmp/ci-report -allowlist /dev/null -summary "$DEV_SUMMARY" <"$DEV_RAW"
+dev_report_status=$?
 set -e
 
 # ---------------------------------------------------------------------------
@@ -247,6 +258,10 @@ set -e
 # An ordinary failing test satisfies neither rule (status 1, report not ok), so
 # it is still reported by ci-report in ci-report's own words.
 gate_status=$report_status
+if [ "$dev_status" -ne 0 ] || [ "$dev_report_status" -ne 0 ]; then
+    echo "✗ development OAuth gate failed (test exit $dev_status, report exit $dev_report_status)"
+    gate_status=1
+fi
 
 for tier_status in "integration:$integration_status" "e2e:$e2e_status"; do
     tier=${tier_status%%:*}

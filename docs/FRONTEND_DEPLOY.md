@@ -110,14 +110,39 @@ force-recreate caddy again; the catch-all goes back to the AppView. This leaves 
 dirty — before the next `/deploy`, either `git checkout -- Caddyfile` (re-applies the cutover)
 or land a proper revert commit.
 
-## Known follow-up: OAuth `redirect_uri` / `state` are ignored by the web login
+## Web OAuth return pages and errors
 
-The frontend's `POST /api/auth/login` starts OAuth at
-`/oauth/login?handle=…&redirect_uri=<origin>/api/auth/callback&state=…`. The backend's web
-`HandleLogin` (`internal/atproto/oauth/handlers.go`) reads only `?redirect=` (a local path) and
-its callback lands the user on `APPVIEW_PUBLIC_URL/`. Login still works — the `coves_session`
-cookie is set on the shared origin and the frontend's `hooks.server.ts` validates it via
-`/api/me` — but the frontend's CSRF-state check in `/api/auth/callback` never runs and the
-user always lands on `/` instead of the page they were on. Fix on either side (backend honours
-`state` + a same-origin `redirect_uri`, or the frontend sends `?redirect=<local path>` and drops
-its callback route); tracked as a post-launch item, not a blocker.
+The frontend starts web login at `/oauth/login?handle=…&redirect=<local path>`.
+Go owns the OAuth transaction: it saves the validated return path and an expiring
+browser binding with the provider's OAuth request. The callback claims that
+binding once before exchanging the code or issuing `coves_session`. Success
+returns to the saved path, including its query and fragment. Failed login returns
+to `/login?error=<known-code>&redirect=<saved-path>` so the frontend can explain
+the failure and retain the destination for retry. Invalid or unrelated callbacks
+use `/` as the retry destination and do not clear another pending login cookie.
+A new login replaces the browser's binding cookie, so only the newest attempt
+can complete from that browser; the earlier attempt's server-side binding stays
+claimable by its original cookie value until it expires (10 minutes). The
+binding cookie is scoped to `/oauth`, so browsers send it only to Go's OAuth
+routes and never to the SvelteKit server.
+The login page consumes the error query parameter and clears the message before
+retry, so reload/back navigation does not restore an old failure. Invalid or
+expired browser bindings use `invalid_request`; storage and configuration
+failures use `server_error` and produce sanitized operational diagnostics.
+
+Apply migration `047_web_oauth_binding.sql` before deploying the backend change.
+Deploy the matching frontend and backend together; there is no frontend OAuth
+callback route or additional frontend callback URI to register. The provider's
+registered callback remains `/oauth/callback` on `APPVIEW_PUBLIC_URL`.
+`PUBLIC_INSTANCE_URL` must name that same browser origin; production uses HTTPS
+and secure cookies. Keep `/oauth/*` routed to Go and `/api/auth/*` to SvelteKit.
+
+Local development uses the configured local PDS and PLC through the same proxy
+arrangement. Keep the browser origin on `127.0.0.1` to match the local OAuth
+callback; mixing it with `localhost` would separate their host-only cookies.
+No public Bluesky resolver or production configuration is required for this flow.
+
+Mobile continues to use `/oauth/mobile/login` and the existing callback allowlist.
+Valid mobile completion and error handoffs are separate from the web transaction;
+a rejected mobile callback cannot fall back to creating a web session. This does
+not add callback registrations for third-party mobile clients.

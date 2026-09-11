@@ -27,6 +27,7 @@ import (
 var _ oauth.UserIndexer = (users.UserService)(nil)
 
 func main() {
+	slog.SetDefault(slog.New(oauth.NewOAuthLogHandler(slog.NewTextHandler(os.Stderr, nil))))
 	if err := run(); err != nil {
 		slog.Error("server failed to start", "error", err)
 		os.Exit(1)

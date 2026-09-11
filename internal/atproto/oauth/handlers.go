@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"Coves/internal/api/reqbody"
 	coreerrors "Coves/internal/core/errors"
@@ -320,7 +321,8 @@ func (h *OAuthHandler) HandleClientJWKS(w http.ResponseWriter, r *http.Request) 
 }
 
 // HandleLogin starts the OAuth flow (web version)
-// GET /oauth/login?handle=user.bsky.social
+// GET /oauth/login?handle=user.bsky.social&redirect=/saved
+// redirect must be a local path; it is bound to the pending browser transaction.
 func (h *OAuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -334,54 +336,81 @@ func (h *OAuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	data := WebOAuthData{ReturnURL: safeWebReturnURL(r.URL.Query().Get("redirect")), ExpiresAt: time.Now().Add(webOAuthLifetime)}
+	// Seed the return destination first so every failure below, including a
+	// misconfigured origin or an entropy failure, preserves the retry
+	// destination; replace it with the bound data once the nonce exists.
+	ctx = context.WithValue(ctx, webFlowContextKey{}, data)
+	r = r.WithContext(ctx)
+
+	// Indigo reports a malformed identifier with an untyped error, so validate
+	// the user's input here to classify it (and never log its text).
+	if !strings.HasPrefix(identifier, "https://") {
+		if _, parseErr := syntax.ParseAtIdentifier(identifier); parseErr != nil {
+			logOAuthFailure(ctx, "login_start", fmt.Errorf("%w: %w", ErrLoginIdentifierInvalid, parseErr))
+			h.webErrorRedirect(w, r, "invalid_request")
+			return
+		}
+	}
+
+	// The host-only browser binding must be created on the configured callback
+	// origin. Dev URLs can be reached under several local hostnames, so dev
+	// canonicalizes; production only warns, because a mismatched Host means the
+	// binding cookie will never reach the callback.
+	publicURL, err := url.Parse(h.client.Config.PublicURL)
+	if err == nil && (publicURL.Host == "" || (publicURL.Scheme != "http" && publicURL.Scheme != "https")) {
+		err = errors.New("configured public URL must be an absolute http or https URL")
+	}
+	if h.client.Config.DevMode && err != nil {
+		logOAuthFailure(ctx, "login_start", err)
+		h.webErrorRedirect(w, r, "server_error")
+		return
+	}
+	if err == nil && r.Host != publicURL.Host {
+		slog.Warn("web OAuth login host differs from configured public URL", "operation", "login_start", "category", "host")
+		if h.client.Config.DevMode {
+			target := publicURL.ResolveReference(&url.URL{Path: "/oauth/login"})
+			query := url.Values{"handle": {identifier}, "redirect": {data.ReturnURL}}
+			target.RawQuery = query.Encode()
+			http.Redirect(w, r, target.String(), http.StatusFound)
+			return
+		}
+	}
+
+	nonce, err := generateCSRFToken()
+	if err != nil {
+		h.webErrorRedirect(w, r, "server_error")
+		return
+	}
+	data.BrowserNonce = nonce
+	ctx = context.WithValue(ctx, webFlowContextKey{}, data)
+	r = r.WithContext(ctx)
+
+	receipt := &webPersistenceReceipt{err: errors.New("web OAuth binding was not persisted")}
+	ctx = context.WithValue(ctx, webPersistenceContextKey{}, receipt)
+	r = r.WithContext(ctx)
 	var redirectURL string
-	var err error
-
-	// DEV MODE: Use custom OAuth flow that bypasses HTTPS validation
-	// This is needed because:
-	// 1. Local handles can't be resolved via DNS/HTTP well-known
-	// 2. Indigo's OAuth library requires HTTPS for auth servers
 	if h.devAuthResolver != nil {
-		slog.Info("dev mode: using localhost OAuth flow", "identifier", identifier)
 		redirectURL, err = h.devAuthResolver.StartDevAuthFlow(ctx, h.client, identifier, h.client.ClientApp.Dir)
-		if err != nil {
-			slog.Error("dev mode: failed to start OAuth flow", "error", err, "identifier", identifier)
-			http.Error(w, fmt.Sprintf("failed to start OAuth flow: %v", err), http.StatusBadRequest)
-			return
-		}
 	} else {
-		// Production mode: use standard indigo OAuth flow
 		redirectURL, err = h.client.ClientApp.StartAuthFlow(ctx, identifier)
-		if err != nil {
-			slog.Error("failed to start OAuth flow", "error", err, "identifier", identifier)
-			http.Error(w, fmt.Sprintf("failed to start OAuth flow: %v", err), http.StatusBadRequest)
+	}
+	if err != nil || receipt.err != nil {
+		failure := err
+		if failure == nil {
+			failure = receipt.err
+		}
+		logOAuthFailure(ctx, "login_start", failure)
+		// An identifier that does not resolve is the user's to fix; everything
+		// else is ours.
+		if isIdentityResolutionFailure(failure) {
+			h.webErrorRedirect(w, r, "invalid_request")
 			return
 		}
+		h.webErrorRedirect(w, r, "server_error")
+		return
 	}
-
-	// Log OAuth flow initiation (sanitized - no full URL to avoid leaking state)
-	slog.Info("redirecting to PDS for OAuth", "identifier", identifier)
-
-	// Store post-login redirect URL in cookie if provided
-	// This allows redirecting to a specific page after OAuth completes (e.g., /delete-account)
-	// Only a genuinely local path may be stored; anything else is an open
-	// redirect waiting for the callback to honor it. Whenever we do NOT store a
-	// fresh validated target we must expire the cookie instead of leaving it
-	// alone, or a target planted by an earlier visit survives into this login.
-	postLoginRedirect := r.URL.Query().Get("redirect")
-	if cookie := postLoginRedirectCookie(postLoginRedirect, !h.client.Config.DevMode); cookie != nil {
-		http.SetCookie(w, cookie)
-	} else {
-		if postLoginRedirect != "" {
-			// Never log the value or any prefix of it: it is attacker-chosen
-			// and would put an off-origin URL into the logs verbatim.
-			slog.Warn("rejected unsafe post-login redirect target",
-				"site", "login", "len", len(postLoginRedirect))
-		}
-		http.SetCookie(w, expirePostLoginRedirectCookie())
-	}
-
-	// Redirect to PDS
+	http.SetCookie(w, newWebBindingCookie(nonce, !h.client.Config.DevMode))
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 
@@ -562,6 +591,46 @@ func (h *OAuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Classification comes from persisted mobile data, never browser cookies.
+	if mobileDataLookupErr != nil {
+		logOAuthFailure(ctx, "mobile_lookup", mobileDataLookupErr)
+		h.webErrorRedirect(w, r, "server_error")
+		return
+	}
+	if serverMobileData == nil {
+		cookie, cookieErr := r.Cookie(webOAuthCookieName)
+		webStore, supportsWeb := h.store.(WebOAuthStore)
+		if cookieErr != nil || cookie.Value == "" || oauthState == "" {
+			category := "cookie"
+			if oauthState == "" {
+				category = "state"
+			}
+			slog.Warn("web OAuth callback rejected", "operation", "binding_claim", "category", category)
+			h.webErrorRedirect(w, r, "invalid_request")
+			return
+		}
+		if !supportsWeb {
+			slog.Error("web OAuth store unavailable", "operation", "binding_claim", "category", "store")
+			h.webErrorRedirect(w, r, "server_error")
+			return
+		}
+		data, claimErr := webStore.ClaimWebOAuthData(ctx, oauthState, cookie.Value)
+		if errors.Is(claimErr, ErrAuthRequestNotFound) {
+			slog.Warn("web OAuth binding rejected", "operation", "binding_claim", "category", "binding")
+			h.webErrorRedirect(w, r, "invalid_request")
+			return
+		}
+		if claimErr != nil || data == nil {
+			logOAuthFailure(ctx, "binding_claim", claimErr)
+			h.webErrorRedirect(w, r, "server_error")
+			return
+		}
+		ctx = context.WithValue(ctx, webFlowContextKey{}, *data)
+		ctx = context.WithValue(ctx, claimedWebFlowContextKey{}, *data)
+		r = r.WithContext(ctx)
+		http.SetCookie(w, expiredWebBindingCookie(!h.client.Config.DevMode))
+	}
+
 	// Authorization server errors (user cancelled/denied, expired request, ...)
 	// arrive as ?error=...&error_description=... instead of a code. Send the
 	// user back to the client instead of stranding them on a raw error page.
@@ -576,24 +645,15 @@ func (h *OAuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		rawDesc := r.URL.Query().Get("error_description")
 		errCode, errDesc := clampOAuthError(asError, rawDesc)
 		slog.Info("OAuth callback returned authorization server error",
-			"error", asError, "clamped_error", errCode, "description", rawDesc)
+			"code", errCode)
 
 		// (a) Forged or expired: no state, or no pending auth request for it.
 		// Do NOT clear mobile cookies (a forged request must not kill an
 		// in-flight login) and do NOT redirect into the app.
-		if oauthState == "" || (h.mobileStore != nil && mobileDataLookupErr == nil && !stateRowExists) {
+		if oauthState == "" || (h.mobileStore != nil && !stateRowExists) {
 			slog.Warn("OAuth callback error without matching pending auth request - possible forged callback",
-				"error", asError, "state_present", oauthState != "", "had_mobile_cookie", hadMobileCookie)
+				"code", errCode, "state_present", oauthState != "", "had_mobile_cookie", hadMobileCookie)
 			h.webErrorRedirect(w, r, "invalid_request")
-			return
-		}
-
-		// Lookup failed: we cannot tell a real callback from a forged one, so
-		// keep cookies intact and degrade to a generic web error.
-		if mobileDataLookupErr != nil {
-			slog.Warn("failed to look up OAuth request state while handling authorization server error",
-				"error", mobileDataLookupErr, "had_mobile_cookie", hadMobileCookie)
-			h.webErrorRedirect(w, r, "server_error")
 			return
 		}
 
@@ -606,7 +666,7 @@ func (h *OAuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		// (c) Pending row without mobile data (web flow), or no mobile store to
 		// correlate against: end the flow on the web side, not a raw text page.
 		slog.Info("returning OAuth error to web client",
-			"error", errCode, "had_mobile_cookie", hadMobileCookie)
+			"code", errCode, "had_mobile_cookie", hadMobileCookie)
 		clearMobileCookies(w)
 		h.webErrorRedirect(w, r, errCode)
 		return
@@ -615,18 +675,14 @@ func (h *OAuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	// Process the callback (this deletes the oauth_requests row)
 	sessData, err := h.client.ClientApp.ProcessCallback(ctx, r.URL.Query())
 	if err != nil {
-		slog.Error("failed to process OAuth callback", "error", err)
-		if mobileDataLookupErr != nil {
-			slog.Warn("mobile OAuth data lookup had failed before callback processing",
-				"error", mobileDataLookupErr, "had_mobile_cookie", hadMobileCookie)
-		}
+		logOAuthFailure(ctx, "callback", err)
 		// Give mobile flows closure in the app rather than a dead-end page.
 		// Details stay in the server log; the client only gets a generic code.
 		if h.redirectMobileError(w, r, serverMobileData, "server_error", "OAuth callback failed") {
 			return
 		}
 		slog.Info("returning OAuth error to web client",
-			"error", "server_error", "had_mobile_cookie", hadMobileCookie)
+			"code", "server_error", "had_mobile_cookie", hadMobileCookie)
 		clearMobileCookies(w)
 		h.webErrorRedirect(w, r, "server_error")
 		return
@@ -635,7 +691,9 @@ func (h *OAuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	// Ensure sessData is not nil before using it
 	if sessData == nil {
 		slog.Error("OAuth callback returned nil session data")
-		http.Error(w, "OAuth callback failed: no session data", http.StatusInternalServerError)
+		if !h.redirectMobileError(w, r, serverMobileData, "server_error", "OAuth callback failed") {
+			h.webErrorRedirect(w, r, "server_error")
+		}
 		return
 	}
 
@@ -664,7 +722,9 @@ func (h *OAuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 			// Directory lookup failed - this is a hard error for security
 			slog.Error("OAuth callback: DID lookup failed during handle verification",
 				"did", sessData.AccountDID, "error", err)
-			http.Error(w, "Handle verification failed", http.StatusUnauthorized)
+			if !h.redirectMobileError(w, r, serverMobileData, "server_error", "OAuth callback failed") {
+				h.webErrorRedirect(w, r, "server_error")
+			}
 			return
 		}
 
@@ -706,7 +766,9 @@ func (h *OAuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 				"did", sessData.AccountDID,
 				"handle", "handle.invalid",
 				"reason", "DID document claims a handle that doesn't resolve back to this DID")
-			http.Error(w, "Handle verification failed: DID/handle mismatch", http.StatusUnauthorized)
+			if !h.redirectMobileError(w, r, serverMobileData, "server_error", "OAuth callback failed") {
+				h.webErrorRedirect(w, r, "server_error")
+			}
 			return
 		}
 
@@ -746,16 +808,16 @@ handleVerificationPassed:
 				return
 			}
 			slog.Info("returning OAuth error to web client",
-				"error", "server_error", "had_mobile_cookie", hadMobileCookie)
+				"code", "server_error", "had_mobile_cookie", hadMobileCookie)
 			clearMobileCookies(w)
 			h.webErrorRedirect(w, r, "server_error")
 			return
 		}
 	}
 
-	// Check if this is a mobile callback (check for mobile_redirect_uri cookie)
+	// Server data classifies mobile flows; cookies must also prove the browser binding.
 	mobileRedirect, err := r.Cookie("mobile_redirect_uri")
-	if err == nil && mobileRedirect.Value != "" {
+	if serverMobileData != nil && err == nil && mobileRedirect.Value != "" {
 		// SECURITY FIX 2: Validate CSRF token for mobile callback
 		csrfCookie, err := r.Cookie("oauth_csrf")
 		if err != nil {
@@ -804,35 +866,16 @@ handleVerificationPassed:
 		// (which comes back through the OAuth response), satisfying the requirement to
 		// validate against server-side state rather than only against other cookies.
 		//
-		// CRITICAL: If mobile cookies are present but server-side mobile data is MISSING,
-		// this indicates a potential attack where:
-		// 1. Attacker did a WEB OAuth flow (no mobile data stored)
-		// 2. Attacker planted mobile cookies via cross-site /oauth/mobile/login
-		// 3. Attacker sends victim to callback with attacker's web-flow state/code
-		// We MUST fail closed and use web flow when server-side mobile data is missing.
+		// This branch runs only when persisted mobile data classified the flow,
+		// so attacker-planted mobile cookies on a web-started state never reach
+		// it. Cookies that disagree with the persisted data fall through to
+		// handleWebCallback, which rejects any completion the web flow did not
+		// claim and discards the session Indigo just persisted.
 		//
 		// NOTE: serverMobileData was fetched BEFORE ProcessCallback (which deletes the row)
 		// at the top of this function. We use the pre-fetched result here.
 		if h.mobileStore != nil && oauthState != "" {
-			if mobileDataLookupErr != nil {
-				// Database error - fail closed, use web flow
-				slog.Warn("failed to retrieve server-side mobile OAuth data - using web flow",
-					"error", mobileDataLookupErr, "state", oauthState)
-				clearMobileCookies(w)
-				h.handleWebCallback(w, r, sessData)
-				return
-			}
-			if serverMobileData == nil {
-				// No server-side mobile data for this state - this OAuth flow was NOT started
-				// via /oauth/mobile/login. Mobile cookies are likely attacker-planted.
-				// Fail closed: clear cookies and use web flow.
-				slog.Warn("mobile cookies present but no server-side mobile data for OAuth state - "+
-					"possible cross-flow attack, using web flow", "state", oauthState)
-				clearMobileCookies(w)
-				h.handleWebCallback(w, r, sessData)
-				return
-			}
-			// Server-side mobile data exists - validate it matches cookies
+			// Validate that the persisted mobile data matches the cookies
 			if !constantTimeCompare(csrfCookie.Value, serverMobileData.CSRFToken) {
 				slog.Warn("mobile callback CSRF mismatch: cookie differs from server-side state",
 					"state", oauthState)
@@ -870,6 +913,16 @@ handleVerificationPassed:
 
 // handleWebCallback handles the web OAuth callback flow
 func (h *OAuthHandler) handleWebCallback(w http.ResponseWriter, r *http.Request, sessData *oauth.ClientSessionData) {
+	if _, claimed := r.Context().Value(claimedWebFlowContextKey{}).(WebOAuthData); !claimed {
+		// Indigo already persisted this session during ProcessCallback. A
+		// completion no web browser claimed must not leave those tokens behind.
+		slog.Warn("web OAuth completion rejected without a claimed browser binding", "operation", "callback", "category", "binding")
+		if err := h.store.DeleteSession(r.Context(), sessData.AccountDID, sessData.SessionID); err != nil {
+			logOAuthFailure(r.Context(), "callback", err)
+		}
+		h.webErrorRedirect(w, r, "invalid_request")
+		return
+	}
 	// Use sealed tokens for web flow (same as mobile) per atProto OAuth spec:
 	// "Access and refresh tokens should never be copied or shared across end devices.
 	// They should not be stored in session cookies."
@@ -882,7 +935,7 @@ func (h *OAuthHandler) handleWebCallback(w http.ResponseWriter, r *http.Request,
 	)
 	if err != nil {
 		slog.Error("failed to seal session for web", "error", err)
-		http.Error(w, "failed to create session", http.StatusInternalServerError)
+		h.webErrorRedirect(w, r, "server_error")
 		return
 	}
 
@@ -899,34 +952,8 @@ func (h *OAuthHandler) handleWebCallback(w http.ResponseWriter, r *http.Request,
 	// Clear all mobile cookies if they exist (defense in depth)
 	clearMobileCookies(w)
 
-	// Check for post-login redirect cookie
-	redirectURL := "/"
-	if redirectCookie, err := r.Cookie(postLoginRedirectCookieName); err == nil && redirectCookie.Value != "" {
-		// The write site stores the target percent-encoded, so decode before
-		// validating — never instead of validating. A value that does not
-		// decode is refused rather than guessed at. Unescaping is a no-op for
-		// an unencoded legacy cookie, which therefore still works.
-		//
-		// Validation is "is this a genuinely local path", not merely
-		// slash-prefixed: "//host" is a scheme-relative URL a browser resolves
-		// off-origin. An unsafe value falls back to "/" rather than being
-		// partially sanitized.
-		decoded, decodeErr := url.QueryUnescape(redirectCookie.Value)
-		if decodeErr == nil && isSafeLocalPath(decoded) {
-			redirectURL = decoded
-		} else {
-			// Never log the value or any prefix of it: it is attacker-chosen.
-			slog.Warn("rejected unsafe post-login redirect target",
-				"site", "callback", "len", len(redirectCookie.Value))
-		}
-		// Clear the one-shot redirect cookie
-		http.SetCookie(w, expirePostLoginRedirectCookie())
-	}
-
-	// Add base URL for production
-	if !h.client.Config.DevMode && redirectURL == "/" {
-		redirectURL = h.client.Config.PublicURL + "/"
-	}
+	data, _ := r.Context().Value(webFlowContextKey{}).(WebOAuthData)
+	redirectURL := safeWebReturnURL(data.ReturnURL)
 	http.Redirect(w, r, redirectURL, http.StatusFound)
 }
 
@@ -955,14 +982,13 @@ func clampOAuthError(code, description string) (string, string) {
 	return "server_error", ""
 }
 
-// webErrorRedirect ends a failed OAuth flow on the web side: it clamps the
-// error code to a known OAuth code and redirects to the web app root with
-// ?oauth_error=<code>, mirroring handleWebCallback's PublicURL/DevMode
-// handling (absolute PublicURL in production, relative path in dev).
-// It does NOT touch cookies; callers decide whether to clear mobile cookies.
+// webErrorRedirect returns a known error and revalidated saved destination to
+// the login page. It never clears cookies: an invalid callback may belong to
+// a different attempt than the browser's active transaction.
 func (h *OAuthHandler) webErrorRedirect(w http.ResponseWriter, r *http.Request, errCode string) {
 	code, _ := clampOAuthError(errCode, "")
-	target := "/?oauth_error=" + url.QueryEscape(code)
+	data, _ := r.Context().Value(webFlowContextKey{}).(WebOAuthData)
+	target := "/login?" + url.Values{"error": {code}, "redirect": {safeWebReturnURL(data.ReturnURL)}}.Encode()
 	if !h.client.Config.DevMode {
 		target = h.client.Config.PublicURL + target
 	}
@@ -1045,7 +1071,7 @@ func (h *OAuthHandler) redirectMobileError(w http.ResponseWriter, r *http.Reques
 	}
 
 	slog.Info("redirecting OAuth error to mobile app",
-		"error", errCode, "scheme", extractScheme(redirectURI))
+		"code", errCode, "scheme", extractScheme(redirectURI))
 	http.Redirect(w, r, errorURL, http.StatusFound)
 	return true
 }

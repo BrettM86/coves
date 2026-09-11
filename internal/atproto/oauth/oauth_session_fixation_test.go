@@ -295,7 +295,7 @@ func TestOAuth_SessionFixationAttackPrevention(t *testing.T) {
 // session ended the flow without leaking anything to an attacker.
 //
 // A failed ProcessCallback no longer renders a raw 400: HandleCallback answers
-// with a first-party 302 to /?oauth_error=<generic code> so the user lands back
+// with a first-party 302 to /login?error=<generic code> so the user lands back
 // in the app instead of on a dead-end error page. So the status code proves
 // nothing on its own - the DESTINATION is the security property. A mobile
 // redirect is only ever chosen from SERVER-SIDE data keyed by the OAuth state,
@@ -316,7 +316,7 @@ func assertCallbackEndedSafely(t *testing.T, rec *httptest.ResponseRecorder, for
 		// other origin or a custom deep-link scheme.
 		assert.True(t, strings.HasPrefix(location, "/") && !strings.HasPrefix(location, "//"),
 			"Failed callback should redirect to a first-party path, got %q", location)
-		assert.Contains(t, location, "oauth_error=",
+		assert.Contains(t, location, "/login?error=",
 			"Failed callback should redirect to the generic OAuth error target, got %q", location)
 	}
 

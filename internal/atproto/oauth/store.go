@@ -537,7 +537,20 @@ func NewMobileAwareStoreWrapper(store oauth.ClientAuthStore) *MobileAwareStoreWr
 func (w *MobileAwareStoreWrapper) SaveAuthRequestInfo(ctx context.Context, info oauth.AuthRequestData) error {
 	// First, save the auth request to the underlying store
 	if err := w.ClientAuthStore.SaveAuthRequestInfo(ctx, info); err != nil {
+		if receipt, ok := ctx.Value(webPersistenceContextKey{}).(*webPersistenceReceipt); ok {
+			receipt.err = err
+		}
 		return err
+	}
+
+	if webData, ok := ctx.Value(webFlowContextKey{}).(WebOAuthData); ok {
+		err := w.SaveWebOAuthData(ctx, info.State, webData)
+		if receipt, ok := ctx.Value(webPersistenceContextKey{}).(*webPersistenceReceipt); ok {
+			receipt.err = err
+		}
+		if err != nil {
+			return err
+		}
 	}
 
 	// Check if this is a mobile flow (mobile data in context)

@@ -208,7 +208,7 @@ func (r *DevAuthResolver) StartDevAuthFlow(ctx context.Context, client *OAuthCli
 			return "", fmt.Errorf("failed to resolve handle via PDS (%s): %w", identifier, err)
 		}
 		if did == "" {
-			return "", fmt.Errorf("handle not found: %s", identifier)
+			return "", fmt.Errorf("%w: %s", identity.ErrHandleNotFound, identifier)
 		}
 
 		slog.Info("dev mode: resolved handle via local PDS", "handle", identifier, "did", did)

@@ -74,7 +74,7 @@ Coves has two separate OAuth systems that serve different purposes:
 | **First-Party OAuth** | Authenticate users for Coves web UI | `internal/core/oauth/` | Coves issues tokens |
 | **Third-Party OAuth** | Validate tokens from external apps | *To be implemented* | User's PDS issues tokens |
 
-**First-party OAuth** is for if/when you build a Coves web frontend. It implements the **client side** of OAuth (login flows, token refresh, etc.).
+**First-party OAuth** serves the Coves web frontend (`coves-frontend`; see `docs/FRONTEND_DEPLOY.md` for the web login flow). It implements the **client side** of OAuth (login flows, token refresh, etc.).
 
 **Third-party OAuth validation** is for the **server side** - validating incoming tokens from arbitrary clients you didn't build.
 
@@ -84,7 +84,7 @@ Coves has two separate OAuth systems that serve different purposes:
 
 #### 1. First-Party OAuth (Client-Side)
 - **Location**: `internal/core/oauth/`, `internal/api/handlers/oauth/`
-- **Purpose**: For a potential Coves web frontend
+- **Purpose**: Web login for `coves-frontend` (flow documented in `docs/FRONTEND_DEPLOY.md`)
 - **What it does**:
   - Login flows (`/oauth/login`, `/oauth/callback`)
   - Session management (cookie + database)

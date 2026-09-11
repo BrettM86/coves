@@ -58,6 +58,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -104,6 +105,7 @@ const rematerializeAdvisoryLock int64 = 0x52454d4154 // "REMAT"
 const perRecordTimeout = 5 * time.Minute
 
 func main() {
+	slog.SetDefault(slog.New(oauth.NewOAuthLogHandler(slog.NewTextHandler(os.Stderr, nil))))
 	communityFilter := flag.String("community", "",
 		"restrict the run to a single community DID (a staged rollout); empty means every hosted community")
 	dryRun := flag.Bool("dry-run", false,

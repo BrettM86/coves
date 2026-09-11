@@ -26,7 +26,7 @@ import (
 //   - Mobile flows are qualified by SERVER-STORED data (keyed by OAuth state),
 //     not by cookies. Zero cookies must still redirect errors into the app.
 //   - Forged callbacks (no state, or state with no pending auth request) go to
-//     the web root with ?oauth_error=invalid_request and must NOT clear mobile
+//     the web login page with ?error=invalid_request and must NOT clear mobile
 //     cookies or redirect into the app.
 //   - Error codes are clamped to a known OAuth allowlist; unknown codes become
 //     server_error and their description is dropped.
@@ -181,7 +181,7 @@ func TestHandleCallback_AuthServerErrorRedirects(t *testing.T) {
 		// cookies attached to the request (nil = zero cookies)
 		cookies func(*http.Request)
 		// wantAppRedirect: Location must target the server-stored mobile URI;
-		// otherwise Location must be the web root and never the custom scheme.
+		// otherwise Location must be the web login page and never the custom scheme.
 		wantAppRedirect bool
 		// expected query params in the Location URL (exact match per key)
 		wantParams map[string]string
@@ -223,7 +223,7 @@ func TestHandleCallback_AuthServerErrorRedirects(t *testing.T) {
 			seed:               nil,
 			cookies:            validMobileCookies,
 			wantAppRedirect:    false,
-			wantParams:         map[string]string{"oauth_error": "invalid_request"},
+			wantParams:         map[string]string{"error": "invalid_request"},
 			wantCookiesCleared: false,
 		},
 		{
@@ -233,7 +233,7 @@ func TestHandleCallback_AuthServerErrorRedirects(t *testing.T) {
 			seed:               nil,
 			cookies:            validMobileCookies,
 			wantAppRedirect:    false,
-			wantParams:         map[string]string{"oauth_error": "invalid_request"},
+			wantParams:         map[string]string{"error": "invalid_request"},
 			wantCookiesCleared: false,
 		},
 		{
@@ -258,7 +258,7 @@ func TestHandleCallback_AuthServerErrorRedirects(t *testing.T) {
 				// mobile_redirect_binding deliberately absent
 			},
 			wantAppRedirect:    false,
-			wantParams:         map[string]string{"oauth_error": "access_denied"},
+			wantParams:         map[string]string{"error": "access_denied"},
 			wantCookiesCleared: true,
 		},
 		{
@@ -274,15 +274,15 @@ func TestHandleCallback_AuthServerErrorRedirects(t *testing.T) {
 		},
 		{
 			// pending row WITHOUT mobile data = web flow: end on the web side
-			name:   "web flow row redirects error to web root and clears mobile cookies",
+			name:   "unbound web row rejects callback and preserves active cookies",
 			target: "/oauth/callback?state=state-w&error=access_denied",
 			seed: func(s *fakeMobileAuthStore) {
 				s.seedWebFlowRow("state-w")
 			},
 			cookies:            nil,
 			wantAppRedirect:    false,
-			wantParams:         map[string]string{"oauth_error": "access_denied"},
-			wantCookiesCleared: true,
+			wantParams:         map[string]string{"error": "invalid_request"},
+			wantCookiesCleared: false,
 		},
 		{
 			// store lookup failure: cannot distinguish real from forged, so keep
@@ -294,7 +294,7 @@ func TestHandleCallback_AuthServerErrorRedirects(t *testing.T) {
 			},
 			cookies:            validMobileCookies,
 			wantAppRedirect:    false,
-			wantParams:         map[string]string{"oauth_error": "server_error"},
+			wantParams:         map[string]string{"error": "server_error"},
 			wantCookiesCleared: false,
 		},
 	}
@@ -331,8 +331,10 @@ func TestHandleCallback_AuthServerErrorRedirects(t *testing.T) {
 			} else {
 				assert.NotContains(t, location, "social.coves",
 					"Location must never use the custom app scheme on this path, got: %s", location)
-				assert.True(t, strings.HasPrefix(location, "/?"),
-					"dev-mode web error redirect should target the relative root, got: %s", location)
+				assert.Equal(t, "/", query.Get("redirect"))
+				assert.Empty(t, query.Get("oauth_error"))
+				assert.True(t, strings.HasPrefix(location, "/login?"),
+					"dev-mode web error redirect should target the relative login page, got: %s", location)
 			}
 
 			for key, want := range tt.wantParams {
@@ -355,7 +357,7 @@ func TestHandleCallback_AuthServerErrorRedirects(t *testing.T) {
 
 // TestHandleCallback_ProcessCallbackFailureRedirects covers case (f): when the
 // code+state exchange fails, the user gets a 302 redirect (into the app for
-// mobile flows, to the web root otherwise) instead of the old raw 400 page.
+// mobile flows, to the web login page otherwise) instead of the old raw 400 page.
 //
 // ProcessCallback is driven to failure without network I/O: indigo loads the
 // auth request info by state from the CLIENT's store before any token
@@ -366,11 +368,10 @@ func TestHandleCallback_ProcessCallbackFailureRedirects(t *testing.T) {
 		csrfToken = "test-csrf-token-value-1234567890"
 	)
 
-	t.Run("web flow failure redirects to web root with server_error, not a 400 page", func(t *testing.T) {
+	t.Run("unbound web callback is rejected before processing", func(t *testing.T) {
 		handler, _ := newErrorRedirectTestHandler(t, true)
 
-		// No ?error param, so HandleCallback proceeds to ProcessCallback,
-		// which fails to load auth request info for this unknown state.
+		// Unknown state must be rejected without attempting token exchange.
 		req := httptest.NewRequest(http.MethodGet,
 			"/oauth/callback?state=unknown-state&code=some-code&iss=https://pds.example.com", nil)
 		rec := httptest.NewRecorder()
@@ -379,8 +380,8 @@ func TestHandleCallback_ProcessCallbackFailureRedirects(t *testing.T) {
 
 		require.Equal(t, http.StatusFound, rec.Code,
 			"expected 302 redirect, got %d with body: %s", rec.Code, rec.Body.String())
-		assert.Equal(t, "/?oauth_error=server_error", rec.Header().Get("Location"))
-		assertMobileCookiesCleared(t, rec)
+		assert.Equal(t, "/login?error=invalid_request&redirect=%2F", rec.Header().Get("Location"))
+		assertMobileCookiesUntouched(t, rec)
 	})
 
 	t.Run("mobile flow failure redirects into app with server_error", func(t *testing.T) {
@@ -458,10 +459,10 @@ func TestClampOAuthError(t *testing.T) {
 }
 
 // TestWebErrorRedirect verifies webErrorRedirect's target construction:
-// relative root in dev mode, PublicURL-prefixed in production, and clamped
+// relative login page in dev mode, PublicURL-prefixed in production, and clamped
 // error codes in both.
 func TestWebErrorRedirect(t *testing.T) {
-	t.Run("dev mode redirects to relative root", func(t *testing.T) {
+	t.Run("dev mode redirects to relative login page", func(t *testing.T) {
 		handler, _ := newErrorRedirectTestHandler(t, true)
 
 		req := httptest.NewRequest(http.MethodGet, "/oauth/callback", nil)
@@ -469,10 +470,10 @@ func TestWebErrorRedirect(t *testing.T) {
 		handler.webErrorRedirect(rec, req, "access_denied")
 
 		assert.Equal(t, http.StatusFound, rec.Code)
-		assert.Equal(t, "/?oauth_error=access_denied", rec.Header().Get("Location"))
+		assert.Equal(t, "/login?error=access_denied&redirect=%2F", rec.Header().Get("Location"))
 	})
 
-	t.Run("production redirects to PublicURL root", func(t *testing.T) {
+	t.Run("production redirects to PublicURL login page", func(t *testing.T) {
 		handler, _ := newErrorRedirectTestHandler(t, false)
 
 		req := httptest.NewRequest(http.MethodGet, "/oauth/callback", nil)
@@ -480,7 +481,7 @@ func TestWebErrorRedirect(t *testing.T) {
 		handler.webErrorRedirect(rec, req, "access_denied")
 
 		assert.Equal(t, http.StatusFound, rec.Code)
-		assert.Equal(t, "https://coves.social/?oauth_error=access_denied", rec.Header().Get("Location"))
+		assert.Equal(t, "https://coves.social/login?error=access_denied&redirect=%2F", rec.Header().Get("Location"))
 	})
 
 	t.Run("unknown code is clamped to server_error", func(t *testing.T) {
@@ -491,7 +492,7 @@ func TestWebErrorRedirect(t *testing.T) {
 		handler.webErrorRedirect(rec, req, "totally_made_up")
 
 		assert.Equal(t, http.StatusFound, rec.Code)
-		assert.Equal(t, "/?oauth_error=server_error", rec.Header().Get("Location"))
+		assert.Equal(t, "/login?error=server_error&redirect=%2F", rec.Header().Get("Location"))
 	})
 
 	t.Run("does not touch cookies", func(t *testing.T) {

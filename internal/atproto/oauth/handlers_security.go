@@ -10,13 +10,9 @@ import (
 )
 
 const (
-	// postLoginRedirectCookieName is the one-shot cookie carrying the
-	// post-login redirect target from HandleLogin to handleWebCallback.
-	postLoginRedirectCookieName = "oauth_redirect"
-
 	// maxPostLoginRedirectLen bounds the post-login redirect target. Nothing we
 	// link to is anywhere near this long; the cap exists so an attacker cannot
-	// use the cookie as unbounded storage or push a giant Location header
+	// use the pending request as unbounded storage or push a giant Location header
 	// through the callback.
 	maxPostLoginRedirectLen = 2048
 )
@@ -189,49 +185,4 @@ func isSafeLocalPath(s string) bool {
 		return false
 	}
 	return parsed.Scheme == "" && parsed.Host == ""
-}
-
-// postLoginRedirectCookie builds the one-shot post-login redirect cookie
-// carrying a redirect target, or nil if raw is not a safe local path. Callers
-// pass secure=!DevMode, like the other session cookies.
-//
-// Returning nil rather than an empty cookie is deliberate: an unsafe target
-// must leave nothing behind for the callback to read back, so a rejection here
-// cannot be laundered into a redirect later.
-//
-// The value is stored percent-encoded and handleWebCallback decodes it before
-// validating, so the string that was checked is the string that comes back.
-// Without that, net/http silently DROPS bytes it will not serialize in a
-// cookie value ('"', ';', anything non-ASCII) rather than rejecting them,
-// which would let a validated path like `/";/attacker.example` go out on the
-// wire as `//attacker.example` - validation having run on a string the browser
-// never sees.
-func postLoginRedirectCookie(raw string, secure bool) *http.Cookie {
-	if !isSafeLocalPath(raw) {
-		return nil
-	}
-	return &http.Cookie{
-		Name:     postLoginRedirectCookieName,
-		Value:    url.QueryEscape(raw),
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   secure,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   300, // 5 minutes - enough for the OAuth round trip and no more
-	}
-}
-
-// expirePostLoginRedirectCookie builds the cookie that clears any existing
-// post-login redirect target. HandleLogin emits it whenever it does not store
-// a fresh validated target, and handleWebCallback emits it after consuming
-// one: the cookie lives for five minutes and survives across login attempts,
-// so a target planted by an earlier visit would otherwise steer an unrelated
-// flow.
-func expirePostLoginRedirectCookie() *http.Cookie {
-	return &http.Cookie{
-		Name:   postLoginRedirectCookieName,
-		Value:  "",
-		Path:   "/",
-		MaxAge: -1,
-	}
 }

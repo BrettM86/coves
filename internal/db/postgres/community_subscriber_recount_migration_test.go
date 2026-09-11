@@ -22,6 +22,8 @@ func TestMigration045RecountsAndMaintainsCommunitySubscribers(t *testing.T) {
 	t.Parallel()
 
 	db := testkit.DB(t)
+	require.EqualValues(t, 47, testkit.MigrateDownOne(t, db, 47),
+		"047 (web OAuth binding) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 46, testkit.MigrateDownOne(t, db, 46),
 		"046 (drop encryption_keys) sits on top of 045 and must be rolled back first")
 	require.EqualValues(t, 45, testkit.MigrateDownOne(t, db, 45),
