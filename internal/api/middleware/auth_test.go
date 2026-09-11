@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"Coves/internal/atproto/oauth"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -11,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"Coves/internal/atproto/oauth"
 
 	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
@@ -85,7 +86,7 @@ func (m *mockOAuthStore) GetSession(ctx context.Context, did syntax.DID, session
 	key := did.String() + ":" + sessionID
 	session, ok := m.sessions[key]
 	if !ok {
-		return nil, fmt.Errorf("session not found")
+		return nil, oauth.ErrSessionNotFound
 	}
 	return session, nil
 }
@@ -1697,6 +1698,7 @@ type mockAPIKeyValidator struct {
 	aggregators   map[string]string // key -> DID
 	shouldFail    bool
 	refreshCalled bool
+	refreshError  error
 }
 
 func (m *mockAPIKeyValidator) ValidateKey(ctx context.Context, plainKey string) (string, error) {
@@ -1717,7 +1719,7 @@ func (m *mockAPIKeyValidator) ValidateKey(ctx context.Context, plainKey string) 
 
 func (m *mockAPIKeyValidator) RefreshTokensIfNeeded(ctx context.Context, aggregatorDID string) error {
 	m.refreshCalled = true
-	return nil
+	return m.refreshError
 }
 
 // TestDualAuthMiddleware_APIKey_Valid tests API key authentication

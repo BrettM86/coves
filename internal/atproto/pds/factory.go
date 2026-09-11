@@ -2,7 +2,6 @@ package pds
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -15,44 +14,9 @@ import (
 	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 
-// NewFromOAuthSession creates a commit-capable PDS client from an OAuth session.
-// This uses DPoP authentication - the correct method for OAuth tokens.
-//
-// The oauthClient is used to resume the session and get a properly configured
-// APIClient that handles DPoP proof generation and nonce rotation automatically.
-//
-// # IT TAKES NO ClientOption, AND THE REASON IS A CHAIN THIS PACKAGE DOES NOT OWN
-//
-// The other two constructors build their own HTTP client (see
-// newBearerHTTPClient). This one never touches the field: the client arrives
-// already installed, copied twice by indigo from the ClientApp the caller hands
-// in. Re-read at v0.0.0-20260202181658-ea3d39eec464, the version go.mod pins:
-//
-//	link 1  ours    internal/atproto/oauth, in NewOAuthClient
-//	                clientApp.Client = NewSSRFSafeHTTPClient(PrivateAddressOptions(config.AllowPrivateIPs)...)
-//	link 2  indigo  atproto/auth/oauth/oauth.go:200, in ResumeSession
-//	                sess := ClientSession{Client: app.Client, ...}
-//	link 3  indigo  atproto/auth/oauth/session.go:403, in ClientSession.APIClient
-//	                c := atclient.APIClient{Client: sess.Client, ...}
-//
-// So the OAuth path IS guarded today, and the guard is also correctly gated —
-// AllowPrivateIPs at link 1 is the same dev switch PrivateHostOptions carries
-// here.
-//
-// # WHAT THE CHAIN DEGRADES TO, WHICH IS THE PART WORTH KNOWING
-//
-// Link 1 is an OVERRIDE, not an initialisation: indigo's NewClientApp sets
-// `Client: http.DefaultClient` at oauth.go:55. Deleting or skipping our line
-// therefore does not produce a nil client that fails loudly — it produces the
-// unguarded, un-timed stdlib default, and every OAuth-authenticated PDS call in
-// the AppView reverts silently.
-//
-// Links 2 and 3 are indigo's and can change in a dependency bump;
-// factory_guard_test.go fences both. Link 1 is ours and is NOT fenced anywhere
-// today — nothing in this tree asserts that clientApp.Client is guarded, so
-// deleting that line fails no test. Fencing it means standing up oauth.NewClient
-// with a config, which belongs in internal/atproto/oauth's own tests. That is a
-// known gap, recorded here rather than assumed away.
+// NewFromOAuthSession creates a commit-capable PDS client with DPoP auth.
+// Each operation reloads the persisted session and retains the ClientApp's
+// configured HTTP transport, including its SSRF guard and local development policy.
 func NewFromOAuthSession(ctx context.Context, oauthClient *oauth.ClientApp, sessionData *oauth.ClientSessionData) (CommitClient, error) {
 	if oauthClient == nil {
 		return nil, fmt.Errorf("oauthClient is required")
@@ -61,21 +25,13 @@ func NewFromOAuthSession(ctx context.Context, oauthClient *oauth.ClientApp, sess
 		return nil, fmt.Errorf("sessionData is required")
 	}
 
-	// ResumeSession reconstructs the OAuth session with DPoP key
-	// and returns a ClientSession that can generate authenticated requests.
-	// Common failure modes:
-	// - Expired access/refresh tokens → User needs to re-authenticate
-	// - Session revoked on PDS → User needs to re-authenticate
-	// - DPoP nonce mismatch → Retry may help (transient)
-	// - DPoP key mismatch → Session data corrupted, re-authenticate
-	sess, err := oauthClient.ResumeSession(ctx, sessionData.AccountDID, sessionData.SessionID)
+	sess, err := covesoauth.ResumeSession(ctx, oauthClient, sessionData.AccountDID, sessionData.SessionID)
 	if err != nil {
 		return nil, classifyResumeFailure(err,
 			sessionData.AccountDID.String(), sessionData.SessionID)
 	}
-
-	// APIClient() returns an *atclient.APIClient configured with DPoP auth
 	apiClient := sess.APIClient()
+	apiClient.Auth = &sessionAuth{app: oauthClient, did: sessionData.AccountDID, sessionID: sessionData.SessionID}
 
 	return &client{
 		apiClient: apiClient,
@@ -88,9 +44,10 @@ func NewFromOAuthSession(ctx context.Context, oauthClient *oauth.ClientApp, sess
 // must sign in again.
 //
 // Tag ONLY a session that is genuinely gone. ResumeSession is a session-store
-// read and nothing more, so its failures split two ways: the row is absent or
-// past its expiry (terminal — signing in again is the fix), or the store itself
-// failed (a database outage, an exhausted pool, a cancelled request).
+// read plus a key parse, so its failures split two ways: the row is absent,
+// past its expiry, or holds an unusable key that has just been deleted
+// (terminal — signing in again is the fix), or the store itself failed (a
+// database outage, an exhausted pool, a cancelled request).
 //
 // The distinction has to be made here because the API boundary checks
 // re-authentication ahead of every other rule, so anything tagged expired
@@ -101,7 +58,7 @@ func NewFromOAuthSession(ctx context.Context, oauthClient *oauth.ClientApp, sess
 // Either way the cause stays wrapped, so it reaches the logs and — for a
 // cancelled or timed-out request — still matches the boundary's lifecycle rules.
 func classifyResumeFailure(err error, did, sessionID string) error {
-	if errors.Is(err, covesoauth.ErrSessionNotFound) {
+	if isDeadSession(err) {
 		return fmt.Errorf("failed to resume OAuth session for DID=%s, sessionID=%s: %w: %w",
 			did, sessionID, ErrSessionExpired, err)
 	}
@@ -309,7 +266,8 @@ func newBearerHTTPClient(opts ...ClientOption) *http.Client {
 	}
 
 	client := covesoauth.NewSSRFSafeHTTPClient(
-		append(covesoauth.PrivateAddressOptions(cfg.allowPrivateHosts), cfg.transportOptions...)...)
+		append(covesoauth.PrivateAddressOptions(cfg.allowPrivateHosts), cfg.transportOptions...)...,
+	)
 	client.Timeout = bearerRequestTimeout
 	return client
 }

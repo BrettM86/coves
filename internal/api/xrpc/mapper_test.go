@@ -70,6 +70,15 @@ func TestResolve(t *testing.T) {
 			wantMatch:  true,
 		},
 		{
+			// Coordination contention is neither a dead session nor our
+			// failure: the client retries once the other operation finishes.
+			name:       "session busy",
+			err:        fmt.Errorf("DeleteRecord: %w", pds.ErrSessionBusy),
+			wantStatus: http.StatusServiceUnavailable,
+			wantCode:   "SessionBusy",
+			wantMatch:  true,
+		},
+		{
 			// 403 is a scope problem, not a dead session; it must not answer 401
 			// or clients would sign the user out over a permissions gap.
 			name:       "pds 403 stays 403",

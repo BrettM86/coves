@@ -1200,10 +1200,40 @@ func (h *OAuthHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Revoke session on auth server
-	if err := h.client.ClientApp.Logout(ctx, did, sealed.SessionID); err != nil {
-		slog.Error("failed to revoke session on auth server", "error", err, "did", did)
-		// Continue anyway to clear local session
+	// Wait for earlier operations before revoking and deleting this session.
+	// Otherwise their delayed persistence can recreate the logged-out row.
+	// Indigo's Logout resumes through its own parser, which returns a raw
+	// key-parse error for a corrupt row and never deletes it. Resume through
+	// ResumeSession instead so a corrupt row is deleted and reported as
+	// ErrSessionCorrupt; the revoke and delete steps mirror Indigo's Logout.
+	logout := func(ctx context.Context) error {
+		session, err := ResumeSession(ctx, h.client.ClientApp, did, sealed.SessionID)
+		if err != nil {
+			return err
+		}
+		if session.Data.AuthServerRevocationEndpoint == "" {
+			slog.Info("authorization server does not support token revocation; skipping", "did", did, "session_id", sealed.SessionID)
+		} else if err := session.RevokeSession(ctx); err != nil {
+			// Best effort, as in Indigo: the local row is deleted regardless.
+			slog.Warn("failed to revoke OAuth tokens on authorization server", "error", err, "did", did, "session_id", sealed.SessionID)
+		}
+		return h.client.ClientApp.Store.DeleteSession(ctx, did, sealed.SessionID)
+	}
+	if coordinator, ok := h.client.ClientApp.Store.(sessionOperationCoordinator); ok {
+		err = coordinator.withSessionOperation(ctx, did, sealed.SessionID, logout)
+	} else {
+		err = logout(ctx)
+	}
+	if errors.Is(err, ErrSessionNotFound) || errors.Is(err, ErrSessionCorrupt) {
+		// A corrupt row has already been deleted by ResumeSession; either way
+		// there is nothing left to revoke, so the cookie can go.
+		slog.Info("logout: session already removed", "did", did, "session_id", sealed.SessionID)
+	} else if err != nil {
+		// Keep the cookie: the row may still exist, so reporting success would
+		// leave a replayable token behind. Clients retry on 503.
+		slog.Error("failed to revoke or delete OAuth session", "error", err, "did", did, "session_id", sealed.SessionID)
+		http.Error(w, "logout temporarily unavailable", http.StatusServiceUnavailable)
+		return
 	}
 
 	// Clear session cookie
@@ -1279,26 +1309,36 @@ func (h *OAuthHandler) HandleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resume session (now authenticated via sealed token)
-	sess, err := h.client.ClientApp.ResumeSession(ctx, did, req.SessionID)
+	// Share coordination and terminal-error handling with authenticated writes.
+	// The operation persists rotated credentials before reporting success.
+	var newAccessToken string
+	err = RunSessionOperation(ctx, h.client.ClientApp, did, req.SessionID, func(session *oauth.ClientSession) error {
+		var refreshError error
+		newAccessToken, refreshError = session.RefreshTokens(ctx)
+		return refreshError
+	})
 	if err != nil {
-		slog.Error("failed to resume session", "error", err, "did", did, "session_id", req.SessionID)
-		http.Error(w, "session not found", http.StatusUnauthorized)
-		return
-	}
-
-	// Refresh tokens
-	newAccessToken, err := sess.RefreshTokens(ctx)
-	if err != nil {
-		slog.Error("failed to refresh tokens", "error", err, "did", did)
-		http.Error(w, "failed to refresh tokens", http.StatusUnauthorized)
+		if errors.Is(err, ErrSessionNotFound) || errors.Is(err, ErrRefreshRejected) || errors.Is(err, ErrSessionCorrupt) {
+			sentinel := "ErrSessionNotFound"
+			switch {
+			case errors.Is(err, ErrRefreshRejected):
+				sentinel = "ErrRefreshRejected"
+			case errors.Is(err, ErrSessionCorrupt):
+				sentinel = "ErrSessionCorrupt"
+			}
+			slog.Info("refresh: session invalid", "sentinel", sentinel, "did", did, "session_id", req.SessionID)
+			http.Error(w, "session not found or expired", http.StatusUnauthorized)
+		} else {
+			slog.Error("OAuth session refresh temporarily unavailable", "error", err, "did", did, "session_id", req.SessionID)
+			http.Error(w, "session refresh temporarily unavailable", http.StatusServiceUnavailable)
+		}
 		return
 	}
 
 	// Create new sealed token for mobile
 	sealedToken, err := h.client.SealSession(
-		sess.Data.AccountDID.String(),
-		sess.Data.SessionID,
+		did.String(),
+		req.SessionID,
 		h.client.Config.SealedTokenTTL,
 	)
 	if err != nil {

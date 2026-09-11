@@ -209,6 +209,11 @@ func TestLoad_RejectsExplicitlyDisabledGuards(t *testing.T) {
 			key:  "DB_MAX_OPEN_CONNS", value: "0",
 			wantText: "DB_MAX_OPEN_CONNS must be greater than 0",
 		},
+		{
+			name: "zero session coordination conns leaves that pool unbounded",
+			key:  "DB_SESSION_COORDINATION_MAX_OPEN_CONNS", value: "0",
+			wantText: "DB_SESSION_COORDINATION_MAX_OPEN_CONNS must be greater than 0",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -590,6 +595,7 @@ func TestLoad_MalformedValuesAreRejected(t *testing.T) {
 		{"IS_DEV_ENV", "yes"},
 		{"DB_MAX_OPEN_CONNS", "lots"},
 		{"DB_MAX_OPEN_CONNS", "-1"},
+		{"DB_SESSION_COORDINATION_MAX_OPEN_CONNS", "-1"},
 		{"HTTP_READ_TIMEOUT", "30"}, // missing a unit
 		{"IDENTITY_CACHE_TTL", "forever"},
 		{"SKIP_DID_WEB_VERIFICATION", "1.5"},
@@ -633,7 +639,7 @@ func TestLoad_IdleConnsMayNotExceedOpenConns(t *testing.T) {
 func TestValidate_ReportsAllProblems(t *testing.T) {
 	cfg := &Config{
 		IsDevEnv:     false,
-		Database:     DatabaseConfig{URL: "postgres://u:p@db/coves", MaxOpenConns: 25, MaxIdleConns: 25},
+		Database:     DatabaseConfig{URL: "postgres://u:p@db/coves", MaxOpenConns: 25, MaxIdleConns: 25, SessionCoordinationMaxOpenConns: 5},
 		Server:       ServerConfig{Port: "8080", ReadHeaderTimeout: 10 * time.Second},
 		Instance:     InstanceConfig{DID: "did:plc:abc"}, // no Domain
 		CursorSecret: devCursorSecret,

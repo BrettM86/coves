@@ -22,11 +22,16 @@ var (
 	ErrNotImplemented         = errors.New("feature not yet implemented") // For Phase 2 write-forward operations
 
 	// API Key authentication errors
-	ErrAPIKeyRevoked        = errors.New("API key has been revoked")
-	ErrAPIKeyInvalid        = errors.New("invalid API key")
-	ErrAPIKeyNotFound       = errors.New("API key not found for this aggregator")
-	ErrOAuthTokenExpired    = errors.New("OAuth token has expired and needs refresh")
-	ErrOAuthRefreshFailed   = errors.New("failed to refresh OAuth token")
+	ErrAPIKeyRevoked      = errors.New("API key has been revoked")
+	ErrAPIKeyInvalid      = errors.New("invalid API key")
+	ErrAPIKeyNotFound     = errors.New("API key not found for this aggregator")
+	ErrOAuthTokenExpired  = errors.New("OAuth token has expired and needs refresh")
+	ErrOAuthRefreshFailed = errors.New("failed to refresh OAuth token")
+	// ErrOAuthSessionDead reports that the aggregator's stored OAuth session can
+	// no longer be refreshed: the authorization server rejected the grant, the
+	// row is gone, or its credentials are unusable. Retrying cannot help; the
+	// aggregator must complete the OAuth flow again.
+	ErrOAuthSessionDead     = errors.New("aggregator OAuth session is no longer valid")
 	ErrOAuthSessionMismatch = errors.New("OAuth session DID does not match aggregator DID")
 )
 
@@ -79,5 +84,6 @@ func IsAPIKeyError(err error) bool {
 
 func IsOAuthError(err error) bool {
 	return errors.Is(err, ErrOAuthTokenExpired) ||
-		errors.Is(err, ErrOAuthRefreshFailed)
+		errors.Is(err, ErrOAuthRefreshFailed) ||
+		errors.Is(err, ErrOAuthSessionDead)
 }

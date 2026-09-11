@@ -150,7 +150,21 @@ type DatabaseConfig struct {
 	// MaxOpenConns caps total connections (in use + idle). Kept well below
 	// PostgreSQL's default max_connections of 100 so operators and the
 	// backfill/reindex tools can still connect during a spike.
+	//
+	// OAuth session coordination does not draw on this pool: see
+	// SessionCoordinationMaxOpenConns, which adds to the server's total.
 	MaxOpenConns int
+
+	// SessionCoordinationMaxOpenConns caps a second, dedicated pool that OAuth
+	// session operations use. Every authenticated PDS write holds one of these
+	// connections, under a per-session advisory lock, for the whole PDS round
+	// trip (resume, write, refresh and retry). Concurrent operations on the same
+	// session wait on that lock, for at most a bounded lock_timeout, on their
+	// own coordination connection. Keeping this separate from MaxOpenConns
+	// means slow PDS writes cannot starve session lookups and feed queries.
+	// Small on purpose: when it is exhausted only PDS writes queue for a
+	// connection, and reads keep flowing.
+	SessionCoordinationMaxOpenConns int
 
 	// MaxIdleConns caps connections retained for reuse. The database/sql
 	// default is 2, which forces a fresh connection and PostgreSQL startup
@@ -574,6 +588,10 @@ func (c *Config) loadDatabase() error {
 	if err != nil {
 		return err
 	}
+	sessionCoordinationMaxOpen, err := intVar("DB_SESSION_COORDINATION_MAX_OPEN_CONNS", 5)
+	if err != nil {
+		return err
+	}
 	connMaxLifetime, err := durationVar("DB_CONN_MAX_LIFETIME", 30*time.Minute)
 	if err != nil {
 		return err
@@ -590,11 +608,12 @@ func (c *Config) loadDatabase() error {
 	c.Database = DatabaseConfig{
 		URL: stringVar("DATABASE_URL",
 			"postgres://dev_user:dev_password@localhost:5435/coves_dev?sslmode=disable"),
-		MaxOpenConns:     maxOpen,
-		MaxIdleConns:     maxIdle,
-		ConnMaxLifetime:  connMaxLifetime,
-		ConnMaxIdleTime:  connMaxIdleTime,
-		StatementTimeout: statementTimeout,
+		MaxOpenConns:                    maxOpen,
+		MaxIdleConns:                    maxIdle,
+		SessionCoordinationMaxOpenConns: sessionCoordinationMaxOpen,
+		ConnMaxLifetime:                 connMaxLifetime,
+		ConnMaxIdleTime:                 connMaxIdleTime,
+		StatementTimeout:                statementTimeout,
 	}
 	return nil
 }
@@ -1000,10 +1019,15 @@ func (c *Config) Validate() error {
 		problems = append(problems, "DB_MAX_OPEN_CONNS must be greater than 0 "+
 			"(an unbounded pool can exhaust PostgreSQL's max_connections)")
 	}
+	if c.Database.SessionCoordinationMaxOpenConns == 0 {
+		problems = append(problems, "DB_SESSION_COORDINATION_MAX_OPEN_CONNS must be greater than 0 "+
+			"(an unbounded pool can exhaust PostgreSQL's max_connections)")
+	}
 	if c.Database.MaxIdleConns > c.Database.MaxOpenConns {
 		problems = append(problems, fmt.Sprintf(
 			"DB_MAX_IDLE_CONNS (%d) must not exceed DB_MAX_OPEN_CONNS (%d)",
-			c.Database.MaxIdleConns, c.Database.MaxOpenConns))
+			c.Database.MaxIdleConns, c.Database.MaxOpenConns,
+		))
 	}
 	if c.Server.Port == "" {
 		problems = append(problems, "PORT must not be empty")
@@ -1052,7 +1076,8 @@ func (c *Config) Validate() error {
 	if c.Server.ReadTimeout > 0 && c.Server.ReadHeaderTimeout > c.Server.ReadTimeout {
 		problems = append(problems, fmt.Sprintf(
 			"HTTP_READ_HEADER_TIMEOUT (%s) must not exceed HTTP_READ_TIMEOUT (%s)",
-			c.Server.ReadHeaderTimeout, c.Server.ReadTimeout))
+			c.Server.ReadHeaderTimeout, c.Server.ReadTimeout,
+		))
 	}
 
 	if c.Instance.Domain == "" {
@@ -1064,7 +1089,8 @@ func (c *Config) Validate() error {
 		// against, so a non-DID value fails every aggregator request at
 		// runtime rather than at startup.
 		problems = append(problems, fmt.Sprintf(
-			"INSTANCE_DID must be a DID (got %q)", c.Instance.DID))
+			"INSTANCE_DID must be a DID (got %q)", c.Instance.DID,
+		))
 	}
 
 	// The submission quotas, in every environment. §8's limits exist because
@@ -1078,19 +1104,22 @@ func (c *Config) Validate() error {
 		problems = append(problems, fmt.Sprintf(
 			"POST_SUBMISSIONS_MAX_PER_COMMUNITY must be greater than 0 (got %d); "+
 				"a non-positive per-author quota disables or inverts the abuse limit rather than relaxing it",
-			c.Submissions.MaxPerAuthorPerCommunity))
+			c.Submissions.MaxPerAuthorPerCommunity,
+		))
 	}
 	if c.Submissions.Window <= 0 {
 		problems = append(problems, fmt.Sprintf(
 			"POST_SUBMISSIONS_WINDOW must be greater than 0 (got %s); "+
 				"the quota is counted over a rolling window, and a zero-width one counts nothing",
-			c.Submissions.Window))
+			c.Submissions.Window,
+		))
 	}
 	if c.Submissions.DedupeWindow <= 0 {
 		problems = append(problems, fmt.Sprintf(
 			"POST_SUBMISSIONS_DEDUPE_WINDOW must be greater than 0 (got %s); "+
 				"it scopes the ledger's uniqueness bucket, and without a width every repost collides with the original forever",
-			c.Submissions.DedupeWindow))
+			c.Submissions.DedupeWindow,
+		))
 	}
 	// The interval is checked for being NEGATIVE rather than non-positive,
 	// unlike the three above: zero is the documented way to disable the driver
@@ -1099,7 +1128,8 @@ func (c *Config) Validate() error {
 	if c.Submissions.AcceptanceQueueInterval < 0 {
 		problems = append(problems, fmt.Sprintf(
 			"ACCEPTANCE_QUEUE_INTERVAL cannot be negative (got %s); use 0 to disable the acceptance queue driver",
-			c.Submissions.AcceptanceQueueInterval))
+			c.Submissions.AcceptanceQueueInterval,
+		))
 	}
 	// The bridged-vote poller. Trusted hosts are validated whether or not the
 	// poller will run, because the same list is BridgeTrust's provenance gate
@@ -1109,7 +1139,8 @@ func (c *Config) Validate() error {
 	for _, host := range c.Instance.TrustedBridgePDSHosts {
 		if _, err := bridgedvotes.ParseTrustedHost(host); err != nil {
 			problems = append(problems, fmt.Sprintf(
-				"TRUSTED_BRIDGE_PDS_HOSTS: %v (scheme + host only, e.g. https://tdpl.io)", err))
+				"TRUSTED_BRIDGE_PDS_HOSTS: %v (scheme + host only, e.g. https://tdpl.io)", err,
+			))
 		}
 	}
 	// The interval is held to its rule only when the poller will actually run.
@@ -1120,17 +1151,20 @@ func (c *Config) Validate() error {
 		problems = append(problems, fmt.Sprintf(
 			"BRIDGED_VOTE_POLL_INTERVAL must be greater than 0 (got %s); "+
 				"the poller has no disabled state — leave TRUSTED_BRIDGE_PDS_HOSTS unset to run without it",
-			c.Instance.BridgedVotePollInterval))
+			c.Instance.BridgedVotePollInterval,
+		))
 	}
 	if c.Instance.BridgedVotePollLookback < 0 {
 		problems = append(problems, fmt.Sprintf(
 			"BRIDGED_VOTE_POLL_LOOKBACK cannot be negative (got %s); use 0 for the poller's default",
-			c.Instance.BridgedVotePollLookback))
+			c.Instance.BridgedVotePollLookback,
+		))
 	}
 	if c.Instance.BridgedVotePollSweepCap < 0 {
 		problems = append(problems, fmt.Sprintf(
 			"BRIDGED_VOTE_POLL_SWEEP_CAP cannot be negative (got %d); use 0 for the poller's default",
-			c.Instance.BridgedVotePollSweepCap))
+			c.Instance.BridgedVotePollSweepCap,
+		))
 	}
 	// REDRIVE_INTERVAL is checked in loadJetstream instead of here; see the note
 	// there for why the environment's value and a hand-assembled Config cannot be
@@ -1159,7 +1193,8 @@ func (c *Config) Validate() error {
 			problems = append(problems, fmt.Sprintf(
 				"ENCRYPTION_KEY must decode to %d bytes, got %d; "+
 					"generate one with: openssl rand -base64 %d",
-				encryptionKeyBytes, len(decoded), encryptionKeyBytes))
+				encryptionKeyBytes, len(decoded), encryptionKeyBytes,
+			))
 		}
 	}
 
@@ -1182,7 +1217,8 @@ func (c *Config) Validate() error {
 				problems = append(problems, fmt.Sprintf(
 					"OAUTH_SEAL_SECRET must decode to %d bytes, got %d; "+
 						"generate one with: openssl rand -base64 %d",
-					sealSecretBytes, len(decoded), sealSecretBytes))
+					sealSecretBytes, len(decoded), sealSecretBytes,
+				))
 			}
 		}
 
@@ -1199,7 +1235,8 @@ func (c *Config) Validate() error {
 		case len(c.CursorSecret) < minSecretLength:
 			problems = append(problems, fmt.Sprintf(
 				"CURSOR_SECRET must be at least %d characters to be a usable HMAC key",
-				minSecretLength))
+				minSecretLength,
+			))
 		}
 
 		if c.Jetstream.FeedsSpec == "" {

@@ -160,6 +160,11 @@ var sharedRules = []Rule{
 		"Request payload exceeds size limit"),
 	Sentinel(pds.ErrRateLimited, http.StatusTooManyRequests, "RateLimitExceeded",
 		"Too many requests, please try again later"),
+	// Same-session coordination contention: the session is alive and the
+	// request never started, so it is retryable rather than a dead session
+	// (401) or our failure (500).
+	Sentinel(pds.ErrSessionBusy, http.StatusServiceUnavailable, "SessionBusy",
+		"Another request is using this session, please retry"),
 	// A PDS 5xx is a classified upstream failure, not our internal error, so it
 	// answers 502 rather than falling through to internalError — the same call
 	// the image proxy makes for a PDS it cannot reach. The message is fixed:

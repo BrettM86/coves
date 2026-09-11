@@ -13,6 +13,8 @@ import (
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
+
+	covesoauth "Coves/internal/atproto/oauth"
 )
 
 const (
@@ -64,7 +66,7 @@ func NewAPIKeyService(repo Repository, oauthApp *oauth.ClientApp) *APIKeyService
 // GenerateKey creates a new API key for an aggregator.
 // The aggregator must have completed OAuth authentication first.
 // Returns the plain-text key (only shown once) and the key prefix for reference.
-func (s *APIKeyService) GenerateKey(ctx context.Context, aggregatorDID string, oauthSession *oauth.ClientSessionData) (plainKey string, keyPrefix string, err error) {
+func (s *APIKeyService) GenerateKey(ctx context.Context, aggregatorDID string, oauthSession *oauth.ClientSessionData) (plainKey, keyPrefix string, err error) {
 	// Validate aggregator exists
 	aggregator, err := s.repo.GetAggregator(ctx, aggregatorDID)
 	if err != nil {
@@ -226,20 +228,29 @@ func (s *APIKeyService) RefreshTokensIfNeeded(ctx context.Context, creds *Aggreg
 		return fmt.Errorf("failed to parse aggregator DID: %w", err)
 	}
 
-	// Resume the OAuth session from the store
-	// The session was stored when the aggregator created their API key
-	session, err := s.oauthApp.ResumeSession(ctx, did, DefaultSessionID)
+	// The session was stored when the aggregator created their API key. Refresh
+	// it under the same coordination as every other operation on that session,
+	// so the rotated credentials are persisted before this returns and no
+	// concurrent operation can consume the same refresh token.
+	var newAccessToken string
+	var session oauth.ClientSessionData
+	err = covesoauth.RunSessionOperation(ctx, s.oauthApp, did, DefaultSessionID, func(resumed *oauth.ClientSession) error {
+		accessToken, refreshErr := resumed.RefreshTokens(ctx)
+		if refreshErr != nil {
+			return refreshErr
+		}
+		newAccessToken = accessToken
+		session = *resumed.Data
+		return nil
+	})
 	if err != nil {
-		slog.Error("failed to resume OAuth session for token refresh",
-			"did", creds.DID,
-			"error", err,
-		)
-		return fmt.Errorf("failed to resume session: %w", err)
-	}
-
-	// Refresh tokens using indigo's OAuth library
-	newAccessToken, err := session.RefreshTokens(ctx)
-	if err != nil {
+		if errors.Is(err, covesoauth.ErrRefreshRejected) || errors.Is(err, covesoauth.ErrSessionNotFound) || errors.Is(err, covesoauth.ErrSessionCorrupt) {
+			slog.Error("aggregator OAuth session is dead; re-authentication required",
+				"did", creds.DID,
+				"error", err,
+			)
+			return fmt.Errorf("%w: %w", ErrOAuthSessionDead, err)
+		}
 		slog.Error("failed to refresh OAuth tokens",
 			"did", creds.DID,
 			"error", err,
@@ -252,15 +263,15 @@ func (s *APIKeyService) RefreshTokensIfNeeded(ctx context.Context, creds *Aggreg
 	newExpiry := time.Now().Add(1 * time.Hour)
 
 	// Update tokens in database
-	if err := s.repo.UpdateOAuthTokens(ctx, creds.DID, newAccessToken, session.Data.RefreshToken, newExpiry); err != nil {
+	if err := s.repo.UpdateOAuthTokens(ctx, creds.DID, newAccessToken, session.RefreshToken, newExpiry); err != nil {
 		return fmt.Errorf("failed to update tokens: %w", err)
 	}
 
 	// Update nonces in our database as a secondary copy for visibility/backup.
-	// The authoritative nonces are in indigo's OAuth store (via SaveSession above).
-	// Session resumption uses s.oauthApp.ResumeSession which reads from indigo's store,
-	// so this failure is non-critical - hence warning level, not error.
-	if err := s.repo.UpdateOAuthNonces(ctx, creds.DID, session.Data.DPoPAuthServerNonce, session.Data.DPoPHostNonce); err != nil {
+	// The authoritative nonces are in indigo's OAuth store, already persisted by
+	// the session operation, so this failure is non-critical - hence warning
+	// level, not error.
+	if err := s.repo.UpdateOAuthNonces(ctx, creds.DID, session.DPoPAuthServerNonce, session.DPoPHostNonce); err != nil {
 		failCount := s.failedNonceUpdates.Add(1)
 		slog.Warn("failed to update OAuth nonces in aggregators table",
 			"did", creds.DID,
@@ -271,10 +282,10 @@ func (s *APIKeyService) RefreshTokensIfNeeded(ctx context.Context, creds *Aggreg
 
 	// Update credentials in memory
 	creds.OAuthAccessToken = newAccessToken
-	creds.OAuthRefreshToken = session.Data.RefreshToken
+	creds.OAuthRefreshToken = session.RefreshToken
 	creds.OAuthTokenExpiresAt = &newExpiry
-	creds.OAuthDPoPAuthServerNonce = session.Data.DPoPAuthServerNonce
-	creds.OAuthDPoPPDSNonce = session.Data.DPoPHostNonce
+	creds.OAuthDPoPAuthServerNonce = session.DPoPAuthServerNonce
+	creds.OAuthDPoPPDSNonce = session.DPoPHostNonce
 
 	slog.Info("OAuth tokens refreshed for aggregator",
 		"did", creds.DID,

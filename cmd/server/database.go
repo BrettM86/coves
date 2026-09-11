@@ -1,14 +1,15 @@
 package main
 
 import (
-	"Coves/internal/config"
-	"Coves/internal/crypto/credentialcipher"
-	"Coves/internal/db/migrations"
-	postgresRepo "Coves/internal/db/postgres"
 	"context"
 	"database/sql"
 	"fmt"
 	"log/slog"
+
+	"Coves/internal/config"
+	"Coves/internal/crypto/credentialcipher"
+	"Coves/internal/db/migrations"
+	postgresRepo "Coves/internal/db/postgres"
 
 	"github.com/pressly/goose/v3"
 )
@@ -69,6 +70,42 @@ func openDatabase(
 		"conn_max_lifetime", cfg.ConnMaxLifetime,
 		"conn_max_idle_time", cfg.ConnMaxIdleTime,
 		"statement_timeout", cfg.StatementTimeout,
+	)
+	return db, nil
+}
+
+// openSessionCoordinationDatabase returns the small dedicated pool that OAuth
+// session operations hold connections from. Each authenticated PDS write pins
+// one of these connections, under a per-session advisory lock, for its whole
+// PDS round trip, and same-session waiters block on that lock with their own
+// connection. Isolating that from the request pool keeps session lookups and
+// feed queries flowing while PDS writes are slow.
+//
+// The caller owns the returned pool and must Close it.
+func openSessionCoordinationDatabase(ctx context.Context, cfg config.DatabaseConfig) (*sql.DB, error) {
+	dsn, err := cfg.AppDSN()
+	if err != nil {
+		return nil, fmt.Errorf("building session coordination DSN: %w", err)
+	}
+
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("opening session coordination database: %w", err)
+	}
+	db.SetMaxOpenConns(cfg.SessionCoordinationMaxOpenConns)
+	db.SetMaxIdleConns(cfg.SessionCoordinationMaxOpenConns)
+	db.SetConnMaxLifetime(cfg.ConnMaxLifetime)
+	db.SetConnMaxIdleTime(cfg.ConnMaxIdleTime)
+
+	if err := db.PingContext(ctx); err != nil {
+		if closeErr := db.Close(); closeErr != nil {
+			slog.Error("failed to close session coordination pool after failed ping", "error", closeErr)
+		}
+		return nil, fmt.Errorf("pinging session coordination database: %w", err)
+	}
+
+	slog.Info("connected session coordination pool",
+		"max_open_conns", cfg.SessionCoordinationMaxOpenConns,
 	)
 	return db, nil
 }

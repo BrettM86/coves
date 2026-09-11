@@ -4,11 +4,6 @@
 package main
 
 import (
-	"Coves/internal/atproto/oauth"
-	"Coves/internal/config"
-	"Coves/internal/core/users"
-	"Coves/internal/crypto/credentialcipher"
-	"Coves/internal/observability"
 	"context"
 	"errors"
 	"fmt"
@@ -20,11 +15,17 @@ import (
 	"syscall"
 	"time"
 
+	"Coves/internal/atproto/oauth"
+	"Coves/internal/config"
+	"Coves/internal/core/users"
+	"Coves/internal/crypto/credentialcipher"
+	"Coves/internal/observability"
+
 	_ "github.com/lib/pq"
 )
 
 // Compile-time interface satisfaction checks
-var _ oauth.UserIndexer = (users.UserService)(nil)
+var _ oauth.UserIndexer = users.UserService(nil)
 
 func main() {
 	slog.SetDefault(slog.New(oauth.NewOAuthLogHandler(slog.NewTextHandler(os.Stderr, nil))))
@@ -67,6 +68,16 @@ func run() error {
 		}
 	}()
 
+	sessionCoordinationDB, err := openSessionCoordinationDatabase(ctx, cfg.Database)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := sessionCoordinationDB.Close(); closeErr != nil {
+			slog.Error("failed to close session coordination pool", "error", closeErr)
+		}
+	}()
+
 	otelProvider, err := startObservability(ctx)
 	if err != nil {
 		return err
@@ -80,7 +91,7 @@ func run() error {
 		}
 	}()
 
-	app, err := buildApplication(ctx, cfg, db, credentialCipher)
+	app, err := buildApplication(ctx, cfg, db, sessionCoordinationDB, credentialCipher)
 	if err != nil {
 		return err
 	}

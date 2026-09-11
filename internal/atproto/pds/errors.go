@@ -74,6 +74,11 @@ var (
 	// status — but it has the same remedy, and a client that is not told to
 	// re-authenticate will retry forever.
 	ErrSessionExpired = errors.New("oauth session expired")
+
+	// ErrSessionBusy indicates another operation held the stored OAuth session
+	// for the whole lock wait, so this one never started. The session is alive
+	// and nothing was sent; the caller should retry once the holder finishes.
+	ErrSessionBusy = errors.New("oauth session busy")
 )
 
 // IsAuthError returns true if the error is an authentication/authorization error.

@@ -103,7 +103,7 @@ func TestValidate_RejectsAnUnsetSubmissionQuota(t *testing.T) {
 	base := func() *Config {
 		return &Config{
 			IsDevEnv:     true,
-			Database:     DatabaseConfig{URL: "postgres://u:p@db/coves", MaxOpenConns: 25, MaxIdleConns: 25},
+			Database:     DatabaseConfig{URL: "postgres://u:p@db/coves", MaxOpenConns: 25, MaxIdleConns: 25, SessionCoordinationMaxOpenConns: 5},
 			Server:       ServerConfig{Port: "8080", ReadHeaderTimeout: time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, ShutdownTimeout: 15 * time.Second},
 			Instance:     InstanceConfig{DID: "did:web:coves.social", Domain: "coves.social"},
 			CursorSecret: devCursorSecret,

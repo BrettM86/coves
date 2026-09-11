@@ -513,10 +513,15 @@ func TestOAuthE2E_TokenRefresh(t *testing.T) {
 	server := httptest.NewServer(r)
 	defer server.Close()
 
-	t.Run("Valid refresh request", func(t *testing.T) {
-		// NOTE: This test verifies that the refresh endpoint can be called
-		// In a real scenario, the indigo client's RefreshTokens() would call the PDS
-		// Since we're in a component test, we're testing the Coves handler logic
+	// A sibling session for the same account must survive the corrupt one's removal.
+	siblingSession := initialSession
+	siblingSession.SessionID = "refresh-session-2"
+	err = store.SaveSession(ctx, siblingSession)
+	require.NoError(t, err, "Should save sibling session")
+
+	t.Run("Malformed stored DPoP key invalidates session", func(t *testing.T) {
+		// The stored key can never sign a request, so nothing recovers this
+		// session. It must be deleted and the client told to sign in again.
 
 		// Create refresh request
 		refreshReq := map[string]interface{}{
@@ -532,21 +537,16 @@ func TestOAuthE2E_TokenRefresh(t *testing.T) {
 		require.NoError(t, err)
 		req.Header.Set("Content-Type", "application/json")
 
-		// NOTE: In component testing mode, the indigo client may not have
-		// real PDS credentials, so RefreshTokens() might fail
-		// We're testing that the handler correctly processes the request
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
 		defer func() { _ = resp.Body.Close() }()
 
-		// In component test mode without real PDS, we may get 401
-		// In production with real PDS, this would return 200 with new tokens
-		t.Logf("Refresh response status: %d", resp.StatusCode)
-
-		// The important thing is that the handler doesn't crash
-		// and properly validates the request structure
-		assert.True(t, resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusUnauthorized,
-			"Refresh should return either success or auth failure, got %d", resp.StatusCode)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode,
+			"unusable stored credentials must tell the client to sign in again")
+		_, err = store.GetSession(ctx, did, initialSession.SessionID)
+		require.ErrorIs(t, err, oauth.ErrSessionNotFound, "corrupt session must be deleted")
+		_, err = store.GetSession(ctx, did, siblingSession.SessionID)
+		require.NoError(t, err, "sibling session must survive")
 	})
 
 	t.Run("Invalid DID format (with valid token)", func(t *testing.T) {

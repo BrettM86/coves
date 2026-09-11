@@ -1,12 +1,15 @@
 package middleware
 
 import (
-	"Coves/internal/atproto/oauth"
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
+
+	"Coves/internal/atproto/oauth"
+	"Coves/internal/core/aggregators"
 
 	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
@@ -132,6 +135,10 @@ func (m *OAuthAuthMiddleware) RequireAuth(next http.Handler) http.Handler {
 
 		// Load full OAuth session from database
 		session, err := m.store.GetSession(r.Context(), did, sealedSession.SessionID)
+		if err != nil && !errors.Is(err, oauth.ErrSessionNotFound) {
+			writeSessionStoreError(w, r, sealedSession.DID, sealedSession.SessionID, err)
+			return
+		}
 		if err != nil {
 			log.Printf("[AUTH_FAILURE] type=session_not_found ip=%s method=%s path=%s did=%s session_id=%s error=%v",
 				r.RemoteAddr, r.Method, r.URL.Path, sealedSession.DID, sealedSession.SessionID, err)
@@ -216,6 +223,10 @@ func (m *OAuthAuthMiddleware) OptionalAuth(next http.Handler) http.Handler {
 
 		// Load full OAuth session from database
 		session, err := m.store.GetSession(r.Context(), did, sealedSession.SessionID)
+		if err != nil && !errors.Is(err, oauth.ErrSessionNotFound) {
+			writeSessionStoreError(w, r, sealedSession.DID, sealedSession.SessionID, err)
+			return
+		}
 		if err != nil {
 			log.Printf("[AUTH_WARNING] Optional auth: session not found: %v", err)
 			next.ServeHTTP(w, r)
@@ -349,6 +360,49 @@ func writeAuthError(w http.ResponseWriter, message string) {
 		"message": message,
 	}); err != nil {
 		log.Printf("Failed to write auth error response: %v", err)
+	}
+}
+
+// Storage outages must preserve authentication rather than sign the user out
+// or silently serve a viewer-specific request as a guest. The wrapped store
+// error carries no credentials; the response body stays generic.
+func writeSessionStoreError(w http.ResponseWriter, r *http.Request, did, sessionID string, err error) {
+	log.Printf("[AUTH_ERROR] type=session_store_failure ip=%s method=%s path=%s did=%s session_id=%s error=%v",
+		r.RemoteAddr, r.Method, r.URL.Path, did, sessionID, err)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	if err := json.NewEncoder(w).Encode(map[string]string{
+		"error":   "ServiceUnavailable",
+		"message": "Session lookup temporarily unavailable",
+	}); err != nil {
+		log.Printf("Failed to write session lookup error response: %v", err)
+	}
+}
+
+// isAggregatorReauthRequired reports whether a token refresh failure means the
+// aggregator's credentials can never work again. Everything else (session
+// coordination contention, an authorization-server outage, a persistence
+// failure) is transient: the stored session is still valid and telling the
+// aggregator to re-authenticate would throw it away for nothing.
+func isAggregatorReauthRequired(err error) bool {
+	return errors.Is(err, aggregators.ErrOAuthSessionDead) ||
+		errors.Is(err, oauth.ErrSessionNotFound) ||
+		errors.Is(err, aggregators.ErrAggregatorNotFound) ||
+		aggregators.IsAPIKeyError(err)
+}
+
+// writeTokenRefreshUnavailable answers a transient refresh failure with a
+// retryable 503, in the same generic style as writeSessionStoreError.
+func writeTokenRefreshUnavailable(w http.ResponseWriter, r *http.Request, aggregatorDID string, err error) {
+	log.Printf("[AUTH_ERROR] type=token_refresh_unavailable ip=%s method=%s path=%s did=%s error=%v",
+		r.RemoteAddr, r.Method, r.URL.Path, aggregatorDID, err)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	if err := json.NewEncoder(w).Encode(map[string]string{
+		"error":   "ServiceUnavailable",
+		"message": "OAuth token refresh temporarily unavailable",
+	}); err != nil {
+		log.Printf("Failed to write token refresh error response: %v", err)
 	}
 }
 
@@ -513,10 +567,13 @@ func (m *DualAuthMiddleware) handleAPIKeyAuth(w http.ResponseWriter, r *http.Req
 
 	// Refresh OAuth tokens if needed (for PDS operations)
 	if err := m.apiKeyValidator.RefreshTokensIfNeeded(r.Context(), aggregatorDID); err != nil {
+		if !isAggregatorReauthRequired(err) {
+			writeTokenRefreshUnavailable(w, r, aggregatorDID, err)
+			return
+		}
 		log.Printf("[AUTH_FAILURE] type=token_refresh_failed ip=%s method=%s path=%s did=%s error=%v",
 			r.RemoteAddr, r.Method, r.URL.Path, aggregatorDID, err)
-		// Token refresh failure means the aggregator cannot perform authenticated PDS operations
-		// This is a critical failure - reject the request so the aggregator knows to re-authenticate
+		// The stored session or key can never work again, so the aggregator must re-authenticate.
 		writeAuthError(w, "API key authentication failed: unable to refresh OAuth tokens. Please re-authenticate.")
 		return
 	}
@@ -555,6 +612,10 @@ func (m *DualAuthMiddleware) handleOAuthAuth(w http.ResponseWriter, r *http.Requ
 
 	// Load full OAuth session from database
 	session, err := m.store.GetSession(r.Context(), did, sealedSession.SessionID)
+	if err != nil && !errors.Is(err, oauth.ErrSessionNotFound) {
+		writeSessionStoreError(w, r, sealedSession.DID, sealedSession.SessionID, err)
+		return
+	}
 	if err != nil {
 		log.Printf("[AUTH_FAILURE] type=session_not_found ip=%s method=%s path=%s did=%s session_id=%s error=%v",
 			r.RemoteAddr, r.Method, r.URL.Path, sealedSession.DID, sealedSession.SessionID, err)

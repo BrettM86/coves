@@ -22,18 +22,36 @@ var (
 
 // PostgresOAuthStore implements oauth.ClientAuthStore interface using PostgreSQL
 type PostgresOAuthStore struct {
-	db         *sql.DB
-	sessionTTL time.Duration
+	db *sql.DB
+	// coordination serves session operations: each holds one of its
+	// connections, under a session advisory lock, for a whole PDS round trip.
+	// Keeping that off db means lock waits and long PDS writes never consume
+	// the request pool that session lookups and feed queries depend on.
+	coordination *sql.DB
+	sessionTTL   time.Duration
+	lockTimeout  time.Duration
 }
 
-// NewPostgresOAuthStore creates a new PostgreSQL-backed OAuth store
+// NewPostgresOAuthStore creates a PostgreSQL-backed OAuth store that coordinates
+// session operations on the same pool it queries. That is fine for
+// single-threaded tools and tests; the server uses
+// NewCoordinatedPostgresOAuthStore so session operations cannot starve requests.
 func NewPostgresOAuthStore(db *sql.DB, sessionTTL time.Duration) oauth.ClientAuthStore {
+	return NewCoordinatedPostgresOAuthStore(db, db, sessionTTL)
+}
+
+// NewCoordinatedPostgresOAuthStore creates a PostgreSQL-backed OAuth store whose
+// session operations hold connections from coordination, a separate handle to
+// the same database, instead of the request pool db.
+func NewCoordinatedPostgresOAuthStore(db, coordination *sql.DB, sessionTTL time.Duration) oauth.ClientAuthStore {
 	if sessionTTL == 0 {
 		sessionTTL = 7 * 24 * time.Hour // Default to 7 days
 	}
 	return &PostgresOAuthStore{
-		db:         db,
-		sessionTTL: sessionTTL,
+		db:           db,
+		coordination: coordination,
+		sessionTTL:   sessionTTL,
+		lockTimeout:  sessionLockTimeout,
 	}
 }
 
@@ -55,7 +73,7 @@ func (s *PostgresOAuthStore) GetSession(ctx context.Context, did syntax.DID, ses
 	var scopes pq.StringArray
 	var dpopAuthServerNonce, dpopHostNonce sql.NullString
 
-	err := s.db.QueryRowContext(ctx, query, did.String(), sessionID).Scan(
+	err := s.sessionDatabase(ctx).QueryRowContext(ctx, query, did.String(), sessionID).Scan(
 		&session.AccountDID,
 		&session.SessionID,
 		&hostURL,
@@ -202,7 +220,7 @@ func (s *PostgresOAuthStore) SaveSession(ctx context.Context, sess oauth.ClientS
 		pdsURL = sess.AuthServerURL // Fallback to auth server URL
 	}
 
-	_, err := s.db.ExecContext(
+	_, err := s.sessionDatabase(ctx).ExecContext(
 		ctx, query,
 		sess.AccountDID.String(),
 		sess.SessionID,
@@ -231,7 +249,7 @@ func (s *PostgresOAuthStore) SaveSession(ctx context.Context, sess oauth.ClientS
 func (s *PostgresOAuthStore) DeleteSession(ctx context.Context, did syntax.DID, sessionID string) error {
 	query := `DELETE FROM oauth_sessions WHERE did = $1 AND session_id = $2`
 
-	result, err := s.db.ExecContext(ctx, query, did.String(), sessionID)
+	result, err := s.sessionDatabase(ctx).ExecContext(ctx, query, did.String(), sessionID)
 	if err != nil {
 		return fmt.Errorf("failed to delete session: %w", err)
 	}

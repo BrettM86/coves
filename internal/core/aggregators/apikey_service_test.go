@@ -6,13 +6,16 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"Coves/tests/testkit"
+
+	"github.com/bluesky-social/indigo/atproto/atcrypto"
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
-
-	"Coves/tests/testkit"
 )
 
 // ptrTime returns a pointer to a time.Time (current time)
@@ -1346,5 +1349,128 @@ func TestAPIKeyService_RefreshExpiringTokens_ContextCancellation(t *testing.T) {
 	}
 	if len(errs) != 1 {
 		t.Errorf("RefreshExpiringTokens() errors count = %d, want 1", len(errs))
+	}
+}
+
+// =============================================================================
+// RefreshTokensIfNeeded coordinated refresh
+// =============================================================================
+
+// A refresh must go through the shared session operation: rotated credentials
+// are persisted before the aggregator row is updated, and a rejected grant
+// invalidates exactly the API key session and reports a dead session.
+func TestAPIKeyService_RefreshTokensIfNeeded_Coordinated(t *testing.T) {
+	for _, testcase := range []struct {
+		name         string
+		status       int
+		body         string
+		saveFailure  error
+		wantDead     bool
+		wantRefresh  bool
+		wantDeleted  bool
+		wantNoTokens bool
+	}{
+		{name: "rotation", status: 200, wantRefresh: true},
+		{name: "rejected_grant", status: 400, body: `{"error":"invalid_grant"}`, wantDead: true, wantDeleted: true, wantNoTokens: true},
+		{name: "authorization_server_unavailable", status: 503, body: `{"error":"temporarily_unavailable"}`, wantNoTokens: true},
+		{name: "session_store_unavailable", status: 200, saveFailure: errors.New("database unavailable"), wantNoTokens: true},
+	} {
+		t.Run(testcase.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/token" || r.Method != http.MethodPost || r.Header.Get("DPoP") == "" {
+					t.Error("refresh must be a DPoP authenticated POST to the token endpoint")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(testcase.status)
+				body := testcase.body
+				if testcase.status == 200 {
+					body = `{"access_token":"rotated-access","refresh_token":"rotated-refresh","token_type":"DPoP"}`
+				}
+				_, _ = w.Write([]byte(body))
+			}))
+			t.Cleanup(server.Close)
+			key, err := atcrypto.GeneratePrivateKeyP256()
+			if err != nil {
+				t.Fatal(err)
+			}
+			const did = "did:plc:aggregator1"
+			sessions := map[string]oauth.ClientSessionData{}
+			for _, id := range []string{DefaultSessionID, "browser"} {
+				sessions[id] = oauth.ClientSessionData{
+					AccountDID:              syntax.DID(did),
+					SessionID:               id,
+					HostURL:                 server.URL,
+					AuthServerURL:           server.URL,
+					AuthServerTokenEndpoint: server.URL + "/token",
+					AccessToken:             "initial-access",
+					RefreshToken:            "initial-refresh",
+					DPoPPrivateKeyMultibase: key.Multibase(),
+				}
+			}
+			var deleted []string
+			mockStore := &mockOAuthStore{
+				getSessionFunc: func(_ context.Context, _ syntax.DID, sessionID string) (*oauth.ClientSessionData, error) {
+					data, ok := sessions[sessionID]
+					if !ok {
+						return nil, errors.New("session not found")
+					}
+					return &data, nil
+				},
+				saveSessionFunc: func(_ context.Context, data oauth.ClientSessionData) error {
+					if testcase.saveFailure != nil {
+						return testcase.saveFailure
+					}
+					sessions[data.SessionID] = data
+					return nil
+				},
+				deleteSessionFunc: func(_ context.Context, _ syntax.DID, sessionID string) error {
+					deleted = append(deleted, sessionID)
+					delete(sessions, sessionID)
+					return nil
+				},
+			}
+			var storedAccessToken, storedRefreshToken string
+			repo := &mockRepository{
+				updateOAuthTokensFunc: func(_ context.Context, _, accessToken, refreshToken string, _ time.Time) error {
+					if sessions[DefaultSessionID].RefreshToken != refreshToken {
+						t.Error("rotated credentials must be persisted in the session store before the aggregator row is updated")
+					}
+					storedAccessToken, storedRefreshToken = accessToken, refreshToken
+					return nil
+				},
+			}
+			app := &oauth.ClientApp{Store: mockStore, Config: &oauth.ClientConfig{ClientID: server.URL + "/client.json"}, Client: server.Client()}
+			service := NewAPIKeyService(repo, app)
+			expiresAt := time.Now().Add(-time.Minute)
+			creds := &AggregatorCredentials{DID: did, OAuthAccessToken: "initial-access", OAuthRefreshToken: "initial-refresh", OAuthTokenExpiresAt: &expiresAt}
+
+			err = service.RefreshTokensIfNeeded(context.Background(), creds)
+
+			if testcase.wantRefresh {
+				if err != nil {
+					t.Fatalf("RefreshTokensIfNeeded() unexpected error: %v", err)
+				}
+				if storedAccessToken != "rotated-access" || storedRefreshToken != "rotated-refresh" {
+					t.Error("aggregator row must receive the rotated credentials")
+				}
+				if creds.OAuthAccessToken != "rotated-access" || creds.OAuthRefreshToken != "rotated-refresh" {
+					t.Error("in-memory credentials must receive the rotated credentials")
+				}
+			} else if err == nil {
+				t.Fatal("RefreshTokensIfNeeded() expected error")
+			}
+			if errors.Is(err, ErrOAuthSessionDead) != testcase.wantDead {
+				t.Errorf("ErrOAuthSessionDead = %v, want %v (err: %v)", !testcase.wantDead, testcase.wantDead, err)
+			}
+			if testcase.wantNoTokens && storedRefreshToken != "" {
+				t.Error("aggregator row must not be updated when the refresh did not complete")
+			}
+			if testcase.wantDeleted != (len(deleted) == 1 && deleted[0] == DefaultSessionID) {
+				t.Errorf("deleted sessions = %v, want deletion of API key session only: %v", deleted, testcase.wantDeleted)
+			}
+			if _, ok := sessions["browser"]; !ok {
+				t.Error("the aggregator's unrelated session must survive")
+			}
+		})
 	}
 }

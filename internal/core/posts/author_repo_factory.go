@@ -71,7 +71,7 @@ func NewAuthorRepoFactory(oauthClient *oauth.ClientApp, storedSessionID string) 
 			// which PDS the aggregator's repo is actually on — comes from the
 			// store rather than being guessed at, and so that "there is nothing
 			// to resume" is answered in the vocabulary the boundary needs.
-			resumed, resumeErr := oauthClient.ResumeSession(ctx, did, storedSessionID)
+			resumed, resumeErr := covesoauth.ResumeSession(ctx, oauthClient, did, storedSessionID)
 			if resumeErr != nil {
 				return nil, classifyResumeFailure(authorDID, resumeErr)
 			}
@@ -137,7 +137,7 @@ func classifyResumeFailure(authorDID string, resumeErr error) error {
 	if resumeErr == nil {
 		return nil
 	}
-	if errors.Is(resumeErr, covesoauth.ErrSessionNotFound) {
+	if errors.Is(resumeErr, covesoauth.ErrSessionNotFound) || errors.Is(resumeErr, covesoauth.ErrSessionCorrupt) {
 		return fmt.Errorf("resuming the stored session of %s: %w: %w",
 			authorDID, ErrNoAuthorCredentials, resumeErr)
 	}

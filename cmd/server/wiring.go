@@ -1,6 +1,14 @@
 package main
 
 import (
+	"context"
+	"database/sql"
+	"fmt"
+	"log/slog"
+	"strings"
+	"sync"
+	"time"
+
 	"Coves/internal/api/middleware"
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/jetstream"
@@ -26,13 +34,6 @@ import (
 	"Coves/internal/core/votes"
 	"Coves/internal/crypto/credentialcipher"
 	"Coves/internal/notify/telegram"
-	"context"
-	"database/sql"
-	"fmt"
-	"log/slog"
-	"strings"
-	"sync"
-	"time"
 
 	imageproxyhandlers "Coves/internal/api/handlers/imageproxy"
 	postgresRepo "Coves/internal/db/postgres"
@@ -81,9 +82,12 @@ const (
 // then read-only. It exists so the wiring can be split across focused
 // functions without threading a dozen parameters through each one.
 type application struct {
-	cfg              *config.Config
-	db               *sql.DB
-	credentialCipher *credentialcipher.Cipher
+	cfg *config.Config
+	db  *sql.DB
+	// sessionCoordinationDB is the dedicated pool OAuth session operations hold
+	// connections from; see openSessionCoordinationDatabase.
+	sessionCoordinationDB *sql.DB
+	credentialCipher      *credentialcipher.Cipher
 
 	// Identity and authentication
 	identityResolver identity.Resolver
@@ -170,11 +174,13 @@ func buildApplication(
 	ctx context.Context,
 	cfg *config.Config,
 	db *sql.DB,
+	sessionCoordinationDB *sql.DB,
 	credentialCipher *credentialcipher.Cipher,
 ) (app *application, err error) {
 	app = &application{
 		cfg:                   cfg,
 		db:                    db,
+		sessionCoordinationDB: sessionCoordinationDB,
 		credentialCipher:      credentialCipher,
 		stopImageProxyCleanup: func() {},
 	}
@@ -275,7 +281,7 @@ func (a *application) buildIdentity() {
 func (a *application) buildAuth() error {
 	// The wrapper intercepts SaveAuthRequestInfo to capture mobile CSRF state
 	// from the request context, so it must be what everything else holds.
-	baseOAuthStore := oauth.NewPostgresOAuthStore(a.db, 0) // 0 = default 7-day TTL
+	baseOAuthStore := oauth.NewCoordinatedPostgresOAuthStore(a.db, a.sessionCoordinationDB, 0) // 0 = default 7-day TTL
 	a.oauthStore = oauth.NewMobileAwareStoreWrapper(baseOAuthStore)
 
 	oauthConfig := &oauth.OAuthConfig{
@@ -409,7 +415,8 @@ func (a *application) buildServices(ctx context.Context) error {
 	// the guard would otherwise refuse.
 	communityPDSOptions := communities.PrivateHostOptions(a.allowPrivateHosts())
 	provisioner := communities.NewPDSAccountProvisioner(
-		a.cfg.Instance.Domain, a.cfg.PDS.URL, communityPDSOptions...)
+		a.cfg.Instance.Domain, a.cfg.PDS.URL, communityPDSOptions...,
+	)
 	a.communityService = communities.NewCommunityService(
 		a.communityRepo,
 		a.cfg.PDS.URL,
@@ -494,7 +501,8 @@ func (a *application) buildServices(ctx context.Context) error {
 		// The AUTHOR's own credentials: a browser session when there is one,
 		// and an aggregator's stored tokens when there is not (§4.2 step 3).
 		posts.WithAuthorRepoFactory(
-			posts.NewAuthorRepoFactory(a.oauthClient.ClientApp, aggregators.DefaultSessionID)),
+			posts.NewAuthorRepoFactory(a.oauthClient.ClientApp, aggregators.DefaultSessionID),
+		),
 		posts.WithSyncAcceptance(a.admissionRepo, acceptanceEngine),
 		// The SAME writer the engine accepts through, so both ends of an
 		// acceptance's life — the write the fast path makes and the withdrawal
@@ -538,16 +546,21 @@ func (a *application) buildServices(ctx context.Context) error {
 		return err
 	}
 	a.adminReportService = adminreports.NewService(
-		postgresRepo.NewAdminReportRepository(a.db), adminReportOptions...)
+		postgresRepo.NewAdminReportRepository(a.db), adminReportOptions...,
+	)
 	a.communitySuggestionService = communitysuggestions.NewService(
-		postgresRepo.NewCommunitySuggestionRepository(a.db))
+		postgresRepo.NewCommunitySuggestionRepository(a.db),
+	)
 
 	a.feedService = communityFeeds.NewCommunityFeedService(
-		postgresRepo.NewCommunityFeedRepository(a.db, a.cfg.CursorSecret), a.communityService)
+		postgresRepo.NewCommunityFeedRepository(a.db, a.cfg.CursorSecret), a.communityService,
+	)
 	a.timelineService = timeline.NewTimelineService(
-		postgresRepo.NewTimelineRepository(a.db, a.cfg.CursorSecret))
+		postgresRepo.NewTimelineRepository(a.db, a.cfg.CursorSecret),
+	)
 	a.discoverService = discover.NewDiscoverService(
-		postgresRepo.NewDiscoverRepository(a.db, a.cfg.CursorSecret))
+		postgresRepo.NewDiscoverRepository(a.db, a.cfg.CursorSecret),
+	)
 
 	slog.Info("domain services initialized")
 	return nil
@@ -607,7 +620,8 @@ func (a *application) buildAcceptanceEngine() *posts.AcceptanceEngine {
 
 	engine := posts.NewAcceptanceEngine(
 		a.admissionRepo, decider, a.communityWriter,
-		posts.NewCommunityCredentialRefresher(a.communityService))
+		posts.NewCommunityCredentialRefresher(a.communityService),
+	)
 
 	// Zero DISABLES the driver, and leaving the field nil is what makes
 	// /health/consumers omit the queue block entirely. An all-zero queue and an
@@ -924,12 +938,14 @@ func (a *application) buildBridgedVotePoller() error {
 	}
 
 	client := bridgedvotes.NewClient(
-		oauth.NewSSRFSafeHTTPClient(oauth.PrivateAddressOptions(a.allowPrivateHosts())...))
+		oauth.NewSSRFSafeHTTPClient(oauth.PrivateAddressOptions(a.allowPrivateHosts())...),
+	)
 	poller, err := bridgedvotes.NewPoller(
 		postgresRepo.NewBridgedVotesRepository(a.db), client, hosts, bridgedvotes.Options{
 			Lookback: a.cfg.Instance.BridgedVotePollLookback,
 			SweepCap: a.cfg.Instance.BridgedVotePollSweepCap,
-		})
+		},
+	)
 	if err != nil {
 		// NewPoller's message already names the stage and the offending host.
 		return err

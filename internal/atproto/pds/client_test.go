@@ -1477,7 +1477,6 @@ func TestClient_UploadBlob(t *testing.T) {
 
 		ctx := context.Background()
 		blobRef, err := c.UploadBlob(ctx, uploadData, "image/png")
-
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
