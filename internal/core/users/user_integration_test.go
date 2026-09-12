@@ -38,7 +38,7 @@ func testPDSURL() string {
 // Use this for tests that register user routes but don't actually call updateProfile.
 func testUserRouteOptions() *routes.UserRouteOptions {
 	return &routes.UserRouteOptions{
-		PDSClientFactory: func(ctx context.Context, session *oauth.ClientSessionData) (pds.Client, error) {
+		PDSClientFactory: func(ctx context.Context, session *oauth.ClientSessionData) (pds.CommitClient, error) {
 			return nil, errors.New("not implemented - test does not use updateProfile")
 		},
 	}

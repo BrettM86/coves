@@ -706,14 +706,15 @@ func (a *Account) UploadBlob(t TestingT, data []byte, mimeType string) BlobRef {
 // PasswordAuthFactory adapts a PDS-client constructor into the PDS-client
 // factory a domain service expects.
 //
-// Five domain packages declare the identical type under five names —
+// Domain packages declare the same factory shape under several names —
 // votes.PDSClientFactory, communities.PDSClientFactory,
 // userblocks.PDSClientFactory, comments.PDSClientFactory, and a bare function
-// type in the user-profile wiring — all of them
+// type in the user-profile wiring. Most return
 //
 //	func(context.Context, *oauth.ClientSessionData) (pds.Client, error)
 //
-// testkit cannot name pds.Client (internal/atproto/pds imports
+// while the user-profile wiring returns pds.CommitClient. testkit cannot name
+// either interface (internal/atproto/pds imports
 // internal/core/blobs; see the package doc), so it cannot return any of them.
 // It can, however, be generic over the client type and take the constructor as
 // an argument, which moves the illegal import to the call site where it is
@@ -721,8 +722,10 @@ func (a *Account) UploadBlob(t TestingT, data []byte, mimeType string) BlobRef {
 //
 //	svc := communities.NewService(repo, testkit.PasswordAuthFactory(pds.NewFromAccessToken))
 //
-// The returned unnamed function type is assignable to each of the five named
-// ones, so no conversion is needed. That one line replaces the four adapters in
+// The returned function follows the constructor's client type. A constructor
+// returning pds.Client fits the four ordinary factories; user-profile wiring
+// instead needs a constructor or wrapper returning pds.CommitClient. This
+// replaces the four adapters in
 // tests/integration/helpers.go, and the validation they each did slightly
 // differently now happens once, here.
 //

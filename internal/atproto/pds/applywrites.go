@@ -342,13 +342,14 @@ func (c *client) CreateRecordWithCommit(ctx context.Context, collection, rkey st
 // stood there and committed nothing. Callers that need the revision to order by
 // must still treat that as a failure — there is no rev to stamp — but a guarded
 // CREATE wants to hear it, because "the record already exists and is identical"
-// is the answer a retry after a lost response is owed. See ErrNoCommit.
+// is the answer a retry after a lost response is owed. The partial result keeps
+// the accepted record's URI and CID available alongside ErrNoCommit.
 func recordCommit(operation, collection, uri, cid string, commit *commitResponse) (*RecordCommit, error) {
 	if uri == "" || cid == "" {
 		return nil, fmt.Errorf("%s: PDS returned success without uri/cid (collection %s)", operation, collection)
 	}
 	if commit == nil || commit.Rev == "" {
-		return nil, fmt.Errorf("%s: %w (collection %s, uri %s)", operation, ErrNoCommit, collection, uri)
+		return &RecordCommit{URI: uri, CID: cid}, fmt.Errorf("%s: %w (collection %s, uri %s)", operation, ErrNoCommit, collection, uri)
 	}
 
 	return &RecordCommit{

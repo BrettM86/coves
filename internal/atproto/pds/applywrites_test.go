@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/bluesky-social/indigo/atproto/atclient"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // The commit-aware transport: applyWrites, the commit rev, and the two error
@@ -363,6 +365,31 @@ func TestClient_PutRecordWithCommit(t *testing.T) {
 	}
 }
 
+func TestClient_PutRecordWithCommit_NoCommitPreservesRecordIdentity(t *testing.T) {
+	const (
+		acceptedURI = "at://did:plc:test/social.coves.actor.profile/self"
+		acceptedCID = "bafyreiacceptedaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	)
+
+	c, closeServer := newCommitClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"uri": acceptedURI,
+			"cid": acceptedCID,
+		})
+	})
+	defer closeServer()
+
+	result, err := c.PutRecordWithCommit(context.Background(),
+		"social.coves.actor.profile", "self",
+		map[string]any{"$type": "social.coves.actor.profile"}, "bafyreiprevious")
+
+	require.ErrorIs(t, err, ErrNoCommit)
+	require.NotNil(t, result, "an accepted record identity must survive the missing commit metadata")
+	assert.Equal(t, acceptedURI, result.URI)
+	assert.Equal(t, acceptedCID, result.CID)
+}
+
 func TestClient_PutRecordWithCommit_MapsInvalidSwapToSwapConflict(t *testing.T) {
 	c, closeServer := newCommitClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -380,6 +407,44 @@ func TestClient_PutRecordWithCommit_MapsInvalidSwapToSwapConflict(t *testing.T) 
 	if !errors.Is(err, ErrSwapConflict) {
 		t.Errorf("error %v does not match ErrSwapConflict", err)
 	}
+}
+
+func TestClient_PutRecordWithCommit_EmptySwapIsCreateOnly(t *testing.T) {
+	standing := map[string]any{"$type": "social.coves.actor.profile", "displayName": "Concurrent profile"}
+
+	c, closeServer := newCommitClient(t, func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+
+		swap, present := payload["swapRecord"]
+		if !present || swap != nil {
+			standing = payload["record"].(map[string]any)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"uri":    "at://did:plc:test/social.coves.actor.profile/self",
+				"cid":    "bafyoverwritten",
+				"commit": map[string]any{"cid": testCommitCID, "rev": testCommitRev},
+			})
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error":   "InvalidSwap",
+			"message": "Record already exists",
+		})
+	})
+	defer closeServer()
+
+	_, err := c.PutRecordWithCommit(context.Background(),
+		"social.coves.actor.profile", "self",
+		map[string]any{"$type": "social.coves.actor.profile", "displayName": "My profile"}, "")
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrSwapConflict)
+	assert.Equal(t, "Concurrent profile", standing["displayName"],
+		"an empty guarded swap must send JSON null so an intervening create cannot be overwritten")
 }
 
 func TestClient_CreateRecordWithCommit(t *testing.T) {

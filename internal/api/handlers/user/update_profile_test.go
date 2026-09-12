@@ -17,15 +17,21 @@ import (
 	oauthlib "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // mockPDSClient implements pds.Client for testing error paths
 type mockPDSClient struct {
-	uploadBlobError error
-	uploadBlobRef   *blobs.BlobRef
-	putRecordError  error
-	putRecordURI    string
-	putRecordCID    string
+	getRecordResponse         *pds.RecordResponse
+	getRecordError            error
+	uploadBlobError           error
+	uploadBlobRef             *blobs.BlobRef
+	putRecordError            error
+	putRecordWithCommitError  error
+	putRecordURI              string
+	putRecordCID              string
+	putRecordCalled           bool
+	putRecordWithCommitCalled bool
 
 	// The arguments the handler actually passed to PutRecord. Captured because
 	// the RECORD is the wire contract with the firehose consumer that indexes
@@ -34,7 +40,10 @@ type mockPDSClient struct {
 	putRecordCollection string
 	putRecordRKey       string
 	putRecordValue      any
+	putRecordSwap       string
 }
+
+var _ pds.CommitClient = (*mockPDSClient)(nil)
 
 func (m *mockPDSClient) CreateRecord(_ context.Context, _ string, _ string, _ any) (string, string, error) {
 	return "", "", nil
@@ -49,15 +58,41 @@ func (m *mockPDSClient) ListRecords(_ context.Context, _ string, _ int, _ string
 }
 
 func (m *mockPDSClient) GetRecord(_ context.Context, _ string, _ string) (*pds.RecordResponse, error) {
-	return nil, nil
+	return m.getRecordResponse, m.getRecordError
 }
 
-func (m *mockPDSClient) PutRecord(_ context.Context, collection string, rkey string, record any, _ string) (string, string, error) {
-	m.putRecordCollection, m.putRecordRKey, m.putRecordValue = collection, rkey, record
+func (m *mockPDSClient) PutRecord(_ context.Context, collection string, rkey string, record any, swapRecord string) (string, string, error) {
+	m.putRecordCalled = true
+	m.putRecordCollection, m.putRecordRKey, m.putRecordValue, m.putRecordSwap = collection, rkey, record, swapRecord
 	if m.putRecordError != nil {
 		return "", "", m.putRecordError
 	}
 	return m.putRecordURI, m.putRecordCID, nil
+}
+
+// PutRecordWithCommit lets the mock exercise create-only guarded writes.
+func (m *mockPDSClient) PutRecordWithCommit(_ context.Context, collection string, rkey string, record any, swapRecord string) (*pds.RecordCommit, error) {
+	m.putRecordWithCommitCalled = true
+	m.putRecordCollection, m.putRecordRKey, m.putRecordValue, m.putRecordSwap = collection, rkey, record, swapRecord
+	if m.putRecordWithCommitError != nil {
+		if errors.Is(m.putRecordWithCommitError, pds.ErrNoCommit) {
+			return &pds.RecordCommit{URI: m.putRecordURI, CID: m.putRecordCID}, m.putRecordWithCommitError
+		}
+		return nil, m.putRecordWithCommitError
+	}
+	return &pds.RecordCommit{URI: m.putRecordURI, CID: m.putRecordCID}, nil
+}
+
+func (m *mockPDSClient) ApplyWrites(_ context.Context, _ []pds.Write, _ string) (*pds.ApplyWritesResult, error) {
+	panic("unexpected ApplyWrites call")
+}
+
+func (m *mockPDSClient) CreateRecordWithCommit(_ context.Context, _ string, _ string, _ any) (*pds.RecordCommit, error) {
+	panic("unexpected CreateRecordWithCommit call")
+}
+
+func (m *mockPDSClient) GetLatestCommit(_ context.Context) (*pds.LatestCommit, error) {
+	panic("unexpected GetLatestCommit call")
 }
 
 func (m *mockPDSClient) UploadBlob(_ context.Context, _ []byte, _ string) (*blobs.BlobRef, error) {
@@ -75,9 +110,9 @@ func (m *mockPDSClient) HostURL() string {
 	return "https://test.pds.example"
 }
 
-// createMockFactory creates a PDSClientFactory that returns the given mock client
-func createMockFactory(client pds.Client, err error) PDSClientFactory {
-	return func(_ context.Context, _ *oauthlib.ClientSessionData) (pds.Client, error) {
+// createMockFactory creates a commit-aware factory that returns the given mock client.
+func createMockFactory(client pds.CommitClient, err error) PDSClientFactory {
+	return func(_ context.Context, _ *oauthlib.ClientSessionData) (pds.CommitClient, error) {
 		if err != nil {
 			return nil, err
 		}
@@ -89,7 +124,7 @@ func createMockFactory(client pds.Client, err error) PDSClientFactory {
 // that don't require actual PDS client operations
 func createTestHandler() *UpdateProfileHandler {
 	// Use a factory that will never be called (tests exit before PDS client creation)
-	return NewUpdateProfileHandlerWithFactory(func(_ context.Context, _ *oauthlib.ClientSessionData) (pds.Client, error) {
+	return NewUpdateProfileHandlerWithFactory(func(_ context.Context, _ *oauthlib.ClientSessionData) (pds.CommitClient, error) {
 		return nil, errors.New("mock factory should not be called in validation tests")
 	})
 }
@@ -565,7 +600,7 @@ func TestUpdateProfileHandler_BannerUploadUnauthorized(t *testing.T) {
 			Size:     100,
 		},
 	}
-	handler := NewUpdateProfileHandlerWithFactory(func(_ context.Context, _ *oauthlib.ClientSessionData) (pds.Client, error) {
+	handler := NewUpdateProfileHandlerWithFactory(func(_ context.Context, _ *oauthlib.ClientSessionData) (pds.CommitClient, error) {
 		// Return a mock that fails on second UploadBlob call
 		return &mockPDSClientWithCallCounter{
 			mockPDSClient: mockClient,
@@ -598,10 +633,14 @@ func TestUpdateProfileHandler_BannerUploadUnauthorized(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "AuthExpired")
 }
 
-// TestUpdateProfileHandler_PutRecordUnauthorized tests PutRecord auth error
-func TestUpdateProfileHandler_PutRecordUnauthorized(t *testing.T) {
+// TestUpdateProfileHandler_ProfileWriteUnauthorized tests profile write auth error
+func TestUpdateProfileHandler_ProfileWriteUnauthorized(t *testing.T) {
 	mockClient := &mockPDSClient{
-		putRecordError: pds.ErrUnauthorized,
+		getRecordResponse: &pds.RecordResponse{
+			CID:   "bafyexisting",
+			Value: map[string]any{"$type": CovesProfileCollection},
+		},
+		putRecordWithCommitError: pds.ErrUnauthorized,
 	}
 	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
 
@@ -624,10 +663,14 @@ func TestUpdateProfileHandler_PutRecordUnauthorized(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "AuthExpired")
 }
 
-// TestUpdateProfileHandler_PutRecordRateLimited tests PutRecord rate limiting
-func TestUpdateProfileHandler_PutRecordRateLimited(t *testing.T) {
+// TestUpdateProfileHandler_ProfileWriteRateLimited tests profile write rate limiting
+func TestUpdateProfileHandler_ProfileWriteRateLimited(t *testing.T) {
 	mockClient := &mockPDSClient{
-		putRecordError: pds.ErrRateLimited,
+		getRecordResponse: &pds.RecordResponse{
+			CID:   "bafyexisting",
+			Value: map[string]any{"$type": CovesProfileCollection},
+		},
+		putRecordWithCommitError: pds.ErrRateLimited,
 	}
 	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
 
@@ -650,10 +693,14 @@ func TestUpdateProfileHandler_PutRecordRateLimited(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "RateLimited")
 }
 
-// TestUpdateProfileHandler_PutRecordPayloadTooLarge tests PutRecord payload size error
-func TestUpdateProfileHandler_PutRecordPayloadTooLarge(t *testing.T) {
+// TestUpdateProfileHandler_ProfileWritePayloadTooLarge tests profile write payload size error
+func TestUpdateProfileHandler_ProfileWritePayloadTooLarge(t *testing.T) {
 	mockClient := &mockPDSClient{
-		putRecordError: pds.ErrPayloadTooLarge,
+		getRecordResponse: &pds.RecordResponse{
+			CID:   "bafyexisting",
+			Value: map[string]any{"$type": CovesProfileCollection},
+		},
+		putRecordWithCommitError: pds.ErrPayloadTooLarge,
 	}
 	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
 
@@ -676,12 +723,16 @@ func TestUpdateProfileHandler_PutRecordPayloadTooLarge(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "PayloadTooLarge")
 }
 
-// TestUpdateProfileHandler_PutRecordForbidden tests that a PDS 403 maps to
+// TestUpdateProfileHandler_ProfileWriteForbidden tests that a PDS 403 maps to
 // PermissionDenied (403), NOT AuthExpired (401) — a permissions error must not
 // trigger a client sign-out of a valid session.
-func TestUpdateProfileHandler_PutRecordForbidden(t *testing.T) {
+func TestUpdateProfileHandler_ProfileWriteForbidden(t *testing.T) {
 	mockClient := &mockPDSClient{
-		putRecordError: pds.ErrForbidden,
+		getRecordResponse: &pds.RecordResponse{
+			CID:   "bafyexisting",
+			Value: map[string]any{"$type": CovesProfileCollection},
+		},
+		putRecordWithCommitError: pds.ErrForbidden,
 	}
 	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
 
@@ -735,6 +786,455 @@ func TestUpdateProfileHandler_Success(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, "at://did:plc:test123/social.coves.actor.profile/self", resp.URI)
 	assert.Equal(t, "bafyreifake", resp.CID)
+}
+
+func TestUpdateProfileHandler_TextUpdatePreservesExistingRecord(t *testing.T) {
+	avatar := map[string]any{
+		"$type":    "blob",
+		"ref":      map[string]any{"$link": "bafyavatar"},
+		"mimeType": "image/png",
+		"size":     float64(1000),
+	}
+	banner := map[string]any{
+		"$type":    "blob",
+		"ref":      map[string]any{"$link": "bafybanner"},
+		"mimeType": "image/jpeg",
+		"size":     float64(2000),
+	}
+	mockClient := &mockPDSClient{
+		getRecordResponse: &pds.RecordResponse{
+			CID: "bafyexisting",
+			Value: map[string]any{
+				"$type":       CovesProfileCollection,
+				"displayName": "Old name",
+				"description": "Keep this bio",
+				"avatar":      avatar,
+				"banner":      banner,
+				"createdAt":   "2026-09-01T00:00:00Z",
+			},
+		},
+		putRecordURI: "at://did:plc:test123/social.coves.actor.profile/self",
+		putRecordCID: "bafyupdated",
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	body, _ := json.Marshal(UpdateProfileRequest{DisplayName: strPtr("New name")})
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	const testDID = "did:plc:testuser123"
+	req = setTestOAuthSession(req, testDID, createTestOAuthSession(testDID))
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, map[string]any{
+		"$type":       CovesProfileCollection,
+		"displayName": "New name",
+		"description": "Keep this bio",
+		"avatar":      avatar,
+		"banner":      banner,
+		"createdAt":   "2026-09-01T00:00:00Z",
+	}, mockClient.putRecordValue)
+	assert.Equal(t, "bafyexisting", mockClient.putRecordSwap)
+}
+
+func TestUpdateProfileHandler_BioChangeRemovesDescriptionFacets(t *testing.T) {
+	facets := []any{
+		map[string]any{
+			"index": map[string]any{"byteStart": float64(0), "byteEnd": float64(8)},
+			"features": []any{map[string]any{
+				"$type": "social.coves.richtext.facet#link",
+				"uri":   "https://example.com/old",
+			}},
+		},
+	}
+
+	tests := []struct {
+		name string
+		bio  string
+	}{
+		{name: "changed", bio: "A new bio"},
+		{name: "cleared", bio: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockClient := &mockPDSClient{
+				getRecordResponse: &pds.RecordResponse{
+					CID: "bafyexisting",
+					Value: map[string]any{
+						"$type":             CovesProfileCollection,
+						"description":       "Old link",
+						"descriptionFacets": facets,
+					},
+				},
+				putRecordURI: "at://did:plc:testuser123/social.coves.actor.profile/self",
+				putRecordCID: "bafyupdated",
+			}
+			handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+			body, _ := json.Marshal(UpdateProfileRequest{Bio: strPtr(tt.bio)})
+			req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			const testDID = "did:plc:testuser123"
+			req = setTestOAuthSession(req, testDID, createTestOAuthSession(testDID))
+
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusOK, w.Code)
+			profile, ok := mockClient.putRecordValue.(map[string]any)
+			assert.True(t, ok)
+			assert.Equal(t, tt.bio, profile["description"])
+			assert.NotContains(t, profile, "descriptionFacets",
+				"facets indexed into the old description must not survive a changed or cleared bio")
+		})
+	}
+}
+
+func TestUpdateProfileHandler_UnchangedBioPreservesDescriptionFacets(t *testing.T) {
+	const existingBio = "Keep https://example.com"
+	facets := []any{
+		map[string]any{
+			"index": map[string]any{"byteStart": float64(5), "byteEnd": float64(24)},
+			"features": []any{map[string]any{
+				"$type": "social.coves.richtext.facet#link",
+				"uri":   "https://example.com",
+			}},
+		},
+	}
+
+	tests := []struct {
+		name string
+		bio  *string
+	}{
+		{name: "omitted"},
+		{name: "explicitly unchanged", bio: strPtr(existingBio)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockClient := &mockPDSClient{
+				getRecordResponse: &pds.RecordResponse{
+					CID: "bafyexisting",
+					Value: map[string]any{
+						"$type":             CovesProfileCollection,
+						"description":       existingBio,
+						"descriptionFacets": facets,
+					},
+				},
+				putRecordURI: "at://did:plc:testuser123/social.coves.actor.profile/self",
+				putRecordCID: "bafyupdated",
+			}
+			handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+			body, _ := json.Marshal(UpdateProfileRequest{Bio: tt.bio})
+			req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			const testDID = "did:plc:testuser123"
+			req = setTestOAuthSession(req, testDID, createTestOAuthSession(testDID))
+
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, req)
+
+			assert.Equal(t, http.StatusOK, w.Code)
+			profile, ok := mockClient.putRecordValue.(map[string]any)
+			assert.True(t, ok)
+			assert.Equal(t, existingBio, profile["description"])
+			assert.Equal(t, facets, profile["descriptionFacets"])
+		})
+	}
+}
+
+func TestUpdateProfileHandler_AvatarReplacementPreservesRestOfStandingRecord(t *testing.T) {
+	oldAvatar := map[string]any{
+		"$type":    "blob",
+		"ref":      map[string]any{"$link": "bafyoldavatar"},
+		"mimeType": "image/png",
+		"size":     float64(500),
+	}
+	banner := map[string]any{
+		"$type":    "blob",
+		"ref":      map[string]any{"$link": "bafybanner"},
+		"mimeType": "image/jpeg",
+		"size":     float64(2000),
+	}
+	facets := []any{map[string]any{"index": map[string]any{
+		"byteStart": float64(0), "byteEnd": float64(7),
+	}}}
+	unknown := map[string]any{"nested": []any{"future", float64(2)}}
+
+	mockClient := &mockPDSClient{
+		getRecordResponse: &pds.RecordResponse{
+			CID: "bafystanding",
+			Value: map[string]any{
+				"$type":              CovesProfileCollection,
+				"displayName":        "Existing name",
+				"description":        "Old bio",
+				"descriptionFacets":  facets,
+				"avatar":             oldAvatar,
+				"banner":             banner,
+				"createdAt":          "2026-09-01T00:00:00Z",
+				"unknownFutureField": unknown,
+			},
+		},
+		uploadBlobRef: &blobs.BlobRef{
+			Type:     "blob",
+			Ref:      map[string]string{"$link": "bafynewavatar"},
+			MimeType: "image/webp",
+			Size:     1000,
+		},
+		putRecordURI: "at://did:plc:testuser123/social.coves.actor.profile/self",
+		putRecordCID: "bafyupdated",
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	body, _ := json.Marshal(UpdateProfileRequest{
+		AvatarBlob:     []byte("new avatar"),
+		AvatarMimeType: "image/webp",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	const testDID = "did:plc:testuser123"
+	req = setTestOAuthSession(req, testDID, createTestOAuthSession(testDID))
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, map[string]any{
+		"$type":             CovesProfileCollection,
+		"displayName":       "Existing name",
+		"description":       "Old bio",
+		"descriptionFacets": facets,
+		"avatar": map[string]any{
+			"$type":    "blob",
+			"ref":      map[string]string{"$link": "bafynewavatar"},
+			"mimeType": "image/webp",
+			"size":     1000,
+		},
+		"banner":             banner,
+		"createdAt":          "2026-09-01T00:00:00Z",
+		"unknownFutureField": unknown,
+	}, mockClient.putRecordValue)
+	assert.Equal(t, "bafystanding", mockClient.putRecordSwap,
+		"avatar replacement must compare against the CID of the record whose other fields were preserved")
+}
+
+func TestUpdateProfileHandler_PutRecordSwapConflictIsHTTPConflict(t *testing.T) {
+	mockClient := &mockPDSClient{
+		getRecordResponse: &pds.RecordResponse{
+			CID:   "bafystanding",
+			Value: map[string]any{"$type": CovesProfileCollection},
+		},
+		putRecordWithCommitError: pds.ErrSwapConflict,
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	body, _ := json.Marshal(UpdateProfileRequest{DisplayName: strPtr("Racing update")})
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	const testDID = "did:plc:testuser123"
+	req = setTestOAuthSession(req, testDID, createTestOAuthSession(testDID))
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+	assert.Contains(t, w.Body.String(), `"error":"Conflict"`)
+	assert.Equal(t, "bafystanding", mockClient.putRecordSwap)
+}
+
+func TestUpdateProfileHandler_NoCommitReturnsAcceptedRecordIdentity(t *testing.T) {
+	const (
+		acceptedURI = "at://did:plc:testuser123/social.coves.actor.profile/self"
+		staleCID    = "bafystale"
+		acceptedCID = "bafyaccepted"
+	)
+	mockClient := &mockPDSClient{
+		getRecordResponse: &pds.RecordResponse{
+			URI: acceptedURI,
+			CID: staleCID,
+			Value: map[string]any{
+				"$type":       CovesProfileCollection,
+				"displayName": "Standing name",
+			},
+		},
+		putRecordWithCommitError: pds.ErrNoCommit,
+		putRecordURI:             acceptedURI,
+		putRecordCID:             acceptedCID,
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	body, _ := json.Marshal(UpdateProfileRequest{DisplayName: strPtr("Standing name")})
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	const testDID = "did:plc:testuser123"
+	req = setTestOAuthSession(req, testDID, createTestOAuthSession(testDID))
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.True(t, mockClient.putRecordWithCommitCalled)
+	assert.False(t, mockClient.putRecordCalled, "ErrNoCommit must never trigger an unguarded retry")
+	require.Equal(t, http.StatusOK, w.Code,
+		"a no-op save already has the requested state and must not surface as a failure")
+	var resp UpdateProfileResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, acceptedURI, resp.URI)
+	assert.Equal(t, acceptedCID, resp.CID,
+		"the accepted write identity must win over the stale pre-read CID")
+}
+
+func TestUpdateProfileHandler_NoCommitAfterNotFoundReturnsAcceptedRecordIdentity(t *testing.T) {
+	const (
+		acceptedURI = "at://did:plc:testuser123/social.coves.actor.profile/self"
+		acceptedCID = "bafyaccepted"
+	)
+	mockClient := &mockPDSClient{
+		getRecordError:           pds.ErrNotFound,
+		putRecordWithCommitError: pds.ErrNoCommit,
+		putRecordURI:             acceptedURI,
+		putRecordCID:             acceptedCID,
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	body, _ := json.Marshal(UpdateProfileRequest{DisplayName: strPtr("First profile")})
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	const testDID = "did:plc:testuser123"
+	req = setTestOAuthSession(req, testDID, createTestOAuthSession(testDID))
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.True(t, mockClient.putRecordWithCommitCalled)
+	assert.False(t, mockClient.putRecordCalled, "ErrNoCommit must never trigger an unguarded retry")
+	require.Equal(t, http.StatusOK, w.Code,
+		"the PDS accepted the initially missing record even though it emitted no commit metadata")
+	var resp UpdateProfileResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, acceptedURI, resp.URI)
+	assert.Equal(t, acceptedCID, resp.CID)
+}
+
+func TestUpdateProfileHandler_MissingRecordCreatesProfile(t *testing.T) {
+	mockClient := &mockPDSClient{
+		getRecordError: pds.ErrNotFound,
+		putRecordURI:   "at://did:plc:test123/social.coves.actor.profile/self",
+		putRecordCID:   "bafycreated",
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	body, _ := json.Marshal(UpdateProfileRequest{DisplayName: strPtr("First profile")})
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	const testDID = "did:plc:testuser123"
+	req = setTestOAuthSession(req, testDID, createTestOAuthSession(testDID))
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, map[string]any{
+		"$type":       CovesProfileCollection,
+		"displayName": "First profile",
+	}, mockClient.putRecordValue)
+	assert.Empty(t, mockClient.putRecordSwap)
+}
+
+func TestUpdateProfileHandler_MissingRecordUsesCreateOnlyGuard(t *testing.T) {
+	mockClient := &mockPDSClient{
+		getRecordError:           pds.ErrNotFound,
+		putRecordWithCommitError: pds.ErrSwapConflict,
+		putRecordURI:             "at://did:plc:testuser123/social.coves.actor.profile/self",
+		putRecordCID:             "bafyoverwritten",
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	body, _ := json.Marshal(UpdateProfileRequest{DisplayName: strPtr("First profile")})
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	const testDID = "did:plc:testuser123"
+	req = setTestOAuthSession(req, testDID, createTestOAuthSession(testDID))
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code,
+		"a profile created after the missing-record read must win; this request must not overwrite it")
+	assert.True(t, mockClient.putRecordWithCommitCalled,
+		"the guarded PDS writer gives an empty swapRecord create-only semantics")
+	assert.False(t, mockClient.putRecordCalled,
+		"Client.PutRecord treats an empty swapRecord as unguarded and can overwrite a concurrent create")
+}
+
+func TestUpdateProfileHandler_NilGetRecordResponseDoesNotUseUnguardedWrite(t *testing.T) {
+	mockClient := &mockPDSClient{}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	body, _ := json.Marshal(UpdateProfileRequest{DisplayName: strPtr("First profile")})
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	const testDID = "did:plc:testuser123"
+	req = setTestOAuthSession(req, testDID, createTestOAuthSession(testDID))
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.False(t, mockClient.putRecordCalled,
+		"a nil record response must not cause an unguarded PutRecord")
+	assert.True(t, mockClient.putRecordWithCommitCalled,
+		"a nil record response must use the guarded writer")
+	assert.Empty(t, mockClient.putRecordSwap,
+		"a nil record response may only be written with the create-only guard")
+}
+
+func TestUpdateProfileHandler_ExistingRecordWithEmptyCIDDoesNotUseUnguardedWrite(t *testing.T) {
+	mockClient := &mockPDSClient{
+		getRecordResponse: &pds.RecordResponse{
+			Value: map[string]any{"$type": CovesProfileCollection},
+		},
+		putRecordWithCommitError: pds.ErrSwapConflict,
+	}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	body, _ := json.Marshal(UpdateProfileRequest{DisplayName: strPtr("Updated profile")})
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	const testDID = "did:plc:testuser123"
+	req = setTestOAuthSession(req, testDID, createTestOAuthSession(testDID))
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if !assert.False(t, mockClient.putRecordCalled,
+		"an existing record with an empty CID must not cause an unguarded PutRecord") {
+		return
+	}
+	assert.True(t, mockClient.putRecordWithCommitCalled)
+	assert.Empty(t, mockClient.putRecordSwap,
+		"the commit-aware writer must give the empty swap create-only semantics")
+}
+
+func TestUpdateProfileHandler_GetRecordRateLimitedStopsWrite(t *testing.T) {
+	mockClient := &mockPDSClient{getRecordError: pds.ErrRateLimited}
+	handler := NewUpdateProfileHandlerWithFactory(createMockFactory(mockClient, nil))
+
+	body, _ := json.Marshal(UpdateProfileRequest{Bio: strPtr("New bio")})
+	req := httptest.NewRequest(http.MethodPost, "/xrpc/social.coves.actor.updateProfile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	const testDID = "did:plc:testuser123"
+	req = setTestOAuthSession(req, testDID, createTestOAuthSession(testDID))
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusTooManyRequests, w.Code)
+	assert.Contains(t, w.Body.String(), "RateLimited")
+	assert.Nil(t, mockClient.putRecordValue)
 }
 
 // TestUpdateProfileHandler_SuccessWithAvatar tests successful profile update with avatar
@@ -939,7 +1439,7 @@ func TestUpdateProfileHandler_AvatarUploadReturnsEmptyType(t *testing.T) {
 func TestUpdateProfileHandler_BannerUploadReturnsNilRef(t *testing.T) {
 	// We need the avatar upload to succeed and banner upload to return nil
 	callCount := 0
-	handler := NewUpdateProfileHandlerWithFactory(func(_ context.Context, _ *oauthlib.ClientSessionData) (pds.Client, error) {
+	handler := NewUpdateProfileHandlerWithFactory(func(_ context.Context, _ *oauthlib.ClientSessionData) (pds.CommitClient, error) {
 		return &mockPDSClientWithNilBannerRef{
 			callCount: &callCount,
 		}, nil
@@ -1040,6 +1540,8 @@ type mockPDSClientWithNilBannerRef struct {
 	callCount *int
 }
 
+var _ pds.CommitClient = (*mockPDSClientWithNilBannerRef)(nil)
+
 func (m *mockPDSClientWithNilBannerRef) CreateRecord(_ context.Context, _ string, _ string, _ any) (string, string, error) {
 	return "", "", nil
 }
@@ -1058,6 +1560,22 @@ func (m *mockPDSClientWithNilBannerRef) GetRecord(_ context.Context, _ string, _
 
 func (m *mockPDSClientWithNilBannerRef) PutRecord(_ context.Context, _ string, _ string, _ any, _ string) (string, string, error) {
 	return "", "", nil
+}
+
+func (m *mockPDSClientWithNilBannerRef) ApplyWrites(_ context.Context, _ []pds.Write, _ string) (*pds.ApplyWritesResult, error) {
+	panic("unexpected ApplyWrites call")
+}
+
+func (m *mockPDSClientWithNilBannerRef) PutRecordWithCommit(_ context.Context, _ string, _ string, _ any, _ string) (*pds.RecordCommit, error) {
+	panic("unexpected PutRecordWithCommit call")
+}
+
+func (m *mockPDSClientWithNilBannerRef) CreateRecordWithCommit(_ context.Context, _ string, _ string, _ any) (*pds.RecordCommit, error) {
+	panic("unexpected CreateRecordWithCommit call")
+}
+
+func (m *mockPDSClientWithNilBannerRef) GetLatestCommit(_ context.Context) (*pds.LatestCommit, error) {
+	panic("unexpected GetLatestCommit call")
 }
 
 func (m *mockPDSClientWithNilBannerRef) UploadBlob(_ context.Context, _ []byte, _ string) (*blobs.BlobRef, error) {

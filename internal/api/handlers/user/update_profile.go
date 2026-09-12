@@ -3,6 +3,7 @@ package user
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -24,7 +25,7 @@ const CovesProfileCollection = users.ProfileCollection
 
 // PDSClientFactory creates PDS clients from session data.
 // Used to allow injection of different auth mechanisms (OAuth for production, password for E2E tests).
-type PDSClientFactory func(ctx context.Context, session *oauth.ClientSessionData) (pds.Client, error)
+type PDSClientFactory func(ctx context.Context, session *oauth.ClientSessionData) (pds.CommitClient, error)
 
 const (
 	// MaxDisplayNameGraphemes is the maximum display name length in graphemes (per atProto lexicon)
@@ -91,7 +92,7 @@ func NewUpdateProfileHandlerWithFactory(factory PDSClientFactory) *UpdateProfile
 // getPDSClient creates a PDS client from an OAuth session.
 // If a custom factory was provided (for testing), uses that.
 // Otherwise, uses DPoP authentication via indigo's ClientApp for proper OAuth token handling.
-func (h *UpdateProfileHandler) getPDSClient(ctx context.Context, session *oauth.ClientSessionData) (pds.Client, error) {
+func (h *UpdateProfileHandler) getPDSClient(ctx context.Context, session *oauth.ClientSessionData) (pds.CommitClient, error) {
 	// Use custom factory if provided (e.g., for E2E testing with password auth)
 	if h.pdsClientFactory != nil {
 		return h.pdsClientFactory(ctx, session)
@@ -203,9 +204,31 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// 5. Build profile record
+	// 5. Read the standing record so omitted fields keep their current values.
+	// Guard the subsequent write with its CID so concurrent editors cannot
+	// silently overwrite each other.
+	existing, err := pdsClient.GetRecord(ctx, CovesProfileCollection, "self")
+	missingRecord := errors.Is(err, pds.ErrNotFound) || (err == nil && existing == nil)
+	if err != nil && !missingRecord {
+		slog.Error("failed to read existing profile record",
+			slog.String("did", userDID),
+			slog.String("error", err.Error()),
+		)
+		putProfileMapper.Write(w, err)
+		return
+	}
+
+	// 6. Build profile record
 	profile := map[string]interface{}{
 		"$type": CovesProfileCollection,
+	}
+	swapRecord := ""
+	if existing != nil {
+		for key, value := range existing.Value {
+			profile[key] = value
+		}
+		profile["$type"] = CovesProfileCollection
+		swapRecord = existing.CID
 	}
 
 	// Add displayName if provided
@@ -215,10 +238,14 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 
 	// Add bio (description) if provided
 	if req.Bio != nil {
+		existingBio, hadDescription := profile["description"].(string)
+		if !hadDescription || existingBio != *req.Bio {
+			delete(profile, "descriptionFacets")
+		}
 		profile["description"] = *req.Bio
 	}
 
-	// 6. Upload avatar blob if provided
+	// 7. Upload avatar blob if provided
 	if len(req.AvatarBlob) > 0 {
 		avatarRef, err := pdsClient.UploadBlob(ctx, req.AvatarBlob, req.AvatarMimeType)
 		if err != nil {
@@ -242,7 +269,7 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// 7. Upload banner blob if provided
+	// 8. Upload banner blob if provided
 	if len(req.BannerBlob) > 0 {
 		bannerRef, err := pdsClient.UploadBlob(ctx, req.BannerBlob, req.BannerMimeType)
 		if err != nil {
@@ -266,20 +293,22 @@ func (h *UpdateProfileHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// 8. Put profile record to PDS using com.atproto.repo.putRecord
-	uri, cid, err := pdsClient.PutRecord(ctx, CovesProfileCollection, "self", profile, "")
+	// 9. Put profile record to PDS using com.atproto.repo.putRecord
+	commit, err := pdsClient.PutRecordWithCommit(ctx, CovesProfileCollection, "self", profile, swapRecord)
 	if err != nil {
-		slog.Error("failed to put profile record to PDS",
-			slog.String("did", userDID),
-			slog.String("pds_url", session.HostURL),
-			slog.String("error", err.Error()),
-		)
-		putProfileMapper.Write(w, err)
-		return
+		if !errors.Is(err, pds.ErrNoCommit) || commit == nil || commit.URI == "" || commit.CID == "" {
+			slog.Error("failed to put profile record to PDS",
+				slog.String("did", userDID),
+				slog.String("pds_url", session.HostURL),
+				slog.String("error", err.Error()),
+			)
+			putProfileMapper.Write(w, err)
+			return
+		}
 	}
 
-	// 9. Return success response
-	resp := UpdateProfileResponse{URI: uri, CID: cid}
+	// 10. Return success response
+	resp := UpdateProfileResponse{URI: commit.URI, CID: commit.CID}
 
 	// Marshal to bytes first to catch encoding errors before writing headers
 	responseBytes, err := json.Marshal(resp)
