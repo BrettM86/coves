@@ -62,7 +62,7 @@ const PostV2Collection = posts.PostV2Collection
 // local write API caps in internal/core/posts/service.go.
 const (
 	MaxPostTitleBytes   = 3000
-	MaxPostContentBytes = 100000
+	MaxPostContentBytes = 500000
 )
 
 // DeletedAccountLookup reports whether a DID names an account this AppView was

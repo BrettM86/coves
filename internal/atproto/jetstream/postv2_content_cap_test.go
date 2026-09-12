@@ -28,10 +28,10 @@ func TestPostV2Consumer_ContentAndTitleCapsApplyToCreateAndUpdate(t *testing.T) 
 		content string
 	}{
 		{
-			name:    "content over 100000 bytes",
+			name:    "content over 500000 bytes",
 			rkey:    "pv2contentovercap",
 			title:   "oversized content",
-			content: strings.Repeat("c", 100_001),
+			content: strings.Repeat("c", 500_001),
 		},
 		{
 			name:    "title over 3000 bytes",
@@ -57,7 +57,7 @@ func TestPostV2Consumer_ContentAndTitleCapsApplyToCreateAndUpdate(t *testing.T) 
 		})
 	}
 
-	t.Run("update/content over 100000 bytes", func(t *testing.T) {
+	t.Run("update/content over 500000 bytes", func(t *testing.T) {
 		const (
 			rkey            = "pv2updatecontentovercap"
 			originalContent = "content before the oversized update"
@@ -72,11 +72,11 @@ func TestPostV2Consumer_ContentAndTitleCapsApplyToCreateAndUpdate(t *testing.T) 
 
 		err := f.consumer.HandleEvent(ctx, pv2Event(
 			pv2Author, "update", rkey, revs[1], "bafyreicapupdatev2", base+1_000_000,
-			pv2Record(pv2Community, "updated title", strings.Repeat("u", 100_001)),
+			pv2Record(pv2Community, "updated title", strings.Repeat("u", 500_001)),
 		))
 
 		assert.Truef(t, errors.Is(err, ErrPermanentEvent),
-			"a postv2 update with content over 100,000 bytes must return ErrPermanentEvent; got %v", err)
+			"a postv2 update with content over 500,000 bytes must return ErrPermanentEvent; got %v", err)
 		assert.ErrorContains(t, err, "exceeds maximum length",
 			"the oversized update rejection must name the content cap")
 		var contentUnchanged bool
@@ -96,12 +96,12 @@ func TestPostV2Consumer_ContentAndTitleCapsApplyToCreateAndUpdate(t *testing.T) 
 		wantContent int
 	}{
 		{
-			name:        "content at 100000 bytes",
+			name:        "content at 500000 bytes",
 			rkey:        "pv2contentatcap",
 			title:       "content boundary",
-			content:     strings.Repeat("c", 100_000),
+			content:     strings.Repeat("c", 500_000),
 			wantTitle:   len("content boundary"),
-			wantContent: 100_000,
+			wantContent: 500_000,
 		},
 		{
 			name:        "title at 3000 bytes",
