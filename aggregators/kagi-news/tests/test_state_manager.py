@@ -3,9 +3,11 @@ Tests for State Manager.
 
 Tests deduplication state tracking and persistence.
 """
-import pytest
 import json
+import logging
 import tempfile
+
+import pytest
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -326,3 +328,271 @@ class TestStateManager:
 
         recent = manager.get_recent_stories(feed_url, days=4)
         assert recent == []
+
+
+FEED_URL = "https://news.kagi.com/world.xml"
+OTHER_FEED_URL = "https://news.kagi.com/science.xml"
+RECENT_GUID = "https://kite.kagi.com/world/2026091012/us-announces-new-tariffs-on-china"
+SUPPRESSED_GUID = "https://kite.kagi.com/world/2026091212/trade-tensions-escalate-tariffs-take-effect"
+UNKNOWN_GUID = "https://kite.kagi.com/world/2026091299/never-seen-before"
+
+
+class TestSuppressedGuids:
+    """Suppressed candidates are remembered separately from posted ones.
+
+    A semantic duplicate was never posted, so it cannot live in posted_guids, but
+    it must not be re-offered to the model on the next run either. It gets its own
+    per-feed list.
+    """
+
+    def test_mark_suppressed_records_without_posting(self, temp_state_file):
+        """A suppressed guid reads back as suppressed and stays invisible to posted queries."""
+        manager = StateManager(temp_state_file)
+
+        manager.mark_suppressed(FEED_URL, SUPPRESSED_GUID, RECENT_GUID)
+
+        assert manager.is_suppressed(FEED_URL, SUPPRESSED_GUID)
+        assert not manager.is_suppressed(FEED_URL, UNKNOWN_GUID)
+
+        # Suppressed is not posted: nothing was published to the network.
+        assert not manager.is_posted(FEED_URL, SUPPRESSED_GUID)
+        assert manager.get_posted_count(FEED_URL) == 0
+        assert manager.get_all_posted_guids(FEED_URL) == []
+        assert manager.get_recent_stories(FEED_URL, days=4) == []
+
+    def test_suppressed_entry_persists_with_timestamp(self, temp_state_file):
+        """The suppression survives a reload and records what it duplicated, and when."""
+        manager = StateManager(temp_state_file)
+        manager.mark_suppressed(FEED_URL, SUPPRESSED_GUID, RECENT_GUID)
+
+        reloaded = StateManager(temp_state_file)
+        assert reloaded.is_suppressed(FEED_URL, SUPPRESSED_GUID)
+
+        state_data = json.loads(temp_state_file.read_text())
+        suppressed = state_data['feeds'][FEED_URL]['suppressed_guids']
+        assert len(suppressed) == 1
+
+        entry = suppressed[0]
+        assert set(entry) == {"guid", "duplicate_of", "suppressed_at"}
+        assert entry["guid"] == SUPPRESSED_GUID
+        assert entry["duplicate_of"] == RECENT_GUID
+        # Stored as an ISO string, like posted_at, so cleanup can age it.
+        assert isinstance(entry["suppressed_at"], str)
+        datetime.fromisoformat(entry["suppressed_at"])
+
+    def test_suppression_is_scoped_to_its_feed(self, temp_state_file):
+        """Suppressing a guid in one feed says nothing about another feed."""
+        manager = StateManager(temp_state_file)
+
+        manager.mark_suppressed(FEED_URL, SUPPRESSED_GUID, RECENT_GUID)
+
+        assert manager.is_suppressed(FEED_URL, SUPPRESSED_GUID)
+        assert not manager.is_suppressed(OTHER_FEED_URL, SUPPRESSED_GUID)
+
+    def test_cleanup_drops_aged_suppressed_entries(self, temp_state_file):
+        """Suppressed entries age out at max_age_days, like posted ones."""
+        manager = StateManager(temp_state_file)
+        manager.mark_suppressed(FEED_URL, SUPPRESSED_GUID, RECENT_GUID)
+
+        aged_guid = "https://kite.kagi.com/world/2026080112/long-forgotten-story"
+        old_timestamp = (datetime.now() - timedelta(days=31)).isoformat()
+        state_data = json.loads(temp_state_file.read_text())
+        state_data['feeds'][FEED_URL]['suppressed_guids'].append({
+            'guid': aged_guid,
+            'duplicate_of': RECENT_GUID,
+            'suppressed_at': old_timestamp,
+        })
+        temp_state_file.write_text(json.dumps(state_data, indent=2))
+
+        manager = StateManager(temp_state_file)
+        manager.cleanup_old_entries(FEED_URL)
+
+        assert manager.is_suppressed(FEED_URL, SUPPRESSED_GUID)
+        assert not manager.is_suppressed(FEED_URL, aged_guid)
+
+    def test_cleanup_caps_suppressed_entries_per_feed(self, temp_state_file):
+        """Beyond max_guids_per_feed, the oldest suppressions are dropped first."""
+        oldest_guid = "https://kite.kagi.com/world/2026091210/oldest-suppressed"
+        middle_guid = "https://kite.kagi.com/world/2026091211/middle-suppressed"
+        newest_guid = "https://kite.kagi.com/world/2026091212/newest-suppressed"
+
+        now = datetime.now()
+        temp_state_file.write_text(json.dumps({
+            "feeds": {
+                FEED_URL: {
+                    "posted_guids": [],
+                    "last_successful_run": None,
+                    "suppressed_guids": [
+                        {"guid": oldest_guid, "duplicate_of": RECENT_GUID,
+                         "suppressed_at": (now - timedelta(hours=3)).isoformat()},
+                        {"guid": middle_guid, "duplicate_of": RECENT_GUID,
+                         "suppressed_at": (now - timedelta(hours=2)).isoformat()},
+                        {"guid": newest_guid, "duplicate_of": RECENT_GUID,
+                         "suppressed_at": (now - timedelta(hours=1)).isoformat()},
+                    ],
+                }
+            }
+        }, indent=2))
+
+        manager = StateManager(temp_state_file, max_guids_per_feed=2)
+        manager.cleanup_old_entries(FEED_URL)
+
+        assert not manager.is_suppressed(FEED_URL, oldest_guid)
+        assert manager.is_suppressed(FEED_URL, middle_guid)
+        assert manager.is_suppressed(FEED_URL, newest_guid)
+
+    def test_suppressed_and_posted_limits_are_independent(self, temp_state_file):
+        """Suppressions do not consume the posted budget, or the reverse.
+
+        A busy feed would otherwise evict posted history to make room for
+        suppressions, reopening exact-duplicate posting.
+        """
+        posted_guid_one = "https://kite.kagi.com/world/2026091210/posted-one"
+        posted_guid_two = "https://kite.kagi.com/world/2026091211/posted-two"
+        suppressed_guid_one = "https://kite.kagi.com/world/2026091212/suppressed-one"
+        suppressed_guid_two = "https://kite.kagi.com/world/2026091213/suppressed-two"
+
+        manager = StateManager(temp_state_file, max_guids_per_feed=2)
+        manager.mark_posted(FEED_URL, posted_guid_one, "at://test/1", title="One")
+        manager.mark_posted(FEED_URL, posted_guid_two, "at://test/2", title="Two")
+        manager.mark_suppressed(FEED_URL, suppressed_guid_one, RECENT_GUID)
+        manager.mark_suppressed(FEED_URL, suppressed_guid_two, RECENT_GUID)
+
+        manager.cleanup_old_entries(FEED_URL)
+
+        # All four survive: the cap applies to each list on its own.
+        assert manager.get_posted_count(FEED_URL) == 2
+        assert manager.is_posted(FEED_URL, posted_guid_one)
+        assert manager.is_posted(FEED_URL, posted_guid_two)
+        assert manager.is_suppressed(FEED_URL, suppressed_guid_one)
+        assert manager.is_suppressed(FEED_URL, suppressed_guid_two)
+
+    def test_legacy_state_file_without_suppressed_key(self, temp_state_file):
+        """A state file written before suppressions existed still loads and accepts them."""
+        posted_guid = "https://kite.kagi.com/world/2026091210/already-posted"
+        temp_state_file.write_text(json.dumps({
+            "feeds": {
+                FEED_URL: {
+                    "posted_guids": [{
+                        "guid": posted_guid,
+                        "post_uri": "at://test/1",
+                        "posted_at": datetime.now().isoformat(),
+                    }],
+                    "last_successful_run": None,
+                }
+            }
+        }, indent=2))
+
+        manager = StateManager(temp_state_file)
+
+        assert not manager.is_suppressed(FEED_URL, SUPPRESSED_GUID)
+
+        manager.mark_suppressed(FEED_URL, SUPPRESSED_GUID, RECENT_GUID)
+
+        assert manager.is_suppressed(FEED_URL, SUPPRESSED_GUID)
+        # The pre-existing posted history is untouched.
+        assert manager.is_posted(FEED_URL, posted_guid)
+
+
+class TestUnparsableTimestamps:
+    """A single corrupt timestamp must not wedge the whole feed's state.
+
+    cleanup_old_entries runs on every mark_posted and mark_suppressed, so an
+    entry with a missing or non-ISO timestamp raised on every write: the feed
+    could never record another post, and the write that carried the new entry was
+    lost with it. The bad entry is dropped, named in a WARNING, and the write
+    proceeds.
+    """
+
+    def test_mark_posted_survives_unparsable_posted_at(self, temp_state_file, caplog):
+        """Bad posted_at entries are dropped; good history and the new post survive."""
+        missing_timestamp_guid = "https://kite.kagi.com/world/2026091201/no-timestamp"
+        bad_timestamp_guid = "https://kite.kagi.com/world/2026091202/bad-timestamp"
+        good_guid = "https://kite.kagi.com/world/2026091203/good-timestamp"
+        new_guid = "https://kite.kagi.com/world/2026091204/newly-posted"
+
+        temp_state_file.write_text(json.dumps({
+            "feeds": {
+                FEED_URL: {
+                    "posted_guids": [
+                        {"guid": missing_timestamp_guid, "post_uri": "at://test/1"},
+                        {"guid": bad_timestamp_guid, "post_uri": "at://test/2",
+                         "posted_at": "not-a-date"},
+                        {"guid": good_guid, "post_uri": "at://test/3",
+                         "posted_at": datetime.now().isoformat()},
+                    ],
+                    "last_successful_run": None,
+                    "suppressed_guids": [],
+                }
+            }
+        }, indent=2))
+
+        manager = StateManager(temp_state_file)
+
+        with caplog.at_level(logging.WARNING, logger="src.state_manager"):
+            manager.mark_posted(FEED_URL, new_guid, "at://test/4", title="Newly posted")
+
+        assert manager.is_posted(FEED_URL, new_guid)
+        assert manager.is_posted(FEED_URL, good_guid)
+        assert not manager.is_posted(FEED_URL, missing_timestamp_guid)
+        assert not manager.is_posted(FEED_URL, bad_timestamp_guid)
+
+        # The surviving state is what was written to disk, not just in memory.
+        reloaded = StateManager(temp_state_file)
+        assert reloaded.is_posted(FEED_URL, new_guid)
+        assert reloaded.is_posted(FEED_URL, good_guid)
+        assert not reloaded.is_posted(FEED_URL, missing_timestamp_guid)
+        assert not reloaded.is_posted(FEED_URL, bad_timestamp_guid)
+
+        warnings = [
+            record.getMessage() for record in caplog.records
+            if record.levelno == logging.WARNING
+        ]
+        assert any(missing_timestamp_guid in message for message in warnings), warnings
+        assert any(bad_timestamp_guid in message for message in warnings), warnings
+
+    def test_mark_suppressed_survives_unparsable_suppressed_at(self, temp_state_file,
+                                                               caplog):
+        """Bad suppressed_at entries are dropped; good ones and the new one survive."""
+        missing_timestamp_guid = "https://kite.kagi.com/world/2026091205/no-timestamp"
+        bad_timestamp_guid = "https://kite.kagi.com/world/2026091206/bad-timestamp"
+        good_guid = "https://kite.kagi.com/world/2026091207/good-timestamp"
+
+        temp_state_file.write_text(json.dumps({
+            "feeds": {
+                FEED_URL: {
+                    "posted_guids": [],
+                    "last_successful_run": None,
+                    "suppressed_guids": [
+                        {"guid": missing_timestamp_guid, "duplicate_of": RECENT_GUID},
+                        {"guid": bad_timestamp_guid, "duplicate_of": RECENT_GUID,
+                         "suppressed_at": "not-a-date"},
+                        {"guid": good_guid, "duplicate_of": RECENT_GUID,
+                         "suppressed_at": datetime.now().isoformat()},
+                    ],
+                }
+            }
+        }, indent=2))
+
+        manager = StateManager(temp_state_file)
+
+        with caplog.at_level(logging.WARNING, logger="src.state_manager"):
+            manager.mark_suppressed(FEED_URL, SUPPRESSED_GUID, RECENT_GUID)
+
+        assert manager.is_suppressed(FEED_URL, SUPPRESSED_GUID)
+        assert manager.is_suppressed(FEED_URL, good_guid)
+        assert not manager.is_suppressed(FEED_URL, missing_timestamp_guid)
+        assert not manager.is_suppressed(FEED_URL, bad_timestamp_guid)
+
+        reloaded = StateManager(temp_state_file)
+        assert reloaded.is_suppressed(FEED_URL, SUPPRESSED_GUID)
+        assert reloaded.is_suppressed(FEED_URL, good_guid)
+        assert not reloaded.is_suppressed(FEED_URL, missing_timestamp_guid)
+        assert not reloaded.is_suppressed(FEED_URL, bad_timestamp_guid)
+
+        warnings = [
+            record.getMessage() for record in caplog.records
+            if record.levelno == logging.WARNING
+        ]
+        assert any(missing_timestamp_guid in message for message in warnings), warnings
+        assert any(bad_timestamp_guid in message for message in warnings), warnings

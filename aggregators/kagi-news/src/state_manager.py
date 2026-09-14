@@ -21,6 +21,7 @@ class StateManager:
 
     Tracks:
     - Posted GUIDs per feed (with timestamps)
+    - GUIDs suppressed as semantic duplicates per feed (with timestamps)
     - Last successful run timestamp per feed
     - Automatic cleanup of old entries
     """
@@ -83,12 +84,17 @@ class StateManager:
             raise
 
     def _ensure_feed_exists(self, feed_url: str):
-        """Ensure feed entry exists in state."""
+        """Ensure feed entry exists in state, including lists added after first release."""
         if feed_url not in self.state['feeds']:
             self.state['feeds'][feed_url] = {
                 'posted_guids': [],
-                'last_successful_run': None
+                'last_successful_run': None,
+                'suppressed_guids': []
             }
+            return
+
+        # State files written before suppression tracking existed lack the key.
+        self.state['feeds'][feed_url].setdefault('suppressed_guids', [])
 
     def is_posted(self, feed_url: str, guid: str) -> bool:
         """
@@ -138,6 +144,52 @@ class StateManager:
 
         logger.info(f"Marked as posted: {guid} -> {post_uri}")
 
+    def is_suppressed(self, feed_url: str, guid: str) -> bool:
+        """
+        Check if a story was suppressed as a semantic duplicate.
+
+        Args:
+            feed_url: RSS feed URL
+            guid: Story GUID
+
+        Returns:
+            True if already suppressed for this feed, False otherwise
+        """
+        self._ensure_feed_exists(feed_url)
+
+        suppressed_guids = self.state['feeds'][feed_url]['suppressed_guids']
+        return any(entry['guid'] == guid for entry in suppressed_guids)
+
+    def mark_suppressed(self, feed_url: str, guid: str, duplicate_of: str):
+        """
+        Record a story that was withheld as a semantic duplicate.
+
+        Suppressed stories were never published, so they are tracked separately
+        from posted_guids. Remembering them keeps the next run from offering the
+        same candidate to the model again.
+
+        Args:
+            feed_url: RSS feed URL
+            guid: Story GUID that was suppressed
+            duplicate_of: GUID of the already posted story it duplicates
+        """
+        self._ensure_feed_exists(feed_url)
+
+        entry = {
+            'guid': guid,
+            'duplicate_of': duplicate_of,
+            'suppressed_at': datetime.now().isoformat()
+        }
+        self.state['feeds'][feed_url]['suppressed_guids'].append(entry)
+
+        # Auto-cleanup to keep state file manageable
+        self.cleanup_old_entries(feed_url)
+
+        # Save state
+        self._save_state()
+
+        logger.info(f"Marked as suppressed: {guid} (duplicate of {duplicate_of})")
+
     def get_last_run(self, feed_url: str) -> Optional[datetime]:
         """
         Get last successful run timestamp for a feed.
@@ -179,36 +231,65 @@ class StateManager:
         - Older than max_age_days
         - Beyond max_guids_per_feed limit (keeps most recent)
 
+        Posted and suppressed entries get the same age limit and the same size
+        limit, but each list is trimmed on its own budget, so suppressions never
+        evict posted history.
+
         Args:
             feed_url: RSS feed URL
         """
         self._ensure_feed_exists(feed_url)
 
-        posted_guids = self.state['feeds'][feed_url]['posted_guids']
+        self._cleanup_entry_list(feed_url, 'posted_guids', 'posted_at')
+        self._cleanup_entry_list(feed_url, 'suppressed_guids', 'suppressed_at')
+
+    def _cleanup_entry_list(self, feed_url: str, list_key: str, timestamp_key: str):
+        """Age out and cap one per-feed entry list, most recent kept.
+
+        An entry whose timestamp is missing or not ISO-parsable is dropped with a
+        WARNING naming it, rather than raising: cleanup runs on every write, so
+        one corrupt entry would otherwise stop the feed recording anything again
+        and lose the write that triggered the cleanup with it.
+        """
+        entries = self.state['feeds'][feed_url][list_key]
 
         # Filter out entries older than max_age_days
         cutoff_date = datetime.now() - timedelta(days=self.max_age_days)
-        filtered = [
-            entry for entry in posted_guids
-            if datetime.fromisoformat(entry['posted_at']) > cutoff_date
-        ]
+        filtered = []
+        for entry in entries:
+            timestamp = entry.get(timestamp_key)
+            try:
+                recorded_at = datetime.fromisoformat(timestamp)
+            except (TypeError, ValueError):
+                logger.warning(
+                    f"Dropping {list_key} entry {entry.get('guid')!r} for {feed_url}: "
+                    f"{timestamp_key} {timestamp!r} is missing or not ISO-parsable"
+                )
+                continue
+            if recorded_at > cutoff_date:
+                filtered.append(entry)
 
         # Keep only most recent max_guids_per_feed entries
-        # Sort by posted_at (most recent first)
-        filtered.sort(key=lambda x: x['posted_at'], reverse=True)
+        filtered.sort(key=lambda entry: entry[timestamp_key], reverse=True)
         filtered = filtered[:self.max_guids_per_feed]
 
         # Update state
-        old_count = len(posted_guids)
+        old_count = len(entries)
         new_count = len(filtered)
-        self.state['feeds'][feed_url]['posted_guids'] = filtered
+        self.state['feeds'][feed_url][list_key] = filtered
 
         if old_count != new_count:
-            logger.info(f"Cleaned up {old_count - new_count} old entries for {feed_url}")
+            logger.info(
+                f"Cleaned up {old_count - new_count} old {list_key} entries for {feed_url}"
+            )
 
     def get_recent_stories(self, feed_url: str, days: int = 4) -> List[Dict]:
         """
         Get recently posted stories with title and summary for semantic comparison.
+
+        Only posted stories are returned. Suppressed stories were never shown to
+        the community, so a later candidate is compared against the post that
+        suppressed them, not against the suppressed story itself.
 
         Args:
             feed_url: RSS feed URL

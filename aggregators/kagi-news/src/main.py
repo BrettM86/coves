@@ -26,7 +26,7 @@ from src.json_parser import KagiJSONParser
 from src.richtext_formatter import RichTextFormatter
 from src.state_manager import StateManager
 from src.coves_client import CovesClient
-from src.semantic_dedup import SemanticDeduplicator
+from src.semantic_dedup import SemanticDeduplicator, SemanticDedupUnavailable
 
 # Setup logging
 logging.basicConfig(
@@ -183,10 +183,12 @@ class Aggregator:
             logger.error(f"Failed to fetch JSON feed '{json_url}': {e}")
             raise
 
-        # Phase 1: Parse all entries, filter by exact GUID
+        # Phase 1: Parse all entries, filter out exact GUIDs already posted or
+        # suppressed as semantic duplicates on an earlier run
         # Store as (entry_guid, story) tuples to preserve the authoritative GUID
         candidates = []
         skipped_guid = 0
+        skipped_suppressed = 0
         resolved_count = 0
 
         for entry in feed.entries:
@@ -195,6 +197,13 @@ class Aggregator:
                 if self.state_manager.is_posted(feed_config.url, guid):
                     skipped_guid += 1
                     logger.debug(f"Skipping already-posted story: {guid}")
+                    continue
+
+                # A candidate the model already rejected must not be re-offered:
+                # it costs another API call and risks a different verdict.
+                if self.state_manager.is_suppressed(feed_config.url, guid):
+                    skipped_suppressed += 1
+                    logger.debug(f"Skipping already-suppressed story: {guid}")
                     continue
 
                 cluster = self._resolve_json_cluster(entry, clusters)
@@ -245,7 +254,7 @@ class Aggregator:
         # whenever a feed was fully published -- the steady state between new
         # stories, i.e. most runs. That reduced the one alarm that detects a Kagi
         # format change to routine noise, indistinguishable from a healthy run.
-        attempted = len(feed.entries) - skipped_guid
+        attempted = len(feed.entries) - skipped_guid - skipped_suppressed
         if attempted > 0 and resolved_count == 0:
             logger.error(
                 f"Feed '{feed_config.name}' resolved 0 of {attempted} unposted "
@@ -273,11 +282,42 @@ class Aggregator:
                     {"id": guid, "title": story.title, "summary": stripped_summaries[guid][:200]}
                     for guid, story in candidates
                 ]
-                duplicate_ids = self.semantic_dedup.find_duplicates(
-                    new_for_comparison, recent_stories
-                )
+                try:
+                    duplicate_of_by_guid = self.semantic_dedup.find_duplicates(
+                        new_for_comparison, recent_stories
+                    )
+                except SemanticDedupUnavailable as e:
+                    # The batch was never judged. Posting it would publish
+                    # duplicates irreversibly, so defer the whole feed: nothing
+                    # posted, nothing suppressed, and the same candidates are
+                    # offered again on the next run.
+                    logger.error(
+                        f"Semantic dedup unavailable for feed '{feed_config.name}': {e}; "
+                        f"deferring {len(candidates)} candidate(s) to the next run"
+                    )
+                    self.state_manager.update_last_run(
+                        feed_config.url, datetime.now(timezone.utc)
+                    )
+                    logger.info(
+                        f"Feed '{feed_config.name}': semantic dedup unavailable, "
+                        f"{len(candidates)} candidates deferred, "
+                        f"{skipped_guid} exact dupes, {skipped_suppressed} suppressed"
+                    )
+                    return
+
+                # Record every suppression before Phase 3 posts anything: an
+                # exception on a survivor must not lose the suppressions and let
+                # those candidates be re-offered on the next run.
+                for guid, duplicate_of in duplicate_of_by_guid.items():
+                    self.state_manager.mark_suppressed(
+                        feed_config.url, guid, duplicate_of
+                    )
+
                 before_count = len(candidates)
-                candidates = [(g, s) for g, s in candidates if g not in duplicate_ids]
+                candidates = [
+                    (guid, story) for guid, story in candidates
+                    if guid not in duplicate_of_by_guid
+                ]
                 skipped_semantic = before_count - len(candidates)
 
         # Phase 3: Post remaining candidates
@@ -337,7 +377,8 @@ class Aggregator:
         logger.info(
             f"Feed '{feed_config.name}': {new_posts} new, "
             f"{failed_posts} failed, "
-            f"{skipped_guid} exact dupes, {skipped_semantic} semantic dupes"
+            f"{skipped_guid} exact dupes, {skipped_suppressed} suppressed, "
+            f"{skipped_semantic} semantic dupes"
         )
 
     @staticmethod

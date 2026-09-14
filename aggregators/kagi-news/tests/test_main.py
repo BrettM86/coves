@@ -3,6 +3,9 @@ Tests for Main Orchestration Script.
 
 Tests the complete flow: fetch → parse → format → dedupe → post → update state.
 """
+import json
+import logging
+
 import pytest
 from dataclasses import replace
 from pathlib import Path
@@ -11,7 +14,9 @@ from unittest.mock import Mock, MagicMock, patch, call
 import feedparser
 
 from src.main import Aggregator
+from src.semantic_dedup import SemanticDeduplicator
 from src.models import KagiStory, AggregatorConfig, FeedConfig, DedupConfig, Perspective, Quote, Source
+from src.state_manager import StateManager
 
 
 @pytest.fixture
@@ -722,7 +727,6 @@ class TestAggregator:
 
     def test_semantic_dedup_filters_duplicates(self, mock_rss_feed, mock_json_clusters, tmp_path):
         """Test that semantic dedup filters out similar stories when recent stories exist."""
-        import json
 
         # Config with semantic dedup enabled
         config = AggregatorConfig(
@@ -785,7 +789,7 @@ class TestAggregator:
 
         # Mock semantic dedup to mark first story as duplicate of existing-1
         mock_dedup = Mock()
-        mock_dedup.find_duplicates.return_value = {"https://kite.kagi.com/test/world/1"}
+        mock_dedup.find_duplicates.return_value = {"https://kite.kagi.com/test/world/1": "existing-1"}
 
         with patch('src.main.ConfigLoader') as MockConfigLoader, \
              patch('src.main.RSSFetcher') as MockRSSFetcher, \
@@ -841,6 +845,197 @@ class TestAggregator:
             assert mock_client.create_post.call_count == 1
             posted_title = mock_client.create_post.call_args.kwargs.get("title")
             assert posted_title == "Earthquake hits Turkey killing dozens"
+
+    def test_semantic_dedup_uses_handles_and_records_suppressed_candidates(self, tmp_path):
+        """Acceptance: dedup speaks in opaque handles and suppressed candidates stay suppressed.
+
+        The model is never asked to echo a Kagi GUID back as an article ID (it
+        truncates long URLs, so flagged duplicates were posted anyway), and every
+        flagged candidate is recorded as suppressed so a later run neither posts
+        it nor spends another API call re-asking about it.
+        """
+
+        feed_url = "https://news.kagi.com/science.xml"
+        recent_guid = "https://kite.kagi.com/science/2026091012/openai-navier-stokes-claim"
+        candidate_one_guid = "https://kite.kagi.com/science/2026091212/openai-claims-navier-stokes"
+        candidate_two_guid = "https://kite.kagi.com/science/2026091213/lab-grown-kidney-transplanted"
+        candidate_one_title = "OpenAI claims Navier-Stokes breakthrough"
+        candidate_two_title = "Lab-grown kidney transplanted into a patient"
+
+        config = AggregatorConfig(
+            coves_api_url="https://api.coves.social",
+            feeds=[
+                FeedConfig(
+                    name="Science",
+                    url=feed_url,
+                    community_handle="science.coves.social",
+                    enabled=True
+                )
+            ],
+            log_level="info",
+            dedup=DedupConfig(semantic_enabled=True, lookback_days=4)
+        )
+
+        # One already-posted recent story, with title so get_recent_stories returns it.
+        state_file = tmp_path / "state.json"
+        state_file.write_text(json.dumps({
+            "feeds": {
+                feed_url: {
+                    "posted_guids": [
+                        {
+                            "guid": recent_guid,
+                            "post_uri": "at://did:plc:test/social.coves.post/recent",
+                            "posted_at": datetime.now().isoformat(),
+                            "title": "OpenAI says it has progress on Navier-Stokes",
+                            "summary_snippet": "The lab claims a partial result on the equations."
+                        }
+                    ],
+                    "last_successful_run": None
+                }
+            }
+        }))
+
+        feed = MagicMock()
+        feed.bozo = 0
+        feed.entries = [
+            MagicMock(
+                title=candidate_one_title,
+                link=candidate_one_guid,
+                guid=candidate_one_guid,
+                published_parsed=(2026, 9, 12, 12, 0, 0, 0, 255, 0),
+                tags=[MagicMock(term="Science")]
+            ),
+            MagicMock(
+                title=candidate_two_title,
+                link=candidate_two_guid,
+                guid=candidate_two_guid,
+                published_parsed=(2026, 9, 12, 13, 0, 0, 0, 255, 0),
+                tags=[MagicMock(term="Science")]
+            ),
+        ]
+        clusters = {
+            1: {"cluster_number": 1, "title": candidate_one_title,
+                "short_summary": "The lab published a partial result."},
+            2: {"cluster_number": 2, "title": candidate_two_title,
+                "short_summary": "Surgeons transplanted a lab-grown organ."},
+        }
+        story_one = KagiStory(
+            title=candidate_one_title,
+            link=candidate_one_guid,
+            guid=candidate_one_guid,
+            pub_date=datetime(2026, 9, 12, 12, 0, 0),
+            categories=["Science"],
+            summary="The lab published a partial result on the equations.",
+            highlights=[], perspectives=[], quote=None, sources=[],
+            image_url=None, image_alt=None
+        )
+        story_two = KagiStory(
+            title=candidate_two_title,
+            link=candidate_two_guid,
+            guid=candidate_two_guid,
+            pub_date=datetime(2026, 9, 12, 13, 0, 0),
+            categories=["Science"],
+            summary="Surgeons transplanted a lab-grown organ into a patient.",
+            highlights=[], perspectives=[], quote=None, sources=[],
+            image_url=None, image_alt=None
+        )
+
+        def build_deduplicator():
+            """A real SemanticDeduplicator whose Anthropic client answers in handles."""
+            deduplicator = SemanticDeduplicator(api_key="test-api-key-not-real")
+            tool_use_block = Mock()
+            tool_use_block.type = "tool_use"
+            tool_use_block.name = "report_duplicates"
+            tool_use_block.input = {
+                "results": [
+                    {"new_id": "n1", "duplicate_of": "r1", "confidence": 0.9},
+                    {"new_id": "n2", "duplicate_of": "", "confidence": 0.0},
+                ]
+            }
+            response = Mock()
+            response.content = [tool_use_block]
+            response.stop_reason = "tool_use"
+            anthropic_client = Mock()
+            anthropic_client.messages.create.return_value = response
+            deduplicator.client = anthropic_client
+            return deduplicator, anthropic_client
+
+        def run_aggregator(deduplicator, coves_client, parsed_stories):
+            with patch('src.main.ConfigLoader') as MockConfigLoader, \
+                 patch('src.main.RSSFetcher') as MockRSSFetcher, \
+                 patch('src.main.JSONFetcher') as MockJSONFetcher, \
+                 patch('src.main.KagiJSONParser') as MockJSONParser, \
+                 patch('src.main.RichTextFormatter') as MockFormatter:
+
+                mock_loader = Mock()
+                mock_loader.load.return_value = config
+                MockConfigLoader.return_value = mock_loader
+
+                mock_fetcher = Mock()
+                mock_fetcher.fetch_feed.return_value = feed
+                MockRSSFetcher.return_value = mock_fetcher
+
+                mock_json_fetcher = Mock()
+                mock_json_fetcher.fetch_clusters.return_value = clusters
+                MockJSONFetcher.return_value = mock_json_fetcher
+
+                mock_parser = Mock()
+                mock_parser.parse_to_story.side_effect = list(parsed_stories)
+                MockJSONParser.return_value = mock_parser
+
+                mock_formatter = Mock()
+                mock_formatter.format_full.return_value = {"content": "Test content", "facets": []}
+                MockFormatter.return_value = mock_formatter
+
+                aggregator = Aggregator(
+                    config_path=Path("config.yaml"),
+                    state_file=state_file,
+                    coves_client=coves_client,
+                    semantic_dedup=deduplicator
+                )
+                aggregator.run()
+
+        first_coves_client = Mock()
+        first_coves_client.create_post.return_value = "at://did:plc:test/social.coves.post/second"
+        first_deduplicator, first_anthropic_client = build_deduplicator()
+
+        run_aggregator(first_deduplicator, first_coves_client, [story_one, story_two])
+
+        # (a) The flagged candidate is suppressed; only the second one is posted.
+        assert first_coves_client.create_post.call_count == 1
+        assert first_coves_client.create_post.call_args.kwargs.get("title") == candidate_two_title
+
+        # (b) Exactly one batched API call for the feed.
+        assert first_anthropic_client.messages.create.call_count == 1
+
+        # (c) The prompt identifies articles by opaque handles, never by GUID.
+        prompt = first_anthropic_client.messages.create.call_args.kwargs["messages"][0]["content"]
+        assert "[n1]" in prompt
+        assert "[n2]" in prompt
+        assert "[r1]" in prompt
+        assert f"[{candidate_one_guid}]" not in prompt
+        assert f"[{candidate_two_guid}]" not in prompt
+        assert f"[{recent_guid}]" not in prompt
+
+        # (d) The suppression is durable: recorded with its duplicate_of, not posted.
+        persisted = json.loads(state_file.read_text())
+        suppressed = persisted["feeds"][feed_url]["suppressed_guids"]
+        suppressed_by_guid = {entry["guid"]: entry for entry in suppressed}
+        assert candidate_one_guid in suppressed_by_guid
+        assert suppressed_by_guid[candidate_one_guid]["duplicate_of"] == recent_guid
+        posted_guids = [entry["guid"] for entry in persisted["feeds"][feed_url]["posted_guids"]]
+        assert candidate_one_guid not in posted_guids
+        assert candidate_two_guid in posted_guids
+
+        # (e) A later run re-reads that state: nothing to post, no API call.
+        second_coves_client = Mock()
+        second_coves_client.create_post.return_value = "at://did:plc:test/social.coves.post/none"
+        second_deduplicator, second_anthropic_client = build_deduplicator()
+
+        run_aggregator(second_deduplicator, second_coves_client, [story_one, story_two])
+
+        assert second_coves_client.create_post.call_count == 0
+        assert second_anthropic_client.messages.create.call_count == 0
 
     def test_semantic_dedup_disabled_skips_check(self, mock_config, mock_rss_feed, mock_json_clusters, sample_story, tmp_path):
         """Test that semantic dedup is skipped when disabled."""
@@ -2031,3 +2226,387 @@ class TestAggregator:
         assert _re.search(r'\[[^\[\]]+#\d+\]', description) is None, (
             f"raw citation marker leaked into embed.description: {description!r}"
         )
+
+
+SUPPRESSION_FEED_URL = "https://news.kagi.com/world.xml"
+CANDIDATE_X_GUID = "https://kite.kagi.com/test/world/1"
+CANDIDATE_Y_GUID = "https://kite.kagi.com/test/world/2"
+RECENT_POSTED_GUID = "https://kite.kagi.com/test/world/recent"
+
+
+def _suppression_config():
+    """Single-feed config with semantic dedup on."""
+    return AggregatorConfig(
+        coves_api_url="https://api.coves.social",
+        feeds=[
+            FeedConfig(
+                name="World News",
+                url=SUPPRESSION_FEED_URL,
+                community_handle="world-news.coves.social",
+                enabled=True
+            )
+        ],
+        log_level="info",
+        dedup=DedupConfig(semantic_enabled=True, lookback_days=4)
+    )
+
+
+def _candidate_story(guid, title, summary):
+    return KagiStory(
+        title=title,
+        link=guid,
+        guid=guid,
+        pub_date=datetime(2024, 1, 15, 12, 0, 0),
+        categories=["World"],
+        summary=summary,
+        highlights=[], perspectives=[], quote=None, sources=[],
+        image_url=None, image_alt=None
+    )
+
+
+CANDIDATE_STORIES = {
+    CANDIDATE_X_GUID: _candidate_story(
+        CANDIDATE_X_GUID, "Story 1", "Tariffs on Chinese goods take effect today."
+    ),
+    CANDIDATE_Y_GUID: _candidate_story(
+        CANDIDATE_Y_GUID, "Story 2", "A 6.5 magnitude earthquake struck Turkey."
+    ),
+}
+
+
+def _seed_state(state_file):
+    """State with one recent posted story, so get_recent_stories has something to compare."""
+    seed = StateManager(state_file)
+    seed.mark_posted(
+        SUPPRESSION_FEED_URL, RECENT_POSTED_GUID, "at://did:plc:test/social.coves.post/recent",
+        title="US announces new tariffs on China",
+        summary_snippet="The United States announced sweeping new tariffs."
+    )
+    return seed
+
+
+def _run_one_feed(state_file, coves_client, semantic_dedup, feed, clusters):
+    """Run the aggregator over one feed with everything but state and dedup mocked."""
+    with patch('src.main.ConfigLoader') as MockConfigLoader, \
+         patch('src.main.RSSFetcher') as MockRSSFetcher, \
+         patch('src.main.JSONFetcher') as MockJSONFetcher, \
+         patch('src.main.KagiJSONParser') as MockJSONParser, \
+         patch('src.main.RichTextFormatter') as MockFormatter:
+
+        mock_loader = Mock()
+        mock_loader.load.return_value = _suppression_config()
+        MockConfigLoader.return_value = mock_loader
+
+        mock_fetcher = Mock()
+        mock_fetcher.fetch_feed.return_value = feed
+        MockRSSFetcher.return_value = mock_fetcher
+
+        mock_json_fetcher = Mock()
+        mock_json_fetcher.fetch_clusters.return_value = clusters
+        MockJSONFetcher.return_value = mock_json_fetcher
+
+        # Keyed by guid, so the test does not depend on which entries survive Phase 1.
+        mock_parser = Mock()
+        mock_parser.parse_to_story.side_effect = lambda **kwargs: CANDIDATE_STORIES[kwargs["guid"]]
+        MockJSONParser.return_value = mock_parser
+
+        mock_formatter = Mock()
+        mock_formatter.format_full.return_value = {"content": "Test content", "facets": []}
+        MockFormatter.return_value = mock_formatter
+
+        aggregator = Aggregator(
+            config_path=Path("config.yaml"),
+            state_file=state_file,
+            coves_client=coves_client,
+            semantic_dedup=semantic_dedup
+        )
+        aggregator.run()
+
+
+def _feed_summary(caplog):
+    """The single per-feed summary line."""
+    lines = [
+        record.getMessage() for record in caplog.records
+        if record.getMessage().startswith("Feed 'World News':")
+    ]
+    assert len(lines) == 1, lines
+    return lines[0]
+
+
+def _suppressed_on_disk(state_file):
+    """Suppressed entries as persisted, keyed by guid."""
+    state_data = json.loads(Path(state_file).read_text())
+    suppressed = state_data['feeds'][SUPPRESSION_FEED_URL].get('suppressed_guids', [])
+    return {entry['guid']: entry for entry in suppressed}
+
+
+def _posted_titles(coves_client):
+    return [call.kwargs.get("title") for call in coves_client.create_post.call_args_list]
+
+
+class TestSuppressedCandidateWiring:
+    """A suppressed candidate stays suppressed: never re-offered, never posted.
+
+    Without this the aggregator re-asked the model about the same rejected story on
+    every run, and a story the model flagged was posted anyway.
+    """
+
+    def test_suppressed_candidate_is_not_offered_to_the_model_again(
+            self, mock_rss_feed, mock_json_clusters, tmp_path, caplog):
+        """Phase 1 skips suppressed guids, counted under their own summary term.
+
+        Folding them into "exact dupes" hid how much of a feed the model had
+        rejected, which is the number worth watching when dedup goes wrong.
+        """
+        state_file = tmp_path / "state.json"
+        seed = _seed_state(state_file)
+        seed.mark_suppressed(SUPPRESSION_FEED_URL, CANDIDATE_X_GUID, RECENT_POSTED_GUID)
+
+        coves_client = Mock()
+        coves_client.create_post.return_value = "at://did:plc:test/social.coves.post/y"
+        semantic_dedup = Mock()
+        semantic_dedup.find_duplicates.return_value = {}
+
+        with caplog.at_level(logging.INFO, logger="src.main"):
+            _run_one_feed(state_file, coves_client, semantic_dedup,
+                          mock_rss_feed, mock_json_clusters)
+
+        # Only the unposted, unsuppressed candidate is offered for comparison.
+        semantic_dedup.find_duplicates.assert_called_once()
+        offered = semantic_dedup.find_duplicates.call_args[0][0]
+        assert [story["id"] for story in offered] == [CANDIDATE_Y_GUID]
+
+        assert _posted_titles(coves_client) == ["Story 2"]
+        assert not StateManager(state_file).is_posted(SUPPRESSION_FEED_URL, CANDIDATE_X_GUID)
+        assert _feed_summary(caplog) == (
+            "Feed 'World News': 1 new, 0 failed, "
+            "0 exact dupes, 1 suppressed, 0 semantic dupes"
+        )
+
+    def test_posted_candidate_still_counts_as_an_exact_dupe(
+            self, mock_rss_feed, mock_json_clusters, tmp_path, caplog):
+        """An already-posted guid counts under "exact dupes", not under "suppressed"."""
+        state_file = tmp_path / "state.json"
+        seed = _seed_state(state_file)
+        seed.mark_posted(
+            SUPPRESSION_FEED_URL, CANDIDATE_X_GUID,
+            "at://did:plc:test/social.coves.post/x", title="Story 1"
+        )
+
+        coves_client = Mock()
+        coves_client.create_post.return_value = "at://did:plc:test/social.coves.post/y"
+        semantic_dedup = Mock()
+        semantic_dedup.find_duplicates.return_value = {}
+
+        with caplog.at_level(logging.INFO, logger="src.main"):
+            _run_one_feed(state_file, coves_client, semantic_dedup,
+                          mock_rss_feed, mock_json_clusters)
+
+        assert _posted_titles(coves_client) == ["Story 2"]
+        assert _feed_summary(caplog) == (
+            "Feed 'World News': 1 new, 0 failed, "
+            "1 exact dupes, 0 suppressed, 0 semantic dupes"
+        )
+
+    def test_flagged_candidate_is_recorded_as_suppressed_and_not_posted(
+            self, mock_rss_feed, mock_json_clusters, tmp_path, caplog):
+        """A flagged candidate is persisted as suppressed, with what it duplicated."""
+        state_file = tmp_path / "state.json"
+        _seed_state(state_file)
+
+        coves_client = Mock()
+        coves_client.create_post.return_value = "at://did:plc:test/social.coves.post/y"
+        semantic_dedup = Mock()
+        semantic_dedup.find_duplicates.return_value = {CANDIDATE_X_GUID: RECENT_POSTED_GUID}
+
+        with caplog.at_level(logging.INFO, logger="src.main"):
+            _run_one_feed(state_file, coves_client, semantic_dedup,
+                          mock_rss_feed, mock_json_clusters)
+
+        suppressed = _suppressed_on_disk(state_file)
+        assert CANDIDATE_X_GUID in suppressed
+        assert suppressed[CANDIDATE_X_GUID]['duplicate_of'] == RECENT_POSTED_GUID
+
+        reloaded = StateManager(state_file)
+        assert reloaded.is_suppressed(SUPPRESSION_FEED_URL, CANDIDATE_X_GUID)
+        assert not reloaded.is_posted(SUPPRESSION_FEED_URL, CANDIDATE_X_GUID)
+        assert reloaded.is_posted(SUPPRESSION_FEED_URL, CANDIDATE_Y_GUID)
+
+        assert _posted_titles(coves_client) == ["Story 2"]
+        assert "1 semantic dupes" in _feed_summary(caplog)
+
+    def test_suppression_is_recorded_even_when_a_survivor_fails_to_post(
+            self, mock_rss_feed, mock_json_clusters, tmp_path):
+        """Suppression is written before posting, so a post failure cannot lose it.
+
+        The ordering is observed from inside create_post: at the moment the
+        survivor is posted, a fresh StateManager reading state.json must already
+        see the flagged candidate suppressed. Checking only after the run cannot
+        tell the orders apart, because _process_feed catches the survivor's
+        exception per post and would still record the suppression afterwards.
+        """
+        state_file = tmp_path / "state.json"
+        _seed_state(state_file)
+
+        suppressed_at_post_time = []
+
+        def fail_after_reading_persisted_state(**kwargs):
+            """Record what state.json says about X, then fail the post."""
+            suppressed_at_post_time.append(
+                StateManager(state_file).is_suppressed(
+                    SUPPRESSION_FEED_URL, CANDIDATE_X_GUID
+                )
+            )
+            raise RuntimeError("coves API is down")
+
+        coves_client = Mock()
+        coves_client.create_post.side_effect = fail_after_reading_persisted_state
+        semantic_dedup = Mock()
+        semantic_dedup.find_duplicates.return_value = {CANDIDATE_X_GUID: RECENT_POSTED_GUID}
+
+        _run_one_feed(state_file, coves_client, semantic_dedup,
+                      mock_rss_feed, mock_json_clusters)
+
+        # The survivor was attempted, and the suppression was already durable.
+        assert suppressed_at_post_time == [True], suppressed_at_post_time
+
+        suppressed = _suppressed_on_disk(state_file)
+        assert CANDIDATE_X_GUID in suppressed
+        assert suppressed[CANDIDATE_X_GUID]['duplicate_of'] == RECENT_POSTED_GUID
+        # The survivor genuinely failed, so it is neither posted nor suppressed.
+        assert not StateManager(state_file).is_posted(SUPPRESSION_FEED_URL, CANDIDATE_Y_GUID)
+        assert CANDIDATE_Y_GUID not in suppressed
+
+    def test_every_candidate_suppressed_posts_nothing(
+            self, mock_rss_feed, mock_json_clusters, tmp_path, caplog):
+        """When the model flags the whole batch, all of it is recorded and none posted."""
+        state_file = tmp_path / "state.json"
+        _seed_state(state_file)
+
+        coves_client = Mock()
+        semantic_dedup = Mock()
+        semantic_dedup.find_duplicates.return_value = {
+            CANDIDATE_X_GUID: RECENT_POSTED_GUID,
+            CANDIDATE_Y_GUID: RECENT_POSTED_GUID,
+        }
+
+        with caplog.at_level(logging.INFO, logger="src.main"):
+            _run_one_feed(state_file, coves_client, semantic_dedup,
+                          mock_rss_feed, mock_json_clusters)
+
+        coves_client.create_post.assert_not_called()
+
+        suppressed = _suppressed_on_disk(state_file)
+        assert set(suppressed) == {CANDIDATE_X_GUID, CANDIDATE_Y_GUID}
+        assert all(
+            entry['duplicate_of'] == RECENT_POSTED_GUID for entry in suppressed.values()
+        )
+
+        summary = _feed_summary(caplog)
+        assert "0 new" in summary
+        assert "2 semantic dupes" in summary
+
+
+class TestSemanticDedupUnavailable:
+    """When the model cannot be reached, the feed is deferred, not published.
+
+    Returning "no duplicates" on an outage meant a broken dedup call published the
+    whole batch, and those posts are unrecoverable: the duplicates are live and the
+    guids are recorded as posted. Deferring costs one delayed run instead.
+    """
+
+    def _unavailable_dedup(self):
+        """A dedup double that reports itself unavailable on every call."""
+        from src.semantic_dedup import SemanticDedupUnavailable
+
+        semantic_dedup = Mock()
+        semantic_dedup.find_duplicates.side_effect = SemanticDedupUnavailable(
+            "Semantic dedup API call failed (transient)"
+        )
+        return semantic_dedup
+
+    def test_unavailable_dedup_posts_nothing_and_defers_the_feed(
+            self, mock_rss_feed, mock_json_clusters, tmp_path, caplog):
+        """Nothing is posted, nothing is suppressed, and the feed says why."""
+        state_file = tmp_path / "state.json"
+        _seed_state(state_file)
+
+        coves_client = Mock()
+        semantic_dedup = self._unavailable_dedup()
+
+        with caplog.at_level(logging.INFO, logger="src.main"):
+            _run_one_feed(state_file, coves_client, semantic_dedup,
+                          mock_rss_feed, mock_json_clusters)
+
+        coves_client.create_post.assert_not_called()
+        assert _suppressed_on_disk(state_file) == {}
+
+        state_data = json.loads(state_file.read_text())
+        posted_guids = [
+            entry['guid'] for entry in state_data['feeds'][SUPPRESSION_FEED_URL]['posted_guids']
+        ]
+        assert posted_guids == [RECENT_POSTED_GUID]
+
+        assert _feed_summary(caplog) == (
+            "Feed 'World News': semantic dedup unavailable, 2 candidates deferred, "
+            "0 exact dupes, 0 suppressed"
+        )
+
+    def test_unavailable_dedup_logs_an_error_naming_the_feed(
+            self, mock_rss_feed, mock_json_clusters, tmp_path, caplog):
+        """The deferral is an ERROR on the feed, handled inside _process_feed.
+
+        The run-level "Error processing feed" handler must not be what catches
+        this: that path skips the summary line and reads like a crash.
+        """
+        state_file = tmp_path / "state.json"
+        _seed_state(state_file)
+
+        with caplog.at_level(logging.INFO, logger="src.main"):
+            _run_one_feed(state_file, Mock(), self._unavailable_dedup(),
+                          mock_rss_feed, mock_json_clusters)
+
+        errors = [
+            record.getMessage() for record in caplog.records
+            if record.levelno == logging.ERROR
+        ]
+        named = [
+            message for message in errors
+            if "World News" in message and "semantic dedup" in message.lower()
+        ]
+        assert named, errors
+        assert not [
+            message for message in errors
+            if message.startswith("Error processing feed 'World News'")
+        ], errors
+
+    def test_unavailable_dedup_still_updates_last_run(
+            self, mock_rss_feed, mock_json_clusters, tmp_path):
+        """The run happened, so the feed's last_successful_run still moves."""
+        state_file = tmp_path / "state.json"
+        _seed_state(state_file)
+
+        _run_one_feed(state_file, Mock(), self._unavailable_dedup(),
+                      mock_rss_feed, mock_json_clusters)
+
+        state_data = json.loads(state_file.read_text())
+        assert state_data['feeds'][SUPPRESSION_FEED_URL]['last_successful_run'] is not None
+
+    def test_deferred_candidates_are_re_offered_on_the_next_run(
+            self, mock_rss_feed, mock_json_clusters, tmp_path):
+        """Nothing was recorded, so the next run asks about the same candidates."""
+        state_file = tmp_path / "state.json"
+        _seed_state(state_file)
+
+        semantic_dedup = self._unavailable_dedup()
+
+        _run_one_feed(state_file, Mock(), semantic_dedup,
+                      mock_rss_feed, mock_json_clusters)
+        _run_one_feed(state_file, Mock(), semantic_dedup,
+                      mock_rss_feed, mock_json_clusters)
+
+        assert semantic_dedup.find_duplicates.call_count == 2
+        offered_second = semantic_dedup.find_duplicates.call_args_list[1][0][0]
+        assert [story["id"] for story in offered_second] == [
+            CANDIDATE_X_GUID, CANDIDATE_Y_GUID
+        ]
