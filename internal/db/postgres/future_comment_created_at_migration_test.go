@@ -18,6 +18,8 @@ func TestMigration041_ClampsFutureCommentCreatedAt(t *testing.T) {
 	t.Parallel()
 
 	db := testkit.DB(t)
+	require.EqualValues(t, 48, testkit.MigrateDownOne(t, db, 48),
+		"048 (Discover Hot snapshot tables) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 47, testkit.MigrateDownOne(t, db, 47),
 		"047 (web OAuth binding) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 46, testkit.MigrateDownOne(t, db, 46),

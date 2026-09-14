@@ -115,6 +115,11 @@ func (failingResolver) Purge(context.Context, string) error { return nil }
 // part of the contract: a route pattern that stopped capturing the CID would
 // leave every handler unit test passing.
 func newProxyServer(t *testing.T, resolver identity.Resolver, fetchTimeout time.Duration) *httptest.Server {
+	server, _ := newProxyServerWithCache(t, resolver, fetchTimeout)
+	return server
+}
+
+func newProxyServerWithCache(t *testing.T, resolver identity.Resolver, fetchTimeout time.Duration) (*httptest.Server, imageproxycore.Cache) {
 	t.Helper()
 
 	cacheDir := t.TempDir()
@@ -154,7 +159,7 @@ func newProxyServer(t *testing.T, resolver identity.Resolver, fetchTimeout time.
 
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
-	return server
+	return server, cache
 }
 
 // newBlobServer runs an httptest server that answers com.atproto.sync.getBlob
@@ -354,6 +359,7 @@ func TestImageProxy_PresetGeometry(t *testing.T) {
 	t.Parallel()
 
 	const cid = "bafybeipresetgeometry123"
+	const smallCID = "bafybeismallsource123"
 	did := "did:plc:" + testkit.UniqueID(t)
 
 	// 1000x1000 so that both directions are exercised: the cover presets crop
@@ -361,9 +367,10 @@ func TestImageProxy_PresetGeometry(t *testing.T) {
 	// something to shrink. A source smaller than every preset would make the
 	// no-upscaling case below indistinguishable from a no-op.
 	upstream := newBlobServer(t, map[string]func(http.ResponseWriter){
-		cid: servePNG(testkit.TestPNGColor(1000, 1000, color.RGBA{R: 200, G: 100, B: 50, A: 255})),
+		cid:      servePNG(testkit.TestPNGColor(1000, 1000, color.RGBA{R: 200, G: 100, B: 50, A: 255})),
+		smallCID: servePNG(testkit.TestPNGColor(200, 200, color.RGBA{R: 100, G: 150, B: 200, A: 255})),
 	})
-	server := newProxyServer(t, &fixedPDSResolver{pdsURL: upstream.URL}, defaultFetchTimeout)
+	server, cache := newProxyServerWithCache(t, &fixedPDSResolver{pdsURL: upstream.URL}, defaultFetchTimeout)
 
 	// The cover presets: the source is scaled and cropped to exactly these.
 	for _, preset := range []struct {
@@ -392,18 +399,16 @@ func TestImageProxy_PresetGeometry(t *testing.T) {
 	})
 
 	t.Run("content_preview does not upscale a small source", func(t *testing.T) {
-		const smallCID = "bafybeismallsource123"
-		smallUpstream := newBlobServer(t, map[string]func(http.ResponseWriter){
-			smallCID: servePNG(testkit.TestPNGColor(200, 200, color.RGBA{R: 100, G: 150, B: 200, A: 255})),
-		})
-		smallServer := newProxyServer(t, &fixedPDSResolver{pdsURL: smallUpstream.URL}, defaultFetchTimeout)
-
-		resp, body := fetch(t, proxyURL(smallServer, "content_preview", did, smallCID), nil)
+		resp, body := fetch(t, proxyURL(server, "content_preview", did, smallCID), nil)
 
 		require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
 		// Bounding, not resizing: a source already inside the bound is left
 		// alone rather than blown up into a blurry 800x800.
 		assertImageSize(t, body, 200, 200)
+		testkit.WaitFor(t, 10*time.Second, func() (bool, error) {
+			_, found, err := cache.Get("content_preview", did, smallCID)
+			return found, err
+		}, testkit.WithDescription("the small content preview cache write to complete"))
 	})
 
 	t.Run("an unknown preset is a 400", func(t *testing.T) {

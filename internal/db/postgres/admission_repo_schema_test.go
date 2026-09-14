@@ -318,16 +318,12 @@ func TestMigration034_DownRestoresTheAuthorForeignKeyUnvalidated(t *testing.T) {
 	require.NoError(t, err,
 		"with fk_author dropped, a federated author's post must index even though no users row exists for them")
 
-	// The expected-version parameter is the tripwire, and it has now fired
-	// eleven times: migration 035 (post_submissions), 036 (deleted_accounts),
-	// 037 (the re-materialization ledger), 038 (communities.origin), 039
-	// (the (name, origin) index), 040 (the vote-drift repair), 041 (the future
-	// comment created_at repair), 042 (the dead-letter retention index), 043
-	// (the bridged-vote poll watermark), 044 (the posts search vector), and 045
-	// (the community subscriber recount) all sit on top of 034, so all eleven have to
-	// come off first. Rolling back explicitly,
+	// The expected-version parameter is the tripwire. Migrations 035 through 048
+	// all sit on top of 034, so all fourteen have to come off first. Rolling back explicitly,
 	// one asserted step at a time, is what keeps the assertions below pointed at
 	// 034's Down rather than at whatever happens to be newest.
+	require.EqualValues(t, 48, testkit.MigrateDownOne(t, db, 48),
+		"048 (Discover Hot snapshot tables) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 47, testkit.MigrateDownOne(t, db, 47),
 		"047 (web OAuth binding) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 46, testkit.MigrateDownOne(t, db, 46),

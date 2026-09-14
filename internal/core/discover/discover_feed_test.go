@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -360,6 +361,89 @@ func TestGetDiscover_HotSort_PaginationCoversNegativeScores(t *testing.T) {
 
 	assert.Equal(t, expectedOrder, seen,
 		"Pagination should return every post exactly once, in hot-rank order")
+}
+
+// TestGetDiscover_HotSort_NormalizesAndDiversifiesAcrossPages is the outer
+// contract for Discover's community-aware Hot policy. All current candidates
+// have the same age, so their ordering cannot drift with the test clock. Under
+// the legacy raw formula the 100-vote high-baseline post beats the 45-vote
+// ordinary-baseline post; partial normalization must reverse that comparison.
+func TestGetDiscover_HotSort_NormalizesAndDiversifiesAcrossPages(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+
+	discoverRepo := postgres.NewDiscoverRepository(db, cursorSecret)
+	discoverService := discover.NewDiscoverService(discoverRepo)
+	handler := discoverhandler.NewGetDiscoverHandler(discoverService, nil, nil)
+
+	ctx := context.Background()
+	testID := testkit.UniqueID(t)
+
+	ordinaryCommunity, err := fixtures.Community(ctx, db, fmt.Sprintf("ordinary-%s", testID), fmt.Sprintf("ordinary-%s.test", testID))
+	require.NoError(t, err)
+	highBaselineCommunity, err := fixtures.Community(ctx, db, fmt.Sprintf("high-%s", testID), fmt.Sprintf("high-%s.test", testID))
+	require.NoError(t, err)
+	alternativeCommunity, err := fixtures.Community(ctx, db, fmt.Sprintf("alternative-%s", testID), fmt.Sprintf("alternative-%s.test", testID))
+	require.NoError(t, err)
+
+	fixtureNow := time.Now()
+	matureCreatedAt := fixtureNow.Add(-72 * time.Hour)
+	for i := 0; i < 5; i++ {
+		fixtures.Post(t, db, ordinaryCommunity, "did:plc:ordinary-history", fmt.Sprintf("Ordinary history %d", i), 3, matureCreatedAt)
+		fixtures.Post(t, db, highBaselineCommunity, "did:plc:high-history", fmt.Sprintf("High history %d", i), 1_000_000, matureCreatedAt)
+		fixtures.Post(t, db, alternativeCommunity, "did:plc:alternative-history", fmt.Sprintf("Alternative history %d", i), 3, matureCreatedAt)
+	}
+
+	candidateCreatedAt := fixtureNow.Add(-2 * time.Hour)
+	ordinaryFirst := fixtures.Post(t, db, ordinaryCommunity, "did:plc:ordinary-author", "Ordinary first", 45, candidateCreatedAt)
+	highFirst := fixtures.Post(t, db, highBaselineCommunity, "did:plc:high-author", "High first", 100, candidateCreatedAt)
+	ordinarySecond := fixtures.Post(t, db, ordinaryCommunity, "did:plc:ordinary-author", "Ordinary second", 35, candidateCreatedAt)
+	alternativeFirst := fixtures.Post(t, db, alternativeCommunity, "did:plc:alternative-author", "Alternative first", 6, candidateCreatedAt)
+	ordinaryThird := fixtures.Post(t, db, ordinaryCommunity, "did:plc:ordinary-author", "Ordinary third", 28, candidateCreatedAt)
+	highSecond := fixtures.Post(t, db, highBaselineCommunity, "did:plc:high-author", "High second", 35, candidateCreatedAt)
+
+	expected := []string{
+		ordinaryFirst,
+		highFirst,
+		ordinarySecond,
+		alternativeFirst,
+		ordinaryThird,
+		highSecond,
+	}
+
+	var returned []string
+	cursor := ""
+	for page := 0; page < 2; page++ {
+		requestURL := "/xrpc/social.coves.feed.getDiscover?sort=hot&limit=3"
+		if cursor != "" {
+			requestURL += "&cursor=" + url.QueryEscape(cursor)
+		}
+
+		req := httptest.NewRequest(http.MethodGet, requestURL, nil)
+		rec := httptest.NewRecorder()
+		handler.HandleGetDiscover(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code, "page %d should succeed: %s", page+1, rec.Body.String())
+
+		var response discover.DiscoverResponse
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &response))
+		require.Len(t, response.Feed, 3, "page %d should be full", page+1)
+		for _, post := range response.Feed {
+			returned = append(returned, post.Post.URI)
+		}
+
+		if page == 0 {
+			require.NotNil(t, response.Cursor, "first page should continue the ranking session")
+			cursor = *response.Cursor
+		}
+	}
+
+	unique := make(map[string]struct{}, len(returned))
+	for _, uri := range returned {
+		require.NotContains(t, unique, uri, "paginated Discover Hot must not repeat a post")
+		unique[uri] = struct{}{}
+	}
+	require.Equal(t, expected, returned,
+		"normalization and progressive community penalties must produce one continuous cross-page order")
 }
 
 // TestGetDiscover_HotSort_FutureDatedPost guards the feed against records

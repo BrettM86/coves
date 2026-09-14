@@ -192,14 +192,12 @@ func TestRematerializeLedgerMigration_RollsBack(t *testing.T) {
 	db := testkit.DB(t)
 	requireTableExists(t, db, rematerializeLedgerTable)
 
-	// The expected-version tripwire: 045 (the community subscriber recount),
-	// 044 (the posts search vector), 043 (the bridged-vote poll watermark),
-	// 042 (the dead-letter retention index), 041
-	// (the future comment created_at repair), 040 (the vote-drift repair), 039
-	// (the communities (name, origin) index), and 038 (communities.origin) sit on
-	// top of 037 and come off first, one asserted step at a time. Asserting which
+	// The expected-version tripwire: migrations 038 through 048 sit on top of
+	// 037 and come off first, one asserted step at a time. Asserting which
 	// migration rolled back is what keeps this pointed at 037's Down rather than
 	// drifting onto a newer one later.
+	require.EqualValues(t, 48, testkit.MigrateDownOne(t, db, 48),
+		"048 (Discover Hot snapshot tables) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 47, testkit.MigrateDownOne(t, db, 47),
 		"047 (web OAuth binding) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 46, testkit.MigrateDownOne(t, db, 46),

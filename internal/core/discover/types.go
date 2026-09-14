@@ -78,7 +78,8 @@ type PostRef struct {
 
 // Errors
 var (
-	ErrInvalidCursor = errors.New("invalid cursor")
+	ErrInvalidCursor       = errors.New("invalid cursor")
+	ErrDiscoverUnavailable = errors.New("discover unavailable")
 )
 
 // ValidationError is the shared validation error type. It is aliased rather

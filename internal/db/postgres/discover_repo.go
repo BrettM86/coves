@@ -10,11 +10,15 @@ import (
 
 type postgresDiscoverRepo struct {
 	*feedRepoBase
+	discoverHotCandidateLimit               int
+	discoverHotStoredCandidateLimit         int
+	discoverHotStoredCheckpointLimit        int
+	discoverHotCheckpointStateByteLimit     int
+	discoverHotSnapshotBuildsPerMinuteLimit int
+	discoverHotWorkDeadline                 time.Duration
 }
 
-// NewDiscoverRepository creates a new PostgreSQL discover repository
-// Sorting (including the log-damped hot rank) is shared across all post feeds —
-// see feedSortClauses and hotRankSQL in feed_repo_base.go
+// NewDiscoverRepository creates a new PostgreSQL discover repository.
 func NewDiscoverRepository(db *sql.DB, cursorSecret string) discover.Repository {
 	return &postgresDiscoverRepo{
 		feedRepoBase: newFeedRepoBase(db, cursorSecret),
@@ -23,6 +27,10 @@ func NewDiscoverRepository(db *sql.DB, cursorSecret string) discover.Repository 
 
 // GetDiscover retrieves posts from ALL communities (public feed)
 func (r *postgresDiscoverRepo) GetDiscover(ctx context.Context, req discover.GetDiscoverRequest) ([]*discover.FeedViewPost, *string, error) {
+	if req.Sort == "hot" {
+		return r.getDiscoverHot(ctx, req)
+	}
+
 	// Capture query time for stable cursor generation (used for hot sort pagination)
 	queryTime := time.Now()
 

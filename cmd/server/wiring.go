@@ -139,6 +139,7 @@ type application struct {
 	feedService                communityFeeds.Service
 	timelineService            timeline.Service
 	discoverService            discover.Service
+	discoverHotStateCleaner    discover.DiscoverHotStateCleaner
 	aggregatorService          aggregators.Service
 	apiKeyService              *aggregators.APIKeyService
 	blueskyService             blueskypost.Service
@@ -558,9 +559,13 @@ func (a *application) buildServices(ctx context.Context) error {
 	a.timelineService = timeline.NewTimelineService(
 		postgresRepo.NewTimelineRepository(a.db, a.cfg.CursorSecret),
 	)
-	a.discoverService = discover.NewDiscoverService(
-		postgresRepo.NewDiscoverRepository(a.db, a.cfg.CursorSecret),
-	)
+	discoverRepository := postgresRepo.NewDiscoverRepository(a.db, a.cfg.CursorSecret)
+	discoverHotStateCleaner, ok := discoverRepository.(discover.DiscoverHotStateCleaner)
+	if !ok {
+		return fmt.Errorf("Discover repository does not support expired Hot state cleanup")
+	}
+	a.discoverHotStateCleaner = discoverHotStateCleaner
+	a.discoverService = discover.NewDiscoverService(discoverRepository)
 
 	slog.Info("domain services initialized")
 	return nil
