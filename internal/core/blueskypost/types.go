@@ -19,7 +19,7 @@ type BlueskyPostResult struct {
 	CreatedAt time.Time `json:"createdAt"`
 
 	// Author contains the post author's identity information
-	Author *Author `json:"author"`
+	Author *Author `json:"author,omitempty"`
 
 	// QuotedPost is a nested Bluesky post if this post quotes another post
 	// Limited to 1 level of nesting in Phase 1
@@ -58,6 +58,23 @@ type BlueskyPostResult struct {
 	// Embed contains the post's external link embed, if present
 	// This captures link cards from the original Bluesky post
 	Embed *ExternalEmbed `json:"embed,omitempty"`
+
+	// Images contains validated image views supplied by the Bluesky AppView.
+	Images []BlueskyImage `json:"images,omitempty"`
+}
+
+// BlueskyImage is a resolved image view supplied by the Bluesky AppView.
+type BlueskyImage struct {
+	Thumb       string       `json:"thumb"`
+	Fullsize    string       `json:"fullsize"`
+	Alt         string       `json:"alt"`
+	AspectRatio *AspectRatio `json:"aspectRatio,omitempty"`
+}
+
+// AspectRatio describes an image's positive pixel dimensions.
+type AspectRatio struct {
+	Width  int `json:"width"`
+	Height int `json:"height"`
 }
 
 // Author represents a Bluesky post author's identity.

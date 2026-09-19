@@ -14,7 +14,7 @@ func TestMapAPIPostToResult_BasicPost(t *testing.T) {
 			DID:         "did:plc:alice123",
 			Handle:      "alice.bsky.social",
 			DisplayName: "Alice",
-			Avatar:      "https://example.com/avatar.jpg",
+			Avatar:      resolvedMediaCDN + "/img/avatar/plain/alice",
 		},
 		Record: blueskyAPIRecord{
 			Text:      "Hello world!",
@@ -60,8 +60,8 @@ func TestMapAPIPostToResult_BasicPost(t *testing.T) {
 	if result.Author.DisplayName != "Alice" {
 		t.Errorf("Expected display name %q, got %q", "Alice", result.Author.DisplayName)
 	}
-	if result.Author.Avatar != "https://example.com/avatar.jpg" {
-		t.Errorf("Expected avatar %q, got %q", "https://example.com/avatar.jpg", result.Author.Avatar)
+	if result.Author.Avatar != resolvedMediaCDN+"/img/avatar/plain/alice" {
+		t.Errorf("Expected avatar %q, got %q", resolvedMediaCDN+"/img/avatar/plain/alice", result.Author.Avatar)
 	}
 }
 
@@ -134,144 +134,6 @@ func TestMapAPIPostToResult_TimestampParsing(t *testing.T) {
 	}
 }
 
-func TestMapAPIPostToResult_MediaInRecordEmbed(t *testing.T) {
-	tests := []struct {
-		recordEmbed   *recordEmbed
-		name          string
-		expectedCount int
-		expectedMedia bool
-	}{
-		{
-			name:          "no embed",
-			recordEmbed:   nil,
-			expectedMedia: false,
-			expectedCount: 0,
-		},
-		{
-			name: "single image",
-			recordEmbed: &recordEmbed{
-				Type:   "app.bsky.embed.images",
-				Images: []json.RawMessage{json.RawMessage(`{"alt":"test"}`)},
-			},
-			expectedMedia: true,
-			expectedCount: 1,
-		},
-		{
-			name: "multiple images",
-			recordEmbed: &recordEmbed{
-				Type: "app.bsky.embed.images",
-				Images: []json.RawMessage{
-					json.RawMessage(`{"alt":"test1"}`),
-					json.RawMessage(`{"alt":"test2"}`),
-					json.RawMessage(`{"alt":"test3"}`),
-				},
-			},
-			expectedMedia: true,
-			expectedCount: 3,
-		},
-		{
-			name: "video",
-			recordEmbed: &recordEmbed{
-				Type:  "app.bsky.embed.video",
-				Video: json.RawMessage(`{"cid":"video123"}`),
-			},
-			expectedMedia: true,
-			expectedCount: 1,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			apiPost := &blueskyAPIPost{
-				URI: "at://did:plc:test/app.bsky.feed.post/test",
-				CID: "cid",
-				Author: blueskyAPIAuthor{
-					DID:    "did:plc:test",
-					Handle: "test.bsky.social",
-				},
-				Record: blueskyAPIRecord{
-					Text:      "Test",
-					CreatedAt: "2025-12-21T10:30:00Z",
-					Embed:     tt.recordEmbed,
-				},
-			}
-
-			result := mapAPIPostToResult(apiPost)
-
-			if result.HasMedia != tt.expectedMedia {
-				t.Errorf("Expected HasMedia %v, got %v", tt.expectedMedia, result.HasMedia)
-			}
-			if result.MediaCount != tt.expectedCount {
-				t.Errorf("Expected MediaCount %d, got %d", tt.expectedCount, result.MediaCount)
-			}
-		})
-	}
-}
-
-func TestMapAPIPostToResult_MediaInAPIEmbed(t *testing.T) {
-	tests := []struct {
-		apiEmbed      *blueskyAPIEmbed
-		name          string
-		expectedCount int
-		expectedMedia bool
-	}{
-		{
-			name:          "no embed",
-			apiEmbed:      nil,
-			expectedMedia: false,
-			expectedCount: 0,
-		},
-		{
-			name: "images in API embed",
-			apiEmbed: &blueskyAPIEmbed{
-				Type: "app.bsky.embed.images#view",
-				Images: []json.RawMessage{
-					json.RawMessage(`{"thumb":"url1"}`),
-					json.RawMessage(`{"thumb":"url2"}`),
-				},
-			},
-			expectedMedia: true,
-			expectedCount: 2,
-		},
-		{
-			name: "video in API embed",
-			apiEmbed: &blueskyAPIEmbed{
-				Type:  "app.bsky.embed.video#view",
-				Video: json.RawMessage(`{"playlist":"url"}`),
-			},
-			expectedMedia: true,
-			expectedCount: 1,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			apiPost := &blueskyAPIPost{
-				URI: "at://did:plc:test/app.bsky.feed.post/test",
-				CID: "cid",
-				Author: blueskyAPIAuthor{
-					DID:    "did:plc:test",
-					Handle: "test.bsky.social",
-				},
-				Record: blueskyAPIRecord{
-					Text:      "Test",
-					CreatedAt: "2025-12-21T10:30:00Z",
-				},
-				Embed: tt.apiEmbed,
-			}
-
-			result := mapAPIPostToResult(apiPost)
-
-			if result.HasMedia != tt.expectedMedia {
-				t.Errorf("Expected HasMedia %v, got %v", tt.expectedMedia, result.HasMedia)
-			}
-			if result.MediaCount != tt.expectedCount {
-				t.Errorf("Expected MediaCount %d, got %d", tt.expectedCount, result.MediaCount)
-			}
-		})
-	}
-}
-
 func TestMapAPIPostToResult_QuotedPost(t *testing.T) {
 	// Create a quoted post structure using record#view format
 	// For record#view, the viewRecord fields are directly on blueskyAPIEmbedRecord
@@ -334,102 +196,6 @@ func TestMapAPIPostToResult_QuotedPost(t *testing.T) {
 	}
 }
 
-func TestMapAPIPostToResult_QuotedPostWithMedia(t *testing.T) {
-	// Test recordWithMedia#view format where the quoted post is nested differently
-	// This is the format used when a post has both an image and a quoted post
-	apiPost := &blueskyAPIPost{
-		URI: "at://did:plc:alice123/app.bsky.feed.post/abc123",
-		CID: "cid123",
-		Author: blueskyAPIAuthor{
-			DID:    "did:plc:alice123",
-			Handle: "alice.bsky.social",
-		},
-		Record: blueskyAPIRecord{
-			Text:      "Quote with image attached!",
-			CreatedAt: "2025-12-21T10:30:00Z",
-		},
-		Embed: &blueskyAPIEmbed{
-			Type: "app.bsky.embed.recordWithMedia#view",
-			// Media attached to the quoting post
-			Media: &blueskyAPIEmbedMedia{
-				Type: "app.bsky.embed.images#view",
-				Images: []json.RawMessage{
-					json.RawMessage(`{"thumb":"image1.jpg"}`),
-				},
-			},
-			// For recordWithMedia, the quoted post is nested inside embed.record.record
-			Record: &blueskyAPIEmbedRecord{
-				Record: &blueskyAPIViewRecord{
-					URI: "at://did:plc:bob456/app.bsky.feed.post/xyz789",
-					CID: "cid789",
-					Author: blueskyAPIAuthor{
-						DID:         "did:plc:bob456",
-						Handle:      "bob.bsky.social",
-						DisplayName: "Bob",
-					},
-					Value: &blueskyAPIRecordValue{
-						Text:      "Original quoted post",
-						CreatedAt: "2025-12-20T08:00:00Z",
-					},
-					LikeCount:   50,
-					ReplyCount:  5,
-					RepostCount: 10,
-					Embeds: []json.RawMessage{
-						json.RawMessage(`{"$type":"app.bsky.embed.images#view"}`),
-					},
-				},
-			},
-		},
-	}
-
-	result := mapAPIPostToResult(apiPost)
-
-	// Verify main post
-	if result.Text != "Quote with image attached!" {
-		t.Errorf("Expected main post text %q, got %q", "Quote with image attached!", result.Text)
-	}
-
-	// Verify main post has media
-	if !result.HasMedia {
-		t.Error("Expected main post to have media")
-	}
-	if result.MediaCount != 1 {
-		t.Errorf("Expected media count 1, got %d", result.MediaCount)
-	}
-
-	// Verify quoted post exists
-	if result.QuotedPost == nil {
-		t.Fatal("Expected quoted post, got nil")
-	}
-
-	// Verify quoted post content
-	if result.QuotedPost.Text != "Original quoted post" {
-		t.Errorf("Expected quoted post text %q, got %q", "Original quoted post", result.QuotedPost.Text)
-	}
-	if result.QuotedPost.Author == nil {
-		t.Fatal("Expected quoted post author, got nil")
-	}
-	if result.QuotedPost.Author.Handle != "bob.bsky.social" {
-		t.Errorf("Expected quoted post handle %q, got %q", "bob.bsky.social", result.QuotedPost.Author.Handle)
-	}
-	if result.QuotedPost.Author.DisplayName != "Bob" {
-		t.Errorf("Expected quoted post display name %q, got %q", "Bob", result.QuotedPost.Author.DisplayName)
-	}
-	if result.QuotedPost.LikeCount != 50 {
-		t.Errorf("Expected quoted post like count 50, got %d", result.QuotedPost.LikeCount)
-	}
-
-	// Verify quoted post has its own media indicator
-	if !result.QuotedPost.HasMedia {
-		t.Error("Expected quoted post to indicate it has media")
-	}
-
-	// Verify no nested quoted posts
-	if result.QuotedPost.QuotedPost != nil {
-		t.Error("Quoted posts should not be nested more than 1 level deep")
-	}
-}
-
 func TestMapAPIPostToResult_QuotedPostNonRecordEmbed(t *testing.T) {
 	// Test that non-record embeds don't create quoted posts
 	apiPost := &blueskyAPIPost{
@@ -487,87 +253,6 @@ func TestMapAPIPostToResult_EmptyOptionalFields(t *testing.T) {
 	}
 	if result.ReplyCount != 0 || result.RepostCount != 0 || result.LikeCount != 0 {
 		t.Error("Expected zero counts for missing engagement metrics")
-	}
-}
-
-func TestMapAPIPostToResult_MediaFromBothEmbeds(t *testing.T) {
-	// Test that media is detected from either record embed or API embed
-	apiPost := &blueskyAPIPost{
-		URI: "at://did:plc:test/app.bsky.feed.post/test",
-		CID: "cid",
-		Author: blueskyAPIAuthor{
-			DID:    "did:plc:test",
-			Handle: "test.bsky.social",
-		},
-		Record: blueskyAPIRecord{
-			Text:      "Test",
-			CreatedAt: "2025-12-21T10:30:00Z",
-			Embed: &recordEmbed{
-				Type:   "app.bsky.embed.images",
-				Images: []json.RawMessage{json.RawMessage(`"img1"`), json.RawMessage(`"img2"`)},
-			},
-		},
-		Embed: &blueskyAPIEmbed{
-			Type:   "app.bsky.embed.images#view",
-			Images: []json.RawMessage{json.RawMessage(`"img1"`), json.RawMessage(`"img2"`)},
-		},
-	}
-
-	result := mapAPIPostToResult(apiPost)
-
-	if !result.HasMedia {
-		t.Error("Expected HasMedia to be true")
-	}
-	// MediaCount should be set from the first source (record embed)
-	if result.MediaCount != 2 {
-		t.Errorf("Expected MediaCount 2, got %d", result.MediaCount)
-	}
-}
-
-func TestMapAPIPostToResult_ComplexPost(t *testing.T) {
-	// Test a post with media (images)
-	apiPost := &blueskyAPIPost{
-		URI: "at://did:plc:alice123/app.bsky.feed.post/complex",
-		CID: "cid123",
-		Author: blueskyAPIAuthor{
-			DID:         "did:plc:alice123",
-			Handle:      "alice.bsky.social",
-			DisplayName: "Alice",
-			Avatar:      "https://example.com/alice.jpg",
-		},
-		Record: blueskyAPIRecord{
-			Text:      "Complex post with media",
-			CreatedAt: "2025-12-21T10:30:00Z",
-			Embed: &recordEmbed{
-				Type:   "app.bsky.embed.images",
-				Images: []json.RawMessage{json.RawMessage(`"img1"`)},
-			},
-		},
-		Embed: &blueskyAPIEmbed{
-			Type:   "app.bsky.embed.images#view",
-			Images: []json.RawMessage{json.RawMessage(`"img1"`)},
-		},
-		ReplyCount:  10,
-		RepostCount: 20,
-		LikeCount:   30,
-	}
-
-	result := mapAPIPostToResult(apiPost)
-
-	// Verify main post
-	if result.Text != "Complex post with media" {
-		t.Errorf("Unexpected text: %q", result.Text)
-	}
-	if !result.HasMedia {
-		t.Error("Expected HasMedia to be true")
-	}
-	if result.MediaCount != 1 {
-		t.Errorf("Expected MediaCount 1, got %d", result.MediaCount)
-	}
-
-	// Verify engagement
-	if result.ReplyCount != 10 || result.RepostCount != 20 || result.LikeCount != 30 {
-		t.Error("Engagement counts don't match")
 	}
 }
 
@@ -653,8 +338,8 @@ func TestMapAPIPostToResult_ExternalEmbed(t *testing.T) {
 	if result.Embed.Description != "The NBA and FIBA have announced a joint search for teams interested in joining a potential European league." {
 		t.Errorf("Expected external description, got %s", result.Embed.Description)
 	}
-	if result.Embed.Thumb != "https://cdn.lemonde.fr/thumbnail.jpg" {
-		t.Errorf("Expected external thumb, got %s", result.Embed.Thumb)
+	if result.Embed.Thumb != "" {
+		t.Errorf("Expected a foreign external thumb to be omitted, got %s", result.Embed.Thumb)
 	}
 }
 

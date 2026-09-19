@@ -156,8 +156,11 @@ func TestService_ParseBlueskyURL(t *testing.T) {
 
 func TestService_ResolvePost_CacheHit(t *testing.T) {
 	repo := newMockRepository()
-	resolver := &mockIdentityResolver{}
-	svc := NewService(repo, resolver)
+	requests := 0
+	svc := newStubbedService(t, repo, func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		http.Error(w, "cache hit must not reach metadata upstream", http.StatusInternalServerError)
+	})
 	ctx := context.Background()
 
 	atURI := "at://did:plc:alice123/app.bsky.feed.post/abc123"
@@ -189,11 +192,18 @@ func TestService_ResolvePost_CacheHit(t *testing.T) {
 	if result.Text != expectedResult.Text {
 		t.Errorf("Expected text %q, got %q", expectedResult.Text, result.Text)
 	}
+	if requests != 0 {
+		t.Errorf("Expected cache hit to make zero metadata requests, got %d", requests)
+	}
 }
 
 func TestService_ResolvePost_CacheMiss(t *testing.T) {
 	repo := newMockRepository()
-	svc := newStubbedService(t, repo, respondPostNotFound)
+	requests := 0
+	svc := newStubbedService(t, repo, func(w http.ResponseWriter, request *http.Request) {
+		requests++
+		respondPostNotFound(w, request)
+	})
 	ctx := context.Background()
 
 	atURI := "at://did:plc:notincache/app.bsky.feed.post/xyz789"
@@ -210,6 +220,9 @@ func TestService_ResolvePost_CacheMiss(t *testing.T) {
 	}
 	if !result.Unavailable {
 		t.Error("Expected result to be unavailable for fake DID")
+	}
+	if requests != 1 {
+		t.Errorf("Expected cache miss to make one metadata request, got %d", requests)
 	}
 }
 

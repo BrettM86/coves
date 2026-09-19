@@ -77,7 +77,8 @@ func blobOwnerOf(postView *PostView) (did, pdsURL string, ok bool) {
 }
 
 // TransformPostEmbeds enriches post embeds with resolved Bluesky post data
-// This modifies the Embed field in-place, adding a "resolved" field with BlueskyPostResult
+// This modifies the Embed field in-place, adding a "resolved" field with the
+// BlueskyPostResult projected into its serving view.
 // Only processes social.coves.embed.post embeds with app.bsky.feed.post URIs
 func TransformPostEmbeds(ctx context.Context, postView *PostView, blueskyService blueskypost.Service) {
 	if postView == nil || postView.Embed == nil || blueskyService == nil {
@@ -160,7 +161,7 @@ func TransformPostEmbeds(ctx context.Context, postView *PostView, blueskyService
 		return
 	}
 
-	// Add resolved data to embed
-	embedMap["resolved"] = result
+	// Validate cached media again on the serving boundary.
+	embedMap["resolved"] = blueskypost.ProjectMediaURLs(result)
 	embedMap["$type"] = "social.coves.embed.post#view"
 }
