@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	discoverHotAlgorithmVersion                    = 1
+	discoverHotAlgorithmVersion                    = 2
 	discoverHotCursorVersion                       = "discover-hot-v1"
 	discoverHotCursorMaxLength                     = 500
 	discoverHotSnapshotReuse                       = 30 * time.Second
@@ -274,7 +274,11 @@ func (r *postgresDiscoverRepo) createDiscoverHotSnapshot(ctx context.Context, vi
 			adjustment = discover.CommunityAdjustment(history[candidate.CommunityDID], reference, referenceAvailable)
 			adjustments[candidate.CommunityDID] = adjustment
 		}
-		candidate.BaseRank = discover.DiscoverHotRank(candidate.Score, candidate.CreatedAt, rankingTime, adjustment)
+		var hostedBonus float64
+		if candidate.Hosted {
+			hostedBonus = discover.HostedCommunityBonus(r.cursorSecret, candidate.URI)
+		}
+		candidate.BaseRank = discover.DiscoverHotRank(candidate.Score, candidate.CreatedAt, rankingTime, adjustment, hostedBonus)
 		if math.IsNaN(candidate.BaseRank) || math.IsInf(candidate.BaseRank, 0) {
 			return 0, nil, fmt.Errorf("nonfinite Discover Hot rank for %s", candidate.URI)
 		}
@@ -361,6 +365,9 @@ func (r *postgresDiscoverRepo) recordDiscoverHotBuildAttempt(ctx context.Context
 type discoverHotRawCandidate struct {
 	discover.DiscoverHotCandidate
 	Score int
+	// Hosted is the presence of a stored PDS refresh token for the post's
+	// community, never its contents: the credential is not decrypted here.
+	Hosted bool
 }
 
 func queryDiscoverHotHistory(ctx context.Context, tx *sql.Tx, rankingTime time.Time) (map[string][]int, error) {
@@ -404,8 +411,13 @@ func queryDiscoverHotCandidates(ctx context.Context, tx *sql.Tx, viewerDID strin
 		queryLimit++
 	}
 	rows, err := tx.QueryContext(ctx, `
-		SELECT p.uri, p.community_did, p.score, p.created_at
+		SELECT p.uri, p.community_did, p.score, p.created_at,
+			c.pds_refresh_token_encrypted IS NOT NULL AS hosted
 		FROM posts p`+visJoin+`
+			-- communities.did is UNIQUE, so this join cannot multiply candidate
+			-- rows: the candidate limit and the atomic overflow refusal both
+			-- depend on one row per post. A missing community reads as not hosted.
+			LEFT JOIN communities c ON c.did = p.community_did
 		WHERE p.deleted_at IS NULL
 			AND `+visWhere+`
 			`+viewerFilter+`
@@ -419,7 +431,7 @@ func queryDiscoverHotCandidates(ctx context.Context, tx *sql.Tx, viewerDID strin
 	var candidates []discoverHotRawCandidate
 	for rows.Next() {
 		var candidate discoverHotRawCandidate
-		if err := rows.Scan(&candidate.URI, &candidate.CommunityDID, &candidate.Score, &candidate.CreatedAt); err != nil {
+		if err := rows.Scan(&candidate.URI, &candidate.CommunityDID, &candidate.Score, &candidate.CreatedAt, &candidate.Hosted); err != nil {
 			return nil, fmt.Errorf("scan Discover Hot candidate: %w", err)
 		}
 		if len(candidates) == candidateLimit {

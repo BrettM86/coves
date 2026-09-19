@@ -79,24 +79,24 @@ func TestDiscoverHotNormalization(t *testing.T) {
 		twoHoursOld := rankingTime.Add(-2 * time.Hour)
 		denominator := math.Pow(4, 1.5)
 
-		positive := discoverHotRank(15, twoHoursOld, rankingTime, 0.5)
-		zero := discoverHotRank(0, twoHoursOld, rankingTime, 0.5)
-		negative := discoverHotRank(-3, twoHoursOld, rankingTime, 0.5)
+		positive := discoverHotRank(15, twoHoursOld, rankingTime, 0.5, 0)
+		zero := discoverHotRank(0, twoHoursOld, rankingTime, 0.5, 0)
+		negative := discoverHotRank(-3, twoHoursOld, rankingTime, 0.5, 0)
 
 		assert.InDelta(t, (1+0.5*math.Log(16))/denominator, positive, 1e-12)
 		assert.InDelta(t, 1/denominator, zero, 1e-12)
 		assert.InDelta(t, (1-math.Log(4))/denominator, negative, 1e-12)
-		assert.Greater(t, discoverHotRank(255, twoHoursOld, rankingTime, 0.5), positive)
+		assert.Greater(t, discoverHotRank(255, twoHoursOld, rankingTime, 0.5, 0), positive)
 		assert.Greater(t, positive, zero)
 		assert.Negative(t, negative)
-		assert.Less(t, discoverHotRank(-15, twoHoursOld, rankingTime, 0.5), negative)
-		assert.Equal(t, zero, discoverHotRank(0, twoHoursOld, rankingTime, 1),
+		assert.Less(t, discoverHotRank(-15, twoHoursOld, rankingTime, 0.5, 0), negative)
+		assert.Equal(t, zero, discoverHotRank(0, twoHoursOld, rankingTime, 1, 0),
 			"normalization must not change zero-score rank")
-		assert.Equal(t, negative, discoverHotRank(-3, twoHoursOld, rankingTime, 1),
+		assert.Equal(t, negative, discoverHotRank(-3, twoHoursOld, rankingTime, 1, 0),
 			"normalization must not change negative-score rank")
 
-		fresh := discoverHotRank(0, rankingTime, rankingTime, 1)
-		future := discoverHotRank(0, rankingTime.Add(48*time.Hour), rankingTime, 1)
+		fresh := discoverHotRank(0, rankingTime, rankingTime, 1, 0)
+		future := discoverHotRank(0, rankingTime.Add(48*time.Hour), rankingTime, 1, 0)
 		assert.InDelta(t, 1/math.Pow(2, 1.5), fresh, 1e-12)
 		assert.Equal(t, fresh, future, "future dates should clamp to zero age without gaining a boost")
 	})

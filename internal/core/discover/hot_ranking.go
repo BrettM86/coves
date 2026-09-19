@@ -1,17 +1,23 @@
 package discover
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/binary"
 	"math"
 	"sort"
 	"time"
 )
 
 const (
-	minimumReferencePosts = 5
-	baselinePriorPosts    = 20
-	minimumAdjustment     = 0.5
-	recentCommunityWindow = 20
-	repetitionPenaltyStep = 0.5
+	minimumReferencePosts       = 5
+	baselinePriorPosts          = 20
+	minimumAdjustment           = 0.5
+	recentCommunityWindow       = 20
+	repetitionPenaltyStep       = 0.5
+	maximumHostedCommunityBonus = 3.0
+
+	hostedCommunityBonusDomainLabel = "discover-hot-hosted-bonus\x00"
 )
 
 func communityReference(scoresByCommunity map[string][]int) (float64, bool) {
@@ -60,7 +66,7 @@ func CommunityAdjustment(scores []int, reference float64, referenceAvailable boo
 	return communityAdjustment(scores, reference, referenceAvailable)
 }
 
-func discoverHotRank(score int, createdAt, rankingTime time.Time, communityAdjustment float64) float64 {
+func discoverHotRank(score int, createdAt, rankingTime time.Time, communityAdjustment, hostedBonus float64) float64 {
 	ageHours := rankingTime.Sub(createdAt).Hours()
 	if ageHours < 0 {
 		ageHours = 0
@@ -78,12 +84,35 @@ func discoverHotRank(score int, createdAt, rankingTime time.Time, communityAdjus
 		numerator -= math.Log1p(math.Abs(float64(score)))
 	}
 
+	if score >= 0 {
+		if math.IsNaN(hostedBonus) || math.IsInf(hostedBonus, 0) || hostedBonus < 0 {
+			hostedBonus = 0
+		}
+		numerator += min(hostedBonus, maximumHostedCommunityBonus)
+	}
+
 	return numerator / math.Pow(ageHours+2, 1.5)
 }
 
-// DiscoverHotRank returns the normalized, freshness-decayed base rank.
-func DiscoverHotRank(score int, createdAt, rankingTime time.Time, communityAdjustment float64) float64 {
-	return discoverHotRank(score, createdAt, rankingTime, communityAdjustment)
+// DiscoverHotRank returns the normalized, freshness-decayed base rank, including
+// the hosted-community bonus for posts that are not negatively scored.
+func DiscoverHotRank(score int, createdAt, rankingTime time.Time, communityAdjustment, hostedBonus float64) float64 {
+	return discoverHotRank(score, createdAt, rankingTime, communityAdjustment, hostedBonus)
+}
+
+// HostedCommunityBonus returns the deterministic numerator bonus for a post in
+// a Coves-hosted community, spread over [0, maximumHostedCommunityBonus).
+//
+// It is keyed with the server's cursor secret because the post author chooses
+// the URI's rkey: an unkeyed digest could be ground offline until it landed at
+// the ceiling. The label separates this domain from cursor signatures, which
+// use the same key.
+func HostedCommunityBonus(secret, uri string) float64 {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(hostedCommunityBonusDomainLabel))
+	mac.Write([]byte(uri))
+	digest := mac.Sum(nil)
+	return maximumHostedCommunityBonus * float64(binary.BigEndian.Uint64(digest[:8])>>11) / (1 << 53)
 }
 
 func engagementSum(scores []int) float64 {

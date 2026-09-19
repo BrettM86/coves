@@ -42,7 +42,7 @@ func TestDiscoverHotRank_NeutralMatchesLegacyPostgresExpression(t *testing.T) {
 				testCase.score, testCase.createdAt, rankingTime).Scan(&postgresRank)
 			require.NoError(t, err)
 
-			goRank := discover.DiscoverHotRank(testCase.score, testCase.createdAt, rankingTime, 1)
+			goRank := discover.DiscoverHotRank(testCase.score, testCase.createdAt, rankingTime, 1, 0)
 			absoluteError := math.Abs(goRank - postgresRank)
 			scale := math.Max(math.Abs(goRank), math.Abs(postgresRank))
 			relativeError := absoluteError

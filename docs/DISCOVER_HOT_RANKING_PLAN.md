@@ -14,7 +14,9 @@ The user also selected **stable snapshot pagination**: scrolling preserves a ran
 
 Apply this to **Discover Hot only**, including requests that default to Hot. Timeline Hot, community Hot, and Discover New/Top retain their existing ranking behavior. Do not change the shared Hot formula to implement Discover's new policy.
 
-Native-specific slots, native-community multipliers, subscriber weighting, author penalties, and an additional age taper are outside this version. Do not infer human authorship from community hosting or imported vote counts. This ranking is source-neutral.
+Native-specific slots, native-community multipliers, subscriber weighting, author penalties, and an additional age taper are outside this version. Do not infer human authorship from community hosting or imported vote counts.
+
+**Amended 2026-09-18 (algorithm version 2):** the ranking is no longer source-neutral. Posts in Coves-hosted communities receive the deterministic numerator bonus specified in §3.5. Every other statement in this section stands.
 
 ### Intended outcome
 
@@ -122,6 +124,40 @@ base_rank < 0:  adjusted_rank = base_rank × penalty
 Choose the highest adjusted rank, with `created_at DESC, uri DESC` as deterministic tie-breakers. Add the selected community to the window and expire its oldest entry when necessary. This is a soft penalty, not a quota or a guaranteed interleave. Single-community supply still fills pages normally.
 
 The sign-safe branches ensure repetition never improves a negative rank. The adjustment preserves base-rank order within a community. Therefore only the best remaining candidate from each community can win the next selection.
+
+### 3.5 Hosted-community bonus (algorithm version 2)
+
+Approved 2026-09-18. Bridged communities import vote counts in the hundreds while posts in Coves-hosted communities sit at zero or one vote, so fresh hosted posts ranked below much older bridged posts. A flat boost was rejected because it would stack every fresh hosted post at the top of the feed.
+
+```text
+hosted  = communities.pds_refresh_token_encrypted IS NOT NULL
+mac     = HMAC-SHA256(key = CURSOR_SECRET, message = "discover-hot-hosted-bonus\0" + post URI)
+u       = (first 8 bytes of mac, big-endian) >> 11, divided by 2^53    # [0, 1)
+bonus   = 3.0 × u          when hosted and score >= 0
+bonus   = 0                otherwise
+numerator = (numerator from §3.3) + bonus
+```
+
+- `hosted` is the same fact as `internal/db/postgres/community_hosted.go`: the presence of the stored credential. It is never decrypted, and `hosted_by_did` is a claim anyone can write, so it is not used.
+- The bonus depends only on the post URI and the server's `CURSOR_SECRET`. It has no clock and no per-process randomness, so it is identical across the 30-second snapshot rebuilds for the post's lifetime and the feed does not reshuffle on refresh.
+- It is keyed because the author chooses the URI: a `postv2` record lives at `at://<author DID>/social.coves.community.postv2/<author-chosen rkey>`. An unkeyed digest could be ground offline, about 1,000 rkeys for a near-maximum bonus on every post. The label prefix separates the bonus from cursor signatures, which use the same key. Rotating `CURSOR_SECRET` reshuffles every bonus; rotation already invalidates every cursor.
+- It is additive and independent of score, so an upvote never lowers a post's rank. Negative-score posts receive no bonus. This is a deliberate hard cutoff: the first downvote on a zero-vote hosted post removes the whole bonus, taking the numerator from as much as 4.0 to `1 - ln 2` (about 13x), against about 3.3x for a non-hosted post. Hosted posts sit at 0-1 votes, so one account can do this. A taper over the first few negative scores is the alternative if it is abused.
+- A post with `u` near zero ranks where it did under version 1. Freshness decay, partial normalization and the repetition penalty are unchanged, and the repetition penalty remains the guard against one hosted community filling a page.
+- With a bonus of zero the Go rank still equals the legacy `hotRankSQL` expression at neutral normalization.
+- The algorithm version moved from 1 to 2. Version 1 snapshots are not reused and their cursors return `InvalidCursor`, which clients already recover from (§7.2). Version 1 candidate rows keep counting against the stored-candidate limit until they expire, so stored-candidate headroom is reduced for up to one snapshot lifetime (one hour) after the deploy.
+- Eligibility is every post in a hosted community, aggregator-authored or human. Revisit this as native human posting grows.
+
+Read-only production simulation (run with the unkeyed digest; the keyed value has the same uniform distribution), snapshot `2026-09-19T00:41Z`: 1,217 publicly visible posts from the preceding 14 days. Posts under 24 hours old: 44 hosted (all aggregator-authored, scores 0-1, 5 communities) and 59 bridged.
+
+| Maximum bonus | Hosted posts in first 20 / 50 / 100 | Longest hosted run in first 100 | Posts older than 40h ranked above a hosted post younger than 18h |
+|---:|---:|---:|---:|
+| 0 (version 1) | 1 / 2 / 19 | 4 | 21 |
+| 1.5 | 1 / 7 / 30 | 2 | 5 |
+| 2.0 | 1 / 7 / 33 | 3 | 4 |
+| **3.0** | **2 / 11 / 36** | **4** | **1** |
+| 4.0 | 3 / 13 / 38 | 3 | 0 |
+
+`3.0` was chosen: hosted posts reach 22% of the first 50 against 43% of fresh supply, without lengthening the longest hosted run. This is one snapshot, and aggregator posts arrive in batches, so the mix varies by time of day. These are dated observations, not test expectations.
 
 ## 4. Candidate selection and hydration
 
