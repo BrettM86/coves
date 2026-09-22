@@ -5,7 +5,7 @@ import (
 )
 
 // CommentView represents the full view of a comment with all metadata
-// Matches social.coves.community.comment.getComments#commentView lexicon
+// Matches social.coves.community.comment.defs#commentView lexicon
 // Used in thread views and get endpoints
 // For deleted comments, IsDeleted=true and content-related fields are empty/nil
 type CommentView struct {
@@ -26,7 +26,7 @@ type CommentView struct {
 }
 
 // ThreadViewComment represents a comment with its nested replies
-// Matches social.coves.community.comment.getComments#threadViewComment lexicon
+// Matches social.coves.community.comment.defs#threadViewComment lexicon
 // Supports recursive threading for comment trees
 type ThreadViewComment struct {
 	Comment *CommentView         `json:"comment"`
@@ -58,7 +58,7 @@ type CommentViewerState struct {
 }
 
 // GetCommentsResponse represents the response for fetching comments on a post
-// Matches social.coves.feed.getComments lexicon output
+// Matches social.coves.community.comment.getComments lexicon output
 // Includes the full comment thread tree and original post reference
 type GetCommentsResponse struct {
 	Post     interface{}          `json:"post"`

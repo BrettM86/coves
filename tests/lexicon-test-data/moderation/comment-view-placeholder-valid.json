@@ -1,0 +1,37 @@
+{
+  "$type": "social.coves.community.comment.defs#commentView",
+  "uri": "at://did:plc:abc123/social.coves.community.comment/3k7a3dmb5bk2c",
+  "cid": "bafyreigj3fwnwjuzr35k2kuzmb5dixxczrzjhqkr5srlqplsh6gq3bj3si",
+  "author": {
+    "did": "did:plc:abc123",
+    "handle": "handle.invalid"
+  },
+  "record": null,
+  "post": {
+    "uri": "at://did:plc:def456/social.coves.community.postv2/3k7a3dmb5bk2c",
+    "cid": "bafyreigj3fwnwjuzr35k2kuzmb5dixxczrzjhqkr5srlqplsh6gq3bj3si"
+  },
+  "createdAt": "2026-09-20T10:00:00Z",
+  "indexedAt": "2026-09-20T10:01:00Z",
+  "stats": {
+    "upvotes": 0,
+    "downvotes": 0,
+    "score": 0,
+    "replyCount": 3
+  },
+  "isDeleted": true,
+  "deletionReason": "moderator",
+  "deletedAt": "2026-09-21T10:00:00Z",
+  "moderation": {
+    "state": "removed",
+    "sources": [
+      {
+        "authorityDid": "did:plc:def456",
+        "scope": {
+          "kind": "community",
+          "communityDid": "did:plc:def456"
+        }
+      }
+    ]
+  }
+}

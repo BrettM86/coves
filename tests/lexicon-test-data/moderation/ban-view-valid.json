@@ -1,0 +1,11 @@
+{
+  "$type": "social.coves.moderation.defs#banView",
+  "uri": "at://did:plc:abc123/social.coves.moderation.ban/3k7a3dmb5bk2c",
+  "cid": "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm",
+  "record": {
+    "$type": "social.coves.moderation.ban",
+    "community": "did:plc:abc123",
+    "subject": "did:plc:def456"
+  },
+  "indexedAt": "2026-09-21T10:00:00Z"
+}

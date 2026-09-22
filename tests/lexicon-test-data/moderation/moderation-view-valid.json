@@ -1,0 +1,40 @@
+{
+  "$type": "social.coves.moderation.defs#moderationView",
+  "state": "removed",
+  "sources": [
+    {
+      "authorityDid": "did:plc:abc123",
+      "scope": {
+        "kind": "instance"
+      },
+      "action": {
+        "serviceDid": "did:plc:abc123",
+        "actionId": "action-005"
+      },
+      "reason": "social.coves.moderation.defs#reasonSpam"
+    },
+    {
+      "authorityDid": "did:plc:def456",
+      "scope": {
+        "kind": "community",
+        "communityDid": "did:plc:def456"
+      },
+      "reason": "social.coves.moderation.defs#reasonRuleViolation"
+    }
+  ],
+  "sourcesTruncated": false,
+  "contentLabels": [
+    {
+      "value": "nsfw",
+      "sources": [
+        {
+          "authorityDid": "did:plc:abc123",
+          "scope": {
+            "kind": "instance"
+          }
+        }
+      ],
+      "sourcesTruncated": false
+    }
+  ]
+}

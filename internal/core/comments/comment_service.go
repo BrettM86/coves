@@ -640,15 +640,13 @@ func (s *commentService) buildCommentView(
 	}
 }
 
-// buildDeletedCommentView creates a placeholder view for a deleted comment
-// Preserves threading structure while hiding content
-// Shows as "[deleted]" in the UI with minimal metadata
+// buildDeletedCommentView creates a placeholder view for a deleted comment.
+// It preserves threading structure while hiding content and profile details.
 func (s *commentService) buildDeletedCommentView(comment *Comment) *CommentView {
-	// Build minimal author view - just DID for attribution
-	// Frontend will display "[deleted]" or "[deleted by @user]" based on deletion_reason
+	// Keep only the DID and the valid sentinel for an unresolvable handle.
 	authorView := &posts.AuthorView{
 		DID:         comment.CommenterDID,
-		Handle:      "", // Empty - frontend handles display
+		Handle:      "handle.invalid",
 		DisplayName: nil,
 		Avatar:      nil,
 		Reputation:  nil,

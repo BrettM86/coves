@@ -1,0 +1,13 @@
+{
+  "$type": "social.coves.moderation.defs#actionView",
+  "ref": {
+    "serviceDid": "did:plc:abc123",
+    "actionId": "action-003"
+  },
+  "action": "restore",
+  "scope": {
+    "kind": "instance"
+  },
+  "createdAt": "2026-09-21T10:02:00Z",
+  "origin": "local"
+}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"Coves/internal/validation"
 	"bytes"
 	"encoding/json"
 	"flag"
@@ -344,8 +345,8 @@ func validateTestData(catalog *lexicon.BaseCatalog, testDataPath string, verbose
 				flags |= lexicon.AllowLenientDatetime
 			}
 
-			// Validate the record
-			validateErr := lexicon.ValidateRecord(catalog, recordData, recordType, flags)
+			// Validate the fixture against its record or object definition.
+			validateErr := validation.ValidateData(catalog, recordData, recordType, flags)
 
 			if isInvalidTest {
 				// This file should fail validation
@@ -371,7 +372,9 @@ func validateTestData(catalog *lexicon.BaseCatalog, testDataPath string, verbose
 					}
 				} else {
 					validSuccessCount++
-					testedTypes[recordType] = true
+					if isRecordSchema(catalog, recordType) {
+						testedTypes[recordType] = true
+					}
 					if verbose {
 						fmt.Printf("    ✅ Valid %s record\n", recordType)
 					}
@@ -435,6 +438,18 @@ func validateTestData(catalog *lexicon.BaseCatalog, testDataPath string, verbose
 		}
 	}
 	return nil
+}
+
+// isRecordSchema reports whether ref resolves to a record definition. Object
+// fixtures (views, inputs, outputs) validate through the same path but must not
+// count toward record coverage, whose denominator lists record schemas only.
+func isRecordSchema(catalog lexicon.Catalog, ref string) bool {
+	schema, err := catalog.Resolve(ref)
+	if err != nil {
+		return false
+	}
+	_, isRecord := schema.Def.(lexicon.SchemaRecord)
+	return isRecord
 }
 
 // validateCrossReferences validates that all schema references resolve correctly

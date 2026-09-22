@@ -1,0 +1,12 @@
+{
+  "$type": "social.coves.moderation.labelContent#input",
+  "subject": {
+    "uri": "at://did:plc:abc123/social.coves.community.postv2/3k7a3dmb5bk2c",
+    "cid": "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"
+  },
+  "labelValue": "nsfw",
+  "expectedVersion": "state-0003",
+  "idempotencyKey": "label-request-001",
+  "reason": "social.coves.moderation.defs#reasonRuleViolation",
+  "privateNote": "The post requires the configured content warning."
+}

@@ -1,0 +1,28 @@
+{
+  "$type": "social.coves.moderation.defs#mutationResult",
+  "outcome": "applied",
+  "state": {
+    "subject": "at://did:plc:def456/social.coves.community.postv2/3k7a3dmb5bk2c",
+    "version": "state-0002",
+    "moderation": {
+      "state": "clear"
+    },
+    "recordState": "present"
+  },
+  "action": {
+    "action": {
+      "ref": {
+        "serviceDid": "did:plc:abc123",
+        "actionId": "action-008"
+      },
+      "action": "restore",
+      "authorityDid": "did:plc:abc123",
+      "scope": {
+        "kind": "instance"
+      },
+      "createdAt": "2026-09-21T10:04:00Z",
+      "origin": "local"
+    },
+    "actorDid": "did:plc:ghi789"
+  }
+}

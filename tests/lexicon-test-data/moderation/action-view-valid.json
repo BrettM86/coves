@@ -1,0 +1,27 @@
+{
+  "$type": "social.coves.moderation.defs#actionView",
+  "ref": {
+    "serviceDid": "did:plc:abc123",
+    "actionId": "action-001"
+  },
+  "action": "remove",
+  "authorityDid": "did:plc:abc123",
+  "scope": {
+    "kind": "community",
+    "communityDid": "did:plc:def456"
+  },
+  "createdAt": "2026-09-21T10:00:00Z",
+  "origin": "local",
+  "subject": {
+    "uri": "at://did:plc:def456/social.coves.community.postv2/3k7a3dmb5bk2c",
+    "cid": "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"
+  },
+  "reason": "social.coves.moderation.defs#reasonSpam",
+  "actor": {
+    "did": "did:plc:ghi789"
+  },
+  "reverses": {
+    "serviceDid": "did:plc:abc123",
+    "actionId": "action-000"
+  }
+}

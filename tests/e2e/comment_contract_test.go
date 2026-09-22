@@ -567,8 +567,9 @@ func TestCommentIngestion(t *testing.T) {
 	require.Equal(t, author.DID, node.Comment.Author.DID,
 		"the placeholder keeps the commenter's DID, which is what lets a client render \"[deleted]\" "+
 			"against the right slot")
-	require.Empty(t, node.Comment.Author.Handle,
-		"the placeholder must not carry the handle: it is the identifying half a reader would recognise")
+	require.Equal(t, "handle.invalid", node.Comment.Author.Handle,
+		"the placeholder must carry handle.invalid, not the author's handle: the handle is the identifying "+
+			"half a reader would recognise, and handle.invalid is the atProto convention for an unresolvable one")
 	require.NotNil(t, node.Comment.DeletionReason)
 	require.Equal(t, "author", *node.Comment.DeletionReason,
 		"a delete commit in the author's own repo is an author deletion, not a moderator removal — "+

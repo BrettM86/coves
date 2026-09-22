@@ -1,0 +1,9 @@
+{
+  "$type": "social.coves.community.post.defs#moderatedPost",
+  "uri": "at://did:plc:abc123/social.coves.community.postv2/3k7a3dmb5bk2c",
+  "authorDid": "did:plc:abc123",
+  "community": {
+    "did": "did:plc:def456",
+    "name": "Example Community"
+  }
+}
