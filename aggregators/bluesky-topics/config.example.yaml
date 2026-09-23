@@ -1,0 +1,50 @@
+# Bluesky Topics Aggregator configuration. Copy to config.yaml and edit.
+#
+# Each topic pulls candidates from named Bluesky feeds and lists, keeps posts
+# from the last window_hours, ranks them by likes + reposts + quotes, asks the
+# classifier which are primarily about the topic, and cross-posts the top
+# max_posts_per_run into the Coves community. Run with DRY_RUN=1 first and
+# read the ranked table.
+
+coves_api_url: "https://coves.social"           # env COVES_API_URL overrides
+bluesky_api_url: "https://public.api.bsky.app"  # env BLUESKY_API_URL overrides
+
+window_hours: 24           # lookback per topic (1-48); omit the key and the code default is 24h,
+                           # which with top 3 measured ~7 posts/day on the NBA feeds
+max_posts_per_run: 3       # default posts per topic per run (1-20)
+classify_candidates: 50    # ranked candidates sent to the classifier per topic (1-200)
+min_confidence: 0.7        # classifier confidence required to post
+classifier_model: "openai/gpt-5.6-luna"  # model id as your Anthropic-compatible endpoint names it;
+                                          # via OpenRouter: openai/gpt-5.6-luna (default),
+                                          # deepseek/deepseek-v4-flash (cheapest), anthropic/claude-haiku-4.5;
+                                          # direct Anthropic API: claude-opus-5 or claude-haiku-4-5
+log_level: "info"
+
+topics:
+  - name: "nba"                       # lowercase letters, digits, - and _; keys the state file
+    community_handle: "nba.coves.social"
+    description: >
+      Posts about the NBA: teams, players, games, trades, injuries, and league
+      news. Not the WNBA, college basketball, or any other sport, even when the
+      author is an NBA reporter.
+    feeds:
+      # Surf's "NBA Essentials" feed, served by did:web:bsky.surf.social
+      - "at://did:plc:ygvuw3tg5gsy73wpggfz3oj4/app.bsky.feed.generator/nba-essential"
+      # NBAsky by davelevitan.bsky.social (skyfeed): people who cover or enjoy the NBA.
+      # Account-curated, so plenty of off-topic chatter; the classifier filters it.
+      - "at://did:plc:u45hqzk7counfbwyg5edhmvi/app.bsky.feed.generator/aaadvxju4txkk"
+    lists: []                         # at://<did>/app.bsky.graph.list/<rkey>
+    excluded_handles:
+      - "surfrecommends.bsky.social"  # Surf's promo account posts into its feeds
+    min_likes: 5
+    enabled: true
+    # Per-topic overrides of the top-level defaults:
+    # window_hours: 12
+    # max_posts_per_run: 2
+
+  # - name: "tennis"
+  #   community_handle: "tennis.coves.social"
+  #   description: "Posts about professional tennis: ATP, WTA, Grand Slams, players, matches."
+  #   feeds: ["at://did:plc:.../app.bsky.feed.generator/..."]
+  #   min_likes: 5
+  #   enabled: false
