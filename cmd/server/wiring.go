@@ -139,7 +139,7 @@ type application struct {
 	userBlockService           userblocks.Service
 	adminReportService         adminreports.Service
 	moderationService          moderation.Service
-	commentMediaReconciler     jetstream.CommentMediaReconciler
+	mediaReconciler            *moderation.MediaReconciler
 	communitySuggestionService communitysuggestions.Service
 	feedService                communityFeeds.Service
 	timelineService            timeline.Service
@@ -221,7 +221,7 @@ func buildApplication(
 			Purger:                 purger,
 		},
 	)
-	app.commentMediaReconciler = moderation.NewMediaReconciler(
+	app.mediaReconciler = moderation.NewMediaReconciler(
 		postgresRepo.NewModerationRepository(app.db), app.cfg.Instance.DID, purger)
 	app.buildJetstreamInfrastructure()
 	if err = app.buildBridgedVotePoller(); err != nil {

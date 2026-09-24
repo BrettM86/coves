@@ -4,6 +4,8 @@ import (
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/bridgedvotes"
 	"Coves/internal/core/communities"
+	"Coves/internal/core/embeds"
+	"Coves/internal/core/moderation"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/richtext"
 	"Coves/internal/core/users"
@@ -25,6 +27,9 @@ type PostEventConsumer struct {
 	communityRepo communities.Repository
 	userService   users.UserService
 	db            *sql.DB // Direct DB access for atomic count reconciliation
+
+	// nil keeps ingestion independent of moderation media reconciliation.
+	mediaReconciler PostMediaReconciler
 	// bridgeTrust gates whether a post's author repo may assert bridgedStats.
 	// nil means default-deny (bridgedStats are ignored for every post).
 	bridgeTrust *BridgeTrust
@@ -262,6 +267,10 @@ type postContentUpdate struct {
 	storedDeletedAt *time.Time
 	storedIndexedAt time.Time
 	timeUS          int64
+
+	// authorDID owns the incoming blobs, which are blocked when the post is
+	// removed even if the update is skipped.
+	authorDID string
 }
 
 // applyPostContentUpdate runs the rev gate and the atomic content UPDATE.
@@ -273,8 +282,23 @@ type postContentUpdate struct {
 // as an error would dead-letter healthy events.
 func (c *PostEventConsumer) applyPostContentUpdate(ctx context.Context, in postContentUpdate) (bool, error) {
 	// Skip soft-deleted rows: a deleted post should not be resurrected by an edit.
+	// The author's repo still serves the incoming blobs, so a removed post's
+	// recreated images are blocked even though the content is not indexed. The
+	// rev gate runs first (read-only: this path never advances the rev) so an
+	// out-of-order event that predates the delete blocks nothing.
 	if in.storedDeletedAt != nil {
+		stale, err := recordRevIsStale(ctx, c.db, in.uri, in.rev)
+		if err != nil {
+			return false, fmt.Errorf("failed to check rev of soft-deleted post update: %w", err)
+		}
+		if stale {
+			logSkippedStaleRev(ConsumerPosts, "update", in.uri, in.rev)
+			return false, nil
+		}
 		log.Printf("Update event for soft-deleted post: %s (skipping)", in.uri)
+		if err := c.blockIncomingMedia(ctx, in.uri, in.authorDID, in.embed); err != nil {
+			return false, fmt.Errorf("failed to block media of skipped post update: %w", err)
+		}
 		return false, nil
 	}
 
@@ -402,7 +426,7 @@ func (c *PostEventConsumer) applyPostContentUpdate(ctx context.Context, in postC
 		return false, nil
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := commitMediaWrite(ctx, tx, in.uri, c.mediaReconciler, "post"); err != nil {
 		return false, fmt.Errorf("failed to commit post update transaction: %w", err)
 	}
 
@@ -520,7 +544,9 @@ func (c *PostEventConsumer) indexPostIfRevWins(ctx context.Context, post *posts.
 		// (comments implement the in-place re-create because their resurrection
 		// machinery already exists; see comment_consumer.go).
 		log.Printf("Post already indexed: %s (idempotent)", post.URI)
-		if commitErr := tx.Commit(); commitErr != nil {
+		// The dropped content's blobs are still served from the author's repo,
+		// so a removed post blocks them from the incoming embed.
+		if commitErr := c.commitIncomingMediaWrite(ctx, tx, post.URI, post.AuthorDID, incomingPostBlobCIDs(embedJSON)); commitErr != nil {
 			return false, fmt.Errorf("failed to commit transaction: %w", commitErr)
 		}
 		// Reported as NOT applied: no content was written, so a caller that
@@ -562,7 +588,7 @@ func (c *PostEventConsumer) indexPostIfRevWins(ctx context.Context, post *posts.
 	}
 
 	// Commit transaction
-	if err := tx.Commit(); err != nil {
+	if err := commitMediaWrite(ctx, tx, post.URI, c.mediaReconciler, "post"); err != nil {
 		return false, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
@@ -655,4 +681,68 @@ func parseRecordCreatedAt(raw, uri string) time.Time {
 		return now
 	}
 	return createdAt
+}
+
+// PostMediaReconciler also blocks the blobs of incoming post content that the
+// consumer does not index, because the stored row cannot name them.
+type PostMediaReconciler interface {
+	MediaReconciler
+	ReconcileIncomingTx(ctx context.Context, tx *sql.Tx, subjectURI, ownerDID string, blobCIDs []string) ([]moderation.MediaBlock, error)
+}
+
+// WithPostMediaReconciler reconciles media blocks when a removed post is created or edited.
+func WithPostMediaReconciler(reconciler PostMediaReconciler) PostEventConsumerOption {
+	return func(c *PostEventConsumer) { c.mediaReconciler = reconciler }
+}
+
+// incomingPostBlobCIDs returns the proxy-served blob CIDs of a serialized
+// incoming embed. A malformed embed has no served blobs to block.
+func incomingPostBlobCIDs(embed sql.NullString) []string {
+	if !embed.Valid {
+		return nil
+	}
+	var decoded map[string]interface{}
+	if err := json.Unmarshal([]byte(embed.String), &decoded); err != nil {
+		return nil
+	}
+	return embeds.PostBlobCIDs(decoded)
+}
+
+// commitIncomingMediaWrite blocks the incoming blobs of a removed post inside
+// tx, commits, and purges cached copies only after the blocks commit.
+func (c *PostEventConsumer) commitIncomingMediaWrite(ctx context.Context, tx *sql.Tx, uri, ownerDID string, blobCIDs []string) error {
+	var blocks []moderation.MediaBlock
+	if c.mediaReconciler != nil {
+		var err error
+		blocks, err = c.mediaReconciler.ReconcileIncomingTx(ctx, tx, uri, ownerDID, blobCIDs)
+		if err != nil {
+			return fmt.Errorf("reconcile incoming post media: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if c.mediaReconciler != nil {
+		c.mediaReconciler.Purge(blocks)
+	}
+	return nil
+}
+
+// blockIncomingMedia blocks the blobs of an incoming post event that writes no
+// post row. It is a no-op unless the post has an active removal.
+func (c *PostEventConsumer) blockIncomingMedia(ctx context.Context, uri, ownerDID string, embed sql.NullString) error {
+	blobCIDs := incomingPostBlobCIDs(embed)
+	if c.mediaReconciler == nil || len(blobCIDs) == 0 {
+		return nil
+	}
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin media block transaction: %w", err)
+	}
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && rollbackErr != sql.ErrTxDone {
+			log.Printf("Failed to rollback transaction: %v", rollbackErr)
+		}
+	}()
+	return c.commitIncomingMediaWrite(ctx, tx, uri, ownerDID, blobCIDs)
 }

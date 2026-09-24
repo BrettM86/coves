@@ -141,6 +141,9 @@ type moderationMediaHarness struct {
 	postCID    string
 	ownerA     string
 	ownerB     string
+
+	// proxyService is the purger a consumer's media reconciler shares with the proxy.
+	proxyService *imageproxy.ImageProxyService
 }
 
 func newModerationMediaHarness(t *testing.T, blockFetch bool) (*moderationMediaHarness, *waitingMediaFetcher) {
@@ -190,7 +193,7 @@ func newModerationMediaHarness(t *testing.T, blockFetch bool) (*moderationMediaH
 	routes.RegisterImageProxyRoutes(router, imagehandler.NewHandler(proxyService, mediaPDSResolver{url: pdsServer.URL}))
 	proxy := httptest.NewServer(router)
 	t.Cleanup(proxy.Close)
-	return &moderationMediaHarness{db: db, cache: cache, cacheDir: cacheDir, proxy: proxy, pds: pds,
+	return &moderationMediaHarness{db: db, cache: cache, cacheDir: cacheDir, proxy: proxy, proxyService: proxyService, pds: pds,
 		moderation: service, postURI: postURI, postCID: post.CID, ownerA: ownerA, ownerB: ownerB}, waiting
 }
 

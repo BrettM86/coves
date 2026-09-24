@@ -28,6 +28,7 @@ package embeds
 import (
 	"log/slog"
 
+	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/ipfs/go-cid"
 
 	"Coves/internal/core/blobs"
@@ -84,8 +85,8 @@ type mutation func()
 // idempotent because a projected embed's $type is a #view type, which this
 // function does not act on.
 //
-// social.coves.embed.post carries no blobs; it is projected to its own #view by
-// posts.TransformPostEmbeds, which resolves the quoted record.
+// social.coves.embed.post carries no blobs; Bluesky quotes are resolved by
+// posts.TransformPostEmbeds, while Coves quotes retain only their strongRef.
 func HydrateView(embed map[string]interface{}, ownerDID, ownerPDSURL string) {
 	if embed == nil {
 		return
@@ -186,14 +187,139 @@ func HydrateCommentView(embed map[string]interface{}, ownerDID, ownerPDSURL stri
 		return
 	}
 
-	// TypePost carries no blobs and is projected by posts.TransformPostEmbeds,
-	// which resolves the quoted record; anything other than images is outside
+	// TypePost carries no blobs; anything other than images is outside
 	// the comment union entirely.
 	if embedType, _ := embed["$type"].(string); embedType != TypeImages {
 		return
 	}
 
 	HydrateView(embed, ownerDID, ownerPDSURL)
+}
+
+// ServableEmbed reduces a stored embed to what a post or comment view may
+// serve, and runs before HydrateView or HydrateCommentView projects it. It is
+// the serving half of the rule moderation blocks depend on: the only media URLs
+// a view carries are the ones HydrateView derives from blob references, which
+// are exactly the CIDs PostBlobCIDs and CommentImageCIDs report for blocking.
+//
+// The stored embed is the author's record, and nothing on the firehose path
+// validates it, so a URL string in it is author-written. Served verbatim it
+// would point readers at an image no removal blocks, including one under the
+// author's own DID that an illegal-content removal must refuse. The AppView
+// itself never stores a media URL: post create rejects a string thumb, the
+// unfurl path uploads thumbnails as blobs, and posts.TransformPostEmbeds
+// resolves Bluesky quote previews at serve time, after this runs.
+//
+// So:
+//   - images, video and external keep their record shape, minus any field the
+//     record declares as a blob whose value is not an object (image, thumb,
+//     video, thumbnail) and minus the view-only thumb and fullsize on image
+//     entries, including an external gallery's.
+//   - A quote, record or #view, is rebuilt to its strongRef; see projectQuote.
+//   - Anything else is not served and yields nil: a stored #view of a media
+//     type, a type outside the record union, an untyped or non-object embed.
+//
+// It edits the embed it is given. Callers pass a freshly decoded copy; the
+// verbatim record decodes its own and keeps every byte.
+func ServableEmbed(stored interface{}) interface{} {
+	embed, isObject := stored.(map[string]interface{})
+	if !isObject {
+		return nil
+	}
+
+	switch embedType, _ := embed["$type"].(string); embedType {
+	case TypeImages:
+		dropViewImageURLs(embed["images"])
+	case TypeVideo:
+		dropNonBlob(embed, "video")
+		dropNonBlob(embed, "thumbnail")
+	case TypeExternal:
+		dropNonBlob(embed, "external")
+		if external, isObject := embed["external"].(map[string]interface{}); isObject {
+			dropNonBlob(external, "thumb")
+			dropViewImageURLs(external["images"])
+		}
+	case TypePost, TypePost + viewSuffix:
+		return projectQuote(embed)
+	default:
+		return nil
+	}
+	return embed
+}
+
+// dropNonBlob deletes object[field] when it is present and not an object. A
+// blob reference is always an object, so anything else in a blob position is
+// an author-written value the view must not carry.
+func dropNonBlob(object map[string]interface{}, field string) {
+	value, present := object[field]
+	if !present {
+		return
+	}
+	if _, isObject := value.(map[string]interface{}); !isObject {
+		delete(object, field)
+	}
+}
+
+// dropViewImageURLs removes the view-only URL fields from every image entry in
+// a record's image list. HydrateView writes thumb and fullsize from the entry's
+// blob when it projects; left in place they would be served whenever it
+// cannot.
+func dropViewImageURLs(value interface{}) {
+	images, _ := value.([]interface{})
+	for _, entry := range images {
+		image, isObject := entry.(map[string]interface{})
+		if !isObject {
+			continue
+		}
+		dropNonBlob(image, "image")
+		delete(image, "thumb")
+		delete(image, "fullsize")
+	}
+}
+
+// projectQuote rebuilds a quote embed, record or #view, to its strongRef.
+//
+// D-QUOTES: Coves-quoted posts are not hydrated server-side. The served quote
+// is the strongRef only, so a removed quoted post leaves no copied content;
+// post.get on its URI returns #moderatedPost. A Bluesky quote is rebuilt the
+// same way: posts.TransformPostEmbeds resolves its preview at serve time from
+// the record type, so a stored resolved object, which only an author can have
+// written, is never served in its place.
+//
+// Decision: record.embed is not projected. The lexicon serves record as the
+// quoter's own authored record verbatim, so its embed keeps every byte the
+// quoter wrote, including preview fields it forged. None of that is
+// AppView-held content of the quoted post; the AppView adds resolved only at
+// serve time, only for Bluesky URIs, and only to the top-level embed.
+func projectQuote(embed map[string]interface{}) map[string]interface{} {
+	projected := map[string]interface{}{"$type": TypePost}
+	post, _ := embed["post"].(map[string]interface{})
+	strongRef := make(map[string]interface{}, 2)
+	if uri, ok := post["uri"].(string); ok && uri != "" {
+		strongRef["uri"] = uri
+	}
+	if cid, ok := post["cid"].(string); ok && cid != "" {
+		strongRef["cid"] = cid
+	}
+	if len(strongRef) > 0 {
+		projected["post"] = strongRef
+	}
+	return projected
+}
+
+// blueskyPostCollection is the NSID of a Bluesky post record.
+const blueskyPostCollection = "app.bsky.feed.post"
+
+// IsBlueskyPostURI reports whether uri is a syntactically valid AT-URI whose
+// collection segment is app.bsky.feed.post and which names a record. The
+// substring elsewhere in a URI (a Coves collection's record key path, a
+// fragment, a handle authority) does not make it a Bluesky post.
+func IsBlueskyPostURI(uri string) bool {
+	parsed, err := syntax.ParseATURI(uri)
+	if err != nil {
+		return false
+	}
+	return parsed.Collection().String() == blueskyPostCollection && parsed.RecordKey() != ""
 }
 
 // CommentImageCIDs returns the canonical CIDs of every image blob that
@@ -383,4 +509,45 @@ func blobCID(value interface{}) string {
 	}
 
 	return ""
+}
+
+// PostBlobCIDs returns the canonical, first-seen CIDs of post blobs served
+// through the image proxy. Malformed entries are skipped; video blobs are
+// served directly by the PDS, so only their thumbnails are included.
+func PostBlobCIDs(embed map[string]interface{}) []string {
+	var cids []string
+	seen := make(map[string]bool)
+	addBlob := func(value interface{}) {
+		parsed, err := cid.Decode(blobCID(value))
+		if err != nil {
+			return
+		}
+		canonical := parsed.String()
+		if !seen[canonical] {
+			seen[canonical] = true
+			cids = append(cids, canonical)
+		}
+	}
+	addImages := func(value interface{}) {
+		images, _ := value.([]interface{})
+		for _, entry := range images {
+			image, ok := entry.(map[string]interface{})
+			if ok {
+				addBlob(image["image"])
+			}
+		}
+	}
+
+	switch embedType, _ := embed["$type"].(string); embedType {
+	case TypeImages:
+		addImages(embed["images"])
+	case TypeVideo:
+		addBlob(embed["thumbnail"])
+	case TypeExternal:
+		if external, ok := embed["external"].(map[string]interface{}); ok {
+			addBlob(external["thumb"])
+			addImages(external["images"])
+		}
+	}
+	return cids
 }

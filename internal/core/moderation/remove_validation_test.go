@@ -34,8 +34,7 @@ func TestRemoveContentRejectsUnsupportedSubjectsReasonsAndOversizedInputs(t *tes
 		change     func(*moderation.RemoveContentRequest)
 		want       error
 	}{
-		{name: "author-owned post removal is unsupported", collection: moderation.PostV2Collection, want: moderation.ErrInvalidSubject},
-		{name: "legacy post removal is unsupported", collection: moderation.LegacyPostCollection, want: moderation.ErrInvalidSubject},
+		{name: "non-content collection is unsupported", collection: "app.bsky.feed.post", want: moderation.ErrInvalidSubject},
 		{name: "unrecognized reason token", change: func(request *moderation.RemoveContentRequest) {
 			request.Reason = "social.coves.moderation.defs#reasonCsam"
 		}, want: moderation.ErrUnsupportedReason},
@@ -81,9 +80,6 @@ func TestRemoveContentRejectsUnsupportedSubjectsReasonsAndOversizedInputs(t *tes
 			result, err := service.RemoveContent(t.Context(), actorDID, request)
 			require.ErrorIs(t, err, test.want)
 			assert.Nil(t, result)
-			if test.want == moderation.ErrInvalidSubject {
-				assert.Contains(t, err.Error(), "post", "post removal must be explicitly unsupported")
-			}
 			assert.Empty(t, store.writeCalls, "validation must not attempt a mutation")
 			assert.Empty(t, store.state.actions)
 			assert.Empty(t, store.state.activeRemovals)

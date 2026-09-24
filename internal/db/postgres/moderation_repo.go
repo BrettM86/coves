@@ -151,6 +151,41 @@ func (t *moderationTransaction) LockSubject(ctx context.Context, subjectURI stri
 	return version, err
 }
 
+func (t *moderationTransaction) ReadIndexedPost(ctx context.Context, subjectURI string) (*moderation.IndexedPost, error) {
+	var post moderation.IndexedPost
+	var authorDID string
+	var embed sql.NullString
+	err := t.tx.QueryRowContext(ctx, `
+		SELECT uri, cid, author_did, community_did, (deleted_at IS NOT NULL), embed
+		FROM posts WHERE uri = $1 FOR SHARE
+	`, subjectURI).Scan(&post.URI, &post.CID, &authorDID, &post.CommunityDID, &post.AuthorDeleted, &embed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, moderation.ErrSubjectNotIndexed
+	}
+	if err != nil {
+		return nil, err
+	}
+	uri, err := syntax.ParseATURI(post.URI)
+	if err != nil {
+		return nil, err
+	}
+	post.OwnerDID = authorDID
+	if uri.Collection().String() == moderation.LegacyPostCollection {
+		post.OwnerDID = post.CommunityDID
+	}
+	if embed.Valid {
+		// Post embeds are unvalidated indexed data; malformed shapes have no
+		// proxy-served blobs to block and must not prevent moderation.
+		var decoded any
+		if err := json.Unmarshal([]byte(embed.String), &decoded); err == nil {
+			if object, isObject := decoded.(map[string]any); isObject {
+				post.BlobCIDs = embeds.PostBlobCIDs(object)
+			}
+		}
+	}
+	return &post, nil
+}
+
 func (t *moderationTransaction) ReadIndexedComment(ctx context.Context, subjectURI string) (*moderation.IndexedComment, error) {
 	var comment moderation.IndexedComment
 	var communityDID, embed sql.NullString

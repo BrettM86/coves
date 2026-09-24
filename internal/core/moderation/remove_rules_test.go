@@ -33,14 +33,21 @@ type removeRulesOwnerPurge struct {
 type removeRulesPurger struct {
 	ownerPurges []removeRulesOwnerPurge
 	blobPurges  []string
+	onPurge     func()
 }
 
 func (purger *removeRulesPurger) PurgeOwnerBlob(ownerDID, blobCID string) error {
+	if purger.onPurge != nil {
+		purger.onPurge()
+	}
 	purger.ownerPurges = append(purger.ownerPurges, removeRulesOwnerPurge{ownerDID, blobCID})
 	return nil
 }
 
 func (purger *removeRulesPurger) PurgeBlob(blobCID string) error {
+	if purger.onPurge != nil {
+		purger.onPurge()
+	}
 	purger.blobPurges = append(purger.blobPurges, blobCID)
 	return nil
 }

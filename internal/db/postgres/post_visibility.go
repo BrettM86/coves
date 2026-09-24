@@ -70,6 +70,10 @@ import (
 //     core: every non-accepted post that HAS a decision, and every postv2 with no
 //     decision, is invisible to non-authors on every read path.
 //
+// An active moderation removal hides the post from everyone, including its
+// author, regardless of admission status. Restoring it reverts to the admission
+// rule above; neither operation changes the post or its admission row.
+//
 // The collection is the fourth '/'-segment of the AT-URI
 // (at://<authority>/<collection>/<rkey>), read with split_part; authorities and
 // rkeys carry no '/', so segment 4 is exactly CollectionOfPostURI's answer.
@@ -101,11 +105,30 @@ const anonymousViewerSQL = `''`
 // anonymousViewerSQL for one that structurally does not.
 //
 // Everything above about the join key, the collection-aware status rule and the
-// pinned CID describes THIS function; visiblePostsJoin is the parameterized
-// spelling of it. Two viewer bindings, one predicate: a count and a display
-// query cannot disagree about what "visible" means, because there is only one
-// string.
+// pinned CID, and active-removal exclusion describes THIS function;
+// visiblePostsJoin is the parameterized spelling of it. Two viewer bindings,
+// one predicate: a count and a display query cannot disagree about what
+// "visible" means, because there is only one string.
 func visiblePostsPredicate(viewerExpr string) (joinSQL, whereSQL string) {
+	joinSQL, admittedSQL := admittedPostsPredicate(viewerExpr)
+	whereSQL = admittedSQL + ` AND NOT EXISTS (
+				SELECT 1 FROM moderation_decisions d
+				WHERE d.subject_uri = p.uri AND d.kind = 'removal' AND d.active
+			)`
+	return joinSQL, whereSQL
+}
+
+// admittedPostsPredicate is the viewer-bound admission half of
+// visiblePostsPredicate: the join key and the collection-aware status rule,
+// WITHOUT the active-removal exclusion. visiblePostsPredicate is this plus that
+// exclusion, so the two cannot disagree about admission.
+//
+// Its only other caller is post.get's #moderatedPost gate
+// (AdmittedURIsForViewer): an instance removal may tell a viewer that a post
+// was removed only if that viewer could have seen the post had it not been
+// removed. Anything else would disclose a pending, rejected or unadmitted post
+// and tie it to a community that never accepted it.
+func admittedPostsPredicate(viewerExpr string) (joinSQL, whereSQL string) {
 	joinSQL = `
 			LEFT JOIN community_post_admissions a
 				ON a.community_did = p.community_did AND a.post_uri = p.uri`
@@ -121,7 +144,8 @@ func visiblePostsPredicate(viewerExpr string) (joinSQL, whereSQL string) {
 
 // visiblePostCountSubquery renders a scalar subquery counting the posts that are
 // PUBLICLY visible in the community named by communityExpr — the same predicate
-// every display query runs, with the anonymous viewer.
+// every display query runs, with the anonymous viewer. Active moderation
+// removals are excluded from the count just as they are from display queries.
 //
 // It exists because `communities.post_count` was a STORED column, and the only
 // thing that ever incremented it (community_repo_memberships.go's

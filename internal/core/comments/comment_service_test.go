@@ -300,6 +300,14 @@ func newMockPostRepo() *mockPostRepo {
 	}
 }
 
+func (m *mockPostRepo) ActiveRemovalsByURIs(context.Context, []string) (map[string][]posts.RemovalSource, error) {
+	return map[string][]posts.RemovalSource{}, nil
+}
+
+func (m *mockPostRepo) AdmittedURIsForViewer(context.Context, []string, string) (map[string]bool, error) {
+	return map[string]bool{}, nil
+}
+
 // hideFromHeader makes the visibility predicate refuse this post, as it does for
 // any non-accepted admission state when the viewer is not the author.
 func (m *mockPostRepo) hideFromHeader(uri string) {
@@ -2014,7 +2022,7 @@ func TestBuildCommentView_ValidEmbedDeserialization(t *testing.T) {
 	communityRepo := newMockCommunityRepo()
 
 	postURI := "at://did:plc:post123/app.bsky.feed.post/test"
-	embedJSON := `{"$type":"app.bsky.embed.images","images":[{"alt":"test","image":{"$type":"blob","ref":"bafytest"}}]}`
+	embedJSON := `{"$type":"social.coves.embed.images","images":[{"alt":"test","image":{"$type":"blob","ref":"bafytest"}}]}`
 
 	comment := createTestComment("at://did:plc:commenter123/comment/1", "did:plc:commenter123", "commenter.test", postURI, postURI, 0)
 	comment.Embed = &embedJSON
@@ -2026,7 +2034,7 @@ func TestBuildCommentView_ValidEmbedDeserialization(t *testing.T) {
 	assert.NotNil(t, result.Embed)
 	embedMap, ok := result.Embed.(map[string]interface{})
 	assert.True(t, ok)
-	assert.Equal(t, "app.bsky.embed.images", embedMap["$type"])
+	assert.Equal(t, "social.coves.embed.images", embedMap["$type"])
 }
 
 func TestBuildCommentRecord_ValidLabelsDeserialization(t *testing.T) {
@@ -2109,7 +2117,7 @@ func TestBuildCommentView_EmptyStringVsNilHandling(t *testing.T) {
 		{
 			name:               "Valid JSON strings",
 			facetsValue:        strPtr(`[]`),
-			embedValue:         strPtr(`{}`),
+			embedValue:         strPtr(`{"$type":"social.coves.embed.post","post":{"uri":"at://did:plc:post123/social.coves.community.postv2/test","cid":"bafypost"}}`),
 			labelsValue:        strPtr(`{"$type":"com.atproto.label.defs#selfLabels","values":[]}`),
 			expectFacetsNil:    false,
 			expectEmbedNil:     false,

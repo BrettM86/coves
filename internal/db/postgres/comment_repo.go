@@ -459,6 +459,7 @@ func (r *postgresCommentRepo) ListByCommenter(ctx context.Context, commenterDID 
 // Used for user profile comment history (social.coves.actor.getComments)
 // Supports optional community filtering and returns next page cursor
 // Uses chronological ordering (newest first) with composite key cursor for stable pagination
+// Excludes comments removed directly or under a removed root before pagination.
 func (r *postgresCommentRepo) ListByCommenterWithCursor(ctx context.Context, req comments.ListByCommenterRequest) ([]*comments.Comment, *string, error) {
 	// Parse cursor for pagination
 	cursorFilter, cursorValues, err := r.parseCommenterCursor(req.Cursor)
@@ -523,7 +524,7 @@ func (r *postgresCommentRepo) ListByCommenterWithCursor(ctx context.Context, req
 			AND c.deleted_at IS NULL
 			AND NOT EXISTS (
 				SELECT 1 FROM moderation_decisions d
-				WHERE d.subject_uri = c.uri AND d.kind = 'removal' AND d.active
+				WHERE d.subject_uri IN (c.uri, c.root_uri) AND d.kind = 'removal' AND d.active
 			)
 			%s
 			%s

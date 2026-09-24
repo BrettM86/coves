@@ -31,9 +31,14 @@ func validateMutationFields(key, expectedVersion, reason, privateNote string) er
 	return nil
 }
 
-func validCommentStrongRef(ref StrongRef) bool {
+func validContentStrongRef(ref StrongRef) bool {
 	uri, err := syntax.ParseATURI(ref.URI)
-	if err != nil || !uri.Authority().IsDID() || uri.RecordKey().String() == "" || uri.Collection().String() != CommentCollection {
+	if err != nil || !uri.Authority().IsDID() || uri.RecordKey().String() == "" {
+		return false
+	}
+	switch uri.Collection().String() {
+	case CommentCollection, PostV2Collection, LegacyPostCollection:
+	default:
 		return false
 	}
 	_, err = syntax.ParseCID(ref.CID)

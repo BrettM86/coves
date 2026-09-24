@@ -39,39 +39,45 @@ type CommentEventConsumer struct {
 	// bridgeTrust gates whether a comment's user repo may assert bridgedStats.
 	// nil means default-deny (bridgedStats are ignored for every comment).
 	bridgeTrust     *BridgeTrust
-	mediaReconciler CommentMediaReconciler
+	mediaReconciler MediaReconciler
 }
 
 // CommentEventConsumerOption configures optional CommentEventConsumer behaviour.
 type CommentEventConsumerOption func(*CommentEventConsumer)
 
-// CommentMediaReconciler blocks images introduced on a removed comment.
-type CommentMediaReconciler interface {
+// MediaReconciler blocks images introduced on removed comments or posts.
+type MediaReconciler interface {
 	ReconcileTx(ctx context.Context, tx *sql.Tx, subjectURI string) ([]moderation.MediaBlock, error)
 	Purge(blocks []moderation.MediaBlock)
 }
 
 // WithCommentMediaReconciler reconciles media blocks when a removed comment is rewritten.
-func WithCommentMediaReconciler(reconciler CommentMediaReconciler) CommentEventConsumerOption {
+func WithCommentMediaReconciler(reconciler MediaReconciler) CommentEventConsumerOption {
 	return func(c *CommentEventConsumer) { c.mediaReconciler = reconciler }
 }
 
 // commitCommentWrite reconciles the indexed embed within the write transaction;
 // cached bytes are purged only after both the comment and its blocks commit.
 func (c *CommentEventConsumer) commitCommentWrite(ctx context.Context, tx *sql.Tx, uri string) error {
+	return commitMediaWrite(ctx, tx, uri, c.mediaReconciler, "comment")
+}
+
+// commitMediaWrite reconciles newly indexed media before committing the content
+// and its blocks together, then purges cached copies only after a successful commit.
+func commitMediaWrite(ctx context.Context, tx *sql.Tx, uri string, reconciler MediaReconciler, kind string) error {
 	var blocks []moderation.MediaBlock
-	if c.mediaReconciler != nil {
+	if reconciler != nil {
 		var err error
-		blocks, err = c.mediaReconciler.ReconcileTx(ctx, tx, uri)
+		blocks, err = reconciler.ReconcileTx(ctx, tx, uri)
 		if err != nil {
-			return fmt.Errorf("reconcile comment media: %w", err)
+			return fmt.Errorf("reconcile %s media: %w", kind, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	if c.mediaReconciler != nil {
-		c.mediaReconciler.Purge(blocks)
+	if reconciler != nil {
+		reconciler.Purge(blocks)
 	}
 	return nil
 }

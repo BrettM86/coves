@@ -1307,7 +1307,7 @@ const MaxGetPostsURIs = 25
 //  1. Validate the URI count (1..25) and that every URI is a well-formed DID-based URI.
 //     A malformed or handle-based URI is a client error -> InvalidRequest, not a silent miss.
 //  2. Batch fetch views for the (deduped) URIs.
-//  3. Assemble results in request order; valid-but-absent URIs become notFoundPost.
+//  3. Resolve removal tombstones for absent URIs, then assemble in request order.
 //
 // Viewer state (vote) and embed/blob transforms are applied by the handler layer.
 func (s *postService) GetPosts(ctx context.Context, req GetPostsRequest) ([]*PostResult, error) {
@@ -1347,13 +1347,36 @@ func (s *postService) GetPosts(ctx context.Context, req GetPostsRequest) ([]*Pos
 		return nil, fmt.Errorf("failed to fetch post views: %w", err)
 	}
 
-	// 3. Assemble results in request order. A visible view is a postView; an
-	// absent URI is a notFoundPost — UNLESS its own community removed it, in
-	// which case it becomes a #removedPost tombstone carrying the removal code
-	// (PRD §3.4/§6.2). The visibility predicate hides a removed post from
-	// GetViewsByURIs exactly as it hides a pending one, so the removal is
-	// recovered here from the admission row rather than from the (absent) view.
-	removed, err := s.removedMarkers(ctx, req.URIs, views)
+	// 3. Resolve absent URIs in batches. Raw rows establish that a post was
+	// indexed and has not been withdrawn by its author; neither the raw content
+	// nor the admission row can override an active instance removal.
+	absent := make([]string, 0, len(unique))
+	for _, uri := range unique {
+		if views[uri] == nil {
+			absent = append(absent, uri)
+		}
+	}
+	var postsByURI map[string]*Post
+	var removals map[string][]RemovalSource
+	var admitted map[string]bool
+	if len(absent) != 0 {
+		postsByURI, err = s.repo.GetRawIndexedRowsByURIs(ctx, absent)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve removal state for post.get: %w", err)
+		}
+		removals, err = s.repo.ActiveRemovalsByURIs(ctx, absent)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch active post removals: %w", err)
+		}
+		// An instance removal must not widen access: the #moderatedPost
+		// tombstone discloses the author and the community, so it is served
+		// only to a viewer the admission rule would have shown the post to.
+		admitted, err = s.repo.AdmittedURIsForViewer(ctx, absent, req.ViewerDID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve post admission for post.get: %w", err)
+		}
+	}
+	removed, err := s.removedMarkers(ctx, absent, postsByURI)
 	if err != nil {
 		return nil, err
 	}
@@ -1362,6 +1385,11 @@ func (s *postService) GetPosts(ctx context.Context, req GetPostsRequest) ([]*Pos
 		switch {
 		case views[uri] != nil:
 			results[i] = foundResult(views[uri])
+		case postsByURI[uri] != nil && postsByURI[uri].DeletedAt == nil && len(removals[uri]) != 0 && (admitted[uri] || hasRemovedMarker(removed, uri)):
+			// A same-community removal marker already makes the post and its
+			// community public as #removedPost, so the instance tombstone may
+			// replace it without disclosing anything new.
+			results[i] = moderatedResult(postsByURI[uri], removals[uri])
 		default:
 			if code, ok := removed[uri]; ok {
 				results[i] = removedResult(uri, code)
@@ -1383,8 +1411,15 @@ func (s *postService) GetPosts(ctx context.Context, req GetPostsRequest) ([]*Pos
 	return results, nil
 }
 
-// removedMarkers returns, for the requested URIs absent from the visible view
-// set, the removal code of any whose OWN community removed it — so post.get can
+// hasRemovedMarker reports whether removedMarkers produced a same-community
+// removal marker for uri.
+func hasRemovedMarker(markers map[string]string, uri string) bool {
+	_, ok := markers[uri]
+	return ok
+}
+
+// removedMarkers returns, for the absent URIs with indexed rows, the removal
+// code of any whose OWN community removed it — so post.get can
 // serve a #removedPost tombstone (PRD §3.4) instead of collapsing a moderator
 // removal into an indistinguishable notFoundPost. The presence of a URI in the
 // returned map is the removed signal; the value is the code (possibly empty).
@@ -1394,7 +1429,7 @@ func (s *postService) GetPosts(ctx context.Context, req GetPostsRequest) ([]*Pos
 // That is a CONFIGURATION fact, known before any lookup runs, and it is the only
 // thing that silently degrades to notFound.
 //
-// A LOOKUP FAILURE IS AN ERROR, NOT A NOTFOUND. Both lookups here used to be
+// A LOOKUP FAILURE IS AN ERROR, NOT A NOTFOUND. The lookups used to be
 // best-effort: a database blip turned a standing removal into notFoundPost, so
 // the same request answered with a different union member depending on the
 // health of the database, and a client (or a moderator checking their own
@@ -1402,46 +1437,13 @@ func (s *postService) GetPosts(ctx context.Context, req GetPostsRequest) ([]*Pos
 // out". post.get answering 5xx is the honest response to "we do not know";
 // silently downgrading the tombstone is not, and it is unfalsifiable from the
 // wire. Callers propagate the error.
-func (s *postService) removedMarkers(ctx context.Context, uris []string, views map[string]*PostView) (map[string]string, error) {
+func (s *postService) removedMarkers(ctx context.Context, absent []string, postsByURI map[string]*Post) (map[string]string, error) {
 	markers := make(map[string]string)
-	if s.admissions == nil {
-		return markers, nil
-	}
-
-	// Collect the absent URIs once (deduped), then resolve their admissions in a
-	// single batched lookup rather than one round-trip per URI.
-	seen := make(map[string]struct{}, len(uris))
-	absent := make([]string, 0, len(uris))
-	for _, uri := range uris {
-		if views[uri] != nil {
-			continue // visible — not a candidate for a tombstone
-		}
-		if _, done := seen[uri]; done {
-			continue
-		}
-		seen[uri] = struct{}{}
-		absent = append(absent, uri)
-	}
-	if len(absent) == 0 {
+	if s.admissions == nil || len(absent) == 0 {
 		return markers, nil
 	}
 
 	admissionsByURI, err := s.admissions.GetByPostURIs(ctx, absent)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve removal state for post.get: %w", err)
-	}
-
-	// The post rows are fetched in ONE batched round trip. Looping a per-URI
-	// lookup here was an N+1 on a public endpoint whose URI list the caller
-	// controls: 25 URIs (MaxGetPostsURIs) meant up to 25 sequential queries per
-	// request, all of them for URIs the visibility predicate had already refused.
-	//
-	// These are RAW rows on purpose — the predicate has already hidden every URI
-	// in `absent`, so a gated read would return nothing and there would be no
-	// removal to report. The raw row is used for exactly two facts, both checked
-	// below and neither of them content: which community owns the post, and
-	// whether its author withdrew it.
-	postsByURI, err := s.repo.GetRawIndexedRowsByURIs(ctx, absent)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve removal state for post.get: %w", err)
 	}

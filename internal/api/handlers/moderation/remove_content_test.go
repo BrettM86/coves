@@ -224,16 +224,16 @@ func mutationErrorMessage(t *testing.T, response *httptest.ResponseRecorder) str
 	return message
 }
 
-func TestRemoveContentHandlerNamesPostRemovalAsUnsupported(t *testing.T) {
+func TestRemoveContentHandlerRejectsUnsupportedCollectionBeforeStoreAccess(t *testing.T) {
 	service := moderation.NewService(nil, nil, moderation.Config{
 		InstanceDID: mutationInstanceDID, IdempotencyRetention: time.Hour, MaxLiveIdempotencyKeys: 1,
 	})
-	postBody := strings.Replace(removeBody, moderation.CommentCollection, moderation.PostV2Collection, 1)
+	unsupportedBody := strings.Replace(removeBody, moderation.CommentCollection, "app.bsky.feed.post", 1)
 	response := httptest.NewRecorder()
 	NewRemoveContentHandler(service).HandleRemoveContent(response,
-		mutationRequest(http.MethodPost, "/xrpc/social.coves.moderation.removeContent", postBody, "application/json"))
+		mutationRequest(http.MethodPost, "/xrpc/social.coves.moderation.removeContent", unsupportedBody, "application/json"))
 	assertMutationError(t, response, http.StatusBadRequest, "InvalidSubject")
-	assert.Equal(t, "invalid subject: post removal is unsupported", mutationErrorMessage(t, response))
+	assert.Equal(t, "invalid subject: unsupported subject collection", mutationErrorMessage(t, response))
 }
 
 func TestMutationHandlersWriteRuleDetailButKeepUnavailableGeneric(t *testing.T) {

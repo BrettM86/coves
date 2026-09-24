@@ -57,6 +57,20 @@ type IndexedComment struct {
 	ImageCIDs []string
 }
 
+// IndexedPost is the indexed post row a mutation inspects, read under a share
+// lock so consumer writes serialize against the CID check.
+type IndexedPost struct {
+	URI           string
+	CID           string
+	AuthorDeleted bool
+	// OwnerDID is the repository holding the post's blobs: the author for
+	// postv2, the community for legacy posts.
+	OwnerDID     string
+	CommunityDID string
+	// BlobCIDs are the canonical CIDs of the post's proxy-served blobs.
+	BlobCIDs []string
+}
+
 // MediaBlock suppresses Coves-served bytes of a blob. An empty OwnerDID
 // blocks the CID for every owner.
 type MediaBlock struct {
@@ -102,6 +116,8 @@ type Transaction interface {
 	LockSubject(ctx context.Context, subjectURI string) (int64, error)
 	// ReadIndexedComment returns ErrSubjectNotIndexed for a never-indexed URI.
 	ReadIndexedComment(ctx context.Context, subjectURI string) (*IndexedComment, error)
+	// ReadIndexedPost returns ErrSubjectNotIndexed for a never-indexed URI.
+	ReadIndexedPost(ctx context.Context, subjectURI string) (*IndexedPost, error)
 	// GetAction returns ErrDecisionNotFound for an unknown id.
 	GetAction(ctx context.Context, actionID string) (*Action, error)
 	// ActiveRemoval returns the active removal action, or nil.

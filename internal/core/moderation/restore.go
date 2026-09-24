@@ -14,8 +14,8 @@ func validateRestoreRequest(request RestoreContentRequest) error {
 	if err := validateMutationFields(request.IdempotencyKey, request.ExpectedVersion, request.Reason, request.PrivateNote); err != nil {
 		return err
 	}
-	if request.ReviewedSubject != nil && !validCommentStrongRef(*request.ReviewedSubject) {
-		return fmt.Errorf("%w: reviewedSubject must be a comment strongRef", ErrInvalidRequest)
+	if request.ReviewedSubject != nil && !validContentStrongRef(*request.ReviewedSubject) {
+		return fmt.Errorf("%w: reviewedSubject must be a content strongRef", ErrInvalidRequest)
 	}
 	return nil
 }
@@ -94,7 +94,7 @@ func (s *service) restoreContent(ctx context.Context, actorDID string, request R
 		if request.ReviewedSubject != nil && reviewedURI != removal.SubjectURI {
 			return fail(fmt.Errorf("%w: reviewedSubject URI differs from removal subject", ErrInvalidRequest))
 		}
-		comment, err := tx.ReadIndexedComment(ctx, removal.SubjectURI)
+		subject, err := readIndexedSubject(ctx, tx, removal.SubjectURI)
 		if err != nil && !errors.Is(err, ErrSubjectNotIndexed) {
 			return unavailable(err)
 		}
@@ -102,19 +102,19 @@ func (s *service) restoreContent(ctx context.Context, actorDID string, request R
 		var current *StrongRef
 		var observedCID string
 		if err == nil {
-			if comment == nil {
-				return unavailable(errors.New("indexed comment lookup returned no comment"))
+			if subject == nil {
+				return unavailable(errors.New("indexed subject lookup returned no subject"))
 			}
-			observedCID = comment.CID
-			if comment.AuthorDeleted {
+			observedCID = subject.CID
+			if subject.AuthorDeleted {
 				recordState = RecordStateDeleted
 			} else {
 				recordState = RecordStatePresent
-				current = &StrongRef{URI: comment.URI, CID: comment.CID}
+				current = &StrongRef{URI: subject.URI, CID: subject.CID}
 				if request.ReviewedSubject == nil {
-					return fail(fmt.Errorf("%w: reviewedSubject is required for a present comment", ErrInvalidRequest))
+					return fail(fmt.Errorf("%w: reviewedSubject is required for present content", ErrInvalidRequest))
 				}
-				if reviewedCID != comment.CID {
+				if reviewedCID != subject.CID {
 					return fail(ErrContentChanged)
 				}
 			}

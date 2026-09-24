@@ -23,12 +23,10 @@ var removeReasons = map[string]struct{}{
 func validateRemoveRequest(request RemoveContentRequest) error {
 	uri, err := syntax.ParseATURI(request.Subject.URI)
 	if err != nil || !uri.Authority().IsDID() || uri.RecordKey().String() == "" {
-		return fmt.Errorf("%w: expected a comment record URI with a DID authority", ErrInvalidSubject)
+		return fmt.Errorf("%w: expected a content record URI with a DID authority", ErrInvalidSubject)
 	}
 	switch uri.Collection().String() {
-	case PostV2Collection, LegacyPostCollection:
-		return fmt.Errorf("%w: post removal is unsupported", ErrInvalidSubject)
-	case CommentCollection:
+	case CommentCollection, PostV2Collection, LegacyPostCollection:
 	default:
 		return fmt.Errorf("%w: unsupported subject collection", ErrInvalidSubject)
 	}
@@ -85,17 +83,17 @@ func (s *service) removeContent(ctx context.Context, actorDID string, request Re
 		if request.ExpectedVersion != versionToken(version) {
 			return fail(ErrStateConflict)
 		}
-		comment, err := tx.ReadIndexedComment(ctx, request.Subject.URI)
+		subject, err := readIndexedSubject(ctx, tx, request.Subject.URI)
 		if errors.Is(err, ErrSubjectNotIndexed) {
 			return fail(ErrSubjectNotFound)
 		}
 		if err != nil {
 			return unavailable(err)
 		}
-		if comment == nil {
-			return unavailable(errors.New("indexed comment missing"))
+		if subject == nil {
+			return unavailable(errors.New("indexed subject missing"))
 		}
-		if !comment.AuthorDeleted && comment.CID != request.Subject.CID {
+		if !subject.AuthorDeleted && subject.CID != request.Subject.CID {
 			return fail(ErrContentChanged)
 		}
 		active, err := tx.ActiveRemoval(ctx, s.config.InstanceDID, request.Subject.URI)
@@ -104,10 +102,10 @@ func (s *service) removeContent(ctx context.Context, actorDID string, request Re
 		}
 		recordState := RecordStatePresent
 		var current *StrongRef
-		if comment.AuthorDeleted {
+		if subject.AuthorDeleted {
 			recordState = RecordStateDeleted
 		} else {
-			current = &StrongRef{URI: comment.URI, CID: comment.CID}
+			current = &StrongRef{URI: subject.URI, CID: subject.CID}
 		}
 		if active != nil {
 			state, err := newSubjectState(request.Subject.URI, version, recordState, current, active, s.config.InstanceDID)
@@ -119,8 +117,8 @@ func (s *service) removeContent(ctx context.Context, actorDID string, request Re
 			action, err := tx.InsertAction(ctx, Action{
 				ActorDID: actorDID, AuthorityDID: s.config.InstanceDID,
 				ScopeKind: ScopeInstance, SubjectURI: request.Subject.URI,
-				SubjectCollection: CommentCollection, SubjectCommunityDID: comment.CommunityDID,
-				ObservedCID: comment.CID, Action: ActionRemove, Reason: request.Reason,
+				SubjectCollection: subject.Collection, SubjectCommunityDID: subject.CommunityDID,
+				ObservedCID: subject.CID, Action: ActionRemove, Reason: request.Reason,
 				PrivateNote: request.PrivateNote, Origin: OriginLocal, CreatedAt: now,
 			})
 			if err != nil {
@@ -135,7 +133,7 @@ func (s *service) removeContent(ctx context.Context, actorDID string, request Re
 			if err := tx.SetSubjectVersion(ctx, request.Subject.URI, version+1); err != nil {
 				return unavailable(err)
 			}
-			newlyBlocked = imageMediaBlocks(comment, action)
+			newlyBlocked = imageMediaBlocks(subject, action)
 			if len(newlyBlocked) > 0 {
 				if err := tx.InsertMediaBlocks(ctx, newlyBlocked); err != nil {
 					return unavailable(err)

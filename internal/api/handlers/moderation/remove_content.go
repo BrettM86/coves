@@ -172,7 +172,7 @@ func writeMutationError(w http.ResponseWriter, operation string, err error) {
 	} {
 		if errors.Is(err, entry.cause) {
 			// Rule errors carry only fixed text and configured limits, such as
-			// "post removal is unsupported" or the live-key limit, never request
+			// "unsupported subject collection" or the live-key limit, never request
 			// payloads, so the detail is safe to show the caller.
 			xrpc.WriteError(w, http.StatusBadRequest, entry.code, strings.TrimPrefix(err.Error(), "moderation: "))
 			return

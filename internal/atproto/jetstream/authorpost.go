@@ -766,7 +766,7 @@ func (c *PostEventConsumer) upsertAuthorPost(ctx context.Context, authorDID stri
 			facets: facetsJSON, embed: embedJSON, labels: labelsJSON,
 			bridgedUpvotes: up, bridgedDownvotes: down, bridgedAsOf: asOf,
 			storedAsOf: stored.bridgedAsOf, storedDeletedAt: stored.deletedAt,
-			storedIndexedAt: stored.indexedAt, timeUS: timeUS,
+			storedIndexedAt: stored.indexedAt, timeUS: timeUS, authorDID: authorDID,
 		})
 		if err != nil {
 			return err

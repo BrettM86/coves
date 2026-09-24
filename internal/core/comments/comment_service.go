@@ -1,12 +1,6 @@
 package comments
 
 import (
-	"Coves/internal/core/blobs"
-	"Coves/internal/core/communities"
-	"Coves/internal/core/embeds"
-	"Coves/internal/core/posts"
-	"Coves/internal/core/richtext"
-	"Coves/internal/core/users"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +8,13 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+
+	"Coves/internal/core/blobs"
+	"Coves/internal/core/communities"
+	"Coves/internal/core/embeds"
+	"Coves/internal/core/posts"
+	"Coves/internal/core/richtext"
+	"Coves/internal/core/users"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
@@ -633,13 +634,17 @@ func (s *commentService) buildCommentView(
 	// union than posts, and the firehose applies no embed validation, so a
 	// federated comment carrying a post-only embed type must not be stamped
 	// with a #view type the comment union does not declare.
+	//
+	// ServableEmbed runs first so the view serves only proxy URLs derived from
+	// blobs, the CIDs CommentImageCIDs blocks; the record keeps the stored
+	// embed verbatim.
 	var embed interface{}
 	if comment.Embed != nil && *comment.Embed != "" {
-		var embedMap map[string]interface{}
-		if err := json.Unmarshal([]byte(*comment.Embed), &embedMap); err != nil {
+		var storedEmbed map[string]interface{}
+		if err := json.Unmarshal([]byte(*comment.Embed), &storedEmbed); err != nil {
 			// Log error but don't fail request - embed is optional
 			slog.Warn("failed to unmarshal embed for comment", "comment_uri", comment.URI, "error", err)
-		} else {
+		} else if embedMap, servable := embeds.ServableEmbed(storedEmbed).(map[string]interface{}); servable {
 			var authorPDSURL string
 			if user, found := usersByDID[comment.CommenterDID]; found && user != nil {
 				authorPDSURL = user.PDSURL

@@ -6,10 +6,11 @@ import (
 	"log/slog"
 )
 
-// MediaTransaction provides the operations needed to reconcile a comment's images.
+// MediaTransaction provides the operations needed to reconcile a subject's images.
 type MediaTransaction interface {
 	ActiveRemoval(ctx context.Context, authorityDID, subjectURI string) (*Action, error)
 	ReadIndexedComment(ctx context.Context, subjectURI string) (*IndexedComment, error)
+	ReadIndexedPost(ctx context.Context, subjectURI string) (*IndexedPost, error)
 	// InsertNewMediaBlocks inserts only blocks not already active for the action
 	// and returns the blocks it inserted.
 	InsertNewMediaBlocks(ctx context.Context, blocks []MediaBlock) ([]MediaBlock, error)
@@ -41,11 +42,30 @@ func (r *MediaReconciler) ReconcileTx(ctx context.Context, tx *sql.Tx, subjectUR
 	if err != nil || action == nil {
 		return nil, err
 	}
-	comment, err := bound.ReadIndexedComment(ctx, subjectURI)
+	subject, err := readIndexedSubject(ctx, bound, subjectURI)
 	if err != nil {
 		return nil, err
 	}
-	return bound.InsertNewMediaBlocks(ctx, imageMediaBlocks(comment, action))
+	if subject == nil {
+		return nil, ErrSubjectNotIndexed
+	}
+	return bound.InsertNewMediaBlocks(ctx, imageMediaBlocks(subject, action))
+}
+
+// ReconcileIncomingTx blocks blobs of incoming content the consumer did not
+// index, such as a recreate of a deleted post whose tombstone is kept. The
+// owner's repository still serves those blobs, and the stored row does not
+// name them, so the caller passes the owner and CIDs from the incoming record.
+func (r *MediaReconciler) ReconcileIncomingTx(ctx context.Context, tx *sql.Tx, subjectURI, ownerDID string, blobCIDs []string) ([]MediaBlock, error) {
+	if len(blobCIDs) == 0 {
+		return nil, nil
+	}
+	bound := r.binder.BindTransaction(tx)
+	action, err := bound.ActiveRemoval(ctx, r.instanceDID, subjectURI)
+	if err != nil || action == nil {
+		return nil, err
+	}
+	return bound.InsertNewMediaBlocks(ctx, imageMediaBlocks(&indexedSubject{OwnerDID: ownerDID, BlobCIDs: blobCIDs}, action))
 }
 
 // Purge removes cached bytes of newly blocked blobs after commit.
@@ -76,15 +96,15 @@ func purgeMediaBlocks(purger MediaPurger, blocks []MediaBlock) {
 	}
 }
 
-func imageMediaBlocks(comment *IndexedComment, action *Action) []MediaBlock {
+func imageMediaBlocks(subject *indexedSubject, action *Action) []MediaBlock {
 	var blocks []MediaBlock
 	seen := make(map[string]bool)
-	for _, cid := range comment.ImageCIDs {
+	for _, cid := range subject.BlobCIDs {
 		if seen[cid] {
 			continue
 		}
 		seen[cid] = true
-		blocks = append(blocks, MediaBlock{OwnerDID: comment.OwnerDID, BlobCID: cid, ActionID: action.ID})
+		blocks = append(blocks, MediaBlock{OwnerDID: subject.OwnerDID, BlobCID: cid, ActionID: action.ID})
 		if action.Reason == illegalContentReason {
 			blocks = append(blocks, MediaBlock{BlobCID: cid, ActionID: action.ID})
 		}

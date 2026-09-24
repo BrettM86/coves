@@ -13,6 +13,7 @@ import (
 
 	"Coves/internal/core/blobs"
 	"Coves/internal/core/communities"
+	"Coves/internal/core/embeds"
 	"Coves/internal/core/posts"
 
 	"github.com/lib/pq"
@@ -143,10 +144,10 @@ func (r *PostRepository) Create(ctx context.Context, post *posts.Post) error {
 // shared by GetRawIndexedRow and GetRawIndexedRowsByURIs so the two cannot drift
 // apart. It must stay byte-aligned with scanRawIndexedRow's positional Scan.
 const rawIndexedRowColumns = `
-		id, uri, cid, rkey, author_did, community_did,
-		title, content, content_facets, embed, content_labels,
-		created_at, edited_at, indexed_at, deleted_at,
-		upvote_count + bridged_upvote_count AS upvote_count, downvote_count + bridged_downvote_count AS downvote_count, score, comment_count`
+		p.id, p.uri, p.cid, p.rkey, p.author_did, p.community_did,
+		p.title, p.content, p.content_facets, p.embed, p.content_labels,
+		p.created_at, p.edited_at, p.indexed_at, p.deleted_at,
+		p.upvote_count + p.bridged_upvote_count AS upvote_count, p.downvote_count + p.bridged_downvote_count AS downvote_count, p.score, p.comment_count`
 
 // ════════════════════════════════════════════════════════════════════════════
 // DANGER — GetRawIndexedRow IS NOT A DISPLAY READ.
@@ -173,10 +174,10 @@ const rawIndexedRowColumns = `
 // ════════════════════════════════════════════════════════════════════════════
 func (r *PostRepository) GetRawIndexedRow(ctx context.Context, uri string) (*posts.Post, error) {
 	query := `SELECT` + rawIndexedRowColumns + `
-		FROM posts
-		WHERE uri = $1`
+		FROM posts p
+		WHERE p.uri = $1`
 
-	post, err := scanRawIndexedRow(r.db.QueryRowContext(ctx, query, uri))
+	post, err := scanRawIndexedRow(r.db.QueryRowContext(ctx, query, uri), false)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, posts.ErrNotFound
 	}
@@ -186,13 +187,74 @@ func (r *PostRepository) GetRawIndexedRow(ctx context.Context, uri string) (*pos
 	return post, nil
 }
 
+// AdmittedURIsForViewer returns the subset of uris whose post passes the
+// viewer-bound admission half of the read-path visibility predicate
+// (admittedPostsPredicate), ignoring active moderation removals. viewerDID is ""
+// for an anonymous read. Soft-deleted rows are not filtered here; the caller
+// already holds that state from the raw row.
+func (r *PostRepository) AdmittedURIsForViewer(ctx context.Context, uris []string, viewerDID string) (map[string]bool, error) {
+	admitted := make(map[string]bool)
+	if len(uris) == 0 {
+		return admitted, nil
+	}
+	joinSQL, whereSQL := admittedPostsPredicate("$2")
+	rows, err := r.db.QueryContext(ctx, `SELECT p.uri FROM posts p`+joinSQL+`
+		WHERE p.uri = ANY($1) AND `+whereSQL, pq.Array(uris), viewerDID)
+	if err != nil {
+		return nil, fmt.Errorf("fetch admitted post URIs: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var uri string
+		if err := rows.Scan(&uri); err != nil {
+			return nil, fmt.Errorf("scan admitted post URI: %w", err)
+		}
+		admitted[uri] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate admitted post URIs: %w", err)
+	}
+	return admitted, nil
+}
+
+// ActiveRemovalsByURIs returns active removal sources keyed by subject URI.
+func (r *PostRepository) ActiveRemovalsByURIs(ctx context.Context, uris []string) (map[string][]posts.RemovalSource, error) {
+	removals := make(map[string][]posts.RemovalSource)
+	if len(uris) == 0 {
+		return removals, nil
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT subject_uri, authority_did, scope_kind
+		FROM moderation_decisions
+		WHERE subject_uri = ANY($1) AND kind = 'removal' AND active
+		ORDER BY subject_uri, authority_did, scope_kind, scope_community_did
+	`, pq.Array(uris))
+	if err != nil {
+		return nil, fmt.Errorf("fetch active post removals: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var uri string
+		var source posts.RemovalSource
+		if err := rows.Scan(&uri, &source.AuthorityDID, &source.ScopeKind); err != nil {
+			return nil, fmt.Errorf("scan active post removal: %w", err)
+		}
+		removals[uri] = append(removals[uri], source)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate active post removals: %w", err)
+	}
+	return removals, nil
+}
+
 // GetRawIndexedRowsByURIs is the batched GetRawIndexedRow. THE SAME DANGER
 // APPLIES — read the banner above before calling it.
 //
 // URIs with no indexed row are absent from the returned map; that is not an
 // error, it is the answer ("this URI is not indexed here"), and it is what lets
 // the caller tell a genuine lookup FAILURE (a returned error) apart from a URI
-// the AppView has never seen.
+// the AppView has never seen. Rows also carry community handle/name when the
+// community exists; a missing community must not hide an indexed post.
 func (r *PostRepository) GetRawIndexedRowsByURIs(ctx context.Context, uris []string) (map[string]*posts.Post, error) {
 	result := make(map[string]*posts.Post, len(uris))
 	if len(uris) == 0 {
@@ -202,9 +264,10 @@ func (r *PostRepository) GetRawIndexedRowsByURIs(ctx context.Context, uris []str
 	// Bound through a single array parameter (= ANY($1)) rather than an
 	// interpolated IN list, so the SQL stays fully parameterized and the plan is
 	// cached regardless of batch size.
-	query := `SELECT` + rawIndexedRowColumns + `
-		FROM posts
-		WHERE uri = ANY($1)`
+	query := `SELECT` + rawIndexedRowColumns + `, c.handle, c.name
+		FROM posts p
+		LEFT JOIN communities c ON c.did = p.community_did
+		WHERE p.uri = ANY($1)`
 
 	rows, err := r.db.QueryContext(ctx, query, pq.Array(uris))
 	if err != nil {
@@ -217,7 +280,7 @@ func (r *PostRepository) GetRawIndexedRowsByURIs(ctx context.Context, uris []str
 	}()
 
 	for rows.Next() {
-		post, err := scanRawIndexedRow(rows)
+		post, err := scanRawIndexedRow(rows, true)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan raw post row: %w", err)
 		}
@@ -238,17 +301,22 @@ type rowScanner interface {
 
 // scanRawIndexedRow scans one rawIndexedRowColumns row into a posts.Post. The
 // Scan order below MUST stay byte-aligned with that column list.
-func scanRawIndexedRow(row rowScanner) (*posts.Post, error) {
+func scanRawIndexedRow(row rowScanner, withCommunity bool) (*posts.Post, error) {
 	var post posts.Post
 	var facetsJSON, embedJSON, labelsJSON sql.NullString
+	var communityHandle, communityName sql.NullString
 
-	err := row.Scan(
+	columns := []interface{}{
 		&post.ID, &post.URI, &post.CID, &post.RKey,
 		&post.AuthorDID, &post.CommunityDID,
 		&post.Title, &post.Content, &facetsJSON, &embedJSON, &labelsJSON,
 		&post.CreatedAt, &post.EditedAt, &post.IndexedAt, &post.DeletedAt,
 		&post.UpvoteCount, &post.DownvoteCount, &post.Score, &post.CommentCount,
-	)
+	}
+	if withCommunity {
+		columns = append(columns, &communityHandle, &communityName)
+	}
+	err := row.Scan(columns...)
 	if err != nil {
 		return nil, err
 	}
@@ -263,6 +331,12 @@ func scanRawIndexedRow(row rowScanner) (*posts.Post, error) {
 	if labelsJSON.Valid {
 		// Labels are stored as JSONB containing full com.atproto.label.defs#selfLabels structure
 		post.ContentLabels = &labelsJSON.String
+	}
+	if communityHandle.Valid {
+		post.CommunityHandle = communityHandle.String
+	}
+	if communityName.Valid {
+		post.CommunityName = communityName.String
 	}
 
 	return &post, nil
@@ -683,7 +757,7 @@ func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, er
 				"error", err,
 			)
 		} else {
-			postView.Embed = embedData
+			postView.Embed = embeds.ServableEmbed(embedData)
 		}
 	}
 

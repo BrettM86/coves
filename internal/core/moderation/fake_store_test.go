@@ -22,6 +22,7 @@ type inMemoryModerationIdempotencyKey struct {
 
 type inMemoryModerationState struct {
 	indexedComments map[string]moderation.IndexedComment
+	indexedPosts    map[string]moderation.IndexedPost
 	versions        map[string]int64
 	actions         map[string]moderation.Action
 	activeRemovals  map[inMemoryModerationDecisionKey]string
@@ -33,6 +34,7 @@ type inMemoryModerationState struct {
 func (state inMemoryModerationState) copy() inMemoryModerationState {
 	working := inMemoryModerationState{
 		indexedComments: make(map[string]moderation.IndexedComment, len(state.indexedComments)),
+		indexedPosts:    make(map[string]moderation.IndexedPost, len(state.indexedPosts)),
 		versions:        make(map[string]int64, len(state.versions)),
 		actions:         make(map[string]moderation.Action, len(state.actions)),
 		activeRemovals:  make(map[inMemoryModerationDecisionKey]string, len(state.activeRemovals)),
@@ -43,6 +45,10 @@ func (state inMemoryModerationState) copy() inMemoryModerationState {
 	for key, comment := range state.indexedComments {
 		comment.ImageCIDs = append([]string(nil), comment.ImageCIDs...)
 		working.indexedComments[key] = comment
+	}
+	for key, post := range state.indexedPosts {
+		post.BlobCIDs = append([]string(nil), post.BlobCIDs...)
+		working.indexedPosts[key] = post
 	}
 	for key, version := range state.versions {
 		working.versions[key] = version
@@ -78,6 +84,7 @@ func newInMemoryModerationStore(now time.Time) *inMemoryModerationStore {
 		now: now,
 		state: inMemoryModerationState{
 			indexedComments: make(map[string]moderation.IndexedComment),
+			indexedPosts:    make(map[string]moderation.IndexedPost),
 			versions:        make(map[string]int64),
 			actions:         make(map[string]moderation.Action),
 			activeRemovals:  make(map[inMemoryModerationDecisionKey]string),
@@ -159,6 +166,15 @@ func (transaction *inMemoryModerationTransaction) ReadIndexedComment(_ context.C
 	}
 	comment.ImageCIDs = append([]string(nil), comment.ImageCIDs...)
 	return &comment, nil
+}
+
+func (transaction *inMemoryModerationTransaction) ReadIndexedPost(_ context.Context, subjectURI string) (*moderation.IndexedPost, error) {
+	post, exists := transaction.state.indexedPosts[subjectURI]
+	if !exists {
+		return nil, moderation.ErrSubjectNotIndexed
+	}
+	post.BlobCIDs = append([]string(nil), post.BlobCIDs...)
+	return &post, nil
 }
 
 func (transaction *inMemoryModerationTransaction) GetAction(_ context.Context, actionID string) (*moderation.Action, error) {
