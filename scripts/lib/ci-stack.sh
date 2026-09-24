@@ -13,8 +13,8 @@
 #
 # So the bring-up lives here once, and both callers get the identical stack:
 # same images built from the working tree, same staging (the AppView cannot
-# start until its PDS account exists), same egress-blocked network, same cache
-# volumes.
+# start until its PDS account and moderation admins exist), same egress-blocked
+# network, same cache volumes.
 #
 # CONTRACT FOR CALLERS
 #
@@ -261,6 +261,7 @@ stack_discard_previous() {
         fail "remove them by hand and retry: $(compose_cmdline down -v --remove-orphans)"
         return 1
     fi
+    rm -f "$OUT_DIR/moderation-admins-${PROJECT}.env"
     ok "clean slate"
 }
 
@@ -302,7 +303,7 @@ stack_prefetch_modules() {
 stack_start() {
     # Staged deliberately: the AppView is NOT started with the rest. It
     # authenticates to the PDS as PDS_INSTANCE_HANDLE, and in a fresh PDS that
-    # account does not exist yet, so it has to be created in between.
+    # account and the moderation admins do not exist yet.
     step "Starting infrastructure (Postgres ×4, PLC, PDS ×2, relay, Turnstile stub)"
     # Jetstream is deliberately absent from this --wait list. `up --wait` fails
     # outright — "has no healthcheck configured" — for any service it is asked
@@ -327,9 +328,24 @@ stack_start() {
     compose up -d jetstream
     ok "jetstream started (readiness gated by the runner)"
 
-    step "Seeding the stack (relay crawl announcements, instance PDS account)"
+    step "Seeding the stack (relay crawl announcements, instance and moderation admin accounts)"
     # --no-deps so this does not drag the AppView up before its account exists.
     compose run --rm --no-deps --entrypoint bash runner /src/scripts/ci-bootstrap.sh
+
+    local admins_file="$OUT_DIR/moderation-admins-${PROJECT}.env" admins_line admins
+    if [[ ! -f $admins_file ]] || ! IFS= read -r admins_line <"$admins_file"; then
+        fail "bootstrap did not write $admins_file with MODERATION_ADMINS; refusing to start AppView"
+        return 1
+    fi
+    if [[ ! $admins_line =~ ^MODERATION_ADMINS=did:[a-z]+:[a-zA-Z0-9._:%-]+,did:[a-z]+:[a-zA-Z0-9._:%-]+$ ]]; then
+        fail "invalid MODERATION_ADMINS in $admins_file: expected two DIDs; refusing to start AppView"
+        return 1
+    fi
+    admins=${admins_line#MODERATION_ADMINS=}
+    if [[ ${admins%,*} == "${admins#*,}" ]]; then
+        fail "duplicate moderation admin DIDs in $admins_file; refusing to start AppView"
+        return 1
+    fi
 
     step "Starting the AppView"
     compose up -d --wait appview

@@ -90,8 +90,8 @@
 # itself.
 #
 # Usage: driven by scripts/ci.sh, which stages startup so the relay is crawling
-# both PDSes and the instance PDS account exists before the AppView boots. Not
-# intended for direct `up`.
+# both PDSes and the instance and moderation admin accounts exist before the
+# AppView boots. Not intended for direct `up`.
 
 services:
   # Owns the network namespace every other service joins. Does nothing else;
@@ -548,6 +548,10 @@ services:
     network_mode: "service:netns"
     env_file:
       - .env.ci
+      # Bootstrap writes this into the runner's /src/.ci-out bind mount before
+      # AppView starts. It is absent during the initial infrastructure bring-up.
+      - path: .ci-out/moderation-admins-${COVES_CI_PROJECT:-coves-ci}.env
+        required: false
     environment:
       # .env.ci silences logs so the go test -json stream stays readable. The
       # AppView is exempt: when an E2E test fails, these logs are the only

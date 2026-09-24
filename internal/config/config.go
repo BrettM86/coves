@@ -14,6 +14,8 @@ import (
 
 	"Coves/internal/core/bridgedvotes"
 	"Coves/internal/core/imageproxy"
+
+	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 
 // devCursorSecret is the placeholder HMAC key used for pagination cursors when
@@ -122,6 +124,9 @@ type Config struct {
 	// Submissions bounds what one author may post into one community.
 	Submissions SubmissionsConfig
 
+	// Moderation holds the instance moderation settings.
+	Moderation ModerationConfig
+
 	// CursorSecret is the HMAC key that signs pagination cursors, preventing
 	// clients from forging or tampering with them.
 	CursorSecret string
@@ -135,6 +140,13 @@ type Config struct {
 	// because ENCRYPTION_KEY was unset in dev. Credentials sealed under a
 	// generated key do not survive a restart.
 	EncryptionKeyGenerated bool
+}
+
+// ModerationConfig holds the instance moderation settings.
+type ModerationConfig struct {
+	// Admins is the operator-managed allowlist of instance admin DIDs
+	// (MODERATION_ADMINS). An empty list grants nobody admin authority.
+	Admins []string
 }
 
 // DatabaseConfig holds the AppView PostgreSQL connection and pool settings.
@@ -515,6 +527,7 @@ func Load() (*Config, error) {
 	if err := cfg.loadSubmissions(); err != nil {
 		return nil, err
 	}
+	cfg.Moderation.Admins = csvVar("MODERATION_ADMINS")
 
 	cfg.PDS = PDSConfig{
 		URL:              stringVar("PDS_URL", "http://localhost:3001"),
@@ -1011,6 +1024,12 @@ func (c *Config) loadSubmissions() error {
 // instead of one restart per mistake.
 func (c *Config) Validate() error {
 	var problems []string
+	for _, did := range c.Moderation.Admins {
+		if _, err := syntax.ParseDID(did); err != nil {
+			problems = append(problems, "MODERATION_ADMINS must contain only valid DIDs")
+			break
+		}
+	}
 
 	if c.Database.URL == "" {
 		problems = append(problems, "DATABASE_URL is required")

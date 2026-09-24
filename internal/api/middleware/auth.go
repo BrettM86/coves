@@ -592,57 +592,121 @@ func (m *DualAuthMiddleware) handleAPIKeyAuth(w http.ResponseWriter, r *http.Req
 
 // handleOAuthAuth handles authentication using OAuth sealed session tokens (existing logic)
 func (m *DualAuthMiddleware) handleOAuthAuth(w http.ResponseWriter, r *http.Request, next http.Handler, token string) {
-	// Authenticate using sealed token
-	sealedSession, err := m.unsealer.UnsealSession(token)
-	if err != nil {
+	auth := authenticateSealedSession(r.Context(), token, m.unsealer, m.store)
+	switch auth.failure {
+	case sealedSessionUnsealFailed:
 		log.Printf("[AUTH_FAILURE] type=unseal_failed ip=%s method=%s path=%s error=%v",
-			r.RemoteAddr, r.Method, r.URL.Path, err)
+			r.RemoteAddr, r.Method, r.URL.Path, auth.err)
+		writeAuthError(w, "Invalid or expired token")
+		return
+	case sealedSessionInvalidDID:
+		log.Printf("[AUTH_FAILURE] type=invalid_did ip=%s method=%s path=%s did=%s error=%v",
+			r.RemoteAddr, r.Method, r.URL.Path, auth.did, auth.err)
+		writeAuthError(w, "Invalid DID in token")
+		return
+	case sealedSessionStoreFailure:
+		writeSessionStoreError(w, r, auth.did, auth.sessionID, auth.err)
+		return
+	case sealedSessionNotFound:
+		log.Printf("[AUTH_FAILURE] type=session_not_found ip=%s method=%s path=%s did=%s session_id=%s error=%v",
+			r.RemoteAddr, r.Method, r.URL.Path, auth.did, auth.sessionID, auth.err)
+		writeAuthError(w, "Session not found or expired")
+		return
+	case sealedSessionDIDMismatch:
+		log.Printf("[AUTH_FAILURE] type=did_mismatch ip=%s method=%s path=%s token_did=%s session_did=%s",
+			r.RemoteAddr, r.Method, r.URL.Path, auth.did, auth.session.AccountDID.String())
+		writeAuthError(w, "Session DID mismatch")
+		return
+	case sealedSessionNoFailure:
+		// Authenticated; continue below.
+	default:
+		log.Printf("[AUTH_FAILURE] type=%s ip=%s method=%s path=%s",
+			auth.failure.reason(), r.RemoteAddr, r.Method, r.URL.Path)
 		writeAuthError(w, "Invalid or expired token")
 		return
 	}
 
-	// Parse DID
-	did, err := syntax.ParseDID(sealedSession.DID)
-	if err != nil {
-		log.Printf("[AUTH_FAILURE] type=invalid_did ip=%s method=%s path=%s did=%s error=%v",
-			r.RemoteAddr, r.Method, r.URL.Path, sealedSession.DID, err)
-		writeAuthError(w, "Invalid DID in token")
-		return
-	}
-
-	// Load full OAuth session from database
-	session, err := m.store.GetSession(r.Context(), did, sealedSession.SessionID)
-	if err != nil && !errors.Is(err, oauth.ErrSessionNotFound) {
-		writeSessionStoreError(w, r, sealedSession.DID, sealedSession.SessionID, err)
-		return
-	}
-	if err != nil {
-		log.Printf("[AUTH_FAILURE] type=session_not_found ip=%s method=%s path=%s did=%s session_id=%s error=%v",
-			r.RemoteAddr, r.Method, r.URL.Path, sealedSession.DID, sealedSession.SessionID, err)
-		writeAuthError(w, "Session not found or expired")
-		return
-	}
-
-	// Verify session DID matches token DID
-	if session.AccountDID.String() != sealedSession.DID {
-		log.Printf("[AUTH_FAILURE] type=did_mismatch ip=%s method=%s path=%s token_did=%s session_did=%s",
-			r.RemoteAddr, r.Method, r.URL.Path, sealedSession.DID, session.AccountDID.String())
-		writeAuthError(w, "Session DID mismatch")
-		return
-	}
-
 	log.Printf("[AUTH_SUCCESS] type=oauth ip=%s method=%s path=%s did=%s session_id=%s",
-		r.RemoteAddr, r.Method, r.URL.Path, sealedSession.DID, sealedSession.SessionID)
+		r.RemoteAddr, r.Method, r.URL.Path, auth.did, auth.sessionID)
 
 	// Inject user info and session into context
-	ctx := context.WithValue(r.Context(), UserDIDKey, sealedSession.DID)
-	ctx = context.WithValue(ctx, OAuthSessionKey, session)
-	ctx = context.WithValue(ctx, UserAccessToken, session.AccessToken)
+	ctx := context.WithValue(r.Context(), UserDIDKey, auth.did)
+	ctx = context.WithValue(ctx, OAuthSessionKey, auth.session)
+	ctx = context.WithValue(ctx, UserAccessToken, auth.session.AccessToken)
 	ctx = context.WithValue(ctx, IsAggregatorAuthKey, false)
 	ctx = context.WithValue(ctx, AuthMethodKey, AuthMethodOAuth)
 
 	// Call next handler
 	next.ServeHTTP(w, r.WithContext(ctx))
+}
+
+type sealedSessionFailure uint8
+
+// The zero value is sealedSessionUnauthenticated so that an unset result can
+// never read as authenticated; success must be set explicitly.
+const (
+	sealedSessionUnauthenticated sealedSessionFailure = iota
+	sealedSessionNoFailure
+	sealedSessionUnsealFailed
+	sealedSessionInvalidDID
+	sealedSessionNotFound
+	sealedSessionStoreFailure
+	sealedSessionDIDMismatch
+)
+
+func (failure sealedSessionFailure) reason() string {
+	switch failure {
+	case sealedSessionUnsealFailed:
+		return "unseal_failed"
+	case sealedSessionInvalidDID:
+		return "invalid_did"
+	case sealedSessionNotFound:
+		return "session_not_found"
+	case sealedSessionStoreFailure:
+		return "session_store_failure"
+	case sealedSessionDIDMismatch:
+		return "did_mismatch"
+	case sealedSessionNoFailure:
+		return ""
+	default:
+		return "unauthenticated"
+	}
+}
+
+type sealedSessionAuthentication struct {
+	did       string
+	sessionID string
+	session   *oauthlib.ClientSessionData
+	failure   sealedSessionFailure
+	err       error
+}
+
+func authenticateSealedSession(ctx context.Context, token string, unsealer SessionUnsealer, store oauthlib.ClientAuthStore) sealedSessionAuthentication {
+	sealed, err := unsealer.UnsealSession(token)
+	if err != nil {
+		return sealedSessionAuthentication{failure: sealedSessionUnsealFailed, err: err}
+	}
+	result := sealedSessionAuthentication{did: sealed.DID, sessionID: sealed.SessionID}
+	did, err := syntax.ParseDID(sealed.DID)
+	if err != nil {
+		result.failure, result.err = sealedSessionInvalidDID, err
+		return result
+	}
+	result.session, err = store.GetSession(ctx, did, sealed.SessionID)
+	if errors.Is(err, oauth.ErrSessionNotFound) {
+		result.failure, result.err = sealedSessionNotFound, err
+		return result
+	}
+	if err != nil {
+		result.failure, result.err = sealedSessionStoreFailure, err
+		return result
+	}
+	if result.session.AccountDID.String() != sealed.DID {
+		result.failure = sealedSessionDIDMismatch
+		return result
+	}
+	result.failure = sealedSessionNoFailure
+	return result
 }
 
 // isJWTFormat checks if a token has JWT format (three parts separated by dots).

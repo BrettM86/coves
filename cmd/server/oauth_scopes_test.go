@@ -77,3 +77,9 @@ func TestOAuthScopes_RetainCommunityPostThroughTheDrain(t *testing.T) {
 	assert.Containsf(t, post, "action=delete",
 		"the retained community.post grant must include action=delete — the drain's whole job is deleting those records")
 }
+
+func TestOAuthScopes_ExcludeAppViewModeration(t *testing.T) {
+	for _, scope := range oauthScopes() {
+		assert.NotContains(t, scope, "social.coves.moderation", "moderation endpoints are AppView-served, not PDS-proxied")
+	}
+}

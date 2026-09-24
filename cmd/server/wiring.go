@@ -26,6 +26,7 @@ import (
 	"Coves/internal/core/communitysuggestions"
 	"Coves/internal/core/discover"
 	"Coves/internal/core/imageproxy"
+	"Coves/internal/core/moderation"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/timeline"
 	"Coves/internal/core/unfurl"
@@ -90,12 +91,14 @@ type application struct {
 	credentialCipher      *credentialcipher.Cipher
 
 	// Identity and authentication
-	identityResolver identity.Resolver
-	oauthClient      *oauth.OAuthClient
-	oauthStore       *oauth.MobileAwareStoreWrapper
-	oauthHandler     *oauth.OAuthHandler
-	authMiddleware   *middleware.OAuthAuthMiddleware
-	dualAuth         *middleware.DualAuthMiddleware
+	identityResolver     identity.Resolver
+	oauthClient          *oauth.OAuthClient
+	oauthStore           *oauth.MobileAwareStoreWrapper
+	oauthHandler         *oauth.OAuthHandler
+	authMiddleware       *middleware.OAuthAuthMiddleware
+	dualAuth             *middleware.DualAuthMiddleware
+	serviceAuthValidator middleware.ServiceAuthValidator
+	instanceAdminAuth    *middleware.InstanceAdminMiddleware
 
 	// Repositories reused outside their own service (Jetstream consumers,
 	// route options).
@@ -135,6 +138,7 @@ type application struct {
 	commentService             comments.Service
 	userBlockService           userblocks.Service
 	adminReportService         adminreports.Service
+	moderationService          moderation.Service
 	communitySuggestionService communitysuggestions.Service
 	feedService                communityFeeds.Service
 	timelineService            timeline.Service
@@ -434,6 +438,9 @@ func (a *application) buildServices(ctx context.Context) error {
 	a.apiKeyService = aggregators.NewAPIKeyService(a.aggregatorRepo, a.oauthClient.ClientApp)
 
 	a.buildDualAuth()
+	a.instanceAdminAuth = buildInstanceAdminMiddleware(a.cfg, a.oauthClient, a.oauthStore, a.serviceAuthValidator)
+	a.moderationService = moderation.NewService(moderation.NewRepositorySubjectReader(a.postRepo, a.commentRepo))
+	slog.Info("instance moderation admins configured", "admin_count", len(a.cfg.Moderation.Admins))
 
 	// The SSRF hatch is open only in dev, where the links a developer pastes and
 	// the fixtures the test suite serves both live on the developer's own
@@ -765,6 +772,7 @@ func (a *application) buildDualAuth() {
 		Dir:             identityDir,
 		TimestampLeeway: 30 * time.Second,
 	}
+	a.serviceAuthValidator = serviceValidator
 
 	a.dualAuth = middleware.NewDualAuthMiddleware(
 		a.oauthClient,    // SessionUnsealer for OAuth

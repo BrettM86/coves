@@ -247,6 +247,9 @@ var declaredRoutes = []declaredRoute{
 	// RegisterAdminReportRoutes — social.coves.admin.*
 	{http.MethodPost, "/xrpc/social.coves.admin.submitReport", authRequired, 10, false},
 
+	// RegisterModerationRoutes — instance-admin-only state query.
+	{http.MethodGet, "/xrpc/social.coves.moderation.getSubjectState", authRequired, 0, false},
+
 	// RegisterCommunitySuggestionRoutes — social.coves.community.suggestion.*
 	{http.MethodGet, "/xrpc/social.coves.community.suggestion.list", authOptional, 0, false},
 	{http.MethodGet, "/xrpc/social.coves.community.suggestion.get", authOptional, 0, false},
@@ -425,6 +428,7 @@ var theRouter = sync.OnceValue(func() builtRouter {
 	RegisterUserBlockRoutes(mux, unreachableUserBlockService{}, auth)
 	RegisterCommentRoutes(mux, nil, auth)
 	RegisterAdminReportRoutes(mux, nil, auth)
+	RegisterModerationRoutes(mux, nil, middleware.NewInstanceAdminMiddleware(unsealer, nil, nil, nil))
 	RegisterCommunitySuggestionRoutes(mux, nil, auth, nil)
 	RegisterCommunityFeedRoutes(mux, nil, nil, nil, auth)
 	RegisterTimelineRoutes(mux, nil, nil, nil, auth)
