@@ -16,6 +16,20 @@ type fakeSubjectReader struct {
 	err    error
 }
 
+type fakeSubjectStore struct{}
+
+func (fakeSubjectStore) InTransaction(_ context.Context, _ func(context.Context, moderation.Transaction) error) error {
+	return nil
+}
+
+func (fakeSubjectStore) SubjectModeration(_ context.Context, _, _ string) (*moderation.SubjectModeration, error) {
+	return &moderation.SubjectModeration{Version: 0}, nil
+}
+
+func newSubjectStateTestService(reader moderation.SubjectReader) moderation.Service {
+	return moderation.NewService(reader, fakeSubjectStore{}, moderation.Config{InstanceDID: "did:web:test.coves.social"})
+}
+
 func (reader *fakeSubjectReader) ReadSubject(_ context.Context, uri string) (*moderation.IndexedRecord, error) {
 	reader.calls = append(reader.calls, uri)
 	return reader.record, reader.err
@@ -45,7 +59,7 @@ func TestGetSubjectStateRejectsInvalidSubjectsBeforeReading(t *testing.T) {
 	} {
 		t.Run(subject, func(t *testing.T) {
 			reader := &fakeSubjectReader{}
-			state, err := moderation.NewService(reader).GetSubjectState(t.Context(), subject)
+			state, err := newSubjectStateTestService(reader).GetSubjectState(t.Context(), subject)
 			assert.ErrorIs(t, err, moderation.ErrInvalidSubject)
 			assert.Nil(t, state)
 			assert.Empty(t, reader.calls, "invalid subjects must not reach the reader")
@@ -57,7 +71,7 @@ func TestGetSubjectStateNeverIndexed(t *testing.T) {
 	uri := "at://did:plc:neverindexed/social.coves.community.postv2/3kabc"
 	reader := &fakeSubjectReader{err: moderation.ErrSubjectNotIndexed}
 
-	state, err := moderation.NewService(reader).GetSubjectState(t.Context(), uri)
+	state, err := newSubjectStateTestService(reader).GetSubjectState(t.Context(), uri)
 	require.NoError(t, err)
 	assertInitialSubjectState(t, state, uri, moderation.RecordStateUnavailable, nil)
 	assert.Equal(t, []string{uri}, reader.calls)
@@ -77,7 +91,7 @@ func TestGetSubjectStateIndexedPresent(t *testing.T) {
 			cid := "bafy...distinct"
 			reader := &fakeSubjectReader{record: &moderation.IndexedRecord{URI: uri, CID: cid}}
 
-			state, err := moderation.NewService(reader).GetSubjectState(t.Context(), uri)
+			state, err := newSubjectStateTestService(reader).GetSubjectState(t.Context(), uri)
 			require.NoError(t, err)
 			assertInitialSubjectState(t, state, uri, moderation.RecordStatePresent, &moderation.StrongRef{URI: uri, CID: cid})
 			assert.Equal(t, []string{uri}, reader.calls)
@@ -89,7 +103,7 @@ func TestGetSubjectStateAuthorDeleted(t *testing.T) {
 	uri := "at://did:plc:x/social.coves.community.comment/3kabc"
 	reader := &fakeSubjectReader{record: &moderation.IndexedRecord{URI: uri, CID: "bafy...distinct", Deleted: true}}
 
-	state, err := moderation.NewService(reader).GetSubjectState(t.Context(), uri)
+	state, err := newSubjectStateTestService(reader).GetSubjectState(t.Context(), uri)
 	require.NoError(t, err)
 	assertInitialSubjectState(t, state, uri, moderation.RecordStateDeleted, nil)
 	assert.Equal(t, []string{uri}, reader.calls)
@@ -99,7 +113,7 @@ func TestGetSubjectStateReaderFailure(t *testing.T) {
 	uri := "at://did:plc:x/social.coves.community.postv2/3kabc"
 	reader := &fakeSubjectReader{err: errors.New("db down")}
 
-	state, err := moderation.NewService(reader).GetSubjectState(t.Context(), uri)
+	state, err := newSubjectStateTestService(reader).GetSubjectState(t.Context(), uri)
 	assert.ErrorIs(t, err, moderation.ErrModerationUnavailable)
 	assert.Nil(t, state)
 	assert.Equal(t, []string{uri}, reader.calls)
@@ -108,7 +122,7 @@ func TestGetSubjectStateReaderFailure(t *testing.T) {
 func TestGetSubjectStateNeverIndexedVersionIsStable(t *testing.T) {
 	uri := "at://did:plc:neverindexed/social.coves.community.postv2/3kabc"
 	reader := &fakeSubjectReader{err: moderation.ErrSubjectNotIndexed}
-	service := moderation.NewService(reader)
+	service := newSubjectStateTestService(reader)
 
 	first, err := service.GetSubjectState(t.Context(), uri)
 	require.NoError(t, err)

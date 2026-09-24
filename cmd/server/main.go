@@ -19,6 +19,7 @@ import (
 	"Coves/internal/config"
 	"Coves/internal/core/users"
 	"Coves/internal/crypto/credentialcipher"
+	postgresRepo "Coves/internal/db/postgres"
 	"Coves/internal/observability"
 
 	_ "github.com/lib/pq"
@@ -114,6 +115,8 @@ func run() error {
 	startAggregatorTokenRefreshJob(backgroundCtx, &backgroundWG, app.apiKeyService)
 	startDiscoverHotCleanupJob(backgroundCtx, &backgroundWG, app.discoverHotStateCleaner,
 		discoverHotCleanupInterval, discoverHotCleanupDerivedRowBatchSize)
+	startModerationIdempotencySweepJob(backgroundCtx, &backgroundWG,
+		postgresRepo.NewModerationRepository(db), moderationIdempotencySweepInterval)
 
 	// Nil when the driver is disabled, and passed as a typed nil would be a
 	// non-nil interface — so the guard is here rather than inside the job.

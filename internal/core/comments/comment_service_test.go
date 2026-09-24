@@ -21,6 +21,8 @@ import (
 // mockCommentRepo is a mock implementation of the comment Repository interface
 type mockCommentRepo struct {
 	comments                      map[string]*Comment
+	activeRemovalsByURI           map[string][]RemovalSource
+	activeRemovalsErr             error
 	listByParentWithHotRankFunc   func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string, viewerDID string) ([]*Comment, *string, error)
 	listByParentsBatchFunc        func(ctx context.Context, parentURIs []string, sort string, limitPerParent int) (map[string][]*Comment, error)
 	getVoteStateForCommentsFunc   func(ctx context.Context, viewerDID string, commentURIs []string) (map[string]interface{}, error)
@@ -154,6 +156,19 @@ func (m *mockCommentRepo) GetByURIsBatch(ctx context.Context, uris []string) (ma
 	for _, uri := range uris {
 		if c, ok := m.comments[uri]; ok {
 			result[uri] = c
+		}
+	}
+	return result, nil
+}
+
+func (m *mockCommentRepo) ActiveRemovalsByURIs(ctx context.Context, uris []string) (map[string][]RemovalSource, error) {
+	if m.activeRemovalsErr != nil {
+		return nil, m.activeRemovalsErr
+	}
+	result := make(map[string][]RemovalSource)
+	for _, uri := range uris {
+		if sources := m.activeRemovalsByURI[uri]; len(sources) > 0 {
+			result[uri] = sources
 		}
 	}
 	return result, nil

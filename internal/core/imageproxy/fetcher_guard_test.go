@@ -540,7 +540,7 @@ func TestImageProxyService_GetImage_RefusesAPrivateAddressOnAColdCache(t *testin
 			"ever calling the fetcher and this whole case would pass without exercising the guard",
 		preset, did, cid)
 
-	service, err := NewService(cache, newTestProcessor(t), NewPDSFetcher(5*time.Second, 10), Config{
+	service, err := NewService(cache, newTestProcessor(t), NewPDSFetcher(5*time.Second, 10), allowAllBlockChecker(), Config{
 		Enabled:                true,
 		CachePath:              t.TempDir(),
 		CacheMaxGB:             1,

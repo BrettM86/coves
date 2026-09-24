@@ -139,6 +139,7 @@ type application struct {
 	userBlockService           userblocks.Service
 	adminReportService         adminreports.Service
 	moderationService          moderation.Service
+	commentMediaReconciler     jetstream.CommentMediaReconciler
 	communitySuggestionService communitysuggestions.Service
 	feedService                communityFeeds.Service
 	timelineService            timeline.Service
@@ -158,7 +159,8 @@ type application struct {
 
 	// imageProxyHandler is nil when the image proxy is disabled.
 	imageProxyHandler *imageproxyhandlers.Handler
-	// stopImageProxyCleanup halts the disk cache eviction job. Never nil.
+	// stopImageProxyCleanup halts the disk cache eviction job and the blocked
+	// media purge job. Never nil.
 	stopImageProxyCleanup context.CancelFunc
 	// closeOnce guards Close, which is reached from both serve and run's
 	// deferred cleanup on every shutdown.
@@ -205,9 +207,22 @@ func buildApplication(
 	if err = app.buildServices(ctx); err != nil {
 		return nil, err
 	}
-	if err = app.buildImageProxy(); err != nil {
+	purger, err := app.buildImageProxy()
+	if err != nil {
 		return nil, err
 	}
+	app.moderationService = moderation.NewService(
+		moderation.NewRepositorySubjectReader(app.postRepo, app.commentRepo),
+		postgresRepo.NewModerationRepository(app.db),
+		moderation.Config{
+			InstanceDID:            app.cfg.Instance.DID,
+			IdempotencyRetention:   app.cfg.Moderation.IdempotencyRetention,
+			MaxLiveIdempotencyKeys: app.cfg.Moderation.MaxLiveIdempotencyKeys,
+			Purger:                 purger,
+		},
+	)
+	app.commentMediaReconciler = moderation.NewMediaReconciler(
+		postgresRepo.NewModerationRepository(app.db), app.cfg.Instance.DID, purger)
 	app.buildJetstreamInfrastructure()
 	if err = app.buildBridgedVotePoller(); err != nil {
 		return nil, err
@@ -439,7 +454,6 @@ func (a *application) buildServices(ctx context.Context) error {
 
 	a.buildDualAuth()
 	a.instanceAdminAuth = buildInstanceAdminMiddleware(a.cfg, a.oauthClient, a.oauthStore, a.serviceAuthValidator)
-	a.moderationService = moderation.NewService(moderation.NewRepositorySubjectReader(a.postRepo, a.commentRepo))
 	slog.Info("instance moderation admins configured", "admin_count", len(a.cfg.Moderation.Admins))
 
 	// The SSRF hatch is open only in dev, where the links a developer pastes and
@@ -838,7 +852,7 @@ func (a *application) authenticateInstanceWithPDS(ctx context.Context) {
 // is disabled — because the view builders need to know whether to emit proxy
 // URLs or direct blob URLs. In production, config.Validate has already refused
 // the disabled path unless the operator opted into it explicitly.
-func (a *application) buildImageProxy() error {
+func (a *application) buildImageProxy() (moderation.MediaPurger, error) {
 	cfg := a.cfg.Media.ImageProxy
 
 	// Published on every path, including the disabled one. Set explicitly at
@@ -867,24 +881,25 @@ func (a *application) buildImageProxy() error {
 		slog.Warn("[IMAGE-PROXY] disabled: image URLs will address PDS blob endpoints directly",
 			"consequence", "media bypasses any scanning CDN and is blocked by the default Content-Security-Policy",
 		)
-		return nil
+		return nil, nil
 	}
 
 	if err := cfg.Validate(); err != nil {
-		return fmt.Errorf("image proxy configuration: %w", err)
+		return nil, fmt.Errorf("image proxy configuration: %w", err)
 	}
 
 	cache, err := imageproxy.NewDiskCache(cfg.CachePath, cfg.CacheMaxGB, cfg.CacheTTLDays)
 	if err != nil {
-		return fmt.Errorf("creating image proxy cache: %w", err)
+		return nil, fmt.Errorf("creating image proxy cache: %w", err)
 	}
 	a.stopImageProxyCleanup = cache.StartCleanupJob(cfg.CleanupInterval)
 
 	processor, err := imageproxy.NewProcessor(cfg.MaxSourceMegapixels)
 	if err != nil {
-		return fmt.Errorf("creating image proxy processor: %w", err)
+		return nil, fmt.Errorf("creating image proxy processor: %w", err)
 	}
 
+	moderationRepository := postgresRepo.NewModerationRepository(a.db)
 	service, err := imageproxy.NewService(
 		cache,
 		processor,
@@ -894,10 +909,19 @@ func (a *application) buildImageProxy() error {
 		// that carries no credential.
 		imageproxy.NewPDSFetcher(cfg.FetchTimeout, cfg.MaxSourceSizeMB,
 			imageproxy.PrivateHostOptions(a.allowPrivateHosts())...),
+		moderationRepository,
 		cfg,
 	)
 	if err != nil {
-		return fmt.Errorf("creating image proxy service: %w", err)
+		return nil, fmt.Errorf("creating image proxy service: %w", err)
+	}
+	// The startup sweep finishes any moderation purge a restart interrupted;
+	// later sweeps retry purges the disk refused.
+	stopCacheCleanup := a.stopImageProxyCleanup
+	stopBlockedMediaPurge := service.StartActiveBlockPurgeJob(moderationRepository, cfg.CleanupInterval)
+	a.stopImageProxyCleanup = func() {
+		stopCacheCleanup()
+		stopBlockedMediaPurge()
 	}
 
 	a.imageProxyHandler = imageproxyhandlers.NewHandler(service, a.identityResolver)
@@ -917,7 +941,7 @@ func (a *application) buildImageProxy() error {
 		"process_queue_wait", cfg.ProcessQueueWait,
 		"max_in_flight_requests", cfg.MaxInFlightRequests,
 	)
-	return nil
+	return service, nil
 }
 
 func (a *application) buildJetstreamInfrastructure() {

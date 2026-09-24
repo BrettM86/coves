@@ -66,7 +66,7 @@ func TestGetSubjectState(t *testing.T) {
 	postRepo := postgres.NewPostRepository(db)
 	commentRepo := postgres.NewCommentRepository(db)
 	reader := moderation.NewRepositorySubjectReader(postRepo, commentRepo)
-	service := moderation.NewService(reader)
+	service := moderation.NewService(reader, postgres.NewModerationRepository(db), moderation.Config{InstanceDID: fixtures.InstanceDID()})
 
 	adminDID := fixtures.DID(testkit.UniqueIDWithPrefix(t, "admin"))
 	nonAdminDID := fixtures.DID(testkit.UniqueIDWithPrefix(t, "nonadmin"))

@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
+	"github.com/ipfs/go-cid"
 )
 
 // ValidateDID validates that a DID string matches expected atproto DID formats.
@@ -40,6 +41,22 @@ func ValidateCID(cid string) error {
 	}
 
 	return nil
+}
+
+// CanonicalCID decodes a CID in any multibase encoding and returns its
+// canonical string form. A PDS resolves every encoding of a CID to the same
+// blob, so moderation blocks, cache keys and fetches must all use this one
+// form; ValidateCID alone is a syntax check and accepts strings that are not
+// CIDs. Returns ErrInvalidCID if the value does not decode.
+func CanonicalCID(value string) (string, error) {
+	if err := ValidateCID(value); err != nil {
+		return "", err
+	}
+	parsed, err := cid.Decode(value)
+	if err != nil {
+		return "", ErrInvalidCID
+	}
+	return parsed.String(), nil
 }
 
 // SanitizePathComponent ensures a string is safe to use as a filesystem path component.

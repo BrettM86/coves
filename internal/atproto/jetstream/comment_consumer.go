@@ -3,6 +3,7 @@ package jetstream
 import (
 	"Coves/internal/atproto/utils"
 	"Coves/internal/core/comments"
+	"Coves/internal/core/moderation"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/richtext"
 	"context"
@@ -37,11 +38,43 @@ type CommentEventConsumer struct {
 	db          *sql.DB // Direct DB access for atomic count updates
 	// bridgeTrust gates whether a comment's user repo may assert bridgedStats.
 	// nil means default-deny (bridgedStats are ignored for every comment).
-	bridgeTrust *BridgeTrust
+	bridgeTrust     *BridgeTrust
+	mediaReconciler CommentMediaReconciler
 }
 
 // CommentEventConsumerOption configures optional CommentEventConsumer behaviour.
 type CommentEventConsumerOption func(*CommentEventConsumer)
+
+// CommentMediaReconciler blocks images introduced on a removed comment.
+type CommentMediaReconciler interface {
+	ReconcileTx(ctx context.Context, tx *sql.Tx, subjectURI string) ([]moderation.MediaBlock, error)
+	Purge(blocks []moderation.MediaBlock)
+}
+
+// WithCommentMediaReconciler reconciles media blocks when a removed comment is rewritten.
+func WithCommentMediaReconciler(reconciler CommentMediaReconciler) CommentEventConsumerOption {
+	return func(c *CommentEventConsumer) { c.mediaReconciler = reconciler }
+}
+
+// commitCommentWrite reconciles the indexed embed within the write transaction;
+// cached bytes are purged only after both the comment and its blocks commit.
+func (c *CommentEventConsumer) commitCommentWrite(ctx context.Context, tx *sql.Tx, uri string) error {
+	var blocks []moderation.MediaBlock
+	if c.mediaReconciler != nil {
+		var err error
+		blocks, err = c.mediaReconciler.ReconcileTx(ctx, tx, uri)
+		if err != nil {
+			return fmt.Errorf("reconcile comment media: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if c.mediaReconciler != nil {
+		c.mediaReconciler.Purge(blocks)
+	}
+	return nil
+}
 
 // WithCommentBridgeTrust installs the provenance gate that decides which user repos may
 // assert bridgedStats on their comments. Without it, bridgedStats are default-denied.
@@ -410,7 +443,7 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 		return nil
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err := c.commitCommentWrite(ctx, tx, uri); err != nil {
 		return fmt.Errorf("failed to commit comment update transaction: %w", err)
 	}
 
@@ -593,7 +626,7 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 				}
 				// Parent unchanged and the row was never decounted, so parent counts
 				// are already correct — commit without the increment sections below.
-				if commitErr := tx.Commit(); commitErr != nil {
+				if commitErr := c.commitCommentWrite(ctx, tx, comment.URI); commitErr != nil {
 					return fmt.Errorf("failed to commit transaction: %w", commitErr)
 				}
 				return nil
@@ -773,7 +806,7 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 	// Test coverage: TestPostConsumer_CommentCountReconciliation in post_consumer_test.go
 	if isResurrectionWithSameParent {
 		log.Printf("Resurrection with same parent - skipping parent count increment for: %s", comment.URI)
-		if err := tx.Commit(); err != nil {
+		if err := c.commitCommentWrite(ctx, tx, comment.URI); err != nil {
 			return fmt.Errorf("failed to commit transaction: %w", err)
 		}
 		return nil
@@ -855,14 +888,14 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 		// Unknown or unsupported parent collection
 		// Comment is still indexed, we just don't update parent counts
 		log.Printf("Comment parent has unsupported collection: %s (comment indexed, parent count not updated)", collection)
-		if commitErr := tx.Commit(); commitErr != nil {
+		if commitErr := c.commitCommentWrite(ctx, tx, comment.URI); commitErr != nil {
 			return fmt.Errorf("failed to commit transaction: %w", commitErr)
 		}
 		return nil
 	}
 
 	// Commit transaction
-	if err := tx.Commit(); err != nil {
+	if err := c.commitCommentWrite(ctx, tx, comment.URI); err != nil {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 

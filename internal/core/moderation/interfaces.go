@@ -28,7 +28,9 @@ type CommentReader interface {
 	GetByURI(ctx context.Context, uri string) (*comments.Comment, error)
 }
 
-// Service is the moderation domain's read surface.
+// Service is the moderation domain's read and mutation surface.
 type Service interface {
 	GetSubjectState(ctx context.Context, subject string) (*SubjectState, error)
+	RemoveContent(ctx context.Context, actorDID string, request RemoveContentRequest) (*MutationResult, error)
+	RestoreContent(ctx context.Context, actorDID string, request RestoreContentRequest) (*MutationResult, error)
 }

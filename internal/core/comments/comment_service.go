@@ -366,6 +366,14 @@ func (s *commentService) buildThreadViews(
 	if len(comments) == 0 {
 		return result, nil
 	}
+	commentURIs := make([]string, 0, len(comments))
+	for _, comment := range comments {
+		commentURIs = append(commentURIs, comment.URI)
+	}
+	removals, err := s.commentRepo.ActiveRemovalsByURIs(ctx, commentURIs)
+	if err != nil {
+		return nil, fmt.Errorf("checking active comment removals: %w", err)
+	}
 
 	// Batch fetch vote states for all comments at this level (Phase 2B)
 	var voteStates map[string]interface{}
@@ -419,11 +427,27 @@ func (s *commentService) buildThreadViews(
 
 	for _, comment := range comments {
 		var commentView *CommentView
+		sources := removals[comment.URI]
 
 		// Build appropriate view based on deletion status
-		if comment.DeletedAt != nil {
+		if comment.DeletedAt != nil || len(sources) > 0 {
 			// Deleted comment - build placeholder view to preserve thread structure
 			commentView = s.buildDeletedCommentView(comment)
+			if len(sources) > 0 {
+				if comment.DeletedAt == nil || comment.DeletionReason == nil || *comment.DeletionReason != DeletionReasonAuthor {
+					reason := DeletionReasonModerator
+					commentView.DeletionReason = &reason
+					commentView.DeletedAt = nil
+				}
+				viewSources := make([]ModerationSourceView, 0, len(sources))
+				for _, source := range sources {
+					viewSources = append(viewSources, ModerationSourceView{
+						AuthorityDID: source.AuthorityDID,
+						Scope:        ModerationScopeView{Kind: source.ScopeKind},
+					})
+				}
+				commentView.Moderation = &ModerationView{State: "removed", Sources: viewSources}
+			}
 		} else {
 			// Active comment - build full view with author info and stats
 			commentView = s.buildCommentView(comment, viewerDID, voteStates, usersByDID)

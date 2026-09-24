@@ -57,6 +57,12 @@ import (
 // and a tight budget here would turn a loaded CI machine into a 502.
 const defaultFetchTimeout = 30 * time.Second
 
+type allowAllBlockChecker struct{}
+
+func (allowAllBlockChecker) IsBlocked(context.Context, string, string) (bool, error) {
+	return false, nil
+}
+
 // fixedPDSResolver is an identity.Resolver that sends every DID to one PDS.
 //
 // Only ResolveDID is implemented because that is the only method the proxy
@@ -140,6 +146,7 @@ func newProxyServerWithCache(t *testing.T, resolver identity.Resolver, fetchTime
 		// core/imageproxy/fetcher_guard_test.go, whose fetchers are built
 		// without this option and assert the listener is never reached.
 		imageproxycore.NewPDSFetcher(fetchTimeout, 10, imageproxycore.WithPrivateHostsAllowed()),
+		allowAllBlockChecker{},
 		imageproxycore.Config{
 			Enabled:                true,
 			CachePath:              cacheDir,
@@ -252,7 +259,7 @@ func assertImageSize(t *testing.T, body []byte, wantWidth, wantHeight int) {
 func TestImageProxy_ServesProcessedBlob(t *testing.T) {
 	t.Parallel()
 
-	const cid = "bafybeimockimagetest123"
+	const cid = "bafkreicdmtgb7deaakqrghapqrdjva63vqcieyzzi66q2pokcwyotdermy"
 	did := "did:plc:" + testkit.UniqueID(t)
 
 	upstream := newBlobServer(t, map[string]func(http.ResponseWriter){
@@ -272,7 +279,7 @@ func TestImageProxy_ServesProcessedBlob(t *testing.T) {
 	})
 
 	t.Run("a blob the PDS does not hold is a 404", func(t *testing.T) {
-		resp, _ := fetch(t, proxyURL(server, "avatar", did, "nonexistentcid"), nil)
+		resp, _ := fetch(t, proxyURL(server, "avatar", did, "bafkreickn4h365ejzx3jx6uvmu6atijrecyeavikim7dyf5wer7tcu4zme"), nil)
 
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 	})
@@ -290,7 +297,7 @@ func TestImageProxy_UpstreamFailuresAreBadGateway(t *testing.T) {
 
 	// Well-formed CIDs: these must travel past validation so that the failure
 	// under test is the fetch, not the parse.
-	const validCID = "bafyreihgdyzzpkkzq2izfnhcmm77ycuacvkuziwbnqxfxtqsz7tmxwhnshi"
+	const validCID = "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"
 	did := "did:plc:" + testkit.UniqueID(t)
 
 	t.Run("the resolved PDS refuses the connection", func(t *testing.T) {
@@ -358,8 +365,8 @@ func TestImageProxy_UndecodableUpstreamBytes(t *testing.T) {
 func TestImageProxy_PresetGeometry(t *testing.T) {
 	t.Parallel()
 
-	const cid = "bafybeipresetgeometry123"
-	const smallCID = "bafybeismallsource123"
+	const cid = "bafkreieswtoyhdnkf552cgtp3jebltovvu6rc56hzhmuvgzghndwrtbe5i"
+	const smallCID = "bafkreifh4b76hmqvsksqlq3tuovcrekvsl7buylbztorfnwti3bp3zp4pq"
 	did := "did:plc:" + testkit.UniqueID(t)
 
 	// 1000x1000 so that both directions are exercised: the cover presets crop

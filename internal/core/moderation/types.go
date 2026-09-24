@@ -2,6 +2,8 @@
 // (Authority) and what the AppView knows about a subject (SubjectState).
 package moderation
 
+import "time"
+
 // RecordState is the repository availability of a subject record as the
 // AppView has indexed it.
 type RecordState string
@@ -75,4 +77,40 @@ type IndexedRecord struct {
 	URI     string
 	CID     string
 	Deleted bool
+}
+
+// MutationResult is the outcome of a removeContent/restoreContent call. Action
+// is nil for an unchanged outcome.
+type MutationResult struct {
+	Outcome string
+	State   SubjectState
+	Action  *Action
+}
+
+// RemoveContentRequest is the caller-supplied part of a removeContent call.
+type RemoveContentRequest struct {
+	Subject         StrongRef
+	ExpectedVersion string
+	IdempotencyKey  string
+	Reason          string
+	PrivateNote     string
+}
+
+// RestoreContentRequest is the caller-supplied part of a restoreContent call.
+type RestoreContentRequest struct {
+	ActionID        string
+	ReviewedSubject *StrongRef
+	ExpectedVersion string
+	IdempotencyKey  string
+	Reason          string
+	PrivateNote     string
+}
+
+// Config is the moderation service's configuration.
+type Config struct {
+	InstanceDID            string
+	IdempotencyRetention   time.Duration
+	MaxLiveIdempotencyKeys int
+	Purger                 MediaPurger
+	Now                    func() time.Time
 }

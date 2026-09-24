@@ -146,7 +146,9 @@ type Config struct {
 type ModerationConfig struct {
 	// Admins is the operator-managed allowlist of instance admin DIDs
 	// (MODERATION_ADMINS). An empty list grants nobody admin authority.
-	Admins []string
+	Admins                 []string
+	IdempotencyRetention   time.Duration
+	MaxLiveIdempotencyKeys int
 }
 
 // DatabaseConfig holds the AppView PostgreSQL connection and pool settings.
@@ -527,7 +529,9 @@ func Load() (*Config, error) {
 	if err := cfg.loadSubmissions(); err != nil {
 		return nil, err
 	}
-	cfg.Moderation.Admins = csvVar("MODERATION_ADMINS")
+	if err := cfg.loadModeration(); err != nil {
+		return nil, err
+	}
 
 	cfg.PDS = PDSConfig{
 		URL:              stringVar("PDS_URL", "http://localhost:3001"),
@@ -1014,6 +1018,29 @@ func (c *Config) loadSubmissions() error {
 		DedupeWindow:             dedupeWindow,
 		AcceptanceQueueInterval:  queueInterval,
 		AcceptanceQueueBatchSize: queueBatch,
+	}
+	return nil
+}
+
+func (c *Config) loadModeration() error {
+	retention, err := durationVar("MODERATION_IDEMPOTENCY_RETENTION", 24*time.Hour)
+	if err != nil {
+		return err
+	}
+	if retention <= 0 {
+		return fmt.Errorf("MODERATION_IDEMPOTENCY_RETENTION must be greater than 0 (got %s)", retention)
+	}
+	maxKeys, err := intVar("MODERATION_IDEMPOTENCY_MAX_LIVE_KEYS", 1000)
+	if err != nil {
+		return err
+	}
+	if maxKeys <= 0 {
+		return fmt.Errorf("MODERATION_IDEMPOTENCY_MAX_LIVE_KEYS must be greater than 0 (got %d)", maxKeys)
+	}
+	c.Moderation = ModerationConfig{
+		Admins:                 csvVar("MODERATION_ADMINS"),
+		IdempotencyRetention:   retention,
+		MaxLiveIdempotencyKeys: maxKeys,
 	}
 	return nil
 }

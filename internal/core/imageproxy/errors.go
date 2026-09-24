@@ -67,3 +67,9 @@ var (
 	// ErrNilDependency is returned when a required dependency is nil.
 	ErrNilDependency = errors.New("required dependency is nil")
 )
+
+// ErrBlobBlocked is returned when moderation blocks serving a blob.
+var ErrBlobBlocked = errors.New("blob blocked")
+
+// ErrBlockCheckFailed is returned when the moderation block check fails.
+var ErrBlockCheckFailed = errors.New("blob block check failed")

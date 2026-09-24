@@ -24,12 +24,26 @@ const (
 	// validTestDID is a valid did:plc identifier (24 lowercase base32 chars after did:plc:)
 	validTestDID = "did:plc:z72i7hdynmk6r22z27h6tvur"
 	// validTestCID is a valid CIDv1 base32 identifier
-	validTestCID = "bafyreihgdyzzpkkzq2izfnhcmm77ycuacvkuziwbnqxfxtqsz7tmxwhnshi"
+	validTestCID = "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"
 )
 
 // mockService implements imageproxy.Service for testing
 type mockService struct {
-	getImageFunc func(ctx context.Context, preset, did, cid, pdsURL string) ([]byte, error)
+	getImageFunc      func(ctx context.Context, preset, did, cid, pdsURL string) ([]byte, error)
+	isBlobBlockedFunc func(ctx context.Context, did, cid string) (bool, error)
+}
+
+type allowAllBlockChecker struct{}
+
+func (allowAllBlockChecker) IsBlocked(context.Context, string, string) (bool, error) {
+	return false, nil
+}
+
+func (m *mockService) IsBlobBlocked(ctx context.Context, did, cid string) (bool, error) {
+	if m.isBlobBlockedFunc != nil {
+		return m.isBlobBlockedFunc(ctx, did, cid)
+	}
+	return false, nil
 }
 
 func (m *mockService) GetImage(ctx context.Context, preset, did, cid, pdsURL string) ([]byte, error) {

@@ -21,6 +21,8 @@ import (
 )
 
 type subjectStateServiceFake struct {
+	// The mutations are not exercised by the read handler; calling one panics.
+	moderation.Service
 	state    *moderation.SubjectState
 	err      error
 	subjects []string

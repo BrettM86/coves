@@ -263,7 +263,8 @@ func (a *application) registerFeedConsumers() ([]feedConsumer, error) {
 	consumers = append(consumers, feedConsumer{
 		name: jetstream.ConsumerComments,
 		handler: jetstream.NewCommentEventConsumer(a.commentRepo, a.db,
-			jetstream.WithCommentBridgeTrust(a.bridgeTrust)),
+			jetstream.WithCommentBridgeTrust(a.bridgeTrust),
+			jetstream.WithCommentMediaReconciler(a.commentMediaReconciler)),
 	})
 
 	return consumers, nil

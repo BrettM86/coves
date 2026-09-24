@@ -28,6 +28,8 @@ package embeds
 import (
 	"log/slog"
 
+	"github.com/ipfs/go-cid"
+
 	"Coves/internal/core/blobs"
 )
 
@@ -192,6 +194,42 @@ func HydrateCommentView(embed map[string]interface{}, ownerDID, ownerPDSURL stri
 	}
 
 	HydrateView(embed, ownerDID, ownerPDSURL)
+}
+
+// CommentImageCIDs returns the canonical CIDs of every image blob that
+// HydrateCommentView can serve through the image proxy for a comment embed.
+// Moderation blocks exactly these, so blocking and serving cannot drift apart.
+//
+// The embed is author-controlled and unvalidated, so this never fails: only a
+// social.coves.embed.images embed contributes, and an entry that is not an
+// object, carries no blob CID in either encoding blobCID accepts, or whose CID
+// does not decode is skipped. Each CID is decoded and re-encoded in its
+// canonical string form, the form the proxy route normalizes requests to, and
+// the result is de-duplicated in first-seen order.
+func CommentImageCIDs(embed map[string]interface{}) []string {
+	if embedType, _ := embed["$type"].(string); embedType != TypeImages {
+		return nil
+	}
+	images, _ := embed["images"].([]interface{})
+	var cids []string
+	seen := make(map[string]bool, len(images))
+	for _, entry := range images {
+		image, isObject := entry.(map[string]interface{})
+		if !isObject {
+			continue
+		}
+		parsed, err := cid.Decode(blobCID(image["image"]))
+		if err != nil {
+			continue
+		}
+		canonical := parsed.String()
+		if seen[canonical] {
+			continue
+		}
+		seen[canonical] = true
+		cids = append(cids, canonical)
+	}
+	return cids
 }
 
 // projectExternal computes the URL-bearing fields of

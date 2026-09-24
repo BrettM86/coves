@@ -127,18 +127,22 @@ const commentCollection = "social.coves.community.comment"
 // observe. As elsewhere in this package, modelling only the asserted fields
 // keeps a new lexicon field from breaking every contract that reads a comment.
 type commentView struct {
-	URI            string         `json:"uri"`
-	CID            string         `json:"cid"`
-	Author         identityRef    `json:"author"`
-	Record         map[string]any `json:"record"`
-	Post           *strongRef     `json:"post"`
-	Parent         *strongRef     `json:"parent"`
-	Stats          commentStats   `json:"stats"`
-	CreatedAt      string         `json:"createdAt"`
-	IndexedAt      string         `json:"indexedAt"`
-	IsDeleted      bool           `json:"isDeleted"`
-	DeletionReason *string        `json:"deletionReason"`
-	DeletedAt      *string        `json:"deletedAt"`
+	URI        string         `json:"uri"`
+	CID        string         `json:"cid"`
+	Author     identityRef    `json:"author"`
+	Record     map[string]any `json:"record"`
+	Embed      map[string]any `json:"embed"`
+	Moderation *struct {
+		State string `json:"state"`
+	} `json:"moderation"`
+	Post           *strongRef   `json:"post"`
+	Parent         *strongRef   `json:"parent"`
+	Stats          commentStats `json:"stats"`
+	CreatedAt      string       `json:"createdAt"`
+	IndexedAt      string       `json:"indexedAt"`
+	IsDeleted      bool         `json:"isDeleted"`
+	DeletionReason *string      `json:"deletionReason"`
+	DeletedAt      *string      `json:"deletedAt"`
 }
 
 // strongRef is the uri+cid pair the lexicon uses for threading references.

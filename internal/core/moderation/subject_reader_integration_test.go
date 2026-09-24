@@ -68,9 +68,15 @@ func TestRepositorySubjectReaderIndexedRecords(t *testing.T) {
 	}
 	commentURI := insertComment("bafyreipresentcomment")
 	deletedCommentURI := insertComment("bafyreideletedcomment")
+	moderatorDeletedCommentCID := "bafyreimoderatordeletedcomment"
+	moderatorDeletedCommentURI := insertComment(moderatorDeletedCommentCID)
 	_, err = db.ExecContext(ctx, `
 		UPDATE comments SET deleted_at = NOW(), deletion_reason = 'author', deleted_by = $1 WHERE uri = $2
 	`, authorDID, deletedCommentURI)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `
+		UPDATE comments SET deleted_at = NOW(), deletion_reason = 'moderator', deleted_by = $1, content = '' WHERE uri = $2
+	`, communityDID, moderatorDeletedCommentURI)
 	require.NoError(t, err)
 
 	for _, test := range []struct {
@@ -83,6 +89,7 @@ func TestRepositorySubjectReaderIndexedRecords(t *testing.T) {
 		{"indexed legacy post", legacyURI, legacyCID, false},
 		{"indexed comment", commentURI, "bafyreipresentcomment", false},
 		{"author-deleted comment", deletedCommentURI, "bafyreideletedcomment", true},
+		{"legacy moderator-deleted comment", moderatorDeletedCommentURI, moderatorDeletedCommentCID, false},
 		{"soft-deleted postv2", deletedPostV2URI, "bafyreideletedpostv2", true},
 		{"soft-deleted legacy post", deletedLegacyURI, legacyCID, true},
 		{"pending postv2", pendingURI, "bafyreipendingpostv2", false},
@@ -109,13 +116,29 @@ func TestRepositorySubjectReaderIndexedRecords(t *testing.T) {
 		})
 	}
 
-	service := moderation.NewService(reader)
+	service := moderation.NewService(reader, postgres.NewModerationRepository(db), moderation.Config{
+		InstanceDID: fixtures.InstanceDID(), IdempotencyRetention: 24 * time.Hour, MaxLiveIdempotencyKeys: 1000,
+	})
 	t.Run("service author-deleted comment", func(t *testing.T) {
 		state, err := service.GetSubjectState(t.Context(), deletedCommentURI)
 		require.NoError(t, err)
 		require.NotNil(t, state)
 		assert.Equal(t, moderation.RecordStateDeleted, state.RecordState)
 		assert.Nil(t, state.CurrentSubject)
+	})
+	t.Run("service legacy moderator-deleted comment", func(t *testing.T) {
+		state, err := service.GetSubjectState(t.Context(), moderatorDeletedCommentURI)
+		require.NoError(t, err)
+		require.NotNil(t, state)
+		assert.Equal(t, moderation.RecordStatePresent, state.RecordState)
+		assert.Equal(t, &moderation.StrongRef{URI: moderatorDeletedCommentURI, CID: moderatorDeletedCommentCID}, state.CurrentSubject)
+	})
+	t.Run("legacy moderator-deleted comment still requires matching CID to remove", func(t *testing.T) {
+		_, err := service.RemoveContent(t.Context(), fixtures.DID(testkit.UniqueIDWithPrefix(t, "legacyadmin")), moderation.RemoveContentRequest{
+			Subject:         moderation.StrongRef{URI: moderatorDeletedCommentURI, CID: "bafyreigj3fwnwjuzr35k2kuzmb5dixxczrzjhqkr5srlqplsh6gq3bj3si"},
+			ExpectedVersion: "v0", IdempotencyKey: "legacy-mismatched-cid", Reason: "social.coves.moderation.defs#reasonSpam",
+		})
+		assert.ErrorIs(t, err, moderation.ErrContentChanged)
 	})
 	t.Run("service indexed postv2", func(t *testing.T) {
 		state, err := service.GetSubjectState(t.Context(), postV2URI)

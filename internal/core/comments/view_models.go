@@ -23,6 +23,7 @@ type CommentView struct {
 	IsDeleted      bool                `json:"isDeleted,omitempty"`
 	DeletionReason *string             `json:"deletionReason,omitempty"`
 	DeletedAt      *string             `json:"deletedAt,omitempty"`
+	Moderation     *ModerationView     `json:"moderation,omitempty"`
 }
 
 // ThreadViewComment represents a comment with its nested replies
@@ -81,4 +82,22 @@ type GetActorCommentsRequest struct {
 type GetActorCommentsResponse struct {
 	Comments []*CommentView `json:"comments"`
 	Cursor   *string        `json:"cursor,omitempty"`
+}
+
+// ModerationView is a comment's public removal state
+// (social.coves.moderation.defs#moderationView).
+type ModerationView struct {
+	State   string                 `json:"state"`
+	Sources []ModerationSourceView `json:"sources,omitempty"`
+}
+
+// ModerationSourceView attributes a removal (social.coves.moderation.defs#sourceView).
+type ModerationSourceView struct {
+	AuthorityDID string              `json:"authorityDid"`
+	Scope        ModerationScopeView `json:"scope"`
+}
+
+// ModerationScopeView is a removal's scope (social.coves.moderation.defs#scopeView).
+type ModerationScopeView struct {
+	Kind string `json:"kind"`
 }

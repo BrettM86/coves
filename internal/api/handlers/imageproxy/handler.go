@@ -33,6 +33,8 @@ type Service interface {
 	// cid: the content identifier of the blob
 	// pdsURL: the URL of the user's PDS
 	GetImage(ctx context.Context, preset, did, cid, pdsURL string) ([]byte, error)
+	// IsBlobBlocked reports whether moderation blocks serving the blob.
+	IsBlobBlocked(ctx context.Context, did, cid string) (bool, error)
 }
 
 // Handler handles HTTP requests for the image proxy.
@@ -80,8 +82,12 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate CID format (must be valid base32/base58 CID)
-	if err := imageproxy.ValidateCID(cid); err != nil {
+	// Decode the CID and continue with its canonical form. Every multibase
+	// encoding of one CID names the same blob on the PDS, so the block check,
+	// the ETag, the cache key and the fetch must all see the same string, or a
+	// re-encoded CID would bypass a moderation block.
+	cid, err := imageproxy.CanonicalCID(cid)
+	if err != nil {
 		writeErrorResponse(w, http.StatusBadRequest, "invalid CID format")
 		return
 	}
@@ -91,6 +97,16 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 
 	// Check If-None-Match header for 304 response
 	if r.Header.Get("If-None-Match") == etag {
+		blocked, err := h.service.IsBlobBlocked(r.Context(), did, cid)
+		if err != nil {
+			logBlockCheckFailure(err, did, cid)
+			writeErrorResponse(w, http.StatusServiceUnavailable, "image moderation unavailable")
+			return
+		}
+		if blocked {
+			writeErrorResponse(w, http.StatusNotFound, "blob not found")
+			return
+		}
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
@@ -159,15 +175,19 @@ func getPDSEndpoint(doc *identity.DIDDocument) string {
 // budget refusal is logged at WARN with the blob's identity: it is the
 // signature of a decompression bomb, so an operator needs to be able to find
 // the repo and the blob afterwards. A processing failure is logged at ERROR
-// with the underlying error because it is our fault. An SSRF refusal is logged
+// with the underlying error because it is our fault, and so is a failed
+// moderation block lookup. An SSRF refusal is logged
 // at WARN because the response deliberately hides it. Load shedding is NOT
 // logged here: the service already logs it once with the counter, and a
 // second line per shed request would be the flood logging itself. The
 // remaining branches are ordinary client errors and stay quiet.
 func handleServiceError(w http.ResponseWriter, err error, preset, did, cid string) {
 	switch {
-	case errors.Is(err, imageproxy.ErrPDSNotFound):
+	case errors.Is(err, imageproxy.ErrPDSNotFound), errors.Is(err, imageproxy.ErrBlobBlocked):
 		writeErrorResponse(w, http.StatusNotFound, "blob not found")
+	case errors.Is(err, imageproxy.ErrBlockCheckFailed):
+		logBlockCheckFailure(err, did, cid)
+		writeErrorResponse(w, http.StatusServiceUnavailable, "image moderation unavailable")
 	case errors.Is(err, imageproxy.ErrPDSTimeout):
 		writeErrorResponse(w, http.StatusGatewayTimeout, "request timed out")
 	// ONE BRANCH FOR BOTH, so the status and the body cannot drift apart. A
@@ -227,6 +247,20 @@ func handleServiceError(w http.ResponseWriter, err error, preset, did, cid strin
 		)
 		writeErrorResponse(w, http.StatusInternalServerError, "internal server error")
 	}
+}
+
+// logBlockCheckFailure logs a failed moderation block lookup at ERROR: the
+// response is a generic 503, so the log line is the only record of the cause.
+// A client that went away is not a failure of ours and is not logged.
+func logBlockCheckFailure(err error, did, cid string) {
+	if errors.Is(err, context.Canceled) {
+		return
+	}
+	slog.Error("[IMAGE-PROXY] media block check failed",
+		"did", did,
+		"cid", cid,
+		"error", err,
+	)
 }
 
 // writeErrorResponse writes a plain text error response.

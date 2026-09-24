@@ -13,6 +13,12 @@ import (
 // scopes in cmd/server remain unchanged (see oauth_scopes_test.go).
 func RegisterModerationRoutes(r chi.Router, service moderation.Service, adminAuth *middleware.InstanceAdminMiddleware) {
 	getSubjectState := handler.NewGetSubjectStateHandler(service)
+	removeContent := handler.NewRemoveContentHandler(service)
+	restoreContent := handler.NewRestoreContentHandler(service)
 	r.With(adminAuth.RequireInstanceAdmin).Get(
 		"/xrpc/social.coves.moderation.getSubjectState", getSubjectState.HandleGetSubjectState)
+	r.With(adminAuth.RequireInstanceAdmin).Post(
+		"/xrpc/social.coves.moderation.removeContent", removeContent.HandleRemoveContent)
+	r.With(adminAuth.RequireInstanceAdmin).Post(
+		"/xrpc/social.coves.moderation.restoreContent", restoreContent.HandleRestoreContent)
 }

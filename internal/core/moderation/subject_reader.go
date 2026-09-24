@@ -46,7 +46,10 @@ func (r *repositorySubjectReader) ReadSubject(ctx context.Context, uri string) (
 		if err != nil {
 			return nil, fmt.Errorf("reading comment: %w", err)
 		}
-		return &IndexedRecord{URI: comment.URI, CID: comment.CID, Deleted: comment.DeletedAt != nil}, nil
+		return &IndexedRecord{
+			URI: comment.URI, CID: comment.CID,
+			Deleted: comment.DeletedAt != nil && comment.DeletionReason != nil && *comment.DeletionReason == comments.DeletionReasonAuthor,
+		}, nil
 	default:
 		return nil, fmt.Errorf("%w: unsupported collection", ErrInvalidSubject)
 	}

@@ -3,6 +3,9 @@ package imageproxy
 import (
 	"errors"
 	"testing"
+
+	"github.com/ipfs/go-cid"
+	"github.com/multiformats/go-multibase"
 )
 
 func TestValidateDID(t *testing.T) {
@@ -339,4 +342,45 @@ func contains(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestCanonicalCID(t *testing.T) {
+	const canonical = "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"
+	parsed, err := cid.Decode(canonical)
+	if err != nil {
+		t.Fatalf("fixture must decode: %v", err)
+	}
+	base58, err := parsed.StringOfBase(multibase.Base58BTC)
+	if err != nil {
+		t.Fatalf("re-encode fixture: %v", err)
+	}
+	base16, err := parsed.StringOfBase(multibase.Base16)
+	if err != nil {
+		t.Fatalf("re-encode fixture: %v", err)
+	}
+	tests := []struct {
+		name    string
+		value   string
+		want    string
+		wantErr error
+	}{
+		{name: "canonical CIDv1 is unchanged", value: canonical, want: canonical},
+		{name: "base58btc CIDv1 is canonicalized", value: base58, want: canonical},
+		{name: "base16 CIDv1 is canonicalized", value: base16, want: canonical},
+		{name: "CIDv0 keeps its canonical form", value: "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG", want: "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"},
+		{name: "syntax-valid string that is not a CID", value: "bafybeimockimagetest123", wantErr: ErrInvalidCID},
+		{name: "path traversal", value: "../../../etc/passwd", wantErr: ErrInvalidCID},
+		{name: "empty", value: "", wantErr: ErrInvalidCID},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := CanonicalCID(tt.value)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("CanonicalCID(%q) error = %v, want %v", tt.value, err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Errorf("CanonicalCID(%q) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
+	}
 }
