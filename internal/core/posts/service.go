@@ -935,6 +935,11 @@ const (
 	maxTagLength = 640
 )
 
+// MaxContentLength is the post body cap, in BYTES — it matches the postv2
+// lexicon. Create and edit both enforce it through
+// normalizeAndValidatePostContent.
+const MaxContentLength = 500000
+
 // normalizeAndValidatePostContent is the definition of a well-formed Coves post,
 // and it is SHARED by the create and the edit path rather than duplicated across
 // them.
@@ -989,13 +994,12 @@ const (
 func normalizeAndValidatePostContent(post postContent) error {
 	// Global content limits (from lexicon)
 	const (
-		maxContentLength = 500000 // 500k bytes - matches the postv2 lexicon
-		maxTitleLength   = 3000   // 3k bytes
+		maxTitleLength = 3000 // 3k bytes
 	)
 
-	if post.Content != nil && len(*post.Content) > maxContentLength {
+	if post.Content != nil && len(*post.Content) > MaxContentLength {
 		return NewValidationError("content",
-			fmt.Sprintf("content too long (max %d characters)", maxContentLength))
+			fmt.Sprintf("content too long (max %d characters)", MaxContentLength))
 	}
 
 	if post.Title != nil && len(*post.Title) > maxTitleLength {

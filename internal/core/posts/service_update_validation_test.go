@@ -125,7 +125,7 @@ func TestService_UpdateRefusesContentCreateWouldHaveRefused(t *testing.T) {
 		},
 		{
 			name: "content past the lexicon's cap",
-			req:  posts.UpdatePostRequest{Content: ptr(strings.Repeat("b", 500001))},
+			req:  posts.UpdatePostRequest{Content: ptr(strings.Repeat("b", posts.MaxContentLength+1))},
 		},
 		{
 			name: "a label outside the allowlist",

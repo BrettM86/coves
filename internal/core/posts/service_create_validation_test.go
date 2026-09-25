@@ -203,9 +203,10 @@ func TestService_CreateResolvesTheCommunityAndValidatesTheRequest(t *testing.T) 
 	})
 
 	t.Run("Rejects content over the length limit", func(t *testing.T) {
-		// One byte past maxContentLength (500,000). The limit is what keeps a
-		// single record from being unbounded on the way to the PDS.
-		longContent := string(make([]byte, 500001))
+		// One byte past the service's own content cap, derived from it so a
+		// change to the cap cannot leave this fixture behind. The limit is what
+		// keeps a single record from being unbounded on the way to the PDS.
+		longContent := string(make([]byte, posts.MaxContentLength+1))
 		err := createPost(posts.CreatePostRequest{
 			Community: community.DID,
 			Content:   &longContent,
