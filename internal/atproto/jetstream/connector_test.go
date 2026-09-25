@@ -716,6 +716,9 @@ func TestDeadLetterRedriver_AttemptsEachRowAtMostOncePerPass(t *testing.T) {
 	}
 
 	redriver := NewDeadLetterRedriver(fakeRedriveStore(queue), map[string]EventHandler{"test-consumer": handler})
+	if rows <= redriver.batchSize {
+		t.Fatalf("rows=%d must exceed the redrive batch size %d or a same-pass re-list is invisible", rows, redriver.batchSize)
+	}
 	redriver.redriveAll(ctx)
 
 	for i := int64(1); i <= rows; i++ {
