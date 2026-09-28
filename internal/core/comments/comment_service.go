@@ -1,12 +1,6 @@
 package comments
 
 import (
-	"Coves/internal/core/blobs"
-	"Coves/internal/core/communities"
-	"Coves/internal/core/embeds"
-	"Coves/internal/core/posts"
-	"Coves/internal/core/richtext"
-	"Coves/internal/core/users"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +8,13 @@ import (
 	"log/slog"
 	"strings"
 	"time"
+
+	"Coves/internal/core/blobs"
+	"Coves/internal/core/communities"
+	"Coves/internal/core/embeds"
+	"Coves/internal/core/posts"
+	"Coves/internal/core/richtext"
+	"Coves/internal/core/users"
 
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
@@ -348,11 +349,17 @@ func (s *commentService) getCommentSubtree(
 	}, nil
 }
 
-// buildThreadViews constructs threaded comment views with nested replies using batch loading
-// Uses batch queries to prevent N+1 query problem when loading nested replies
-// Loads replies level-by-level up to the specified depth limit
-// Returns an error if loading a reply batch fails, so callers surface a real failure
-// instead of silently returning a truncated tree.
+// buildThreadViews constructs threaded comment views with nested replies using batch loading.
+//
+// The tree is walked breadth-first: every comment at one depth is hydrated
+// together and every reply at the next depth is fetched together, so a thread
+// costs a fixed three queries per level (replies, viewer votes, authors) no
+// matter how many comments it holds. Walking it per parent instead issues
+// those three queries for every comment that has replies — hundreds of serial
+// round trips on a busy thread at the default depth of 10.
+//
+// Returns an error if loading a reply batch fails, so callers surface a real
+// failure instead of silently returning a truncated tree.
 func (s *commentService) buildThreadViews(
 	ctx context.Context,
 	comments []*Comment,
@@ -361,10 +368,89 @@ func (s *commentService) buildThreadViews(
 	viewerDID *string,
 ) ([]*ThreadViewComment, error) {
 	// Always return an empty slice, never nil (important for JSON serialization)
-	result := make([]*ThreadViewComment, 0, len(comments))
+	result := s.buildLevelViews(ctx, comments, remainingDepth, viewerDID)
 
+	var batchViewerDID string
+	if viewerDID != nil {
+		batchViewerDID = *viewerDID
+	}
+
+	level, levelViews := comments, result
+	for depth := remainingDepth; depth > 0; depth-- {
+		// Collect parent URIs that have replies. Deleted comments are included
+		// so their children are still loaded under the placeholder.
+		parents := make([]string, 0, len(level))
+		for _, comment := range level {
+			if comment.ReplyCount > 0 {
+				parents = append(parents, comment.URI)
+			}
+		}
+		if len(parents) == 0 {
+			break
+		}
+
+		repliesByParent, err := s.commentRepo.ListByParentsBatch(
+			ctx,
+			parents,
+			sort,
+			DefaultRepliesPerParent,
+			batchViewerDID,
+		)
+		if err != nil {
+			// Propagate instead of returning a silently truncated tree: a transient DB
+			// error must surface as a failure, not as "no replies" with HasMore=false
+			return nil, fmt.Errorf("failed to batch load replies: %w", err)
+		}
+
+		// Hydrate the whole next level at once, then hand each parent its slice
+		// of it in the order the repository returned.
+		var nextLevel []*Comment
+		for i, comment := range level {
+			replies := repliesByParent[comment.URI]
+			if comment.ReplyCount == 0 || len(replies) == 0 {
+				continue
+			}
+			nextLevel = append(nextLevel, replies...)
+			// Update HasMore based on actual reply count vs loaded count
+			levelViews[i].HasMore = comment.ReplyCount > len(replies)
+		}
+		nextViews := s.buildLevelViews(ctx, nextLevel, depth-1, viewerDID)
+
+		offset := 0
+		for i, comment := range level {
+			replies := repliesByParent[comment.URI]
+			if comment.ReplyCount == 0 || len(replies) == 0 {
+				continue
+			}
+			levelViews[i].Replies = nextViews[offset : offset+len(replies) : offset+len(replies)]
+			offset += len(replies)
+		}
+
+		level, levelViews = nextLevel, nextViews
+	}
+
+	return result, nil
+}
+
+// buildLevelViews hydrates one depth of a comment thread: viewer vote state and
+// author profiles for every comment, each in a single batched query. Replies
+// are left for buildThreadViews to attach. remainingDepth is the depth still
+// available BELOW these comments, which decides whether a comment with replies
+// reports HasMore.
+//
+// The result is 1:1 with comments and in the same order: result[i] is the view
+// of comments[i], including deleted comments (as placeholders). buildThreadViews
+// depends on this to slice one hydrated level back out to each parent by
+// offset, so this must never drop, merge or reorder comments.
+func (s *commentService) buildLevelViews(
+	ctx context.Context,
+	comments []*Comment,
+	remainingDepth int,
+	viewerDID *string,
+) []*ThreadViewComment {
+	threadViews := make([]*ThreadViewComment, 0, len(comments))
 	if len(comments) == 0 {
-		return result, nil
+		return threadViews
 	}
 
 	// Batch fetch vote states for all comments at this level (Phase 2B)
@@ -412,11 +498,6 @@ func (s *commentService) buildThreadViews(
 		usersByDID = make(map[string]*users.User)
 	}
 
-	// Build thread views for current level
-	threadViews := make([]*ThreadViewComment, 0, len(comments))
-	commentsByURI := make(map[string]*ThreadViewComment)
-	parentsWithReplies := make([]string, 0)
-
 	for _, comment := range comments {
 		var commentView *CommentView
 
@@ -429,70 +510,14 @@ func (s *commentService) buildThreadViews(
 			commentView = s.buildCommentView(comment, viewerDID, voteStates, usersByDID)
 		}
 
-		threadView := &ThreadViewComment{
+		threadViews = append(threadViews, &ThreadViewComment{
 			Comment: commentView,
 			Replies: nil,
 			HasMore: comment.ReplyCount > 0 && remainingDepth == 0,
-		}
-
-		threadViews = append(threadViews, threadView)
-		commentsByURI[comment.URI] = threadView
-
-		// Collect parent URIs that have replies and depth remaining
-		// Include deleted comments so their children are still loaded
-		if remainingDepth > 0 && comment.ReplyCount > 0 {
-			parentsWithReplies = append(parentsWithReplies, comment.URI)
-		}
+		})
 	}
 
-	// Batch load all replies for this level in a single query
-	if len(parentsWithReplies) > 0 {
-		var batchViewerDID string
-		if viewerDID != nil {
-			batchViewerDID = *viewerDID
-		}
-		repliesByParent, err := s.commentRepo.ListByParentsBatch(
-			ctx,
-			parentsWithReplies,
-			sort,
-			DefaultRepliesPerParent,
-			batchViewerDID,
-		)
-		if err != nil {
-			// Propagate instead of returning a silently truncated tree: a transient DB
-			// error must surface as a failure, not as "no replies" with HasMore=false
-			return nil, fmt.Errorf("failed to batch load replies: %w", err)
-		}
-
-		// Group child comments by parent for recursive processing
-		for parentURI, replies := range repliesByParent {
-			threadView := commentsByURI[parentURI]
-			if threadView != nil && len(replies) > 0 {
-				// Recursively build views for child comments
-				threadView.Replies, err = s.buildThreadViews(
-					ctx,
-					replies,
-					remainingDepth-1,
-					sort,
-					viewerDID,
-				)
-				if err != nil {
-					return nil, err
-				}
-
-				// Update HasMore based on actual reply count vs loaded count
-				// Get the original comment to check reply count
-				for _, comment := range comments {
-					if comment.URI == parentURI {
-						threadView.HasMore = comment.ReplyCount > len(replies)
-						break
-					}
-				}
-			}
-		}
-	}
-
-	return threadViews, nil
+	return threadViews
 }
 
 // hydrateAuthorProfile fills display name and avatar on an author view from an indexed

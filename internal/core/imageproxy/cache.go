@@ -41,6 +41,12 @@ type Cache interface {
 // DiskCache implements Cache using the filesystem for storage.
 // Cache key format: {basePath}/{preset}/{did_safe}/{cid}
 // where did_safe has colons replaced with underscores for filesystem safety.
+//
+// Each entry keeps two times on disk, so both survive a restart:
+//   - its modification time is when Set wrote it. Nothing else changes it, and
+//     the TTL counts from it, so reading an entry never extends its life.
+//   - its access time is when it was last read. Get sets it explicitly, and LRU
+//     eviction orders by it.
 type DiskCache struct {
 	basePath  string
 	maxSizeGB int
@@ -141,7 +147,8 @@ func validateParams(preset, did, cid string) error {
 // Get retrieves cached image data for the given preset, DID, and CID.
 // Returns the data, whether it was found, and any error.
 // If the item is not in cache, returns (nil, false, nil).
-// Updates the file's modification time on access for LRU tracking.
+// Records the read in the file's access time for LRU eviction and leaves the
+// modification time, which the TTL counts from, unchanged.
 func (c *DiskCache) Get(preset, did, cid string) ([]byte, bool, error) {
 	if err := validateParams(preset, did, cid); err != nil {
 		return nil, false, err
@@ -157,11 +164,12 @@ func (c *DiskCache) Get(preset, did, cid string) ([]byte, bool, error) {
 		return nil, false, err
 	}
 
-	// Update mtime for LRU tracking
-	// Log errors as warnings since failed mtime updates degrade LRU accuracy
-	now := time.Now()
-	if chtimesErr := os.Chtimes(path, now, now); chtimesErr != nil {
-		slog.Warn("[IMAGE-PROXY] failed to update mtime for LRU tracking",
+	// Set the access time explicitly rather than relying on the read to do it:
+	// noatime and relatime mounts do not update it on every read. The zero
+	// modification time leaves the creation time the TTL counts from alone.
+	// Log errors as warnings since failed updates degrade LRU accuracy
+	if chtimesErr := os.Chtimes(path, time.Now(), time.Time{}); chtimesErr != nil {
+		slog.Warn("[IMAGE-PROXY] failed to update access time for LRU tracking",
 			"path", path,
 			"error", chtimesErr,
 		)
@@ -214,9 +222,12 @@ func (c *DiskCache) Delete(preset, did, cid string) error {
 
 // cacheEntry represents a cached file with its metadata.
 type cacheEntry struct {
-	path    string
-	size    int64
-	modTime time.Time
+	path string
+	size int64
+	// createdAt is the file's modification time: when Set wrote it.
+	createdAt time.Time
+	// lastAccessedAt is the file's access time: when Get last read it.
+	lastAccessedAt time.Time
 }
 
 // scanCache walks the cache directory and returns all cache entries.
@@ -242,9 +253,10 @@ func (c *DiskCache) scanCache() ([]cacheEntry, int64, error) {
 		}
 
 		entries = append(entries, cacheEntry{
-			path:    path,
-			size:    info.Size(),
-			modTime: info.ModTime(),
+			path:           path,
+			size:           info.Size(),
+			createdAt:      info.ModTime(),
+			lastAccessedAt: lastAccessTime(info),
 		})
 		totalSize += info.Size()
 
@@ -277,9 +289,9 @@ func (c *DiskCache) EvictLRU() (int, error) {
 		return 0, nil // Under limit, nothing to do
 	}
 
-	// Sort by modification time (oldest first for LRU)
+	// Sort by last access (least recently read first)
 	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].modTime.Before(entries[j].modTime)
+		return entries[i].lastAccessedAt.Before(entries[j].lastAccessedAt)
 	})
 
 	removed := 0
@@ -318,7 +330,8 @@ func (c *DiskCache) EvictLRU() (int, error) {
 	return removed, nil
 }
 
-// CleanExpired removes cache entries older than the configured TTL.
+// CleanExpired removes cache entries written longer ago than the configured
+// TTL, however recently they were read.
 // Returns the number of entries removed.
 // If TTL is 0 (disabled), returns 0 without scanning.
 func (c *DiskCache) CleanExpired() (int, error) {
@@ -335,7 +348,7 @@ func (c *DiskCache) CleanExpired() (int, error) {
 	removed := 0
 
 	for _, entry := range entries {
-		if entry.modTime.After(cutoff) {
+		if entry.createdAt.After(cutoff) {
 			continue // Not expired
 		}
 
@@ -343,7 +356,7 @@ func (c *DiskCache) CleanExpired() (int, error) {
 			if !os.IsNotExist(err) {
 				slog.Warn("[IMAGE-PROXY] failed to remove expired cache entry",
 					"path", entry.path,
-					"mod_time", entry.modTime,
+					"created_at", entry.createdAt,
 					"error", err,
 				)
 			}
@@ -354,7 +367,7 @@ func (c *DiskCache) CleanExpired() (int, error) {
 
 		slog.Debug("[IMAGE-PROXY] removed expired cache entry",
 			"path", entry.path,
-			"mod_time", entry.modTime,
+			"created_at", entry.createdAt,
 			"ttl_days", c.ttlDays,
 		)
 	}

@@ -196,6 +196,8 @@ func TestRematerializeLedgerMigration_RollsBack(t *testing.T) {
 	// 037 and come off first, one asserted step at a time. Asserting which
 	// migration rolled back is what keeps this pointed at 037's Down rather than
 	// drifting onto a newer one later.
+	require.EqualValues(t, 49, testkit.MigrateDownOne(t, db, 49),
+		"049 (read-path indexes) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 48, testkit.MigrateDownOne(t, db, 48),
 		"048 (Discover Hot snapshot tables) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 47, testkit.MigrateDownOne(t, db, 47),

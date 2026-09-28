@@ -134,6 +134,16 @@ func (r *originRepo) GetByDID(_ context.Context, did string) (*communities.Commu
 	return &cp, nil
 }
 
+// ExistsByDID answers through GetByDID so the call count and injected error
+// cover the consumers' key-only existence checks too.
+func (r *originRepo) ExistsByDID(ctx context.Context, did string) (bool, error) {
+	_, err := r.GetByDID(ctx, did)
+	if communities.IsNotFound(err) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 func (r *originRepo) Update(_ context.Context, c *communities.Community) (*communities.Community, error) {
 	if _, ok := r.byDID[c.DID]; !ok {
 		return nil, communities.ErrCommunityNotFound

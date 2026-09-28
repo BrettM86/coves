@@ -59,7 +59,7 @@ func newStubbedService(t *testing.T, repo Repository, handler http.HandlerFunc) 
 	t.Cleanup(server.Close)
 
 	svc := NewService(repo, &mockIdentityResolver{}).(*service)
-	svc.api = blueskyAPI{baseURL: server.URL, allowPrivateHost: true}
+	svc.api = newBlueskyAPI(server.URL, true)
 	return svc
 }
 

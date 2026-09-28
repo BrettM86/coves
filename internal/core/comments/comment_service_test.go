@@ -404,6 +404,30 @@ func (m *mockCommunityRepo) GetByHandle(ctx context.Context, handle string) (*co
 	return nil, communities.ErrCommunityNotFound
 }
 
+func (r *mockCommunityRepo) ExistsByDID(ctx context.Context, did string) (bool, error) {
+	_, err := r.GetByDID(ctx, did)
+	if communities.IsNotFound(err) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (r *mockCommunityRepo) GetDIDByHandle(ctx context.Context, handle string) (string, error) {
+	community, err := r.GetByHandle(ctx, handle)
+	if err != nil {
+		return "", err
+	}
+	return community.DID, nil
+}
+
+func (r *mockCommunityRepo) GetDIDByNameAndOrigin(ctx context.Context, name, origin string) (string, error) {
+	community, err := r.GetByNameAndOrigin(ctx, name, origin)
+	if err != nil {
+		return "", err
+	}
+	return community.DID, nil
+}
+
 func (m *mockCommunityRepo) Update(ctx context.Context, community *communities.Community) (*communities.Community, error) {
 	m.communities[community.DID] = community
 	return community, nil
@@ -2590,4 +2614,165 @@ func TestBuildCommentView_HydratesEmbedForAnUnindexedAuthor(t *testing.T) {
 	assert.Equal(t,
 		"https://img.coves.social/img/content_preview/plain/"+commenterDID+"/"+imageCID,
 		image["thumb"])
+}
+
+// countingUserRepo counts batched author lookups.
+type countingUserRepo struct {
+	*mockUserRepo
+	getByDIDsCalls int
+}
+
+func (c *countingUserRepo) GetByDIDs(ctx context.Context, dids []string) (map[string]*users.User, error) {
+	c.getByDIDsCalls++
+	return c.mockUserRepo.GetByDIDs(ctx, dids)
+}
+
+// A thread costs a fixed number of queries per depth, not per comment with
+// replies: the whole next level is fetched and hydrated at once.
+func TestCommentService_buildThreadViews_BatchesPerLevelNotPerParent(t *testing.T) {
+	commentRepo := newMockCommentRepo()
+	userRepo := &countingUserRepo{mockUserRepo: newMockUserRepo()}
+	const postURI = "at://did:plc:post123/app.bsky.feed.post/test"
+	const commenter = "did:plc:commenter123"
+
+	// 3 top-level comments, each with 2 replies, each of those with 2 replies
+	// of its own: 21 comments across 3 levels, 9 of them parents.
+	children := map[string][]*Comment{}
+	var top []*Comment
+	for i := range 3 {
+		root := createTestComment(fmt.Sprintf("at://%s/comment/t%d", commenter, i), commenter, "commenter.test", postURI, postURI, 2)
+		top = append(top, root)
+		for j := range 2 {
+			reply := createTestComment(fmt.Sprintf("%s-r%d", root.URI, j), commenter, "commenter.test", postURI, root.URI, 3)
+			children[root.URI] = append(children[root.URI], reply)
+			for k := range 2 {
+				leaf := createTestComment(fmt.Sprintf("%s-l%d", reply.URI, k), commenter, "commenter.test", postURI, reply.URI, 0)
+				children[reply.URI] = append(children[reply.URI], leaf)
+			}
+		}
+	}
+
+	batchCalls := 0
+	commentRepo.listByParentsBatchFunc = func(ctx context.Context, parentURIs []string, sort string, limitPerParent int) (map[string][]*Comment, error) {
+		batchCalls++
+		result := map[string][]*Comment{}
+		for _, uri := range parentURIs {
+			result[uri] = children[uri]
+		}
+		return result, nil
+	}
+
+	service := NewCommentService(commentRepo, userRepo, newMockPostRepo(), newMockCommunityRepo(), nil, nil, nil).(*commentService)
+	result, err := service.buildThreadViews(context.Background(), top, 10, "hot", nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, batchCalls, "one reply batch per level below the top, not one per parent")
+	assert.Equal(t, 3, userRepo.getByDIDsCalls, "one author lookup per level")
+
+	require.Len(t, result, 3)
+	for i, rootView := range result {
+		assert.Equal(t, top[i].URI, rootView.Comment.URI)
+		assert.False(t, rootView.HasMore, "all of the root's replies were loaded")
+		require.Len(t, rootView.Replies, 2)
+		for j, replyView := range rootView.Replies {
+			assert.Equal(t, children[top[i].URI][j].URI, replyView.Comment.URI)
+			assert.True(t, replyView.HasMore, "reply_count 3 with 2 loaded leaves more to fetch")
+			require.Len(t, replyView.Replies, 2)
+			for k, leafView := range replyView.Replies {
+				assert.Equal(t, children[replyView.Comment.URI][k].URI, leafView.Comment.URI)
+				assert.Nil(t, leafView.Replies)
+				assert.False(t, leafView.HasMore)
+			}
+		}
+	}
+}
+
+// One level whose parents have uneven reply counts: each parent must get back
+// exactly its own replies, in the repository's order, and a parent the batch
+// returned nothing for must not steal a neighbour's slice of the hydrated
+// level.
+func TestCommentService_buildThreadViews_UnevenRepliesPerParent(t *testing.T) {
+	commentRepo := newMockCommentRepo()
+	const postURI = "at://did:plc:post123/app.bsky.feed.post/test"
+	const commenter = "did:plc:commenter123"
+	newComment := func(uri, parentURI string, replyCount int) *Comment {
+		return createTestComment(uri, commenter, "commenter.test", postURI, parentURI, replyCount)
+	}
+
+	// P0 has no replies; P1 claims 3 but the batch returns none (all hidden
+	// or blocked); P2 has its only reply loaded; P3 has 4, of which the batch
+	// returns the first 3.
+	parentWithoutReplies := newComment("at://did:plc:commenter123/comment/p0", postURI, 0)
+	parentWithHiddenReplies := newComment("at://did:plc:commenter123/comment/p1", postURI, 3)
+	parentWithOneReply := newComment("at://did:plc:commenter123/comment/p2", postURI, 1)
+	parentWithTruncatedReplies := newComment("at://did:plc:commenter123/comment/p3", postURI, 4)
+	top := []*Comment{parentWithoutReplies, parentWithHiddenReplies, parentWithOneReply, parentWithTruncatedReplies}
+
+	children := map[string][]*Comment{
+		parentWithOneReply.URI: {
+			newComment(parentWithOneReply.URI+"-r0", parentWithOneReply.URI, 0),
+		},
+		parentWithTruncatedReplies.URI: {
+			newComment(parentWithTruncatedReplies.URI+"-r0", parentWithTruncatedReplies.URI, 0),
+			newComment(parentWithTruncatedReplies.URI+"-r1", parentWithTruncatedReplies.URI, 0),
+			newComment(parentWithTruncatedReplies.URI+"-r2", parentWithTruncatedReplies.URI, 0),
+		},
+	}
+
+	var requestedParents [][]string
+	commentRepo.listByParentsBatchFunc = func(ctx context.Context, parentURIs []string, sort string, limitPerParent int) (map[string][]*Comment, error) {
+		requestedParents = append(requestedParents, parentURIs)
+		result := map[string][]*Comment{}
+		for _, uri := range parentURIs {
+			if replies, ok := children[uri]; ok {
+				result[uri] = replies
+			}
+		}
+		return result, nil
+	}
+
+	service := NewCommentService(commentRepo, newMockUserRepo(), newMockPostRepo(), newMockCommunityRepo(), nil, nil, nil).(*commentService)
+	result, err := service.buildThreadViews(context.Background(), top, 10, "hot", nil)
+	require.NoError(t, err)
+
+	require.Equal(t, [][]string{{parentWithHiddenReplies.URI, parentWithOneReply.URI, parentWithTruncatedReplies.URI}}, requestedParents,
+		"only parents with a reply count are batched, and the replies (all reply_count 0) end the walk")
+
+	replyURIs := func(view *ThreadViewComment) []string {
+		if view.Replies == nil {
+			return nil
+		}
+		uris := make([]string, 0, len(view.Replies))
+		for _, reply := range view.Replies {
+			uris = append(uris, reply.Comment.URI)
+		}
+		return uris
+	}
+
+	require.Len(t, result, 4)
+	for i, view := range result {
+		assert.Equal(t, top[i].URI, view.Comment.URI, "top-level order is preserved")
+	}
+
+	assert.Nil(t, result[0].Replies)
+	assert.False(t, result[0].HasMore, "no replies at all")
+
+	assert.Nil(t, result[1].Replies, "the batch returned nothing for this parent")
+	assert.False(t, result[1].HasMore,
+		"with depth to spare and nothing returned, HasMore stays false (the same as main's per-parent walk)")
+
+	assert.Equal(t, []string{parentWithOneReply.URI + "-r0"}, replyURIs(result[2]))
+	assert.False(t, result[2].HasMore, "its only reply was loaded")
+
+	assert.Equal(t, []string{
+		parentWithTruncatedReplies.URI + "-r0",
+		parentWithTruncatedReplies.URI + "-r1",
+		parentWithTruncatedReplies.URI + "-r2",
+	}, replyURIs(result[3]))
+	assert.True(t, result[3].HasMore, "reply_count 4 with 3 loaded leaves more to fetch")
+
+	for _, view := range append(result[2].Replies, result[3].Replies...) {
+		assert.Nil(t, view.Replies)
+		assert.False(t, view.HasMore)
+	}
 }

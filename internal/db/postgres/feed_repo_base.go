@@ -49,7 +49,7 @@ var feedSortClauses = map[string]string{
 //   - Used by: Both timeline and discover for "top" sort
 //   - Covers: Community filtering + score ordering + tie-breaking + soft delete filter
 //
-// 3. idx_subscriptions_user_community ON community_subscriptions(user_did, community_did)
+// 3. community_subscriptions_user_did_community_did_key UNIQUE (user_did, community_did)
 //   - Used by: Timeline feed (JOIN with subscriptions)
 //   - Covers: User subscription lookup
 //
@@ -87,9 +87,17 @@ type feedRepoBase struct {
 // future timestamps. Clamping the age (not the POWER base) means a future-dated
 // post ranks exactly like a brand-new one instead of gaining a boost, and the
 // POWER base stays >= 2 so it can never error on a negative base.
+//
+// The age is cast to double precision before any arithmetic. EXTRACT returns
+// NUMERIC, and POWER over NUMERIC runs in arbitrary precision — about 20x the
+// cost of the float8 version, paid on every candidate row of every hot feed
+// (the whole community, or every subscribed community on the timeline). The
+// rank was already rounded to float8 by the division, so this changes nothing
+// but the last bits of a value that both sides of every cursor comparison
+// compute with this same builder.
 func hotRankSQL(alias, nowExpr string) string {
 	return fmt.Sprintf(
-		`((SIGN(%[1]s.score) * LN(ABS(%[1]s.score) + 1) + 1) / POWER(GREATEST(EXTRACT(EPOCH FROM (%[2]s - %[1]s.created_at))/3600, 0) + 2, 1.5))`,
+		`((SIGN(%[1]s.score) * LN(ABS(%[1]s.score) + 1) + 1) / POWER(GREATEST(EXTRACT(EPOCH FROM (%[2]s - %[1]s.created_at))::float8/3600, 0) + 2, 1.5))`,
 		alias, nowExpr)
 }
 

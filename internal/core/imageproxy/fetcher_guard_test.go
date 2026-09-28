@@ -553,7 +553,7 @@ func TestImageProxyService_GetImage_RefusesAPrivateAddressOnAColdCache(t *testin
 	})
 	require.NoError(t, err, "creating the image proxy service")
 
-	_, err = service.GetImage(context.Background(), preset, did, cid, pds.server.URL)
+	_, err = service.GetImageResolvingPDS(context.Background(), preset, did, cid, resolvedPDS(pds.server.URL))
 
 	require.Error(t, err,
 		"the assembled image proxy fetched a blob from a loopback PDS URL. This is the shape of the "+

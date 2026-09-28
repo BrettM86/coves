@@ -1193,12 +1193,12 @@ func (s *communityService) ResolveCommunityIdentifier(ctx context.Context, ident
 
 	// 1. DID - verify it exists and return (Bluesky standard)
 	if strings.HasPrefix(identifier, "did:") {
-		_, err := s.repo.GetByDID(ctx, identifier)
+		exists, err := s.repo.ExistsByDID(ctx, identifier)
 		if err != nil {
-			if IsNotFound(err) {
-				return "", fmt.Errorf("community not found for DID %s: %w", identifier, err)
-			}
 			return "", fmt.Errorf("failed to verify community DID %s: %w", identifier, err)
+		}
+		if !exists {
+			return "", fmt.Errorf("community not found for DID %s: %w", identifier, ErrCommunityNotFound)
 		}
 		return identifier, nil
 	}
@@ -1218,9 +1218,9 @@ func (s *communityService) ResolveCommunityIdentifier(ctx context.Context, ident
 
 	// 5. Canonical handle: name.community.instance.com (Bluesky standard)
 	if strings.Contains(identifier, ".") {
-		community, err := LookupByHandle(ctx, s.repo, identifier)
+		did, err := LookupDIDByHandle(ctx, s.repo, identifier)
 		if err == nil {
-			return community.DID, nil
+			return did, nil
 		}
 		if !IsNotFound(err) {
 			return "", fmt.Errorf("failed to look up community handle %s: %w", identifier, err)
@@ -1287,11 +1287,14 @@ func (s *communityService) resolveScopedIdentifier(ctx context.Context, scoped s
 		// Construct canonical handle: c-{name}.{instanceDomain}
 		canonicalHandle := fmt.Sprintf("c-%s.%s", name, origin)
 
-		community, err := s.repo.GetByHandle(ctx, canonicalHandle)
+		did, err := s.repo.GetDIDByHandle(ctx, canonicalHandle)
 		if err != nil {
-			return "", fmt.Errorf("community not found for scoped identifier !%s@%s: %w", name, origin, err)
+			if IsNotFound(err) {
+				return "", fmt.Errorf("community not found for scoped identifier !%s@%s: %w", name, origin, err)
+			}
+			return "", fmt.Errorf("failed to look up community !%s@%s: %w", name, origin, err)
 		}
-		return community.DID, nil
+		return did, nil
 	}
 
 	// A remote origin must be a real public hostname: it is compared against
@@ -1302,9 +1305,9 @@ func (s *communityService) resolveScopedIdentifier(ctx context.Context, scoped s
 		return "", NewValidationError("identifier", "invalid instance domain format")
 	}
 
-	community, err := s.repo.GetByNameAndOrigin(ctx, name, normalizedOrigin)
+	did, err := s.repo.GetDIDByNameAndOrigin(ctx, name, normalizedOrigin)
 	if err == nil {
-		return community.DID, nil
+		return did, nil
 	}
 	if IsAmbiguous(err) {
 		return "", fmt.Errorf("resolving scoped identifier !%s@%s: %w", name, normalizedOrigin, err)
@@ -1317,14 +1320,14 @@ func (s *communityService) resolveScopedIdentifier(ctx context.Context, scoped s
 	// column existed still follows the c-{name}.{origin} handle convention,
 	// and EffectiveOrigin advertises exactly that origin to clients — so the
 	// identifier the API hands out has to resolve here too.
-	community, err = s.repo.GetByHandle(ctx, fmt.Sprintf("c-%s.%s", name, normalizedOrigin))
+	did, err = s.repo.GetDIDByHandle(ctx, fmt.Sprintf("c-%s.%s", name, normalizedOrigin))
 	if err != nil {
 		if IsNotFound(err) {
 			return "", fmt.Errorf("community not found for scoped identifier !%s@%s: %w", name, normalizedOrigin, err)
 		}
 		return "", fmt.Errorf("failed to look up community !%s@%s: %w", name, normalizedOrigin, err)
 	}
-	return community.DID, nil
+	return did, nil
 }
 
 // isLocalInstance checks if the provided domain matches this instance

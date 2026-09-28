@@ -18,7 +18,6 @@ import (
 
 	"Coves/internal/atproto/identity"
 	"Coves/internal/atproto/oauth"
-	"Coves/internal/core/communities"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
 
@@ -734,13 +733,14 @@ func (c *PostEventConsumer) upsertAuthorPost(ctx context.Context, authorDID stri
 	// names a community that does not exist must not be able to stall the
 	// lane for that long per post. ErrUnresolvedReference skips the in-line
 	// retries and leaves the redrive budget for the redriver.
-	if _, err := c.communityRepo.GetByDID(ctx, record.Community); err != nil {
-		if communities.IsNotFound(err) {
-			log.Printf("Error: cannot index %s before its community %s is indexed", uri, record.Community)
-			return fmt.Errorf("%w: community not found: %s - cannot index post before community",
-				ErrUnresolvedReference, record.Community)
-		}
+	exists, err := c.communityRepo.ExistsByDID(ctx, record.Community)
+	if err != nil {
 		return fmt.Errorf("%w: failed to verify community %s exists: %v", errValidationInfra, record.Community, err)
+	}
+	if !exists {
+		log.Printf("Error: cannot index %s before its community %s is indexed", uri, record.Community)
+		return fmt.Errorf("%w: community not found: %s - cannot index post before community",
+			ErrUnresolvedReference, record.Community)
 	}
 
 	// Provenance for bridgedStats is keyed on the AUTHOR's PDS now, because the
@@ -1066,18 +1066,19 @@ func parseCommunityDecision(record map[string]interface{}, collection string) (*
 func (c *PostEventConsumer) handleCommunityDecisionEvent(ctx context.Context, event *JetstreamEvent, commit *CommitEvent) error {
 	communityDID := event.Did
 
-	if _, err := c.communityRepo.GetByDID(ctx, communityDID); err != nil {
-		if communities.IsNotFound(err) {
-			// This is an unresolved reference caused by delivery order rather
-			// than leniency: a community's first acceptance can genuinely outrun
-			// its own profile event. The bounded redrive budget can resolve that
-			// race without giving attacker-reachable input in-line retries.
-			log.Printf("🚨 SECURITY: refusing %s from %s - not an indexed community repo",
-				commit.Collection, communityDID)
-			return fmt.Errorf("%w: community not found: %s - cannot apply a %s from a repo that is not an indexed community",
-				ErrUnresolvedReference, communityDID, commit.Collection)
-		}
+	exists, err := c.communityRepo.ExistsByDID(ctx, communityDID)
+	if err != nil {
 		return fmt.Errorf("%w: failed to verify community %s exists: %v", errValidationInfra, communityDID, err)
+	}
+	if !exists {
+		// This is an unresolved reference caused by delivery order rather
+		// than leniency: a community's first acceptance can genuinely outrun
+		// its own profile event. The bounded redrive budget can resolve that
+		// race without giving attacker-reachable input in-line retries.
+		log.Printf("🚨 SECURITY: refusing %s from %s - not an indexed community repo",
+			commit.Collection, communityDID)
+		return fmt.Errorf("%w: community not found: %s - cannot apply a %s from a repo that is not an indexed community",
+			ErrUnresolvedReference, communityDID, commit.Collection)
 	}
 
 	if commit.Operation == "delete" {

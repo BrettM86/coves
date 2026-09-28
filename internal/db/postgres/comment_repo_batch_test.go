@@ -351,6 +351,68 @@ func TestCommentRepo_ListByParentsBatch(t *testing.T) {
 			"one viewer's block must not remove the reply for everybody")
 	})
 
+	// The LIMIT sits inside the per-parent LATERAL, so it has to be applied
+	// after that sort's ORDER BY. Four replies whose hot, new and top orders
+	// all pick a different top two: an ORDER BY that fell back to another
+	// arm, or a LIMIT taken before ordering, picks the wrong pair.
+	t.Run("a limit below the reply count keeps each sort's own top N", func(t *testing.T) {
+		t.Parallel()
+		env := commentEnvFor(t)
+		parent := env.seed(commentSpec{rkey: "capped"})
+		// Hot is computed against NOW(), so these ages are relative to the
+		// clock rather than commentBaseTime. The hot ranks, log10(score+2) /
+		// (hours+2)^1.8, are roughly: oldBest 0.003, recentRising 0.186,
+		// newestFlat 0.085, midScored 0.111.
+		now := time.Now().UTC()
+		oldBest := env.seed(commentSpec{rkey: "oldbest", parent: parent, score: 1000, createdAt: now.Add(-48 * time.Hour)})
+		recentRising := env.seed(commentSpec{rkey: "rising", parent: parent, score: 20, createdAt: now.Add(-time.Hour)})
+		newestFlat := env.seed(commentSpec{rkey: "newest", parent: parent, createdAt: now.Add(-time.Minute)})
+		midScored := env.seed(commentSpec{rkey: "midscored", parent: parent, score: 100, createdAt: now.Add(-3 * time.Hour)})
+
+		byHot, err := env.repo.ListByParentsBatch(env.ctx, []string{parent}, "hot", 2, "")
+		require.NoError(t, err)
+		assert.Equal(t, []string{recentRising, midScored}, commentURIs(byHot[parent]),
+			"hot's top two are the recent, moderately scored replies, not the newest and not the "+
+				"highest scored")
+
+		byNew, err := env.repo.ListByParentsBatch(env.ctx, []string{parent}, "new", 2, "")
+		require.NoError(t, err)
+		assert.Equal(t, []string{newestFlat, recentRising}, commentURIs(byNew[parent]),
+			"new's top two are the two most recent replies")
+
+		all, err := env.repo.ListByParentsBatch(env.ctx, []string{parent}, "hot", 10, "")
+		require.NoError(t, err)
+		assert.Equal(t, []string{recentRising, midScored, newestFlat, oldBest}, commentURIs(all[parent]),
+			"with room for every reply, the capped result must be this ordering's prefix")
+	})
+
+	// The block filter lives in the LATERAL's WHERE, so it removes rows before
+	// the LIMIT counts them. Filtering after the LIMIT would spend the only slot
+	// on the blocked reply and then drop it, leaving the parent with none.
+	t.Run("the block filter applies before the per-parent limit", func(t *testing.T) {
+		t.Parallel()
+		env := commentEnvFor(t)
+		parent := env.seed(commentSpec{rkey: "blockcap"})
+		viewer := "did:plc:cmtbcviewer" + env.id
+		blocked := "did:plc:cmtbcblocked" + env.id
+		createTestUser(t, env.db, "cmtbcv-"+env.id+".test", viewer)
+		createTestUser(t, env.db, "cmtbcb-"+env.id+".test", blocked)
+		otherReply := env.seed(commentSpec{rkey: "older", parent: parent})
+		blockedReply := env.seed(commentSpec{rkey: "newerblocked", parent: parent, author: blocked,
+			createdAt: commentBaseTime.Add(time.Minute)})
+		insertUserBlock(t, env.db, viewer, blocked)
+
+		anonymous, err := env.repo.ListByParentsBatch(env.ctx, []string{parent}, "new", 1, "")
+		require.NoError(t, err)
+		require.Equal(t, []string{blockedReply}, commentURIs(anonymous[parent]),
+			"precondition: the blocked author's reply ranks first under new")
+
+		got, err := env.repo.ListByParentsBatch(env.ctx, []string{parent}, "new", 1, viewer)
+		require.NoError(t, err)
+		assert.Equal(t, []string{otherReply}, commentURIs(got[parent]),
+			"the viewer must get the next reply in the blocked one's place, not an empty parent")
+	})
+
 	t.Run("hydrates the author handle and falls back to the DID", func(t *testing.T) {
 		t.Parallel()
 		env := commentEnvFor(t)

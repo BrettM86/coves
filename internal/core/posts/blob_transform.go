@@ -3,7 +3,9 @@ package posts
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
+	"log/slog"
 	"strings"
 
 	"Coves/internal/core/blueskypost"
@@ -81,51 +83,51 @@ func blobOwnerOf(postView *PostView) (did, pdsURL string, ok bool) {
 // BlueskyPostResult projected into its serving view.
 // Only processes social.coves.embed.post embeds with app.bsky.feed.post URIs
 func TransformPostEmbeds(ctx context.Context, postView *PostView, blueskyService blueskypost.Service) {
+	// Most posts carry no Bluesky quote, so the two common-case returns (no
+	// embed, or an embed of another type or collection) run once per post of
+	// every feed page and stay silent. The others mean a malformed embed and
+	// log at warn level.
 	if postView == nil || postView.Embed == nil || blueskyService == nil {
-		log.Printf("[DEBUG] [TRANSFORM-EMBED] Skipping: postView nil=%v, embed nil=%v, blueskyService nil=%v",
-			postView == nil, postView == nil || postView.Embed == nil, blueskyService == nil)
 		return
 	}
 
 	// Check if embed is a map (should be for post embeds)
 	embedMap, ok := postView.Embed.(map[string]interface{})
 	if !ok {
-		log.Printf("[DEBUG] [TRANSFORM-EMBED] Skipping: embed is not a map (type: %T)", postView.Embed)
+		slog.Warn("skipping embed transform: embed is not a map", "post", postView.URI, "type", fmt.Sprintf("%T", postView.Embed))
 		return
 	}
 
 	// Check embed type
 	embedType, ok := embedMap["$type"].(string)
 	if !ok || embedType != "social.coves.embed.post" {
-		log.Printf("[DEBUG] [TRANSFORM-EMBED] Skipping: embed type is not social.coves.embed.post (type: %v)", embedType)
 		return
 	}
 
 	// Extract the post reference
 	postRef, ok := embedMap["post"].(map[string]interface{})
 	if !ok {
-		log.Printf("[DEBUG] [TRANSFORM-EMBED] Skipping: post reference is not a map")
+		slog.Warn("skipping embed transform: post reference is not a map", "post", postView.URI)
 		return
 	}
 
 	// Get the AT-URI from the post reference
 	atURI, ok := postRef["uri"].(string)
 	if !ok || atURI == "" {
-		log.Printf("[DEBUG] [TRANSFORM-EMBED] Skipping: AT-URI is missing or not a string")
+		slog.Warn("skipping embed transform: AT-URI is missing", "post", postView.URI)
 		return
 	}
 
 	// Only process app.bsky.feed.post URIs (Bluesky posts)
 	// Format: at://did:plc:xxx/app.bsky.feed.post/abc123
 	if len(atURI) < 20 || atURI[:5] != "at://" {
-		log.Printf("[DEBUG] [TRANSFORM-EMBED] Skipping: invalid AT-URI format: %s", atURI)
+		slog.Warn("skipping embed transform: invalid AT-URI", "post", postView.URI, "uri", atURI)
 		return
 	}
 
 	// Simple check for app.bsky.feed.post collection
 	// We don't want to process other types of embeds (e.g., Coves posts)
 	if !strings.Contains(atURI, "/app.bsky.feed.post/") {
-		log.Printf("[DEBUG] [TRANSFORM-EMBED] Skipping: not a Bluesky post (URI: %s)", atURI)
 		return
 	}
 

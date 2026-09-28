@@ -652,6 +652,10 @@ func (r *postgresCommentRepo) buildCommenterCursor(comment *comments.Comment) st
 // a non-integer power yields a complex result", aborting the whole thread query.
 // GREATEST(age, 0) keeps the POWER base >= 2 and makes a future-dated comment rank
 // exactly like a brand-new one instead of gaining a boost.
+//
+// The age is cast to double precision for the same reason as hotRankSQL's: POWER
+// over EXTRACT's NUMERIC result costs about 20x the float8 version on every reply
+// ranked, and the rank was already a float8.
 func commentHotRankSQL(alias, nowExpr string) string {
 	return commentHotRankFromValuesSQL(alias+".score", alias+".created_at", nowExpr)
 }
@@ -662,7 +666,7 @@ func commentHotRankSQL(alias, nowExpr string) string {
 // operand types as the row side, both sides of the comparison evaluate bit-identically.
 func commentHotRankFromValuesSQL(scoreExpr, createdAtExpr, nowExpr string) string {
 	return fmt.Sprintf(
-		`LOG(GREATEST(2, %[1]s + 2)) / POWER(GREATEST(EXTRACT(EPOCH FROM (%[3]s - %[2]s))/3600, 0) + 2, 1.8)`,
+		`LOG(GREATEST(2, %[1]s + 2)) / POWER(GREATEST(EXTRACT(EPOCH FROM (%[3]s - %[2]s))::float8/3600, 0) + 2, 1.8)`,
 		scoreExpr, createdAtExpr, nowExpr)
 }
 
@@ -1264,43 +1268,31 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 		return make(map[string][]*comments.Comment), nil
 	}
 
-	// Build ORDER BY clause based on sort type
-	// windowOrderBy must inline expressions (can't use SELECT aliases in window functions)
-	var windowOrderBy string
-	var selectClause string
+	// Each parent's replies are ranked and limited on their own (LATERAL ... LIMIT),
+	// so the top and new sorts read just limitPerParent rows per parent straight off
+	// idx_comments_parent_score / idx_comments_parent. The window-function form this
+	// replaced ranked, joined and materialized EVERY reply of every parent before
+	// discarding all but a handful — thousands of full rows for one popular comment.
+	// Hot still ranks each parent's replies, as it must, but no longer joins users
+	// or carries full rows for the ones it drops.
+	//
+	// The outer ORDER BY restores the per-parent order the LIMIT chose; the callers
+	// group rows by parent in the order they arrive.
+	var rankColumn, innerOrderBy, outerOrderBy string
 	switch sort {
 	case "top":
-		selectClause = `
-			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
-			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
-			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
-			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
-			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
-			NULL::numeric as hot_rank,
-			COALESCE(u.handle, c.commenter_did) as author_handle`
-		windowOrderBy = `c.score DESC, c.created_at DESC`
+		rankColumn = `NULL::numeric`
+		innerOrderBy = `c.score DESC, c.created_at DESC, c.uri DESC`
+		outerOrderBy = `c.score DESC, c.created_at DESC, c.uri DESC`
 	case "new":
-		selectClause = `
-			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
-			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
-			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
-			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
-			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
-			NULL::numeric as hot_rank,
-			COALESCE(u.handle, c.commenter_did) as author_handle`
-		windowOrderBy = `c.created_at DESC`
+		rankColumn = `NULL::numeric`
+		innerOrderBy = `c.created_at DESC, c.uri DESC`
+		outerOrderBy = `c.created_at DESC, c.uri DESC`
 	default:
 		// "hot", and deliberately any unrecognised sort — see the KNOWN DEFECT note in buildCommentSortClause
-		selectClause = fmt.Sprintf(`
-			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
-			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
-			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
-			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
-			c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
-			%s as hot_rank,
-			COALESCE(u.handle, c.commenter_did) as author_handle`, commentHotRankSQL("c", "NOW()"))
-		// CRITICAL: Must inline hot_rank formula - PostgreSQL doesn't allow SELECT aliases in window ORDER BY
-		windowOrderBy = commentHotRankSQL("c", "NOW()") + ` DESC, c.score DESC, c.created_at DESC`
+		rankColumn = commentHotRankSQL("c", "NOW()")
+		innerOrderBy = `hot_rank DESC, c.score DESC, c.created_at DESC, c.uri DESC`
+		outerOrderBy = `c.hot_rank DESC, c.score DESC, c.created_at DESC, c.uri DESC`
 	}
 
 	// Build optional viewer block filter (only when authenticated viewer is present)
@@ -1313,34 +1305,35 @@ func (r *postgresCommentRepo) ListByParentsBatch(
 		viewerArgs = append(viewerArgs, viewerDID)
 	}
 
-	// Use window function to limit results per parent
-	// This is more efficient than LIMIT in a subquery per parent
 	// LEFT JOIN prevents data loss when user record hasn't been indexed yet (out-of-order Jetstream events)
 	// Includes deleted comments to preserve thread structure (shown as "[deleted]" placeholders)
+	// DISTINCT keeps a parent listed twice from returning its replies twice, as = ANY did.
 	query := fmt.Sprintf(`
-		WITH ranked_comments AS (
-			SELECT
-				%s,
-				ROW_NUMBER() OVER (
-					PARTITION BY c.parent_uri
-					ORDER BY %s
-				) as rn
-			FROM comments c
-			LEFT JOIN users u ON c.commenter_did = u.did
-			WHERE c.parent_uri = ANY($1)
-				%s
-		)
 		SELECT
-			id, uri, cid, rkey, commenter_did,
-			root_uri, root_cid, parent_uri, parent_cid,
-			content, content_facets, embed, content_labels, langs,
-			created_at, indexed_at, deleted_at, deletion_reason, deleted_by,
-			upvote_count, downvote_count, score, reply_count,
-			hot_rank, author_handle
-		FROM ranked_comments
-		WHERE rn <= $2
-		ORDER BY parent_uri, rn
-	`, selectClause, windowOrderBy, viewerFilter)
+			c.id, c.uri, c.cid, c.rkey, c.commenter_did,
+			c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
+			c.content, c.content_facets, c.embed, c.content_labels, c.langs,
+			c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
+			c.upvote_count, c.downvote_count, c.score, c.reply_count,
+			c.hot_rank, COALESCE(u.handle, c.commenter_did) AS author_handle
+		FROM (SELECT DISTINCT unnest($1::text[]) AS uri) AS parent
+		CROSS JOIN LATERAL (
+			SELECT
+				c.id, c.uri, c.cid, c.rkey, c.commenter_did,
+				c.root_uri, c.root_cid, c.parent_uri, c.parent_cid,
+				c.content, c.content_facets, c.embed, c.content_labels, c.langs,
+				c.created_at, c.indexed_at, c.deleted_at, c.deletion_reason, c.deleted_by,
+				c.upvote_count + c.bridged_upvote_count AS upvote_count, c.downvote_count + c.bridged_downvote_count AS downvote_count, c.score, c.reply_count,
+				%s AS hot_rank
+			FROM comments c
+			WHERE c.parent_uri = parent.uri
+				%s
+			ORDER BY %s
+			LIMIT $2
+		) c
+		LEFT JOIN users u ON c.commenter_did = u.did
+		ORDER BY c.parent_uri, %s
+	`, rankColumn, viewerFilter, innerOrderBy, outerOrderBy)
 
 	queryArgs := []interface{}{pq.Array(parentURIs), limitPerParent}
 	queryArgs = append(queryArgs, viewerArgs...)

@@ -310,6 +310,37 @@ func TestImageProxy_UpstreamFailuresAreBadGateway(t *testing.T) {
 	})
 }
 
+// TestImageProxy_CachedImageServedWithoutResolvingDID covers the cache-hit
+// path: a cached image is served from the cache before the DID is resolved, so
+// a directory that cannot resolve the DID does not stop it being served. The
+// uncached request on the same server is the control: it proves the resolver
+// really does fail, so the 200 comes from the cache and not from resolution.
+func TestImageProxy_CachedImageServedWithoutResolvingDID(t *testing.T) {
+	t.Parallel()
+
+	const cachedCID = "bafyreihgdyzzpkkzq2izfnhcmm77ycuacvkuziwbnqxfxtqsz7tmxwhnshi"
+	const uncachedCID = "bafyreiabcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst"
+	did := "did:plc:" + testkit.UniqueID(t)
+	cachedImage := []byte("cached image bytes")
+
+	server, cache := newProxyServerWithCache(t, failingResolver{}, time.Second)
+	require.NoError(t, cache.Set("avatar", did, cachedCID, cachedImage), "seeding the cache")
+
+	t.Run("a cached image is served", func(t *testing.T) {
+		resp, body := fetch(t, proxyURL(server, "avatar", did, cachedCID), nil)
+
+		require.Equal(t, http.StatusOK, resp.StatusCode, "body: %s", body)
+		assert.Equal(t, cachedImage, body)
+		assert.Equal(t, "image/jpeg", resp.Header.Get("Content-Type"))
+	})
+
+	t.Run("an uncached image still needs the DID resolved", func(t *testing.T) {
+		resp, _ := fetch(t, proxyURL(server, "avatar", did, uncachedCID), nil)
+
+		assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+	})
+}
+
 // TestImageProxy_UndecodableUpstreamBytes covers what happens when the fetch
 // succeeds but the bytes are not an image the processor can read.
 //

@@ -173,6 +173,30 @@ func (f *fakeCommunityRepo) GetByNameAndOrigin(_ context.Context, name, origin s
 	}
 }
 
+func (r *fakeCommunityRepo) ExistsByDID(ctx context.Context, did string) (bool, error) {
+	_, err := r.GetByDID(ctx, did)
+	if communities.IsNotFound(err) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (r *fakeCommunityRepo) GetDIDByHandle(ctx context.Context, handle string) (string, error) {
+	community, err := r.GetByHandle(ctx, handle)
+	if err != nil {
+		return "", err
+	}
+	return community.DID, nil
+}
+
+func (r *fakeCommunityRepo) GetDIDByNameAndOrigin(ctx context.Context, name, origin string) (string, error) {
+	community, err := r.GetByNameAndOrigin(ctx, name, origin)
+	if err != nil {
+		return "", err
+	}
+	return community.DID, nil
+}
+
 func (f *fakeCommunityRepo) Update(_ context.Context, community *communities.Community) (*communities.Community, error) {
 	f.record("Update", community.DID)
 	if f.err != nil {

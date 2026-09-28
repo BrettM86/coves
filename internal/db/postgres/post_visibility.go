@@ -110,11 +110,24 @@ func visiblePostsPredicate(viewerExpr string) (joinSQL, whereSQL string) {
 			LEFT JOIN community_post_admissions a
 				ON a.community_did = p.community_did AND a.post_uri = p.uri`
 
-	whereSQL = fmt.Sprintf(`(
-				(a.status = 'accepted' AND a.accepted_cid = p.cid)
-				OR (a.status IS NULL AND (split_part(p.uri, '/', 4) <> '%s' OR p.author_did = %s))
-				OR (a.status IN ('pending', 'pending_reacceptance', 'removed', 'rejected') AND p.author_did = %s)
-			)`, posts.PostV2Collection, viewerExpr, viewerExpr)
+	// The rule is spelled as a CASE over a.status rather than the equivalent
+	// three-way OR, and that is a planner concern, not a semantic one. Asked
+	// how many rows `a.status IS NULL` keeps, PostgreSQL answers from the
+	// column's null fraction — zero, since status is NOT NULL — without
+	// counting the rows the LEFT JOIN null-extends, which are most posts. So
+	// it estimated the OR kept ~1 row of a whole community, sorted every post
+	// the community ever had instead of walking the (community, created_at)
+	// index to the LIMIT, and a 15-post page of a 20k-post community took a
+	// quarter second. The CASE is opaque to that estimate. Each branch is
+	// exactly one arm of the OR: a NULL status can satisfy only the
+	// collection arm, 'accepted' only the pinned-CID arm, and the four
+	// non-accepted statuses only the author arm; anything else is hidden.
+	whereSQL = fmt.Sprintf(`(CASE
+				WHEN a.status IS NULL THEN (split_part(p.uri, '/', 4) <> '%s' OR p.author_did = %s)
+				WHEN a.status = 'accepted' THEN a.accepted_cid = p.cid
+				WHEN a.status IN ('pending', 'pending_reacceptance', 'removed', 'rejected') THEN p.author_did = %s
+				ELSE false
+			END)`, posts.PostV2Collection, viewerExpr, viewerExpr)
 
 	return joinSQL, whereSQL
 }
