@@ -198,9 +198,11 @@ func TestImageProxy_EmittedURLsAreFetchable(t *testing.T) {
 	// lifetime on success and sits behind a CDN, so a cacheable failure would
 	// outlive the condition that caused it by a year.
 	t.Run("an unresolvable blob returns an uncacheable error", func(t *testing.T) {
+		// A decodable CID the PDS does not hold, so the failure is the fetch;
+		// an undecodable one would be refused before it.
 		missing := blobs.HydrateImageURL(blobs.GetImageURLConfig(),
 			community.PDSURL, community.DID,
-			"bafkreiabcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopq", "content_preview")
+			"bafkreial332smgjcus5atd7x52uof527vx4g4dg4yenw3inp3r7t4tod2m", "content_preview")
 		require.NotEmpty(t, missing)
 
 		resp, _ := fetch(t, missing, nil)
