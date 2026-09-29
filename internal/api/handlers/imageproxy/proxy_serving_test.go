@@ -325,8 +325,10 @@ func TestImageProxy_UpstreamFailuresAreBadGateway(t *testing.T) {
 func TestImageProxy_CachedImageServedWithoutResolvingDID(t *testing.T) {
 	t.Parallel()
 
-	const cachedCID = "bafyreihgdyzzpkkzq2izfnhcmm77ycuacvkuziwbnqxfxtqsz7tmxwhnshi"
-	const uncachedCID = "bafyreiabcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst"
+	// Decodable, canonical CIDs: the handler refuses a CID it cannot decode
+	// before it reaches the cache, and keys the cache by the canonical form.
+	const cachedCID = "bafyreicxvtmzbe4fw5htiqgg3qwqo3ysoi56oackos2mvhw3mzopubbkiq"
+	const uncachedCID = "bafyreiclbevrsikcac4wr7nkxi4d2ikig2uwmz6pedr4ixsebmlvuo44um"
 	did := "did:plc:" + testkit.UniqueID(t)
 	cachedImage := []byte("cached image bytes")
 
