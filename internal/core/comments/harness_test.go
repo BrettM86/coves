@@ -23,7 +23,9 @@ import (
 // terminates at Postgres and needs nothing else.
 // comment_write_test.go is the other T1 seam §3.4b names: the write path
 // forwards to a real PDS, and asserting the record it actually wrote there is
-// the coverage T2 cannot have while sealed sessions mint only in a browser.
+// coverage T2 did not have while sealed sessions minted only in a browser. T2
+// can now sign in (testkit.AppView.SignIn); a comment-write contract there is
+// possible and not yet written.
 //
 // Neither dials a websocket: the consumer is fed directly.
 func TestMain(m *testing.M) {

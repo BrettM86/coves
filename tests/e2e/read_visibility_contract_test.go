@@ -23,19 +23,21 @@ import (
 //
 // # WHAT THIS TIER CAN AND CANNOT OBSERVE
 //
-// The viewer here is the ANONYMOUS public. §3.4b's standing limitation — nothing
-// but the browser OAuth callback mints a sealed session RequireAuth accepts —
-// means this tier cannot authenticate a viewer AT ALL, so it proves the one case
-// that matters most: the unauthenticated internet must reach accepted content
-// only. The author's own privileged view of their pending/removed posts (PRD
-// §6.2) needs an authenticated viewer DID and is proven at T1, where the read
+// The viewer here is the ANONYMOUS public. This contract was written when the
+// tier could not authenticate a viewer at all, so it proves the one case that
+// matters most: the unauthenticated internet must reach accepted content only.
+// The author's own privileged view of their pending/removed posts (PRD §6.2)
+// needs an authenticated viewer DID. T2 can now sign in (testkit.AppView.SignIn,
+// proven in session_contract_test.go), so that contract is possible here and not
+// yet written; today it is proven at T1, where the read
 // requests carry a ViewerDID directly (internal/db/postgres/post_visibility_test.go,
 // TestActorPostsVisibility_AuthorVsNonAuthor).
 //
-// getTimeline is also absent below for a tier reason, not an oversight: it is the
-// one feed behind RequireAuth (routes: authRequired), so an anonymous timeline
-// read is a 401 rather than a filtered feed. Its accepted-only predicate is
-// proven at T1 (TestTimelineVisibility_AcceptedOnly).
+// getTimeline is also absent below: it is the one feed behind RequireAuth
+// (routes: authRequired), so an anonymous timeline read is a 401 rather than a
+// filtered feed. A signed-in timeline read is now possible at T2
+// (timeline_contract_test.go reads it), but its accepted-only predicate is not
+// yet asserted there and is proven at T1 (TestTimelineVisibility_AcceptedOnly).
 //
 // # HOW ADMISSION STATE IS DRIVEN
 //

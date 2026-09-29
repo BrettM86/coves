@@ -183,11 +183,10 @@ func Post(t *testing.T, db *sql.DB, communityDID, authorDID, title string, score
 // drive an authenticated route without a browser authorization-code flow
 // against the PDS' login pages.
 //
-// This is the same limitation tests/e2e documents from the other side: the
-// pipeline tier CANNOT authenticate a write (§3.4b's standing note), because
-// substituting these fakes means running the router in-process, which T2 is not
-// allowed to do. Authenticated write behaviour is therefore proven here, at T1,
-// and the pipeline tier proves the auth boundary instead.
+// T2 cannot use these fakes, because substituting them means running the router
+// in-process, which T2 is not allowed to do. It signs in for real instead
+// (testkit.AppView.SignIn, §3.4b) and drives a few writes end to end; the
+// breadth of authenticated write behaviour is proven here, at T1.
 
 // SessionUnsealer resolves bearer tokens to sealed sessions from a map.
 type SessionUnsealer struct {

@@ -248,8 +248,10 @@ func TestAuthorPostIngestion(t *testing.T) {
 	// wire. This is the compensating control for the write-path flip: a post any
 	// author can index naming any community must not render as that community's
 	// content until the community admits it. (The record WAS indexed — getStatus
-	// above reports it pending — and its author's own privileged view of it is a
-	// T1 concern, since this tier can only read as the anonymous public.)
+	// above reports it pending — and its author's own privileged view of it is
+	// proven at T1. When this was written T2 could only read as the anonymous
+	// public; testkit.AppView.SignIn now makes a signed-in author read possible,
+	// and it is not yet written.)
 	served, err := p.Post(context.Background(), uri)
 	require.NoError(t, err)
 	assert.Truef(t, served.NotFound,

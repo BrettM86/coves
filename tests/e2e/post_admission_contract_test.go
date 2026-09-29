@@ -20,12 +20,12 @@ import (
 //
 // # THE CREDENTIAL, AND WHY IT IS AN AGGREGATOR'S
 //
-// This contract holds the first real write credential the tier has ever held.
-// §3.4b's standing limitation still stands for USERS — nothing but the browser
-// OAuth callback mints a sealed session token RequireAuth accepts — but
-// post.create is the one Coves route behind DualAuth, and DualAuth's second
-// path takes a PDS-signed service JWT from a REGISTERED AGGREGATOR. Every link
-// of that chain is mintable inside the hermetic stack:
+// This contract holds the first real write credential the tier ever held. USERS
+// now sign in too — testkit.AppView.SignIn runs the real OAuth web flow
+// headlessly (session_contract_test.go) — but this contract predates that, and
+// post.create is the one Coves route behind DualAuth, whose second path takes a
+// PDS-signed service JWT from a REGISTERED AGGREGATOR. Every link of that chain
+// is mintable inside the hermetic stack:
 //
 //   - the aggregator is a PDS account (provisionAggregatorRepo), whose DID the
 //     hermetic PLC can resolve to a signing key;
@@ -62,10 +62,11 @@ import (
 //     turn one transient failure into a lockout until the dedupe window rolls.
 //
 // The two USER-classified refusals — 403 Banned (step 3) and the per-author
-// 429 RateLimitExceeded (step 6) — are structurally out of this tier's reach:
-// they require an ActorUser principal, which requires the sealed-session mint
-// that does not exist (§3.4b), and no aggregator credential is ever classified
-// ActorUser. They are proven where they can be honestly: the decision matrix
+// 429 RateLimitExceeded (step 6) — are not exercised by this contract, because
+// they need an ActorUser principal and no aggregator credential is classified
+// ActorUser. A signed-in user (SignIn) is such a principal, so a T2 contract
+// for both refusals is possible and not yet written. Until then they are
+// proven where they can be honestly: the decision matrix
 // at T0 (internal/core/posts/admit_matrix_test.go, service_admission_test.go),
 // the ledger against real Postgres at T1 (internal/db/postgres), and the
 // refusal-to-status mapping at T0 (internal/api/handlers/post/errors_test.go).
@@ -83,11 +84,12 @@ import (
 // reported an unclassified 500.
 //
 // A post is written to its AUTHOR's repository now (PRD §4.2 step 3), so the
-// credential that has to exist is the AUTHOR's, and this tier cannot mint one
-// for the same reason §3.4b gives for everything else. The two ways to hold one
-// are a browser OAuth session (which needs the sealed-session mint that does not
-// exist here) or an aggregator's STORED tokens from migration 025 (which are
-// written by that same OAuth grant, performed once by a human operator). A
+// credential that has to exist is the AUTHOR's, and the aggregator this contract
+// submits as holds none. The two ways to hold one are an OAuth session (SignIn
+// now mints one, but for a signed-in user authoring their own post — a
+// user-authored admitted-path contract is possible and not yet written) or an
+// aggregator's STORED tokens from migration 025 (which are written by an OAuth
+// grant performed once by a human operator). A
 // service JWT authenticates the caller to the AppView; it is not a repo
 // credential and was never meant to be one.
 //
@@ -101,8 +103,10 @@ import (
 // open. Any 4xx means the admission gate refused something it had authorized;
 // any 500 now means something unclassified broke.
 //
-// The moment a credentialed author becomes reachable at T2, the same test
-// upgrades itself to the full dedupe proof (the branch is written out below).
+// The moment the aggregator holds stored author-repo credentials at T2 (a
+// migration 025 grant the AppView can resume under its stored session ID), the
+// same test upgrades itself to the full dedupe proof (the branch is written out
+// below).
 func TestPostAdmissionAPIContract(t *testing.T) {
 	p := newPipeline(t)
 
@@ -206,10 +210,10 @@ func TestPostAdmissionAPIContract(t *testing.T) {
 		}
 
 		// Today's ceiling (see the file comment): admission PASSED and the write
-		// then stopped at the AUTHOR-repo open, because no principal this tier
-		// can mint holds a repo credential. The status and the NAME are both
-		// pinned, and the name is what makes this branch worth having — it is
-		// produced at exactly one place in the write path, so meeting it proves
+		// then stopped at the AUTHOR-repo open, because the aggregator this
+		// contract submits as holds no repo credential. The status and the NAME
+		// are both pinned, and the name is what makes this branch worth having —
+		// it is produced at exactly one place in the write path, so meeting it proves
 		// the submission travelled past every gate this contract is about.
 		//
 		// The two ways this assertion fails are the two regressions it exists to

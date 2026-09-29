@@ -268,8 +268,8 @@ var declaredRoutes = []declaredRoute{
 	{http.MethodGet, "/xrpc/social.coves.feed.searchPosts", authOptional, 30, false},
 	// getTimeline is the one feed that is NOT public: it is the personalised
 	// fan-out over the caller's subscriptions, so an anonymous caller has no
-	// timeline to serve. It is also why the timeline's behaviour is unreachable
-	// from the pipeline tier (docs/TEST_ARCHITECTURE.md §3.4b).
+	// timeline to serve. The pipeline tier reaches it only through a signed-in
+	// client (testkit.AppView.SignIn, docs/TEST_ARCHITECTURE.md §3.4b).
 	{http.MethodGet, "/xrpc/social.coves.feed.getTimeline", authRequired, 0, false},
 	{http.MethodGet, "/xrpc/social.coves.feed.getDiscover", authOptional, 0, false},
 	{http.MethodGet, "/xrpc/social.coves.actor.getPosts", authOptional, 0, false},

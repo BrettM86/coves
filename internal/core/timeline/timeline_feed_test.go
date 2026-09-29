@@ -6,11 +6,10 @@
 // product one — a post from an unsubscribed community appearing here is the
 // same class of defect as a leaked row.
 //
-// These tests are the ONLY coverage of that behaviour anywhere in the suite.
-// The endpoint requires authentication, and the pipeline tier cannot
-// authenticate a write or a read (docs/TEST_ARCHITECTURE.md §3.4b), so the
-// personalised path is unreachable from T2 by construction. Everything here has
-// to stay.
+// These tests are the breadth coverage of that join. The pipeline tier proves
+// only the end-to-end case — a signed-in subscriber sees the post and a
+// signed-in non-subscriber does not (tests/e2e/timeline_contract_test.go) — so
+// the cases here are not duplicated there and have to stay.
 //
 // They run against a real database with the real repository, service and HTTP
 // handler wired together, because a stubbed repository would assert nothing

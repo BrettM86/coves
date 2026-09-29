@@ -40,12 +40,15 @@ import (
 //     (RegisterCommunityRoutes). Discover and the timeline apply the
 //     community_blocks mute only for a viewer (viewerBlockFilters).
 //
-// §3.4b's standing limitation then closes the door: nothing outside the browser
-// OAuth callback mints a session RequireAuth accepts, so this tier cannot hold
-// one. A contract here therefore cannot ask "is the row there?" of any
-// endpoint. That was verified by spike rather than assumed — an anonymous
-// post.get on a post whose author the caller has blocked serves the post in
-// full, exactly as it should.
+// When these contracts were written, nothing outside the browser OAuth callback
+// minted a session RequireAuth accepts, so this tier could not hold one and a
+// contract here could not ask "is the row there?" of any endpoint. That an
+// anonymous read cannot see a block was verified by spike rather than assumed —
+// an anonymous post.get on a post whose author the caller has blocked serves
+// the post in full, exactly as it should. T2 can now sign in
+// (testkit.AppView.SignIn, proven in session_contract_test.go), so a
+// viewer-scoped block contract is possible and not yet written; the contracts
+// below still observe without a viewer.
 //
 // # WHAT THESE CONTRACTS PROVE INSTEAD, AND WHY IT IS STILL PIPELINE PROOF
 //
@@ -110,8 +113,9 @@ import (
 // subscribed timeline hide every post in the blocked community, while the
 // community's own feed, post permalinks and comment threads stay reachable as
 // explicit requests — and social.coves.community.getBlockedCommunities serves
-// the caller's list back. All of it is viewer-scoped, so none of it is
-// observable from this tier (§3.4b); it is proven at T1 in internal/db/postgres
+// the caller's list back. All of it is viewer-scoped, so none of it is observed
+// anonymously; a signed-in contract for it is possible now and not yet written,
+// and it is proven at T1 in internal/db/postgres
 // (community_block_enforcement_test.go and the per-read-path
 // *_repo_block_test.go suites) and at T0 in internal/api/handlers/community.
 // What this contract asserts is the ingestion half those suites build on: the
