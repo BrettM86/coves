@@ -72,6 +72,8 @@ func DryRunOf(tool *Rematerializer) *Rematerializer {
 		Progress:         tool.Progress,
 		PerRecordTimeout: tool.PerRecordTimeout,
 		AbortOnFallback:  tool.AbortOnFallback,
+		Removals:         tool.Removals,
+		InstanceDID:      tool.InstanceDID,
 	}
 	return dry
 }

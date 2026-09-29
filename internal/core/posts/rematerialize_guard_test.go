@@ -64,6 +64,7 @@ func newGuardHarness(t *testing.T, authorDID string) *guardHarness {
 	h.newCID = deterministicCID(h.rkey)
 	h.tool = &posts.Rematerializer{
 		Source: source, Ledger: ledger, AuthorRepos: authors.factory(),
+		Removals: noRematerializeRemovalsIntegration{}, InstanceDID: "did:web:coves-instance.invalid",
 		Acceptances: writer, CommunityRepos: writer.repos(),
 	}
 	return h
@@ -543,6 +544,7 @@ func TestRematerialize_ScopedRun_RefusesARecordFromAnotherCommunity(t *testing.T
 
 	tool := &posts.Rematerializer{
 		Source: source, Ledger: ledger, AuthorRepos: authors.factory(),
+		Removals: noRematerializeRemovalsIntegration{}, InstanceDID: "did:web:coves-instance.invalid",
 		Acceptances: writer, CommunityRepos: writer.repos(),
 		CommunityScope: rematCommunityDID,
 	}
@@ -581,6 +583,7 @@ func TestRematerialize_ScopedRun_ReportsScopeAndWholeMigrationSeparately(t *test
 
 	tool := &posts.Rematerializer{
 		Source: source, Ledger: ledger, AuthorRepos: authors.factory(),
+		Removals: noRematerializeRemovalsIntegration{}, InstanceDID: "did:web:coves-instance.invalid",
 		Acceptances: writer, CommunityRepos: writer.repos(),
 		CommunityScope: rematCommunityDID,
 	}
@@ -622,6 +625,7 @@ func TestRematerialize_Complete_IsGatedOnARescanOfTheSource(t *testing.T) {
 
 	tool := &posts.Rematerializer{
 		Source: source, Ledger: ledger, AuthorRepos: authors.factory(),
+		Removals: noRematerializeRemovalsIntegration{}, InstanceDID: "did:web:coves-instance.invalid",
 		Acceptances: writer, CommunityRepos: writer.repos(),
 	}
 
@@ -663,6 +667,7 @@ func TestRematerialize_NoCredentials_WritesNothingEvenWhenOtherIdentitiesAreWrit
 	source := newFakeLegacySource(legacy)
 	tool := &posts.Rematerializer{
 		Source: source, Ledger: ledger, AuthorRepos: authors.factory(),
+		Removals: noRematerializeRemovalsIntegration{}, InstanceDID: "did:web:coves-instance.invalid",
 		Acceptances: writer, CommunityRepos: writer.repos(),
 	}
 
@@ -700,6 +705,7 @@ func TestRematerialize_RetryableCredentialFailure_FailsTheRunAndSentencesNothing
 	source := newFakeLegacySource(one, two)
 	tool := &posts.Rematerializer{
 		Source: source, Ledger: ledger, AuthorRepos: authors.factory(),
+		Removals: noRematerializeRemovalsIntegration{}, InstanceDID: "did:web:coves-instance.invalid",
 		Acceptances: writer, CommunityRepos: writer.repos(),
 	}
 
@@ -745,6 +751,7 @@ func TestRematerialize_AbortOnFallback_StopsBeforeAnyRepoIsMutated(t *testing.T)
 
 	tool := &posts.Rematerializer{
 		Source: source, Ledger: ledger, AuthorRepos: authors.factory(),
+		Removals: noRematerializeRemovalsIntegration{}, InstanceDID: "did:web:coves-instance.invalid",
 		Acceptances: writer, CommunityRepos: writer.repos(),
 		AbortOnFallback: true,
 	}
@@ -778,6 +785,7 @@ func TestRematerialize_ReopenFallback_LetsAReAuthorizedAuthorBeRetried(t *testin
 	source := newFakeLegacySource(legacy)
 	tool := &posts.Rematerializer{
 		Source: source, Ledger: ledger, AuthorRepos: authors.factory(),
+		Removals: noRematerializeRemovalsIntegration{}, InstanceDID: "did:web:coves-instance.invalid",
 		Acceptances: writer, CommunityRepos: writer.repos(),
 	}
 
@@ -801,6 +809,7 @@ func TestRematerialize_ReopenFallback_LetsAReAuthorizedAuthorBeRetried(t *testin
 	// of extra token rotations for an author who has none.
 	retry := &posts.Rematerializer{
 		Source: source, Ledger: ledger, AuthorRepos: authors.factory(),
+		Removals: noRematerializeRemovalsIntegration{}, InstanceDID: "did:web:coves-instance.invalid",
 		Acceptances: writer, CommunityRepos: writer.repos(),
 	}
 	state, err := retry.RematerializeOne(ctx, legacy)
@@ -851,6 +860,7 @@ func TestRematerialize_BlobProbeFails_RefusesToDelete(t *testing.T) {
 
 	tool := &posts.Rematerializer{
 		Source: source, Ledger: ledger, AuthorRepos: authors.factory(),
+		Removals: noRematerializeRemovalsIntegration{}, InstanceDID: "did:web:coves-instance.invalid",
 		Acceptances: writer, CommunityRepos: writer.repos(), Blobs: blobClient,
 	}
 
@@ -878,6 +888,7 @@ func TestRematerialize_FetchesCommunityBlobsFromTheCommunitysHost(t *testing.T) 
 
 	tool := &posts.Rematerializer{
 		Source: source, Ledger: ledger, AuthorRepos: authors.factory(),
+		Removals: noRematerializeRemovalsIntegration{}, InstanceDID: "did:web:coves-instance.invalid",
 		Acceptances: writer, CommunityRepos: writer.repos(), Blobs: blobClient,
 	}
 
@@ -921,6 +932,7 @@ func TestRematerialize_ResumeAtPostV2Written_StillVerifiesTheBlobs(t *testing.T)
 
 	tool := &posts.Rematerializer{
 		Source: source, Ledger: ledger, AuthorRepos: authors.factory(),
+		Removals: noRematerializeRemovalsIntegration{}, InstanceDID: "did:web:coves-instance.invalid",
 		Acceptances: writer, CommunityRepos: writer.repos(), Blobs: blobClient,
 	}
 

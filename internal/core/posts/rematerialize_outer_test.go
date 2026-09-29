@@ -175,7 +175,7 @@ func TestRematerialize_OuterContract_RealPDS_MovesPostAndIsIdempotent(t *testing
 	source := &realLegacySource{community: communityGeneric, staged: []posts.LegacyPost{legacy}}
 	ledger := postgres.NewRematerializeLedger(testkit.DB(t))
 	communityRepos := func(_ context.Context, _ string) (posts.CommunityRepo, error) { return communityRepo, nil }
-	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authorFactory, Acceptances: writer, CommunityRepos: communityRepos}
+	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authorFactory, Acceptances: writer, CommunityRepos: communityRepos, Removals: noRematerializeRemovalsIntegration{}, InstanceDID: "did:web:coves-instance.invalid"}
 
 	// ---- run -----------------------------------------------------------------
 	state, err := tool.RematerializeOne(ctx, legacy)
@@ -325,6 +325,7 @@ func TestRematerialize_OuterContract_CopiesEmbedBlobToAuthorRepo(t *testing.T) {
 		Source: source, Ledger: ledger, AuthorRepos: authorFactory, Acceptances: writer,
 		CommunityRepos: communityRepos,
 		Blobs:          posts.DefaultRematerializeBlobClient(true),
+		Removals:       noRematerializeRemovalsIntegration{}, InstanceDID: "did:web:coves-instance.invalid",
 	}
 
 	_, err = tool.RematerializeOne(ctx, legacy)

@@ -93,6 +93,7 @@ func TestClassifyResumeFailure_NilErrorIsNotAFailure(t *testing.T) {
 func TestRematerializer_ResolvesCredentialsOncePerAuthor(t *testing.T) {
 	resolutions := map[string]int{}
 	tool := &Rematerializer{
+		Removals: noRematerializeRemovals{}, InstanceDID: "did:web:coves-instance.invalid",
 		AuthorRepos: func(_ context.Context, did string, _ *oauth.ClientSessionData) (AuthorRepo, error) {
 			resolutions[did]++
 			return nil, fmt.Errorf("no repo in this unit test: %w", ErrNoAuthorCredentials)
