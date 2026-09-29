@@ -22,8 +22,10 @@ func TestMigration045RecountsAndMaintainsCommunitySubscribers(t *testing.T) {
 	t.Parallel()
 
 	db := testkit.DB(t)
+	require.EqualValues(t, 50, testkit.MigrateDownOne(t, db, 50),
+		"050 (moderation state) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 49, testkit.MigrateDownOne(t, db, 49),
-		"049 (moderation state) must be rolled back before testing earlier migrations")
+		"049 (read-path indexes) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 48, testkit.MigrateDownOne(t, db, 48),
 		"048 (Discover Hot snapshot tables) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 47, testkit.MigrateDownOne(t, db, 47),

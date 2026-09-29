@@ -510,11 +510,12 @@ func newPipeline(t *testing.T) *pipeline {
 // fail somewhere that looks unrelated to the rotation.
 func (p *pipeline) FreshReadQuota(t *testing.T, reason string) {
 	t.Helper()
-	// Read before the rebuild. Nothing in the tier authenticates a T2 client
-	// today (§3.4b — no sealed session can be minted), so this is empty in
-	// every current caller; it is preserved anyway because the day that
-	// changes, a dropped credential turns into a 401 in a contract that never
-	// mentions auth.
+	// Read before the rebuild. Signed-in viewers are separate clients made with
+	// p.AppView.As(token), so this is empty in every current caller; it is
+	// preserved anyway because the day a caller sets it, a dropped credential
+	// turns into a 401 in a contract that never mentions auth. Those As()
+	// clients are copies, not views: one made before this call keeps the old
+	// client IP and spends from the old bucket.
 	bearer := p.AppView.Bearer
 
 	p.clientIP = testkit.SyntheticClientIP(t.Name() + "/" + reason)

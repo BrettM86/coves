@@ -46,7 +46,14 @@ func (m *mockService) IsBlobBlocked(ctx context.Context, did, cid string) (bool,
 	return false, nil
 }
 
-func (m *mockService) GetImage(ctx context.Context, preset, did, cid, pdsURL string) ([]byte, error) {
+// GetImageResolvingPDS resolves the PDS up front, as a cache miss would, so
+// getImageFunc sees the resolved URL and resolution failures surface exactly
+// as the real service returns them.
+func (m *mockService) GetImageResolvingPDS(ctx context.Context, preset, did, cid string, resolvePDS func(context.Context) (string, error)) ([]byte, error) {
+	pdsURL, err := resolvePDS(ctx)
+	if err != nil {
+		return nil, err
+	}
 	if m.getImageFunc != nil {
 		return m.getImageFunc(ctx, preset, did, cid, pdsURL)
 	}

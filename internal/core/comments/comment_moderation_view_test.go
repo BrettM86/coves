@@ -151,6 +151,17 @@ func TestCommentServiceGetCommentsFailsClosedOnRemovalLookupError(t *testing.T) 
 	assert.Nil(t, response, "unchecked content must never be returned")
 }
 
+// The removal lookup runs once per thread depth. A failure below the top level
+// must fail the request too, or the nested replies would render unchecked.
+func TestCommentServiceGetCommentsFailsClosedOnNestedRemovalLookupError(t *testing.T) {
+	service, repo, request, _, reply := moderationViewFixture(t)
+	lookupError := errors.New("nested removal lookup unavailable")
+	repo.activeRemovalsErrFor = map[string]error{reply.URI: lookupError}
+	response, err := service.GetComments(t.Context(), request)
+	require.ErrorIs(t, err, lookupError)
+	assert.Nil(t, response, "unchecked nested content must never be returned")
+}
+
 func stringPointer(value string) *string { return &value }
 
 func mustMarshalModerationView(t *testing.T, view *ModerationView) string {

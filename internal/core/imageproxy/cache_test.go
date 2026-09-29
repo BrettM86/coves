@@ -11,10 +11,9 @@ import (
 )
 
 // entryIsGone reports whether a cache file has been removed from disk. It is
-// the probe the cleanup-job tests wait on, and it deliberately does not go
-// through DiskCache.Get: a hit touches the entry's mtime, which is the very
-// value the TTL sweep is judging, so polling through Get would keep the entry
-// alive forever.
+// the probe the cleanup-job tests wait on. It stats the file rather than
+// calling DiskCache.Get so that polling observes the entry without reading it
+// or recording an access.
 func entryIsGone(path string) (bool, error) {
 	_, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -519,41 +518,173 @@ func TestDiskCache_Cleanup(t *testing.T) {
 	}
 }
 
-func TestDiskCache_GetUpdatesMtime(t *testing.T) {
-	tmpDir := t.TempDir()
-	cache := mustNewDiskCache(t, tmpDir, 1)
-
-	data := []byte("test data")
-	if err := cache.Set("avatar", "did:plc:test", "cid1", data); err != nil {
-		t.Fatalf("Set failed: %v", err)
-	}
-
-	path := cache.cachePath("avatar", "did:plc:test", "cid1")
-
-	// Set an old mtime
-	oldTime := time.Now().Add(-24 * time.Hour)
-	if err := os.Chtimes(path, oldTime, oldTime); err != nil {
-		t.Fatalf("Chtimes failed: %v", err)
-	}
-
-	// Get the file - this should update mtime
-	_, found, err := cache.Get("avatar", "did:plc:test", "cid1")
-	if err != nil {
-		t.Fatalf("Get failed: %v", err)
-	}
-	if !found {
-		t.Fatal("Expected to find entry")
-	}
-
-	// Check that mtime was updated
+// statTimes returns the entry's creation time (its modification time) and its
+// last access time, as the cache reads them.
+func statTimes(t *testing.T, path string) (createdAt, lastAccessedAt time.Time) {
+	t.Helper()
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("Stat failed: %v", err)
 	}
+	return info.ModTime(), lastAccessTime(info)
+}
 
-	// Mtime should be recent (within last minute)
-	if time.Since(info.ModTime()) > time.Minute {
-		t.Errorf("Expected mtime to be updated to now, but it's %v old", time.Since(info.ModTime()))
+// setEntryTimes backdates an entry: createdAt becomes its modification time and
+// lastAccessedAt its access time.
+func setEntryTimes(t *testing.T, path string, createdAt, lastAccessedAt time.Time) {
+	t.Helper()
+	if err := os.Chtimes(path, lastAccessedAt, createdAt); err != nil {
+		t.Fatalf("Chtimes failed: %v", err)
+	}
+}
+
+func TestDiskCache_GetRecordsAccessWithoutChangingCreationTime(t *testing.T) {
+	tmpDir := t.TempDir()
+	cache := mustNewDiskCache(t, tmpDir, 1)
+
+	if err := cache.Set("avatar", "did:plc:test", "cid1", []byte("test data")); err != nil {
+		t.Fatalf("Set failed: %v", err)
+	}
+	path := cache.cachePath("avatar", "did:plc:test", "cid1")
+	createdAt := time.Now().Add(-24 * time.Hour).Truncate(time.Second)
+	setEntryTimes(t, path, createdAt, createdAt)
+
+	if _, found, err := cache.Get("avatar", "did:plc:test", "cid1"); err != nil || !found {
+		t.Fatalf("Get: found=%v err=%v, want a hit", found, err)
+	}
+
+	gotCreatedAt, gotLastAccessedAt := statTimes(t, path)
+	if !gotCreatedAt.Equal(createdAt) {
+		t.Errorf("Get changed the creation time the TTL counts from: got %v, want %v", gotCreatedAt, createdAt)
+	}
+	if time.Since(gotLastAccessedAt) > time.Minute {
+		t.Errorf("Get did not record the read: access time is %v old", time.Since(gotLastAccessedAt))
+	}
+}
+
+// Reading an entry must not extend its life: the TTL counts from when Set
+// wrote it, so a deleted account's images stop being served once it passes,
+// however often they are requested.
+func TestDiskCache_CleanExpired_CountsFromCreationNotLastRead(t *testing.T) {
+	tmpDir := t.TempDir()
+	const ttlDays = 30
+	cache, err := NewDiskCache(tmpDir, 1, ttlDays)
+	if err != nil {
+		t.Fatalf("NewDiskCache failed: %v", err)
+	}
+
+	data := []byte("image bytes")
+	now := time.Now()
+	entries := []struct {
+		cid       string
+		createdAt time.Time
+		wantKept  bool
+	}{
+		{cid: "cid_past_ttl", createdAt: now.AddDate(0, 0, -(ttlDays + 1)), wantKept: false},
+		{cid: "cid_within_ttl", createdAt: now.AddDate(0, 0, -(ttlDays - 1)), wantKept: true},
+	}
+	for _, entry := range entries {
+		if err := cache.Set("avatar", "did:plc:reader", entry.cid, data); err != nil {
+			t.Fatalf("Set %s failed: %v", entry.cid, err)
+		}
+		setEntryTimes(t, cache.cachePath("avatar", "did:plc:reader", entry.cid), entry.createdAt, entry.createdAt)
+
+		// Read repeatedly, as a popular image would be.
+		for read := 0; read < 3; read++ {
+			if _, found, err := cache.Get("avatar", "did:plc:reader", entry.cid); err != nil || !found {
+				t.Fatalf("Get %s (read %d): found=%v err=%v, want a hit", entry.cid, read+1, found, err)
+			}
+		}
+	}
+
+	removed, err := cache.CleanExpired()
+	if err != nil {
+		t.Fatalf("CleanExpired failed: %v", err)
+	}
+	if removed != 1 {
+		t.Errorf("CleanExpired removed %d entries, want 1", removed)
+	}
+
+	for _, entry := range entries {
+		_, statErr := os.Stat(cache.cachePath("avatar", "did:plc:reader", entry.cid))
+		kept := statErr == nil
+		if kept != entry.wantKept {
+			t.Errorf("%s created %v ago and read just now: kept=%v, want kept=%v",
+				entry.cid, now.Sub(entry.createdAt).Round(time.Hour), kept, entry.wantKept)
+		}
+	}
+}
+
+// Eviction removes the least recently READ entry, not the oldest one: the
+// entry created first but read just now must survive, and the entry created
+// last but not read since must go.
+func TestDiskCache_EvictLRU_EvictsLeastRecentlyRead(t *testing.T) {
+	tmpDir := t.TempDir()
+	cache := mustNewDiskCache(t, tmpDir, 1) // 1GB limit
+
+	// Three 400MB entries make 1.2GB, so evicting exactly one brings the cache
+	// under the limit. Truncate extends each file sparsely: its reported size
+	// is 400MB without writing 400MB to disk.
+	const entrySize = 400 * 1024 * 1024
+	now := time.Now()
+	entries := []struct {
+		cid            string
+		createdAt      time.Time
+		lastAccessedAt time.Time
+	}{
+		// Oldest entry; Get below reads it now.
+		{cid: "cid_created_first_read_now", createdAt: now.Add(-72 * time.Hour), lastAccessedAt: now.Add(-72 * time.Hour)},
+		{cid: "cid_read_half_hour_ago", createdAt: now.Add(-48 * time.Hour), lastAccessedAt: now.Add(-30 * time.Minute)},
+		// Newest entry, never read since it was written.
+		{cid: "cid_created_last_never_read", createdAt: now.Add(-1 * time.Hour), lastAccessedAt: now.Add(-1 * time.Hour)},
+	}
+	for _, entry := range entries {
+		if err := cache.Set("avatar", "did:plc:lru", entry.cid, []byte("image bytes")); err != nil {
+			t.Fatalf("Set %s failed: %v", entry.cid, err)
+		}
+		setEntryTimes(t, cache.cachePath("avatar", "did:plc:lru", entry.cid), entry.createdAt, entry.lastAccessedAt)
+	}
+
+	// Read while the entry is still small: Get reads the whole file into
+	// memory, and 400MB of it would be a 400MB allocation.
+	if _, found, err := cache.Get("avatar", "did:plc:lru", "cid_created_first_read_now"); err != nil || !found {
+		t.Fatalf("Get: found=%v err=%v, want a hit", found, err)
+	}
+	readInfo, err := os.Stat(cache.cachePath("avatar", "did:plc:lru", "cid_created_first_read_now"))
+	if err != nil {
+		t.Fatalf("Stat failed: %v", err)
+	}
+	readAt := lastAccessTime(readInfo)
+
+	// Truncate resets mtime, so each entry's times are restored after it is
+	// enlarged, keeping the access time Get recorded.
+	for _, entry := range entries {
+		path := cache.cachePath("avatar", "did:plc:lru", entry.cid)
+		if err := os.Truncate(path, entrySize); err != nil {
+			t.Fatalf("Truncate %s failed: %v", entry.cid, err)
+		}
+		lastAccessedAt := entry.lastAccessedAt
+		if entry.cid == "cid_created_first_read_now" {
+			lastAccessedAt = readAt
+		}
+		setEntryTimes(t, path, entry.createdAt, lastAccessedAt)
+	}
+
+	removed, err := cache.EvictLRU()
+	if err != nil {
+		t.Fatalf("EvictLRU failed: %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("EvictLRU removed %d entries, want 1", removed)
+	}
+
+	for _, entry := range entries {
+		_, statErr := os.Stat(cache.cachePath("avatar", "did:plc:lru", entry.cid))
+		kept := statErr == nil
+		wantKept := entry.cid != "cid_created_last_never_read"
+		if kept != wantKept {
+			t.Errorf("%s: kept=%v, want kept=%v", entry.cid, kept, wantKept)
+		}
 	}
 }
 
@@ -584,10 +715,8 @@ func TestDiskCache_StartCleanupJob(t *testing.T) {
 	// The eviction is work the background goroutine does, so wait for the
 	// eviction rather than for a duration guessed to contain a cycle.
 	//
-	// The probe stats the file instead of calling Get: a cache hit TOUCHES the
-	// entry's mtime, and mtime is what the TTL sweep reads. Polling through Get
-	// would keep resetting the age of the very entry it is waiting to see
-	// expire, and the wait would never finish.
+	// The probe stats the file instead of calling Get, so polling observes the
+	// entry without reading it or recording an access.
 	testkit.WaitFor(t, 10*time.Second, func() (bool, error) {
 		return entryIsGone(expiredPath)
 	}, testkit.WithDescription("the background cleanup job to evict the expired entry"))

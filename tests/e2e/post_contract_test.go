@@ -21,10 +21,11 @@ import (
 // community admission are proven in author_post_contract_test.go; this file
 // exercises the public post APIs against accepted postv2 fixtures.
 //
-// The authenticated write paths remain T1 concerns because this tier cannot
-// mint the browser OAuth session RequireAuth accepts. Here the running router
-// proves those endpoints reject anonymous callers and the public reads preserve
-// their positional, validation, and author-feed contracts.
+// The authenticated write paths are proven at T1. When this was written T2
+// could not sign in; testkit.AppView.SignIn now makes a signed-in contract
+// possible, and it is not yet written. Here the running router proves those
+// endpoints reject anonymous callers and the public reads preserve their
+// positional, validation, and author-feed contracts.
 
 // postView is the slice of social.coves.community.post.get's postView member
 // that the contracts observe. As elsewhere in this package, modelling only the
@@ -132,10 +133,10 @@ func indexedCommunity(t *testing.T, p *pipeline, prefix, creatorDID string) prov
 // It carries NO ingestion marker — markers are for pipeline proofs (§3.4a), and
 // this asserts the client path.
 //
-// The authenticated half of both write endpoints is proven at T1, for the reason
-// §3.4b records and TestCommunityAPIContract spells out: nothing but the browser
-// OAuth callback mints a session RequireAuth accepts. For posts specifically that
-// half is internal/core/posts/service_writeforward_test.go (the record the
+// The authenticated half of both write endpoints is proven at T1. When this was
+// written T2 could not sign in (TestCommunityAPIContract spells out why);
+// testkit.AppView.SignIn (§3.4b) now makes a signed-in contract possible, and
+// it is not yet written. For posts specifically that half is internal/core/posts/service_writeforward_test.go (the record the
 // service puts in the author's repo, and who may delete it) plus
 // internal/api/handlers/post (handler validation). What this adds is
 // the part neither can see — that the shipped binary really routes these NSIDs,

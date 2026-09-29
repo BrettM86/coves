@@ -65,10 +65,7 @@ func fetchPostFixture(t *testing.T, postJSON string) (*BlueskyPostResult, map[st
 	}))
 	t.Cleanup(server.Close)
 
-	result, err := fetchBlueskyPost(context.Background(), testPostURI, time.Second, blueskyAPI{
-		baseURL:          server.URL,
-		allowPrivateHost: true,
-	})
+	result, err := fetchBlueskyPost(context.Background(), testPostURI, time.Second, newBlueskyAPI(server.URL, true))
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.Equal(t, 1, requests, "the only request is getPosts metadata; media URLs are never fetched")

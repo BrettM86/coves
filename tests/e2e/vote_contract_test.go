@@ -429,8 +429,10 @@ func TestVoteBeforeSubjectIsCountedOnceSubjectIndexed(t *testing.T) {
 // A vote is only ever visible to an unauthenticated client as somebody else's
 // count, which the ingestion contract above already reads through
 // social.coves.community.post.get. Viewer state (did I vote, and which way) is
-// the part a client asks about by identity, and it is behind OptionalAuth with
-// no credential this tier can mint (§3.4b) — covered at T1 instead, in
+// the part a client asks about by identity; it is behind OptionalAuth, so it
+// needs a signed-in viewer. When this was written T2 could not sign in;
+// testkit.AppView.SignIn (§3.4b) now makes a signed-in contract possible, and
+// it is not yet written. It is covered at T1 instead, in
 // internal/core/comments/comment_vote_test.go for comments and
 // internal/db/postgres/vote_repo_test.go for posts.
 //

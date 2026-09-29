@@ -399,31 +399,39 @@ func TestCommunityProfileIngestion(t *testing.T) {
 // # WHAT IS MISSING FROM IT, AND WHY (a finding for tasks 12-15)
 //
 // §3.4b asks this contract to drive the write endpoints "exactly as the mobile
-// app calls them", and it cannot, because there is no non-interactive way for a
-// test to hold an AppView session. OAuthAuthMiddleware.RequireAuth accepts one
-// credential: a sealed session token (internal/atproto/oauth/seal.go) naming a
-// row in the OAuth session store. Tokens are minted in exactly one place —
-// /oauth/callback, at the end of the browser authorization-code flow against
-// the PDS' own HTML login pages — and nothing else issues one:
-// social.coves.actor.signup returns the PDS' accessJwt, which RequireAuth
-// rejects (it is not sealed), and /oauth/refresh requires a sealed token to
-// begin with.
+// app calls them", and when it was written it could not, because there was no
+// non-interactive way for a test to hold an AppView session.
+// OAuthAuthMiddleware.RequireAuth accepts one credential: a sealed session token
+// (internal/atproto/oauth/seal.go) naming a row in the OAuth session store.
+// Tokens are minted in exactly one place — /oauth/callback, at the end of the
+// authorization-code flow against the PDS' own login pages — and nothing else
+// issues one: social.coves.actor.signup returns the PDS' accessJwt, which
+// RequireAuth rejects (it is not sealed), and /oauth/refresh requires a sealed
+// token to begin with.
 //
-// The two ways out are both bigger than one contract: drive the PDS' OAuth
+// The two ways out were both bigger than one contract: drive the PDS' OAuth
 // consent pages from Go (fragile against a PDS the project does not own), or
 // give the AppView a test-only session-minting path (a production change, with
-// the obvious care about how it is gated). The integration tier sidesteps it by
+// the obvious care about how it is gated). The first now exists:
+// testkit.AppView.SignIn runs the real OAuth web flow headlessly, with no
+// AppView change, and is proven in session_contract_test.go. The integration
+// tier had sidestepped it by
 // constructing the session in-process — internal/atproto/oauth's
 // oauth_integration_test.go calls store.SaveSession then client.SealSession —
-// which T2 cannot do without
-// writing to the AppView's own database, the one thing the package doc forbids.
+// which T2 cannot do without writing to the AppView's own database, the one
+// thing the package doc forbids.
 //
-// So the authenticated half of every write endpoint family (create, update,
-// subscribe, block, and the post/comment/vote endpoints tasks 12-15 will meet)
-// is proven at T1 today: handler behaviour against a mock service in
-// internal/api/handlers/community, and write-forward record shape against a
-// real PDS in internal/core/communities. What this contract adds on top is the
-// part T1 cannot see — that the shipped binary really does route these NSIDs,
+// So the authenticated half of these endpoints is now possible here and, for
+// this contract, not yet written. Of the write families (create, update,
+// subscribe, community block, and the post/comment/vote endpoints tasks 12-15
+// will meet), only subscribe is driven signed-in at T2 today
+// (timeline_contract_test.go). The block session_contract_test.go drives is a
+// user block (social.coves.actor.blockUser), which is outside these families.
+// The authenticated half of every family is proven at T1:
+// handler behaviour against a mock service in internal/api/handlers/community,
+// and write-forward record shape against a real PDS in
+// internal/core/communities. What this contract adds on top is the part T1
+// cannot see — that the shipped binary really does route these NSIDs,
 // really does guard them, and really does serve an indexed community back.
 func TestCommunityAPIContract(t *testing.T) {
 	p := newPipeline(t)

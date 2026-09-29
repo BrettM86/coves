@@ -625,9 +625,9 @@ func TestCommentIngestion(t *testing.T) {
 // It carries NO ingestion marker — markers are for pipeline proofs (§3.4a), and
 // this asserts the client path.
 //
-// The authenticated half of all three write endpoints is proven at T1, for the
-// reason §3.4b records and TestCommentAPIContract's siblings spell out: nothing
-// but the browser OAuth callback mints a session RequireAuth accepts. For
+// The authenticated half of all three write endpoints is proven at T1. When
+// this was written T2 could not sign in; testkit.AppView.SignIn (§3.4b) now
+// makes a signed-in contract possible, and it is not yet written. For
 // comments that half is internal/core/comments/comment_write_service_test.go
 // (validation, ownership and the record the service writes, against a mock PDS),
 // internal/core/comments/comment_write_test.go (the same against a REAL PDS,

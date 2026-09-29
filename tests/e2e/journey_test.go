@@ -80,19 +80,21 @@ func voteRecord(subject strongRef, direction string) map[string]any {
 //
 // The old step 9 read social.coves.feed.getTimeline — User B's PERSONALISED
 // feed, which is why it needed the subscription in step 5. That endpoint is
-// behind RequireAuth, and §3.4b's standing limitation is that nothing outside
-// the browser OAuth callback mints a credential RequireAuth accepts, so T2
-// cannot call it at all.
+// behind RequireAuth, and when this journey was written nothing outside the
+// browser OAuth callback minted a credential RequireAuth accepts, so T2 could
+// not call it at all.
 //
 // The substitution is social.coves.communityFeed.getCommunity: the same
 // indexed post, the same hydrated stats, read through the public feed the
 // community page is built from. What is lost is specifically the subscription
 // fan-out (does a post reach a subscriber's timeline), which is
 // community.subscription's own concern — task 14 owns that collection's
-// ingestion contract, and the personalised feed becomes reachable here when the
-// Phase-5 test-only session mint lands. Stated plainly rather than quietly
-// dropped, because "the journey covers the timeline" would otherwise stay true
-// in everyone's memory and false in the code.
+// ingestion contract, and the fan-out itself is now proven in
+// timeline_contract_test.go, which signs in with testkit.AppView.SignIn. This
+// journey still reads the public feed; restoring the timeline step is possible
+// and not yet done. Stated plainly rather than quietly dropped, because "the
+// journey covers the timeline" would otherwise stay true in everyone's memory
+// and false in the code.
 func TestUserJourney(t *testing.T) {
 	p := newPipeline(t)
 	ctx := context.Background()

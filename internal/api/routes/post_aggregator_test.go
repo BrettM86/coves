@@ -45,11 +45,11 @@ import (
 // The middleware itself. A real service JWT is minted by the PDS
 // (com.atproto.server.getServiceAuth) and validated against the aggregators
 // table, so "a valid JWT from a DID that is not a registered aggregator is
-// refused" needs the running stack and a token, which is Phase-5 pre-work — it
-// is the only credential the pipeline tier could ever construct for itself, and
-// there is no testkit helper for it yet. Until then this test injects the
-// principal that middleware would produce, which proves everything downstream
-// of the decision and nothing about the decision.
+// refused" needs the running stack and a token. The pipeline tier mints one
+// (mintServiceJWT) and proves that refusal in
+// tests/e2e/post_admission_contract_test.go. This test injects the principal
+// that middleware would produce, which proves everything downstream of the
+// decision and nothing about the decision.
 //
 // The behaviour behind the mapped errors — that the quota really stops the
 // eleventh post, that a revoked authorization really refuses the next one — is

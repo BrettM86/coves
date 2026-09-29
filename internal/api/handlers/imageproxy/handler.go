@@ -27,12 +27,13 @@ var processorBusyRetryAfterSeconds = strconv.Itoa(int(imageproxy.DefaultProcessQ
 // Service defines the interface for the image proxy service.
 // This interface is implemented by the imageproxy package's service layer.
 type Service interface {
-	// GetImage retrieves and processes an image from a PDS.
+	// GetImageResolvingPDS retrieves and processes an image from a PDS.
 	// preset: the image transformation preset (e.g., "avatar", "banner")
 	// did: the DID of the user who owns the blob
 	// cid: the content identifier of the blob
-	// pdsURL: the URL of the user's PDS
-	GetImage(ctx context.Context, preset, did, cid, pdsURL string) ([]byte, error)
+	// resolvePDS: returns the URL of the user's PDS; called only on a cache
+	// miss, and its error is returned as-is
+	GetImageResolvingPDS(ctx context.Context, preset, did, cid string, resolvePDS func(context.Context) (string, error)) ([]byte, error)
 	// IsBlobBlocked reports whether moderation blocks serving the blob.
 	IsBlobBlocked(ctx context.Context, did, cid string) (bool, error)
 }
@@ -111,30 +112,34 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve DID to get PDS URL
-	didDoc, err := h.identityResolver.ResolveDID(r.Context(), did)
-	if err != nil {
+	// Fetch and process the image. The DID is resolved to its PDS only if
+	// the image is not already cached.
+	imageData, err := h.service.GetImageResolvingPDS(r.Context(), preset, did, cid, func(ctx context.Context) (string, error) {
+		didDoc, err := h.identityResolver.ResolveDID(ctx, did)
+		if err != nil {
+			return "", fmt.Errorf("%w: %w", errDIDResolution, err)
+		}
+		pdsURL := getPDSEndpoint(didDoc)
+		if pdsURL == "" {
+			return "", errNoPDSEndpoint
+		}
+		return pdsURL, nil
+	})
+	switch {
+	case errors.Is(err, errDIDResolution):
 		slog.Warn("[IMAGE-PROXY] failed to resolve DID",
 			"did", did,
 			"error", err,
 		)
 		writeErrorResponse(w, http.StatusBadGateway, "failed to resolve DID")
 		return
-	}
-
-	// Extract PDS URL from DID document
-	pdsURL := getPDSEndpoint(didDoc)
-	if pdsURL == "" {
+	case errors.Is(err, errNoPDSEndpoint):
 		slog.Warn("[IMAGE-PROXY] no PDS endpoint found in DID document",
 			"did", did,
 		)
 		writeErrorResponse(w, http.StatusBadGateway, "no PDS endpoint found")
 		return
-	}
-
-	// Fetch and process the image
-	imageData, err := h.service.GetImage(r.Context(), preset, did, cid, pdsURL)
-	if err != nil {
+	case err != nil:
 		handleServiceError(w, err, preset, did, cid)
 		return
 	}
@@ -155,6 +160,13 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 }
+
+// Errors from the handler's own PDS resolution, told apart from the service's
+// errors so each keeps its response.
+var (
+	errDIDResolution = errors.New("resolving DID")
+	errNoPDSEndpoint = errors.New("no PDS endpoint in DID document")
+)
 
 // getPDSEndpoint extracts the PDS service endpoint from a DID document.
 func getPDSEndpoint(doc *identity.DIDDocument) string {

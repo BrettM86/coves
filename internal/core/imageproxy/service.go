@@ -50,11 +50,14 @@ func ProcessorBusyRefusalCount() int64 {
 
 // Service defines the interface for the image proxy service.
 type Service interface {
-	// GetImage retrieves an image for the given preset, DID, and CID.
-	// It checks moderation before the cache, then fetches from the PDS if not cached,
-	// waits for a processing slot, processes the image according to the
-	// preset, and stores in cache.
-	GetImage(ctx context.Context, preset, did, cid string, pdsURL string) ([]byte, error)
+	// GetImageResolvingPDS retrieves an image for the given preset, DID, and
+	// CID. It checks moderation before the cache, then the cache; on a miss it
+	// resolves the DID's PDS with resolvePDS, fetches the blob, waits for a
+	// processing slot, processes the image according to the preset, and
+	// stores it in the cache. resolvePDS runs only on a cache miss, so a
+	// cached image is served without a DID lookup, which may be a PLC round
+	// trip. Its error is returned unwrapped so the caller can classify it.
+	GetImageResolvingPDS(ctx context.Context, preset, did, cid string, resolvePDS func(context.Context) (string, error)) ([]byte, error)
 }
 
 // ImageProxyService implements the Service interface and orchestrates
@@ -144,18 +147,25 @@ func NewService(cache Cache, processor Processor, fetcher Fetcher, blocks BlockC
 // gone away.
 const defaultPublicationTimeout = 10 * time.Second
 
-// GetImage retrieves an image for the given preset, DID, and CID.
-// The service flow is:
+// GetImageResolvingPDS implements Service. The service flow is:
 //  1. Validate preset exists
 //  2. Check moderation, then cache for (preset, did, cid) - return if hit
-//  3. Acquire an admission slot, waiting at most ProcessQueueWait
-//  4. Fetch blob from PDS using pdsURL
-//  5. Acquire a processing slot, waiting at most ProcessQueueWait
-//  6. Process image with preset
-//  7. Release the processing slot, then under the CID lock recheck
+//  3. Resolve the DID's PDS with resolvePDS (misses only)
+//  4. Acquire an admission slot, waiting at most ProcessQueueWait
+//  5. Fetch blob from the PDS
+//  6. Acquire a processing slot, waiting at most ProcessQueueWait
+//  7. Process image with preset
+//  8. Release the processing slot, then under the CID lock recheck
 //     moderation and store in cache, on a context detached from the caller
-//  8. Release the admission slot and return the processed image
-func (s *ImageProxyService) GetImage(ctx context.Context, presetName, did, cid string, pdsURL string) ([]byte, error) {
+//  9. Release the admission slot and return the processed image
+//
+// The PDS is resolved only once the cache has missed: before, every request —
+// hits included, which are nearly all of them — paid a DID resolution first.
+func (s *ImageProxyService) GetImageResolvingPDS(
+	ctx context.Context,
+	presetName, did, cid string,
+	resolvePDS func(context.Context) (string, error),
+) ([]byte, error) {
 	// Step 1: Validate preset exists
 	preset, err := GetPreset(presetName)
 	if err != nil {
@@ -194,7 +204,15 @@ func (s *ImageProxyService) GetImage(ctx context.Context, presetName, did, cid s
 		return cachedData, nil
 	}
 
-	// Step 3: Acquire an admission slot. This sits AFTER the cache check so a
+	// Step 3: A miss needs the PDS that hosts the blob. Resolved before the
+	// admission slot: a slow DID lookup holds no blob, so it must not
+	// occupy one of the slots that bound blobs held in memory.
+	pdsURL, err := resolvePDS(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Step 4: Acquire an admission slot. This sits AFTER the cache check so a
 	// hit, which costs a file read and holds no blob, is never refused under
 	// load; and BEFORE the fetch so the number of fetched blobs held in memory
 	// is bounded. The slot spans fetch, the processing-slot wait, decode and
@@ -223,29 +241,29 @@ func (s *ImageProxyService) GetImage(ctx context.Context, presetName, did, cid s
 		return nil, err
 	}
 
-	// Step 7: The check and the cache publication must be atomic against
+	// Step 8: The check and the cache publication must be atomic against
 	// purges; a purge after this write removes the bytes before returning.
 	if err := s.publish(ctx, presetName, did, cid, processedData); err != nil {
 		return nil, err
 	}
 
-	// Step 8: Return processed image
+	// Step 9: Return processed image
 	return processedData, nil
 }
 
-// fetchAndProcess runs steps 4 to 6 of GetImage under the caller's admission
+// fetchAndProcess runs steps 5 to 7 of GetImageResolvingPDS under the caller's admission
 // slot. The processing slot is released when it returns, so it is not held
 // across the moderation recheck and cache write that follow: those wait on a
 // database and a stripe lock, not on CPU, and a decode slot held there would
 // refuse unrelated requests as busy.
 func (s *ImageProxyService) fetchAndProcess(ctx context.Context, preset Preset, presetName, did, cid, pdsURL string) ([]byte, error) {
-	// Step 4: Fetch blob from PDS
+	// Step 5: Fetch blob from PDS
 	rawData, err := s.fetcher.Fetch(ctx, pdsURL, did, cid)
 	if err != nil {
 		return nil, err
 	}
 
-	// Step 5: Acquire a processing slot. This happens AFTER the fetch so a slow
+	// Step 6: Acquire a processing slot. This happens AFTER the fetch so a slow
 	// or hostile PDS cannot pin a slot for the whole network round-trip; slots
 	// are only ever held while CPU and memory are actually being spent. The
 	// wait is bounded because a waiter is holding a fetched blob of up to
@@ -266,7 +284,7 @@ func (s *ImageProxyService) fetchAndProcess(ctx context.Context, preset Preset, 
 	}
 	defer s.processSlots.Release(1)
 
-	// Step 6: Process image with preset
+	// Step 7: Process image with preset
 	return s.processor.Process(rawData, preset)
 }
 

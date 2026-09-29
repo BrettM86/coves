@@ -1,0 +1,39 @@
+services:
+  bluesky-topics-aggregator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bluesky-topics-aggregator
+    restart: unless-stopped
+
+    environment:
+      # Required: Coves aggregator API key (not needed when DRY_RUN=1)
+      - COVES_API_KEY=${COVES_API_KEY}
+      # Required: Anthropic API key for the topic classifier
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-https://api.anthropic.com}
+      # Optional overrides
+      - COVES_API_URL=${COVES_API_URL:-https://coves.social}
+      - BLUESKY_API_URL=${BLUESKY_API_URL:-https://public.api.bsky.app}
+      - RUN_ON_STARTUP=${RUN_ON_STARTUP:-false}
+      - DRY_RUN=${DRY_RUN:-0}
+
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data  # state persistence for deduplication
+
+    env_file:
+      - .env
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    healthcheck:
+      test: ["CMD", "pgrep", "cron"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

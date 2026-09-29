@@ -28,12 +28,11 @@ import (
 // allowed to do it.
 //
 // This is the client-write half of the post domain: the half that
-// tests/e2e/post_contract_test.go structurally cannot reach. §3.4b of
-// docs/TEST_ARCHITECTURE.md records why — RequireAuth accepts only a sealed
-// session token, minted nowhere but the browser OAuth callback, so T2 can prove
-// that the write endpoints refuse an unauthenticated client and nothing beyond
-// it. Authenticated write BEHAVIOUR is therefore proven here, against a real
-// PDS.
+// tests/e2e/post_contract_test.go does not drive. When this was written T2
+// could not sign in, so it proved only that the write endpoints refuse an
+// unauthenticated client; testkit.AppView.SignIn (docs/TEST_ARCHITECTURE.md
+// §3.4b) now makes a signed-in post-write contract possible, and it is not yet
+// written. Authenticated write BEHAVIOUR is proven here, against a real PDS.
 //
 // # THE REPO MOVED, AND THAT IS WHAT THIS FILE IS NOW ABOUT
 //

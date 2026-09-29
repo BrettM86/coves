@@ -234,6 +234,64 @@ func (r *postgresCommunityRepo) GetByDID(ctx context.Context, did string) (*comm
 	return community, nil
 }
 
+// ExistsByDID reports whether a community with this DID is indexed. See
+// communities.Repository: it reads only the key, never the post count.
+func (r *postgresCommunityRepo) ExistsByDID(ctx context.Context, did string) (bool, error) {
+	var exists bool
+	if err := r.db.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM communities WHERE did = $1)`, did).Scan(&exists); err != nil {
+		return false, fmt.Errorf("failed to check community existence by DID: %w", err)
+	}
+	return exists, nil
+}
+
+// GetDIDByHandle is GetByHandle's key-only counterpart for identifier resolution.
+func (r *postgresCommunityRepo) GetDIDByHandle(ctx context.Context, handle string) (string, error) {
+	var did string
+	err := r.db.QueryRowContext(ctx, `SELECT did FROM communities WHERE handle = $1`, handle).Scan(&did)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", communities.ErrCommunityNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to get community DID by handle: %w", err)
+	}
+	return did, nil
+}
+
+// GetDIDByNameAndOrigin is GetByNameAndOrigin's key-only counterpart for
+// identifier resolution, with the same refusal when two rows share the pair.
+func (r *postgresCommunityRepo) GetDIDByNameAndOrigin(ctx context.Context, name, origin string) (string, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT did FROM communities
+		WHERE lower(name) = lower($1) AND origin = $2
+		LIMIT 2`, name, origin)
+	if err != nil {
+		return "", fmt.Errorf("failed to get community DID by name and origin: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var matches []string
+	for rows.Next() {
+		var did string
+		if err := rows.Scan(&did); err != nil {
+			return "", fmt.Errorf("failed to scan community DID: %w", err)
+		}
+		matches = append(matches, did)
+	}
+	if err := rows.Err(); err != nil {
+		return "", fmt.Errorf("error iterating community DIDs: %w", err)
+	}
+
+	switch len(matches) {
+	case 0:
+		return "", communities.ErrCommunityNotFound
+	case 1:
+		return matches[0], nil
+	default:
+		return "", communities.ErrAmbiguousCommunity
+	}
+}
+
 // GetByHandle retrieves a community by its scoped handle
 func (r *postgresCommunityRepo) GetByHandle(ctx context.Context, handle string) (*communities.Community, error) {
 	community := &communities.Community{}

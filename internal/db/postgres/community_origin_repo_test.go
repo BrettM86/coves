@@ -6,6 +6,7 @@ import (
 	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -177,4 +178,59 @@ func TestCommunityRepo_GetByNameAndOriginIgnoresNameCase(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, created.DID, got.DID)
 	assert.Equal(t, "MixedCase"+suffix, got.Name, "the stored spelling is preserved")
+}
+
+// TestCommunityRepo_KeyOnlyLookups pins the lookups identifier resolution and
+// the consumers' existence checks use: the same answers, misses and ambiguity
+// as the full lookups, without loading the row.
+func TestCommunityRepo_KeyOnlyLookups(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+	ctx := context.Background()
+	repo := postgres.NewCommunityRepository(db, credentialciphertest.Fixed())
+
+	suffix := testkit.UniqueID(t)
+	name := "keyonly" + suffix
+	create := func(label string) *communities.Community {
+		did := fmt.Sprintf("did:plc:%s%s", label, suffix)
+		created, err := repo.Create(ctx, &communities.Community{
+			DID:          did,
+			Handle:       label + suffix + ".lemmy-world.tdpl.io",
+			Name:         name,
+			OwnerDID:     did,
+			CreatedByDID: "did:plc:keyonlycreator",
+			HostedByDID:  "did:web:tdpl.io",
+			PDSURL:       "https://pds.tdpl.io",
+			Visibility:   "public",
+			Origin:       "lemmy.world",
+			CreatedAt:    time.Now(),
+			UpdatedAt:    time.Now(),
+		})
+		require.NoError(t, err)
+		return created
+	}
+	first := create("first")
+
+	exists, err := repo.ExistsByDID(ctx, first.DID)
+	require.NoError(t, err)
+	assert.True(t, exists)
+	exists, err = repo.ExistsByDID(ctx, "did:plc:missing"+suffix)
+	require.NoError(t, err)
+	assert.False(t, exists)
+
+	did, err := repo.GetDIDByHandle(ctx, first.Handle)
+	require.NoError(t, err)
+	assert.Equal(t, first.DID, did)
+	_, err = repo.GetDIDByHandle(ctx, "missing"+suffix+".tdpl.io")
+	assert.ErrorIs(t, err, communities.ErrCommunityNotFound)
+
+	did, err = repo.GetDIDByNameAndOrigin(ctx, strings.ToUpper(name), "lemmy.world")
+	require.NoError(t, err, "names compare case-insensitively, as GetByNameAndOrigin does")
+	assert.Equal(t, first.DID, did)
+	_, err = repo.GetDIDByNameAndOrigin(ctx, name, "lemmy.ml")
+	assert.ErrorIs(t, err, communities.ErrCommunityNotFound)
+
+	create("second")
+	_, err = repo.GetDIDByNameAndOrigin(ctx, name, "lemmy.world")
+	assert.ErrorIs(t, err, communities.ErrAmbiguousCommunity)
 }

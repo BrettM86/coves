@@ -1,0 +1,7 @@
+# Run the Bluesky Topics aggregator every hour. Each run posts at most
+# max_posts_per_run new stories; stories already posted (by the aggregator or by
+# a community member) are skipped, not backfilled, so quiet hours post nothing.
+# No jitter: the public Bluesky AppView is a documented API, not a scraped site.
+# Environment comes from /etc/environment, written by docker-entrypoint.sh.
+0 * * * * . /etc/environment; cd /app && /usr/local/bin/python -m src.main >> /var/log/cron.log 2>&1
+

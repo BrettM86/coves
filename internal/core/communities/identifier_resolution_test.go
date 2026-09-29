@@ -58,6 +58,33 @@ func (r *stubHandleRepo) GetByDID(_ context.Context, did string) (*Community, er
 	return nil, ErrCommunityNotFound
 }
 
+// The key-only lookups resolution uses delegate to the full ones above, so the
+// recorded lookups and injected failures apply to both.
+
+func (r *stubHandleRepo) ExistsByDID(ctx context.Context, did string) (bool, error) {
+	_, err := r.GetByDID(ctx, did)
+	if IsNotFound(err) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (r *stubHandleRepo) GetDIDByHandle(ctx context.Context, handle string) (string, error) {
+	community, err := r.GetByHandle(ctx, handle)
+	if err != nil {
+		return "", err
+	}
+	return community.DID, nil
+}
+
+func (r *stubHandleRepo) GetDIDByNameAndOrigin(ctx context.Context, name, origin string) (string, error) {
+	community, err := r.GetByNameAndOrigin(ctx, name, origin)
+	if err != nil {
+		return "", err
+	}
+	return community.DID, nil
+}
+
 func newStubRepo(communities ...*Community) *stubHandleRepo {
 	repo := &stubHandleRepo{
 		byHandle: make(map[string]*Community, len(communities)),
@@ -353,6 +380,10 @@ type failingPairRepo struct {
 
 func (r *failingPairRepo) GetByNameAndOrigin(context.Context, string, string) (*Community, error) {
 	return nil, r.err
+}
+
+func (r *failingPairRepo) GetDIDByNameAndOrigin(context.Context, string, string) (string, error) {
+	return "", r.err
 }
 
 func TestOriginFromHandle(t *testing.T) {

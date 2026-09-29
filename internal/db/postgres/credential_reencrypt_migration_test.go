@@ -27,8 +27,10 @@ func TestMigration046DownRestoresUsableEncryptionKey(t *testing.T) {
 	db := testkit.DB(t)
 	assert.False(t, credentialReencryptKeyTable(t, db).Valid,
 		"migration 046 Up must drop encryption_keys before its Down behavior can be tested")
+	require.EqualValues(t, 50, testkit.MigrateDownOne(t, db, 50),
+		"050 (moderation state) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 49, testkit.MigrateDownOne(t, db, 49),
-		"049 (moderation state) must be rolled back before testing earlier migrations")
+		"049 (read-path indexes) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 48, testkit.MigrateDownOne(t, db, 48),
 		"048 (Discover Hot snapshot tables) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 47, testkit.MigrateDownOne(t, db, 47),
@@ -395,8 +397,10 @@ func TestCredentialReencryptRejectsLegacyRowsAfterEncryptionKeysDropped(t *testi
 func credentialReencryptVersion45Database(t *testing.T) *sql.DB {
 	t.Helper()
 	db := testkit.DB(t)
+	require.EqualValues(t, 50, testkit.MigrateDownOne(t, db, 50),
+		"050 (moderation state) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 49, testkit.MigrateDownOne(t, db, 49),
-		"049 (moderation state) must be rolled back before testing earlier migrations")
+		"049 (read-path indexes) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 48, testkit.MigrateDownOne(t, db, 48),
 		"048 (Discover Hot snapshot tables) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 47, testkit.MigrateDownOne(t, db, 47),

@@ -196,6 +196,14 @@ func mustNewService(t *testing.T, cache Cache, processor Processor, fetcher Fetc
 	return service
 }
 
+// resolvedPDS is a resolver that always answers pdsURL, for tests that do not
+// exercise DID resolution itself.
+func resolvedPDS(pdsURL string) func(context.Context) (string, error) {
+	return func(context.Context) (string, error) {
+		return pdsURL, nil
+	}
+}
+
 func TestImageProxyService_GetImage_CacheHit(t *testing.T) {
 	cache := NewMockCache()
 	processor := NewMockProcessor(nil, nil)
@@ -209,7 +217,7 @@ func TestImageProxyService_GetImage_CacheHit(t *testing.T) {
 	service := mustNewService(t, cache, processor, fetcher, config)
 	ctx := context.Background()
 
-	data, err := service.GetImage(ctx, "avatar", "did:plc:test123", "bafyreicid123", "https://pds.example.com")
+	data, err := service.GetImageResolvingPDS(ctx, "avatar", "did:plc:test123", "bafyreicid123", resolvedPDS("https://pds.example.com"))
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -239,7 +247,7 @@ func TestImageProxyService_GetImage_CacheMiss(t *testing.T) {
 	service := mustNewService(t, cache, processor, fetcher, config)
 	ctx := context.Background()
 
-	data, err := service.GetImage(ctx, "avatar", "did:plc:test123", "bafyreicid123", "https://pds.example.com")
+	data, err := service.GetImageResolvingPDS(ctx, "avatar", "did:plc:test123", "bafyreicid123", resolvedPDS("https://pds.example.com"))
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -278,7 +286,7 @@ func TestImageProxyService_GetImage_InvalidPreset(t *testing.T) {
 	service := mustNewService(t, cache, processor, fetcher, config)
 	ctx := context.Background()
 
-	_, err := service.GetImage(ctx, "invalid_preset", "did:plc:test123", "bafyreicid123", "https://pds.example.com")
+	_, err := service.GetImageResolvingPDS(ctx, "invalid_preset", "did:plc:test123", "bafyreicid123", resolvedPDS("https://pds.example.com"))
 	if !errors.Is(err, ErrInvalidPreset) {
 		t.Errorf("expected ErrInvalidPreset, got: %v", err)
 	}
@@ -293,7 +301,7 @@ func TestImageProxyService_GetImage_PDSFetchError(t *testing.T) {
 	service := mustNewService(t, cache, processor, fetcher, config)
 	ctx := context.Background()
 
-	_, err := service.GetImage(ctx, "avatar", "did:plc:test123", "bafyreicid123", "https://pds.example.com")
+	_, err := service.GetImageResolvingPDS(ctx, "avatar", "did:plc:test123", "bafyreicid123", resolvedPDS("https://pds.example.com"))
 	if !errors.Is(err, ErrPDSNotFound) {
 		t.Errorf("expected ErrPDSNotFound, got: %v", err)
 	}
@@ -308,7 +316,7 @@ func TestImageProxyService_GetImage_ProcessingError(t *testing.T) {
 	service := mustNewService(t, cache, processor, fetcher, config)
 	ctx := context.Background()
 
-	_, err := service.GetImage(ctx, "avatar", "did:plc:test123", "bafyreicid123", "https://pds.example.com")
+	_, err := service.GetImageResolvingPDS(ctx, "avatar", "did:plc:test123", "bafyreicid123", resolvedPDS("https://pds.example.com"))
 	if !errors.Is(err, ErrProcessingFailed) {
 		t.Errorf("expected ErrProcessingFailed, got: %v", err)
 	}
@@ -325,7 +333,7 @@ func TestImageProxyService_GetImage_CacheWriteCompletesBeforeReturn(t *testing.T
 	service := mustNewService(t, cache, processor, fetcher, config)
 	ctx := context.Background()
 
-	data, err := service.GetImage(ctx, "avatar", "did:plc:test123", "bafyreicid123", "https://pds.example.com")
+	data, err := service.GetImageResolvingPDS(ctx, "avatar", "did:plc:test123", "bafyreicid123", resolvedPDS("https://pds.example.com"))
 
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
@@ -346,7 +354,7 @@ func TestImageProxyService_GetImage_EmptyPreset(t *testing.T) {
 	service := mustNewService(t, cache, processor, fetcher, config)
 	ctx := context.Background()
 
-	_, err := service.GetImage(ctx, "", "did:plc:test123", "bafyreicid123", "https://pds.example.com")
+	_, err := service.GetImageResolvingPDS(ctx, "", "did:plc:test123", "bafyreicid123", resolvedPDS("https://pds.example.com"))
 	if !errors.Is(err, ErrInvalidPreset) {
 		t.Errorf("expected ErrInvalidPreset for empty preset, got: %v", err)
 	}
@@ -367,7 +375,7 @@ func TestImageProxyService_GetImage_AllPresets(t *testing.T) {
 			service := mustNewService(t, cache, processor, fetcher, config)
 			ctx := context.Background()
 
-			data, err := service.GetImage(ctx, presetName, "did:plc:test123", "bafyreicid123", "https://pds.example.com")
+			data, err := service.GetImageResolvingPDS(ctx, presetName, "did:plc:test123", "bafyreicid123", resolvedPDS("https://pds.example.com"))
 			if err != nil {
 				t.Errorf("expected no error for preset %s, got: %v", presetName, err)
 			}
@@ -511,7 +519,7 @@ type getImageResult struct {
 func callGetImageAsync(ctx context.Context, service *ImageProxyService, cid string) <-chan getImageResult {
 	done := make(chan getImageResult, 1)
 	go func() {
-		data, err := service.GetImage(ctx, "avatar", "did:plc:test123", cid, "https://pds.example.com")
+		data, err := service.GetImageResolvingPDS(ctx, "avatar", "did:plc:test123", cid, resolvedPDS("https://pds.example.com"))
 		done <- getImageResult{data: data, err: err}
 	}()
 	return done
@@ -749,12 +757,12 @@ func TestImageProxyService_GetImage_ReleasesSlotWhenProcessingFails(t *testing.T
 	}}
 	service := mustNewService(t, NewMockCache(), processor, NewMockFetcher([]byte("raw"), nil), semaphoreTestConfig(1))
 
-	_, err := service.GetImage(context.Background(), "avatar", "did:plc:test123", "bafyreicid001", "https://pds.example.com")
+	_, err := service.GetImageResolvingPDS(context.Background(), "avatar", "did:plc:test123", "bafyreicid001", resolvedPDS("https://pds.example.com"))
 	if !errors.Is(err, ErrProcessingFailed) {
 		t.Fatalf("first GetImage: expected the scripted processing error, got: %v", err)
 	}
 
-	data, err := service.GetImage(context.Background(), "avatar", "did:plc:test123", "bafyreicid002", "https://pds.example.com")
+	data, err := service.GetImageResolvingPDS(context.Background(), "avatar", "did:plc:test123", "bafyreicid002", resolvedPDS("https://pds.example.com"))
 	if err != nil {
 		t.Fatalf("second GetImage: expected success once the failed call released its slot, got: %v", err)
 	}
@@ -881,7 +889,7 @@ func TestImageProxyService_GetImage_ReleasesSlotAfterSuccess(t *testing.T) {
 	service := mustNewService(t, NewMockCache(), processor, NewMockFetcher([]byte("raw"), nil), semaphoreTestConfig(1))
 
 	for i, cid := range []string{"bafyreicid001", "bafyreicid002"} {
-		data, err := service.GetImage(context.Background(), "avatar", "did:plc:test123", cid, "https://pds.example.com")
+		data, err := service.GetImageResolvingPDS(context.Background(), "avatar", "did:plc:test123", cid, resolvedPDS("https://pds.example.com"))
 		if err != nil {
 			t.Fatalf("GetImage %d: expected success, got: %v", i+1, err)
 		}
@@ -1086,7 +1094,7 @@ func TestImageProxyService_GetImage_ReleasesAdmissionAfterSuccess(t *testing.T) 
 	service := mustNewService(t, NewMockCache(), NewMockProcessor(processed, nil), fetcher, admissionTestConfig(1))
 
 	for i, cid := range []string{"bafyreicid001", "bafyreicid002"} {
-		data, err := service.GetImage(context.Background(), "avatar", "did:plc:test123", cid, "https://pds.example.com")
+		data, err := service.GetImageResolvingPDS(context.Background(), "avatar", "did:plc:test123", cid, resolvedPDS("https://pds.example.com"))
 		if err != nil {
 			t.Fatalf("GetImage %d: expected success, got: %v", i+1, err)
 		}
@@ -1096,5 +1104,45 @@ func TestImageProxyService_GetImage_ReleasesAdmissionAfterSuccess(t *testing.T) 
 	}
 	if got := fetcher.Calls(); got != 2 {
 		t.Errorf("expected 2 Fetch calls, got %d", got)
+	}
+}
+
+// A cached image is served without resolving the DID: resolution can be a PLC
+// round trip, and hits are nearly every request.
+func TestImageProxyService_GetImageResolvingPDS_ResolvesOnlyOnMiss(t *testing.T) {
+	cache := NewMockCache()
+	cache.SetCacheData("avatar", "did:plc:test123", "bafyreicached", []byte("cached image data"))
+	fetcher := NewMockFetcher([]byte("raw image from PDS"), nil)
+	service := mustNewService(t, cache, NewMockProcessor([]byte("processed image"), nil), fetcher, DefaultConfig())
+	ctx := context.Background()
+
+	resolutions := 0
+	resolve := func(context.Context) (string, error) {
+		resolutions++
+		return "https://pds.example.com", nil
+	}
+
+	if _, err := service.GetImageResolvingPDS(ctx, "avatar", "did:plc:test123", "bafyreicached", resolve); err != nil {
+		t.Fatalf("cache hit: expected no error, got: %v", err)
+	}
+	if resolutions != 0 {
+		t.Fatalf("a cache hit resolved the DID %d times", resolutions)
+	}
+
+	if _, err := service.GetImageResolvingPDS(ctx, "avatar", "did:plc:test123", "bafyreimissed", resolve); err != nil {
+		t.Fatalf("cache miss: expected no error, got: %v", err)
+	}
+	if resolutions != 1 || fetcher.Calls() != 1 {
+		t.Fatalf("a cache miss must resolve once and fetch once; resolved %d, fetched %d", resolutions, fetcher.Calls())
+	}
+
+	resolveErr := errors.New("PLC unavailable")
+	_, err := service.GetImageResolvingPDS(ctx, "avatar", "did:plc:test123", "bafyreiunresolved",
+		func(context.Context) (string, error) { return "", resolveErr })
+	if !errors.Is(err, resolveErr) {
+		t.Fatalf("expected the resolver's error back unwrapped, got: %v", err)
+	}
+	if fetcher.Calls() != 1 {
+		t.Fatalf("an unresolved PDS must not be fetched from; fetched %d times", fetcher.Calls())
 	}
 }

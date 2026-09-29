@@ -346,8 +346,9 @@ func TestActorProfileIngestion(t *testing.T) {
 //
 // The authenticated half — social.coves.actor.updateProfile, which is how the
 // mobile app writes the record this contract's sibling writes directly — is
-// proven at T1 for the reason §3.4b records: nothing outside the browser OAuth
-// callback mints a session RequireAuth accepts. That half lives in
+// proven at T1. When this was written T2 could not sign in;
+// testkit.AppView.SignIn (§3.4b) now makes a signed-in contract possible, and
+// it is not yet written. That half lives in
 // internal/api/handlers/user/update_profile_test.go, which asserts (among the
 // size caps and MIME allowlist) that the record handed to the PDS embeds the
 // uploaded blob ref in the shape the consumer above parses. What this adds is

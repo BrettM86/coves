@@ -22,14 +22,34 @@ const blueskyAPIBaseURL = "https://public.api.bsky.app"
 // "unit" tests reached public.api.bsky.app for real and passed only while
 // Bluesky was up and reachable.
 type blueskyAPI struct {
+	// client is built once per service by newBlueskyAPI and shared by every
+	// fetch. A client per fetch meant a Transport per fetch: no connection was
+	// ever reused, so each quoted post paid a fresh TCP and TLS handshake, and
+	// each abandoned Transport held its idle connection open until it timed
+	// out.
+	client  *http.Client
 	baseURL string
 	// allowPrivateHost disables the SSRF protection that blocks private and
 	// loopback addresses. Never set outside tests.
 	allowPrivateHost bool
 }
 
+// newBlueskyAPI builds the SSRF-safe client the fetcher uses for baseURL. The
+// client's own Timeout is cleared: fetchBlueskyPost bounds each fetch with a
+// context deadline instead, and a client Timeout alongside it would silently
+// cap any configured timeout longer than the client's built-in one.
+func newBlueskyAPI(baseURL string, allowPrivateHost bool) blueskyAPI {
+	client := oauth.NewSSRFSafeHTTPClient(oauth.PrivateAddressOptions(allowPrivateHost)...)
+	client.Timeout = 0
+	return blueskyAPI{
+		client:           client,
+		baseURL:          baseURL,
+		allowPrivateHost: allowPrivateHost,
+	}
+}
+
 func defaultBlueskyAPI() blueskyAPI {
-	return blueskyAPI{baseURL: blueskyAPIBaseURL}
+	return newBlueskyAPI(blueskyAPIBaseURL, false)
 }
 
 // blueskyAPIResponse represents the response from app.bsky.feed.getPosts
@@ -141,9 +161,11 @@ type blueskyAPIResolvedImage struct {
 
 // fetchBlueskyPost fetches a Bluesky post from the public API
 func fetchBlueskyPost(ctx context.Context, atURI string, timeout time.Duration, api blueskyAPI) (*BlueskyPostResult, error) {
-	// Create SSRF-safe HTTP client
-	client := oauth.NewSSRFSafeHTTPClient(oauth.PrivateAddressOptions(api.allowPrivateHost)...)
-	client.Timeout = timeout
+	// The client is shared and has no Timeout of its own, so this deadline is
+	// the single bound on the fetch; like client.Timeout, it covers the whole
+	// exchange including reading the body.
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	// Construct API URL
 	apiURL := fmt.Sprintf("%s/xrpc/app.bsky.feed.getPosts?uris=%s", api.baseURL, url.QueryEscape(atURI))
@@ -157,7 +179,7 @@ func fetchBlueskyPost(ctx context.Context, atURI string, timeout time.Duration, 
 	req.Header.Set("User-Agent", "CovesBot/1.0 (+https://coves.social)")
 
 	// Execute request
-	resp, err := client.Do(req)
+	resp, err := api.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch post: %w", err)
 	}

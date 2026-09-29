@@ -41,25 +41,21 @@ import (
 // it against the live per-user COUNT(*) still detects any regression in that
 // invariant, and it costs one extra request.
 //
-// # THE FAN-OUT THIS CONTRACT CANNOT REACH, STATED PLAINLY
+// # THE FAN-OUT IS PROVEN IN timeline_contract_test.go
 //
 // The interesting thing a subscription DOES — a post from a subscribed
 // community appearing in the subscriber's feed — is served by exactly one
-// endpoint, social.coves.feed.getTimeline, and it is behind RequireAuth. §3.4b's
-// standing limitation applies: nothing outside the browser OAuth callback mints
-// a credential RequireAuth accepts, so T2 cannot call it at all. Every other
-// public surface was checked before writing that sentence:
-// social.coves.feed.getDiscover explicitly does not filter by subscription
-// ("show ALL posts from ALL communities", discover_repo.go),
-// communityFeed.getCommunity filters by community and never by subscriber, and
-// community.list's ?subscribed=true filter 401s without a session.
-//
-// So the fan-out is covered at T1 (internal/core/timeline/timeline_feed_test.go,
-// against the repo's own join) and becomes reachable here when the Phase-5
-// test-only session mint lands. It is named here rather than quietly omitted, because
-// "the subscription contract covers the timeline" would otherwise stay true in
-// everyone's memory and false in the code — the same note journey_test.go makes
-// about the step it had to substitute.
+// endpoint, social.coves.feed.getTimeline, which is behind RequireAuth. No other
+// public surface shows it: social.coves.feed.getDiscover explicitly does not
+// filter by subscription ("show ALL posts from ALL communities",
+// discover_repo.go), communityFeed.getCommunity filters by community and never
+// by subscriber, and community.list's ?subscribed=true filter 401s without a
+// session. testkit.AppView.SignIn mints the sealed session that endpoint needs,
+// so the fan-out is a contract of its own:
+// TestTimelineContract_SubscribedCommunityPostsReachTheSubscribersTimeline
+// subscribes through the AppView and reads the timeline as the subscriber and as
+// a viewer who never subscribed. This file stays the ingestion proof for the
+// collection itself.
 //
 // # THE 401 MATRIX IS NOT REPEATED HERE
 //

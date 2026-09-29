@@ -35,8 +35,10 @@ func TestMigration048DiscoverHotSnapshots(t *testing.T) {
 	_, err := db.ExecContext(ctx, `CREATE TABLE discover_hot_migration_sentinel (id BIGINT PRIMARY KEY)`)
 	require.NoError(t, err)
 
+	require.EqualValues(t, 50, testkit.MigrateDownOne(t, db, 50),
+		"050 (moderation state) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 49, testkit.MigrateDownOne(t, db, 49),
-		"049 (moderation state) must be rolled back before testing earlier migrations")
+		"049 (read-path indexes) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 48, testkit.MigrateDownOne(t, db, 48),
 		"this test must exercise migration 048's Down section")
 	for _, table := range discoverHotTables {

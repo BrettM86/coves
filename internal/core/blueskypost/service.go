@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"time"
 )
 
@@ -20,6 +21,10 @@ const (
 	// TTL for unavailable posts (shorter to allow re-checking)
 	ttlUnavailable = 15 * time.Minute
 )
+
+// defaultFetchTimeout bounds a Bluesky API fetch when no positive timeout is
+// configured.
+const defaultFetchTimeout = 10 * time.Second
 
 // service implements the Service interface
 type service struct {
@@ -43,7 +48,7 @@ func NewService(repo Repository, identityResolver identity.Resolver, opts ...Ser
 	s := &service{
 		repo:             repo,
 		identityResolver: identityResolver,
-		timeout:          10 * time.Second,
+		timeout:          defaultFetchTimeout,
 		maxCacheTTL:      ttlOldPost, // max TTL for fallback; actual TTL is age-based
 		circuitBreaker:   newCircuitBreaker(),
 		api:              defaultBlueskyAPI(),
@@ -59,9 +64,14 @@ func NewService(repo Repository, identityResolver identity.Resolver, opts ...Ser
 // ServiceOption configures the service
 type ServiceOption func(*service)
 
-// WithTimeout sets the HTTP timeout for Bluesky API requests
+// WithTimeout sets the HTTP timeout for Bluesky API requests. A zero or
+// negative timeout would expire every fetch before it started, so it is
+// ignored and the default applies.
 func WithTimeout(timeout time.Duration) ServiceOption {
 	return func(s *service) {
+		if timeout <= 0 {
+			return
+		}
 		s.timeout = timeout
 	}
 }
@@ -129,7 +139,9 @@ func (s *service) ResolvePost(ctx context.Context, atURI string) (*BlueskyPostRe
 		// Log cache errors (but not cache misses) at WARNING level for operator visibility
 		log.Printf("[BLUESKY] Warning: Cache read error for %s: %v", atURI, err)
 	} else if err == nil && cached != nil {
-		log.Printf("[BLUESKY] Cache hit for %s", atURI)
+		// Debug, not Printf: a hit is the common case, once per quoted post
+		// on every feed page that renders it.
+		slog.Debug("bluesky post cache hit", "uri", atURI)
 		return cached, nil
 	}
 

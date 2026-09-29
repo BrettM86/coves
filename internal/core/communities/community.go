@@ -49,6 +49,30 @@ func LookupByHandle(ctx context.Context, repo Repository, handle string) (*Commu
 	return prefixed, nil
 }
 
+// LookupDIDByHandle is LookupByHandle's key-only counterpart: the same
+// unprefixed-then-prefixed fallback, answered without loading the community.
+func LookupDIDByHandle(ctx context.Context, repo Repository, handle string) (string, error) {
+	handle = strings.ToLower(handle)
+
+	did, err := repo.GetDIDByHandle(ctx, handle)
+	if err == nil {
+		return did, nil
+	}
+	if !IsNotFound(err) || strings.HasPrefix(handle, communityHandlePrefix) {
+		return "", err
+	}
+
+	prefixed, prefixedErr := repo.GetDIDByHandle(ctx, communityHandlePrefix+handle)
+	if prefixedErr != nil {
+		if IsNotFound(prefixedErr) {
+			// Report the miss against the handle the caller actually asked for.
+			return "", err
+		}
+		return "", prefixedErr
+	}
+	return prefixed, nil
+}
+
 // Community represents a Coves community indexed from the firehose
 // Communities are federated, instance-scoped forums built on atProto
 type Community struct {

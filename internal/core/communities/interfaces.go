@@ -13,6 +13,22 @@ type Repository interface {
 	Create(ctx context.Context, community *Community) (*Community, error)
 	GetByDID(ctx context.Context, did string) (*Community, error)
 	GetByHandle(ctx context.Context, handle string) (*Community, error)
+
+	// ExistsByDID, GetDIDByHandle and GetDIDByNameAndOrigin answer "which
+	// community is this?" without loading it. The full lookups compute the
+	// community's live post count — a scan of every post it holds — and
+	// decrypt its credentials, which is wasted on identifier resolution and
+	// existence checks that only need the key: every community feed request
+	// and every postv2 event goes through one. GetDIDByHandle and
+	// GetDIDByNameAndOrigin report misses and ambiguity with the same errors as
+	// the full lookups (ErrCommunityNotFound, ErrAmbiguousCommunity).
+	// ExistsByDID reports a miss as (false, nil) and returns an error only when
+	// the lookup itself fails. Unlike GetByDID it never decrypts credentials,
+	// so a community whose credentials cannot be decrypted still exists.
+	ExistsByDID(ctx context.Context, did string) (bool, error)
+	GetDIDByHandle(ctx context.Context, handle string) (string, error)
+	GetDIDByNameAndOrigin(ctx context.Context, name, origin string) (string, error)
+
 	// GetByNameAndOrigin resolves the name@origin form against the stored
 	// (name, origin) pair, comparing name case-insensitively (names are
 	// stored as the record spelled them). Returns ErrCommunityNotFound when
