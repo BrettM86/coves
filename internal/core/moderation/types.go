@@ -113,4 +113,7 @@ type Config struct {
 	MaxLiveIdempotencyKeys int
 	Purger                 MediaPurger
 	Now                    func() time.Time
+	CursorSecret           string
+	CommunityResolver      CommunityResolver
+	HandleResolver         HandleResolver
 }

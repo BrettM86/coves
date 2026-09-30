@@ -37,6 +37,8 @@ func TestMigration049ReadPathIndexes(t *testing.T) {
 	}
 	assertReadPathIndexDefinitions(t, db, "after 049 Up")
 
+	require.EqualValues(t, 51, testkit.MigrateDownOne(t, db, 51),
+		"051 (moderation action log indexes) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 50, testkit.MigrateDownOne(t, db, 50),
 		"050 (moderation state) must be rolled back before testing 049")
 	require.EqualValues(t, 49, testkit.MigrateDownOne(t, db, 49),

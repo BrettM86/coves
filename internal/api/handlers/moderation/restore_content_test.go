@@ -111,3 +111,19 @@ func TestRestoreContentHandlerOmitsCIDForUnavailableSubject(t *testing.T) {
 	require.NoError(t, err)
 	assert.NoError(t, validation.ValidateData(catalog, decoded, "social.coves.moderation.defs#mutationResult", 0))
 }
+
+func TestRestoreContentHandlerKeepsReversedDoxingSubjectOnlyInPrivateProjection(t *testing.T) {
+	result := mutationResult(moderation.ActionRestore, mutationNote)
+	result.Action.Reason = "social.coves.moderation.defs#reasonModeratorDiscretion"
+	result.Action.ReversedActionReason = "social.coves.moderation.defs#reasonDoxing"
+	fake := &mutationServiceFake{result: result}
+	response := httptest.NewRecorder()
+	NewRestoreContentHandler(fake).HandleRestoreContent(response,
+		mutationRequest(http.MethodPost, restorePath, restoreBody, "application/json"))
+	require.Len(t, fake.restoreCalls, 1)
+	publicAction := assertHiddenMutationAction(t, response, result)
+	assert.Equal(t, result.Action.Reason, publicAction["reason"])
+	assert.Equal(t, map[string]any{
+		"serviceDid": mutationInstanceDID, "actionId": result.Action.ReversesActionID,
+	}, publicAction["reverses"])
+}

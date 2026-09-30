@@ -18,8 +18,10 @@ import (
 )
 
 const (
-	removeContentMethod  = "social.coves.moderation.removeContent"
-	restoreContentMethod = "social.coves.moderation.restoreContent"
+	removeContentMethod    = "social.coves.moderation.removeContent"
+	restoreContentMethod   = "social.coves.moderation.restoreContent"
+	listActionsMethod      = "social.coves.moderation.listActions"
+	listAdminActionsMethod = "social.coves.moderation.listAdminActions"
 )
 
 // TestModerationCommentRemovalContract crosses the real PDS → consumer → AppView
@@ -101,6 +103,7 @@ func TestModerationCommentRemovalContract(t *testing.T) {
 		"expectedVersion": initialState.State.Version,
 		"idempotencyKey":  testkit.UniqueID(t),
 		"reason":          "social.coves.moderation.defs#reasonSpam",
+		"privateNote":     "comment removal private note",
 	}
 	err = p.AppView.As(outsider.ServiceAuth(t, communityInstanceDID, removeContentMethod)).Procedure(
 		t.Context(), removeContentMethod, removeInput, nil)
@@ -236,6 +239,74 @@ func TestModerationCommentRemovalContract(t *testing.T) {
 			return response.Status == http.StatusOK && len(response.Body) > 0 &&
 				strings.HasPrefix(response.ContentType, "image/"), nil
 		})
+	}
+
+	var publicLog map[string]any
+	err = p.AppView.Query(t.Context(), listActionsMethod, url.Values{"subject": {uri}}, &publicLog)
+	require.NoError(t, err)
+	publicActions := requireModlogActions(t, publicLog)
+	require.Len(t, publicActions, 2)
+	for index, kind := range []string{"restore", "remove"} {
+		action := publicActions[index]
+		require.Equal(t, kind, action["action"])
+		require.Equal(t, map[string]any{"did": admin.DID}, action["actor"])
+		subject, ok := action["subject"].(map[string]any)
+		require.True(t, ok, "public spam action must include its subject")
+		require.Equal(t, uri, subject["uri"])
+	}
+	reverses, ok := publicActions[0]["reverses"].(map[string]any)
+	require.True(t, ok, "the restore must name the removal it reverses")
+	require.Equal(t, removal.Action.Action.Ref.ActionID, reverses["actionId"])
+	requireNoPrivateModlogKeys(t, publicLog)
+
+	var byHandle map[string]any
+	err = p.AppView.Query(t.Context(), listActionsMethod,
+		url.Values{"subject": {uri}, "actor": {admin.Handle}}, &byHandle)
+	require.NoError(t, err, "actor handle must resolve through the configured local identity infrastructure")
+	require.Equal(t, publicLog, byHandle)
+
+	var adminLog map[string]any
+	err = p.AppView.As(admin.ServiceAuth(t, communityInstanceDID, listAdminActionsMethod)).Query(
+		t.Context(), listAdminActionsMethod, url.Values{"subject": {uri}}, &adminLog)
+	require.NoError(t, err)
+	adminActions := requireModlogActions(t, adminLog)
+	require.Len(t, adminActions, 2)
+	for index, item := range adminActions {
+		require.Equal(t, admin.DID, item["actorDid"])
+		require.Equal(t, publicActions[index], item["action"])
+	}
+	require.Equal(t, removeInput["privateNote"], adminActions[1]["privateNote"])
+
+	err = p.AppView.Query(t.Context(), listAdminActionsMethod, url.Values{"subject": {uri}}, nil)
+	requireXRPCRefusal(t, err, http.StatusUnauthorized, "AuthRequired", "an anonymous admin action log request")
+}
+
+func requireModlogActions(t *testing.T, body map[string]any) []map[string]any {
+	t.Helper()
+	items, ok := body["actions"].([]any)
+	require.True(t, ok, "modlog response must contain an actions array")
+	actions := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		action, ok := item.(map[string]any)
+		require.True(t, ok, "modlog action must be a JSON object")
+		actions = append(actions, action)
+	}
+	return actions
+}
+
+func requireNoPrivateModlogKeys(t *testing.T, value any) {
+	t.Helper()
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			require.NotContains(t, []string{"privateNote", "actorDid", "privateSubject"}, key,
+				"public action log must not include private fields")
+			requireNoPrivateModlogKeys(t, child)
+		}
+	case []any:
+		for _, child := range typed {
+			requireNoPrivateModlogKeys(t, child)
+		}
 	}
 }
 
@@ -624,4 +695,105 @@ func TestModerationPostRemovalContract(t *testing.T) {
 				strings.HasPrefix(response.ContentType, "image/"), nil
 		})
 	}
+}
+
+// TestModerationModlogWiringContract reads the public action log through the
+// shipped server's wiring. The community-handle filter needs the community
+// resolver cmd/server hands the moderation service, and every list needs its
+// cursor secret: without one the service refuses to list at all (503).
+func TestModerationModlogWiringContract(t *testing.T) {
+	p := newPipeline(t)
+	author := p.IndexedAccount(t, "mlw")
+	community := indexedCommunity(t, p, "mlw", author.DID)
+	admin := testkit.ModerationAdmin(t, 1)
+	type mutation struct {
+		Outcome string `json:"outcome"`
+		Action  struct {
+			Action struct {
+				Ref struct {
+					ActionID string `json:"actionId"`
+				} `json:"ref"`
+			} `json:"action"`
+		} `json:"action"`
+		State struct {
+			Version string `json:"version"`
+		} `json:"state"`
+	}
+	var created []string
+	var restored testkit.Record
+	var restoredRemoval mutation
+	for index := range 2 {
+		post := author.PutRecord(t, postV2Collection, testkit.TID(),
+			postV2Record(community.DID, "modlog wiring "+testkit.UniqueID(t), "a post for the action log"))
+		awaitStatus(t, p, post.URI, community.DID, "pending", "the post to reach the AppView index")
+		var removal mutation
+		err := p.AppView.As(admin.ServiceAuth(t, communityInstanceDID, removeContentMethod)).Procedure(
+			t.Context(), removeContentMethod, map[string]any{
+				"subject":         map[string]any{"uri": post.URI, "cid": post.CID},
+				"expectedVersion": "v0",
+				"idempotencyKey":  testkit.UniqueID(t),
+				"reason":          "social.coves.moderation.defs#reasonSpam",
+			}, &removal)
+		require.NoError(t, err)
+		require.Equal(t, "applied", removal.Outcome)
+		created = append(created, removal.Action.Action.Ref.ActionID)
+		if index == 0 {
+			restored, restoredRemoval = post, removal
+		}
+	}
+	var restoration mutation
+	err := p.AppView.As(admin.ServiceAuth(t, communityInstanceDID, restoreContentMethod)).Procedure(
+		t.Context(), restoreContentMethod, map[string]any{
+			"actionId":        restoredRemoval.Action.Action.Ref.ActionID,
+			"reviewedSubject": map[string]any{"uri": restored.URI, "cid": restored.CID},
+			"expectedVersion": restoredRemoval.State.Version,
+			"idempotencyKey":  testkit.UniqueID(t),
+			"reason":          "social.coves.moderation.defs#reasonModeratorDiscretion",
+		}, &restoration)
+	require.NoError(t, err)
+	require.Equal(t, "applied", restoration.Outcome)
+	created = append(created, restoration.Action.Action.Ref.ActionID)
+
+	// The community is this test's own, so its log holds exactly these actions.
+	var unpaged map[string]any
+	err = p.AppView.Query(t.Context(), listActionsMethod, url.Values{"community": {community.Handle}}, &unpaged)
+	require.NoError(t, err, "the community handle must resolve through the AppView's community resolver")
+	listed := modlogActionIDs(t, unpaged)
+	require.ElementsMatch(t, created, listed)
+	var byDID map[string]any
+	err = p.AppView.Query(t.Context(), listActionsMethod, url.Values{"community": {community.DID}}, &byDID)
+	require.NoError(t, err)
+	require.Equal(t, unpaged, byDID)
+
+	query := url.Values{"community": {community.Handle}, "limit": {"1"}}
+	var walked []string
+	pages := 0
+	for {
+		var page map[string]any
+		require.NoError(t, p.AppView.Query(t.Context(), listActionsMethod, query, &page))
+		pages++
+		walked = append(walked, modlogActionIDs(t, page)...)
+		cursor, ok := page["cursor"].(string)
+		if !ok {
+			break
+		}
+		require.NotEmpty(t, cursor)
+		require.LessOrEqual(t, pages, len(created), "a limit=1 walk over %d actions must end", len(created))
+		query.Set("cursor", cursor)
+	}
+	require.GreaterOrEqual(t, pages, 2, "the limit=1 walk must continue through at least one cursor")
+	require.Equal(t, listed, walked, "the limit=1 walk must return the unpaged list in order")
+}
+
+func modlogActionIDs(t *testing.T, body map[string]any) []string {
+	t.Helper()
+	var ids []string
+	for _, action := range requireModlogActions(t, body) {
+		ref, ok := action["ref"].(map[string]any)
+		require.True(t, ok, "modlog action must carry a ref")
+		id, ok := ref["actionId"].(string)
+		require.True(t, ok, "modlog action ref must carry an actionId")
+		ids = append(ids, id)
+	}
+	return ids
 }

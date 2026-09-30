@@ -26,6 +26,10 @@ func (fakeSubjectStore) SubjectModeration(_ context.Context, _, _ string) (*mode
 	return &moderation.SubjectModeration{Version: 0}, nil
 }
 
+func (fakeSubjectStore) ListActions(context.Context, moderation.ActionListQuery) ([]moderation.Action, error) {
+	return nil, nil
+}
+
 func newSubjectStateTestService(reader moderation.SubjectReader) moderation.Service {
 	return moderation.NewService(reader, fakeSubjectStore{}, moderation.Config{InstanceDID: "did:web:test.coves.social"})
 }

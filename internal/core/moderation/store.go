@@ -38,8 +38,13 @@ type Action struct {
 	Reason              string
 	PrivateNote         string
 	ReversesActionID    string
-	Origin              string
-	CreatedAt           time.Time
+	// ReversedActionReason is the reason of the action named by ReversesActionID,
+	// read with the row rather than stored as a column. Store.ListActions must
+	// populate it: it decides whether the action is hidden, and an empty value
+	// reads as not hidden.
+	ReversedActionReason string
+	Origin               string
+	CreatedAt            time.Time
 }
 
 // IndexedComment is the indexed comment row a mutation inspects, read under a
@@ -101,6 +106,35 @@ type SubjectModeration struct {
 type Store interface {
 	InTransaction(ctx context.Context, fn func(ctx context.Context, tx Transaction) error) error
 	SubjectModeration(ctx context.Context, authorityDID, subjectURI string) (*SubjectModeration, error)
+	// ListActions returns up to query.Limit actions, newest first, each with
+	// ReversedActionReason populated. Under ExcludeHidden it must omit every
+	// hidden action; the service fails closed if one comes back.
+	ListActions(ctx context.Context, query ActionListQuery) ([]Action, error)
+}
+
+// ActionListQuery selects a page of the action log, newest first.
+type ActionListQuery struct {
+	// Limit is the page size plus one look-ahead row, which tells the service
+	// whether a next page exists.
+	Limit             int
+	Before            *ActionKey
+	SubjectURI        string
+	SubjectCollection string
+	Action            string
+	Origin            string
+	AuthorityDID      string
+	ActorDID          string
+	CommunityDID      string
+	ActionID          string
+	Since             *time.Time
+	Until             *time.Time
+	ExcludeHidden     bool
+}
+
+// ActionKey is an action log position: rows strictly older than it follow.
+type ActionKey struct {
+	CreatedAt time.Time
+	ID        string
 }
 
 // Transaction is the set of operations a mutation performs atomically.

@@ -247,7 +247,9 @@ var declaredRoutes = []declaredRoute{
 	// RegisterAdminReportRoutes — social.coves.admin.*
 	{http.MethodPost, "/xrpc/social.coves.admin.submitReport", authRequired, 10, false},
 
-	// RegisterModerationRoutes — instance-admin-only state query and mutations.
+	// RegisterModerationRoutes — public log and instance-admin state, history and mutations.
+	{http.MethodGet, "/xrpc/social.coves.moderation.listActions", authNone, 0, false},
+	{http.MethodGet, "/xrpc/social.coves.moderation.listAdminActions", authRequired, 0, false},
 	{http.MethodGet, "/xrpc/social.coves.moderation.getSubjectState", authRequired, 0, false},
 	{http.MethodPost, "/xrpc/social.coves.moderation.removeContent", authRequired, 0, false},
 	{http.MethodPost, "/xrpc/social.coves.moderation.restoreContent", authRequired, 0, false},

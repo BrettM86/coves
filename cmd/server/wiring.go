@@ -219,6 +219,9 @@ func buildApplication(
 			IdempotencyRetention:   app.cfg.Moderation.IdempotencyRetention,
 			MaxLiveIdempotencyKeys: app.cfg.Moderation.MaxLiveIdempotencyKeys,
 			Purger:                 purger,
+			CursorSecret:           app.cfg.CursorSecret,
+			CommunityResolver:      app.communityService,
+			HandleResolver:         app.identityResolver,
 		},
 	)
 	app.mediaReconciler = moderation.NewMediaReconciler(

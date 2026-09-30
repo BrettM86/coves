@@ -266,3 +266,44 @@ func TestMutationHandlersWriteRuleDetailButKeepUnavailableGeneric(t *testing.T) 
 		})
 	}
 }
+
+func assertHiddenMutationAction(t *testing.T, response *httptest.ResponseRecorder, result *moderation.MutationResult) map[string]any {
+	t.Helper()
+	require.Equal(t, http.StatusOK, response.Code)
+	assert.Equal(t, "application/json", response.Header().Get("Content-Type"))
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
+	adminAction, ok := body["action"].(map[string]any)
+	require.True(t, ok, "mutation must include an admin action: %s", response.Body.String())
+	publicAction, ok := adminAction["action"].(map[string]any)
+	require.True(t, ok, "mutation must include the public action projection: %s", response.Body.String())
+	assert.NotContains(t, publicAction, "subject", "hidden subjects must not be exposed in the public projection")
+	assert.Equal(t, map[string]any{"uri": result.Action.SubjectURI, "cid": result.Action.ObservedCID}, adminAction["privateSubject"])
+	assert.Equal(t, result.Action.ActorDID, adminAction["actorDid"])
+	assert.Equal(t, result.Action.PrivateNote, adminAction["privateNote"])
+	catalog := lexicon.NewBaseCatalog()
+	require.NoError(t, catalog.LoadDirectory("../../../atproto/lexicon"))
+	decoded, err := atdata.UnmarshalJSON(response.Body.Bytes())
+	require.NoError(t, err)
+	assert.NoError(t, validation.ValidateData(catalog, decoded, "social.coves.moderation.defs#mutationResult", 0))
+	return publicAction
+}
+
+func TestRemoveContentHandlerKeepsHiddenSubjectOnlyInPrivateProjection(t *testing.T) {
+	for _, reason := range []string{
+		"social.coves.moderation.defs#reasonIllegalContent",
+		"social.coves.moderation.defs#reasonDoxing",
+	} {
+		t.Run(reason, func(t *testing.T) {
+			result := mutationResult(moderation.ActionRemove, mutationNote)
+			result.Action.Reason = reason
+			fake := &mutationServiceFake{result: result}
+			response := httptest.NewRecorder()
+			NewRemoveContentHandler(fake).HandleRemoveContent(response,
+				mutationRequest(http.MethodPost, "/xrpc/social.coves.moderation.removeContent", removeBody, "application/json"))
+			require.Len(t, fake.removeCalls, 1)
+			publicAction := assertHiddenMutationAction(t, response, result)
+			assert.Equal(t, reason, publicAction["reason"])
+		})
+	}
+}

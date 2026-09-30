@@ -6,7 +6,6 @@ import (
 	"mime"
 	"net/http"
 	"strings"
-	"time"
 
 	"Coves/internal/api/middleware"
 	"Coves/internal/api/reqbody"
@@ -96,63 +95,15 @@ func writeMutationResult(w http.ResponseWriter, operation string, result *modera
 		})
 	}
 	response := struct {
-		Outcome string           `json:"outcome"`
-		State   subjectStateView `json:"state"`
-		Action  *adminActionView `json:"action,omitempty"`
+		Outcome string                      `json:"outcome"`
+		State   subjectStateView            `json:"state"`
+		Action  *moderation.AdminActionView `json:"action,omitempty"`
 	}{Outcome: result.Outcome, State: view}
 	if result.Action != nil {
-		action := result.Action
-		projection := actionView{
-			Ref:    actionRefView{ServiceDID: action.AuthorityDID, ActionID: action.ID},
-			Action: action.Action, AuthorityDID: action.AuthorityDID,
-			Scope:     scopeView{Kind: action.ScopeKind, CommunityDID: action.ScopeCommunityDID},
-			CreatedAt: action.CreatedAt.Format(time.RFC3339Nano), Origin: action.Origin,
-			Reason: action.Reason, Actor: actorView{DID: action.ActorDID},
-		}
-		if action.SubjectURI != "" {
-			projection.Subject = &subjectRefView{URI: action.SubjectURI, CID: action.ObservedCID}
-		}
-		if action.ReversesActionID != "" {
-			projection.Reverses = &actionRefView{ServiceDID: action.AuthorityDID, ActionID: action.ReversesActionID}
-		}
-		response.Action = &adminActionView{Action: projection, ActorDID: action.ActorDID, PrivateNote: action.PrivateNote}
+		projection := moderation.NewAdminActionView(*result.Action)
+		response.Action = &projection
 	}
 	xrpc.WriteJSON(w, http.StatusOK, response)
-}
-
-type adminActionView struct {
-	Action      actionView `json:"action"`
-	ActorDID    string     `json:"actorDid,omitempty"`
-	PrivateNote string     `json:"privateNote,omitempty"`
-}
-
-type actionView struct {
-	Ref          actionRefView   `json:"ref"`
-	Action       string          `json:"action"`
-	AuthorityDID string          `json:"authorityDid"`
-	Scope        scopeView       `json:"scope"`
-	CreatedAt    string          `json:"createdAt"`
-	Origin       string          `json:"origin"`
-	Subject      *subjectRefView `json:"subject,omitempty"`
-	Reason       string          `json:"reason,omitempty"`
-	Actor        actorView       `json:"actor"`
-	Reverses     *actionRefView  `json:"reverses,omitempty"`
-}
-
-// subjectRefView is defs#subjectRef: the CID is optional because an action can
-// target a subject whose record the AppView never observed.
-type subjectRefView struct {
-	URI string `json:"uri"`
-	CID string `json:"cid,omitempty"`
-}
-
-type scopeView struct {
-	Kind         string `json:"kind"`
-	CommunityDID string `json:"communityDid,omitempty"`
-}
-
-type actorView struct {
-	DID string `json:"did"`
 }
 
 func writeMutationError(w http.ResponseWriter, operation string, err error) {

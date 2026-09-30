@@ -16,6 +16,7 @@ import (
 	"Coves/internal/core/moderation"
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
+	"github.com/lib/pq"
 )
 
 // ModerationRepository is the Postgres moderation.Store.
@@ -61,7 +62,7 @@ func (r *ModerationRepository) SubjectModeration(ctx context.Context, authorityD
 		    AND d.kind = 'removal' AND d.active
 		LEFT JOIN moderation_actions a ON a.id = d.active_action_id
 	`, authorityDID, subjectURI)
-	action, err := scanModerationAction(row, &version)
+	action, err := scanModerationAction(row, &version, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +230,7 @@ type moderationRow interface {
 	Scan(dest ...any) error
 }
 
-func scanModerationAction(row moderationRow, version *int64) (*moderation.Action, error) {
+func scanModerationAction(row moderationRow, version *int64, reversedReason *sql.NullString) (*moderation.Action, error) {
 	var id, actorDID, authorityDID, scopeKind, scopeCommunityDID sql.NullString
 	var subjectURI, subjectCollection, subjectCommunityDID, observedCID sql.NullString
 	var actionKind, labelValue, reason, privateClassification, privateNote sql.NullString
@@ -244,13 +245,16 @@ func scanModerationAction(row moderationRow, version *int64) (*moderation.Action
 	if version != nil {
 		dest = append([]any{version}, dest...)
 	}
+	if reversedReason != nil {
+		dest = append(dest, reversedReason)
+	}
 	if err := row.Scan(dest...); err != nil {
 		return nil, err
 	}
 	if !id.Valid {
 		return nil, nil
 	}
-	return &moderation.Action{
+	action := &moderation.Action{
 		ID: id.String, ActorDID: actorDID.String, AuthorityDID: authorityDID.String,
 		ScopeKind: scopeKind.String, ScopeCommunityDID: scopeCommunityDID.String,
 		SubjectURI: subjectURI.String, SubjectCollection: subjectCollection.String,
@@ -258,12 +262,16 @@ func scanModerationAction(row moderationRow, version *int64) (*moderation.Action
 		Action: actionKind.String, LabelValue: labelValue.String, Reason: reason.String,
 		PrivateNote: privateNote.String, ReversesActionID: reversesActionID.String,
 		Origin: origin.String, CreatedAt: createdAt.Time,
-	}, nil
+	}
+	if reversedReason != nil {
+		action.ReversedActionReason = reversedReason.String
+	}
+	return action, nil
 }
 
 func (t *moderationTransaction) GetAction(ctx context.Context, actionID string) (*moderation.Action, error) {
 	action, err := scanModerationAction(t.tx.QueryRowContext(ctx,
-		`SELECT `+moderationActionColumns+` FROM moderation_actions a WHERE a.id = $1`, actionID), nil)
+		`SELECT `+moderationActionColumns+` FROM moderation_actions a WHERE a.id = $1`, actionID), nil, nil)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, moderation.ErrDecisionNotFound
 	}
@@ -288,7 +296,7 @@ func (t *moderationTransaction) ActiveRemoval(ctx context.Context, authorityDID,
 		WHERE d.authority_did = $1 AND d.subject_uri = $2
 		  AND d.scope_kind = 'instance' AND d.kind = 'removal' AND d.active
 		FOR SHARE OF d
-	`, authorityDID, subjectURI), nil)
+	`, authorityDID, subjectURI), nil, nil)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -447,4 +455,55 @@ func (r *ModerationRepository) ListActiveBlockedBlobs(ctx context.Context) ([]im
 // BindTransaction binds media reconciliation operations to tx.
 func (r *ModerationRepository) BindTransaction(tx *sql.Tx) moderation.MediaTransaction {
 	return &moderationTransaction{tx: tx}
+}
+
+// ListActions reads a page of the action log.
+func (r *ModerationRepository) ListActions(ctx context.Context, query moderation.ActionListQuery) ([]moderation.Action, error) {
+	var beforeCreatedAt, beforeID any
+	if query.Before != nil {
+		beforeCreatedAt, beforeID = query.Before.CreatedAt, query.Before.ID
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT `+moderationActionColumns+`, reversed.reason
+		FROM moderation_actions a
+		LEFT JOIN moderation_actions reversed ON reversed.id = a.reverses_action_id
+		WHERE ($2::timestamptz IS NULL OR (a.created_at, a.id) < ($2::timestamptz, $3::text))
+		  AND (NULLIF($4::text, '') IS NULL OR a.subject_uri = $4)
+		  AND (NULLIF($5::text, '') IS NULL OR a.subject_collection = $5)
+		  AND (NULLIF($6::text, '') IS NULL OR a.action = $6)
+		  AND (NULLIF($7::text, '') IS NULL OR a.origin = $7)
+		  AND (NULLIF($8::text, '') IS NULL OR a.authority_did = $8)
+		  AND (NULLIF($9::text, '') IS NULL OR a.actor_did = $9)
+		  AND (NULLIF($10::text, '') IS NULL OR a.subject_community_did = $10)
+		  AND (NULLIF($11::text, '') IS NULL OR a.id = $11)
+		  AND ($12::timestamptz IS NULL OR a.created_at >= $12::timestamptz)
+		  AND ($13::timestamptz IS NULL OR a.created_at < $13::timestamptz)
+		  AND (NOT $14::boolean OR NOT (
+		      COALESCE(a.reason = ANY($15::text[]), FALSE)
+		      OR COALESCE(reversed.reason = ANY($15::text[]), FALSE)))
+		ORDER BY a.created_at DESC, a.id DESC
+		LIMIT $1
+	`, query.Limit, beforeCreatedAt, beforeID, query.SubjectURI, query.SubjectCollection,
+		query.Action, query.Origin, query.AuthorityDID, query.ActorDID, query.CommunityDID,
+		query.ActionID, query.Since, query.Until, query.ExcludeHidden, pq.Array(moderation.HiddenActionReasons()))
+	if err != nil {
+		return nil, fmt.Errorf("list moderation actions: %w", err)
+	}
+	defer rows.Close()
+	var actions []moderation.Action
+	for rows.Next() {
+		var reversedReason sql.NullString
+		action, err := scanModerationAction(rows, nil, &reversedReason)
+		if err != nil {
+			return nil, fmt.Errorf("scan moderation action: %w", err)
+		}
+		if action == nil {
+			return nil, errors.New("scan moderation action: row has no action id")
+		}
+		actions = append(actions, *action)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read moderation actions: %w", err)
+	}
+	return actions, nil
 }

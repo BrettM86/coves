@@ -75,8 +75,11 @@ type inMemoryModerationStore struct {
 	state                  inMemoryModerationState
 	now                    time.Time
 	writeCalls             []string
+	listQueries            []moderation.ActionListQuery
+	listRows               []moderation.Action
 	failInsertAction       error
 	failSetRemovalDecision error
+	failListActions        error
 }
 
 func newInMemoryModerationStore(now time.Time) *inMemoryModerationStore {
@@ -116,6 +119,16 @@ func (store *inMemoryModerationStore) SubjectModeration(_ context.Context, autho
 		state.ActiveRemoval = &action
 	}
 	return state, nil
+}
+
+func (store *inMemoryModerationStore) ListActions(_ context.Context, query moderation.ActionListQuery) ([]moderation.Action, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.listQueries = append(store.listQueries, query)
+	if store.failListActions != nil {
+		return nil, store.failListActions
+	}
+	return append([]moderation.Action(nil), store.listRows...), nil
 }
 
 type inMemoryModerationTransaction struct {

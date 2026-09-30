@@ -33,4 +33,16 @@ type Service interface {
 	GetSubjectState(ctx context.Context, subject string) (*SubjectState, error)
 	RemoveContent(ctx context.Context, actorDID string, request RemoveContentRequest) (*MutationResult, error)
 	RestoreContent(ctx context.Context, actorDID string, request RestoreContentRequest) (*MutationResult, error)
+	ListActions(ctx context.Context, params ListActionsParams) (*ActionPage, error)
+	ListAdminActions(ctx context.Context, params ListAdminActionsParams) (*AdminActionPage, error)
+}
+
+// CommunityResolver resolves a community identifier to its DID.
+type CommunityResolver interface {
+	ResolveCommunityIdentifier(ctx context.Context, identifier string) (string, error)
+}
+
+// HandleResolver resolves an account handle to its DID.
+type HandleResolver interface {
+	ResolveHandle(ctx context.Context, handle string) (did, pdsURL string, err error)
 }

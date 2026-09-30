@@ -1,8 +1,10 @@
 package moderation_test
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"Coves/internal/core/moderation"
 
@@ -79,6 +81,42 @@ func TestRestoreContentValidatesRequestWithoutChangingActiveRemoval(t *testing.T
 			scenario := newRestoreRulesScenario(t)
 			test.change(&scenario.request)
 			assertRestoreRulesRejected(t, scenario, test.want)
+		})
+	}
+}
+
+// restoreRulesTransactionCounter counts store transactions so a test can show
+// that a request was refused before the service touched the store.
+type restoreRulesTransactionCounter struct {
+	*inMemoryModerationStore
+	transactions int
+}
+
+func (counter *restoreRulesTransactionCounter) InTransaction(ctx context.Context, fn func(context.Context, moderation.Transaction) error) error {
+	counter.transactions++
+	return counter.inMemoryModerationStore.InTransaction(ctx, fn)
+}
+
+func TestRestoreContentRejectsHiddenReasonsBeforeStore(t *testing.T) {
+	for _, reason := range []string{"social.coves.moderation.defs#reasonDoxing", removeRulesIllegal} {
+		t.Run(reason, func(t *testing.T) {
+			scenario := newRestoreRulesScenario(t)
+			counter := &restoreRulesTransactionCounter{inMemoryModerationStore: scenario.store}
+			scenario.service = moderation.NewService(scenario.reader, counter, moderation.Config{
+				InstanceDID: removeRulesInstanceDID, IdempotencyRetention: 24 * time.Hour,
+				MaxLiveIdempotencyKeys: 1000, Now: func() time.Time { return scenario.store.now }, Purger: scenario.purger,
+			})
+			scenario.request.Reason = reason
+			assertRestoreRulesRejected(t, scenario, moderation.ErrUnsupportedReason)
+			assert.Zero(t, counter.transactions, "a hidden restore reason must be refused before any store call")
+			assert.Empty(t, scenario.store.writeCalls)
+
+			// The refusal consumed no idempotency key: the same key still restores with a public reason.
+			scenario.request.Reason = "social.coves.moderation.defs#reasonModeratorDiscretion"
+			restored, err := scenario.service.RestoreContent(t.Context(), restoreRulesAdminDID, scenario.request)
+			require.NoError(t, err)
+			require.NotNil(t, restored)
+			assert.Equal(t, moderation.OutcomeApplied, restored.Outcome)
 		})
 	}
 }
@@ -245,4 +283,38 @@ func TestRestoreContentAppliesInverseWithoutChangingOriginalAction(t *testing.T)
 	require.NoError(t, err)
 	require.NotNil(t, following)
 	assert.Equal(t, result.State, *following)
+}
+
+func TestRestoreContentRetainsReversedRemovalReasonAcrossIdempotentReplay(t *testing.T) {
+	for _, reason := range []string{removeRulesIllegal, removeRulesSpam} {
+		t.Run(reason, func(t *testing.T) {
+			scenario := newRemoveRulesScenario()
+			scenario.request.Reason = reason
+			removed, err := scenario.service.RemoveContent(t.Context(), removeRulesAdminDID, scenario.request)
+			require.NoError(t, err)
+			require.NotNil(t, removed)
+			require.NotNil(t, removed.Action)
+			request := moderation.RestoreContentRequest{
+				ActionID: removed.Action.ID, ReviewedSubject: &moderation.StrongRef{URI: removeRulesURI, CID: removeRulesCID},
+				ExpectedVersion: removed.State.Version, IdempotencyKey: "restore-with-reversed-reason",
+				Reason: "social.coves.moderation.defs#reasonModeratorDiscretion", PrivateNote: "reviewed",
+			}
+			restored, err := scenario.service.RestoreContent(t.Context(), restoreRulesAdminDID, request)
+			require.NoError(t, err)
+			require.NotNil(t, restored)
+			require.NotNil(t, restored.Action)
+			assert.Equal(t, moderation.OutcomeApplied, restored.Outcome)
+			assert.Equal(t, removed.Action.ID, restored.Action.ReversesActionID)
+			assert.Equal(t, reason, restored.Action.ReversedActionReason, "the fresh restore must carry the removal's reason")
+
+			scenario.store.writeCalls = nil
+			replayed, err := scenario.service.RestoreContent(t.Context(), restoreRulesAdminDID, request)
+			require.NoError(t, err)
+			require.NotNil(t, replayed)
+			require.NotNil(t, replayed.Action)
+			assert.Equal(t, restored.Action.ID, replayed.Action.ID)
+			assert.Equal(t, reason, replayed.Action.ReversedActionReason, "the idempotent result must retain the removal's reason")
+			assert.Empty(t, scenario.store.writeCalls, "replay must not insert another action")
+		})
+	}
 }

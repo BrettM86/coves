@@ -9,13 +9,16 @@ import (
 	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 
-const illegalContentReason = "social.coves.moderation.defs#reasonIllegalContent"
+const (
+	illegalContentReason = "social.coves.moderation.defs#reasonIllegalContent"
+	doxingReason         = "social.coves.moderation.defs#reasonDoxing"
+)
 
 var removeReasons = map[string]struct{}{
-	"social.coves.moderation.defs#reasonSpam":                {},
-	"social.coves.moderation.defs#reasonHarassment":          {},
-	"social.coves.moderation.defs#reasonDoxing":              {},
-	illegalContentReason:                                     {},
+	"social.coves.moderation.defs#reasonSpam":       {},
+	"social.coves.moderation.defs#reasonHarassment": {},
+	doxingReason:         {},
+	illegalContentReason: {},
 	"social.coves.moderation.defs#reasonRuleViolation":       {},
 	"social.coves.moderation.defs#reasonModeratorDiscretion": {},
 }

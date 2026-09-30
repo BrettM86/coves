@@ -14,6 +14,11 @@ func validateRestoreRequest(request RestoreContentRequest) error {
 	if err := validateMutationFields(request.IdempotencyKey, request.ExpectedVersion, request.Reason, request.PrivateNote); err != nil {
 		return err
 	}
+	// A hidden reason would drop the restore from the subject's public history
+	// while its reverses reference still pointed at a public removal of that subject.
+	if request.Reason == illegalContentReason || request.Reason == doxingReason {
+		return fmt.Errorf("%w: a restore cannot use the illegal-content or doxing reason", ErrUnsupportedReason)
+	}
 	if request.ReviewedSubject != nil && !validContentStrongRef(*request.ReviewedSubject) {
 		return fmt.Errorf("%w: reviewedSubject must be a content strongRef", ErrInvalidRequest)
 	}
@@ -125,7 +130,8 @@ func (s *service) restoreContent(ctx context.Context, actorDID string, request R
 			SubjectCollection: removal.SubjectCollection, SubjectCommunityDID: removal.SubjectCommunityDID,
 			ObservedCID: observedCID, Action: ActionRestore, Reason: request.Reason,
 			PrivateNote: request.PrivateNote, ReversesActionID: removal.ID,
-			Origin: OriginLocal, CreatedAt: now,
+			ReversedActionReason: removal.Reason,
+			Origin:               OriginLocal, CreatedAt: now,
 		})
 		if err != nil {
 			return unavailable(err)
