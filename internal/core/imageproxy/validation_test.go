@@ -6,7 +6,52 @@ import (
 
 	"github.com/ipfs/go-cid"
 	"github.com/multiformats/go-multibase"
+	"github.com/stretchr/testify/require"
 )
+
+func TestValidateOwnerDID(t *testing.T) {
+	for _, test := range []struct {
+		name, did string
+		accepted  bool
+	}{
+		{name: "canonical plc", did: "did:plc:z72i7hdynmk6r22z27h6tvur", accepted: true},
+		{name: "fixture plc", did: "did:plc:testauthor1", accepted: true},
+		{name: "canonical web", did: "did:web:example.test", accepted: true},
+		{name: "subdomain and hyphen", did: "did:web:sub.example-host.test", accepted: true},
+		{name: "web port", did: "did:web:localhost%3A8080", accepted: true},
+		{name: "uppercase plc identifier", did: "did:plc:testAuthor1"},
+		{name: "uppercase web host", did: "did:web:Example.test"},
+		{name: "escaped web host letter", did: "did:web:%65xample.test"},
+		{name: "escaped plc identifier", did: "did:plc:%61bc"},
+		{name: "lowercase port escape", did: "did:web:localhost%3a8080"},
+		{name: "port escape without digits", did: "did:web:localhost%3A"},
+		{name: "web port leading zero", did: "did:web:localhost%3A08080"},
+		{name: "web port zero", did: "did:web:localhost%3A0"},
+		{name: "web path segments", did: "did:web:example.test:a:b"},
+		{name: "web path underscore", did: "did:web:example.test:a_b"},
+		{name: "web host underscore", did: "did:web:exa_mple.test"},
+		{name: "empty web host", did: "did:web:"},
+		{name: "empty plc identifier", did: "did:plc:"},
+		{name: "key method", did: "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"},
+		{name: "uppercase method", did: "did:PLC:abc"},
+		{name: "plc traversal", did: "did:plc:../../../etc/passwd"},
+		{name: "plc path", did: "did:plc:abc/def"},
+		// The pattern alone accepts these; the disk cache strips ".." from the
+		// directory name, so each would share did:plc:abcd's (or did:plc:ab.cd's)
+		// cache entries. Only ValidateDID's ".." guard refuses them.
+		{name: "plc double dot", did: "did:plc:ab..cd"},
+		{name: "plc triple dot", did: "did:plc:ab...cd"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := ValidateOwnerDID(test.did)
+			if test.accepted {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, ErrInvalidDID)
+			}
+		})
+	}
+}
 
 func TestValidateDID(t *testing.T) {
 	tests := []struct {

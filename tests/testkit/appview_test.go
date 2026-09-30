@@ -181,6 +181,38 @@ func TestStatusError_HandlesANonXRPCBody(t *testing.T) {
 	assert.Contains(t, err.Error(), "upstream is down")
 }
 
+func TestXRPCClient_GetBinaryExposesSuccessAndErrorHeaders(t *testing.T) {
+	stub := newStubService(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/img/blocked" {
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("blob not found"))
+			return
+		}
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		w.Header().Set("ETag", `"avatar-blob"`)
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("image bytes"))
+	})
+	client := NewXRPCClient(stub.URL)
+
+	served, err := client.GetBinary(t.Context(), "/img/served")
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, served.Status)
+	assert.Equal(t, "public, max-age=86400", served.Header.Get("Cache-Control"))
+	assert.Equal(t, `"avatar-blob"`, served.Header.Get("ETag"))
+	assert.Equal(t, "image/jpeg", served.ContentType)
+	assert.Equal(t, []byte("image bytes"), served.Body)
+
+	_, err = client.GetBinary(t.Context(), "/img/blocked")
+	require.Error(t, err)
+	var statusError *StatusError
+	require.ErrorAs(t, err, &statusError)
+	assert.Equal(t, http.StatusNotFound, statusError.StatusCode)
+	assert.Equal(t, "no-store", statusError.Header.Get("Cache-Control"))
+	assert.Equal(t, "blob not found", statusError.Body)
+}
+
 func TestStatusOf_IsZeroForTransportFailures(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	address := server.URL

@@ -1,7 +1,7 @@
 # PRD: CSAM Scanning via Cloudflare + Media Choke Point
 
-**Status:** Workstreams 1 and 2 implemented (AppView + Caddy). Workstream 3 (Cloudflare zone config) is manual dashboard/DNS work, not yet done. Workstream 4 (takedown runbook) not started.
-**Last updated:** 2026-07-27
+**Status:** Workstreams 1 and 2 implemented (AppView + Caddy). Workstream 3 (Cloudflare zone config) is manual dashboard/DNS work: as of 2026-09-28 Cloudflare proxies `img.coves.social`, and no Cloudflare API token with the Cache Purge permission exists yet. The other WS3 steps (cache rule, CSAM Scanning Tool, SSL mode) are not confirmed here. Workstream 4 (takedown runbook) not started.
+**Last updated:** 2026-09-29
 
 ## Problem
 
@@ -21,7 +21,7 @@ Cloudflare can only scan what is **proxied through Cloudflare and cached at its 
 - `tdpl.io` **cannot** be CDN-proxied at all: on-demand TLS for bridged-handle certs requires DNS pointing directly at the origin (`Caddyfile` catch-all block), and Cloudflare wildcard proxying doesn't cover `*.*.tdpl.io` anyway.
 - `pds.coves.me` serves the atproto sync surface (firehose WebSockets, relay traffic) — proxying it through Cloudflare is possible but risky and unnecessary.
 
-However, we already have the right choke point built: the **image proxy** (`internal/core/imageproxy/`, route `GET /img/{preset}/plain/{did}/{cid}`). It resolves *any* DID to its PDS (including the bridge PDS), fetches the blob, transforms it, and serves it with `Cache-Control: public, max-age=31536000, immutable` + ETag — ideal for edge caching. The presets registry already includes `content_preview`, `content_full`, and `embed_thumbnail`, not just avatars/banners.
+However, we already have the right choke point built: the **image proxy** (`internal/core/imageproxy/`, route `GET /img/{preset}/plain/{did}/{cid}`). It resolves *any* DID to its PDS (including the bridge PDS), fetches the blob, transforms it, and serves it with `Cache-Control: public, max-age=86400` + ETag — cacheable at the edge for a day, which bounds how long an unpurged edge or browser keeps an image after a moderation removal. The presets registry already includes `content_preview`, `content_full`, and `embed_thumbnail`, not just avatars/banners.
 
 **Decision:** Do NOT put the whole site (or the PDS, or tdpl.io) behind Cloudflare. Instead:
 
@@ -59,7 +59,7 @@ The `img.coves.social` site block is in the production `Caddyfile`: `/img/*` rev
 
 Also done:
 - CSP: the `coves.social` `img-src` is now `'self' data: https://img.coves.social`.
-- Error responses from the proxy carry `Cache-Control: no-store` (`writeErrorResponse` in `internal/api/handlers/imageproxy/handler.go`), so a transient PDS timeout or an unpropagated DID can't be pinned at the edge for the year the success path advertises.
+- Error responses from the proxy carry `Cache-Control: no-store` (`writeErrorResponse` in `internal/api/handlers/imageproxy/handler.go`), so a transient PDS timeout, an unpropagated DID or a moderation block can't be pinned at the edge or in a browser.
 
 Remaining at deploy time: **the bind-mount trap** — Caddyfile changes require `docker compose up -d --force-recreate caddy`, not just a `git pull` + reload.
 
@@ -68,7 +68,7 @@ Remaining at deploy time: **the bind-mount trap** — Caddyfile changes require 
 On the `coves.social` zone (we already own it — DNS-01 tokens exist):
 
 1. **DNS**: `img.coves.social` A/AAAA → OVH origin IP, **Proxied** (orange cloud). All other records stay DNS-only (grey) — especially anything under `tdpl.io` and `coves.me`.
-2. **Cache**: add a Cache Rule for `img.coves.social/*`: *Eligible for cache*, respect origin `Cache-Control`. Blobs are content-addressed (CID in URL) so immutable caching is correct. Optionally enable Tiered Cache.
+2. **Cache**: add a Cache Rule for `img.coves.social/*`: *Eligible for cache*, with Edge TTL set to respect origin `Cache-Control` headers, and set the zone's Browser Cache TTL to *Respect Existing Headers*. Blobs are content-addressed (CID in URL), but caching is no longer immutable: a moderation removal must stop serving an image, so the origin advertises `public, max-age=86400` and an overriding edge or browser TTL would outlive that bound. Optionally enable Tiered Cache.
 3. **Enable CSAM Scanning Tool**: Dashboard → Caching → Configuration → CSAM Scanning Tool → Configure. Provide a monitored role address (e.g. `abuse@coves.social`, forwarded to admins) and verify it. Agree to the service-specific terms.
 4. **SSL mode**: Full (strict) for the zone (origin has valid certs via Caddy).
 5. Do **not** enable Cloudflare features that interfere with API semantics on other hostnames — only `img` is proxied, so blast radius is zero.
@@ -104,6 +104,8 @@ Phase 1 can be a documented manual runbook using existing tools (psql, PDS admin
 | Direct PDS `getBlob` remains publicly fetchable | Required by atproto sync (relays, other AppViews) | API no longer emits these URLs; optionally rate-limit `getBlob` at Caddy for non-relay UAs |
 | Only known-hash CSAM is detected | Fuzzy hash lists can't catch novel content | Community reporting (`internal/core/adminreports/`) + moderator review remain the backstop |
 | Video blobs unscanned | Image proxy is stills-only | Track as separate workstream |
+| Browser caches, and any shared cache nobody purges, keep a removed image for up to one day | A moderation removal purges only the proxy's own disk cache; a copy already served with `Cache-Control: public, max-age=86400` stays valid wherever it was stored | The one-day `max-age` bounds the exposure without any configuration, including for self-hosters with no CDN; the optional CDN purge on removal, once built, will shorten it for an edge that is configured for it |
+| Responses cached under the pre-deploy `public, max-age=31536000, immutable` header | Copies stored before the one-day header shipped keep their original lifetime | Browsers keep them for up to a year and nothing server-side can reach them; the edge keeps them until a one-time Purge Everything of the `coves.social` zone after deploy (Rollout order step 4; WS3 proxies only `img.coves.social`, so this drops only cached images) |
 | Bridge PDS stores blobs regardless of scanning | Blobs land before any serve-time scan | Phase 2 ingest scanning; instance allow/blocklist at the bridge is the coarse control |
 | `record.embed` still carries blob references | Post and comment responses include the verbatim atproto record, whose embed is unprojected by design (the lexicon calls it verbatim). A client *could* build a `getBlob` URL from it | Neither client reads `record.embed` today. Coves image URLs use the proxy, with the explicit foreign Bluesky CDN exception below; this does not mean no blob reference reaches a client. The same record bytes are public on the PDS regardless. Revisit if a client starts reading it |
 | Resolved Bluesky post images, avatars, and link-preview thumbnails | Approved direct-CDN exception, 2026-09-19: `social.coves.embed.post` resolution preserves validated HTTPS `cdn.bsky.app` image URLs from Bluesky's resolved views, including media on the one-level quoted post. These foreign images bypass the Coves image proxy and Coves scanning edge; URL validation is not content scanning. No PDS blob fetch or CDN-to-blob-reference conversion is used. Videos are outside this change | Fetch and serving boundaries reject unsafe media URLs while preserving post and external-card metadata; see `internal/core/blueskypost/cdn_url.go` and `projection.go`. Backend implementation only: this records the accepted scanning exception, not production deployment or security verification |
@@ -113,11 +115,12 @@ Phase 1 can be a documented manual runbook using existing tools (psql, PDS admin
 WS1 and WS2 are both in the tree, so they ship together. The ordering constraint that remains is **DNS before deploy**: the AppView will start emitting `https://img.coves.social/...` URLs the moment it boots with the new config, so that hostname has to resolve and serve first or every image 404s.
 
 1. **DNS + Cloudflare (WS3)** — create the `img.coves.social` A/AAAA record pointing at the OVH origin, **Proxied** (orange cloud). Every other record stays DNS-only, especially `tdpl.io` and `coves.me`. Set the zone to Full (strict). Add the cache rule for `img.coves.social/*`. Enable the CSAM Scanning Tool with a verified role address.
-2. **Deploy Caddy** — `docker compose up -d --force-recreate caddy` (bind-mount trap). Verify `curl -sD- -o /dev/null https://img.coves.social/img/avatar/plain/<did>/<cid>` returns 200 with `Cache-Control: public, max-age=31536000, immutable`, and that `https://img.coves.social/` 404s. (Use `-sD- -o /dev/null`, not `-I`: the image route is registered GET-only and chi does not map HEAD to it, so `-I` returns 405 and shows none of the cache headers.)
+2. **Deploy Caddy** — `docker compose up -d --force-recreate caddy` (bind-mount trap). Verify `curl -sD- -o /dev/null https://img.coves.social/img/avatar/plain/<did>/<cid>` returns 200 with `Cache-Control: public, max-age=86400`, and that `https://img.coves.social/` 404s. (Use `-sD- -o /dev/null`, not `-I`: the image route is registered GET-only and chi does not map HEAD to it, so `-I` returns 405 and shows none of the cache headers.)
 3. **Deploy the AppView** with `IMAGE_PROXY_BASE_URL=https://img.coves.social`. Startup now fails loudly on a misconfigured proxy rather than silently falling back. Verify feeds render, then watch proxy cache hit rate and origin bandwidth.
-4. **Client follow-ups** — ship the two `coves-frontend` type/`extractEmbedUrl` changes noted in WS1.
-5. WS4 runbook written and dry-run before announcing Lemmy federation more broadly.
-6. Phase 2 (ingest-time hash matching) scheduled after federation traffic is real.
+4. **Purge the edge once** — after the first AppView deploy that sends `Cache-Control: public, max-age=86400`, run Purge Everything on the `coves.social` zone in the Cloudflare dashboard. Edge copies stored under the old `public, max-age=31536000, immutable` header otherwise keep serving for up to a year, including images removed since. Browser copies cannot be purged (WS5).
+5. **Client follow-ups** — ship the two `coves-frontend` type/`extractEmbedUrl` changes noted in WS1.
+6. WS4 runbook written and dry-run before announcing Lemmy federation more broadly.
+7. Phase 2 (ingest-time hash matching) scheduled after federation traffic is real.
 
 ## Open questions
 

@@ -92,7 +92,7 @@ func TestModerationCommentConsumerReconcilesRemovedImages(t *testing.T) {
 		remove                  bool
 	}{
 		{name: "edit adds image under spam removal", reason: moderationTestReason, operation: "update", initialImage: true, remove: true},
-		{name: "illegal content edit adds ownerless block", reason: "social.coves.moderation.defs#reasonIllegalContent", operation: "update", remove: true},
+		{name: "illegal content edit adds owner-scoped block", reason: "social.coves.moderation.defs#reasonIllegalContent", operation: "update", remove: true},
 		{name: "duplicate create after removal does not purge", reason: moderationTestReason, operation: "duplicate", initialImage: true, remove: true},
 		{name: "author delete then recreate same URI", reason: moderationTestReason, operation: "recreate", remove: true},
 		{name: "newer-rev re-create of the active row", reason: moderationTestReason, operation: "recreate-active", initialImage: true, remove: true},
@@ -243,12 +243,15 @@ func TestModerationCommentConsumerReconcilesRemovedImages(t *testing.T) {
 			require.NotEmpty(t, purger.calls, "new pair must be purged")
 			assert.Equal(t, consumerPurgeCall{ownerDID: authorDID, blobCID: newImageCID, visible: true}, purger.calls[0], "pair purge must happen after commit")
 			if scenario.reason == "social.coves.moderation.defs#reasonIllegalContent" {
-				assert.Equal(t, 2, blocks, "illegal content blocks both the owner pair and every owner")
-				require.Len(t, purger.calls, 2)
-				assert.Contains(t, purger.calls, consumerPurgeCall{blobCID: newImageCID, visible: true}, "ownerless purge must happen after commit")
+				assert.Equal(t, 1, blocks, "an edit adds only the author's image block")
+				var ownerlessBlocks int
+				require.NoError(t, db.QueryRowContext(ctx, `SELECT count(*) FROM moderation_media_blocks WHERE blob_cid = $1 AND owner_did IS NULL AND active`, newImageCID).Scan(&ownerlessBlocks))
+				assert.Zero(t, ownerlessBlocks, "an edit must not add an ownerless image block")
+				assert.Equal(t, []consumerPurgeCall{{ownerDID: authorDID, blobCID: newImageCID, visible: true}}, purger.calls,
+					"only the author's image cache is purged after commit")
 				otherOwnerBlocked, checkErr := moderationRepo.IsBlocked(ctx, fixtures.DID("otherimageowner"), newImageCID)
 				require.NoError(t, checkErr)
-				assert.True(t, otherOwnerBlocked)
+				assert.False(t, otherOwnerBlocked, "another owner's new image must remain available")
 			} else {
 				assert.Equal(t, 1, blocks, "spam blocks only the image owner's pair")
 				require.Len(t, purger.calls, 1)

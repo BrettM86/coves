@@ -194,9 +194,8 @@ func TestImageProxy_EmittedURLsAreFetchable(t *testing.T) {
 		assertImageSize(t, body, 1000, 1000)
 	})
 
-	// Errors must be uncacheable: this route advertises a one-year immutable
-	// lifetime on success and sits behind a CDN, so a cacheable failure would
-	// outlive the condition that caused it by a year.
+	// Errors must be uncacheable: success can be cached for one day behind a
+	// CDN, but a cached failure could outlive the condition that caused it.
 	t.Run("an unresolvable blob returns an uncacheable error", func(t *testing.T) {
 		// A decodable CID the PDS does not hold, so the failure is the fetch;
 		// an undecodable one would be refused before it.

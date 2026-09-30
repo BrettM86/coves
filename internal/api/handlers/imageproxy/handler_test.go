@@ -159,7 +159,7 @@ func TestHandler_HandleImage_Success(t *testing.T) {
 
 	// Verify Cache-Control
 	cacheControl := w.Header().Get("Cache-Control")
-	expectedCacheControl := "public, max-age=31536000, immutable"
+	expectedCacheControl := "public, max-age=86400"
 	if cacheControl != expectedCacheControl {
 		t.Errorf("Expected Cache-Control %q, got %q", expectedCacheControl, cacheControl)
 	}
@@ -689,11 +689,11 @@ func TestHandler_HandleImage_InvalidCID(t *testing.T) {
 	}
 }
 
-// This route sits behind a CDN and advertises a one-year immutable lifetime on
-// success, which is correct for content-addressed blobs. Inheriting anything
-// cacheable on an error would pin a transient failure — a PDS timeout, a DID
-// that had not propagated yet — at the edge long after the image became
-// fetchable. Every error path must therefore say no-store.
+// This route sits behind a CDN, and a browser or CDN may cache successful
+// images for one day.
+// Caching an error would let a transient failure — a PDS timeout or a DID
+// that had not propagated yet — outlive its cause. Every error path must
+// therefore say no-store.
 func TestHandler_HandleImage_ErrorsAreNeverCacheable(t *testing.T) {
 	tests := []struct {
 		name       string

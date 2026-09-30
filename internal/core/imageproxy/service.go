@@ -148,7 +148,7 @@ func NewService(cache Cache, processor Processor, fetcher Fetcher, blocks BlockC
 const defaultPublicationTimeout = 10 * time.Second
 
 // GetImageResolvingPDS implements Service. The service flow is:
-//  1. Validate preset exists
+//  1. Validate preset exists and the owner DID is canonical
 //  2. Check moderation, then cache for (preset, did, cid) - return if hit
 //  3. Resolve the DID's PDS with resolvePDS (misses only)
 //  4. Acquire an admission slot, waiting at most ProcessQueueWait
@@ -169,6 +169,11 @@ func (s *ImageProxyService) GetImageResolvingPDS(
 	// Step 1: Validate preset exists
 	preset, err := GetPreset(presetName)
 	if err != nil {
+		return nil, err
+	}
+	// A second spelling of the owner would miss its block and could read
+	// another spelling's cache directory; see ValidateOwnerDID.
+	if err := ValidateOwnerDID(did); err != nil {
 		return nil, err
 	}
 
@@ -365,8 +370,12 @@ type BlockChecker interface {
 	IsBlocked(ctx context.Context, ownerDID, cid string) (bool, error)
 }
 
-// IsBlobBlocked reports whether moderation blocks serving the blob.
+// IsBlobBlocked reports whether moderation blocks serving the blob. A
+// noncanonical owner DID returns ErrInvalidDID: blocks match one spelling.
 func (s *ImageProxyService) IsBlobBlocked(ctx context.Context, did, cid string) (bool, error) {
+	if err := ValidateOwnerDID(did); err != nil {
+		return false, err
+	}
 	blocked, err := s.blocks.IsBlocked(ctx, did, cid)
 	if err != nil {
 		return false, fmt.Errorf("%w: %w", ErrBlockCheckFailed, err)

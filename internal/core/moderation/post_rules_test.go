@@ -231,10 +231,11 @@ func TestRestorePostContentReviewsCurrentPostAndDeactivatesBlocks(t *testing.T) 
 }
 
 type postRulesMediaTransaction struct {
-	post   moderation.IndexedPost
-	action moderation.Action
-	calls  []string
-	blocks []moderation.MediaBlock
+	post    moderation.IndexedPost
+	comment *moderation.IndexedComment
+	action  moderation.Action
+	calls   []string
+	blocks  []moderation.MediaBlock
 }
 
 func (transaction *postRulesMediaTransaction) ActiveRemoval(context.Context, string, string) (*moderation.Action, error) {
@@ -244,6 +245,9 @@ func (transaction *postRulesMediaTransaction) ActiveRemoval(context.Context, str
 
 func (transaction *postRulesMediaTransaction) ReadIndexedComment(context.Context, string) (*moderation.IndexedComment, error) {
 	transaction.calls = append(transaction.calls, "ReadIndexedComment")
+	if transaction.comment != nil {
+		return transaction.comment, nil
+	}
 	return &moderation.IndexedComment{}, nil
 }
 
@@ -282,6 +286,98 @@ func TestReconcileRemovedPostMediaReadsIndexedPost(t *testing.T) {
 	}
 	assert.Equal(t, want, bound.blocks)
 	assert.Equal(t, want, blocks)
+}
+
+func TestReconcileIllegalContentMediaIsOwnerScoped(t *testing.T) {
+	for _, test := range []struct {
+		name, uri, ownerDID string
+		blobCIDs            []string
+		incoming            bool
+		readCall            string
+	}{
+		{
+			name: "indexed post", uri: postRulesURI, ownerDID: postRulesAuthorDID,
+			blobCIDs: []string{removeRulesFirstImage, removeRulesSecondImage}, readCall: "ReadIndexedPost",
+		},
+		{
+			name: "indexed comment", uri: removeRulesURI, ownerDID: removeRulesAuthorDID,
+			blobCIDs: []string{removeRulesFirstImage}, readCall: "ReadIndexedComment",
+		},
+		{
+			name: "incoming post blobs not indexed", uri: postRulesURI, ownerDID: postRulesAuthorDID,
+			blobCIDs: []string{removeRulesSecondImage}, incoming: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			bound := &postRulesMediaTransaction{
+				post: moderation.IndexedPost{
+					URI: postRulesURI, CID: postRulesCID,
+					OwnerDID: postRulesAuthorDID, BlobCIDs: test.blobCIDs,
+				},
+				comment: &moderation.IndexedComment{
+					URI: removeRulesURI, CID: removeRulesCID,
+					OwnerDID: removeRulesAuthorDID, ImageCIDs: test.blobCIDs,
+				},
+				action: moderation.Action{ID: "illegal-removal", Reason: removeRulesIllegal},
+			}
+			purger := &removeRulesPurger{}
+			reconciler := moderation.NewMediaReconciler(postRulesMediaBinder{bound}, removeRulesInstanceDID, purger)
+			var blocks []moderation.MediaBlock
+			var err error
+			if test.incoming {
+				blocks, err = reconciler.ReconcileIncomingTx(t.Context(), nil, test.uri, test.ownerDID, test.blobCIDs)
+				assert.Equal(t, []string{"ActiveRemoval", "InsertNewMediaBlocks"}, bound.calls)
+			} else {
+				blocks, err = reconciler.ReconcileTx(t.Context(), nil, test.uri)
+				assert.Equal(t, []string{"ActiveRemoval", test.readCall, "InsertNewMediaBlocks"}, bound.calls)
+			}
+			require.NoError(t, err)
+			wantBlocks := make([]moderation.MediaBlock, 0, len(test.blobCIDs))
+			wantPurges := make([]removeRulesOwnerPurge, 0, len(test.blobCIDs))
+			for _, blobCID := range test.blobCIDs {
+				wantBlocks = append(wantBlocks, moderation.MediaBlock{OwnerDID: test.ownerDID, BlobCID: blobCID, ActionID: bound.action.ID})
+				wantPurges = append(wantPurges, removeRulesOwnerPurge{test.ownerDID, blobCID})
+			}
+			assert.Equal(t, wantBlocks, bound.blocks, "only owner-scoped blocks may be inserted")
+			assert.Equal(t, wantBlocks, blocks, "only owner-scoped blocks may be returned")
+			reconciler.Purge(blocks)
+			assert.Equal(t, wantPurges, purger.ownerPurges, "new blobs must use PurgeOwnerBlob")
+			assert.Empty(t, purger.blobPurges, "reconciliation must never call PurgeBlob")
+		})
+	}
+}
+
+// The store writes an empty owner as an every-owner block, so reconciliation
+// must refuse an empty owner rather than insert anything.
+func TestReconcileRefusesEmptyOwnerDID(t *testing.T) {
+	for _, test := range []struct {
+		name, uri string
+		incoming  bool
+	}{
+		{name: "indexed post", uri: postRulesURI},
+		{name: "indexed comment", uri: removeRulesURI},
+		{name: "incoming post blobs not indexed", uri: postRulesURI, incoming: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			blobCIDs := []string{removeRulesFirstImage}
+			bound := &postRulesMediaTransaction{
+				post:    moderation.IndexedPost{URI: postRulesURI, CID: postRulesCID, BlobCIDs: blobCIDs},
+				comment: &moderation.IndexedComment{URI: removeRulesURI, CID: removeRulesCID, ImageCIDs: blobCIDs},
+				action:  moderation.Action{ID: "spam-removal", Reason: removeRulesSpam},
+			}
+			reconciler := moderation.NewMediaReconciler(postRulesMediaBinder{bound}, removeRulesInstanceDID, nil)
+			var blocks []moderation.MediaBlock
+			var err error
+			if test.incoming {
+				blocks, err = reconciler.ReconcileIncomingTx(t.Context(), nil, test.uri, "", blobCIDs)
+			} else {
+				blocks, err = reconciler.ReconcileTx(t.Context(), nil, test.uri)
+			}
+			require.ErrorIs(t, err, moderation.ErrInvalidSubject)
+			assert.Empty(t, blocks)
+			assert.NotContains(t, bound.calls, "InsertNewMediaBlocks", "an empty owner must never reach the store")
+		})
+	}
 }
 
 var _ moderation.MediaTransaction = (*postRulesMediaTransaction)(nil)

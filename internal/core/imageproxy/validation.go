@@ -1,6 +1,7 @@
 package imageproxy
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
@@ -22,6 +23,35 @@ func ValidateDID(did string) error {
 		return ErrInvalidDID
 	}
 
+	return nil
+}
+
+// ownerDIDPattern is the canonical owner spelling: a lowercase did:plc, or a
+// lowercase did:web host with an optional %3A port that has no leading zero.
+var ownerDIDPattern = regexp.MustCompile(`^(?:did:plc:[a-z0-9._-]+|did:web:[a-z0-9-]+(?:\.[a-z0-9-]+)*(?:%3A[1-9][0-9]{0,4})?)$`)
+
+// ValidateOwnerDID accepts only the canonical spelling of a did:plc or did:web
+// blob owner, so that each owner has exactly one string. Two lookups key on it:
+//   - the media block check compares owner_did = $1 exactly, so an uppercase or
+//     percent-escaped spelling of a blocked owner would not match its block;
+//   - the disk cache directory is the DID with ":" rewritten to "_" and ".."
+//     stripped, so did:web:x:a:b and did:web:x:a_b would share cached bytes.
+//
+// The pattern therefore refuses uppercase, every percent escape except one
+// %3A port, and any colon after the method.
+//
+// A real PLC identifier is 24 base32 characters. The pattern also allows ".",
+// "_" and "-" so that test fixtures such as did:plc:apikey_aggregator pass;
+// the cache path rewrites none of those characters, so they cannot alias.
+// ValidateDID must run first: it refuses "..", which the pattern accepts and
+// the cache strips (did:plc:ab..cd would share did:plc:abcd's directory).
+func ValidateOwnerDID(did string) error {
+	if err := ValidateDID(did); err != nil {
+		return err
+	}
+	if !ownerDIDPattern.MatchString(did) {
+		return ErrInvalidDID
+	}
 	return nil
 }
 

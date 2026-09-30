@@ -3,6 +3,7 @@ package moderation
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log/slog"
 )
 
@@ -21,8 +22,11 @@ type TransactionBinder interface {
 	BindTransaction(tx *sql.Tx) MediaTransaction
 }
 
-// MediaReconciler keeps media blocks in step with a removed subject's
-// indexed images when a consumer rewrites the subject.
+// MediaReconciler adds owner-scoped blocks for images introduced after a
+// subject is removed. Ownerless (every-owner) blocks exist only for an
+// illegal-content removal and cover only the images indexed when the admin
+// removed the subject; reconciliation never adds one. Both reconcile methods
+// therefore refuse an empty owner DID, which the store records as ownerless.
 type MediaReconciler struct {
 	binder      TransactionBinder
 	instanceDID string
@@ -35,7 +39,8 @@ func NewMediaReconciler(binder TransactionBinder, instanceDID string, purger Med
 }
 
 // ReconcileTx blocks images newly present on a subject with an active
-// removal, inside the caller's transaction, and returns the new blocks.
+// removal for that subject's owner, inside the caller's transaction, and
+// returns the new blocks.
 func (r *MediaReconciler) ReconcileTx(ctx context.Context, tx *sql.Tx, subjectURI string) ([]MediaBlock, error) {
 	bound := r.binder.BindTransaction(tx)
 	action, err := bound.ActiveRemoval(ctx, r.instanceDID, subjectURI)
@@ -49,13 +54,17 @@ func (r *MediaReconciler) ReconcileTx(ctx context.Context, tx *sql.Tx, subjectUR
 	if subject == nil {
 		return nil, ErrSubjectNotIndexed
 	}
-	return bound.InsertNewMediaBlocks(ctx, imageMediaBlocks(subject, action))
+	if subject.OwnerDID == "" {
+		return nil, fmt.Errorf("%w: indexed subject has no owner DID", ErrInvalidSubject)
+	}
+	return bound.InsertNewMediaBlocks(ctx, ownerImageMediaBlocks(subject, action))
 }
 
 // ReconcileIncomingTx blocks blobs of incoming content the consumer did not
 // index, such as a recreate of a deleted post whose tombstone is kept. The
 // owner's repository still serves those blobs, and the stored row does not
 // name them, so the caller passes the owner and CIDs from the incoming record.
+// These new blocks apply only to that owner, regardless of removal reason.
 func (r *MediaReconciler) ReconcileIncomingTx(ctx context.Context, tx *sql.Tx, subjectURI, ownerDID string, blobCIDs []string) ([]MediaBlock, error) {
 	if len(blobCIDs) == 0 {
 		return nil, nil
@@ -65,7 +74,10 @@ func (r *MediaReconciler) ReconcileIncomingTx(ctx context.Context, tx *sql.Tx, s
 	if err != nil || action == nil {
 		return nil, err
 	}
-	return bound.InsertNewMediaBlocks(ctx, imageMediaBlocks(&indexedSubject{OwnerDID: ownerDID, BlobCIDs: blobCIDs}, action))
+	if ownerDID == "" {
+		return nil, fmt.Errorf("%w: incoming content has no owner DID", ErrInvalidSubject)
+	}
+	return bound.InsertNewMediaBlocks(ctx, ownerImageMediaBlocks(&indexedSubject{OwnerDID: ownerDID, BlobCIDs: blobCIDs}, action))
 }
 
 // Purge removes cached bytes of newly blocked blobs after commit.
@@ -96,7 +108,9 @@ func purgeMediaBlocks(purger MediaPurger, blocks []MediaBlock) {
 	}
 }
 
-func imageMediaBlocks(subject *indexedSubject, action *Action) []MediaBlock {
+// ownerImageMediaBlocks returns one owner-scoped block per distinct CID.
+// Reconciliation uses it directly, and imageMediaBlocks builds on it.
+func ownerImageMediaBlocks(subject *indexedSubject, action *Action) []MediaBlock {
 	var blocks []MediaBlock
 	seen := make(map[string]bool)
 	for _, cid := range subject.BlobCIDs {
@@ -105,9 +119,20 @@ func imageMediaBlocks(subject *indexedSubject, action *Action) []MediaBlock {
 		}
 		seen[cid] = true
 		blocks = append(blocks, MediaBlock{OwnerDID: subject.OwnerDID, BlobCID: cid, ActionID: action.ID})
-		if action.Reason == illegalContentReason {
-			blocks = append(blocks, MediaBlock{BlobCID: cid, ActionID: action.ID})
-		}
+	}
+	return blocks
+}
+
+// imageMediaBlocks returns the blocks an admin removal installs: the owner
+// blocks plus, for illegal content, an every-owner block per CID.
+func imageMediaBlocks(subject *indexedSubject, action *Action) []MediaBlock {
+	ownerBlocks := ownerImageMediaBlocks(subject, action)
+	if action.Reason != illegalContentReason {
+		return ownerBlocks
+	}
+	var blocks []MediaBlock
+	for _, ownerBlock := range ownerBlocks {
+		blocks = append(blocks, ownerBlock, MediaBlock{BlobCID: ownerBlock.BlobCID, ActionID: action.ID})
 	}
 	return blocks
 }

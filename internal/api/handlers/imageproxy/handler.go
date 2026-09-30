@@ -24,6 +24,11 @@ import (
 // the pressure being shed, so the two must never drift apart.
 var processorBusyRetryAfterSeconds = strconv.Itoa(int(imageproxy.DefaultProcessQueueWait / time.Second))
 
+// successCacheControl is the cache policy of a served image and of its 304.
+// One day bounds how long a browser or an unpurged shared cache keeps an image
+// after a moderation removal, with no configuration and no CDN required.
+const successCacheControl = "public, max-age=86400"
+
 // Service defines the interface for the image proxy service.
 // This interface is implemented by the imageproxy package's service layer.
 type Service interface {
@@ -77,8 +82,10 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate DID format (must be did:plc: or did:web:)
-	if err := imageproxy.ValidateDID(did); err != nil {
+	// Accept only canonical did:plc or did:web owner spellings. Anything else
+	// is refused here, before the block check, the cache lookup, DID
+	// resolution and the fetch.
+	if err := imageproxy.ValidateOwnerDID(did); err != nil {
 		writeErrorResponse(w, http.StatusBadRequest, "invalid DID format")
 		return
 	}
@@ -108,6 +115,8 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 			writeErrorResponse(w, http.StatusNotFound, "blob not found")
 			return
 		}
+		w.Header().Set("Cache-Control", successCacheControl)
+		w.Header().Set("ETag", etag)
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
@@ -146,7 +155,7 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 
 	// Set response headers
 	w.Header().Set("Content-Type", "image/jpeg")
-	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Header().Set("Cache-Control", successCacheControl)
 	w.Header().Set("ETag", etag)
 
 	// Write image data
@@ -279,11 +288,9 @@ func logBlockCheckFailure(err error, did, cid string) {
 // For the image proxy, we use simple text responses rather than JSON
 // since the expected response is binary image data.
 //
-// Errors are explicitly uncacheable. Success responses advertise a one-year
-// immutable lifetime, which is correct for content-addressed blobs but
-// catastrophic for a failure: this route sits behind a CDN, and a transient
-// PDS timeout or a DID that had not yet propagated would otherwise be pinned
-// at the edge for a year, long after the image became fetchable.
+// Errors and blocked responses are no-store: a cached error or block would
+// outlive its cause, still refusing the image after the PDS recovers or the
+// block is lifted.
 func writeErrorResponse(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")

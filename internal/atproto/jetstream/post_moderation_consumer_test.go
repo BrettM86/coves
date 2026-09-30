@@ -191,11 +191,11 @@ func TestModerationPostConsumerReplayAndDuplicateKeepRemoval(t *testing.T) {
 
 func TestModerationPostConsumerEditReconcilesNewImages(t *testing.T) {
 	for _, scenario := range []struct {
-		name, reason string
-		ownerless    bool
+		name, reason   string
+		illegalContent bool
 	}{
 		{name: "spam owner block", reason: "social.coves.moderation.defs#reasonSpam"},
-		{name: "illegal content ownerless block", reason: "social.coves.moderation.defs#reasonIllegalContent", ownerless: true},
+		{name: "illegal content owner-scoped block", reason: "social.coves.moderation.defs#reasonIllegalContent", illegalContent: true},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			f := newPostModerationConsumerFixture(t)
@@ -227,15 +227,18 @@ func TestModerationPostConsumerEditReconcilesNewImages(t *testing.T) {
 			assert.Equal(t, 1, ownedBlocks, "the edited image needs an active author-owned block on the original action")
 			assert.Contains(t, f.purger.calls, postModerationPurgeCall{ownerDID: pv2Author, blobCID: postModerationCIDTwo, committed: true},
 				"the consumer must purge the author-owned image after the block commits")
-			if scenario.ownerless {
+			if scenario.illegalContent {
 				var ownerlessBlocks int
 				require.NoError(t, f.db.QueryRowContext(t.Context(), `
 					SELECT count(*) FROM moderation_media_blocks
 					WHERE action_id = $1 AND owner_did IS NULL AND blob_cid = $2 AND active
 				`, removed.Action.ID, postModerationCIDTwo).Scan(&ownerlessBlocks))
-				assert.Equal(t, 1, ownerlessBlocks, "illegal content must also block the edited image for every owner")
-				assert.Contains(t, f.purger.calls, postModerationPurgeCall{blobCID: postModerationCIDTwo, committed: true},
-					"the ownerless image cache must be purged after commit")
+				assert.Zero(t, ownerlessBlocks, "an edit must not add an ownerless image block")
+				assert.Equal(t, []postModerationPurgeCall{{ownerDID: pv2Author, blobCID: postModerationCIDTwo, committed: true}}, f.purger.calls,
+					"only the author's image cache is purged after commit")
+				blocked, checkErr := postgres.NewModerationRepository(f.db).IsBlocked(t.Context(), pv2Other, postModerationCIDTwo)
+				require.NoError(t, checkErr)
+				assert.False(t, blocked, "another owner's new image must remain available")
 			}
 		})
 	}
@@ -243,11 +246,11 @@ func TestModerationPostConsumerEditReconcilesNewImages(t *testing.T) {
 
 func TestModerationPostConsumerDeleteThenCreateRemainsNotFound(t *testing.T) {
 	for _, scenario := range []struct {
-		name, reason string
-		ownerless    bool
+		name, reason   string
+		illegalContent bool
 	}{
 		{name: "spam owner block", reason: "social.coves.moderation.defs#reasonSpam"},
-		{name: "illegal content ownerless block", reason: "social.coves.moderation.defs#reasonIllegalContent", ownerless: true},
+		{name: "illegal content owner-scoped block", reason: "social.coves.moderation.defs#reasonIllegalContent", illegalContent: true},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			f := newPostModerationConsumerFixture(t)
@@ -271,13 +274,16 @@ func TestModerationPostConsumerDeleteThenCreateRemainsNotFound(t *testing.T) {
 			`, removed.Action.ID, pv2Author, postModerationCIDTwo), "the recreated image needs an active author-owned block on the original action")
 			assert.Contains(t, f.purger.calls, postModerationPurgeCall{ownerDID: pv2Author, blobCID: postModerationCIDTwo, committed: true},
 				"the consumer must purge the recreated image after the block commits")
-			if scenario.ownerless {
-				assert.Equal(t, 1, countRows(t, f.db, `
+			if scenario.illegalContent {
+				assert.Zero(t, countRows(t, f.db, `
 					SELECT count(*) FROM moderation_media_blocks
 					WHERE action_id = $1 AND owner_did IS NULL AND blob_cid = $2 AND active
-				`, removed.Action.ID, postModerationCIDTwo), "illegal content must also block the recreated image for every owner")
-				assert.Contains(t, f.purger.calls, postModerationPurgeCall{blobCID: postModerationCIDTwo, committed: true},
-					"the ownerless image cache must be purged after commit")
+				`, removed.Action.ID, postModerationCIDTwo), "a recreate must not add an ownerless image block")
+				assert.Equal(t, []postModerationPurgeCall{{ownerDID: pv2Author, blobCID: postModerationCIDTwo, committed: true}}, f.purger.calls,
+					"only the author's image cache is purged after commit")
+				blocked, checkErr := postgres.NewModerationRepository(f.db).IsBlocked(t.Context(), pv2Other, postModerationCIDTwo)
+				require.NoError(t, checkErr)
+				assert.False(t, blocked, "another owner's recreated image must remain available")
 			}
 		})
 	}
@@ -306,14 +312,16 @@ func TestModerationPostConsumerAlreadyIndexedCreateBlocksIncomingImages(t *testi
 		SELECT count(*) FROM moderation_media_blocks
 		WHERE action_id = $1 AND owner_did = $2 AND blob_cid = $3 AND active
 	`, removed.Action.ID, pv2Author, postModerationCIDTwo), "the discarded create's image needs an author-owned block")
-	assert.Equal(t, 1, countRows(t, f.db, `
+	assert.Zero(t, countRows(t, f.db, `
 		SELECT count(*) FROM moderation_media_blocks
 		WHERE action_id = $1 AND owner_did IS NULL AND blob_cid = $2 AND active
-	`, removed.Action.ID, postModerationCIDTwo), "illegal content must block the discarded create's image for every owner")
+	`, removed.Action.ID, postModerationCIDTwo), "a discarded create must not add an ownerless block")
 	assert.ElementsMatch(t, []postModerationPurgeCall{
 		{ownerDID: pv2Author, blobCID: postModerationCIDTwo, committed: true},
-		{blobCID: postModerationCIDTwo, committed: true},
 	}, f.purger.calls)
+	blocked, checkErr := postgres.NewModerationRepository(f.db).IsBlocked(t.Context(), pv2Other, postModerationCIDTwo)
+	require.NoError(t, checkErr)
+	assert.False(t, blocked, "another owner's incoming image must remain available")
 }
 
 func TestModerationPostConsumerRemovalIsPerURI(t *testing.T) {

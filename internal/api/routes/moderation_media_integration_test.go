@@ -60,9 +60,10 @@ func base58MediaCID(t *testing.T, canonical string) string {
 type mediaBlobKey struct{ did, cid string }
 
 type mediaPDS struct {
-	mu     sync.Mutex
-	counts map[mediaBlobKey]int
-	known  map[mediaBlobKey]bool
+	mu           sync.Mutex
+	counts       map[mediaBlobKey]int
+	known        map[mediaBlobKey]bool
+	blobRequests int
 }
 
 func (p *mediaPDS) serve(w http.ResponseWriter, r *http.Request) {
@@ -70,6 +71,9 @@ func (p *mediaPDS) serve(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	p.mu.Lock()
+	p.blobRequests++
+	p.mu.Unlock()
 	// Like the reference PDS, look the blob up by its parsed CID, so every
 	// multibase encoding of one CID names the same blob.
 	parsed, err := cid.Decode(r.URL.Query().Get("cid"))
@@ -96,6 +100,12 @@ func (p *mediaPDS) count(did, cid string) int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.counts[mediaBlobKey{did, cid}]
+}
+
+func (p *mediaPDS) totalBlobRequests() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.blobRequests
 }
 
 type mediaPDSResolver struct{ url string }

@@ -4,6 +4,8 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -244,6 +246,8 @@ func TestModerationCommentRemovalContract(t *testing.T) {
 func TestModerationPostRemovalContract(t *testing.T) {
 	p := newPipeline(t)
 	author := p.IndexedAccount(t, "mpa")
+	authorToken := p.AppView.SignIn(t, author)
+	authorView := p.AppView.As(authorToken)
 	community := indexedCommunity(t, p, "mpa", author.DID)
 	admin := testkit.ModerationAdmin(t, 1)
 	rkey := testkit.TID()
@@ -282,6 +286,64 @@ func TestModerationPostRemovalContract(t *testing.T) {
 		}
 		return response.Posts[0], nil
 	}
+	// GetBinary preserves the actual response bytes so content leakage is checked
+	// across the whole response, not just in the decoded post union member.
+	readAuthorPost := func() (map[string]any, []byte, error) {
+		path := "/xrpc/social.coves.community.post.get?" + url.Values{"uris": {uri}}.Encode()
+		response, err := authorView.GetBinary(t.Context(), path)
+		if err != nil {
+			return nil, nil, err
+		}
+		var out struct {
+			Posts []map[string]any `json:"posts"`
+		}
+		if err := json.Unmarshal(response.Body, &out); err != nil {
+			return nil, nil, fmt.Errorf("decoding author post.get: %w", err)
+		}
+		if len(out.Posts) != 1 {
+			return nil, nil, fmt.Errorf("author post.get returned %d union members for one URI", len(out.Posts))
+		}
+		return out.Posts[0], response.Body, nil
+	}
+	requireModeratedAuthorPost := func(forbiddenContent ...string) {
+		t.Helper()
+		post, body, err := readAuthorPost()
+		require.NoError(t, err)
+		require.Equal(t, "social.coves.community.post.defs#moderatedPost", post["$type"])
+		require.Equal(t, uri, post["uri"])
+		moderation, ok := post["moderation"].(map[string]any)
+		require.True(t, ok, "author's moderated post must carry moderation details")
+		require.Equal(t, "removed", moderation["state"])
+		sources, ok := moderation["sources"].([]any)
+		require.True(t, ok, "moderation sources must be an array")
+		require.Len(t, sources, 1)
+		source, ok := sources[0].(map[string]any)
+		require.True(t, ok, "moderation source must be an object")
+		require.Equal(t, communityInstanceDID, source["authorityDid"])
+		scope, ok := source["scope"].(map[string]any)
+		require.True(t, ok, "moderation scope must be an object")
+		require.Equal(t, "instance", scope["kind"])
+		for _, key := range []string{"record", "title", "embed"} {
+			require.NotContains(t, post, key, "moderated post must not expose content")
+		}
+		for _, text := range forbiddenContent {
+			require.NotContains(t, string(body), text, "moderated response leaked post content")
+		}
+	}
+	readAuthorFeedURIs := func(method string, params url.Values) []string {
+		t.Helper()
+		var feed struct {
+			Feed []feedItemView `json:"feed"`
+		}
+		require.NoError(t, authorView.Query(t.Context(), method, params, &feed))
+		uris := make([]string, 0, len(feed.Feed))
+		for _, item := range feed.Feed {
+			uris = append(uris, item.Post.URI)
+		}
+		return uris
+	}
+	authorFeedParams := url.Values{"actor": {author.DID}, "limit": {"25"}}
+	communityFeedParams := url.Values{"community": {community.DID}, "sort": {"new"}, "limit": {"50"}}
 	var imageURL string
 	p.Await(t, "the accepted image post to serve through post.get", func() (bool, error) {
 		post, err := readPost()
@@ -308,12 +370,16 @@ func TestModerationPostRemovalContract(t *testing.T) {
 		return ok && imageURL != "", nil
 	})
 	require.Contains(t, imageURL, image.CID())
-	requireServesImage(t, p, "accepted post image", imageURL)
+	servedImage := requireServesImage(t, p, "accepted post image", imageURL)
+	require.Equal(t, "public, max-age=86400", servedImage.Header.Get("Cache-Control"))
+	require.NotContains(t, servedImage.Header.Get("Cache-Control"), "s-maxage")
 	parsedImage, err := url.Parse(imageURL)
 	require.NoError(t, err)
 	require.True(t, strings.HasPrefix(parsedImage.Path, "/img/"), "the image must be served through the AppView proxy")
 	require.Contains(t, communityFeedURIs(t, p, community.DID), uri,
 		"the accepted post must appear in the feed before its removal can prove exclusion")
+	require.Contains(t, readAuthorFeedURIs("social.coves.actor.getPosts", authorFeedParams), uri)
+	require.Contains(t, readAuthorFeedURIs("social.coves.communityFeed.getCommunity", communityFeedParams), uri)
 	p.Await(t, "search to find the accepted post before removal", func() (bool, error) {
 		search, err := queryPostSearch(p, needle, community.DID)
 		if err != nil {
@@ -335,6 +401,11 @@ func TestModerationPostRemovalContract(t *testing.T) {
 		node, found := thread.find(commentURI)
 		return found && node.Comment.Record["content"] == commentText, nil
 	}, withReadCadence())
+	// The wait above can spend 19 of getComments' 20 reads per minute, and the
+	// removal phase reads the thread three more times.
+	p.FreshReadQuota(t, "removed-post-thread")
+	// As copies the client IP, and FreshReadQuota just replaced it.
+	authorView = p.AppView.As(authorToken)
 
 	stateToken := admin.ServiceAuth(t, communityInstanceDID, subjectStateMethod)
 	readState := func() (moderationSubjectStateResponse, error) {
@@ -401,19 +472,35 @@ func TestModerationPostRemovalContract(t *testing.T) {
 	removed, err := moderated()
 	require.NoError(t, err)
 	require.True(t, removed, "post.get must serve a content-free moderatedPost immediately after removal")
+	requireModeratedAuthorPost(title, content)
 	missingRootURI := authorPostURI(author.DID, testkit.TID())
 	_, missingRootErr := p.Thread(context.Background(), missingRootURI, nil)
 	missingRoot := requireXRPCRefusal(t, missingRootErr, http.StatusNotFound, "RootNotFound", "a never-indexed post thread")
 	_, removedRootErr := p.Thread(context.Background(), uri, nil)
 	removedRoot := requireXRPCRefusal(t, removedRootErr, http.StatusNotFound, "RootNotFound", "an instance-removed post thread")
 	require.Equal(t, missingRoot.XRPCError, removedRoot.XRPCError)
+	authorRootErr := authorView.Query(t.Context(), "social.coves.community.comment.getComments",
+		url.Values{"post": {uri}}, nil)
+	authorRoot := requireXRPCRefusal(t, authorRootErr, http.StatusNotFound, "RootNotFound", "the author's instance-removed post thread")
+	require.Equal(t, removedRoot.XRPCError, authorRoot.XRPCError)
+	require.NotContains(t, readAuthorFeedURIs("social.coves.actor.getPosts", authorFeedParams), uri,
+		"the author must not find an instance-removed post in their own feed")
+	require.NotContains(t, readAuthorFeedURIs("social.coves.communityFeed.getCommunity", communityFeedParams), uri,
+		"the author must not find an instance-removed post in the community feed")
 	require.NotContains(t, communityFeedURIs(t, p, community.DID), uri)
 	search, err := queryPostSearch(p, needle, community.DID)
 	require.NoError(t, err)
 	require.Empty(t, search.Feed, "the removed post must not appear in search for its unique title")
+	var blockedImageHeaders http.Header
 	pathBlocked := func(path string) (bool, error) {
 		_, err := p.AppView.GetBinary(context.Background(), path)
 		if testkit.IsStatus(err, http.StatusNotFound) {
+			if path == parsedImage.Path {
+				var statusError *testkit.StatusError
+				if errors.As(err, &statusError) {
+					blockedImageHeaders = statusError.Header
+				}
+			}
 			return true, nil
 		}
 		if err != nil {
@@ -424,13 +511,16 @@ func TestModerationPostRemovalContract(t *testing.T) {
 	p.Await(t, "the removed post's cached image to return 404", func() (bool, error) {
 		return pathBlocked(parsedImage.Path)
 	})
+	require.NotNil(t, blockedImageHeaders, "the blocked image's 404 response headers were not captured")
+	require.Equal(t, "no-store", blockedImageHeaders.Get("Cache-Control"))
 
 	editImage := author.UploadBlob(t, testkit.TestPNG(96, 96), "image/png")
 	require.NotEqual(t, image.CID(), editImage.CID())
 	editImagePath := strings.Replace(parsedImage.Path, image.CID(), editImage.CID(), 1)
 	require.NotEqual(t, parsedImage.Path, editImagePath)
 	editedTitle := title + " edited"
-	editedCID := writePost(editedTitle, "edited while removed", image, editImage)
+	editedContent := "edited while removed"
+	editedCID := writePost(editedTitle, editedContent, image, editImage)
 	require.NotEqual(t, createdCID, editedCID)
 	// Observe the edit in the indexed post before testing the overlay or media
 	// reconciliation. A still-hidden pre-edit view proves neither behavior.
@@ -442,10 +532,12 @@ func TestModerationPostRemovalContract(t *testing.T) {
 		}
 		return indexed.State.CurrentSubject.CID == editedCID, nil
 	})
+	awaitStatus(t, p, uri, community.DID, "pending_reacceptance",
+		"the author's edit to invalidate the old community acceptance")
 	// The edited CID is not admitted yet, so an anonymous viewer gets notFound:
-	// removal never widens access to an unadmitted CID. The author's #moderatedPost
-	// view in this state is proven at T1 by TestModerationPostConsumerEditReconcilesNewImages,
-	// because this tier cannot hold an AppView-sealed OAuth session.
+	// removal never widens access to an unadmitted CID. The author could read
+	// their own pending post before the removal, so they keep a view, but only a
+	// content-free #moderatedPost, even after the edit reaches the index.
 	p.Holds(t, "the unadmitted edited post to read as notFound anonymously with its newly added image blocked", func() (bool, error) {
 		hidden, err := notFoundAnonymously()
 		if err != nil || !hidden {
@@ -453,8 +545,7 @@ func TestModerationPostRemovalContract(t *testing.T) {
 		}
 		return pathBlocked(editImagePath)
 	})
-	awaitStatus(t, p, uri, community.DID, "pending_reacceptance",
-		"the author's edit to invalidate the old community acceptance")
+	requireModeratedAuthorPost(title, content, editedTitle, editedContent)
 
 	// The community account can update its acceptance at the same subject rkey,
 	// so restore can be checked through the public thread rather than an
@@ -497,6 +588,8 @@ func TestModerationPostRemovalContract(t *testing.T) {
 		return ok && post["uri"] == uri && post["$type"] == nil && record["title"] == editedTitle, nil
 	})
 	p.FreshReadQuota(t, "restored-post-thread")
+	// As copies the client IP, and FreshReadQuota just replaced it.
+	authorView = p.AppView.As(authorToken)
 	p.Await(t, "the restored post's comment thread to serve publicly", func() (bool, error) {
 		thread, err := p.Thread(context.Background(), uri, nil)
 		if err != nil {
@@ -505,6 +598,15 @@ func TestModerationPostRemovalContract(t *testing.T) {
 		node, found := thread.find(commentURI)
 		return thread.Post.URI == uri && found && node.Comment.Record["content"] == commentText, nil
 	}, withReadCadence())
+	restoredAuthorPost, _, err := readAuthorPost()
+	require.NoError(t, err)
+	require.Equal(t, uri, restoredAuthorPost["uri"])
+	require.NotContains(t, restoredAuthorPost, "$type", "restoration must serve a post view, not a moderated placeholder")
+	restoredRecord, ok := restoredAuthorPost["record"].(map[string]any)
+	require.True(t, ok, "restored author's post must carry a record")
+	require.Equal(t, editedTitle, restoredRecord["title"])
+	require.Equal(t, editedContent, restoredRecord["content"])
+	require.NotContains(t, restoredAuthorPost, "moderation")
 	require.Contains(t, communityFeedURIs(t, p, community.DID), uri,
 		"restoration must return the re-accepted post to the community feed")
 	// Positive control for the blocked-path checks above: both paths are real,

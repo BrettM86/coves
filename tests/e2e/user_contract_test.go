@@ -125,7 +125,7 @@ func (p *pipeline) profileWithImages(ctx context.Context, actor string) (Profile
 // uploaded. The proxy re-encodes and resizes by preset, so a byte comparison
 // would be asserting the image pipeline's output rather than its reachability,
 // and would fail the day a preset changed.
-func requireServesImage(t *testing.T, p *pipeline, kind, rawURL string) {
+func requireServesImage(t *testing.T, p *pipeline, kind, rawURL string) testkit.BinaryResponse {
 	t.Helper()
 
 	appview, err := url.Parse(testkit.Endpoints().AppView.BaseURL)
@@ -148,6 +148,7 @@ func requireServesImage(t *testing.T, p *pipeline, kind, rawURL string) {
 	require.Truef(t, strings.HasPrefix(resp.ContentType, "image/"),
 		"the %s URL served content type %q rather than an image/*: a client will not render it, "+
 			"and an HTML error page returned with a 200 looks exactly like this", kind, resp.ContentType)
+	return resp
 }
 
 // blobRefValue renders a testkit blob reference the way a record embeds it.

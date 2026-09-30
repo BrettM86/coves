@@ -45,6 +45,43 @@ func TestImageProxyService_BlocksBeforeReadingCache(t *testing.T) {
 	}
 }
 
+// The handler refuses these first; the service refuses them too, so a second
+// caller cannot miss an owner-scoped block or read another spelling's cache.
+func TestImageProxyService_RefusesNoncanonicalOwnerDID(t *testing.T) {
+	for _, test := range []struct{ name, owner string }{
+		{name: "uppercase plc identifier", owner: "did:plc:Moderationimageowner"},
+		{name: "path-based web DID sharing a cache directory", owner: "did:web:example.test:a:b"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cache := NewMockCache()
+			cache.SetCacheData("avatar", test.owner, moderationTestCID, []byte("cached secret"))
+			fetcher := NewMockFetcher([]byte("fetched secret"), nil)
+			var checks, resolutions atomic.Int32
+			checker := blockCheckFunc(func(context.Context, string, string) (bool, error) {
+				checks.Add(1)
+				return false, nil
+			})
+			service, err := NewService(cache, NewMockProcessor([]byte("processed"), nil), fetcher, checker, DefaultConfig())
+			require.NoError(t, err)
+
+			data, err := service.GetImageResolvingPDS(t.Context(), "avatar", test.owner, moderationTestCID, func(context.Context) (string, error) {
+				resolutions.Add(1)
+				return "https://pds.example.com", nil
+			})
+			assert.ErrorIs(t, err, ErrInvalidDID)
+			assert.Empty(t, data)
+			blocked, err := service.IsBlobBlocked(t.Context(), test.owner, moderationTestCID)
+			assert.ErrorIs(t, err, ErrInvalidDID)
+			assert.False(t, blocked)
+
+			assert.Zero(t, checks.Load(), "no block lookup for a noncanonical owner")
+			assert.Zero(t, cache.GetCalls(), "a warm entry under a noncanonical owner must not be read")
+			assert.Zero(t, resolutions.Load(), "no PDS resolution for a noncanonical owner")
+			assert.Zero(t, fetcher.Calls())
+		})
+	}
+}
+
 func TestImageProxyService_BlockCheckFailureFailsClosed(t *testing.T) {
 	cache := NewMockCache()
 	cache.SetCacheData("avatar", moderationTestOwner, moderationTestCID, []byte("cached secret"))
