@@ -35,6 +35,9 @@ Thumbs.db
 
 # Application data
 /data/
+# Production backup dumps (scripts/pg-backup.sh, scripts/pds-backup.sh): keep
+# them out of `git status` and out of reach of `git clean`.
+/backups/
 /local_dev_data/
 /test_db_data/
 

@@ -121,15 +121,19 @@ aggregators.
    the counts, and migration 046 drops the key table. Startup fails loudly
    instead of dropping the key if anything is left unconverted.
 3. Take a fresh backup and confirm it no longer contains the table. Backups are
-   plain SQL, gzipped:
+   `pg_dump -Fc` archives (`/opt/coves/backups/coves-<stamp>.dump`, root-only);
+   `pg_restore -f -` turns one back into SQL:
 
    ```bash
-   zcat <dump>.sql.gz | grep -c encryption_keys   # expect 0
+   sudo cat <dump> | sudo docker exec -i coves-prod-postgres pg_restore -f - \
+     | grep -c encryption_keys   # expect 0
    ```
 
 4. Older backups still hold the old key beside the old ciphertext. Treat them
    as containing plaintext credentials: purge them once a post-cutover backup is
-   verified (the backup script prunes after 30 days on its own), and rotate the
+   verified (the backup script prunes its own dumps after 14 days, see
+   `docs/PRODUCTION_BACKUPS.md`; `coves_*.sql.gz` files from the old backup
+   script are not pruned and must be deleted by hand), and rotate the
    community PDS passwords and aggregator OAuth sessions if any old dump may
    have left the host.
 

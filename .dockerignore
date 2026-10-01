@@ -8,8 +8,11 @@
 .git
 .gitignore
 
-# Per-run and local state, never an input to a build.
+# Per-run and local state, never an input to a build. backups/ holds the
+# nightly dumps: root-only on the production host (a context that includes it
+# fails with permission denied) and full of secrets.
 .ci-out/
+backups/
 cache/
 .claude/
 .beads/

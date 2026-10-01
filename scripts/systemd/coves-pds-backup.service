@@ -1,0 +1,14 @@
+[Unit]
+Description=Coves nightly backup: PDS data directory
+# A failed run retries every 5 minutes: a run missed while the host was down
+# fires at boot, and after an unclean shutdown the PDS may not yet have
+# recovered its WAL; other SQLite busy or I/O errors are transient too. Four
+# failed starts in two hours stop the retries.
+StartLimitIntervalSec=2h
+StartLimitBurst=4
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/coves-pds-backup
+Restart=on-failure
+RestartSec=5min
