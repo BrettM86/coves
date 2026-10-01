@@ -38,9 +38,7 @@
               "remove",
               "restore",
               "apply-removal",
-              "retract-removal",
-              "label",
-              "retract-label"
+              "retract-removal"
             ],
             "description": "Return actions with this moderation transition"
           },

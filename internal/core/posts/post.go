@@ -203,22 +203,40 @@ type RemovalSource struct {
 	ScopeKind    string
 }
 
-// ModerationView is a post's public removal state
+// ModerationView states served on the wire.
+const (
+	// ModerationViewStateClear is served with content labels. It is correct only
+	// on rows already filtered by visiblePostsPredicate, which drops removed posts.
+	ModerationViewStateClear = "clear"
+	// ModerationViewStateRemoved is served on a removal tombstone.
+	ModerationViewStateRemoved = "removed"
+)
+
+// ModerationView is a post's public removal or content-label state
 // (social.coves.moderation.defs#moderationView).
 type ModerationView struct {
-	State   string                 `json:"state"`
+	State         string                 `json:"state"`
+	Sources       []ModerationSourceView `json:"sources,omitempty"`
+	ContentLabels []ContentLabelView     `json:"contentLabels,omitempty"`
+}
+
+// ContentLabelView is one active moderator classification value
+// (social.coves.moderation.defs#contentLabelView).
+type ContentLabelView struct {
+	Value   string                 `json:"value"`
 	Sources []ModerationSourceView `json:"sources,omitempty"`
 }
 
-// ModerationSourceView attributes a removal (social.coves.moderation.defs#sourceView).
+// ModerationSourceView attributes a removal or label (social.coves.moderation.defs#sourceView).
 type ModerationSourceView struct {
 	AuthorityDID string              `json:"authorityDid"`
 	Scope        ModerationScopeView `json:"scope"`
 }
 
-// ModerationScopeView is a removal's scope (social.coves.moderation.defs#scopeView).
+// ModerationScopeView is a removal or label's scope (social.coves.moderation.defs#scopeView).
 type ModerationScopeView struct {
-	Kind string `json:"kind"`
+	Kind         string `json:"kind"`
+	CommunityDID string `json:"communityDid,omitempty"`
 }
 
 // ModeratedPost is the content-free social.coves.community.post.defs#moderatedPost
@@ -281,7 +299,7 @@ func moderatedResult(post *Post, sources []RemovalSource) *PostResult {
 	}
 	result := &ModeratedPost{
 		URI: post.URI, AuthorDID: post.AuthorDID,
-		Moderation: &ModerationView{State: "removed", Sources: viewSources},
+		Moderation: &ModerationView{State: ModerationViewStateRemoved, Sources: viewSources},
 	}
 	if post.CommunityDID != "" && post.CommunityName != "" {
 		result.Community = &CommunityRef{DID: post.CommunityDID, Handle: post.CommunityHandle, Name: post.CommunityName}
@@ -386,9 +404,11 @@ type PostView struct {
 	Author    *AuthorView   `json:"author"`
 	Stats     *PostStats    `json:"stats,omitempty"`
 	Community *CommunityRef `json:"community"`
-	RKey      string        `json:"rkey"`
-	CID       string        `json:"cid"`
-	URI       string        `json:"uri"`
+	// Moderation carries active content labels on visible posts; absent when none apply.
+	Moderation *ModerationView `json:"moderation,omitempty"`
+	RKey       string          `json:"rkey"`
+	CID        string          `json:"cid"`
+	URI        string          `json:"uri"`
 
 	// Status and AcceptanceURI are the per-community admission context (PRD §6.2),
 	// populated from the visibility join. Both are additive-optional: a public

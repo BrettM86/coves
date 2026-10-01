@@ -48,8 +48,13 @@ func (r *ModerationRepository) InTransaction(ctx context.Context, fn func(ctx co
 
 // SubjectModeration reads the stored moderation state of a subject.
 func (r *ModerationRepository) SubjectModeration(ctx context.Context, authorityDID, subjectURI string) (*moderation.SubjectModeration, error) {
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("begin subject moderation read: %w", err)
+	}
+	defer tx.Rollback()
 	var version int64
-	row := r.db.QueryRowContext(ctx, `
+	row := tx.QueryRowContext(ctx, `
 		SELECT COALESCE(s.version, 0),
 		       a.id, a.actor_did, a.authority_did, a.scope_kind, a.scope_community_did,
 		       a.subject_uri, a.subject_collection, a.subject_community_did, a.observed_cid,
@@ -64,9 +69,18 @@ func (r *ModerationRepository) SubjectModeration(ctx context.Context, authorityD
 	`, authorityDID, subjectURI)
 	action, err := scanModerationAction(row, &version, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read subject moderation: %w", err)
 	}
-	return &moderation.SubjectModeration{Version: version, ActiveRemoval: action}, nil
+	// A locking read here would fail with a serialization error, or wait, when
+	// a concurrent retraction updates a label decision after the snapshot.
+	labels, err := activeLabels(ctx, tx, authorityDID, subjectURI, false)
+	if err != nil {
+		return nil, fmt.Errorf("read subject moderation labels: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit subject moderation read: %w", err)
+	}
+	return &moderation.SubjectModeration{Version: version, ActiveRemoval: action, ActiveLabels: labels}, nil
 }
 
 type moderationTransaction struct {
@@ -303,6 +317,45 @@ func (t *moderationTransaction) ActiveRemoval(ctx context.Context, authorityDID,
 	return action, err
 }
 
+func (t *moderationTransaction) ActiveLabels(ctx context.Context, authorityDID, subjectURI string) ([]moderation.Action, error) {
+	return activeLabels(ctx, t.tx, authorityDID, subjectURI, true)
+}
+
+// activeLabels reads the instance's active labels on a subject, ordered by
+// value. Mutations lock the decision rows; snapshot reads must not.
+func activeLabels(ctx context.Context, tx *sql.Tx, authorityDID, subjectURI string, lockDecisions bool) ([]moderation.Action, error) {
+	query := `
+		SELECT ` + moderationActionColumns + ` FROM moderation_actions a
+		JOIN moderation_decisions d ON d.active_action_id = a.id
+		WHERE d.kind = 'label' AND d.active AND d.authority_did = $1
+		  AND d.scope_kind = 'instance' AND d.subject_uri = $2
+		ORDER BY d.value`
+	if lockDecisions {
+		query += `
+		FOR SHARE OF d`
+	}
+	rows, err := tx.QueryContext(ctx, query, authorityDID, subjectURI)
+	if err != nil {
+		return nil, fmt.Errorf("query active moderation labels: %w", err)
+	}
+	defer rows.Close()
+	var actions []moderation.Action
+	for rows.Next() {
+		action, err := scanModerationAction(rows, nil, nil)
+		if err != nil {
+			return nil, fmt.Errorf("scan active moderation label: %w", err)
+		}
+		if action == nil {
+			return nil, errors.New("active moderation label has no action")
+		}
+		actions = append(actions, *action)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read active moderation labels: %w", err)
+	}
+	return actions, nil
+}
+
 func (t *moderationTransaction) InsertAction(ctx context.Context, action moderation.Action) (*moderation.Action, error) {
 	action.ID = moderationActionClock.Next().String()
 	// Postgres timestamps have microsecond precision. Return the same instant
@@ -352,6 +405,48 @@ func (t *moderationTransaction) SetRemovalDecision(ctx context.Context, authorit
 		    active_action_id = EXCLUDED.active_action_id, active = TRUE
 	`, authorityDID, subjectURI, actionID)
 	return err
+}
+
+func (t *moderationTransaction) SetLabelDecision(ctx context.Context, authorityDID, subjectURI, value, actionID string, active bool) error {
+	if !active {
+		result, err := t.tx.ExecContext(ctx, `
+			UPDATE moderation_decisions SET active = FALSE
+			WHERE authority_did = $1 AND subject_uri = $2 AND scope_kind = 'instance'
+			  AND kind = 'label' AND value = $3 AND active_action_id = $4 AND active
+		`, authorityDID, subjectURI, value, actionID)
+		if err != nil {
+			return fmt.Errorf("deactivate moderation label: %w", err)
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("count deactivated moderation labels: %w", err)
+		}
+		if count != 1 {
+			return fmt.Errorf("active moderation label decision not found for retraction: updated %d rows", count)
+		}
+		return nil
+	}
+	// An already-active decision is never overwritten: the redundant apply
+	// path returns unchanged without calling here, so a conflict is a bug.
+	result, err := t.tx.ExecContext(ctx, `
+		INSERT INTO moderation_decisions
+		    (authority_did, scope_kind, scope_community_did, subject_uri, kind, value, active_action_id, active)
+		VALUES ($1, 'instance', NULL, $2, 'label', $3, $4, TRUE)
+		ON CONFLICT ON CONSTRAINT moderation_decisions_key DO UPDATE SET
+		    active_action_id = EXCLUDED.active_action_id, active = TRUE
+		WHERE NOT moderation_decisions.active
+	`, authorityDID, subjectURI, value, actionID)
+	if err != nil {
+		return fmt.Errorf("activate moderation label: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count activated moderation labels: %w", err)
+	}
+	if count != 1 {
+		return fmt.Errorf("moderation label decision already active: updated %d rows", count)
+	}
+	return nil
 }
 
 func (t *moderationTransaction) SetSubjectVersion(ctx context.Context, subjectURI string, version int64) error {
@@ -481,11 +576,13 @@ func (r *ModerationRepository) ListActions(ctx context.Context, query moderation
 		  AND (NOT $14::boolean OR NOT (
 		      COALESCE(a.reason = ANY($15::text[]), FALSE)
 		      OR COALESCE(reversed.reason = ANY($15::text[]), FALSE)))
+		  AND (NOT $16::boolean OR a.action <> ALL($17::text[]))
 		ORDER BY a.created_at DESC, a.id DESC
 		LIMIT $1
 	`, query.Limit, beforeCreatedAt, beforeID, query.SubjectURI, query.SubjectCollection,
 		query.Action, query.Origin, query.AuthorityDID, query.ActorDID, query.CommunityDID,
-		query.ActionID, query.Since, query.Until, query.ExcludeHidden, pq.Array(moderation.HiddenActionReasons()))
+		query.ActionID, query.Since, query.Until, query.ExcludeHidden, pq.Array(moderation.HiddenActionReasons()),
+		query.ExcludeLabelActions, pq.Array(moderation.PublicExcludedActions()))
 	if err != nil {
 		return nil, fmt.Errorf("list moderation actions: %w", err)
 	}

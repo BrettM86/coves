@@ -56,9 +56,23 @@ type LocalLabel struct {
 	Action ActionRef
 }
 
-// ModerationView is the effective public removal state of a subject.
+// ModerationView is the effective public moderation of a subject: its removal
+// state and its active content labels.
 type ModerationView struct {
-	State string
+	State         string
+	ContentLabels []ContentLabel
+}
+
+// ContentLabel is one active classification value with the sources applying it.
+type ContentLabel struct {
+	Value   string
+	Sources []DecisionSource
+}
+
+// DecisionSource attributes a decision to its authority and scope.
+type DecisionSource struct {
+	AuthorityDID string
+	ScopeKind    string
 }
 
 // SubjectState is the versioned moderation and repository state of a subject.
@@ -79,8 +93,9 @@ type IndexedRecord struct {
 	Deleted bool
 }
 
-// MutationResult is the outcome of a removeContent/restoreContent call. Action
-// is nil for an unchanged outcome.
+// MutationResult is the outcome of a removeContent, restoreContent,
+// labelContent or retractContentLabel call. Action is nil for an unchanged
+// outcome.
 type MutationResult struct {
 	Outcome string
 	State   SubjectState
@@ -90,6 +105,30 @@ type MutationResult struct {
 // RemoveContentRequest is the caller-supplied part of a removeContent call.
 type RemoveContentRequest struct {
 	Subject         StrongRef
+	ExpectedVersion string
+	IdempotencyKey  string
+	Reason          string
+	PrivateNote     string
+}
+
+// LabelContentRequest is the caller-supplied part of a labelContent call.
+// Reason is optional; the doxing and illegal-content reasons are rejected
+// because they are only for removal.
+type LabelContentRequest struct {
+	Subject         StrongRef
+	LabelValue      string
+	ExpectedVersion string
+	IdempotencyKey  string
+	Reason          string
+	PrivateNote     string
+}
+
+// RetractContentLabelRequest is the caller-supplied part of a retractContentLabel call.
+// Reason is optional; the doxing and illegal-content reasons are rejected
+// because they are only for removal.
+type RetractContentLabelRequest struct {
+	ActionID        string
+	ReviewedSubject *StrongRef
 	ExpectedVersion string
 	IdempotencyKey  string
 	Reason          string

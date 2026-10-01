@@ -520,7 +520,7 @@ func TestModerationModlogFilters(t *testing.T) {
 	}
 	for _, query := range []url.Values{
 		{"actor": {"missing.test"}}, {"authority": {"missing.test"}},
-		{"community": {"nonexistent.coves.social"}}, {"action": {"label"}},
+		{"community": {"nonexistent.coves.social"}},
 		{"origin": {"inherited"}}, {"collection": {moderation.PostV2Collection}},
 	} {
 		response := f.list(t, false, "", query)

@@ -27,6 +27,14 @@ func (s *service) RestoreContent(ctx context.Context, actorDID string, request R
 	return s.restoreContent(ctx, actorDID, request)
 }
 
+func (s *service) LabelContent(ctx context.Context, actorDID string, request LabelContentRequest) (*MutationResult, error) {
+	return s.labelContent(ctx, actorDID, request)
+}
+
+func (s *service) RetractContentLabel(ctx context.Context, actorDID string, request RetractContentLabelRequest) (*MutationResult, error) {
+	return s.retractContentLabel(ctx, actorDID, request)
+}
+
 func (s *service) GetSubjectState(ctx context.Context, subject string) (*SubjectState, error) {
 	uri, err := syntax.ParseATURI(subject)
 	if err != nil || !uri.Authority().IsDID() || !IsSubjectCollection(uri.Collection().String()) || uri.RecordKey().String() == "" {
@@ -57,7 +65,7 @@ func (s *service) GetSubjectState(ctx context.Context, subject string) (*Subject
 			current = &StrongRef{URI: record.URI, CID: record.CID}
 		}
 	}
-	state, err := newSubjectState(subject, stored.Version, recordState, current, stored.ActiveRemoval, s.config.InstanceDID)
+	state, err := newSubjectState(subject, stored.Version, recordState, current, stored.ActiveRemoval, stored.ActiveLabels, s.config.InstanceDID)
 	if err != nil {
 		return nil, err
 	}

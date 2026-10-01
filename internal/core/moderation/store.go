@@ -7,8 +7,14 @@ import (
 
 // Action kinds, scope kinds and origins recorded on moderation actions.
 const (
-	ActionRemove  = "remove"
-	ActionRestore = "restore"
+	ActionRemove       = "remove"
+	ActionRestore      = "restore"
+	ActionLabel        = "label"
+	ActionRetractLabel = "retract-label"
+
+	// LabelNSFW is the only content label value the local classification
+	// procedures accept.
+	LabelNSFW = "nsfw"
 
 	ScopeInstance = "instance"
 
@@ -100,6 +106,7 @@ type IdempotencyRecord struct {
 type SubjectModeration struct {
 	Version       int64
 	ActiveRemoval *Action
+	ActiveLabels  []Action
 }
 
 // Store persists moderation state. Mutations run inside InTransaction.
@@ -108,7 +115,8 @@ type Store interface {
 	SubjectModeration(ctx context.Context, authorityDID, subjectURI string) (*SubjectModeration, error)
 	// ListActions returns up to query.Limit actions, newest first, each with
 	// ReversedActionReason populated. Under ExcludeHidden it must omit every
-	// hidden action; the service fails closed if one comes back.
+	// hidden action, and under ExcludeLabelActions every action whose kind is
+	// in PublicExcludedActions; the service fails closed if either comes back.
 	ListActions(ctx context.Context, query ActionListQuery) ([]Action, error)
 }
 
@@ -129,6 +137,8 @@ type ActionListQuery struct {
 	Since             *time.Time
 	Until             *time.Time
 	ExcludeHidden     bool
+	// ExcludeLabelActions omits every action kind in PublicExcludedActions.
+	ExcludeLabelActions bool
 }
 
 // ActionKey is an action log position: rows strictly older than it follow.
@@ -156,8 +166,17 @@ type Transaction interface {
 	GetAction(ctx context.Context, actionID string) (*Action, error)
 	// ActiveRemoval returns the active removal action, or nil.
 	ActiveRemoval(ctx context.Context, authorityDID, subjectURI string) (*Action, error)
+	// ActiveLabels returns active instance-scope label actions, ordered by value.
+	ActiveLabels(ctx context.Context, authorityDID, subjectURI string) ([]Action, error)
 	InsertAction(ctx context.Context, action Action) (*Action, error)
 	SetRemovalDecision(ctx context.Context, authorityDID, subjectURI, actionID string, active bool) error
+	// SetLabelDecision changes the instance-scope label decision for
+	// (authorityDID, subjectURI, value). With active true it activates the
+	// decision keyed to actionID, inserting it or reactivating an inactive row,
+	// and fails if the decision is already active. With active false it
+	// deactivates exactly one active decision whose action is actionID, and
+	// fails if there is none.
+	SetLabelDecision(ctx context.Context, authorityDID, subjectURI, value, actionID string, active bool) error
 	SetSubjectVersion(ctx context.Context, subjectURI string, version int64) error
 	InsertMediaBlocks(ctx context.Context, blocks []MediaBlock) error
 	DeactivateMediaBlocks(ctx context.Context, actionID string) error

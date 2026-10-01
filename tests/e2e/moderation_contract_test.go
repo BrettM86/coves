@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -20,9 +21,187 @@ import (
 const (
 	removeContentMethod    = "social.coves.moderation.removeContent"
 	restoreContentMethod   = "social.coves.moderation.restoreContent"
+	labelContentMethod     = "social.coves.moderation.labelContent"
+	retractLabelMethod     = "social.coves.moderation.retractContentLabel"
 	listActionsMethod      = "social.coves.moderation.listActions"
 	listAdminActionsMethod = "social.coves.moderation.listAdminActions"
 )
+
+// TestModerationContentLabelContract verifies that an instance label is served
+// on a pipeline-indexed post without changing the author's PDS record.
+func TestModerationContentLabelContract(t *testing.T) {
+	p := newPipeline(t)
+	author := p.IndexedAccount(t, "mcl")
+	community := indexedCommunity(t, p, "mcl", author.DID)
+	post := indexedPost(t, p, community, author, "label contract "+testkit.UniqueID(t))
+	outsider := p.IndexedAccount(t, "mclout")
+	admin := testkit.ModerationAdmin(t, 1)
+
+	readPost := func() (map[string]any, error) {
+		var response struct {
+			Posts []map[string]any `json:"posts"`
+		}
+		err := p.AppView.Query(context.Background(), "social.coves.community.post.get",
+			url.Values{"uris": {post.URI}}, &response)
+		if err != nil {
+			return nil, err
+		}
+		if len(response.Posts) != 1 {
+			return nil, fmt.Errorf("post.get returned %d members for one URI", len(response.Posts))
+		}
+		return response.Posts[0], nil
+	}
+	readFeedPost := func() (map[string]any, error) {
+		var response struct {
+			Feed []struct {
+				Post map[string]any `json:"post"`
+			} `json:"feed"`
+		}
+		err := p.AppView.Query(context.Background(), "social.coves.communityFeed.getCommunity",
+			url.Values{"community": {community.DID}, "sort": {"new"}, "limit": {"50"}}, &response)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range response.Feed {
+			if item.Post["uri"] == post.URI {
+				return item.Post, nil
+			}
+		}
+		return nil, nil
+	}
+	readPDSRecord := func() (testkit.RecordValue, error) {
+		var record testkit.RecordValue
+		err := author.XRPC().Query(context.Background(), "com.atproto.repo.getRecord",
+			url.Values{"repo": {author.DID}, "collection": {postV2Collection}, "rkey": {post.URI[strings.LastIndex(post.URI, "/")+1:]}}, &record)
+		return record, err
+	}
+
+	p.Await(t, "the accepted post to serve through post.get", func() (bool, error) {
+		view, err := readPost()
+		if err != nil {
+			return false, err
+		}
+		return view["uri"] == post.URI && view["cid"] == post.CID && view["record"] != nil, nil
+	}, withReadCadence())
+	require.Contains(t, communityFeedURIs(t, p, community.DID), post.URI)
+	before, err := readPDSRecord()
+	require.NoError(t, err)
+	require.Equal(t, post.URI, before.URI)
+	require.Equal(t, post.CID, before.CID)
+	require.NotNil(t, before.Value)
+	initialView, err := readPost()
+	require.NoError(t, err)
+	require.NotContains(t, initialView, "moderation")
+
+	stateToken := admin.ServiceAuth(t, communityInstanceDID, subjectStateMethod)
+	readState := func() (moderationSubjectStateResponse, error) {
+		var response moderationSubjectStateResponse
+		err := p.AppView.As(stateToken).Query(context.Background(), subjectStateMethod,
+			url.Values{"subject": {post.URI}}, &response)
+		return response, err
+	}
+	state, err := readState()
+	require.NoError(t, err)
+	require.Equal(t, post.CID, state.State.CurrentSubject.CID)
+	input := map[string]any{
+		"subject":         map[string]any{"uri": post.URI, "cid": post.CID},
+		"labelValue":      "nsfw",
+		"expectedVersion": state.State.Version,
+		"idempotencyKey":  testkit.UniqueID(t),
+	}
+	err = p.AppView.As(outsider.ServiceAuth(t, communityInstanceDID, labelContentMethod)).Procedure(
+		t.Context(), labelContentMethod, input, nil)
+	requireXRPCRefusal(t, err, http.StatusForbidden, "Forbidden", "a non-admin label request")
+	stillClear, err := readPost()
+	require.NoError(t, err)
+	require.Equal(t, post.URI, stillClear["uri"])
+	require.NotContains(t, stillClear, "moderation")
+
+	var applied struct {
+		Outcome string `json:"outcome"`
+		Action  struct {
+			Action struct {
+				Action     string `json:"action"`
+				LabelValue string `json:"labelValue"`
+				Ref        struct {
+					ActionID string `json:"actionId"`
+				} `json:"ref"`
+			} `json:"action"`
+		} `json:"action"`
+	}
+	err = p.AppView.As(admin.ServiceAuth(t, communityInstanceDID, labelContentMethod)).Procedure(
+		t.Context(), labelContentMethod, input, &applied)
+	require.NoError(t, err)
+	require.Equal(t, "applied", applied.Outcome)
+	require.Equal(t, "label", applied.Action.Action.Action)
+	require.Equal(t, "nsfw", applied.Action.Action.LabelValue)
+	labelID := applied.Action.Action.Ref.ActionID
+	require.NotEmpty(t, labelID)
+
+	wantModeration := map[string]any{
+		"state": "clear",
+		"contentLabels": []any{map[string]any{
+			"value": "nsfw", "sources": []any{map[string]any{
+				"authorityDid": communityInstanceDID, "scope": map[string]any{"kind": "instance"},
+			}},
+		}},
+	}
+	p.Await(t, "post.get to serve the instance NSFW label", func() (bool, error) {
+		view, err := readPost()
+		if err != nil {
+			return false, err
+		}
+		return view["uri"] == post.URI && view["record"] != nil &&
+			reflect.DeepEqual(view["moderation"], wantModeration), nil
+	}, withReadCadence())
+	p.FreshReadQuota(t, "labelled-community-feed")
+	p.Await(t, "the accepted community feed post to carry the same label", func() (bool, error) {
+		view, err := readFeedPost()
+		if err != nil {
+			return false, err
+		}
+		return view != nil && reflect.DeepEqual(view["moderation"], wantModeration), nil
+	}, withReadCadence())
+	require.Contains(t, communityFeedURIs(t, p, community.DID), post.URI)
+
+	state, err = readState()
+	require.NoError(t, err)
+	require.NotEqual(t, input["expectedVersion"], state.State.Version)
+	var retracted struct {
+		Outcome string `json:"outcome"`
+		Action  struct {
+			Action struct {
+				Action string `json:"action"`
+			} `json:"action"`
+		} `json:"action"`
+	}
+	err = p.AppView.As(admin.ServiceAuth(t, communityInstanceDID, retractLabelMethod)).Procedure(
+		t.Context(), retractLabelMethod, map[string]any{
+			"actionId":        labelID,
+			"expectedVersion": state.State.Version,
+			"idempotencyKey":  testkit.UniqueID(t),
+			"reviewedSubject": map[string]any{"uri": post.URI, "cid": post.CID},
+		}, &retracted)
+	require.NoError(t, err)
+	require.Equal(t, "applied", retracted.Outcome)
+	require.Equal(t, "retract-label", retracted.Action.Action.Action)
+
+	p.FreshReadQuota(t, "retracted-post-label")
+	p.Holds(t, "post.get to keep serving the post without moderation after retraction", func() (bool, error) {
+		view, err := readPost()
+		if err != nil {
+			return false, err
+		}
+		_, labelled := view["moderation"]
+		return view["uri"] == post.URI && view["cid"] == post.CID && view["record"] != nil &&
+			view["$type"] == nil && !labelled, nil
+	})
+	after, err := readPDSRecord()
+	require.NoError(t, err)
+	require.Equal(t, before.URI, after.URI)
+	require.Equal(t, before.CID, after.CID, "moderation must not rewrite the author's PDS record")
+	require.Equal(t, before.Value, after.Value, "moderation must not change the PDS value, including labels")
+}
 
 // TestModerationCommentRemovalContract crosses the real PDS → consumer → AppView
 // boundary twice: once for the comment and again for the author's edit while the

@@ -253,6 +253,8 @@ var declaredRoutes = []declaredRoute{
 	{http.MethodGet, "/xrpc/social.coves.moderation.getSubjectState", authRequired, 0, false},
 	{http.MethodPost, "/xrpc/social.coves.moderation.removeContent", authRequired, 0, false},
 	{http.MethodPost, "/xrpc/social.coves.moderation.restoreContent", authRequired, 0, false},
+	{http.MethodPost, "/xrpc/social.coves.moderation.labelContent", authRequired, 0, false},
+	{http.MethodPost, "/xrpc/social.coves.moderation.retractContentLabel", authRequired, 0, false},
 
 	// RegisterCommunitySuggestionRoutes — social.coves.community.suggestion.*
 	{http.MethodGet, "/xrpc/social.coves.community.suggestion.list", authOptional, 0, false},

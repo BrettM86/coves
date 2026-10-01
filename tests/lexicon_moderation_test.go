@@ -673,29 +673,37 @@ func TestLexiconModerationProcedureInputs(t *testing.T) {
 	}
 }
 
-func listActionParameterExpectations(includeActionID bool) map[string]moderationPropertyExpectation {
+// listActionParameterExpectations returns the public or admin action-log
+// filters. They differ only in actionId and in the action filter: the public
+// log never serves label or retract-label actions (2026-09-30), so its action
+// filter does not list them.
+func listActionParameterExpectations(admin bool) map[string]moderationPropertyExpectation {
+	actionKinds := []string{"remove", "restore", "apply-removal", "retract-removal"}
+	if admin {
+		actionKinds = append(actionKinds, "label", "retract-label")
+	}
 	properties := map[string]moderationPropertyExpectation{
 		"limit":      {schemaType: "integer", minimum: 1, maximum: 100, defaultValue: float64(50), hasDefault: true},
 		"cursor":     {schemaType: "string", maxLength: 2048},
 		"subject":    {schemaType: "string", format: "at-uri"},
 		"collection": {schemaType: "string", format: "nsid"},
-		"action": {schemaType: "string", maxLength: 64,
-			knownValues: []string{"remove", "restore", "apply-removal", "retract-removal", "label", "retract-label"}},
-		"origin":    {schemaType: "string", maxLength: 64, knownValues: []string{"local", "inherited"}},
-		"authority": {schemaType: "string", format: "at-identifier"},
-		"actor":     {schemaType: "string", format: "at-identifier"},
-		"community": {schemaType: "string", minLength: 1, maxLength: 320},
-		"since":     {schemaType: "string", format: "datetime"},
-		"until":     {schemaType: "string", format: "datetime"},
+		"action":     {schemaType: "string", maxLength: 64, knownValues: actionKinds},
+		"origin":     {schemaType: "string", maxLength: 64, knownValues: []string{"local", "inherited"}},
+		"authority":  {schemaType: "string", format: "at-identifier"},
+		"actor":      {schemaType: "string", format: "at-identifier"},
+		"community":  {schemaType: "string", minLength: 1, maxLength: 320},
+		"since":      {schemaType: "string", format: "datetime"},
+		"until":      {schemaType: "string", format: "datetime"},
 	}
-	if includeActionID {
+	if admin {
 		properties["actionId"] = moderationPropertyExpectation{schemaType: "string", minLength: 1, maxLength: 128}
 	}
 	return properties
 }
 
-// TestLexiconModerationQueryParameters pins public/admin filter parity and the
-// required getSubjectState subject, preventing hidden filters or inconsistent
+// TestLexiconModerationQueryParameters pins public/admin filter parity (apart
+// from the admin-only actionId filter and label action kinds) and the required
+// getSubjectState subject, preventing hidden filters or inconsistent
 // pagination bounds from changing what callers can enumerate.
 func TestLexiconModerationQueryParameters(t *testing.T) {
 	queryProperties := map[string]map[string]moderationPropertyExpectation{

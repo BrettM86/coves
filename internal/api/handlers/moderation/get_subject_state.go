@@ -38,7 +38,7 @@ func (h *GetSubjectStateHandler) HandleGetSubjectState(w http.ResponseWriter, r 
 	view := subjectStateView{
 		Subject:     state.Subject,
 		Version:     state.Version,
-		Moderation:  moderationView{State: state.Moderation.State},
+		Moderation:  newModerationView(state.Moderation),
 		RecordState: state.RecordState,
 	}
 	if state.CurrentSubject != nil {
@@ -69,7 +69,33 @@ type subjectStateView struct {
 }
 
 type moderationView struct {
-	State string `json:"state"`
+	State         string             `json:"state"`
+	ContentLabels []contentLabelView `json:"contentLabels,omitempty"`
+}
+
+type contentLabelView struct {
+	Value   string               `json:"value"`
+	Sources []decisionSourceView `json:"sources,omitempty"`
+}
+
+type decisionSourceView struct {
+	AuthorityDID string               `json:"authorityDid"`
+	Scope        moderation.ScopeView `json:"scope"`
+}
+
+func newModerationView(state moderation.ModerationView) moderationView {
+	view := moderationView{State: state.State}
+	for _, label := range state.ContentLabels {
+		item := contentLabelView{Value: label.Value}
+		for _, source := range label.Sources {
+			item.Sources = append(item.Sources, decisionSourceView{
+				AuthorityDID: source.AuthorityDID,
+				Scope:        moderation.ScopeView{Kind: source.ScopeKind},
+			})
+		}
+		view.ContentLabels = append(view.ContentLabels, item)
+	}
+	return view
 }
 
 type strongRefView struct {

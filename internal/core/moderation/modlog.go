@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -34,6 +35,17 @@ var permanentHandleFailures = []error{
 // HiddenActionReasons returns the reasons that suppress subject details in the public log.
 func HiddenActionReasons() []string {
 	return []string{illegalContentReason, doxingReason}
+}
+
+// PublicExcludedActions returns the action kinds the public log never serves.
+// NSFW label applies and retractions are left out of it (user decision,
+// 2026-09-30); the admin log keeps them.
+func PublicExcludedActions() []string {
+	return []string{ActionLabel, ActionRetractLabel}
+}
+
+func publicExcludedAction(kind string) bool {
+	return slices.Contains(PublicExcludedActions(), kind)
 }
 
 func hiddenAction(action Action) bool {
@@ -201,11 +213,12 @@ func listActionPage[T any](ctx context.Context, s *service, params ListActionsPa
 	if err != nil {
 		return nil, "", fmt.Errorf("%w: list %s actions: %w", ErrModerationUnavailable, visibility, err)
 	}
-	if query.ExcludeHidden {
-		for _, row := range rows {
-			if hiddenAction(row) {
-				return nil, "", fmt.Errorf("%w: list %s actions: store returned hidden action %s despite ExcludeHidden", ErrModerationUnavailable, visibility, row.ID)
-			}
+	for _, row := range rows {
+		if query.ExcludeHidden && hiddenAction(row) {
+			return nil, "", fmt.Errorf("%w: list %s actions: store returned hidden action %s despite ExcludeHidden", ErrModerationUnavailable, visibility, row.ID)
+		}
+		if query.ExcludeLabelActions && publicExcludedAction(row.Action) {
+			return nil, "", fmt.Errorf("%w: list %s actions: store returned %s action %s despite ExcludeLabelActions", ErrModerationUnavailable, visibility, row.Action, row.ID)
 		}
 	}
 	pageSize := query.Limit - 1
@@ -225,6 +238,9 @@ func (s *service) actionListQuery(ctx context.Context, params ListActionsParams,
 	query, err := validateActionListParams(params, actionID)
 	if err != nil {
 		return ActionListQuery{}, digest, err
+	}
+	if !admin && publicExcludedAction(params.Action) {
+		return ActionListQuery{}, digest, fmt.Errorf("%w: the public log does not serve %s actions", ErrInvalidRequest, params.Action)
 	}
 	if s.config.CursorSecret == "" {
 		return ActionListQuery{}, digest, fmt.Errorf("%w: cursor secret is not configured", ErrModerationUnavailable)
@@ -288,6 +304,7 @@ func (s *service) actionListQuery(ctx context.Context, params ListActionsParams,
 		query.Before = &cursor.key
 	}
 	query.ExcludeHidden = !admin && (params.Subject != "" || params.Collection != "" || params.Community != "")
+	query.ExcludeLabelActions = !admin
 	return query, digest, nil
 }
 

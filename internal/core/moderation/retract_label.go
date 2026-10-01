@@ -7,17 +7,15 @@ import (
 	"time"
 )
 
-func validateRestoreRequest(request RestoreContentRequest) error {
+func validateRetractLabelRequest(request RetractContentLabelRequest) error {
 	if !validOpaqueField(request.ActionID) {
 		return fmt.Errorf("%w: actionId must be 1-128 UTF-8 bytes", ErrInvalidRequest)
 	}
-	if err := validateMutationFields(request.IdempotencyKey, request.ExpectedVersion, request.Reason, request.PrivateNote); err != nil {
+	if err := validateMutationBaseFields(request.IdempotencyKey, request.ExpectedVersion, request.PrivateNote); err != nil {
 		return err
 	}
-	// A hidden reason would drop the restore from the subject's public history
-	// while its reverses reference still pointed at a public removal of that subject.
-	if request.Reason == illegalContentReason || request.Reason == doxingReason {
-		return fmt.Errorf("%w: a restore cannot use the illegal-content or doxing reason", ErrUnsupportedReason)
+	if err := validateOptionalReason(request.Reason); err != nil {
+		return err
 	}
 	if request.ReviewedSubject != nil && !validContentStrongRef(*request.ReviewedSubject) {
 		return fmt.Errorf("%w: reviewedSubject must be a content strongRef", ErrInvalidRequest)
@@ -25,8 +23,8 @@ func validateRestoreRequest(request RestoreContentRequest) error {
 	return nil
 }
 
-func (s *service) restoreContent(ctx context.Context, actorDID string, request RestoreContentRequest) (*MutationResult, error) {
-	if err := validateRestoreRequest(request); err != nil {
+func (s *service) retractContentLabel(ctx context.Context, actorDID string, request RetractContentLabelRequest) (*MutationResult, error) {
+	if err := validateRetractLabelRequest(request); err != nil {
 		return nil, err
 	}
 	now := time.Now()
@@ -38,7 +36,7 @@ func (s *service) restoreContent(ctx context.Context, actorDID string, request R
 		reviewedURI = request.ReviewedSubject.URI
 		reviewedCID = request.ReviewedSubject.CID
 	}
-	fingerprint := mutationFingerprint(ActionRestore, request.ActionID, reviewedURI, reviewedCID, request.ExpectedVersion, request.Reason, "", request.PrivateNote)
+	fingerprint := mutationFingerprint(ActionRetractLabel, request.ActionID, reviewedURI, reviewedCID, request.ExpectedVersion, request.Reason, "", request.PrivateNote)
 	var result *MutationResult
 	var ruleError error
 	err := s.store.InTransaction(ctx, func(ctx context.Context, tx Transaction) error {
@@ -69,37 +67,44 @@ func (s *service) restoreContent(ctx context.Context, actorDID string, request R
 		if count >= s.config.MaxLiveIdempotencyKeys {
 			return fail(fmt.Errorf("%w: live idempotency key limit %d reached", ErrInvalidRequest, s.config.MaxLiveIdempotencyKeys))
 		}
-		removal, err := tx.GetAction(ctx, request.ActionID)
+		label, err := tx.GetAction(ctx, request.ActionID)
 		if errors.Is(err, ErrDecisionNotFound) {
 			return fail(ErrDecisionNotFound)
 		}
 		if err != nil {
 			return unavailable(err)
 		}
-		if removal == nil {
+		if label == nil {
 			return unavailable(errors.New("action lookup returned no action"))
 		}
-		if removal.Action != ActionRemove || removal.AuthorityDID != s.config.InstanceDID || removal.ScopeKind != ScopeInstance {
+		if label.Action != ActionLabel || label.AuthorityDID != s.config.InstanceDID || label.ScopeKind != ScopeInstance || label.Origin != OriginLocal {
 			return fail(ErrInvalidDecision)
 		}
-		version, err := tx.LockSubject(ctx, removal.SubjectURI)
+		version, err := tx.LockSubject(ctx, label.SubjectURI)
 		if err != nil {
 			return unavailable(err)
 		}
-		active, err := tx.ActiveRemoval(ctx, s.config.InstanceDID, removal.SubjectURI)
+		activeLabels, err := tx.ActiveLabels(ctx, s.config.InstanceDID, label.SubjectURI)
 		if err != nil {
 			return unavailable(err)
 		}
-		if active == nil || active.ID != removal.ID {
+		found := false
+		for _, activeLabel := range activeLabels {
+			if activeLabel.ID == label.ID {
+				found = true
+				break
+			}
+		}
+		if !found {
 			return fail(ErrInvalidDecision)
 		}
 		if request.ExpectedVersion != versionToken(version) {
 			return fail(ErrStateConflict)
 		}
-		if request.ReviewedSubject != nil && reviewedURI != removal.SubjectURI {
-			return fail(fmt.Errorf("%w: reviewedSubject URI differs from removal subject", ErrInvalidRequest))
+		if request.ReviewedSubject != nil && reviewedURI != label.SubjectURI {
+			return fail(fmt.Errorf("%w: reviewedSubject URI differs from label subject", ErrInvalidRequest))
 		}
-		subject, err := readIndexedSubject(ctx, tx, removal.SubjectURI)
+		subject, err := readIndexedSubject(ctx, tx, label.SubjectURI)
 		if err != nil && !errors.Is(err, ErrSubjectNotIndexed) {
 			return unavailable(err)
 		}
@@ -126,11 +131,11 @@ func (s *service) restoreContent(ctx context.Context, actorDID string, request R
 		}
 		action, err := tx.InsertAction(ctx, Action{
 			ActorDID: actorDID, AuthorityDID: s.config.InstanceDID,
-			ScopeKind: ScopeInstance, SubjectURI: removal.SubjectURI,
-			SubjectCollection: removal.SubjectCollection, SubjectCommunityDID: removal.SubjectCommunityDID,
-			ObservedCID: observedCID, Action: ActionRestore, Reason: request.Reason,
-			PrivateNote: request.PrivateNote, ReversesActionID: removal.ID,
-			ReversedActionReason: removal.Reason,
+			ScopeKind: ScopeInstance, SubjectURI: label.SubjectURI,
+			SubjectCollection: label.SubjectCollection, SubjectCommunityDID: label.SubjectCommunityDID,
+			ObservedCID: observedCID, Action: ActionRetractLabel, LabelValue: label.LabelValue,
+			Reason: request.Reason, PrivateNote: request.PrivateNote, ReversesActionID: label.ID,
+			ReversedActionReason: label.Reason,
 			Origin:               OriginLocal, CreatedAt: now,
 		})
 		if err != nil {
@@ -139,20 +144,21 @@ func (s *service) restoreContent(ctx context.Context, actorDID string, request R
 		if action == nil || action.ID == "" {
 			return unavailable(errors.New("action insert returned no identifier"))
 		}
-		if err := tx.SetRemovalDecision(ctx, s.config.InstanceDID, removal.SubjectURI, removal.ID, false); err != nil {
+		if err := tx.SetLabelDecision(ctx, s.config.InstanceDID, label.SubjectURI, label.LabelValue, label.ID, false); err != nil {
 			return unavailable(err)
 		}
-		if err := tx.SetSubjectVersion(ctx, removal.SubjectURI, version+1); err != nil {
+		if err := tx.SetSubjectVersion(ctx, label.SubjectURI, version+1); err != nil {
 			return unavailable(err)
 		}
-		if err := tx.DeactivateMediaBlocks(ctx, removal.ID); err != nil {
-			return unavailable(err)
-		}
-		activeLabels, err := tx.ActiveLabels(ctx, s.config.InstanceDID, removal.SubjectURI)
+		removal, err := tx.ActiveRemoval(ctx, s.config.InstanceDID, label.SubjectURI)
 		if err != nil {
 			return unavailable(err)
 		}
-		state, err := newSubjectState(removal.SubjectURI, version+1, recordState, current, nil, activeLabels, s.config.InstanceDID)
+		remainingLabels, err := tx.ActiveLabels(ctx, s.config.InstanceDID, label.SubjectURI)
+		if err != nil {
+			return unavailable(err)
+		}
+		state, err := newSubjectState(label.SubjectURI, version+1, recordState, current, removal, remainingLabels, s.config.InstanceDID)
 		if err != nil {
 			return err
 		}

@@ -3,6 +3,7 @@ package moderation_test
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -12,6 +13,17 @@ import (
 type inMemoryModerationDecisionKey struct {
 	authorityDID string
 	subjectURI   string
+}
+
+type inMemoryModerationLabelKey struct {
+	authorityDID string
+	subjectURI   string
+	value        string
+}
+
+type inMemoryModerationLabelDecision struct {
+	actionID string
+	active   bool
 }
 
 type inMemoryModerationIdempotencyKey struct {
@@ -26,6 +38,7 @@ type inMemoryModerationState struct {
 	versions        map[string]int64
 	actions         map[string]moderation.Action
 	activeRemovals  map[inMemoryModerationDecisionKey]string
+	labelDecisions  map[inMemoryModerationLabelKey]inMemoryModerationLabelDecision
 	idempotency     map[inMemoryModerationIdempotencyKey]moderation.IdempotencyRecord
 	mediaBlocks     map[moderation.MediaBlock]bool
 	nextActionID    int
@@ -38,6 +51,7 @@ func (state inMemoryModerationState) copy() inMemoryModerationState {
 		versions:        make(map[string]int64, len(state.versions)),
 		actions:         make(map[string]moderation.Action, len(state.actions)),
 		activeRemovals:  make(map[inMemoryModerationDecisionKey]string, len(state.activeRemovals)),
+		labelDecisions:  make(map[inMemoryModerationLabelKey]inMemoryModerationLabelDecision, len(state.labelDecisions)),
 		idempotency:     make(map[inMemoryModerationIdempotencyKey]moderation.IdempotencyRecord, len(state.idempotency)),
 		mediaBlocks:     make(map[moderation.MediaBlock]bool, len(state.mediaBlocks)),
 		nextActionID:    state.nextActionID,
@@ -58,6 +72,9 @@ func (state inMemoryModerationState) copy() inMemoryModerationState {
 	}
 	for key, actionID := range state.activeRemovals {
 		working.activeRemovals[key] = actionID
+	}
+	for key, decision := range state.labelDecisions {
+		working.labelDecisions[key] = decision
 	}
 	for key, record := range state.idempotency {
 		working.idempotency[key] = record
@@ -80,6 +97,10 @@ type inMemoryModerationStore struct {
 	failInsertAction       error
 	failSetRemovalDecision error
 	failListActions        error
+	failSetLabelDecision   error
+	// failActiveLabelsAfterLabelDecision fails ActiveLabels reads made after
+	// the transaction has changed a label decision.
+	failActiveLabelsAfterLabelDecision error
 }
 
 func newInMemoryModerationStore(now time.Time) *inMemoryModerationStore {
@@ -91,10 +112,17 @@ func newInMemoryModerationStore(now time.Time) *inMemoryModerationStore {
 			versions:        make(map[string]int64),
 			actions:         make(map[string]moderation.Action),
 			activeRemovals:  make(map[inMemoryModerationDecisionKey]string),
+			labelDecisions:  make(map[inMemoryModerationLabelKey]inMemoryModerationLabelDecision),
 			idempotency:     make(map[inMemoryModerationIdempotencyKey]moderation.IdempotencyRecord),
 			mediaBlocks:     make(map[moderation.MediaBlock]bool),
 		},
 	}
+}
+
+func (store *inMemoryModerationStore) seedActiveLabel(action moderation.Action) {
+	store.state.actions[action.ID] = action
+	store.state.labelDecisions[inMemoryModerationLabelKey{action.AuthorityDID, action.SubjectURI, action.LabelValue}] =
+		inMemoryModerationLabelDecision{actionID: action.ID, active: true}
 }
 
 func (store *inMemoryModerationStore) InTransaction(ctx context.Context, fn func(context.Context, moderation.Transaction) error) error {
@@ -118,6 +146,17 @@ func (store *inMemoryModerationStore) SubjectModeration(_ context.Context, autho
 		action := store.state.actions[actionID]
 		state.ActiveRemoval = &action
 	}
+	var values []string
+	for key, decision := range store.state.labelDecisions {
+		if key.authorityDID == authorityDID && key.subjectURI == subjectURI && decision.active {
+			values = append(values, key.value)
+		}
+	}
+	sort.Strings(values)
+	for _, value := range values {
+		key := inMemoryModerationLabelKey{authorityDID, subjectURI, value}
+		state.ActiveLabels = append(state.ActiveLabels, store.state.actions[store.state.labelDecisions[key].actionID])
+	}
 	return state, nil
 }
 
@@ -128,12 +167,23 @@ func (store *inMemoryModerationStore) ListActions(_ context.Context, query moder
 	if store.failListActions != nil {
 		return nil, store.failListActions
 	}
-	return append([]moderation.Action(nil), store.listRows...), nil
+	rows := make([]moderation.Action, 0, len(store.listRows))
+	for _, row := range store.listRows {
+		excluded := false
+		for _, kind := range moderation.PublicExcludedActions() {
+			excluded = excluded || (query.ExcludeLabelActions && row.Action == kind)
+		}
+		if !excluded {
+			rows = append(rows, row)
+		}
+	}
+	return rows, nil
 }
 
 type inMemoryModerationTransaction struct {
-	store *inMemoryModerationStore
-	state *inMemoryModerationState
+	store                *inMemoryModerationStore
+	state                *inMemoryModerationState
+	labelDecisionWritten bool
 }
 
 func (*inMemoryModerationTransaction) LockActor(context.Context, string) error {
@@ -206,6 +256,51 @@ func (transaction *inMemoryModerationTransaction) ActiveRemoval(_ context.Contex
 	}
 	action := transaction.state.actions[actionID]
 	return &action, nil
+}
+
+func (transaction *inMemoryModerationTransaction) ActiveLabels(_ context.Context, authorityDID, subjectURI string) ([]moderation.Action, error) {
+	if transaction.labelDecisionWritten && transaction.store.failActiveLabelsAfterLabelDecision != nil {
+		return nil, transaction.store.failActiveLabelsAfterLabelDecision
+	}
+	var values []string
+	for key, decision := range transaction.state.labelDecisions {
+		if key.authorityDID == authorityDID && key.subjectURI == subjectURI && decision.active {
+			values = append(values, key.value)
+		}
+	}
+	sort.Strings(values)
+	actions := make([]moderation.Action, 0, len(values))
+	for _, value := range values {
+		key := inMemoryModerationLabelKey{authorityDID, subjectURI, value}
+		actions = append(actions, transaction.state.actions[transaction.state.labelDecisions[key].actionID])
+	}
+	return actions, nil
+}
+
+func (transaction *inMemoryModerationTransaction) SetLabelDecision(_ context.Context, authorityDID, subjectURI, value, actionID string, active bool) error {
+	transaction.store.writeCalls = append(transaction.store.writeCalls, "SetLabelDecision")
+	if transaction.store.failSetLabelDecision != nil {
+		return transaction.store.failSetLabelDecision
+	}
+	key := inMemoryModerationLabelKey{authorityDID, subjectURI, value}
+	decision, exists := transaction.state.labelDecisions[key]
+	if active {
+		if _, actionExists := transaction.state.actions[actionID]; !actionExists {
+			return moderation.ErrDecisionNotFound
+		}
+		if exists && decision.active {
+			return fmt.Errorf("label decision %q on %s is already active", value, subjectURI)
+		}
+		transaction.state.labelDecisions[key] = inMemoryModerationLabelDecision{actionID: actionID, active: true}
+	} else {
+		if !exists || !decision.active || decision.actionID != actionID {
+			return fmt.Errorf("no active label decision %q on %s for action %s", value, subjectURI, actionID)
+		}
+		decision.active = false
+		transaction.state.labelDecisions[key] = decision
+	}
+	transaction.labelDecisionWritten = true
+	return nil
 }
 
 func (transaction *inMemoryModerationTransaction) InsertAction(_ context.Context, action moderation.Action) (*moderation.Action, error) {

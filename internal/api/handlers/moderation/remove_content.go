@@ -80,7 +80,7 @@ func writeMutationResult(w http.ResponseWriter, operation string, result *modera
 	state := result.State
 	view := subjectStateView{
 		Subject: state.Subject, Version: state.Version,
-		Moderation: moderationView{State: state.Moderation.State}, RecordState: state.RecordState,
+		Moderation: newModerationView(state.Moderation), RecordState: state.RecordState,
 	}
 	if state.CurrentSubject != nil {
 		view.CurrentSubject = &strongRefView{URI: state.CurrentSubject.URI, CID: state.CurrentSubject.CID}
@@ -120,6 +120,7 @@ func writeMutationError(w http.ResponseWriter, operation string, err error) {
 		{moderation.ErrStateConflict, "StateConflict"},
 		{moderation.ErrIdempotencyConflict, "IdempotencyConflict"},
 		{moderation.ErrUnsupportedReason, "UnsupportedReason"},
+		{moderation.ErrUnsupportedLabel, "UnsupportedLabel"},
 	} {
 		if errors.Is(err, entry.cause) {
 			// Rule errors carry only fixed text and configured limits, such as

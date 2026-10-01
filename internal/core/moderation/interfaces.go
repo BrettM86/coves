@@ -33,6 +33,8 @@ type Service interface {
 	GetSubjectState(ctx context.Context, subject string) (*SubjectState, error)
 	RemoveContent(ctx context.Context, actorDID string, request RemoveContentRequest) (*MutationResult, error)
 	RestoreContent(ctx context.Context, actorDID string, request RestoreContentRequest) (*MutationResult, error)
+	LabelContent(ctx context.Context, actorDID string, request LabelContentRequest) (*MutationResult, error)
+	RetractContentLabel(ctx context.Context, actorDID string, request RetractContentLabelRequest) (*MutationResult, error)
 	ListActions(ctx context.Context, params ListActionsParams) (*ActionPage, error)
 	ListAdminActions(ctx context.Context, params ListAdminActionsParams) (*AdminActionPage, error)
 }

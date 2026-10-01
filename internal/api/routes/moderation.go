@@ -17,6 +17,8 @@ func RegisterModerationRoutes(r chi.Router, service moderation.Service, adminAut
 	listAdminActions := handler.NewListAdminActionsHandler(service)
 	removeContent := handler.NewRemoveContentHandler(service)
 	restoreContent := handler.NewRestoreContentHandler(service)
+	labelContent := handler.NewLabelContentHandler(service)
+	retractContentLabel := handler.NewRetractContentLabelHandler(service)
 	r.Get("/xrpc/social.coves.moderation.listActions", listActions.HandleListActions)
 	r.With(adminAuth.RequireInstanceAdmin).Get(
 		"/xrpc/social.coves.moderation.listAdminActions", listAdminActions.HandleListAdminActions)
@@ -26,4 +28,8 @@ func RegisterModerationRoutes(r chi.Router, service moderation.Service, adminAut
 		"/xrpc/social.coves.moderation.removeContent", removeContent.HandleRemoveContent)
 	r.With(adminAuth.RequireInstanceAdmin).Post(
 		"/xrpc/social.coves.moderation.restoreContent", restoreContent.HandleRestoreContent)
+	r.With(adminAuth.RequireInstanceAdmin).Post(
+		"/xrpc/social.coves.moderation.labelContent", labelContent.HandleLabelContent)
+	r.With(adminAuth.RequireInstanceAdmin).Post(
+		"/xrpc/social.coves.moderation.retractContentLabel", retractContentLabel.HandleRetractContentLabel)
 }

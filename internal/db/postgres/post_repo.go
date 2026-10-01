@@ -56,7 +56,21 @@ const postViewSelectColumns = `
 		p.title, p.content, p.content_facets, p.embed, p.content_labels,
 		p.created_at, p.edited_at, p.indexed_at,
 		p.upvote_count + p.bridged_upvote_count AS upvote_count, p.downvote_count + p.bridged_downvote_count AS downvote_count, p.score, p.comment_count,
-		a.status AS admission_status, a.acceptance_uri AS admission_acceptance_uri`
+		a.status AS admission_status, a.acceptance_uri AS admission_acceptance_uri,
+		(SELECT jsonb_agg(jsonb_build_object('value', labels.value, 'sources', labels.sources) ORDER BY labels.value)
+		 FROM (
+			SELECT d.value,
+				jsonb_agg(jsonb_build_object(
+					'authorityDid', d.authority_did,
+					'scope', jsonb_build_object('kind', d.scope_kind) ||
+						CASE WHEN d.scope_community_did IS NOT NULL
+							THEN jsonb_build_object('communityDid', d.scope_community_did)
+							ELSE '{}'::jsonb END
+				) ORDER BY d.authority_did, d.scope_kind, d.scope_community_did) AS sources
+			FROM moderation_decisions d
+			WHERE d.subject_uri = p.uri AND d.kind = 'label' AND d.active
+			GROUP BY d.value
+		 ) labels) AS active_content_labels`
 
 // NewPostRepository creates a new PostgreSQL post repository.
 //
@@ -666,6 +680,7 @@ func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, er
 		communityOrigin   sql.NullString
 		admissionStatus   sql.NullString
 		acceptanceURI     sql.NullString
+		activeLabelsJSON  sql.NullString
 	)
 
 	dest := []interface{}{
@@ -675,7 +690,7 @@ func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, er
 		&title, &content, &facets, &embed, &labelsJSON,
 		&postView.CreatedAt, &editedAt, &postView.IndexedAt,
 		&postView.UpvoteCount, &postView.DownvoteCount, &postView.Score, &postView.CommentCount,
-		&admissionStatus, &acceptanceURI,
+		&admissionStatus, &acceptanceURI, &activeLabelsJSON,
 	}
 	dest = append(dest, extraDest...)
 
@@ -733,6 +748,14 @@ func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, er
 	}
 	if acceptanceURI.Valid {
 		postView.AcceptanceURI = acceptanceURI.String
+	}
+	if activeLabelsJSON.Valid {
+		var labels []posts.ContentLabelView
+		if err := json.Unmarshal([]byte(activeLabelsJSON.String), &labels); err != nil {
+			return nil, fmt.Errorf("decode active post labels for %s: %w", postView.URI, err)
+		}
+		// Clear holds only because every caller filters with visiblePostsPredicate.
+		postView.Moderation = &posts.ModerationView{State: posts.ModerationViewStateClear, ContentLabels: labels}
 	}
 
 	// Parse facets JSON into local variable (will be added to record below)

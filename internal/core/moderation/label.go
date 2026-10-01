@@ -9,51 +9,36 @@ import (
 	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 
-const (
-	illegalContentReason = "social.coves.moderation.defs#reasonIllegalContent"
-	doxingReason         = "social.coves.moderation.defs#reasonDoxing"
-)
-
-// removeReasons is every known moderation reason. removeContent and
-// restoreContent require one; labelContent and retractContentLabel accept one
-// optionally. Restore, label and retract-label reject the illegal-content and
-// doxing reasons on top of this set.
-var removeReasons = map[string]struct{}{
-	"social.coves.moderation.defs#reasonSpam":       {},
-	"social.coves.moderation.defs#reasonHarassment": {},
-	doxingReason:         {},
-	illegalContentReason: {},
-	"social.coves.moderation.defs#reasonRuleViolation":       {},
-	"social.coves.moderation.defs#reasonModeratorDiscretion": {},
-}
-
-func validateRemoveRequest(request RemoveContentRequest) error {
+func validateLabelRequest(request LabelContentRequest) error {
 	uri, err := syntax.ParseATURI(request.Subject.URI)
 	if err != nil || !uri.Authority().IsDID() || uri.RecordKey().String() == "" {
-		return fmt.Errorf("%w: expected a content record URI with a DID authority", ErrInvalidSubject)
+		return fmt.Errorf("%w: expected a post record URI with a DID authority", ErrInvalidSubject)
 	}
-	switch uri.Collection().String() {
-	case CommentCollection, PostV2Collection, LegacyPostCollection:
-	default:
+	if uri.Collection().String() != PostV2Collection && uri.Collection().String() != LegacyPostCollection {
 		return fmt.Errorf("%w: unsupported subject collection", ErrInvalidSubject)
 	}
 	if _, err := syntax.ParseCID(request.Subject.CID); err != nil {
 		return fmt.Errorf("%w: invalid subject CID", ErrInvalidRequest)
 	}
-	return validateMutationFields(request.IdempotencyKey, request.ExpectedVersion, request.Reason, request.PrivateNote)
+	if err := validateMutationBaseFields(request.IdempotencyKey, request.ExpectedVersion, request.PrivateNote); err != nil {
+		return err
+	}
+	if !validOpaqueField(request.LabelValue) {
+		return fmt.Errorf("%w: labelValue must be 1-128 UTF-8 bytes", ErrInvalidRequest)
+	}
+	return validateOptionalReason(request.Reason)
 }
 
-func (s *service) removeContent(ctx context.Context, actorDID string, request RemoveContentRequest) (*MutationResult, error) {
-	if err := validateRemoveRequest(request); err != nil {
+func (s *service) labelContent(ctx context.Context, actorDID string, request LabelContentRequest) (*MutationResult, error) {
+	if err := validateLabelRequest(request); err != nil {
 		return nil, err
 	}
 	now := time.Now()
 	if s.config.Now != nil {
 		now = s.config.Now()
 	}
-	fingerprint := mutationFingerprint(ActionRemove, "", request.Subject.URI, request.Subject.CID, request.ExpectedVersion, request.Reason, "", request.PrivateNote)
+	fingerprint := mutationFingerprint(ActionLabel, "", request.Subject.URI, request.Subject.CID, request.ExpectedVersion, request.Reason, request.LabelValue, request.PrivateNote)
 	var result *MutationResult
-	var newlyBlocked []MediaBlock
 	var ruleError error
 	err := s.store.InTransaction(ctx, func(ctx context.Context, tx Transaction) error {
 		fail := func(err error) error {
@@ -75,6 +60,9 @@ func (s *service) removeContent(ctx context.Context, actorDID string, request Re
 			copy := stored.Result
 			result = &copy
 			return nil
+		}
+		if request.LabelValue != LabelNSFW {
+			return fail(ErrUnsupportedLabel)
 		}
 		count, err := tx.CountLiveIdempotencyKeys(ctx, actorDID, now)
 		if err != nil {
@@ -100,26 +88,30 @@ func (s *service) removeContent(ctx context.Context, actorDID string, request Re
 		if subject == nil {
 			return unavailable(errors.New("indexed subject missing"))
 		}
-		if !subject.AuthorDeleted && subject.CID != request.Subject.CID {
+		if subject.AuthorDeleted {
+			return fail(ErrSubjectNotFound)
+		}
+		if subject.CID != request.Subject.CID {
 			return fail(ErrContentChanged)
+		}
+		labels, err := tx.ActiveLabels(ctx, s.config.InstanceDID, request.Subject.URI)
+		if err != nil {
+			return unavailable(err)
 		}
 		active, err := tx.ActiveRemoval(ctx, s.config.InstanceDID, request.Subject.URI)
 		if err != nil {
 			return unavailable(err)
 		}
-		activeLabels, err := tx.ActiveLabels(ctx, s.config.InstanceDID, request.Subject.URI)
-		if err != nil {
-			return unavailable(err)
+		current := &StrongRef{URI: subject.URI, CID: subject.CID}
+		alreadyActive := false
+		for _, label := range labels {
+			if label.LabelValue == LabelNSFW {
+				alreadyActive = true
+				break
+			}
 		}
-		recordState := RecordStatePresent
-		var current *StrongRef
-		if subject.AuthorDeleted {
-			recordState = RecordStateDeleted
-		} else {
-			current = &StrongRef{URI: subject.URI, CID: subject.CID}
-		}
-		if active != nil {
-			state, err := newSubjectState(request.Subject.URI, version, recordState, current, active, activeLabels, s.config.InstanceDID)
+		if alreadyActive {
+			state, err := newSubjectState(request.Subject.URI, version, RecordStatePresent, current, active, labels, s.config.InstanceDID)
 			if err != nil {
 				return err
 			}
@@ -129,8 +121,9 @@ func (s *service) removeContent(ctx context.Context, actorDID string, request Re
 				ActorDID: actorDID, AuthorityDID: s.config.InstanceDID,
 				ScopeKind: ScopeInstance, SubjectURI: request.Subject.URI,
 				SubjectCollection: subject.Collection, SubjectCommunityDID: subject.CommunityDID,
-				ObservedCID: subject.CID, Action: ActionRemove, Reason: request.Reason,
-				PrivateNote: request.PrivateNote, Origin: OriginLocal, CreatedAt: now,
+				ObservedCID: subject.CID, Action: ActionLabel, LabelValue: LabelNSFW,
+				Reason: request.Reason, PrivateNote: request.PrivateNote,
+				Origin: OriginLocal, CreatedAt: now,
 			})
 			if err != nil {
 				return unavailable(err)
@@ -138,19 +131,17 @@ func (s *service) removeContent(ctx context.Context, actorDID string, request Re
 			if action == nil || action.ID == "" {
 				return unavailable(errors.New("action insert returned no identifier"))
 			}
-			if err := tx.SetRemovalDecision(ctx, s.config.InstanceDID, request.Subject.URI, action.ID, true); err != nil {
+			if err := tx.SetLabelDecision(ctx, s.config.InstanceDID, request.Subject.URI, LabelNSFW, action.ID, true); err != nil {
 				return unavailable(err)
 			}
 			if err := tx.SetSubjectVersion(ctx, request.Subject.URI, version+1); err != nil {
 				return unavailable(err)
 			}
-			newlyBlocked = imageMediaBlocks(subject, action)
-			if len(newlyBlocked) > 0 {
-				if err := tx.InsertMediaBlocks(ctx, newlyBlocked); err != nil {
-					return unavailable(err)
-				}
+			appliedLabels, err := tx.ActiveLabels(ctx, s.config.InstanceDID, request.Subject.URI)
+			if err != nil {
+				return unavailable(err)
 			}
-			state, err := newSubjectState(request.Subject.URI, version+1, recordState, current, action, activeLabels, s.config.InstanceDID)
+			state, err := newSubjectState(request.Subject.URI, version+1, RecordStatePresent, current, active, appliedLabels, s.config.InstanceDID)
 			if err != nil {
 				return err
 			}
@@ -167,6 +158,5 @@ func (s *service) removeContent(ctx context.Context, actorDID string, request Re
 		}
 		return nil, fmt.Errorf("%w: %w", ErrModerationUnavailable, err)
 	}
-	purgeMediaBlocks(s.config.Purger, newlyBlocked)
 	return result, nil
 }

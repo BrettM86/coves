@@ -170,3 +170,43 @@ func TestGetSubjectStateHandlerPassesExactQuerySubject(t *testing.T) {
 	_ = requestGetSubjectState(service, subject, true)
 	assert.Equal(t, []string{subject}, service.subjects)
 }
+
+func TestGetSubjectStateHandlerSerializesActiveContentLabels(t *testing.T) {
+	const subject = "at://did:plc:subject/social.coves.community.postv2/3kabc"
+	const cid = "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"
+	state := &moderation.SubjectState{
+		Subject: subject, Version: "v1", RecordState: moderation.RecordStatePresent,
+		CurrentSubject: &moderation.StrongRef{URI: subject, CID: cid},
+		LocalLabels: []moderation.LocalLabel{{
+			Value: moderation.LabelNSFW, Action: moderation.ActionRef{ServiceDID: mutationInstanceDID, ActionID: "label-1"},
+		}},
+		Moderation: moderation.ModerationView{State: moderation.ModerationStateClear, ContentLabels: []moderation.ContentLabel{{
+			Value:   moderation.LabelNSFW,
+			Sources: []moderation.DecisionSource{{AuthorityDID: mutationInstanceDID, ScopeKind: moderation.ScopeInstance}},
+		}}},
+	}
+	service := &subjectStateServiceFake{state: state}
+	response := requestGetSubjectState(service, subject, true)
+	require.Equalf(t, http.StatusOK, response.Code, "response: %s", response.Body.String())
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &body))
+	want := map[string]any{"state": map[string]any{
+		"subject": subject, "version": "v1", "recordState": "present",
+		"currentSubject": map[string]any{"uri": subject, "cid": cid},
+		"localLabels": []any{map[string]any{
+			"value": "nsfw", "action": map[string]any{"serviceDid": mutationInstanceDID, "actionId": "label-1"},
+		}},
+		"moderation": map[string]any{"state": "clear", "contentLabels": []any{map[string]any{
+			"value": "nsfw", "sources": []any{map[string]any{
+				"authorityDid": mutationInstanceDID, "scope": map[string]any{"kind": "instance"},
+			}},
+		}}},
+	}}
+	assert.Equal(t, want, body)
+	assert.Equal(t, []string{subject}, service.subjects)
+	catalog := lexicon.NewBaseCatalog()
+	require.NoError(t, catalog.LoadDirectory("../../../atproto/lexicon"))
+	decoded, err := atdata.UnmarshalJSON(response.Body.Bytes())
+	require.NoError(t, err)
+	require.NoError(t, validation.ValidateData(catalog, decoded, "social.coves.moderation.getSubjectState#output", 0))
+}

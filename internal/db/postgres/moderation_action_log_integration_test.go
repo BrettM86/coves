@@ -242,3 +242,34 @@ func TestModerationActionLogHiddenReasonsAndFullRowMapping(t *testing.T) {
 	}
 	assert.Equal(t, []string{"h"}, actionLogIDs(listActionLog(t, db, moderation.ActionListQuery{Limit: 20, ActionID: "h", CommunityDID: rows[7].SubjectCommunityDID})))
 }
+
+// TestModerationActionLogExcludesLabelActions pins the SQL half of the public
+// label exclusion: ExcludeLabelActions omits label and retract-label rows on
+// every page and filter, and leaves every other kind in place.
+func TestModerationActionLogExcludesLabelActions(t *testing.T) {
+	db := testkit.DB(t)
+	base := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	removal := actionLogRow("a", base)
+	label := actionLogRow("b", base.Add(time.Microsecond))
+	label.Action, label.LabelValue, label.Reason = moderation.ActionLabel, moderation.LabelNSFW, actionLogRule
+	retraction := actionLogRow("c", base.Add(2*time.Microsecond))
+	retraction.Action, retraction.LabelValue, retraction.Reason = moderation.ActionRetractLabel, moderation.LabelNSFW, ""
+	retraction.ReversesActionID = label.ID
+	restore := actionLogRow("d", base.Add(3*time.Microsecond))
+	restore.Action, restore.ReversesActionID, restore.Reason = moderation.ActionRestore, removal.ID, actionLogDiscretion
+	for _, row := range []moderation.Action{removal, label, retraction, restore} {
+		insertActionLogRow(t, db, row)
+	}
+	assert.Equal(t, []string{"d", "c", "b", "a"}, actionLogIDs(listActionLog(t, db, moderation.ActionListQuery{Limit: 20})))
+	assert.Equal(t, []string{"d", "a"}, actionLogIDs(listActionLog(t, db, moderation.ActionListQuery{Limit: 20, ExcludeLabelActions: true})))
+	assert.Equal(t, []string{"a"}, actionLogIDs(listActionLog(t, db, moderation.ActionListQuery{
+		Limit: 20, ExcludeLabelActions: true, Before: &moderation.ActionKey{CreatedAt: restore.CreatedAt, ID: restore.ID},
+	})))
+	for _, kind := range moderation.PublicExcludedActions() {
+		assert.Empty(t, listActionLog(t, db, moderation.ActionListQuery{Limit: 20, Action: kind, ExcludeLabelActions: true}), kind)
+		assert.Len(t, listActionLog(t, db, moderation.ActionListQuery{Limit: 20, Action: kind}), 1, kind)
+	}
+	assert.Equal(t, []string{"d", "a"}, actionLogIDs(listActionLog(t, db, moderation.ActionListQuery{
+		Limit: 20, ExcludeLabelActions: true, ExcludeHidden: true, SubjectCollection: moderation.CommentCollection,
+	})))
+}

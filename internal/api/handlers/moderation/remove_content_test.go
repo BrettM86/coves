@@ -35,6 +35,8 @@ type mutationServiceFake struct {
 	moderation.Service
 	removeCalls  []moderation.RemoveContentRequest
 	restoreCalls []moderation.RestoreContentRequest
+	labelCalls   []moderation.LabelContentRequest
+	retractCalls []moderation.RetractContentLabelRequest
 	actors       []string
 	result       *moderation.MutationResult
 	err          error
@@ -49,6 +51,18 @@ func (fake *mutationServiceFake) RemoveContent(_ context.Context, actorDID strin
 func (fake *mutationServiceFake) RestoreContent(_ context.Context, actorDID string, request moderation.RestoreContentRequest) (*moderation.MutationResult, error) {
 	fake.actors = append(fake.actors, actorDID)
 	fake.restoreCalls = append(fake.restoreCalls, request)
+	return fake.result, fake.err
+}
+
+func (fake *mutationServiceFake) LabelContent(_ context.Context, actorDID string, request moderation.LabelContentRequest) (*moderation.MutationResult, error) {
+	fake.actors = append(fake.actors, actorDID)
+	fake.labelCalls = append(fake.labelCalls, request)
+	return fake.result, fake.err
+}
+
+func (fake *mutationServiceFake) RetractContentLabel(_ context.Context, actorDID string, request moderation.RetractContentLabelRequest) (*moderation.MutationResult, error) {
+	fake.actors = append(fake.actors, actorDID)
+	fake.retractCalls = append(fake.retractCalls, request)
 	return fake.result, fake.err
 }
 
@@ -115,6 +129,11 @@ func assertMutationResponse(t *testing.T, response *httptest.ResponseRecorder, r
 		want["action"] = adminAction
 	}
 	assert.Equal(t, want, body, "response must omit null optional fields and expose the exact action projection")
+	assertMutationLexicon(t, response)
+}
+
+func assertMutationLexicon(t *testing.T, response *httptest.ResponseRecorder) {
+	t.Helper()
 	catalog := lexicon.NewBaseCatalog()
 	require.NoError(t, catalog.LoadDirectory("../../../atproto/lexicon"))
 	decoded, err := atdata.UnmarshalJSON(response.Body.Bytes())
