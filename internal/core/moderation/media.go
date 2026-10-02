@@ -103,22 +103,22 @@ func (r *MediaReconciler) insertAndRecord(ctx context.Context, bound MediaTransa
 
 // Purge removes cached bytes of newly blocked blobs after commit.
 func (r *MediaReconciler) Purge(ctx context.Context, blocks []MediaBlock) {
-	purgeMediaBlocks(r.purger, blocks)
+	purgeMediaBlocks(ctx, r.purger, blocks)
 	if r.cdnPurgeTargets != nil && len(blocks) > 0 {
 		r.cdnPurgeTargets.PurgeAfterCommit(ctx, ownerCDNPurgeBlobs(blocks))
 	}
 }
 
-func purgeMediaBlocks(purger MediaPurger, blocks []MediaBlock) {
+func purgeMediaBlocks(ctx context.Context, purger MediaPurger, blocks []MediaBlock) {
 	if purger == nil {
 		return
 	}
 	for _, block := range blocks {
 		var err error
 		if block.OwnerDID == "" {
-			err = purger.PurgeBlob(block.BlobCID)
+			err = purger.PurgeBlob(ctx, block.BlobCID)
 		} else {
-			err = purger.PurgeOwnerBlob(block.OwnerDID, block.BlobCID)
+			err = purger.PurgeOwnerBlob(ctx, block.OwnerDID, block.BlobCID)
 		}
 		// The block is committed and serving is refused, but the bytes stay on
 		// disk until the image proxy's blocked media sweep retries the purge.

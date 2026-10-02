@@ -43,19 +43,30 @@ func (clock *moderationCDNClock) Set(at time.Time) {
 }
 
 func newModerationCDNPurgeHarness(t *testing.T, endpoint *testkit.CloudflarePurgeEndpoint, clock *moderationCDNClock, writeTimeout time.Duration, wrapStore ...func(moderation.Store) moderation.Store) *moderationMediaHarness {
+	var configure []func(*moderationMediaHarnessConfig)
+	if len(wrapStore) != 0 {
+		configure = append(configure, func(options *moderationMediaHarnessConfig) { options.wrapStore = wrapStore[0] })
+	}
+	return newModerationCDNPurgeHarnessConfigured(t, endpoint, clock, writeTimeout, configure...)
+}
+
+func newModerationCDNPurgeHarnessConfigured(t *testing.T, endpoint *testkit.CloudflarePurgeEndpoint, clock *moderationCDNClock, writeTimeout time.Duration, configure ...func(*moderationMediaHarnessConfig)) *moderationMediaHarness {
 	t.Helper()
 	purger := newMediaCloudflarePurger(t, endpoint, "route-cdn-token-SENTINEL")
-	h, _ := newModerationMediaHarness(t, false, func(options *moderationMediaHarnessConfig) {
+	configureHarness := func(options *moderationMediaHarnessConfig) {
 		options.now = clock.Now
 		options.targets = func(db *sql.DB, now func() time.Time) moderation.CDNPurgeTargets {
-			return moderation.NewCDNPurgeQueue(postgres.NewModerationRepository(db), purger, moderation.CDNPurgeQueueConfig{
+			var targetStore moderation.CDNPurgeTargetStore = postgres.NewModerationRepository(db)
+			if options.wrapTargetStore != nil {
+				targetStore = options.wrapTargetStore(targetStore)
+			}
+			return moderation.NewCDNPurgeQueue(targetStore, purger, moderation.CDNPurgeQueueConfig{
 				WriteTimeout: writeTimeout, Now: now, BatchSize: 100,
 			})
 		}
-		if len(wrapStore) != 0 {
-			options.wrapStore = wrapStore[0]
-		}
-	})
+	}
+	configuration := append([]func(*moderationMediaHarnessConfig){configureHarness}, configure...)
+	h, _ := newModerationMediaHarness(t, false, configuration...)
 	require.NotNil(t, h.queue)
 	return h
 }
@@ -122,6 +133,10 @@ type gatedModerationCDNTargets struct {
 	calls   int
 	entered chan struct{}
 	release chan struct{}
+}
+
+func (targets *gatedModerationCDNTargets) queueForRecorder() *moderation.CDNPurgeQueue {
+	return targets.queue
 }
 
 func (targets *gatedModerationCDNTargets) PurgeAfterCommit(ctx context.Context, blobs []imageproxy.BlockedBlob) {

@@ -57,6 +57,10 @@ type CDNPurgeTargetStore interface {
 	ClaimDueCDNPurgeTargets(ctx context.Context, claim CDNPurgeClaim) ([]CDNPurgeTarget, error)
 	CompleteCDNPurgeTarget(ctx context.Context, target CDNPurgeTarget) error
 	RescheduleCDNPurgeTarget(ctx context.Context, target CDNPurgeTarget, nextAttemptAt time.Time, failureCode string) error
+	// RecordCDNPurgeTargets commits pending targets in its own transaction. A
+	// target already pending keeps its backoff and claim; it returns only the
+	// targets it inserted or moved back to pending.
+	RecordCDNPurgeTargets(ctx context.Context, blobs []imageproxy.BlockedBlob) ([]imageproxy.BlockedBlob, error)
 }
 
 const (
@@ -311,4 +315,36 @@ func cdnPurgeRetryDelay(failedAttempts int) time.Duration {
 		return time.Hour
 	}
 	return time.Minute << (failedAttempts - 1)
+}
+
+// RecordCDNPurgeTargets durably records owner-scoped targets before scheduling
+// an immediate purge attempt for the targets the store inserted or re-pended; a
+// target already pending waits for its scheduled retry. Every owner DID must be
+// valid and every CID canonical. A failed recording leaves the caller's cached
+// bytes untouched so the next sweep can retry.
+func (q *CDNPurgeQueue) RecordCDNPurgeTargets(ctx context.Context, blobs []imageproxy.BlockedBlob) error {
+	if len(blobs) == 0 {
+		return nil
+	}
+	for _, blob := range blobs {
+		if blob.OwnerDID == "" || blob.CID == "" {
+			return fmt.Errorf("record CDN purge target: %w", imageproxy.ErrEmptyParameter)
+		}
+		if err := imageproxy.ValidateOwnerDID(blob.OwnerDID); err != nil {
+			return fmt.Errorf("record CDN purge target: %w", err)
+		}
+		canonical, err := imageproxy.CanonicalCID(blob.CID)
+		if err != nil {
+			return fmt.Errorf("record CDN purge target: %w", err)
+		}
+		if canonical != blob.CID {
+			return fmt.Errorf("record CDN purge target: non-canonical CID: %w", imageproxy.ErrInvalidCID)
+		}
+	}
+	pended, err := q.store.RecordCDNPurgeTargets(ctx, blobs)
+	if err != nil {
+		return fmt.Errorf("record CDN purge targets: %w", err)
+	}
+	q.PurgeAfterCommit(ctx, pended)
+	return nil
 }

@@ -63,11 +63,12 @@ type Service interface {
 // ImageProxyService implements the Service interface and orchestrates
 // caching, fetching, and processing of images.
 type ImageProxyService struct {
-	cache     Cache
-	processor Processor
-	fetcher   Fetcher
-	blocks    BlockChecker
-	config    Config
+	cache            Cache
+	processor        Processor
+	fetcher          Fetcher
+	blocks           BlockChecker
+	config           Config
+	cdnPurgeRecorder CDNPurgeRecorder
 	// A fixed number of stripes serializes cache publication with purges for
 	// the same CID without retaining locks for every blob ever requested.
 	// Each stripe is a weight-1 semaphore rather than a mutex so a waiter can
@@ -100,7 +101,7 @@ type ImageProxyService struct {
 // NewService creates a new ImageProxyService with the provided dependencies.
 // Returns an error if any required dependency is nil or if the processing
 // budgets the service enforces itself are not positive.
-func NewService(cache Cache, processor Processor, fetcher Fetcher, blocks BlockChecker, config Config) (*ImageProxyService, error) {
+func NewService(cache Cache, processor Processor, fetcher Fetcher, blocks BlockChecker, config Config, options ...ServiceOption) (*ImageProxyService, error) {
 	if cache == nil {
 		return nil, fmt.Errorf("%w: cache", ErrNilDependency)
 	}
@@ -138,6 +139,9 @@ func NewService(cache Cache, processor Processor, fetcher Fetcher, blocks BlockC
 	}
 	for index := range service.publicationLocks {
 		service.publicationLocks[index] = semaphore.NewWeighted(1)
+	}
+	for _, option := range options {
+		option(service)
 	}
 	return service, nil
 }
@@ -384,19 +388,38 @@ func (s *ImageProxyService) IsBlobBlocked(ctx context.Context, did, cid string) 
 }
 
 // PurgeOwnerBlob removes the owner's cached copies of a blocked blob. The
-// caller must have committed the block first.
-func (s *ImageProxyService) PurgeOwnerBlob(did, cid string) error {
-	if err := s.awaitPublications(context.Background(), cid); err != nil {
+// caller must have committed the block first. Cancelling ctx does not stop
+// the purge.
+func (s *ImageProxyService) PurgeOwnerBlob(ctx context.Context, did, cid string) error {
+	if err := s.awaitPublications(context.WithoutCancel(ctx), cid); err != nil {
 		return err
 	}
 	return s.cache.DeleteOwner(did, cid)
 }
 
+// cdnPurgeRecordTimeout bounds recording a purged blob's cached owners for the
+// CDN. The recording is a database write that runs after the caller's own
+// transaction committed, so a stalled pool must not hold the caller open. A
+// variable so in-package tests can shorten it.
+var cdnPurgeRecordTimeout = 10 * time.Second
+
 // PurgeBlob removes every owner's cached copies of a blocked blob. The caller
-// must have committed the block first.
-func (s *ImageProxyService) PurgeBlob(cid string) error {
-	if err := s.awaitPublications(context.Background(), cid); err != nil {
+// must have committed the block first. Cancelling ctx does not stop the
+// purge, but recording the cached owners for the CDN is bounded by
+// cdnPurgeRecordTimeout; when it fails or times out the bytes stay on disk
+// and the blocked media sweep retries.
+func (s *ImageProxyService) PurgeBlob(ctx context.Context, cid string) error {
+	ctx = context.WithoutCancel(ctx)
+	if err := s.awaitPublications(ctx, cid); err != nil {
 		return err
+	}
+	if s.cdnPurgeRecorder != nil {
+		recordCtx, cancel := context.WithTimeout(ctx, cdnPurgeRecordTimeout)
+		err := s.recordCachedOwners(recordCtx, cid)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("recording cached owners of %s for CDN purge: %w", cid, err)
+		}
 	}
 	return s.cache.DeleteCID(cid)
 }
@@ -424,6 +447,20 @@ func (s *ImageProxyService) awaitPublications(ctx context.Context, cid string) e
 func (s *ImageProxyService) purgeBlockedEntry(ctx context.Context, presetName, did, cid string) {
 	if err := s.awaitPublications(ctx, cid); err != nil {
 		return
+	}
+	if s.cdnPurgeRecorder != nil {
+		_, found, err := s.cache.Get(presetName, did, cid)
+		if err != nil {
+			slog.Error("[IMAGE-PROXY] failed to inspect a blocked cache entry", "preset", presetName, "did", did, "cid", cid, "error", err)
+			return
+		}
+		if found {
+			err = s.cdnPurgeRecorder.RecordCDNPurgeTargets(ctx, []BlockedBlob{{OwnerDID: did, CID: cid}})
+			if err != nil {
+				slog.Error("[IMAGE-PROXY] failed to record blocked cache entry for CDN purge", "preset", presetName, "did", did, "cid", cid, "error", err)
+				return
+			}
+		}
 	}
 	if err := s.cache.Delete(presetName, did, cid); err != nil {
 		slog.Error("[IMAGE-PROXY] failed to purge a blocked cache entry",
@@ -472,7 +509,13 @@ func (s *ImageProxyService) PurgeActiveBlocks(ctx context.Context, lister Blocke
 			return errors.Join(append(errs, err)...)
 		}
 		if blob.OwnerDID == "" {
-			err = s.cache.DeleteCID(blob.CID)
+			err = nil
+			if s.cdnPurgeRecorder != nil {
+				err = s.recordCachedOwners(ctx, blob.CID)
+			}
+			if err == nil {
+				err = s.cache.DeleteCID(blob.CID)
+			}
 		} else {
 			err = s.cache.DeleteOwner(blob.OwnerDID, blob.CID)
 		}

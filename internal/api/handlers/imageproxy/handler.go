@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -25,17 +26,36 @@ import (
 var processorBusyRetryAfterSeconds = strconv.Itoa(int(imageproxy.DefaultProcessQueueWait / time.Second))
 
 // successCacheControl is the cache policy of a served image and of its 304
-// when the request has no query string.
+// when the request has no query string and does not qualify for
+// cdnPurgeCacheControl.
 // One day bounds how long a browser or an unpurged shared cache keeps an image
 // after a moderation removal, with no configuration and no CDN required.
 const successCacheControl = "public, max-age=86400"
 
-// successCacheControlFor returns no-store for a request with a query string.
-// A CDN purge names only the bare image URL, while a shared cache keys on the
-// query string, so a cached query-string variant would survive the purge.
-func successCacheControlFor(r *http.Request) string {
-	if r.URL.RawQuery != "" {
+// cdnPurgeCacheControl lets shared caches keep an image for a year while
+// browsers keep the one-day bound of successCacheControl. It carries no
+// immutable, so a browser still revalidates after a day. A year is safe only
+// for a URL the moderation purger names on removal, which is why
+// successCacheControlFor grants it only for a purgeable host, the canonical
+// CID and DID spelling, no query string and no Origin header.
+const cdnPurgeCacheControl = "public, max-age=86400, s-maxage=31536000"
+
+// successCacheControlFor returns no-store for a request with a query string
+// (including a bare "?"): a CDN purge names only the bare image URL, while a
+// shared cache keys on the query string, so a cached query-string variant
+// would survive the purge. It grants the long shared-cache lifetime only when
+// the purge can name the exact URL requested by the client. A request with an
+// Origin header gets one day, because the CDN cache key may include Origin and
+// the purger sends bare URLs that would not reach that variant.
+func (h *Handler) successCacheControlFor(r *http.Request, did, rawCID, canonicalCID string) string {
+	if r.URL.RawQuery != "" || r.URL.ForceQuery {
 		return "no-store"
+	}
+	if len(r.Header.Values("Origin")) > 0 {
+		return successCacheControl
+	}
+	if rawCID == canonicalCID && url.PathEscape(did) == did && h.cdnPurgeHosts[r.Host] {
+		return cdnPurgeCacheControl
 	}
 	return successCacheControl
 }
@@ -58,14 +78,19 @@ type Service interface {
 type Handler struct {
 	service          Service
 	identityResolver identity.Resolver
+	cdnPurgeHosts    map[string]bool
 }
 
 // NewHandler creates a new image proxy handler.
-func NewHandler(service Service, resolver identity.Resolver) *Handler {
-	return &Handler{
+func NewHandler(service Service, resolver identity.Resolver, options ...HandlerOption) *Handler {
+	handler := &Handler{
 		service:          service,
 		identityResolver: resolver,
 	}
+	for _, option := range options {
+		option(handler)
+	}
+	return handler
 }
 
 // HandleImage handles GET /img/{preset}/plain/{did}/{cid}
@@ -76,6 +101,7 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 	preset := chi.URLParam(r, "preset")
 	did := chi.URLParam(r, "did")
 	cid := chi.URLParam(r, "cid")
+	rawCID := cid
 
 	// Validate required parameters
 	if preset == "" || did == "" || cid == "" {
@@ -126,7 +152,7 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 			writeErrorResponse(w, http.StatusNotFound, "blob not found")
 			return
 		}
-		w.Header().Set("Cache-Control", successCacheControlFor(r))
+		w.Header().Set("Cache-Control", h.successCacheControlFor(r, did, rawCID, cid))
 		w.Header().Set("ETag", etag)
 		w.WriteHeader(http.StatusNotModified)
 		return
@@ -166,7 +192,7 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 
 	// Set response headers
 	w.Header().Set("Content-Type", "image/jpeg")
-	w.Header().Set("Cache-Control", successCacheControlFor(r))
+	w.Header().Set("Cache-Control", h.successCacheControlFor(r, did, rawCID, cid))
 	w.Header().Set("ETag", etag)
 
 	// Write image data
@@ -312,5 +338,23 @@ func writeErrorResponse(w http.ResponseWriter, status int, message string) {
 			"message", message,
 			"error", err,
 		)
+	}
+}
+
+// HandlerOption configures a Handler.
+type HandlerOption func(*Handler)
+
+// WithCDNPurgeBaseURLs enables long-lived responses on hosts whose bare image
+// URLs can be named by the CDN purger.
+func WithCDNPurgeBaseURLs(baseURLs []string) HandlerOption {
+	return func(handler *Handler) {
+		handler.cdnPurgeHosts = make(map[string]bool)
+		for _, base := range baseURLs {
+			parsed, err := url.Parse(base)
+			if err != nil || parsed.Host == "" || (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+				continue
+			}
+			handler.cdnPurgeHosts[parsed.Host] = true
+		}
 	}
 }

@@ -158,9 +158,12 @@ type moderationMediaHarness struct {
 }
 
 type moderationMediaHarnessConfig struct {
-	now       func() time.Time
-	targets   func(*sql.DB, func() time.Time) moderation.CDNPurgeTargets
-	wrapStore func(moderation.Store) moderation.Store
+	now             func() time.Time
+	targets         func(*sql.DB, func() time.Time) moderation.CDNPurgeTargets
+	wrapStore       func(moderation.Store) moderation.Store
+	wrapCache       func(*imageproxy.DiskCache, *sql.DB, string) imageproxy.Cache
+	wrapTargetStore func(moderation.CDNPurgeTargetStore) moderation.CDNPurgeTargetStore
+	purger          moderation.MediaPurger
 }
 
 func newModerationMediaHarness(t *testing.T, blockFetch bool, configure ...func(*moderationMediaHarnessConfig)) (*moderationMediaHarness, *waitingMediaFetcher) {
@@ -204,12 +207,31 @@ func newModerationMediaHarness(t *testing.T, blockFetch bool, configure ...func(
 		})
 	}
 	store := postgres.NewModerationRepository(db)
-	proxyService, err := imageproxy.NewService(cache, processor, fetcher, store, imageproxy.DefaultConfig())
-	require.NoError(t, err)
-	config := moderation.Config{InstanceDID: fixtures.InstanceDID(), IdempotencyRetention: 24 * time.Hour, MaxLiveIdempotencyKeys: 1000, Purger: proxyService, Now: options.now}
+	var targets moderation.CDNPurgeTargets
 	if options.targets != nil {
-		config.CDNPurgeTargets = options.targets(db, options.now)
+		targets = options.targets(db, options.now)
 	}
+	queue, _ := targets.(*moderation.CDNPurgeQueue)
+	if wrapped, ok := targets.(interface {
+		queueForRecorder() *moderation.CDNPurgeQueue
+	}); ok {
+		queue = wrapped.queueForRecorder()
+	}
+	var serviceCache imageproxy.Cache = cache
+	if options.wrapCache != nil {
+		serviceCache = options.wrapCache(cache, db, cacheDir)
+	}
+	var serviceOptions []imageproxy.ServiceOption
+	if queue != nil {
+		serviceOptions = append(serviceOptions, imageproxy.WithCDNPurgeRecorder(queue))
+	}
+	proxyService, err := imageproxy.NewService(serviceCache, processor, fetcher, store, imageproxy.DefaultConfig(), serviceOptions...)
+	require.NoError(t, err)
+	var mediaPurger moderation.MediaPurger = proxyService
+	if options.purger != nil {
+		mediaPurger = options.purger
+	}
+	config := moderation.Config{InstanceDID: fixtures.InstanceDID(), IdempotencyRetention: 24 * time.Hour, MaxLiveIdempotencyKeys: 1000, Purger: mediaPurger, Now: options.now, CDNPurgeTargets: targets}
 	var serviceStore moderation.Store = store
 	if options.wrapStore != nil {
 		serviceStore = options.wrapStore(store)
@@ -222,7 +244,6 @@ func newModerationMediaHarness(t *testing.T, blockFetch bool, configure ...func(
 	routes.RegisterImageProxyRoutes(router, imagehandler.NewHandler(proxyService, mediaPDSResolver{url: pdsServer.URL}))
 	proxy := httptest.NewServer(router)
 	t.Cleanup(proxy.Close)
-	queue, _ := config.CDNPurgeTargets.(*moderation.CDNPurgeQueue)
 	return &moderationMediaHarness{db: db, cache: cache, cacheDir: cacheDir, proxy: proxy, proxyService: proxyService, pds: pds, queue: queue,
 		moderation: service, postURI: postURI, postCID: post.CID, ownerA: ownerA, ownerB: ownerB}, waiting
 }

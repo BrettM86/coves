@@ -43,11 +43,11 @@ func (p *consumerPurger) record(ownerDID, blobCID string) error {
 	return call.err
 }
 
-func (p *consumerPurger) PurgeOwnerBlob(ownerDID, blobCID string) error {
+func (p *consumerPurger) PurgeOwnerBlob(_ context.Context, ownerDID, blobCID string) error {
 	return p.record(ownerDID, blobCID)
 }
 
-func (p *consumerPurger) PurgeBlob(blobCID string) error {
+func (p *consumerPurger) PurgeBlob(_ context.Context, blobCID string) error {
 	return p.record("", blobCID)
 }
 

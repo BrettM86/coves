@@ -53,11 +53,11 @@ func (p *postModerationPurger) purge(ownerDID, blobCID string) error {
 	return err
 }
 
-func (p *postModerationPurger) PurgeOwnerBlob(ownerDID, blobCID string) error {
+func (p *postModerationPurger) PurgeOwnerBlob(_ context.Context, ownerDID, blobCID string) error {
 	return p.purge(ownerDID, blobCID)
 }
 
-func (p *postModerationPurger) PurgeBlob(blobCID string) error {
+func (p *postModerationPurger) PurgeBlob(_ context.Context, blobCID string) error {
 	return p.purge("", blobCID)
 }
 

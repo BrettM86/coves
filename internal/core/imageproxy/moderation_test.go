@@ -152,7 +152,7 @@ func TestImageProxyService_PurgeSerializesWithCachePublication(t *testing.T) {
 	purgeDone := make(chan error, 1)
 	go func() {
 		close(purgeStarted)
-		purgeDone <- service.PurgeOwnerBlob("did:plc:test123", moderationTestCID)
+		purgeDone <- service.PurgeOwnerBlob(t.Context(), "did:plc:test123", moderationTestCID)
 	}()
 	<-purgeStarted
 	testkit.Holds(t, 200*time.Millisecond, func() (bool, error) {
@@ -191,7 +191,7 @@ func TestImageProxyService_PurgeBlobClearsAllOwners(t *testing.T) {
 	cache.SetCacheData("avatar", moderationTestOwner, "bafyreiunrelatedimage", []byte("unrelated"))
 	service, err := NewService(cache, NewMockProcessor(nil, nil), NewMockFetcher(nil, nil), allowAllBlockChecker(), DefaultConfig())
 	require.NoError(t, err)
-	require.NoError(t, service.PurgeBlob(moderationTestCID))
+	require.NoError(t, service.PurgeBlob(t.Context(), moderationTestCID))
 	for _, entry := range []struct{ preset, did string }{{"avatar", moderationTestOwner}, {"banner", "did:plc:otherowner"}} {
 		_, found, err := cache.Get(entry.preset, entry.did, moderationTestCID)
 		require.NoError(t, err)
@@ -284,7 +284,7 @@ func TestImageProxyService_PurgeDiskWorkDoesNotHoldPublicationLock(t *testing.T)
 	require.NoError(t, err)
 
 	purgeDone := make(chan error, 1)
-	go func() { purgeDone <- service.PurgeBlob(moderationTestCID) }()
+	go func() { purgeDone <- service.PurgeBlob(t.Context(), moderationTestCID) }()
 	select {
 	case <-cache.entered:
 	case <-time.After(5 * time.Second):
@@ -406,8 +406,8 @@ func TestImageProxyService_PurgeReturnsWhileFetchIsParked(t *testing.T) {
 
 	purged := make(chan error, 2)
 	go func() {
-		purged <- service.PurgeBlob(moderationTestCID)
-		purged <- service.PurgeOwnerBlob("did:plc:test123", moderationTestCID)
+		purged <- service.PurgeBlob(t.Context(), moderationTestCID)
+		purged <- service.PurgeOwnerBlob(t.Context(), "did:plc:test123", moderationTestCID)
 	}()
 	for range 2 {
 		select {

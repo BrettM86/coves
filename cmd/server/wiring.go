@@ -208,19 +208,23 @@ func buildApplication(
 	if err = app.buildServices(ctx); err != nil {
 		return nil, err
 	}
+	moderationStore := postgresRepo.NewModerationRepository(app.db)
+	app.cdnPurgeQueue, err = buildCDNPurgeQueue(app.cfg, cloudflareAPIBase, moderationStore)
+	if err != nil {
+		return nil, err
+	}
 	purger, err := app.buildImageProxy()
 	if err != nil {
 		return nil, err
 	}
-	moderationStore := postgresRepo.NewModerationRepository(app.db)
-	app.moderationService, app.mediaReconciler, app.cdnPurgeQueue, err = buildModeration(app.cfg, cloudflareAPIBase, moderationDependencies{
-		subjectReader:       moderation.NewRepositorySubjectReader(app.postRepo, app.commentRepo),
-		store:               moderationStore,
-		mediaBinder:         moderationStore,
-		mediaPurger:         purger,
-		communityResolver:   app.communityService,
-		handleResolver:      app.identityResolver,
-		cdnPurgeTargetStore: moderationStore,
+	app.moderationService, app.mediaReconciler, err = buildModeration(app.cfg, moderationDependencies{
+		subjectReader:     moderation.NewRepositorySubjectReader(app.postRepo, app.commentRepo),
+		store:             moderationStore,
+		mediaBinder:       moderationStore,
+		mediaPurger:       purger,
+		communityResolver: app.communityService,
+		handleResolver:    app.identityResolver,
+		cdnPurgeQueue:     app.cdnPurgeQueue,
 	})
 	if err != nil {
 		return nil, err
@@ -902,31 +906,31 @@ func (a *application) buildImageProxy() (moderation.MediaPurger, error) {
 	}
 
 	moderationRepository := postgresRepo.NewModerationRepository(a.db)
-	service, err := imageproxy.NewService(
-		cache,
-		processor,
+	service, handler, stopBlockedMediaPurge, err := buildImageProxyService(cfg, a.cfg.Media.CDNPurge, a.cdnPurgeQueue, imageProxyDependencies{
+		cache:     cache,
+		processor: processor,
 		// The SSRF hatch is open only in dev, where the PDS runs on the
 		// developer's own machine. In production this fetch dials whatever
 		// address a DID document's serviceEndpoint names, over a public route
 		// that carries no credential.
-		imageproxy.NewPDSFetcher(cfg.FetchTimeout, cfg.MaxSourceSizeMB,
+		fetcher: imageproxy.NewPDSFetcher(cfg.FetchTimeout, cfg.MaxSourceSizeMB,
 			imageproxy.PrivateHostOptions(a.allowPrivateHosts())...),
-		moderationRepository,
-		cfg,
-	)
+		blocks:   moderationRepository,
+		lister:   moderationRepository,
+		resolver: a.identityResolver,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("creating image proxy service: %w", err)
 	}
 	// The startup sweep finishes any moderation purge a restart interrupted;
 	// later sweeps retry purges the disk refused.
 	stopCacheCleanup := a.stopImageProxyCleanup
-	stopBlockedMediaPurge := service.StartActiveBlockPurgeJob(moderationRepository, cfg.CleanupInterval)
 	a.stopImageProxyCleanup = func() {
 		stopCacheCleanup()
 		stopBlockedMediaPurge()
 	}
 
-	a.imageProxyHandler = imageproxyhandlers.NewHandler(service, a.identityResolver)
+	a.imageProxyHandler = handler
 	publishURLConfig()
 
 	slog.Info("image proxy enabled",

@@ -1,6 +1,7 @@
 package moderation_test
 
 import (
+	"context"
 	"errors"
 	"strconv"
 	"testing"
@@ -36,7 +37,7 @@ type removeRulesPurger struct {
 	onPurge     func()
 }
 
-func (purger *removeRulesPurger) PurgeOwnerBlob(ownerDID, blobCID string) error {
+func (purger *removeRulesPurger) PurgeOwnerBlob(_ context.Context, ownerDID, blobCID string) error {
 	if purger.onPurge != nil {
 		purger.onPurge()
 	}
@@ -44,7 +45,7 @@ func (purger *removeRulesPurger) PurgeOwnerBlob(ownerDID, blobCID string) error 
 	return nil
 }
 
-func (purger *removeRulesPurger) PurgeBlob(blobCID string) error {
+func (purger *removeRulesPurger) PurgeBlob(_ context.Context, blobCID string) error {
 	if purger.onPurge != nil {
 		purger.onPurge()
 	}

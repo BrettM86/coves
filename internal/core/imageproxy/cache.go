@@ -40,6 +40,10 @@ type Cache interface {
 	DeleteOwner(did, cid string) error
 	// DeleteCID removes every owner's cached copies of the blob in every preset.
 	DeleteCID(cid string) error
+	// OwnerDirectories returns the distinct owner directory names (as stored
+	// on disk) holding cid under any preset. A missing directory is not an
+	// error; any other read error is returned.
+	OwnerDirectories(cid string) ([]string, error)
 }
 
 // DiskCache implements Cache using the filesystem for storage.
@@ -618,4 +622,53 @@ func (c *DiskCache) DeleteCID(cid string) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// OwnerDirectories finds every directory with a cached copy of cid.
+func (c *DiskCache) OwnerDirectories(cid string) ([]string, error) {
+	if cid == "" {
+		return nil, ErrEmptyParameter
+	}
+	presets, err := os.ReadDir(c.basePath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	ownersFound := make(map[string]bool)
+	for _, preset := range presets {
+		if !preset.IsDir() {
+			continue
+		}
+		owners, err := os.ReadDir(filepath.Join(c.basePath, preset.Name()))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, owner := range owners {
+			if !owner.IsDir() {
+				continue
+			}
+			entry := filepath.Join(c.basePath, preset.Name(), owner.Name(), makeCIDSafe(cid))
+			info, err := os.Stat(entry)
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			if !info.IsDir() {
+				ownersFound[owner.Name()] = true
+			}
+		}
+	}
+	directories := make([]string, 0, len(ownersFound))
+	for owner := range ownersFound {
+		directories = append(directories, owner)
+	}
+	sort.Strings(directories)
+	return directories, nil
 }

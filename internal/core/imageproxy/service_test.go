@@ -1146,3 +1146,7 @@ func TestImageProxyService_GetImageResolvingPDS_ResolvesOnlyOnMiss(t *testing.T)
 		t.Fatalf("an unresolved PDS must not be fetched from; fetched %d times", fetcher.Calls())
 	}
 }
+
+// OwnerDirectories satisfies the Cache interface; MockCache does not model
+// on-disk owner directories.
+func (m *MockCache) OwnerDirectories(string) ([]string, error) { return nil, nil }

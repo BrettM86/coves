@@ -146,8 +146,29 @@ func (binder cdnWiringMediaBinder) BindTransaction(*sql.Tx) moderation.MediaTran
 }
 
 type cdnWiringPurgeTargetStore struct {
-	mu     sync.Mutex
-	claims []moderation.CDNPurgeClaim
+	mu             sync.Mutex
+	claims         []moderation.CDNPurgeClaim
+	recorded       []imageproxy.BlockedBlob
+	recordedSignal chan struct{}
+}
+
+func (store *cdnWiringPurgeTargetStore) RecordCDNPurgeTargets(_ context.Context, blobs []imageproxy.BlockedBlob) ([]imageproxy.BlockedBlob, error) {
+	store.mu.Lock()
+	store.recorded = append(store.recorded, blobs...)
+	store.mu.Unlock()
+	if store.recordedSignal != nil {
+		select {
+		case store.recordedSignal <- struct{}{}:
+		default:
+		}
+	}
+	return blobs, nil
+}
+
+func (store *cdnWiringPurgeTargetStore) recordedBlobs() []imageproxy.BlockedBlob {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return append([]imageproxy.BlockedBlob(nil), store.recorded...)
 }
 
 func (store *cdnWiringPurgeTargetStore) ClaimDueCDNPurgeTargets(_ context.Context, claim moderation.CDNPurgeClaim) ([]moderation.CDNPurgeTarget, error) {
@@ -199,15 +220,18 @@ func TestBuildModerationRecordsCDNPurgeTargetsAndConfiguresQueue(t *testing.T) {
 			store := &cdnWiringStore{transaction: &cdnWiringTransaction{comment: comment}}
 			media := &cdnWiringMediaTransaction{comment: moderation.IndexedComment{URI: subjectURI, OwnerDID: ownerDID, ImageCIDs: []string{reconciledBlob}}}
 			targets := &cdnWiringPurgeTargetStore{}
-			service, reconciler, queue, err := buildModeration(cfg, endpoint.URL(), moderationDependencies{
-				subjectReader: store, store: store, mediaBinder: cdnWiringMediaBinder{transaction: media}, cdnPurgeTargetStore: targets,
-			})
+			queue, err := buildCDNPurgeQueue(cfg, endpoint.URL(), targets)
 			require.NoError(t, err)
 			if configured {
-				assert.NotNil(t, queue, "configured CDN purge needs a durable queue")
+				require.NotNil(t, queue, "configured CDN purge needs a durable queue")
+				t.Cleanup(queue.Close)
 			} else {
-				assert.Nil(t, queue)
+				require.True(t, queue == nil)
 			}
+			service, reconciler, err := buildModeration(cfg, moderationDependencies{
+				subjectReader: store, store: store, mediaBinder: cdnWiringMediaBinder{transaction: media}, cdnPurgeQueue: queue,
+			})
+			require.NoError(t, err)
 
 			result, err := service.RemoveContent(t.Context(), "did:plc:cdnwiringadmin", moderation.RemoveContentRequest{
 				Subject:         moderation.StrongRef{URI: subjectURI, CID: comment.CID},
@@ -222,23 +246,28 @@ func TestBuildModerationRecordsCDNPurgeTargetsAndConfiguresQueue(t *testing.T) {
 			if configured {
 				assert.Equal(t, []imageproxy.BlockedBlob{{OwnerDID: ownerDID, CID: removedImage}}, store.transaction.purgeTargets)
 				assert.Equal(t, []imageproxy.BlockedBlob{{OwnerDID: ownerDID, CID: reconciledBlob}}, media.purgeTargets)
-				if queue != nil {
-					queueCtx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-					defer cancel()
-					require.NoError(t, queue.Wait(queueCtx))
-					beforeSweep := len(targets.snapshot())
-					require.NoError(t, queue.Sweep(queueCtx))
-					claims := targets.snapshot()
-					require.Greater(t, len(claims), beforeSweep)
-					assert.Equal(t, 77*time.Second, claims[beforeSweep].WriteTimeout)
-					assert.Equal(t, 2*time.Minute, claims[beforeSweep].Lease)
-				}
+				queueCtx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+				defer cancel()
+				require.NoError(t, queue.Wait(queueCtx))
+				beforeSweep := len(targets.snapshot())
+				require.NoError(t, queue.Sweep(queueCtx))
+				claims := targets.snapshot()
+				require.Greater(t, len(claims), beforeSweep)
+				assert.Equal(t, 77*time.Second, claims[beforeSweep].WriteTimeout)
+				assert.Equal(t, 2*time.Minute, claims[beforeSweep].Lease)
 			} else {
 				assert.Empty(t, store.transaction.purgeTargets)
 				assert.Empty(t, media.purgeTargets)
 			}
 		})
 	}
+	t.Run("configured without target store", func(t *testing.T) {
+		cfg := &config.Config{}
+		cfg.Media.CDNPurge = config.CDNPurgeConfig{ZoneID: "zone-cdn-wiring", APIToken: "token-cdn-wiring", BaseURLs: []string{"https://img.cdn-wiring.test"}}
+		queue, err := buildCDNPurgeQueue(cfg, "https://api.cdn-wiring.test", nil)
+		require.Error(t, err)
+		require.True(t, queue == nil)
+	})
 }
 
 type cdnWiringSweeper struct{ called chan struct{} }

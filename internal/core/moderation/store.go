@@ -187,6 +187,6 @@ type Transaction interface {
 
 // MediaPurger removes cached bytes of newly blocked blobs.
 type MediaPurger interface {
-	PurgeOwnerBlob(ownerDID, blobCID string) error
-	PurgeBlob(blobCID string) error
+	PurgeOwnerBlob(ctx context.Context, ownerDID, blobCID string) error
+	PurgeBlob(ctx context.Context, blobCID string) error
 }

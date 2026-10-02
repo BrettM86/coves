@@ -178,7 +178,7 @@ func (s *service) removeContent(ctx context.Context, actorDID string, request Re
 		}
 		return nil, fmt.Errorf("%w: %w", ErrModerationUnavailable, err)
 	}
-	purgeMediaBlocks(s.config.Purger, newlyBlocked)
+	purgeMediaBlocks(ctx, s.config.Purger, newlyBlocked)
 	if s.config.CDNPurgeTargets != nil && len(purgeBlobs) > 0 {
 		s.config.CDNPurgeTargets.PurgeAfterCommit(ctx, purgeBlobs)
 	}

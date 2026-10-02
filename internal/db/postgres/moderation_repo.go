@@ -724,3 +724,48 @@ func (r *ModerationRepository) ListActions(ctx context.Context, query moderation
 	}
 	return actions, nil
 }
+
+// RecordCDNPurgeTargets commits targets independently of any moderation action
+// transaction. Unlike the removal upsert it leaves a pending target untouched,
+// so repeated recordings neither reset its backoff nor void its claim; a
+// completed target goes back to pending. It returns the targets it inserted or
+// re-pended.
+func (r *ModerationRepository) RecordCDNPurgeTargets(ctx context.Context, blobs []imageproxy.BlockedBlob) (pended []imageproxy.BlockedBlob, err error) {
+	if len(blobs) == 0 {
+		return nil, nil
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin CDN purge target recording: %w", err)
+	}
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			err = errors.Join(err, rollbackErr)
+		}
+	}()
+	for _, blob := range blobs {
+		var recorded imageproxy.BlockedBlob
+		err := tx.QueryRowContext(ctx, `
+			INSERT INTO moderation_media_purges (owner_did, blob_cid)
+			VALUES ($1, $2)
+			ON CONFLICT (owner_did, blob_cid) DO UPDATE SET
+			    state = 'pending', attempts = 0, next_attempt_at = '-infinity',
+			    earliest_completion_at = NULL, last_failure_code = NULL,
+			    generation = moderation_media_purges.generation + 1,
+			    claim = moderation_media_purges.claim + 1, updated_at = NOW()
+			WHERE moderation_media_purges.state <> 'pending'
+			RETURNING owner_did, blob_cid
+		`, blob.OwnerDID, blob.CID).Scan(&recorded.OwnerDID, &recorded.CID)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("record CDN purge target: %w", err)
+		}
+		pended = append(pended, recorded)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit CDN purge target recording: %w", err)
+	}
+	return pended, nil
+}
