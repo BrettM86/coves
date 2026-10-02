@@ -140,6 +140,7 @@ type application struct {
 	adminReportService         adminreports.Service
 	moderationService          moderation.Service
 	mediaReconciler            *moderation.MediaReconciler
+	cdnPurgeQueue              *moderation.CDNPurgeQueue
 	communitySuggestionService communitysuggestions.Service
 	feedService                communityFeeds.Service
 	timelineService            timeline.Service
@@ -212,13 +213,14 @@ func buildApplication(
 		return nil, err
 	}
 	moderationStore := postgresRepo.NewModerationRepository(app.db)
-	app.moderationService, app.mediaReconciler, err = buildModeration(app.cfg, cloudflareAPIBase, moderationDependencies{
-		subjectReader:     moderation.NewRepositorySubjectReader(app.postRepo, app.commentRepo),
-		store:             moderationStore,
-		mediaBinder:       moderationStore,
-		mediaPurger:       purger,
-		communityResolver: app.communityService,
-		handleResolver:    app.identityResolver,
+	app.moderationService, app.mediaReconciler, app.cdnPurgeQueue, err = buildModeration(app.cfg, cloudflareAPIBase, moderationDependencies{
+		subjectReader:       moderation.NewRepositorySubjectReader(app.postRepo, app.commentRepo),
+		store:               moderationStore,
+		mediaBinder:         moderationStore,
+		mediaPurger:         purger,
+		communityResolver:   app.communityService,
+		handleResolver:      app.identityResolver,
+		cdnPurgeTargetStore: moderationStore,
 	})
 	if err != nil {
 		return nil, err

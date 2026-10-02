@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+
+	"Coves/internal/core/imageproxy"
 )
 
 // MediaTransaction provides the operations needed to reconcile a subject's images.
@@ -15,6 +17,7 @@ type MediaTransaction interface {
 	// InsertNewMediaBlocks inserts only blocks not already active for the action
 	// and returns the blocks it inserted.
 	InsertNewMediaBlocks(ctx context.Context, blocks []MediaBlock) ([]MediaBlock, error)
+	RecordCDNPurgeTargets(ctx context.Context, blobs []imageproxy.BlockedBlob) error
 }
 
 // TransactionBinder binds media operations to a caller's transaction.
@@ -28,10 +31,10 @@ type TransactionBinder interface {
 // removed the subject; reconciliation never adds one. Both reconcile methods
 // therefore refuse an empty owner DID, which the store records as ownerless.
 type MediaReconciler struct {
-	binder      TransactionBinder
-	instanceDID string
-	purger      MediaPurger
-	cdnPurger   CDNPurger
+	binder          TransactionBinder
+	instanceDID     string
+	purger          MediaPurger
+	cdnPurgeTargets CDNPurgeTargets
 }
 
 // NewMediaReconciler builds a MediaReconciler.
@@ -62,7 +65,7 @@ func (r *MediaReconciler) ReconcileTx(ctx context.Context, tx *sql.Tx, subjectUR
 	if subject.OwnerDID == "" {
 		return nil, fmt.Errorf("%w: indexed subject has no owner DID", ErrInvalidSubject)
 	}
-	return bound.InsertNewMediaBlocks(ctx, ownerImageMediaBlocks(subject, action))
+	return r.insertAndRecord(ctx, bound, ownerImageMediaBlocks(subject, action))
 }
 
 // ReconcileIncomingTx blocks blobs of incoming content the consumer did not
@@ -82,13 +85,28 @@ func (r *MediaReconciler) ReconcileIncomingTx(ctx context.Context, tx *sql.Tx, s
 	if ownerDID == "" {
 		return nil, fmt.Errorf("%w: incoming content has no owner DID", ErrInvalidSubject)
 	}
-	return bound.InsertNewMediaBlocks(ctx, ownerImageMediaBlocks(&indexedSubject{OwnerDID: ownerDID, BlobCIDs: blobCIDs}, action))
+	return r.insertAndRecord(ctx, bound, ownerImageMediaBlocks(&indexedSubject{OwnerDID: ownerDID, BlobCIDs: blobCIDs}, action))
+}
+
+func (r *MediaReconciler) insertAndRecord(ctx context.Context, bound MediaTransaction, blocks []MediaBlock) ([]MediaBlock, error) {
+	inserted, err := bound.InsertNewMediaBlocks(ctx, blocks)
+	if err != nil {
+		return nil, err
+	}
+	if r.cdnPurgeTargets != nil && len(inserted) > 0 {
+		if err := bound.RecordCDNPurgeTargets(ctx, ownerCDNPurgeBlobs(inserted)); err != nil {
+			return nil, err
+		}
+	}
+	return inserted, nil
 }
 
 // Purge removes cached bytes of newly blocked blobs after commit.
-func (r *MediaReconciler) Purge(blocks []MediaBlock) {
+func (r *MediaReconciler) Purge(ctx context.Context, blocks []MediaBlock) {
 	purgeMediaBlocks(r.purger, blocks)
-	purgeCDNMediaBlocks(context.Background(), r.cdnPurger, blocks)
+	if r.cdnPurgeTargets != nil && len(blocks) > 0 {
+		r.cdnPurgeTargets.PurgeAfterCommit(ctx, ownerCDNPurgeBlobs(blocks))
+	}
 }
 
 func purgeMediaBlocks(purger MediaPurger, blocks []MediaBlock) {

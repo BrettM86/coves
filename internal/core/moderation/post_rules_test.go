@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"testing"
 
+	"Coves/internal/core/imageproxy"
 	"Coves/internal/core/moderation"
 
 	"github.com/stretchr/testify/assert"
@@ -262,6 +263,10 @@ func (transaction *postRulesMediaTransaction) InsertNewMediaBlocks(_ context.Con
 	return blocks, nil
 }
 
+func (*postRulesMediaTransaction) RecordCDNPurgeTargets(context.Context, []imageproxy.BlockedBlob) error {
+	return nil
+}
+
 type postRulesMediaBinder struct{ bound *postRulesMediaTransaction }
 
 func (binder postRulesMediaBinder) BindTransaction(*sql.Tx) moderation.MediaTransaction {
@@ -340,7 +345,7 @@ func TestReconcileIllegalContentMediaIsOwnerScoped(t *testing.T) {
 			}
 			assert.Equal(t, wantBlocks, bound.blocks, "only owner-scoped blocks may be inserted")
 			assert.Equal(t, wantBlocks, blocks, "only owner-scoped blocks may be returned")
-			reconciler.Purge(blocks)
+			reconciler.Purge(t.Context(), blocks)
 			assert.Equal(t, wantPurges, purger.ownerPurges, "new blobs must use PurgeOwnerBlob")
 			assert.Empty(t, purger.blobPurges, "reconciliation must never call PurgeBlob")
 		})

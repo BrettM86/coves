@@ -3,6 +3,8 @@ package moderation
 import (
 	"context"
 	"time"
+
+	"Coves/internal/core/imageproxy"
 )
 
 // Action kinds, scope kinds and origins recorded on moderation actions.
@@ -180,6 +182,7 @@ type Transaction interface {
 	SetSubjectVersion(ctx context.Context, subjectURI string, version int64) error
 	InsertMediaBlocks(ctx context.Context, blocks []MediaBlock) error
 	DeactivateMediaBlocks(ctx context.Context, actionID string) error
+	RecordCDNPurgeTargets(ctx context.Context, blobs []imageproxy.BlockedBlob) error
 }
 
 // MediaPurger removes cached bytes of newly blocked blobs.

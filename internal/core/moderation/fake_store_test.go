@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"Coves/internal/core/imageproxy"
 	"Coves/internal/core/moderation"
 )
 
@@ -41,6 +42,7 @@ type inMemoryModerationState struct {
 	labelDecisions  map[inMemoryModerationLabelKey]inMemoryModerationLabelDecision
 	idempotency     map[inMemoryModerationIdempotencyKey]moderation.IdempotencyRecord
 	mediaBlocks     map[moderation.MediaBlock]bool
+	cdnPurgeTargets []imageproxy.BlockedBlob
 	nextActionID    int
 }
 
@@ -54,6 +56,7 @@ func (state inMemoryModerationState) copy() inMemoryModerationState {
 		labelDecisions:  make(map[inMemoryModerationLabelKey]inMemoryModerationLabelDecision, len(state.labelDecisions)),
 		idempotency:     make(map[inMemoryModerationIdempotencyKey]moderation.IdempotencyRecord, len(state.idempotency)),
 		mediaBlocks:     make(map[moderation.MediaBlock]bool, len(state.mediaBlocks)),
+		cdnPurgeTargets: append([]imageproxy.BlockedBlob(nil), state.cdnPurgeTargets...),
 		nextActionID:    state.nextActionID,
 	}
 	for key, comment := range state.indexedComments {
@@ -348,6 +351,11 @@ func (transaction *inMemoryModerationTransaction) InsertMediaBlocks(_ context.Co
 	for _, block := range blocks {
 		transaction.state.mediaBlocks[block] = true
 	}
+	return nil
+}
+
+func (transaction *inMemoryModerationTransaction) RecordCDNPurgeTargets(_ context.Context, blobs []imageproxy.BlockedBlob) error {
+	transaction.state.cdnPurgeTargets = append(transaction.state.cdnPurgeTargets, blobs...)
 	return nil
 }
 

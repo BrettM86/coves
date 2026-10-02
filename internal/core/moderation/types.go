@@ -151,7 +151,7 @@ type Config struct {
 	IdempotencyRetention   time.Duration
 	MaxLiveIdempotencyKeys int
 	Purger                 MediaPurger
-	CDNPurger              CDNPurger
+	CDNPurgeTargets        CDNPurgeTargets
 	Now                    func() time.Time
 	CursorSecret           string
 	CommunityResolver      CommunityResolver

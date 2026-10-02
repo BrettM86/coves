@@ -117,6 +117,9 @@ func run() error {
 		discoverHotCleanupInterval, discoverHotCleanupDerivedRowBatchSize)
 	startModerationIdempotencySweepJob(backgroundCtx, &backgroundWG,
 		postgresRepo.NewModerationRepository(db), moderationIdempotencySweepInterval)
+	if app.cdnPurgeQueue != nil {
+		startCDNPurgeSweepJob(backgroundCtx, &backgroundWG, app.cdnPurgeQueue, cdnPurgeSweepInterval)
+	}
 
 	// Nil when the driver is disabled, and passed as a typed nil would be a
 	// non-nil interface — so the guard is here rather than inside the job.
@@ -217,6 +220,10 @@ func serve(
 	case <-ctx.Done():
 		slog.Info("shutdown signal received")
 	}
+	if app.cdnPurgeQueue != nil {
+		// Commits from here on leave their CDN purge targets to the next sweep.
+		app.cdnPurgeQueue.Close()
+	}
 
 	// Drain background work concurrently with the listener drain, not after
 	// it. They are independent — background work runs on its own context,
@@ -242,8 +249,16 @@ func serve(
 			slog.Error("HTTP server shutdown error", "error", err)
 		}
 	}
-
 	drained := <-drainResult
+
+	if app.cdnPurgeQueue != nil {
+		// Best effort: an attempt cut off here keeps its durable target, which
+		// the boot sweep retries once its lease expires.
+		if err := app.cdnPurgeQueue.Wait(shutdownCtx); err != nil {
+			slog.Warn("CDN purge attempts still in flight at shutdown",
+				"in_flight", app.cdnPurgeQueue.InFlight(), "error", err)
+		}
+	}
 
 	// Stop the image proxy cleanup job here rather than leaving it to run's
 	// deferred Close, so it does not outlive the drain. Close is idempotent,

@@ -82,14 +82,6 @@ func newRemoveRulesScenario() removeRulesScenario {
 	}
 }
 
-func (scenario *removeRulesScenario) withCDNPurger(store moderation.Store, cdn moderation.CDNPurger) {
-	scenario.service = moderation.NewService(scenario.reader, store, moderation.Config{
-		InstanceDID: removeRulesInstanceDID, IdempotencyRetention: 24 * time.Hour,
-		MaxLiveIdempotencyKeys: 1000, Now: func() time.Time { return scenario.store.now },
-		Purger: scenario.purger, CDNPurger: cdn,
-	})
-}
-
 func assertRemoveRulesNoWrites(t *testing.T, scenario removeRulesScenario) {
 	t.Helper()
 	assert.Empty(t, scenario.store.writeCalls)

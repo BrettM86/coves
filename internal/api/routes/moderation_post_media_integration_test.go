@@ -5,11 +5,9 @@ package routes_test
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -107,12 +105,12 @@ func (capture *postMediaLogCapture) snapshot() []slog.Record {
 
 // Not parallel: this test replaces slog.Default while the removal runs.
 func TestModerationPostCDNFailureDoesNotUndoLocalRemoval(t *testing.T) {
-	const token = "post-cdn-token-SENTINEL"
+	const token = "route-cdn-token-SENTINEL"
 	const bodySentinel = "cf-response-body-SENTINEL"
+	clock := &moderationCDNClock{at: time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)}
 	endpoint := testkit.NewCloudflarePurgeEndpoint(t)
 	endpoint.SetResponse(http.StatusInternalServerError, bodySentinel)
-	cdn := newMediaCloudflarePurger(t, endpoint, token)
-	h, _ := newModerationMediaHarness(t, false, cdn)
+	h := newModerationCDNPurgeHarness(t, endpoint, clock, 30*time.Second)
 	imageCID := mediaImageCID("post cdn failure")
 	subject, authorDID := h.indexedImagePost(t, moderation.PostV2Collection, imageCID)
 	require.Equal(t, h.ownerA, authorDID)
@@ -125,31 +123,83 @@ func TestModerationPostCDNFailureDoesNotUndoLocalRemoval(t *testing.T) {
 	slog.SetDefault(slog.New(logs))
 	t.Cleanup(func() { slog.SetDefault(previousLogger) })
 	removed := h.remove(t, subject, postMediaSpamReason)
+	waitModerationCDN(t, h.queue)
 	require.Equal(t, moderation.OutcomeApplied, removed.Outcome)
-	assert.Len(t, endpoint.Requests(), 1, "the failing purge must have been attempted")
+	require.Len(t, endpoint.Requests(), 1, "the failing purge must have been attempted")
+	assert.ElementsMatch(t, moderationCDNFiles(authorDID, imageCID), endpoint.Requests()[0].Files)
 	h.assertNoCachedBlob(t, imageCID, authorDID)
 	require.Equal(t, http.StatusNotFound, h.request(t, postMediaPreset, authorDID, imageCID))
+	blocked, err := postgres.NewModerationRepository(h.db).IsBlocked(t.Context(), authorDID, imageCID)
+	require.NoError(t, err)
+	assert.True(t, blocked)
+	first := moderationCDNTarget(t, h.db, authorDID, imageCID)
+	assert.Equal(t, "pending", first.state)
+	assert.Equal(t, 1, first.attempts)
+	assert.Equal(t, "http_500", first.failureCode)
+	assert.Equal(t, time.Date(2026, 9, 28, 12, 1, 0, 0, time.UTC), first.nextAttemptAt)
 
-	var foundError bool
+	var matchingErrors int
 	for _, record := range logs.snapshot() {
-		var values []string
 		var text strings.Builder
 		text.WriteString(record.Message)
+		attrs := make(map[string]string)
 		record.Attrs(func(attr slog.Attr) bool {
-			values = append(values, attr.Value.String())
-			fmt.Fprint(&text, " ", attr)
+			attrs[attr.Key] = attr.Value.String()
+			text.WriteString(" " + attr.Key + "=" + attr.Value.String())
 			return true
 		})
 		assert.NotContains(t, text.String(), token, "no log record may expose the Cloudflare token")
 		assert.NotContains(t, text.String(), bodySentinel, "no log record may expose the Cloudflare response")
-		if record.Level == slog.LevelError &&
-			slices.Contains(values, authorDID) &&
-			slices.Contains(values, imageCID) &&
-			slices.Contains(values, "http_500") {
-			foundError = true
+		if record.Level == slog.LevelError && attrs["did"] == authorDID && attrs["cid"] == imageCID && attrs["code"] == "http_500" {
+			matchingErrors++
 		}
 	}
-	assert.True(t, foundError, "an Error record must carry the author DID, CID and http_500")
+	assert.Equal(t, 1, matchingErrors, "exactly one Error record must carry did, cid and http_500 for the first failure")
+	slog.SetDefault(previousLogger)
+
+	newQueue := func() *moderation.CDNPurgeQueue {
+		return moderation.NewCDNPurgeQueue(postgres.NewModerationRepository(h.db),
+			newMediaCloudflarePurger(t, endpoint, token), moderation.CDNPurgeQueueConfig{WriteTimeout: 30 * time.Second, Now: clock.Now})
+	}
+	clock.Set(time.Date(2026, 9, 28, 12, 0, 59, 999999000, time.UTC))
+	require.NoError(t, h.queue.Sweep(t.Context()))
+	assert.Len(t, endpoint.Requests(), 1)
+	clock.Set(time.Date(2026, 9, 28, 12, 1, 0, 0, time.UTC))
+	require.NoError(t, h.queue.Sweep(t.Context()))
+	require.Len(t, endpoint.Requests(), 2)
+	assert.ElementsMatch(t, moderationCDNFiles(authorDID, imageCID), endpoint.Requests()[1].Files)
+	second := moderationCDNTarget(t, h.db, authorDID, imageCID)
+	assert.Equal(t, "pending", second.state)
+	assert.Equal(t, 2, second.attempts)
+	assert.Equal(t, "http_500", second.failureCode)
+	assert.Equal(t, time.Date(2026, 9, 28, 12, 3, 0, 0, time.UTC), second.nextAttemptAt)
+	clock.Set(time.Date(2026, 9, 28, 12, 2, 59, 999999000, time.UTC))
+	require.NoError(t, h.queue.Sweep(t.Context()))
+	assert.Len(t, endpoint.Requests(), 2)
+
+	clock.Set(time.Date(2026, 9, 28, 12, 3, 0, 0, time.UTC))
+	entered, release := endpoint.HoldNextRequest(t)
+	firstSweep := make(chan error, 1)
+	go func() { firstSweep <- newQueue().Sweep(t.Context()) }()
+	awaitModerationCDN(t, "first concurrent sweep request", entered)
+	require.NoError(t, newQueue().Sweep(t.Context()))
+	assert.Len(t, endpoint.Requests(), 3, "the second queue cannot claim an in-flight target")
+	release()
+	require.NoError(t, awaitModerationCDN(t, "first concurrent sweep to finish", firstSweep))
+	assert.ElementsMatch(t, moderationCDNFiles(authorDID, imageCID), endpoint.Requests()[2].Files)
+	third := moderationCDNTarget(t, h.db, authorDID, imageCID)
+	assert.Equal(t, "pending", third.state)
+	assert.Equal(t, 3, third.attempts)
+	assert.Equal(t, time.Date(2026, 9, 28, 12, 7, 0, 0, time.UTC), third.nextAttemptAt)
+	endpoint.SetResponse(http.StatusOK, `{"success":true}`)
+	clock.Set(time.Date(2026, 9, 28, 12, 7, 0, 0, time.UTC))
+	require.NoError(t, newQueue().Sweep(t.Context()), "a restarted queue must recover the due target")
+	require.Len(t, endpoint.Requests(), 4)
+	assert.ElementsMatch(t, moderationCDNFiles(authorDID, imageCID), endpoint.Requests()[3].Files)
+	assert.Equal(t, "completed", moderationCDNTarget(t, h.db, authorDID, imageCID).state)
+	clock.Set(time.Date(2026, 9, 28, 14, 0, 0, 0, time.UTC))
+	require.NoError(t, newQueue().Sweep(t.Context()))
+	assert.Len(t, endpoint.Requests(), 4)
 }
 
 func TestModerationPostV2MediaRemovalColdAndWarm(t *testing.T) {

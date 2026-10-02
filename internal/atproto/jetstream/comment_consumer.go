@@ -48,7 +48,7 @@ type CommentEventConsumerOption func(*CommentEventConsumer)
 // MediaReconciler blocks images introduced on removed comments or posts.
 type MediaReconciler interface {
 	ReconcileTx(ctx context.Context, tx *sql.Tx, subjectURI string) ([]moderation.MediaBlock, error)
-	Purge(blocks []moderation.MediaBlock)
+	Purge(ctx context.Context, blocks []moderation.MediaBlock)
 }
 
 // WithCommentMediaReconciler reconciles media blocks when a removed comment is rewritten.
@@ -77,7 +77,7 @@ func commitMediaWrite(ctx context.Context, tx *sql.Tx, uri string, reconciler Me
 		return err
 	}
 	if reconciler != nil {
-		reconciler.Purge(blocks)
+		reconciler.Purge(ctx, blocks)
 	}
 	return nil
 }

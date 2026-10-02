@@ -723,7 +723,7 @@ func (c *PostEventConsumer) commitIncomingMediaWrite(ctx context.Context, tx *sq
 		return err
 	}
 	if c.mediaReconciler != nil {
-		c.mediaReconciler.Purge(blocks)
+		c.mediaReconciler.Purge(ctx, blocks)
 	}
 	return nil
 }

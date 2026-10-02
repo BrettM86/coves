@@ -191,8 +191,8 @@ func (g *gatedMediaReconciler) ReconcileTx(ctx context.Context, tx *sql.Tx, subj
 	return blocks, err
 }
 
-func (g *gatedMediaReconciler) Purge(blocks []moderation.MediaBlock) {
-	g.inner.Purge(blocks)
+func (g *gatedMediaReconciler) Purge(ctx context.Context, blocks []moderation.MediaBlock) {
+	g.inner.Purge(ctx, blocks)
 }
 
 // holdRestoreBeforeCommit parks a mutation at its idempotency-record insert,

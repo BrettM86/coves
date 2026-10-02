@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"Coves/internal/core/imageproxy"
+
 	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 
@@ -54,6 +56,7 @@ func (s *service) removeContent(ctx context.Context, actorDID string, request Re
 	fingerprint := mutationFingerprint(ActionRemove, "", request.Subject.URI, request.Subject.CID, request.ExpectedVersion, request.Reason, "", request.PrivateNote)
 	var result *MutationResult
 	var newlyBlocked []MediaBlock
+	var purgeBlobs []imageproxy.BlockedBlob
 	var ruleError error
 	err := s.store.InTransaction(ctx, func(ctx context.Context, tx Transaction) error {
 		fail := func(err error) error {
@@ -149,6 +152,14 @@ func (s *service) removeContent(ctx context.Context, actorDID string, request Re
 				if err := tx.InsertMediaBlocks(ctx, newlyBlocked); err != nil {
 					return unavailable(err)
 				}
+				if s.config.CDNPurgeTargets != nil {
+					purgeBlobs = ownerCDNPurgeBlobs(newlyBlocked)
+					if len(purgeBlobs) > 0 {
+						if err := tx.RecordCDNPurgeTargets(ctx, purgeBlobs); err != nil {
+							return unavailable(err)
+						}
+					}
+				}
 			}
 			state, err := newSubjectState(request.Subject.URI, version+1, recordState, current, action, activeLabels, s.config.InstanceDID)
 			if err != nil {
@@ -168,6 +179,8 @@ func (s *service) removeContent(ctx context.Context, actorDID string, request Re
 		return nil, fmt.Errorf("%w: %w", ErrModerationUnavailable, err)
 	}
 	purgeMediaBlocks(s.config.Purger, newlyBlocked)
-	purgeCDNMediaBlocks(context.WithoutCancel(ctx), s.config.CDNPurger, newlyBlocked)
+	if s.config.CDNPurgeTargets != nil && len(purgeBlobs) > 0 {
+		s.config.CDNPurgeTargets.PurgeAfterCommit(ctx, purgeBlobs)
+	}
 	return result, nil
 }

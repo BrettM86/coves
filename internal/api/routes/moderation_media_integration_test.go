@@ -21,7 +21,6 @@ import (
 	imagehandler "Coves/internal/api/handlers/imageproxy"
 	"Coves/internal/api/routes"
 	"Coves/internal/atproto/identity"
-	"Coves/internal/core/blobs"
 	"Coves/internal/core/imageproxy"
 	"Coves/internal/core/moderation"
 	"Coves/internal/db/postgres"
@@ -148,6 +147,7 @@ type moderationMediaHarness struct {
 	proxy      *httptest.Server
 	pds        *mediaPDS
 	moderation moderation.Service
+	queue      *moderation.CDNPurgeQueue
 	postURI    string
 	postCID    string
 	ownerA     string
@@ -157,8 +157,18 @@ type moderationMediaHarness struct {
 	proxyService *imageproxy.ImageProxyService
 }
 
-func newModerationMediaHarness(t *testing.T, blockFetch bool, cdnPurgers ...moderation.CDNPurger) (*moderationMediaHarness, *waitingMediaFetcher) {
+type moderationMediaHarnessConfig struct {
+	now       func() time.Time
+	targets   func(*sql.DB, func() time.Time) moderation.CDNPurgeTargets
+	wrapStore func(moderation.Store) moderation.Store
+}
+
+func newModerationMediaHarness(t *testing.T, blockFetch bool, configure ...func(*moderationMediaHarnessConfig)) (*moderationMediaHarness, *waitingMediaFetcher) {
 	t.Helper()
+	options := moderationMediaHarnessConfig{now: time.Now}
+	for _, configureHarness := range configure {
+		configureHarness(&options)
+	}
 	db := testkit.DB(t)
 	ownerName := testkit.UniqueIDWithPrefix(t, "mediaowner")
 	otherName := testkit.UniqueIDWithPrefix(t, "otherowner")
@@ -196,19 +206,24 @@ func newModerationMediaHarness(t *testing.T, blockFetch bool, cdnPurgers ...mode
 	store := postgres.NewModerationRepository(db)
 	proxyService, err := imageproxy.NewService(cache, processor, fetcher, store, imageproxy.DefaultConfig())
 	require.NoError(t, err)
-	config := moderation.Config{InstanceDID: fixtures.InstanceDID(), IdempotencyRetention: 24 * time.Hour, MaxLiveIdempotencyKeys: 1000, Purger: proxyService}
-	if len(cdnPurgers) > 0 {
-		config.CDNPurger = cdnPurgers[0]
+	config := moderation.Config{InstanceDID: fixtures.InstanceDID(), IdempotencyRetention: 24 * time.Hour, MaxLiveIdempotencyKeys: 1000, Purger: proxyService, Now: options.now}
+	if options.targets != nil {
+		config.CDNPurgeTargets = options.targets(db, options.now)
+	}
+	var serviceStore moderation.Store = store
+	if options.wrapStore != nil {
+		serviceStore = options.wrapStore(store)
 	}
 	service := moderation.NewService(
 		moderation.NewRepositorySubjectReader(postgres.NewPostRepository(db), postgres.NewCommentRepository(db)),
-		store, config,
+		serviceStore, config,
 	)
 	router := chi.NewRouter()
 	routes.RegisterImageProxyRoutes(router, imagehandler.NewHandler(proxyService, mediaPDSResolver{url: pdsServer.URL}))
 	proxy := httptest.NewServer(router)
 	t.Cleanup(proxy.Close)
-	return &moderationMediaHarness{db: db, cache: cache, cacheDir: cacheDir, proxy: proxy, proxyService: proxyService, pds: pds,
+	queue, _ := config.CDNPurgeTargets.(*moderation.CDNPurgeQueue)
+	return &moderationMediaHarness{db: db, cache: cache, cacheDir: cacheDir, proxy: proxy, proxyService: proxyService, pds: pds, queue: queue,
 		moderation: service, postURI: postURI, postCID: post.CID, ownerA: ownerA, ownerB: ownerB}, waiting
 }
 
@@ -221,69 +236,6 @@ func newMediaCloudflarePurger(t *testing.T, endpoint *testkit.CloudflarePurgeEnd
 	require.NoError(t, err)
 	require.NotNil(t, purger)
 	return purger
-}
-
-func TestModerationCommentCDNPurgeAfterPostgresCommit(t *testing.T) {
-	const token = "route-cdn-token-SENTINEL"
-	const base = "https://img.example.test"
-	const spam = "social.coves.moderation.defs#reasonSpam"
-	for _, scenario := range []string{"removal", "stale version", "restore"} {
-		t.Run(scenario, func(t *testing.T) {
-			endpoint := testkit.NewCloudflarePurgeEndpoint(t)
-			purger := newMediaCloudflarePurger(t, endpoint, token)
-			h, _ := newModerationMediaHarness(t, false, purger)
-			imageCID := mediaImageCID("cdn comment " + scenario)
-			subject := h.comment(t, h.ownerA, imageCID)
-			observed := make(chan struct {
-				blocked bool
-				err     error
-			}, 1)
-			endpoint.SetHook(func([]string) {
-				blocked, err := postgres.NewModerationRepository(h.db).IsBlocked(t.Context(), h.ownerA, imageCID)
-				// Non-blocking: an unexpected second request must not wedge the handler.
-				select {
-				case observed <- struct {
-					blocked bool
-					err     error
-				}{blocked, err}:
-				default:
-				}
-			})
-			if scenario == "stale version" {
-				result, err := h.moderation.RemoveContent(t.Context(), fixtures.DID(testkit.UniqueIDWithPrefix(t, "mediaadmin")), moderation.RemoveContentRequest{
-					Subject: subject, ExpectedVersion: "v7", IdempotencyKey: "remove-" + testkit.UniqueID(t), Reason: spam,
-				})
-				require.ErrorIs(t, err, moderation.ErrStateConflict)
-				assert.Nil(t, result)
-				assert.Empty(t, endpoint.Requests())
-				return
-			}
-			removed := h.remove(t, subject, spam)
-			requests := endpoint.Requests()
-			require.Len(t, requests, 1)
-			request := requests[0]
-			assert.NoError(t, request.DecodeError)
-			assert.Equal(t, http.MethodPost, request.Method)
-			assert.Equal(t, "/zones/zone-abc/purge_cache", request.Path)
-			assert.Equal(t, "Bearer "+token, request.Authorization)
-			var expected []string
-			for _, preset := range []string{"avatar", "avatar_small", "banner", "content_preview", "content_full", "embed_thumbnail"} {
-				expected = append(expected, blobs.HydrateImageProxyURL(base, preset, h.ownerA, imageCID))
-			}
-			assert.ElementsMatch(t, expected, request.Files)
-			select {
-			case committed := <-observed:
-				require.NoError(t, committed.err)
-				assert.True(t, committed.blocked, "the endpoint must see the block on a separate connection")
-			default:
-				t.Fatal("Cloudflare request hook did not check the committed block")
-			}
-			if scenario == "restore" {
-				h.restore(t, subject, removed)
-				assert.Len(t, endpoint.Requests(), 1, "restore must not make another purge request")
-			}
-		})
-	}
 }
 
 func (h *moderationMediaHarness) comment(t *testing.T, owner string, imageCIDs ...string) moderation.StrongRef {
@@ -343,7 +295,7 @@ func (h *moderationMediaHarness) remove(t *testing.T, subject moderation.StrongR
 	return result
 }
 
-func (h *moderationMediaHarness) restore(t *testing.T, subject moderation.StrongRef, removed *moderation.MutationResult) {
+func (h *moderationMediaHarness) restore(t *testing.T, subject moderation.StrongRef, removed *moderation.MutationResult) *moderation.MutationResult {
 	t.Helper()
 	result, err := h.moderation.RestoreContent(t.Context(), fixtures.DID(testkit.UniqueIDWithPrefix(t, "mediaadmin")), moderation.RestoreContentRequest{
 		ActionID: removed.Action.ID, ReviewedSubject: &subject, ExpectedVersion: removed.State.Version,
@@ -351,6 +303,7 @@ func (h *moderationMediaHarness) restore(t *testing.T, subject moderation.Strong
 	})
 	require.NoError(t, err)
 	assert.Equal(t, moderation.OutcomeApplied, result.Outcome)
+	return result
 }
 
 func (h *moderationMediaHarness) cachePath(preset, owner, cid string) string {

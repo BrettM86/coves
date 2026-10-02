@@ -495,6 +495,126 @@ func (t *moderationTransaction) InsertNewMediaBlocks(ctx context.Context, blocks
 	return inserted, nil
 }
 
+// RecordCDNPurgeTargets runs in the removal or reconciliation transaction.
+func (t *moderationTransaction) RecordCDNPurgeTargets(ctx context.Context, blobs []imageproxy.BlockedBlob) error {
+	for _, blob := range blobs {
+		_, err := t.tx.ExecContext(ctx, `
+			INSERT INTO moderation_media_purges (owner_did, blob_cid)
+			VALUES ($1, $2)
+			ON CONFLICT (owner_did, blob_cid) DO UPDATE SET
+			    state = 'pending', attempts = 0, next_attempt_at = '-infinity',
+			    earliest_completion_at = NULL, last_failure_code = NULL,
+			    generation = moderation_media_purges.generation + 1,
+			    claim = moderation_media_purges.claim + 1, updated_at = NOW()
+		`, blob.OwnerDID, blob.CID)
+		if err != nil {
+			return fmt.Errorf("record CDN purge target: %w", err)
+		}
+	}
+	return nil
+}
+
+// ClaimDueCDNPurgeTargets locks pending rows due at claim.DueAt without waiting
+// on other workers. A clock sample after the locks anchors completion to a time
+// no earlier than the committing transaction's visibility.
+func (r *ModerationRepository) ClaimDueCDNPurgeTargets(ctx context.Context, claim moderation.CDNPurgeClaim) ([]moderation.CDNPurgeTarget, error) {
+	if claim.Now == nil {
+		claim.Now = time.Now
+	}
+	if claim.Limit <= 0 {
+		return nil, nil
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin CDN purge claim: %w", err)
+	}
+	defer tx.Rollback()
+	var owners, cids []string
+	for _, blob := range claim.Blobs {
+		owners = append(owners, blob.OwnerDID)
+		cids = append(cids, blob.CID)
+	}
+	var excludedOwners, excludedCIDs []string
+	for _, blob := range claim.ExcludedBlobs() {
+		excludedOwners = append(excludedOwners, blob.OwnerDID)
+		excludedCIDs = append(excludedCIDs, blob.CID)
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT owner_did, blob_cid FROM moderation_media_purges
+		WHERE state = 'pending' AND next_attempt_at <= $1
+		  AND (NOT $2 OR (owner_did, blob_cid) IN (
+		      SELECT owner_did, blob_cid FROM unnest($3::text[], $4::text[]) AS allowed(owner_did, blob_cid)))
+		  AND (owner_did, blob_cid) NOT IN (
+		      SELECT owner_did, blob_cid FROM unnest($6::text[], $7::text[]) AS excluded(owner_did, blob_cid))
+		ORDER BY next_attempt_at, owner_did, blob_cid
+		LIMIT $5 FOR UPDATE SKIP LOCKED
+	`, claim.DueAt, claim.Blobs != nil, pq.Array(owners), pq.Array(cids), claim.Limit,
+		pq.Array(excludedOwners), pq.Array(excludedCIDs))
+	if err != nil {
+		return nil, fmt.Errorf("select due CDN purge targets: %w", err)
+	}
+	var targets []moderation.CDNPurgeTarget
+	for rows.Next() {
+		var target moderation.CDNPurgeTarget
+		if err := rows.Scan(&target.Blob.OwnerDID, &target.Blob.CID); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan due CDN purge target: %w", err)
+		}
+		targets = append(targets, target)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("read due CDN purge targets: %w", err)
+	}
+	rows.Close()
+	if len(targets) > 0 {
+		lockedNow := claim.Now()
+		for i := range targets {
+			var earliest time.Time
+			err := tx.QueryRowContext(ctx, `
+				UPDATE moderation_media_purges SET
+				    next_attempt_at = $3, earliest_completion_at = COALESCE(earliest_completion_at, $4),
+				    claim = claim + 1, updated_at = NOW()
+				WHERE owner_did = $1 AND blob_cid = $2
+				RETURNING attempts, earliest_completion_at, generation, claim
+			`, targets[i].Blob.OwnerDID, targets[i].Blob.CID,
+				lockedNow.Add(claim.Lease), lockedNow.Add(claim.WriteTimeout)).Scan(
+				&targets[i].Attempts, &earliest, &targets[i].Generation, &targets[i].Claim)
+			if err != nil {
+				return nil, fmt.Errorf("lease CDN purge target: %w", err)
+			}
+			targets[i].EarliestCompletionAt = earliest
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit CDN purge claim: %w", err)
+	}
+	return targets, nil
+}
+
+// CompleteCDNPurgeTarget fences new removals through the generation.
+func (r *ModerationRepository) CompleteCDNPurgeTarget(ctx context.Context, target moderation.CDNPurgeTarget) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE moderation_media_purges SET state = 'completed', updated_at = NOW()
+		WHERE owner_did = $1 AND blob_cid = $2 AND generation = $3 AND state = 'pending'
+	`, target.Blob.OwnerDID, target.Blob.CID, target.Generation)
+	return err
+}
+
+// RescheduleCDNPurgeTarget fences stale workers by their claim number.
+func (r *ModerationRepository) RescheduleCDNPurgeTarget(ctx context.Context, target moderation.CDNPurgeTarget, nextAttemptAt time.Time, failureCode string) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE moderation_media_purges SET
+		    next_attempt_at = $4,
+		    attempts = attempts + CASE WHEN $5::text <> '' THEN 1 ELSE 0 END,
+		    last_failure_code = CASE WHEN $5::text <> '' THEN $5 ELSE last_failure_code END,
+		    updated_at = NOW()
+		WHERE owner_did = $1 AND blob_cid = $2 AND generation = $3
+		  AND claim = $6 AND state = 'pending'
+	`, target.Blob.OwnerDID, target.Blob.CID, target.Generation, nextAttemptAt, failureCode, target.Claim)
+	return err
+}
+
 func (t *moderationTransaction) DeactivateMediaBlocks(ctx context.Context, actionID string) error {
 	_, err := t.tx.ExecContext(ctx, `
 		UPDATE moderation_media_blocks SET active = FALSE WHERE action_id = $1 AND active

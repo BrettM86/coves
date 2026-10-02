@@ -6,10 +6,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"net/http"
+	"sync"
 	"testing"
 	"time"
 
-	"Coves/internal/core/blobs"
 	"Coves/internal/core/communityFeeds"
 	"Coves/internal/core/imageproxy"
 	"Coves/internal/core/moderation"
@@ -26,6 +28,7 @@ import (
 const (
 	postModerationCIDOne    = "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"
 	postModerationCIDTwo    = "bafkreicy44vctf2bgqnn5wwzdern7bc2khwi7ku2r66bozl4x6bsrvuj2q"
+	postModerationCIDThree  = "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"
 	postModerationRecordCID = "bafyreihgdyzzpkkzq2izfnhcmm77ycuacvkuziwbnqxfxtqsz7tmxwhnshi"
 )
 
@@ -80,13 +83,14 @@ type postModerationConsumerFixture struct {
 	postService    posts.Service
 	moderator      moderation.Service
 	purger         *postModerationPurger
+	queue          *moderation.CDNPurgeQueue
 	uri, rkey      string
 	createdAt      int64
 	revs           []string
 	create         *JetstreamEvent
 }
 
-func newPostModerationConsumerFixture(t *testing.T, cdnPurgers ...moderation.CDNPurger) postModerationConsumerFixture {
+func newPostModerationConsumerFixture(t *testing.T, targets ...func(*sql.DB) moderation.CDNPurgeTargets) postModerationConsumerFixture {
 	t.Helper()
 	db := testkit.DB(t)
 	f := newPV2Fixture(t, db)
@@ -94,8 +98,11 @@ func newPostModerationConsumerFixture(t *testing.T, cdnPurgers ...moderation.CDN
 	moderationRepository := postgres.NewModerationRepository(db)
 	purger := &postModerationPurger{db: db}
 	var options []moderation.MediaReconcilerOption
-	if len(cdnPurgers) > 0 {
-		options = append(options, moderation.WithCDNPurger(cdnPurgers[0]))
+	var queue *moderation.CDNPurgeQueue
+	if len(targets) > 0 {
+		configured := targets[0](db)
+		queue, _ = configured.(*moderation.CDNPurgeQueue)
+		options = append(options, moderation.WithCDNPurgeTargets(configured))
 	}
 	f.consumer = NewPostEventConsumer(
 		postRepository, postgres.NewCommunityRepository(db, credentialciphertest.Fixed()), f.users, db,
@@ -131,65 +138,180 @@ func newPostModerationConsumerFixture(t *testing.T, cdnPurgers ...moderation.CDN
 	require.Equal(t, posts.AdmissionApplied, accepted.Outcome)
 	return postModerationConsumerFixture{
 		pv2Fixture: f, postRepository: postRepository, postService: postService,
-		moderator: moderator, purger: purger, uri: uri, rkey: rkey,
+		moderator: moderator, purger: purger, queue: queue, uri: uri, rkey: rkey,
 		createdAt: createdAt, revs: revs, create: create,
 	}
 }
 
-func TestModerationPostConsumerCDNPurgeAfterEditCommit(t *testing.T) {
-	const token = "consumer-cdn-token-SENTINEL"
-	const base = "https://img.example.test"
-	endpoint := testkit.NewCloudflarePurgeEndpoint(t)
+type postModerationCDNClock struct {
+	mu sync.Mutex
+	at time.Time
+}
+
+func (clock *postModerationCDNClock) Now() time.Time {
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	return clock.at
+}
+
+func newPostModerationCDNFixture(t *testing.T, endpoint *testkit.CloudflarePurgeEndpoint) postModerationConsumerFixture {
+	t.Helper()
+	clock := &postModerationCDNClock{at: time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)}
 	cdn, err := imageproxy.NewCloudflarePurger(imageproxy.CloudflarePurgerConfig{
-		APIBase: endpoint.URL(), ZoneID: "zone-abc", APIToken: token,
-		BaseURLs: []string{base}, Timeout: 5 * time.Second,
+		APIBase: endpoint.URL(), ZoneID: "zone-abc", APIToken: "consumer-cdn-token-SENTINEL",
+		BaseURLs: []string{"https://img.example.test"}, Timeout: 5 * time.Second,
 	})
 	require.NoError(t, err)
-	require.NotNil(t, cdn)
-	f := newPostModerationConsumerFixture(t, cdn)
-	removed := f.remove(t, "social.coves.moderation.defs#reasonSpam")
-	assert.Empty(t, endpoint.Requests(), "the moderator has no CDN purger")
-	observed := make(chan struct {
-		blocked bool
-		err     error
-	}, 1)
-	endpoint.SetHook(func([]string) {
-		blocked, err := postgres.NewModerationRepository(f.db).IsBlocked(t.Context(), pv2Author, postModerationCIDTwo)
-		// Non-blocking: an unexpected second request must not wedge the handler.
-		select {
-		case observed <- struct {
-			blocked bool
-			err     error
-		}{blocked, err}:
-		default:
-		}
+	return newPostModerationConsumerFixture(t, func(db *sql.DB) moderation.CDNPurgeTargets {
+		return moderation.NewCDNPurgeQueue(postgres.NewModerationRepository(db), cdn,
+			moderation.CDNPurgeQueueConfig{WriteTimeout: 90 * time.Second, Now: clock.Now})
 	})
+}
+
+func postModerationCDNTargetCount(t *testing.T, db *sql.DB) int {
+	t.Helper()
+	var count int
+	require.NoError(t, db.QueryRowContext(t.Context(), `SELECT count(*) FROM moderation_media_purges`).Scan(&count))
+	return count
+}
+
+func postModerationCDNFiles(cid string) []string {
+	return []string{
+		"https://img.example.test/img/avatar/plain/" + pv2Author + "/" + cid,
+		"https://img.example.test/img/avatar_small/plain/" + pv2Author + "/" + cid,
+		"https://img.example.test/img/banner/plain/" + pv2Author + "/" + cid,
+		"https://img.example.test/img/content_preview/plain/" + pv2Author + "/" + cid,
+		"https://img.example.test/img/content_full/plain/" + pv2Author + "/" + cid,
+		"https://img.example.test/img/embed_thumbnail/plain/" + pv2Author + "/" + cid,
+	}
+}
+
+func assertPostModerationCDNCommitted(t *testing.T, f postModerationConsumerFixture, cid string) {
+	t.Helper()
+	blocked, err := postgres.NewModerationRepository(f.db).IsBlocked(t.Context(), pv2Author, cid)
+	require.NoError(t, err)
+	assert.True(t, blocked, "a separate connection must see the committed incoming image block")
+	var state string
+	require.NoError(t, f.db.QueryRowContext(t.Context(), `
+		SELECT state FROM moderation_media_purges WHERE owner_did = $1 AND blob_cid = $2
+	`, pv2Author, cid).Scan(&state))
+	assert.Equal(t, "pending", state)
+}
+
+func assertPostModerationCDNRequest(t *testing.T, endpoint *testkit.CloudflarePurgeEndpoint, cid string) {
+	t.Helper()
+	requests := endpoint.Requests()
+	require.Len(t, requests, 1)
+	assert.NoError(t, requests[0].DecodeError)
+	assert.Equal(t, http.MethodPost, requests[0].Method)
+	assert.Equal(t, "/zones/zone-abc/purge_cache", requests[0].Path)
+	assert.Equal(t, "Bearer consumer-cdn-token-SENTINEL", requests[0].Authorization)
+	assert.ElementsMatch(t, postModerationCDNFiles(cid), requests[0].Files)
+}
+
+func waitPostModerationCDN(t *testing.T, queue *moderation.CDNPurgeQueue) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	require.NoError(t, queue.Wait(ctx))
+}
+
+func awaitPostModerationCDNRequest(t *testing.T, entered <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for immediate CDN purge request")
+	}
+}
+
+func TestModerationPostConsumerCDNPurgeAfterEditCommit(t *testing.T) {
+	endpoint := testkit.NewCloudflarePurgeEndpoint(t)
+	entered, release := endpoint.HoldNextRequest(t)
+	f := newPostModerationCDNFixture(t, endpoint)
+	removed := f.remove(t, "social.coves.moderation.defs#reasonSpam")
+	assert.Empty(t, endpoint.Requests(), "the moderator has no CDN target seam")
 	update := pv2Event(pv2Author, "update", f.rkey, f.revs[1], postModerationCIDOne,
 		f.createdAt+1_000_000, postModerationRecord(postModerationCIDOne, postModerationCIDTwo))
 	require.NoError(t, f.consumer.HandleEvent(t.Context(), update))
+	awaitPostModerationCDNRequest(t, entered)
 	assert.Equal(t, 1, countRows(t, f.db, `
 		SELECT count(*) FROM moderation_media_blocks
 		WHERE action_id = $1 AND owner_did = $2 AND blob_cid = $3 AND active
 	`, removed.Action.ID, pv2Author, postModerationCIDTwo))
-	requests := endpoint.Requests()
-	require.Len(t, requests, 1)
-	request := requests[0]
-	assert.NoError(t, request.DecodeError)
-	assert.Equal(t, "POST", request.Method)
-	assert.Equal(t, "/zones/zone-abc/purge_cache", request.Path)
-	assert.Equal(t, "Bearer "+token, request.Authorization)
-	var expected []string
-	for _, preset := range []string{"avatar", "avatar_small", "banner", "content_preview", "content_full", "embed_thumbnail"} {
-		expected = append(expected, blobs.HydrateImageProxyURL(base, preset, pv2Author, postModerationCIDTwo))
+	assertPostModerationCDNCommitted(t, f, postModerationCIDTwo)
+	assertPostModerationCDNRequest(t, endpoint, postModerationCIDTwo)
+	release()
+	waitPostModerationCDN(t, f.queue)
+	assertPostModerationCDNCommitted(t, f, postModerationCIDTwo)
+}
+
+func TestModerationPostConsumerCDNPurgeIncomingCreateCommit(t *testing.T) {
+	endpoint := testkit.NewCloudflarePurgeEndpoint(t)
+	entered, release := endpoint.HoldNextRequest(t)
+	f := newPostModerationCDNFixture(t, endpoint)
+	removed := f.remove(t, "social.coves.moderation.defs#reasonSpam")
+	embed, err := json.Marshal(postModerationRecord(postModerationCIDThree)["embed"])
+	require.NoError(t, err)
+	embedJSON := string(embed)
+	applied, err := f.consumer.indexPostIfRevWins(t.Context(), &posts.Post{
+		URI: f.uri, CID: postModerationCIDOne, RKey: f.rkey, AuthorDID: pv2Author, CommunityDID: pv2Community,
+		Embed: &embedJSON, CreatedAt: time.Now(), IndexedAt: time.Now(),
+	}, f.revs[1])
+	require.NoError(t, err)
+	assert.False(t, applied, "the incoming create must leave the stored row intact")
+	awaitPostModerationCDNRequest(t, entered)
+	assert.Equal(t, 1, countRows(t, f.db, `
+		SELECT count(*) FROM moderation_media_blocks
+		WHERE action_id = $1 AND owner_did = $2 AND blob_cid = $3 AND active
+	`, removed.Action.ID, pv2Author, postModerationCIDThree))
+	assertPostModerationCDNCommitted(t, f, postModerationCIDThree)
+	assertPostModerationCDNRequest(t, endpoint, postModerationCIDThree)
+	release()
+	waitPostModerationCDN(t, f.queue)
+	assertPostModerationCDNCommitted(t, f, postModerationCIDThree)
+}
+
+type failingPostModerationCDNBinder struct{ moderation.TransactionBinder }
+type failingPostModerationCDNTransaction struct{ moderation.MediaTransaction }
+
+func (binder failingPostModerationCDNBinder) BindTransaction(tx *sql.Tx) moderation.MediaTransaction {
+	return failingPostModerationCDNTransaction{binder.TransactionBinder.BindTransaction(tx)}
+}
+
+func (tx failingPostModerationCDNTransaction) RecordCDNPurgeTargets(ctx context.Context, targets []imageproxy.BlockedBlob) error {
+	if err := tx.MediaTransaction.RecordCDNPurgeTargets(ctx, targets); err != nil {
+		return err
 	}
-	assert.ElementsMatch(t, expected, request.Files)
-	select {
-	case committed := <-observed:
-		require.NoError(t, committed.err)
-		assert.True(t, committed.blocked, "the endpoint must see the edited image block on a separate connection")
-	default:
-		t.Fatal("Cloudflare request hook did not check the committed edited image block")
-	}
+	return errors.New("record targets failed after insert")
+}
+
+func TestModerationPostConsumerCDNPurgeRecordFailureRollsBackEdit(t *testing.T) {
+	endpoint := testkit.NewCloudflarePurgeEndpoint(t)
+	f := newPostModerationCDNFixture(t, endpoint)
+	f.remove(t, "social.coves.moderation.defs#reasonSpam")
+	f.consumer.mediaReconciler = moderation.NewMediaReconciler(
+		failingPostModerationCDNBinder{postgres.NewModerationRepository(f.db)}, fixtures.InstanceDID(), f.purger,
+		moderation.WithCDNPurgeTargets(f.queue))
+	update := pv2Event(pv2Author, "update", f.rkey, f.revs[1], postModerationCIDOne,
+		f.createdAt+1_000_000, postModerationRecord(postModerationCIDOne, postModerationCIDTwo))
+	require.Error(t, f.consumer.HandleEvent(t.Context(), update), "record failure must abort the edit")
+	blocked, err := postgres.NewModerationRepository(f.db).IsBlocked(t.Context(), pv2Author, postModerationCIDTwo)
+	require.NoError(t, err)
+	assert.False(t, blocked)
+	assert.Zero(t, postModerationCDNTargetCount(t, f.db))
+	assert.Empty(t, endpoint.Requests())
+}
+
+func TestModerationPostConsumerCDNPurgeUnconfiguredWritesNoTargets(t *testing.T) {
+	endpoint := testkit.NewCloudflarePurgeEndpoint(t)
+	f := newPostModerationConsumerFixture(t)
+	f.remove(t, "social.coves.moderation.defs#reasonSpam")
+	update := pv2Event(pv2Author, "update", f.rkey, f.revs[1], postModerationCIDOne,
+		f.createdAt+1_000_000, postModerationRecord(postModerationCIDOne, postModerationCIDTwo))
+	require.NoError(t, f.consumer.HandleEvent(t.Context(), update))
+	assert.Zero(t, postModerationCDNTargetCount(t, f.db))
+	assert.Empty(t, endpoint.Requests())
 }
 
 func (f postModerationConsumerFixture) remove(t *testing.T, reason string) *moderation.MutationResult {

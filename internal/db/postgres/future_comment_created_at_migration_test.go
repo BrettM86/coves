@@ -18,6 +18,8 @@ func TestMigration041_ClampsFutureCommentCreatedAt(t *testing.T) {
 	t.Parallel()
 
 	db := testkit.DB(t)
+	require.EqualValues(t, 52, testkit.MigrateDownOne(t, db, 52),
+		"052 (moderation CDN purge targets) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 51, testkit.MigrateDownOne(t, db, 51),
 		"051 (moderation action log indexes) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 50, testkit.MigrateDownOne(t, db, 50),
