@@ -24,10 +24,21 @@ import (
 // the pressure being shed, so the two must never drift apart.
 var processorBusyRetryAfterSeconds = strconv.Itoa(int(imageproxy.DefaultProcessQueueWait / time.Second))
 
-// successCacheControl is the cache policy of a served image and of its 304.
+// successCacheControl is the cache policy of a served image and of its 304
+// when the request has no query string.
 // One day bounds how long a browser or an unpurged shared cache keeps an image
 // after a moderation removal, with no configuration and no CDN required.
 const successCacheControl = "public, max-age=86400"
+
+// successCacheControlFor returns no-store for a request with a query string.
+// A CDN purge names only the bare image URL, while a shared cache keys on the
+// query string, so a cached query-string variant would survive the purge.
+func successCacheControlFor(r *http.Request) string {
+	if r.URL.RawQuery != "" {
+		return "no-store"
+	}
+	return successCacheControl
+}
 
 // Service defines the interface for the image proxy service.
 // This interface is implemented by the imageproxy package's service layer.
@@ -115,7 +126,7 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 			writeErrorResponse(w, http.StatusNotFound, "blob not found")
 			return
 		}
-		w.Header().Set("Cache-Control", successCacheControl)
+		w.Header().Set("Cache-Control", successCacheControlFor(r))
 		w.Header().Set("ETag", etag)
 		w.WriteHeader(http.StatusNotModified)
 		return
@@ -155,7 +166,7 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 
 	// Set response headers
 	w.Header().Set("Content-Type", "image/jpeg")
-	w.Header().Set("Cache-Control", successCacheControl)
+	w.Header().Set("Cache-Control", successCacheControlFor(r))
 	w.Header().Set("ETag", etag)
 
 	// Write image data

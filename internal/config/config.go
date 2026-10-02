@@ -405,6 +405,9 @@ type MediaConfig struct {
 	// the production invariant below before anything starts.
 	ImageProxy imageproxy.Config
 
+	// CDNPurge configures optional Cloudflare edge invalidation for blocked media.
+	CDNPurge CDNPurgeConfig
+
 	// AllowUnproxiedMedia acknowledges, for a production deployment, that
 	// media will be served straight from PDS blob endpoints.
 	//
@@ -581,8 +584,18 @@ func Load() (*Config, error) {
 	imageProxy.Enabled = imageProxyEnabled
 
 	cfg.Media = MediaConfig{
-		ImageProxy:          imageProxy,
+		ImageProxy: imageProxy,
+		CDNPurge: CDNPurgeConfig{
+			ZoneID:   lookup("CLOUDFLARE_CACHE_PURGE_ZONE_ID"),
+			APIToken: lookup("CLOUDFLARE_CACHE_PURGE_API_TOKEN"),
+		},
 		AllowUnproxiedMedia: allowUnproxiedMedia,
+	}
+	if cfg.Media.CDNPurge.Enabled() {
+		cfg.Media.CDNPurge.BaseURLs = []string{imageProxy.BaseURL}
+		if imageProxy.CDNURL != "" && imageProxy.CDNURL != imageProxy.BaseURL {
+			cfg.Media.CDNPurge.BaseURLs = append(cfg.Media.CDNPurge.BaseURLs, imageProxy.CDNURL)
+		}
 	}
 
 	cfg.CursorSecret = stringVar("CURSOR_SECRET", devCursorSecret)
@@ -1051,6 +1064,24 @@ func (c *Config) loadModeration() error {
 // instead of one restart per mistake.
 func (c *Config) Validate() error {
 	var problems []string
+	zoneID := c.Media.CDNPurge.ZoneID
+	apiToken := c.Media.CDNPurge.APIToken
+	switch {
+	case zoneID != "" && apiToken == "":
+		problems = append(problems, "CLOUDFLARE_CACHE_PURGE_API_TOKEN is required when CLOUDFLARE_CACHE_PURGE_ZONE_ID is set")
+	case zoneID == "" && apiToken != "":
+		problems = append(problems, "CLOUDFLARE_CACHE_PURGE_ZONE_ID is required when CLOUDFLARE_CACHE_PURGE_API_TOKEN is set")
+	case zoneID != "" && apiToken != "":
+		if !c.Media.ImageProxy.Enabled {
+			problems = append(problems, "IMAGE_PROXY_ENABLED must be true when CDN purge is configured")
+		}
+		if !absoluteHTTPURL(c.Media.ImageProxy.BaseURL) {
+			problems = append(problems, "IMAGE_PROXY_BASE_URL must be an absolute http(s) URL when CDN purge is configured")
+		}
+		if cdn := c.Media.ImageProxy.CDNURL; cdn != "" && !absoluteHTTPURL(cdn) {
+			problems = append(problems, "IMAGE_PROXY_CDN_URL must be an absolute http(s) URL when CDN purge is configured")
+		}
+	}
 	for _, did := range c.Moderation.Admins {
 		if _, err := syntax.ParseDID(did); err != nil {
 			problems = append(problems, "MODERATION_ADMINS must contain only valid DIDs")
@@ -1378,3 +1409,28 @@ func (c *Config) mediaProblems() []string {
 
 	return problems
 }
+
+// absoluteHTTPURL accepts only complete HTTP(S) origins, in both dev and production.
+func absoluteHTTPURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Hostname() != ""
+}
+
+// CDNPurgeConfig holds optional Cloudflare zone credentials and image origins.
+type CDNPurgeConfig struct {
+	ZoneID   string
+	APIToken string `json:"-"`
+	BaseURLs []string
+}
+
+// Enabled reports whether both required Cloudflare credentials are present.
+func (c CDNPurgeConfig) Enabled() bool { return c.ZoneID != "" && c.APIToken != "" }
+
+// String redacts the credential when a Config is formatted with %v or %+v.
+// GoString covers %#v, and the json:"-" tag on APIToken covers JSON encoding.
+func (c CDNPurgeConfig) String() string {
+	return fmt.Sprintf("{ZoneID:%q APIToken:[REDACTED] BaseURLs:%v}", c.ZoneID, c.BaseURLs)
+}
+
+// GoString redacts the credential when a Config is formatted with %#v.
+func (c CDNPurgeConfig) GoString() string { return c.String() }

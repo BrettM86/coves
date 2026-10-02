@@ -1,7 +1,7 @@
 # PRD: CSAM Scanning via Cloudflare + Media Choke Point
 
 **Status:** Workstreams 1 and 2 implemented (AppView + Caddy). Workstream 3 (Cloudflare zone config) is manual dashboard/DNS work: as of 2026-09-28 Cloudflare proxies `img.coves.social`, and no Cloudflare API token with the Cache Purge permission exists yet. The other WS3 steps (cache rule, CSAM Scanning Tool, SSL mode) are not confirmed here. Workstream 4 (takedown runbook) not started.
-**Last updated:** 2026-09-29
+**Last updated:** 2026-10-01
 
 ## Problem
 
@@ -68,7 +68,7 @@ Remaining at deploy time: **the bind-mount trap** — Caddyfile changes require 
 On the `coves.social` zone (we already own it — DNS-01 tokens exist):
 
 1. **DNS**: `img.coves.social` A/AAAA → OVH origin IP, **Proxied** (orange cloud). All other records stay DNS-only (grey) — especially anything under `tdpl.io` and `coves.me`.
-2. **Cache**: add a Cache Rule for `img.coves.social/*`: *Eligible for cache*, with Edge TTL set to respect origin `Cache-Control` headers, and set the zone's Browser Cache TTL to *Respect Existing Headers*. Blobs are content-addressed (CID in URL), but caching is no longer immutable: a moderation removal must stop serving an image, so the origin advertises `public, max-age=86400` and an overriding edge or browser TTL would outlive that bound. Optionally enable Tiered Cache.
+2. **Cache**: add a Cache Rule for `img.coves.social/*`: *Eligible for cache*, with Edge TTL set to respect origin `Cache-Control` headers, and set the zone's Browser Cache TTL to *Respect Existing Headers*. Keep Cloudflare's default cache key; do not build a custom key from headers, cookies or query parameters, because URL purge only matches the default key. Blobs are content-addressed (CID in URL), but caching is no longer immutable: a moderation removal must stop serving an image, so the origin advertises `public, max-age=86400` and an overriding edge or browser TTL would outlive that bound. The image proxy serves any request with a query string as `no-store`, so query-string variants are never shared-cacheable and the bare-URL purge covers every cacheable edge entry. Optionally enable Tiered Cache.
 3. **Enable CSAM Scanning Tool**: Dashboard → Caching → Configuration → CSAM Scanning Tool → Configure. Provide a monitored role address (e.g. `abuse@coves.social`, forwarded to admins) and verify it. Agree to the service-specific terms.
 4. **SSL mode**: Full (strict) for the zone (origin has valid certs via Caddy).
 5. Do **not** enable Cloudflare features that interfere with API semantics on other hostnames — only `img` is proxied, so blast radius is zero.
@@ -89,7 +89,7 @@ Build an admin takedown flow (CLI or admin endpoint), input = DID + CID:
    - Delete the record + blob from the owning PDS (native: PDS admin API; bridged: tidepool bridge admin path).
    - Remove/tombstone the post in the AppView index.
    - Purge the imageproxy disk cache for **all presets** of that DID+CID (add a purge-by-blob admin method to `imageproxy.DiskCache` — cache keys are preset-scoped).
-   - Purge the Cloudflare edge cache by URL for each preset variant (single-file purge is available on free plans). Cloudflare's own block covers the exact matched URL; we purge the sibling preset URLs.
+   - Purge the Cloudflare edge cache by URL for each preset variant (single-file purge is available on free plans). Cloudflare's own block covers the exact matched URL; we purge the sibling preset URLs. Moderation removal already purges the imageproxy disk cache and, when configured, the edge through `imageproxy.CloudflarePurger`. Set both `CLOUDFLARE_CACHE_PURGE_ZONE_ID` and `CLOUDFLARE_CACHE_PURGE_API_TOKEN`; the token needs Zone → Cache Purge → Purge on the `coves.social` zone only, separate from Caddy's `CLOUDFLARE_API_TOKEN`. The DID+CID takedown tooling can reuse this purger.
 4. **Report**: file our own NCMEC CyberTipline report (Cloudflare's third-party report does not replace the provider's own obligation).
 5. **Act on the source**: ban the native account, or for bridged content: report to the origin Lemmy instance's admins and, on repeat, drop the instance at the bridge (instance blocklist) — this is where "rely on Lemmy moderation" plugs in.
 6. **Log** the entire action (who, what, when) to an audit table. Never log or store the image content outside the preservation store.
@@ -104,7 +104,10 @@ Phase 1 can be a documented manual runbook using existing tools (psql, PDS admin
 | Direct PDS `getBlob` remains publicly fetchable | Required by atproto sync (relays, other AppViews) | API no longer emits these URLs; optionally rate-limit `getBlob` at Caddy for non-relay UAs |
 | Only known-hash CSAM is detected | Fuzzy hash lists can't catch novel content | Community reporting (`internal/core/adminreports/`) + moderator review remain the backstop |
 | Video blobs unscanned | Image proxy is stills-only | Track as separate workstream |
-| Browser caches, and any shared cache nobody purges, keep a removed image for up to one day | A moderation removal purges only the proxy's own disk cache; a copy already served with `Cache-Control: public, max-age=86400` stays valid wherever it was stored | The one-day `max-age` bounds the exposure without any configuration, including for self-hosters with no CDN; the optional CDN purge on removal, once built, will shorten it for an edge that is configured for it |
+| Browser caches, and any shared cache nobody purges, keep a removed image for up to one day | A moderation removal purges the proxy's disk cache and optionally Cloudflare's edge; a copy already served with `Cache-Control: public, max-age=86400` stays valid in browser caches and any shared cache not purged | The one-day `max-age` bounds the exposure without any configuration, including for self-hosters with no CDN |
+| Other owners' edge copies of an `illegal-content` CID are not purged | The edge purge names only the owner of each owner-scoped block, not the other owners covered by an ownerless block | The one-day cache lifetime bounds the gap; a planned follow-up names the other owners |
+| A failed edge purge is not retried | The removal logs the failure but does not queue a retry | The one-day cache lifetime bounds the gap; a planned follow-up adds durable purge targets and retries |
+| An in-flight response can reach the edge after its purge | A response authorized before the removal commits can still be written after the edge purge | The one-day cache lifetime bounds the gap; a planned follow-up adds a final purge after `HTTP_WRITE_TIMEOUT` |
 | Responses cached under the pre-deploy `public, max-age=31536000, immutable` header | Copies stored before the one-day header shipped keep their original lifetime | Browsers keep them for up to a year and nothing server-side can reach them; the edge keeps them until a one-time Purge Everything of the `coves.social` zone after deploy (Rollout order step 4; WS3 proxies only `img.coves.social`, so this drops only cached images) |
 | Bridge PDS stores blobs regardless of scanning | Blobs land before any serve-time scan | Phase 2 ingest scanning; instance allow/blocklist at the bridge is the coarse control |
 | `record.embed` still carries blob references | Post and comment responses include the verbatim atproto record, whose embed is unprojected by design (the lexicon calls it verbatim). A client *could* build a `getBlob` URL from it | Neither client reads `record.embed` today. Coves image URLs use the proxy, with the explicit foreign Bluesky CDN exception below; this does not mean no blob reference reaches a client. The same record bytes are public on the PDS regardless. Revisit if a client starts reading it |
@@ -118,9 +121,10 @@ WS1 and WS2 are both in the tree, so they ship together. The ordering constraint
 2. **Deploy Caddy** — `docker compose up -d --force-recreate caddy` (bind-mount trap). Verify `curl -sD- -o /dev/null https://img.coves.social/img/avatar/plain/<did>/<cid>` returns 200 with `Cache-Control: public, max-age=86400`, and that `https://img.coves.social/` 404s. (Use `-sD- -o /dev/null`, not `-I`: the image route is registered GET-only and chi does not map HEAD to it, so `-I` returns 405 and shows none of the cache headers.)
 3. **Deploy the AppView** with `IMAGE_PROXY_BASE_URL=https://img.coves.social`. Startup now fails loudly on a misconfigured proxy rather than silently falling back. Verify feeds render, then watch proxy cache hit rate and origin bandwidth.
 4. **Purge the edge once** — after the first AppView deploy that sends `Cache-Control: public, max-age=86400`, run Purge Everything on the `coves.social` zone in the Cloudflare dashboard. Edge copies stored under the old `public, max-age=31536000, immutable` header otherwise keep serving for up to a year, including images removed since. Browser copies cannot be purged (WS5).
-5. **Client follow-ups** — ship the two `coves-frontend` type/`extractEmbedUrl` changes noted in WS1.
-6. WS4 runbook written and dry-run before announcing Lemmy federation more broadly.
-7. Phase 2 (ingest-time hash matching) scheduled after federation traffic is real.
+5. **Verify edge invalidation (outside hermetic CI)** — warm an image through the Cloudflare edge, remove the content, then confirm the edge serves 404 for that image URL.
+6. **Client follow-ups** — ship the two `coves-frontend` type/`extractEmbedUrl` changes noted in WS1.
+7. WS4 runbook written and dry-run before announcing Lemmy federation more broadly.
+8. Phase 2 (ingest-time hash matching) scheduled after federation traffic is real.
 
 ## Open questions
 

@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/core/blobs"
 	"Coves/internal/core/communityFeeds"
+	"Coves/internal/core/imageproxy"
 	"Coves/internal/core/moderation"
 	"Coves/internal/core/posts"
 	"Coves/internal/crypto/credentialcipher/credentialciphertest"
@@ -84,17 +86,21 @@ type postModerationConsumerFixture struct {
 	create         *JetstreamEvent
 }
 
-func newPostModerationConsumerFixture(t *testing.T) postModerationConsumerFixture {
+func newPostModerationConsumerFixture(t *testing.T, cdnPurgers ...moderation.CDNPurger) postModerationConsumerFixture {
 	t.Helper()
 	db := testkit.DB(t)
 	f := newPV2Fixture(t, db)
 	postRepository := postgres.NewPostRepository(db)
 	moderationRepository := postgres.NewModerationRepository(db)
 	purger := &postModerationPurger{db: db}
+	var options []moderation.MediaReconcilerOption
+	if len(cdnPurgers) > 0 {
+		options = append(options, moderation.WithCDNPurger(cdnPurgers[0]))
+	}
 	f.consumer = NewPostEventConsumer(
 		postRepository, postgres.NewCommunityRepository(db, credentialciphertest.Fixed()), f.users, db,
 		WithAdmissions(f.admissions), WithDeletedAccounts(postgres.NewDeletedAccountRepository(db)),
-		WithPostMediaReconciler(moderation.NewMediaReconciler(moderationRepository, fixtures.InstanceDID(), purger)),
+		WithPostMediaReconciler(moderation.NewMediaReconciler(moderationRepository, fixtures.InstanceDID(), purger, options...)),
 	)
 	moderator := moderation.NewService(
 		moderation.NewRepositorySubjectReader(postRepository, postgres.NewCommentRepository(db)),
@@ -127,6 +133,62 @@ func newPostModerationConsumerFixture(t *testing.T) postModerationConsumerFixtur
 		pv2Fixture: f, postRepository: postRepository, postService: postService,
 		moderator: moderator, purger: purger, uri: uri, rkey: rkey,
 		createdAt: createdAt, revs: revs, create: create,
+	}
+}
+
+func TestModerationPostConsumerCDNPurgeAfterEditCommit(t *testing.T) {
+	const token = "consumer-cdn-token-SENTINEL"
+	const base = "https://img.example.test"
+	endpoint := testkit.NewCloudflarePurgeEndpoint(t)
+	cdn, err := imageproxy.NewCloudflarePurger(imageproxy.CloudflarePurgerConfig{
+		APIBase: endpoint.URL(), ZoneID: "zone-abc", APIToken: token,
+		BaseURLs: []string{base}, Timeout: 5 * time.Second,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, cdn)
+	f := newPostModerationConsumerFixture(t, cdn)
+	removed := f.remove(t, "social.coves.moderation.defs#reasonSpam")
+	assert.Empty(t, endpoint.Requests(), "the moderator has no CDN purger")
+	observed := make(chan struct {
+		blocked bool
+		err     error
+	}, 1)
+	endpoint.SetHook(func([]string) {
+		blocked, err := postgres.NewModerationRepository(f.db).IsBlocked(t.Context(), pv2Author, postModerationCIDTwo)
+		// Non-blocking: an unexpected second request must not wedge the handler.
+		select {
+		case observed <- struct {
+			blocked bool
+			err     error
+		}{blocked, err}:
+		default:
+		}
+	})
+	update := pv2Event(pv2Author, "update", f.rkey, f.revs[1], postModerationCIDOne,
+		f.createdAt+1_000_000, postModerationRecord(postModerationCIDOne, postModerationCIDTwo))
+	require.NoError(t, f.consumer.HandleEvent(t.Context(), update))
+	assert.Equal(t, 1, countRows(t, f.db, `
+		SELECT count(*) FROM moderation_media_blocks
+		WHERE action_id = $1 AND owner_did = $2 AND blob_cid = $3 AND active
+	`, removed.Action.ID, pv2Author, postModerationCIDTwo))
+	requests := endpoint.Requests()
+	require.Len(t, requests, 1)
+	request := requests[0]
+	assert.NoError(t, request.DecodeError)
+	assert.Equal(t, "POST", request.Method)
+	assert.Equal(t, "/zones/zone-abc/purge_cache", request.Path)
+	assert.Equal(t, "Bearer "+token, request.Authorization)
+	var expected []string
+	for _, preset := range []string{"avatar", "avatar_small", "banner", "content_preview", "content_full", "embed_thumbnail"} {
+		expected = append(expected, blobs.HydrateImageProxyURL(base, preset, pv2Author, postModerationCIDTwo))
+	}
+	assert.ElementsMatch(t, expected, request.Files)
+	select {
+	case committed := <-observed:
+		require.NoError(t, committed.err)
+		assert.True(t, committed.blocked, "the endpoint must see the edited image block on a separate connection")
+	default:
+		t.Fatal("Cloudflare request hook did not check the committed edited image block")
 	}
 }
 

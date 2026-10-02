@@ -168,5 +168,6 @@ func (s *service) removeContent(ctx context.Context, actorDID string, request Re
 		return nil, fmt.Errorf("%w: %w", ErrModerationUnavailable, err)
 	}
 	purgeMediaBlocks(s.config.Purger, newlyBlocked)
+	purgeCDNMediaBlocks(context.WithoutCancel(ctx), s.config.CDNPurger, newlyBlocked)
 	return result, nil
 }

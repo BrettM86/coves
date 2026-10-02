@@ -53,6 +53,42 @@ func TestHandler_RoutedImageCacheHeaders(t *testing.T) {
 		assert.Equal(t, served.Header().Get("ETag"), conditional.Header().Get("ETag"))
 	})
 
+	// A purge names only the bare URL, so a query-string variant must never be
+	// shared-cacheable: it is served, unchanged, with no-store.
+	t.Run("query-string variant is served as no-store on 200 and 304", func(t *testing.T) {
+		service := &mockService{getImageFunc: func(context.Context, string, string, string, string) ([]byte, error) {
+			return []byte("image bytes"), nil
+		}}
+		router := route(service)
+		requestPath := func(target, ifNoneMatch string) *httptest.ResponseRecorder {
+			req := httptest.NewRequest(http.MethodGet, target, nil)
+			if ifNoneMatch != "" {
+				req.Header.Set("If-None-Match", ifNoneMatch)
+			}
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, req)
+			return response
+		}
+
+		bare := requestPath(path, "")
+		require.Equal(t, http.StatusOK, bare.Code)
+		assert.Equal(t, cacheControl, bare.Header().Get("Cache-Control"))
+
+		variant := requestPath(path+"?x=1", "")
+		require.Equal(t, http.StatusOK, variant.Code)
+		assert.Equal(t, "image bytes", variant.Body.String())
+		assert.Equal(t, etag, variant.Header().Get("ETag"))
+		assert.Equal(t, "no-store", variant.Header().Get("Cache-Control"))
+
+		conditionalVariant := requestPath(path+"?x=1", etag)
+		require.Equal(t, http.StatusNotModified, conditionalVariant.Code)
+		assert.Equal(t, "no-store", conditionalVariant.Header().Get("Cache-Control"))
+
+		conditionalBare := requestPath(path, etag)
+		require.Equal(t, http.StatusNotModified, conditionalBare.Code)
+		assert.Equal(t, cacheControl, conditionalBare.Header().Get("Cache-Control"))
+	})
+
 	for _, test := range []struct {
 		name        string
 		serveFirst  bool

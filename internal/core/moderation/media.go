@@ -31,11 +31,16 @@ type MediaReconciler struct {
 	binder      TransactionBinder
 	instanceDID string
 	purger      MediaPurger
+	cdnPurger   CDNPurger
 }
 
 // NewMediaReconciler builds a MediaReconciler.
-func NewMediaReconciler(binder TransactionBinder, instanceDID string, purger MediaPurger) *MediaReconciler {
-	return &MediaReconciler{binder: binder, instanceDID: instanceDID, purger: purger}
+func NewMediaReconciler(binder TransactionBinder, instanceDID string, purger MediaPurger, options ...MediaReconcilerOption) *MediaReconciler {
+	reconciler := &MediaReconciler{binder: binder, instanceDID: instanceDID, purger: purger}
+	for _, option := range options {
+		option(reconciler)
+	}
+	return reconciler
 }
 
 // ReconcileTx blocks images newly present on a subject with an active
@@ -83,6 +88,7 @@ func (r *MediaReconciler) ReconcileIncomingTx(ctx context.Context, tx *sql.Tx, s
 // Purge removes cached bytes of newly blocked blobs after commit.
 func (r *MediaReconciler) Purge(blocks []MediaBlock) {
 	purgeMediaBlocks(r.purger, blocks)
+	purgeCDNMediaBlocks(context.Background(), r.cdnPurger, blocks)
 }
 
 func purgeMediaBlocks(purger MediaPurger, blocks []MediaBlock) {

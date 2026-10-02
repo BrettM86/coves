@@ -211,21 +211,18 @@ func buildApplication(
 	if err != nil {
 		return nil, err
 	}
-	app.moderationService = moderation.NewService(
-		moderation.NewRepositorySubjectReader(app.postRepo, app.commentRepo),
-		postgresRepo.NewModerationRepository(app.db),
-		moderation.Config{
-			InstanceDID:            app.cfg.Instance.DID,
-			IdempotencyRetention:   app.cfg.Moderation.IdempotencyRetention,
-			MaxLiveIdempotencyKeys: app.cfg.Moderation.MaxLiveIdempotencyKeys,
-			Purger:                 purger,
-			CursorSecret:           app.cfg.CursorSecret,
-			CommunityResolver:      app.communityService,
-			HandleResolver:         app.identityResolver,
-		},
-	)
-	app.mediaReconciler = moderation.NewMediaReconciler(
-		postgresRepo.NewModerationRepository(app.db), app.cfg.Instance.DID, purger)
+	moderationStore := postgresRepo.NewModerationRepository(app.db)
+	app.moderationService, app.mediaReconciler, err = buildModeration(app.cfg, cloudflareAPIBase, moderationDependencies{
+		subjectReader:     moderation.NewRepositorySubjectReader(app.postRepo, app.commentRepo),
+		store:             moderationStore,
+		mediaBinder:       moderationStore,
+		mediaPurger:       purger,
+		communityResolver: app.communityService,
+		handleResolver:    app.identityResolver,
+	})
+	if err != nil {
+		return nil, err
+	}
 	app.buildJetstreamInfrastructure()
 	if err = app.buildBridgedVotePoller(); err != nil {
 		return nil, err

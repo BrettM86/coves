@@ -3,9 +3,15 @@
 package routes_test
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
+	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -77,6 +83,73 @@ func (h *moderationMediaHarness) indexedImagePost(t *testing.T, collection, imag
 	require.NotNil(t, indexed.Embed)
 	assert.Contains(t, *indexed.Embed, imageCID)
 	return subject, blobOwnerDID
+}
+
+type postMediaLogCapture struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (*postMediaLogCapture) Enabled(context.Context, slog.Level) bool { return true }
+func (capture *postMediaLogCapture) Handle(_ context.Context, record slog.Record) error {
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	capture.records = append(capture.records, record.Clone())
+	return nil
+}
+func (capture *postMediaLogCapture) WithAttrs([]slog.Attr) slog.Handler { return capture }
+func (capture *postMediaLogCapture) WithGroup(string) slog.Handler      { return capture }
+func (capture *postMediaLogCapture) snapshot() []slog.Record {
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	return append([]slog.Record(nil), capture.records...)
+}
+
+// Not parallel: this test replaces slog.Default while the removal runs.
+func TestModerationPostCDNFailureDoesNotUndoLocalRemoval(t *testing.T) {
+	const token = "post-cdn-token-SENTINEL"
+	const bodySentinel = "cf-response-body-SENTINEL"
+	endpoint := testkit.NewCloudflarePurgeEndpoint(t)
+	endpoint.SetResponse(http.StatusInternalServerError, bodySentinel)
+	cdn := newMediaCloudflarePurger(t, endpoint, token)
+	h, _ := newModerationMediaHarness(t, false, cdn)
+	imageCID := mediaImageCID("post cdn failure")
+	subject, authorDID := h.indexedImagePost(t, moderation.PostV2Collection, imageCID)
+	require.Equal(t, h.ownerA, authorDID)
+	require.Equal(t, http.StatusOK, h.request(t, postMediaPreset, authorDID, imageCID))
+	_, err := os.Stat(h.cachePath(postMediaPreset, authorDID, imageCID))
+	require.NoError(t, err, "the post image must be cached on disk before removal")
+
+	logs := &postMediaLogCapture{}
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(logs))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+	removed := h.remove(t, subject, postMediaSpamReason)
+	require.Equal(t, moderation.OutcomeApplied, removed.Outcome)
+	assert.Len(t, endpoint.Requests(), 1, "the failing purge must have been attempted")
+	h.assertNoCachedBlob(t, imageCID, authorDID)
+	require.Equal(t, http.StatusNotFound, h.request(t, postMediaPreset, authorDID, imageCID))
+
+	var foundError bool
+	for _, record := range logs.snapshot() {
+		var values []string
+		var text strings.Builder
+		text.WriteString(record.Message)
+		record.Attrs(func(attr slog.Attr) bool {
+			values = append(values, attr.Value.String())
+			fmt.Fprint(&text, " ", attr)
+			return true
+		})
+		assert.NotContains(t, text.String(), token, "no log record may expose the Cloudflare token")
+		assert.NotContains(t, text.String(), bodySentinel, "no log record may expose the Cloudflare response")
+		if record.Level == slog.LevelError &&
+			slices.Contains(values, authorDID) &&
+			slices.Contains(values, imageCID) &&
+			slices.Contains(values, "http_500") {
+			foundError = true
+		}
+	}
+	assert.True(t, foundError, "an Error record must carry the author DID, CID and http_500")
 }
 
 func TestModerationPostV2MediaRemovalColdAndWarm(t *testing.T) {
