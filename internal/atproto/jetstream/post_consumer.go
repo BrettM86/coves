@@ -1,6 +1,14 @@
 package jetstream
 
 import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"time"
+
 	"Coves/internal/atproto/identity"
 	"Coves/internal/core/bridgedvotes"
 	"Coves/internal/core/communities"
@@ -9,13 +17,6 @@ import (
 	"Coves/internal/core/posts"
 	"Coves/internal/core/richtext"
 	"Coves/internal/core/users"
-	"context"
-	"database/sql"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"log"
-	"time"
 )
 
 // PostEventConsumer consumes author-owned posts and community decisions from
@@ -284,19 +285,12 @@ func (c *PostEventConsumer) applyPostContentUpdate(ctx context.Context, in postC
 	// Skip soft-deleted rows: a deleted post should not be resurrected by an edit.
 	// The author's repo still serves the incoming blobs, so a removed post's
 	// recreated images are blocked even though the content is not indexed. The
-	// rev gate runs first (read-only: this path never advances the rev) so an
-	// out-of-order event that predates the delete blocks nothing.
+	// rev gate is checked under its lock (read-only: this path never advances
+	// the rev) so an out-of-order event that predates the delete blocks nothing.
+	// Event time is not compared here (timeUS 0), as this skip never did.
 	if in.storedDeletedAt != nil {
-		stale, err := recordRevIsStale(ctx, c.db, in.uri, in.rev)
-		if err != nil {
-			return false, fmt.Errorf("failed to check rev of soft-deleted post update: %w", err)
-		}
-		if stale {
-			logSkippedStaleRev(ConsumerPosts, "update", in.uri, in.rev)
-			return false, nil
-		}
 		log.Printf("Update event for soft-deleted post: %s (skipping)", in.uri)
-		if err := c.blockIncomingMedia(ctx, in.uri, in.authorDID, in.embed); err != nil {
+		if err := c.blockIncomingMedia(ctx, in.uri, in.authorDID, in.rev, 0, in.embed); err != nil {
 			return false, fmt.Errorf("failed to block media of skipped post update: %w", err)
 		}
 		return false, nil
@@ -722,8 +716,9 @@ func (c *PostEventConsumer) commitIncomingMediaWrite(ctx context.Context, tx *sq
 }
 
 // blockIncomingMedia blocks the blobs of an incoming post event that writes no
-// post row. It is a no-op unless the post has an active removal.
-func (c *PostEventConsumer) blockIncomingMedia(ctx context.Context, uri, ownerDID string, embed sql.NullString) error {
+// post row. It is a no-op unless the post has an active removal, and a no-op
+// for an event that is stale by rev, or by event time when timeUS is positive.
+func (c *PostEventConsumer) blockIncomingMedia(ctx context.Context, uri, ownerDID, rev string, timeUS int64, embed sql.NullString) error {
 	blobCIDs := incomingPostBlobCIDs(embed)
 	if c.mediaReconciler == nil || len(blobCIDs) == 0 {
 		return nil
@@ -737,5 +732,60 @@ func (c *PostEventConsumer) blockIncomingMedia(ctx context.Context, uri, ownerDI
 			log.Printf("Failed to rollback transaction: %v", rollbackErr)
 		}
 	}()
+	current, err := lockCurrentIncomingEvent(ctx, tx, lockPostRowQuery, ConsumerPosts, uri, rev, timeUS)
+	if err != nil || !current {
+		return err
+	}
 	return c.commitIncomingMediaWrite(ctx, tx, uri, ownerDID, blobCIDs)
+}
+
+// The content-row locks taken before an incoming-media active-removal read.
+// FOR NO KEY UPDATE conflicts with the FOR SHARE a removal takes when it reads
+// the indexed subject, as an ordinary update's row write does.
+const (
+	lockPostRowQuery    = `SELECT indexed_at FROM posts WHERE uri = $1 FOR NO KEY UPDATE`
+	lockCommentRowQuery = `SELECT indexed_at FROM comments WHERE uri = $1 FOR NO KEY UPDATE`
+)
+
+// lockContentRow locks the indexed row of a record whose incoming media is
+// about to be reconciled, so a removal that has already read the subject
+// commits first and the active-removal read that follows sees it. found is
+// false when the row is gone; no removal can then be holding it.
+func lockContentRow(ctx context.Context, tx *sql.Tx, lockQuery, uri string) (indexedAt time.Time, found bool, err error) {
+	err = tx.QueryRowContext(ctx, lockQuery, uri).Scan(&indexedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("failed to lock indexed row %s: %w", uri, err)
+	}
+	return indexedAt, true, nil
+}
+
+// lockCurrentIncomingEvent decides inside tx whether an event the consumer
+// refuses to index is still the newest for its record, and holds the locks
+// that keep that answer and the active-removal read after it true until tx
+// ends. It locks in the order every same-record write does: the rev gate row,
+// then the content row. A stale event, by rev or by an event time (when timeUS
+// is positive) not after the row's indexed_at, returns false. It advances
+// nothing, because the refused content is never applied.
+func lockCurrentIncomingEvent(ctx context.Context, tx *sql.Tx, lockQuery, consumer, uri, rev string, timeUS int64) (bool, error) {
+	stale, err := lockedRecordRevIsStale(ctx, tx, uri, rev)
+	if err != nil {
+		return false, err
+	}
+	if stale {
+		logSkippedStaleRev(consumer, "update", uri, rev)
+		return false, nil
+	}
+	indexedAt, found, err := lockContentRow(ctx, tx, lockQuery, uri)
+	if err != nil {
+		return false, err
+	}
+	if evTime, ok := eventTime(timeUS); ok && found && !indexedAt.Before(evTime) {
+		log.Printf("INFO: not blocking media of stale %s event for %s (event time %s <= last indexed %s)",
+			consumer, uri, evTime.Format(time.RFC3339Nano), indexedAt.Format(time.RFC3339Nano))
+		return false, nil
+	}
+	return true, nil
 }

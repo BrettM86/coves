@@ -3,6 +3,9 @@
 package jetstream
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -191,4 +194,99 @@ func TestModerationStaleRejectedEventAddsNoBlocks(t *testing.T) {
 		require.ErrorIs(t, err, ErrPermanentEvent)
 		c.assertImageBNotBlocked(t)
 	})
+}
+
+// holdNewerEvent writes, in a transaction it leaves open until commit is
+// called, what a newer same-record event writes: its rev gate claim, the
+// first statement of every consumer write, and the row's indexed_at watermark.
+func (c *rejectedMediaCase) holdNewerEvent(t *testing.T, rev string, at time.Time) (commit func()) {
+	t.Helper()
+	table := "posts"
+	if c.subjectIsComment {
+		table = "comments"
+	}
+	tx, err := c.h.db.BeginTx(t.Context(), nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tx.Rollback() })
+	won, err := tryAdvanceRecordRev(t.Context(), tx, c.subject.URI, rev)
+	require.NoError(t, err)
+	require.True(t, won, "the held event must be newer than the indexed state")
+	_, err = tx.ExecContext(t.Context(), `UPDATE `+table+` SET indexed_at = $2 WHERE uri = $1`, c.subject.URI, at)
+	require.NoError(t, err)
+	return func() { require.NoError(t, tx.Commit()) }
+}
+
+// A refused event must decide that it is current in the transaction that
+// inserts its blocks. A newer event that commits after the refused event's
+// first read of the indexed state, but before its reconciliation, supersedes
+// it, and the refused event must then add no blocks.
+func TestModerationRejectedEventRechecksFreshnessUnderLock(t *testing.T) {
+	type deliver func(ctx context.Context, c *rejectedMediaCase, rev string, at time.Time) error
+	retarget := func(ctx context.Context, c *rejectedMediaCase, rev string, at time.Time) error {
+		return c.h.posts.HandleEvent(ctx, c.postCommunityChange(rev, at))
+	}
+	rethread := func(ctx context.Context, c *rejectedMediaCase, rev string, at time.Time) error {
+		err := c.h.comments.HandleEvent(ctx, editMediaCommentEvent(c.otherPost, "update", c.commentRkey, rev,
+			editMediaCID("rethreaded comment record"), at, c.imageA, c.imageB))
+		if errors.Is(err, ErrPermanentEvent) {
+			return nil
+		}
+		return fmt.Errorf("the threading change must still be rejected, got %v", err)
+	}
+	for _, path := range []struct {
+		name    string
+		comment bool
+		deliver deliver
+	}{
+		{name: "postv2 community change", deliver: retarget},
+		{name: "comment threading change", comment: true, deliver: rethread},
+	} {
+		for _, newer := range []struct {
+			name string
+			// newerRev and newerAt are the held event's; refusedRev and
+			// refusedAt the refused event's, as indexes into revs and seconds
+			// after the case started.
+			newerRev, refusedRev int
+			newerAt, refusedAt   time.Duration
+		}{
+			// A cross-feed copy carries a newer emission time, so only rev orders it.
+			{name: "newer by rev", newerRev: 2, refusedRev: 1, newerAt: 2 * time.Second, refusedAt: 3 * time.Second},
+			{name: "newer by event time", newerRev: 1, refusedRev: 2, newerAt: 2 * time.Second, refusedAt: time.Second},
+		} {
+			t.Run(path.name+" superseded "+newer.name, func(t *testing.T) {
+				c := newRejectedMediaCase(t, "fresh "+path.name+" "+newer.name, path.comment, true)
+				// The pool is three connections: the held event, the refused
+				// event and this one.
+				observer, err := c.h.db.Conn(t.Context())
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = observer.Close() })
+				commit := c.holdNewerEvent(t, c.revs[newer.newerRev], c.started.Add(newer.newerAt))
+
+				ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+				defer cancel()
+				refusedDone := make(chan error, 1)
+				go func() {
+					refusedDone <- path.deliver(ctx, c, c.revs[newer.refusedRev], c.started.Add(newer.refusedAt))
+				}()
+				testkit.WaitFor(t, 5*time.Second, func() (bool, error) {
+					if len(refusedDone) > 0 {
+						return true, nil
+					}
+					var waiting int
+					err := observer.QueryRowContext(t.Context(), `
+						SELECT count(*) FROM pg_stat_activity
+						WHERE datname = current_database() AND pid <> pg_backend_pid()
+						  AND wait_event_type = 'Lock' AND wait_event <> 'advisory'
+					`).Scan(&waiting)
+					return waiting > 0, err
+				}, testkit.WithDescription("refused event waiting on a lock or finished"))
+				assert.Empty(t, refusedDone, "the refused event must not reconcile while a newer event is uncommitted")
+
+				commit()
+				require.NoError(t, <-refusedDone)
+				c.assertContentUnchanged(t)
+				c.assertImageBNotBlocked(t)
+			})
+		}
+	}
 }

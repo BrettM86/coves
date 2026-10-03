@@ -301,8 +301,8 @@ func (t *moderationTransaction) GetAction(ctx context.Context, actionID string) 
 // committed row, and a restore that arrives later waits at its decision
 // update for this transaction's blocks to commit, so its later
 // DeactivateMediaBlocks sees them. Mutations take it after the subject lock
-// and the consumer after its own row write; neither then waits on a lock the
-// other holds, so the order cannot deadlock.
+// and the consumer after its own row write or row lock; neither then waits on
+// a lock the other holds, so the order cannot deadlock.
 func (t *moderationTransaction) ActiveRemoval(ctx context.Context, authorityDID, subjectURI string) (*moderation.Action, error) {
 	action, err := scanModerationAction(t.tx.QueryRowContext(ctx, `
 		SELECT `+moderationActionColumns+` FROM moderation_actions a

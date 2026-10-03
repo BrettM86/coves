@@ -47,12 +47,35 @@ func (tx *pausingModerationTransaction) InsertAction(ctx context.Context, action
 	return tx.Transaction.InsertAction(ctx, action)
 }
 
+// rejectedLockCommentConsumer indexes a comment on the fixture's post with
+// one image, and another post the rejected events re-parent it to.
+func rejectedLockCommentConsumer(t *testing.T, f postModerationConsumerFixture, rev string, now time.Time) (*CommentEventConsumer, moderation.StrongRef, moderation.StrongRef, string) {
+	t.Helper()
+	reconciler := moderation.NewMediaReconciler(postgres.NewModerationRepository(f.db), fixtures.InstanceDID(), nil)
+	consumer := NewCommentEventConsumer(postgres.NewCommentRepository(f.db), f.db, WithCommentMediaReconciler(reconciler))
+	otherRkey := testkit.TID()
+	otherPost := moderation.StrongRef{URI: pv2URI(pv2Author, otherRkey), CID: editMediaCID("locked other post " + otherRkey)}
+	require.NoError(t, f.consumer.HandleEvent(t.Context(), pv2Event(pv2Author, "create", otherRkey, f.revs[0],
+		otherPost.CID, f.createdAt, postModerationRecord())))
+	root := moderation.StrongRef{URI: f.uri, CID: postModerationRecordCID}
+	rkey := testkit.TID()
+	created := editMediaCID("locked comment create " + rkey)
+	require.NoError(t, consumer.HandleEvent(t.Context(),
+		editMediaCommentEvent(root, "create", rkey, rev, created, now, postModerationCIDOne)))
+	subject := moderation.StrongRef{URI: "at://" + pv2Author + "/" + moderation.CommentCollection + "/" + rkey, CID: created}
+	return consumer, subject, otherPost, rkey
+}
+
 // An author edit that adds image Y must not commit between the removal's read
 // of the indexed subject and the removal's commit. If it could, the edit's
 // media reconciliation would find no active removal yet, and the removal would
 // block only the images it read, leaving Y served. The content-row share lock
 // taken with that read orders the two: the edit waits for the removal, then its
 // reconciliation sees the active removal and blocks Y.
+//
+// The same holds for the events the consumers refuse to index but whose images
+// they block (PRD Q-I6): each takes a conflicting lock on the content row
+// before it reads the active removal.
 func TestModerationRemovalHoldsContentRowAgainstAuthorEdit(t *testing.T) {
 	imageY := postModerationCIDTwo
 	for _, scenario := range []struct {
@@ -60,6 +83,11 @@ func TestModerationRemovalHoldsContentRowAgainstAuthorEdit(t *testing.T) {
 		// setup indexes the subject with one image and returns it with the
 		// consumer and event that edit it to add imageY.
 		setup func(t *testing.T, f postModerationConsumerFixture) (moderation.StrongRef, func(context.Context) error)
+		// rejected is true when the consumer refuses to index the event, so
+		// the subject keeps its indexed record.
+		rejected bool
+		// editErr is the error the event returns once the removal commits.
+		editErr error
 	}{
 		{name: "postv2", setup: func(t *testing.T, f postModerationConsumerFixture) (moderation.StrongRef, func(context.Context) error) {
 			update := pv2Event(pv2Author, "update", f.rkey, f.revs[1], editMediaCID("locked post edit"),
@@ -80,6 +108,28 @@ func TestModerationRemovalHoldsContentRowAgainstAuthorEdit(t *testing.T) {
 				now.Add(time.Second), postModerationCIDOne, imageY)
 			return moderation.StrongRef{URI: "at://" + pv2Author + "/" + moderation.CommentCollection + "/" + rkey, CID: created},
 				func(ctx context.Context) error { return consumer.HandleEvent(ctx, update) }
+		}},
+		{name: "postv2 update that changes community", rejected: true, setup: func(t *testing.T, f postModerationConsumerFixture) (moderation.StrongRef, func(context.Context) error) {
+			record := postModerationRecord(postModerationCIDOne, imageY)
+			record["community"] = pv2Prefix + "community2"
+			update := pv2Event(pv2Author, "update", f.rkey, f.revs[1], editMediaCID("locked post retarget"),
+				f.createdAt+1_000_000, record)
+			return moderation.StrongRef{URI: f.uri, CID: postModerationRecordCID},
+				func(ctx context.Context) error { return f.consumer.HandleEvent(ctx, update) }
+		}},
+		{name: "comment update that changes threading references", rejected: true, editErr: ErrPermanentEvent, setup: func(t *testing.T, f postModerationConsumerFixture) (moderation.StrongRef, func(context.Context) error) {
+			now := time.Now()
+			consumer, subject, otherPost, rkey := rejectedLockCommentConsumer(t, f, f.revs[2], now)
+			update := editMediaCommentEvent(otherPost, "update", rkey, f.revs[3], editMediaCID("locked comment rethread"),
+				now.Add(time.Second), postModerationCIDOne, imageY)
+			return subject, func(ctx context.Context) error { return consumer.HandleEvent(ctx, update) }
+		}},
+		{name: "same-rkey comment re-create with a changed parent", rejected: true, setup: func(t *testing.T, f postModerationConsumerFixture) (moderation.StrongRef, func(context.Context) error) {
+			now := time.Now()
+			consumer, subject, otherPost, rkey := rejectedLockCommentConsumer(t, f, f.revs[2], now)
+			recreate := editMediaCommentEvent(otherPost, "create", rkey, f.revs[3], editMediaCID("locked comment recreate"),
+				now.Add(time.Second), imageY)
+			return subject, func(ctx context.Context) error { return consumer.HandleEvent(ctx, recreate) }
 		}},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
@@ -152,14 +202,27 @@ func TestModerationRemovalHoldsContentRowAgainstAuthorEdit(t *testing.T) {
 
 			releaseRemoval()
 			require.NoError(t, <-removalDone)
-			require.NoError(t, <-editDone)
+			if scenario.editErr != nil {
+				require.ErrorIs(t, <-editDone, scenario.editErr)
+			} else {
+				require.NoError(t, <-editDone)
+			}
 			require.NoError(t, observer.QueryRowContext(t.Context(), `
 				SELECT cid FROM posts WHERE uri = $1 UNION ALL SELECT cid FROM comments WHERE uri = $1
 			`, subject.URI).Scan(&indexedCID))
-			assert.NotEqual(t, subject.CID, indexedCID, "the edit must be indexed after the removal commits")
+			if scenario.rejected {
+				assert.Equal(t, subject.CID, indexedCID, "the refused event must not be indexed")
+			} else {
+				assert.NotEqual(t, subject.CID, indexedCID, "the edit must be indexed after the removal commits")
+			}
 			blocked, err := postgres.NewModerationRepository(f.db).IsBlocked(t.Context(), pv2Author, imageY)
 			require.NoError(t, err)
 			assert.True(t, blocked, "the image the edit added must be blocked under the removal")
+			var ownerless int
+			require.NoError(t, observer.QueryRowContext(t.Context(), `
+				SELECT count(*) FROM moderation_media_blocks WHERE blob_cid = $1 AND owner_did IS NULL
+			`, imageY).Scan(&ownerless))
+			assert.Zero(t, ownerless, "an image added after the removal read the subject must not get an every-owner block")
 		})
 	}
 }

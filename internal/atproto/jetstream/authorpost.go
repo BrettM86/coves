@@ -720,7 +720,7 @@ func (c *PostEventConsumer) upsertAuthorPost(ctx context.Context, authorDID stri
 			PostV2Collection, uri, stored.communityDID, record.Community)
 		// The author's repo still serves the ignored record's images, so a
 		// removed post blocks them for the author (PRD Q-I6).
-		if err := c.blockIgnoredUpdateMedia(ctx, uri, authorDID, commit.Rev, timeUS, stored.indexedAt, record.Embed); err != nil {
+		if err := c.blockIgnoredUpdateMedia(ctx, uri, authorDID, commit.Rev, timeUS, record.Embed); err != nil {
 			return err
 		}
 		return nil
@@ -839,25 +839,15 @@ func (c *PostEventConsumer) upsertAuthorPost(ctx context.Context, authorDID stri
 // blockIgnoredUpdateMedia blocks, for the author only, the images of a postv2
 // update the consumer ignores, when the post has an active removal. A stale
 // event (older by rev or by event time than the indexed state) blocks nothing:
-// the newer state supersedes it. Neither guard advances anything, because the
-// ignored content is never applied.
-func (c *PostEventConsumer) blockIgnoredUpdateMedia(ctx context.Context, uri, authorDID, rev string, timeUS int64, storedIndexedAt time.Time, embed map[string]interface{}) error {
-	if evTime, ok := eventTime(timeUS); ok && !storedIndexedAt.Before(evTime) {
-		return nil
-	}
-	stale, err := recordRevIsStale(ctx, c.db, uri, rev)
-	if err != nil {
-		return fmt.Errorf("failed to check rev of ignored post update: %w", err)
-	}
-	if stale {
-		logSkippedStaleRev(ConsumerPosts, "update", uri, rev)
-		return nil
-	}
+// the newer state supersedes it. Both guards are decided under the gate and
+// post row locks, in the transaction that inserts the blocks, and neither
+// advances anything, because the ignored content is never applied.
+func (c *PostEventConsumer) blockIgnoredUpdateMedia(ctx context.Context, uri, authorDID, rev string, timeUS int64, embed map[string]interface{}) error {
 	_, embedJSON, _, err := serializePostContent(nil, embed, nil)
 	if err != nil {
 		return err
 	}
-	if err := c.blockIncomingMedia(ctx, uri, authorDID, embedJSON); err != nil {
+	if err := c.blockIncomingMedia(ctx, uri, authorDID, rev, timeUS, embedJSON); err != nil {
 		return fmt.Errorf("failed to block media of ignored post update: %w", err)
 	}
 	return nil
