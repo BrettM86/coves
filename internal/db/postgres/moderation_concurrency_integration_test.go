@@ -191,6 +191,10 @@ func (g *gatedMediaReconciler) ReconcileTx(ctx context.Context, tx *sql.Tx, subj
 	return blocks, err
 }
 
+func (g *gatedMediaReconciler) ReconcileIncomingTx(ctx context.Context, tx *sql.Tx, subjectURI, ownerDID string, blobCIDs []string) ([]moderation.MediaBlock, error) {
+	return g.inner.ReconcileIncomingTx(ctx, tx, subjectURI, ownerDID, blobCIDs)
+}
+
 func (g *gatedMediaReconciler) Purge(ctx context.Context, blocks []moderation.MediaBlock) {
 	g.inner.Purge(ctx, blocks)
 }

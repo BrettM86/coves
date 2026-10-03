@@ -147,6 +147,12 @@ func (s *service) removeContent(ctx context.Context, actorDID string, request Re
 			if err := tx.SetSubjectVersion(ctx, request.Subject.URI, version+1); err != nil {
 				return unavailable(err)
 			}
+			// An empty owner DID on a media block means every owner, so a
+			// subject that lost its owner is refused rather than blocking its
+			// images for everyone.
+			if subject.OwnerDID == "" && len(subject.BlobCIDs) > 0 {
+				return unavailable(errors.New("indexed subject has images but no owner DID"))
+			}
 			newlyBlocked = imageMediaBlocks(subject, action)
 			if len(newlyBlocked) > 0 {
 				if err := tx.InsertMediaBlocks(ctx, newlyBlocked); err != nil {

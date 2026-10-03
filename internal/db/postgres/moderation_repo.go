@@ -673,15 +673,37 @@ func (r *ModerationRepository) BindTransaction(tx *sql.Tx) moderation.MediaTrans
 }
 
 // ListActions reads a page of the action log.
+//
+// Each row's SubjectAccess is decided now, not when the action was recorded, by
+// the anonymous viewer's admission rule post.get applies before it discloses a
+// removed post (admittedPostsPredicate): a post admitted after its removal is
+// public from then on. A comment follows its root post. A subject with no
+// indexed post to decide from is restricted. ExcludeRestricted filters in the
+// WHERE clause, before LIMIT, so a filtered page is never short.
 func (r *ModerationRepository) ListActions(ctx context.Context, query moderation.ActionListQuery) ([]moderation.Action, error) {
 	var beforeCreatedAt, beforeID any
 	if query.Before != nil {
 		beforeCreatedAt, beforeID = query.Before.CreatedAt, query.Before.ID
 	}
+	// The admission join aliases community_post_admissions as a, shadowing the
+	// action alias inside the EXISTS, so the root URI is resolved one level out.
+	admissionJoin, admitted := admittedPostsPredicate(anonymousViewerSQL)
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT `+moderationActionColumns+`, reversed.reason
+		SELECT `+moderationActionColumns+`, reversed.reason, subject_access.access
 		FROM moderation_actions a
 		LEFT JOIN moderation_actions reversed ON reversed.id = a.reverses_action_id
+		LEFT JOIN comments subject_comment
+		    ON a.subject_collection = $18 AND subject_comment.uri = a.subject_uri
+		CROSS JOIN LATERAL (
+		    SELECT CASE WHEN a.subject_collection = $18 THEN subject_comment.root_uri
+		                ELSE a.subject_uri END AS post_uri
+		) subject_root
+		CROSS JOIN LATERAL (
+		    SELECT CASE WHEN EXISTS (
+		        SELECT 1 FROM posts p`+admissionJoin+`
+		        WHERE p.uri = subject_root.post_uri AND `+admitted+`
+		    ) THEN $20::text ELSE $21::text END AS access
+		) subject_access
 		WHERE ($2::timestamptz IS NULL OR (a.created_at, a.id) < ($2::timestamptz, $3::text))
 		  AND (NULLIF($4::text, '') IS NULL OR a.subject_uri = $4)
 		  AND (NULLIF($5::text, '') IS NULL OR a.subject_collection = $5)
@@ -697,12 +719,15 @@ func (r *ModerationRepository) ListActions(ctx context.Context, query moderation
 		      COALESCE(a.reason = ANY($15::text[]), FALSE)
 		      OR COALESCE(reversed.reason = ANY($15::text[]), FALSE)))
 		  AND (NOT $16::boolean OR a.action <> ALL($17::text[]))
+		  AND (NOT $19::boolean OR subject_access.access = $20::text)
 		ORDER BY a.created_at DESC, a.id DESC
 		LIMIT $1
 	`, query.Limit, beforeCreatedAt, beforeID, query.SubjectURI, query.SubjectCollection,
 		query.Action, query.Origin, query.AuthorityDID, query.ActorDID, query.CommunityDID,
 		query.ActionID, query.Since, query.Until, query.ExcludeHidden, pq.Array(moderation.HiddenActionReasons()),
-		query.ExcludeLabelActions, pq.Array(moderation.PublicExcludedActions()))
+		query.ExcludeLabelActions, pq.Array(moderation.PublicExcludedActions()),
+		moderation.CommentCollection, query.ExcludeRestricted,
+		string(moderation.SubjectAccessPublic), string(moderation.SubjectAccessRestricted))
 	if err != nil {
 		return nil, fmt.Errorf("list moderation actions: %w", err)
 	}
@@ -710,19 +735,31 @@ func (r *ModerationRepository) ListActions(ctx context.Context, query moderation
 	var actions []moderation.Action
 	for rows.Next() {
 		var reversedReason sql.NullString
-		action, err := scanModerationAction(rows, nil, &reversedReason)
+		var access string
+		action, err := scanModerationAction(trailingColumns{row: rows, extra: []any{&access}}, nil, &reversedReason)
 		if err != nil {
 			return nil, fmt.Errorf("scan moderation action: %w", err)
 		}
 		if action == nil {
 			return nil, errors.New("scan moderation action: row has no action id")
 		}
+		action.SubjectAccess = moderation.SubjectAccess(access)
 		actions = append(actions, *action)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read moderation actions: %w", err)
 	}
 	return actions, nil
+}
+
+// trailingColumns scans extra columns after the ones its caller asks for.
+type trailingColumns struct {
+	row   moderationRow
+	extra []any
+}
+
+func (columns trailingColumns) Scan(dest ...any) error {
+	return columns.row.Scan(append(dest, columns.extra...)...)
 }
 
 // RecordCDNPurgeTargets commits targets independently of any moderation action

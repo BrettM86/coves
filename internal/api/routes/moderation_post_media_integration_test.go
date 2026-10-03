@@ -150,11 +150,11 @@ func TestModerationPostCDNFailureDoesNotUndoLocalRemoval(t *testing.T) {
 		})
 		assert.NotContains(t, text.String(), token, "no log record may expose the Cloudflare token")
 		assert.NotContains(t, text.String(), bodySentinel, "no log record may expose the Cloudflare response")
-		if record.Level == slog.LevelError && attrs["did"] == authorDID && attrs["cid"] == imageCID && attrs["code"] == "http_500" {
+		if record.Level == slog.LevelError && attrs["code"] == "http_500" && attrs["count"] == "1" {
 			matchingErrors++
 		}
 	}
-	assert.Equal(t, 1, matchingErrors, "exactly one Error record must carry did, cid and http_500 for the first failure")
+	assert.Equal(t, 1, matchingErrors, "exactly one aggregated Error record must carry http_500 and count=1 for the first failure")
 	slog.SetDefault(previousLogger)
 
 	newQueue := func() *moderation.CDNPurgeQueue {

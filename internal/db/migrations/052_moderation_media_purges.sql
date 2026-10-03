@@ -1,6 +1,6 @@
 -- +goose Up
 CREATE TABLE moderation_media_purges (
-    owner_did TEXT NOT NULL,
+    owner_did TEXT NOT NULL CHECK (owner_did <> ''),
     blob_cid TEXT NOT NULL,
     state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'completed')),
     attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),

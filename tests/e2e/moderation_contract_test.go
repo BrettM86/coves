@@ -899,12 +899,12 @@ func TestModerationModlogWiringContract(t *testing.T) {
 		} `json:"state"`
 	}
 	var created []string
-	var restored testkit.Record
+	var restored strongRef
 	var restoredRemoval mutation
 	for index := range 2 {
-		post := author.PutRecord(t, postV2Collection, testkit.TID(),
-			postV2Record(community.DID, "modlog wiring "+testkit.UniqueID(t), "a post for the action log"))
-		awaitStatus(t, p, post.URI, community.DID, "pending", "the post to reach the AppView index")
+		// Accepted, because the public log never ties a post the public cannot
+		// see to its community.
+		post := indexedPost(t, p, community, author, "modlog wiring "+testkit.UniqueID(t))
 		var removal mutation
 		err := p.AppView.As(admin.ServiceAuth(t, communityInstanceDID, removeContentMethod)).Procedure(
 			t.Context(), removeContentMethod, map[string]any{

@@ -57,6 +57,17 @@ func hiddenAction(action Action) bool {
 	return false
 }
 
+// restrictedSubject reports a subject whose existence the public log must not
+// reveal (PRD §6): its URI, CID and community stay out of the public view.
+func restrictedSubject(action Action) bool {
+	return action.SubjectAccess == SubjectAccessRestricted
+}
+
+// privateSubject reports an action whose subject reference is admin-only.
+func privateSubject(action Action) bool {
+	return hiddenAction(action) || restrictedSubject(action)
+}
+
 // ActionView is the public defs#actionView projection of an action.
 type ActionView struct {
 	Ref          ActionRefView   `json:"ref"`
@@ -115,8 +126,12 @@ func NewActionView(action Action) ActionView {
 		Reason:       action.Reason,
 		LabelValue:   action.LabelValue,
 	}
-	if !hiddenAction(action) {
+	if !privateSubject(action) {
 		view.Subject = &SubjectRefView{URI: action.SubjectURI, CID: action.ObservedCID}
+	}
+	if restrictedSubject(action) {
+		// A community scope would tie the restricted subject to its community.
+		view.Scope.CommunityDID = ""
 	}
 	if action.ActorDID != "" {
 		view.Actor = &ActorRefView{DID: action.ActorDID}
@@ -134,7 +149,7 @@ func NewAdminActionView(action Action) AdminActionView {
 		ActorDID:    action.ActorDID,
 		PrivateNote: action.PrivateNote,
 	}
-	if hiddenAction(action) {
+	if privateSubject(action) {
 		view.PrivateSubject = &SubjectRefView{URI: action.SubjectURI, CID: action.ObservedCID}
 	}
 	return view
@@ -214,6 +229,12 @@ func listActionPage[T any](ctx context.Context, s *service, params ListActionsPa
 		return nil, "", fmt.Errorf("%w: list %s actions: %w", ErrModerationUnavailable, visibility, err)
 	}
 	for _, row := range rows {
+		if row.SubjectAccess != SubjectAccessPublic && row.SubjectAccess != SubjectAccessRestricted {
+			return nil, "", fmt.Errorf("%w: list %s actions: store returned action %s with subject access %q", ErrModerationUnavailable, visibility, row.ID, row.SubjectAccess)
+		}
+		if query.ExcludeRestricted && restrictedSubject(row) {
+			return nil, "", fmt.Errorf("%w: list %s actions: store returned restricted action %s despite ExcludeRestricted", ErrModerationUnavailable, visibility, row.ID)
+		}
 		if query.ExcludeHidden && hiddenAction(row) {
 			return nil, "", fmt.Errorf("%w: list %s actions: store returned hidden action %s despite ExcludeHidden", ErrModerationUnavailable, visibility, row.ID)
 		}
@@ -303,7 +324,10 @@ func (s *service) actionListQuery(ctx context.Context, params ListActionsParams,
 		}
 		query.Before = &cursor.key
 	}
+	// A filter that selects by subject, collection or community would confirm
+	// what the projection withholds, so such rows are not listed at all.
 	query.ExcludeHidden = !admin && (params.Subject != "" || params.Collection != "" || params.Community != "")
+	query.ExcludeRestricted = query.ExcludeHidden
 	query.ExcludeLabelActions = !admin
 	return query, digest, nil
 }

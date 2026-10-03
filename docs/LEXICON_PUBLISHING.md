@@ -311,5 +311,7 @@ enabled:
    a 25-URI response containing normal posts plus an unknown union variant,
    render `deletionReason: moderator`, tolerate the optional `moderation`
    object, and handle thread `NotFound` without a crash loop. Until it passes,
-   instance removals stay `#notFoundPost` for all callers of that endpoint;
-   never substitute the community-only `#removedPost`.
+   do not enable admin actions (leave `MODERATION_ADMINS` empty):
+   `community.post.get` serves `#moderatedPost` for every instance removal and
+   has no `#notFoundPost` fallback switch. Never substitute the community-only
+   `#removedPost`.

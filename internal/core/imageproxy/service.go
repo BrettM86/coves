@@ -526,42 +526,6 @@ func (s *ImageProxyService) PurgeActiveBlocks(ctx context.Context, lister Blocke
 	return errors.Join(errs...)
 }
 
-// StartActiveBlockPurgeJob runs PurgeActiveBlocks once straight away, which
-// completes any purge a restart interrupted, and then every interval. An
-// interval of zero or less runs only the startup sweep. The returned function
-// stops the job.
-func (s *ImageProxyService) StartActiveBlockPurgeJob(lister BlockedBlobLister, interval time.Duration) context.CancelFunc {
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("[IMAGE-PROXY] CRITICAL: blocked media purge job panicked", "panic", r)
-			}
-		}()
-		s.runActiveBlockPurge(ctx, lister)
-		if interval <= 0 {
-			return
-		}
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				s.runActiveBlockPurge(ctx, lister)
-			}
-		}
-	}()
-	return cancel
-}
-
-func (s *ImageProxyService) runActiveBlockPurge(ctx context.Context, lister BlockedBlobLister) {
-	if err := s.PurgeActiveBlocks(ctx, lister); err != nil && ctx.Err() == nil {
-		slog.Error("[IMAGE-PROXY] blocked media purge failed", "error", err)
-	}
-}
-
 // lockPublication takes cid's publication stripe, giving up when ctx ends.
 func (s *ImageProxyService) lockPublication(ctx context.Context, cid string) (release func(), err error) {
 	lock := s.publicationLock(cid)

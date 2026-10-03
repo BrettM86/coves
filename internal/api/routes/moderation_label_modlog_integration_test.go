@@ -35,6 +35,14 @@ func (f *modlogFixture) labelPost(t *testing.T) moderation.StrongRef {
 		VALUES ($1, $2, $3, $4, $5, 'modlog labelled post', 'indexed body', $6)
 	`, subject.URI, subject.CID, rkey, f.authorDID, f.communityDID, time.Now())
 	require.NoError(t, err)
+	// Accepted, so the post is public and the admin log names it as the
+	// action's subject rather than as a restricted privateSubject.
+	_, err = f.db.ExecContext(t.Context(), `
+		INSERT INTO community_post_admissions
+			(community_did, post_uri, status, accepted_cid, evaluated_cid, last_community_rev, last_community_op_rank, created_at, updated_at)
+		VALUES ($1, $2, 'accepted', $3, $3, '3lqqqqqqqqqq2', 1, NOW(), NOW())
+	`, f.communityDID, subject.URI, subject.CID)
+	require.NoError(t, err)
 	return subject
 }
 

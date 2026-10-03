@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	"Coves/internal/config"
 	"Coves/internal/core/imageproxy"
 	"Coves/internal/core/moderation"
+	"Coves/tests/testkit"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
@@ -155,4 +158,40 @@ func TestBuildImageProxyServiceStartupSweepAndCacheHeaders(t *testing.T) {
 			assert.Equal(t, test.wantCache, response.Header().Get("Cache-Control"))
 		})
 	}
+}
+
+type cdnWiringPanickingLister struct{ calls, withoutDeadline atomic.Int64 }
+
+func (lister *cdnWiringPanickingLister) ListActiveBlockedBlobs(ctx context.Context) ([]imageproxy.BlockedBlob, error) {
+	if lister.calls.Add(1) == 1 {
+		panic("first blocked media purge cycle explodes")
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		lister.withoutDeadline.Add(1)
+	}
+	return nil, nil
+}
+
+// One panicking sweep must cost one cycle, not the job: a dead purge job
+// leaves blocked bytes the disk refused to drop in the cache until restart.
+func TestBuildImageProxyServiceBlockedMediaPurgeSurvivesAPanickingCycle(t *testing.T) {
+	cache, err := imageproxy.NewDiskCache(t.TempDir(), 1, 0)
+	require.NoError(t, err)
+	cfg := imageproxy.DefaultConfig()
+	cfg.CachePath = t.TempDir()
+	cfg.CleanupInterval = time.Millisecond
+	lister := &cdnWiringPanickingLister{}
+
+	_, _, stop, err := buildImageProxyService(cfg, config.CDNPurgeConfig{}, nil, imageProxyDependencies{
+		cache: cache, processor: cdnWiringFailProcessor{t}, fetcher: cdnWiringFailFetcher{t},
+		blocks: cdnWiringUnblocked{}, lister: lister, resolver: cdnWiringFailResolver{t: t},
+	})
+	require.NoError(t, err)
+	t.Cleanup(stop)
+
+	testkit.WaitFor(t, 5*time.Second, func() (bool, error) {
+		return lister.calls.Load() >= 3, nil
+	}, testkit.WithDescription("the blocked media purge job keeps cycling after a panicking cycle"),
+		testkit.WithDiagnostics(func() string { return fmt.Sprintf("list calls: %d", lister.calls.Load()) }))
+	assert.Zero(t, lister.withoutDeadline.Load(), "every purge cycle must run under a deadline")
 }

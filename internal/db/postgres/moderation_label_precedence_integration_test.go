@@ -38,6 +38,7 @@ func requireLabelPrecedenceTombstone(t *testing.T, result *posts.PostResult, sub
 	assert.Equal(t, subject.URI, result.Moderated.URI)
 	require.NotNil(t, result.Moderated.Moderation)
 	assert.Equal(t, moderation.ModerationStateRemoved, result.Moderated.Moderation.State)
+	assert.Len(t, result.Moderated.Moderation.Sources, 1, "only the removal is a removal source, never the label")
 	assert.Empty(t, result.Moderated.Moderation.ContentLabels)
 	encoded := labelPrecedenceJSON(t, result)
 	assert.Contains(t, string(encoded), `"$type":"social.coves.community.post.defs#moderatedPost"`)

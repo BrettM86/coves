@@ -1,11 +1,6 @@
 package jetstream
 
 import (
-	"Coves/internal/atproto/utils"
-	"Coves/internal/core/comments"
-	"Coves/internal/core/moderation"
-	"Coves/internal/core/posts"
-	"Coves/internal/core/richtext"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -14,6 +9,13 @@ import (
 	"log"
 	"strings"
 	"time"
+
+	"Coves/internal/atproto/utils"
+	"Coves/internal/core/comments"
+	"Coves/internal/core/embeds"
+	"Coves/internal/core/moderation"
+	"Coves/internal/core/posts"
+	"Coves/internal/core/richtext"
 
 	"github.com/lib/pq"
 )
@@ -46,8 +48,11 @@ type CommentEventConsumer struct {
 type CommentEventConsumerOption func(*CommentEventConsumer)
 
 // MediaReconciler blocks images introduced on removed comments or posts.
+// ReconcileIncomingTx covers incoming content the consumer does not index,
+// because the stored row cannot name its blobs.
 type MediaReconciler interface {
 	ReconcileTx(ctx context.Context, tx *sql.Tx, subjectURI string) ([]moderation.MediaBlock, error)
+	ReconcileIncomingTx(ctx context.Context, tx *sql.Tx, subjectURI, ownerDID string, blobCIDs []string) ([]moderation.MediaBlock, error)
 	Purge(ctx context.Context, blocks []moderation.MediaBlock)
 }
 
@@ -80,6 +85,38 @@ func commitMediaWrite(ctx context.Context, tx *sql.Tx, uri string, reconciler Me
 		reconciler.Purge(ctx, blocks)
 	}
 	return nil
+}
+
+// commitIncomingCommentMedia blocks, for the commenter only, the images of an
+// incoming comment record the consumer does not index, when the comment has an
+// active removal. It commits tx unless reconciliation fails, and purges cached
+// copies only after the blocks commit.
+func (c *CommentEventConsumer) commitIncomingCommentMedia(ctx context.Context, tx *sql.Tx, uri, commenterDID string, blobCIDs []string) error {
+	if c.mediaReconciler == nil || len(blobCIDs) == 0 {
+		return tx.Commit()
+	}
+	blocks, err := c.mediaReconciler.ReconcileIncomingTx(ctx, tx, uri, commenterDID, blobCIDs)
+	if err != nil {
+		return fmt.Errorf("reconcile incoming comment media: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	c.mediaReconciler.Purge(ctx, blocks)
+	return nil
+}
+
+// incomingCommentImageCIDs returns the image CIDs of a serialized incoming
+// comment embed. A malformed embed has no served images to block.
+func incomingCommentImageCIDs(embed *string) []string {
+	if embed == nil {
+		return nil
+	}
+	var decoded map[string]interface{}
+	if err := json.Unmarshal([]byte(*embed), &decoded); err != nil {
+		return nil
+	}
+	return embeds.CommentImageCIDs(decoded)
 }
 
 // WithCommentBridgeTrust installs the provenance gate that decides which user repos may
@@ -322,6 +359,12 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 		log.Printf("  Incoming root: %s (CID: %s)", commentRecord.Reply.Root.URI, commentRecord.Reply.Root.CID)
 		log.Printf("  Existing parent: %s (CID: %s)", storedParentURI, storedParentCID)
 		log.Printf("  Incoming parent: %s (CID: %s)", commentRecord.Reply.Parent.URI, commentRecord.Reply.Parent.CID)
+		// The commenter's repo still serves the rejected record's images, so a
+		// removed comment blocks them for the commenter (PRD Q-I6). The recency
+		// guard above already ran; a rev-stale event blocks nothing either.
+		if err := c.blockRejectedUpdateMedia(ctx, uri, repoDID, commit.Rev, commentRecord.Embed); err != nil {
+			return err
+		}
 		// PERMANENT: threading reassignment is a policy rejection that no retry or
 		// redrive can ever make valid.
 		return fmt.Errorf("%w: comment threading references cannot be changed after creation", ErrPermanentEvent)
@@ -457,6 +500,38 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 		log.Printf("✓ Updated comment: %s (bridgedStats candidate applied if newer-or-equal: up=%d down=%d)", uri, incomingUp, incomingDn)
 	} else {
 		log.Printf("✓ Updated comment: %s", uri)
+	}
+	return nil
+}
+
+// blockRejectedUpdateMedia blocks the images of a rejected comment update for
+// the commenter when the comment has an active removal. A rev-stale event
+// blocks nothing, and the read-only rev check advances nothing, because the
+// rejected content is never applied.
+func (c *CommentEventConsumer) blockRejectedUpdateMedia(ctx context.Context, uri, commenterDID, rev string, embed map[string]interface{}) error {
+	blobCIDs := embeds.CommentImageCIDs(embed)
+	if c.mediaReconciler == nil || len(blobCIDs) == 0 {
+		return nil
+	}
+	stale, err := recordRevIsStale(ctx, c.db, uri, rev)
+	if err != nil {
+		return fmt.Errorf("failed to check rev of rejected comment update: %w", err)
+	}
+	if stale {
+		logSkippedStaleRev(ConsumerComments, "update", uri, rev)
+		return nil
+	}
+	tx, err := c.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin media block transaction: %w", err)
+	}
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && rollbackErr != sql.ErrTxDone {
+			log.Printf("Failed to rollback transaction: %v", rollbackErr)
+		}
+	}()
+	if err := c.commitIncomingCommentMedia(ctx, tx, uri, commenterDID, blobCIDs); err != nil {
+		return fmt.Errorf("failed to block media of rejected comment update: %w", err)
 	}
 	return nil
 }
@@ -646,7 +721,10 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 			// a dead-lettered delete AND a cross-thread rkey reuse inside the
 			// redrive window. Documented rather than fixed.
 			log.Printf("Comment already indexed: %s (idempotent replay)", comment.URI)
-			if commitErr := tx.Commit(); commitErr != nil {
+			// The dropped record's images are still served from the commenter's
+			// repo, so a removed comment blocks them for the commenter (PRD Q-I6).
+			if commitErr := c.commitIncomingCommentMedia(ctx, tx, comment.URI, comment.CommenterDID,
+				incomingCommentImageCIDs(comment.Embed)); commitErr != nil {
 				return fmt.Errorf("failed to commit transaction: %w", commitErr)
 			}
 			return nil

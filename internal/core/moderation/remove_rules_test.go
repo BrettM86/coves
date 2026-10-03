@@ -167,6 +167,23 @@ func TestRemoveContentRules(t *testing.T) {
 		assert.Equal(t, []string{removeRulesFirstImage, removeRulesSecondImage}, scenario.purger.blobPurges)
 	})
 
+	// An empty owner DID on a media block means every owner, so an indexed
+	// subject that lost its owner must not turn a spam removal into an
+	// every-owner block.
+	t.Run("indexed subject with images and no owner is refused without blocks", func(t *testing.T) {
+		scenario := newRemoveRulesScenario()
+		comment := scenario.store.state.indexedComments[removeRulesURI]
+		comment.OwnerDID = ""
+		scenario.store.state.indexedComments[removeRulesURI] = comment
+		result, err := scenario.service.RemoveContent(t.Context(), removeRulesAdminDID, scenario.request)
+		require.ErrorIs(t, err, moderation.ErrModerationUnavailable)
+		assert.Nil(t, result)
+		assert.Empty(t, scenario.store.state.mediaBlocks)
+		assert.Empty(t, scenario.store.state.actions)
+		assert.Empty(t, scenario.purger.ownerPurges)
+		assert.Empty(t, scenario.purger.blobPurges)
+	})
+
 	for _, test := range []struct {
 		name   string
 		change func(*removeRulesScenario)

@@ -1,6 +1,6 @@
 # PRD: Admin Moderation, Public Modlog, and Federated Decisions
 
-**Status:** Draft for product review; not an implementation authorization
+**Status:** Local milestone (phases 1a and 1: authority, remove/restore, NSFW apply/retract, read-path enforcement, media blocks, public/admin modlog, optional CDN purge) implemented on the backend. The federated milestone (§7 labeler, label publication/ingestion, §10 items 10–16) is not implemented.
 
 **Date:** 2026-09-17
 
@@ -10,7 +10,7 @@
 
 ## 1. Summary and recommendation
 
-Give each Coves instance multiple DID-authenticated administrators who can remove and restore posts and comments from that instance's served views, and apply or retract NSFW labels on posts. NSFW uses the existing client blur/reveal treatment without excluding the post from feeds; full AppView removal is a separate action. Removed comments retain the machine-readable `moderator-removed` state, with authority scope selecting **[Removed by server admin]** or, later, **[Removed by community moderator]**. Record each moderation action in a public, paginated modlog, with private notes and report details available only to authorized admins.
+Give each Coves instance multiple DID-authenticated administrators who can remove and restore posts and comments from that instance's served views, and apply or retract NSFW labels on posts. NSFW uses the existing client blur/reveal treatment without excluding the post from feeds; full AppView removal is a separate action. Removed comments retain the machine-readable `moderator-removed` state, with authority scope selecting **[Removed by server admin]** or, later, **[Removed by community moderator]**. Record each removal and restoration in a public, paginated modlog, and every action, NSFW included, in an admin-only log with private notes.
 
 **Use atProto labels to distribute moderation decisions, with a separate action history and local enforcement policy.** Labels are the right federation primitive for “instance Y chooses to follow Coves.social's removals.” They do not themselves delete content, grant moderation permissions, provide a complete audit log, or force another instance to comply.
 
@@ -82,7 +82,7 @@ The local milestone is useful on its own, but **the federation requirement is co
 - A full Ozone replacement, general activity logging of every admin interaction, or migrating every existing admin-like endpoint into this release.
 - Guaranteed removal of copies already downloaded or independently cached by third parties.
 
-The initial modlog covers every successful remove, restore, NSFW application, and NSFW retraction. In-app editing, amendment, and redaction of modlog entries are deferred. The public log has no free-text field in this release, so no disclosure-correction procedure is needed yet; define one before public explanations are ever added. Failed authorization and failed requests belong in private operational/security audit records, not the public modlog.
+The admin log covers every successful remove, restore, NSFW application, and NSFW retraction; the public log covers removals and restorations only (Q-LABEL-LOG). In-app editing, amendment, and redaction of modlog entries are deferred. The public log has no free-text field in this release, so no disclosure-correction procedure is needed yet; define one before public explanations are ever added. Failed authorization and failed requests belong in private operational/security audit records, not the public modlog.
 
 ## 3. Existing foundations and gaps
 
@@ -188,7 +188,7 @@ The initial UI actions are **Mark NSFW**, **Retract NSFW label**, and the separa
 4. Retraction references the active local NSFW action and clears only that authority/scope/value. Another authority's NSFW label or an author's self-label keeps the existing sensitive-content presentation active. A deleted/unavailable post does not prevent retracting a decision about its URI.
 5. A removal always takes precedence over blur. Applying or retracting NSFW cannot restore removed content; restoring content cannot clear NSFW labels. If the removal is lifted while NSFW remains, the post returns with the existing NSFW treatment. A Show/reveal control never reveals an AppView-removed post.
 
-“Remove from the entire AppView” means the independent instance-removal action applies across all ordinary serving surfaces, including direct reads, feeds, search, profile activity, quotes, and cached hydration. This remains reversible local enforcement, not deletion from the author's PDS. NSFW classification alone is intentionally revealable and is not a security boundary for fetching content. Coves-controlled media serving and shared-blob details for actual removals remain an implementation decision in section 12.
+“Remove from the entire AppView” means the independent instance-removal action applies across all ordinary serving surfaces, including direct reads, feeds, search, profile activity, quotes, and cached hydration. This remains reversible local enforcement, not deletion from the author's PDS. NSFW classification alone is intentionally revealable and is not a security boundary for fetching content. Coves-controlled media serving and shared-blob rules are decided (section 9, Media and retained content).
 
 The web currently derives sensitivity from `post.record?.labels`; mobile's `PostView.isSensitive` also reads only the record's self-labels. Both must consume the new view metadata before moderator labeling is usable. Test existing non-image concealment and accessibility behavior too, not just image blur. Existing supported-client rollout checks must include NSFW metadata; do not fake self-labels to make an old client appear compatible.
 
@@ -369,7 +369,7 @@ Choose one authoritative action store and a reliable projection into labels; do 
 4. A removal survives an edit, duplicate firehose delivery, restart, and delete/recreate of the same URI. A different URI is a different subject; repost detection is not implied.
 5. Restore appends history and releases only its own decision. It cannot revive author-deleted content, bypass admission, or clear another source's removal.
 6. Concurrent admins and request retries yield a coherent final state and exactly one action per accepted mutation, with explicit conflict/no-op responses. Cover cross-actor key reuse, same-key/different-body conflicts, authorization revocation, and stale retries after key-retention expiry.
-7. The public modlog lists every successful moderation mutation with stable pagination; private notes/report data and restricted subjects do not leak. Original actor attribution survives role revocation.
+7. The public modlog lists every successful remove and restore with stable pagination; private notes/report data and restricted subjects do not leak. Original actor attribution survives role revocation.
 8. A storage failure cannot leave an unlogged effective action or a success entry for an unenforced action. Local-only decisions have no pending-publication claim. Moderating a locally hosted community's content leaves its community acceptance/removal records untouched.
 9. Web and mobile render agreed placeholders without crashing or revealing removed content. Coves-controlled media behavior matches the approved policy, including warm-cache requests.
 
@@ -377,10 +377,10 @@ Choose one authoritative action store and a reliable projection into labels; do 
 
 - An admin marks an otherwise eligible post NSFW: web and mobile use the existing badge/blur/concealment and Show/Hide behavior for the viewer's existing settings. The post stays in the same default feed/search/profile eligibility and receives no NSFW-specific ranking penalty.
 - The author's record, CID, and self-labels are untouched by the moderation write. Ordinary viewers and the author cannot clear an admin label through the author-edit API. Post edits do not silently erase the active URI-scoped decision.
-- Application and retraction each create one attributed modlog action; retries do not duplicate them. A non-admin or an unsupported subject/value cannot create or retract a moderator classification.
+- Application and retraction each create one attributed admin-log action (not in the public modlog); retries do not duplicate them. A non-admin or an unsupported subject/value cannot create or retract a moderator classification.
 - Retracting one source's label leaves NSFW presentation active if another applicable source or the author's self-label remains. A post with no remaining NSFW source returns to its ordinary presentation on refreshed state.
 - A post can be both NSFW and removed. Removal suppresses it across the AppView even after it was revealed or cached; NSFW retraction does not restore it, and restoring it preserves any remaining NSFW treatment.
-- Moderator label metadata reaches feeds, direct post reads, quotes, and refreshed cached views. Supported clients do not accidentally treat omission from a truncated source preview as the absence of NSFW.
+- Moderator label metadata reaches feeds, direct post reads, and refreshed cached views. Supported clients do not accidentally treat omission from a truncated source preview as the absence of NSFW.
 
 ### Federated milestone
 
@@ -434,7 +434,7 @@ Consulted 2026-09-17; pin dependency versions and recheck wire behavior during i
 
 ## 14. Lexicon change inventory
 
-**Status:** Proposed implementation inventory, checked against discussion 4245 and the published style guide on 2026-09-17. No schema JSON is changed or published by this PRD. Final wire definitions depend on the product decisions in section 12; neither this inventory nor schema publication grants admin authority.
+**Status:** Implementation inventory, checked against discussion 4245 and the published style guide on 2026-09-17. The local-milestone schema JSON in this inventory is implemented; publication follows `LEXICON_PUBLISHING.md`. Final wire definitions depend on the product decisions in section 12; neither this inventory nor schema publication grants admin authority.
 
 Paths below are relative to `internal/atproto/lexicon/social/coves/`. A schema `object` used in API responses is not a repository `record`: the moderation service's action history does not need a new public repository collection just to have a typed XRPC API.
 
@@ -530,7 +530,7 @@ The published `comment.defs#commentView` requires a verbatim `record`, but the A
 | `community/post/get.json` | Add `#moderatedPost` to the existing open `posts.items` union and serve it for instance removals (decided 2026-09-20), subject to the old-reader check below. | Schema-additive, so schema evolution alone does not require `post.getV2`; runtime client compatibility must still be demonstrated. Unknown variants must render unavailable rather than crash a batch or expose raw JSON. |
 | `actor/getComments.json` | Keep its normal `commentView` response. Filter moderated comments, comments under a removed post, and any author-deleted placeholders from profile activity before hydration. | No schema change. Audit whether placeholders are currently returned here; profile tombstones have no use. |
 | `actor/getPosts.json`, `feed/defs.json`, `feed/getCommunity.json`, `feed/getDiscover.json`, `feed/getTimeline.json`, `feed/getAll.json`, `feed/searchPosts.json` | Keep normal feed views and filter removed subjects; hydrate the new optional post metadata for NSFW without filtering/ranking changes. Test pagination, cached candidates, and hydration. | The referenced `postView` gains optional metadata; no feed-array type change is needed. Do not broaden all feed unions just because direct views need tombstones. |
-| `embed/post.json#view.resolved` | Document/test the content-free unavailable result for a removed quoted subject; preserve its current `unknown` field type. Reuse a typed tombstone object when it fits the existing rendering contract, or define the concrete unavailable object before shipping. Carry active NSFW metadata when hydrating a visible Coves quoted post so the quote uses the same sensitive-content treatment. | Redact a removed quote's preview, not the containing post; this is not an embed-only moderation action. Do not narrow the published `unknown` to a union in place or turn the record's strongRef into a hydrated object. No removed record data may survive in cached `resolved` objects. |
+| `embed/post.json#view.resolved` | Document/test the content-free unavailable result for a removed quoted subject; preserve its current `unknown` field type. Reuse a typed tombstone object when it fits the existing rendering contract, or define the concrete unavailable object before shipping. D-QUOTES (decided): Coves-quoted posts are not hydrated server-side. The served quote is the strongRef only, so it carries no copied content and no NSFW metadata; `post.get` on a removed quoted URI returns `#moderatedPost`. | Redact a removed quote's preview, not the containing post; this is not an embed-only moderation action. Do not narrow the published `unknown` to a union in place or turn the record's strongRef into a hydrated object. No removed record data may survive in cached `resolved` objects. |
 | `community/post/getStatus.json` | Keep community admission status and its meaning. Audit serving/disclosure separately; do not overwrite `accepted` with an instance-removal status. | No moderation-driven schema change. `getSubjectState` and tombstone views describe the separate instance restriction. |
 
 **Old-reader contract:** comments need no separate old-reader path, because removed comments use the wire shape installed clients already decode and a removed post's thread uses the already-declared `NotFound`. Before enabling actions, pin with tests that supported web and mobile builds render `deletionReason: moderator`, tolerate the optional `moderation` object, and handle thread `NotFound` without a crash loop. Every other still-served endpoint must redact using only a response its published schema allows.
@@ -561,4 +561,4 @@ Before publishing implementation schemas:
 5. Update the runbook's moderation holdback policy for these specific reviewed schemas. Because the new content-view definitions reference `moderation.defs`, resolving its publication is a hard prerequisite for tombstones as well as the modlog. The existing `#banView` (a generic `uri`/`cid`/`record`/`indexedAt` record view referenced only by the held-back `banUser`, `listBans`, and `getBanStatus`) is published as it stands (2026-09-20); it cannot be removed afterwards. Then enable `_lexicon.moderation.coves.social` delegation, publish the reviewed shared definitions, and verify their full dependency closure resolves. Only then publish the additions to `community.comment.defs` and `community.post.defs`, and finally the endpoints that reference them. Use explicit file allowlists, **not the whole moderation directory**. Do not silently publish unreviewed governance contracts or remove an existing definition casually.
 6. Resolve all published definitions through DNS/PDS and pass the older-decoder gate above before emitting new variants. The corrected `commentView` placeholder, removed-post thread `NotFound`, the selected old-reader behavior, and effective NSFW hydration/presentation must all be exercised against the running AppView before enabling actions. Ignoring optional moderator label metadata is schema-compatible but does not satisfy the supported client's NSFW behavior contract.
 
-Inventory completion means each row has a selected wire contract and compatibility classification before coding; JSON validation/linting and network publication are later implementation/release checks, not checks this documentation edit claims to have passed.
+Inventory completion means each row has a selected wire contract and compatibility classification before coding; network publication remains a release step under `LEXICON_PUBLISHING.md`.

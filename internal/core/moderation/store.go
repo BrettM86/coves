@@ -53,7 +53,24 @@ type Action struct {
 	ReversedActionReason string
 	Origin               string
 	CreatedAt            time.Time
+	// SubjectAccess is whether the public may know the subject exists, decided
+	// when the log is read. Store.ListActions must set it on every row; the
+	// service refuses a row that leaves it unset. It is read-time state, so it
+	// stays out of stored idempotency results.
+	SubjectAccess SubjectAccess `json:"-"`
 }
+
+// SubjectAccess says whether an action's subject is content the anonymous
+// public can see. It follows post.get's anonymous admission rule: a post is
+// public when its own community admitted it (or, outside postv2, when it has
+// no admission row), and a comment follows its root post. A subject with no
+// indexed content row to decide from is restricted.
+type SubjectAccess string
+
+const (
+	SubjectAccessPublic     SubjectAccess = "public"
+	SubjectAccessRestricted SubjectAccess = "restricted"
+)
 
 // IndexedComment is the indexed comment row a mutation inspects, read under a
 // share lock so consumer writes serialize against the CID check.
@@ -116,9 +133,11 @@ type Store interface {
 	InTransaction(ctx context.Context, fn func(ctx context.Context, tx Transaction) error) error
 	SubjectModeration(ctx context.Context, authorityDID, subjectURI string) (*SubjectModeration, error)
 	// ListActions returns up to query.Limit actions, newest first, each with
-	// ReversedActionReason populated. Under ExcludeHidden it must omit every
-	// hidden action, and under ExcludeLabelActions every action whose kind is
-	// in PublicExcludedActions; the service fails closed if either comes back.
+	// ReversedActionReason and SubjectAccess populated. Under ExcludeHidden it
+	// must omit every hidden action, under ExcludeLabelActions every action
+	// whose kind is in PublicExcludedActions, and under ExcludeRestricted every
+	// action whose subject is not SubjectAccessPublic; the service fails closed
+	// if any of them comes back.
 	ListActions(ctx context.Context, query ActionListQuery) ([]Action, error)
 }
 
@@ -139,6 +158,8 @@ type ActionListQuery struct {
 	Since             *time.Time
 	Until             *time.Time
 	ExcludeHidden     bool
+	// ExcludeRestricted omits every action whose subject is restricted.
+	ExcludeRestricted bool
 	// ExcludeLabelActions omits every action kind in PublicExcludedActions.
 	ExcludeLabelActions bool
 }

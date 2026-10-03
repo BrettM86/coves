@@ -254,6 +254,7 @@ func TestModlogFilterHiddenExclusionDependsOnlyOnSubjectDetail(t *testing.T) {
 				require.NoError(t, err)
 				require.Len(t, store.listQueries, 1)
 				assert.Equal(t, test.hidden && !admin, store.listQueries[0].ExcludeHidden)
+				assert.Equal(t, test.hidden && !admin, store.listQueries[0].ExcludeRestricted)
 			})
 		}
 	}

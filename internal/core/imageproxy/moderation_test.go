@@ -499,20 +499,3 @@ func TestImageProxyService_PurgeActiveBlocksRemovesBlockedEntries(t *testing.T) 
 	err = service.PurgeActiveBlocks(t.Context(), blockedBlobListerFunc(func(context.Context) ([]BlockedBlob, error) { return nil, listError }))
 	assert.ErrorIs(t, err, listError)
 }
-
-func TestImageProxyService_ActiveBlockPurgeJobSweepsAtStartup(t *testing.T) {
-	cache := NewMockCache()
-	cache.SetCacheData("avatar", moderationTestOwner, moderationTestCID, []byte("left by a lost purge"))
-	service, err := NewService(cache, NewMockProcessor(nil, nil), NewMockFetcher(nil, nil), allowAllBlockChecker(), DefaultConfig())
-	require.NoError(t, err)
-	lister := blockedBlobListerFunc(func(context.Context) ([]BlockedBlob, error) {
-		return []BlockedBlob{{OwnerDID: moderationTestOwner, CID: moderationTestCID}}, nil
-	})
-
-	stop := service.StartActiveBlockPurgeJob(lister, 0)
-	t.Cleanup(stop)
-	testkit.WaitFor(t, 5*time.Second, func() (bool, error) {
-		_, found, err := cache.Get("avatar", moderationTestOwner, moderationTestCID)
-		return !found, err
-	}, testkit.WithDescription("startup sweep removes bytes a lost purge left on disk"))
-}

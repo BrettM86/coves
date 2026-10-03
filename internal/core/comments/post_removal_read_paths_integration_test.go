@@ -69,6 +69,20 @@ func removeFixturePost(t *testing.T, service moderation.Service, subject moderat
 	return removed
 }
 
+// labelFixtureRoot applies an active NSFW label, which is a moderation decision
+// but not a removal, to the root of comment, so read paths that exclude removed
+// roots must still serve it.
+func labelFixtureRoot(t *testing.T, db *sql.DB, service moderation.Service, comment string) {
+	t.Helper()
+	var root moderation.StrongRef
+	require.NoError(t, db.QueryRowContext(t.Context(), `SELECT root_uri, root_cid FROM comments WHERE uri = $1`, comment).Scan(&root.URI, &root.CID))
+	labelled, err := service.LabelContent(t.Context(), fixtures.DID(testkit.UniqueIDWithPrefix(t, "rootlabeler")), moderation.LabelContentRequest{
+		Subject: root, LabelValue: moderation.LabelNSFW, ExpectedVersion: "v0", IdempotencyKey: "label-root",
+	})
+	require.NoError(t, err)
+	require.Equal(t, moderation.OutcomeApplied, labelled.Outcome)
+}
+
 func TestPostRemovalGetCommentsHidesRootForEveryViewer(t *testing.T) {
 	db, commentService, moderationService, subject, _, _, _, _, _ := postRemovalFixture(t)
 	baseline, err := commentService.GetComments(t.Context(), &comments.GetCommentsRequest{PostURI: subject.URI, Sort: "new", Depth: 1, Limit: 10})
@@ -99,11 +113,12 @@ func TestPostRemovalGetCommentsHidesRootForEveryViewer(t *testing.T) {
 }
 
 func TestPostRemovalActorCommentsFiltersBeforePagination(t *testing.T) {
-	_, commentService, moderationService, subject, communityDID, commenterDID, first, visible, second := postRemovalFixture(t)
+	db, commentService, moderationService, subject, communityDID, commenterDID, first, visible, second := postRemovalFixture(t)
 	baseline := postRemovalActorComments(t, commentService, commenterDID, "", 10, nil)
 	require.Len(t, baseline.Comments, 3)
 	require.Equal(t, []string{first, visible, second}, []string{baseline.Comments[0].URI, baseline.Comments[1].URI, baseline.Comments[2].URI})
 	removeFixturePost(t, moderationService, subject)
+	labelFixtureRoot(t, db, moderationService, visible)
 	for _, filter := range []struct{ name, community string }{{"all communities", ""}, {"community filtered", communityDID}} {
 		t.Run(filter.name, func(t *testing.T) {
 			whole := postRemovalActorComments(t, commentService, commenterDID, filter.community, 10, nil)
@@ -165,7 +180,8 @@ func TestPostRemovalRestoreServesIndexedThreadAndActorComments(t *testing.T) {
 
 // The profile's commentCount must agree with the list actor.getComments
 // serves: both exclude comments under an instance-removed root and comments
-// that are themselves instance-removed.
+// that are themselves instance-removed, and both keep a comment whose root is
+// only labelled.
 func TestPostRemovalProfileCommentCountMatchesActorComments(t *testing.T) {
 	db, commentService, moderationService, subject, _, commenterDID, _, visible, _ := postRemovalFixture(t)
 	var visibleRootURI, visibleRootCID string
@@ -183,6 +199,7 @@ func TestPostRemovalProfileCommentCountMatchesActorComments(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, moderation.OutcomeApplied, removedComment.Outcome)
+	labelFixtureRoot(t, db, moderationService, visible)
 
 	listed := postRemovalActorComments(t, commentService, commenterDID, "", 50, nil)
 	require.Len(t, listed.Comments, 1)

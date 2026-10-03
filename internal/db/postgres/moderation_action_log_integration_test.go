@@ -237,6 +237,8 @@ func TestModerationActionLogHiddenReasonsAndFullRowMapping(t *testing.T) {
 			want.ReversedActionReason = byID[want.ReversesActionID].Reason
 		}
 		want.CreatedAt = want.CreatedAt.UTC()
+		// With no indexed content to decide from, every subject is restricted.
+		want.SubjectAccess = moderation.SubjectAccessRestricted
 		assert.Equal(t, want, byID[want.ID], want.ID)
 		assert.Equal(t, time.UTC, byID[want.ID].CreatedAt.Location(), want.ID)
 	}

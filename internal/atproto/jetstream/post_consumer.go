@@ -29,7 +29,7 @@ type PostEventConsumer struct {
 	db            *sql.DB // Direct DB access for atomic count reconciliation
 
 	// nil keeps ingestion independent of moderation media reconciliation.
-	mediaReconciler PostMediaReconciler
+	mediaReconciler MediaReconciler
 	// bridgeTrust gates whether a post's author repo may assert bridgedStats.
 	// nil means default-deny (bridgedStats are ignored for every post).
 	bridgeTrust *BridgeTrust
@@ -683,15 +683,8 @@ func parseRecordCreatedAt(raw, uri string) time.Time {
 	return createdAt
 }
 
-// PostMediaReconciler also blocks the blobs of incoming post content that the
-// consumer does not index, because the stored row cannot name them.
-type PostMediaReconciler interface {
-	MediaReconciler
-	ReconcileIncomingTx(ctx context.Context, tx *sql.Tx, subjectURI, ownerDID string, blobCIDs []string) ([]moderation.MediaBlock, error)
-}
-
 // WithPostMediaReconciler reconciles media blocks when a removed post is created or edited.
-func WithPostMediaReconciler(reconciler PostMediaReconciler) PostEventConsumerOption {
+func WithPostMediaReconciler(reconciler MediaReconciler) PostEventConsumerOption {
 	return func(c *PostEventConsumer) { c.mediaReconciler = reconciler }
 }
 

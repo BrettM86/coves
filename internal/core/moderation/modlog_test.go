@@ -36,6 +36,7 @@ func modlogTestAction() moderation.Action {
 		PrivateNote:         "SECRET-NOTE-operator-only 🔒\nsecond line",
 		Origin:              moderation.OriginLocal,
 		CreatedAt:           time.Date(2026, 9, 28, 15, 4, 5, 123456789, time.FixedZone("UTC+3", 3*60*60)),
+		SubjectAccess:       moderation.SubjectAccessPublic,
 	}
 }
 

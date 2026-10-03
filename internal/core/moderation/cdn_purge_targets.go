@@ -67,17 +67,20 @@ const (
 	// cdnPurgeLease is how long a claim holds a target before another worker
 	// may claim it.
 	cdnPurgeLease = 2 * time.Minute
-	// cdnPurgeImmediateAttemptTimeout bounds an immediate post-commit attempt.
-	// With cdnPurgeOutcomeWriteTimeout it stays below cdnPurgeLease, so the
-	// attempt's outcome is written before its lease can pass to a sweep.
-	cdnPurgeImmediateAttemptTimeout = 90 * time.Second
+	// cdnPurgeAttemptTimeout bounds one claimed batch's purge request, both for
+	// an immediate post-commit attempt and for each batch of a sweep. With
+	// cdnPurgeOutcomeWriteTimeout it stays below cdnPurgeLease, so the
+	// attempt's outcome is written before its lease can pass to another worker.
+	cdnPurgeAttemptTimeout = 90 * time.Second
 	// cdnPurgeOutcomeWriteTimeout bounds writing an attempt's outcomes, which
 	// runs after the attempt's own context may have ended.
 	cdnPurgeOutcomeWriteTimeout = 5 * time.Second
 	// cdnPurgeImmediateAttemptLimit caps immediate attempts in flight. Beyond
 	// it, recorded targets wait for the next sweep.
 	cdnPurgeImmediateAttemptLimit = 4
-	// cdnPurgeInterruptedCode records an attempt cut off by its context.
+	// cdnPurgeInterruptedCode marks a target whose attempt its context cut off.
+	// It is never stored: the target is due again at once and its attempt is
+	// not counted, because the edge never refused it.
 	cdnPurgeInterruptedCode = "interrupted"
 )
 
@@ -152,7 +155,7 @@ func (q *CDNPurgeQueue) PurgeAfterCommit(ctx context.Context, blobs []imageproxy
 			}
 			q.mu.Unlock()
 		}()
-		attemptCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cdnPurgeImmediateAttemptTimeout)
+		attemptCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cdnPurgeAttemptTimeout)
 		defer cancel()
 		for start := 0; start < len(owned); start += q.config.BatchSize {
 			if attemptCtx.Err() != nil {
@@ -184,7 +187,9 @@ func (q *CDNPurgeQueue) claim(blobs []imageproxy.BlockedBlob, dueAt time.Time) C
 // Sweep drains targets due at the start of this pass. Freezing the due cutoff
 // keeps a target rescheduled while a request is held from being retried by the
 // same sweep if the clock advances during that request. The store still samples
-// the live clock after locking rows for each target's completion anchor.
+// the live clock after locking rows for each target's completion anchor. Each
+// batch's request is bounded by cdnPurgeAttemptTimeout so it ends inside the
+// batch's claim lease.
 func (q *CDNPurgeQueue) Sweep(ctx context.Context) error {
 	dueAt := q.config.Now()
 	var attempted []imageproxy.BlockedBlob
@@ -198,7 +203,10 @@ func (q *CDNPurgeQueue) Sweep(ctx context.Context) error {
 		if len(targets) == 0 {
 			return ctx.Err()
 		}
-		if err := q.attempt(ctx, targets); err != nil {
+		attemptCtx, cancel := context.WithTimeout(ctx, cdnPurgeAttemptTimeout)
+		err = q.attempt(attemptCtx, targets)
+		cancel()
+		if err != nil {
 			return err
 		}
 		for _, target := range targets {
@@ -258,6 +266,8 @@ func (q *CDNPurgeQueue) attempt(ctx context.Context, targets []CDNPurgeTarget) e
 	}
 	codes := make([]string, len(targets))
 	interruptedCount := 0
+	failedCounts := make(map[string]int)
+	var failedCodes []string
 	for i, target := range targets {
 		if acknowledged[target.Blob] {
 			continue
@@ -272,7 +282,14 @@ func (q *CDNPurgeQueue) attempt(ctx context.Context, targets []CDNPurgeTarget) e
 			code = "unacknowledged"
 		}
 		codes[i] = code
-		slog.Error("moderation CDN purge failed", "did", target.Blob.OwnerDID, "cid", target.Blob.CID, "code", code)
+		if failedCounts[code] == 0 {
+			failedCodes = append(failedCodes, code)
+		}
+		failedCounts[code]++
+		slog.Debug("moderation CDN purge target failed", "did", target.Blob.OwnerDID, "cid", target.Blob.CID, "code", code)
+	}
+	for _, code := range failedCodes {
+		logCDNPurgeFailure(code, failedCounts[code])
 	}
 	if interruptedCount > 0 {
 		slog.Warn("moderation CDN purge interrupted; targets rescheduled", "count", interruptedCount)
@@ -286,6 +303,8 @@ func (q *CDNPurgeQueue) attempt(ctx context.Context, targets []CDNPurgeTarget) e
 		var err error
 		operation := "reschedule"
 		switch {
+		case codes[i] == cdnPurgeInterruptedCode:
+			err = q.store.RescheduleCDNPurgeTarget(writeCtx, target, attemptedAt, "")
 		case codes[i] != "":
 			err = q.store.RescheduleCDNPurgeTarget(writeCtx, target, attemptedAt.Add(cdnPurgeRetryDelay(target.Attempts+1)), codes[i])
 		case !attemptedAt.Before(target.EarliestCompletionAt):
@@ -300,6 +319,18 @@ func (q *CDNPurgeQueue) attempt(ctx context.Context, targets []CDNPurgeTarget) e
 		}
 	}
 	return errors.Join(writeErrors...)
+}
+
+// logCDNPurgeFailure writes one line per failure code per attempt. A refused
+// credential or zone fails every target of every attempt, so a line per target
+// would bury the cause; the per-target detail is at Debug.
+func logCDNPurgeFailure(code string, count int) {
+	if code == "http_401" || code == "http_403" {
+		slog.Error("moderation CDN purge refused: Cloudflare rejected the purge credentials or zone; removed images may stay at the edge until the API token and zone ID are fixed",
+			"code", code, "count", count)
+		return
+	}
+	slog.Error("moderation CDN purge failed", "code", code, "count", count)
 }
 
 // WithCDNPurgeTargets enables transactionally recorded CDN targets.

@@ -543,9 +543,9 @@ func TestModerationCDNPurgeSweepRecordsOutcomesAfterContextEnds(t *testing.T) {
 		"an acknowledged pair completes even though the sweep's context ended")
 	interrupted := moderationCDNTarget(t, h.db, h.ownerA, second)
 	assert.Equal(t, "pending", interrupted.state)
-	assert.Equal(t, 1, interrupted.attempts)
-	assert.Equal(t, "interrupted", interrupted.failureCode)
-	assert.Equal(t, time.Date(2026, 9, 28, 12, 2, 30, 0, time.UTC), interrupted.nextAttemptAt)
+	assert.Equal(t, 0, interrupted.attempts, "an interrupted pair was never refused, so it is not a failed attempt")
+	assert.Empty(t, interrupted.failureCode)
+	assert.Equal(t, time.Date(2026, 9, 28, 12, 1, 30, 0, time.UTC), interrupted.nextAttemptAt, "an interrupted pair is due again at once")
 	var warnings int
 	for _, record := range logs.snapshot() {
 		attrs := make(map[string]slog.Value)

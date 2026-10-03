@@ -671,7 +671,15 @@ func TestModerationModlogCommunityAssociationSurvivesReindex(t *testing.T) {
 	require.NoError(t, err)
 	_, err = f.db.ExecContext(t.Context(), `TRUNCATE TABLE comments, posts CASCADE`)
 	require.NoError(t, err)
-	check(t)
+	// With nothing indexed to show the subject is public, it is restricted:
+	// listed without its subject, and not selectable by community.
+	for _, community := range []string{f.communityDID, f.communityHandle} {
+		_, items := modlogPage(t, f.list(t, false, "", url.Values{"community": {community}}), false)
+		assert.Empty(t, items)
+	}
+	_, items := modlogPage(t, f.list(t, false, "", nil), false)
+	require.Len(t, items, 1)
+	assert.NotContains(t, modlogAction(t, items[0], false), "subject")
 	_, err = f.db.ExecContext(t.Context(), `INSERT INTO posts (uri,cid,rkey,author_did,community_did,title,created_at) VALUES ($1,$2,$3,$4,$5,$6,NOW())`, f.postURI, f.postCID, f.postURI[strings.LastIndex(f.postURI, "/")+1:], f.authorDID, f.communityDID, "reindexed post")
 	require.NoError(t, err)
 	_, err = f.db.ExecContext(t.Context(), `INSERT INTO comments (uri,cid,rkey,commenter_did,root_uri,root_cid,parent_uri,parent_cid,content,created_at) VALUES ($1,$2,$3,$4,$5,$6,$5,$6,$7,NOW())`, uri, cid, uri[strings.LastIndex(uri, "/")+1:], f.authorDID, f.postURI, f.postCID, "reindexed comment")

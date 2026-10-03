@@ -58,8 +58,10 @@ func TestModerationPostActiveRemovalsByURIs(t *testing.T) {
 	active := indexedModerationPost(t, db, moderation.PostV2Collection, communityDID, authorDID, "active decision", "")
 	restored := indexedModerationPost(t, db, moderation.PostV2Collection, communityDID, authorDID, "restored decision", "")
 	control := indexedModerationPost(t, db, moderation.PostV2Collection, communityDID, authorDID, "never removed", "")
+	labelled := indexedModerationPost(t, db, moderation.PostV2Collection, communityDID, authorDID, "labelled only", "")
 	service := newPostgresModerationService(db)
 	removeIndexedModerationPost(t, service, active)
+	labelPost(t, service, fixtures.DID("postlabeladmin"), labelled, "v0", "label-only-post")
 	previous, err := service.RemoveContent(t.Context(), fixtures.DID("postremovaladminb"), moderation.RemoveContentRequest{
 		Subject: restored, ExpectedVersion: "v0", IdempotencyKey: "remove-restored-post",
 		Reason: "social.coves.moderation.defs#reasonSpam",
@@ -69,8 +71,9 @@ func TestModerationPostActiveRemovalsByURIs(t *testing.T) {
 	require.NotNil(t, previous.Action)
 	restoreModerationPost(t, service, restored, previous)
 
-	got, err := repo.ActiveRemovalsByURIs(t.Context(), []string{control.URI, active.URI, restored.URI, active.URI})
+	got, err := repo.ActiveRemovalsByURIs(t.Context(), []string{control.URI, active.URI, restored.URI, labelled.URI, active.URI})
 	require.NoError(t, err)
+	assert.NotContains(t, got, labelled.URI, "an active label is not a removal")
 	assert.Equal(t, map[string][]posts.RemovalSource{
 		active.URI: {{AuthorityDID: fixtures.InstanceDID(), ScopeKind: "instance"}},
 	}, got, "only active decisions may appear, even in a batch with restored and unremoved URIs")
@@ -163,6 +166,27 @@ func TestModerationPostGetTombstone(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A label is a decision row too, but never a removal: a community-removed post
+// carrying only an NSFW label stays the community's #removedPost.
+func TestModerationPostGetCommunityRemovedLabelledPost(t *testing.T) {
+	db := testkit.DB(t)
+	communityDID, authorDID := moderationPostTombstoneActors(t, db)
+	subject := indexedModerationPost(t, db, moderation.PostV2Collection, communityDID, authorDID, "community removed, labelled", "")
+	_, err := db.ExecContext(t.Context(), `
+		UPDATE community_post_admissions SET status = 'removed', accepted_cid = NULL,
+			decision_code = 'rule-violation', decision_at = NOW(), updated_at = NOW()
+		WHERE community_did = $1 AND post_uri = $2
+	`, communityDID, subject.URI)
+	require.NoError(t, err)
+	labelPost(t, newPostgresModerationService(db), fixtures.DID("tombstonelabeladmin"), subject, "v0", "community-removed-label")
+	results, err := moderationPostGetService(db, postgres.NewPostRepository(db)).GetPosts(t.Context(), posts.GetPostsRequest{URIs: []string{subject.URI}})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.NotNil(t, results[0].Removed, "with no instance removal, the community's #removedPost must stand")
+	assert.Equal(t, "rule-violation", results[0].Removed.Code)
+	assert.Nil(t, results[0].Moderated)
 }
 
 func TestModerationPostGetBatchPreservesOrder(t *testing.T) {
