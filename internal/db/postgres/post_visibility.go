@@ -127,7 +127,10 @@ func visiblePostsPredicate(viewerExpr string) (joinSQL, whereSQL string) {
 // (AdmittedURIsForViewer): an instance removal may tell a viewer that a post
 // was removed only if that viewer could have seen the post had it not been
 // removed. Anything else would disclose a pending, rejected or unadmitted post
-// and tie it to a community that never accepted it.
+// and tie it to a community that never accepted it. The public moderation log
+// deliberately does not follow this rule: removals are public by default
+// (decided 2026-10-03, PRD section 6), so listActions names such a post and
+// selects it by its community.
 func admittedPostsPredicate(viewerExpr string) (joinSQL, whereSQL string) {
 	joinSQL = `
 			LEFT JOIN community_post_admissions a

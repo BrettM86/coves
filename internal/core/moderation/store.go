@@ -60,11 +60,11 @@ type Action struct {
 	SubjectAccess SubjectAccess `json:"-"`
 }
 
-// SubjectAccess says whether an action's subject is content the anonymous
-// public can see. It follows post.get's anonymous admission rule: a post is
-// public when its own community admitted it (or, outside postv2, when it has
-// no admission row), and a comment follows its root post. A subject with no
-// indexed content row to decide from is restricted.
+// SubjectAccess says whether the public log may name an action's subject.
+// Removals are public by default, whatever the subject's community admission
+// status (decided 2026-10-03): a subject is public while its own post or
+// comment row is indexed, soft-deleted or not. One whose row is gone, as after
+// account erasure, is restricted.
 type SubjectAccess string
 
 const (

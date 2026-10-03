@@ -674,35 +674,25 @@ func (r *ModerationRepository) BindTransaction(tx *sql.Tx) moderation.MediaTrans
 
 // ListActions reads a page of the action log.
 //
-// Each row's SubjectAccess is decided now, not when the action was recorded, by
-// the anonymous viewer's admission rule post.get applies before it discloses a
-// removed post (admittedPostsPredicate): a post admitted after its removal is
-// public from then on. A comment follows its root post. A subject with no
-// indexed post to decide from is restricted. ExcludeRestricted filters in the
-// WHERE clause, before LIMIT, so a filtered page is never short.
+// Each row's SubjectAccess is decided now, not when the action was recorded: a
+// subject whose own post or comment row is still indexed is public, whatever
+// its community admission status and even when the author soft-deleted it, and
+// one whose row is gone (account erasure hard-deletes it) is restricted. ExcludeRestricted filters in the WHERE
+// clause, before LIMIT, so a filtered page is never short.
 func (r *ModerationRepository) ListActions(ctx context.Context, query moderation.ActionListQuery) ([]moderation.Action, error) {
 	var beforeCreatedAt, beforeID any
 	if query.Before != nil {
 		beforeCreatedAt, beforeID = query.Before.CreatedAt, query.Before.ID
 	}
-	// The admission join aliases community_post_admissions as a, shadowing the
-	// action alias inside the EXISTS, so the root URI is resolved one level out.
-	admissionJoin, admitted := admittedPostsPredicate(anonymousViewerSQL)
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT `+moderationActionColumns+`, reversed.reason, subject_access.access
 		FROM moderation_actions a
 		LEFT JOIN moderation_actions reversed ON reversed.id = a.reverses_action_id
-		LEFT JOIN comments subject_comment
-		    ON a.subject_collection = $18 AND subject_comment.uri = a.subject_uri
 		CROSS JOIN LATERAL (
-		    SELECT CASE WHEN a.subject_collection = $18 THEN subject_comment.root_uri
-		                ELSE a.subject_uri END AS post_uri
-		) subject_root
-		CROSS JOIN LATERAL (
-		    SELECT CASE WHEN EXISTS (
-		        SELECT 1 FROM posts p`+admissionJoin+`
-		        WHERE p.uri = subject_root.post_uri AND `+admitted+`
-		    ) THEN $20::text ELSE $21::text END AS access
+		    SELECT CASE WHEN
+		        EXISTS (SELECT 1 FROM comments c WHERE a.subject_collection = $18 AND c.uri = a.subject_uri)
+		        OR EXISTS (SELECT 1 FROM posts p WHERE a.subject_collection <> $18 AND p.uri = a.subject_uri)
+		    THEN $20::text ELSE $21::text END AS access
 		) subject_access
 		WHERE ($2::timestamptz IS NULL OR (a.created_at, a.id) < ($2::timestamptz, $3::text))
 		  AND (NULLIF($4::text, '') IS NULL OR a.subject_uri = $4)

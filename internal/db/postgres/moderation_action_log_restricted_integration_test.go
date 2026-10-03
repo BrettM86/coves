@@ -5,6 +5,7 @@ package postgres_test
 import (
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,75 +70,102 @@ func restrictedLogIDs(page *moderation.ActionPage) []string {
 	return ids
 }
 
-// A removal of content the public cannot see must not disclose it through the
-// public modlog (PRD §6 "restricted subjects do not leak"). Restricted-ness is
-// post.get's anonymous admission rule, evaluated when the log is read: a
-// pending, rejected, community-removed or unadmitted postv2, and a comment
-// whose root post is one of those, is listed without its subject and is
-// excluded whenever a subject, collection or community filter could tie it to
-// its target. A post admitted later shows normally.
-func TestModerationActionLogRestrictsNonPublicSubjects(t *testing.T) {
+// Removals are public by default (decided 2026-10-03): the public log names a
+// subject while its own post or comment row is indexed, whatever its community
+// admission status and even after its author soft-deleted it. Only a subject whose row is gone, as after account erasure,
+// is restricted: listed without its subject, and excluded whenever a subject,
+// collection or community filter could tie it to its target. Access is decided
+// when the log is read, so a subject indexed again shows normally.
+func TestModerationActionLogRestrictsOnlyUnindexedSubjects(t *testing.T) {
 	db := testkit.DB(t)
 	communityDID, authorDID := moderationPostTombstoneActors(t, db)
 	service := restrictedLogService(db)
 
-	post := func(title, admissionSQL string) moderation.StrongRef {
+	post := func(title, status string) moderation.StrongRef {
 		subject := indexedModerationPost(t, db, moderation.PostV2Collection, communityDID, authorDID, title, "")
-		if admissionSQL != "" {
-			_, err := db.ExecContext(t.Context(), admissionSQL, communityDID, subject.URI)
+		switch status {
+		case "":
+		case "unadmitted":
+			_, err := db.ExecContext(t.Context(), `DELETE FROM community_post_admissions WHERE community_did = $1 AND post_uri = $2`, communityDID, subject.URI)
+			require.NoError(t, err)
+		default:
+			_, err := db.ExecContext(t.Context(), `
+				UPDATE community_post_admissions SET status = $3, accepted_cid = NULL,
+					decision_code = 'rule-violation', decision_at = NOW(), updated_at = NOW()
+				WHERE community_did = $1 AND post_uri = $2
+			`, communityDID, subject.URI, status)
 			require.NoError(t, err)
 		}
 		return subject
 	}
-	const pendingSQL = `UPDATE community_post_admissions SET status = 'pending', accepted_cid = NULL, updated_at = NOW()
-		WHERE community_did = $1 AND post_uri = $2`
 	accepted := post("accepted", "")
-	pending := post("pending", pendingSQL)
-	rejected := post("rejected", `UPDATE community_post_admissions SET status = 'rejected', accepted_cid = NULL,
-		decision_code = 'off-topic', decision_at = NOW(), updated_at = NOW() WHERE community_did = $1 AND post_uri = $2`)
-	communityRemoved := post("community removed", `UPDATE community_post_admissions SET status = 'removed', accepted_cid = NULL,
-		decision_code = 'rule-violation', decision_at = NOW(), updated_at = NOW() WHERE community_did = $1 AND post_uri = $2`)
-	unadmitted := post("unadmitted", `DELETE FROM community_post_admissions WHERE community_did = $1 AND post_uri = $2`)
-	legacy := indexedModerationPost(t, db, moderation.LegacyPostCollection, communityDID, authorDID, "legacy", "")
-	pendingRoot := post("pending root", pendingSQL)
-	publicComment := restrictedLogComment(t, db, authorDID, accepted)
-	restrictedComment := restrictedLogComment(t, db, authorDID, pendingRoot)
+	pending := post("pending", "pending")
+	orphanRoot := post("orphan root", "")
+	erasedPost := post("erased post", "")
+	erasedComment := restrictedLogComment(t, db, authorDID, accepted)
+	softDeletedPost := post("soft deleted post", "")
+	softDeletedComment := restrictedLogComment(t, db, authorDID, accepted)
 
 	type entry struct {
 		subject    moderation.StrongRef
+		collection string
 		restricted bool
+	}
+	subjects := []entry{
+		{accepted, moderation.PostV2Collection, false},
+		{pending, moderation.PostV2Collection, false},
+		{post("pending reacceptance", "pending_reacceptance"), moderation.PostV2Collection, false},
+		{post("rejected", "rejected"), moderation.PostV2Collection, false},
+		{post("community removed", "removed"), moderation.PostV2Collection, false},
+		{post("unadmitted", "unadmitted"), moderation.PostV2Collection, false},
+		{indexedModerationPost(t, db, moderation.LegacyPostCollection, communityDID, authorDID, "legacy", ""), moderation.LegacyPostCollection, false},
+		{restrictedLogComment(t, db, authorDID, pending), moderation.CommentCollection, false},
+		{restrictedLogComment(t, db, authorDID, orphanRoot), moderation.CommentCollection, false},
+		{softDeletedPost, moderation.PostV2Collection, false},
+		{softDeletedComment, moderation.CommentCollection, false},
+		{erasedPost, moderation.PostV2Collection, true},
+		{erasedComment, moderation.CommentCollection, true},
 	}
 	entries := map[string]entry{}
 	var publicIDs []string
-	for _, subject := range []struct {
-		ref        moderation.StrongRef
-		restricted bool
-	}{
-		{accepted, false},
-		{pending, true},
-		{rejected, true},
-		{communityRemoved, true},
-		{unadmitted, true},
-		{legacy, false},
-		{publicComment, false},
-		{restrictedComment, true},
-	} {
-		id := restrictedLogRemove(t, service, subject.ref)
-		entries[id] = entry{subject.ref, subject.restricted}
+	for _, subject := range subjects {
+		id := restrictedLogRemove(t, service, subject.subject)
+		entries[id] = subject
 		if !subject.restricted {
 			publicIDs = append([]string{id}, publicIDs...)
 		}
 	}
+	// Account erasure hard-deletes rows; an author's delete only sets
+	// deleted_at, so the row stays and the entry stays public. A comment whose
+	// root post is gone keeps its own row, so it stays public too.
+	for _, statement := range []struct{ sql, uri string }{
+		{`UPDATE posts SET deleted_at = NOW() WHERE uri = $1`, softDeletedPost.URI},
+		{`UPDATE comments SET deleted_at = NOW() WHERE uri = $1`, softDeletedComment.URI},
+		{`DELETE FROM posts WHERE uri = $1`, erasedPost.URI},
+		{`DELETE FROM comments WHERE uri = $1`, erasedComment.URI},
+		{`DELETE FROM posts WHERE uri = $1`, orphanRoot.URI},
+	} {
+		_, err := db.ExecContext(t.Context(), statement.sql, statement.uri)
+		require.NoError(t, err)
+	}
+	publicIn := func(collection string) []string {
+		var ids []string
+		for _, id := range publicIDs {
+			if entries[id].collection == collection {
+				ids = append(ids, id)
+			}
+		}
+		return ids
+	}
 
-	t.Run("unfiltered public log lists restricted actions without their subjects", func(t *testing.T) {
+	t.Run("unfiltered public log names every indexed subject", func(t *testing.T) {
 		page, encoded := restrictedLogPage(t, service, moderation.ListActionsParams{})
 		require.Len(t, page.Actions, len(entries))
 		for _, action := range page.Actions {
 			want, found := entries[action.Ref.ActionID]
 			require.True(t, found, action.Ref.ActionID)
-			assert.Empty(t, action.Scope.CommunityDID, action.Ref.ActionID)
 			if want.restricted {
-				assert.Nil(t, action.Subject, "a restricted subject must not appear in the public log")
+				assert.Nil(t, action.Subject, "an erased subject must not appear in the public log")
 				assert.NotContains(t, encoded, want.subject.URI)
 			} else {
 				assert.Equal(t, &moderation.SubjectRefView{URI: want.subject.URI, CID: want.subject.CID}, action.Subject)
@@ -145,7 +173,7 @@ func TestModerationActionLogRestrictsNonPublicSubjects(t *testing.T) {
 		}
 	})
 
-	t.Run("admin log keeps restricted subjects private", func(t *testing.T) {
+	t.Run("admin log keeps erased subjects private", func(t *testing.T) {
 		page, err := service.ListAdminActions(t.Context(), moderation.ListAdminActionsParams{})
 		require.NoError(t, err)
 		require.Len(t, page.Actions, len(entries))
@@ -162,33 +190,33 @@ func TestModerationActionLogRestrictsNonPublicSubjects(t *testing.T) {
 		}
 	})
 
-	t.Run("filters never select a restricted subject", func(t *testing.T) {
+	t.Run("filters select every indexed subject and never an erased one", func(t *testing.T) {
 		page, _ := restrictedLogPage(t, service, moderation.ListActionsParams{Community: communityDID})
-		assert.Equal(t, publicIDs, restrictedLogIDs(page), "the community filter must not tie restricted subjects to the community")
-		page, _ = restrictedLogPage(t, service, moderation.ListActionsParams{Collection: moderation.PostV2Collection})
-		assert.Equal(t, []string{publicIDs[2]}, restrictedLogIDs(page), "only the accepted postv2 may match its collection")
-		page, _ = restrictedLogPage(t, service, moderation.ListActionsParams{Collection: moderation.CommentCollection})
-		assert.Equal(t, []string{publicIDs[0]}, restrictedLogIDs(page), "only the comment on an accepted root may match its collection")
+		assert.Equal(t, publicIDs, restrictedLogIDs(page), "the community filter lists every indexed subject, whatever its admission status")
+		for _, collection := range []string{moderation.PostV2Collection, moderation.LegacyPostCollection, moderation.CommentCollection} {
+			page, _ = restrictedLogPage(t, service, moderation.ListActionsParams{Collection: collection})
+			assert.Equal(t, publicIn(collection), restrictedLogIDs(page), collection)
+		}
 		never := "at://" + authorDID + "/" + moderation.PostV2Collection + "/" + testkit.TID()
 		_, neverBody := restrictedLogPage(t, service, moderation.ListActionsParams{Subject: never})
 		for id, want := range entries {
 			page, body := restrictedLogPage(t, service, moderation.ListActionsParams{Subject: want.subject.URI})
 			if want.restricted {
-				assert.Equal(t, neverBody, body, "a restricted subject filter must answer exactly as a never-moderated subject")
+				assert.Equal(t, neverBody, body, "an erased subject filter must answer exactly as a never-moderated subject")
 			} else {
 				assert.Equal(t, []string{id}, restrictedLogIDs(page))
 			}
 		}
 	})
 
-	t.Run("filtered pagination skips restricted rows before the limit", func(t *testing.T) {
+	t.Run("filtered pagination skips erased rows before the limit", func(t *testing.T) {
 		one := 1
 		params := moderation.ListActionsParams{Community: communityDID, Limit: &one}
 		var walked []string
 		for pages := 1; ; pages++ {
 			require.LessOrEqual(t, pages, len(publicIDs), "every page of the walk must hold a public action")
 			page, _ := restrictedLogPage(t, service, params)
-			require.Len(t, page.Actions, 1, "a page must not come back short because restricted rows used its limit")
+			require.Len(t, page.Actions, 1, "a page must not come back short because erased rows used its limit")
 			walked = append(walked, restrictedLogIDs(page)...)
 			if page.Cursor == "" {
 				break
@@ -198,15 +226,15 @@ func TestModerationActionLogRestrictsNonPublicSubjects(t *testing.T) {
 		assert.Equal(t, publicIDs, walked)
 	})
 
-	t.Run("a post admitted later shows normally", func(t *testing.T) {
+	t.Run("a subject indexed again shows normally", func(t *testing.T) {
 		_, err := db.ExecContext(t.Context(), `
-			UPDATE community_post_admissions SET status = 'accepted', accepted_cid = $3, updated_at = NOW()
-			WHERE community_did = $1 AND post_uri = $2
-		`, communityDID, pending.URI, pending.CID)
+			INSERT INTO posts (uri, cid, rkey, author_did, community_did, title, created_at)
+			VALUES ($1, $2, $3, $4, $5, 'reindexed', NOW())
+		`, erasedPost.URI, erasedPost.CID, erasedPost.URI[strings.LastIndex(erasedPost.URI, "/")+1:], authorDID, communityDID)
 		require.NoError(t, err)
-		page, _ := restrictedLogPage(t, service, moderation.ListActionsParams{Subject: pending.URI})
+		page, _ := restrictedLogPage(t, service, moderation.ListActionsParams{Subject: erasedPost.URI})
 		require.Len(t, page.Actions, 1)
-		assert.Equal(t, &moderation.SubjectRefView{URI: pending.URI, CID: pending.CID}, page.Actions[0].Subject)
+		assert.Equal(t, &moderation.SubjectRefView{URI: erasedPost.URI, CID: erasedPost.CID}, page.Actions[0].Subject)
 		page, _ = restrictedLogPage(t, service, moderation.ListActionsParams{Community: communityDID})
 		assert.Len(t, page.Actions, len(publicIDs)+1)
 	})
