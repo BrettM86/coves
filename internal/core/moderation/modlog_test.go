@@ -65,7 +65,7 @@ func TestActionViewProjectsOnlyPublicFields(t *testing.T) {
 	assert.Equal(t, moderation.ScopeView{Kind: moderation.ScopeInstance}, view.Scope)
 	assert.Equal(t, "2026-09-28T12:04:05.123456789Z", view.CreatedAt)
 	assert.Equal(t, action.Origin, view.Origin)
-	assert.Equal(t, &moderation.SubjectRefView{URI: action.SubjectURI, CID: action.ObservedCID}, view.Subject)
+	assert.Equal(t, &moderation.SubjectRefView{URI: action.SubjectURI, CID: action.ObservedCID, CommunityDID: action.SubjectCommunityDID}, view.Subject)
 	assert.Equal(t, action.Reason, view.Reason)
 	assert.Equal(t, &moderation.ActorRefView{DID: action.ActorDID}, view.Actor)
 	assert.Nil(t, view.Reverses)
@@ -76,7 +76,7 @@ func TestActionViewProjectsOnlyPublicFields(t *testing.T) {
 	assert.NotContains(t, object, "privateNote")
 	assert.NotContains(t, string(raw), action.PrivateNote)
 	assert.NotContains(t, string(raw), "SECRET-NOTE-")
-	assert.NotContains(t, string(raw), action.SubjectCommunityDID)
+	assert.Equal(t, action.SubjectCommunityDID, modlogObject(t, object["subject"])["communityDid"])
 }
 
 func TestActionViewOptionalFieldsAndReverses(t *testing.T) {
@@ -107,6 +107,10 @@ func TestActionViewOptionalFieldsAndReverses(t *testing.T) {
 	object, _ = modlogJSON(t, moderation.NewActionView(action))
 	assert.NotContains(t, modlogObject(t, object["scope"]), "communityDid")
 	assert.NotContains(t, object, "labelValue")
+
+	action.SubjectCommunityDID = ""
+	object, _ = modlogJSON(t, moderation.NewActionView(action))
+	assert.NotContains(t, modlogObject(t, object["subject"]), "communityDid")
 }
 
 func TestModlogHiddenSubjectAndAdminProjection(t *testing.T) {
@@ -142,8 +146,9 @@ func TestModlogHiddenSubjectAndAdminProjection(t *testing.T) {
 				assert.Nil(t, public.Subject)
 				assert.NotContains(t, publicObject, "subject", "hidden subject must be omitted, not null")
 				assert.NotContains(t, string(publicJSON), action.SubjectURI)
+				assert.NotContains(t, string(publicJSON), action.SubjectCommunityDID)
 			} else {
-				assert.Equal(t, &moderation.SubjectRefView{URI: action.SubjectURI, CID: action.ObservedCID}, public.Subject)
+				assert.Equal(t, &moderation.SubjectRefView{URI: action.SubjectURI, CID: action.ObservedCID, CommunityDID: action.SubjectCommunityDID}, public.Subject)
 			}
 			if test.restore {
 				assert.Equal(t, &moderation.ActionRefView{ServiceDID: action.AuthorityDID, ActionID: action.ReversesActionID}, public.Reverses)
@@ -160,7 +165,7 @@ func TestModlogHiddenSubjectAndAdminProjection(t *testing.T) {
 			assert.Equal(t, action.ActorDID, adminObject["actorDid"])
 			assert.Equal(t, action.PrivateNote, adminObject["privateNote"])
 			if test.hidden {
-				require.Equal(t, &moderation.SubjectRefView{URI: action.SubjectURI, CID: action.ObservedCID}, admin.PrivateSubject)
+				require.Equal(t, &moderation.SubjectRefView{URI: action.SubjectURI, CID: action.ObservedCID, CommunityDID: action.SubjectCommunityDID}, admin.PrivateSubject)
 				assert.Equal(t, action.SubjectURI, modlogObject(t, adminObject["privateSubject"])["uri"])
 			} else {
 				assert.Nil(t, admin.PrivateSubject)
@@ -183,7 +188,7 @@ func TestModlogPublicProjectionDoesNotLeakStoredFields(t *testing.T) {
 	allowed := map[string]bool{}
 	for _, path := range []string{
 		"ref", "ref.serviceDid", "ref.actionId", "action", "authorityDid", "scope", "scope.kind",
-		"scope.communityDid", "createdAt", "origin", "subject", "subject.uri", "subject.cid",
+		"scope.communityDid", "createdAt", "origin", "subject", "subject.uri", "subject.cid", "subject.communityDid",
 		"reason", "labelValue", "actor", "actor.did", "reverses", "reverses.serviceDid", "reverses.actionId",
 	} {
 		allowed[path] = true

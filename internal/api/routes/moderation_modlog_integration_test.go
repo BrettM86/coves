@@ -248,7 +248,7 @@ func TestModerationModlogListsRemovalHistory(t *testing.T) {
 		if want.hidden {
 			assert.NotContains(t, action, "subject")
 		} else {
-			assert.Equal(t, want.uri, moderationAcceptanceObject(t, action["subject"])["uri"])
+			assert.Equal(t, map[string]any{"uri": want.uri, "cid": want.cid, "communityDid": f.communityDID}, action["subject"])
 		}
 		if want.reverses != "" {
 			assert.Equal(t, want.reverses, moderationAcceptanceObject(t, action["reverses"])["actionId"])
@@ -270,7 +270,7 @@ func TestModerationModlogListsRemovalHistory(t *testing.T) {
 		assert.Equal(t, want.note, entry["privateNote"])
 		if want.hidden {
 			assert.NotContains(t, action, "subject")
-			assert.Equal(t, map[string]any{"uri": want.uri, "cid": want.cid}, entry["privateSubject"])
+			assert.Equal(t, map[string]any{"uri": want.uri, "cid": want.cid, "communityDid": f.communityDID}, entry["privateSubject"])
 		} else {
 			assert.NotContains(t, entry, "privateSubject")
 		}

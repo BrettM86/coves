@@ -98,8 +98,13 @@ type ScopeView struct {
 
 // SubjectRefView is defs#subjectRef.
 type SubjectRefView struct {
-	URI string `json:"uri"`
-	CID string `json:"cid,omitempty"`
+	URI          string `json:"uri"`
+	CID          string `json:"cid,omitempty"`
+	CommunityDID string `json:"communityDid,omitempty"`
+}
+
+func newSubjectRefView(action Action) *SubjectRefView {
+	return &SubjectRefView{URI: action.SubjectURI, CID: action.ObservedCID, CommunityDID: action.SubjectCommunityDID}
 }
 
 // ActorRefView is defs#actorRef.
@@ -128,7 +133,7 @@ func NewActionView(action Action) ActionView {
 		LabelValue:   action.LabelValue,
 	}
 	if !privateSubject(action) {
-		view.Subject = &SubjectRefView{URI: action.SubjectURI, CID: action.ObservedCID}
+		view.Subject = newSubjectRefView(action)
 	}
 	if restrictedSubject(action) {
 		// A community scope would tie the restricted subject to its community.
@@ -151,7 +156,7 @@ func NewAdminActionView(action Action) AdminActionView {
 		PrivateNote: action.PrivateNote,
 	}
 	if privateSubject(action) {
-		view.PrivateSubject = &SubjectRefView{URI: action.SubjectURI, CID: action.ObservedCID}
+		view.PrivateSubject = newSubjectRefView(action)
 	}
 	return view
 }

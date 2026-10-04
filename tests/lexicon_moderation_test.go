@@ -75,8 +75,9 @@ func moderationObjectExpectations() map[string]moderationDefinitionExpectation {
 		"subjectRef": {
 			required: []string{"uri"},
 			properties: map[string]moderationPropertyExpectation{
-				"uri": formattedString("at-uri"),
-				"cid": formattedString("cid"),
+				"uri":          formattedString("at-uri"),
+				"cid":          formattedString("cid"),
+				"communityDid": formattedString("did"),
 			},
 		},
 		"actorRef": {

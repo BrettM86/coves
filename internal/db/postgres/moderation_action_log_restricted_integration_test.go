@@ -168,7 +168,7 @@ func TestModerationActionLogRestrictsOnlyUnindexedSubjects(t *testing.T) {
 				assert.Nil(t, action.Subject, "an erased subject must not appear in the public log")
 				assert.NotContains(t, encoded, want.subject.URI)
 			} else {
-				assert.Equal(t, &moderation.SubjectRefView{URI: want.subject.URI, CID: want.subject.CID}, action.Subject)
+				assert.Equal(t, &moderation.SubjectRefView{URI: want.subject.URI, CID: want.subject.CID, CommunityDID: communityDID}, action.Subject)
 			}
 		}
 	})
@@ -179,7 +179,7 @@ func TestModerationActionLogRestrictsOnlyUnindexedSubjects(t *testing.T) {
 		require.Len(t, page.Actions, len(entries))
 		for _, action := range page.Actions {
 			want := entries[action.Action.Ref.ActionID]
-			ref := &moderation.SubjectRefView{URI: want.subject.URI, CID: want.subject.CID}
+			ref := &moderation.SubjectRefView{URI: want.subject.URI, CID: want.subject.CID, CommunityDID: communityDID}
 			if want.restricted {
 				assert.Nil(t, action.Action.Subject)
 				assert.Equal(t, ref, action.PrivateSubject)
@@ -234,7 +234,7 @@ func TestModerationActionLogRestrictsOnlyUnindexedSubjects(t *testing.T) {
 		require.NoError(t, err)
 		page, _ := restrictedLogPage(t, service, moderation.ListActionsParams{Subject: erasedPost.URI})
 		require.Len(t, page.Actions, 1)
-		assert.Equal(t, &moderation.SubjectRefView{URI: erasedPost.URI, CID: erasedPost.CID}, page.Actions[0].Subject)
+		assert.Equal(t, &moderation.SubjectRefView{URI: erasedPost.URI, CID: erasedPost.CID, CommunityDID: communityDID}, page.Actions[0].Subject)
 		page, _ = restrictedLogPage(t, service, moderation.ListActionsParams{Community: communityDID})
 		assert.Len(t, page.Actions, len(publicIDs)+1)
 	})

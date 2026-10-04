@@ -93,6 +93,11 @@
           "type": "string",
           "format": "cid",
           "description": "CID of the observed record version, never the moderation action's version"
+        },
+        "communityDid": {
+          "type": "string",
+          "format": "did",
+          "description": "DID of the community the record was posted in, recorded when the action was taken"
         }
       }
     },

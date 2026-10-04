@@ -34,13 +34,13 @@ func TestModlogRestrictedSubjectProjection(t *testing.T) {
 
 			admin := moderation.NewAdminActionView(action)
 			assert.Equal(t, public, admin.Action)
-			assert.Equal(t, &moderation.SubjectRefView{URI: action.SubjectURI, CID: action.ObservedCID}, admin.PrivateSubject)
+			assert.Equal(t, &moderation.SubjectRefView{URI: action.SubjectURI, CID: action.ObservedCID, CommunityDID: action.SubjectCommunityDID}, admin.PrivateSubject)
 		})
 	}
 	public := modlogTestAction()
 	public.ScopeCommunityDID = "did:plc:scopecommunity"
 	view := moderation.NewActionView(public)
-	assert.Equal(t, &moderation.SubjectRefView{URI: public.SubjectURI, CID: public.ObservedCID}, view.Subject)
+	assert.Equal(t, &moderation.SubjectRefView{URI: public.SubjectURI, CID: public.ObservedCID, CommunityDID: public.SubjectCommunityDID}, view.Subject)
 	assert.Equal(t, public.ScopeCommunityDID, view.Scope.CommunityDID)
 	assert.Nil(t, moderation.NewAdminActionView(public).PrivateSubject)
 }
