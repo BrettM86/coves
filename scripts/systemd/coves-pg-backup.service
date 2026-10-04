@@ -1,0 +1,15 @@
+[Unit]
+Description=Coves nightly backup: AppView Postgres
+Requires=docker.service
+After=docker.service
+# A failed run retries every 5 minutes (a run missed while the host was down
+# fires at boot, possibly before the containers are up); four failed starts in
+# two hours stop the retries.
+StartLimitIntervalSec=2h
+StartLimitBurst=4
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/coves-pg-backup
+Restart=on-failure
+RestartSec=5min
