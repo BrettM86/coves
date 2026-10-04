@@ -139,14 +139,12 @@ func TestImageProxy_ServesRealPDSAvatar(t *testing.T) {
 		assertImageSize(t, body, 360, 360)
 	})
 
-	t.Run("the response is immutably cacheable", func(t *testing.T) {
+	t.Run("the response is cacheable for one day", func(t *testing.T) {
 		resp, _ := fetch(t, url, nil)
 
-		// A preset plus a content-addressed CID names bytes that can never
-		// change, so the response is safe to cache forever — that is the whole
-		// economic argument for the proxy, and a weakened header here would
-		// quietly send every view back to the PDS.
-		assert.Equal(t, "public, max-age=31536000, immutable", resp.Header.Get("Cache-Control"))
+		// The CID identifies stable bytes, but moderation can later block their
+		// serving. Without a purge, a browser or CDN must revalidate within a day.
+		assert.Equal(t, "public, max-age=86400", resp.Header.Get("Cache-Control"))
 		assert.Equal(t, fmt.Sprintf(`"avatar_small-%s"`, avatar.avatarCID), resp.Header.Get("ETag"))
 	})
 

@@ -118,16 +118,15 @@ func TransformPostEmbeds(ctx context.Context, postView *PostView, blueskyService
 		return
 	}
 
-	// Only process app.bsky.feed.post URIs (Bluesky posts)
-	// Format: at://did:plc:xxx/app.bsky.feed.post/abc123
+	// Only process AT-URIs (Format: at://did:plc:xxx/app.bsky.feed.post/abc123)
 	if len(atURI) < 20 || atURI[:5] != "at://" {
 		slog.Warn("skipping embed transform: invalid AT-URI", "post", postView.URI, "uri", atURI)
 		return
 	}
 
-	// Simple check for app.bsky.feed.post collection
-	// We don't want to process other types of embeds (e.g., Coves posts)
-	if !strings.Contains(atURI, "/app.bsky.feed.post/") {
+	// Only a URI whose collection segment is app.bsky.feed.post is a Bluesky
+	// post; the substring elsewhere (e.g. in a Coves post's path) is not.
+	if !embeds.IsBlueskyPostURI(atURI) {
 		return
 	}
 

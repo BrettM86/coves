@@ -84,5 +84,5 @@ func TestHandler_HandleImage_BlockedIsIndistinguishableFromAFailedFetch(t *testi
 
 	assert.Equalf(t, "no-store", blocked.Header().Get("Cache-Control"),
 		"a refusal must stay uncacheable like every other error on this route: it sits behind a CDN "+
-			"whose success responses advertise a one-year immutable lifetime")
+			"whose success responses can be cached for one day; a cached refusal could outlive its cause")
 }

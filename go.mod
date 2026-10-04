@@ -12,7 +12,10 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/hashicorp/go-retryablehttp v0.7.8
 	github.com/hashicorp/golang-lru/v2 v2.0.7
+	github.com/ipfs/go-cid v0.6.2
 	github.com/lib/pq v1.12.3
+	github.com/multiformats/go-multibase v0.3.0
+	github.com/multiformats/go-multihash v0.2.3
 	github.com/pressly/goose/v3 v3.28.0
 	github.com/rivo/uniseg v0.4.7
 	github.com/stretchr/testify v1.12.1
@@ -45,7 +48,6 @@ require (
 	github.com/ipfs/bbloom v0.0.4 // indirect
 	github.com/ipfs/go-block-format v0.2.0 // indirect
 	github.com/ipfs/go-blockservice v0.5.2 // indirect
-	github.com/ipfs/go-cid v0.6.2 // indirect
 	github.com/ipfs/go-datastore v0.6.0 // indirect
 	github.com/ipfs/go-ipfs-blockstore v1.3.1 // indirect
 	github.com/ipfs/go-ipfs-ds-help v1.1.1 // indirect
@@ -71,8 +73,6 @@ require (
 	github.com/mr-tron/base58 v1.3.0 // indirect
 	github.com/multiformats/go-base32 v0.1.0 // indirect
 	github.com/multiformats/go-base36 v0.2.0 // indirect
-	github.com/multiformats/go-multibase v0.3.0 // indirect
-	github.com/multiformats/go-multihash v0.2.3 // indirect
 	github.com/multiformats/go-varint v0.1.0 // indirect
 	github.com/opentracing/opentracing-go v1.2.0 // indirect
 	github.com/polydawn/refmt v0.90.0 // indirect

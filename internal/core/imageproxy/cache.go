@@ -36,6 +36,14 @@ type Cache interface {
 	// Cleanup runs both LRU eviction and TTL cleanup.
 	// Returns the number of entries removed and any error.
 	Cleanup() (int, error)
+	// DeleteOwner removes every preset's cached copy of the owner's blob.
+	DeleteOwner(did, cid string) error
+	// DeleteCID removes every owner's cached copies of the blob in every preset.
+	DeleteCID(cid string) error
+	// OwnerDirectories returns the distinct owner directory names (as stored
+	// on disk) holding cid under any preset. A missing directory is not an
+	// error; any other read error is returned.
+	OwnerDirectories(cid string) ([]string, error)
 }
 
 // DiskCache implements Cache using the filesystem for storage.
@@ -210,14 +218,19 @@ func (c *DiskCache) Delete(preset, did, cid string) error {
 		return err
 	}
 
-	path := c.cachePath(preset, did, cid)
+	return removeEntry(c.cachePath(preset, did, cid))
+}
 
-	err := os.Remove(path)
-	if err != nil && !os.IsNotExist(err) {
-		return err
+// removeEntry deletes a cached file and the temporary file an interrupted Set
+// may have left beside it. A missing file is not an error.
+func removeEntry(path string) error {
+	var errs []error
+	for _, candidate := range []string{path, path + ".tmp"} {
+		if err := os.Remove(candidate); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			errs = append(errs, err)
+		}
 	}
-
-	return nil
+	return errors.Join(errs...)
 }
 
 // cacheEntry represents a cached file with its metadata.
@@ -549,4 +562,113 @@ func (c *DiskCache) StartCleanupJob(interval time.Duration) context.CancelFunc {
 	}()
 
 	return cancel
+}
+
+// DeleteOwner removes every preset's cached copy of the owner's blob. It
+// keeps going past a failed preset and returns every failure joined, so one
+// bad entry cannot leave the owner's other copies on disk.
+func (c *DiskCache) DeleteOwner(did, cid string) error {
+	if did == "" || cid == "" {
+		return ErrEmptyParameter
+	}
+	presets, err := os.ReadDir(c.basePath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, preset := range presets {
+		if preset.IsDir() {
+			errs = append(errs, c.Delete(preset.Name(), did, cid))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// DeleteCID removes every owner's cached copies of the blob in every preset.
+// Like DeleteOwner it keeps going past failures and joins them. A preset
+// directory that vanishes mid-walk (the cleanup job removes empty ones) is
+// skipped, because nothing in it can still hold the blob.
+func (c *DiskCache) DeleteCID(cid string) error {
+	if cid == "" {
+		return ErrEmptyParameter
+	}
+	presets, err := os.ReadDir(c.basePath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, preset := range presets {
+		if !preset.IsDir() {
+			continue
+		}
+		owners, err := os.ReadDir(filepath.Join(c.basePath, preset.Name()))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		for _, owner := range owners {
+			if owner.IsDir() {
+				errs = append(errs, c.Delete(preset.Name(), owner.Name(), cid))
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// OwnerDirectories finds every directory with a cached copy of cid.
+func (c *DiskCache) OwnerDirectories(cid string) ([]string, error) {
+	if cid == "" {
+		return nil, ErrEmptyParameter
+	}
+	presets, err := os.ReadDir(c.basePath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	ownersFound := make(map[string]bool)
+	for _, preset := range presets {
+		if !preset.IsDir() {
+			continue
+		}
+		owners, err := os.ReadDir(filepath.Join(c.basePath, preset.Name()))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, owner := range owners {
+			if !owner.IsDir() {
+				continue
+			}
+			entry := filepath.Join(c.basePath, preset.Name(), owner.Name(), makeCIDSafe(cid))
+			info, err := os.Stat(entry)
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			if !info.IsDir() {
+				ownersFound[owner.Name()] = true
+			}
+		}
+	}
+	directories := make([]string, 0, len(ownersFound))
+	for owner := range ownersFound {
+		directories = append(directories, owner)
+	}
+	sort.Strings(directories)
+	return directories, nil
 }

@@ -113,12 +113,23 @@ type Repository interface {
 	// GetRawIndexedRowsByURIs is the batched GetRawIndexedRow: same ungated raw
 	// rows, one round trip. THE SAME DANGER APPLIES — read the banner above
 	// before calling it. URIs with no indexed row are absent from the map.
+	// Rows also carry community handle/name when available; a missing community
+	// row does not remove an indexed post from the result.
 	//
 	// It exists because the post.get removal path needs the community and
 	// soft-delete state of every absent URI in a caller-supplied batch, and
 	// looping GetRawIndexedRow there put an N+1 on a public endpoint whose URI
 	// list the caller controls.
 	GetRawIndexedRowsByURIs(ctx context.Context, uris []string) (map[string]*Post, error)
+
+	// ActiveRemovalsByURIs returns the active removal sources of each URI that has any.
+	ActiveRemovalsByURIs(ctx context.Context, uris []string) (map[string][]RemovalSource, error)
+
+	// AdmittedURIsForViewer returns the URIs whose posts pass the viewer-bound
+	// admission rule of the read-path visibility predicate, ignoring active
+	// moderation removals. viewerDID is "" for an anonymous read. post.get uses
+	// it so a removal tombstone never discloses a post the viewer could not see.
+	AdmittedURIsForViewer(ctx context.Context, uris []string, viewerDID string) (map[string]bool, error)
 
 	// GetViewsByURIs retrieves full post views (with author + community joins) for a
 	// set of canonical DID-based AT-URIs. Returns a map keyed by URI; missing or

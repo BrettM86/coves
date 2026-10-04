@@ -265,7 +265,9 @@ func dryRunFixture() (*Rematerializer, *memSource, *memLedger, *memAuthorRepo, *
 		CommunityRepos: func(context.Context, string) (CommunityRepo, error) {
 			return communityRepo, nil
 		},
-		Blobs: blobClient,
+		Blobs:       blobClient,
+		Removals:    noRematerializeRemovals{},
+		InstanceDID: "did:web:coves-instance.invalid",
 	}
 	return tool, source, ledger, authorRepo, writer, blobClient
 }

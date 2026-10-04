@@ -21,6 +21,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type noRematerializeRemovalsIntegration struct{}
+
+func (noRematerializeRemovalsIntegration) ActiveRemovalsByURIs(context.Context, []string) (map[string][]posts.RemovalSource, error) {
+	return nil, nil
+}
+
 // callLog is an ordered record of the load-bearing calls a run makes, shared by
 // the fake factory, author repo, and legacy source, so a test can assert on
 // ORDERING that no outcome value reveals — specifically that the credential
@@ -781,7 +787,7 @@ func TestRematerialize_HappyPath_WalksToDoneVerifyBeforeDelete(t *testing.T) {
 	legacy := legacyPost(t, rematCommunityDID, rematAuthorDID)
 	source := newFakeLegacySource(legacy)
 
-	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos()}
+	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos(), Removals: noRematerializeRemovalsIntegration{}, InstanceDID: "did:web:coves-instance.invalid"}
 
 	state, err := tool.RematerializeOne(context.Background(), legacy)
 	require.NoError(t, err)
@@ -832,6 +838,7 @@ func TestRematerialize_TombstonesLegacyIndexAfterDeleteBeforeDone(t *testing.T) 
 	tool := &posts.Rematerializer{
 		Source: source, Ledger: ledger, AuthorRepos: authors.factory(),
 		Acceptances: writer, CommunityRepos: writer.repos(), Index: index,
+		Removals: noRematerializeRemovalsIntegration{}, InstanceDID: "did:web:coves-instance.invalid",
 	}
 
 	state, err := tool.RematerializeOne(context.Background(), legacy)
@@ -866,7 +873,7 @@ func TestRematerialize_ReRun_IsAPureNoOp(t *testing.T) {
 	writer := &spyAcceptanceWriter{}
 	legacy := legacyPost(t, rematCommunityDID, rematAuthorDID)
 	source := newFakeLegacySource(legacy)
-	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos()}
+	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos(), Removals: noRematerializeRemovalsIntegration{}, InstanceDID: "did:web:coves-instance.invalid"}
 
 	first, err := tool.RematerializeOne(context.Background(), legacy)
 	require.NoError(t, err)
@@ -911,7 +918,7 @@ func TestRematerialize_ResumeAfterDeleteFailure_RetriesOnlyTheDelete(t *testing.
 	legacy := legacyPost(t, rematCommunityDID, rematAuthorDID)
 	source := newFakeLegacySource(legacy)
 	source.deleteErr[legacy.URI] = fmt.Errorf("transient: the community PDS returned 502 on delete")
-	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos()}
+	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos(), Removals: noRematerializeRemovalsIntegration{}, InstanceDID: "did:web:coves-instance.invalid"}
 
 	// First pass: everything succeeds up to the delete, which fails once. The row
 	// must stop at migrated — the checkpoint BEFORE the delete — never done.
@@ -953,7 +960,7 @@ func TestRematerialize_CIDMismatch_DoesNotCheckpointOrDelete(t *testing.T) {
 	writer := &spyAcceptanceWriter{}
 	legacy := legacyPost(t, rematCommunityDID, rematAuthorDID)
 	source := newFakeLegacySource(legacy)
-	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos()}
+	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos(), Removals: noRematerializeRemovalsIntegration{}, InstanceDID: "did:web:coves-instance.invalid"}
 
 	// The verify re-read of the postv2 comes back with a DIFFERENT CID than the
 	// one the acceptance pinned — a concurrent edit landing in the write→verify
@@ -1000,7 +1007,7 @@ func TestRematerialize_NoCredentials_LeavesLegacyNeverForges(t *testing.T) {
 	authors.noCreds[humanDID] = true
 	legacy := legacyPost(t, rematCommunityDID, humanDID)
 	source := newFakeLegacySource(legacy)
-	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos()}
+	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos(), Removals: noRematerializeRemovalsIntegration{}, InstanceDID: "did:web:coves-instance.invalid"}
 
 	state, err := tool.RematerializeOne(context.Background(), legacy)
 	require.NoError(t, err, "a no-creds record is an expected terminal outcome, not a run-failing error")
@@ -1036,7 +1043,7 @@ func TestRematerialize_Run_CensusGatesCompletionWhileFallbackSurvives(t *testing
 	stranded := legacyPost(t, rematCommunityDID, humanDID)
 	source := newFakeLegacySource(migratable, stranded)
 	writer := &spyAcceptanceWriter{}
-	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos()}
+	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos(), Removals: noRematerializeRemovalsIntegration{}, InstanceDID: "did:web:coves-instance.invalid"}
 
 	report, err := tool.Run(context.Background())
 	require.NoError(t, err)
@@ -1072,7 +1079,7 @@ func TestRematerialize_UsesDirectAcceptanceWriter_NeverReDecides(t *testing.T) {
 	// community it currently sits in. This mirrors service_writeforward_test.go's
 	// scriptedDecider trick, made structural: the acceptance is written for the
 	// post's content unconditionally.
-	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos()}
+	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos(), Removals: noRematerializeRemovalsIntegration{}, InstanceDID: "did:web:coves-instance.invalid"}
 
 	state, err := tool.RematerializeOne(context.Background(), legacy)
 	require.NoError(t, err)
@@ -1124,7 +1131,7 @@ func TestRematerialize_PreservesEveryPublishedField(t *testing.T) {
 		RawRecord:    raw,
 	}
 	source := newFakeLegacySource(legacy)
-	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos()}
+	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos(), Removals: noRematerializeRemovalsIntegration{}, InstanceDID: "did:web:coves-instance.invalid"}
 
 	_, err := tool.RematerializeOne(context.Background(), legacy)
 	require.NoError(t, err)
@@ -1158,7 +1165,7 @@ func TestRematerialize_RefusesWhenADifferentRecordStandsAtTheRkey(t *testing.T) 
 	writer := &spyAcceptanceWriter{}
 	legacy := legacyPost(t, rematCommunityDID, rematAuthorDID)
 	source := newFakeLegacySource(legacy)
-	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos()}
+	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos(), Removals: noRematerializeRemovalsIntegration{}, InstanceDID: "did:web:coves-instance.invalid"}
 
 	// A DIFFERENT record already stands at the target rkey — its CID is the one a
 	// fresh write would get (so a CID-only verify passes), but its body is NOT this
@@ -1223,7 +1230,7 @@ func TestRematerialize_Run_ReconcilesStrandedMigratedRowFromLedger(t *testing.T)
 
 	// The source does NOT list the stranded record — its community.post is gone.
 	source := newFakeLegacySource()
-	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos()}
+	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos(), Removals: noRematerializeRemovalsIntegration{}, InstanceDID: "did:web:coves-instance.invalid"}
 
 	report, err := tool.Run(ctx)
 	require.NoError(t, err)
@@ -1276,7 +1283,7 @@ func TestRematerialize_Run_ResolvesAllCredentialsBeforeAnyMutation(t *testing.T)
 	second := legacyPost(t, rematCommunityDID, noCreds)
 	source := newFakeLegacySource(first, second)
 	source.log = log
-	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos()}
+	tool := &posts.Rematerializer{Source: source, Ledger: ledger, AuthorRepos: authors.factory(), Acceptances: writer, CommunityRepos: writer.repos(), Removals: noRematerializeRemovalsIntegration{}, InstanceDID: "did:web:coves-instance.invalid"}
 
 	_, err := tool.Run(context.Background())
 	require.NoError(t, err)

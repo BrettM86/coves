@@ -1,6 +1,7 @@
 package posts
 
 import (
+	"encoding/json"
 	"time"
 )
 
@@ -34,11 +35,14 @@ type Post struct {
 	RKey          string     `json:"rkey" db:"rkey"`
 	URI           string     `json:"uri" db:"uri"`
 	AuthorDID     string     `json:"authorDid" db:"author_did"`
-	ID            int64      `json:"id" db:"id"`
-	UpvoteCount   int        `json:"upvoteCount" db:"upvote_count"`
-	DownvoteCount int        `json:"downvoteCount" db:"downvote_count"`
-	Score         int        `json:"score" db:"score"`
-	CommentCount  int        `json:"commentCount" db:"comment_count"`
+	// Set by the batched raw read for content-free moderation tombstones.
+	CommunityHandle string `json:"-"`
+	CommunityName   string `json:"-"`
+	ID              int64  `json:"id" db:"id"`
+	UpvoteCount     int    `json:"upvoteCount" db:"upvote_count"`
+	DownvoteCount   int    `json:"downvoteCount" db:"downvote_count"`
+	Score           int    `json:"score" db:"score"`
+	CommentCount    int    `json:"commentCount" db:"comment_count"`
 
 	// Bridge-asserted origin-platform vote aggregates for federated/bridged content.
 	// Populated from the record's bridgedStats field; kept separate from native votes.
@@ -193,17 +197,79 @@ type RemovedPost struct {
 	Code    string `json:"code,omitempty"`
 }
 
+// RemovalSource attributes one active removal decision on a post.
+type RemovalSource struct {
+	AuthorityDID string
+	ScopeKind    string
+}
+
+// ModerationView states served on the wire.
+const (
+	// ModerationViewStateClear is served with content labels. It is correct only
+	// on rows already filtered by visiblePostsPredicate, which drops removed posts.
+	ModerationViewStateClear = "clear"
+	// ModerationViewStateRemoved is served on a removal tombstone.
+	ModerationViewStateRemoved = "removed"
+)
+
+// ModerationView is a post's public removal or content-label state
+// (social.coves.moderation.defs#moderationView).
+type ModerationView struct {
+	State         string                 `json:"state"`
+	Sources       []ModerationSourceView `json:"sources,omitempty"`
+	ContentLabels []ContentLabelView     `json:"contentLabels,omitempty"`
+}
+
+// ContentLabelView is one active moderator classification value
+// (social.coves.moderation.defs#contentLabelView).
+type ContentLabelView struct {
+	Value   string                 `json:"value"`
+	Sources []ModerationSourceView `json:"sources,omitempty"`
+}
+
+// ModerationSourceView attributes a removal or label (social.coves.moderation.defs#sourceView).
+type ModerationSourceView struct {
+	AuthorityDID string              `json:"authorityDid"`
+	Scope        ModerationScopeView `json:"scope"`
+}
+
+// ModerationScopeView is a removal or label's scope (social.coves.moderation.defs#scopeView).
+type ModerationScopeView struct {
+	Kind         string `json:"kind"`
+	CommunityDID string `json:"communityDid,omitempty"`
+}
+
+// ModeratedPost is the content-free social.coves.community.post.defs#moderatedPost
+// tombstone for a post under an instance-scoped removal.
+type ModeratedPost struct {
+	Moderation *ModerationView `json:"moderation"`
+	Community  *CommunityRef   `json:"community,omitempty"`
+	URI        string          `json:"uri"`
+	AuthorDID  string          `json:"authorDid,omitempty"`
+}
+
+// MarshalJSON identifies this tombstone as the moderatedPost union member.
+func (p ModeratedPost) MarshalJSON() ([]byte, error) {
+	type wirePost ModeratedPost
+	return json.Marshal(struct {
+		Type string `json:"$type"`
+		wirePost
+	}{Type: "social.coves.community.post.defs#moderatedPost", wirePost: wirePost(p)})
+}
+
 // PostResult is one ordered element of a GetPosts response. Exactly one of Post,
-// Blocked, Removed, or NotFound is set: Post when the post was found and visible
-// to the viewer, Blocked when the viewer has blocked the author, Removed when the
-// post's own community removed it, NotFound when the URI could not be resolved.
+// Blocked, Removed, Moderated, or NotFound is set: Post when visible, Blocked
+// when the viewer has blocked the author, Removed when the post's own community
+// removed it, Moderated when an active instance removal hides it, and NotFound
+// when the URI could not be resolved or the author deleted it.
 // Construct results via the result helpers so the const discriminators
 // (notFound/blocked/removed == true) cannot be left unset.
 type PostResult struct {
-	Post     *PostView
-	Blocked  *BlockedPost
-	Removed  *RemovedPost
-	NotFound *NotFoundPost
+	Post      *PostView
+	Blocked   *BlockedPost
+	Removed   *RemovedPost
+	NotFound  *NotFoundPost
+	Moderated *ModeratedPost
 }
 
 // foundResult builds a found (postView) union member.
@@ -222,6 +288,25 @@ func removedResult(uri, code string) *PostResult {
 	return &PostResult{Removed: &RemovedPost{URI: uri, Removed: true, Code: code}}
 }
 
+// moderatedResult builds a content-free removal tombstone from indexed metadata.
+func moderatedResult(post *Post, sources []RemovalSource) *PostResult {
+	viewSources := make([]ModerationSourceView, 0, len(sources))
+	for _, source := range sources {
+		viewSources = append(viewSources, ModerationSourceView{
+			AuthorityDID: source.AuthorityDID,
+			Scope:        ModerationScopeView{Kind: source.ScopeKind},
+		})
+	}
+	result := &ModeratedPost{
+		URI: post.URI, AuthorDID: post.AuthorDID,
+		Moderation: &ModerationView{State: ModerationViewStateRemoved, Sources: viewSources},
+	}
+	if post.CommunityDID != "" && post.CommunityName != "" {
+		result.Community = &CommunityRef{DID: post.CommunityDID, Handle: post.CommunityHandle, Name: post.CommunityName}
+	}
+	return &PostResult{Moderated: result}
+}
+
 // blockedByAuthorResult builds a blockedPost union member (blockedBy "author") with its
 // const discriminator set.
 func blockedByAuthorResult(uri, authorDID string) *PostResult {
@@ -233,10 +318,9 @@ func blockedByAuthorResult(uri, authorDID string) *PostResult {
 	}}
 }
 
-// GetPost returns the underlying PostView (nil for blocked/not-found results),
-// satisfying the viewer-state enrichment helper's FeedPostProvider interface. Blocked
-// and not-found results carry no PostView, so they are skipped by viewer enrichment
-// and embed transforms.
+// GetPost returns the underlying PostView (nil for tombstones), satisfying the
+// viewer-state enrichment helper's FeedPostProvider interface. Content-free
+// results are skipped by viewer enrichment and embed transforms.
 func (r *PostResult) GetPost() *PostView {
 	return r.Post
 }
@@ -247,7 +331,7 @@ func (r *PostResult) GetPost() *PostView {
 // an assembly bug; reporting it (rather than silently picking one by priority) is the
 // whole point of this guard, so a mis-assembled result surfaces as an internal error
 // instead of emitting a null or ambiguous array entry that violates the lexicon's union
-// (postView | blockedPost | notFoundPost).
+// (postView | blockedPost | removedPost | moderatedPost | notFoundPost).
 func (r *PostResult) Member() (interface{}, bool) {
 	var member interface{}
 	count := 0
@@ -261,6 +345,10 @@ func (r *PostResult) Member() (interface{}, bool) {
 	}
 	if r.Removed != nil {
 		member = r.Removed
+		count++
+	}
+	if r.Moderated != nil {
+		member = r.Moderated
 		count++
 	}
 	if r.NotFound != nil {
@@ -316,9 +404,11 @@ type PostView struct {
 	Author    *AuthorView   `json:"author"`
 	Stats     *PostStats    `json:"stats,omitempty"`
 	Community *CommunityRef `json:"community"`
-	RKey      string        `json:"rkey"`
-	CID       string        `json:"cid"`
-	URI       string        `json:"uri"`
+	// Moderation carries active content labels on visible posts; absent when none apply.
+	Moderation *ModerationView `json:"moderation,omitempty"`
+	RKey       string          `json:"rkey"`
+	CID        string          `json:"cid"`
+	URI        string          `json:"uri"`
 
 	// Status and AcceptanceURI are the per-community admission context (PRD §6.2),
 	// populated from the visibility join. Both are additive-optional: a public

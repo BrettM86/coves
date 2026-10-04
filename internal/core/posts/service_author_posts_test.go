@@ -51,6 +51,14 @@ func (m *mockRepository) GetRawIndexedRowsByURIs(ctx context.Context, uris []str
 	return out, nil
 }
 
+func (m *mockRepository) ActiveRemovalsByURIs(context.Context, []string) (map[string][]RemovalSource, error) {
+	return map[string][]RemovalSource{}, nil
+}
+
+func (m *mockRepository) AdmittedURIsForViewer(context.Context, []string, string) (map[string]bool, error) {
+	return map[string]bool{}, nil
+}
+
 func (m *mockRepository) GetViewsByURIs(ctx context.Context, uris []string, viewerDID string) (map[string]*PostView, error) {
 	m.getViewsByURIsCalls++
 	m.gotViewsViewerDID = viewerDID

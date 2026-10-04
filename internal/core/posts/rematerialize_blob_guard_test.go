@@ -163,7 +163,7 @@ func TestDefaultRematerializeBlobClient_GuardedIsTheDefaultForTheStateMachine(t 
 
 	host := newCountingBlobHost(t)
 
-	fallback := (&Rematerializer{}).blobClient()
+	fallback := (&Rematerializer{Removals: noRematerializeRemovals{}, InstanceDID: "did:web:coves-instance.invalid"}).blobClient()
 	require.NotNil(t, fallback, "a Rematerializer with no injected Blobs must still have a client")
 
 	_, err := fallback.Fetch(context.Background(), host.server.URL,

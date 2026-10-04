@@ -5,7 +5,7 @@ import (
 )
 
 // CommentView represents the full view of a comment with all metadata
-// Matches social.coves.community.comment.getComments#commentView lexicon
+// Matches social.coves.community.comment.defs#commentView lexicon
 // Used in thread views and get endpoints
 // For deleted comments, IsDeleted=true and content-related fields are empty/nil
 type CommentView struct {
@@ -23,10 +23,11 @@ type CommentView struct {
 	IsDeleted      bool                `json:"isDeleted,omitempty"`
 	DeletionReason *string             `json:"deletionReason,omitempty"`
 	DeletedAt      *string             `json:"deletedAt,omitempty"`
+	Moderation     *ModerationView     `json:"moderation,omitempty"`
 }
 
 // ThreadViewComment represents a comment with its nested replies
-// Matches social.coves.community.comment.getComments#threadViewComment lexicon
+// Matches social.coves.community.comment.defs#threadViewComment lexicon
 // Supports recursive threading for comment trees
 type ThreadViewComment struct {
 	Comment *CommentView         `json:"comment"`
@@ -58,7 +59,7 @@ type CommentViewerState struct {
 }
 
 // GetCommentsResponse represents the response for fetching comments on a post
-// Matches social.coves.feed.getComments lexicon output
+// Matches social.coves.community.comment.getComments lexicon output
 // Includes the full comment thread tree and original post reference
 type GetCommentsResponse struct {
 	Post     interface{}          `json:"post"`
@@ -81,4 +82,22 @@ type GetActorCommentsRequest struct {
 type GetActorCommentsResponse struct {
 	Comments []*CommentView `json:"comments"`
 	Cursor   *string        `json:"cursor,omitempty"`
+}
+
+// ModerationView is a comment's public removal state
+// (social.coves.moderation.defs#moderationView).
+type ModerationView struct {
+	State   string                 `json:"state"`
+	Sources []ModerationSourceView `json:"sources,omitempty"`
+}
+
+// ModerationSourceView attributes a removal (social.coves.moderation.defs#sourceView).
+type ModerationSourceView struct {
+	AuthorityDID string              `json:"authorityDid"`
+	Scope        ModerationScopeView `json:"scope"`
+}
+
+// ModerationScopeView is a removal's scope (social.coves.moderation.defs#scopeView).
+type ModerationScopeView struct {
+	Kind string `json:"kind"`
 }

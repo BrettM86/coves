@@ -127,18 +127,22 @@ const commentCollection = "social.coves.community.comment"
 // observe. As elsewhere in this package, modelling only the asserted fields
 // keeps a new lexicon field from breaking every contract that reads a comment.
 type commentView struct {
-	URI            string         `json:"uri"`
-	CID            string         `json:"cid"`
-	Author         identityRef    `json:"author"`
-	Record         map[string]any `json:"record"`
-	Post           *strongRef     `json:"post"`
-	Parent         *strongRef     `json:"parent"`
-	Stats          commentStats   `json:"stats"`
-	CreatedAt      string         `json:"createdAt"`
-	IndexedAt      string         `json:"indexedAt"`
-	IsDeleted      bool           `json:"isDeleted"`
-	DeletionReason *string        `json:"deletionReason"`
-	DeletedAt      *string        `json:"deletedAt"`
+	URI        string         `json:"uri"`
+	CID        string         `json:"cid"`
+	Author     identityRef    `json:"author"`
+	Record     map[string]any `json:"record"`
+	Embed      map[string]any `json:"embed"`
+	Moderation *struct {
+		State string `json:"state"`
+	} `json:"moderation"`
+	Post           *strongRef   `json:"post"`
+	Parent         *strongRef   `json:"parent"`
+	Stats          commentStats `json:"stats"`
+	CreatedAt      string       `json:"createdAt"`
+	IndexedAt      string       `json:"indexedAt"`
+	IsDeleted      bool         `json:"isDeleted"`
+	DeletionReason *string      `json:"deletionReason"`
+	DeletedAt      *string      `json:"deletedAt"`
 }
 
 // strongRef is the uri+cid pair the lexicon uses for threading references.
@@ -567,8 +571,9 @@ func TestCommentIngestion(t *testing.T) {
 	require.Equal(t, author.DID, node.Comment.Author.DID,
 		"the placeholder keeps the commenter's DID, which is what lets a client render \"[deleted]\" "+
 			"against the right slot")
-	require.Empty(t, node.Comment.Author.Handle,
-		"the placeholder must not carry the handle: it is the identifying half a reader would recognise")
+	require.Equal(t, "handle.invalid", node.Comment.Author.Handle,
+		"the placeholder must carry handle.invalid, not the author's handle: the handle is the identifying "+
+			"half a reader would recognise, and handle.invalid is the atProto convention for an unresolvable one")
 	require.NotNil(t, node.Comment.DeletionReason)
 	require.Equal(t, "author", *node.Comment.DeletionReason,
 		"a delete commit in the author's own repo is an author deletion, not a moderator removal — "+

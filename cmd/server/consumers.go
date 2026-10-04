@@ -230,6 +230,7 @@ func (a *application) registerFeedConsumers() ([]feedConsumer, error) {
 			jetstream.WithAdmissions(a.admissionRepo),
 			jetstream.WithDeletedAccounts(postgresRepo.NewDeletedAccountRepository(a.db)),
 			jetstream.WithPostRecordFetcher(postFetcher),
+			jetstream.WithPostMediaReconciler(a.mediaReconciler),
 			// The host-side half of an author's own deletion (§5.3): when the
 			// author tombstones a post this instance's community accepted, the
 			// acceptance in that community's repo is withdrawn. It refuses
@@ -263,7 +264,8 @@ func (a *application) registerFeedConsumers() ([]feedConsumer, error) {
 	consumers = append(consumers, feedConsumer{
 		name: jetstream.ConsumerComments,
 		handler: jetstream.NewCommentEventConsumer(a.commentRepo, a.db,
-			jetstream.WithCommentBridgeTrust(a.bridgeTrust)),
+			jetstream.WithCommentBridgeTrust(a.bridgeTrust),
+			jetstream.WithCommentMediaReconciler(a.mediaReconciler)),
 	})
 
 	return consumers, nil

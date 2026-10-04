@@ -37,6 +37,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -56,6 +57,12 @@ import (
 // complete. It is generous on purpose: these tests are not measuring latency,
 // and a tight budget here would turn a loaded CI machine into a 502.
 const defaultFetchTimeout = 30 * time.Second
+
+type allowAllBlockChecker struct{}
+
+func (allowAllBlockChecker) IsBlocked(context.Context, string, string) (bool, error) {
+	return false, nil
+}
 
 // fixedPDSResolver is an identity.Resolver that sends every DID to one PDS.
 //
@@ -140,6 +147,7 @@ func newProxyServerWithCache(t *testing.T, resolver identity.Resolver, fetchTime
 		// core/imageproxy/fetcher_guard_test.go, whose fetchers are built
 		// without this option and assert the listener is never reached.
 		imageproxycore.NewPDSFetcher(fetchTimeout, 10, imageproxycore.WithPrivateHostsAllowed()),
+		allowAllBlockChecker{},
 		imageproxycore.Config{
 			Enabled:                true,
 			CachePath:              cacheDir,
@@ -252,7 +260,7 @@ func assertImageSize(t *testing.T, body []byte, wantWidth, wantHeight int) {
 func TestImageProxy_ServesProcessedBlob(t *testing.T) {
 	t.Parallel()
 
-	const cid = "bafybeimockimagetest123"
+	const cid = "bafkreicdmtgb7deaakqrghapqrdjva63vqcieyzzi66q2pokcwyotdermy"
 	did := "did:plc:" + testkit.UniqueID(t)
 
 	upstream := newBlobServer(t, map[string]func(http.ResponseWriter){
@@ -272,7 +280,7 @@ func TestImageProxy_ServesProcessedBlob(t *testing.T) {
 	})
 
 	t.Run("a blob the PDS does not hold is a 404", func(t *testing.T) {
-		resp, _ := fetch(t, proxyURL(server, "avatar", did, "nonexistentcid"), nil)
+		resp, _ := fetch(t, proxyURL(server, "avatar", did, "bafkreickn4h365ejzx3jx6uvmu6atijrecyeavikim7dyf5wer7tcu4zme"), nil)
 
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 	})
@@ -290,7 +298,7 @@ func TestImageProxy_UpstreamFailuresAreBadGateway(t *testing.T) {
 
 	// Well-formed CIDs: these must travel past validation so that the failure
 	// under test is the fetch, not the parse.
-	const validCID = "bafyreihgdyzzpkkzq2izfnhcmm77ycuacvkuziwbnqxfxtqsz7tmxwhnshi"
+	const validCID = "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"
 	did := "did:plc:" + testkit.UniqueID(t)
 
 	t.Run("the resolved PDS refuses the connection", func(t *testing.T) {
@@ -318,8 +326,10 @@ func TestImageProxy_UpstreamFailuresAreBadGateway(t *testing.T) {
 func TestImageProxy_CachedImageServedWithoutResolvingDID(t *testing.T) {
 	t.Parallel()
 
-	const cachedCID = "bafyreihgdyzzpkkzq2izfnhcmm77ycuacvkuziwbnqxfxtqsz7tmxwhnshi"
-	const uncachedCID = "bafyreiabcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrst"
+	// Decodable, canonical CIDs: the handler refuses a CID it cannot decode
+	// before it reaches the cache, and keys the cache by the canonical form.
+	const cachedCID = "bafyreicxvtmzbe4fw5htiqgg3qwqo3ysoi56oackos2mvhw3mzopubbkiq"
+	const uncachedCID = "bafyreiclbevrsikcac4wr7nkxi4d2ikig2uwmz6pedr4ixsebmlvuo44um"
 	did := "did:plc:" + testkit.UniqueID(t)
 	cachedImage := []byte("cached image bytes")
 
@@ -351,28 +361,47 @@ func TestImageProxy_UndecodableUpstreamBytes(t *testing.T) {
 	t.Parallel()
 
 	did := "did:plc:" + testkit.UniqueID(t)
-	upstream := newBlobServer(t, map[string]func(http.ResponseWriter){
-		"textdata": func(w http.ResponseWriter) {
+
+	// Each case needs a decodable CID: the handler refuses one it cannot
+	// decode with a 400 before any fetch, which would satisfy the assertion
+	// below without the upstream bytes ever being read.
+	cases := []struct {
+		name  string
+		cid   string
+		write func(http.ResponseWriter)
+	}{
+		{"textdata", "bafyreiebpu646nzrrs7utmoucb3c3pe3647so7duktwr4dpqlfkne2pgxa", func(w http.ResponseWriter) {
 			w.Header().Set("Content-Type", "text/plain")
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("this is not an image"))
-		},
-		"corruptedimage": func(w http.ResponseWriter) {
+		}},
+		{"corruptedimage", "bafyreiemmgzsvld73r3qvp2pw5huuw35b6u4jw2jyonwujf2bmuv7wmc7q", func(w http.ResponseWriter) {
 			w.Header().Set("Content-Type", "image/png")
 			w.WriteHeader(http.StatusOK)
 			// A PNG signature with nothing behind it.
 			_, _ = w.Write([]byte{0x89, 0x50, 0x4E, 0x47, 0x00, 0x00})
-		},
-		"emptybody": func(w http.ResponseWriter) {
+		}},
+		{"emptybody", "bafyreidunnc32hpxlcbmarbymtp3ag6ztshqosrppgucarhtleb7hxv3nq", func(w http.ResponseWriter) {
 			w.WriteHeader(http.StatusOK)
-		},
-	})
+		}},
+	}
+	var fetched sync.Map
+	blobs := make(map[string]func(http.ResponseWriter), len(cases))
+	for _, blobCase := range cases {
+		blobs[blobCase.cid] = func(w http.ResponseWriter) {
+			fetched.Store(blobCase.cid, true)
+			blobCase.write(w)
+		}
+	}
+	upstream := newBlobServer(t, blobs)
 	server := newProxyServer(t, &fixedPDSResolver{pdsURL: upstream.URL}, defaultFetchTimeout)
 
-	for _, cid := range []string{"textdata", "corruptedimage", "emptybody"} {
-		t.Run(cid, func(t *testing.T) {
-			resp, _ := fetch(t, proxyURL(server, "avatar", did, cid), nil)
+	for _, blobCase := range cases {
+		t.Run(blobCase.name, func(t *testing.T) {
+			resp, _ := fetch(t, proxyURL(server, "avatar", did, blobCase.cid), nil)
 
+			_, reached := fetched.Load(blobCase.cid)
+			require.True(t, reached, "the request must reach the upstream fetch (status %d)", resp.StatusCode)
 			// The exact code differs by failure mode — a sniffable non-image is
 			// a 400, a decoder blowing up mid-stream is a 500 — and pinning
 			// each one would make this brittle about which layer noticed
@@ -389,8 +418,8 @@ func TestImageProxy_UndecodableUpstreamBytes(t *testing.T) {
 func TestImageProxy_PresetGeometry(t *testing.T) {
 	t.Parallel()
 
-	const cid = "bafybeipresetgeometry123"
-	const smallCID = "bafybeismallsource123"
+	const cid = "bafkreieswtoyhdnkf552cgtp3jebltovvu6rc56hzhmuvgzghndwrtbe5i"
+	const smallCID = "bafkreifh4b76hmqvsksqlq3tuovcrekvsl7buylbztorfnwti3bp3zp4pq"
 	did := "did:plc:" + testkit.UniqueID(t)
 
 	// 1000x1000 so that both directions are exercised: the cover presets crop

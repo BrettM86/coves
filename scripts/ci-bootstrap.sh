@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Seeds the CI stack: registers both PDSes with the relay, then creates the
-# account the AppView authenticates as.
+# instance account and two moderation admin accounts before the AppView boots.
 #
 # Both halves must happen after the infrastructure is healthy and before the
 # AppView boots, which is why they share a stage in scripts/lib/ci-stack.sh
@@ -29,6 +29,11 @@ RELAY_ADMIN_KEY=${RELAY_ADMIN_KEY:-ci-relay-admin-key}
 HANDLE=${PDS_INSTANCE_HANDLE:?PDS_INSTANCE_HANDLE must be set (see .env.ci)}
 PASSWORD=${PDS_INSTANCE_PASSWORD:?PDS_INSTANCE_PASSWORD must be set (see .env.ci)}
 EMAIL=${COVES_CI_INSTANCE_EMAIL:-instance@local.coves.dev}
+ADMIN_ONE_HANDLE=${CI_MODERATION_ADMIN_ONE_HANDLE:?CI_MODERATION_ADMIN_ONE_HANDLE must be set (see .env.ci)}
+ADMIN_ONE_PASSWORD=${CI_MODERATION_ADMIN_ONE_PASSWORD:?CI_MODERATION_ADMIN_ONE_PASSWORD must be set (see .env.ci)}
+ADMIN_TWO_HANDLE=${CI_MODERATION_ADMIN_TWO_HANDLE:?CI_MODERATION_ADMIN_TWO_HANDLE must be set (see .env.ci)}
+ADMIN_TWO_PASSWORD=${CI_MODERATION_ADMIN_TWO_PASSWORD:?CI_MODERATION_ADMIN_TWO_PASSWORD must be set (see .env.ci)}
+CI_PROJECT=${COVES_CI_PROJECT:?COVES_CI_PROJECT must be set by the CI runner}
 
 # ---------------------------------------------------------------------------
 # The relay: raise the crawl limit, then announce both PDSes
@@ -80,53 +85,84 @@ announce_host "the AppView's PDS" "${PDS_URL#http://}"
 announce_host "the federated PDS" "${PDS2_URL#http://}"
 
 # ---------------------------------------------------------------------------
-# The instance account
+# PDS accounts
 # ---------------------------------------------------------------------------
-echo "▶ Creating the instance PDS account ($HANDLE)..."
+provision_account() {
+    local label=$1 handle=$2 email=$3 password=$4 response body session_code account_did
+    echo "▶ Creating the $label PDS account ($handle)..."
 
-# The PDS runs with PDS_INVITE_REQUIRED=false, so no invite code is needed.
-response=$(
-    curl -sS -o /tmp/createAccount.out -w '%{http_code}' \
-        -X POST "$PDS_URL/xrpc/com.atproto.server.createAccount" \
-        -H 'Content-Type: application/json' \
-        -d "{\"handle\":\"$HANDLE\",\"email\":\"$EMAIL\",\"password\":\"$PASSWORD\"}"
-)
-body=$(cat /tmp/createAccount.out)
+    # The PDS runs with PDS_INVITE_REQUIRED=false, so no invite code is needed.
+    response=$(
+        curl -sS -o /tmp/createAccount.out -w '%{http_code}' \
+            -X POST "$PDS_URL/xrpc/com.atproto.server.createAccount" \
+            -H 'Content-Type: application/json' \
+            -d "{\"handle\":\"$handle\",\"email\":\"$email\",\"password\":\"$password\"}"
+    )
+    body=$(cat /tmp/createAccount.out)
 
-case "$response" in
-200 | 201)
-    echo "  ✓ created"
-    ;;
-400)
-    # Idempotency: a retried run against a stack that was kept alive
-    # (COVES_CI_KEEP_STACK=1) will find the handle already taken. Anything else
-    # in the 400 is a real configuration problem and must not be swallowed.
-    if grep -qi 'handle.*taken\|already.*exists\|AlreadyExists' <<<"$body"; then
-        echo "  ✓ already exists (reusing)"
-    else
-        echo "  ✗ PDS rejected the account creation: $body" >&2
-        exit 1
+    case "$response" in
+    200 | 201)
+        echo "  ✓ created"
+        ;;
+    400)
+        # A kept stack can already have this handle. Any other 400 is a real
+        # configuration error, not a successful retry.
+        if grep -qi 'handle.*taken\|already.*exists\|AlreadyExists' <<<"$body"; then
+            echo "  ✓ already exists (reusing)"
+        else
+            echo "  ✗ PDS rejected the account creation: $body" >&2
+            return 1
+        fi
+        ;;
+    *)
+        echo "  ✗ unexpected HTTP $response from the PDS: $body" >&2
+        return 1
+        ;;
+    esac
+
+    # Creating an account and authenticating as it are different claims.
+    echo "▶ Verifying the $label credentials authenticate..."
+    session_code=$(
+        curl -sS -o /tmp/createSession.out -w '%{http_code}' \
+            -X POST "$PDS_URL/xrpc/com.atproto.server.createSession" \
+            -H 'Content-Type: application/json' \
+            -d "{\"identifier\":\"$handle\",\"password\":\"$password\"}"
+    )
+    if [[ $session_code != 200 ]]; then
+        echo "  ✗ could not authenticate as $handle (HTTP $session_code): $(cat /tmp/createSession.out)" >&2
+        return 1
     fi
-    ;;
-*)
-    echo "  ✗ unexpected HTTP $response from the PDS: $body" >&2
-    exit 1
-    ;;
-esac
+    echo "  ✓ credentials valid"
 
-# Prove the credentials the AppView will use actually work. Creating the account
-# and being able to authenticate as it are different claims, and the AppView
-# failing to log in surfaces much later and much more confusingly — as community
-# writes failing deep inside a test.
-echo "▶ Verifying the instance credentials authenticate..."
-session_code=$(
-    curl -sS -o /tmp/createSession.out -w '%{http_code}' \
-        -X POST "$PDS_URL/xrpc/com.atproto.server.createSession" \
-        -H 'Content-Type: application/json' \
-        -d "{\"identifier\":\"$HANDLE\",\"password\":\"$PASSWORD\"}"
-)
-if [[ $session_code != 200 ]]; then
-    echo "  ✗ could not authenticate as $HANDLE (HTTP $session_code): $(cat /tmp/createSession.out)" >&2
+    # The runner has GNU grep but no jq. Do not print the createSession body:
+    # it contains access and refresh tokens alongside the DID.
+    if ! account_did=$(grep -oE '"did"[[:space:]]*:[[:space:]]*"did:[a-z]+:[^"]+"' /tmp/createSession.out | cut -d '"' -f 4) ||
+        [[ ! $account_did =~ ^did:[a-z]+:[a-zA-Z0-9._:%-]+$ ]]; then
+        echo "  ✗ PDS session for $handle did not contain a valid DID" >&2
+        return 1
+    fi
+    PROVISIONED_DID=$account_did
+}
+
+provision_account "instance" "$HANDLE" "$EMAIL" "$PASSWORD"
+provision_account "moderation admin one" "$ADMIN_ONE_HANDLE" "${CI_MODERATION_ADMIN_ONE_EMAIL:-modadmin-one@local.coves.dev}" "$ADMIN_ONE_PASSWORD"
+admin_one_did=$PROVISIONED_DID
+provision_account "moderation admin two" "$ADMIN_TWO_HANDLE" "${CI_MODERATION_ADMIN_TWO_EMAIL:-modadmin-two@local.coves.dev}" "$ADMIN_TWO_PASSWORD"
+admin_two_did=$PROVISIONED_DID
+
+if [[ -z $admin_one_did || -z $admin_two_did || $admin_one_did == "$admin_two_did" ]]; then
+    echo "  ✗ moderation admin accounts must have distinct, non-empty DIDs" >&2
     exit 1
 fi
-echo "  ✓ credentials valid"
+
+admins_dir=/src/.ci-out
+admins_file="$admins_dir/moderation-admins-${CI_PROJECT}.env"
+mkdir -p "$admins_dir"
+admins_tmp=$(mktemp "$admins_file.tmp.XXXXXX")
+trap 'rm -f "$admins_tmp"' EXIT
+printf 'MODERATION_ADMINS=%s,%s\n' "$admin_one_did" "$admin_two_did" >"$admins_tmp"
+# The runner writes as root, but host-side Compose must be able to read it.
+chmod 644 "$admins_tmp"
+mv "$admins_tmp" "$admins_file"
+trap - EXIT
+echo "  ✓ moderation admin DIDs saved for the AppView"

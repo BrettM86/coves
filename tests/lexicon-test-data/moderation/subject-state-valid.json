@@ -1,0 +1,34 @@
+{
+  "$type": "social.coves.moderation.defs#subjectState",
+  "subject": "at://did:plc:def456/social.coves.community.postv2/3k7a3dmb5bk2c",
+  "version": "state-0001",
+  "moderation": {
+    "state": "removed",
+    "sources": [
+      {
+        "authorityDid": "did:plc:abc123",
+        "scope": {
+          "kind": "instance"
+        }
+      }
+    ]
+  },
+  "recordState": "present",
+  "currentSubject": {
+    "uri": "at://did:plc:def456/social.coves.community.postv2/3k7a3dmb5bk2c",
+    "cid": "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"
+  },
+  "localRemoval": {
+    "serviceDid": "did:plc:abc123",
+    "actionId": "action-006"
+  },
+  "localLabels": [
+    {
+      "value": "nsfw",
+      "action": {
+        "serviceDid": "did:plc:abc123",
+        "actionId": "action-007"
+      }
+    }
+  ]
+}

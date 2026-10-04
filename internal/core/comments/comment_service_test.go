@@ -21,6 +21,9 @@ import (
 // mockCommentRepo is a mock implementation of the comment Repository interface
 type mockCommentRepo struct {
 	comments                      map[string]*Comment
+	activeRemovalsByURI           map[string][]RemovalSource
+	activeRemovalsErr             error
+	activeRemovalsErrFor          map[string]error // fails a lookup that includes the key URI
 	listByParentWithHotRankFunc   func(ctx context.Context, parentURI, sort, timeframe string, limit int, cursor *string, viewerDID string) ([]*Comment, *string, error)
 	listByParentsBatchFunc        func(ctx context.Context, parentURIs []string, sort string, limitPerParent int) (map[string][]*Comment, error)
 	getVoteStateForCommentsFunc   func(ctx context.Context, viewerDID string, commentURIs []string) (map[string]interface{}, error)
@@ -159,6 +162,24 @@ func (m *mockCommentRepo) GetByURIsBatch(ctx context.Context, uris []string) (ma
 	return result, nil
 }
 
+func (m *mockCommentRepo) ActiveRemovalsByURIs(ctx context.Context, uris []string) (map[string][]RemovalSource, error) {
+	if m.activeRemovalsErr != nil {
+		return nil, m.activeRemovalsErr
+	}
+	for _, uri := range uris {
+		if err := m.activeRemovalsErrFor[uri]; err != nil {
+			return nil, err
+		}
+	}
+	result := make(map[string][]RemovalSource)
+	for _, uri := range uris {
+		if sources := m.activeRemovalsByURI[uri]; len(sources) > 0 {
+			result[uri] = sources
+		}
+	}
+	return result, nil
+}
+
 func (m *mockCommentRepo) GetVoteStateForComments(ctx context.Context, viewerDID string, commentURIs []string) (map[string]interface{}, error) {
 	if m.getVoteStateForCommentsFunc != nil {
 		return m.getVoteStateForCommentsFunc(ctx, viewerDID, commentURIs)
@@ -283,6 +304,14 @@ func newMockPostRepo() *mockPostRepo {
 		posts:  make(map[string]*posts.Post),
 		hidden: make(map[string]bool),
 	}
+}
+
+func (m *mockPostRepo) ActiveRemovalsByURIs(context.Context, []string) (map[string][]posts.RemovalSource, error) {
+	return map[string][]posts.RemovalSource{}, nil
+}
+
+func (m *mockPostRepo) AdmittedURIsForViewer(context.Context, []string, string) (map[string]bool, error) {
+	return map[string]bool{}, nil
 }
 
 // hideFromHeader makes the visibility predicate refuse this post, as it does for
@@ -2023,7 +2052,7 @@ func TestBuildCommentView_ValidEmbedDeserialization(t *testing.T) {
 	communityRepo := newMockCommunityRepo()
 
 	postURI := "at://did:plc:post123/app.bsky.feed.post/test"
-	embedJSON := `{"$type":"app.bsky.embed.images","images":[{"alt":"test","image":{"$type":"blob","ref":"bafytest"}}]}`
+	embedJSON := `{"$type":"social.coves.embed.images","images":[{"alt":"test","image":{"$type":"blob","ref":"bafytest"}}]}`
 
 	comment := createTestComment("at://did:plc:commenter123/comment/1", "did:plc:commenter123", "commenter.test", postURI, postURI, 0)
 	comment.Embed = &embedJSON
@@ -2035,7 +2064,7 @@ func TestBuildCommentView_ValidEmbedDeserialization(t *testing.T) {
 	assert.NotNil(t, result.Embed)
 	embedMap, ok := result.Embed.(map[string]interface{})
 	assert.True(t, ok)
-	assert.Equal(t, "app.bsky.embed.images", embedMap["$type"])
+	assert.Equal(t, "social.coves.embed.images", embedMap["$type"])
 }
 
 func TestBuildCommentRecord_ValidLabelsDeserialization(t *testing.T) {
@@ -2118,7 +2147,7 @@ func TestBuildCommentView_EmptyStringVsNilHandling(t *testing.T) {
 		{
 			name:               "Valid JSON strings",
 			facetsValue:        strPtr(`[]`),
-			embedValue:         strPtr(`{}`),
+			embedValue:         strPtr(`{"$type":"social.coves.embed.post","post":{"uri":"at://did:plc:post123/social.coves.community.postv2/test","cid":"bafypost"}}`),
 			labelsValue:        strPtr(`{"$type":"com.atproto.label.defs#selfLabels","values":[]}`),
 			expectFacetsNil:    false,
 			expectEmbedNil:     false,

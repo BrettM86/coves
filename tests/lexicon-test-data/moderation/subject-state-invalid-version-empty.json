@@ -1,0 +1,9 @@
+{
+  "$type": "social.coves.moderation.defs#subjectState",
+  "subject": "at://did:plc:def456/social.coves.community.postv2/3k7a3dmb5bk2c",
+  "version": "",
+  "moderation": {
+    "state": "clear"
+  },
+  "recordState": "present"
+}

@@ -358,8 +358,9 @@ func (s *commentService) getCommentSubtree(
 // those three queries for every comment that has replies — hundreds of serial
 // round trips on a busy thread at the default depth of 10.
 //
-// Returns an error if loading a reply batch fails, so callers surface a real
-// failure instead of silently returning a truncated tree.
+// Returns an error if loading a reply batch or a level's active removals
+// fails, so callers surface a real failure instead of silently returning a
+// truncated tree or unmoderated content.
 func (s *commentService) buildThreadViews(
 	ctx context.Context,
 	comments []*Comment,
@@ -368,7 +369,10 @@ func (s *commentService) buildThreadViews(
 	viewerDID *string,
 ) ([]*ThreadViewComment, error) {
 	// Always return an empty slice, never nil (important for JSON serialization)
-	result := s.buildLevelViews(ctx, comments, remainingDepth, viewerDID)
+	result, err := s.buildLevelViews(ctx, comments, remainingDepth, viewerDID)
+	if err != nil {
+		return nil, err
+	}
 
 	var batchViewerDID string
 	if viewerDID != nil {
@@ -414,7 +418,10 @@ func (s *commentService) buildThreadViews(
 			// Update HasMore based on actual reply count vs loaded count
 			levelViews[i].HasMore = comment.ReplyCount > len(replies)
 		}
-		nextViews := s.buildLevelViews(ctx, nextLevel, depth-1, viewerDID)
+		nextViews, err := s.buildLevelViews(ctx, nextLevel, depth-1, viewerDID)
+		if err != nil {
+			return nil, err
+		}
 
 		offset := 0
 		for i, comment := range level {
@@ -432,8 +439,9 @@ func (s *commentService) buildThreadViews(
 	return result, nil
 }
 
-// buildLevelViews hydrates one depth of a comment thread: viewer vote state and
-// author profiles for every comment, each in a single batched query. Replies
+// buildLevelViews hydrates one depth of a comment thread: active moderation
+// removals, viewer vote state and author profiles for every comment, each in a
+// single batched query. Replies
 // are left for buildThreadViews to attach. remainingDepth is the depth still
 // available BELOW these comments, which decides whether a comment with replies
 // reports HasMore.
@@ -447,10 +455,18 @@ func (s *commentService) buildLevelViews(
 	comments []*Comment,
 	remainingDepth int,
 	viewerDID *string,
-) []*ThreadViewComment {
+) ([]*ThreadViewComment, error) {
 	threadViews := make([]*ThreadViewComment, 0, len(comments))
 	if len(comments) == 0 {
-		return threadViews
+		return threadViews, nil
+	}
+	commentURIs := make([]string, 0, len(comments))
+	for _, comment := range comments {
+		commentURIs = append(commentURIs, comment.URI)
+	}
+	removals, err := s.commentRepo.ActiveRemovalsByURIs(ctx, commentURIs)
+	if err != nil {
+		return nil, fmt.Errorf("checking active comment removals: %w", err)
 	}
 
 	// Batch fetch vote states for all comments at this level (Phase 2B)
@@ -500,11 +516,27 @@ func (s *commentService) buildLevelViews(
 
 	for _, comment := range comments {
 		var commentView *CommentView
+		sources := removals[comment.URI]
 
 		// Build appropriate view based on deletion status
-		if comment.DeletedAt != nil {
+		if comment.DeletedAt != nil || len(sources) > 0 {
 			// Deleted comment - build placeholder view to preserve thread structure
 			commentView = s.buildDeletedCommentView(comment)
+			if len(sources) > 0 {
+				if comment.DeletedAt == nil || comment.DeletionReason == nil || *comment.DeletionReason != DeletionReasonAuthor {
+					reason := DeletionReasonModerator
+					commentView.DeletionReason = &reason
+					commentView.DeletedAt = nil
+				}
+				viewSources := make([]ModerationSourceView, 0, len(sources))
+				for _, source := range sources {
+					viewSources = append(viewSources, ModerationSourceView{
+						AuthorityDID: source.AuthorityDID,
+						Scope:        ModerationScopeView{Kind: source.ScopeKind},
+					})
+				}
+				commentView.Moderation = &ModerationView{State: "removed", Sources: viewSources}
+			}
 		} else {
 			// Active comment - build full view with author info and stats
 			commentView = s.buildCommentView(comment, viewerDID, voteStates, usersByDID)
@@ -517,7 +549,7 @@ func (s *commentService) buildLevelViews(
 		})
 	}
 
-	return threadViews
+	return threadViews, nil
 }
 
 // hydrateAuthorProfile fills display name and avatar on an author view from an indexed
@@ -634,13 +666,17 @@ func (s *commentService) buildCommentView(
 	// union than posts, and the firehose applies no embed validation, so a
 	// federated comment carrying a post-only embed type must not be stamped
 	// with a #view type the comment union does not declare.
+	//
+	// ServableEmbed runs first so the view serves only proxy URLs derived from
+	// blobs, the CIDs CommentImageCIDs blocks; the record keeps the stored
+	// embed verbatim.
 	var embed interface{}
 	if comment.Embed != nil && *comment.Embed != "" {
-		var embedMap map[string]interface{}
-		if err := json.Unmarshal([]byte(*comment.Embed), &embedMap); err != nil {
+		var storedEmbed map[string]interface{}
+		if err := json.Unmarshal([]byte(*comment.Embed), &storedEmbed); err != nil {
 			// Log error but don't fail request - embed is optional
 			slog.Warn("failed to unmarshal embed for comment", "comment_uri", comment.URI, "error", err)
-		} else {
+		} else if embedMap, servable := embeds.ServableEmbed(storedEmbed).(map[string]interface{}); servable {
 			var authorPDSURL string
 			if user, found := usersByDID[comment.CommenterDID]; found && user != nil {
 				authorPDSURL = user.PDSURL
@@ -665,15 +701,13 @@ func (s *commentService) buildCommentView(
 	}
 }
 
-// buildDeletedCommentView creates a placeholder view for a deleted comment
-// Preserves threading structure while hiding content
-// Shows as "[deleted]" in the UI with minimal metadata
+// buildDeletedCommentView creates a placeholder view for a deleted comment.
+// It preserves threading structure while hiding content and profile details.
 func (s *commentService) buildDeletedCommentView(comment *Comment) *CommentView {
-	// Build minimal author view - just DID for attribution
-	// Frontend will display "[deleted]" or "[deleted by @user]" based on deletion_reason
+	// Keep only the DID and the valid sentinel for an unresolvable handle.
 	authorView := &posts.AuthorView{
 		DID:         comment.CommenterDID,
-		Handle:      "", // Empty - frontend handles display
+		Handle:      "handle.invalid",
 		DisplayName: nil,
 		Avatar:      nil,
 		Reputation:  nil,

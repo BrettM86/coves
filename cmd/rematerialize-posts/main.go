@@ -7,6 +7,17 @@
 // index row before marking it done. The firehose no longer ingests legacy post
 // deletes, so the tool must converge both stores itself.
 //
+// A legacy post with an active removal by the configured instance DID at
+// instance scope is left as legacy and counted as skipped-removed, and as
+// remaining legacy by any run whose scope includes it. Only an unscoped run can
+// report the migration complete: a -community run's final re-scan covers only
+// its own community, and a post skipped in another community leaves no ledger
+// row. The removal is checked before the post's ledger row is discovered and
+// again right before the community acceptance is written; when the second
+// check fires, the postv2 already written in the author's repo is left there
+// unaccepted and the legacy post stays in place. A removal made after the
+// acceptance is written does not carry over to the new postv2 URI.
+//
 // # THIS COMMAND DELETES PRODUCTION USER DATA IRREVERSIBLY
 //
 // It is run by hand, once, during a maintenance window, by someone who has been
@@ -229,13 +240,16 @@ func main() {
 	}
 
 	progress := newProgressLogger()
+	postRepository := postgresRepo.NewPostRepository(db)
 	tool := &posts.Rematerializer{
 		Source:         source,
 		Ledger:         ledger,
 		AuthorRepos:    authorFactory,
 		Acceptances:    writer,
 		CommunityRepos: repoFactory,
-		Index:          postgresRepo.NewPostRepository(db),
+		Index:          postRepository,
+		Removals:       postRepository,
+		InstanceDID:    cfg.Instance.DID,
 		CommunityScope: *communityFilter,
 		// The blob copy's dev gate, decided HERE rather than inside the state
 		// machine, exactly as blobs.PrivateHostOptions is decided above.
@@ -294,25 +308,57 @@ func main() {
 		os.Exit(1)
 	}
 
-	// TWO SIGNALS, REPORTED SEPARATELY. A staged -community run finishing its own
-	// scope is a success even though the migration as a whole is not done, and
-	// collapsing the two taught the operator to ignore a red exit code on every
-	// staged run — which would leave §11 step 6 with no machine-checkable gate at
-	// all.
-	if !report.ScopeComplete {
-		log.Printf("rematerialize-posts: SCOPE INCOMPLETE — %d of %d row(s) in scope reached done, %d fallback(s), %d legacy record(s) still standing",
-			report.Done, report.Discovered, report.Fallbacks, report.RemainingLegacy)
-		os.Exit(1)
+	if exitCode := logVerdict(report); exitCode != 0 {
+		os.Exit(exitCode)
 	}
-	log.Printf("rematerialize-posts: scope complete — every post in %s was re-materialized", scopeName(*communityFilter))
+}
 
+// logVerdict prints the run's final verdict and returns the process exit code:
+// 1 when the run's own scope is incomplete, 0 otherwise.
+//
+// TWO SIGNALS, REPORTED SEPARATELY. A staged -community run finishing its own
+// scope is a success even though the migration as a whole is not done, and
+// collapsing the two taught the operator to ignore a red exit code on every
+// staged run — which would leave §11 step 6 with no machine-checkable gate at
+// all.
+//
+// A scoped run never certifies the whole migration: its final re-scan covers
+// only its own community, and a post skipped for a removal in another community
+// leaves no ledger row. Only an unscoped run's verdict gates §11 step 6.
+func logVerdict(report posts.RematerializeReport) (exitCode int) {
+	if !report.ScopeComplete {
+		log.Printf("rematerialize-posts: SCOPE INCOMPLETE — %d of %d row(s) in scope reached done, %d fallback(s), %d legacy record(s) still standing, %d skipped for an active instance removal",
+			report.Done, report.Discovered, report.Fallbacks, report.RemainingLegacy, report.SkippedRemoved)
+		logSkippedRemovedGuidance(report.SkippedRemoved)
+		return 1
+	}
+	log.Printf("rematerialize-posts: scope complete — every post in %s was re-materialized", scopeName(report.CommunityScope))
+
+	if report.CommunityScope != "" {
+		log.Printf("rematerialize-posts: this run was scoped to %s, and a scoped run never certifies the whole migration.", report.CommunityScope)
+		log.Printf("rematerialize-posts: DO NOT run the legacy-removal follow-up (PRD_AUTHOR_OWNED_POSTS §11 step 6) until an UNSCOPED run (no -community) reports MIGRATION COMPLETE.")
+		return 0
+	}
 	if !report.Complete {
-		log.Printf("rematerialize-posts: THE MIGRATION AS A WHOLE IS NOT COMPLETE — %d of %d ledger row(s) done, %d fallback(s), %d legacy record(s) still standing.",
-			report.GlobalDone, report.GlobalDiscovered, report.GlobalFallbacks, report.RemainingLegacy)
+		log.Printf("rematerialize-posts: THE MIGRATION AS A WHOLE IS NOT COMPLETE — %d of %d ledger row(s) done, %d fallback(s), %d legacy record(s) still standing, %d skipped for an active instance removal.",
+			report.GlobalDone, report.GlobalDiscovered, report.GlobalFallbacks, report.RemainingLegacy, report.SkippedRemoved)
+		logSkippedRemovedGuidance(report.SkippedRemoved)
 		log.Printf("rematerialize-posts: DO NOT run the legacy-removal follow-up (PRD §11 step 6) until this line says complete.")
-		return
+		return 0
 	}
 	log.Printf("rematerialize-posts: MIGRATION COMPLETE — every discovered post was re-materialized and no legacy record remains")
+	return 0
+}
+
+// logSkippedRemovedGuidance tells the operator what the posts skipped for an
+// active instance removal mean for the migration, when there are any. Without
+// it every run exits red while a removal stands, with nothing saying why.
+func logSkippedRemovedGuidance(skippedRemoved int) {
+	if skippedRemoved == 0 {
+		return
+	}
+	log.Printf("rematerialize-posts: the %d post(s) skipped for an active instance removal stay legacy while the removal stands and keep the migration incomplete; "+
+		"restoring one and re-running migrates it, and PRD_AUTHOR_OWNED_POSTS §11 step 6 must not run while any stands.", skippedRemoved)
 }
 
 // repoClient is the narrow PDS surface the legacy source needs: enumerate,
@@ -699,9 +745,14 @@ func logCensus(report posts.RematerializeReport, dryRun bool) {
 	if dryRun {
 		prefix = "census (dry run — no state was persisted)"
 	}
-	log.Printf("rematerialize-posts: %s — scope=%s discovered=%d done=%d fallbacks=%d remaining-legacy=%d scope-complete=%v",
+	log.Printf("rematerialize-posts: %s — scope=%s discovered=%d done=%d fallbacks=%d remaining-legacy=%d skipped-removed=%d unmatched-removals=%d scope-complete=%v",
 		prefix, scopeName(report.CommunityScope), report.Discovered, report.Done, report.Fallbacks,
-		report.RemainingLegacy, report.ScopeComplete)
+		report.RemainingLegacy, report.SkippedRemoved, report.UnmatchedRemovals, report.ScopeComplete)
+	if report.UnmatchedRemovals > 0 {
+		log.Printf("rematerialize-posts: WARNING — %d legacy post(s) carry an active removal that is not by this tool's INSTANCE_DID at instance scope. "+
+			"They are hidden on the read path but were NOT skipped. A non-zero count usually means INSTANCE_DID differs from the server's.",
+			report.UnmatchedRemovals)
+	}
 	for _, state := range censusOrder {
 		if n, ok := report.ByState[state]; ok {
 			log.Printf("    %-22s %d", state, n)

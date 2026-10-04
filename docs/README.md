@@ -38,6 +38,10 @@ and requires `goose` for migrations.
 
 ## Design background
 
+[Admin moderation PRD](PRD_ADMIN_MODERATION.md) covers server-admin remove/restore,
+post NSFW labeling with existing blur/reveal, a public modlog, and opt-in
+federated moderation through signed labels (draft).
+
 [Author-owned posts](PRD_AUTHOR_OWNED_POSTS.md) explains why post content and
 community acceptance live in separate repositories. It also includes migration
 notes and proposed federation work.

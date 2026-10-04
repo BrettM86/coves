@@ -232,24 +232,26 @@ func (r *postgresUserRepo) GetProfileStats(ctx context.Context, did string) (*us
 	// count: the author self-view branches turn on `p.author_did = $2`, and no
 	// DID is "".
 	//
-	// comment_count is DELIBERATELY ROOT-BLIND — it counts the actor's comments
-	// whatever the admission state of the post they hang under, and that is not
-	// an oversight to be fixed by symmetry with post_count above. A comment is
-	// the actor's own public speech, and actor.getComments already LISTS it when
-	// its root is pending or removed, carrying the root as a bare uri/cid
-	// reference that leaks nothing and resolves through the gated post.get
-	// (TestActorCommentsVisibility_RootIsReferenceOnly pins that shape). Gating
-	// the count would put the profile's headline number in disagreement with the
-	// list the same profile renders, and would leak in the other direction: a
-	// comment count that visibly drops tells the reader a root they cannot see
-	// was moderated. The asymmetry with post_count is real and intended — a
-	// post's visibility IS its community's decision, a comment's is not.
+	// comment_count counts exactly what actor.getComments lists
+	// (ListByCommenterWithCursor): the actor's undeleted comments, minus any
+	// comment that is itself under an active instance removal or whose root is.
+	// The exclusion is the same `IN (c.uri, c.root_uri)` predicate that query
+	// runs, so the profile's headline number and the list it renders cannot
+	// disagree. It does NOT follow the root's community admission state: a
+	// comment under a pending or community-removed root is still the actor's own
+	// public speech and is listed and counted. Only instance removals, which hide
+	// the root from everyone, take its comments out of both.
 	visJoin, visWhere := visiblePostsJoin(2)
 	query := `
 		SELECT
 			(SELECT COUNT(*) FROM posts p` + visJoin + `
 				WHERE p.author_did = $1 AND p.deleted_at IS NULL AND ` + visWhere + `) as post_count,
-			(SELECT COUNT(*) FROM comments WHERE commenter_did = $1 AND deleted_at IS NULL) as comment_count,
+			(SELECT COUNT(*) FROM comments c
+				WHERE c.commenter_did = $1 AND c.deleted_at IS NULL
+					AND NOT EXISTS (
+						SELECT 1 FROM moderation_decisions d
+						WHERE d.subject_uri IN (c.uri, c.root_uri) AND d.kind = 'removal' AND d.active
+					)) as comment_count,
 			(SELECT COUNT(*) FROM community_subscriptions WHERE user_did = $1) as community_count,
 			(SELECT COUNT(*) FROM community_memberships WHERE user_did = $1 AND is_banned = false) as membership_count,
 			(SELECT COALESCE(SUM(reputation_score), 0) FROM community_memberships WHERE user_did = $1) as reputation

@@ -1,0 +1,558 @@
+//go:build integration
+
+package jetstream
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"sync"
+	"testing"
+	"time"
+
+	"Coves/internal/core/communityFeeds"
+	"Coves/internal/core/imageproxy"
+	"Coves/internal/core/moderation"
+	"Coves/internal/core/posts"
+	"Coves/internal/crypto/credentialcipher/credentialciphertest"
+	"Coves/internal/db/postgres"
+	"Coves/tests/fixtures"
+	"Coves/tests/testkit"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+const (
+	postModerationCIDOne    = "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"
+	postModerationCIDTwo    = "bafkreicy44vctf2bgqnn5wwzdern7bc2khwi7ku2r66bozl4x6bsrvuj2q"
+	postModerationCIDThree  = "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"
+	postModerationRecordCID = "bafyreihgdyzzpkkzq2izfnhcmm77ycuacvkuziwbnqxfxtqsz7tmxwhnshi"
+)
+
+type postModerationPurgeCall struct {
+	ownerDID, blobCID string
+	committed         bool
+}
+
+type postModerationPurger struct {
+	db    *sql.DB
+	calls []postModerationPurgeCall
+}
+
+func (p *postModerationPurger) purge(ownerDID, blobCID string) error {
+	call := postModerationPurgeCall{ownerDID: ownerDID, blobCID: blobCID}
+	err := p.db.QueryRowContext(context.Background(), `
+		SELECT EXISTS (SELECT 1 FROM moderation_media_blocks
+		               WHERE owner_did IS NOT DISTINCT FROM NULLIF($1, '')
+		                 AND blob_cid = $2 AND active)
+	`, ownerDID, blobCID).Scan(&call.committed)
+	p.calls = append(p.calls, call)
+	return err
+}
+
+func (p *postModerationPurger) PurgeOwnerBlob(_ context.Context, ownerDID, blobCID string) error {
+	return p.purge(ownerDID, blobCID)
+}
+
+func (p *postModerationPurger) PurgeBlob(_ context.Context, blobCID string) error {
+	return p.purge("", blobCID)
+}
+
+func postModerationRecord(imageCIDs ...string) map[string]interface{} {
+	record := pv2Record(pv2Community, "shared image post", "same authored body")
+	images := make([]interface{}, 0, len(imageCIDs))
+	for _, imageCID := range imageCIDs {
+		images = append(images, map[string]interface{}{
+			"alt": "indexed image",
+			"image": map[string]interface{}{
+				"$type": "blob", "ref": map[string]interface{}{"$link": imageCID},
+				"mimeType": "image/png", "size": 10,
+			},
+		})
+	}
+	record["embed"] = map[string]interface{}{"$type": "social.coves.embed.images", "images": images}
+	return record
+}
+
+type postModerationConsumerFixture struct {
+	pv2Fixture
+	postRepository posts.Repository
+	postService    posts.Service
+	moderator      moderation.Service
+	purger         *postModerationPurger
+	queue          *moderation.CDNPurgeQueue
+	uri, rkey      string
+	createdAt      int64
+	revs           []string
+	create         *JetstreamEvent
+}
+
+func newPostModerationConsumerFixture(t *testing.T, targets ...func(*sql.DB) moderation.CDNPurgeTargets) postModerationConsumerFixture {
+	t.Helper()
+	db := testkit.DB(t)
+	f := newPV2Fixture(t, db)
+	postRepository := postgres.NewPostRepository(db)
+	moderationRepository := postgres.NewModerationRepository(db)
+	purger := &postModerationPurger{db: db}
+	var options []moderation.MediaReconcilerOption
+	var queue *moderation.CDNPurgeQueue
+	if len(targets) > 0 {
+		configured := targets[0](db)
+		queue, _ = configured.(*moderation.CDNPurgeQueue)
+		options = append(options, moderation.WithCDNPurgeTargets(configured))
+	}
+	f.consumer = NewPostEventConsumer(
+		postRepository, postgres.NewCommunityRepository(db, credentialciphertest.Fixed()), f.users, db,
+		WithAdmissions(f.admissions), WithDeletedAccounts(postgres.NewDeletedAccountRepository(db)),
+		WithPostMediaReconciler(moderation.NewMediaReconciler(moderationRepository, fixtures.InstanceDID(), purger, options...)),
+	)
+	moderator := moderation.NewService(
+		moderation.NewRepositorySubjectReader(postRepository, postgres.NewCommentRepository(db)),
+		moderationRepository,
+		moderation.Config{InstanceDID: fixtures.InstanceDID(), IdempotencyRetention: 24 * time.Hour, MaxLiveIdempotencyKeys: 1000},
+	)
+	postService := posts.NewPostService(postRepository, nil, nil, nil, nil, nil, testkit.Endpoints().PDS.BaseURL,
+		posts.WithAdmissionPolicy(posts.NewAllowAllAdmissionPolicyForTests()),
+		posts.WithSyncAcceptance(f.admissions, nil))
+	rkey := testkit.TID()
+	uri := pv2URI(pv2Author, rkey)
+	revs := increasingTIDs(t, 4)
+	createdAt := time.Now().Add(-time.Minute).UnixMicro()
+	create := pv2Event(pv2Author, "create", rkey, revs[0], postModerationRecordCID, createdAt,
+		postModerationRecord(postModerationCIDOne))
+	require.NoError(t, f.consumer.HandleEvent(t.Context(), create))
+	indexed, err := postRepository.GetRawIndexedRow(t.Context(), uri)
+	require.NoError(t, err)
+	require.Equal(t, postModerationRecordCID, indexed.CID)
+	acceptanceRkey := testkit.TID()
+	accepted, err := f.admissions.ApplyAcceptance(t.Context(), posts.ApplyAcceptanceCommand{
+		CommunityDID: pv2Community, PostURI: uri,
+		AcceptanceURI:  "at://" + pv2Community + "/" + posts.AcceptanceCollection + "/" + acceptanceRkey,
+		AcceptanceRkey: acceptanceRkey, PinnedCID: postModerationRecordCID,
+		Watermark: posts.CommunityWatermark{Rev: testkit.TID()},
+	})
+	require.NoError(t, err)
+	require.Equal(t, posts.AdmissionApplied, accepted.Outcome)
+	return postModerationConsumerFixture{
+		pv2Fixture: f, postRepository: postRepository, postService: postService,
+		moderator: moderator, purger: purger, queue: queue, uri: uri, rkey: rkey,
+		createdAt: createdAt, revs: revs, create: create,
+	}
+}
+
+type postModerationCDNClock struct {
+	mu sync.Mutex
+	at time.Time
+}
+
+func (clock *postModerationCDNClock) Now() time.Time {
+	clock.mu.Lock()
+	defer clock.mu.Unlock()
+	return clock.at
+}
+
+func newPostModerationCDNFixture(t *testing.T, endpoint *testkit.CloudflarePurgeEndpoint) postModerationConsumerFixture {
+	t.Helper()
+	clock := &postModerationCDNClock{at: time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)}
+	cdn, err := imageproxy.NewCloudflarePurger(imageproxy.CloudflarePurgerConfig{
+		APIBase: endpoint.URL(), ZoneID: "zone-abc", APIToken: "consumer-cdn-token-SENTINEL",
+		BaseURLs: []string{"https://img.example.test"}, Timeout: 5 * time.Second,
+	})
+	require.NoError(t, err)
+	return newPostModerationConsumerFixture(t, func(db *sql.DB) moderation.CDNPurgeTargets {
+		return moderation.NewCDNPurgeQueue(postgres.NewModerationRepository(db), cdn,
+			moderation.CDNPurgeQueueConfig{WriteTimeout: 90 * time.Second, Now: clock.Now})
+	})
+}
+
+func postModerationCDNTargetCount(t *testing.T, db *sql.DB) int {
+	t.Helper()
+	var count int
+	require.NoError(t, db.QueryRowContext(t.Context(), `SELECT count(*) FROM moderation_media_purges`).Scan(&count))
+	return count
+}
+
+func postModerationCDNFiles(cid string) []string {
+	return []string{
+		"https://img.example.test/img/avatar/plain/" + pv2Author + "/" + cid,
+		"https://img.example.test/img/avatar_small/plain/" + pv2Author + "/" + cid,
+		"https://img.example.test/img/banner/plain/" + pv2Author + "/" + cid,
+		"https://img.example.test/img/content_preview/plain/" + pv2Author + "/" + cid,
+		"https://img.example.test/img/content_full/plain/" + pv2Author + "/" + cid,
+		"https://img.example.test/img/embed_thumbnail/plain/" + pv2Author + "/" + cid,
+	}
+}
+
+func assertPostModerationCDNCommitted(t *testing.T, f postModerationConsumerFixture, cid string) {
+	t.Helper()
+	blocked, err := postgres.NewModerationRepository(f.db).IsBlocked(t.Context(), pv2Author, cid)
+	require.NoError(t, err)
+	assert.True(t, blocked, "a separate connection must see the committed incoming image block")
+	var state string
+	require.NoError(t, f.db.QueryRowContext(t.Context(), `
+		SELECT state FROM moderation_media_purges WHERE owner_did = $1 AND blob_cid = $2
+	`, pv2Author, cid).Scan(&state))
+	assert.Equal(t, "pending", state)
+}
+
+func assertPostModerationCDNRequest(t *testing.T, endpoint *testkit.CloudflarePurgeEndpoint, cid string) {
+	t.Helper()
+	requests := endpoint.Requests()
+	require.Len(t, requests, 1)
+	assert.NoError(t, requests[0].DecodeError)
+	assert.Equal(t, http.MethodPost, requests[0].Method)
+	assert.Equal(t, "/zones/zone-abc/purge_cache", requests[0].Path)
+	assert.Equal(t, "Bearer consumer-cdn-token-SENTINEL", requests[0].Authorization)
+	assert.ElementsMatch(t, postModerationCDNFiles(cid), requests[0].Files)
+}
+
+func waitPostModerationCDN(t *testing.T, queue *moderation.CDNPurgeQueue) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	require.NoError(t, queue.Wait(ctx))
+}
+
+func awaitPostModerationCDNRequest(t *testing.T, entered <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for immediate CDN purge request")
+	}
+}
+
+func TestModerationPostConsumerCDNPurgeAfterEditCommit(t *testing.T) {
+	endpoint := testkit.NewCloudflarePurgeEndpoint(t)
+	entered, release := endpoint.HoldNextRequest(t)
+	f := newPostModerationCDNFixture(t, endpoint)
+	removed := f.remove(t, "social.coves.moderation.defs#reasonSpam")
+	assert.Empty(t, endpoint.Requests(), "the moderator has no CDN target seam")
+	update := pv2Event(pv2Author, "update", f.rkey, f.revs[1], postModerationCIDOne,
+		f.createdAt+1_000_000, postModerationRecord(postModerationCIDOne, postModerationCIDTwo))
+	require.NoError(t, f.consumer.HandleEvent(t.Context(), update))
+	awaitPostModerationCDNRequest(t, entered)
+	assert.Equal(t, 1, countRows(t, f.db, `
+		SELECT count(*) FROM moderation_media_blocks
+		WHERE action_id = $1 AND owner_did = $2 AND blob_cid = $3 AND active
+	`, removed.Action.ID, pv2Author, postModerationCIDTwo))
+	assertPostModerationCDNCommitted(t, f, postModerationCIDTwo)
+	assertPostModerationCDNRequest(t, endpoint, postModerationCIDTwo)
+	release()
+	waitPostModerationCDN(t, f.queue)
+	assertPostModerationCDNCommitted(t, f, postModerationCIDTwo)
+}
+
+func TestModerationPostConsumerCDNPurgeIncomingCreateCommit(t *testing.T) {
+	endpoint := testkit.NewCloudflarePurgeEndpoint(t)
+	entered, release := endpoint.HoldNextRequest(t)
+	f := newPostModerationCDNFixture(t, endpoint)
+	removed := f.remove(t, "social.coves.moderation.defs#reasonSpam")
+	embed, err := json.Marshal(postModerationRecord(postModerationCIDThree)["embed"])
+	require.NoError(t, err)
+	embedJSON := string(embed)
+	applied, err := f.consumer.indexPostIfRevWins(t.Context(), &posts.Post{
+		URI: f.uri, CID: postModerationCIDOne, RKey: f.rkey, AuthorDID: pv2Author, CommunityDID: pv2Community,
+		Embed: &embedJSON, CreatedAt: time.Now(), IndexedAt: time.Now(),
+	}, f.revs[1])
+	require.NoError(t, err)
+	assert.False(t, applied, "the incoming create must leave the stored row intact")
+	awaitPostModerationCDNRequest(t, entered)
+	assert.Equal(t, 1, countRows(t, f.db, `
+		SELECT count(*) FROM moderation_media_blocks
+		WHERE action_id = $1 AND owner_did = $2 AND blob_cid = $3 AND active
+	`, removed.Action.ID, pv2Author, postModerationCIDThree))
+	assertPostModerationCDNCommitted(t, f, postModerationCIDThree)
+	assertPostModerationCDNRequest(t, endpoint, postModerationCIDThree)
+	release()
+	waitPostModerationCDN(t, f.queue)
+	assertPostModerationCDNCommitted(t, f, postModerationCIDThree)
+}
+
+type failingPostModerationCDNBinder struct{ moderation.TransactionBinder }
+type failingPostModerationCDNTransaction struct{ moderation.MediaTransaction }
+
+func (binder failingPostModerationCDNBinder) BindTransaction(tx *sql.Tx) moderation.MediaTransaction {
+	return failingPostModerationCDNTransaction{binder.TransactionBinder.BindTransaction(tx)}
+}
+
+func (tx failingPostModerationCDNTransaction) RecordCDNPurgeTargets(ctx context.Context, targets []imageproxy.BlockedBlob) error {
+	if err := tx.MediaTransaction.RecordCDNPurgeTargets(ctx, targets); err != nil {
+		return err
+	}
+	return errors.New("record targets failed after insert")
+}
+
+func TestModerationPostConsumerCDNPurgeRecordFailureRollsBackEdit(t *testing.T) {
+	endpoint := testkit.NewCloudflarePurgeEndpoint(t)
+	f := newPostModerationCDNFixture(t, endpoint)
+	f.remove(t, "social.coves.moderation.defs#reasonSpam")
+	f.consumer.mediaReconciler = moderation.NewMediaReconciler(
+		failingPostModerationCDNBinder{postgres.NewModerationRepository(f.db)}, fixtures.InstanceDID(), f.purger,
+		moderation.WithCDNPurgeTargets(f.queue))
+	update := pv2Event(pv2Author, "update", f.rkey, f.revs[1], postModerationCIDOne,
+		f.createdAt+1_000_000, postModerationRecord(postModerationCIDOne, postModerationCIDTwo))
+	require.Error(t, f.consumer.HandleEvent(t.Context(), update), "record failure must abort the edit")
+	blocked, err := postgres.NewModerationRepository(f.db).IsBlocked(t.Context(), pv2Author, postModerationCIDTwo)
+	require.NoError(t, err)
+	assert.False(t, blocked)
+	assert.Zero(t, postModerationCDNTargetCount(t, f.db))
+	assert.Empty(t, endpoint.Requests())
+}
+
+func TestModerationPostConsumerCDNPurgeUnconfiguredWritesNoTargets(t *testing.T) {
+	endpoint := testkit.NewCloudflarePurgeEndpoint(t)
+	f := newPostModerationConsumerFixture(t)
+	f.remove(t, "social.coves.moderation.defs#reasonSpam")
+	update := pv2Event(pv2Author, "update", f.rkey, f.revs[1], postModerationCIDOne,
+		f.createdAt+1_000_000, postModerationRecord(postModerationCIDOne, postModerationCIDTwo))
+	require.NoError(t, f.consumer.HandleEvent(t.Context(), update))
+	assert.Zero(t, postModerationCDNTargetCount(t, f.db))
+	assert.Empty(t, endpoint.Requests())
+}
+
+func (f postModerationConsumerFixture) remove(t *testing.T, reason string) *moderation.MutationResult {
+	t.Helper()
+	removed, err := f.moderator.RemoveContent(t.Context(), fixtures.DID(testkit.UniqueIDWithPrefix(t, "postmediaadmin")), moderation.RemoveContentRequest{
+		Subject:         moderation.StrongRef{URI: f.uri, CID: postModerationRecordCID},
+		ExpectedVersion: "v0", IdempotencyKey: "remove-post-media", Reason: reason,
+	})
+	require.NoError(t, err)
+	require.Equal(t, moderation.OutcomeApplied, removed.Outcome)
+	require.NotNil(t, removed.Action)
+	var originalBlocks int
+	require.NoError(t, f.db.QueryRowContext(t.Context(), `
+		SELECT count(*) FROM moderation_media_blocks
+		WHERE action_id = $1 AND owner_did = $2 AND blob_cid = $3 AND active
+	`, removed.Action.ID, pv2Author, postModerationCIDOne).Scan(&originalBlocks))
+	require.Equal(t, 1, originalBlocks, "the original image must be blocked before testing edit reconciliation")
+	assert.Empty(t, f.purger.calls, "removal service has no purger; calls must come from the consumer")
+	return removed
+}
+
+func (f postModerationConsumerFixture) assertReadPaths(t *testing.T, viewerDID string, wantModerated, wantNotFound bool) {
+	t.Helper()
+	results, err := f.postService.GetPosts(t.Context(), posts.GetPostsRequest{URIs: []string{f.uri}, ViewerDID: viewerDID})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	if wantModerated {
+		require.NotNil(t, results[0].Moderated, "a present post under an active removal must be a moderatedPost")
+		assert.Nil(t, results[0].Post)
+	}
+	if wantNotFound {
+		require.NotNil(t, results[0].NotFound, "a deleted post, or one this viewer could not see before the removal, must be notFound")
+		assert.Nil(t, results[0].Moderated)
+	}
+	feed, _, err := postgres.NewCommunityFeedRepository(f.db, "post-moderation-consumer-cursor").GetCommunityFeed(t.Context(),
+		communityFeeds.GetCommunityFeedRequest{Community: pv2Community, Sort: "new", Timeframe: "all", Limit: 10})
+	require.NoError(t, err)
+	for _, item := range feed {
+		assert.NotEqual(t, f.uri, item.Post.URI, "removed or deleted post must not appear in the community feed")
+	}
+	state, err := f.moderator.GetSubjectState(t.Context(), f.uri)
+	require.NoError(t, err)
+	assert.Equal(t, moderation.ModerationStateRemoved, state.Moderation.State)
+	require.NotNil(t, state.LocalRemoval)
+}
+
+func TestModerationPostConsumerReplayAndDuplicateKeepRemoval(t *testing.T) {
+	f := newPostModerationConsumerFixture(t)
+	removed := f.remove(t, "social.coves.moderation.defs#reasonSpam")
+	for _, delivery := range []string{"replay", "duplicate"} {
+		t.Run(delivery, func(t *testing.T) {
+			require.NoError(t, f.consumer.HandleEvent(t.Context(), f.create))
+			f.assertReadPaths(t, "", true, false)
+			state, err := f.moderator.GetSubjectState(t.Context(), f.uri)
+			require.NoError(t, err)
+			assert.Equal(t, removed.Action.ID, state.LocalRemoval.ActionID)
+			assert.Empty(t, f.purger.calls)
+		})
+	}
+}
+
+func TestModerationPostConsumerEditReconcilesNewImages(t *testing.T) {
+	for _, scenario := range []struct {
+		name, reason   string
+		illegalContent bool
+	}{
+		{name: "spam owner block", reason: "social.coves.moderation.defs#reasonSpam"},
+		{name: "illegal content owner-scoped block", reason: "social.coves.moderation.defs#reasonIllegalContent", illegalContent: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			f := newPostModerationConsumerFixture(t)
+			removed := f.remove(t, scenario.reason)
+			update := pv2Event(pv2Author, "update", f.rkey, f.revs[1], postModerationCIDOne,
+				f.createdAt+1_000_000, postModerationRecord(postModerationCIDOne, postModerationCIDTwo))
+			require.NoError(t, f.consumer.HandleEvent(t.Context(), update))
+			indexed, err := f.postRepository.GetRawIndexedRow(t.Context(), f.uri)
+			require.NoError(t, err)
+			assert.Equal(t, postModerationCIDOne, indexed.CID, "the edited record must be indexed before media reconciliation")
+			require.NotNil(t, indexed.Embed)
+			assert.Contains(t, *indexed.Embed, postModerationCIDTwo, "the new image must be present in the indexed embed")
+			// The edit moves the admission to pending_reacceptance, which only the
+			// author could see before the removal, so the tombstone is the
+			// author's; everyone else gets notFound (#moderatedPost never widens
+			// access).
+			f.assertReadPaths(t, pv2Author, true, false)
+			f.assertReadPaths(t, "", false, true)
+			state, err := f.moderator.GetSubjectState(t.Context(), f.uri)
+			require.NoError(t, err)
+			require.NotNil(t, state.CurrentSubject)
+			assert.Equal(t, postModerationCIDOne, state.CurrentSubject.CID)
+			assert.Equal(t, removed.Action.ID, state.LocalRemoval.ActionID)
+			var ownedBlocks int
+			require.NoError(t, f.db.QueryRowContext(t.Context(), `
+				SELECT count(*) FROM moderation_media_blocks
+				WHERE action_id = $1 AND owner_did = $2 AND blob_cid = $3 AND active
+			`, removed.Action.ID, pv2Author, postModerationCIDTwo).Scan(&ownedBlocks))
+			assert.Equal(t, 1, ownedBlocks, "the edited image needs an active author-owned block on the original action")
+			assert.Contains(t, f.purger.calls, postModerationPurgeCall{ownerDID: pv2Author, blobCID: postModerationCIDTwo, committed: true},
+				"the consumer must purge the author-owned image after the block commits")
+			if scenario.illegalContent {
+				var ownerlessBlocks int
+				require.NoError(t, f.db.QueryRowContext(t.Context(), `
+					SELECT count(*) FROM moderation_media_blocks
+					WHERE action_id = $1 AND owner_did IS NULL AND blob_cid = $2 AND active
+				`, removed.Action.ID, postModerationCIDTwo).Scan(&ownerlessBlocks))
+				assert.Zero(t, ownerlessBlocks, "an edit must not add an ownerless image block")
+				assert.Equal(t, []postModerationPurgeCall{{ownerDID: pv2Author, blobCID: postModerationCIDTwo, committed: true}}, f.purger.calls,
+					"only the author's image cache is purged after commit")
+				blocked, checkErr := postgres.NewModerationRepository(f.db).IsBlocked(t.Context(), pv2Other, postModerationCIDTwo)
+				require.NoError(t, checkErr)
+				assert.False(t, blocked, "another owner's new image must remain available")
+			}
+		})
+	}
+}
+
+func TestModerationPostConsumerDeleteThenCreateRemainsNotFound(t *testing.T) {
+	for _, scenario := range []struct {
+		name, reason   string
+		illegalContent bool
+	}{
+		{name: "spam owner block", reason: "social.coves.moderation.defs#reasonSpam"},
+		{name: "illegal content owner-scoped block", reason: "social.coves.moderation.defs#reasonIllegalContent", illegalContent: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			f := newPostModerationConsumerFixture(t)
+			removed := f.remove(t, scenario.reason)
+			require.NoError(t, f.consumer.HandleEvent(t.Context(), pv2Event(pv2Author, "delete", f.rkey, f.revs[1], "", f.createdAt+1_000_000, nil)))
+			require.NoError(t, f.consumer.HandleEvent(t.Context(), pv2Event(pv2Author, "create", f.rkey, f.revs[2], postModerationCIDOne,
+				f.createdAt+2_000_000, postModerationRecord(postModerationCIDOne, postModerationCIDTwo))))
+			indexed, err := f.postRepository.GetRawIndexedRow(t.Context(), f.uri)
+			require.NoError(t, err)
+			require.NotNil(t, indexed.DeletedAt, "a newer create must not resurrect a soft-deleted postv2")
+			f.assertReadPaths(t, "", false, true)
+			state, err := f.moderator.GetSubjectState(t.Context(), f.uri)
+			require.NoError(t, err)
+			assert.Equal(t, moderation.RecordStateDeleted, state.RecordState)
+			assert.Equal(t, removed.Action.ID, state.LocalRemoval.ActionID)
+			// The recreated record's new image is served from the author's repo
+			// even though the AppView keeps the tombstone, so it must be blocked.
+			assert.Equal(t, 1, countRows(t, f.db, `
+				SELECT count(*) FROM moderation_media_blocks
+				WHERE action_id = $1 AND owner_did = $2 AND blob_cid = $3 AND active
+			`, removed.Action.ID, pv2Author, postModerationCIDTwo), "the recreated image needs an active author-owned block on the original action")
+			assert.Contains(t, f.purger.calls, postModerationPurgeCall{ownerDID: pv2Author, blobCID: postModerationCIDTwo, committed: true},
+				"the consumer must purge the recreated image after the block commits")
+			if scenario.illegalContent {
+				assert.Zero(t, countRows(t, f.db, `
+					SELECT count(*) FROM moderation_media_blocks
+					WHERE action_id = $1 AND owner_did IS NULL AND blob_cid = $2 AND active
+				`, removed.Action.ID, postModerationCIDTwo), "a recreate must not add an ownerless image block")
+				assert.Equal(t, []postModerationPurgeCall{{ownerDID: pv2Author, blobCID: postModerationCIDTwo, committed: true}}, f.purger.calls,
+					"only the author's image cache is purged after commit")
+				blocked, checkErr := postgres.NewModerationRepository(f.db).IsBlocked(t.Context(), pv2Other, postModerationCIDTwo)
+				require.NoError(t, checkErr)
+				assert.False(t, blocked, "another owner's recreated image must remain available")
+			}
+		})
+	}
+}
+
+// The create path's ON CONFLICT branch discards incoming content when the row
+// already exists (a concurrent insert, or the documented active-row re-create).
+// The incoming images are still served from the author's repo, so a removed
+// post must block them there too.
+func TestModerationPostConsumerAlreadyIndexedCreateBlocksIncomingImages(t *testing.T) {
+	f := newPostModerationConsumerFixture(t)
+	removed := f.remove(t, "social.coves.moderation.defs#reasonIllegalContent")
+	embed, err := json.Marshal(postModerationRecord(postModerationCIDTwo)["embed"])
+	require.NoError(t, err)
+	embedJSON := string(embed)
+	applied, err := f.consumer.indexPostIfRevWins(t.Context(), &posts.Post{
+		URI: f.uri, CID: postModerationCIDOne, RKey: f.rkey, AuthorDID: pv2Author, CommunityDID: pv2Community,
+		Embed: &embedJSON, CreatedAt: time.Now(), IndexedAt: time.Now(),
+	}, f.revs[1])
+	require.NoError(t, err)
+	assert.False(t, applied, "an existing row must keep its content")
+	indexed, err := f.postRepository.GetRawIndexedRow(t.Context(), f.uri)
+	require.NoError(t, err)
+	assert.Equal(t, postModerationRecordCID, indexed.CID)
+	assert.Equal(t, 1, countRows(t, f.db, `
+		SELECT count(*) FROM moderation_media_blocks
+		WHERE action_id = $1 AND owner_did = $2 AND blob_cid = $3 AND active
+	`, removed.Action.ID, pv2Author, postModerationCIDTwo), "the discarded create's image needs an author-owned block")
+	assert.Zero(t, countRows(t, f.db, `
+		SELECT count(*) FROM moderation_media_blocks
+		WHERE action_id = $1 AND owner_did IS NULL AND blob_cid = $2 AND active
+	`, removed.Action.ID, postModerationCIDTwo), "a discarded create must not add an ownerless block")
+	assert.ElementsMatch(t, []postModerationPurgeCall{
+		{ownerDID: pv2Author, blobCID: postModerationCIDTwo, committed: true},
+	}, f.purger.calls)
+	blocked, checkErr := postgres.NewModerationRepository(f.db).IsBlocked(t.Context(), pv2Other, postModerationCIDTwo)
+	require.NoError(t, checkErr)
+	assert.False(t, blocked, "another owner's incoming image must remain available")
+}
+
+func TestModerationPostConsumerRemovalIsPerURI(t *testing.T) {
+	f := newPostModerationConsumerFixture(t)
+	f.remove(t, "social.coves.moderation.defs#reasonSpam")
+	otherRkey := testkit.TID()
+	otherURI := pv2URI(pv2Author, otherRkey)
+	require.NoError(t, f.consumer.HandleEvent(t.Context(), pv2Event(pv2Author, "create", otherRkey, f.revs[1],
+		postModerationRecordCID, f.createdAt+1_000_000, postModerationRecord(postModerationCIDOne))))
+	acceptanceRkey := testkit.TID()
+	accepted, err := f.admissions.ApplyAcceptance(t.Context(), posts.ApplyAcceptanceCommand{
+		CommunityDID: pv2Community, PostURI: otherURI,
+		AcceptanceURI:  "at://" + pv2Community + "/" + posts.AcceptanceCollection + "/" + acceptanceRkey,
+		AcceptanceRkey: acceptanceRkey, PinnedCID: postModerationRecordCID,
+		Watermark: posts.CommunityWatermark{Rev: testkit.TID()},
+	})
+	require.NoError(t, err)
+	require.Equal(t, posts.AdmissionApplied, accepted.Outcome)
+	results, err := f.postService.GetPosts(t.Context(), posts.GetPostsRequest{URIs: []string{f.uri, otherURI}})
+	require.NoError(t, err)
+	require.Len(t, results, 2)
+	assert.NotNil(t, results[0].Moderated)
+	require.NotNil(t, results[1].Post, "a distinct accepted URI must remain a postView")
+	assert.Equal(t, otherURI, results[1].Post.URI)
+}
+
+func TestModerationPostConsumerUnremovedEditCreatesNoBlocks(t *testing.T) {
+	f := newPostModerationConsumerFixture(t)
+	require.NoError(t, f.consumer.HandleEvent(t.Context(), pv2Event(pv2Author, "update", f.rkey, f.revs[1], postModerationCIDOne,
+		f.createdAt+1_000_000, postModerationRecord(postModerationCIDOne, postModerationCIDTwo))))
+	indexed, err := f.postRepository.GetRawIndexedRow(t.Context(), f.uri)
+	require.NoError(t, err)
+	assert.Equal(t, postModerationCIDOne, indexed.CID)
+	assert.Equal(t, 0, countRows(t, f.db, `SELECT count(*) FROM moderation_media_blocks WHERE blob_cid = $1`, postModerationCIDTwo))
+	assert.Empty(t, f.purger.calls)
+}
+
+// An out-of-order update that predates the delete is stale by rev; the rev gate
+// must reject it before any media is blocked, or an older record's images would
+// be blocked for a post whose newest state is the tombstone.
+func TestModerationPostConsumerStaleUpdateAfterDeleteAddsNoBlocks(t *testing.T) {
+	f := newPostModerationConsumerFixture(t)
+	f.remove(t, "social.coves.moderation.defs#reasonIllegalContent")
+	require.NoError(t, f.consumer.HandleEvent(t.Context(), pv2Event(pv2Author, "delete", f.rkey, f.revs[2], "", f.createdAt+2_000_000, nil)))
+	require.NoError(t, f.consumer.HandleEvent(t.Context(), pv2Event(pv2Author, "update", f.rkey, f.revs[1], postModerationCIDOne,
+		f.createdAt+1_000_000, postModerationRecord(postModerationCIDOne, postModerationCIDTwo))))
+	assert.Equal(t, 0, countRows(t, f.db, `SELECT count(*) FROM moderation_media_blocks WHERE blob_cid = $1`, postModerationCIDTwo),
+		"a stale update must not block its images")
+	assert.Empty(t, f.purger.calls)
+}

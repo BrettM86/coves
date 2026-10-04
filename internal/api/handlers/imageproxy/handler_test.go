@@ -24,12 +24,26 @@ const (
 	// validTestDID is a valid did:plc identifier (24 lowercase base32 chars after did:plc:)
 	validTestDID = "did:plc:z72i7hdynmk6r22z27h6tvur"
 	// validTestCID is a valid CIDv1 base32 identifier
-	validTestCID = "bafyreihgdyzzpkkzq2izfnhcmm77ycuacvkuziwbnqxfxtqsz7tmxwhnshi"
+	validTestCID = "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"
 )
 
 // mockService implements imageproxy.Service for testing
 type mockService struct {
-	getImageFunc func(ctx context.Context, preset, did, cid, pdsURL string) ([]byte, error)
+	getImageFunc      func(ctx context.Context, preset, did, cid, pdsURL string) ([]byte, error)
+	isBlobBlockedFunc func(ctx context.Context, did, cid string) (bool, error)
+}
+
+type allowAllBlockChecker struct{}
+
+func (allowAllBlockChecker) IsBlocked(context.Context, string, string) (bool, error) {
+	return false, nil
+}
+
+func (m *mockService) IsBlobBlocked(ctx context.Context, did, cid string) (bool, error) {
+	if m.isBlobBlockedFunc != nil {
+		return m.isBlobBlockedFunc(ctx, did, cid)
+	}
+	return false, nil
 }
 
 // GetImageResolvingPDS resolves the PDS up front, as a cache miss would, so
@@ -145,7 +159,7 @@ func TestHandler_HandleImage_Success(t *testing.T) {
 
 	// Verify Cache-Control
 	cacheControl := w.Header().Get("Cache-Control")
-	expectedCacheControl := "public, max-age=31536000, immutable"
+	expectedCacheControl := "public, max-age=86400"
 	if cacheControl != expectedCacheControl {
 		t.Errorf("Expected Cache-Control %q, got %q", expectedCacheControl, cacheControl)
 	}
@@ -675,11 +689,11 @@ func TestHandler_HandleImage_InvalidCID(t *testing.T) {
 	}
 }
 
-// This route sits behind a CDN and advertises a one-year immutable lifetime on
-// success, which is correct for content-addressed blobs. Inheriting anything
-// cacheable on an error would pin a transient failure — a PDS timeout, a DID
-// that had not propagated yet — at the edge long after the image became
-// fetchable. Every error path must therefore say no-store.
+// This route sits behind a CDN, and a browser or CDN may cache successful
+// images for one day.
+// Caching an error would let a transient failure — a PDS timeout or a DID
+// that had not propagated yet — outlive its cause. Every error path must
+// therefore say no-store.
 func TestHandler_HandleImage_ErrorsAreNeverCacheable(t *testing.T) {
 	tests := []struct {
 		name       string

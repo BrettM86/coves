@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"testing"
 
@@ -354,4 +356,216 @@ func TestOAuthScopes_GrantTheLegacyDeleteTheDrainDependsOn(t *testing.T) {
 			"the entire corpus undeleteable", posts.LegacyPostCollection)
 	assert.Containsf(t, legacy, "action=delete",
 		"the legacy-post scope %q grants no delete; the drain's final step is exactly that delete", legacy)
+}
+
+// ---- the operator's census and verdict ------------------------------------
+
+// captureLog sends the standard logger to a buffer, without timestamps, for the
+// rest of the test.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	previousOutput, previousFlags := log.Writer(), log.Flags()
+	t.Cleanup(func() {
+		log.SetOutput(previousOutput)
+		log.SetFlags(previousFlags)
+	})
+	log.SetFlags(0)
+	var output bytes.Buffer
+	log.SetOutput(&output)
+	return &output
+}
+
+// lineContaining returns the first output line containing phrase, or "".
+func lineContaining(output, phrase string) string {
+	for _, line := range strings.Split(output, "\n") {
+		if strings.Contains(line, phrase) {
+			return line
+		}
+	}
+	return ""
+}
+
+// censusFields parses the label=value tokens of the census summary line.
+func censusFields(t *testing.T, output string) map[string]string {
+	t.Helper()
+	line := lineContaining(output, "remaining-legacy=")
+	require.NotEmptyf(t, line, "no census line in output:\n%s", output)
+	fields := map[string]string{}
+	for _, token := range strings.Fields(line) {
+		if label, value, ok := strings.Cut(token, "="); ok {
+			fields[label] = value
+		}
+	}
+	return fields
+}
+
+// Every count is distinct, so a census that prints one count under another
+// count's label fails here.
+func TestLogCensus_PrintsEachCountUnderItsOwnLabel(t *testing.T) {
+	output := captureLog(t)
+	report := posts.RematerializeReport{
+		Discovered:        11,
+		Done:              2,
+		Fallbacks:         3,
+		RemainingLegacy:   5,
+		SkippedRemoved:    7,
+		UnmatchedRemovals: 13,
+	}
+	for _, mode := range []struct {
+		name   string
+		dryRun bool
+	}{
+		{name: "live", dryRun: false},
+		{name: "dry_run", dryRun: true},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			output.Reset()
+			logCensus(report, mode.dryRun)
+			fields := censusFields(t, output.String())
+			for label, want := range map[string]string{
+				"discovered":         "11",
+				"done":               "2",
+				"fallbacks":          "3",
+				"remaining-legacy":   "5",
+				"skipped-removed":    "7",
+				"unmatched-removals": "13",
+				"scope-complete":     "false",
+			} {
+				assert.Equalf(t, want, fields[label], "census label %q in:\n%s", label, output.String())
+			}
+			assert.Contains(t, output.String(), "skipped-removed=7 unmatched-removals=13",
+				"unmatched-removals belongs right after skipped-removed")
+		})
+	}
+}
+
+// A removal that is not (INSTANCE_DID, instance) hides the post on the read path
+// but does not stop the tool migrating it. Moderation writes only that pair, so
+// the census must say so when it sees one.
+func TestLogCensus_WarnsAboutUnmatchedRemovalsOnlyWhenThereAreAny(t *testing.T) {
+	output := captureLog(t)
+	for _, tc := range []struct {
+		name        string
+		unmatched   int
+		wantWarning bool
+	}{
+		{name: "none", unmatched: 0, wantWarning: false},
+		{name: "some", unmatched: 13, wantWarning: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			output.Reset()
+			logCensus(posts.RematerializeReport{Discovered: 11, UnmatchedRemovals: tc.unmatched}, false)
+			warning := lineContaining(output.String(), "INSTANCE_DID")
+			if !tc.wantWarning {
+				assert.Emptyf(t, warning, "no unmatched removal was seen, so no warning belongs in:\n%s", output.String())
+				return
+			}
+			require.NotEmptyf(t, warning, "no INSTANCE_DID warning in:\n%s", output.String())
+			assert.Contains(t, warning, "13 legacy post(s)")
+			assert.Contains(t, warning, "hidden on the read path")
+			assert.Contains(t, warning, "NOT skipped")
+			assert.Contains(t, warning, "differs from the server's")
+		})
+	}
+}
+
+// A scoped run's final re-scan covers only its own community, so it can never
+// certify the whole migration. Its verdict must send the operator to an
+// unscoped run, not tell them to wait for a line a scoped run never prints.
+func TestLogVerdict_AScopedRunSendsTheOperatorToAnUnscopedRun(t *testing.T) {
+	output := captureLog(t)
+	for _, complete := range []bool{false, true} {
+		t.Run(fmt.Sprintf("complete=%v", complete), func(t *testing.T) {
+			output.Reset()
+			exitCode := logVerdict(posts.RematerializeReport{
+				CommunityScope:   "did:plc:inscope22222222222222222",
+				Discovered:       4,
+				Done:             4,
+				ScopeComplete:    true,
+				GlobalDiscovered: 9,
+				GlobalDone:       4,
+				Complete:         complete,
+			})
+			text := output.String()
+			assert.Equal(t, 0, exitCode, "a staged run that finished its own scope is a success")
+			assert.NotContains(t, text, "until this line says complete")
+			assert.NotContains(t, text, "rematerialize-posts: MIGRATION COMPLETE")
+			assert.Contains(t, text, "UNSCOPED")
+			assert.Contains(t, text, "§11 step 6")
+		})
+	}
+}
+
+// While an instance removal stands every run exits 1 or reports NOT COMPLETE, so
+// the final line must say how many posts that is and what the operator does
+// about it.
+func TestLogVerdict_CountsThePostsSkippedForAnInstanceRemoval(t *testing.T) {
+	output := captureLog(t)
+	for _, tc := range []struct {
+		name          string
+		report        posts.RematerializeReport
+		verdictPhrase string
+		wantExitCode  int
+	}{
+		{
+			name:          "scope incomplete",
+			report:        posts.RematerializeReport{Discovered: 11, Done: 2, Fallbacks: 3, RemainingLegacy: 5},
+			verdictPhrase: "SCOPE INCOMPLETE",
+			wantExitCode:  1,
+		},
+		{
+			name: "whole migration not complete",
+			report: posts.RematerializeReport{
+				Discovered: 11, Done: 11, ScopeComplete: true,
+				GlobalDiscovered: 11, GlobalDone: 10, GlobalFallbacks: 1,
+			},
+			verdictPhrase: "NOT COMPLETE",
+			wantExitCode:  0,
+		},
+	} {
+		for _, skipped := range []int{0, 7} {
+			t.Run(fmt.Sprintf("%s/skipped=%d", tc.name, skipped), func(t *testing.T) {
+				output.Reset()
+				report := tc.report
+				report.SkippedRemoved = skipped
+				exitCode := logVerdict(report)
+				text := output.String()
+				assert.Equal(t, tc.wantExitCode, exitCode)
+				verdict := lineContaining(text, tc.verdictPhrase)
+				require.NotEmptyf(t, verdict, "no %q line in:\n%s", tc.verdictPhrase, text)
+				assert.Contains(t, verdict, fmt.Sprintf("%d skipped for an active instance removal", skipped))
+				guidance := lineContaining(text, "stay legacy while")
+				if skipped == 0 {
+					assert.Emptyf(t, guidance, "nothing was skipped, so no guidance belongs in:\n%s", text)
+					return
+				}
+				require.NotEmptyf(t, guidance, "no guidance for the skipped posts in:\n%s", text)
+				assert.Contains(t, guidance, "7 post(s)")
+				assert.Contains(t, guidance, "re-running migrates it")
+				assert.Contains(t, guidance, "§11 step 6 must not run")
+			})
+		}
+	}
+}
+
+// The unscoped run is the §11 step 6 gate, so its two final lines stay as they
+// were.
+func TestLogVerdict_AnUnscopedRunKeepsItsCompletionLines(t *testing.T) {
+	output := captureLog(t)
+
+	exitCode := logVerdict(posts.RematerializeReport{
+		Discovered: 11, Done: 11, ScopeComplete: true,
+		GlobalDiscovered: 11, GlobalDone: 10, GlobalFallbacks: 1,
+	})
+	assert.Equal(t, 0, exitCode)
+	assert.Contains(t, output.String(), "THE MIGRATION AS A WHOLE IS NOT COMPLETE")
+	assert.Contains(t, output.String(), "until this line says complete")
+
+	output.Reset()
+	exitCode = logVerdict(posts.RematerializeReport{
+		Discovered: 11, Done: 11, ScopeComplete: true,
+		GlobalDiscovered: 11, GlobalDone: 11, Complete: true,
+	})
+	assert.Equal(t, 0, exitCode)
+	assert.Contains(t, output.String(), "rematerialize-posts: MIGRATION COMPLETE")
 }

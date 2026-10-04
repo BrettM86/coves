@@ -128,6 +128,10 @@ services:
       # Comma-separated list of DIDs
       TRUSTED_AGGREGATOR_DIDS: ${TRUSTED_AGGREGATOR_DIDS:-}
 
+      # Instance moderation admins (comma-separated DIDs). Empty grants nobody
+      # admin authority. Independent of COMMUNITY_CREATORS.
+      MODERATION_ADMINS: ${MODERATION_ADMINS:-}
+
       # Trusted virtual bridge PDS hosts. Required for Tidepool-authored
       # profiles/posts to be indexed and for bridge-asserted bridgedStats to
       # be accepted. Example: https://tdpl.io
@@ -151,6 +155,10 @@ services:
       # a variable only present in .env is invisible to the container, so setting
       # it there without this line silently has no effect.
       IMAGE_PROXY_CDN_URL: ${IMAGE_PROXY_CDN_URL:-}
+      # Optional Cloudflare edge purge on moderation removal. Both must be set
+      # together; this token is separate from Caddy's DNS-01 token.
+      CLOUDFLARE_CACHE_PURGE_ZONE_ID: ${CLOUDFLARE_CACHE_PURGE_ZONE_ID:-}
+      CLOUDFLARE_CACHE_PURGE_API_TOKEN: ${CLOUDFLARE_CACHE_PURGE_API_TOKEN:-}
       IMAGE_PROXY_CACHE_PATH: /var/cache/coves/images
       IMAGE_PROXY_CACHE_MAX_GB: ${IMAGE_PROXY_CACHE_MAX_GB:-10}
       IMAGE_PROXY_FETCH_TIMEOUT_SECONDS: ${IMAGE_PROXY_FETCH_TIMEOUT_SECONDS:-30}

@@ -30,10 +30,13 @@ func (f *bombFetcher) Fetch(_ context.Context, _, _, _ string) ([]byte, error) {
 // every request is forced through fetch and decode.
 type missCache struct{}
 
-func (missCache) Get(_, _, _ string) ([]byte, bool, error) { return nil, false, nil }
-func (missCache) Set(_, _, _ string, _ []byte) error       { return nil }
-func (missCache) Delete(_, _, _ string) error              { return nil }
-func (missCache) Cleanup() (int, error)                    { return 0, nil }
+func (missCache) Get(_, _, _ string) ([]byte, bool, error)    { return nil, false, nil }
+func (missCache) Set(_, _, _ string, _ []byte) error          { return nil }
+func (missCache) Delete(_, _, _ string) error                 { return nil }
+func (missCache) DeleteOwner(_, _ string) error               { return nil }
+func (missCache) DeleteCID(_ string) error                    { return nil }
+func (missCache) OwnerDirectories(_ string) ([]string, error) { return nil, nil }
+func (missCache) Cleanup() (int, error)                       { return 0, nil }
 
 // pngChunk frames one PNG chunk: length, type, data, CRC32 over type+data.
 func pngChunk(chunkType string, data []byte) []byte {
@@ -111,7 +114,7 @@ func TestHandler_RejectsDecompressionBombBeforeDecoding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewProcessor: %v", err)
 	}
-	service, err := imageproxy.NewService(missCache{}, processor, fetcher, imageproxy.DefaultConfig())
+	service, err := imageproxy.NewService(missCache{}, processor, fetcher, allowAllBlockChecker{}, imageproxy.DefaultConfig())
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}

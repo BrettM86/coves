@@ -244,6 +244,8 @@ test-e2e-dev: ## T2 against the long-lived DEV stack (debugging only - not how C
 	@echo "$(YELLOW)  minus the federation contracts: they need the SECOND PDS and the relay,$(RESET)"
 	@echo "$(YELLOW)  which exist only in the hermetic stack (docker-compose.ci.yml). The dev$(RESET)"
 	@echo "$(YELLOW)  stack has one PDS and Jetstream wired straight to it.$(RESET)"
+	@echo "$(YELLOW)  minus the moderation contracts: they need the bootstrap admin accounts$(RESET)"
+	@echo "$(YELLOW)  that scripts/ci-bootstrap.sh provisions only in the hermetic stack.$(RESET)"
 	@# run_pipeline_tier is the ONE definition of how T2 is invoked — the gate,
 	@# 'make test-e2e' and this hatch all call it, so the flags cannot drift
 	@# apart. Sourced here rather than copied for exactly that reason.
@@ -263,8 +265,16 @@ test-e2e-dev: ## T2 against the long-lived DEV stack (debugging only - not how C
 	@# A federation contract named without it is not a silent pass either:
 	@# testkit.NewFederatedPDS fatals on the spot, naming PDS2_URL and this
 	@# hatch.
-	@bash -c 'source ./scripts/lib/runner-ready.sh && run_pipeline_tier -skip "^TestReliability|Federat"'
-	@echo "$(GREEN)✓ Pipeline tier complete (against the dev stack; no reliability suite, no federation contracts)$(RESET)"
+	@#
+	@# "^TestModeration" catches every instance-moderation contract. They act as
+	@# the two bootstrap admin accounts (testkit.ModerationAdmin), which
+	@# scripts/ci-bootstrap.sh provisions and writes into MODERATION_ADMINS only
+	@# for the hermetic stack. The dev stack has neither the accounts nor the
+	@# allowlist (.env.dev sets MODERATION_ADMINS empty), so these contracts
+	@# would fatal here on every run. Prefix rather than a list, as with
+	@# "Federat", so a new moderation contract is excluded without an edit.
+	@bash -c 'source ./scripts/lib/runner-ready.sh && run_pipeline_tier -skip "^TestReliability|Federat|^TestModeration"'
+	@echo "$(GREEN)✓ Pipeline tier complete (against the dev stack; no reliability suite, no federation contracts, no moderation contracts)$(RESET)"
 
 test-db-reset: ## Reset test database
 	@echo "$(GREEN)Resetting test database...$(RESET)"

@@ -14,6 +14,8 @@ import (
 
 	"Coves/internal/core/bridgedvotes"
 	"Coves/internal/core/imageproxy"
+
+	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 
 // devCursorSecret is the placeholder HMAC key used for pagination cursors when
@@ -122,6 +124,9 @@ type Config struct {
 	// Submissions bounds what one author may post into one community.
 	Submissions SubmissionsConfig
 
+	// Moderation holds the instance moderation settings.
+	Moderation ModerationConfig
+
 	// CursorSecret is the HMAC key that signs pagination cursors, preventing
 	// clients from forging or tampering with them.
 	CursorSecret string
@@ -135,6 +140,15 @@ type Config struct {
 	// because ENCRYPTION_KEY was unset in dev. Credentials sealed under a
 	// generated key do not survive a restart.
 	EncryptionKeyGenerated bool
+}
+
+// ModerationConfig holds the instance moderation settings.
+type ModerationConfig struct {
+	// Admins is the operator-managed allowlist of instance admin DIDs
+	// (MODERATION_ADMINS). An empty list grants nobody admin authority.
+	Admins                 []string
+	IdempotencyRetention   time.Duration
+	MaxLiveIdempotencyKeys int
 }
 
 // DatabaseConfig holds the AppView PostgreSQL connection and pool settings.
@@ -391,6 +405,9 @@ type MediaConfig struct {
 	// the production invariant below before anything starts.
 	ImageProxy imageproxy.Config
 
+	// CDNPurge configures optional Cloudflare edge invalidation for blocked media.
+	CDNPurge CDNPurgeConfig
+
 	// AllowUnproxiedMedia acknowledges, for a production deployment, that
 	// media will be served straight from PDS blob endpoints.
 	//
@@ -515,6 +532,9 @@ func Load() (*Config, error) {
 	if err := cfg.loadSubmissions(); err != nil {
 		return nil, err
 	}
+	if err := cfg.loadModeration(); err != nil {
+		return nil, err
+	}
 
 	cfg.PDS = PDSConfig{
 		URL:              stringVar("PDS_URL", "http://localhost:3001"),
@@ -564,8 +584,18 @@ func Load() (*Config, error) {
 	imageProxy.Enabled = imageProxyEnabled
 
 	cfg.Media = MediaConfig{
-		ImageProxy:          imageProxy,
+		ImageProxy: imageProxy,
+		CDNPurge: CDNPurgeConfig{
+			ZoneID:   lookup("CLOUDFLARE_CACHE_PURGE_ZONE_ID"),
+			APIToken: lookup("CLOUDFLARE_CACHE_PURGE_API_TOKEN"),
+		},
 		AllowUnproxiedMedia: allowUnproxiedMedia,
+	}
+	if cfg.Media.CDNPurge.Enabled() {
+		cfg.Media.CDNPurge.BaseURLs = []string{imageProxy.BaseURL}
+		if imageProxy.CDNURL != "" && imageProxy.CDNURL != imageProxy.BaseURL {
+			cfg.Media.CDNPurge.BaseURLs = append(cfg.Media.CDNPurge.BaseURLs, imageProxy.CDNURL)
+		}
 	}
 
 	cfg.CursorSecret = stringVar("CURSOR_SECRET", devCursorSecret)
@@ -1005,12 +1035,59 @@ func (c *Config) loadSubmissions() error {
 	return nil
 }
 
+func (c *Config) loadModeration() error {
+	retention, err := durationVar("MODERATION_IDEMPOTENCY_RETENTION", 24*time.Hour)
+	if err != nil {
+		return err
+	}
+	if retention <= 0 {
+		return fmt.Errorf("MODERATION_IDEMPOTENCY_RETENTION must be greater than 0 (got %s)", retention)
+	}
+	maxKeys, err := intVar("MODERATION_IDEMPOTENCY_MAX_LIVE_KEYS", 1000)
+	if err != nil {
+		return err
+	}
+	if maxKeys <= 0 {
+		return fmt.Errorf("MODERATION_IDEMPOTENCY_MAX_LIVE_KEYS must be greater than 0 (got %d)", maxKeys)
+	}
+	c.Moderation = ModerationConfig{
+		Admins:                 csvVar("MODERATION_ADMINS"),
+		IdempotencyRetention:   retention,
+		MaxLiveIdempotencyKeys: maxKeys,
+	}
+	return nil
+}
+
 // Validate enforces the constraints that Load's defaults cannot express,
 // notably the ones that differ between dev and production. It returns every
 // problem at once so a misconfigured deployment can be fixed in a single pass
 // instead of one restart per mistake.
 func (c *Config) Validate() error {
 	var problems []string
+	zoneID := c.Media.CDNPurge.ZoneID
+	apiToken := c.Media.CDNPurge.APIToken
+	switch {
+	case zoneID != "" && apiToken == "":
+		problems = append(problems, "CLOUDFLARE_CACHE_PURGE_API_TOKEN is required when CLOUDFLARE_CACHE_PURGE_ZONE_ID is set")
+	case zoneID == "" && apiToken != "":
+		problems = append(problems, "CLOUDFLARE_CACHE_PURGE_ZONE_ID is required when CLOUDFLARE_CACHE_PURGE_API_TOKEN is set")
+	case zoneID != "" && apiToken != "":
+		if !c.Media.ImageProxy.Enabled {
+			problems = append(problems, "IMAGE_PROXY_ENABLED must be true when CDN purge is configured")
+		}
+		if !absoluteHTTPURL(c.Media.ImageProxy.BaseURL) {
+			problems = append(problems, "IMAGE_PROXY_BASE_URL must be an absolute http(s) URL when CDN purge is configured")
+		}
+		if cdn := c.Media.ImageProxy.CDNURL; cdn != "" && !absoluteHTTPURL(cdn) {
+			problems = append(problems, "IMAGE_PROXY_CDN_URL must be an absolute http(s) URL when CDN purge is configured")
+		}
+	}
+	for _, did := range c.Moderation.Admins {
+		if _, err := syntax.ParseDID(did); err != nil {
+			problems = append(problems, "MODERATION_ADMINS must contain only valid DIDs")
+			break
+		}
+	}
 
 	if c.Database.URL == "" {
 		problems = append(problems, "DATABASE_URL is required")
@@ -1332,3 +1409,28 @@ func (c *Config) mediaProblems() []string {
 
 	return problems
 }
+
+// absoluteHTTPURL accepts only complete HTTP(S) origins, in both dev and production.
+func absoluteHTTPURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Hostname() != ""
+}
+
+// CDNPurgeConfig holds optional Cloudflare zone credentials and image origins.
+type CDNPurgeConfig struct {
+	ZoneID   string
+	APIToken string `json:"-"`
+	BaseURLs []string
+}
+
+// Enabled reports whether both required Cloudflare credentials are present.
+func (c CDNPurgeConfig) Enabled() bool { return c.ZoneID != "" && c.APIToken != "" }
+
+// String redacts the credential when a Config is formatted with %v or %+v.
+// GoString covers %#v, and the json:"-" tag on APIToken covers JSON encoding.
+func (c CDNPurgeConfig) String() string {
+	return fmt.Sprintf("{ZoneID:%q APIToken:[REDACTED] BaseURLs:%v}", c.ZoneID, c.BaseURLs)
+}
+
+// GoString redacts the credential when a Config is formatted with %#v.
+func (c CDNPurgeConfig) GoString() string { return c.String() }

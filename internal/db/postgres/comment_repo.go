@@ -463,6 +463,7 @@ func (r *postgresCommentRepo) ListByCommenter(ctx context.Context, commenterDID 
 // Used for user profile comment history (social.coves.actor.getComments)
 // Supports optional community filtering and returns next page cursor
 // Uses chronological ordering (newest first) with composite key cursor for stable pagination
+// Excludes comments removed directly or under a removed root before pagination.
 func (r *postgresCommentRepo) ListByCommenterWithCursor(ctx context.Context, req comments.ListByCommenterRequest) ([]*comments.Comment, *string, error) {
 	// Parse cursor for pagination
 	cursorFilter, cursorValues, err := r.parseCommenterCursor(req.Cursor)
@@ -525,6 +526,10 @@ func (r *postgresCommentRepo) ListByCommenterWithCursor(ctx context.Context, req
 		LEFT JOIN users u ON c.commenter_did = u.did
 		WHERE c.commenter_did = $1
 			AND c.deleted_at IS NULL
+			AND NOT EXISTS (
+				SELECT 1 FROM moderation_decisions d
+				WHERE d.subject_uri IN (c.uri, c.root_uri) AND d.kind = 'removal' AND d.active
+			)
 			%s
 			%s
 		ORDER BY c.created_at DESC, c.uri DESC
@@ -1437,4 +1442,34 @@ func (r *postgresCommentRepo) GetVoteStateForComments(ctx context.Context, viewe
 	}
 
 	return result, nil
+}
+
+// ActiveRemovalsByURIs returns the active removal sources of each URI.
+func (r *postgresCommentRepo) ActiveRemovalsByURIs(ctx context.Context, uris []string) (map[string][]comments.RemovalSource, error) {
+	removals := make(map[string][]comments.RemovalSource)
+	if len(uris) == 0 {
+		return removals, nil
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT subject_uri, authority_did, scope_kind
+		FROM moderation_decisions
+		WHERE subject_uri = ANY($1) AND kind = 'removal' AND active
+		ORDER BY subject_uri, authority_did, scope_kind, scope_community_did
+	`, pq.Array(uris))
+	if err != nil {
+		return nil, fmt.Errorf("fetch active comment removals: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var uri string
+		var source comments.RemovalSource
+		if err := rows.Scan(&uri, &source.AuthorityDID, &source.ScopeKind); err != nil {
+			return nil, fmt.Errorf("scan active comment removal: %w", err)
+		}
+		removals[uri] = append(removals[uri], source)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate active comment removals: %w", err)
+	}
+	return removals, nil
 }

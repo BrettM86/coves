@@ -36,6 +36,7 @@
                   "social.coves.community.post.defs#postView",
                   "social.coves.community.post.defs#notFoundPost",
                   "social.coves.community.post.defs#removedPost",
+                  "social.coves.community.post.defs#moderatedPost",
                   "social.coves.community.post.defs#blockedPost"
                 ]
               }

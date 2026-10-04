@@ -1,0 +1,798 @@
+package postgres
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/binary"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"Coves/internal/core/embeds"
+	"Coves/internal/core/imageproxy"
+	"Coves/internal/core/moderation"
+
+	"github.com/bluesky-social/indigo/atproto/syntax"
+	"github.com/lib/pq"
+)
+
+// ModerationRepository is the Postgres moderation.Store.
+type ModerationRepository struct {
+	db *sql.DB
+}
+
+// NewModerationRepository builds the Postgres moderation store.
+func NewModerationRepository(db *sql.DB) *ModerationRepository {
+	return &ModerationRepository{db: db}
+}
+
+// InTransaction runs fn in one transaction.
+func (r *ModerationRepository) InTransaction(ctx context.Context, fn func(ctx context.Context, tx moderation.Transaction) error) (err error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			err = errors.Join(err, rollbackErr)
+		}
+	}()
+	if err := fn(ctx, &moderationTransaction{tx: tx}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// SubjectModeration reads the stored moderation state of a subject.
+func (r *ModerationRepository) SubjectModeration(ctx context.Context, authorityDID, subjectURI string) (*moderation.SubjectModeration, error) {
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("begin subject moderation read: %w", err)
+	}
+	defer tx.Rollback()
+	var version int64
+	row := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(s.version, 0),
+		       a.id, a.actor_did, a.authority_did, a.scope_kind, a.scope_community_did,
+		       a.subject_uri, a.subject_collection, a.subject_community_did, a.observed_cid,
+		       a.action, a.label_value, a.reason, a.private_classification, a.private_note,
+		       a.reverses_action_id, a.origin, a.created_at
+		FROM (SELECT $2::text AS uri) AS target
+		LEFT JOIN moderation_subjects s ON s.subject_uri = target.uri
+		LEFT JOIN moderation_decisions d ON d.subject_uri = target.uri
+		    AND d.authority_did = $1 AND d.scope_kind = 'instance'
+		    AND d.kind = 'removal' AND d.active
+		LEFT JOIN moderation_actions a ON a.id = d.active_action_id
+	`, authorityDID, subjectURI)
+	action, err := scanModerationAction(row, &version, nil)
+	if err != nil {
+		return nil, fmt.Errorf("read subject moderation: %w", err)
+	}
+	// A locking read here would fail with a serialization error, or wait, when
+	// a concurrent retraction updates a label decision after the snapshot.
+	labels, err := activeLabels(ctx, tx, authorityDID, subjectURI, false)
+	if err != nil {
+		return nil, fmt.Errorf("read subject moderation labels: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit subject moderation read: %w", err)
+	}
+	return &moderation.SubjectModeration{Version: version, ActiveRemoval: action, ActiveLabels: labels}, nil
+}
+
+type moderationTransaction struct {
+	tx *sql.Tx
+}
+
+var moderationActionClock = newModerationActionClock()
+
+func newModerationActionClock() *syntax.TIDClock {
+	var clockID [2]byte
+	if _, err := rand.Read(clockID[:]); err != nil {
+		panic(fmt.Sprintf("moderation action clock: %v", err))
+	}
+	return syntax.NewTIDClock(uint(binary.BigEndian.Uint16(clockID[:]) % 1024))
+}
+
+func (t *moderationTransaction) LockActor(ctx context.Context, actorDID string) error {
+	// One lock per actor serializes admission for distinct idempotency keys as
+	// well as replays. Namespace the hash away from other advisory lock users.
+	digest := sha256.Sum256([]byte("coves/moderation-actor/" + actorDID))
+	key := int64(binary.BigEndian.Uint64(digest[:8]))
+	_, err := t.tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, key)
+	return err
+}
+
+func (t *moderationTransaction) LiveIdempotencyRecord(ctx context.Context, actorDID, authorityDID, key string, now time.Time) (*moderation.IdempotencyRecord, error) {
+	var record moderation.IdempotencyRecord
+	var storedResult []byte
+	err := t.tx.QueryRowContext(ctx, `
+		SELECT fingerprint, stored_result, created_at, expires_at
+		FROM moderation_idempotency_keys
+		WHERE actor_did = $1 AND authority_did = $2 AND key = $3 AND expires_at > $4
+	`, actorDID, authorityDID, key, now).Scan(&record.Fingerprint, &storedResult, &record.CreatedAt, &record.ExpiresAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(storedResult, &record.Result); err != nil {
+		return nil, fmt.Errorf("decode stored moderation result: %w", err)
+	}
+	record.ActorDID, record.AuthorityDID, record.Key = actorDID, authorityDID, key
+	return &record, nil
+}
+
+func (t *moderationTransaction) CountLiveIdempotencyKeys(ctx context.Context, actorDID string, now time.Time) (int, error) {
+	var count int
+	err := t.tx.QueryRowContext(ctx, `
+		SELECT count(*) FROM moderation_idempotency_keys WHERE actor_did = $1 AND expires_at > $2
+	`, actorDID, now).Scan(&count)
+	return count, err
+}
+
+func (t *moderationTransaction) SaveIdempotencyRecord(ctx context.Context, record moderation.IdempotencyRecord) error {
+	result, err := json.Marshal(record.Result)
+	if err != nil {
+		return err
+	}
+	_, err = t.tx.ExecContext(ctx, `
+		INSERT INTO moderation_idempotency_keys
+		    (actor_did, authority_did, key, fingerprint, stored_result, created_at, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (actor_did, authority_did, key) DO UPDATE SET
+		    fingerprint = EXCLUDED.fingerprint, stored_result = EXCLUDED.stored_result,
+		    created_at = EXCLUDED.created_at, expires_at = EXCLUDED.expires_at
+		WHERE moderation_idempotency_keys.expires_at <= EXCLUDED.created_at
+	`, record.ActorDID, record.AuthorityDID, record.Key, record.Fingerprint, result, record.CreatedAt, record.ExpiresAt)
+	return err
+}
+
+func (t *moderationTransaction) LockSubject(ctx context.Context, subjectURI string) (int64, error) {
+	if _, err := t.tx.ExecContext(ctx, `
+		INSERT INTO moderation_subjects (subject_uri, version) VALUES ($1, 0)
+		ON CONFLICT (subject_uri) DO NOTHING
+	`, subjectURI); err != nil {
+		return 0, err
+	}
+	var version int64
+	err := t.tx.QueryRowContext(ctx, `
+		SELECT version FROM moderation_subjects WHERE subject_uri = $1 FOR UPDATE
+	`, subjectURI).Scan(&version)
+	return version, err
+}
+
+func (t *moderationTransaction) ReadIndexedPost(ctx context.Context, subjectURI string) (*moderation.IndexedPost, error) {
+	var post moderation.IndexedPost
+	var authorDID string
+	var embed sql.NullString
+	err := t.tx.QueryRowContext(ctx, `
+		SELECT uri, cid, author_did, community_did, (deleted_at IS NOT NULL), embed
+		FROM posts WHERE uri = $1 FOR SHARE
+	`, subjectURI).Scan(&post.URI, &post.CID, &authorDID, &post.CommunityDID, &post.AuthorDeleted, &embed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, moderation.ErrSubjectNotIndexed
+	}
+	if err != nil {
+		return nil, err
+	}
+	uri, err := syntax.ParseATURI(post.URI)
+	if err != nil {
+		return nil, err
+	}
+	post.OwnerDID = authorDID
+	if uri.Collection().String() == moderation.LegacyPostCollection {
+		post.OwnerDID = post.CommunityDID
+	}
+	if embed.Valid {
+		// Post embeds are unvalidated indexed data; malformed shapes have no
+		// proxy-served blobs to block and must not prevent moderation.
+		var decoded any
+		if err := json.Unmarshal([]byte(embed.String), &decoded); err == nil {
+			if object, isObject := decoded.(map[string]any); isObject {
+				post.BlobCIDs = embeds.PostBlobCIDs(object)
+			}
+		}
+	}
+	return &post, nil
+}
+
+func (t *moderationTransaction) ReadIndexedComment(ctx context.Context, subjectURI string) (*moderation.IndexedComment, error) {
+	var comment moderation.IndexedComment
+	var communityDID, embed sql.NullString
+	err := t.tx.QueryRowContext(ctx, `
+		SELECT c.uri, c.cid, c.commenter_did,
+		       (c.deleted_at IS NOT NULL AND c.deletion_reason = 'author'),
+		       p.community_did, c.embed
+		FROM comments c
+		LEFT JOIN posts p ON p.uri = c.root_uri
+		WHERE c.uri = $1 FOR SHARE OF c
+	`, subjectURI).Scan(&comment.URI, &comment.CID, &comment.OwnerDID,
+		&comment.AuthorDeleted, &communityDID, &embed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, moderation.ErrSubjectNotIndexed
+	}
+	if err != nil {
+		return nil, err
+	}
+	comment.CommunityDID = communityDID.String
+	if embed.Valid {
+		// The embed is author-controlled and stored unvalidated. A shape the
+		// comment view cannot serve images from has no images to block, and
+		// must never make the comment impossible to moderate.
+		var decoded any
+		if err := json.Unmarshal([]byte(embed.String), &decoded); err == nil {
+			if object, isObject := decoded.(map[string]any); isObject {
+				comment.ImageCIDs = embeds.CommentImageCIDs(object)
+			}
+		}
+	}
+	return &comment, nil
+}
+
+const moderationActionColumns = `
+	a.id, a.actor_did, a.authority_did, a.scope_kind, a.scope_community_did,
+	a.subject_uri, a.subject_collection, a.subject_community_did, a.observed_cid,
+	a.action, a.label_value, a.reason, a.private_classification, a.private_note,
+	a.reverses_action_id, a.origin, a.created_at`
+
+type moderationRow interface {
+	Scan(dest ...any) error
+}
+
+func scanModerationAction(row moderationRow, version *int64, reversedReason *sql.NullString) (*moderation.Action, error) {
+	var id, actorDID, authorityDID, scopeKind, scopeCommunityDID sql.NullString
+	var subjectURI, subjectCollection, subjectCommunityDID, observedCID sql.NullString
+	var actionKind, labelValue, reason, privateClassification, privateNote sql.NullString
+	var reversesActionID, origin sql.NullString
+	var createdAt sql.NullTime
+	dest := []any{
+		&id, &actorDID, &authorityDID, &scopeKind, &scopeCommunityDID,
+		&subjectURI, &subjectCollection, &subjectCommunityDID, &observedCID,
+		&actionKind, &labelValue, &reason, &privateClassification, &privateNote,
+		&reversesActionID, &origin, &createdAt,
+	}
+	if version != nil {
+		dest = append([]any{version}, dest...)
+	}
+	if reversedReason != nil {
+		dest = append(dest, reversedReason)
+	}
+	if err := row.Scan(dest...); err != nil {
+		return nil, err
+	}
+	if !id.Valid {
+		return nil, nil
+	}
+	action := &moderation.Action{
+		ID: id.String, ActorDID: actorDID.String, AuthorityDID: authorityDID.String,
+		ScopeKind: scopeKind.String, ScopeCommunityDID: scopeCommunityDID.String,
+		SubjectURI: subjectURI.String, SubjectCollection: subjectCollection.String,
+		SubjectCommunityDID: subjectCommunityDID.String, ObservedCID: observedCID.String,
+		Action: actionKind.String, LabelValue: labelValue.String, Reason: reason.String,
+		PrivateNote: privateNote.String, ReversesActionID: reversesActionID.String,
+		Origin: origin.String, CreatedAt: createdAt.Time,
+	}
+	if reversedReason != nil {
+		action.ReversedActionReason = reversedReason.String
+	}
+	return action, nil
+}
+
+func (t *moderationTransaction) GetAction(ctx context.Context, actionID string) (*moderation.Action, error) {
+	action, err := scanModerationAction(t.tx.QueryRowContext(ctx,
+		`SELECT `+moderationActionColumns+` FROM moderation_actions a WHERE a.id = $1`, actionID), nil, nil)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, moderation.ErrDecisionNotFound
+	}
+	return action, err
+}
+
+// ActiveRemoval reads the active removal and share-locks its decision row
+// until the transaction ends. The comment consumer reconciles media blocks
+// through this read, and when the comment row is absent (purged, then
+// recreated by a fresh insert) no content-row lock orders it against a
+// restore. The share lock does: a restore that already deactivated the
+// decision makes this read wait and then re-check d.active against the
+// committed row, and a restore that arrives later waits at its decision
+// update for this transaction's blocks to commit, so its later
+// DeactivateMediaBlocks sees them. Mutations take it after the subject lock
+// and the consumer after its own row write or row lock; neither then waits on
+// a lock the other holds, so the order cannot deadlock.
+func (t *moderationTransaction) ActiveRemoval(ctx context.Context, authorityDID, subjectURI string) (*moderation.Action, error) {
+	action, err := scanModerationAction(t.tx.QueryRowContext(ctx, `
+		SELECT `+moderationActionColumns+` FROM moderation_actions a
+		JOIN moderation_decisions d ON d.active_action_id = a.id
+		WHERE d.authority_did = $1 AND d.subject_uri = $2
+		  AND d.scope_kind = 'instance' AND d.kind = 'removal' AND d.active
+		FOR SHARE OF d
+	`, authorityDID, subjectURI), nil, nil)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return action, err
+}
+
+func (t *moderationTransaction) ActiveLabels(ctx context.Context, authorityDID, subjectURI string) ([]moderation.Action, error) {
+	return activeLabels(ctx, t.tx, authorityDID, subjectURI, true)
+}
+
+// activeLabels reads the instance's active labels on a subject, ordered by
+// value. Mutations lock the decision rows; snapshot reads must not.
+func activeLabels(ctx context.Context, tx *sql.Tx, authorityDID, subjectURI string, lockDecisions bool) ([]moderation.Action, error) {
+	query := `
+		SELECT ` + moderationActionColumns + ` FROM moderation_actions a
+		JOIN moderation_decisions d ON d.active_action_id = a.id
+		WHERE d.kind = 'label' AND d.active AND d.authority_did = $1
+		  AND d.scope_kind = 'instance' AND d.subject_uri = $2
+		ORDER BY d.value`
+	if lockDecisions {
+		query += `
+		FOR SHARE OF d`
+	}
+	rows, err := tx.QueryContext(ctx, query, authorityDID, subjectURI)
+	if err != nil {
+		return nil, fmt.Errorf("query active moderation labels: %w", err)
+	}
+	defer rows.Close()
+	var actions []moderation.Action
+	for rows.Next() {
+		action, err := scanModerationAction(rows, nil, nil)
+		if err != nil {
+			return nil, fmt.Errorf("scan active moderation label: %w", err)
+		}
+		if action == nil {
+			return nil, errors.New("active moderation label has no action")
+		}
+		actions = append(actions, *action)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read active moderation labels: %w", err)
+	}
+	return actions, nil
+}
+
+func (t *moderationTransaction) InsertAction(ctx context.Context, action moderation.Action) (*moderation.Action, error) {
+	action.ID = moderationActionClock.Next().String()
+	// Postgres timestamps have microsecond precision. Return the same instant
+	// that will be read back, without a monotonic clock or local time zone.
+	action.CreatedAt = action.CreatedAt.UTC().Truncate(time.Microsecond)
+	_, err := t.tx.ExecContext(ctx, `
+		INSERT INTO moderation_actions
+		    (id, actor_did, authority_did, scope_kind, scope_community_did,
+		     subject_uri, subject_collection, subject_community_did, observed_cid,
+		     action, label_value, reason, private_note, reverses_action_id, origin, created_at)
+		VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, $7, NULLIF($8, ''), NULLIF($9, ''),
+		        $10, NULLIF($11, ''), NULLIF($12, ''), NULLIF($13, ''), NULLIF($14, ''), $15, $16)
+	`, action.ID, action.ActorDID, action.AuthorityDID, action.ScopeKind, action.ScopeCommunityDID,
+		action.SubjectURI, action.SubjectCollection, action.SubjectCommunityDID, action.ObservedCID,
+		action.Action, action.LabelValue, action.Reason, action.PrivateNote, action.ReversesActionID,
+		action.Origin, action.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &action, nil
+}
+
+func (t *moderationTransaction) SetRemovalDecision(ctx context.Context, authorityDID, subjectURI, actionID string, active bool) error {
+	if !active {
+		result, err := t.tx.ExecContext(ctx, `
+			UPDATE moderation_decisions SET active = FALSE
+			WHERE authority_did = $1 AND subject_uri = $2 AND scope_kind = 'instance'
+			  AND kind = 'removal' AND active_action_id = $3 AND active
+		`, authorityDID, subjectURI, actionID)
+		if err != nil {
+			return err
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if count != 1 {
+			return fmt.Errorf("active moderation decision not found for restore")
+		}
+		return nil
+	}
+	_, err := t.tx.ExecContext(ctx, `
+		INSERT INTO moderation_decisions
+		    (authority_did, scope_kind, scope_community_did, subject_uri, kind, value, active_action_id, active)
+		VALUES ($1, 'instance', NULL, $2, 'removal', NULL, $3, TRUE)
+		ON CONFLICT ON CONSTRAINT moderation_decisions_key DO UPDATE SET
+		    active_action_id = EXCLUDED.active_action_id, active = TRUE
+	`, authorityDID, subjectURI, actionID)
+	return err
+}
+
+func (t *moderationTransaction) SetLabelDecision(ctx context.Context, authorityDID, subjectURI, value, actionID string, active bool) error {
+	if !active {
+		result, err := t.tx.ExecContext(ctx, `
+			UPDATE moderation_decisions SET active = FALSE
+			WHERE authority_did = $1 AND subject_uri = $2 AND scope_kind = 'instance'
+			  AND kind = 'label' AND value = $3 AND active_action_id = $4 AND active
+		`, authorityDID, subjectURI, value, actionID)
+		if err != nil {
+			return fmt.Errorf("deactivate moderation label: %w", err)
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("count deactivated moderation labels: %w", err)
+		}
+		if count != 1 {
+			return fmt.Errorf("active moderation label decision not found for retraction: updated %d rows", count)
+		}
+		return nil
+	}
+	// An already-active decision is never overwritten: the redundant apply
+	// path returns unchanged without calling here, so a conflict is a bug.
+	result, err := t.tx.ExecContext(ctx, `
+		INSERT INTO moderation_decisions
+		    (authority_did, scope_kind, scope_community_did, subject_uri, kind, value, active_action_id, active)
+		VALUES ($1, 'instance', NULL, $2, 'label', $3, $4, TRUE)
+		ON CONFLICT ON CONSTRAINT moderation_decisions_key DO UPDATE SET
+		    active_action_id = EXCLUDED.active_action_id, active = TRUE
+		WHERE NOT moderation_decisions.active
+	`, authorityDID, subjectURI, value, actionID)
+	if err != nil {
+		return fmt.Errorf("activate moderation label: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count activated moderation labels: %w", err)
+	}
+	if count != 1 {
+		return fmt.Errorf("moderation label decision already active: updated %d rows", count)
+	}
+	return nil
+}
+
+func (t *moderationTransaction) SetSubjectVersion(ctx context.Context, subjectURI string, version int64) error {
+	result, err := t.tx.ExecContext(ctx, `
+		UPDATE moderation_subjects SET version = $2, updated_at = NOW() WHERE subject_uri = $1
+	`, subjectURI, version)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return fmt.Errorf("moderation subject version row not found")
+	}
+	return nil
+}
+
+func (t *moderationTransaction) InsertMediaBlocks(ctx context.Context, blocks []moderation.MediaBlock) error {
+	_, err := t.InsertNewMediaBlocks(ctx, blocks)
+	return err
+}
+
+// InsertNewMediaBlocks returns only blocks inserted by this transaction, for
+// post-commit cache purging. The NULLS NOT DISTINCT constraint deduplicates
+// ownerless blocks as well as owner-scoped blocks.
+func (t *moderationTransaction) InsertNewMediaBlocks(ctx context.Context, blocks []moderation.MediaBlock) ([]moderation.MediaBlock, error) {
+	var inserted []moderation.MediaBlock
+	for _, block := range blocks {
+		var id int64
+		err := t.tx.QueryRowContext(ctx, `
+			INSERT INTO moderation_media_blocks (owner_did, blob_cid, action_id, active)
+			VALUES (NULLIF($1, ''), $2, $3, TRUE)
+			ON CONFLICT ON CONSTRAINT moderation_media_block_key DO NOTHING
+			RETURNING id
+		`, block.OwnerDID, block.BlobCID, block.ActionID).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		inserted = append(inserted, block)
+	}
+	return inserted, nil
+}
+
+// RecordCDNPurgeTargets runs in the removal or reconciliation transaction.
+func (t *moderationTransaction) RecordCDNPurgeTargets(ctx context.Context, blobs []imageproxy.BlockedBlob) error {
+	for _, blob := range blobs {
+		_, err := t.tx.ExecContext(ctx, `
+			INSERT INTO moderation_media_purges (owner_did, blob_cid)
+			VALUES ($1, $2)
+			ON CONFLICT (owner_did, blob_cid) DO UPDATE SET
+			    state = 'pending', attempts = 0, next_attempt_at = '-infinity',
+			    earliest_completion_at = NULL, last_failure_code = NULL,
+			    generation = moderation_media_purges.generation + 1,
+			    claim = moderation_media_purges.claim + 1, updated_at = NOW()
+		`, blob.OwnerDID, blob.CID)
+		if err != nil {
+			return fmt.Errorf("record CDN purge target: %w", err)
+		}
+	}
+	return nil
+}
+
+// ClaimDueCDNPurgeTargets locks pending rows due at claim.DueAt without waiting
+// on other workers. A clock sample after the locks anchors completion to a time
+// no earlier than the committing transaction's visibility.
+func (r *ModerationRepository) ClaimDueCDNPurgeTargets(ctx context.Context, claim moderation.CDNPurgeClaim) ([]moderation.CDNPurgeTarget, error) {
+	if claim.Now == nil {
+		claim.Now = time.Now
+	}
+	if claim.Limit <= 0 {
+		return nil, nil
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin CDN purge claim: %w", err)
+	}
+	defer tx.Rollback()
+	var owners, cids []string
+	for _, blob := range claim.Blobs {
+		owners = append(owners, blob.OwnerDID)
+		cids = append(cids, blob.CID)
+	}
+	var excludedOwners, excludedCIDs []string
+	for _, blob := range claim.ExcludedBlobs() {
+		excludedOwners = append(excludedOwners, blob.OwnerDID)
+		excludedCIDs = append(excludedCIDs, blob.CID)
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT owner_did, blob_cid FROM moderation_media_purges
+		WHERE state = 'pending' AND next_attempt_at <= $1
+		  AND (NOT $2 OR (owner_did, blob_cid) IN (
+		      SELECT owner_did, blob_cid FROM unnest($3::text[], $4::text[]) AS allowed(owner_did, blob_cid)))
+		  AND (owner_did, blob_cid) NOT IN (
+		      SELECT owner_did, blob_cid FROM unnest($6::text[], $7::text[]) AS excluded(owner_did, blob_cid))
+		ORDER BY next_attempt_at, owner_did, blob_cid
+		LIMIT $5 FOR UPDATE SKIP LOCKED
+	`, claim.DueAt, claim.Blobs != nil, pq.Array(owners), pq.Array(cids), claim.Limit,
+		pq.Array(excludedOwners), pq.Array(excludedCIDs))
+	if err != nil {
+		return nil, fmt.Errorf("select due CDN purge targets: %w", err)
+	}
+	var targets []moderation.CDNPurgeTarget
+	for rows.Next() {
+		var target moderation.CDNPurgeTarget
+		if err := rows.Scan(&target.Blob.OwnerDID, &target.Blob.CID); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan due CDN purge target: %w", err)
+		}
+		targets = append(targets, target)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("read due CDN purge targets: %w", err)
+	}
+	rows.Close()
+	if len(targets) > 0 {
+		lockedNow := claim.Now()
+		for i := range targets {
+			var earliest time.Time
+			err := tx.QueryRowContext(ctx, `
+				UPDATE moderation_media_purges SET
+				    next_attempt_at = $3, earliest_completion_at = COALESCE(earliest_completion_at, $4),
+				    claim = claim + 1, updated_at = NOW()
+				WHERE owner_did = $1 AND blob_cid = $2
+				RETURNING attempts, earliest_completion_at, generation, claim
+			`, targets[i].Blob.OwnerDID, targets[i].Blob.CID,
+				lockedNow.Add(claim.Lease), lockedNow.Add(claim.WriteTimeout)).Scan(
+				&targets[i].Attempts, &earliest, &targets[i].Generation, &targets[i].Claim)
+			if err != nil {
+				return nil, fmt.Errorf("lease CDN purge target: %w", err)
+			}
+			targets[i].EarliestCompletionAt = earliest
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit CDN purge claim: %w", err)
+	}
+	return targets, nil
+}
+
+// CompleteCDNPurgeTarget fences new removals through the generation.
+func (r *ModerationRepository) CompleteCDNPurgeTarget(ctx context.Context, target moderation.CDNPurgeTarget) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE moderation_media_purges SET state = 'completed', updated_at = NOW()
+		WHERE owner_did = $1 AND blob_cid = $2 AND generation = $3 AND state = 'pending'
+	`, target.Blob.OwnerDID, target.Blob.CID, target.Generation)
+	return err
+}
+
+// RescheduleCDNPurgeTarget fences stale workers by their claim number.
+func (r *ModerationRepository) RescheduleCDNPurgeTarget(ctx context.Context, target moderation.CDNPurgeTarget, nextAttemptAt time.Time, failureCode string) error {
+	_, err := r.db.ExecContext(ctx, `
+		UPDATE moderation_media_purges SET
+		    next_attempt_at = $4,
+		    attempts = attempts + CASE WHEN $5::text <> '' THEN 1 ELSE 0 END,
+		    last_failure_code = CASE WHEN $5::text <> '' THEN $5 ELSE last_failure_code END,
+		    updated_at = NOW()
+		WHERE owner_did = $1 AND blob_cid = $2 AND generation = $3
+		  AND claim = $6 AND state = 'pending'
+	`, target.Blob.OwnerDID, target.Blob.CID, target.Generation, nextAttemptAt, failureCode, target.Claim)
+	return err
+}
+
+func (t *moderationTransaction) DeactivateMediaBlocks(ctx context.Context, actionID string) error {
+	_, err := t.tx.ExecContext(ctx, `
+		UPDATE moderation_media_blocks SET active = FALSE WHERE action_id = $1 AND active
+	`, actionID)
+	return err
+}
+
+// DeleteExpiredIdempotencyKeys deletes idempotency rows expired at now.
+func (r *ModerationRepository) DeleteExpiredIdempotencyKeys(ctx context.Context, now time.Time) (int64, error) {
+	result, err := r.db.ExecContext(ctx, `DELETE FROM moderation_idempotency_keys WHERE expires_at <= $1`, now)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+// IsBlocked reports whether an active media block covers the owner's blob.
+func (r *ModerationRepository) IsBlocked(ctx context.Context, ownerDID, cid string) (bool, error) {
+	var blocked bool
+	err := r.db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM moderation_media_blocks
+			WHERE owner_did = $1 AND blob_cid = $2 AND active
+		) OR EXISTS (
+			SELECT 1 FROM moderation_media_blocks
+			WHERE owner_did IS NULL AND blob_cid = $2 AND active
+		)
+	`, ownerDID, cid).Scan(&blocked)
+	return blocked, err
+}
+
+// ListActiveBlockedBlobs lists every blob an active media block covers, once
+// each. An every-owner block comes back with an empty OwnerDID.
+func (r *ModerationRepository) ListActiveBlockedBlobs(ctx context.Context) ([]imageproxy.BlockedBlob, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT DISTINCT COALESCE(owner_did, ''), blob_cid FROM moderation_media_blocks WHERE active
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var blobs []imageproxy.BlockedBlob
+	for rows.Next() {
+		var blob imageproxy.BlockedBlob
+		if err := rows.Scan(&blob.OwnerDID, &blob.CID); err != nil {
+			return nil, err
+		}
+		blobs = append(blobs, blob)
+	}
+	return blobs, rows.Err()
+}
+
+// BindTransaction binds media reconciliation operations to tx.
+func (r *ModerationRepository) BindTransaction(tx *sql.Tx) moderation.MediaTransaction {
+	return &moderationTransaction{tx: tx}
+}
+
+// ListActions reads a page of the action log.
+//
+// Each row's SubjectAccess is decided now, not when the action was recorded: a
+// subject whose own post or comment row is still indexed is public, whatever
+// its community admission status and even when the author soft-deleted it, and
+// one whose row is gone (account erasure hard-deletes it) is restricted. ExcludeRestricted filters in the WHERE
+// clause, before LIMIT, so a filtered page is never short.
+func (r *ModerationRepository) ListActions(ctx context.Context, query moderation.ActionListQuery) ([]moderation.Action, error) {
+	var beforeCreatedAt, beforeID any
+	if query.Before != nil {
+		beforeCreatedAt, beforeID = query.Before.CreatedAt, query.Before.ID
+	}
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT `+moderationActionColumns+`, reversed.reason, subject_access.access
+		FROM moderation_actions a
+		LEFT JOIN moderation_actions reversed ON reversed.id = a.reverses_action_id
+		CROSS JOIN LATERAL (
+		    SELECT CASE WHEN
+		        EXISTS (SELECT 1 FROM comments c WHERE a.subject_collection = $18 AND c.uri = a.subject_uri)
+		        OR EXISTS (SELECT 1 FROM posts p WHERE a.subject_collection <> $18 AND p.uri = a.subject_uri)
+		    THEN $20::text ELSE $21::text END AS access
+		) subject_access
+		WHERE ($2::timestamptz IS NULL OR (a.created_at, a.id) < ($2::timestamptz, $3::text))
+		  AND (NULLIF($4::text, '') IS NULL OR a.subject_uri = $4)
+		  AND (NULLIF($5::text, '') IS NULL OR a.subject_collection = $5)
+		  AND (NULLIF($6::text, '') IS NULL OR a.action = $6)
+		  AND (NULLIF($7::text, '') IS NULL OR a.origin = $7)
+		  AND (NULLIF($8::text, '') IS NULL OR a.authority_did = $8)
+		  AND (NULLIF($9::text, '') IS NULL OR a.actor_did = $9)
+		  AND (NULLIF($10::text, '') IS NULL OR a.subject_community_did = $10)
+		  AND (NULLIF($11::text, '') IS NULL OR a.id = $11)
+		  AND ($12::timestamptz IS NULL OR a.created_at >= $12::timestamptz)
+		  AND ($13::timestamptz IS NULL OR a.created_at < $13::timestamptz)
+		  AND (NOT $14::boolean OR NOT (
+		      COALESCE(a.reason = ANY($15::text[]), FALSE)
+		      OR COALESCE(reversed.reason = ANY($15::text[]), FALSE)))
+		  AND (NOT $16::boolean OR a.action <> ALL($17::text[]))
+		  AND (NOT $19::boolean OR subject_access.access = $20::text)
+		ORDER BY a.created_at DESC, a.id DESC
+		LIMIT $1
+	`, query.Limit, beforeCreatedAt, beforeID, query.SubjectURI, query.SubjectCollection,
+		query.Action, query.Origin, query.AuthorityDID, query.ActorDID, query.CommunityDID,
+		query.ActionID, query.Since, query.Until, query.ExcludeHidden, pq.Array(moderation.HiddenActionReasons()),
+		query.ExcludeLabelActions, pq.Array(moderation.PublicExcludedActions()),
+		moderation.CommentCollection, query.ExcludeRestricted,
+		string(moderation.SubjectAccessPublic), string(moderation.SubjectAccessRestricted))
+	if err != nil {
+		return nil, fmt.Errorf("list moderation actions: %w", err)
+	}
+	defer rows.Close()
+	var actions []moderation.Action
+	for rows.Next() {
+		var reversedReason sql.NullString
+		var access string
+		action, err := scanModerationAction(trailingColumns{row: rows, extra: []any{&access}}, nil, &reversedReason)
+		if err != nil {
+			return nil, fmt.Errorf("scan moderation action: %w", err)
+		}
+		if action == nil {
+			return nil, errors.New("scan moderation action: row has no action id")
+		}
+		action.SubjectAccess = moderation.SubjectAccess(access)
+		actions = append(actions, *action)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read moderation actions: %w", err)
+	}
+	return actions, nil
+}
+
+// trailingColumns scans extra columns after the ones its caller asks for.
+type trailingColumns struct {
+	row   moderationRow
+	extra []any
+}
+
+func (columns trailingColumns) Scan(dest ...any) error {
+	return columns.row.Scan(append(dest, columns.extra...)...)
+}
+
+// RecordCDNPurgeTargets commits targets independently of any moderation action
+// transaction. Unlike the removal upsert it leaves a pending target untouched,
+// so repeated recordings neither reset its backoff nor void its claim; a
+// completed target goes back to pending. It returns the targets it inserted or
+// re-pended.
+func (r *ModerationRepository) RecordCDNPurgeTargets(ctx context.Context, blobs []imageproxy.BlockedBlob) (pended []imageproxy.BlockedBlob, err error) {
+	if len(blobs) == 0 {
+		return nil, nil
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin CDN purge target recording: %w", err)
+	}
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			err = errors.Join(err, rollbackErr)
+		}
+	}()
+	for _, blob := range blobs {
+		var recorded imageproxy.BlockedBlob
+		err := tx.QueryRowContext(ctx, `
+			INSERT INTO moderation_media_purges (owner_did, blob_cid)
+			VALUES ($1, $2)
+			ON CONFLICT (owner_did, blob_cid) DO UPDATE SET
+			    state = 'pending', attempts = 0, next_attempt_at = '-infinity',
+			    earliest_completion_at = NULL, last_failure_code = NULL,
+			    generation = moderation_media_purges.generation + 1,
+			    claim = moderation_media_purges.claim + 1, updated_at = NOW()
+			WHERE moderation_media_purges.state <> 'pending'
+			RETURNING owner_did, blob_cid
+		`, blob.OwnerDID, blob.CID).Scan(&recorded.OwnerDID, &recorded.CID)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("record CDN purge target: %w", err)
+		}
+		pended = append(pended, recorded)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit CDN purge target recording: %w", err)
+	}
+	return pended, nil
+}

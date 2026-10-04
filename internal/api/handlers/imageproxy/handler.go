@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -24,6 +25,41 @@ import (
 // the pressure being shed, so the two must never drift apart.
 var processorBusyRetryAfterSeconds = strconv.Itoa(int(imageproxy.DefaultProcessQueueWait / time.Second))
 
+// successCacheControl is the cache policy of a served image and of its 304
+// when the request has no query string and does not qualify for
+// cdnPurgeCacheControl.
+// One day bounds how long a browser or an unpurged shared cache keeps an image
+// after a moderation removal, with no configuration and no CDN required.
+const successCacheControl = "public, max-age=86400"
+
+// cdnPurgeCacheControl lets shared caches keep an image for a year while
+// browsers keep the one-day bound of successCacheControl. It carries no
+// immutable, so a browser still revalidates after a day. A year is safe only
+// for a URL the moderation purger names on removal, which is why
+// successCacheControlFor grants it only for a purgeable host, the canonical
+// CID and DID spelling, no query string and no Origin header.
+const cdnPurgeCacheControl = "public, max-age=86400, s-maxage=31536000"
+
+// successCacheControlFor returns no-store for a request with a query string
+// (including a bare "?"): a CDN purge names only the bare image URL, while a
+// shared cache keys on the query string, so a cached query-string variant
+// would survive the purge. It grants the long shared-cache lifetime only when
+// the purge can name the exact URL requested by the client. A request with an
+// Origin header gets one day, because the CDN cache key may include Origin and
+// the purger sends bare URLs that would not reach that variant.
+func (h *Handler) successCacheControlFor(r *http.Request, did, rawCID, canonicalCID string) string {
+	if r.URL.RawQuery != "" || r.URL.ForceQuery {
+		return "no-store"
+	}
+	if len(r.Header.Values("Origin")) > 0 {
+		return successCacheControl
+	}
+	if rawCID == canonicalCID && url.PathEscape(did) == did && h.cdnPurgeHosts[r.Host] {
+		return cdnPurgeCacheControl
+	}
+	return successCacheControl
+}
+
 // Service defines the interface for the image proxy service.
 // This interface is implemented by the imageproxy package's service layer.
 type Service interface {
@@ -34,20 +70,27 @@ type Service interface {
 	// resolvePDS: returns the URL of the user's PDS; called only on a cache
 	// miss, and its error is returned as-is
 	GetImageResolvingPDS(ctx context.Context, preset, did, cid string, resolvePDS func(context.Context) (string, error)) ([]byte, error)
+	// IsBlobBlocked reports whether moderation blocks serving the blob.
+	IsBlobBlocked(ctx context.Context, did, cid string) (bool, error)
 }
 
 // Handler handles HTTP requests for the image proxy.
 type Handler struct {
 	service          Service
 	identityResolver identity.Resolver
+	cdnPurgeHosts    map[string]bool
 }
 
 // NewHandler creates a new image proxy handler.
-func NewHandler(service Service, resolver identity.Resolver) *Handler {
-	return &Handler{
+func NewHandler(service Service, resolver identity.Resolver, options ...HandlerOption) *Handler {
+	handler := &Handler{
 		service:          service,
 		identityResolver: resolver,
 	}
+	for _, option := range options {
+		option(handler)
+	}
+	return handler
 }
 
 // HandleImage handles GET /img/{preset}/plain/{did}/{cid}
@@ -58,6 +101,7 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 	preset := chi.URLParam(r, "preset")
 	did := chi.URLParam(r, "did")
 	cid := chi.URLParam(r, "cid")
+	rawCID := cid
 
 	// Validate required parameters
 	if preset == "" || did == "" || cid == "" {
@@ -75,14 +119,20 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate DID format (must be did:plc: or did:web:)
-	if err := imageproxy.ValidateDID(did); err != nil {
+	// Accept only canonical did:plc or did:web owner spellings. Anything else
+	// is refused here, before the block check, the cache lookup, DID
+	// resolution and the fetch.
+	if err := imageproxy.ValidateOwnerDID(did); err != nil {
 		writeErrorResponse(w, http.StatusBadRequest, "invalid DID format")
 		return
 	}
 
-	// Validate CID format (must be valid base32/base58 CID)
-	if err := imageproxy.ValidateCID(cid); err != nil {
+	// Decode the CID and continue with its canonical form. Every multibase
+	// encoding of one CID names the same blob on the PDS, so the block check,
+	// the ETag, the cache key and the fetch must all see the same string, or a
+	// re-encoded CID would bypass a moderation block.
+	cid, err := imageproxy.CanonicalCID(cid)
+	if err != nil {
 		writeErrorResponse(w, http.StatusBadRequest, "invalid CID format")
 		return
 	}
@@ -92,6 +142,18 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 
 	// Check If-None-Match header for 304 response
 	if r.Header.Get("If-None-Match") == etag {
+		blocked, err := h.service.IsBlobBlocked(r.Context(), did, cid)
+		if err != nil {
+			logBlockCheckFailure(err, did, cid)
+			writeErrorResponse(w, http.StatusServiceUnavailable, "image moderation unavailable")
+			return
+		}
+		if blocked {
+			writeErrorResponse(w, http.StatusNotFound, "blob not found")
+			return
+		}
+		w.Header().Set("Cache-Control", h.successCacheControlFor(r, did, rawCID, cid))
+		w.Header().Set("ETag", etag)
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
@@ -130,7 +192,7 @@ func (h *Handler) HandleImage(w http.ResponseWriter, r *http.Request) {
 
 	// Set response headers
 	w.Header().Set("Content-Type", "image/jpeg")
-	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Header().Set("Cache-Control", h.successCacheControlFor(r, did, rawCID, cid))
 	w.Header().Set("ETag", etag)
 
 	// Write image data
@@ -171,15 +233,19 @@ func getPDSEndpoint(doc *identity.DIDDocument) string {
 // budget refusal is logged at WARN with the blob's identity: it is the
 // signature of a decompression bomb, so an operator needs to be able to find
 // the repo and the blob afterwards. A processing failure is logged at ERROR
-// with the underlying error because it is our fault. An SSRF refusal is logged
+// with the underlying error because it is our fault, and so is a failed
+// moderation block lookup. An SSRF refusal is logged
 // at WARN because the response deliberately hides it. Load shedding is NOT
 // logged here: the service already logs it once with the counter, and a
 // second line per shed request would be the flood logging itself. The
 // remaining branches are ordinary client errors and stay quiet.
 func handleServiceError(w http.ResponseWriter, err error, preset, did, cid string) {
 	switch {
-	case errors.Is(err, imageproxy.ErrPDSNotFound):
+	case errors.Is(err, imageproxy.ErrPDSNotFound), errors.Is(err, imageproxy.ErrBlobBlocked):
 		writeErrorResponse(w, http.StatusNotFound, "blob not found")
+	case errors.Is(err, imageproxy.ErrBlockCheckFailed):
+		logBlockCheckFailure(err, did, cid)
+		writeErrorResponse(w, http.StatusServiceUnavailable, "image moderation unavailable")
 	case errors.Is(err, imageproxy.ErrPDSTimeout):
 		writeErrorResponse(w, http.StatusGatewayTimeout, "request timed out")
 	// ONE BRANCH FOR BOTH, so the status and the body cannot drift apart. A
@@ -241,15 +307,27 @@ func handleServiceError(w http.ResponseWriter, err error, preset, did, cid strin
 	}
 }
 
+// logBlockCheckFailure logs a failed moderation block lookup at ERROR: the
+// response is a generic 503, so the log line is the only record of the cause.
+// A client that went away is not a failure of ours and is not logged.
+func logBlockCheckFailure(err error, did, cid string) {
+	if errors.Is(err, context.Canceled) {
+		return
+	}
+	slog.Error("[IMAGE-PROXY] media block check failed",
+		"did", did,
+		"cid", cid,
+		"error", err,
+	)
+}
+
 // writeErrorResponse writes a plain text error response.
 // For the image proxy, we use simple text responses rather than JSON
 // since the expected response is binary image data.
 //
-// Errors are explicitly uncacheable. Success responses advertise a one-year
-// immutable lifetime, which is correct for content-addressed blobs but
-// catastrophic for a failure: this route sits behind a CDN, and a transient
-// PDS timeout or a DID that had not yet propagated would otherwise be pinned
-// at the edge for a year, long after the image became fetchable.
+// Errors and blocked responses are no-store: a cached error or block would
+// outlive its cause, still refusing the image after the PDS recovers or the
+// block is lifted.
 func writeErrorResponse(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
@@ -260,5 +338,23 @@ func writeErrorResponse(w http.ResponseWriter, status int, message string) {
 			"message", message,
 			"error", err,
 		)
+	}
+}
+
+// HandlerOption configures a Handler.
+type HandlerOption func(*Handler)
+
+// WithCDNPurgeBaseURLs enables long-lived responses on hosts whose bare image
+// URLs can be named by the CDN purger.
+func WithCDNPurgeBaseURLs(baseURLs []string) HandlerOption {
+	return func(handler *Handler) {
+		handler.cdnPurgeHosts = make(map[string]bool)
+		for _, base := range baseURLs {
+			parsed, err := url.Parse(base)
+			if err != nil || parsed.Host == "" || (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+				continue
+			}
+			handler.cdnPurgeHosts[parsed.Host] = true
+		}
 	}
 }

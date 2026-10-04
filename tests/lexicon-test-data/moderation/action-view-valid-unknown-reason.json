@@ -1,0 +1,15 @@
+{
+  "$type": "social.coves.moderation.defs#actionView",
+  "ref": {
+    "serviceDid": "did:plc:abc123",
+    "actionId": "action-002"
+  },
+  "action": "remove",
+  "authorityDid": "did:plc:abc123",
+  "scope": {
+    "kind": "instance"
+  },
+  "createdAt": "2026-09-21T10:01:00Z",
+  "origin": "inherited",
+  "reason": "com.example.moderation#reasonCustom"
+}

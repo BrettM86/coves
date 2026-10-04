@@ -87,6 +87,10 @@ type Repository interface {
 	// Used for hydrating comment threads without N+1 queries
 	GetByURIsBatch(ctx context.Context, uris []string) (map[string]*Comment, error)
 
+	// ActiveRemovalsByURIs returns the active moderation removal sources of
+	// each URI that has at least one.
+	ActiveRemovalsByURIs(ctx context.Context, uris []string) (map[string][]RemovalSource, error)
+
 	// GetVoteStateForComments retrieves the viewer's votes on a batch of comments
 	// Returns map[commentURI]*Vote for efficient lookups
 	// Future: Used when votes table is implemented
@@ -116,4 +120,10 @@ type RepositoryTx interface {
 	// reason: must be DeletionReasonAuthor or DeletionReasonModerator
 	// deletedByDID: DID of the actor who performed the deletion
 	SoftDeleteWithReasonTx(ctx context.Context, tx *sql.Tx, uri, reason, deletedByDID string) (int64, error)
+}
+
+// RemovalSource is the authority and scope of an active removal decision.
+type RemovalSource struct {
+	AuthorityDID string
+	ScopeKind    string
 }

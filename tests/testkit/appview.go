@@ -64,6 +64,8 @@ type StatusError struct {
 	XRPCShaped bool
 	// Body is the raw response, truncated to maxErrorBody.
 	Body string
+	// Header is a copy of the response headers, including cache policy on errors.
+	Header http.Header
 }
 
 func (e *StatusError) Error() string {
@@ -333,12 +335,13 @@ func (c *XRPCClient) Get(ctx context.Context, path string, out any) error {
 	return c.do(req, path, out)
 }
 
-// BinaryResponse is a non-JSON response: what was served, and enough about it
-// to assert the service really served content rather than merely not failing.
+// BinaryResponse is a non-JSON response: what was served, including its headers,
+// and enough about it to assert the service served content rather than merely not failing.
 type BinaryResponse struct {
 	Status      int
 	ContentType string
 	Body        []byte
+	Header      http.Header
 }
 
 // GetBinary fetches a plain path and returns the raw response.
@@ -354,11 +357,10 @@ type BinaryResponse struct {
 // against — a proxy that cannot reach the blob store — is upstream of the
 // status code the proxy chooses to report.
 //
-// So this returns the three facts a caller needs to make the real claim
-// (status, content type, bytes) rather than folding them into a bool. The body
-// is bounded: a test asserting an image is non-empty does not need to buffer an
-// arbitrarily large one, and an unbounded read here would make a runaway
-// response a hang instead of a failure.
+// So this returns status, content type, bytes and response headers rather than
+// folding them into a bool. The body is bounded: a test asserting an image is
+// non-empty does not need to buffer an arbitrarily large one, and an unbounded
+// read here would make a runaway response a hang instead of a failure.
 //
 // Unlike Get, a non-2xx is returned as a StatusError, so callers keep the
 // familiar testkit.IsStatus handling.
@@ -399,6 +401,7 @@ func (c *XRPCClient) GetBinary(ctx context.Context, path string) (BinaryResponse
 		Status:      resp.StatusCode,
 		ContentType: resp.Header.Get("Content-Type"),
 		Body:        body,
+		Header:      resp.Header.Clone(),
 	}, nil
 }
 
@@ -459,6 +462,7 @@ func newStatusError(nsid string, resp *http.Response) *StatusError {
 		Method:     nsid,
 		StatusCode: resp.StatusCode,
 		Body:       strings.TrimSpace(string(body)),
+		Header:     resp.Header.Clone(),
 	}
 	if readErr != nil {
 		// Said rather than swallowed. An empty Body reads as "the service

@@ -533,7 +533,7 @@ Content rules are stored in `social.coves.community.profile` under the `contentR
 ## Related PRDs
 
 - [PRD_COMMUNITIES.md](PRD_COMMUNITIES.md) - Core community architecture and V2 implementation
-- PRD_MODERATION.md (TODO) - Content moderation, reporting, labeling
+- PRD_ADMIN_MODERATION.md - Instance-admin content moderation, public modlog, labeling (draft)
 - PRD_FEDERATION.md (TODO) - Cross-instance community discovery and moderation
 
 ---

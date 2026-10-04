@@ -231,6 +231,14 @@ func (m *mockPostRepository) GetRawIndexedRowsByURIs(ctx context.Context, uris [
 	return map[string]*posts.Post{}, nil
 }
 
+func (m *mockPostRepository) ActiveRemovalsByURIs(context.Context, []string) (map[string][]posts.RemovalSource, error) {
+	return map[string][]posts.RemovalSource{}, nil
+}
+
+func (m *mockPostRepository) AdmittedURIsForViewer(context.Context, []string, string) (map[string]bool, error) {
+	return map[string]bool{}, nil
+}
+
 func (m *mockPostRepository) GetByAuthor(ctx context.Context, req posts.GetAuthorPostsRequest) ([]*posts.PostView, *string, error) {
 	return nil, nil, nil
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -367,6 +368,29 @@ func (p *PDS) Login(t TestingT, identifier, password string) *Account {
 	return acct
 }
 
+// ModerationAdmin logs into one of the two accounts provisioned by the CI
+// bootstrap before the AppView starts. Only testkit reads their credentials.
+func ModerationAdmin(t TestingT, n int) *Account {
+	t.Helper()
+	if n != 1 && n != 2 {
+		t.Fatalf("testkit.ModerationAdmin: account number must be 1 or 2, got %d", n)
+		return nil
+	}
+	suffix := "ONE"
+	if n == 2 {
+		suffix = "TWO"
+	}
+	handleVariable := "CI_MODERATION_ADMIN_" + suffix + "_HANDLE"
+	passwordVariable := "CI_MODERATION_ADMIN_" + suffix + "_PASSWORD"
+	handle, password := os.Getenv(handleVariable), os.Getenv(passwordVariable)
+	if handle == "" || password == "" {
+		t.Fatalf("testkit.ModerationAdmin: %s and %s must be set; run 'make ci' to bootstrap moderation admin accounts",
+			handleVariable, passwordVariable)
+		return nil
+	}
+	return NewPDS(t).Login(t, handle, password)
+}
+
 // sessionResponse is the body com.atproto.server.createAccount and
 // com.atproto.server.createSession both return.
 type sessionResponse struct {
@@ -461,6 +485,30 @@ func (a *Account) XRPC() *XRPCClient {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.client
+}
+
+// ServiceAuth asks this account's PDS to sign a service JWT for one AppView
+// method and audience. Neither the token nor its signing credentials are logged.
+func (a *Account) ServiceAuth(t TestingT, audience, lexiconMethod string) string {
+	t.Helper()
+	var out struct {
+		Token string `json:"token"`
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), defaultXRPCTimeout)
+	defer cancel()
+	err := a.XRPC().Query(ctx, "com.atproto.server.getServiceAuth", url.Values{
+		"aud": {audience},
+		"lxm": {lexiconMethod},
+	}, &out)
+	if err != nil {
+		t.Fatalf("testkit: minting service auth for %s via com.atproto.server.getServiceAuth: %v", a.DID, err)
+		return ""
+	}
+	if out.Token == "" {
+		t.Fatalf("testkit: com.atproto.server.getServiceAuth answered 200 without a token for %s", a.DID)
+		return ""
+	}
+	return out.Token
 }
 
 // handleLabel returns the part of a handle before the first dot.

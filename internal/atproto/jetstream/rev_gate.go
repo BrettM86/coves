@@ -100,6 +100,28 @@ func recordRevIsStale(ctx context.Context, q revGateQuerier, uri, rev string) (b
 	return stale, nil
 }
 
+// lockedRecordRevIsStale is recordRevIsStale with the gate row locked until tx
+// ends. A same-record event's tryAdvanceRecordRev waits on that lock, so no
+// newer event can commit between this answer and tx's commit. It advances
+// nothing. With no gate row there is nothing to lock and the event is not
+// stale.
+func lockedRecordRevIsStale(ctx context.Context, tx *sql.Tx, uri, rev string) (bool, error) {
+	if rev == "" {
+		return false, nil
+	}
+	var stale bool
+	err := tx.QueryRowContext(ctx,
+		`SELECT rev >= $2 FROM jetstream_record_revs WHERE record_uri = $1 FOR UPDATE`, uri, rev,
+	).Scan(&stale)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("failed to lock record rev for %s: %w", uri, err)
+	}
+	return stale, nil
+}
+
 // logSkippedStaleRev is the single, grep-able log line for gate skips.
 // Rejected stale events are the system WORKING (e.g. the bsky feed's delayed
 // copies of self-feed events); this line makes that observable and

@@ -87,6 +87,7 @@ func registerXRPCRoutes(r chi.Router, app *application) {
 	routes.RegisterUserBlockRoutes(r, app.userBlockService, app.authMiddleware)
 	routes.RegisterCommentRoutes(r, app.commentService, app.authMiddleware)
 	routes.RegisterAdminReportRoutes(r, app.adminReportService, app.authMiddleware)
+	routes.RegisterModerationRoutes(r, app.moderationService, app.instanceAdminAuth)
 	routes.RegisterCommunitySuggestionRoutes(r, app.communitySuggestionService,
 		app.authMiddleware, app.cfg.Instance.AllowedCommunityCreators)
 

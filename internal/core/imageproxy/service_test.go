@@ -4,12 +4,24 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"Coves/tests/testkit"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+type blockCheckFunc func(context.Context, string, string) (bool, error)
+
+func (f blockCheckFunc) IsBlocked(ctx context.Context, did, cid string) (bool, error) {
+	return f(ctx, did, cid)
+}
+
+func allowAllBlockChecker() BlockChecker {
+	return blockCheckFunc(func(context.Context, string, string) (bool, error) { return false, nil })
+}
 
 // MockCache implements Cache for testing
 type MockCache struct {
@@ -55,6 +67,28 @@ func (m *MockCache) Delete(preset, did, cid string) error {
 	defer m.mu.Unlock()
 	key := m.cacheKey(preset, did, cid)
 	delete(m.data, key)
+	return nil
+}
+
+func (m *MockCache) DeleteOwner(did, cid string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for key := range m.data {
+		if strings.HasSuffix(key, ":"+did+":"+cid) {
+			delete(m.data, key)
+		}
+	}
+	return nil
+}
+
+func (m *MockCache) DeleteCID(cid string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for key := range m.data {
+		if strings.HasSuffix(key, ":"+cid) {
+			delete(m.data, key)
+		}
+	}
 	return nil
 }
 
@@ -155,7 +189,7 @@ func (m *MockFetcher) Calls() int {
 // mustNewService is a test helper that creates a service or fails the test
 func mustNewService(t *testing.T, cache Cache, processor Processor, fetcher Fetcher, config Config) *ImageProxyService {
 	t.Helper()
-	service, err := NewService(cache, processor, fetcher, config)
+	service, err := NewService(cache, processor, fetcher, allowAllBlockChecker(), config)
 	if err != nil {
 		t.Fatalf("NewService failed: %v", err)
 	}
@@ -231,14 +265,7 @@ func TestImageProxyService_GetImage_CacheMiss(t *testing.T) {
 		t.Errorf("expected processor to be called once, got %d calls", processor.Calls())
 	}
 
-	// The cache write happens on its own goroutine, so wait for the write
-	// itself rather than for a duration guessed to contain it.
-	testkit.WaitFor(t, 5*time.Second, func() (bool, error) {
-		return cache.SetCalls() >= 1, nil
-	}, testkit.WithDescription("the asynchronous cache write to land"),
-		testkit.WithDiagnostics(func() string {
-			return fmt.Sprintf("cache Set calls: %d", cache.SetCalls())
-		}))
+	require.Equal(t, 1, cache.SetCalls(), "cache publication must finish before GetImage returns")
 
 	// Verify the correct data was cached
 	setData, found := cache.GetSetData("avatar", "did:plc:test123", "bafyreicid123")
@@ -295,7 +322,7 @@ func TestImageProxyService_GetImage_ProcessingError(t *testing.T) {
 	}
 }
 
-func TestImageProxyService_GetImage_CacheWriteIsAsync(t *testing.T) {
+func TestImageProxyService_GetImage_CacheWriteCompletesBeforeReturn(t *testing.T) {
 	cache := NewMockCache()
 	rawImageData := []byte("raw image from PDS")
 	processedData := []byte("processed image")
@@ -306,10 +333,7 @@ func TestImageProxyService_GetImage_CacheWriteIsAsync(t *testing.T) {
 	service := mustNewService(t, cache, processor, fetcher, config)
 	ctx := context.Background()
 
-	// Call GetImage
-	startTime := time.Now()
 	data, err := service.GetImageResolvingPDS(ctx, "avatar", "did:plc:test123", "bafyreicid123", resolvedPDS("https://pds.example.com"))
-	elapsed := time.Since(startTime)
 
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
@@ -318,19 +342,7 @@ func TestImageProxyService_GetImage_CacheWriteIsAsync(t *testing.T) {
 		t.Errorf("expected processed data %q, got %q", processedData, data)
 	}
 
-	// The response should come back quickly, not blocked by cache write
-	// (This is a soft assertion - just ensures we're not blocking)
-	if elapsed > 100*time.Millisecond {
-		t.Logf("warning: GetImage took %v, expected faster response", elapsed)
-	}
-
-	// The write still has to happen — asynchronous must not mean dropped.
-	testkit.WaitFor(t, 5*time.Second, func() (bool, error) {
-		return cache.SetCalls() >= 1, nil
-	}, testkit.WithDescription("the cache write to complete after GetImage returned"),
-		testkit.WithDiagnostics(func() string {
-			return fmt.Sprintf("cache Set calls: %d", cache.SetCalls())
-		}))
+	require.Equal(t, 1, cache.SetCalls(), "a late cache write could republish bytes after a purge returns")
 }
 
 func TestImageProxyService_GetImage_EmptyPreset(t *testing.T) {
@@ -381,34 +393,40 @@ func TestNewService_NilDependencies(t *testing.T) {
 	fetcher := NewMockFetcher(nil, nil)
 
 	t.Run("nil cache", func(t *testing.T) {
-		_, err := NewService(nil, processor, fetcher, config)
+		_, err := NewService(nil, processor, fetcher, allowAllBlockChecker(), config)
 		if !errors.Is(err, ErrNilDependency) {
 			t.Errorf("expected ErrNilDependency, got: %v", err)
 		}
 	})
 
 	t.Run("nil processor", func(t *testing.T) {
-		_, err := NewService(cache, nil, fetcher, config)
+		_, err := NewService(cache, nil, fetcher, allowAllBlockChecker(), config)
 		if !errors.Is(err, ErrNilDependency) {
 			t.Errorf("expected ErrNilDependency, got: %v", err)
 		}
 	})
 
 	t.Run("nil fetcher", func(t *testing.T) {
-		_, err := NewService(cache, processor, nil, config)
+		_, err := NewService(cache, processor, nil, allowAllBlockChecker(), config)
 		if !errors.Is(err, ErrNilDependency) {
 			t.Errorf("expected ErrNilDependency, got: %v", err)
 		}
 	})
 
 	t.Run("all valid", func(t *testing.T) {
-		service, err := NewService(cache, processor, fetcher, config)
+		service, err := NewService(cache, processor, fetcher, allowAllBlockChecker(), config)
 		if err != nil {
 			t.Errorf("expected no error with valid dependencies, got: %v", err)
 		}
 		if service == nil {
 			t.Error("expected non-nil service")
 		}
+	})
+
+	t.Run("nil block checker", func(t *testing.T) {
+		service, err := NewService(cache, processor, fetcher, nil, config)
+		assert.ErrorIs(t, err, ErrNilDependency)
+		assert.Nil(t, service)
 	})
 }
 
@@ -574,7 +592,7 @@ func TestNewService_RejectsInvalidProcessingBudgets(t *testing.T) {
 			cfg := DefaultConfig()
 			tt.mutate(&cfg)
 
-			service, err := NewService(NewMockCache(), NewMockProcessor(nil, nil), NewMockFetcher(nil, nil), cfg)
+			service, err := NewService(NewMockCache(), NewMockProcessor(nil, nil), NewMockFetcher(nil, nil), allowAllBlockChecker(), cfg)
 
 			if err == nil {
 				t.Fatalf("expected NewService to refuse the config with %v, got a service", tt.wantErr)
@@ -1128,3 +1146,7 @@ func TestImageProxyService_GetImageResolvingPDS_ResolvesOnlyOnMiss(t *testing.T)
 		t.Fatalf("an unresolved PDS must not be fetched from; fetched %d times", fetcher.Calls())
 	}
 }
+
+// OwnerDirectories satisfies the Cache interface; MockCache does not model
+// on-disk owner directories.
+func (m *MockCache) OwnerDirectories(string) ([]string, error) { return nil, nil }

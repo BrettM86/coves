@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"Coves/internal/validation"
 	"bytes"
 	"encoding/json"
 	"os"
@@ -32,20 +33,31 @@ const invalidFixtureMarker = "-invalid-"
 // "-invalid-" fixture MUST have an entry here; the walker fails on any that
 // does not, so adding a fixture forces adding its expected error.
 var invalidFixtureExpectedErrors = map[string]string{
-	"acceptance-invalid-missing-subject.json": "subject",
-	"comment-invalid-content.json":            "content",
-	"post-invalid-missing-community.json":     "community",
-	"postv2-invalid-community-not-a-did.json": "DID",
-	"postv2-invalid-missing-community.json":   "community",
-	"postv2-invalid-missing-createdat.json":   "createdAt",
-	"profile-invalid-moderation-type.json":    "expected a string",
-	"removal-invalid-missing-code.json":       "code",
-	"removal-invalid-reason-too-long.json":    "graphemes",
-	"rule-proposal-invalid-status.json":       "enum",
-	"rule-proposal-invalid-threshold.json":    "outside specified range",
-	"rule-proposal-invalid-type.json":         "enum",
-	"rules-invalid-moderation.json":           "$type",
-	"subscription-invalid-visibility.json":    "outside specified range",
+	"acceptance-invalid-missing-subject.json":                 "subject",
+	"action-view-invalid-missing-authority.json":              "authorityDid",
+	"admin-action-view-invalid-note-too-many-bytes.json":      "string length outside specified range",
+	"admin-action-view-invalid-note-too-many-graphemes.json":  "graphemes",
+	"ban-view-invalid-missing-cid.json":                       "cid",
+	"comment-invalid-content.json":                            "content",
+	"moderated-post-invalid-missing-moderation.json":          "moderation",
+	"label-content-input-invalid-empty-label-value.json":      "string length outside specified range",
+	"list-actions-output-invalid-too-many-actions.json":       "array length out of bounds",
+	"post-invalid-missing-community.json":                     "community",
+	"postv2-invalid-community-not-a-did.json":                 "DID",
+	"postv2-invalid-missing-community.json":                   "community",
+	"postv2-invalid-missing-createdat.json":                   "createdAt",
+	"profile-invalid-moderation-type.json":                    "expected a string",
+	"removal-invalid-missing-code.json":                       "code",
+	"removal-invalid-reason-too-long.json":                    "graphemes",
+	"remove-content-input-invalid-missing-reason.json":        "reason",
+	"remove-content-input-invalid-subject-not-strongref.json": "cid",
+	"rule-proposal-invalid-status.json":                       "enum",
+	"rule-proposal-invalid-threshold.json":                    "outside specified range",
+	"rule-proposal-invalid-type.json":                         "enum",
+	"rules-invalid-moderation.json":                           "$type",
+	"moderation-view-invalid-too-many-sources.json":           "array length out of bounds",
+	"subject-state-invalid-version-empty.json":                "string length outside specified range",
+	"subscription-invalid-visibility.json":                    "outside specified range",
 	// The fixture's ONE violation is the decision enum. It used to carry an
 	// accidental second violation (a literal `$1` in subject — an unexpanded
 	// template), and with two invalid fields the reported error followed Go's
@@ -77,7 +89,7 @@ var expectedFixtureFamilies = []string{
 // familiesRequiringInvalidFixtures lists the families that must also carry at
 // least one rejection case: the records that gate community membership and
 // moderation must prove the validator rejects their malformed forms.
-var familiesRequiringInvalidFixtures = []string{"postv2", "acceptance", "removal"}
+var familiesRequiringInvalidFixtures = []string{"postv2", "acceptance", "removal", "moderation"}
 
 // loadFixtureCatalog builds the catalog every fixture is validated against.
 func loadFixtureCatalog(t *testing.T) *lexicon.BaseCatalog {
@@ -230,7 +242,7 @@ func TestLexiconFixtures(t *testing.T) {
 				"fixture %s names a schema that does not resolve", relPath)
 
 			// AllowLenientDatetime matches cmd/validate-lexicon's default mode.
-			err := lexicon.ValidateRecord(catalog, record, recordType, lexicon.AllowLenientDatetime)
+			err := validation.ValidateData(catalog, record, recordType, lexicon.AllowLenientDatetime)
 
 			basename := filepath.Base(relPath)
 			if strings.Contains(basename, invalidFixtureMarker) {

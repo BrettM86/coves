@@ -7,6 +7,20 @@ import (
 	lexicon "github.com/bluesky-social/indigo/atproto/lexicon"
 )
 
+const syntheticObjectRecordID = "social.coves.validation.syntheticObject"
+
+type objectValidationCatalog struct {
+	lexicon.Catalog
+	record lexicon.SchemaRecord
+}
+
+func (c objectValidationCatalog) Resolve(ref string) (*lexicon.Schema, error) {
+	if ref == syntheticObjectRecordID {
+		return &lexicon.Schema{ID: syntheticObjectRecordID, Def: c.record}, nil
+	}
+	return c.Catalog.Resolve(ref)
+}
+
 // LexiconValidator provides a convenient interface for validating atproto records
 type LexiconValidator struct {
 	catalog *lexicon.BaseCatalog
@@ -115,4 +129,39 @@ func (v *LexiconValidator) ResolveReference(ref string) (interface{}, error) {
 // GetCatalog returns the underlying lexicon catalog for advanced usage
 func (v *LexiconValidator) GetCatalog() *lexicon.BaseCatalog {
 	return v.catalog
+}
+
+// ValidateData validates record and object data against a schema definition.
+// Objects are wrapped in a synthetic record because Indigo only exports record
+// validation, while the delegating catalog preserves resolution of nested refs.
+func ValidateData(catalog lexicon.Catalog, data map[string]any, ref string, flags lexicon.ValidateFlags) error {
+	schema, err := catalog.Resolve(ref)
+	if err != nil {
+		return fmt.Errorf("resolving schema %q: %w", ref, err)
+	}
+
+	switch definition := schema.Def.(type) {
+	case lexicon.SchemaRecord:
+		return lexicon.ValidateRecord(catalog, data, ref, flags)
+	case lexicon.SchemaObject:
+		// Mirror the record branch: a declared $type that disagrees with the
+		// requested schema is a mismatch, not something to overwrite.
+		if declared, ok := data["$type"].(string); ok && declared != ref {
+			return fmt.Errorf("data $type %q does not match schema %s", declared, ref)
+		}
+		record := lexicon.SchemaRecord{
+			Type:   "record",
+			Key:    "any",
+			Record: definition,
+		}
+		decoratedCatalog := objectValidationCatalog{Catalog: catalog, record: record}
+		validationData := make(map[string]any, len(data)+1)
+		for key, value := range data {
+			validationData[key] = value
+		}
+		validationData["$type"] = syntheticObjectRecordID
+		return lexicon.ValidateRecord(decoratedCatalog, validationData, syntheticObjectRecordID, flags)
+	default:
+		return fmt.Errorf("schema is not a record or object type: %s", ref)
+	}
 }

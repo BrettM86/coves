@@ -70,7 +70,8 @@ import (
 
 // RematerializeState is one legacy record's position in the ledger state machine
 // (migration 037). The happy path is discovered → postv2_written → verified →
-// migrated → done; the fallback state is terminal.
+// migrated → done; the fallback state is terminal. RematerializeSkippedRemoved
+// is the one exception: an outcome RematerializeOne returns, never stored.
 type RematerializeState string
 
 const (
@@ -115,7 +116,22 @@ const (
 	// entry nothing produces is a trap for whoever writes recovery SQL at 2am
 	// against a state that cannot exist.
 	RematerializeFallbackLeftLegacy RematerializeState = "fallback_left_legacy"
+
+	// RematerializeSkippedRemoved is returned for a legacy post with an active
+	// instance removal. It is an outcome, never a ledger state.
+	RematerializeSkippedRemoved RematerializeState = "skipped_removed"
 )
+
+// RematerializeRemovalLookup reports the active removal sources of each URI that
+// has any. posts.Repository.ActiveRemovalsByURIs satisfies it.
+type RematerializeRemovalLookup interface {
+	ActiveRemovalsByURIs(ctx context.Context, uris []string) (map[string][]RemovalSource, error)
+}
+
+// instanceRemovalScopeKind is moderation.ScopeInstance. Posts cannot import
+// moderation (moderation imports posts); migration 050's scope_kind CHECK
+// ('instance', 'community') keeps the two from drifting.
+const instanceRemovalScopeKind = "instance"
 
 // IsFallback reports whether a state is a terminal fallback state, so the census
 // can gate "complete" on any of them surviving without enumerating each string
@@ -312,7 +328,7 @@ type RematerializeLedger interface {
 // while the migration as a whole still has thousands of posts to go (Complete).
 // Reporting only the second makes every staged run look like a failure, and an
 // operator who has learned to ignore a red exit code is an operator with no gate
-// on §11 step 6 at all.
+// on §11 step 6 at all. Only an unscoped run can report Complete.
 type RematerializeReport struct {
 	// CommunityScope is the community DID this run was restricted to, or "" for
 	// every hosted community.
@@ -325,7 +341,9 @@ type RematerializeReport struct {
 	ByState    map[RematerializeState]int
 
 	// RemainingLegacy is how many legacy records a FINAL RE-SCAN of the source
-	// still saw that are not accounted for by a fallback row. It is what turns
+	// still saw that are not accounted for by a fallback row. A record this run
+	// skipped for an instance removal counts even when it has a fallback row,
+	// because it stays legacy. It is what turns
 	// "the ledger says we are done" into "the source agrees" — a ledger-only
 	// completion check cannot see a record written after the run began, or one
 	// the discovery pass never listed.
@@ -346,7 +364,24 @@ type RematerializeReport struct {
 	// follow-up (§11 step 6). It requires the whole migration — not this run's
 	// scope — to have reached done, with no fallback surviving and nothing left in
 	// the source.
+	//
+	// A SCOPED RUN NEVER REPORTS IT. Its re-scan lists only its own community, so
+	// it cannot see a legacy record standing elsewhere that no ledger row
+	// accounts for: a post another scoped run skipped for an instance removal, or
+	// one no run has discovered yet. The §11 step 6 gate must come from an
+	// unscoped run.
 	Complete bool
+
+	// SkippedRemoved counts the distinct legacy posts this run skipped because
+	// they have an active instance removal.
+	SkippedRemoved int
+
+	// UnmatchedRemovals counts the distinct legacy posts the census pass saw
+	// with an active removal, none of them by InstanceDID at instance scope.
+	// Such a post is hidden on the read path but NOT skipped here. Moderation
+	// writes only (instance DID, instance) removals, so a non-zero count means
+	// this tool's INSTANCE_DID differs from the server's.
+	UnmatchedRemovals int
 }
 
 // RematerializeProgress is one observable transition, handed to the caller's
@@ -422,6 +457,13 @@ type Rematerializer struct {
 	// corpus, and a run that "succeeded" has migrated almost nothing. With this
 	// set, the run stops and names the authors instead.
 	AbortOnFallback bool
+
+	// Removals looks up active removals. Required.
+	Removals RematerializeRemovalLookup
+
+	// InstanceDID is the authority whose instance-scoped removals skip a post.
+	// Required.
+	InstanceDID string
 
 	// credentials caches ONE resolution per distinct author DID for the lifetime
 	// of this Rematerializer. Each resolution is a refresh-token rotation against
@@ -525,11 +567,25 @@ func RematerializeRkey(legacyPostURI string) string {
 // permission to run the irreversible legacy-removal step while a record sits
 // half-migrated. A no-creds fallback is NOT such an error — it is an expected
 // terminal outcome the census counts.
+//
+// A post with an active instance removal by InstanceDID is skipped before its
+// ledger row is touched (RematerializeOne says where it checks): it stays
+// legacy, and SkippedRemoved counts it. Every run whose scope includes it
+// counts it in RemainingLegacy while its record stands, so ScopeComplete stays
+// false; only an unscoped run can report Complete. A post the census skips is
+// not retried by the source pass or the ledger reconcile later in the same run,
+// even if its removal is lifted meanwhile: its author never went through the
+// credential census.
 func (r *Rematerializer) Run(ctx context.Context) (RematerializeReport, error) {
+	if err := r.requireRemovalSeam(); err != nil {
+		return RematerializeReport{}, err
+	}
 	legacies, err := r.Source.ListLegacyPosts(ctx)
 	if err != nil {
 		return RematerializeReport{}, fmt.Errorf("enumerating legacy posts: %w", err)
 	}
+	skippedRemoved := make(map[string]bool)
+	unmatchedRemovals := make(map[string]bool)
 
 	// Pass 1 — the census. Resolve EVERY not-yet-started author before ANY repo is
 	// mutated. A row already past discovered had its credentials confirmed on an
@@ -540,6 +596,29 @@ func (r *Rematerializer) Run(ctx context.Context) (RematerializeReport, error) {
 	for i, legacy := range legacies {
 		if err := ctx.Err(); err != nil {
 			return RematerializeReport{}, err
+		}
+		removed, unmatched, err := r.instanceRemoved(ctx, legacy.URI)
+		if err != nil {
+			return RematerializeReport{}, err
+		}
+		if removed {
+			note, err := r.removedSkipNote(ctx, legacy.URI)
+			if err != nil {
+				return RematerializeReport{}, err
+			}
+			skippedRemoved[legacy.URI] = true
+			r.report(RematerializeProgress{
+				OldURI: legacy.URI, To: RematerializeSkippedRemoved,
+				Index: i + 1, Total: len(legacies), Note: note,
+			})
+			continue
+		}
+		if unmatched {
+			unmatchedRemovals[legacy.URI] = true
+			r.report(RematerializeProgress{
+				OldURI: legacy.URI, Index: i + 1, Total: len(legacies),
+				Note: "active removal not by the instance DID at instance scope; migrating",
+			})
 		}
 		row, err := r.Ledger.Discover(ctx, legacy.URI, legacy.CommunityDID, legacy.AuthorDID)
 		if err != nil {
@@ -576,14 +655,22 @@ func (r *Rematerializer) Run(ctx context.Context) (RematerializeReport, error) {
 	}
 
 	// Pass 2 — the source pass. A record whose census marked it a fallback is left
-	// untouched by RematerializeOne (it returns early on a terminal row).
+	// untouched by RematerializeOne (it returns early on a terminal row). A record
+	// the census skipped for a removal is not handed to it at all: the census
+	// already reported it, and its author was never preflighted.
 	for i, legacy := range legacies {
 		if err := ctx.Err(); err != nil {
 			return RematerializeReport{}, err
 		}
+		if skippedRemoved[legacy.URI] {
+			continue
+		}
 		state, err := r.rematerializeOneBounded(ctx, legacy)
 		if err != nil {
 			return RematerializeReport{}, fmt.Errorf("re-materializing %s: %w", legacy.URI, err)
+		}
+		if state == RematerializeSkippedRemoved {
+			skippedRemoved[legacy.URI] = true
 		}
 		r.report(RematerializeProgress{OldURI: legacy.URI, To: state, Index: i + 1, Total: len(legacies)})
 	}
@@ -606,15 +693,26 @@ func (r *Rematerializer) Run(ctx context.Context) (RematerializeReport, error) {
 		if ledgerRow.State == RematerializeDiscovered {
 			continue
 		}
+		// The census verdict holds here too: a listed post it skipped is not
+		// finished from its ledger row even if the removal was lifted since.
+		if skippedRemoved[ledgerRow.OldURI] {
+			continue
+		}
 		legacy := legacyFromLedgerRow(ledgerRow)
 		state, err := r.rematerializeOneBounded(ctx, legacy)
 		if err != nil {
 			return RematerializeReport{}, fmt.Errorf("reconciling %s: %w", ledgerRow.OldURI, err)
 		}
+		if state == RematerializeSkippedRemoved {
+			// RematerializeOne reported the skip, naming any postv2 that stands. The
+			// row did not move, so there is no reconcile transition to report.
+			skippedRemoved[ledgerRow.OldURI] = true
+			continue
+		}
 		r.report(RematerializeProgress{OldURI: ledgerRow.OldURI, From: ledgerRow.State, To: state, Index: i + 1, Total: len(resumable), Note: "reconciled from the ledger"})
 	}
 
-	return r.census(ctx)
+	return r.census(ctx, skippedRemoved, unmatchedRemovals)
 }
 
 // rematerializeOneBounded runs one record under PerRecordTimeout, so a single
@@ -633,7 +731,7 @@ func (r *Rematerializer) rematerializeOneBounded(ctx context.Context, legacy Leg
 
 // census builds the report: the scoped tally, the global tally, and a FINAL
 // RE-SCAN of the source that the completion signals are gated on.
-func (r *Rematerializer) census(ctx context.Context) (RematerializeReport, error) {
+func (r *Rematerializer) census(ctx context.Context, skippedRemoved, unmatchedRemovals map[string]bool) (RematerializeReport, error) {
 	scoped, err := r.Ledger.CountByState(ctx, r.CommunityScope)
 	if err != nil {
 		return RematerializeReport{}, fmt.Errorf("taking the census: %w", err)
@@ -647,9 +745,11 @@ func (r *Rematerializer) census(ctx context.Context) (RematerializeReport, error
 	}
 
 	report := RematerializeReport{
-		CommunityScope: r.CommunityScope,
-		ByState:        scoped,
-		GlobalByState:  global,
+		CommunityScope:    r.CommunityScope,
+		ByState:           scoped,
+		GlobalByState:     global,
+		SkippedRemoved:    len(skippedRemoved),
+		UnmatchedRemovals: len(unmatchedRemovals),
 	}
 	for state, n := range scoped {
 		report.Discovered += n
@@ -683,9 +783,10 @@ func (r *Rematerializer) census(ctx context.Context) (RematerializeReport, error
 		if err != nil {
 			return report, fmt.Errorf("checking the ledger for the re-scanned %s: %w", legacy.URI, err)
 		}
-		// A record deliberately left as legacy is accounted for, not remaining. A
-		// record with no row at all, or one not yet done, is remaining.
-		if found && IsFallback(row.State) {
+		// A credential fallback is accounted for, except when this run skipped
+		// the post for an instance removal: that legacy record still remains.
+		// A record with no row at all, or one not yet done, is remaining.
+		if found && IsFallback(row.State) && !skippedRemoved[legacy.URI] {
 			continue
 		}
 		report.RemainingLegacy++
@@ -696,15 +797,27 @@ func (r *Rematerializer) census(ctx context.Context) (RematerializeReport, error
 	// no fallback surviving, and the source re-scan agreeing. A row stranded in any
 	// non-terminal state, a surviving fallback, or a legacy record still standing all
 	// leave it false, and the operator's irreversible legacy-removal step (§11 step 6)
-	// must not run while any of them is true.
+	// must not run while any of them is true. A scoped run never reports it: its
+	// re-scan cannot see a legacy record standing in another community.
 	report.Complete = report.GlobalDone == report.GlobalDiscovered &&
 		report.GlobalFallbacks == 0 &&
-		report.RemainingLegacy == 0
+		report.RemainingLegacy == 0 &&
+		r.CommunityScope == ""
 	return report, nil
 }
 
 // RematerializeOne drives a single legacy record from wherever its ledger row
-// stands to a terminal state, and returns the state it reached.
+// stands to a terminal state, and returns the ledger state the row reached, or
+// RematerializeSkippedRemoved, which is not a ledger state.
+//
+// The removal is checked twice. At the top, before Discover: a removed post
+// gets no ledger row, and an existing row stays exactly where it stood. Right
+// before the acceptance write, the step that admits the postv2: a removal that
+// landed in between leaves the row at postv2_written, with the postv2 it names
+// standing in the author's repo without this call's acceptance, and the legacy
+// record untouched.
+// Either skip returns RematerializeSkippedRemoved. A removal that lands after
+// the acceptance is not honoured by this call.
 //
 // The steps are guarded on the ledger state each moves FROM, so a resumed run
 // re-enters at exactly the step its predecessor stopped before and re-does none
@@ -713,6 +826,9 @@ func (r *Rematerializer) census(ctx context.Context) (RematerializeReport, error
 // because the ledger records that verification passed at a moment now in the
 // past and the delete needs it to be true now.
 func (r *Rematerializer) RematerializeOne(ctx context.Context, legacy LegacyPost) (RematerializeState, error) {
+	if err := r.requireRemovalSeam(); err != nil {
+		return "", err
+	}
 	if r.CommunityScope != "" && legacy.CommunityDID != r.CommunityScope {
 		// A SCOPED RUN NEVER TOUCHES ANOTHER COMMUNITY'S POSTS. This is the last
 		// gate before a delete, and it is checked here rather than only at discovery
@@ -720,6 +836,20 @@ func (r *Rematerializer) RematerializeOne(ctx context.Context, legacy LegacyPost
 		return "", fmt.Errorf(
 			"refusing to re-materialize %s: it belongs to %s but this run is scoped to %s",
 			legacy.URI, legacy.CommunityDID, r.CommunityScope)
+	}
+	// An instance-removed post is left legacy, checked before Discover so it gets
+	// no ledger row and a resumed row is not advanced.
+	removed, _, err := r.instanceRemoved(ctx, legacy.URI)
+	if err != nil {
+		return "", err
+	}
+	if removed {
+		note, err := r.removedSkipNote(ctx, legacy.URI)
+		if err != nil {
+			return "", err
+		}
+		r.report(RematerializeProgress{OldURI: legacy.URI, To: RematerializeSkippedRemoved, Note: note})
+		return RematerializeSkippedRemoved, nil
 	}
 
 	row, err := r.Ledger.Discover(ctx, legacy.URI, legacy.CommunityDID, legacy.AuthorDID)
@@ -764,6 +894,21 @@ func (r *Rematerializer) RematerializeOne(ctx context.Context, legacy LegacyPost
 	// mean "verified" on the strength of nothing. The state advances only after
 	// the read-back below.
 	if row.State == RematerializePostV2Written {
+		// The acceptance is what admits the postv2, and it can follow the check at
+		// the top by up to PerRecordTimeout. A removal that landed meanwhile stops
+		// here, with the row left at postv2_written.
+		removed, _, err := r.instanceRemoved(ctx, legacy.URI)
+		if err != nil {
+			return row.State, err
+		}
+		if removed {
+			r.report(RematerializeProgress{
+				OldURI: legacy.URI, To: RematerializeSkippedRemoved,
+				Note: "active instance removal landed before the acceptance; leaving legacy post untouched; the postv2 at " +
+					row.NewURI + " stands without this run's acceptance and is NOT removed",
+			})
+			return RematerializeSkippedRemoved, nil
+		}
 		if _, err := r.Acceptances.WriteAcceptance(ctx, CommunityWriteCommand{
 			CommunityDID: legacy.CommunityDID,
 			PostURI:      row.NewURI,
@@ -831,6 +976,47 @@ func (r *Rematerializer) RematerializeOne(ctx context.Context, legacy LegacyPost
 	}
 
 	return row.State, nil
+}
+
+// instanceRemoved reports whether uri has an active removal by InstanceDID at
+// instance scope (removed), and whether it has active removals of which none is
+// that (unmatched). A lookup error is returned, never treated as "not removed".
+func (r *Rematerializer) instanceRemoved(ctx context.Context, uri string) (removed, unmatched bool, err error) {
+	removals, err := r.Removals.ActiveRemovalsByURIs(ctx, []string{uri})
+	if err != nil {
+		return false, false, fmt.Errorf("checking active removals for %s: %w", uri, err)
+	}
+	for _, removal := range removals[uri] {
+		if removal.AuthorityDID == r.InstanceDID && removal.ScopeKind == instanceRemovalScopeKind {
+			return true, false, nil
+		}
+	}
+	return false, len(removals[uri]) > 0, nil
+}
+
+// removedSkipNote is the progress note for a post skipped for an instance
+// removal. When an earlier run already wrote the post's postv2, the note names
+// it: that postv2 stands and the removal does not cover it.
+func (r *Rematerializer) removedSkipNote(ctx context.Context, uri string) (string, error) {
+	note := "active instance removal; leaving legacy post untouched"
+	existing, found, err := r.Ledger.Get(ctx, uri)
+	if err != nil {
+		return "", fmt.Errorf("reading the ledger row of the removed %s: %w", uri, err)
+	}
+	if found && existing.NewURI != "" {
+		note += "; a postv2 already stands at " + existing.NewURI + " and is NOT removed"
+	}
+	return note, nil
+}
+
+func (r *Rematerializer) requireRemovalSeam() error {
+	if r.Removals == nil {
+		return errors.New("rematerializer requires Removals")
+	}
+	if r.InstanceDID == "" {
+		return errors.New("rematerializer requires InstanceDID")
+	}
+	return nil
 }
 
 // writePostV2 is step 1: resolve the author, re-read the legacy record, copy its
