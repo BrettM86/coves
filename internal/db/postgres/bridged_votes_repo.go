@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"Coves/internal/core/bridgedvotes"
+	"Coves/internal/core/notifications"
 
 	"github.com/lib/pq"
 )
@@ -16,12 +17,36 @@ import (
 // BridgedVotesRepository implements bridgedvotes.Store over posts, comments and
 // communities.
 type BridgedVotesRepository struct {
-	db *sql.DB
+	db               *sql.DB
+	notificationRepo notifications.Repository
+	bridgeHosts      notifications.BridgeHostChecker
+}
+
+// BridgedVotesRepositoryOption configures a BridgedVotesRepository.
+type BridgedVotesRepositoryOption func(*BridgedVotesRepository)
+
+// WithBridgedVoteNotifications wires upvote-group fan-out into aggregate writes.
+// A nil repository leaves notifications unwired.
+func WithBridgedVoteNotifications(repo notifications.Repository, bridgeHosts notifications.BridgeHostChecker) BridgedVotesRepositoryOption {
+	return func(r *BridgedVotesRepository) {
+		r.notificationRepo = repo
+		r.bridgeHosts = bridgeHosts
+	}
 }
 
 // NewBridgedVotesRepository builds the postgres-backed bridgedvotes.Store.
-func NewBridgedVotesRepository(db *sql.DB) *BridgedVotesRepository {
-	return &BridgedVotesRepository{db: db}
+func NewBridgedVotesRepository(db *sql.DB, options ...BridgedVotesRepositoryOption) *BridgedVotesRepository {
+	r := &BridgedVotesRepository{db: db}
+	for _, option := range options {
+		option(r)
+	}
+	return r
+}
+
+// NotificationWiring returns the notification repository and bridge checker
+// supplied to this store, or nil values if they were not configured.
+func (r *BridgedVotesRepository) NotificationWiring() (notifications.Repository, notifications.BridgeHostChecker) {
+	return r.notificationRepo, r.bridgeHosts
 }
 
 // SelectCandidates implements bridgedvotes.Store: it selects the oldest eligible subjects in poll-rotation order.
@@ -117,7 +142,9 @@ func (r *BridgedVotesRepository) DistinctCommunityPDSURLs(ctx context.Context) (
 	return urls, nil
 }
 
-// ApplyAggregate implements bridgedvotes.Store: it applies a non-regressing bridged tally to its post or comment.
+// ApplyAggregate implements bridgedvotes.Store: it applies a non-regressing
+// bridged tally and its upvote-group intent in one transaction. The subject
+// lock precedes the group write and any recipient foreign-key check.
 func (r *BridgedVotesRepository) ApplyAggregate(ctx context.Context, agg bridgedvotes.Aggregate) (bool, error) {
 	if agg.AsOf.IsZero() {
 		// The client never produces one (ParseAsOf rejects the zero time), so
@@ -126,10 +153,35 @@ func (r *BridgedVotesRepository) ApplyAggregate(ctx context.Context, agg bridged
 		return false, fmt.Errorf("apply bridged vote aggregate to %q: %w", agg.URI, bridgedvotes.ErrMissingAsOf)
 	}
 
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return false, fmt.Errorf("begin bridged vote aggregate transaction: %w", err)
+	}
+	defer func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			slog.Warn("failed to roll back bridged vote aggregate transaction", "error", rollbackErr)
+		}
+	}()
+
+	// The subject lock precedes the group row and users FK, as in erasure
+	// and native vote writes. The poller has no actor, so it takes no erasure
+	// advisory lock.
+	subject, found, err := lockBridgedAggregateSubject(ctx, tx, agg.URI)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return false, nil
+	}
+
 	// Jetstream record stamps and this poller race through the same bridged columns.
 	// Keeping the >= guard, count replacement, and score recomputation in one UPDATE
 	// prevents a read-then-write race from letting an older aggregate overwrite a newer
 	// one or recomputing score from counts that did not win the guard.
+	//
+	// The same UPDATE raises bridged_upvote_peak. bridged_upvote_count is inside
+	// GREATEST because the record channel can write a count without raising the
+	// peak, so the pre-update stored count is absorbed into the peak here.
 	//
 	// The guard truncates both sides to milliseconds. The bridge serializes the
 	// aggregate channel's updatedAt to milliseconds and its record stamps to
@@ -137,10 +189,10 @@ func (r *BridgedVotesRepository) ApplyAggregate(ctx context.Context, agg bridged
 	// "older" than what the record channel stored. Comparing at the coarser
 	// precision keeps an equal instant idempotent across both channels, which
 	// is the contract; a genuinely older aggregate still loses.
-	for _, table := range []string{"posts", "comments"} {
-		result, err := r.db.ExecContext(ctx, `
-			UPDATE `+table+`
+	result, err := tx.ExecContext(ctx, `
+			UPDATE `+subject.table+`
 			SET bridged_upvote_count = $2,
+				bridged_upvote_peak = GREATEST(bridged_upvote_peak, bridged_upvote_count, $2),
 				bridged_downvote_count = $3,
 				bridged_stats_as_of = $4,
 				score = (upvote_count + $2) - (downvote_count + $3)
@@ -149,28 +201,68 @@ func (r *BridgedVotesRepository) ApplyAggregate(ctx context.Context, agg bridged
 				AND (bridged_stats_as_of IS NULL
 					OR date_trunc('milliseconds', $4::timestamptz) >= date_trunc('milliseconds', bridged_stats_as_of))
 		`, agg.URI, agg.Upvotes, agg.Downvotes, agg.AsOf)
+	if err != nil {
+		return false, fmt.Errorf("failed to apply bridged vote aggregate to %s: %w", subject.table, err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("failed to check bridged vote %s aggregate result: %w", subject.table, err)
+	}
+	if rowsAffected == 0 {
+		// The record channel may already have applied a newer sample.
+		slog.Debug("bridged vote aggregate matched no writable subject",
+			"uri", agg.URI, "incoming_as_of", agg.AsOf)
+		return false, nil
+	}
+	if r.notificationRepo != nil {
+		intent, err := notifications.FanoutBridgedUpvoteChange(ctx, r.notificationRepo.LookupsTx(tx), r.bridgeHosts,
+			notifications.BridgedUpvoteChange{
+				SubjectURI: agg.URI, SubjectRootURI: subject.rootURI,
+				PreviousUpvotes: subject.previousUpvotes, Upvotes: agg.Upvotes, PeakUpvotes: subject.peakUpvotes,
+			})
 		if err != nil {
-			return false, fmt.Errorf("failed to apply bridged vote aggregate to %s: %w", table, err)
+			return false, fmt.Errorf("fan out bridged vote aggregate notifications: %w", err)
 		}
-		rowsAffected, err := result.RowsAffected()
-		if err != nil {
-			return false, fmt.Errorf("failed to check bridged vote %s aggregate result: %w", table, err)
-		}
-		if rowsAffected > 0 {
-			return true, nil
+		if err := r.notificationRepo.ApplyUpvoteGroupTx(ctx, tx, intent); err != nil {
+			return false, fmt.Errorf("apply bridged vote aggregate upvote group: %w", err)
 		}
 	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit bridged vote aggregate transaction: %w", err)
+	}
+	return true, nil
+}
 
-	// The poller selected this subject as existing and non-deleted moments ago,
-	// so zero rows in both tables is the stale-guard case: a stored stamp newer
-	// than what the bridge just served, usually the record channel arriving
-	// first. That is expected in the steady state and is counted in the sweep
-	// report rather than logged per subject; the per-URI detail stays at debug.
-	slog.Debug("bridged vote aggregate matched no writable subject",
-		"uri", agg.URI,
-		"incoming_as_of", agg.AsOf,
-	)
-	return false, nil
+type bridgedAggregateSubject struct {
+	table           string
+	rootURI         string
+	previousUpvotes int
+	peakUpvotes     int
+}
+
+// lockBridgedAggregateSubject reads the previous tally and peak under the
+// subject row lock, trying posts before comments and excluding deleted subjects.
+func lockBridgedAggregateSubject(ctx context.Context, tx *sql.Tx, uri string) (bridgedAggregateSubject, bool, error) {
+	var subject bridgedAggregateSubject
+	err := tx.QueryRowContext(ctx,
+		`SELECT bridged_upvote_count, bridged_upvote_peak FROM posts WHERE uri = $1 AND deleted_at IS NULL FOR UPDATE`, uri).Scan(&subject.previousUpvotes, &subject.peakUpvotes)
+	if err == nil {
+		subject.table = "posts"
+		return subject, true, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return bridgedAggregateSubject{}, false, fmt.Errorf("lock bridged vote aggregate subject in posts: %w", err)
+	}
+	err = tx.QueryRowContext(ctx,
+		`SELECT bridged_upvote_count, bridged_upvote_peak, root_uri FROM comments WHERE uri = $1 AND deleted_at IS NULL FOR UPDATE`, uri).Scan(&subject.previousUpvotes, &subject.peakUpvotes, &subject.rootURI)
+	if err == nil {
+		subject.table = "comments"
+		return subject, true, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return bridgedAggregateSubject{}, false, fmt.Errorf("lock bridged vote aggregate subject in comments: %w", err)
+	}
+	return bridgedAggregateSubject{}, false, nil
 }
 
 // MarkPolled implements bridgedvotes.Store: it advances rotation watermarks for every attempted subject.

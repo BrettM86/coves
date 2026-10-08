@@ -5,7 +5,7 @@
 # Usage:
 #   CF_API_TOKEN=<token with Zone:DNS:Edit on coves.social> \
 #   LEXICON_DID=did:plc:xxxxxxxxxxxx \
-#   ./scripts/publish-lexicon-dns.sh [--include-moderation]
+#   ./scripts/publish-lexicon-dns.sh [--include-moderation] [--include-notification]
 #
 # Idempotent: existing records are updated in place, missing ones created.
 set -euo pipefail
@@ -41,9 +41,13 @@ AUTHORITIES=(
   "_lexicon.vote.feed.${ZONE_NAME}"
   "_lexicon.richtext.${ZONE_NAME}"
 )
-if [[ "${1:-}" == "--include-moderation" ]]; then
-  AUTHORITIES+=("_lexicon.moderation.${ZONE_NAME}")
-fi
+for FLAG in "$@"; do
+  case "$FLAG" in
+    --include-moderation) AUTHORITIES+=("_lexicon.moderation.${ZONE_NAME}") ;;
+    --include-notification) AUTHORITIES+=("_lexicon.notification.${ZONE_NAME}") ;;
+    *) echo "error: unknown flag ${FLAG}" >&2; exit 1 ;;
+  esac
+done
 
 API="https://api.cloudflare.com/client/v4"
 AUTH=(-H "Authorization: Bearer ${CF_API_TOKEN}" -H "Content-Type: application/json")

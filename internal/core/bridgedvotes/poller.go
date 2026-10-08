@@ -351,3 +351,8 @@ func joinSweepErrors(errs ...error) error {
 	}
 	return errors.Join(cancellation...)
 }
+
+// Store returns the store used by this poller.
+func (p *Poller) Store() Store {
+	return p.store
+}

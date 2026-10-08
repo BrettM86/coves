@@ -27,6 +27,7 @@ import (
 	"Coves/internal/core/discover"
 	"Coves/internal/core/imageproxy"
 	"Coves/internal/core/moderation"
+	"Coves/internal/core/notifications"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/timeline"
 	"Coves/internal/core/unfurl"
@@ -108,11 +109,15 @@ type application struct {
 	// the comment service's PostReader requires the admission-aware
 	// VisibleHeaderView as well, and storing the narrower interface here would
 	// erase it before the wiring could hand it over.
-	postRepo       *postgresRepo.PostRepository
-	voteRepo       votes.Repository
-	commentRepo    comments.Repository
-	userBlockRepo  userblocks.Repository
-	aggregatorRepo aggregators.Repository
+	postRepo    *postgresRepo.PostRepository
+	voteRepo    votes.Repository
+	commentRepo comments.Repository
+	// notificationRepo is handed to the consumers that write notifications.
+	notificationRepo notifications.Repository
+	// The same repository also performs the hourly retention sweeps.
+	notificationRetentionSweeper notifications.RetentionSweeper
+	userBlockRepo                userblocks.Repository
+	aggregatorRepo               aggregators.Repository
 	// admissionRepo is shared by the ingestion consumer, which WRITES the
 	// per-(community, post) decisions, and the status query, which reads them.
 	admissionRepo posts.AdmissionRepository
@@ -136,6 +141,9 @@ type application struct {
 	acceptanceQueue            *posts.QueueDriver
 	voteService                votes.Service
 	commentService             comments.Service
+	notificationService        notifications.Service
+	notificationListService    notifications.ListService
+	preferencesService         notifications.PreferencesService
 	userBlockService           userblocks.Service
 	adminReportService         adminreports.Service
 	moderationService          moderation.Service
@@ -370,6 +378,12 @@ func (a *application) buildRepositories() {
 	a.postRepo = postgresRepo.NewPostRepository(a.db)
 	a.voteRepo = postgresRepo.NewVoteRepository(a.db)
 	a.commentRepo = postgresRepo.NewCommentRepository(a.db)
+	if len(a.cfg.Instance.TrustedBridgePDSHosts) > 0 {
+		a.notificationRepo = postgresRepo.NewNotificationRepository(a.db, postgresRepo.WithBridgedUpvoteTotals())
+	} else {
+		a.notificationRepo = postgresRepo.NewNotificationRepository(a.db)
+	}
+	a.notificationRetentionSweeper = a.notificationRepo.(notifications.RetentionSweeper)
 	a.userBlockRepo = postgresRepo.NewUserBlockRepository(a.db)
 	a.aggregatorRepo = postgresRepo.NewAggregatorRepository(a.db, a.credentialCipher)
 	a.admissionRepo = postgresRepo.NewAdmissionRepository(a.db)
@@ -568,6 +582,9 @@ func (a *application) buildServices(ctx context.Context) error {
 		a.commentRepo, a.userRepo, a.postRepo, a.communityRepo,
 		a.oauthClient, a.oauthStore, nil,
 	)
+	a.notificationService = notifications.NewService(a.notificationRepo.(notifications.ReadRepository))
+	a.notificationListService = notifications.NewListService(a.notificationRepo.(notifications.ReadRepository), a.userRepo, a.postRepo, a.commentRepo)
+	a.preferencesService = notifications.NewPreferencesService(a.notificationRepo.(notifications.PreferencesRepository))
 	a.userBlockService = userblocks.NewService(a.userBlockRepo, nil, a.oauthClient, a.oauthStore, nil)
 	adminReportOptions, err := adminReportAlertOptions()
 	if err != nil {
@@ -984,7 +1001,8 @@ func (a *application) buildBridgedVotePoller() error {
 		oauth.NewSSRFSafeHTTPClient(oauth.PrivateAddressOptions(a.allowPrivateHosts())...),
 	)
 	poller, err := bridgedvotes.NewPoller(
-		postgresRepo.NewBridgedVotesRepository(a.db), client, hosts, bridgedvotes.Options{
+		postgresRepo.NewBridgedVotesRepository(a.db,
+			postgresRepo.WithBridgedVoteNotifications(a.notificationRepo, a.bridgeTrust)), client, hosts, bridgedvotes.Options{
 			Lookback: a.cfg.Instance.BridgedVotePollLookback,
 			SweepCap: a.cfg.Instance.BridgedVotePollSweepCap,
 		},

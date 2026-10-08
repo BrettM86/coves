@@ -198,21 +198,6 @@ func (a *application) registerFeedConsumers() ([]feedConsumer, error) {
 	// them: the deprecated community-repo post, the author-repo postv2, and
 	// the acceptance/removal pair. One consumer, because they write the same
 	// admission row and an acceptance is meaningless without the post it pins.
-	//
-	// The direct fetcher is what makes acceptance-before-post converge without
-	// full relay coverage (PRD §5.4). It dials a PDS named by a DID document
-	// anyone can publish, so its SSRF guard stays on in production and the hatch
-	// opens only under IS_DEV_ENV — where the hermetic stack's PDS is a private
-	// address the guard would otherwise refuse.
-	//
-	// The decision goes through jetstream.PrivatePostFetcherOptions rather than
-	// the `if` that used to stand here, for the same reason the community
-	// consumer's gate does nineteen lines above: `.env.ci:140` sets
-	// IS_DEV_ENV=true, so `make ci` takes the permissive branch and an inline
-	// conditional in wiring is reachable only by standing up this wiring with a
-	// production config, which nothing in this tree does. As a pure function the
-	// branch production actually runs is testable in T0.
-	//
 	// The warning stays here, because it is about this process rather than about
 	// the option — a helper that logged would fire once per test that builds a
 	// hatched fetcher, and this line has to mean "this server is running
@@ -220,23 +205,9 @@ func (a *application) registerFeedConsumers() ([]feedConsumer, error) {
 	if a.allowPrivateHosts() {
 		slog.Warn("direct post fetch has SSRF protection DISABLED (IS_DEV_ENV); this must never be set in production")
 	}
-	postFetcher := jetstream.NewDirectPostFetcher(a.identityResolver,
-		jetstream.PrivatePostFetcherOptions(a.allowPrivateHosts())...)
 	consumers = append(consumers, feedConsumer{
-		name: jetstream.ConsumerPosts,
-		handler: jetstream.NewPostEventConsumer(a.postRepo, a.communityRepo, a.userService, a.db,
-			jetstream.WithPostBridgeTrust(a.bridgeTrust),
-			jetstream.WithPostIdentityResolver(a.identityResolver),
-			jetstream.WithAdmissions(a.admissionRepo),
-			jetstream.WithDeletedAccounts(postgresRepo.NewDeletedAccountRepository(a.db)),
-			jetstream.WithPostRecordFetcher(postFetcher),
-			jetstream.WithPostMediaReconciler(a.mediaReconciler),
-			// The host-side half of an author's own deletion (§5.3): when the
-			// author tombstones a post this instance's community accepted, the
-			// acceptance in that community's repo is withdrawn. It refuses
-			// itself for every community this AppView does not host, which on
-			// most instances is all of them.
-			jetstream.WithAcceptanceCleanup(a.communityWriter)),
+		name:    jetstream.ConsumerPosts,
+		handler: a.buildPostConsumer(),
 	})
 
 	// Aggregators: service declarations and authorization records, following
@@ -255,17 +226,14 @@ func (a *application) registerFeedConsumers() ([]feedConsumer, error) {
 	// redriver replays it until the attempt budget is spent, and the row then sits
 	// retired in the queue alongside events that represent a real backlog.
 	consumers = append(consumers, feedConsumer{
-		name: jetstream.ConsumerVotes,
-		handler: jetstream.NewVoteEventConsumer(a.voteRepo, a.userService, a.db,
-			jetstream.WithVoteDeletedAccounts(postgresRepo.NewDeletedAccountRepository(a.db))),
+		name:    jetstream.ConsumerVotes,
+		handler: a.buildVoteConsumer(),
 	})
 
 	// Comments from user repositories, with atomic parent count updates.
 	consumers = append(consumers, feedConsumer{
-		name: jetstream.ConsumerComments,
-		handler: jetstream.NewCommentEventConsumer(a.commentRepo, a.db,
-			jetstream.WithCommentBridgeTrust(a.bridgeTrust),
-			jetstream.WithCommentMediaReconciler(a.mediaReconciler)),
+		name:    jetstream.ConsumerComments,
+		handler: a.buildCommentConsumer(),
 	})
 
 	return consumers, nil
@@ -283,4 +251,49 @@ func warnIfNoPrimaryFeed(feeds []jetstream.Feed) {
 	slog.Warn("no JETSTREAM_FEEDS entry uses the primary feed key: every consumer name will be "+
 		"suffixed \"@<feedKey>\", so cursors persisted under the bare legacy names will NOT be used",
 		"primary_feed_key", jetstream.PrimaryFeedKey)
+}
+
+// buildVoteConsumer builds the vote consumer registered on the feed.
+func (a *application) buildVoteConsumer() *jetstream.VoteEventConsumer {
+	return jetstream.NewVoteEventConsumer(a.voteRepo, a.userService, a.db,
+		jetstream.WithVoteDeletedAccounts(postgresRepo.NewDeletedAccountRepository(a.db)),
+		jetstream.WithVoteBridgeTrust(a.bridgeTrust),
+		jetstream.WithVoteNotifications(a.notificationRepo))
+}
+
+// buildCommentConsumer builds the comment consumer registered on the feed.
+func (a *application) buildCommentConsumer() *jetstream.CommentEventConsumer {
+	return jetstream.NewCommentEventConsumer(a.commentRepo, a.db,
+		jetstream.WithCommentBridgeTrust(a.bridgeTrust),
+		jetstream.WithCommentMediaReconciler(a.mediaReconciler),
+		jetstream.WithCommentNotifications(a.notificationRepo))
+}
+
+// buildPostConsumer builds the post consumer registered on the feed.
+func (a *application) buildPostConsumer() *jetstream.PostEventConsumer {
+	// The direct fetcher is what makes acceptance-before-post converge without
+	// full relay coverage (PRD §5.4). It dials a PDS named by a DID document
+	// anyone can publish, so its SSRF guard stays on in production and the hatch
+	// opens only under IS_DEV_ENV — where the hermetic stack's PDS is a private
+	// address the guard would otherwise refuse.
+	//
+	// The decision goes through jetstream.PrivatePostFetcherOptions rather than
+	// an inline conditional: `.env.ci:140` sets IS_DEV_ENV=true, so `make ci`
+	// takes the permissive branch. The production branch is testable in T0.
+	postFetcher := jetstream.NewDirectPostFetcher(a.identityResolver,
+		jetstream.PrivatePostFetcherOptions(a.allowPrivateHosts())...)
+	return jetstream.NewPostEventConsumer(a.postRepo, a.communityRepo, a.userService, a.db,
+		jetstream.WithPostBridgeTrust(a.bridgeTrust),
+		jetstream.WithPostIdentityResolver(a.identityResolver),
+		jetstream.WithAdmissions(a.admissionRepo),
+		jetstream.WithDeletedAccounts(postgresRepo.NewDeletedAccountRepository(a.db)),
+		jetstream.WithPostRecordFetcher(postFetcher),
+		jetstream.WithPostMediaReconciler(a.mediaReconciler),
+		// The host-side half of an author's own deletion (§5.3): when the
+		// author tombstones a post this instance's community accepted, the
+		// acceptance in that community's repo is withdrawn. It refuses
+		// itself for every community this AppView does not host, which on
+		// most instances is all of them.
+		jetstream.WithAcceptanceCleanup(a.communityWriter),
+		jetstream.WithPostNotifications(a.notificationRepo))
 }

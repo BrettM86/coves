@@ -14,6 +14,7 @@ import (
 	"Coves/internal/core/comments"
 	"Coves/internal/core/embeds"
 	"Coves/internal/core/moderation"
+	"Coves/internal/core/notifications"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/richtext"
 
@@ -42,6 +43,10 @@ type CommentEventConsumer struct {
 	// nil means default-deny (bridgedStats are ignored for every comment).
 	bridgeTrust     *BridgeTrust
 	mediaReconciler MediaReconciler
+	// notifications writes reply and mention notifications, removes an author-deleted
+	// comment's notifications and repoints its upvote groups, all inside the event's
+	// transaction. nil means notifications are neither written nor removed.
+	notifications notifications.Repository
 }
 
 // CommentEventConsumerOption configures optional CommentEventConsumer behaviour.
@@ -124,6 +129,19 @@ func incomingCommentImageCIDs(embed *string) []string {
 func WithCommentBridgeTrust(bt *BridgeTrust) CommentEventConsumerOption {
 	return func(c *CommentEventConsumer) { c.bridgeTrust = bt }
 }
+
+// WithCommentNotifications makes the consumer write reply and mention notifications for
+// the comments it indexes and remove or repoint them when an author deletes or
+// re-creates a comment.
+func WithCommentNotifications(repository notifications.Repository) CommentEventConsumerOption {
+	return func(c *CommentEventConsumer) { c.notifications = repository }
+}
+
+// NotificationsWired reports whether the consumer maintains comment notifications.
+func (c *CommentEventConsumer) NotificationsWired() bool { return c.notifications != nil }
+
+// BridgeTrustWired reports whether the consumer holds a bridge trust gate.
+func (c *CommentEventConsumer) BridgeTrustWired() bool { return c.bridgeTrust != nil }
 
 // NewCommentEventConsumer creates a new Jetstream consumer for comment events
 func NewCommentEventConsumer(
@@ -266,7 +284,8 @@ func (c *CommentEventConsumer) createComment(ctx context.Context, repoDID string
 	}
 
 	// Atomically: Rev-gate + Index comment + Update parent counts
-	if err := c.indexCommentAndUpdateCounts(ctx, comment, commit.Rev); err != nil {
+	createEventTime, _ := eventTime(timeUS)
+	if err := c.indexCommentAndUpdateCounts(ctx, comment, commit.Rev, createEventTime); err != nil {
 		return fmt.Errorf("failed to index comment and update counts: %w", err)
 	}
 
@@ -276,11 +295,10 @@ func (c *CommentEventConsumer) createComment(ctx context.Context, repoDID string
 
 // updateComment updates an existing comment's content fields.
 //
-// Like updatePost, this is idempotent and error-return means log-and-drop (the
-// connector tracks no cursor and live-tails Jetstream, so a returned error is NOT
-// replayed): the folded bridged counts only self-heal on the bridge's next record
-// edit. We therefore skip benign no-ops (missing row, soft-deleted row) cleanly and
-// reserve errors for transient infra faults.
+// Like updatePost, this is idempotent. The connector retries a returned error
+// in-line, then dead-letters the event for the DeadLetterRedriver to replay, so
+// benign no-ops (missing row, soft-deleted row, superseded event) return nil
+// rather than an error that would be retried and dead-lettered for nothing.
 func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string, commit *CommitEvent, timeUS int64) error {
 	if commit.Record == nil {
 		return fmt.Errorf("%w: comment update event missing record data", ErrPermanentEvent)
@@ -448,7 +466,7 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 	// each feed stamps its own emission time — a pre-edit update replayed by the
 	// lagging bsky feed carries a NEWER time_us than the edit it would regress.
 	// Only rev, assigned by the repo itself, orders events across feeds.
-	tx, err := c.db.BeginTx(ctx, nil)
+	tx, err := c.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -465,6 +483,29 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 	if !won {
 		logSkippedStaleRev(ConsumerComments, "update", uri, commit.Rev)
 		return nil
+	}
+
+	var erased bool
+	var storedFacets, lockedParentURI, lockedRootURI string
+	var storedCreatedAt time.Time
+	if c.notifications != nil {
+		// Acquire the erasure lock before locking any content row, so Delete
+		// cannot wait for a row held by an edit waiting for the erasure lock.
+		erased, err = c.notifications.ErasureGateTx(ctx, tx, repoDID)
+		if err != nil {
+			return fmt.Errorf("check comment actor erasure before updating: %w", err)
+		}
+		err = tx.QueryRowContext(ctx,
+			`SELECT COALESCE(content_facets::text, ''), created_at, parent_uri, root_uri
+			 FROM comments WHERE uri = $1 AND deleted_at IS NULL FOR UPDATE`, uri,
+		).Scan(&storedFacets, &storedCreatedAt, &lockedParentURI, &lockedRootURI)
+		if errors.Is(err, sql.ErrNoRows) {
+			log.Printf("Update event for comment that was deleted between load and write: %s (skipping)", uri)
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("failed to load stored comment for edit notifications: %w", err)
+		}
 	}
 
 	result, err := tx.ExecContext(ctx, updateQuery,
@@ -490,6 +531,17 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 	if rowsAffected == 0 {
 		log.Printf("Update event for comment that was deleted or superseded by a newer update between load and write: %s (skipping)", uri)
 		return nil
+	}
+
+	if c.notifications != nil && !erased {
+		editEventTime, _ := eventTime(timeUS)
+		if err := c.writeCommentEditNotifications(ctx, tx, notifications.CommentRecord{
+			URI: uri, CID: commit.CID, AuthorDID: repoDID,
+			ParentURI: lockedParentURI, RootURI: lockedRootURI, CreatedAt: storedCreatedAt,
+			EditEventTime: editEventTime,
+		}, facetsJSON, storedFacets); err != nil {
+			return err
+		}
 	}
 
 	if err := c.commitCommentWrite(ctx, tx, uri); err != nil {
@@ -550,11 +602,14 @@ func (c *CommentEventConsumer) blockRejectedUpdateMedia(ctx context.Context, uri
 // equal-or-older rev then loses the gate). The gate row is advanced — and
 // committed — even when the comment was never indexed, so the create's late
 // copy is rejected too.
+//
+// With notifications wired, the shared erasure lock is taken before the comment
+// row. The comment's existing notifications remain after author deletion.
 func (c *CommentEventConsumer) deleteComment(ctx context.Context, repoDID string, commit *CommitEvent) error {
 	// Build AT-URI for the comment being deleted
 	uri := fmt.Sprintf("at://%s/social.coves.community.comment/%s", repoDID, commit.RKey)
 
-	tx, err := c.db.BeginTx(ctx, nil)
+	tx, err := c.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -574,6 +629,14 @@ func (c *CommentEventConsumer) deleteComment(ctx context.Context, repoDID string
 	if !won {
 		logSkippedStaleRev(ConsumerComments, "delete", uri, commit.Rev)
 		return nil
+	}
+
+	if c.notifications != nil {
+		// Take the erasure lock before touching the comment row, so a delete
+		// cannot wait on erasure while holding a row needed by account deletion.
+		if _, err := c.notifications.ErasureGateTx(ctx, tx, repoDID); err != nil {
+			return fmt.Errorf("check comment actor erasure before deleting: %w", err)
+		}
 	}
 
 	// 1. Soft-delete the comment: blank content but preserve structure.
@@ -615,9 +678,10 @@ func (c *CommentEventConsumer) deleteComment(ctx context.Context, repoDID string
 	return nil
 }
 
-// indexCommentAndUpdateCounts atomically indexes a comment and updates parent counts
-func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, comment *comments.Comment, rev string) error {
-	tx, err := c.db.BeginTx(ctx, nil)
+// indexCommentAndUpdateCounts atomically indexes a comment and updates parent counts.
+// editEventTime is the create event's Jetstream time, used when an active re-create is an edit.
+func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, comment *comments.Comment, rev string, editEventTime time.Time) error {
+	tx, err := c.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -643,6 +707,17 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 		return nil
 	}
 
+	var erased bool
+	if c.notifications != nil {
+		// Lock before touching comments or posts: waiting for the shared erasure
+		// lock while holding a content row could deadlock with Delete, which holds
+		// the exclusive erasure lock while waiting for that row.
+		erased, err = c.notifications.ErasureGateTx(ctx, tx, comment.CommenterDID)
+		if err != nil {
+			return fmt.Errorf("check comment actor erasure before indexing: %w", err)
+		}
+	}
+
 	// 1. Check if comment exists and handle resurrection case
 	// In atProto, deleted records' rkeys become available - users can recreate with same rkey
 	// We must distinguish: idempotent replay (skip) vs resurrection (update + restore counts)
@@ -655,6 +730,7 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 
 	var commentID int64
 	var isResurrectionWithSameParent bool // Track if we should skip parent count increment
+	var repairKeptNotifications bool      // Different-parent resurrection: kept rows need repair
 
 	if checkErr == nil {
 		// Comment exists
@@ -674,6 +750,15 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 				existingParentURI == comment.ParentURI && existingRootURI == comment.RootURI {
 				log.Printf("Re-create of active comment with newer rev: %s (applying new content, CID %s -> %s)",
 					comment.URI, existingCID, comment.CID)
+				var storedFacets, lockedParentURI, lockedRootURI string
+				var storedCreatedAt time.Time
+				if c.notifications != nil {
+					err := tx.QueryRowContext(ctx, `SELECT COALESCE(content_facets::text, ''), created_at, parent_uri, root_uri
+						FROM comments WHERE id = $1 FOR UPDATE`, existingID).Scan(&storedFacets, &storedCreatedAt, &lockedParentURI, &lockedRootURI)
+					if err != nil {
+						return fmt.Errorf("read stored comment before re-create: %w", err)
+					}
+				}
 				recreateQuery := `
 					UPDATE comments
 					SET
@@ -704,6 +789,17 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 					existingID,
 				); err != nil {
 					return fmt.Errorf("failed to apply re-created comment content: %w", err)
+				}
+				// An active re-create is an edit: use the pre-update creation time for
+				// activation, and let edit fan-out suppress the unchanged reply recipient.
+				if c.notifications != nil && !erased {
+					if err := c.writeCommentEditNotifications(ctx, tx, notifications.CommentRecord{
+						URI: comment.URI, CID: comment.CID, AuthorDID: comment.CommenterDID,
+						ParentURI: lockedParentURI, RootURI: lockedRootURI, CreatedAt: storedCreatedAt,
+						EditEventTime: editEventTime,
+					}, comment.ContentFacets, storedFacets); err != nil {
+						return err
+					}
 				}
 				// Parent unchanged and the row was never decounted, so parent counts
 				// are already correct — commit without the increment sections below.
@@ -803,6 +899,16 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 		if err != nil {
 			return fmt.Errorf("failed to resurrect comment: %w", err)
 		}
+		// Author delete leaves groups (which have no record_uri) and native votes
+		// intact. Group roots are written on insert only, so repoint them here.
+		// Not gated on erased: erasure deleted every row whose recipient is the
+		// author, so an erased author has no group for this to match.
+		if c.notifications != nil && existingRootURI != comment.RootURI {
+			if err := c.notifications.ReplaceUpvoteGroupRootTx(ctx, tx, comment.CommenterDID, comment.URI, comment.RootURI); err != nil {
+				return fmt.Errorf("replace comment upvote group root: %w", err)
+			}
+		}
+		repairKeptNotifications = !isResurrectionWithSameParent
 
 	} else if errors.Is(checkErr, sql.ErrNoRows) {
 		// Comment doesn't exist - insert new comment
@@ -886,6 +992,11 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 	// Since deleteComment() no longer decrements counts (deleted comments shown as "[deleted]" placeholders),
 	// resurrecting a comment with the same parent should NOT increment the count again.
 	// However, if the parent CHANGED (user recreated comment on different post/thread), we DO increment.
+	// Author deletion keeps notifications. A resurrection under the same parent
+	// retains those rows and fans out only to new recipients within the remaining
+	// mention budget. A different-parent resurrection repairs the kept rows around
+	// create fan-out (writeCreateNotificationsAfterCounts) so replies and roots
+	// match the new threading.
 	//
 	// NOTE: Post comment_count reconciliation IS implemented in PostEventConsumer.createPostAndUpdateCounts()
 	// When a comment arrives before its parent post, the post update below returns 0 rows
@@ -896,6 +1007,16 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 	// Test coverage: TestPostConsumer_CommentCountReconciliation in post_consumer_test.go
 	if isResurrectionWithSameParent {
 		log.Printf("Resurrection with same parent - skipping parent count increment for: %s", comment.URI)
+		if c.notifications != nil && !erased {
+			if err := c.writeCommentCreateNotifications(ctx, tx, comment); err != nil {
+				return err
+			}
+		}
+		if c.notifications != nil {
+			if err := c.notifications.DeleteReplyRecipientMentionsTx(ctx, tx, comment.URI); err != nil {
+				return fmt.Errorf("repair resurrected comment notifications: %w", err)
+			}
+		}
 		if err := c.commitCommentWrite(ctx, tx, comment.URI); err != nil {
 			return fmt.Errorf("failed to commit transaction: %w", err)
 		}
@@ -978,10 +1099,17 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 		// Unknown or unsupported parent collection
 		// Comment is still indexed, we just don't update parent counts
 		log.Printf("Comment parent has unsupported collection: %s (comment indexed, parent count not updated)", collection)
+		if err := c.writeCreateNotificationsAfterCounts(ctx, tx, comment, erased, repairKeptNotifications); err != nil {
+			return err
+		}
 		if commitErr := c.commitCommentWrite(ctx, tx, comment.URI); commitErr != nil {
 			return fmt.Errorf("failed to commit transaction: %w", commitErr)
 		}
 		return nil
+	}
+
+	if err := c.writeCreateNotificationsAfterCounts(ctx, tx, comment, erased, repairKeptNotifications); err != nil {
+		return err
 	}
 
 	// Commit transaction
@@ -989,6 +1117,81 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
+	return nil
+}
+
+// writeCommentEditNotifications writes the mentions an edit adds in the edit's
+// transaction. record carries the edit's URI, CID, author and Jetstream event time,
+// with the threading and creation time read under lock; facets are the edit's new facets.
+func (c *CommentEventConsumer) writeCommentEditNotifications(ctx context.Context, tx *sql.Tx, record notifications.CommentRecord, facets *string, storedFacets string) error {
+	if facets != nil {
+		record.FacetsJSON = *facets
+	}
+	intents, err := notifications.FanoutCommentEdit(ctx, c.notifications.LookupsTx(tx), c.bridgeTrust, record, storedFacets)
+	if err != nil {
+		return fmt.Errorf("compute comment edit notifications: %w", err)
+	}
+	if err := c.notifications.ApplyTx(ctx, tx, intents); err != nil {
+		return fmt.Errorf("write comment edit notifications: %w", err)
+	}
+	return nil
+}
+
+// writeCreateNotificationsAfterCounts runs create fan-out for a new comment or a
+// different-parent resurrection, after the parent and root count updates. Those
+// updates lock the new reply recipient's content row before any notification row
+// is touched, the order account erasure also uses, so the repair cannot deadlock
+// with erasure of that recipient.
+//
+// With repairKeptRows, the kept rows are repaired before fan-out, whether or not
+// the actor is erased. A mention is removed only after fan-out, and only
+// when the same recipient now holds a reply row for the record, so a recipient
+// whose reply was gated out keeps its mention.
+func (c *CommentEventConsumer) writeCreateNotificationsAfterCounts(ctx context.Context, tx *sql.Tx, comment *comments.Comment, erased, repairKeptRows bool) error {
+	if c.notifications == nil {
+		return nil
+	}
+	if repairKeptRows {
+		subjectURI, err := notifications.CommentReplySubject(ctx, c.notifications.LookupsTx(tx), notifications.CommentRecord{
+			ParentURI: comment.ParentURI, RootURI: comment.RootURI,
+		})
+		if err != nil {
+			return fmt.Errorf("resolve resurrected comment reply subject: %w", err)
+		}
+		if err := c.notifications.RepairResurrectedCommentNotificationsTx(ctx, tx, comment.URI, subjectURI, comment.RootURI); err != nil {
+			return fmt.Errorf("repair resurrected comment notifications: %w", err)
+		}
+	}
+	if !erased {
+		if err := c.writeCommentCreateNotifications(ctx, tx, comment); err != nil {
+			return err
+		}
+	}
+	if repairKeptRows {
+		if err := c.notifications.DeleteReplyRecipientMentionsTx(ctx, tx, comment.URI); err != nil {
+			return fmt.Errorf("repair resurrected comment notifications: %w", err)
+		}
+	}
+	return nil
+}
+
+// writeCommentCreateNotifications writes eligible reply and mention intents in the index transaction.
+func (c *CommentEventConsumer) writeCommentCreateNotifications(ctx context.Context, tx *sql.Tx, comment *comments.Comment) error {
+	var facetsJSON string
+	if comment.ContentFacets != nil {
+		facetsJSON = *comment.ContentFacets
+	}
+	intents, err := notifications.FanoutCommentCreate(ctx, c.notifications.LookupsTx(tx), c.bridgeTrust, notifications.CommentRecord{
+		URI: comment.URI, CID: comment.CID, AuthorDID: comment.CommenterDID,
+		ParentURI: comment.ParentURI, RootURI: comment.RootURI, CreatedAt: comment.CreatedAt,
+		FacetsJSON: facetsJSON,
+	})
+	if err != nil {
+		return fmt.Errorf("compute comment notifications: %w", err)
+	}
+	if err := c.notifications.ApplyTx(ctx, tx, intents); err != nil {
+		return fmt.Errorf("write comment notifications: %w", err)
+	}
 	return nil
 }
 

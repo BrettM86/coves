@@ -18,8 +18,8 @@ import (
 // PostgreSQL storage for per-(community, post) admission decisions
 // (docs/PRD_AUTHOR_OWNED_POSTS.md §5.2, §5.5, §6.1; migration 034).
 //
-// THE SHAPE EVERY MUTATION TAKES. All seven are single-statement compare-and-
-// swaps whose guard is the whole decision. Five — the author-repo observation
+// THE SHAPE EVERY MUTATION TAKES. All seven use a guarded writing statement
+// whose guard is the whole admission decision. Five — the author-repo observation
 // and the four community events — are one INSERT ... ON CONFLICT DO UPDATE ...
 // WHERE <guard>, because each may legitimately meet an absent subject and must
 // create the row that records the event was seen. The other two are guarded
@@ -27,10 +27,12 @@ import (
 // that stands, and a rejection lands on the pending row the engine read from
 // its own queue. Either way, Postgres evaluates the guard against the current
 // row inside the writing statement, so two consumers draining overlapping
-// Jetstream feeds cannot interleave a read and a write. There is no
-// SELECT-then-decide anywhere in this file, which is what makes a duplicate
-// delivery — RecordRejection's included — a genuine no-op rather than a
-// re-stamped decision timestamp.
+// Jetstream feeds cannot interleave a read and a write. ApplyRemoval and
+// ApplyAcceptanceDelete first lock and read the admission row in their transaction,
+// then decide only whether to maintain a public-withdrawal marker if the guarded
+// write applies. The pre-read never decides the admission CAS: a duplicate
+// delivery — RecordRejection's included — remains a genuine no-op rather than
+// a re-stamped decision timestamp.
 //
 // updated_at is set ONLY inside the guarded SET clause. A refused event must
 // leave the row byte-identical — the moderation audit trail would otherwise
@@ -269,8 +271,9 @@ func (r *postgresAdmissionRepo) ApplyAcceptanceDelete(ctx context.Context, cmd p
 			updated_at = NOW()` + communityWatermarkGuard + `
 		RETURNING ` + admissionColumns
 
-	return r.compareAndSwap(ctx, "ApplyAcceptanceDelete", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired,
-		query, cmd.CommunityDID, cmd.PostURI, cmd.Watermark.Rev, int16(posts.CommunityOpDelete))
+	return r.compareAndSwapWithWithdrawal(ctx, "ApplyAcceptanceDelete", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired,
+		query, &communityWithdrawal{rev: cmd.Watermark.Rev},
+		cmd.CommunityDID, cmd.PostURI, cmd.Watermark.Rev, int16(posts.CommunityOpDelete))
 }
 
 // ApplyRemoval applies a community removal record write under the §5.2
@@ -306,8 +309,9 @@ func (r *postgresAdmissionRepo) ApplyRemoval(ctx context.Context, cmd posts.Appl
 			updated_at = NOW()` + communityWatermarkGuard + `
 		RETURNING ` + admissionColumns
 
-	return r.compareAndSwap(ctx, "ApplyRemoval", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired,
-		query, cmd.CommunityDID, cmd.PostURI, cmd.DecisionCode,
+	return r.compareAndSwapWithWithdrawal(ctx, "ApplyRemoval", cmd.CommunityDID, cmd.PostURI, communityEventOutcome, rowRequired,
+		query, &communityWithdrawal{rev: cmd.Watermark.Rev, removal: true},
+		cmd.CommunityDID, cmd.PostURI, cmd.DecisionCode,
 		cmd.Watermark.Rev, int16(posts.CommunityOpPut))
 }
 
@@ -783,6 +787,28 @@ func (r *postgresAdmissionRepo) compareAndSwap(
 	query string,
 	args ...interface{},
 ) (posts.AdmissionResult, error) {
+	return r.compareAndSwapWithWithdrawal(ctx, operation, communityDID, postURI, classify, mayLackRow, query, nil, args...)
+}
+
+type communityWithdrawal struct {
+	rev     string
+	removal bool
+}
+
+// compareAndSwapWithWithdrawal locks the old admission before evaluating whether
+// the post was publicly admitted. An active admin removal does not count against
+// admission: the community still withdraws a post it had made public, so the
+// notification keeps its removed placeholder. The guarded upsert still decides
+// whether the admission write applies.
+func (r *postgresAdmissionRepo) compareAndSwapWithWithdrawal(
+	ctx context.Context,
+	operation, communityDID, postURI string,
+	classify admissionOutcome,
+	mayLackRow bool,
+	query string,
+	withdrawal *communityWithdrawal,
+	args ...interface{},
+) (posts.AdmissionResult, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return posts.AdmissionResult{}, fmt.Errorf("%s for %s in %s: beginning transaction: %w", operation, postURI, communityDID, err)
@@ -799,6 +825,33 @@ func (r *postgresAdmissionRepo) compareAndSwap(
 			)
 		}
 	}()
+
+	var ownCommunityPost, admittedBefore, alreadyRemoved bool
+	if withdrawal != nil {
+		var priorStatus posts.AdmissionStatus
+		err := tx.QueryRowContext(ctx, `SELECT status FROM community_post_admissions
+			WHERE community_did = $1 AND post_uri = $2 FOR UPDATE`, communityDID, postURI).Scan(&priorStatus)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return posts.AdmissionResult{}, fmt.Errorf("%s for %s in %s: record post community withdrawal: locking admission: %w", operation, postURI, communityDID, err)
+		}
+		hadAdmission := err == nil
+		alreadyRemoved = hadAdmission && priorStatus == posts.AdmissionStatusRemoved
+
+		// This is a later READ COMMITTED statement, after the admission lock has
+		// settled. With no locked admission, never treat a newly inserted row as
+		// the pre-write state, even if it appears between these statements.
+		joinSQL, whereSQL := admittedPostsPredicate(anonymousViewerSQL)
+		err = tx.QueryRowContext(ctx, `SELECT
+			EXISTS (SELECT 1 FROM posts p WHERE p.uri = $1 AND p.community_did = $2),
+			EXISTS (SELECT 1 FROM posts p`+joinSQL+`
+				WHERE p.uri = $1 AND p.community_did = $2
+				AND split_part(p.uri, '/', 4) = $4 AND p.deleted_at IS NULL
+				AND $3::boolean AND `+whereSQL+`)`, postURI, communityDID, hadAdmission, posts.PostV2Collection).
+			Scan(&ownCommunityPost, &admittedBefore)
+		if err != nil {
+			return posts.AdmissionResult{}, fmt.Errorf("%s for %s in %s: record post community withdrawal: checking admission: %w", operation, postURI, communityDID, err)
+		}
+	}
 
 	admission, err := scanAdmission(tx.QueryRowContext(ctx, query, args...))
 	wrote := true
@@ -830,6 +883,21 @@ func (r *postgresAdmissionRepo) compareAndSwap(
 	}
 	if err != nil {
 		return posts.AdmissionResult{}, fmt.Errorf("%s for %s in %s: %w", operation, postURI, communityDID, err)
+	}
+
+	if wrote && withdrawal != nil && ownCommunityPost && (!withdrawal.removal || !alreadyRemoved) {
+		if admittedBefore {
+			_, err = tx.ExecContext(ctx, `INSERT INTO notification_public_post_withdrawals
+				(post_uri, kind, community_rev) VALUES ($1, 'communityWithdrawal', $2)
+				ON CONFLICT (post_uri, kind) DO UPDATE SET
+					community_rev = EXCLUDED.community_rev, recorded_at = NOW()`, postURI, withdrawal.rev)
+		} else if withdrawal.removal {
+			_, err = tx.ExecContext(ctx, `DELETE FROM notification_public_post_withdrawals
+				WHERE post_uri = $1 AND kind = 'communityWithdrawal' AND community_rev IS DISTINCT FROM $2`, postURI, withdrawal.rev)
+		}
+		if err != nil {
+			return posts.AdmissionResult{}, fmt.Errorf("%s for %s in %s: record post community withdrawal: %w", operation, postURI, communityDID, err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

@@ -511,6 +511,10 @@ func blobCID(value interface{}) string {
 	return ""
 }
 
+// BlobCID exposes the same extraction rule to callers validating stored blobs
+// before asking the view projector to turn them into URLs.
+func BlobCID(value interface{}) string { return blobCID(value) }
+
 // PostBlobCIDs returns the canonical, first-seen CIDs of post blobs served
 // through the image proxy. Malformed entries are skipped; video blobs are
 // served directly by the PDS, so only their thumbnails are included.

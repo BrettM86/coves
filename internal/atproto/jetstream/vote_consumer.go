@@ -1,10 +1,6 @@
 package jetstream
 
 import (
-	"Coves/internal/atproto/utils"
-	"Coves/internal/core/posts"
-	"Coves/internal/core/users"
-	"Coves/internal/core/votes"
 	"context"
 	"database/sql"
 	"errors"
@@ -12,6 +8,12 @@ import (
 	"log"
 	"strings"
 	"time"
+
+	"Coves/internal/atproto/utils"
+	"Coves/internal/core/notifications"
+	"Coves/internal/core/posts"
+	"Coves/internal/core/users"
+	"Coves/internal/core/votes"
 )
 
 // A vote names its subject by AT-URI and nothing else, so the collection segment
@@ -46,6 +48,11 @@ type VoteEventConsumer struct {
 	// deletedAccounts gates votes whose SUBJECT lives in an erased account's
 	// repo. nil means no gate.
 	deletedAccounts DeletedAccountLookup
+	// notifications writes upvote groups inside the index transaction; nil disables them.
+	notifications notifications.Repository
+	// bridgeTrust filters recipients hosted on trusted bridge PDS hosts; nil
+	// trusts no host.
+	bridgeTrust *BridgeTrust
 }
 
 // VoteEventConsumerOption configures optional VoteEventConsumer behaviour.
@@ -57,6 +64,25 @@ type VoteEventConsumerOption func(*VoteEventConsumer)
 func WithVoteDeletedAccounts(lookup DeletedAccountLookup) VoteEventConsumerOption {
 	return func(c *VoteEventConsumer) { c.deletedAccounts = lookup }
 }
+
+// WithVoteNotifications installs the repository that writes upvote groups for
+// eligible newly indexed votes. It also installs the voter's shared erasure
+// lock, taken before any content row is read. nil disables both.
+func WithVoteNotifications(repository notifications.Repository) VoteEventConsumerOption {
+	return func(c *VoteEventConsumer) { c.notifications = repository }
+}
+
+// WithVoteBridgeTrust installs the trusted bridge PDS hosts used to filter
+// upvote group recipients.
+func WithVoteBridgeTrust(bt *BridgeTrust) VoteEventConsumerOption {
+	return func(c *VoteEventConsumer) { c.bridgeTrust = bt }
+}
+
+// NotificationsWired reports whether the consumer writes upvote groups.
+func (c *VoteEventConsumer) NotificationsWired() bool { return c.notifications != nil }
+
+// BridgeTrustWired reports whether the consumer holds a bridge trust gate.
+func (c *VoteEventConsumer) BridgeTrustWired() bool { return c.bridgeTrust != nil }
 
 // NewVoteEventConsumer creates a new Jetstream consumer for vote events
 func NewVoteEventConsumer(
@@ -135,12 +161,9 @@ func (c *VoteEventConsumer) createVote(ctx context.Context, repoDID string, comm
 	// Format: at://voter_did/social.coves.feed.vote/rkey
 	uri := fmt.Sprintf("at://%s/social.coves.feed.vote/%s", repoDID, commit.RKey)
 
-	// Parse timestamp from record
-	createdAt, err := time.Parse(time.RFC3339, voteRecord.CreatedAt)
-	if err != nil {
-		log.Printf("Warning: Failed to parse createdAt timestamp, using current time: %v", err)
-		createdAt = time.Now()
-	}
+	// A future createdAt is clamped to now, as the post and comment consumers
+	// do, so neither the stored vote nor the notification gates see it.
+	createdAt := parseRecordCreatedAt(voteRecord.CreatedAt, uri)
 
 	// Build vote entity
 	vote := &votes.Vote{
@@ -177,11 +200,14 @@ func (c *VoteEventConsumer) createVote(ctx context.Context, repoDID string, comm
 // or blocks until our tombstone commits (its equal-or-older rev then loses
 // the gate). The gate row is advanced — and committed — even when the vote
 // was never indexed, so the create's late copy is rejected too.
+// The voter's shared erasure lock follows the rev claim but precedes the vote
+// read: waiting for it while holding a vote, post or comment row could
+// deadlock with account erasure. Erased voters' deletes still proceed.
 func (c *VoteEventConsumer) deleteVote(ctx context.Context, repoDID string, commit *CommitEvent) error {
 	// Build AT-URI for the vote being deleted
 	uri := fmt.Sprintf("at://%s/social.coves.feed.vote/%s", repoDID, commit.RKey)
 
-	tx, err := c.db.BeginTx(ctx, nil)
+	tx, err := c.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -201,6 +227,11 @@ func (c *VoteEventConsumer) deleteVote(ctx context.Context, repoDID string, comm
 	if !won {
 		logSkippedStaleRev(ConsumerVotes, "delete", uri, commit.Rev)
 		return nil
+	}
+	if c.notifications != nil {
+		if _, err := c.notifications.ErasureGateTx(ctx, tx, repoDID); err != nil {
+			return fmt.Errorf("check vote voter erasure before deleting: %w", err)
+		}
 	}
 
 	// 1. Load the vote INSIDE the gate transaction: direction and subject
@@ -329,6 +360,17 @@ func (c *VoteEventConsumer) deleteVote(ctx context.Context, repoDID string, comm
 	if rowsAffected == 0 {
 		log.Printf("Warning: Vote subject no longer exists: %s (vote deleted anyway)", subjectURI)
 	}
+	// Delete-if-empty follows the decrement while we hold the subject row lock.
+	if c.notifications != nil {
+		intent, err := notifications.FanoutVoteRemoval(ctx, c.notifications.LookupsTx(tx),
+			notifications.VoteRecord{SubjectURI: subjectURI})
+		if err != nil {
+			return fmt.Errorf("compute vote deletion notifications: %w", err)
+		}
+		if err := c.notifications.ApplyUpvoteGroupTx(ctx, tx, intent); err != nil {
+			return fmt.Errorf("write vote deletion notifications: %w", err)
+		}
+	}
 
 	// Commit transaction
 	if err := tx.Commit(); err != nil {
@@ -342,7 +384,7 @@ func (c *VoteEventConsumer) deleteVote(ctx context.Context, repoDID string, comm
 // indexVoteAndUpdateCounts atomically indexes a vote and updates post vote counts
 // Returns (true, nil) if vote was newly inserted, (false, nil) if already existed (idempotent)
 func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *votes.Vote, rev string) (bool, error) {
-	tx, err := c.db.BeginTx(ctx, nil)
+	tx, err := c.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return false, fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -365,6 +407,18 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 	if !won {
 		logSkippedStaleRev(ConsumerVotes, "create", vote.URI, rev)
 		return false, nil
+	}
+	var voterErased bool
+	if c.notifications != nil {
+		// Lock before touching votes, posts or comments: waiting for the shared
+		// erasure lock while holding a content row could deadlock with Delete. An
+		// erased voter's vote is still indexed; fan-out determines eligibility
+		// from this gate's answer, which the lock keeps true for the transaction,
+		// and performs upvote-group maintenance under this lock.
+		voterErased, err = c.notifications.ErasureGateTx(ctx, tx, vote.VoterDID)
+		if err != nil {
+			return false, fmt.Errorf("check vote voter erasure before indexing: %w", err)
+		}
 	}
 
 	// 1. ORDERING GATE: a vote is only indexed onto a subject that is present
@@ -553,6 +607,20 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 		// adjustments) through the create path. Comments handle their analogous
 		// case in place (see indexCommentAndUpdateCounts).
 		//
+		// A stale vote removed above changed the vote set, so run delete-if-empty
+		// maintenance before this early commit. It must stay after the stale
+		// decrement: that holds the subject row, which a concurrent vote's count
+		// update also takes before its group bump.
+		if existingDirection.Valid && c.notifications != nil {
+			intent, err := notifications.FanoutVoteRemoval(ctx, c.notifications.LookupsTx(tx),
+				notifications.VoteRecord{SubjectURI: vote.SubjectURI})
+			if err != nil {
+				return false, fmt.Errorf("compute stale vote notifications: %w", err)
+			}
+			if err := c.notifications.ApplyUpvoteGroupTx(ctx, tx, intent); err != nil {
+				return false, fmt.Errorf("write stale vote notifications: %w", err)
+			}
+		}
 		// Silently handle the common idempotent case - no log needed for replays.
 		if commitErr := tx.Commit(); commitErr != nil {
 			return false, fmt.Errorf("failed to commit transaction: %w", commitErr)
@@ -646,6 +714,24 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 		return false, fmt.Errorf("vote subject %s disappeared while counting the vote: retry once the gate can classify it",
 			vote.SubjectURI)
 	}
+	// Fan-out stays after the count update (or the stale decrement before it):
+	// delete-if-empty is correct only while this transaction holds the subject row.
+	if c.notifications != nil {
+		subjectRootURI, err := voteSubjectRootAfterCountUpdate(ctx, tx, vote.SubjectURI)
+		if err != nil {
+			return false, err
+		}
+		intent, err := notifications.FanoutVoteCreate(ctx, c.notifications.LookupsTx(tx), c.bridgeTrust, notifications.VoteRecord{
+			URI: vote.URI, VoterDID: vote.VoterDID, SubjectURI: vote.SubjectURI, SubjectRootURI: subjectRootURI,
+			Direction: vote.Direction, CreatedAt: vote.CreatedAt, VoterErased: voterErased,
+		})
+		if err != nil {
+			return false, fmt.Errorf("compute vote notifications: %w", err)
+		}
+		if err := c.notifications.ApplyUpvoteGroupTx(ctx, tx, intent); err != nil {
+			return false, fmt.Errorf("write vote notifications: %w", err)
+		}
+	}
 
 	// Commit transaction
 	if err := tx.Commit(); err != nil {
@@ -653,6 +739,19 @@ func (c *VoteEventConsumer) indexVoteAndUpdateCounts(ctx context.Context, vote *
 	}
 
 	return true, nil // Vote was newly indexed
+}
+
+// voteSubjectRootAfterCountUpdate reads a comment root under the row lock held
+// by the count update, for the group bump on a newly indexed vote.
+func voteSubjectRootAfterCountUpdate(ctx context.Context, tx *sql.Tx, subjectURI string) (string, error) {
+	if utils.ExtractCollectionFromURI(subjectURI) != CommentCollection {
+		return "", nil
+	}
+	var rootURI string
+	if err := tx.QueryRowContext(ctx, `SELECT root_uri FROM comments WHERE uri = $1`, subjectURI).Scan(&rootURI); err != nil {
+		return "", fmt.Errorf("read vote comment root after counting: %w", err)
+	}
+	return rootURI, nil
 }
 
 // subjectWasErased reports whether the repo HOSTING this subject carries a

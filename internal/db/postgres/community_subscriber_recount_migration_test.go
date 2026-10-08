@@ -22,6 +22,12 @@ func TestMigration045RecountsAndMaintainsCommunitySubscribers(t *testing.T) {
 	t.Parallel()
 
 	db := testkit.DB(t)
+	require.EqualValues(t, 55, testkit.MigrateDownOne(t, db, 55),
+		"055 (notification public post withdrawals) must be rolled back before testing earlier migrations")
+	require.EqualValues(t, 54, testkit.MigrateDownOne(t, db, 54),
+		"054 (upvote history index) must be rolled back before testing earlier migrations")
+	require.EqualValues(t, 53, testkit.MigrateDownOne(t, db, 53),
+		"053 (notifications) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 52, testkit.MigrateDownOne(t, db, 52),
 		"052 (moderation CDN purge targets) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 51, testkit.MigrateDownOne(t, db, 51),

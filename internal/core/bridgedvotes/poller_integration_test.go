@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -15,7 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/bridgedvotes"
+	"Coves/internal/core/notifications"
 	"Coves/internal/db/postgres"
 	"Coves/tests/testkit"
 
@@ -261,4 +264,213 @@ func requireSweep(t *testing.T, ctx context.Context, poller *bridgedvotes.Poller
 	t.Helper()
 	_, err := poller.Sweep(ctx)
 	require.NoError(t, err)
+}
+
+type notificationPollerFixture struct {
+	db        *sql.DB
+	ctx       context.Context
+	now       time.Time
+	recipient string
+}
+
+func newNotificationPollerFixture(t *testing.T) notificationPollerFixture {
+	t.Helper()
+	f := notificationPollerFixture{db: testkit.DB(t), ctx: context.Background()}
+	require.NoError(t, f.db.QueryRowContext(f.ctx, `SELECT now()`).Scan(&f.now))
+	f.now = f.now.UTC().Truncate(time.Microsecond)
+	f.recipient = "did:plc:" + testkit.UniqueID(t) + "pollrecipient"
+	_, err := f.db.ExecContext(f.ctx, `INSERT INTO users (did, handle, pds_url, created_at) VALUES ($1, $2, $3, $4)`,
+		f.recipient, testkit.UniqueID(t)+".test", testkit.Endpoints().PDS.BaseURL, f.now)
+	require.NoError(t, err)
+	return f
+}
+
+func (f notificationPollerFixture) post(t *testing.T, pdsURL string) string {
+	t.Helper()
+	id := testkit.UniqueID(t)
+	community := "did:plc:" + id + "pollcommunity"
+	postURI := "at://" + f.recipient + "/social.coves.community.postv2/" + id
+	_, err := f.db.ExecContext(f.ctx, `INSERT INTO communities
+		(did, handle, name, owner_did, created_by_did, hosted_by_did, pds_url, federated_from, created_at)
+		VALUES ($1, $2, 'poll community', $1, $1, $1, $3, 'lemmy', $4)`,
+		community, "!"+id+"@local.test", pdsURL, f.now)
+	require.NoError(t, err)
+	_, err = f.db.ExecContext(f.ctx, `INSERT INTO posts
+		(uri, cid, rkey, author_did, community_did, title, created_at, upvote_count, downvote_count, score)
+		VALUES ($1, $2, $3, $4, $5, 'poll post', $6, 0, 0, 0)`,
+		postURI, "bafy"+id, id, f.recipient, community, f.now.Add(-time.Hour))
+	require.NoError(t, err)
+	_, err = f.db.ExecContext(f.ctx, `INSERT INTO community_post_admissions
+		(community_did, post_uri, status, acceptance_uri, acceptance_rkey, accepted_cid, evaluated_cid, created_at, updated_at)
+		VALUES ($1, $2, 'accepted', $3, $4, $5, $5, $6, $6)`,
+		community, postURI, "at://"+community+"/social.coves.community.acceptance/"+id,
+		id, "bafy"+id, f.now)
+	require.NoError(t, err)
+	return postURI
+}
+
+func (f notificationPollerFixture) poller(t *testing.T, hosts []string, client *http.Client, repo notifications.Repository) *bridgedvotes.Poller {
+	t.Helper()
+	store := postgres.NewBridgedVotesRepository(f.db,
+		postgres.WithBridgedVoteNotifications(repo, jetstream.NewBridgeTrust(hosts)))
+	poller, err := bridgedvotes.NewPoller(store, bridgedvotes.NewClient(client), hosts,
+		bridgedvotes.Options{Lookback: 2 * time.Hour, SweepCap: 100})
+	require.NoError(t, err)
+	return poller
+}
+
+func (f notificationPollerFixture) notificationRepo() notifications.Repository {
+	return postgres.NewNotificationRepository(f.db, postgres.WithBridgedUpvoteTotals())
+}
+
+func (f notificationPollerFixture) groupSort(t *testing.T, postURI string) time.Time {
+	t.Helper()
+	var sortAt time.Time
+	require.NoError(t, f.db.QueryRowContext(f.ctx, `SELECT sort_at FROM notifications
+		WHERE reason = 'upvote' AND recipient_did = $1 AND subject_uri = $2`, f.recipient, postURI).Scan(&sortAt))
+	return sortAt.UTC().Truncate(time.Microsecond)
+}
+
+func (f notificationPollerFixture) groupCount(t *testing.T, postURI string) int {
+	t.Helper()
+	var count int
+	require.NoError(t, f.db.QueryRowContext(f.ctx, `SELECT count(*) FROM notifications
+		WHERE reason = 'upvote' AND recipient_did = $1 AND subject_uri = $2`, f.recipient, postURI).Scan(&count))
+	return count
+}
+
+func (f notificationPollerFixture) bridgedTotal(t *testing.T, postURI string) int {
+	t.Helper()
+	var total int
+	require.NoError(t, f.db.QueryRowContext(f.ctx, `SELECT bridged_upvote_count FROM posts WHERE uri = $1`, postURI).Scan(&total))
+	return total
+}
+
+func (f notificationPollerFixture) watermark(t *testing.T, postURI string) sql.NullTime {
+	t.Helper()
+	var at sql.NullTime
+	require.NoError(t, f.db.QueryRowContext(f.ctx, `SELECT bridged_polled_at FROM posts WHERE uri = $1`, postURI).Scan(&at))
+	return at
+}
+
+func (f notificationPollerFixture) unread(t *testing.T, repo notifications.Repository, want int) {
+	t.Helper()
+	got, err := repo.(notifications.ReadRepository).CountUnread(f.ctx, f.recipient)
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+}
+
+func TestPollerSweepTrustedNativeIncreaseCreatesUpvoteGroup(t *testing.T) {
+	t.Parallel()
+	f := newNotificationPollerFixture(t)
+	bridge := &aggregateServer{aggregates: map[string]servedAggregate{}}
+	server := httptest.NewServer(bridge)
+	t.Cleanup(server.Close)
+	postURI := f.post(t, server.URL)
+	bridge.replace(servedAggregate{URI: postURI, Upvotes: 3, UpdatedAt: f.now.Format(time.RFC3339Nano)})
+	repo := f.notificationRepo()
+	requireSweep(t, f.ctx, f.poller(t, []string{server.URL}, server.Client(), repo))
+	require.Contains(t, bridge.requestedURIs(), postURI)
+	require.Equal(t, 3, f.bridgedTotal(t, postURI))
+	require.Equal(t, 1, f.groupCount(t, postURI))
+}
+
+func TestPollerSweepDoesNotRequestUntrustedCommunity(t *testing.T) {
+	t.Parallel()
+	f := newNotificationPollerFixture(t)
+	trusted := &aggregateServer{aggregates: map[string]servedAggregate{}}
+	trustedServer := httptest.NewServer(trusted)
+	t.Cleanup(trustedServer.Close)
+	untrusted := &aggregateServer{aggregates: map[string]servedAggregate{}}
+	untrustedServer := httptest.NewServer(untrusted)
+	t.Cleanup(untrustedServer.Close)
+	postURI := f.post(t, untrustedServer.URL)
+	untrusted.replace(servedAggregate{URI: postURI, Upvotes: 4, UpdatedAt: f.now.Format(time.RFC3339Nano)})
+	requireSweep(t, f.ctx, f.poller(t, []string{trustedServer.URL}, trustedServer.Client(), f.notificationRepo()))
+	require.NotContains(t, untrusted.requestedURIs(), postURI)
+	require.Equal(t, 0, f.groupCount(t, postURI))
+}
+
+func TestPollerSweepHostRemovalPreservesStoredGroupsAndTotals(t *testing.T) {
+	t.Parallel()
+	f := newNotificationPollerFixture(t)
+	first := &aggregateServer{aggregates: map[string]servedAggregate{}}
+	firstServer := httptest.NewServer(first)
+	t.Cleanup(firstServer.Close)
+	second := &aggregateServer{aggregates: map[string]servedAggregate{}}
+	secondServer := httptest.NewServer(second)
+	t.Cleanup(secondServer.Close)
+	firstPost := f.post(t, firstServer.URL)
+	secondPost := f.post(t, secondServer.URL)
+	first.replace(servedAggregate{URI: firstPost, Upvotes: 3, UpdatedAt: f.now.Add(-time.Minute).Format(time.RFC3339Nano)})
+	second.replace(servedAggregate{URI: secondPost, Upvotes: 5, UpdatedAt: f.now.Add(-time.Minute).Format(time.RFC3339Nano)})
+	initialRepo := f.notificationRepo()
+	require.NoError(t, initialRepo.(notifications.ReadRepository).UpdateSeen(f.ctx, f.recipient, f.now.Add(-time.Hour)))
+	requireSweep(t, f.ctx, f.poller(t, []string{firstServer.URL, secondServer.URL}, firstServer.Client(), initialRepo))
+	require.Equal(t, 3, f.bridgedTotal(t, firstPost))
+	require.Equal(t, 5, f.bridgedTotal(t, secondPost))
+	require.Equal(t, 1, f.groupCount(t, firstPost))
+	require.Equal(t, 1, f.groupCount(t, secondPost))
+	f.unread(t, initialRepo, 2)
+	firstSort := f.groupSort(t, firstPost)
+	secondSort := f.groupSort(t, secondPost)
+
+	firstRequests := len(first.requestedURIs())
+	secondRequests := len(second.requestedURIs())
+	first.replace(servedAggregate{URI: firstPost, Upvotes: 9, UpdatedAt: f.now.Format(time.RFC3339Nano)})
+	second.replace(servedAggregate{URI: secondPost, Upvotes: 6, UpdatedAt: f.now.Format(time.RFC3339Nano)})
+	restartedRepo := f.notificationRepo()
+	requireSweep(t, f.ctx, f.poller(t, []string{secondServer.URL}, secondServer.Client(), restartedRepo))
+	require.Len(t, first.requestedURIs(), firstRequests)
+	require.Greater(t, len(second.requestedURIs()), secondRequests)
+	require.Equal(t, 3, f.bridgedTotal(t, firstPost))
+	require.True(t, f.groupSort(t, firstPost).Equal(firstSort))
+	require.Equal(t, 6, f.bridgedTotal(t, secondPost))
+	require.True(t, f.groupSort(t, secondPost).After(secondSort))
+	page, err := restartedRepo.(notifications.ReadRepository).List(f.ctx, f.recipient, "", 10)
+	require.NoError(t, err)
+	require.Len(t, page.Notifications, 2)
+	listed := make(map[string]notifications.ListedNotification)
+	for _, notification := range page.Notifications {
+		listed[notification.SubjectURI] = notification
+	}
+	require.Equal(t, 3, listed[firstPost].UpvoteCount)
+	require.False(t, listed[firstPost].IsRead)
+	require.Equal(t, 6, listed[secondPost].UpvoteCount)
+	require.False(t, listed[secondPost].IsRead)
+	f.unread(t, restartedRepo, 2)
+}
+
+type pollerFailingNotificationRepo struct {
+	notifications.Repository
+	err error
+}
+
+func (r pollerFailingNotificationRepo) ApplyUpvoteGroupTx(ctx context.Context, tx *sql.Tx, intent notifications.UpvoteGroupIntent) error {
+	if err := r.Repository.ApplyUpvoteGroupTx(ctx, tx, intent); err != nil {
+		return err
+	}
+	return r.err
+}
+
+func TestPollerSweepNotificationFailureLeavesBatchUnpolled(t *testing.T) {
+	t.Parallel()
+	f := newNotificationPollerFixture(t)
+	bridge := &aggregateServer{aggregates: map[string]servedAggregate{}}
+	server := httptest.NewServer(bridge)
+	t.Cleanup(server.Close)
+	postURI := f.post(t, server.URL)
+	bridge.replace(servedAggregate{URI: postURI, Upvotes: 3, UpdatedAt: f.now.Format(time.RFC3339Nano)})
+	_, err := f.db.ExecContext(f.ctx, `UPDATE posts SET bridged_polled_at = $2 WHERE uri = $1`, postURI, f.now.Add(-time.Minute))
+	require.NoError(t, err)
+	before := f.watermark(t, postURI)
+	require.True(t, before.Valid)
+	sentinel := errors.New("upvote notification write failed")
+	repo := pollerFailingNotificationRepo{Repository: f.notificationRepo(), err: sentinel}
+	poller := f.poller(t, []string{server.URL}, server.Client(), repo)
+	_, err = poller.Sweep(f.ctx)
+	require.ErrorIs(t, err, sentinel)
+	after := f.watermark(t, postURI)
+	require.True(t, after.Valid)
+	require.True(t, after.Time.UTC().Truncate(time.Microsecond).Equal(before.Time.UTC().Truncate(time.Microsecond)))
 }

@@ -115,6 +115,7 @@ func run() error {
 	startAggregatorTokenRefreshJob(backgroundCtx, &backgroundWG, app.apiKeyService)
 	startDiscoverHotCleanupJob(backgroundCtx, &backgroundWG, app.discoverHotStateCleaner,
 		discoverHotCleanupInterval, discoverHotCleanupDerivedRowBatchSize)
+	startNotificationRetentionJob(backgroundCtx, &backgroundWG, app.notificationRetentionSweeper, notificationRetentionInterval)
 	startModerationIdempotencySweepJob(backgroundCtx, &backgroundWG,
 		postgresRepo.NewModerationRepository(db), moderationIdempotencySweepInterval)
 	if app.cdnPurgeQueue != nil {

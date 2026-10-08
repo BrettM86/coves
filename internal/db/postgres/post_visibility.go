@@ -123,8 +123,10 @@ func visiblePostsPredicate(viewerExpr string) (joinSQL, whereSQL string) {
 // WITHOUT the active-removal exclusion. visiblePostsPredicate is this plus that
 // exclusion, so the two cannot disagree about admission.
 //
-// Its only other caller is post.get's #moderatedPost gate
-// (AdmittedURIsForViewer): an instance removal may tell a viewer that a post
+// Its other callers need admission regardless of removal: the notification
+// reference states and withdrawal markers (a removed post that was public still
+// reads as removed rather than hidden), and post.get's #moderatedPost gate
+// (AdmittedURIsForViewer), where an instance removal may tell a viewer that a post
 // was removed only if that viewer could have seen the post had it not been
 // removed. Anything else would disclose a pending, rejected or unadmitted post
 // and tie it to a community that never accepted it. The public moderation log

@@ -1,13 +1,14 @@
 package postgres
 
 import (
-	"Coves/internal/core/users"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
+
+	"Coves/internal/core/users"
 
 	"github.com/lib/pq"
 )
@@ -284,7 +285,7 @@ func (r *postgresUserRepo) Delete(ctx context.Context, did string) error {
 	}
 
 	// Start transaction for atomic deletion
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return fmt.Errorf("failed to start transaction for did=%s: %w", did, err)
 	}
@@ -297,10 +298,18 @@ func (r *postgresUserRepo) Delete(ctx context.Context, did string) error {
 		}
 	}()
 
+	// Notification fan-out takes the shared erasure lock for actor_did before
+	// checking deleted_accounts, since actors have no foreign key. Taking the
+	// exclusive lock before the marker means fan-out either finishes before
+	// erasure starts or sees the marker.
+	if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock("+ErasureLockKeySQL+")", did); err != nil {
+		return fmt.Errorf("failed to take erasure lock for did=%s: %w", did, err)
+	}
+
 	// 0. Record the erasure marker (migration 036).
 	//
-	// It goes FIRST and inside this transaction, both deliberately. Inside,
-	// because a marker that survived a rolled-back deletion would name an
+	// It is the first write after the lock and inside this transaction, both
+	// deliberately. Inside, because a marker that survived a rolled-back deletion would name an
 	// account that still exists — and the ingestion gate reads this table, so
 	// that account's future posts would be dropped forever with no row
 	// anywhere explaining it. First, because every statement below erases
@@ -399,7 +408,29 @@ func (r *postgresUserRepo) Delete(ctx context.Context, did string) error {
 		return fmt.Errorf("failed to delete posts for did=%s: %w", did, err)
 	}
 
-	// 11. Delete user
+	// 11. Delete notifications for this recipient or actor after content deletes.
+	// A notification consumer locks the recipient's content row (count/reply_count
+	// UPDATE) before upserting the notification. Deleting notifications first
+	// could hold the notification row it needs while waiting for the content row
+	// it holds, causing a deadlock. Upvote groups this user voted into have a
+	// NULL actor_did and are deliberately left in place; read-time rules hide
+	// groups that lose their last voter.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM notifications WHERE recipient_did = $1 OR actor_did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete notifications for did=%s: %w", did, err)
+	}
+	// The split_part expression is served by migration 055's expression index;
+	// keep the two identical.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM notification_public_post_withdrawals
+		WHERE split_part(post_uri, '/', 3) = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete notification public post withdrawals for did=%s: %w", did, err)
+	}
+
+	// 12. Delete notification state
+	if _, err := tx.ExecContext(ctx, `DELETE FROM notification_state WHERE did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete notification_state for did=%s: %w", did, err)
+	}
+
+	// 13. Delete user
 	result, err := tx.ExecContext(ctx, `DELETE FROM users WHERE did = $1`, did)
 	if err != nil {
 		return fmt.Errorf("failed to delete user did=%s: %w", did, err)

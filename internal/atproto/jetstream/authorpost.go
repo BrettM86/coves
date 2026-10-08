@@ -549,7 +549,7 @@ func (c *PostEventConsumer) tombstoneAuthorPost(ctx context.Context, authorDID s
 		return err
 	}
 
-	applied, err := c.tombstoneRecordIfRevWins(ctx, uri, commit.Rev)
+	applied, err := c.tombstoneRecordIfRevWins(ctx, uri, commit.Rev, authorDID)
 	if err != nil {
 		return err
 	}
@@ -766,12 +766,12 @@ func (c *PostEventConsumer) upsertAuthorPost(ctx context.Context, authorDID stri
 	var applied bool
 	if found {
 		applied, err = c.applyPostContentUpdate(ctx, postContentUpdate{
-			uri: uri, storedID: stored.id, rev: commit.Rev, cid: commit.CID,
+			uri: uri, authorDID: authorDID, storedID: stored.id, rev: commit.Rev, cid: commit.CID,
 			title: record.Title, content: record.Content,
 			facets: facetsJSON, embed: embedJSON, labels: labelsJSON,
 			bridgedUpvotes: up, bridgedDownvotes: down, bridgedAsOf: asOf,
 			storedAsOf: stored.bridgedAsOf, storedDeletedAt: stored.deletedAt,
-			storedIndexedAt: stored.indexedAt, timeUS: timeUS, authorDID: authorDID,
+			storedIndexedAt: stored.indexedAt, timeUS: timeUS,
 		})
 		if err != nil {
 			return err

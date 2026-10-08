@@ -84,7 +84,8 @@ moderation package: `moderation/defs.json` and the seven endpoint files
 `moderation/removeContent.json`, `moderation/restoreContent.json`,
 `moderation/labelContent.json`, `moderation/retractContentLabel.json`,
 `moderation/listActions.json`, `moderation/listAdminActions.json`,
-`moderation/getSubjectState.json`.
+`moderation/getSubjectState.json`; and, once the notifications release below
+runs, `notification/defs.json` and its five endpoint files.
 
 **Held back** (governance/tribunal design has not landed; each is listed by
 path relative to `internal/atproto/lexicon/social/coves/`, and the test fails
@@ -103,7 +104,7 @@ if a publish command names any of them or a directory that contains them):
 
 `goat lex publish` sweeps every schema in a directory operand, so the commands
 below name files, never the `moderation` or `community` directory. Retired
-schemas stay live until explicitly unpublished (see step 4).
+schemas stay live until explicitly unpublished (see step 5).
 
 ## One-time setup
 
@@ -135,18 +136,20 @@ schemas stay live until explicitly unpublished (see step 4).
    | `_lexicon.vote.feed.coves.social` | `did=<publishing DID>` |
    | `_lexicon.richtext.coves.social` | `did=<publishing DID>` |
    | `_lexicon.moderation.coves.social` | `did=<publishing DID>` — created in the moderation release, step 3 |
+   | `_lexicon.notification.coves.social` | `did=<publishing DID>` — created in the notifications release, step 4 |
 
    Via the Cloudflare API (token needs Zone:DNS:Edit on `coves.social`):
    ```sh
    CF_API_TOKEN=... LEXICON_DID=did:plc:... ./scripts/publish-lexicon-dns.sh
    # add --include-moderation for the moderation release (step 3 below)
+   # add --include-notification for the notifications release (step 4 below)
    ```
 
 ## Publish / update workflow
 
 Step 0 is run on every publish. Steps 1–2 republish the already-live
-namespaces. Step 3 is the moderation release, run once in the order given.
-Step 4 verifies. Every operand is an explicit file.
+namespaces. Step 3 is the moderation release and step 4 the notifications
+release, each run once in the order given. Step 5 verifies. Every operand is an explicit file.
 
 ```sh
 # 0. Gates — all must pass; review the lint/breaking/diff output by hand
@@ -266,11 +269,29 @@ goat lex publish \
   internal/atproto/lexicon/social/coves/moderation/listAdminActions.json \
   internal/atproto/lexicon/social/coves/moderation/getSubjectState.json
 
-# 4. Verify resolution end-to-end, and unpublish anything retired.
+# 4. Notifications release (once). notification.defs references actor.defs
+#    and community.post.defs, so it runs after step 3d; the endpoints
+#    reference notification.defs, so defs go first.
+#    4a. DNS delegation for the new authority, then confirm resolution:
+CF_API_TOKEN=... LEXICON_DID=did:plc:... ./scripts/publish-lexicon-dns.sh --include-notification
+goat lex check-dns internal/atproto/lexicon/social/coves/notification/defs.json
+#    4b. Shared definitions, then the five endpoints:
+goat lex publish \
+  internal/atproto/lexicon/social/coves/notification/defs.json
+goat lex resolve social.coves.notification.defs
+goat lex publish \
+  internal/atproto/lexicon/social/coves/notification/getUnreadCount.json \
+  internal/atproto/lexicon/social/coves/notification/listNotifications.json \
+  internal/atproto/lexicon/social/coves/notification/updateSeen.json \
+  internal/atproto/lexicon/social/coves/notification/getPreferences.json \
+  internal/atproto/lexicon/social/coves/notification/putPreferences.json
+
+# 5. Verify resolution end-to-end, and unpublish anything retired.
 goat lex check-dns internal/atproto/lexicon/social/coves
 goat lex status internal/atproto/lexicon/social/coves
 goat lex resolve social.coves.community.post
 goat lex resolve social.coves.moderation.listActions
+goat lex resolve social.coves.notification.listNotifications
 # Retired schemas: publish only writes what it is given, so a schema whose
 # file was deleted stays live until explicitly unpublished.
 # social.coves.community.post.search was published by the 2026-07 directory

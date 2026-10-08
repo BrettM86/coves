@@ -86,6 +86,9 @@ func registerXRPCRoutes(r chi.Router, app *application) {
 	routes.RegisterVoteRoutes(r, app.voteService, app.authMiddleware)
 	routes.RegisterUserBlockRoutes(r, app.userBlockService, app.authMiddleware)
 	routes.RegisterCommentRoutes(r, app.commentService, app.authMiddleware)
+	routes.RegisterNotificationRoutes(r, app.notificationService, app.authMiddleware)
+	routes.RegisterNotificationListRoutes(r, app.notificationListService, app.authMiddleware)
+	routes.RegisterNotificationPreferenceRoutes(r, app.preferencesService, app.authMiddleware)
 	routes.RegisterAdminReportRoutes(r, app.adminReportService, app.authMiddleware)
 	routes.RegisterModerationRoutes(r, app.moderationService, app.instanceAdminAuth)
 	routes.RegisterCommunitySuggestionRoutes(r, app.communitySuggestionService,

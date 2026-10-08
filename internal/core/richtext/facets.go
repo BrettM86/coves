@@ -30,8 +30,9 @@ const MaxFacets = 200
 const MaxFeaturesPerFacet = 20
 
 // Known feature $types from the social.coves.richtext.facet lexicon. All but
-// featureTypeLink carry attribute constraints enforced by checkKnownFeature;
-// featureTypeLink is used only by NormalizeLinkURIs, which owns its uri rules.
+// featureTypeLink and featureTypeMention carry attribute constraints enforced by
+// checkKnownFeature; featureTypeLink is used only by NormalizeLinkURIs, which
+// owns its uri rules, and featureTypeMention only by MentionedDIDs.
 // Only KNOWN types are checked — unknown $types pass untouched, keeping the
 // union open for forward compatibility.
 const (
@@ -40,6 +41,7 @@ const (
 	featureTypeCodeBlock  = "social.coves.richtext.facet#codeBlock"
 	featureTypeSpoiler    = "social.coves.richtext.facet#spoiler"
 	featureTypeLink       = "social.coves.richtext.facet#link"
+	featureTypeMention    = "social.coves.richtext.facet#mention"
 )
 
 const (

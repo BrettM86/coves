@@ -14,6 +14,7 @@ import (
 	"Coves/internal/core/communities"
 	"Coves/internal/core/embeds"
 	"Coves/internal/core/moderation"
+	"Coves/internal/core/notifications"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/richtext"
 	"Coves/internal/core/users"
@@ -34,6 +35,9 @@ type PostEventConsumer struct {
 	// bridgeTrust gates whether a post's author repo may assert bridgedStats.
 	// nil means default-deny (bridgedStats are ignored for every post).
 	bridgeTrust *BridgeTrust
+	// notifications writes mention notifications for newly indexed posts in
+	// the same transaction as the post. nil disables post notifications.
+	notifications notifications.Repository
 	// identityResolver is used only when relay scheduling delivers a post
 	// before its author's profile. The identity is admitted only when its PDS
 	// passes bridgeTrust.
@@ -72,6 +76,15 @@ func WithPostBridgeTrust(bt *BridgeTrust) PostEventConsumerOption {
 func WithPostIdentityResolver(resolver identity.Resolver) PostEventConsumerOption {
 	return func(c *PostEventConsumer) { c.identityResolver = resolver }
 }
+
+// WithPostNotifications makes the consumer write eligible mentions when it
+// indexes a new postv2 record.
+func WithPostNotifications(repository notifications.Repository) PostEventConsumerOption {
+	return func(c *PostEventConsumer) { c.notifications = repository }
+}
+
+// NotificationsWired reports whether the consumer writes post mentions.
+func (c *PostEventConsumer) NotificationsWired() bool { return c.notifications != nil }
 
 // NewPostEventConsumer creates a new Jetstream consumer for post events
 func NewPostEventConsumer(
@@ -167,19 +180,24 @@ func indexedAtForEvent(timeUS int64) time.Time {
 // SOFT, never hard: the row is the rev gate's tombstone, the comment thread's
 // parent, and what moderation still reads.
 //
+// When notifications are wired, take the author's erasure lock before touching
+// the post row, then record its pre-withdrawal public visibility after the soft
+// delete (including a zero-row delete). Notifications remain on author deletion.
+// Both actions share the rev-gated transaction.
+//
 // The applied flag exists for the author-repo path's acceptance sweep, which
 // must fire once per deletion rather than once per DELIVERY of it: the
 // connector rewinds its cursor after every reconnect, so a tombstone that
 // re-swept on each redelivery would put an authenticated PDS round trip behind
 // every replayed event.
-func (c *PostEventConsumer) tombstoneRecordIfRevWins(ctx context.Context, uri, rev string) (bool, error) {
+func (c *PostEventConsumer) tombstoneRecordIfRevWins(ctx context.Context, uri, rev, authorDID string) (bool, error) {
 	// REV GATE + soft delete in one transaction (the repo's SoftDelete is not
 	// transaction-aware, and the delete's rev must be recorded atomically with
 	// the tombstone: it is what rejects a stale cross-feed copy of the CREATE
 	// arriving later and resurrecting the post). The gate row is advanced even
 	// when the post was never indexed, so the late create of an already-deleted
 	// record is rejected too.
-	tx, err := c.db.BeginTx(ctx, nil)
+	tx, err := c.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return false, fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -198,12 +216,24 @@ func (c *PostEventConsumer) tombstoneRecordIfRevWins(ctx context.Context, uri, r
 		return false, nil
 	}
 
+	if c.notifications != nil {
+		if _, err := c.notifications.ErasureGateTx(ctx, tx, authorDID); err != nil {
+			return false, fmt.Errorf("check post author erasure before deleting: %w", err)
+		}
+	}
+
 	// Same statement as postRepo.SoftDelete, inlined for transactionality.
 	// Idempotent: zero rows (already deleted or never indexed) is success.
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE posts SET deleted_at = NOW() WHERE uri = $1 AND deleted_at IS NULL`, uri,
 	); err != nil {
 		return false, fmt.Errorf("failed to soft delete post: %w", err)
+	}
+
+	if c.notifications != nil {
+		if err := c.notifications.RecordPostAuthorDeleteWithdrawalTx(ctx, tx, uri); err != nil {
+			return false, fmt.Errorf("record post author-delete withdrawal: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -248,10 +278,13 @@ func (c *PostEventConsumer) loadStoredPost(ctx context.Context, uri string) (sto
 // existing-row branch. Acceptance-triggered direct fetches insert missing rows
 // through insertAuthorPost instead.
 type postContentUpdate struct {
-	uri      string
-	storedID int64
-	rev      string
-	cid      string
+	uri string
+	// authorDID owns the incoming blobs, which are blocked when the post is
+	// removed even if the update is skipped.
+	authorDID string
+	storedID  int64
+	rev       string
+	cid       string
 
 	title   *string
 	content *string
@@ -268,10 +301,6 @@ type postContentUpdate struct {
 	storedDeletedAt *time.Time
 	storedIndexedAt time.Time
 	timeUS          int64
-
-	// authorDID owns the incoming blobs, which are blocked when the post is
-	// removed even if the update is skipped.
-	authorDID string
 }
 
 // applyPostContentUpdate runs the rev gate and the atomic content UPDATE.
@@ -375,7 +404,7 @@ func (c *PostEventConsumer) applyPostContentUpdate(ctx context.Context, in postC
 	// each feed stamps its own emission time — a pre-edit update replayed by the
 	// lagging bsky feed carries a NEWER time_us than the edit it would regress.
 	// Only rev, assigned by the repo itself, orders events across feeds.
-	tx, err := c.db.BeginTx(ctx, nil)
+	tx, err := c.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return false, fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -392,6 +421,29 @@ func (c *PostEventConsumer) applyPostContentUpdate(ctx context.Context, in postC
 	if !won {
 		logSkippedStaleRev(ConsumerPosts, "update", in.uri, in.rev)
 		return false, nil
+	}
+
+	var erased bool
+	var storedFacets string
+	var storedCreatedAt time.Time
+	if c.notifications != nil {
+		// Take the erasure lock before locking the post row, avoiding a cycle
+		// with account deletion that holds the erasure lock first.
+		erased, err = c.notifications.ErasureGateTx(ctx, tx, in.authorDID)
+		if err != nil {
+			return false, fmt.Errorf("check post author erasure before updating: %w", err)
+		}
+		err = tx.QueryRowContext(ctx,
+			`SELECT COALESCE(content_facets::text, ''), created_at
+			 FROM posts WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`, in.storedID,
+		).Scan(&storedFacets, &storedCreatedAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			log.Printf("Update event for post that was deleted between load and write: %s (skipping)", in.uri)
+			return false, nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("read stored post before update: %w", err)
+		}
 	}
 
 	result, err := tx.ExecContext(ctx, updateQuery,
@@ -418,6 +470,12 @@ func (c *PostEventConsumer) applyPostContentUpdate(ctx context.Context, in postC
 		// replay re-evaluates against whatever state superseded this event.
 		log.Printf("Update event for post that was deleted or superseded by a newer update between load and write: %s (skipping)", in.uri)
 		return false, nil
+	}
+
+	if c.notifications != nil && !erased {
+		if err := c.writePostEditNotifications(ctx, tx, in, storedFacets, storedCreatedAt); err != nil {
+			return false, err
+		}
 	}
 
 	if err := commitMediaWrite(ctx, tx, in.uri, c.mediaReconciler, "post"); err != nil {
@@ -450,13 +508,15 @@ func parseBridgedAsOf(asOf, uri string) (time.Time, error) {
 
 // indexPostIfRevWins atomically indexes a post and reconciles comment counts.
 // This fixes the race condition where comments arrive before their parent post.
+// When notifications are wired, the author's erasure gate is checked before
+// touching the post row; an erased author's post is indexed without mentions.
 //
 // It reports whether the insert APPLIED: false means the rev gate refused the
 // event, or the row already existed. Callers that must not act on content they
 // did not write — the author-repo path, which opens an admission from the CID
 // it just indexed — read that flag rather than assuming the write happened.
 func (c *PostEventConsumer) indexPostIfRevWins(ctx context.Context, post *posts.Post, rev string) (bool, error) {
-	tx, err := c.db.BeginTx(ctx, nil)
+	tx, err := c.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return false, fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -478,6 +538,14 @@ func (c *PostEventConsumer) indexPostIfRevWins(ctx context.Context, post *posts.
 	if !won {
 		logSkippedStaleRev(ConsumerPosts, "create", post.URI, rev)
 		return false, nil
+	}
+
+	var erased bool
+	if c.notifications != nil {
+		erased, err = c.notifications.ErasureGateTx(ctx, tx, post.AuthorDID)
+		if err != nil {
+			return false, fmt.Errorf("check post author erasure before indexing: %w", err)
+		}
 	}
 
 	// 1. Insert the post (idempotent with RETURNING clause)
@@ -581,12 +649,59 @@ func (c *PostEventConsumer) indexPostIfRevWins(ctx context.Context, post *posts.
 		return false, fmt.Errorf("failed to reconcile comment_count for %s: %w", post.URI, reconcileErr)
 	}
 
+	if c.notifications != nil && !erased {
+		if err := c.writePostCreateNotifications(ctx, tx, post); err != nil {
+			return false, err
+		}
+	}
+
 	// Commit transaction
 	if err := commitMediaWrite(ctx, tx, post.URI, c.mediaReconciler, "post"); err != nil {
 		return false, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return true, nil
+}
+
+// writePostCreateNotifications writes eligible mentions in the post insert transaction.
+func (c *PostEventConsumer) writePostCreateNotifications(ctx context.Context, tx *sql.Tx, post *posts.Post) error {
+	var facetsJSON string
+	if post.ContentFacets != nil {
+		facetsJSON = *post.ContentFacets
+	}
+	intents, err := notifications.FanoutPostCreate(ctx, c.notifications.LookupsTx(tx), c.bridgeTrust, notifications.PostRecord{
+		URI: post.URI, CID: post.CID, AuthorDID: post.AuthorDID,
+		CreatedAt: post.CreatedAt, FacetsJSON: facetsJSON,
+	})
+	if err != nil {
+		return fmt.Errorf("compute post notifications: %w", err)
+	}
+	if err := c.notifications.ApplyTx(ctx, tx, intents); err != nil {
+		return fmt.Errorf("write post notifications: %w", err)
+	}
+	return nil
+}
+
+// writePostEditNotifications writes new mentions in the post update transaction.
+func (c *PostEventConsumer) writePostEditNotifications(ctx context.Context, tx *sql.Tx, in postContentUpdate, storedFacets string, storedCreatedAt time.Time) error {
+	var facetsJSON string
+	if in.facets.Valid {
+		facetsJSON = in.facets.String
+	}
+	// Missing time_us (<= 0) passes a zero EditEventTime, which falls back to
+	// index time for freshness; indexedAtForEvent substitutes wall clock instead.
+	editEventTime, _ := eventTime(in.timeUS)
+	intents, err := notifications.FanoutPostEdit(ctx, c.notifications.LookupsTx(tx), c.bridgeTrust, notifications.PostRecord{
+		URI: in.uri, CID: in.cid, AuthorDID: in.authorDID,
+		CreatedAt: storedCreatedAt, FacetsJSON: facetsJSON, EditEventTime: editEventTime,
+	}, storedFacets)
+	if err != nil {
+		return fmt.Errorf("compute post edit notifications: %w", err)
+	}
+	if err := c.notifications.ApplyTx(ctx, tx, intents); err != nil {
+		return fmt.Errorf("write post edit notifications: %w", err)
+	}
+	return nil
 }
 
 // errValidationInfra marks an ingestion validation failure caused by an infrastructure fault
