@@ -148,13 +148,21 @@ services:
     # (testkit.ConcurrencyBudget), so the two move together instead of the suite
     # discovering the limit as "sorry, too many clients already" in whichever
     # test happened to be unlucky.
-    command: ["-p", "5434", "-c", "max_connections=200"]
+    #
+    # Durability is off and the data lives in memory. Every test creates and
+    # drops its own clone, and DROP DATABASE waits for an immediate checkpoint.
+    # On a disk-backed volume under load, one stack logged 250 such checkpoints
+    # taking up to 23.9s, against testkit's 30s cleanup deadline; this is a
+    # mitigation of that suspected cause. The data is thrown away after every
+    # run.
+    command: ["-p", "5434", "-c", "max_connections=200",
+              "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"]
     environment:
       POSTGRES_DB: coves_test
       POSTGRES_USER: test_user
       POSTGRES_PASSWORD: test_password
-    volumes:
-      - postgres-test-data:/var/lib/postgresql/data
+    tmpfs:
+      - /var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -p 5434 -U test_user -d coves_test"]
       interval: 3s
@@ -188,9 +196,9 @@ services:
   # ---------------------------------------------------------------------------
 
   # Local PLC directory, so CI registers DIDs against its own registry and never
-  # touches plc.directory. Pre-baked (see docker/plc/Dockerfile) because the dev
-  # stack's approach — git clone plus yarn install at container start — costs
-  # minutes against the wiped volumes CI uses.
+  # touches plc.directory. Pre-baked from docker/plc/Dockerfile (shared with the
+  # dev stack) so the install is cached in image layers rather than repeated
+  # against the volumes CI wipes every run.
   plc-directory:
     build:
       context: ./docker/plc
@@ -666,7 +674,6 @@ volumes:
   # registry, and empty databases — no accumulated accounts, no handle
   # collisions, no fixtures left behind by a previous run.
   postgres-data:
-  postgres-test-data:
   postgres-plc-data:
   pds-data:
   pds2-data:

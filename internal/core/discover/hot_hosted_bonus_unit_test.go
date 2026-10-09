@@ -125,42 +125,68 @@ func TestHostedCommunityBonusIsStableAcrossCalls(t *testing.T) {
 		"one secret and one URI must produce the identical value within a process, not merely a close one")
 }
 
-// frozenRankingTime and the frozen table below are the pre-bonus ranking
-// function's own output, captured from this package before the parameter
-// existed and printed with %.17g. They are compared with == rather than a
-// delta: a bonus of zero must leave every existing rank bit-for-bit identical,
-// because a rank that drifted even in the last digit would reshuffle the ties
-// that decide feed order.
+// preBonusDiscoverHotRank is the ranking function as it stood before the bonus
+// parameter existed, copied from 0b1c178^:internal/core/discover/hot_ranking.go
+// with its minimumAdjustment constant written as the literal 0.5. A bonus of
+// zero, and any bonus on a negative score, must reproduce it bit for bit: a
+// rank that drifted even in the last digit would reshuffle the ties that
+// decide feed order.
+//
+// It is restated rather than frozen as printed literals because math.Pow is
+// built on Exp and Log, which have per-architecture assembly (and
+// CPU-dependent FMA use on amd64), and arm64 may fuse multiply-adds, so the
+// last digit of a rank can differ between machines. Literals printed on one
+// machine can fail on another, while the invariant holds on each.
+func preBonusDiscoverHotRank(score int, createdAt, rankingTime time.Time, communityAdjustment float64) float64 {
+	ageHours := rankingTime.Sub(createdAt).Hours()
+	if ageHours < 0 {
+		ageHours = 0
+	}
+
+	numerator := 1.0
+	switch {
+	case score > 0:
+		if math.IsNaN(communityAdjustment) || math.IsInf(communityAdjustment, 0) {
+			communityAdjustment = 1
+		}
+		communityAdjustment = min(max(communityAdjustment, 0.5), 1)
+		numerator += communityAdjustment * math.Log1p(float64(score))
+	case score < 0:
+		numerator -= math.Log1p(math.Abs(float64(score)))
+	}
+
+	return numerator / math.Pow(ageHours+2, 1.5)
+}
+
 var frozenRankingTime = time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 
-var frozenDiscoverHotRanks = []struct {
+var discoverHotRankCases = []struct {
 	name       string
 	score      int
 	age        time.Duration
 	adjustment float64
-	rank       float64
 }{
-	{"fresh zero score", 0, 0, 1, 0.35355339059327379},
-	{"half-day-old zero score", 0, 15 * time.Hour, 1, 0.014266801472725471},
-	{"small positive score", 5, 3 * time.Hour, 1, 0.24970255800090652},
-	{"popular two-day-old post", 400, 48 * time.Hour, 0.8, 0.016391213593287227},
-	{"very popular three-day-old post", 1000, 72 * time.Hour, 0.5, 0.0069974439678588476},
-	{"single upvote, minutes old", 1, 30 * time.Minute, 0.8, 0.39326533884824877},
-	{"lightly downvoted", -3, 6 * time.Hour, 1, -0.017071960142624978},
-	{"heavily downvoted", -250, 36 * time.Hour, 0.5, -0.01931908965911432},
-	{"future-dated positive score", 50, -5 * time.Hour, 1, 1.7436636742645033},
-	{"future-dated zero score", 0, -90 * time.Minute, 0.5, 0.35355339059327379},
-	{"fractional age", 7, 9*time.Hour + 45*time.Minute, 0.5, 0.050642357939854221},
+	{"fresh zero score", 0, 0, 1},
+	{"half-day-old zero score", 0, 15 * time.Hour, 1},
+	{"small positive score", 5, 3 * time.Hour, 1},
+	{"popular two-day-old post", 400, 48 * time.Hour, 0.8},
+	{"very popular three-day-old post", 1000, 72 * time.Hour, 0.5},
+	{"single upvote, minutes old", 1, 30 * time.Minute, 0.8},
+	{"lightly downvoted", -3, 6 * time.Hour, 1},
+	{"heavily downvoted", -250, 36 * time.Hour, 0.5},
+	{"future-dated positive score", 50, -5 * time.Hour, 1},
+	{"future-dated zero score", 0, -90 * time.Minute, 0.5},
+	{"fractional age", 7, 9*time.Hour + 45*time.Minute, 0.5},
 }
 
 func TestDiscoverHotRankWithoutBonusIsUnchanged(t *testing.T) {
 	t.Parallel()
 
-	for _, frozen := range frozenDiscoverHotRanks {
-		createdAt := frozenRankingTime.Add(-frozen.age)
-		assert.Equalf(t, frozen.rank,
-			discoverHotRank(frozen.score, createdAt, frozenRankingTime, frozen.adjustment, 0),
-			"%s: a zero bonus must reproduce the pre-bonus rank exactly", frozen.name)
+	for _, testCase := range discoverHotRankCases {
+		createdAt := frozenRankingTime.Add(-testCase.age)
+		assert.Equalf(t, preBonusDiscoverHotRank(testCase.score, createdAt, frozenRankingTime, testCase.adjustment),
+			discoverHotRank(testCase.score, createdAt, frozenRankingTime, testCase.adjustment, 0),
+			"%s: a zero bonus must reproduce the pre-bonus rank exactly", testCase.name)
 	}
 }
 
@@ -216,15 +242,15 @@ func TestDiscoverHotRankAddsBonusToNumerator(t *testing.T) {
 func TestDiscoverHotRankIgnoresBonusForNegativeScores(t *testing.T) {
 	t.Parallel()
 
-	for _, frozen := range frozenDiscoverHotRanks {
-		if frozen.score >= 0 {
+	for _, testCase := range discoverHotRankCases {
+		if testCase.score >= 0 {
 			continue
 		}
-		createdAt := frozenRankingTime.Add(-frozen.age)
+		createdAt := frozenRankingTime.Add(-testCase.age)
 		for _, bonus := range []float64{0.125, 1.5, 3.0} {
-			assert.Equalf(t, frozen.rank,
-				discoverHotRank(frozen.score, createdAt, frozenRankingTime, frozen.adjustment, bonus),
-				"%s: bonus %g must not lift a negative-score post", frozen.name, bonus)
+			assert.Equalf(t, preBonusDiscoverHotRank(testCase.score, createdAt, frozenRankingTime, testCase.adjustment),
+				discoverHotRank(testCase.score, createdAt, frozenRankingTime, testCase.adjustment, bonus),
+				"%s: bonus %g must not lift a negative-score post", testCase.name, bonus)
 		}
 	}
 }

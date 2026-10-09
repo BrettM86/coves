@@ -648,22 +648,24 @@ func TestAggregatorAuthorizationIngestion(t *testing.T) {
 //
 // # WHAT THE CODE DOES, AND WHY IT IS RIGHT
 //
-// The insert fails, and the consumer wraps the error WITHOUT ErrPermanentEvent
-// (aggregator_consumer.go:277), so the taxonomy classifies it transient: the
-// connector retries in line, then writes the event to the dead letter queue,
-// where the redriver replays it every five minutes until it succeeds
-// (redrive.go:71). Verified by spike: an authorization written before its
-// aggregator existed was absent for a minute, then appeared on its own once the
-// aggregator declared itself.
+// The insert fails, and the consumer wraps the error in ErrUnresolvedReference,
+// not ErrPermanentEvent (aggregator_consumer.go): the connector skips its in-line
+// retries and writes the event to the dead letter queue, where the redriver
+// replays it every REDRIVE_INTERVAL (five minutes by default, five seconds in
+// CI) until it succeeds or its UnresolvedRedriveAttempts run out (redrive.go).
+// Verified by spike: an authorization written before its aggregator existed was
+// absent for a minute, then appeared on its own once the aggregator declared
+// itself.
 //
 // That is the OPPOSITE of the vote consumer, whose out-of-order events are
 // silently lost (see the issue named in vote_contract_test.go), and the
 // difference is worth a test of its own — "the event was captured, not dropped"
 // is the property, and the dead-letter counter is where it is visible.
 //
-// The recovery itself is NOT asserted here: the redrive interval is five
-// minutes, twice the whole tier's wall clock. It belongs to §3.4c's reliability
-// suite, which owns dead letters and can drive a redrive directly.
+// The recovery itself is NOT asserted here: this test never declares the
+// aggregator, so its orphan stays in the backlog until its redrive budget runs
+// out. Recovery belongs to §3.4c's reliability suite, which owns dead letters
+// (TestReliabilityDeadLetterRedriveRecovers).
 func TestAggregatorAuthorizationArrivingBeforeItsAggregator(t *testing.T) {
 	p := newPipeline(t)
 

@@ -279,7 +279,6 @@ test-e2e-dev: ## T2 against the long-lived DEV stack (debugging only - not how C
 test-db-reset: ## Reset test database
 	@echo "$(GREEN)Resetting test database...$(RESET)"
 	@docker-compose -f docker-compose.dev.yml --env-file .env.dev --profile test rm -sf postgres-test
-	@docker volume rm coves-test-postgres-data || true
 	@docker-compose -f docker-compose.dev.yml --env-file .env.dev --profile test up -d postgres-test
 	@echo "Waiting for PostgreSQL to be ready..."
 	@# Rebuilds the template testkit.DB clones. NOT `goose up` against

@@ -214,6 +214,10 @@ make test-db-reset     # Reset test database (clean slate)
 make test-db-stop      # Stop test database
 ```
 
+The test database (`coves-test-postgres`) keeps its data in memory with
+durability off, as the CI one does. Recreating the container discards
+everything, including the template; the next `make test-integration` rebuilds it.
+
 **See [TEST_ARCHITECTURE.md](TEST_ARCHITECTURE.md) for the canonical description of
 the tiers, the gates, and how to write a test in each one.**
 

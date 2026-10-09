@@ -38,19 +38,22 @@ services:
   postgres-test:
     image: postgres:15
     container_name: coves-test-postgres
-    # Matches docker-compose.ci.yml: tests/testkit clones a database per test,
-    # each with its own pool, and testkit.ConcurrencyBudget derives the safe
-    # `go test -parallel` value from this number. See the CI file for the full
-    # reasoning.
-    command: ["-c", "max_connections=200"]
+    # Matches docker-compose.ci.yml's postgres-test (see that file for the full
+    # reasoning): max_connections sets testkit.ConcurrencyBudget's safe
+    # `go test -parallel` value, and durability is off with the data in memory
+    # because every test creates and drops its own clone. The data, including
+    # the template, is gone whenever the container is recreated;
+    # scripts/test-db-prepare.sh rebuilds it.
+    command: ["-c", "max_connections=200",
+              "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"]
     ports:
       - "${POSTGRES_TEST_PORT:-5434}:5432"
     environment:
       POSTGRES_DB: ${POSTGRES_TEST_DB:-coves_test}
       POSTGRES_USER: ${POSTGRES_TEST_USER:-test_user}
       POSTGRES_PASSWORD: ${POSTGRES_TEST_PASSWORD:-test_password}
-    volumes:
-      - postgres-test-data:/var/lib/postgresql/data
+    tmpfs:
+      - /var/lib/postgresql/data
     networks:
       - coves-dev
     healthcheck:
@@ -204,24 +207,13 @@ services:
   #   PLC_DIRECTORY_URL=http://localhost:3002
   #   IS_DEV_ENV=false  # Use production mode but point to local PLC
   plc-directory:
-    image: node:22.23.2-alpine3.24
+    # Same pinned image as the CI stack (docker/plc/Dockerfile). Keep it pinned:
+    # do not go back to cloning did-method-plc's main branch at container start.
+    build:
+      context: ./docker/plc
     container_name: coves-dev-plc
     ports:
       - "3002:3000"  # PLC directory API
-    working_dir: /app
-    command: >
-      sh -c "
-        if [ ! -d '/app/.git' ]; then
-          echo 'First run: Installing PLC directory...' &&
-          apk add --no-cache git python3 make g++ yarn &&
-          git clone https://github.com/did-method-plc/did-method-plc.git . &&
-          yarn install --frozen-lockfile &&
-          yarn build &&
-          echo 'PLC directory installed successfully!'
-        fi &&
-        cd packages/server &&
-        yarn start
-      "
     environment:
       # Point to dedicated PLC PostgreSQL database
       DATABASE_URL: postgresql://plc_user:plc_password@postgres-plc:5432/plc_dev?sslmode=disable
@@ -235,20 +227,17 @@ services:
 
       # API configuration
       PORT: 3000
-    volumes:
-      # Persist the PLC repo so we don't rebuild every time
-      - plc-app-data:/app
     networks:
       - coves-dev
     depends_on:
       postgres-plc:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/"]
+      # /_health, not /: the PLC server redirects / to https://web.plc.directory
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/_health"]
       interval: 10s
       timeout: 5s
       retries: 10
-      start_period: 120s
     profiles:
       - plc
 
@@ -364,13 +353,9 @@ networks:
 volumes:
   postgres-data:
     name: coves-dev-postgres-data
-  postgres-test-data:
-    name: coves-test-postgres-data
   postgres-plc-data:
     name: coves-dev-postgres-plc-data
   pds-data:
     name: coves-dev-pds-data
   jetstream-data:
     name: coves-dev-jetstream-data
-  plc-app-data:
-    name: coves-dev-plc-app-data

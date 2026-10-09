@@ -299,29 +299,29 @@ func TestReliabilityRewindReplaysExactlyOnce(t *testing.T) {
 // repo. The two records are in different repos, so nothing orders them: a
 // moderator can authorize an aggregator whose service declaration the AppView
 // has not indexed yet. The insert's foreign key fails, the consumer wraps the
-// error without ErrPermanentEvent, and the connector — after its in-line
-// retries — writes the raw event to the dead letter queue with its redrive
-// budget intact (aggregator_consumer.go, connector.go's processMessage).
+// error in ErrUnresolvedReference, and the connector skips its in-line retries
+// and writes the raw event to the dead letter queue with UnresolvedRedriveAttempts
+// redrives left (aggregator_consumer.go, connector.go's processMessage).
 // TestAggregatorAuthorizationArrivingBeforeItsAggregator asserts the capture
-// and stops there, because the recovery is on a five-minute timer.
+// and stops there; the recovery is this pair's to prove.
 //
-// # HOW A REDRIVE IS TRIGGERED WITHOUT WAITING FIVE MINUTES
+// # WHEN THE REDRIVE HAPPENS
 //
-// By restarting the AppView. DeadLetterRedriver.Run does a pass IMMEDIATELY at
-// boot before starting its ticker (redrive.go), precisely so a backlog that
-// accumulated while the process was down is not held hostage to the first full
-// interval. So the restart these scenarios already have machinery for is also
-// the redrive trigger, and it is a production code path rather than a test
-// affordance.
+// On the redriver's timer, which in CI is short: .env.ci sets REDRIVE_INTERVAL
+// to 5s, and a row becomes eligible once it is IDENTITY_NEGATIVE_CACHE_TTL (1s)
+// old. So the AppView running when the orphan is captured is already replaying
+// it every five seconds, and the first pass after the failure's cause is gone
+// consumes the row, possibly before any restart.
 //
-// The alternative was a configurable interval — a REDRIVE_INTERVAL knob set
-// short in .env.ci. It was rejected for two reasons. It adds production
-// configuration whose only consumer is a test, and it would change the
-// behaviour of every OTHER contract's leftovers: at a ten-second interval the
-// permanently-failing dead letters the tier leaves behind would burn their
-// ten-attempt budget during a run instead of over fifty minutes, so the dead
-// letter table the block contracts measure against would be quietly different
-// depending on how long the suite took.
+// The restart is a backstop, not the trigger. DeadLetterRedriver.Run does a
+// pass IMMEDIATELY at boot before starting its ticker (redrive.go), so if no
+// periodic pass got there first, the boot pass does.
+//
+// Either pass can be the one that retires the row, so each scenario snapshots
+// the backlog straight after the capture, while the orphan row is guaranteed to
+// be in it: until the scenario declares the aggregator or writes a tombstone, a
+// replay can only fail. A snapshot taken after that point can already exclude
+// the row, and the backlog then never drops below it.
 //
 // # WHAT PROVES IT WAS THE REDRIVER
 //
@@ -492,9 +492,9 @@ func declareAggregator(t *testing.T, p *pipeline, aggregator *testkit.Account) {
 // the pipeline could not apply when it arrived is not lost, and nobody has to
 // notice or intervene for it to land.
 //
-//	authorize an undeclared aggregator → captured (attempts 0, transient)
+//	authorize an undeclared aggregator → captured (unresolved reference)
 //	declare the aggregator             → the failure's cause is now gone
-//	restart                            → the redriver's boot pass replays it
+//	redrive (5s tick or restart)       → the redriver replays it
 //	the authorization                  → served, and its dead letter row is gone
 //
 // Both halves of that last line are asserted, and the second one is the
@@ -505,11 +505,14 @@ func TestReliabilityDeadLetterRedriveRecovers(t *testing.T) {
 	control := requireStackControl(t)
 
 	orphan := captureOrphanedAuthorization(t, p, "d")
-	declareAggregator(t, p, orphan.undeclared)
-
+	// Before the declaration: after it, a periodic redrive can retire the row
+	// before the snapshot (see the note above this pair).
 	backlogBefore := deadLetterBacklog(t, p, aggregatorsConsumer)
 
-	// Empty outage: the restart IS the trigger (redrive.go's boot pass).
+	declareAggregator(t, p, orphan.undeclared)
+
+	// Empty outage: the boot pass is the backstop if no periodic pass has
+	// replayed the row yet (redrive.go).
 	control.outage(t, p, func() {})
 
 	awaitAuthorization(t, p, orphan.community.DID, orphan.undeclared.DID,
@@ -526,12 +529,15 @@ func TestReliabilityDeadLetterRedriveRecovers(t *testing.T) {
 
 	// EXACTLY one, and that exactness rests on a dependency worth naming: this
 	// is the aggregators consumer's WHOLE backlog, not this scenario's row. The
-	// tier leaves one other aggregators dead letter behind (task 15's baseline —
-	// an invalid record whose redrive budget is exhausted at birth), and the
-	// equality holds only because that row can never succeed and so can never be
-	// retired by the same boot pass. If a future contract leaves a RETRYABLE
-	// aggregators dead letter, this drops by two and fails here rather than
-	// anywhere useful; scope the delta to the row by URI at that point.
+	// tier leaves two other aggregators dead letters behind:
+	// TestAggregatorServiceIngestion's spoofed declaration (permanent, its redrive
+	// budget exhausted at birth) and
+	// TestAggregatorAuthorizationArrivingBeforeItsAggregator's orphan (its
+	// aggregator is never declared, so every replay fails). The equality holds
+	// only because neither row can ever succeed and so neither can be retired by
+	// the same redrive. If a future contract leaves a RETRYABLE aggregators dead
+	// letter, this drops by more than one and fails here rather than anywhere
+	// useful; scope the delta to the row by URI at that point.
 	after := deadLetterBacklog(t, p, aggregatorsConsumer)
 	require.Equalf(t, backlogBefore-1, after,
 		"the aggregators dead letter backlog should have dropped by exactly one — the orphan this "+
@@ -553,7 +559,7 @@ func TestReliabilityDeadLetterRedriveRecovers(t *testing.T) {
 //	authorize an undeclared aggregator → captured, unindexed
 //	DELETE the authorization record    → the rev gate writes its tombstone
 //	declare the aggregator             → a replay would now succeed on its merits
-//	restart → redrive                  → the replay is refused, and STAYS refused
+//	redrive (5s tick or restart)       → the replay is refused, and STAYS refused
 //
 // # WHY THIS IS THE HONEST WAY TO STAGE IT
 //
@@ -584,6 +590,9 @@ func TestReliabilityRevGateRefusesResurrectionAfterDelete(t *testing.T) {
 	control := requireStackControl(t)
 
 	orphan := captureOrphanedAuthorization(t, p, "n")
+	// Before the delete: once the tombstone exists, a periodic redrive can
+	// consume the row before the snapshot (see the note above this pair).
+	backlogBefore := deadLetterBacklog(t, p, aggregatorsConsumer)
 
 	// The delete, bounded by a LATER commit in the SAME repo whose effect is
 	// visible: re-authorizing the declared aggregator with enabled=false flips
@@ -602,8 +611,6 @@ func TestReliabilityRevGateRefusesResurrectionAfterDelete(t *testing.T) {
 		})
 
 	declareAggregator(t, p, orphan.undeclared)
-
-	backlogBefore := deadLetterBacklog(t, p, aggregatorsConsumer)
 
 	control.outage(t, p, func() {})
 

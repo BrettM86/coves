@@ -1,23 +1,19 @@
-# Pre-baked PLC directory image for the hermetic CI stack.
+# Pre-baked PLC directory image, used by both the hermetic CI stack and the
+# dev stack (docker-compose.dev.yml).
 #
-# docker-compose.dev.yml installs the PLC directory at container *start*: it
-# apk-adds a toolchain, git-clones did-method-plc, then runs `yarn install &&
-# yarn build` inside a persistent volume. That is why the dev service needs a
-# 120s healthcheck start_period. The dev stack pays that cost once and keeps
-# the volume.
-#
-# CI wipes its volumes every run by design, so paying it per run would add
-# minutes to every gate. Baking the same steps into an image moves the cost
-# into Docker's layer cache instead: it is paid again only when PLC_REF changes.
+# Baking the install into an image moves its cost into Docker's layer cache:
+# it is paid again only when PLC_REF changes. CI wipes its volumes every run,
+# so installing at container start would add minutes to every gate.
 FROM node:22.23.2-alpine3.24
 
-# Pinned to a SHA rather than tracking main (which the dev compose does), for
-# two reasons: a CI run is reproducible, and an upstream PLC commit can never
-# turn our gate red on its own.
+# Pinned to a SHA rather than tracking main, for two reasons: a build is
+# reproducible, and an upstream PLC commit can never break it on its own.
+# Upstream main has since moved from yarn to pnpm; this commit still uses yarn.
 #
 # 2ed82a5 = "fix: apply backpressure to /export/stream ws producer (#150)",
 # 2026-07-02. Bump deliberately; rebuild with:
 #   docker compose -f docker-compose.ci.yml build plc-directory
+#   docker compose -f docker-compose.dev.yml build plc-directory
 ARG PLC_REF=2ed82a5ccf1b424aa5e2f6c5b461dc0ee133278b
 
 # git to fetch, python3/make/g++ to build the native deps behind better-sqlite3
@@ -39,7 +35,7 @@ RUN git init -q . \
 
 RUN yarn install --frozen-lockfile && yarn build
 
-# packages/server is the only thing CI runs; the rest of the monorepo is built
+# packages/server is the only thing either stack runs; the rest of the monorepo is built
 # because the server imports the sibling packages.
 WORKDIR /app/packages/server
 
