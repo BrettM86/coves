@@ -80,7 +80,7 @@ func registerXRPCRoutes(r chi.Router, app *application) {
 	// Posts accept dual auth so aggregator bots can publish with a service
 	// JWT or API key rather than a user's OAuth session.
 	routes.RegisterPostRoutes(r, app.postService, app.voteService, app.blueskyService,
-		app.dualAuth, app.authMiddleware,
+		app.dualAuth, app.authMiddleware, app.moderationAuthority, app.cfg.Instance.DID,
 		routes.WithPostStatusService(app.postStatusService))
 
 	routes.RegisterVoteRoutes(r, app.voteService, app.authMiddleware)
@@ -91,20 +91,21 @@ func registerXRPCRoutes(r chi.Router, app *application) {
 	routes.RegisterNotificationPreferenceRoutes(r, app.preferencesService, app.authMiddleware)
 	routes.RegisterAdminReportRoutes(r, app.adminReportService, app.authMiddleware)
 	routes.RegisterModerationRoutes(r, app.moderationService, app.instanceAdminAuth)
+	routes.RegisterViewerAuthorityRoute(r, app.instanceAdminAuth, app.moderationAuthority)
 	routes.RegisterCommunitySuggestionRoutes(r, app.communitySuggestionService,
 		app.authMiddleware, app.cfg.Instance.AllowedCommunityCreators)
 
 	// Feed, timeline, discover, and actor routes take optional auth: they are
-	// public, but an authenticated viewer additionally gets vote state and
-	// block filtering.
+	// public, but an authenticated viewer additionally gets vote state,
+	// moderation actions, and block filtering.
 	routes.RegisterCommunityFeedRoutes(r, app.feedService, app.voteService,
-		app.blueskyService, app.authMiddleware)
+		app.blueskyService, app.authMiddleware, app.moderationAuthority, app.cfg.Instance.DID)
 	routes.RegisterTimelineRoutes(r, app.timelineService, app.voteService,
-		app.blueskyService, app.authMiddleware)
+		app.blueskyService, app.authMiddleware, app.moderationAuthority, app.cfg.Instance.DID)
 	routes.RegisterDiscoverRoutes(r, app.discoverService, app.voteService,
-		app.blueskyService, app.authMiddleware)
+		app.blueskyService, app.authMiddleware, app.moderationAuthority, app.cfg.Instance.DID)
 	routes.RegisterActorRoutes(r, app.postService, app.userService, app.voteService,
-		app.blueskyService, app.commentService, app.authMiddleware)
+		app.blueskyService, app.commentService, app.authMiddleware, app.moderationAuthority, app.cfg.Instance.DID)
 
 	// The registration handler fetches .well-known/atproto-did from a domain an
 	// unauthenticated caller supplies, so its client is guarded; the hatch is
@@ -120,12 +121,13 @@ func registerXRPCRoutes(r chi.Router, app *application) {
 }
 
 // registerCommentQueryRoute mounts the comment tree query separately because
-// it needs both optional authentication (for viewer vote state) and a rate
-// limit stricter than the global one.
+// it needs both optional authentication (for viewer vote state and moderation
+// actions) and a rate limit stricter than the global one.
 func registerCommentQueryRoute(r chi.Router, app *application) {
 	limiter := middleware.NewNamedRateLimiter("commentQuery",
 		commentQueryRateLimit, commentQueryRateWindow)
-	handler := commentsAPI.NewGetCommentsHandler(commentsAPI.NewServiceAdapter(app.commentService), app.voteService)
+	handler := commentsAPI.NewGetCommentsHandler(commentsAPI.NewServiceAdapter(app.commentService), app.voteService,
+		app.moderationAuthority, app.cfg.Instance.DID)
 
 	r.Handle(
 		"/xrpc/social.coves.community.comment.getComments",

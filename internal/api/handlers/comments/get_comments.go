@@ -6,6 +6,8 @@ import (
 	"Coves/internal/api/handlers/common"
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/comments"
+	"Coves/internal/core/moderation"
+	"Coves/internal/core/posts"
 	"Coves/internal/core/votes"
 	"encoding/json"
 	"log"
@@ -19,6 +21,8 @@ import (
 type GetCommentsHandler struct {
 	service     Service
 	voteService votes.Service
+	authority   moderation.Authority
+	instanceDID string
 }
 
 // Service defines the interface for comment business logic
@@ -40,11 +44,18 @@ type GetCommentsRequest struct {
 	Limit      int     `json:"limit,omitempty"`
 }
 
-// NewGetCommentsHandler creates a new handler for fetching comments
-func NewGetCommentsHandler(service Service, voteService votes.Service) *GetCommentsHandler {
+// NewGetCommentsHandler creates a new handler for fetching comments.
+// authority decides whether the viewer is an instance admin; instanceDID
+// identifies this instance's own removals and labels. Both are required.
+func NewGetCommentsHandler(service Service, voteService votes.Service, authority moderation.Authority, instanceDID string) *GetCommentsHandler {
+	if authority == nil || instanceDID == "" {
+		panic("comments.NewGetCommentsHandler: authority and instanceDID are required")
+	}
 	return &GetCommentsHandler{
 		service:     service,
 		voteService: voteService,
+		authority:   authority,
+		instanceDID: instanceDID,
 	}
 }
 
@@ -166,7 +177,7 @@ func (h *GetCommentsHandler) HandleGetComments(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	h.populateViewerVoteState(r, resp)
+	h.populateViewerState(r, resp)
 
 	// 11. Return JSON response
 	w.Header().Set("Content-Type", "application/json")
@@ -185,9 +196,11 @@ func ptrOrNil(s string) *string {
 	return &s
 }
 
-// populateViewerVoteState includes every returned reply, including subtree queries.
-func (h *GetCommentsHandler) populateViewerVoteState(r *http.Request, response *comments.GetCommentsResponse) {
-	if response == nil || h.voteService == nil {
+// populateViewerState overlays the viewer's votes and moderation actions on
+// every returned comment, including replies, removed placeholders and subtree
+// queries, and the viewer's moderation actions on the thread's header post.
+func (h *GetCommentsHandler) populateViewerState(r *http.Request, response *comments.GetCommentsResponse) {
+	if response == nil {
 		return
 	}
 	var views []*comments.CommentView
@@ -204,4 +217,8 @@ func (h *GetCommentsHandler) populateViewerVoteState(r *http.Request, response *
 		pending = append(pending, node.Replies...)
 	}
 	common.PopulateCommentViewerVoteState(r, h.voteService, views)
+	common.PopulateCommentViewerModeration(r, h.authority, h.instanceDID, views)
+	if header, ok := response.Post.(*posts.PostView); ok && header != nil {
+		common.PopulateViewerModeration(r, h.authority, h.instanceDID, []*posts.FeedViewPost{{Post: header}})
+	}
 }

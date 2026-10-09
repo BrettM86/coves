@@ -10,6 +10,7 @@ import (
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/blueskypost"
 	"Coves/internal/core/discover"
+	"Coves/internal/core/moderation"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/votes"
 )
@@ -19,6 +20,8 @@ type GetDiscoverHandler struct {
 	service        discover.Service
 	voteService    votes.Service
 	blueskyService blueskypost.Service
+	authority      moderation.Authority
+	instanceDID    string
 }
 
 // NewGetDiscoverHandler creates a new discover handler
@@ -33,9 +36,21 @@ func NewGetDiscoverHandler(service discover.Service, voteService votes.Service, 
 	}
 }
 
+// WithViewerModeration makes the handler report, in viewer.moderation, the
+// moderation actions an instance admin viewer may take on each post.
+func (h *GetDiscoverHandler) WithViewerModeration(authority moderation.Authority, instanceDID string) *GetDiscoverHandler {
+	if authority == nil || instanceDID == "" {
+		panic("discover.GetDiscoverHandler.WithViewerModeration: authority and instanceDID are required")
+	}
+	h.authority = authority
+	h.instanceDID = instanceDID
+	return h
+}
+
 // HandleGetDiscover retrieves posts from all communities (public feed)
 // GET /xrpc/social.coves.feed.getDiscover?sort=hot&limit=15&cursor=...
 // Public endpoint with optional auth - if authenticated, includes viewer vote state
+// and moderation actions
 func (h *GetDiscoverHandler) HandleGetDiscover(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -52,8 +67,9 @@ func (h *GetDiscoverHandler) HandleGetDiscover(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Populate viewer vote state if authenticated
+	// Populate viewer vote state and moderation actions if authenticated
 	common.PopulateViewerVoteState(r.Context(), r, h.voteService, response.Feed)
+	common.PopulateViewerModeration(r, h.authority, h.instanceDID, response.Feed)
 
 	// Transform blob refs to URLs and resolve post embeds for all posts
 	for _, feedPost := range response.Feed {

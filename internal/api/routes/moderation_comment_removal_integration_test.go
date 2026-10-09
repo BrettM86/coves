@@ -156,7 +156,7 @@ func TestModerationCommentRemovalAcceptance(t *testing.T) {
 	mux := chi.NewRouter()
 	routes.RegisterModerationRoutes(mux, moderationService, adminAuth)
 	mux.With(optionalAuth.OptionalAuth).Get("/xrpc/social.coves.community.comment.getComments",
-		commentsAPI.NewGetCommentsHandler(commentsAPI.NewServiceAdapter(commentService), nil).HandleGetComments)
+		commentsAPI.NewGetCommentsHandler(commentsAPI.NewServiceAdapter(commentService), nil, moderation.NewAllowlistAuthority(nil), instanceDID).HandleGetComments)
 	mux.With(optionalAuth.OptionalAuth).Get("/xrpc/social.coves.actor.getComments",
 		actorAPI.NewGetCommentsHandler(commentService, nil, nil).HandleGetComments)
 	server := httptest.NewServer(mux)

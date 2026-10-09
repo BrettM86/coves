@@ -77,9 +77,15 @@ type instanceAdminResult struct {
 }
 
 func (f *instanceAdminFixture) serve(request *http.Request) instanceAdminResult {
+	return f.serveThrough((*InstanceAdminMiddleware).RequireInstanceAdmin, request)
+}
+
+// serveThrough runs request through one of the gate's methods in front of a
+// handler that records the authenticated DID.
+func (f *instanceAdminFixture) serveThrough(method func(*InstanceAdminMiddleware, http.Handler) http.Handler, request *http.Request) instanceAdminResult {
 	result := instanceAdminResult{response: httptest.NewRecorder()}
 	gate := NewInstanceAdminMiddleware(f.unsealer, f.store, f.validator, f.authority)
-	handler := gate.RequireInstanceAdmin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := method(gate, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		result.called = true
 		result.did = GetUserDID(r)
 		w.WriteHeader(http.StatusNoContent)
@@ -91,7 +97,7 @@ func (f *instanceAdminFixture) serve(request *http.Request) instanceAdminResult 
 func assertInstanceAdminResult(t *testing.T, got instanceAdminResult, wantStatus int, wantCode string, wantCalled bool, wantDID string) {
 	t.Helper()
 	assert.Equal(t, wantStatus, got.response.Code)
-	assert.Equal(t, wantCalled, got.called, "next handler must run only for an authorized admin")
+	assert.Equal(t, wantCalled, got.called, "next handler must run only for an authorized caller")
 	if wantCalled {
 		assert.Equal(t, wantDID, got.did, "authenticated DID in next handler")
 	}
@@ -249,7 +255,7 @@ func TestRequireInstanceAdminServiceJWTWithMockValidator(t *testing.T) {
 			}, wantStatus: http.StatusForbidden, wantCode: "Forbidden",
 		},
 		{
-			name: "nil validator", wantStatus: http.StatusUnauthorized, wantCode: "AuthRequired",
+			name: "nil validator", wantStatus: http.StatusInternalServerError, wantCode: "InternalServerError",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -285,11 +291,16 @@ func TestRequireInstanceAdminServiceJWTRefusalDoesNotFallBackToSealedSession(t *
 	require.True(t, isJWTFormat(jwtShapedToken), "fixture token must route as a service JWT")
 
 	for _, test := range []struct {
-		name      string
-		validator ServiceAuthValidator
+		name       string
+		validator  ServiceAuthValidator
+		wantStatus int
+		wantCode   string
 	}{
-		{name: "validator rejects token", validator: &mockServiceAuthValidator{shouldFail: true}},
-		{name: "nil validator"},
+		{
+			name: "validator rejects token", validator: &mockServiceAuthValidator{shouldFail: true},
+			wantStatus: http.StatusUnauthorized, wantCode: "AuthRequired",
+		},
+		{name: "nil validator", wantStatus: http.StatusInternalServerError, wantCode: "InternalServerError"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newInstanceAdminFixture()
@@ -304,7 +315,7 @@ func TestRequireInstanceAdminServiceJWTRefusalDoesNotFallBackToSealedSession(t *
 			fixture.validator = test.validator
 
 			assertInstanceAdminResult(t, fixture.serve(instanceAdminBearerRequest(jwtShapedToken)),
-				http.StatusUnauthorized, "AuthRequired", false, "")
+				test.wantStatus, test.wantCode, false, "")
 		})
 	}
 }
@@ -452,4 +463,109 @@ func TestSealedSessionAuthenticationZeroValueIsNotAuthenticated(t *testing.T) {
 	var zero sealedSessionAuthentication
 	assert.NotEqual(t, sealedSessionNoFailure, zero.failure, "an unset result must not read as authenticated")
 	assert.NotEmpty(t, zero.failure.reason(), "an unset result must have a refusal reason")
+}
+
+const viewerAuthorityPath = "/xrpc/social.coves.actor.getViewerAuthority"
+
+// TestRequireAuthenticated covers the authenticate-only gate in front of
+// social.coves.actor.getViewerAuthority: the same credentials and refusals as
+// RequireInstanceAdmin, without the admin requirement.
+func TestRequireAuthenticated(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		request    func(t *testing.T, fixture *instanceAdminFixture) *http.Request
+		wantStatus int
+		wantCode   string
+		wantCalled bool
+		wantDID    string
+		wantLevel  string
+	}{
+		{
+			name: "non-admin sealed session in bearer header", wantStatus: http.StatusNoContent, wantCalled: true, wantDID: otherActorDID,
+			request: func(t *testing.T, f *instanceAdminFixture) *http.Request {
+				request := httptest.NewRequest(http.MethodGet, viewerAuthorityPath, nil)
+				request.Header.Set("Authorization", "Bearer "+f.sealedToken(t, otherActorDID))
+				return request
+			},
+		},
+		{
+			name: "non-admin sealed session in cookie", wantStatus: http.StatusNoContent, wantCalled: true, wantDID: otherActorDID,
+			request: func(t *testing.T, f *instanceAdminFixture) *http.Request {
+				request := httptest.NewRequest(http.MethodGet, viewerAuthorityPath, nil)
+				request.AddCookie(&http.Cookie{Name: "coves_session", Value: f.sealedToken(t, otherActorDID)})
+				return request
+			},
+		},
+		{
+			name: "service JWT bound to getViewerAuthority", wantStatus: http.StatusNoContent, wantCalled: true, wantDID: otherActorDID,
+			request: func(_ *testing.T, f *instanceAdminFixture) *http.Request {
+				f.validator = &mockServiceAuthValidator{
+					returnDID: syntax.DID(otherActorDID), boundMethod: "social.coves.actor.getViewerAuthority",
+				}
+				request := httptest.NewRequest(http.MethodGet, viewerAuthorityPath, nil)
+				request.Header.Set("Authorization", "Bearer header.payload.signature")
+				return request
+			},
+		},
+		{
+			name: "service JWT bound to another method", wantStatus: http.StatusUnauthorized, wantCode: "AuthRequired",
+			request: func(_ *testing.T, f *instanceAdminFixture) *http.Request {
+				f.validator = &mockServiceAuthValidator{
+					returnDID: syntax.DID(otherActorDID), boundMethod: "social.coves.moderation.getSubjectState",
+				}
+				request := httptest.NewRequest(http.MethodGet, viewerAuthorityPath, nil)
+				request.Header.Set("Authorization", "Bearer header.payload.signature")
+				return request
+			},
+		},
+		{
+			name: "no credential", wantStatus: http.StatusUnauthorized, wantCode: "AuthRequired", wantLevel: "DEBUG",
+			request: func(_ *testing.T, _ *instanceAdminFixture) *http.Request {
+				return httptest.NewRequest(http.MethodGet, viewerAuthorityPath, nil)
+			},
+		},
+		{
+			name: "session DID mismatch", wantStatus: http.StatusUnauthorized, wantCode: "AuthRequired", wantLevel: "WARN",
+			request: func(_ *testing.T, f *instanceAdminFixture) *http.Request {
+				f.sessions.sessions[otherActorDID+":browser"] = &oauthlib.ClientSessionData{
+					AccountDID: syntax.DID(instanceAdminDID), SessionID: "browser",
+				}
+				request := httptest.NewRequest(http.MethodGet, viewerAuthorityPath, nil)
+				request.Header.Set("Authorization", "Bearer "+f.client.createTestToken(otherActorDID, "browser", time.Hour))
+				return request
+			},
+		},
+		{
+			name: "unknown sealed token", wantStatus: http.StatusUnauthorized, wantCode: "AuthRequired",
+			request: func(_ *testing.T, _ *instanceAdminFixture) *http.Request {
+				request := httptest.NewRequest(http.MethodGet, viewerAuthorityPath, nil)
+				request.Header.Set("Authorization", "Bearer garbage-token")
+				return request
+			},
+		},
+		{
+			name: "session store unavailable", wantStatus: http.StatusServiceUnavailable, wantCode: "ModerationUnavailable",
+			request: func(_ *testing.T, f *instanceAdminFixture) *http.Request {
+				f.store = &authenticationFailureStore{failure: errors.New("database unavailable")}
+				request := httptest.NewRequest(http.MethodGet, viewerAuthorityPath, nil)
+				request.Header.Set("Authorization", "Bearer "+f.client.createTestToken(otherActorDID, "browser", time.Hour))
+				return request
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var logged bytes.Buffer
+			previousSlog := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug})))
+			t.Cleanup(func() { slog.SetDefault(previousSlog) })
+
+			fixture := newInstanceAdminFixture()
+			request := test.request(t, fixture)
+			assertInstanceAdminResult(t, fixture.serveThrough((*InstanceAdminMiddleware).RequireAuthenticated, request),
+				test.wantStatus, test.wantCode, test.wantCalled, test.wantDID)
+			if test.wantLevel != "" {
+				assert.Contains(t, logged.String(), "level="+test.wantLevel, "refusal log level")
+			}
+		})
+	}
 }

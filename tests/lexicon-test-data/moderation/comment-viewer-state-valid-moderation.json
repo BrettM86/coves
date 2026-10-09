@@ -1,0 +1,6 @@
+{
+  "$type": "social.coves.community.comment.defs#commentViewerState",
+  "vote": "up",
+  "voteUri": "at://did:plc:abc123/social.coves.feed.vote/3k7a3dmb5bk2c",
+  "moderation": ["remove"]
+}

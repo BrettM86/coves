@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"testing"
 
+	"Coves/internal/api/middleware"
+	"Coves/internal/core/moderation"
 	"Coves/internal/core/posts"
 
 	"github.com/stretchr/testify/assert"
@@ -66,4 +68,30 @@ func TestHandleGetExistingTombstoneUnionEncoding(t *testing.T) {
 			assert.JSONEq(t, `{"posts":[`+scenario.expected+`]}`, recorder.Body.String())
 		})
 	}
+}
+
+func TestHandleGetModeratedPostAdminViewerCarriesOnlyModeration(t *testing.T) {
+	const instanceDID = "did:web:instance.test"
+	const adminDID = "did:plc:instanceadmin"
+	uri := "at://did:plc:ewvi7nxzyoun6zhxrhs64oiz/social.coves.community.postv2/abc123"
+	handler := NewGetHandler(&mockGetPostService{getPostsFunc: func(_ context.Context, _ posts.GetPostsRequest) ([]*posts.PostResult, error) {
+		return []*posts.PostResult{{Moderated: &posts.ModeratedPost{
+			URI: uri, AuthorDID: "did:plc:postauthor",
+			Moderation: &posts.ModerationView{State: "removed", Sources: []posts.ModerationSourceView{{
+				AuthorityDID: instanceDID, Scope: posts.ModerationScopeView{Kind: "instance"},
+			}}},
+		}}}, nil
+	}}, nil, nil).WithViewerModeration(moderation.NewAllowlistAuthority([]string{adminDID}), instanceDID)
+	request := httptest.NewRequest(http.MethodGet, "/xrpc/social.coves.community.post.get?"+url.Values{"uris": {uri}}.Encode(), nil)
+	request = request.WithContext(middleware.SetTestUserDID(request.Context(), adminDID))
+	recorder := httptest.NewRecorder()
+	handler.HandleGet(recorder, request)
+	require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+	var body struct {
+		Posts []map[string]any `json:"posts"`
+	}
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
+	require.Len(t, body.Posts, 1)
+	assert.Equal(t, map[string]any{"moderation": []any{"restore"}}, body.Posts[0]["viewer"],
+		"a moderated tombstone's viewer carries only moderation actions, no post viewer state such as saved")
 }

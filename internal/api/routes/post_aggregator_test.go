@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"Coves/internal/core/moderation"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -130,7 +131,7 @@ func (refusingAuth) RequireAuth(http.Handler) http.Handler {
 // wiring bug it is there to catch — so it gets a real value.
 func postRouter(service posts.Service, auth middleware.AuthMiddleware) http.Handler {
 	router := chi.NewRouter()
-	RegisterPostRoutes(router, service, nil, nil, auth, middleware.NewOAuthAuthMiddleware(nil, nil))
+	RegisterPostRoutes(router, service, nil, nil, auth, middleware.NewOAuthAuthMiddleware(nil, nil), moderation.NewAllowlistAuthority(nil), "did:plc:testinstance")
 	return router
 }
 

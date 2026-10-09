@@ -100,6 +100,10 @@ type application struct {
 	dualAuth             *middleware.DualAuthMiddleware
 	serviceAuthValidator middleware.ServiceAuthValidator
 	instanceAdminAuth    *middleware.InstanceAdminMiddleware
+	// moderationAuthority answers who is an instance admin. It is the
+	// allowlist instanceAdminAuth checks, shared with the read paths that
+	// hydrate viewer.moderation and with getViewerAuthority.
+	moderationAuthority moderation.Authority
 
 	// Repositories reused outside their own service (Jetstream consumers,
 	// route options).
@@ -473,7 +477,8 @@ func (a *application) buildServices(ctx context.Context) error {
 	a.apiKeyService = aggregators.NewAPIKeyService(a.aggregatorRepo, a.oauthClient.ClientApp)
 
 	a.buildDualAuth()
-	a.instanceAdminAuth = buildInstanceAdminMiddleware(a.cfg, a.oauthClient, a.oauthStore, a.serviceAuthValidator)
+	a.moderationAuthority = moderation.NewAllowlistAuthority(a.cfg.Moderation.Admins)
+	a.instanceAdminAuth = buildInstanceAdminMiddleware(a.moderationAuthority, a.oauthClient, a.oauthStore, a.serviceAuthValidator)
 	slog.Info("instance moderation admins configured", "admin_count", len(a.cfg.Moderation.Admins))
 
 	// The SSRF hatch is open only in dev, where the links a developer pastes and

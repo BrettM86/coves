@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"Coves/internal/core/moderation"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -256,6 +257,11 @@ var declaredRoutes = []declaredRoute{
 	{http.MethodPost, "/xrpc/social.coves.moderation.labelContent", authRequired, 0, false},
 	{http.MethodPost, "/xrpc/social.coves.moderation.retractContentLabel", authRequired, 0, false},
 
+	// RegisterViewerAuthorityRoute — whether the signed-in viewer is an instance
+	// admin. Any authenticated caller may ask about themselves; there is no
+	// anonymous answer.
+	{http.MethodGet, "/xrpc/social.coves.actor.getViewerAuthority", authRequired, 0, false},
+
 	// RegisterCommunitySuggestionRoutes — social.coves.community.suggestion.*
 	{http.MethodGet, "/xrpc/social.coves.community.suggestion.list", authOptional, 0, false},
 	{http.MethodGet, "/xrpc/social.coves.community.suggestion.get", authOptional, 0, false},
@@ -429,17 +435,18 @@ var theRouter = sync.OnceValue(func() builtRouter {
 	clientConfig := indigooauth.NewLocalhostConfig("http://127.0.0.1:0/oauth/callback", []string{"atproto"})
 	RegisterUserRoutes(mux, nil, auth, indigooauth.NewClientApp(&clientConfig, nil))
 	RegisterCommunityRoutes(mux, nil, nil, auth, nil)
-	RegisterPostRoutes(mux, nil, nil, nil, auth, auth)
+	RegisterPostRoutes(mux, nil, nil, nil, auth, auth, moderation.NewAllowlistAuthority(nil), "did:plc:testinstance")
 	RegisterVoteRoutes(mux, nil, auth)
 	RegisterUserBlockRoutes(mux, unreachableUserBlockService{}, auth)
 	RegisterCommentRoutes(mux, nil, auth)
 	RegisterAdminReportRoutes(mux, nil, auth)
 	RegisterModerationRoutes(mux, nil, middleware.NewInstanceAdminMiddleware(unsealer, nil, nil, nil))
+	RegisterViewerAuthorityRoute(mux, middleware.NewInstanceAdminMiddleware(unsealer, nil, nil, nil), moderation.NewAllowlistAuthority(nil))
 	RegisterCommunitySuggestionRoutes(mux, nil, auth, nil)
-	RegisterCommunityFeedRoutes(mux, nil, nil, nil, auth)
-	RegisterTimelineRoutes(mux, nil, nil, nil, auth)
-	RegisterDiscoverRoutes(mux, nil, nil, nil, auth)
-	RegisterActorRoutes(mux, nil, nil, nil, nil, nil, auth)
+	RegisterCommunityFeedRoutes(mux, nil, nil, nil, auth, moderation.NewAllowlistAuthority(nil), "did:plc:testinstance")
+	RegisterTimelineRoutes(mux, nil, nil, nil, auth, moderation.NewAllowlistAuthority(nil), "did:plc:testinstance")
+	RegisterDiscoverRoutes(mux, nil, nil, nil, auth, moderation.NewAllowlistAuthority(nil), "did:plc:testinstance")
+	RegisterActorRoutes(mux, nil, nil, nil, nil, nil, auth, moderation.NewAllowlistAuthority(nil), "did:plc:testinstance")
 	RegisterAggregatorRoutes(mux, nil, nil, nil, nil)
 	RegisterAggregatorAPIKeyRoutes(mux, auth, nil, nil)
 	RegisterOAuthRoutes(mux, nil, []string{"https://coves.social"})

@@ -12,6 +12,7 @@ import (
 	"Coves/internal/api/middleware"
 	"Coves/internal/atproto/oauth"
 	"Coves/internal/config"
+	"Coves/internal/core/moderation"
 	indigooauth "github.com/bluesky-social/indigo/atproto/auth/oauth"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/stretchr/testify/assert"
@@ -70,7 +71,7 @@ func TestBuildInstanceAdminMiddlewareUsesModerationAdminsOnly(t *testing.T) {
 				store.sessions[did+":browser"] = &indigooauth.ClientSessionData{AccountDID: syntax.DID(did), SessionID: "browser"}
 			}
 
-			gate := buildInstanceAdminMiddleware(cfg, unsealer, store, nil)
+			gate := buildInstanceAdminMiddleware(moderation.NewAllowlistAuthority(cfg.Moderation.Admins), unsealer, store, nil)
 			if !assert.NotNil(t, gate, "the server must construct the instance-admin gate") {
 				return
 			}

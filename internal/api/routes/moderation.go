@@ -33,3 +33,12 @@ func RegisterModerationRoutes(r chi.Router, service moderation.Service, adminAut
 	r.With(adminAuth.RequireInstanceAdmin).Post(
 		"/xrpc/social.coves.moderation.retractContentLabel", retractContentLabel.HandleRetractContentLabel)
 }
+
+// RegisterViewerAuthorityRoute registers social.coves.actor.getViewerAuthority.
+// It is AppView-served and authenticated, never PDS-proxied, so it stays out
+// of the PDS OAuth scopes.
+func RegisterViewerAuthorityRoute(r chi.Router, adminAuth *middleware.InstanceAdminMiddleware, authority moderation.Authority) {
+	getViewerAuthority := handler.NewGetViewerAuthorityHandler(authority)
+	r.With(adminAuth.RequireAuthenticated).Get(
+		"/xrpc/social.coves.actor.getViewerAuthority", getViewerAuthority.HandleGetViewerAuthority)
+}

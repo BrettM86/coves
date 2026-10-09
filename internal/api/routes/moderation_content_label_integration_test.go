@@ -12,12 +12,16 @@ import (
 	"testing"
 	"time"
 
+	commentsAPI "Coves/internal/api/handlers/comments"
 	"Coves/internal/api/middleware"
 	"Coves/internal/api/routes"
+	"Coves/internal/core/comments"
 	"Coves/internal/core/communities"
 	"Coves/internal/core/communityFeeds"
+	"Coves/internal/core/discover"
 	"Coves/internal/core/moderation"
 	"Coves/internal/core/posts"
+	"Coves/internal/core/timeline"
 	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/internal/validation"
@@ -39,6 +43,7 @@ type contentLabelRouteFixture struct {
 	communityDID  string
 	adminDID      string
 	adminToken    string
+	nonAdminDID   string
 	nonAdminToken string
 	postCID       string
 	pdsRequests   *atomic.Int64
@@ -75,6 +80,10 @@ func newContentLabelRouteFixture(t *testing.T) contentLabelRouteFixture {
 	feedService := communityFeeds.NewCommunityFeedService(
 		postgres.NewCommunityFeedRepository(db, "content-label-acceptance-cursor-secret"), communityService,
 	)
+	commentService := comments.NewCommentService(postgres.NewCommentRepository(db), postgres.NewUserRepository(db),
+		postRepo, communityRepo, nil, nil, nil)
+	timelineService := timeline.NewTimelineService(postgres.NewTimelineRepository(db, "content-label-acceptance-cursor-secret"))
+	discoverService := discover.NewDiscoverService(postgres.NewDiscoverRepository(db, "content-label-acceptance-cursor-secret"))
 
 	authorName := testkit.UniqueIDWithPrefix(t, "labelauthor")
 	const authorDID = "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb"
@@ -112,8 +121,8 @@ func newContentLabelRouteFixture(t *testing.T) contentLabelRouteFixture {
 	oauthStore := fixtures.NewOAuthStore()
 	unsealer.AddSession(adminToken, adminDID, "content-label-admin")
 	oauthStore.AddSession(adminDID, "content-label-admin", "test-access-token")
-	adminAuth := middleware.NewInstanceAdminMiddleware(unsealer, oauthStore, nil,
-		moderation.NewAllowlistAuthority([]string{adminDID}))
+	authority := moderation.NewAllowlistAuthority([]string{adminDID})
+	adminAuth := middleware.NewInstanceAdminMiddleware(unsealer, oauthStore, nil, authority)
 	nonAdminDID := fixtures.DID(testkit.UniqueIDWithPrefix(t, "labelother"))
 	const nonAdminToken = "content-label-nonadmin-session"
 	unsealer.AddSession(nonAdminToken, nonAdminDID, "content-label-nonadmin")
@@ -121,15 +130,21 @@ func newContentLabelRouteFixture(t *testing.T) contentLabelRouteFixture {
 	optionalAuth := middleware.NewOAuthAuthMiddleware(unsealer, oauthStore)
 	mux := chi.NewRouter()
 	routes.RegisterModerationRoutes(mux, moderationService, adminAuth)
-	routes.RegisterPostRoutes(mux, postService, nil, nil, optionalAuth, optionalAuth)
-	routes.RegisterCommunityFeedRoutes(mux, feedService, nil, nil, optionalAuth)
-	routes.RegisterActorRoutes(mux, postService, nil, nil, nil, nil, optionalAuth)
+	routes.RegisterPostRoutes(mux, postService, nil, nil, optionalAuth, optionalAuth, authority, instanceDID)
+	routes.RegisterCommunityFeedRoutes(mux, feedService, nil, nil, optionalAuth, authority, instanceDID)
+	routes.RegisterActorRoutes(mux, postService, nil, nil, nil, commentService, optionalAuth, authority, instanceDID)
+	routes.RegisterTimelineRoutes(mux, timelineService, nil, nil, optionalAuth, authority, instanceDID)
+	routes.RegisterDiscoverRoutes(mux, discoverService, nil, nil, optionalAuth, authority, instanceDID)
+	// Mounted as cmd/server registerCommentQueryRoute mounts it (minus its rate limit).
+	commentThread := commentsAPI.NewGetCommentsHandler(commentsAPI.NewServiceAdapter(commentService), nil, authority, instanceDID)
+	mux.Handle("/xrpc/social.coves.community.comment.getComments",
+		commentsAPI.OptionalAuthMiddleware(optionalAuth, commentThread.HandleGetComments))
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return contentLabelRouteFixture{
 		db: db, server: server, client: server.Client(), instanceDID: instanceDID,
 		authorDID: authorDID, communityDID: communityDID, adminDID: adminDID,
-		adminToken: adminToken, nonAdminToken: nonAdminToken, postCID: postCID,
+		adminToken: adminToken, nonAdminDID: nonAdminDID, nonAdminToken: nonAdminToken, postCID: postCID,
 		pdsRequests: &pdsRequests, insertPost: insertAcceptedPost,
 	}
 }

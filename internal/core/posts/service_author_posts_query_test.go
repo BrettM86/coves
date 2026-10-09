@@ -3,6 +3,7 @@
 package posts_test
 
 import (
+	"Coves/internal/core/moderation"
 	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"context"
 	"database/sql"
@@ -104,7 +105,7 @@ func newAuthorPostsFixture(t *testing.T) *authorPostsFixture {
 
 	auth := fixtures.NewOAuthMiddleware()
 	router := chi.NewRouter()
-	routes.RegisterActorRoutes(router, postService, userService, voteService, nil, nil, auth.OAuthAuthMiddleware)
+	routes.RegisterActorRoutes(router, postService, userService, voteService, nil, nil, auth.OAuthAuthMiddleware, moderation.NewAllowlistAuthority(nil), "did:plc:testinstance")
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
 

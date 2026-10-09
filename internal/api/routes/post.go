@@ -4,6 +4,7 @@ import (
 	"Coves/internal/api/handlers/post"
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/blueskypost"
+	"Coves/internal/core/moderation"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/votes"
 	"time"
@@ -70,6 +71,10 @@ func RegisterPostRoutes(
 	blueskyService blueskypost.Service,
 	authMiddleware middleware.AuthMiddleware,
 	oauthMiddleware *middleware.OAuthAuthMiddleware,
+	// authority decides whether the viewer is an instance admin; instanceDID
+	// identifies this instance's own removals and labels.
+	authority moderation.Authority,
+	instanceDID string,
 	opts ...PostRouteOption,
 ) {
 	var cfg postRouteConfig
@@ -87,7 +92,7 @@ func RegisterPostRoutes(
 	createHandler := post.NewCreateHandler(service)
 	updateHandler := post.NewUpdateHandler(service)
 	deleteHandler := post.NewDeleteHandler(service)
-	getHandler := post.NewGetHandler(service, voteService, blueskyService)
+	getHandler := post.NewGetHandler(service, voteService, blueskyService).WithViewerModeration(authority, instanceDID)
 
 	// Procedure endpoints (POST) - require authentication
 	// social.coves.community.post.create - create a new post in a community
@@ -105,7 +110,8 @@ func RegisterPostRoutes(
 
 	// Query endpoints (GET)
 	// social.coves.community.post.get - batch fetch post views by AT-URI.
-	// Public endpoint with optional auth so authenticated viewers receive their vote state.
+	// Public endpoint with optional auth so authenticated viewers receive their vote state
+	// and moderation actions.
 	// Used for feed-skeleton hydration and permalink / cold-load rendering.
 	r.With(oauthMiddleware.OptionalAuth).Get("/xrpc/social.coves.community.post.get", getHandler.HandleGet)
 

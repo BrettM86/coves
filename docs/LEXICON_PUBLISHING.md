@@ -77,15 +77,18 @@ required output field; PRD §14.4):
 
 ## What is published vs held back
 
-**Published:** `richtext.*`, `embed.*`, `actor.*`, `feed.*`, `aggregator.*`,
+**Published:** `richtext.*`, `embed.*`, `actor.*` except
+`actor/getViewerAuthority.json`, `feed.*`, `aggregator.*`,
 `community.*` except the held-back files below (including `post.*` and
 `comment.*`), and — once the moderation release below runs — the reviewed
 moderation package: `moderation/defs.json` and the seven endpoint files
 `moderation/removeContent.json`, `moderation/restoreContent.json`,
 `moderation/labelContent.json`, `moderation/retractContentLabel.json`,
 `moderation/listActions.json`, `moderation/listAdminActions.json`,
-`moderation/getSubjectState.json`; and, once the notifications release below
-runs, `notification/defs.json` and its five endpoint files.
+`moderation/getSubjectState.json`, plus `actor/getViewerAuthority.json`, which
+tells clients whether the viewer is an instance admin and ships with them; and,
+once the notifications release below runs, `notification/defs.json` and its
+five endpoint files.
 
 **Held back** (governance/tribunal design has not landed; each is listed by
 path relative to `internal/atproto/lexicon/social/coves/`, and the test fails
@@ -103,7 +106,7 @@ if a publish command names any of them or a directory that contains them):
 - `community/moderator.json`
 
 `goat lex publish` sweeps every schema in a directory operand, so the commands
-below name files, never the `moderation` or `community` directory. Retired
+below name files, never the `actor`, `moderation` or `community` directory. Retired
 schemas stay live until explicitly unpublished (see step 5).
 
 ## One-time setup
@@ -259,7 +262,7 @@ goat lex resolve social.coves.community.comment.defs
 goat lex resolve social.coves.community.post.defs
 goat lex publish --update internal/atproto/lexicon/social/coves/community/post/get.json
 goat lex resolve social.coves.community.post.get
-#    3e. The seven reviewed endpoints, last:
+#    3e. The seven reviewed endpoints and actor.getViewerAuthority, last:
 goat lex publish \
   internal/atproto/lexicon/social/coves/moderation/removeContent.json \
   internal/atproto/lexicon/social/coves/moderation/restoreContent.json \
@@ -267,7 +270,8 @@ goat lex publish \
   internal/atproto/lexicon/social/coves/moderation/retractContentLabel.json \
   internal/atproto/lexicon/social/coves/moderation/listActions.json \
   internal/atproto/lexicon/social/coves/moderation/listAdminActions.json \
-  internal/atproto/lexicon/social/coves/moderation/getSubjectState.json
+  internal/atproto/lexicon/social/coves/moderation/getSubjectState.json \
+  internal/atproto/lexicon/social/coves/actor/getViewerAuthority.json
 
 # 4. Notifications release (once). notification.defs references actor.defs
 #    and community.post.defs, so it runs after step 3d; the endpoints

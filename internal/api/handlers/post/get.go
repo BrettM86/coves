@@ -9,6 +9,7 @@ import (
 	"Coves/internal/api/handlers/common"
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/blueskypost"
+	"Coves/internal/core/moderation"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/votes"
 )
@@ -23,10 +24,13 @@ type GetHandler struct {
 	service        posts.Service
 	voteService    votes.Service
 	blueskyService blueskypost.Service
+	authority      moderation.Authority
+	instanceDID    string
 }
 
 // NewGetHandler creates a new get handler.
-// voteService is used to populate the viewer's vote state (may be nil).
+// voteService is used to populate the viewer's vote state (may be nil);
+// WithViewerModeration adds the viewer's moderation actions.
 // blueskyService is used to resolve embedded Bluesky posts (may be nil).
 func NewGetHandler(service posts.Service, voteService votes.Service, blueskyService blueskypost.Service) *GetHandler {
 	return &GetHandler{
@@ -34,6 +38,17 @@ func NewGetHandler(service posts.Service, voteService votes.Service, blueskyServ
 		voteService:    voteService,
 		blueskyService: blueskyService,
 	}
+}
+
+// WithViewerModeration makes the handler report, in viewer.moderation, the
+// moderation actions an instance admin viewer may take on each live post and removal tombstone.
+func (h *GetHandler) WithViewerModeration(authority moderation.Authority, instanceDID string) *GetHandler {
+	if authority == nil || instanceDID == "" {
+		panic("post.GetHandler.WithViewerModeration: authority and instanceDID are required")
+	}
+	h.authority = authority
+	h.instanceDID = instanceDID
+	return h
 }
 
 // HandleGet handles GET /xrpc/social.coves.community.post.get?uris=at://...&uris=at://...
@@ -75,8 +90,17 @@ func (h *GetHandler) HandleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enrich found posts with the authenticated viewer's vote state (no-op if unauthenticated)
+	// Enrich found posts with the authenticated viewer's vote state and moderation
+	// actions (no-op if unauthenticated)
 	common.PopulateViewerVoteState(r.Context(), r, h.voteService, results)
+	common.PopulateViewerModeration(r, h.authority, h.instanceDID, results)
+	tombstones := make([]*posts.ModeratedPost, 0, len(results))
+	for _, res := range results {
+		if res != nil && res.Moderated != nil {
+			tombstones = append(tombstones, res.Moderated)
+		}
+	}
+	common.PopulateModeratedPostViewerModeration(r, h.authority, h.instanceDID, tombstones)
 
 	// Transform blob refs to URLs and resolve embedded Bluesky posts for found posts
 	for _, res := range results {

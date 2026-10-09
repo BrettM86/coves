@@ -1,6 +1,7 @@
 package comments
 
 import (
+	"Coves/internal/core/moderation"
 	"context"
 	"encoding/json"
 	"errors"
@@ -105,7 +106,7 @@ func TestGetComments_CachedViewerVotes(t *testing.T) {
 				request = request.WithContext(ctx)
 			}
 			recorder := httptest.NewRecorder()
-			NewGetCommentsHandler(&fakeCommentService{resp: response}, reader).HandleGetComments(recorder, request)
+			NewGetCommentsHandler(&fakeCommentService{resp: response}, reader, moderation.NewAllowlistAuthority(nil), "did:plc:testinstance").HandleGetComments(recorder, request)
 			require.Equal(t, http.StatusOK, recorder.Code)
 			var got core.GetCommentsResponse
 			require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &got))

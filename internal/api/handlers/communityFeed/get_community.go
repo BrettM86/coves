@@ -10,6 +10,7 @@ import (
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/blueskypost"
 	"Coves/internal/core/communityFeeds"
+	"Coves/internal/core/moderation"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/votes"
 )
@@ -19,6 +20,8 @@ type GetCommunityHandler struct {
 	service        communityFeeds.Service
 	voteService    votes.Service
 	blueskyService blueskypost.Service
+	authority      moderation.Authority
+	instanceDID    string
 }
 
 // NewGetCommunityHandler creates a new community feed handler
@@ -31,6 +34,17 @@ func NewGetCommunityHandler(service communityFeeds.Service, voteService votes.Se
 		voteService:    voteService,
 		blueskyService: blueskyService,
 	}
+}
+
+// WithViewerModeration makes the handler report, in viewer.moderation, the
+// moderation actions an instance admin viewer may take on each post.
+func (h *GetCommunityHandler) WithViewerModeration(authority moderation.Authority, instanceDID string) *GetCommunityHandler {
+	if authority == nil || instanceDID == "" {
+		panic("communityFeed.GetCommunityHandler.WithViewerModeration: authority and instanceDID are required")
+	}
+	h.authority = authority
+	h.instanceDID = instanceDID
+	return h
 }
 
 // HandleGetCommunity retrieves posts from a community with sorting
@@ -55,7 +69,7 @@ func (h *GetCommunityHandler) HandleGetCommunity(w http.ResponseWriter, r *http.
 		return
 	}
 
-	processFeedPosts(r, response.Feed, h.voteService, h.blueskyService)
+	processFeedPosts(r, response.Feed, h.voteService, h.blueskyService, h.authority, h.instanceDID)
 
 	// Return feed
 	w.Header().Set("Content-Type", "application/json")
@@ -66,8 +80,11 @@ func (h *GetCommunityHandler) HandleGetCommunity(w http.ResponseWriter, r *http.
 	}
 }
 
-func processFeedPosts(r *http.Request, feed []*communityFeeds.FeedViewPost, voteService votes.Service, blueskyService blueskypost.Service) {
+func processFeedPosts(r *http.Request, feed []*communityFeeds.FeedViewPost, voteService votes.Service, blueskyService blueskypost.Service,
+	authority moderation.Authority, instanceDID string,
+) {
 	common.PopulateViewerVoteState(r.Context(), r, voteService, feed)
+	common.PopulateViewerModeration(r, authority, instanceDID, feed)
 	for _, feedPost := range feed {
 		if feedPost.Post != nil {
 			posts.TransformBlobRefsToURLs(feedPost.Post)

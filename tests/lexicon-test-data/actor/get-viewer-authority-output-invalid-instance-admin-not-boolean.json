@@ -1,0 +1,4 @@
+{
+  "$type": "social.coves.actor.getViewerAuthority#output",
+  "instanceAdmin": "true"
+}

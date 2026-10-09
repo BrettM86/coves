@@ -26,6 +26,7 @@ type FeedPostProvider interface {
 //   - voteService: Vote service for cache lookup (may be nil)
 //   - feedPosts: Posts to enrich with viewer state (must implement FeedPostProvider)
 //
+// Vote fields are merged into an existing viewer state; other viewer fields are kept.
 // The function logs but does not fail on errors - viewer state is optional enrichment.
 func PopulateViewerVoteState[T FeedPostProvider](
 	ctx context.Context,
@@ -65,10 +66,11 @@ func PopulateViewerVoteState[T FeedPostProvider](
 	for _, feedPost := range feedPosts {
 		if post := feedPost.GetPost(); post != nil {
 			if vote, exists := viewerVotes[post.URI]; exists {
-				post.Viewer = &posts.ViewerState{
-					Vote:    &vote.Direction,
-					VoteURI: &vote.URI,
+				if post.Viewer == nil {
+					post.Viewer = &posts.ViewerState{}
 				}
+				post.Viewer.Vote = &vote.Direction
+				post.Viewer.VoteURI = &vote.URI
 			}
 		}
 	}

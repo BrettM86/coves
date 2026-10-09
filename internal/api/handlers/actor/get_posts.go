@@ -11,6 +11,7 @@ import (
 	"Coves/internal/api/handlers/common"
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/blueskypost"
+	"Coves/internal/core/moderation"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/users"
 	"Coves/internal/core/votes"
@@ -22,6 +23,8 @@ type GetPostsHandler struct {
 	userService    users.UserService
 	voteService    votes.Service
 	blueskyService blueskypost.Service
+	authority      moderation.Authority
+	instanceDID    string
 }
 
 // NewGetPostsHandler creates a new actor posts handler
@@ -40,6 +43,17 @@ func NewGetPostsHandler(
 		voteService:    voteService,
 		blueskyService: blueskyService,
 	}
+}
+
+// WithViewerModeration makes the handler report, in viewer.moderation, the
+// moderation actions an instance admin viewer may take on each post.
+func (h *GetPostsHandler) WithViewerModeration(authority moderation.Authority, instanceDID string) *GetPostsHandler {
+	if authority == nil || instanceDID == "" {
+		panic("actor.GetPostsHandler.WithViewerModeration: authority and instanceDID are required")
+	}
+	h.authority = authority
+	h.instanceDID = instanceDID
+	return h
 }
 
 // HandleGetPosts retrieves posts by an actor (user)
@@ -74,8 +88,9 @@ func (h *GetPostsHandler) HandleGetPosts(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Populate viewer vote state if authenticated
+	// Populate viewer vote state and moderation actions if authenticated
 	common.PopulateViewerVoteState(r.Context(), r, h.voteService, response.Feed)
+	common.PopulateViewerModeration(r, h.authority, h.instanceDID, response.Feed)
 
 	// Transform blob refs to URLs and resolve post embeds for all posts
 	for _, feedPost := range response.Feed {

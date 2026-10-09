@@ -6,6 +6,7 @@ import (
 	commentsAPI "Coves/internal/api/handlers/comments"
 	"Coves/internal/atproto/jetstream"
 	"Coves/internal/core/comments"
+	"Coves/internal/core/moderation"
 	"Coves/internal/crypto/credentialcipher/credentialciphertest"
 	"Coves/internal/db/postgres"
 	"Coves/tests/fixtures"
@@ -1173,7 +1174,7 @@ func TestCommentQuery_ParentRkeyHTTPHandler(t *testing.T) {
 	commentRkey := strings.Split(commentURI, "/")[4]
 
 	// Use the real XRPC handler + service adapter (same wiring as cmd/server/main.go)
-	handler := commentsAPI.NewGetCommentsHandler(commentsAPI.NewServiceAdapter(setupCommentService(db)), nil)
+	handler := commentsAPI.NewGetCommentsHandler(commentsAPI.NewServiceAdapter(setupCommentService(db)), nil, moderation.NewAllowlistAuthority(nil), "did:plc:testinstance")
 
 	t.Run("Subtree via parentRkey", func(t *testing.T) {
 		req := httptest.NewRequest("GET",

@@ -10,6 +10,7 @@ import (
 	"Coves/internal/api/handlers/common"
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/blueskypost"
+	"Coves/internal/core/moderation"
 	"Coves/internal/core/posts"
 	"Coves/internal/core/timeline"
 	"Coves/internal/core/votes"
@@ -20,6 +21,8 @@ type GetTimelineHandler struct {
 	service        timeline.Service
 	voteService    votes.Service
 	blueskyService blueskypost.Service
+	authority      moderation.Authority
+	instanceDID    string
 }
 
 // NewGetTimelineHandler creates a new timeline handler
@@ -32,6 +35,17 @@ func NewGetTimelineHandler(service timeline.Service, voteService votes.Service, 
 		voteService:    voteService,
 		blueskyService: blueskyService,
 	}
+}
+
+// WithViewerModeration makes the handler report, in viewer.moderation, the
+// moderation actions an instance admin viewer may take on each post.
+func (h *GetTimelineHandler) WithViewerModeration(authority moderation.Authority, instanceDID string) *GetTimelineHandler {
+	if authority == nil || instanceDID == "" {
+		panic("timeline.GetTimelineHandler.WithViewerModeration: authority and instanceDID are required")
+	}
+	h.authority = authority
+	h.instanceDID = instanceDID
+	return h
 }
 
 // HandleGetTimeline retrieves posts from all communities the user subscribes to
@@ -64,8 +78,9 @@ func (h *GetTimelineHandler) HandleGetTimeline(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Populate viewer vote state if authenticated
+	// Populate viewer vote state and moderation actions if authenticated
 	common.PopulateViewerVoteState(r.Context(), r, h.voteService, response.Feed)
+	common.PopulateViewerModeration(r, h.authority, h.instanceDID, response.Feed)
 
 	// Transform blob refs to URLs and resolve post embeds for all posts
 	for _, feedPost := range response.Feed {

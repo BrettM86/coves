@@ -141,10 +141,10 @@ func TestModerationPostRemovalAcceptance(t *testing.T) {
 	optionalAuth := middleware.NewOAuthAuthMiddleware(unsealer, oauthStore)
 	mux := chi.NewRouter()
 	routes.RegisterModerationRoutes(mux, moderationService, adminAuth)
-	routes.RegisterPostRoutes(mux, postService, nil, nil, optionalAuth, optionalAuth)
-	routes.RegisterCommunityFeedRoutes(mux, feedService, nil, nil, optionalAuth)
+	routes.RegisterPostRoutes(mux, postService, nil, nil, optionalAuth, optionalAuth, moderation.NewAllowlistAuthority(nil), instanceDID)
+	routes.RegisterCommunityFeedRoutes(mux, feedService, nil, nil, optionalAuth, moderation.NewAllowlistAuthority(nil), instanceDID)
 	mux.With(optionalAuth.OptionalAuth).Get("/xrpc/social.coves.community.comment.getComments",
-		commentsAPI.NewGetCommentsHandler(commentsAPI.NewServiceAdapter(commentService), nil).HandleGetComments)
+		commentsAPI.NewGetCommentsHandler(commentsAPI.NewServiceAdapter(commentService), nil, moderation.NewAllowlistAuthority(nil), instanceDID).HandleGetComments)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	client := server.Client()

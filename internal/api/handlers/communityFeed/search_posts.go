@@ -9,6 +9,7 @@ import (
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/blueskypost"
 	"Coves/internal/core/communityFeeds"
+	"Coves/internal/core/moderation"
 	"Coves/internal/core/votes"
 )
 
@@ -17,6 +18,8 @@ type SearchPostsHandler struct {
 	service        communityFeeds.Service
 	voteService    votes.Service
 	blueskyService blueskypost.Service
+	authority      moderation.Authority
+	instanceDID    string
 }
 
 // NewSearchPostsHandler creates the post search handler.
@@ -26,6 +29,17 @@ func NewSearchPostsHandler(service communityFeeds.Service, voteService votes.Ser
 		voteService:    voteService,
 		blueskyService: blueskyService,
 	}
+}
+
+// WithViewerModeration makes the handler report, in viewer.moderation, the
+// moderation actions an instance admin viewer may take on each post.
+func (h *SearchPostsHandler) WithViewerModeration(authority moderation.Authority, instanceDID string) *SearchPostsHandler {
+	if authority == nil || instanceDID == "" {
+		panic("communityFeed.SearchPostsHandler.WithViewerModeration: authority and instanceDID are required")
+	}
+	h.authority = authority
+	h.instanceDID = instanceDID
+	return h
 }
 
 // HandleSearchPosts handles GET /xrpc/social.coves.feed.searchPosts.
@@ -74,7 +88,7 @@ func (h *SearchPostsHandler) HandleSearchPosts(w http.ResponseWriter, r *http.Re
 		response.Feed = []*communityFeeds.FeedViewPost{}
 	}
 
-	processFeedPosts(r, response.Feed, h.voteService, h.blueskyService)
+	processFeedPosts(r, response.Feed, h.voteService, h.blueskyService, h.authority, h.instanceDID)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

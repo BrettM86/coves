@@ -1,13 +1,14 @@
 package tests
 
 import (
-	"Coves/internal/validation"
 	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"Coves/internal/validation"
 
 	"github.com/bluesky-social/indigo/atproto/atdata"
 	"github.com/bluesky-social/indigo/atproto/lexicon"
@@ -68,6 +69,12 @@ var invalidFixtureExpectedErrors = map[string]string{
 	"tribunal-vote-invalid-decision.json": "enum",
 	"vote-invalid-option.json":            "enum",
 	"wiki-invalid-slug.json":              "length outside specified range",
+	// Viewer moderation actions (viewer.moderation and getViewerAuthority).
+	"get-viewer-authority-output-invalid-missing-instance-admin.json":     "required field missing: instanceAdmin",
+	"get-viewer-authority-output-invalid-instance-admin-not-boolean.json": "expected a boolean",
+	"post-viewer-state-invalid-moderation-item-not-string.json":           "expected a string",
+	"comment-viewer-state-invalid-moderation-item-not-string.json":        "expected a string",
+	"moderated-post-invalid-viewer-not-object.json":                       "expected an object",
 }
 
 // expectedFixtureFamilies is the closed list of top-level fixture directories

@@ -47,9 +47,9 @@ func hiddenReasonContentServer(t *testing.T, f *modlogFixture) *httptest.Server 
 		postgres.NewUserRepository(f.db), postRepo, communityRepo, nil, nil, nil)
 	optionalAuth := middleware.NewOAuthAuthMiddleware(f.unsealer, f.oauthStore)
 	mux := chi.NewRouter()
-	routes.RegisterPostRoutes(mux, postService, nil, nil, optionalAuth, optionalAuth)
+	routes.RegisterPostRoutes(mux, postService, nil, nil, optionalAuth, optionalAuth, moderation.NewAllowlistAuthority(nil), fixtures.InstanceDID())
 	mux.With(optionalAuth.OptionalAuth).Get("/xrpc/social.coves.community.comment.getComments",
-		commentsAPI.NewGetCommentsHandler(commentsAPI.NewServiceAdapter(commentService), nil).HandleGetComments)
+		commentsAPI.NewGetCommentsHandler(commentsAPI.NewServiceAdapter(commentService), nil, moderation.NewAllowlistAuthority(nil), fixtures.InstanceDID()).HandleGetComments)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	return server

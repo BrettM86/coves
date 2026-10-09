@@ -893,11 +893,18 @@ func TestWriteAuthError_JSONEscaping(t *testing.T) {
 type mockServiceAuthValidator struct {
 	shouldFail bool
 	returnDID  syntax.DID
+	// boundMethod, when set, is the lxm the token was signed for. As with
+	// indigo's validator, the token is then refused unless the middleware asks
+	// for exactly that method; an absent or different method fails.
+	boundMethod syntax.NSID
 }
 
 func (m *mockServiceAuthValidator) Validate(ctx context.Context, tokenString string, lexMethod *syntax.NSID) (syntax.DID, error) {
 	if m.shouldFail {
 		return "", fmt.Errorf("mock validation failure")
+	}
+	if m.boundMethod != "" && (lexMethod == nil || *lexMethod != m.boundMethod) {
+		return "", fmt.Errorf("mock validation failure: token bound to %s", m.boundMethod)
 	}
 	return m.returnDID, nil
 }

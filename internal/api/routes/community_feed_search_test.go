@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"Coves/internal/core/moderation"
 	"bytes"
 	"context"
 	"log/slog"
@@ -32,7 +33,7 @@ func (f *fakeCommunityFeedService) SearchPosts(context.Context, communityFeeds.S
 
 func communityFeedRouter(service communityFeeds.Service) http.Handler {
 	router := chi.NewRouter()
-	RegisterCommunityFeedRoutes(router, service, nil, nil, middleware.NewOAuthAuthMiddleware(nil, nil))
+	RegisterCommunityFeedRoutes(router, service, nil, nil, middleware.NewOAuthAuthMiddleware(nil, nil), moderation.NewAllowlistAuthority(nil), "did:plc:testinstance")
 	return router
 }
 

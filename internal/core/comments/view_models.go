@@ -52,10 +52,20 @@ type CommentStats struct {
 }
 
 // CommentViewerState represents the viewer's relationship with the comment
-// Includes voting state and vote record reference
+// Includes voting state, vote record reference, and the moderation actions the
+// viewer may take
 type CommentViewerState struct {
 	Vote    *string `json:"vote,omitempty"`    // "up" or "down"
 	VoteURI *string `json:"voteUri,omitempty"` // URI of the vote record
+	// Moderation lists the moderation actions the viewer may take on the
+	// comment, as modlog action tokens. Omitted when there are none.
+	Moderation []string `json:"moderation,omitempty"`
+}
+
+// IsEmpty reports whether the viewer state carries no field, so the viewer
+// object can be omitted from the comment view.
+func (s *CommentViewerState) IsEmpty() bool {
+	return s.Vote == nil && s.VoteURI == nil && len(s.Moderation) == 0
 }
 
 // GetCommentsResponse represents the response for fetching comments on a post

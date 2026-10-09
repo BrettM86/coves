@@ -226,6 +226,11 @@
           "type": "ref",
           "ref": "#communityRef",
           "description": "Community context for the removed post when available"
+        },
+        "viewer": {
+          "type": "ref",
+          "ref": "#moderatedPostViewerState",
+          "description": "Viewer-specific state; carries the moderation actions the viewer may take on the removed post"
         }
       }
     },
@@ -360,6 +365,40 @@
             "type": "string",
             "maxGraphemes": 64,
             "maxLength": 640
+          }
+        },
+        "moderation": {
+          "type": "array",
+          "description": "Moderation actions the viewer may take on this post, using the modlog action tokens. Omitted when there are none.",
+          "items": {
+            "type": "string",
+            "knownValues": [
+              "remove",
+              "restore",
+              "label",
+              "retract-label"
+            ],
+            "maxLength": 64
+          }
+        }
+      }
+    },
+    "moderatedPostViewerState": {
+      "type": "object",
+      "description": "Viewer state on a moderatedPost tombstone. Carries only moderation actions; the tombstone has no content to vote on, save or tag.",
+      "properties": {
+        "moderation": {
+          "type": "array",
+          "description": "Moderation actions the viewer may take on the removed post, using the modlog action tokens. Omitted when there are none.",
+          "items": {
+            "type": "string",
+            "knownValues": [
+              "remove",
+              "restore",
+              "label",
+              "retract-label"
+            ],
+            "maxLength": 64
           }
         }
       }

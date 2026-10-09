@@ -4,6 +4,7 @@ import (
 	"Coves/internal/api/handlers/timeline"
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/blueskypost"
+	"Coves/internal/core/moderation"
 	timelineCore "Coves/internal/core/timeline"
 	"Coves/internal/core/votes"
 
@@ -17,9 +18,14 @@ func RegisterTimelineRoutes(
 	voteService votes.Service,
 	blueskyService blueskypost.Service,
 	authMiddleware *middleware.OAuthAuthMiddleware,
+	// authority decides whether the viewer is an instance admin; instanceDID
+	// identifies this instance's own removals and labels.
+	authority moderation.Authority,
+	instanceDID string,
 ) {
 	// Create handlers
-	getTimelineHandler := timeline.NewGetTimelineHandler(timelineService, voteService, blueskyService)
+	getTimelineHandler := timeline.NewGetTimelineHandler(timelineService, voteService, blueskyService).
+		WithViewerModeration(authority, instanceDID)
 
 	// GET /xrpc/social.coves.feed.getTimeline
 	// Requires authentication - user must be logged in to see their timeline

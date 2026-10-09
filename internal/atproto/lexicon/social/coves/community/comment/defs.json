@@ -269,6 +269,20 @@
           "type": "string",
           "format": "at-uri",
           "description": "AT-URI of the viewer's vote record"
+        },
+        "moderation": {
+          "type": "array",
+          "description": "Moderation actions the viewer may take on this comment, using the modlog action tokens. Omitted when there are none.",
+          "items": {
+            "type": "string",
+            "knownValues": [
+              "remove",
+              "restore",
+              "label",
+              "retract-label"
+            ],
+            "maxLength": 64
+          }
         }
       }
     }

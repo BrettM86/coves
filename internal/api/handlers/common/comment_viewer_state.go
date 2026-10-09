@@ -11,7 +11,8 @@ import (
 
 // PopulateCommentViewerVoteState overlays cached votes on indexed comment views.
 // Indexed state is preserved when the cache is unavailable; confirmed absence
-// clears both the selected direction and the old vote record URI.
+// clears both the selected direction and the old vote record URI. Other viewer
+// fields are preserved; a viewer state left empty is omitted.
 func PopulateCommentViewerVoteState(r *http.Request, voteService votes.Service, views []*comments.CommentView) {
 	if voteService == nil || len(views) == 0 {
 		return
@@ -45,7 +46,13 @@ func PopulateCommentViewerVoteState(r *http.Request, voteService votes.Service, 
 		}
 		vote := viewerVotes[view.URI]
 		if vote == nil {
-			view.Viewer = nil
+			if view.Viewer != nil {
+				view.Viewer.Vote = nil
+				view.Viewer.VoteURI = nil
+				if view.Viewer.IsEmpty() {
+					view.Viewer = nil
+				}
+			}
 			continue
 		}
 		if view.Viewer == nil {

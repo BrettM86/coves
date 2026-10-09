@@ -5,6 +5,7 @@ import (
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/blueskypost"
 	"Coves/internal/core/communityFeeds"
+	"Coves/internal/core/moderation"
 	"Coves/internal/core/votes"
 	"time"
 
@@ -25,14 +26,20 @@ func RegisterCommunityFeedRoutes(
 	voteService votes.Service,
 	blueskyService blueskypost.Service,
 	authMiddleware *middleware.OAuthAuthMiddleware,
+	// authority decides whether the viewer is an instance admin; instanceDID
+	// identifies this instance's own removals and labels.
+	authority moderation.Authority,
+	instanceDID string,
 ) {
 	// Create handlers
-	getCommunityHandler := communityFeed.NewGetCommunityHandler(feedService, voteService, blueskyService)
-	searchPostsHandler := communityFeed.NewSearchPostsHandler(feedService, voteService, blueskyService)
+	getCommunityHandler := communityFeed.NewGetCommunityHandler(feedService, voteService, blueskyService).
+		WithViewerModeration(authority, instanceDID)
+	searchPostsHandler := communityFeed.NewSearchPostsHandler(feedService, voteService, blueskyService).
+		WithViewerModeration(authority, instanceDID)
 	postSearchLimiter := middleware.NewNamedRateLimiter("postSearch", postSearchRateLimit, postSearchRateWindow)
 
 	// GET /xrpc/social.coves.communityFeed.getCommunity
-	// Public endpoint with optional auth for viewer-specific state (vote state)
+	// Public endpoint with optional auth for viewer-specific state (vote state, moderation actions)
 	r.With(authMiddleware.OptionalAuth).Get("/xrpc/social.coves.communityFeed.getCommunity", getCommunityHandler.HandleGetCommunity)
 
 	// GET /xrpc/social.coves.feed.searchPosts

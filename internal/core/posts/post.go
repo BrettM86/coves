@@ -242,10 +242,18 @@ type ModerationScopeView struct {
 // ModeratedPost is the content-free social.coves.community.post.defs#moderatedPost
 // tombstone for a post under an instance-scoped removal.
 type ModeratedPost struct {
-	Moderation *ModerationView `json:"moderation"`
-	Community  *CommunityRef   `json:"community,omitempty"`
-	URI        string          `json:"uri"`
-	AuthorDID  string          `json:"authorDid,omitempty"`
+	Moderation *ModerationView           `json:"moderation"`
+	Community  *CommunityRef             `json:"community,omitempty"`
+	URI        string                    `json:"uri"`
+	AuthorDID  string                    `json:"authorDid,omitempty"`
+	Viewer     *ModeratedPostViewerState `json:"viewer,omitempty"`
+}
+
+// ModeratedPostViewerState is the viewer state on a removal tombstone. It
+// carries only moderation actions: the tombstone has no content to vote on,
+// save, or tag.
+type ModeratedPostViewerState struct {
+	Moderation []string `json:"moderation,omitempty"`
 }
 
 // MarshalJSON identifies this tombstone as the moderatedPost union member.
@@ -470,7 +478,10 @@ type ViewerState struct {
 	VoteURI  *string  `json:"voteUri,omitempty"`
 	SavedURI *string  `json:"savedUri,omitempty"`
 	Tags     []string `json:"tags,omitempty"`
-	Saved    bool     `json:"saved"`
+	// Moderation lists the moderation actions the viewer may take on the post,
+	// as modlog action tokens. Omitted when there are none.
+	Moderation []string `json:"moderation,omitempty"`
+	Saved      bool     `json:"saved"`
 }
 
 // Filter constants for GetAuthorPosts

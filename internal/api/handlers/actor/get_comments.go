@@ -11,6 +11,7 @@ import (
 	"Coves/internal/api/handlers/common"
 	"Coves/internal/api/middleware"
 	"Coves/internal/core/comments"
+	"Coves/internal/core/moderation"
 	"Coves/internal/core/users"
 	"Coves/internal/core/votes"
 )
@@ -20,6 +21,8 @@ type GetCommentsHandler struct {
 	commentService comments.Service
 	userService    users.UserService
 	voteService    votes.Service
+	authority      moderation.Authority
+	instanceDID    string
 }
 
 // NewGetCommentsHandler creates a new actor comments handler
@@ -33,6 +36,17 @@ func NewGetCommentsHandler(
 		userService:    userService,
 		voteService:    voteService,
 	}
+}
+
+// WithViewerModeration makes the handler report, in viewer.moderation, the
+// moderation actions an instance admin viewer may take on each comment.
+func (h *GetCommentsHandler) WithViewerModeration(authority moderation.Authority, instanceDID string) *GetCommentsHandler {
+	if authority == nil || instanceDID == "" {
+		panic("actor.GetCommentsHandler.WithViewerModeration: authority and instanceDID are required")
+	}
+	h.authority = authority
+	h.instanceDID = instanceDID
+	return h
 }
 
 // HandleGetComments retrieves comments by an actor (user)
@@ -79,8 +93,11 @@ func (h *GetCommentsHandler) HandleGetComments(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Populate viewer vote state if authenticated
+	// Populate viewer vote state and moderation actions if authenticated
 	h.populateViewerVoteState(r, response)
+	if response != nil {
+		common.PopulateCommentViewerModeration(r, h.authority, h.instanceDID, response.Comments)
+	}
 
 	// Pre-encode response to buffer before writing headers
 	// This ensures we can return a proper error if encoding fails

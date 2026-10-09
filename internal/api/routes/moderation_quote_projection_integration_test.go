@@ -132,12 +132,12 @@ func TestModerationCovesQuoteProjectionAcrossReadPaths(t *testing.T) {
 			quoteResolver := rejectingCovesQuoteResolver{}
 			mux := chi.NewRouter()
 			routes.RegisterModerationRoutes(mux, moderationService, adminAuth)
-			routes.RegisterPostRoutes(mux, postService, nil, quoteResolver, optionalAuth, optionalAuth)
-			routes.RegisterCommunityFeedRoutes(mux, feedService, nil, quoteResolver, optionalAuth)
+			routes.RegisterPostRoutes(mux, postService, nil, quoteResolver, optionalAuth, optionalAuth, moderation.NewAllowlistAuthority(nil), instanceDID)
+			routes.RegisterCommunityFeedRoutes(mux, feedService, nil, quoteResolver, optionalAuth, moderation.NewAllowlistAuthority(nil), instanceDID)
 			mux.With(optionalAuth.OptionalAuth).Get("/xrpc/social.coves.actor.getPosts",
 				actorAPI.NewGetPostsHandler(postService, nil, nil, quoteResolver).HandleGetPosts)
 			mux.With(optionalAuth.OptionalAuth).Get("/xrpc/social.coves.community.comment.getComments",
-				commentsAPI.NewGetCommentsHandler(commentsAPI.NewServiceAdapter(commentService), nil).HandleGetComments)
+				commentsAPI.NewGetCommentsHandler(commentsAPI.NewServiceAdapter(commentService), nil, moderation.NewAllowlistAuthority(nil), instanceDID).HandleGetComments)
 			server := httptest.NewServer(mux)
 			t.Cleanup(server.Close)
 			client := server.Client()

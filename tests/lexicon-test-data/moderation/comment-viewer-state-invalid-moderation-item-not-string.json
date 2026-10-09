@@ -1,0 +1,4 @@
+{
+  "$type": "social.coves.community.comment.defs#commentViewerState",
+  "moderation": ["restore", 7]
+}
