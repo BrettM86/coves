@@ -56,8 +56,8 @@ func TestFirehose_CursorGatingBeatsSubscribeAfterWrite(t *testing.T) {
 	assert.Equal(t, testCollection, event.Commit.Collection)
 	assert.Equal(t, record.RKey, event.Commit.RKey)
 	assert.Equal(t, "cursor gating", event.Commit.Record["text"])
-	assert.Greater(t, event.TimeUS, firehose.Cursor(),
-		"an event matched by a cursor-gated subscription is always newer than the cursor")
+	assert.GreaterOrEqual(t, event.TimeUS, firehose.Cursor()-cursorSkewAllowance.Microseconds(),
+		"an event matched by a cursor-gated subscription is no older than the cursor less the clock-skew allowance")
 }
 
 // TestFirehose_DeliversUpdateAndDeleteOnOneSubscription covers the shape every
@@ -127,9 +127,9 @@ func silentStream(conn *websocket.Conn, _ *url.URL) {
 // silent.
 //
 // Honouring the cursor is what makes this a stand-in for Jetstream rather than
-// a tape recorder: a firehose that has to re-dial resumes from the last event it
-// saw, and a fake that replayed everything regardless would test the fake's
-// amnesia instead of the resume.
+// a tape recorder: a firehose that has to re-dial replays from its cursor, and a
+// fake that replayed everything regardless would test the fake's amnesia
+// instead of the cursor bound.
 func sendEvents(events ...Event) func(*websocket.Conn, *url.URL) {
 	return func(conn *websocket.Conn, requested *url.URL) {
 		cursor, _ := strconv.ParseInt(requested.Query().Get("cursor"), 10, 64)
@@ -281,10 +281,11 @@ func TestFirehose_CursorIsABoundNotAHint(t *testing.T) {
 	require.True(t, ft.failed(), "an event older than the cursor must not match")
 	message := ft.message()
 	assert.Contains(t, message, "0 received")
-	// The count is the difference between "the write never happened" and "your
-	// clock disagrees with Jetstream's", which no amount of waiting fixes.
+	// The PREDATED count shows the stream delivered events, but they were older
+	// than the cursor. The matching discarded event, named with how far it
+	// predated the cursor, is what points at clock skew.
 	assert.Contains(t, message, "PREDATED the cursor")
-	assert.Contains(t, message, "clock skew")
+	assert.Contains(t, message, "a matching event arrived 1h0m0s")
 }
 
 // TestFirehose_ResumesWithoutLosingOrRepeatingEvents is the guarantee that makes
@@ -295,7 +296,8 @@ func TestFirehose_ResumesWithoutLosingOrRepeatingEvents(t *testing.T) {
 	base := time.Now().UnixMicro()
 	first := commitEvent(did, testCollection, "first", "create", base+1_000)
 	// Stamped INSIDE the silent gap: it exists on the server before the second
-	// connection is made, so only a resume from the right cursor delivers it.
+	// connection is made, so only a re-dial that replays from the construction
+	// cursor delivers it.
 	second := commitEvent(did, testCollection, "second", "create", base+2_000)
 
 	var connections atomic.Int32
@@ -307,8 +309,8 @@ func TestFirehose_ResumesWithoutLosingOrRepeatingEvents(t *testing.T) {
 		default:
 			// A real Jetstream replays from the cursor inclusive.
 			cursor, _ := strconv.ParseInt(requested.Query().Get("cursor"), 10, 64)
-			assert.Equal(t, first.TimeUS, cursor,
-				"the resume must start at the last event seen, not at the original cursor")
+			assert.Equal(t, base-cursorSkewAllowance.Microseconds(), cursor,
+				"a re-dial must subscribe from the construction cursor less the allowance, not from the last event seen")
 			for _, event := range []Event{first, second} {
 				if event.TimeUS >= cursor {
 					_ = conn.WriteJSON(event)
@@ -335,18 +337,19 @@ func TestFirehose_ResumesWithoutLosingOrRepeatingEvents(t *testing.T) {
 	firehose.mu.Unlock()
 
 	assert.Equal(t, 2, received, "each event is delivered exactly once across the reconnect")
-	assert.Equal(t, 1, duplicates, "the inclusive resume re-sends exactly one event, which is dropped")
+	assert.Equal(t, 1, duplicates, "the replay re-sends the already-seen first event, which is dropped by identity")
 	assert.GreaterOrEqual(t, reconnects, 1)
 }
 
-// TestFirehose_KeepsEventsSharingOneMicrosecond covers the boundary the resume
-// is built around.
+// TestFirehose_KeepsEventsSharingOneMicrosecond covers the boundary dedup by
+// identity is built around.
 //
 // One atProto commit can apply several writes, and Jetstream stamps them all
-// with the same time_us. Resuming from that timestamp re-delivers every one of
-// them, so remembering only the LAST event seen would drop its siblings — and
-// resuming from time_us+1 instead would skip them outright. Both failures are
-// silent: the test just waits forever for an event that already went past.
+// with the same time_us. A re-dial replays them all from the construction
+// cursor; they are distinct identities, so each is kept once and each replayed
+// copy is ignored. A dedup keyed on time_us would treat a sibling as a
+// duplicate and drop it. That failure is silent: the test just waits forever
+// for an event that already went past.
 func TestFirehose_KeepsEventsSharingOneMicrosecond(t *testing.T) {
 	did := "did:plc:firehosetest"
 	base := time.Now().UnixMicro()
@@ -361,7 +364,8 @@ func TestFirehose_KeepsEventsSharingOneMicrosecond(t *testing.T) {
 			_ = conn.WriteJSON(siblingB)
 		} else {
 			cursor, _ := strconv.ParseInt(requested.Query().Get("cursor"), 10, 64)
-			assert.Equal(t, shared, cursor, "an inclusive resume cannot skip the shared microsecond")
+			assert.Equal(t, base-cursorSkewAllowance.Microseconds(), cursor,
+				"a re-dial must subscribe from the construction cursor less the allowance")
 			_ = conn.WriteJSON(siblingA)
 			_ = conn.WriteJSON(siblingB)
 		}
@@ -384,6 +388,165 @@ func TestFirehose_KeepsEventsSharingOneMicrosecond(t *testing.T) {
 	received := firehose.received
 	firehose.mu.Unlock()
 	assert.Equal(t, 2, received, "both siblings arrive once; the replayed copies are ignored")
+}
+
+// TestFirehose_RecoversFromJetstreamDeliveryDisorder covers the ways a real
+// Jetstream delivers events out of time order, and the cursor bound's clock-skew
+// allowance.
+//
+// At its replay->live cutover Jetstream can deliver a LATER event on a
+// connection while the earlier ones are lost on that connection; every later
+// connection replays them from the persisted store. A subscription that resumes
+// from the last event seen, or that treats anything older than it as a
+// duplicate, never sees them again. Duplicates are a matter of identity, not of
+// time: an unseen event at or after the cursor is new in whatever order it
+// arrives.
+//
+// The cursor is still a bound, with a 250ms allowance for the clock skew of a
+// Docker Desktop VM. A matching event discarded beyond it is reported with how
+// far it predated the cursor.
+func TestFirehose_RecoversFromJetstreamDeliveryDisorder(t *testing.T) {
+	const did = "did:plc:firehosetest"
+
+	type awaitStep struct {
+		description string
+		match       Matcher
+		timeout     time.Duration
+		// delivered: the Await must return the event stamped base+offsetUS.
+		delivered bool
+		offsetUS  int64
+		// failureMentions: when not delivered, the failure message must contain it.
+		failureMentions string
+	}
+
+	tests := []struct {
+		name   string
+		serve  func(base int64) func(*websocket.Conn, *url.URL)
+		awaits []awaitStep
+	}{
+		{
+			name: "re-dial recovers earlier events lost before a later one",
+			serve: func(base int64) func(*websocket.Conn, *url.URL) {
+				create := commitEvent(did, testCollection, "disorder", "create", base+1_000)
+				update := commitEvent(did, testCollection, "disorder", "update", base+2_000)
+				deleted := commitEvent(did, testCollection, "disorder", "delete", base+3_000)
+				var connections atomic.Int32
+				return func(conn *websocket.Conn, requested *url.URL) {
+					if connections.Add(1) == 1 {
+						// The cutover race: only the later event survives on this connection.
+						_ = conn.WriteJSON(deleted)
+					} else {
+						// The persisted store has all three; replay from the cursor inclusive.
+						cursor, _ := strconv.ParseInt(requested.Query().Get("cursor"), 10, 64)
+						for _, event := range []Event{create, update, deleted} {
+							if event.TimeUS >= cursor {
+								_ = conn.WriteJSON(event)
+							}
+						}
+					}
+					silentStream(conn, requested)
+				}
+			},
+			awaits: []awaitStep{
+				{description: "the delete", match: MatchOperation("delete"), timeout: 2 * time.Second, delivered: true, offsetUS: 3_000},
+				{description: "the create", match: MatchOperation("create"), timeout: 2 * time.Second, delivered: true, offsetUS: 1_000},
+				{description: "the update", match: MatchOperation("update"), timeout: 2 * time.Second, delivered: true, offsetUS: 2_000},
+			},
+		},
+		{
+			name: "out-of-order on one connection",
+			serve: func(base int64) func(*websocket.Conn, *url.URL) {
+				create := commitEvent(did, testCollection, "disorder", "create", base+1_000)
+				deleted := commitEvent(did, testCollection, "disorder", "delete", base+3_000)
+				return func(conn *websocket.Conn, requested *url.URL) {
+					cursor, _ := strconv.ParseInt(requested.Query().Get("cursor"), 10, 64)
+					// The later event is written first.
+					for _, event := range []Event{deleted, create} {
+						if event.TimeUS >= cursor {
+							_ = conn.WriteJSON(event)
+						}
+					}
+					silentStream(conn, requested)
+				}
+			},
+			awaits: []awaitStep{
+				{description: "the delete", match: MatchOperation("delete"), timeout: 2 * time.Second, delivered: true, offsetUS: 3_000},
+				{description: "the create", match: MatchOperation("create"), timeout: 300 * time.Millisecond, delivered: true, offsetUS: 1_000},
+			},
+		},
+		{
+			// The fake honours the cursor, as Jetstream does: it replays only
+			// stored events stamped at or after the cursor the dial asked for. An
+			// event that Jetstream's lagging clock stamped 5ms before the cursor is
+			// delivered only if the dial itself reaches back by the allowance.
+			name: "awaited event inside the clock-skew allowance",
+			serve: func(base int64) func(*websocket.Conn, *url.URL) {
+				skewed := commitEvent(did, testCollection, "inside-allowance", "create", base-5_000)
+				return func(conn *websocket.Conn, requested *url.URL) {
+					cursor, _ := strconv.ParseInt(requested.Query().Get("cursor"), 10, 64)
+					if skewed.TimeUS >= cursor {
+						_ = conn.WriteJSON(skewed)
+					}
+					silentStream(conn, requested)
+				}
+			},
+			awaits: []awaitStep{
+				{description: "the event stamped just before the cursor", match: MatchRKey("inside-allowance"),
+					timeout: 2 * time.Second, delivered: true, offsetUS: -5_000},
+			},
+		},
+		{
+			// The fake ignores the cursor, modelling Jetstream's over-replay on a
+			// quiet stream; that is how events beyond the allowance reach the
+			// client bound at all.
+			//
+			// The non-matching event is the NEWER discard, so a diagnostic that
+			// reports only the newest predated event names 300ms, not the
+			// awaited event's offset.
+			name: "awaited event beyond the allowance",
+			serve: func(base int64) func(*websocket.Conn, *url.URL) {
+				beyond := commitEvent(did, testCollection, "beyond-allowance", "create", base-1_500_000)
+				other := commitEvent(did, testCollection, "unrelated", "create", base-300_000)
+				return func(conn *websocket.Conn, requested *url.URL) {
+					_ = conn.WriteJSON(beyond)
+					_ = conn.WriteJSON(other)
+					silentStream(conn, requested)
+				}
+			},
+			awaits: []awaitStep{
+				{description: "the event stamped far before the cursor", match: MatchRKey("beyond-allowance"),
+					timeout: 300 * time.Millisecond, delivered: false, failureMentions: "1.5s"},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			base := time.Now().UnixMicro()
+			firehose := NewFirehose(t, WithFirehoseURL(fakeJetstream(t, test.serve(base))), WithFirehoseCursor(base))
+			firehose.readDeadline = 50 * time.Millisecond
+
+			for _, step := range test.awaits {
+				ft := &fakeT{}
+				var event *Event
+				runIsolated(func() {
+					event = firehose.Await(ft, step.timeout, step.match, WithDescription("%s", step.description))
+				})
+
+				if step.delivered {
+					require.Falsef(t, ft.failed(), "%s was not delivered:\n%s", step.description, ft.message())
+					require.NotNil(t, event)
+					assert.Equal(t, base+step.offsetUS, event.TimeUS, "%s", step.description)
+					continue
+				}
+				require.Truef(t, ft.failed(), "%s must not be delivered", step.description)
+				assert.Contains(t, ft.message(), step.failureMentions,
+					"the failure must name how far the matching discarded event predated the cursor")
+				assert.Contains(t, ft.message(), " 0 received",
+					"every event in this row predates the allowance, so none may be accepted")
+			}
+		})
+	}
 }
 
 // TestFirehose_BufferOverflowFailsRatherThanDiscarding: the buffer holds events
@@ -499,7 +662,8 @@ func TestFirehose_SubscribeURLCarriesTheCursorAndFilters(t *testing.T) {
 	assert.Equal(t, "ws", parsed.Scheme)
 	assert.Equal(t, "jetstream.test:6008", parsed.Host)
 	assert.Equal(t, "/subscribe", parsed.Path)
-	assert.Equal(t, "1234567890", parsed.Query().Get("cursor"))
+	assert.Equal(t, strconv.FormatInt(1234567890-cursorSkewAllowance.Microseconds(), 10),
+		parsed.Query().Get("cursor"), "the dial reaches back by the clock-skew allowance")
 	assert.Equal(t,
 		[]string{"social.coves.community.post", "social.coves.community.comment"},
 		parsed.Query()["wantedCollections"])

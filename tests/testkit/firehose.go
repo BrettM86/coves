@@ -47,19 +47,29 @@ import (
 //	ev := fh.Await(t, 30*time.Second, testkit.MatchRecord(rec))       // dials, replays
 //
 // Jetstream stamps each event's time_us when it ingests the commit, which is
-// necessarily after a write that had not happened when the cursor was taken. So
-// the cursor is always below the event's time_us (we receive it) and above every
-// earlier event's (no stale matches). Test and Jetstream share a host clock —
-// the dev stack publishes on loopback, the CI stack shares a network namespace —
-// so there is no skew to compensate for. Where that assumption fails it is
-// reported rather than silently starving the wait: see the discarded-event
-// accounting in render.
+// necessarily after a write that had not happened when the cursor was taken —
+// provided Jetstream's clock agrees with this process's. On Linux the container
+// shares the host kernel's clock and it does. Docker Desktop on a Mac runs
+// containers in a Linux VM whose clock can sit a few milliseconds behind the
+// host's, which stamps a fresh event just BEFORE the cursor; cursorSkewAllowance
+// absorbs that, with about two orders of magnitude of headroom over the skew
+// observed so a slower VM clock still passes. Every dial asks Jetstream to replay
+// from the cursor less the allowance, so the server sends what the client bound
+// admits, and a matching event discarded beyond it is reported with its measured
+// offset rather than as a bare timeout.
 //
 // The cursor is also a BOUND, not merely a starting hint: events older than it
-// are discarded on arrival. A Jetstream subscribed "from now" on a quiet stream
-// has been observed replaying its entire retained store, and a negative
-// assertion ("no delete event arrived") written against an unbounded stream is
-// answered by whatever a previous run left behind.
+// (less the allowance) are discarded on arrival. A Jetstream subscribed "from
+// now" on a quiet stream has been observed replaying its entire retained store,
+// and a negative assertion ("no delete event arrived") written against an
+// unbounded stream is answered by whatever a previous run left behind.
+//
+// Every dial, including a re-dial after a quiet window, subscribes from the
+// construction cursor. Jetstream does not deliver in time order: at its
+// replay-to-live cutover a connection can carry a later event while losing
+// earlier ones, which only a later connection replaying from the persisted store
+// delivers. A re-dial resuming from the last event seen would skip them for
+// good. Replayed events already taken are recognised by identity, not by time.
 //
 // # Feeding a real consumer
 //
@@ -130,6 +140,22 @@ const (
 	// that refuses or immediately drops connections is retried a few times a
 	// second rather than as fast as the scheduler allows.
 	recoveryBackoff = 100 * time.Millisecond
+
+	// cursorSkewAllowance is how far before the cursor an event may be stamped
+	// and still be accepted. It exists for Docker Desktop on a Mac, where the
+	// Linux VM running Jetstream keeps a clock that can sit a few milliseconds
+	// behind the host's, so an event written after NewFirehose can carry a
+	// time_us just below the cursor. 250ms is about two orders of magnitude of
+	// headroom over that observed skew, so a slower VM clock still passes. Every
+	// dial subscribes from the cursor less this allowance, so Jetstream replays
+	// the same window accept admits. Its cost: an event from the 250ms before
+	// construction can satisfy a broad matcher, and the allowance widens an
+	// explicit WithFirehoseCursor the same way.
+	cursorSkewAllowance = 250 * time.Millisecond
+
+	// maxRecentPredatedEvents bounds the ring of discarded predated events kept
+	// so a failed Await can name a matching one and its offset.
+	maxRecentPredatedEvents = 32
 )
 
 // ---------------------------------------------------------------------------
@@ -234,7 +260,7 @@ func (e *Event) String() string {
 }
 
 // identity is what makes two frames the same event, for the deduplication a
-// resumed subscription needs.
+// re-dialled subscription needs.
 //
 // Rev and CID are part of it because one atProto commit can apply several
 // writes, and those events share a time_us and a repo while differing in
@@ -336,22 +362,20 @@ type Firehose struct {
 	conn    *websocket.Conn
 	pending []*Event
 
-	// lastTimeUS and seenAtLast are the resume bookkeeping. A re-dialled
-	// subscription resumes from lastTimeUS INCLUSIVE — rewinding by a
-	// microsecond would skip anything sharing that timestamp, and one atProto
-	// commit applying several writes emits several events with a single time_us
-	// — so the events already taken at that timestamp are remembered
-	// individually and skipped on the way back through.
-	lastTimeUS int64
-	seenAtLast map[string]bool
+	// seen holds the identity of every event accepted so far. Every dial
+	// replays from the construction cursor, so an event already taken comes
+	// round again on each re-dial and is skipped here, whatever order it
+	// arrives in.
+	seen map[string]bool
 
 	received  int
 	discarded int
 	// newestDiscarded is the largest time_us thrown away for predating the
-	// cursor. Under a clock skew between this process and Jetstream it is the
-	// only evidence distinguishing "nothing arrived" from "everything arrived
-	// and was rejected", which otherwise reads as an unfixable timeout.
+	// cursor, and recentPredated the last few such events. They distinguish
+	// "nothing arrived" from "it arrived and was rejected", which otherwise
+	// reads as an unexplained timeout.
 	newestDiscarded int64
+	recentPredated  []*Event
 	duplicates      int
 	reconnects      int
 	closed          bool
@@ -388,6 +412,11 @@ func WithFirehoseURL(baseURL string) FirehoseOption {
 // a "and nothing further happened" assertion by an OBSERVED time_us rather than
 // by a wall clock. Passing time.Now() is the anti-pattern the type exists to
 // prevent; NewFirehose already does that, at the only moment when it is safe.
+//
+// The clock-skew allowance applies here too: the subscription replays and
+// accepts events from up to 250ms before timeUS, so a bound taken from an
+// observed time_us is loose by that much, and events in those 250ms count as
+// "further".
 func WithFirehoseCursor(timeUS int64) FirehoseOption {
 	return func(c *firehoseConfig) { c.cursor, c.cursorSet = timeUS, true }
 }
@@ -420,7 +449,7 @@ func NewFirehose(t TestingT, opts ...FirehoseOption) *Firehose {
 		maxPending:          defaultMaxPendingEvents,
 		ctx:                 ctx,
 		cancel:              cancel,
-		seenAtLast:          map[string]bool{},
+		seen:                map[string]bool{},
 	}
 	t.Cleanup(f.Close)
 	return f
@@ -430,13 +459,20 @@ func NewFirehose(t TestingT, opts ...FirehoseOption) *Firehose {
 // microseconds.
 func (f *Firehose) Cursor() int64 { return f.cursor }
 
-// SubscribeURL is the URL the next dial will use: the configured filters, and
-// the cursor this subscription would resume from right now — the construction
-// cursor until an event has been read, and that event's time_us afterwards.
+// SubscribeURL is the URL every dial uses: the configured filters and the
+// construction cursor less the clock-skew allowance.
 func (f *Firehose) SubscribeURL() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.subscribeURLLocked()
+}
+
+// dialCursor is the cursor every dial sends: the construction cursor less the
+// clock-skew allowance, so Jetstream replays the same window accept admits. An
+// event a lagging Jetstream clock stamped just before the cursor is never
+// re-sent on a dial from the cursor itself.
+func (f *Firehose) dialCursor() int64 {
+	return f.cursor - cursorSkewAllowance.Microseconds()
 }
 
 func (f *Firehose) subscribeURLLocked() string {
@@ -444,7 +480,7 @@ func (f *Firehose) subscribeURLLocked() string {
 	for _, c := range f.collections {
 		params.Add("wantedCollections", c)
 	}
-	params.Set("cursor", strconv.FormatInt(max(f.cursor, f.lastTimeUS), 10))
+	params.Set("cursor", strconv.FormatInt(f.dialCursor(), 10))
 	return f.baseURL + f.path + "?" + params.Encode()
 }
 
@@ -461,7 +497,7 @@ func (f *Firehose) subscribeURLLocked() string {
 //
 // timeout is the ONLY limit on how long this waits. A quiet stream costs
 // re-dials, not a failure: the read deadline is a window, and reaching it means
-// resuming from the last event seen. What ends an Await unsuccessfully is either
+// replaying again from the cursor. What ends an Await unsuccessfully is either
 // that timeout or maxRecoveryFailures consecutive failures to re-establish the
 // subscription at all — reported as two different findings, because "nothing was
 // published" and "Jetstream is gone" want different answers.
@@ -482,7 +518,7 @@ func (f *Firehose) Await(t TestingT, timeout time.Duration, match Matcher, opts 
 	for {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			t.Fatalf("%s", f.render(cfg, fmt.Sprintf(
+			t.Fatalf("%s", f.render(cfg, match, fmt.Sprintf(
 				"timed out after %s (limit %s) waiting for %s",
 				time.Since(start).Round(time.Millisecond), timeout, cfg.subject())))
 			return nil
@@ -491,14 +527,14 @@ func (f *Firehose) Await(t TestingT, timeout time.Duration, match Matcher, opts 
 		conn, err := f.connect(deadline)
 		if err != nil {
 			if f.isClosed() {
-				t.Fatalf("%s", f.render(cfg, fmt.Sprintf(
+				t.Fatalf("%s", f.render(cfg, match, fmt.Sprintf(
 					"waiting for %s: the subscription was closed after %s",
 					cfg.subject(), time.Since(start).Round(time.Millisecond))))
 				return nil
 			}
 			recoveryFailures++
 			if recoveryFailures >= f.maxRecoveryFailures {
-				t.Fatalf("%s", f.render(cfg, fmt.Sprintf(
+				t.Fatalf("%s", f.render(cfg, match, fmt.Sprintf(
 					"gave up after %s waiting for %s: %d consecutive failures to establish the subscription; "+
 						"the last was: %v",
 					time.Since(start).Round(time.Millisecond), cfg.subject(), recoveryFailures, err)))
@@ -518,7 +554,7 @@ func (f *Firehose) Await(t TestingT, timeout time.Duration, match Matcher, opts 
 		raw, readErr := readFrame(conn, window)
 		if readErr != nil {
 			if f.isClosed() {
-				t.Fatalf("%s", f.render(cfg, fmt.Sprintf(
+				t.Fatalf("%s", f.render(cfg, match, fmt.Sprintf(
 					"waiting for %s: the subscription was closed after %s",
 					cfg.subject(), time.Since(start).Round(time.Millisecond))))
 				return nil
@@ -526,7 +562,7 @@ func (f *Firehose) Await(t TestingT, timeout time.Duration, match Matcher, opts 
 			// Every read error is recoverable, and every recovery is a fresh
 			// connection: a websocket past its read deadline is corrupt, and a
 			// stream that ended (EOF, a reset, a Jetstream restart) is precisely
-			// the case cursor-resume exists for. Only a frame that will not
+			// the case cursor replay exists for. Only a frame that will not
 			// decode is terminal, and that is handled below.
 			f.dropConnection()
 			if atDeadline {
@@ -536,14 +572,14 @@ func (f *Firehose) Await(t TestingT, timeout time.Duration, match Matcher, opts 
 				continue
 			}
 			if quietWindow(readErr) {
-				// A silent stream is not a failure. Resume and keep waiting.
+				// A silent stream is not a failure. Re-dial and keep waiting.
 				recoveryFailures = 0
 				f.countReconnect()
 				continue
 			}
 			recoveryFailures++
 			if recoveryFailures >= f.maxRecoveryFailures {
-				t.Fatalf("%s", f.render(cfg, fmt.Sprintf(
+				t.Fatalf("%s", f.render(cfg, match, fmt.Sprintf(
 					"gave up after %s waiting for %s: the subscription broke %d times in a row; "+
 						"the last error was: %v",
 					time.Since(start).Round(time.Millisecond), cfg.subject(), recoveryFailures, readErr)))
@@ -559,7 +595,7 @@ func (f *Firehose) Await(t TestingT, timeout time.Duration, match Matcher, opts 
 			// Terminal: a frame this package cannot parse is a protocol change
 			// or a different service on the port, and neither is fixed by
 			// reading again.
-			t.Fatalf("%s", f.render(cfg, fmt.Sprintf(
+			t.Fatalf("%s", f.render(cfg, match, fmt.Sprintf(
 				"waiting for %s: Jetstream sent a frame that is not an event: %v\n  frame: %s",
 				cfg.subject(), err, truncate(string(raw), 512))))
 			return nil
@@ -568,7 +604,7 @@ func (f *Firehose) Await(t TestingT, timeout time.Duration, match Matcher, opts 
 
 		matched, err := f.accept(event, match)
 		if err != nil {
-			t.Fatalf("%s", f.render(cfg, fmt.Sprintf("waiting for %s: %v", cfg.subject(), err)))
+			t.Fatalf("%s", f.render(cfg, match, fmt.Sprintf("waiting for %s: %v", cfg.subject(), err)))
 			return nil
 		}
 		if matched {
@@ -587,26 +623,21 @@ func (f *Firehose) accept(event *Event, match Matcher) (matched bool, err error)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	switch {
-	case event.TimeUS < f.cursor:
+	if event.TimeUS < f.cursor-cursorSkewAllowance.Microseconds() {
 		f.discarded++
 		f.newestDiscarded = max(f.newestDiscarded, event.TimeUS)
+		if len(f.recentPredated) == maxRecentPredatedEvents {
+			f.recentPredated = f.recentPredated[1:]
+		}
+		f.recentPredated = append(f.recentPredated, event)
 		return false, nil
-	case event.TimeUS < f.lastTimeUS:
-		// Older than the resume point: a stream replaying more than was asked
-		// for. Not a duplicate of anything held, but not new either.
-		f.duplicates++
-		return false, nil
-	case event.TimeUS == f.lastTimeUS && f.seenAtLast[event.identity()]:
+	}
+	identity := event.identity()
+	if f.seen[identity] {
 		f.duplicates++
 		return false, nil
 	}
-
-	if event.TimeUS > f.lastTimeUS {
-		f.lastTimeUS = event.TimeUS
-		clear(f.seenAtLast)
-	}
-	f.seenAtLast[event.identity()] = true
+	f.seen[identity] = true
 	f.received++
 
 	if match(event) {
@@ -775,9 +806,11 @@ func (f *Firehose) takePending(match Matcher) *Event {
 // tier exists to stop producing: what a reader needs is whether ANY event
 // arrived (a live stream with a wrong matcher), whether none did (a dead
 // consumer, a wrong collection filter, a PDS that never committed), or whether
-// they all arrived and were rejected for predating the cursor (a clock skew
-// between this process and Jetstream, which no amount of waiting fixes).
-func (f *Firehose) render(cfg waitConfig, msg string) string {
+// they arrived and were rejected for predating the cursor. Predated events
+// alone are not evidence of clock skew — Jetstream replaying its store produces
+// them with none — so skew is named only when a predated event matches the
+// Await that failed.
+func (f *Firehose) render(cfg waitConfig, match Matcher, msg string) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -789,14 +822,26 @@ func (f *Firehose) render(cfg waitConfig, msg string) string {
 		fmt.Fprintf(&b, ", %d replayed duplicates ignored", f.duplicates)
 	}
 	if f.discarded > 0 {
-		fmt.Fprintf(&b, "\n  %d event(s) arrived but PREDATED the cursor (newest time_us %d, cursor %d, "+
-			"%s earlier) — that reads as a clock skew between this process and Jetstream, not as a missing event",
-			f.discarded, f.newestDiscarded, f.cursor,
+		fmt.Fprintf(&b, "\n  %d event(s) arrived but PREDATED the cursor beyond the %s allowance "+
+			"(newest time_us %d, cursor %d, %s earlier)",
+			f.discarded, cursorSkewAllowance, f.newestDiscarded, f.cursor,
 			time.Duration(f.cursor-f.newestDiscarded)*time.Microsecond)
 	}
+	// The newest matching predated event is the likeliest to be the one
+	// awaited, and its offset is the tightest lower bound on the skew.
+	for _, event := range slices.Backward(f.recentPredated) {
+		if !match(event) {
+			continue
+		}
+		offset := time.Duration(f.cursor-event.TimeUS) * time.Microsecond
+		fmt.Fprintf(&b, "\n  a matching event arrived %s before the cursor and was discarded: %s\n"+
+			"    if it is the event written after NewFirehose, Jetstream's clock is behind this process by at least %s",
+			offset, event, offset)
+		break
+	}
 	if f.reconnects > 0 {
-		fmt.Fprintf(&b, "\n  subscription re-dialled %d time(s); resuming from time_us %d",
-			f.reconnects, max(f.cursor, f.lastTimeUS))
+		fmt.Fprintf(&b, "\n  subscription re-dialled %d time(s); each replayed from time_us %d",
+			f.reconnects, f.dialCursor())
 	}
 	if n := len(f.pending); n > 0 {
 		shown := f.pending
