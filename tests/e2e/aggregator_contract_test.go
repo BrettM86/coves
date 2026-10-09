@@ -663,8 +663,9 @@ func TestAggregatorAuthorizationIngestion(t *testing.T) {
 // is the property, and the dead-letter counter is where it is visible.
 //
 // The recovery itself is NOT asserted here: this test never declares the
-// aggregator, so its orphan stays in the backlog until its redrive budget runs
-// out. Recovery belongs to §3.4c's reliability suite, which owns dead letters
+// aggregator, so its orphan is replayed until its redrive budget runs out, then
+// stays in the backlog, exhausted, until retention prunes it. Recovery belongs
+// to §3.4c's reliability suite, which owns dead letters
 // (TestReliabilityDeadLetterRedriveRecovers).
 func TestAggregatorAuthorizationArrivingBeforeItsAggregator(t *testing.T) {
 	p := newPipeline(t)

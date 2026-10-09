@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"Coves/tests/testkit"
 
@@ -315,13 +316,43 @@ func TestReliabilityRewindReplaysExactlyOnce(t *testing.T) {
 //
 // The restart is a backstop, not the trigger. DeadLetterRedriver.Run does a
 // pass IMMEDIATELY at boot before starting its ticker (redrive.go), so if no
-// periodic pass got there first, the boot pass does.
+// periodic pass got there first, the boot pass does — but only for a row that
+// still has redrive budget left.
 //
-// Either pass can be the one that retires the row, so each scenario snapshots
-// the backlog straight after the capture, while the orphan row is guaranteed to
-// be in it: until the scenario declares the aggregator or writes a tombstone, a
-// replay can only fail. A snapshot taken after that point can already exclude
-// the row, and the backlog then never drops below it.
+// # THE ORPHAN'S BUDGET IS ABOUT 3 × REDRIVE_INTERVAL FROM THE CAPTURE
+//
+// Every pass before the failure's cause is gone FAILS, and every failed pass
+// spends one redrive. The orphan is born with only UnresolvedRedriveAttempts
+// (3) of them, so at CI's interval its budget is gone roughly 11-16s after the
+// capture. An exhausted row stays in the backlog, but ListRetryable never
+// returns it again (state_store.go: attempts < max), so neither a later tick nor
+// the boot pass can replay it: the scenario then waits out its 45s and fails.
+// Whatever lets a replay succeed must therefore land well inside that window,
+// and each scenario keeps only the steps that depend on the capture between the
+// two:
+//
+//   - Scenario 3's declaration is in a different repo, which nothing orders
+//     against the orphan, so it can only be written once the capture is
+//     confirmed. Between them are the capture's own two checks, one backlog
+//     read and the declaration's write.
+//   - Scenario 4 writes its delete in the same burst as the orphan, in the same
+//     repo, so the tombstone is in place before the test takes another step.
+//     From then on a replay is a stale event the gate refuses, and a refusal is
+//     a success that retires the row (applyGated returns nil).
+//
+// A wait that times out reports how long after the capture the declaration was
+// indexed, so a stall that outran the budget names itself instead of reading as
+// a redriver that never ran.
+//
+// # WHERE THE BASELINE IS READ
+//
+// Either pass can be the one that retires the row, so neither scenario may read
+// its backlog baseline after a replay can succeed: a baseline that already
+// excludes the row is one the backlog never drops below. Scenario 3 reads it
+// straight after the capture, while the row is guaranteed to be in it (until
+// the declaration, a replay can only fail). Scenario 4's burst leaves no such
+// moment, so it uses the baseline read just before the burst, and the capture's
+// dead-lettered delta is what proves the row was written.
 //
 // # WHAT PROVES IT WAS THE REDRIVER
 //
@@ -390,10 +421,31 @@ type orphanedAuthorization struct {
 	undeclared *testkit.Account
 	known      *testkit.Account
 	rkey       string
+
+	// backlogBeforeBurst is the aggregators backlog read just before the orphan
+	// was written, so it never contains the orphan's row.
+	backlogBeforeBurst int64
+	// confirmedAt is when the bound became visible. The capture happened before
+	// it, so time.Since(confirmedAt) is a lower bound on the orphan's age, which
+	// is what its redrive budget is measured against.
+	confirmedAt time.Time
+}
+
+// sinceCapture renders how long after the capture a step completed, for the
+// failure text of a wait that a spent redrive budget would time out.
+func (o orphanedAuthorization) sinceCapture(step string) string {
+	return fmt.Sprintf("%s at least %s after the capture was confirmed. The orphan is captured "+
+		"with only 3 redrives (UnresolvedRedriveAttempts) and CI's 5s REDRIVE_INTERVAL spends one per "+
+		"failed pass, so if that is more than about 10s its budget may have run out before a replay "+
+		"could succeed; an exhausted row stays in the backlog and not even the restart's boot pass "+
+		"replays it", step, time.Since(o.confirmedAt).Round(100*time.Millisecond))
 }
 
 // captureOrphanedAuthorization writes the orphan, bounds it, and asserts it was
-// captured rather than dropped.
+// captured rather than dropped. With deleteInBurst it also deletes the orphan
+// straight after writing it, inside the same bound, so the only thing between
+// the capture and the tombstone is the delete's own PDS round trips (see the
+// budget note above this pair).
 //
 // # THE BOUND
 //
@@ -403,8 +455,9 @@ type orphanedAuthorization struct {
 // one at a time, so by the time the bounding authorization is visible the
 // orphan has already been through its retries and its dead-letter write. A
 // bound in a different repo would be ordering luck; a bound that is merely a
-// timer would be a sleep.
-func captureOrphanedAuthorization(t *testing.T, p *pipeline, prefix string) orphanedAuthorization {
+// timer would be a sleep. The same bound covers the delete when there is one:
+// it is written after it, in the same repo.
+func captureOrphanedAuthorization(t *testing.T, p *pipeline, prefix string, deleteInBurst bool) orphanedAuthorization {
 	t.Helper()
 
 	moderator := p.IndexedAccount(t, prefix+"m")
@@ -416,16 +469,21 @@ func captureOrphanedAuthorization(t *testing.T, p *pipeline, prefix string) orph
 	undeclared := provisionAggregatorRepo(t, p, prefix+"u")
 
 	before := p.counters(t, aggregatorsConsumer)
+	backlogBeforeBurst := deadLetterBacklog(t, p, aggregatorsConsumer)
 
 	rkey := testkit.TID()
 	community.PutRecord(t, aggregatorAuthorizationCollection, rkey,
 		aggregatorAuthorizationRecord(undeclared.DID, community.DID, moderator.DID, true))
+	if deleteInBurst {
+		community.DeleteExistingRecord(t, aggregatorAuthorizationCollection, rkey)
+	}
 	community.PutRecord(t, aggregatorAuthorizationCollection, testkit.TID(),
 		aggregatorAuthorizationRecord(known.DID, community.DID, moderator.DID, true))
 
 	awaitAuthorization(t, p, community.DID, known.DID,
 		"the authorization for the DECLARED aggregator, which bounds the orphan",
 		func(authorizationView) bool { return true })
+	confirmedAt := time.Now()
 
 	after := p.counters(t, aggregatorsConsumer)
 	require.Equalf(t, uint64(1), after.DeadLettered-before.DeadLettered,
@@ -441,11 +499,13 @@ func captureOrphanedAuthorization(t *testing.T, p *pipeline, prefix string) orph
 	require.Equal(t, known.DID, granted[0].AggregatorDID)
 
 	return orphanedAuthorization{
-		community:  community,
-		moderator:  moderator,
-		undeclared: undeclared,
-		known:      known,
-		rkey:       rkey,
+		community:          community,
+		moderator:          moderator,
+		undeclared:         undeclared,
+		known:              known,
+		rkey:               rkey,
+		backlogBeforeBurst: backlogBeforeBurst,
+		confirmedAt:        confirmedAt,
 	}
 }
 
@@ -504,22 +564,25 @@ func TestReliabilityDeadLetterRedriveRecovers(t *testing.T) {
 	p := newPipeline(t)
 	control := requireStackControl(t)
 
-	orphan := captureOrphanedAuthorization(t, p, "d")
+	orphan := captureOrphanedAuthorization(t, p, "d", false)
 	// Before the declaration: after it, a periodic redrive can retire the row
-	// before the snapshot (see the note above this pair).
+	// before the snapshot (see the note above this pair). Nothing else goes
+	// between the capture and the declaration, because the orphan's redrive
+	// budget is running from the capture.
 	backlogBefore := deadLetterBacklog(t, p, aggregatorsConsumer)
 
 	declareAggregator(t, p, orphan.undeclared)
+	declared := orphan.sinceCapture("The declaration was indexed")
 
 	// Empty outage: the boot pass is the backstop if no periodic pass has
 	// replayed the row yet (redrive.go).
 	control.outage(t, p, func() {})
 
 	awaitAuthorization(t, p, orphan.community.DID, orphan.undeclared.DID,
-		"the redriven authorization to be served after the aggregator declared itself",
+		"the redriven authorization to be served after the aggregator declared itself. "+declared,
 		func(view authorizationView) bool { return view.Enabled })
 
-	p.Await(t, "the redriver to have retired the dead letter row it replayed", func() (bool, error) {
+	p.Await(t, "the redriver to have retired the dead letter row it replayed. "+declared, func() (bool, error) {
 		backlog, err := readDeadLetterBacklog(p, aggregatorsConsumer)
 		if err != nil {
 			return false, err
@@ -557,9 +620,15 @@ func TestReliabilityDeadLetterRedriveRecovers(t *testing.T) {
 // because in between the record was deleted.
 //
 //	authorize an undeclared aggregator → captured, unindexed
-//	DELETE the authorization record    → the rev gate writes its tombstone
+//	DELETE it, in the same burst       → the rev gate writes its tombstone
+//	redrive (5s tick or restart)       → the replay is refused, retiring the row
 //	declare the aggregator             → a replay would now succeed on its merits
-//	redrive (5s tick or restart)       → the replay is refused, and STAYS refused
+//	no restart from here on            → the record STAYS absent
+//
+// The declaration is what gives the test its teeth. A working gate has usually
+// refused the replay before it; a broken one cannot have applied it, because
+// the aggregator was undeclared, so it applies it on the first periodic pass
+// after the declaration, and the record appears.
 //
 // # WHY THIS IS THE HONEST WAY TO STAGE IT
 //
@@ -589,39 +658,44 @@ func TestReliabilityRevGateRefusesResurrectionAfterDelete(t *testing.T) {
 	p := newPipeline(t)
 	control := requireStackControl(t)
 
-	orphan := captureOrphanedAuthorization(t, p, "n")
-	// Before the delete: once the tombstone exists, a periodic redrive can
-	// consume the row before the snapshot (see the note above this pair).
-	backlogBefore := deadLetterBacklog(t, p, aggregatorsConsumer)
+	// The delete goes in the capture's own burst, bounded by the same later
+	// commit in the same repo: when the bound is visible the orphan has been
+	// dead-lettered AND the delete behind it has written the tombstone. Only the
+	// delete's own GetRecord/DeleteRecord round trips sit inside the orphan's
+	// redrive budget; a stall there still names itself through sinceCapture.
+	orphan := captureOrphanedAuthorization(t, p, "n", true)
 
-	// The delete, bounded by a LATER commit in the SAME repo whose effect is
-	// visible: re-authorizing the declared aggregator with enabled=false flips
-	// a served field (the authorizations table upserts on
-	// (aggregator_did, community_did), aggregator_repo.go:358). When that flip
-	// is visible the delete ahead of it in the same repo's commit order has
-	// been handled, so the tombstone is in place — without a sleep, and without
-	// relying on ordering between repos, which Jetstream does not promise.
-	orphan.community.DeleteExistingRecord(t, aggregatorAuthorizationCollection, orphan.rkey)
-	orphan.community.PutRecord(t, aggregatorAuthorizationCollection, testkit.TID(),
-		aggregatorAuthorizationRecord(orphan.known.DID, orphan.community.DID, orphan.moderator.DID, false))
-
-	awaitAuthorization(t, p, orphan.community.DID, orphan.known.DID,
-		"the disabling re-authorization, which bounds the delete", func(view authorizationView) bool {
-			return !view.Enabled
-		})
+	// The restart comes BEFORE the declaration, as the backstop trigger for the
+	// refusal: if no periodic pass has replayed the row yet, the boot pass does,
+	// and against the tombstone that replay is refused and retires the row. It
+	// must not come after the declaration. Its cursor rewind replays recent
+	// events, the delete among them, so a resurrection by a periodic pass
+	// between the declaration and the stop would be deleted again by the
+	// rewind, and the Holds below would pass over a broken gate.
+	control.outage(t, p, func() {})
 
 	declareAggregator(t, p, orphan.undeclared)
-
-	control.outage(t, p, func() {})
+	declared := orphan.sinceCapture("The declaration was indexed")
 
 	// The redrive is what makes the assertion below meaningful: without it, the
 	// authorization's absence would only prove that nothing tried to add it.
-	p.Await(t, "the redriver to have consumed the captured authorization", func() (bool, error) {
+	//
+	// With a working gate this is already true by now: the first pass after the
+	// burst retired the row. With a broken one, every pass before the
+	// declaration failed on the undeclared aggregator, and the first pass after
+	// it (a periodic tick, since nothing restarts the AppView from here on)
+	// applies the stale create and retires the row, so the drop below is
+	// followed by a resurrection the Holds sees. If that broken gate's failed
+	// passes spent the budget first, the row never drops and this wait fails.
+	p.Await(t, "the redriver to have consumed the captured authorization. With a working rev gate "+
+		"the first pass after the capture refuses the stale create and retires the row; a row "+
+		"still here means no pass replayed it, or a broken gate kept failing on the undeclared "+
+		"aggregator. "+declared, func() (bool, error) {
 		backlog, err := readDeadLetterBacklog(p, aggregatorsConsumer)
 		if err != nil {
 			return false, err
 		}
-		return backlog <= backlogBefore-1, nil
+		return backlog <= orphan.backlogBeforeBurst, nil
 	})
 
 	p.Holds(t,

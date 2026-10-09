@@ -52,8 +52,12 @@ services:
       POSTGRES_DB: ${POSTGRES_TEST_DB:-coves_test}
       POSTGRES_USER: ${POSTGRES_TEST_USER:-test_user}
       POSTGRES_PASSWORD: ${POSTGRES_TEST_PASSWORD:-test_password}
+    # Capped so a clone-leak regression cannot grow this filesystem to the
+    # uncapped default of half of host RAM. Measured peak use is about 240MB;
+    # the estimated peak is about 1.7GB (max_wal_size, a soft target, plus a
+    # full -parallel of clones).
     tmpfs:
-      - /var/lib/postgresql/data
+      - /var/lib/postgresql/data:size=3g
     networks:
       - coves-dev
     healthcheck:

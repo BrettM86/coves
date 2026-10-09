@@ -364,6 +364,14 @@ func newPostFixture(t *testing.T) *postFixture {
 	)
 	acceptor := &acceptorSpy{delegate: engine}
 
+	// Write-forward is not about admission; the opt-out is explicit. Its clock
+	// is frozen at fixture creation because the dedupe bucket feeds the record
+	// key: a wall clock that ticked over the hour between a test's two identical
+	// submissions would hand the retry a different rkey.
+	admission := posts.NewAllowAllAdmissionPolicyForTests()
+	frozen := time.Now()
+	admission.Now = func() time.Time { return frozen }
+
 	f := &postFixture{
 		pds:              pdsServer,
 		db:               db,
@@ -377,9 +385,7 @@ func newPostFixture(t *testing.T) *postFixture {
 	f.service = posts.NewPostService(
 		postgres.NewPostRepository(db), communityService,
 		nil, nil, nil, nil, pdsServer.URL(),
-		append(f.writePathOptions(),
-			// Write-forward is not about admission; the opt-out is explicit.
-			posts.WithAdmissionPolicy(posts.NewAllowAllAdmissionPolicyForTests()))...)
+		append(f.writePathOptions(), posts.WithAdmissionPolicy(admission))...)
 	return f
 }
 

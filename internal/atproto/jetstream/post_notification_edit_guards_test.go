@@ -43,11 +43,11 @@ func TestPostNotificationEdit_NonqualifyingUpdatesPreserveNotifications(t *testi
 	for _, name := range []string{"stale revision", "recency guard", "already soft deleted", "concurrent delete", "concurrent recency advancement"} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			t.Cleanup(cancel)
 			db := testkit.DB(t)
 			fixture := newPV2Fixture(t, db)
 			handles, recipients := postMentionRecipients(t, db, 2)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			t.Cleanup(cancel)
 			createdAt := activatedCommentNotificationTime(t, db, ctx)
 			consumer := postMentionConsumer(db, fixture, postgres.NewNotificationRepository(db))
 			key := testkit.TID()
@@ -153,13 +153,13 @@ func TestPostNotificationEdit_CapCountsExistingEightMentionRows(t *testing.T) {
 
 func TestPostNotificationEdit_DiffAndCapUseLockedStoredFacets(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	t.Cleanup(cancel)
 	db := testkit.DB(t)
 	fixture := newPV2Fixture(t, db)
 	// X, Y, Z are the incoming facets. Nine distinct pre-existing recipients
 	// occupy the budget after the fixture transaction commits.
 	handles, recipients := postMentionRecipients(t, db, 12)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	t.Cleanup(cancel)
 	createdAt := activatedCommentNotificationTime(t, db, ctx)
 	consumer := postMentionConsumer(db, fixture, postgres.NewNotificationRepository(db))
 	key := testkit.TID()

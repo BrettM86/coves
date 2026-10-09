@@ -135,7 +135,7 @@ func TestRunTicker_CancelInterruptsAnInFlightCycle(t *testing.T) {
 	defer cancel()
 
 	var wg sync.WaitGroup
-	started := make(chan struct{})
+	started := make(chan struct{}, 1)
 	finished := make(chan error, 1)
 
 	runTicker(ctx, &wg, "long-cycle", time.Minute, func(workCtx context.Context) {

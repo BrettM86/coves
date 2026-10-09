@@ -477,6 +477,7 @@ func newLedgerFixture(t *testing.T) *ledgerFixture {
 	t.Helper()
 
 	base := newPostFixture(t)
+	frozen := time.Now()
 	return &ledgerFixture{
 		base: base,
 		service: posts.NewPostService(
@@ -491,10 +492,12 @@ func newLedgerFixture(t *testing.T) *ledgerFixture {
 						Window:                   time.Hour,
 						DedupeWindow:             time.Hour,
 					},
-					// The real clock: this fixture never crosses a window, and
-					// the ledger stamps created_at server-side, so an injected
-					// clock would only introduce disagreement between the two.
-					Now: time.Now,
+					// Frozen at fixture creation: a per-call clock would put
+					// submissions that straddle the hour in different dedupe
+					// buckets. It is the real present, not a mid-bucket instant,
+					// because the ledger stamps created_at server-side and
+					// CountSince(now - Window) has to cover those rows.
+					Now: func() time.Time { return frozen },
 				}))...),
 	}
 }
