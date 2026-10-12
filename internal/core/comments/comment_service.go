@@ -192,8 +192,8 @@ func (s *commentService) GetComments(ctx context.Context, req *GetCommentsReques
 	}
 
 	// 2a. Resolve the thread header through the read-path visibility predicate
-	// (task 7, PRD §6.2). GetByURI is admission-blind and serves soft-deleted rows
-	// (the 2026-07-29 defect), so without this the thread endpoint hands a
+	// (docs/POSTS.md §6.2). GetByURI is admission-blind and serves soft-deleted
+	// rows (the 2026-07-29 defect), so without this the thread endpoint hands a
 	// non-author the full header — title, content, author — of a post the feeds
 	// correctly hide. The header answers as post.get does: a soft-deleted post is
 	// gone, and a post its community has not admitted (a pending/removed/rejected
@@ -469,7 +469,7 @@ func (s *commentService) buildLevelViews(
 		return nil, fmt.Errorf("checking active comment removals: %w", err)
 	}
 
-	// Batch fetch vote states for all comments at this level (Phase 2B)
+	// Batch fetch vote states for all comments at this level
 	var voteStates map[string]interface{}
 	if viewerDID != nil {
 		commentURIs := make([]string, 0, len(comments))
@@ -489,7 +489,7 @@ func (s *commentService) buildLevelViews(
 		}
 	}
 
-	// Batch fetch user data for all comment authors (Phase 2C)
+	// Batch fetch user data for all comment authors
 	// Collect unique author DIDs to prevent duplicate queries
 	authorDIDs := make([]string, 0, len(comments))
 	seenDIDs := make(map[string]bool)
@@ -572,14 +572,14 @@ func hydrateAuthorProfile(view *posts.AuthorView, user *users.User) {
 // buildCommentView converts a Comment entity to a CommentView with full metadata
 // Constructs author view, stats, and references to parent post/comment
 // voteStates map contains viewer's vote state for comments (from GetVoteStateForComments)
-// usersByDID map contains pre-loaded user data for batch author hydration (Phase 2C)
+// usersByDID map contains pre-loaded user data for batch author hydration
 func (s *commentService) buildCommentView(
 	comment *Comment,
 	viewerDID *string,
 	voteStates map[string]interface{},
 	usersByDID map[string]*users.User,
 ) *CommentView {
-	// Build author view from comment data with full user hydration (Phase 2C)
+	// Build author view from comment data with full user hydration
 	// CommenterHandle is hydrated by ListByParentWithHotRank via JOIN (fallback)
 	// Prefer handle from usersByDID map for consistency
 	authorHandle := comment.CommenterHandle
@@ -617,7 +617,7 @@ func (s *commentService) buildCommentView(
 		}
 	}
 
-	// Build viewer state - populate from vote states map (Phase 2B)
+	// Build viewer state - populate from vote states map
 	var viewer *CommentViewerState
 	if viewerDID != nil {
 		viewer = &CommentViewerState{
@@ -763,7 +763,7 @@ func (s *commentService) buildDeletedCommentView(comment *Comment) *CommentView 
 
 // buildCommentRecord constructs a complete CommentRecord from a Comment entity
 // Satisfies the lexicon requirement that commentView.record is a required field
-// Deserializes JSONB fields (embed, facets, labels) for complete record (Phase 2C)
+// Deserializes JSONB fields (embed, facets, labels) for complete record
 func (s *commentService) buildCommentRecord(comment *Comment) *CommentRecord {
 	record := &CommentRecord{
 		Type: "social.coves.community.comment",
@@ -782,7 +782,7 @@ func (s *commentService) buildCommentRecord(comment *Comment) *CommentRecord {
 		Langs:     comment.Langs,
 	}
 
-	// Deserialize facets from JSONB (Phase 2C)
+	// Deserialize facets from JSONB
 	if comment.ContentFacets != nil && *comment.ContentFacets != "" {
 		var facets []interface{}
 		if err := json.Unmarshal([]byte(*comment.ContentFacets), &facets); err != nil {
@@ -793,7 +793,7 @@ func (s *commentService) buildCommentRecord(comment *Comment) *CommentRecord {
 		}
 	}
 
-	// Deserialize embed from JSONB (Phase 2C)
+	// Deserialize embed from JSONB
 	if comment.Embed != nil && *comment.Embed != "" {
 		var embed map[string]interface{}
 		if err := json.Unmarshal([]byte(*comment.Embed), &embed); err != nil {
@@ -804,7 +804,7 @@ func (s *commentService) buildCommentRecord(comment *Comment) *CommentRecord {
 		}
 	}
 
-	// Deserialize labels from JSONB (Phase 2C)
+	// Deserialize labels from JSONB
 	if comment.ContentLabels != nil && *comment.ContentLabels != "" {
 		var labels SelfLabels
 		if err := json.Unmarshal([]byte(*comment.ContentLabels), &labels); err != nil {
@@ -1253,7 +1253,8 @@ func (s *commentService) buildPostView(ctx context.Context, post *posts.Post, vi
 	// Build viewer state if authenticated
 	var viewer *posts.ViewerState
 	if viewerDID != nil {
-		// TODO (Phase 2B): Query viewer's vote state
+		// TODO(2026-10-07-comment-service-unused-post-view-builder): Query
+		// viewer's vote state
 		viewer = &posts.ViewerState{
 			Vote:    nil,
 			VoteURI: nil,
@@ -1287,7 +1288,7 @@ func (s *commentService) buildPostView(ctx context.Context, post *posts.Post, vi
 // (postgres.scanPostView): the two post collections are different records rather
 // than two spellings of one. An author-owned post lives in the AUTHOR's repo
 // under social.coves.community.postv2 and has NO author field — its removal is
-// what makes authorship unforgeable (PRD §3.1) — so stamping the deprecated NSID
+// what makes authorship unforgeable (docs/POSTS.md §3.1) — so stamping the deprecated NSID
 // here would tell a client to read the authority of that URI as a community, and
 // hand it a self-asserted author this AppView invented, which is precisely the
 // mis-indexing §3.0 gave the successor a new NSID to prevent.
@@ -1300,7 +1301,8 @@ func (s *commentService) buildPostView(ctx context.Context, post *posts.Post, vi
 // queries), so the two paths can no longer disagree about what a post record
 // looks like.
 //
-// TODO (Phase 2C): Unmarshal JSON fields (embed, facets, labels) for complete record
+// TODO(2026-10-07-comment-service-unused-post-view-builder): Unmarshal JSON
+// fields (embed, facets, labels) for complete record
 func (s *commentService) buildPostRecord(post *posts.Post) map[string]interface{} {
 	collection := posts.CollectionOfPostURI(post.URI)
 	if !posts.IsPostCollection(collection) {
@@ -1327,7 +1329,8 @@ func (s *commentService) buildPostRecord(post *posts.Post) map[string]interface{
 		record["content"] = *post.Content
 	}
 
-	// TODO (Phase 2C): Parse JSON fields from database for complete record:
+	// TODO(2026-10-07-comment-service-unused-post-view-builder): Parse JSON
+	// fields from database for complete record:
 	// - Unmarshal post.Embed (*string) → record["embed"]
 	// - Unmarshal post.ContentFacets (*string) → record["facets"]
 	// - Unmarshal post.ContentLabels (*string) → record["labels"]
@@ -1382,7 +1385,7 @@ func (s *commentService) GetActorComments(ctx context.Context, req *GetActorComm
 	// 3. Fetch comments from repository
 	//
 	// The viewer DID is threaded because the community filter resolves each
-	// comment's root through the read-path visibility predicate (PRD §6.2): it
+	// comment's root through the read-path visibility predicate (docs/POSTS.md §6.2): it
 	// decides whether a caller may see comments rooted at posts the named
 	// community has not admitted. An authenticated author keeps the carve-out over
 	// their own pending/rejected/removed roots; everyone else, including the

@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// The per-author submission quota of docs/PRD_AUTHOR_OWNED_POSTS.md §8 is
+// The per-author submission quota of docs/POSTS.md §8 is
 // configuration, and configuration that goes missing must stop the process.
 //
 // The failure this guards against is specific: an operator who never sets

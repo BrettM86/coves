@@ -15,7 +15,7 @@ import (
 
 // The admission-wiring proof: cmd/server's PRODUCTION-constructed post service
 // routes an authenticated social.coves.community.post.create through the §8
-// admission decision (PRD_AUTHOR_OWNED_POSTS, internal/core/posts/admit.go),
+// admission decision (docs/POSTS.md, internal/core/posts/admit.go),
 // observed end-to-end through the real XRPC surface.
 //
 // # THE CREDENTIAL, AND WHY IT IS AN AGGREGATOR'S
@@ -83,7 +83,7 @@ import (
 // AppView's store, so EnsureFreshToken on an empty token failed and the mapper
 // reported an unclassified 500.
 //
-// A post is written to its AUTHOR's repository now (PRD §4.2 step 3), so the
+// A post is written to its AUTHOR's repository now (docs/POSTS.md §4.2 step 3), so the
 // credential that has to exist is the AUTHOR's, and the aggregator this contract
 // submits as holds none. The two ways to hold one are an OAuth session (SignIn
 // now mints one, but for a signed-in user authoring their own post — a

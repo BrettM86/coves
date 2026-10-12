@@ -33,10 +33,10 @@ import (
 //     has not indexed yet — an ordinary occurrence on a cold start, where
 //     records arrive in repository order rather than in dependency order. The
 //     repository translates the violation by constraint name. The AUTHOR key
-//     used to do the same and is deliberately gone (migration 034, PRD
-//     §5.3): under author-owned posts an author's profile may live on a PDS
-//     this AppView will never index, so an unknown author is a normal state
-//     rather than an ordering artefact. See the subtest below.
+//     used to do the same and is deliberately gone (migration 034,
+//     docs/POSTS.md §5.3): under author-owned posts an author's profile may
+//     live on a PDS this AppView will never index, so an unknown author is a
+//     normal state rather than an ordering artefact. See the subtest below.
 //   - SoftDelete is where "deleted" is defined. It sets one column, and what
 //     that column means is decided entirely by which read paths filter on it.
 //     Two of the three do. The third is pinned below.
@@ -225,7 +225,7 @@ func TestPostRepo_Create(t *testing.T) {
 	// asserted the opposite — that Create ERRORS with "author DID not found" —
 	// and that was correct while posts.author_did carried a hard FK to users.
 	//
-	// Author-owned posts abolished it (PRD_AUTHOR_OWNED_POSTS §5.3). A post
+	// Author-owned posts abolished it (docs/POSTS.md §5.3). A post
 	// record now lives in its AUTHOR's repo, and open federated posting means
 	// the author may be someone this AppView has no users row for and may never
 	// get one: the users consumer default-denies identities from untrusted

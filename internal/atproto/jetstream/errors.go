@@ -54,7 +54,7 @@ const (
 // and every one of them, expressed as a plain transient error, handed any
 // repo on the network a free 4.2-second stall per event: mint a thousand
 // records naming a nonexistent subject and the lane is gone for an hour. See
-// docs/CONSUMER_TRUST_AUDIT.md §1.3.
+// docs/SECURITY_MODEL.md, Firehose error classes.
 
 // ErrPermanentEvent marks a handler failure as permanent: the event can never
 // succeed no matter how many times it is retried (validation rejection,
@@ -135,7 +135,7 @@ func requireDIDShaped(field, value string) error {
 // attacker-reachable firehose event (community create and update, unknown-DID
 // profile create, author hydration). The identity HTTP client already has a
 // 10-second timeout, so this halves the worst case rather than creating the only
-// bound. See docs/SECURITY_AUDIT_2026-09-01.md §1.3.
+// bound. See docs/SECURITY_MODEL.md, Firehose error classes.
 const identityResolveTimeout = 5 * time.Second
 
 // authorHydrationTimeout shares the identity resolution ceiling so equivalent

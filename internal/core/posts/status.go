@@ -7,7 +7,7 @@ import (
 )
 
 // The read side of an admission decision: social.coves.community.post.getStatus
-// (docs/PRD_AUTHOR_OWNED_POSTS.md §3.4).
+// (docs/POSTS.md §3.4).
 //
 // It exists because a rejection is AppView-LOCAL. §3.3 is explicit that a
 // submission refused before it was ever accepted writes NO community record —

@@ -148,7 +148,7 @@ services:
       # Image proxy configuration (on-the-fly resizing with disk cache).
       # The base URL is the hostname every Coves image URL is built from; it is
       # the media hostname, not the AppView apex, because only that hostname is
-      # CDN-proxied for scanning. See docs/PRD_CSAM_SCANNING.md.
+      # CDN-proxied for scanning. See docs/MEDIA.md.
       IMAGE_PROXY_ENABLED: ${IMAGE_PROXY_ENABLED:-true}
       IMAGE_PROXY_BASE_URL: ${IMAGE_PROXY_BASE_URL:-https://img.coves.social}
       # Optional override that wins over the base URL. Passed through explicitly:
@@ -163,7 +163,7 @@ services:
       IMAGE_PROXY_CACHE_MAX_GB: ${IMAGE_PROXY_CACHE_MAX_GB:-10}
       IMAGE_PROXY_FETCH_TIMEOUT_SECONDS: ${IMAGE_PROXY_FETCH_TIMEOUT_SECONDS:-30}
       IMAGE_PROXY_MAX_SOURCE_SIZE_MB: ${IMAGE_PROXY_MAX_SOURCE_SIZE_MB:-10}
-      # Decode-cost bounds (SECURITY_AUDIT_2026-09-01 §1.1): a source image's
+      # Decode-cost bounds (docs/MEDIA.md, Decode budget): a source image's
       # declared pixel count is refused above the megapixel budget before any
       # decode allocation; decodes run in a fixed number of slots; cold requests
       # (each holding a fetched blob of up to MAX_SOURCE_SIZE_MB) are admitted

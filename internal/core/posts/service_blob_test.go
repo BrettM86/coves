@@ -20,7 +20,7 @@ import (
 )
 
 // Where a post's MEDIA ends up, now that the post itself lives in the author's
-// repository (docs/PRD_AUTHOR_OWNED_POSTS.md §4.2 step 2).
+// repository (docs/POSTS.md §4.2 step 2).
 //
 // # WHY THE BLOB CANNOT BE LEFT BEHIND
 //

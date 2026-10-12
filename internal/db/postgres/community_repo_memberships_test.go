@@ -531,7 +531,7 @@ func TestCommunityRepo_Counters(t *testing.T) {
 		// The SERVED postCount is not that column. It is a live count over the
 		// read-path visibility predicate, and this community has no posts — so
 		// advancing the stored counter changes nothing a client can see. That
-		// asymmetry is the point: the stored column is vestigial (PRD §12), and
+		// asymmetry is the point: the stored column is vestigial (docs/POSTS.md §12), and
 		// a reader who assumes wiring the incrementer would fix postCount needs
 		// to meet this assertion rather than discover it in production.
 		assert.Zerof(t, posts,

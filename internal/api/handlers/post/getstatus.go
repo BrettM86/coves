@@ -16,10 +16,10 @@ import (
 //
 // A postv2 URI is AUTHORITY-SCOPED — the author's DID is inside it — and a DID
 // may legally run to 2048 bytes, the same fact that killed the readable rkey
-// transform in PRD rev 2.2. A cap sized for the old community-repo URIs would
-// refuse exactly the authors with long DIDs, on the one endpoint that can tell
-// them why their post is not visible, and nothing else in the system would show
-// a symptom: their posts index fine and every other endpoint serves them.
+// transform in docs/POSTS.md §3.2. A cap sized for the old community-repo URIs
+// would refuse exactly the authors with long DIDs, on the one endpoint that can
+// tell them why their post is not visible, and nothing else in the system would
+// show a symptom: their posts index fine and every other endpoint serves them.
 //
 // So the URI bound is the sum of its legal parts rather than a round number:
 // "at://" + a 2048-byte authority + "/" + a 317-byte NSID + "/" + a 512-byte
@@ -34,14 +34,14 @@ const (
 )
 
 // GetStatusHandler serves social.coves.community.post.getStatus: one
-// community's decision about one post (docs/PRD_AUTHOR_OWNED_POSTS.md §3.4).
+// community's decision about one post (docs/POSTS.md §3.4).
 //
 // UNAUTHENTICATED, deliberately, and the trade is recorded rather than hidden.
 // The caller with the strongest need is an author on a DIFFERENT server whose
 // post is pending on this one (§7): they have no account here, so there is no
 // session to require, and service-auth is Beta scope. The cost is that a
 // rejected post's status is mildly disclosed to anyone who can name its URI —
-// accepted by the owner in PRD rev 2.7. That the route carries no auth
+// accepted by the owner (docs/POSTS.md §7). That the route carries no auth
 // middleware is declared in internal/api/routes/registration_test.go, which is
 // the only place the whole HTTP surface is enumerated.
 type GetStatusHandler struct {
@@ -79,7 +79,7 @@ func (h *GetStatusHandler) HandleGetStatus(w http.ResponseWriter, r *http.Reques
 	}
 	// THE CAP IS SIZED TO THE SPEC, NOT TO THE OLD URIs. A DID may legally run
 	// to 2048 bytes — the same fact that killed the readable rkey transform in
-	// PRD rev 2.2 — and an author-owned post URI is authority-scoped, so the
+	// docs/POSTS.md §3.2 — and an author-owned post URI is authority-scoped, so the
 	// author's DID is INSIDE the URI this endpoint takes. A cap sized for the
 	// old community-repo URIs would silently make long-DID authors unqueryable
 	// and nothing else would notice: their posts index fine and every other

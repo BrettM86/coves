@@ -18,8 +18,8 @@ import (
 )
 
 // actor.getComments' COMMUNITY FILTER is a posts read path wearing a comments
-// costume (PRD §6.2 names "comment community filters" in the must-convert
-// inventory), and it is the one surface where the removed write barrier can be
+// costume (docs/POSTS.md §6.2 lists "comment community filters" among the read
+// paths that must use the visibility predicate), and it is the one surface where the removed write barrier can be
 // rebuilt one table over.
 //
 // Under community-owned posts, only a key holder could put content under a
@@ -164,7 +164,7 @@ func TestActorCommentsCommunityFilter_AdmissionGated(t *testing.T) {
 	})
 
 	t.Run("the post's own author still sees their own unadmitted roots", func(t *testing.T) {
-		// PRD §6.2: an author sees their own posts in every admission state so a
+		// docs/POSTS.md §6.2: an author sees their own posts in every admission state so a
 		// client can render "pending review" / "removed" on their own profile. The
 		// same must hold for their comment history, or the author's own pending
 		// thread disappears from their own view.

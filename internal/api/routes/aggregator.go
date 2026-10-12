@@ -58,8 +58,9 @@ func RegisterAggregatorRoutes(
 	r.Post("/xrpc/social.coves.aggregator.register",
 		registrationRateLimiter.Middleware(http.HandlerFunc(registerHandler.HandleRegister)).ServeHTTP)
 
-	// Write endpoints (Phase 2 - require authentication and moderator permissions)
-	// TODO: Implement after Jetstream consumer is ready
+	// Not served: the enable, disable and updateConfig lexicons exist, but no
+	// handler implements them. Authorization records reach the AppView only
+	// through the aggregator Jetstream consumer.
 	// POST /xrpc/social.coves.aggregator.enable (requires auth + moderator)
 	// POST /xrpc/social.coves.aggregator.disable (requires auth + moderator)
 	// POST /xrpc/social.coves.aggregator.updateConfig (requires auth + moderator)

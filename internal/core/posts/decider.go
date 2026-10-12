@@ -11,7 +11,7 @@ import (
 
 // The production AdmissionDecider: the adapter that turns "decide about this
 // indexed post" into the AdmissionRequest evaluateAdmissionPolicy already
-// answers (docs/PRD_AUTHOR_OWNED_POSTS.md §5.6).
+// answers (docs/POSTS.md §5.6).
 //
 // The engine's input is an admission row — a community DID and a post URI, and
 // nothing about who wrote the post or what class of actor they are. Everything
@@ -51,8 +51,10 @@ import (
 // is privileged on one path and not the other, which is the least debuggable
 // shape a permission bug can take.
 //
-// It is called ONCE, at wiring time, and its result handed to whoever needs it.
-// Reading the environment inside a decision would hide the most consequential
+// The engine's decider gets it once, at wiring time, as
+// DeciderDeps.TrustedAggregatorDIDs, so a change to the variable needs a
+// restart to reach the engine. The write path (CreatePost) calls it per create.
+// Reading the environment inside the engine decision would hide the most consequential
 // input to a security decision from the place that makes it, and would make the
 // trusted branch untestable alongside t.Parallel — Go's testing package refuses
 // t.Setenv there.

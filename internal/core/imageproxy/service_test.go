@@ -608,7 +608,7 @@ func TestNewService_RejectsInvalidProcessingBudgets(t *testing.T) {
 }
 
 // TestImageProxyService_GetImage_ShedsLoadWhenProcessorSlotsAreFull is the
-// service half of SECURITY_AUDIT_2026-09-01 §1.1. The per-image pixel budget
+// service half of the decode budget (docs/MEDIA.md, Decode budget). The per-image pixel budget
 // caps what ONE request can cost; this caps how many such requests decode at
 // once, so total processing memory is budget × slots rather than budget ×
 // however many connections an attacker opens. A request that cannot get a slot

@@ -143,7 +143,8 @@ func (s *aggregatorService) EnableAggregator(ctx context.Context, req EnableAggr
 		return nil, ErrAlreadyAuthorized
 	}
 
-	// TODO Phase 2: Write-forward to PDS
+	// TODO(2026-10-06-aggregator-enable-disable-updateconfig-unbuilt): Write-forward
+	// to PDS
 	// For now, return placeholder response
 	// The actual implementation will:
 	// 1. Create authorization record in community's repository on PDS
@@ -183,7 +184,8 @@ func (s *aggregatorService) DisableAggregator(ctx context.Context, req DisableAg
 		return auth, nil
 	}
 
-	// TODO Phase 2: Write-forward to PDS
+	// TODO(2026-10-06-aggregator-enable-disable-updateconfig-unbuilt): Write-forward
+	// to PDS
 	// Update the authorization record with enabled=false
 	return nil, ErrNotImplemented
 }
@@ -215,7 +217,8 @@ func (s *aggregatorService) UpdateAggregatorConfig(ctx context.Context, req Upda
 		}
 	}
 
-	// TODO Phase 2: Write-forward to PDS
+	// TODO(2026-10-06-aggregator-enable-disable-updateconfig-unbuilt): Write-forward
+	// to PDS
 	// Update the authorization record with new config
 	return auth, ErrNotImplemented
 }

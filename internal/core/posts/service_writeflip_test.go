@@ -19,7 +19,7 @@ import (
 )
 
 // The whole journey of an author-owned post through the write path, against a
-// real PDS and the real admissions table (docs/PRD_AUTHOR_OWNED_POSTS.md §4.2).
+// real PDS and the real admissions table (docs/POSTS.md §4.2).
 //
 // service_writeforward_test.go proves WHERE the record lands. This file proves
 // the four things that only become true once it lands there, and each one is a

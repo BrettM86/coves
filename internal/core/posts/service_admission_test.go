@@ -24,7 +24,7 @@ import (
 )
 
 // The outer contract for admission: what CreatePost does when the admission
-// policy of docs/PRD_AUTHOR_OWNED_POSTS.md §4.1/§8 refuses a submission.
+// policy of docs/POSTS.md §4.1/§8 refuses a submission.
 //
 // The decision itself is covered at width in admit_matrix_test.go against
 // fakes. What is unproven without these is the WIRING, and the wiring is where

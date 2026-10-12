@@ -311,44 +311,6 @@ services:
     profiles:
       - observability
 
-  # Coves AppView (Your Go Application)
-  # Subscribes to PDS firehose and indexes Coves-specific data
-  # Note: Uncomment when you have a Dockerfile for the AppView
-  # appview:
-  #   build:
-  #     context: .
-  #     dockerfile: Dockerfile
-  #   container_name: coves-dev-appview
-  #   ports:
-  #     - "8081:8080"  # AppView API (avoiding conflicts)
-  #   environment:
-  #     # Database connection
-  #     DATABASE_URL: postgresql://${POSTGRES_USER:-dev_user}:${POSTGRES_PASSWORD:-dev_password}@postgres:5432/${POSTGRES_DB:-coves_dev}?sslmode=disable
-  #
-  #     # PDS Firehose subscription (direct, no relay)
-  #     FIREHOSE_URL: ws://pds:3000/xrpc/com.atproto.sync.subscribeRepos
-  #
-  #     # PDS connection (for XRPC calls)
-  #     PDS_URL: http://pds:3000
-  #
-  #     # Application settings
-  #     PORT: 8080
-  #     ENV: development
-  #     LOG_LEVEL: ${LOG_LEVEL:-debug}
-  #
-  #     # Bot-protected signup (Turnstile + on-the-fly PDS invite codes).
-  #     # Defaults: Cloudflare always-pass test keys + PDS admin password "admin".
-  #     TURNSTILE_SITE_KEY: ${TURNSTILE_SITE_KEY:-1x00000000000000000000AA}
-  #     TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY:-1x0000000000000000000000000000000AA}
-  #     PDS_ADMIN_PASSWORD: ${PDS_ADMIN_PASSWORD:-admin}
-  #   networks:
-  #     - coves-dev
-  #   depends_on:
-  #     postgres:
-  #       condition: service_healthy
-  #     pds:
-  #       condition: service_healthy
-
 networks:
   coves-dev:
     driver: bridge

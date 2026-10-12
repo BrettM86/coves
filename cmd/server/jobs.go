@@ -213,7 +213,7 @@ func startBridgedVotePollJob(ctx context.Context, wg *sync.WaitGroup, poller bri
 
 // startAcceptanceQueueJob walks the undecided admission backlog on an interval.
 //
-// It is the PULL half of admission (docs/PRD_AUTHOR_OWNED_POSTS.md §5.6). The
+// It is the PULL half of admission (docs/POSTS.md §5.6). The
 // synchronous write path and the firehose consumer both push work at the
 // engine, and neither can see a subject that was left undecided because a
 // credential expired or a lookup blipped — this pass is the only thing that

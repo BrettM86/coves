@@ -10,7 +10,7 @@ import (
 )
 
 // The deterministic record key a post is written at in its AUTHOR's repo
-// (docs/PRD_AUTHOR_OWNED_POSTS.md §4.2).
+// (docs/POSTS.md §4.2).
 //
 // This closes the lost-response asymmetry §4.2 names: when a PDS write's outcome
 // is ambiguous the record may or may not exist, and a client that retries with a

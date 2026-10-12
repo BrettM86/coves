@@ -71,7 +71,7 @@ func buildCDNPurgeQueue(cfg *config.Config, apiBase string, store moderation.CDN
 // buildCDNPurger returns nil when no Cloudflare edge invalidation is configured.
 func buildCDNPurger(purge config.CDNPurgeConfig, apiBase string) (moderation.CDNPurger, error) {
 	if !purge.Enabled() {
-		slog.Info("CDN purge is off; responses now allow shared caches one day (copies cached under the old one-year header need the one-time Purge Everything, PRD_CSAM_SCANNING.md rollout step 4)")
+		slog.Info("CDN purge is off; responses now allow shared caches one day (copies cached under the old one-year header need the one-time Purge Everything, docs/MEDIA.md, Edge purge)")
 		return nil, nil
 	}
 	return imageproxy.NewCloudflarePurger(imageproxy.CloudflarePurgerConfig{

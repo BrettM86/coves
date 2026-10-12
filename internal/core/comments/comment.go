@@ -96,7 +96,7 @@ type ListByCommenterRequest struct {
 	// it is a security parameter rather than a personalization one: the community
 	// filter resolves each comment's root through the read-path visibility
 	// predicate, where the viewer unlocks the author's own carve-out over their
-	// pending / rejected / removed posts (PRD §6.2). It MUST come from the auth
+	// pending / rejected / removed posts (docs/POSTS.md §6.2). It MUST come from the auth
 	// middleware — never from a query parameter — or any caller can read any
 	// author's unadmitted content.
 	ViewerDID string

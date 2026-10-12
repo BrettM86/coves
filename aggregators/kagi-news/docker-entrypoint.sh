@@ -37,7 +37,7 @@ fi
 
 echo "========================================="
 echo "Kagi News Aggregator is running!"
-echo "Cron schedule: Daily at 1 PM UTC"
+echo "Cron schedule: every 2 hours, on the hour (UTC)"
 echo "Logs will appear below:"
 echo "========================================="
 echo ""

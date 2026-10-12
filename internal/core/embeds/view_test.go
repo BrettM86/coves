@@ -548,7 +548,7 @@ func TestHydrateView_Video(t *testing.T) {
 			embed["thumbnail"])
 
 		// The image proxy cannot stream video, so this URL is the accepted
-		// scanning gap recorded in the CSAM PRD (workstream 5). It must point
+		// scanning gap recorded in docs/MEDIA.md, Accepted exceptions. It must point
 		// at the hosting PDS, not at the proxy, which would 400 on the blob.
 		assert.Equal(t,
 			blobs.HydrateBlobURL(testPDS, testDID, videoCID),

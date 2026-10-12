@@ -7,7 +7,7 @@ import (
 )
 
 // The hosted-community scope query, kept deliberately apart from the community
-// repository (docs/PRD_AUTHOR_OWNED_POSTS.md §11).
+// repository (docs/POSTS.md §11).
 //
 // # WHY THIS IS ITS OWN QUERY AND NOT A FIELD ON `List`
 //

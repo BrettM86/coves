@@ -12,7 +12,7 @@ import (
 
 // PostgreSQL storage for the post_submissions ledger (migration 035) — the
 // rows that both deduplicate submissions and meter the per-author quota of
-// docs/PRD_AUTHOR_OWNED_POSTS.md §8.
+// docs/POSTS.md §8.
 //
 // It mirrors the aggregator limiter of migration 012: a row per accepted
 // submission, a rolling-window COUNT over an index that leads with the pair

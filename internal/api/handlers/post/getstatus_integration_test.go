@@ -25,7 +25,7 @@ import (
 )
 
 // What social.coves.community.post.getStatus answers, over the real admissions
-// table (docs/PRD_AUTHOR_OWNED_POSTS.md §3.4, pulled into task 5 by rev 2.7).
+// table (docs/POSTS.md §3.4).
 //
 // This is at T1 rather than in a handler unit test with a fake service, and the
 // reason is the whole point of the endpoint. getStatus exists so that a client
@@ -39,7 +39,7 @@ import (
 // repository's own mutations, in the same way the consumer will.
 //
 // The pipeline tier then uses this endpoint as its observation surface for the
-// consumer contracts (§9, rev 2.7): no T2 community holds credentials, so the
+// consumer contracts (§9): no T2 community holds credentials, so the
 // accepted-state arcs prove here and at the repository, and T2 asserts consumer
 // semantics by asking getStatus what the AppView concluded.
 
@@ -441,12 +441,12 @@ func TestGetStatus_AcceptsALegalLongDID(t *testing.T) {
 	stack := newStatusStack(db)
 
 	// A DID may legally run to 2048 bytes (the same fact that killed the
-	// readable-rkey transform in PRD rev 2.2 and forced the SHA-256 digest). An
-	// author-owned post URI is authority-scoped, so the author's DID is INSIDE
-	// the URI this endpoint takes — which means a length cap sized for the old
-	// community-repo URIs silently makes long-DID authors unqueryable, and only
-	// them. Nothing else in the system would notice: their posts index fine and
-	// every other endpoint serves them.
+	// readable-rkey transform in docs/POSTS.md §3.2 and forced the SHA-256
+	// digest). An author-owned post URI is authority-scoped, so the author's
+	// DID is INSIDE the URI this endpoint takes — which means a length cap
+	// sized for the old community-repo URIs silently makes long-DID authors
+	// unqueryable, and only them. Nothing else in the system would notice:
+	// their posts index fine and every other endpoint serves them.
 	name := testkit.UniqueIDWithPrefix(t, "longdid")
 	communityDID, err := fixtures.Community(ctx, db, name, "owner"+name)
 	require.NoError(t, err)

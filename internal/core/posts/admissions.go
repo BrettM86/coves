@@ -15,7 +15,7 @@ import (
 // (community, post) pair rather than a status column on the post — a post can
 // carry independent decisions from several communities at once.
 //
-// See docs/PRD_AUTHOR_OWNED_POSTS.md §5.2, §5.5 and §6.1.
+// See docs/POSTS.md §5.2, §5.5 and §6.1.
 
 // AdmissionStatus is the state of one community's decision about one post.
 type AdmissionStatus string

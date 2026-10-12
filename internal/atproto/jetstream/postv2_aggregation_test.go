@@ -19,7 +19,7 @@ import (
 
 // The denormalized counters a post row carries — upvote_count, downvote_count,
 // score, comment_count — when the post is an AUTHOR-OWNED one
-// (social.coves.community.postv2, docs/PRD_AUTHOR_OWNED_POSTS.md §3.1).
+// (social.coves.community.postv2, docs/POSTS.md §3.1).
 //
 // Votes and comments name their subject by AT-URI, and neither consumer has any
 // other way to learn which table to count into: it reads the collection segment

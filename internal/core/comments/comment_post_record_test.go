@@ -18,7 +18,7 @@ import (
 // the deprecated community-repo record carries an `author`, and the author-repo
 // successor deliberately has none, because under §3.1 authorship IS the repo the
 // record lives in. Stamping the deprecated NSID on an author-owned post
-// therefore does the exact thing PRD §3.0 says a new NSID exists to prevent — it
+// therefore does the exact thing docs/POSTS.md §3.0 says a new NSID exists to prevent — it
 // tells the reader to derive community = repo DID for a record whose repo is the
 // AUTHOR — and hands back a fabricated author field alongside it.
 func TestBuildPostRecord_TypeFollowsThePostsCollection(t *testing.T) {

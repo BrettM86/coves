@@ -10,7 +10,7 @@ import (
 // Batch commits and commit revisions.
 //
 // Everything in this file exists because the community-repo writers of
-// docs/PRD_AUTHOR_OWNED_POSTS.md §5.6 need two things the pre-existing Client
+// docs/POSTS.md §5.6 need two things the pre-existing Client
 // surface cannot give them:
 //
 //  1. THE COMMIT REV. §5.2's ordering gate is keyed on the repo revision the

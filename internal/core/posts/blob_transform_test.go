@@ -235,7 +235,7 @@ func TestTransformBlobRefsToURLs_ProxyDisabled(t *testing.T) {
 }
 
 // Which repository a post's blobs live in, now that the answer depends on the
-// record (docs/PRD_AUTHOR_OWNED_POSTS.md §3.1, §4.2).
+// record (docs/POSTS.md §3.1, §4.2).
 //
 // Before the write-path flip there was one answer for every post: the AppView
 // signed the record into the COMMUNITY's repo and uploaded its blobs there, so

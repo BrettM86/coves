@@ -1173,7 +1173,7 @@ func TestAccountDeletion_Integration(t *testing.T) {
 		}
 
 		// Check posts deleted. Migration 034 dropped fk_author's ON DELETE
-		// CASCADE (PRD_AUTHOR_OWNED_POSTS §5.3); Delete removes them explicitly
+		// CASCADE (docs/POSTS.md §5.3); Delete removes them explicitly
 		// now, and this assertion is what holds the replacement to the same
 		// promise.
 		err = db.QueryRow(`SELECT COUNT(*) FROM posts WHERE author_did = $1`, testDID).Scan(&count)

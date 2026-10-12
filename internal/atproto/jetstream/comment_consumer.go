@@ -378,7 +378,7 @@ func (c *CommentEventConsumer) updateComment(ctx context.Context, repoDID string
 		log.Printf("  Existing parent: %s (CID: %s)", storedParentURI, storedParentCID)
 		log.Printf("  Incoming parent: %s (CID: %s)", commentRecord.Reply.Parent.URI, commentRecord.Reply.Parent.CID)
 		// The commenter's repo still serves the rejected record's images, so a
-		// removed comment blocks them for the commenter (PRD Q-I6). A stale
+		// removed comment blocks them for the commenter (docs/MODERATION.md Q-I6). A stale
 		// event, by rev or by event time, blocks nothing.
 		if err := c.blockRejectedUpdateMedia(ctx, uri, repoDID, commit.Rev, timeUS, commentRecord.Embed); err != nil {
 			return err
@@ -818,7 +818,7 @@ func (c *CommentEventConsumer) indexCommentAndUpdateCounts(ctx context.Context, 
 			// redrive window. Documented rather than fixed.
 			log.Printf("Comment already indexed: %s (idempotent replay)", comment.URI)
 			// The dropped record's images are still served from the commenter's
-			// repo, so a removed comment blocks them for the commenter (PRD Q-I6).
+			// repo, so a removed comment blocks them for the commenter (docs/MODERATION.md Q-I6).
 			// The gate claim above already orders this against same-record
 			// events; the row lock orders it against a removal that has read
 			// the comment, as the re-create UPDATE above would.

@@ -28,7 +28,7 @@ var (
 
 	// ErrRateLimitExceeded is returned when a submission is refused for being
 	// over quota — primarily the per-author, per-community submission limit of
-	// PRD_AUTHOR_OWNED_POSTS.md §8 (DecisionRateLimitExceeded). The handler
+	// docs/POSTS.md §8 (DecisionRateLimitExceeded). The handler
 	// maps it to a 429. (An aggregator over its OWN hourly quota is refused
 	// through the aggregators package's sentinel instead, so the boundary can
 	// tell the two apart.)
@@ -42,7 +42,7 @@ var (
 
 	// ErrDuplicateSubmission is returned when an author resubmits content
 	// identical to something already on the submission ledger for the current
-	// dedupe window (PRD_AUTHOR_OWNED_POSTS.md §8).
+	// dedupe window (docs/POSTS.md §8).
 	//
 	// THE WORDING IS LOAD-BEARING. IsConflict below classifies an error by
 	// looking for "duplicate key", "already exists" or "already indexed" in its

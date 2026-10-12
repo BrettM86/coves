@@ -449,7 +449,8 @@ func TestAggregatorRepo_AuthorizationRoundTripsTheDisableAuditTrail(t *testing.T
 // Before this test the upsert alone hit record_uri's UNIQUE constraint — an
 // error no redrive could clear, classified transient, so the consumer stalled
 // 4.2s in-line and ten more times on the redriver — while the OLD aggregator
-// kept the row and stayed authorized (docs/CONSUMER_TRUST_AUDIT.md §1.3).
+// kept the row and stayed authorized (docs/SECURITY_MODEL.md, Firehose error
+// classes).
 func TestAggregatorRepo_CreateAuthorizationRetargetsTheRecordURI(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)

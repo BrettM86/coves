@@ -1,477 +1,52 @@
-# Coves Local Development Guide
-
-Complete guide for setting up and running the Coves atProto development environment.
-
-## Table of Contents
-- [Quick Start](#quick-start)
-- [Architecture Overview](#architecture-overview)
-- [Prerequisites](#prerequisites)
-- [Setup Instructions](#setup-instructions)
-- [Using the Makefile](#using-the-makefile)
-- [Development Workflow](#development-workflow)
-- [Troubleshooting](#troubleshooting)
-- [Environment Variables](#environment-variables)
-
-## Quick Start
-
-```bash
-# 1. Start the stack (PostgreSQL + PDS + Jetstream + PLC Directory)
-make dev-up
-
-# 2. View logs
-make dev-logs
-
-# 3. Check status
-make dev-status
-
-# 4. When done
-make dev-down
-```
-
-## Architecture Overview
-
-Coves uses a simplified single-database architecture with direct PDS firehose subscription:
-
-```
-┌─────────────────────────────────────────────┐
-│      Coves Local Development Stack          │
-├─────────────────────────────────────────────┤
-│                                              │
-│  ┌──────────────┐                           │
-│  │  PDS         │                           │
-│  │  :3001       │                           │
-│  │              │                           │
-│  │  Firehose───────────┐                    │
-│  └──────────────┘      │                    │
-│                        │                     │
-│                        ▼                     │
-│                ┌──────────────┐             │
-│                │ Coves AppView│             │
-│                │  (Go)        │             │
-│                │  :8081       │             │
-│                └──────┬───────┘             │
-│                       │                      │
-│                ┌──────▼───────┐             │
-│                │  PostgreSQL  │             │
-│                │  :5433       │             │
-│                └──────────────┘             │
-│                                              │
-└─────────────────────────────────────────────┘
-
-Your Production PDS (:3000) ← Runs independently
-```
-
-### Components
+# Local development
 
-1. **PDS (Port 3001)** - Bluesky's Personal Data Server with:
-   - User repositories and CAR files (stored in Docker volume)
-   - Internal SQLite database for PDS metadata
-   - Firehose WebSocket: `ws://localhost:3001/xrpc/com.atproto.sync.subscribeRepos`
-2. **PostgreSQL (Port 5433)** - Database for Coves AppView data only
-3. **Coves AppView (Port 8081)** - Your Go application that:
-   - Subscribes directly to PDS firehose
-   - Indexes Coves-specific data to PostgreSQL
+The dev stack runs in Docker from `docker-compose.dev.yml` with settings from `.env.dev`. The AppView itself runs on the host. `make help` lists every target.
 
-**Key Points:**
-- ✅ Ports chosen to avoid conflicts with production PDS on :3000
-- ✅ PDS is self-contained with its own SQLite database and CAR storage
-- ✅ PostgreSQL is only used by the Coves AppView for indexing
-- ✅ AppView subscribes directly to PDS firehose (no relay needed)
-- ✅ Simple, clean architecture for local development
+## Ports
 
-## Prerequisites
+| Service | Host port | Started by |
+|---|---|---|
+| Postgres (dev, `coves_dev`) | 5435 | `make dev-up` |
+| Postgres (PLC) | 5436 | `make dev-up` |
+| Postgres (test, `coves_test`) | 5434 | `make test-integration` |
+| PDS | 3001 | `make dev-up` |
+| PLC directory | 3002 | `make dev-up` |
+| Jetstream / metrics | 6008 / 6009 | `make dev-up` |
+| AppView | 8081 | `make run` or `make run-web` |
+| Web proxy (Caddy) | 8080 | `make web-proxy` |
+| Jaeger UI / OTLP gRPC | 16686 / 4317 | `make dev-up-otel` |
+| Relay | 2471 | not started by any dev target (`relay` profile) |
 
-- **Docker & Docker Compose** - For running containerized services
-- **Go 1.26.8** - For building the Coves AppView and its pinned development tools
-- **PostgreSQL client** (optional) - For database inspection
-- **Make** (optional but recommended) - For convenient commands
-
-`make lint` runs the repository-pinned golangci-lint version through the Go
-toolchain, so no separate system-wide linter installation is required.
-
-## Setup Instructions
-
-### Step 1: Start the Database
-
-The PostgreSQL database must be running first:
-
-```bash
-# Start the stack; PostgreSQL comes up with it
-make dev-up
-
-# Verify it's running
-make dev-status
-```
+## Running
 
-**Connection Details:**
-- Host: `localhost`
-- Port: `5433`
-- Database: `coves_dev`
-- User: `dev_user`
-- Password: `dev_password`
+`make dev-up` starts Postgres, the PLC directory and its Postgres, the PDS and Jetstream. `make run` runs `make db-migrate` and then `scripts/dev-run.sh`, which sources `.env.dev` and runs `go run -tags dev ./cmd/server`. `make db-migrate` calls the `goose` CLI, so it must be on `PATH`. The server also applies migrations itself at startup.
 
-### Step 2: Start the PDS
+The `dev` build tag compiles in the localhost OAuth resolvers (`internal/atproto/oauth/dev_resolver.go`, `dev_auth_resolver.go`). Without it the server falls back to stubs and OAuth against the local HTTP PDS does not work. Do not start the dev AppView with plain `go run ./cmd/server`.
 
-Start the Personal Data Server:
+The AppView ingests through Jetstream, not the PDS firehose. `.env.dev` sets `JETSTREAM_FEEDS=self=ws://localhost:6008`, and the dev Jetstream reads the local PDS's `subscribeRepos`.
 
-```bash
-# Start PDS
-make dev-up
+## Web frontend
 
-# View logs (follows in real-time)
-make dev-logs
-```
+`make run-web` runs migrations, starts the frontend's Vite server from `../coves-frontend` (override with `COVES_FRONTEND_DIR`) on 5173, and runs the AppView on 8081 with `APPVIEW_PUBLIC_URL=http://127.0.0.1:8080`. Start the proxy separately with `make web-proxy` (or `web-proxy-bg`). `Caddyfile.dev` sends `/oauth/*`, `/xrpc/*`, `/oauth-client-metadata.json`, `/img/*` and `/api/me` to the AppView and everything else to Vite, so the browser sees one origin.
 
-Wait for health checks to pass (~10-30 seconds).
+Open the app at `http://127.0.0.1:8080`, not `localhost`. The PDS rejects `localhost` in an OAuth `redirect_uri` (RFC 8252), and the session and OAuth binding cookies are host-only, so mixing the two names splits them and login fails. The same rule applies to `make run`, where `APPVIEW_PUBLIC_URL` is `http://127.0.0.1:8081`.
 
-### Step 3: Verify Services
+## Identity
 
-```bash
-# Check PDS is running
-make dev-status
+Identity, handle checks and OAuth resolve through the local PLC (`PLC_DIRECTORY_URL=http://localhost:3002`) and the local PDS. Never point dev at public Bluesky services: a lookup that succeeds there does not prove local login works.
 
-# Test PDS health endpoint
-curl http://localhost:3001/xrpc/_health
+`HANDLE_WELL_KNOWN_HOSTS` sends handle verification for `.local.coves.dev` and `.coves.social` to the local PDS, because the dev PDS mints handles under both (`PDS_SERVICE_HANDLE_DOMAINS`). Config refuses it unless `IS_DEV_ENV=true`. A side effect: a dev AppView that consumes a feed carrying real `coves.social` communities verifies them against the local PDS, gets a 404 and indexes nothing for them.
 
-# Test PDS firehose endpoint (should get WebSocket upgrade response)
-curl -i -N -H "Connection: Upgrade" -H "Upgrade: websocket" \
-  http://localhost:3001/xrpc/com.atproto.sync.subscribeRepos
-```
+## Secrets that must stay stable
 
-### Step 4: Run Coves AppView (When Ready)
+Keep `OAUTH_SEAL_SECRET` and `ENCRYPTION_KEY` set in `.env.dev`. If `OAUTH_SEAL_SECRET` is unset, the server generates one per boot and every restart signs out every user, mobile sessions included. If `ENCRYPTION_KEY` is unset, it generates a random key per boot and every stored community and aggregator credential becomes unreadable at the next restart. The server logs a warning at startup for either case.
 
-When you have a Dockerfile for the AppView:
+## Migrations
 
-1. Uncomment the `appview` service in `docker-compose.dev.yml`
-2. Restart the stack: `make dev-down && make dev-up`
+Migrations are goose SQL files in `internal/db/migrations/`, named with a sequential three-digit prefix (`053_name.sql`), and embedded into the binary through `migrations.FS`. Create one with `goose -s -dir internal/db/migrations create name sql`; without `-s` goose uses a timestamp prefix, which breaks the ordering. Write both `Up` and `Down`. Never edit a migration that has been applied anywhere; add a new one.
 
-Or run the AppView locally:
+## Tests
 
-```bash
-# Set environment variables
-export DATABASE_URL="postgresql://dev_user:dev_password@localhost:5433/coves_dev?sslmode=disable"
-export FIREHOSE_URL="ws://localhost:3001/xrpc/com.atproto.sync.subscribeRepos"
-export PDS_URL="http://localhost:3001"
-export PORT=8081
+The test tiers, targets and the merge gate are in [TEST_ARCHITECTURE.md](TEST_ARCHITECTURE.md).
 
-# Run the AppView
-go run ./cmd/server
-```
-
-## Using the Makefile
-
-The Makefile provides convenient commands for development. Run `make help` to see all available commands:
-
-### General Commands
-
-```bash
-make help              # Show all available commands with descriptions
-```
-
-### Development Stack Commands
-
-```bash
-make dev-up            # Start PDS for local development
-make dev-down          # Stop the stack
-make dev-logs          # Tail logs from PDS
-make dev-status        # Show status of containers
-make dev-reset         # Nuclear option - remove all data and volumes
-```
-
-### Database Commands
-
-```bash
-make db-shell          # Open psql shell to the development database
-make db-migrate        # Run migrations against the development database
-make db-migrate-down   # Roll back the last migration
-make db-reset          # Reset the database (delete all data, re-run migrations)
-```
-
-**Creating a migration.** Migrations are [goose](https://github.com/pressly/goose)
-files in [internal/db/migrations/](../internal/db/migrations/), embedded into the
-binary:
-
-```bash
-goose -dir internal/db/migrations create migration_name sql
-# → internal/db/migrations/YYYYMMDDHHMMSS_migration_name.sql
-```
-
-- Write both `Up` and `Down`, and verify the rollback works
-- Keep migrations atomic — one logical change each
-- Never modify a migration that has already been applied; add a new one
-- Test against the test database (`make test-db-reset`) before the dev one
-
-### Testing Commands
-
-```bash
-make test              # T0 unit tier - no Docker, no database, no network
-make test-integration  # T1 - needs Postgres; starts postgres-test itself
-make test-e2e          # T2 pipeline tier - brings up the hermetic stack and runs inside it
-make test-live         # T3 - opt-in, deliberately hits the public internet
-make ci                # The merge gate: hermetic stack, T0+T1+T2, egress-blocked
-
-make test-db-reset     # Reset test database (clean slate)
-make test-db-stop      # Stop test database
-```
-
-The test database (`coves-test-postgres`) keeps its data in memory with
-durability off, as the CI one does. Recreating the container discards
-everything, including the template; the next `make test-integration` rebuilds it.
-
-**See [TEST_ARCHITECTURE.md](TEST_ARCHITECTURE.md) for the canonical description of
-the tiers, the gates, and how to write a test in each one.**
-
-### Workflow Commands
-
-```bash
-make fresh-start       # Complete fresh start (reset everything)
-make quick-restart     # Quick restart (keeps data)
-```
-
-### Build Commands
-
-```bash
-make build             # Build the Coves server binary
-make run               # Run the Coves server
-make clean             # Clean build artifacts
-```
-
-### Utilities
-
-```bash
-make validate-lexicon  # Validate all Lexicon schemas
-make docs              # Show documentation file locations
-```
-
-## Development Workflow
-
-### Typical Development Session
-
-```bash
-# 1. Start fresh environment
-make fresh-start
-
-# 2. Work on code...
-
-# 3. Restart services as needed
-make quick-restart
-
-# 4. View logs
-make dev-logs
-
-# 5. Run tests
-make test
-
-# 6. Clean up when done
-make dev-down
-```
-
-### Testing Lexicon Changes
-
-```bash
-# 1. Edit Lexicon files in internal/atproto/lexicon/
-
-# 2. Validate schemas
-make validate-lexicon
-
-# 3. Restart services to pick up changes
-make quick-restart
-```
-
-### Database Inspection
-
-```bash
-# Open PostgreSQL shell
-make db-shell
-
-# Or use psql directly
-PGPASSWORD=dev_password psql -h localhost -p 5433 -U dev_user -d coves_dev
-```
-
-### Viewing Logs
-
-```bash
-# Follow all logs
-make dev-logs
-
-# Or use docker-compose directly
-docker-compose -f docker-compose.dev.yml logs -f pds
-docker-compose -f docker-compose.dev.yml logs -f relay
-```
-
-## Troubleshooting
-
-### Port Already in Use
-
-**Problem:** Error binding to port 3000, 5433, etc.
-
-**Solution:**
-- The dev environment uses non-standard ports to avoid conflicts
-- PDS: 3001 (not 3000)
-- PostgreSQL: 5433 (not 5432)
-- Relay: 2471 (not 2470)
-- AppView: 8081 (not 8080)
-
-If you still have conflicts, check what's using the port:
-
-```bash
-# Check what's using a port
-lsof -i :3001
-lsof -i :5433
-
-# Kill the process
-kill -9 <PID>
-```
-
-### Database Connection Failed
-
-**Problem:** Services can't connect to PostgreSQL
-
-**Solution:**
-
-```bash
-# Ensure the stack (and its database) is running
-make dev-up
-
-# Check database logs
-docker-compose -f docker-compose.dev.yml --env-file .env.dev logs postgres
-
-# Verify connection manually
-PGPASSWORD=dev_password psql -h localhost -p 5433 -U dev_user -d coves_dev
-```
-
-### PDS Health Check Failing
-
-**Problem:** PDS container keeps restarting
-
-**Solution:**
-
-```bash
-# Check PDS logs
-docker-compose -f docker-compose.dev.yml logs pds
-
-# Common issues:
-# 1. Database not accessible - ensure DB is running
-# 2. Invalid environment variables - check .env.dev
-# 3. Port conflict - ensure port 3001 is free
-```
-
-### AppView Not Receiving Firehose Events
-
-**Problem:** AppView isn't receiving events from PDS firehose
-
-**Solution:**
-
-```bash
-# Check PDS logs for firehose activity
-docker-compose -f docker-compose.dev.yml logs pds
-
-# Verify firehose endpoint is accessible
-curl -i -N -H "Connection: Upgrade" -H "Upgrade: websocket" \
-  http://localhost:3001/xrpc/com.atproto.sync.subscribeRepos
-
-# Check AppView is connecting to correct URL:
-# FIREHOSE_URL=ws://localhost:3001/xrpc/com.atproto.sync.subscribeRepos
-```
-
-### Fresh Start Not Working
-
-**Problem:** `make fresh-start` fails
-
-**Solution:**
-
-```bash
-# Manually clean everything
-docker-compose -f docker-compose.dev.yml down -v
-docker volume prune -f
-docker network prune -f
-
-# Then start fresh
-make dev-up
-```
-
-### Production PDS Interference
-
-**Problem:** Dev environment conflicts with your production PDS
-
-**Solution:**
-- Dev PDS runs on port 3001 (production is 3000)
-- Dev services use different handle domain (`.local.coves.dev`)
-- They should not interfere unless you have custom networking
-
-```bash
-# Verify production PDS is still accessible
-curl http://localhost:3000/xrpc/_health
-
-# Verify dev PDS is separate
-curl http://localhost:3001/xrpc/_health
-```
-
-## Environment Variables
-
-All configuration is in [.env.dev](../.env.dev) - a single file for both development and testing:
-
-### Development Database (Port 5433)
-```bash
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5433
-POSTGRES_DB=coves_dev
-POSTGRES_USER=dev_user
-POSTGRES_PASSWORD=dev_password
-```
-
-### Test Database (Port 5434)
-```bash
-POSTGRES_TEST_DB=coves_test
-POSTGRES_TEST_USER=test_user
-POSTGRES_TEST_PASSWORD=test_password
-POSTGRES_TEST_PORT=5434
-```
-
-### PDS Configuration
-```bash
-PDS_HOSTNAME=localhost
-PDS_PORT=3001
-PDS_JWT_SECRET=local-dev-jwt-secret-change-in-production
-PDS_ADMIN_PASSWORD=admin
-PDS_SERVICE_HANDLE_DOMAINS=.local.coves.dev
-```
-
-### AppView Configuration
-```bash
-APPVIEW_PORT=8081
-FIREHOSE_URL=ws://localhost:3001/xrpc/com.atproto.sync.subscribeRepos
-PDS_URL=http://localhost:3001
-```
-
-### Development Settings
-```bash
-ENV=development
-LOG_LEVEL=debug
-```
-
-**No separate `.env.test` file needed!** All configuration (dev + test) is in `.env.dev`.
-
-## Next Steps
-
-1. **Build the Firehose Subscriber** - Create the AppView component that subscribes to the relay
-2. **Define Custom Lexicons** - Create Coves-specific schemas in `internal/atproto/lexicon/social/coves/`
-3. **Implement XRPC Handlers** - Build the API endpoints for Coves features
-4. **Cover it at the right tier** - see [TEST_ARCHITECTURE.md](TEST_ARCHITECTURE.md)
-
-## Additional Resources
-
-- [ATPROTO_GUIDE.md](../ATPROTO_GUIDE.md) - Comprehensive atProto implementation guide
-- [PROJECT_STRUCTURE.md](../PROJECT_STRUCTURE.md) - Project organization
-- [TEST_ARCHITECTURE.md](TEST_ARCHITECTURE.md) - The test suite: tiers, targets, gates
-
-## Getting Help
-
-- Check logs: `make dev-logs`
-- View status: `make dev-status`
-- Reset everything: `make fresh-start`
-- Inspect database: `make db-shell`
-
-For issues with atProto concepts, see [ATPROTO_GUIDE.md](../ATPROTO_GUIDE.md).
-
-For build process questions, see [CLAUDE.md](../CLAUDE.md).
+The test Postgres (`coves-test-postgres`) keeps its data in memory with durability off, like the CI one. Recreating the container discards everything, including the template; the next `make test-integration` rebuilds it.

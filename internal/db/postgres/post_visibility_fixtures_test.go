@@ -15,12 +15,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Shared seeding for the read-path visibility suites (task 7, PRD §6.2).
+// Shared seeding for the read-path visibility suites (docs/POSTS.md §6.2).
 //
 // Every posts read path — the three feeds, post.get, actor.getPosts, the
 // comment header, the profile counts — has to answer the SAME question before
 // it renders a row: has THIS community admitted THIS post? Under author-owned
-// posts (PRD §2, §6.1) that answer is not a column on `posts`; it is a row in
+// posts (docs/POSTS.md §2, §6.1) that answer is not a column on `posts`; it is a row in
 // community_post_admissions keyed by (community_did, post_uri), and a post can
 // hold independent decisions from several communities at once. So a read path
 // that does not join that table shows speech no community agreed to carry.
@@ -34,7 +34,7 @@ import (
 // admission state machine breaks, which is a different suite's job.
 
 // postV2URI renders the AT-URI a postv2 record has once committed: the AUTHOR's
-// DID is the authority (PRD §3.1), never the community's. The read paths must
+// DID is the authority (docs/POSTS.md §3.1), never the community's. The read paths must
 // carry both kinds of post through one table, so the collection in the URI is
 // the only thing that says which repo a row came from (see blobOwnerOf).
 func postV2URI(authorDID, rkey string) string {
@@ -42,13 +42,13 @@ func postV2URI(authorDID, rkey string) string {
 }
 
 // seedVisibilityPost inserts one author-owned postv2 content row and returns its
-// URI. community_did is the post's INITIAL submission target (PRD §6.1) — the
+// URI. community_did is the post's INITIAL submission target (docs/POSTS.md §6.1) — the
 // admission decision lives in a separate row, seeded with seedAdmission, so a
 // post can be pending in one community and accepted in another (the fork case).
 //
 // The author row is NOT created here: some suites deliberately seed a post whose
 // author has no `users` row (a federated author the AppView has not hydrated,
-// PRD §5.3), and an INNER JOIN to users would make that post invisible even once
+// docs/POSTS.md §5.3), and an INNER JOIN to users would make that post invisible even once
 // its community accepts it. Callers that want a known author call createTestUser
 // first.
 func seedVisibilityPost(t *testing.T, db *sql.DB, communityDID, authorDID, rkey, title string, createdAt time.Time) string {
@@ -65,7 +65,7 @@ func seedVisibilityPost(t *testing.T, db *sql.DB, communityDID, authorDID, rkey,
 
 // seedVisibilityPostWithEmbed is seedVisibilityPost carrying an external embed
 // with a blob thumbnail, so a suite can prove the visible row still hydrates its
-// media out of the AUTHOR's repository (blobOwnerOf, PRD §3.1) after the
+// media out of the AUTHOR's repository (blobOwnerOf, docs/POSTS.md §3.1) after the
 // admission predicate lands. A predicate that dropped the author's pds_url from
 // the SELECT would address the blob to an empty host — a broken image that looks
 // fine server-side.
@@ -91,7 +91,7 @@ func seedVisibilityPostWithEmbed(t *testing.T, db *sql.DB, communityDID, authorD
 }
 
 // driftedAcceptedCID is the pinned CID of an acceptance the post's content has
-// moved PAST (PRD §5.5): the community attested to this CID, an edit landed, and
+// moved PAST (docs/POSTS.md §5.5): the community attested to this CID, an edit landed, and
 // posts.cid advanced before the accepted → pending_reacceptance transition
 // committed. It is deliberately a value seedVisibilityPost can never mint, so a
 // row carrying it is un-attested by construction and the read predicate must

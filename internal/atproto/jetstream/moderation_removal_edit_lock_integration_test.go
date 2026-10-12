@@ -74,7 +74,7 @@ func rejectedLockCommentConsumer(t *testing.T, f postModerationConsumerFixture, 
 // reconciliation sees the active removal and blocks Y.
 //
 // The same holds for the events the consumers refuse to index but whose images
-// they block (PRD Q-I6): each takes a conflicting lock on the content row
+// they block (docs/MODERATION.md Q-I6): each takes a conflicting lock on the content row
 // before it reads the active removal.
 func TestModerationRemovalHoldsContentRowAgainstAuthorEdit(t *testing.T) {
 	imageY := postModerationCIDTwo

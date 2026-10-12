@@ -1,297 +1,101 @@
-# Aggregator Setup Scripts
+# Aggregator setup
 
-This directory contains scripts to help you set up and register your aggregator with Coves instances.
+These scripts give an aggregator an atProto account, a service declaration and a Coves API key. The server-side contract they set up is in [docs/AGGREGATORS.md](../../docs/AGGREGATORS.md).
 
-## Overview
+The minimal path is steps 1, 4 and 5. Steps 2 and 3 are optional: Coves recognizes an aggregator by its indexed service record, and registration gates nothing. Run them only if you want a custom domain handle on record.
 
-Aggregators are automated services that post content to Coves communities. They are similar to Bluesky's feed generators and labelers. To use aggregators with Coves, you need to:
+Each script reads and appends to `aggregator-config.env` in the current directory. Step 1 writes the account password and JWTs there, so keep the file out of version control.
 
-1. Create a PDS account for your aggregator (gets you a DID)
-2. **(Optional)** Verify a custom domain via `.well-known/atproto-did`
-3. Register with a Coves instance
-4. Create a service declaration record
-5. **Generate an API key** for authentication
+Use one Coves instance URL for every step and for posting. Step 3 prompts for it (default `https://api.coves.social`) and saves it as `COVES_INSTANCE_URL`. Step 5 reads that variable from the config file and only prompts when the file is missing, so on the minimal path add `COVES_INSTANCE_URL="<url>"` to `aggregator-config.env` before step 5, or its login link has no host. On the local stack under `make run-web` that is `http://127.0.0.1:8080`, never `localhost` (see [docs/LOCAL_DEVELOPMENT.md](../../docs/LOCAL_DEVELOPMENT.md)).
 
-These scripts automate this process for you.
-
-### Handle Options
-
-You have two choices for your aggregator's handle:
-
-1. **PDS-assigned handle** (simpler): Use the handle from your PDS, e.g., `my-aggregator.bsky.social`. No domain verification needed—skip steps 2-3.
-
-2. **Custom domain handle** (branded): Use your own domain, e.g., `news.example.com`. Requires hosting a `.well-known/atproto-did` file on your domain.
-
-## Prerequisites
-
-- **Tools**: `curl`, `jq` (for JSON processing)
-- **Account**: Email address for creating the PDS account
-- **(For custom domain only)**: Domain ownership and ability to serve HTTPS files
-
-## Quick Start
-
-### Interactive Setup (Recommended)
-
-Run the scripts in order:
+## Steps
 
 ```bash
-# Make scripts executable
-chmod +x *.sh
-
-# Step 1: Create PDS account
 ./1-create-pds-account.sh
-
-# Steps 2-3: OPTIONAL - Only if you want a custom domain handle
-# ./2-setup-wellknown.sh
-# ./3-register-with-coves.sh  (after uploading .well-known)
-
-# Step 4: Create service declaration
+./2-setup-wellknown.sh            # optional
+./3-register-with-coves.sh        # optional, after the .well-known file is live
 ./4-create-service-declaration.sh
-
-# Step 5: Generate API key (requires browser for OAuth)
 ./5-create-api-key.sh
 ```
 
-**Minimal setup** (PDS handle only): Steps 1, 4, 5
-**Custom domain**: Steps 1, 2, 3, 4, 5
+### 1. PDS account
 
-### Automated Setup Example
+`1-create-pds-account.sh` calls `com.atproto.server.createAccount` on the PDS you name and saves the DID, handle, PDS URL, password and session JWTs. Any PDS works. Locally, use `http://localhost:3001` and a `*.local.coves.dev` handle.
 
-For a reference implementation of automated setup, see the Kagi News aggregator at [aggregators/kagi-news/scripts/setup.sh](../../aggregators/kagi-news/scripts/setup.sh).
+### 2. Domain file
 
-The Kagi script shows how to automate all 4 steps (with the manual .well-known upload step in between).
+`2-setup-wellknown.sh` writes `.well-known/atproto-did` containing your DID, plus example nginx and Apache configs. Upload it so `https://<domain>/.well-known/atproto-did` returns the DID over HTTPS.
 
-## Script Reference
+### 3. Registration
 
-### 1-create-pds-account.sh
+`3-register-with-coves.sh` checks the file, then calls `social.coves.aggregator.register` with `{did, domain}`. On success Coves writes a `users` row for the DID.
 
-**Purpose**: Creates a PDS account for your aggregator
+Coves requires the DID's handle to be the domain. A PDS-assigned handle such as `mybot.bsky.social` with domain `rss-bot.example.com` fails with `HandleMismatch`. To register a custom domain, serve the `.well-known` file, switch the account's handle to the domain with `com.atproto.identity.updateHandle`, then run step 3. Other refusals: `DomainVerificationFailed` (file missing or wrong DID), `DIDResolutionFailed`, `AccountErased`, and `AlreadyRegistered`, which is harmless on a re-run.
 
-**Prompts for**:
-- PDS URL (default: https://bsky.social)
-- Handle (e.g., mynewsbot.bsky.social)
-- Email
-- Password
+### 4. Service declaration
 
-**Outputs**:
-- `aggregator-config.env` - Configuration file with DID and credentials
-- Prints your DID and access tokens
+`4-create-service-declaration.sh` writes `social.coves.aggregator.service` with rkey `self` to your repo through `com.atproto.repo.createRecord`, using the access JWT from step 1. `displayName` is required. Access JWTs are short-lived: if this step reports an expired token, create a new session with `com.atproto.server.createSession` and update `AGGREGATOR_ACCESS_JWT` in the config file.
 
-**Notes**:
-- Keep the config file secure! It contains your credentials
-- The PDS automatically generates a DID:PLC for you
-- You can use any PDS service, not just bsky.social
-
-### 2-setup-wellknown.sh
-
-**Purpose**: Generates the `.well-known/atproto-did` file for domain verification
-
-**Prompts for**:
-- Your domain (e.g., rss-bot.example.com)
-
-**Outputs**:
-- `.well-known/atproto-did` - File containing your DID
-- `nginx-example.conf` - Example nginx configuration
-- `apache-example.conf` - Example Apache configuration
-
-**Manual step required**:
-Upload the `.well-known` directory to your web server. The file must be accessible at:
-```
-https://yourdomain.com/.well-known/atproto-did
-```
-
-**Verify it works**:
-```bash
-curl https://yourdomain.com/.well-known/atproto-did
-# Should return your DID (e.g., did:plc:abc123...)
-```
-
-### 3-register-with-coves.sh
-
-**Purpose**: Registers your aggregator with a Coves instance
-
-**Prompts for**:
-- Coves instance URL (default: https://api.coves.social)
-
-**Prerequisites**:
-- `.well-known/atproto-did` must be accessible from your domain
-- Scripts 1 and 2 must be completed
-
-**What it does**:
-1. Verifies your `.well-known/atproto-did` is accessible
-2. Calls `social.coves.aggregator.register` XRPC endpoint
-3. Coves verifies domain ownership
-4. Inserts your aggregator into the `users` table
-
-**Outputs**:
-- Updates `aggregator-config.env` with Coves instance URL
-- Prints registration confirmation
-
-### 4-create-service-declaration.sh
-
-**Purpose**: Creates the service declaration record in your repository
-
-**Prompts for**:
-- Display name (e.g., "RSS News Aggregator")
-- Description
-- Source URL (GitHub repo, etc.)
-- Maintainer DID (optional)
-
-**What it does**:
-1. Creates a `social.coves.aggregator.service` record at `at://your-did/social.coves.aggregator.service/self`
-2. Jetstream consumer will index this into the `aggregators` table
-3. Communities can now discover and authorize your aggregator
-
-**Outputs**:
-- Updates `aggregator-config.env` with record URI and CID
-- Prints record details
-
-### 5-create-api-key.sh
-
-**Purpose**: Generates an API key for aggregator authentication
-
-**Prerequisites**:
-- Steps 1-4 completed
-- Aggregator indexed by Coves (usually takes a few seconds after step 4)
-- Web browser for OAuth login
-
-**What it does**:
-1. Guides you through OAuth login in your browser
-2. Provides the JavaScript to call the `createApiKey` endpoint
-3. Validates the API key format
-4. Saves the key to your config file
-
-**Outputs**:
-- Updates `aggregator-config.env` with `COVES_API_KEY`
-- Provides instructions for updating your `.env` file
-
-**Important Notes**:
-- The API key is shown **ONCE** and cannot be retrieved later
-- API keys replace password-based authentication
-- Keys can be revoked and regenerated at any time
-- Store securely - never commit to version control
-
-## Configuration File
-
-After running all scripts, you'll have an `aggregator-config.env` file with:
+The Jetstream consumer indexes the record into `aggregators` within seconds. Check it with:
 
 ```bash
-# Identity
-AGGREGATOR_DID="did:plc:..."
-AGGREGATOR_HANDLE="mynewsbot.example.com"
-AGGREGATOR_PDS_URL="https://bsky.social"
-AGGREGATOR_DOMAIN="mynewsbot.example.com"
-
-# Coves Instance
-COVES_INSTANCE_URL="https://coves.social"
-SERVICE_DECLARATION_URI="at://did:plc:.../social.coves.aggregator.service/self"
-SERVICE_DECLARATION_CID="..."
-
-# API Key (from Step 5)
-COVES_API_KEY="ckapi_..."
+curl "$COVES_URL/xrpc/social.coves.aggregator.getServices?dids=$AGGREGATOR_DID"
 ```
 
-**For your aggregator's `.env` file, you only need:**
+Re-running this script fails because the record already exists. To change the declaration, write it with `com.atproto.repo.putRecord`. Do not delete and re-create it: the delete removes every community authorization, the API key and the stored OAuth session from the AppView, and the authorizations do not come back.
+
+### 5. API key
+
+`5-create-api-key.sh` walks you through minting the key. Its "Checking if aggregator is indexed" probe calls an endpoint that does not exist, so ignore its verdict and use the `getServices` check above.
+
+1. Open `$COVES_URL/oauth/login?handle=<aggregator handle>` in a browser and sign in as the aggregator account.
+2. In that page's developer console, run:
+
+   ```js
+   fetch('/xrpc/social.coves.aggregator.createApiKey', {method: 'POST', credentials: 'include'})
+     .then(r => r.json()).then(d => console.log(d.key))
+   ```
+
+3. Paste the key into the script. It must match `ckapi_` plus 64 hex characters.
+
+The key is shown once. Minting another replaces it immediately.
+
+Do not log out of the browser session that minted the key. Logout revokes the OAuth tokens the key runs on, and the key starts failing with 401 within the hour. Close the tab, clear the cookie, or sign in as a different account instead. If it happens, sign in again and mint a new key.
+
+The aggregator's `.env` needs only:
 
 ```bash
-COVES_API_KEY=ckapi_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-COVES_API_URL=https://coves.social
+COVES_API_KEY=ckapi_...
+COVES_API_URL=<the instance URL used above>
 ```
 
-## What Happens Next?
+## Authorization
 
-After completing all 5 steps:
+A DID listed in the AppView's `TRUSTED_AGGREGATOR_DIDS` can post to any community. Any other aggregator needs a `social.coves.aggregator.authorization` record in the target community's repo. No Coves endpoint writes that record yet, so it has to be written to the community repo directly with the community's credentials. Without it, posts fail with 403 `NotAuthorized`.
 
-1. **Your aggregator is registered** in the Coves instance's `users` table
-2. **Your service declaration is indexed** in the `aggregators` table (takes a few seconds)
-3. **Your API key is stored** and can be used for authentication
-4. **Community moderators can authorize** your aggregator for their communities
-5. **Your aggregator can post** to authorized communities (or all if you're a trusted aggregator)
-
-## Creating an Authorization
-
-Authorizations are created by community moderators, not by aggregators. The moderator writes a `social.coves.aggregator.authorization` record to their community's repository.
-
-See `docs/aggregators/SETUP_GUIDE.md` for more information on the authorization process.
-
-## Posting to Communities
-
-Once authorized, your aggregator can post using your API key:
+## Posting
 
 ```bash
-curl -X POST https://coves.social/xrpc/social.coves.community.post.create \
+curl -X POST "$COVES_URL/xrpc/social.coves.community.post.create" \
   -H "Authorization: Bearer $COVES_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "community": "c-worldnews.coves.social",
-    "content": "Your post content",
-    "facets": []
+    "community": "<community handle or DID on this instance>",
+    "title": "Example headline",
+    "content": "Post body",
+    "embed": {
+      "$type": "social.coves.embed.external",
+      "external": {"uri": "https://example.com/story"}
+    }
   }'
 ```
 
-The API key handles all authentication - no OAuth token refresh needed.
+Only `community` is required. The AppView writes the post to the aggregator's own repo.
 
-## Troubleshooting
+## Local dev shortcut
 
-### Error: "DomainVerificationFailed"
+`go run scripts/setup_dev_aggregator.go` (from the repo root) creates `test-aggregator.local.coves.dev` on the local PDS and inserts its `users` and `aggregators` rows straight into the dev database, which replaces steps 1 to 4. Then do step 5 against `http://127.0.0.1:8080`. To post without an authorization record, make sure the DID it prints is in `TRUSTED_AGGREGATOR_DIDS` in `.env.dev`; a reset of the local PLC gives the account a new DID.
 
-- Verify `.well-known/atproto-did` is accessible: `curl https://yourdomain.com/.well-known/atproto-did`
-- Check the content matches your DID exactly (no extra whitespace)
-- Ensure HTTPS is working (not HTTP)
-- Check CORS headers if accessing from browser
+## Kagi News
 
-### Error: "AlreadyRegistered"
-
-- You've already registered this DID with this Coves instance
-- This is safe to ignore if you're re-running the setup
-
-### Error: "DIDResolutionFailed"
-
-- Your DID might be invalid or not found in the PLC directory
-- Verify your DID exists: `curl https://plc.directory/<your-did>`
-- Wait a few seconds and try again (PLC directory might be propagating)
-
-### Service declaration not appearing
-
-- Wait 5-10 seconds for Jetstream consumer to index it
-- Check the Jetstream logs for errors
-- Verify the record was created: Check your PDS at `at://your-did/social.coves.aggregator.service/self`
-
-## Example: Kagi News Aggregator
-
-For a complete reference implementation, see the Kagi News aggregator at `aggregators/kagi-news/`.
-
-The Kagi aggregator includes an automated setup script at [aggregators/kagi-news/scripts/setup.sh](../../aggregators/kagi-news/scripts/setup.sh) that demonstrates how to:
-
-- Automate the entire registration process
-- Use environment variables for configuration
-- Handle errors gracefully
-- Integrate the setup into your aggregator project
-
-This shows how you can package scripts 1-4 into a single automated flow for your specific aggregator.
-
-## Security Notes
-
-- **Never commit `aggregator-config.env`** to version control
-- Store credentials securely (use environment variables or secret management)
-- Rotate access tokens regularly
-- Use HTTPS for all API calls
-- Validate community authorization before posting
-
-## More Information
-
-- [Aggregator Setup Guide](../../docs/aggregators/SETUP_GUIDE.md)
-- [Aggregator PRD](../../docs/aggregators/PRD_AGGREGATORS.md)
-- [atProto Identity Guide](../../ATPROTO_GUIDE.md)
-- [Coves Communities PRD](../../docs/PRD_COMMUNITIES.md)
-
-## Support
-
-If you encounter issues:
-
-1. Check the troubleshooting section above
-2. Review the full documentation in `docs/aggregators/`
-3. Open an issue on GitHub with:
-   - Which script failed
-   - Error message
-   - Your domain (without credentials)
+Set up the Kagi News account with the numbered scripts. `aggregators/kagi-news/scripts/setup.sh` tries steps 1 to 4 in one pass but cannot finish: it creates a `*.bsky.social` handle, so registration fails with `HandleMismatch`. See [aggregators/kagi-news/README.md](../../aggregators/kagi-news/README.md).

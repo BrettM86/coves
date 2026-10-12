@@ -43,7 +43,7 @@ type PostRepository struct {
 // it is selected as-is.
 //
 // author_handle is COALESCEd to the author DID because the users join is a LEFT
-// join (a federated author with no users row must not vanish, PRD §5.3), so
+// join (a federated author with no users row must not vanish, docs/POSTS.md §5.3), so
 // u.handle is NULL for an unindexed author; the comment read path does the same
 // (comment_repo.go). a.status and a.acceptance_uri come from the admission LEFT
 // join every display query splices in via visiblePostsJoin — they carry the
@@ -381,7 +381,7 @@ func (r *PostRepository) GetViewsByURIs(ctx context.Context, uris []string, view
 	// #removedPost tombstone from the admission row. An AUTHOR passing their own
 	// DID additionally reaches their own non-accepted posts, which is what keeps
 	// post.get agreeing with actor.getPosts, the feeds and the getComments thread
-	// header about a post the author can see (PRD §6.2). "" is fail-closed, so a
+	// header about a post the author can see (docs/POSTS.md §6.2). "" is fail-closed, so a
 	// caller that has no viewer to offer degrades to the public answer rather
 	// than to an ungated one.
 	visJoin, visWhere := visiblePostsJoin(2)
@@ -425,7 +425,7 @@ func (r *PostRepository) GetViewsByURIs(ctx context.Context, uris []string, view
 // viewer threading, one URI and one row instead of a batch and a map. getComments
 // needs both halves it gives — a VIEWER (so an author reaches their own pending
 // post's thread header) and the HYDRATED view (so the served header carries
-// status/acceptanceUri, PRD §6.2). It is not on posts.Repository; the comment
+// status/acceptanceUri, docs/POSTS.md §6.2). It is not on posts.Repository; the comment
 // service names it in comments.PostReader instead, so a repository that lacks it
 // fails to compile at the wiring site. That is deliberate: the earlier optional
 // type assertion here failed OPEN, and any future decorator satisfying only
@@ -518,7 +518,7 @@ func (r *PostRepository) GetByAuthor(ctx context.Context, req posts.GetAuthorPos
 	// anonymous public) sees the author's accepted posts only; the author
 	// themselves ($viewer = ActorDID) additionally sees their own pending /
 	// rejected / removed posts, which is how a profile renders per-community
-	// status (PRD §6.2). This is the alternate-endpoint the feed gate is
+	// status (docs/POSTS.md §6.2). This is the alternate-endpoint the feed gate is
 	// worthless without: an author feed showing ungated content leaks exactly
 	// what the community feed hides.
 	visibilityParam := paramIndex
@@ -739,7 +739,7 @@ func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, er
 		postView.EditedAt = &editedAt.Time
 	}
 
-	// Per-community admission context (PRD §6.2). Present on any row the
+	// Per-community admission context (docs/POSTS.md §6.2). Present on any row the
 	// visibility predicate returned that carries an admission decision — every
 	// accepted post, and an author's own non-accepted posts on their profile.
 	// Absent (NULL) for legacy/bridged rows, which omit it on the wire.

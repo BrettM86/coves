@@ -26,7 +26,7 @@ import (
 )
 
 // Ingesting author-owned posts and the community records that decide about
-// them (docs/PRD_AUTHOR_OWNED_POSTS.md §5.3-§5.6).
+// them (docs/POSTS.md §5.3-§5.6).
 //
 // Three collections land here, and they invert each other:
 //
@@ -41,7 +41,7 @@ import (
 // delete path, and still accumulate vote/comment counters.
 
 // PostV2Collection is the author-repo post record of
-// docs/PRD_AUTHOR_OWNED_POSTS.md §3.1 — the §3.0 successor to the deprecated
+// docs/POSTS.md §3.1 — the §3.0 successor to the deprecated
 // social.coves.community.post.
 //
 // The NSID is new rather than reused, and that is a safety property, not
@@ -65,7 +65,7 @@ const (
 )
 
 // DeletedAccountLookup reports whether a DID names an account this AppView was
-// asked to erase (migration 036, PRD rev 2.7).
+// asked to erase (migration 036, docs/POSTS.md §5.3).
 //
 // It exists because "no users row" stopped being an answer. Under author-owned
 // posts an unknown author is a NORMAL state that must still index (§5.3), so
@@ -719,7 +719,7 @@ func (c *PostEventConsumer) upsertAuthorPost(ctx context.Context, authorDID stri
 		log.Printf("🚨 SECURITY: ignoring the whole %s update for %s - community is immutable (stored %s, incoming %s)",
 			PostV2Collection, uri, stored.communityDID, record.Community)
 		// The author's repo still serves the ignored record's images, so a
-		// removed post blocks them for the author (PRD Q-I6).
+		// removed post blocks them for the author (docs/MODERATION.md Q-I6).
 		if err := c.blockIgnoredUpdateMedia(ctx, uri, authorDID, commit.Rev, timeUS, record.Embed); err != nil {
 			return err
 		}

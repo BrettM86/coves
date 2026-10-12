@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The acceptance engine's routing matrix (docs/PRD_AUTHOR_OWNED_POSTS.md §5.6).
+// The acceptance engine's routing matrix (docs/POSTS.md §5.6).
 //
 // ProcessAdmission is a two-input decision: the row's STATUS and the policy's
 // VERDICT together choose what gets written, and neither alone is enough. The

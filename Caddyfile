@@ -228,7 +228,7 @@ coves.social {
         # emits now points at. media-src must name the PDS hosts directly:
         # the image proxy transcodes stills and cannot stream, so
         # social.coves.embed.video#view serves video from the hosting PDS
-        # (the accepted gap in docs/PRD_CSAM_SCANNING.md workstream 5).
+        # (an accepted exception in docs/MEDIA.md, Accepted exceptions).
         # The listed hosts are our own PDS plus tdpl.io, the bridge PDS
         # hosting blobs for bridged Lemmy communities. Video on a community
         # hosted by any OTHER peer is blocked, fail-closed, browser-side —

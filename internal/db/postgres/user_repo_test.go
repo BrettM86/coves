@@ -205,7 +205,7 @@ func TestUserRepo_Delete_WithPosts_CascadeDeletes(t *testing.T) {
 	createTestCommunity(t, db, communityDID, "c.testpostcommunity", testDID)
 
 	// Create post. Deletion used to reach this row through fk_author's ON DELETE
-	// CASCADE; migration 034 dropped that FK (PRD_AUTHOR_OWNED_POSTS §5.3, so a
+	// CASCADE; migration 034 dropped that FK (docs/POSTS.md §5.3, so a
 	// federated author's post can be indexed at all), and Delete now removes
 	// posts with an explicit statement instead. The assertion below is unchanged
 	// on purpose: deleting a user must still take their posts with it, whichever

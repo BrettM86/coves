@@ -275,12 +275,13 @@ func (failingUserBlockRepoStub) AreBlocked(ctx context.Context, blockerDID strin
 	panic("AreBlocked must not be reached for a permanently invalid event")
 }
 
-// The gates below exist because of docs/CONSUMER_TRUST_AUDIT.md §1.3: each of
-// these values used to fall through to a lookup or an INSERT whose failure was
-// classified transient, so a record carrying a non-DID where a DID belongs
-// bought 4.2s of in-line retries plus ten redrives against a value no replay
-// can repair. They must be refused BEFORE any repository access — which is
-// also why every consumer here is built without one — and refused permanently.
+// The gates below exist because of docs/SECURITY_MODEL.md, Firehose error
+// classes: each of these values used to fall through to a lookup or an INSERT
+// whose failure was classified transient, so a record carrying a non-DID where
+// a DID belongs bought 4.2s of in-line retries plus ten redrives against a
+// value no replay can repair. They must be refused BEFORE any repository access
+// — which is also why every consumer here is built without one — and refused
+// permanently.
 
 func TestCommunityConsumer_NonDIDReferences_ArePermanent(t *testing.T) {
 	c := NewCommunityEventConsumer(nil, "did:web:coves.social", true, nil)

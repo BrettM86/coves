@@ -10,7 +10,7 @@ import (
 )
 
 // The acceptance engine's driver: the thing that decides WHEN the engine runs
-// and on what (docs/PRD_AUTHOR_OWNED_POSTS.md §5.6, §8).
+// and on what (docs/POSTS.md §5.6, §8).
 //
 // The engine settles one subject. Nothing until now decided which subjects, in
 // what order, or how often — the firehose consumer pushes work at it today, and

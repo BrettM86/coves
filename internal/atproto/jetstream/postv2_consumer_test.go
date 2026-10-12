@@ -21,7 +21,7 @@ import (
 )
 
 // Ingesting social.coves.community.postv2 — the post record that now lives in
-// the AUTHOR's repo (docs/PRD_AUTHOR_OWNED_POSTS.md §3.1, §5.3).
+// the AUTHOR's repo (docs/POSTS.md §3.1, §5.3).
 //
 // The collection is new, and so is almost everything about how an event from it
 // is read. Three inversions drive every case below:

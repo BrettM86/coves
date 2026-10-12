@@ -13,20 +13,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The read-path visibility contract (task 7, PRD §6.2, §9 re-scoped): the
-// binding security arc for author-owned posts. It is the compensating control
-// for task 6's write-path flip — that flip means any author can index a postv2
-// naming any community, so the ONLY thing standing between an unadmitted post and
-// every reader is the admission predicate this task builds. An alternate-endpoint
-// hole is a real leak, so the invisibility is asserted on EVERY public display
-// endpoint, not just the feed.
+// The read-path visibility contract (docs/POSTS.md §6.2, §9): the binding
+// security arc for author-owned posts. It is the compensating control for the
+// write-path flip — any author can index a postv2 naming any community, so the
+// ONLY thing standing between an unadmitted post and every reader is the
+// admission predicate. An alternate-endpoint hole is a real leak, so the
+// invisibility is asserted on EVERY public display endpoint, not just the feed.
 //
 // # WHAT THIS TIER CAN AND CANNOT OBSERVE
 //
 // The viewer here is the ANONYMOUS public. This contract was written when the
 // tier could not authenticate a viewer at all, so it proves the one case that
 // matters most: the unauthenticated internet must reach accepted content only.
-// The author's own privileged view of their pending/removed posts (PRD §6.2)
+// The author's own privileged view of their pending/removed posts (docs/POSTS.md §6.2)
 // needs an authenticated viewer DID. T2 can now sign in (testkit.AppView.SignIn,
 // proven in session_contract_test.go), so that contract is possible here and not
 // yet written; today it is proven at T1, where the read
@@ -180,7 +179,7 @@ func TestReadVisibilityContract(t *testing.T) {
 		// through the author feed, or open its comment thread.
 		assert.NotContainsf(t, communityFeedURIs(t, p, community.DID), pendingURI,
 			"a PENDING post appeared in the community feed. It has no acceptance; rendering it publishes speech the "+
-				"community never agreed to carry (PRD §2)")
+				"community never agreed to carry (docs/POSTS.md §2)")
 		assert.NotContainsf(t, discoverFeedURIsPublic(t, p), pendingURI,
 			"a PENDING post appeared in discover")
 
@@ -198,7 +197,7 @@ func TestReadVisibilityContract(t *testing.T) {
 		if err == nil {
 			assert.NotEqualf(t, pendingTitle, thread.Post.Record["title"],
 				"getComments exposed a PENDING post's header (title, content, author) to the public through its thread "+
-					"endpoint — the alternate-endpoint leak PRD §6.2 names explicitly")
+					"endpoint — the alternate-endpoint leak docs/POSTS.md §6.2 names explicitly")
 			assert.Truef(t, thread.Post.URI == "" || thread.Post.NotFound,
 				"getComments served a real post header for a pending post: %+v", thread.Post)
 		}

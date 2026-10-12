@@ -26,7 +26,7 @@ import (
 
 // Ingesting the two records a COMMUNITY writes about a post:
 // social.coves.community.acceptance and social.coves.community.removal
-// (docs/PRD_AUTHOR_OWNED_POSTS.md §5.4, §5.2).
+// (docs/POSTS.md §5.4, §5.2).
 //
 // These are the records that decide what a community shows. A post claiming a
 // community and lacking an acceptance is never rendered in it (§2), so an
@@ -226,7 +226,7 @@ func TestAcceptanceConsumer_FromANonCommunityRepo_IsRefusedAndRedrivable(t *test
 	assert.ErrorIs(t, err, ErrUnresolvedReference,
 		"an unindexed community repo is an ordering failure; the redrive resolves it once the community profile arrives. "+
 			"It must be the bounded unresolved-reference class, not a plain error: any repo can mint these, and a plain "+
-			"error buys ~4.2s of in-line lane time plus ten redrives per fabricated event (audit 2026-09-01 §1.3)")
+			"error buys ~4.2s of in-line lane time plus ten redrives per fabricated event (docs/SECURITY_MODEL.md, Firehose error classes)")
 	assert.NotErrorIs(t, err, ErrPermanentEvent,
 		"the community profile may still arrive, so the row must keep its redrive budget")
 

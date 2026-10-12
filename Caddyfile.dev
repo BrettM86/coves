@@ -3,10 +3,10 @@
 # This enables OAuth cookies to work correctly across frontend/backend
 #
 # Usage:
-#   make web-dev    # Starts proxy (also starts dev stack if needed)
+#   make web-proxy  # Starts proxy (run the backend with make run-web first)
 #   Or manually:    caddy run --config Caddyfile.dev
 #
-# Access at: http://localhost:8080
+# Access at: http://127.0.0.1:8080
 
 :8080 {
 	# OAuth routes -> Coves backend

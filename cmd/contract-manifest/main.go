@@ -31,7 +31,7 @@
 //	contracted  a comment in tests/e2e whose first word is coves:ingestion-contract
 //	            names it. This is the goal state.
 //	pending     tests/ci/pending_contracts.txt lists it with the task that owns
-//	            writing the contract. Phase 4 lands contracts one domain at a
+//	            writing the contract. Contracts landed one domain at a
 //	            time, and a check that fails until the last one arrives would be
 //	            switched off long before then. This is the burn-down, and it
 //	            ratchets: a pending collection that gains a contract makes its

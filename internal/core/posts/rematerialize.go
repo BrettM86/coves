@@ -22,8 +22,7 @@ import (
 // social.coves.community.post record (written into a COMMUNITY's repo under the
 // community's credentials) to an author-owned social.coves.community.postv2 in
 // the AUTHOR's repo, plus the community's acceptance that pins it
-// (docs/PRD_AUTHOR_OWNED_POSTS.md §10.1 step 5 and §11 the rev-2.8 deploy
-// runbook).
+// (docs/POSTS.md §10.1 step 5 and §11, Cutover runbook).
 //
 // # THIS CODE DELETES PRODUCTION USER DATA IRREVERSIBLY
 //

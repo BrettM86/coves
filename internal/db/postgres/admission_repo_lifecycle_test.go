@@ -20,7 +20,7 @@ import (
 // The outer contract for community post admissions: one post's whole life inside
 // one community, driven entirely through the repository API.
 //
-// docs/PRD_AUTHOR_OWNED_POSTS.md §5.2 and §5.5 are the specification. The claim
+// docs/POSTS.md §5.2 and §5.5 are the specification. The claim
 // under test is not "each method writes its columns" — it is that the ONE rule
 // those sections describe (apply a community event only when its (rev, op-rank)
 // tuple is strictly greater than the row's watermark, rank(delete) < rank(put))

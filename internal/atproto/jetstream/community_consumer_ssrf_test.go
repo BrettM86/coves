@@ -510,7 +510,8 @@ func TestPrivateHostOptions_BindTheGateToTheConstructor(t *testing.T) {
 // # THE TIMEOUT
 //
 // NewSSRFSafeHTTPClient ships a 15s ceiling of its own and this consumer runs
-// on wellKnownTimeout (5s since the consumer trust audit; 10s before it).
+// on wellKnownTimeout (5s since the consumer trust audit, docs/SECURITY_MODEL.md;
+// 10s before it).
 // Adopting the shared client without restoring the caller's value LOOSENS
 // every .well-known fetch to the shared ceiling — a change nobody asked for,
 // arriving as part of an SSRF fix, on a firehose path where a slow remote

@@ -524,7 +524,7 @@ func (a *application) buildServices(ctx context.Context) error {
 	// userBlockRepo backs viewer block enforcement on GetPosts, keeping
 	// permalink and cold-load reads consistent with feed/timeline filtering.
 	// The admission policy is what makes the ban lookup and the per-author
-	// submission quota live (PRD_AUTHOR_OWNED_POSTS §4.1, §8). A post service
+	// submission quota live (docs/POSTS.md §4.1, §8). A post service
 	// built without it enforces only what CreatePost enforced before those
 	// existed, so this is not an optional enrichment — it is the enforcement.
 	// The limits come from config, which refuses to start the process with a

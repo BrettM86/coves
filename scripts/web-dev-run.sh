@@ -17,15 +17,8 @@ export APPVIEW_PUBLIC_URL="http://127.0.0.1:8080"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 COVES_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# Frontend location (override with KELP_DIR env var)
-# Try coves-frontend first, fall back to kelp for backwards compatibility
-if [ -z "$KELP_DIR" ]; then
-    if [ -d "$COVES_DIR/../coves-frontend" ]; then
-        KELP_DIR="$COVES_DIR/../coves-frontend"
-    else
-        KELP_DIR="$COVES_DIR/../kelp"
-    fi
-fi
+# Frontend location (override with COVES_FRONTEND_DIR env var)
+COVES_FRONTEND_DIR="${COVES_FRONTEND_DIR:-$COVES_DIR/../coves-frontend}"
 
 # Cleanup function
 cleanup() {
@@ -51,15 +44,15 @@ echo "   PDS_URL: $PDS_URL"
 echo "   Build tags: dev"
 echo ""
 
-# Check if kelp directory exists
-if [ ! -d "$KELP_DIR" ]; then
-    echo "❌ Frontend directory not found: $KELP_DIR"
+# Check if the frontend directory exists
+if [ ! -d "$COVES_FRONTEND_DIR" ]; then
+    echo "❌ Frontend directory not found: $COVES_FRONTEND_DIR"
     exit 1
 fi
 
 # Start Vite in background
-echo "🚀 Starting Vite frontend (kelp) on :5173..."
-cd "$KELP_DIR" && pnpm dev &
+echo "🚀 Starting Vite frontend (coves-frontend) on :5173..."
+cd "$COVES_FRONTEND_DIR" && pnpm dev &
 VITE_PID=$!
 
 # Give Vite a moment to start
@@ -72,7 +65,7 @@ echo ""
 echo "🚀 Starting Coves backend on :8081..."
 echo ""
 echo "   ⚠️  Make sure Caddy proxy is running: make web-proxy"
-echo "   📍 Access your app at: http://localhost:8080"
+echo "   📍 Access your app at: http://127.0.0.1:8080"
 echo ""
 echo "   Press Ctrl+C to stop both services"
 echo ""

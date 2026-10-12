@@ -16,7 +16,7 @@ import (
 )
 
 // PostgreSQL storage for per-(community, post) admission decisions
-// (docs/PRD_AUTHOR_OWNED_POSTS.md §5.2, §5.5, §6.1; migration 034).
+// (docs/POSTS.md §5.2, §5.5, §6.1; migration 034).
 //
 // THE SHAPE EVERY MUTATION TAKES. All seven use a guarded writing statement
 // whose guard is the whole admission decision. Five — the author-repo observation

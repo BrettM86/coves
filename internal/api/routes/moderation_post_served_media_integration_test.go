@@ -47,7 +47,7 @@ func servedProxyBlobs(t *testing.T, proxyBaseURL string, value any) []mediaBlobK
 	return found
 }
 
-// PRD §9 Media: a removal blocks the blobs PostBlobCIDs derives, so the served
+// docs/MODERATION.md, Media blocks: a removal blocks the blobs PostBlobCIDs derives, so the served
 // view must carry no proxy URL outside them. An author who hand-writes a proxy
 // URL for their own blob into the record gets no image in the view; the same
 // image referenced as a blob is served and is blocked by an illegal-content

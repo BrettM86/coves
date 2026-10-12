@@ -10,7 +10,7 @@ import (
 )
 
 // The single highest-risk detail in the whole cutover: the postv2 record key the
-// re-materialization tool writes at (docs/PRD_AUTHOR_OWNED_POSTS.md §11 step 4).
+// re-materialization tool writes at (docs/POSTS.md §11 step 4).
 //
 // It has TWO hard constraints that pull in different directions, and the RED-1
 // digest scheme satisfied only one of them (whole-branch review, P9):

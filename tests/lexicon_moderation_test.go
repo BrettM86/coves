@@ -603,7 +603,7 @@ func TestLexiconModerationEndpointEnvelopes(t *testing.T) {
 			errorNames := endpointErrorNames(t, main, expected.name)
 			assert.ElementsMatch(t, expected.errors, errorNames, "%s must declare exactly its specified errors", expected.name)
 			for _, name := range errorNames {
-				assert.Containsf(t, allowedErrors, name, "%s declares %s outside the PRD error vocabulary", expected.name, name)
+				assert.Containsf(t, allowedErrors, name, "%s declares %s outside the moderation error vocabulary", expected.name, name)
 			}
 		})
 	}

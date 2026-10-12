@@ -10,7 +10,7 @@ import (
 
 // PostgreSQL storage for the re-materialization ledger (migration 037): one row
 // per legacy social.coves.community.post record, tracking its progress through
-// the cutover state machine (docs/PRD_AUTHOR_OWNED_POSTS.md §11).
+// the cutover state machine (docs/POSTS.md §11).
 //
 // Every transition is a single parameterized statement. The state-advancing
 // updates are GUARDED on the state they move FROM, and a guard that matches no

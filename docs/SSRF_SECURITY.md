@@ -1,73 +1,35 @@
-# SSRF security model
+# SSRF security
 
-This document describes the maintained server-side request forgery (SSRF)
-boundary in Coves. It is an architecture and contributor guide, not an incident
-log. The implementation and its regression tests remain the source of truth.
-
-Potential security vulnerabilities should be reported privately as described in
-[`SECURITY.md`](../SECURITY.md).
+Report suspected vulnerabilities privately as described in [SECURITY.md](../SECURITY.md). The wider auth and firehose trust rules are in [SECURITY_MODEL.md](SECURITY_MODEL.md).
 
 ## Threat model
 
-Coves participates in a federated network and therefore fetches URLs derived
-from remote identities, PDS records, OAuth discovery, link previews, image
-metadata, and aggregator registrations. A syntactically valid remote record is
-not a trust boundary: a remote party may control the hostname, its DNS answers,
-redirects, response headers, and response body.
+Coves fetches URLs derived from remote identities, PDS records, OAuth discovery, link previews, image metadata and aggregator registrations. A syntactically valid remote record is not a trust boundary: the remote party may control the hostname, its DNS answers, redirects, response headers and response body.
 
-The shared egress boundary is `NewSSRFSafeHTTPClient` in
-`internal/atproto/oauth/transport.go`. Production code that accepts a non-static
-destination must use this client or document a narrowly scoped exemption that
-is enforced by `scripts/ssrf-audit.sh`.
+`NewSSRFSafeHTTPClient` in `internal/atproto/oauth/transport.go` is the single egress guard. Production code that fetches a non-static destination must use it, or carry a narrow exemption marker that `scripts/ssrf-audit.sh` enforces.
 
 ## Guard invariants
 
-The guarded client provides the following properties:
-
-- Hostnames are normalized consistently with Go's HTTP stack before lookup.
+- Hostnames are normalized the way Go's HTTP stack normalizes them before lookup.
 - IP-literal destinations are refused by default.
-- DNS is resolved once per request under the request context. Every answer is
-  classified, and the connection is made directly to an approved address. This
-  closes the DNS rebinding window between validation and dialing.
-- A hostname is refused if any answer is private, local, special-purpose, or
-  otherwise disallowed. Mixed public/private answer sets fail closed.
-- The transport does not use environment-configured HTTP proxies. Adding
-  `http.ProxyFromEnvironment` would bypass the direct relationship between the
-  vetted address and the socket destination and must be treated as a security
-  change.
-- Redirects are limited and each destination is processed by the same guard.
-- Requests have connection and overall deadlines. Response bodies have a
-  32 MiB default cap, with tighter or explicitly larger limits at call sites
-  that need them.
-- Address refusals match `ErrBlockedAddress`; oversized reads match
-  `ErrResponseTooLarge`. Callers should use `errors.Is` rather than matching
-  rendered messages.
+- DNS is resolved once per request under the request context. Every answer is classified, and the dial goes straight to an approved address. The base transport's `DialContext` ignores the hostname and fails closed when no vetted address is in the context. This closes the DNS rebinding window between check and dial. TLS still verifies the requested hostname.
+- A hostname is refused if any answer is disallowed. Mixed public and private answer sets fail closed.
+- The transport does not use environment proxies. Adding `http.ProxyFromEnvironment` would break the link between the vetted address and the socket, and is a security change.
+- Redirects are limited, and each hop goes through the same guard.
+- The client has a 10-second dial timeout and a 15-second overall timeout by default; call sites may override the overall timeout. Response bodies are capped at `DefaultMaxResponseBytes` (32 MiB) unless a call site sets its own limit.
+- Address refusals match `ErrBlockedAddress` and oversized reads match `ErrResponseTooLarge`. Match them with `errors.Is`, not on the message.
 
-Protocol-specific validation remains the caller's responsibility. The generic
-client intentionally supports federation endpoints that use non-default ports.
-A caller with a narrower protocol contract should apply that contract to the
-initial URL and every redirect.
+Protocol-specific validation is the caller's job. The generic client allows non-default ports because federation endpoints use them. A caller with a narrower contract applies it to the first URL and every redirect.
 
 ## Address policy
 
-The classifier rejects the standard library's loopback, unspecified, private,
-link-local, and multicast classes. It also rejects IANA special-purpose ranges
-that are not globally reachable, even when a local network happens to route
-them. That includes documentation and benchmarking networks, transition
-mechanisms that can carry private destinations, and deprecated local-use space.
+The classifier rejects the standard library's loopback, unspecified, private, link-local and multicast classes. It also rejects IANA special-purpose ranges that are not globally reachable, even when the local network routes them: documentation and benchmarking networks, transition mechanisms that can carry private destinations, and deprecated local-use space.
 
-Known destination-carrying IPv4-in-IPv6 formats are decoded and the embedded
-IPv4 address is classified. The well-known NAT64 prefix `64:ff9b::/96` remains
-usable for public IPv4 destinations.
+Known IPv4-in-IPv6 formats are decoded and the embedded IPv4 address is classified. The well-known NAT64 prefix `64:ff9b::/96` stays usable for public IPv4 destinations.
 
-RFC 8215 local-use NAT64 space (`64:ff9b:1::/48`) is blocked in full. RFC 6052
-allows deployments to choose more-specific Pref64 lengths and layouts, so the
-IPv4 position cannot be inferred safely from the address alone. If Coves ever
-needs a local-use Pref64, add an explicit operator configuration and decode only
-the declared prefix and layout. Do not scan arbitrary IPv6 offsets or weaken
-the default block.
+RFC 8215 local-use NAT64 space, `64:ff9b:1::/48`, is blocked in full. RFC 6052 lets deployments choose more-specific Pref64 lengths and layouts, so the IPv4 position cannot be inferred from the address. If Coves ever needs a local-use Pref64, add explicit operator configuration and decode only the declared prefix and layout. Do not scan arbitrary IPv6 offsets or weaken the default block.
 
-Useful registries and protocol references:
+References:
 
 - [IANA IPv4 Special-Purpose Address Registry](https://www.iana.org/assignments/iana-ipv4-special-registry/)
 - [IANA IPv6 Special-Purpose Address Registry](https://www.iana.org/assignments/iana-ipv6-special-registry/)
@@ -76,82 +38,43 @@ Useful registries and protocol references:
 
 ## OAuth discovery
 
-Indigo's OAuth application contains three independent HTTP clients:
+Indigo's OAuth `ClientApp` carries three independent HTTP clients: the main OAuth client, the identity directory client, and the authorization-server metadata resolver. `NewOAuthClient` in `internal/atproto/oauth/client.go` replaces all three with guarded clients. Leaving the resolver's default client in place would expose a proxy-aware SSRF path, because `StartAuthFlow` takes an attacker-chosen `https://` authorization-server identifier on a public route.
 
-1. the main OAuth client;
-2. the identity directory client; and
-3. the authorization-server metadata resolver.
+The metadata resolver client (`newOAuthResolverHTTPClient`) has a 10-second timeout, a 1 MiB response cap, at most five redirects, and accepts only HTTPS redirects with no explicit port.
 
-`NewOAuthClient` replaces all three with Coves-guarded clients. The metadata
-resolver has a ten-second timeout, a 1 MiB response limit, and an HTTPS/no-
-explicit-port redirect policy. Construction and end-to-end `StartAuthFlow`
-tests cover all three clients, including a private DNS answer that must not
-reach a listener and an explicit development-hatch control.
-
-Password-based PDS login also constructs its API client before calling
-`com.atproto.server.createSession`, so the password-bearing request and all
-subsequent authenticated requests share the guarded transport.
+Password-based PDS login (`pds.NewFromPasswordAuth`) builds its API client on the guarded transport before calling `com.atproto.server.createSession`, so the password-bearing request and every later authenticated request share the guard.
 
 ## Development hatch
 
-Private addresses are available only through explicit option functions such as
-`WithPrivateAddressesAllowed` and package-specific equivalents (including
-`identity.WithWellKnownHosts`, which redirects the handle-verification GET for
-configured suffixes to a local PDS over plain `http` — it wraps the guarded
-transport rather than replacing it, and both identity constructors refuse it
-unless the hatch is also set; see `internal/atproto/identity/well_known_hosts.go`). They exist for
-local development and hermetic tests, whose services normally listen on
-loopback.
+Private addresses are reachable only through explicit option functions, each marked `coves:allow-ssrf-hatch`: `WithPrivateAddressesAllowed` on the transport, and a `WithPrivateHostsAllowed` option in each package that builds a guarded client (identity, unfurl, imageproxy, blobs, communities). `identity.WithWellKnownHosts` redirects the handle-verification GET for configured suffixes to a local PDS over plain `http`. It wraps the guarded transport rather than replacing it, and resolver construction refuses it unless the private-hosts hatch is also set.
 
-Production wiring must pass no hatch option. Keep the choice local to each
-client construction; do not derive it implicitly inside the transport or from
-ambient proxy settings. Guard tests should always contain both directions:
+Production wiring passes no hatch. Keep the choice local to each client construction. Never derive it inside the transport or from ambient proxy settings. `.env.ci` sets `IS_DEV_ENV=true`, so `make ci` runs every call site with the hatch open; a green merge gate says nothing about the closed path. That is why `make ssrf-audit` exists.
 
-- hatch closed: the private listener is never reached and the error matches
-  `ErrBlockedAddress`;
-- hatch open: the otherwise identical fixture is reached, proving the closed
-  case is testing classification rather than a broken client.
+Guard tests always cover both directions:
 
-## Resolver behavior and hostname syntax
+- hatch closed: the private listener is never reached and the error matches `ErrBlockedAddress`.
+- hatch open: the otherwise identical fixture is reached, proving the closed case tests classification rather than a broken client.
 
-The transport classifies addresses returned by the resolver, regardless of
-which Go resolver implementation produced them. Legacy numeric hostname forms
-may be rejected as malformed or may resolve to an IPv4 address depending on the
-platform and resolver mode; if they resolve, the resulting address is still
-classified before dialing. The production container uses the pure-Go resolver
-with `CGO_ENABLED=0`, and the audit pins that build setting to keep production
-resolution behavior deterministic.
+## Resolver policy
 
-Entry points that accept a domain rather than a general URL should additionally
-use the positive DNS-name validation in `internal/validation/domain.go`.
+The transport classifies whatever addresses the resolver returns, regardless of which Go resolver produced them. Legacy numeric hostname forms may be rejected as malformed or resolved to an IPv4 address depending on platform and resolver mode. If they resolve, the address is still classified before dialing.
 
-## Adding or changing egress
+The production image is built with `CGO_ENABLED=0`, so it uses the pure-Go resolver. `scripts/ssrf-audit.sh` fails if any `go build` in the `Dockerfile` runs without `CGO_ENABLED=0` in the same stage, which keeps production resolution deterministic.
 
-When adding a network fetch:
+Entry points that accept a domain rather than a URL should also use the positive DNS-name validation in `internal/validation/domain.go`.
 
-1. Identify who controls the destination, DNS, redirects, and response body.
+## Adding egress
+
+1. Identify who controls the destination, its DNS, redirects and response body.
 2. Use `NewSSRFSafeHTTPClient` before the first request leaves the process.
-3. Apply scheme, port, content-type, timeout, and body-size rules for that
-   protocol.
-4. Add a listener-never-reached test for a well-formed hostname resolving to a
-   private address, plus an explicit hatch-open control where local access is
-   supported.
-5. Run both audit gates and the relevant test tiers.
+3. Apply the scheme, port, content-type, timeout and body-size rules of that protocol.
+4. Add a test where a well-formed hostname resolves to a private address and the listener is never reached, plus a hatch-open control where local access is supported.
+5. Run `make test`, `make test-audit` and `make ssrf-audit`, plus the relevant integration and e2e tiers.
 
-Any `coves:allow-*` exemption is a security decision. Keep it next to the
-construction it exempts and explain why the destination cannot be controlled by
-an untrusted party.
+A `coves:allow-*` exemption is a security decision. Put it on the construction it exempts and say why an untrusted party cannot control the destination. `make ssrf-audit` is a tripwire over client construction, not a substitute for behavioural tests or review.
 
-## Verification
+## Known gaps
 
-Run at minimum:
+The Jetstream connector dials with `websocket.DefaultDialer` (`internal/atproto/jetstream/connector.go`). That dialer is outside the guard and outside the ssrf-audit patterns, and it honours `ProxyFromEnvironment`. Jetstream URLs come from operator config (`JETSTREAM_FEEDS`), not from remote input.
 
-```sh
-make test
-make test-audit
-make ssrf-audit
-```
-
-`make ssrf-audit` is a regression tripwire over production egress construction;
-it is not a substitute for behavioral tests or code review. Before a release,
-run the repository's integration and end-to-end gates as well.
+The guarded client sets no `ResponseHeaderTimeout` or `MaxResponseHeaderBytes`; only the overall client timeout bounds a slow header. Both gaps are tracked in backlog issue `2026-09-04-ssrf-doc-residuals`.

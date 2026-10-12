@@ -9,7 +9,7 @@ import (
 )
 
 // The acceptance engine: the single decision point of
-// docs/PRD_AUTHOR_OWNED_POSTS.md §5.6.
+// docs/POSTS.md §5.6.
 //
 // Its input is one admission row — a (community, post) subject the AppView has
 // indexed and this AppView hosts the community for. It runs the admission

@@ -39,7 +39,7 @@
 # Images are pinned by digest or SHA tag so that an upstream push can never turn
 # this gate red on its own.
 #
-# THE FEDERATION TOPOLOGY (docs/TEST_ARCHITECTURE.md §4, Phase 5)
+# THE FEDERATION TOPOLOGY (docs/TEST_ARCHITECTURE.md §3.4a)
 # ---------------------------------------------------------------
 # There are TWO PDSes here, and the ingest path runs through a real relay:
 #
@@ -68,13 +68,12 @@
 #      block contracts' measurement windows, the reliability suite's
 #      dead-letter deltas, requireSingleFeedTopology's poisoned-stack guard —
 #      is written against exactly one row per consumer.
-#   2. It leaves the relay decorative. §4 asks for a hermetic relay; a relay
+#   2. It leaves the relay decorative. §3.4a asks for a hermetic relay; a relay
 #      nothing consumes proves nothing about relay semantics.
-#   3. Production ingests through a relay (docs/PRD_ALPHA_GO_LIVE.md; the
-#      tidepool self-hosted relay + Jetstream pair). Jetstream wired straight
-#      to a PDS, which is what this stack did before, is a topology that ships
-#      nowhere — so the gate was grading a pipeline shape production does not
-#      run.
+#   3. Production ingests through a relay (the tidepool self-hosted relay +
+#      Jetstream pair). Jetstream wired straight to a PDS, which is what this
+#      stack did before, is a topology that ships nowhere — so the gate was
+#      grading a pipeline shape production does not run.
 #   4. It puts real relay semantics under EVERY contract, not just the
 #      federated ones: per-commit signature verification against the local PLC,
 #      DID-document-driven host association, and per-repo (never cross-repo)

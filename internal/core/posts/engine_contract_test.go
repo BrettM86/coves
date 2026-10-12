@@ -19,7 +19,7 @@ import (
 
 // The acceptance engine's outer contract: one post's whole life inside one
 // community, driven through the engine and read back out of a REAL community
-// repository on a REAL PDS (docs/PRD_AUTHOR_OWNED_POSTS.md §5.6).
+// repository on a REAL PDS (docs/POSTS.md §5.6).
 //
 // The routing matrix is proven against fakes in engine_matrix_test.go, at the
 // width the matrix has. What is unprovable there — and what this file exists

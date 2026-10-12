@@ -2,17 +2,13 @@
 
 ## Supported versions
 
-Coves is under active development and does not currently maintain multiple
-supported release lines. Security fixes are applied to the latest code on
-`main`; operators should update to the newest available revision.
+Coves does not maintain multiple release lines. Security fixes land on `main`; operators should update to the newest revision.
 
 ## Reporting a vulnerability
 
-Please do not disclose suspected vulnerabilities in a public issue, discussion,
-or pull request before maintainers have had an opportunity to investigate.
+Do not disclose a suspected vulnerability in a public issue, discussion or pull request before maintainers have had a chance to investigate.
 
-Email `support@coves.social` with the subject `Security vulnerability`. Include,
-where possible:
+Email `support@coves.social` with the subject `Security vulnerability`. This is the only private reporting channel; GitHub private vulnerability reporting is not enabled for this repository. Include, where possible:
 
 - the affected component and revision;
 - the impact and required preconditions;
@@ -20,9 +16,6 @@ where possible:
 - any suggested mitigation; and
 - how you would like to be credited.
 
-Avoid including real user data, production credentials, or unnecessary access
-to third-party systems. Maintainers will coordinate validation, remediation, and
-appropriate disclosure with the reporter.
+Leave out real user data and production credentials, and avoid unnecessary access to third-party systems. Maintainers will coordinate validation, the fix and disclosure with the reporter.
 
-If GitHub private vulnerability reporting is enabled for this repository, the
-repository's **Security** tab is also an appropriate private reporting channel.
+How Coves handles authentication, firehose trust, outbound requests and stored credentials is described in [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md), [docs/SSRF_SECURITY.md](docs/SSRF_SECURITY.md) and [docs/CREDENTIAL_ENCRYPTION.md](docs/CREDENTIAL_ENCRYPTION.md).

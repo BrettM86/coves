@@ -1,66 +1,44 @@
 # Production backups
 
-What is backed up on the production host, how it is scheduled, and how to
-restore it. Tidepool's own database backup is documented in tidepool's
-`DEPLOY.md` ("Backup and restore"); it runs on the same host on the same
-pattern.
+Tidepool's own database backup runs on the same host on the same pattern; it is documented in tidepool's `DEPLOY.md` ("Backup and restore").
 
-## What runs
+## Schedule
 
-| Unit | Time (UTC) | Script (installed copy) | Output in `/opt/coves/backups` |
+| Unit | Time (UTC) | Installed script | Output |
 |---|---|---|---|
-| `tidepool-pg-backup.timer` | 02:17 | `/usr/local/sbin/tidepool-pg-backup` ← `/opt/tidepool/scripts/pg-backup.sh` | (writes to `/opt/tidepool/backups/tidepool-*.dump`) |
-| `coves-pg-backup.timer` | 02:47 | `/usr/local/sbin/coves-pg-backup` ← `scripts/pg-backup.sh` | `coves-<stamp>.dump` |
-| `coves-pds-backup.timer` | 03:07 | `/usr/local/sbin/coves-pds-backup` ← `scripts/pds-backup.sh` | `pds-<stamp>.tar.gz` |
+| `tidepool-pg-backup.timer` | 02:17 | `/usr/local/sbin/tidepool-pg-backup` | `/opt/tidepool/backups/tidepool-*.dump` |
+| `coves-pg-backup.timer` | 02:47 | `/usr/local/sbin/coves-pg-backup` from `scripts/pg-backup.sh` | `/opt/coves/backups/coves-<stamp>.dump` |
+| `coves-pds-backup.timer` | 03:07 | `/usr/local/sbin/coves-pds-backup` from `scripts/pds-backup.sh` | `/opt/coves/backups/pds-<stamp>.tar.gz` |
 
-- **AppView Postgres**: `pg_dump -Fc`, verified with a full read
-  (`pg_restore -f /dev/null`) before it gets its final name.
-- **PDS data directory**: every SQLite database copied with the online backup
-  API and checked with `PRAGMA integrity_check`, plus the per-actor signing
-  `key` files. This is the source of truth for every hosted community and
-  native account. Blobs are in object storage (`PDS_BLOBSTORE_S3_BUCKET`), not
-  in this archive. The run fails if any account in `account.sqlite` lacks its
-  store or signing key in the snapshot.
-- Retention is 14 days (`RETENTION_DAYS`).
-- A run that fails while the dump or archive is being written keeps only the
-  most recent failed partial, under a fixed name that each failed retry
-  overwrites: `coves-last-failed.dump.partial` or
-  `pds-last-failed.tar.gz.partial`. It is never deleted and is warned about
-  once it is older than a day. A PDS run that fails earlier leaves nothing
-  behind: check `systemctl --failed` and the journal. A `.pds-stage.*` staging
-  directory left by a killed PDS run is warned about once it is older than a
-  day.
-- A failed run is retried every 5 minutes, up to 4 starts in 2 hours, then
-  left failed until the next night. A run missed while the host was down
-  fires at boot.
-- Files are root-only (`umask 077`); the directory is mode 700.
+The AppView Postgres backup is `pg_dump -Fc`, verified with a full read (`pg_restore -f /dev/null`) before it gets its final name.
 
-Output goes to the journal: `journalctl -u coves-pg-backup.service`. A failed
-run shows in `systemctl --failed`. Nothing alerts on failure yet.
+The PDS backup copies every SQLite database through the online backup API, checks each copy with `PRAGMA integrity_check`, and adds the per-actor signing `key` files. The PDS is the source of truth for every hosted community and native account; nothing else can rebuild it. The run fails if any account in `account.sqlite` lacks its store or signing key in the snapshot. Blobs are in object storage (`PDS_BLOBSTORE_S3_BUCKET`), not in this archive.
 
-## What is NOT backed up here
+The `moderation_*` tables in the AppView database are admin decisions, not index state. They have no foreign key to posts or comments and cannot be rebuilt from the firehose. Any truncate, reindex or partial-restore procedure must keep them.
 
-- **Secrets in `.env` files**: `/opt/coves/.env` (`ENCRYPTION_KEY`, OAuth keys,
-  the PDS PLC rotation key and admin password, S3 keys), `/opt/tidepool/.env`
-  (`BRIDGE_KEK`), and the aggregators' `.env` files. A database dump without
-  `ENCRYPTION_KEY` restores community and aggregator credentials as unreadable
-  ciphertext. Keep these in a password manager, not on this host.
-- **Off-host copies**: the dumps sit on the same disk array as the data they
-  protect. They cover a dropped database or a bad migration, not loss of the
-  host.
-- **The S3 blob bucket**: one copy, in object storage only.
+## Retention and failures
 
-## Install or update (on the production host)
+Retention is 14 days (`RETENTION_DAYS`). Files are root-only (`umask 077`) and the directory is mode 700.
 
-The scripts are installed outside `/opt/coves`, because deploys `git pull`
-that checkout and a locally changed or untracked file blocks the pull. After a
-change to either script, re-run the `install` lines. Tidepool's script is
-installed the same way, as `/usr/local/sbin/tidepool-pg-backup`; its steps are
-in tidepool's `DEPLOY.md`.
+A run that fails while writing the dump or archive keeps its partial under a fixed name that each failed retry overwrites: `coves-last-failed.dump.partial` or `pds-last-failed.tar.gz.partial`. It is never deleted. Only a later successful run warns about it, once it is older than a day. A PDS run that fails before writing the archive leaves nothing behind. A `.pds-stage.*` directory left by a killed PDS run holds plaintext database copies and signing keys; later successful runs warn about it once it is older than a day.
+
+A failed run retries every 5 minutes, up to 4 starts in 2 hours, then stays failed until the next night. A run missed while the host was down fires at boot (`Persistent=true`).
+
+Output goes to the journal (`journalctl -u coves-pg-backup.service`). A failed run shows in `systemctl --failed`. Nothing alerts on failure.
+
+## Not backed up
+
+- Secrets in `.env` files: `/opt/coves/.env` (`ENCRYPTION_KEY`, OAuth keys, the PDS PLC rotation key and admin password, S3 keys), `/opt/tidepool/.env` (`BRIDGE_KEK`), and the aggregators' `.env` files. A dump restored without `ENCRYPTION_KEY` has community and aggregator credentials as unreadable ciphertext. Keep these in a password manager, not on this host.
+- Off-host copies. The dumps sit on the same disk array as the data. They cover a dropped database or a bad migration, not loss of the host.
+- The S3 blob bucket. It has one copy, in object storage.
+
+## Install or update
+
+The scripts are installed outside `/opt/coves`, because deploys `git pull` that checkout and a changed or untracked file there blocks the pull. After changing either script, re-run the `install` lines.
 
 ```bash
 sudo apt-get install -y sqlite3
-sudo chmod 700 /opt/coves/backups
+sudo install -d -m 700 /opt/coves/backups   # the scripts do not create it
 cd /opt/coves
 sudo install -m 755 scripts/pg-backup.sh  /usr/local/sbin/coves-pg-backup
 sudo install -m 755 scripts/pds-backup.sh /usr/local/sbin/coves-pds-backup
@@ -71,23 +49,11 @@ sudo systemctl start coves-pg-backup.service coves-pds-backup.service   # first 
 systemctl list-timers 'coves-*' 'tidepool-*'
 ```
 
-## Restore
+## Restore AppView Postgres
 
-### AppView Postgres
+Restore into a freshly created database, never over the live one. `pg_restore --clean` drops only objects in the archive, so tables or columns from a later migration survive and goose then fails on them. `--exit-on-error --single-transaction` aborts the whole restore on any error.
 
-Restore into a freshly created database, not over the live one:
-`pg_restore --clean` only drops objects that are in the archive, so tables or
-columns added by a later migration survive and goose then fails on them.
-`--exit-on-error --single-transaction` makes any error abort the whole restore
-instead of being skipped.
-
-Set `DUMP` on the second line, then run the block. It stops at the first
-failed step: the dump must exist and pass a full read before the AppView is
-stopped or the database dropped, and the AppView is started only after the
-restore succeeds (on startup it applies migrations, so it must not boot
-against an empty database). The script is passed with `-c`, not on stdin,
-because `pg_restore` reads the dump from stdin. The block is one
-single-quoted string, so it must not contain a single quote.
+Set `DUMP` on the block's second line, then run it. It stops at the first failed step. The dump must pass a full read before the AppView is stopped or the database dropped, and the AppView starts only after the restore succeeds: it applies migrations on startup, so it must not boot against an empty database. The script goes through `-c`, not stdin, because `pg_restore` reads the dump from stdin. It is one single-quoted string, so it must not contain a single quote.
 
 ```bash
 sudo bash -euo pipefail -c '
@@ -110,11 +76,9 @@ docker compose -f docker-compose.prod.yml start appview
 '
 ```
 
-The AppView resumes Jetstream from the cursors in the dump. Everything indexed
-after the dump was taken is lost, apart from what Jetstream can still replay.
+The AppView resumes Jetstream from the cursors in the dump. Anything indexed after the dump is lost unless Jetstream can still replay it.
 
-To check a dump without touching production, restore it into a throwaway
-container:
+To check a dump without touching production, restore it into a throwaway container:
 
 ```bash
 DUMP=/opt/coves/backups/coves-<stamp>.dump    # root-only: read it with sudo
@@ -130,23 +94,18 @@ sudo docker exec coves-restore-drill psql -U postgres -At \
 sudo docker rm -f -v coves-restore-drill
 ```
 
-### PDS
+## Restore the PDS
 
-This procedure has not been rehearsed.
+This procedure has never been rehearsed.
 
-First record the live sequencer's high-water mark (skip this if the live
-database is the thing that is broken):
+First record the live sequencer's high-water mark, unless the live database is the thing that is broken:
 
 ```bash
 sudo sqlite3 -readonly /var/lib/docker/volumes/coves-prod-pds-data/_data/sequencer.sqlite \
   'SELECT max(seq) FROM repo_seq'
 ```
 
-Set `ARCHIVE` on the second line, then run the block. It stops at the first
-failed step: the PDS must be stopped and the archive must extract with an
-`account.sqlite` before the live data is touched, and the live data is moved
-aside, not deleted. As above, the script is passed with `-c`, not on stdin,
-so no command inside it can swallow the rest of the script.
+Set `ARCHIVE` on the block's second line, then run it. It stops at the first failed step. The PDS must be stopped and the archive must extract with an `account.sqlite` before the live data is touched, and the live data is moved aside, not deleted. As above, the script goes through `-c` so no command inside it can swallow the rest.
 
 ```bash
 sudo bash -euo pipefail -c '
@@ -171,14 +130,4 @@ docker compose -f docker-compose.prod.yml start pds
 '
 ```
 
-Anything the PDS accepted after the archive was taken is lost, and the
-restored PDS rewinds in two ways that relays and Jetstream notice:
-
-- Its sequencer restarts below the cursor they already hold for this PDS, so
-  new events can be skipped until `seq` passes the high-water mark recorded
-  above.
-- Every repo's `rev` goes back, so relays may treat those repos as out of
-  sync.
-
-After the PDS is up, ask each relay that crawls it to recrawl
-(`com.atproto.sync.requestCrawl` with this PDS's hostname).
+Anything the PDS accepted after the archive was taken is lost. The restored PDS also rewinds in two ways that relays and Jetstream notice. Its sequencer restarts below the cursor they already hold, so new events can be skipped until `seq` passes the high-water mark recorded above. Every repo's `rev` goes back, so relays may treat those repos as out of sync. After the PDS is up, ask each relay that crawls it to recrawl (`com.atproto.sync.requestCrawl` with this PDS's hostname).

@@ -12,7 +12,7 @@ import (
 // path, not a personalization one.
 //
 // The repository resolves each comment's root through the read-path visibility
-// predicate when a community is named (PRD §6.2), and that predicate's author
+// predicate when a community is named (docs/POSTS.md §6.2), and that predicate's author
 // branch is `p.author_did = $viewer`: the bound viewer is what decides whether
 // the caller may see comments rooted at pending / rejected / removed posts. A
 // service that forgot to thread it would silently downgrade every authenticated

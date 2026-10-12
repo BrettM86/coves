@@ -9,8 +9,8 @@
 // routes around it. Centralizing URL construction here also means changing the
 // CDN, adding a preset, or purging a blob needs no client release.
 //
-// Two limits on that claim, both deliberate and both recorded in the PRD's
-// residual-gaps table:
+// Two limits on that claim, both deliberate and both recorded in
+// docs/MEDIA.md, Accepted exceptions:
 //
 //   - Video is exempt. The proxy transcodes stills and cannot stream, so
 //     video#view points at the hosting PDS (see projectVideo).
@@ -20,9 +20,9 @@
 //     is that the AppView does not construct unproxied URLs, not that a blob
 //     reference never reaches a client.
 //
-// The CDN routing itself is workstream 3 and is configured outside this repo;
-// until it is in place this package is emitting the right URLs at a hostname
-// that is not yet scanned. See docs/PRD_CSAM_SCANNING.md.
+// The CDN routing itself is configured outside this repo, in the Cloudflare
+// zone settings listed in docs/MEDIA.md ("Cloudflare zone"); without them this
+// package emits the right URLs at a hostname that is not scanned.
 package embeds
 
 import (
@@ -279,7 +279,7 @@ func dropViewImageURLs(value interface{}) {
 
 // projectQuote rebuilds a quote embed, record or #view, to its strongRef.
 //
-// D-QUOTES: Coves-quoted posts are not hydrated server-side. The served quote
+// D-QUOTES (docs/MODERATION.md): Coves-quoted posts are not hydrated server-side. The served quote
 // is the strongRef only, so a removed quoted post leaves no copied content;
 // post.get on its URI returns #moderatedPost. A Bluesky quote is rebuilt the
 // same way: posts.TransformPostEmbeds resolves its preview at serve time from
@@ -445,7 +445,7 @@ func projectImages(images []interface{}, ownerDID, ownerPDSURL string) ([]mutati
 // blob is not: the proxy decodes and re-encodes images and cannot stream video,
 // so its URL points at the hosting PDS directly. That URL is the one piece of
 // Coves-served media the scanning CDN never sees — the known, accepted gap
-// recorded in docs/PRD_CSAM_SCANNING.md workstream 5, closed later by
+// recorded in docs/MEDIA.md, Accepted exceptions, closed later by
 // ingest-time hash matching rather than by scan-on-serve.
 //
 // video is required on the view; thumbnail is optional, so a video with no

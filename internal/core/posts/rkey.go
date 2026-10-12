@@ -23,7 +23,7 @@ var subjectRkeyEncoding = base32.StdEncoding.WithPadding(base32.NoPadding)
 // It is the unpadded lowercase base32 encoding of the SHA-256 digest of the
 // post's AT-URI: a fixed 52 characters drawn entirely from the rkey-safe
 // charset, well inside the 512-byte limit, for a subject of any length
-// (docs/PRD_AUTHOR_OWNED_POSTS.md §3.2).
+// (docs/POSTS.md §3.2).
 //
 // WHY A DIGEST RATHER THAN A READABLE TRANSFORM. The obvious scheme — strip
 // `at://`, swap `/` for `:` — is not total over the legal subject space. DIDs

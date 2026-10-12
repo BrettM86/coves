@@ -1,5 +1,5 @@
 // Command rematerialize-posts is the operator-invoked cutover tool of
-// docs/PRD_AUTHOR_OWNED_POSTS.md §11: it moves every legacy
+// docs/POSTS.md §11: it moves every legacy
 // social.coves.community.post (written into a COMMUNITY's repo under the
 // community's credentials) to an author-owned social.coves.community.postv2 in
 // the AUTHOR's repo, plus the community's acceptance that pins it, and then —
@@ -336,14 +336,14 @@ func logVerdict(report posts.RematerializeReport) (exitCode int) {
 
 	if report.CommunityScope != "" {
 		log.Printf("rematerialize-posts: this run was scoped to %s, and a scoped run never certifies the whole migration.", report.CommunityScope)
-		log.Printf("rematerialize-posts: DO NOT run the legacy-removal follow-up (PRD_AUTHOR_OWNED_POSTS §11 step 6) until an UNSCOPED run (no -community) reports MIGRATION COMPLETE.")
+		log.Printf("rematerialize-posts: DO NOT run the legacy-removal follow-up (docs/POSTS.md §11 step 6) until an UNSCOPED run (no -community) reports MIGRATION COMPLETE.")
 		return 0
 	}
 	if !report.Complete {
 		log.Printf("rematerialize-posts: THE MIGRATION AS A WHOLE IS NOT COMPLETE — %d of %d ledger row(s) done, %d fallback(s), %d legacy record(s) still standing, %d skipped for an active instance removal.",
 			report.GlobalDone, report.GlobalDiscovered, report.GlobalFallbacks, report.RemainingLegacy, report.SkippedRemoved)
 		logSkippedRemovedGuidance(report.SkippedRemoved)
-		log.Printf("rematerialize-posts: DO NOT run the legacy-removal follow-up (PRD §11 step 6) until this line says complete.")
+		log.Printf("rematerialize-posts: DO NOT run the legacy-removal follow-up (docs/POSTS.md §11 step 6) until this line says complete.")
 		return 0
 	}
 	log.Printf("rematerialize-posts: MIGRATION COMPLETE — every discovered post was re-materialized and no legacy record remains")
@@ -358,7 +358,7 @@ func logSkippedRemovedGuidance(skippedRemoved int) {
 		return
 	}
 	log.Printf("rematerialize-posts: the %d post(s) skipped for an active instance removal stay legacy while the removal stands and keep the migration incomplete; "+
-		"restoring one and re-running migrates it, and PRD_AUTHOR_OWNED_POSTS §11 step 6 must not run while any stands.", skippedRemoved)
+		"restoring one and re-running migrates it, and docs/POSTS.md §11 step 6 must not run while any stands.", skippedRemoved)
 }
 
 // repoClient is the narrow PDS surface the legacy source needs: enumerate,

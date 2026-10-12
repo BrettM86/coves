@@ -22,23 +22,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The read-path visibility predicate (task 7, PRD §6.2). Under author-owned
+// The read-path visibility predicate (docs/POSTS.md §6.2). Under author-owned
 // posts a post record is indexed the moment its author writes it, but it is only
-// VISIBLE in a community once that community has admitted it (PRD §2). Admission
+// VISIBLE in a community once that community has admitted it (docs/POSTS.md §2). Admission
 // state is per-(community, post) in community_post_admissions, and the security
-// property this whole task exists to establish is:
+// property the predicate exists to establish is:
 //
 //	a non-author must not reach a pending / rejected / removed post through ANY
 //	read path — the feeds, post.get, actor.getPosts, the comment header, or the
 //	counts.
 //
-// On this branch the read queries reference community_post_admissions NOWHERE
-// (loop_state task-6 note: "post_repo.go + all feed queries currently reference
-// it NOWHERE outside getStatus"), so every one of these suites fails until the
-// centralized predicate lands. They are the compensating control for task 6's
-// deploy gate, not a feature nicety: task 6 shipped the write-path flip, which
-// means any authenticated user can already index a postv2 naming any community,
-// and only this predicate stops it rendering as that community's content.
+// These suites are a security control, not a feature nicety: after the
+// write-path flip any authenticated user can index a postv2 naming any
+// community, and only this predicate stops it rendering as that community's
+// content.
 
 const (
 	// visibilitySort keeps every feed read chronological so the seeded set is
@@ -128,7 +125,7 @@ func TestCommunityFeedVisibility_AcceptedOnly(t *testing.T) {
 //
 // The fork case is what makes the community half of that key load-bearing. One
 // post carries TWO admission rows: pending in its own community B, and accepted
-// in a DIFFERENT community A that forked it (PRD §2, §6.1). A predicate that
+// in a DIFFERENT community A that forked it (docs/POSTS.md §2, §6.1). A predicate that
 // joined on post_uri + status alone — dropping the community_did equality — would
 // see the accepted (A, post) row and leak the post into discover under community
 // B, which has not accepted it. That is the single most dangerous read-path bug
@@ -218,7 +215,7 @@ func TestTimelineVisibility_AcceptedOnly(t *testing.T) {
 //
 // This suite also pins the TWO shapes the predicate must preserve while it adds
 // the admission gate: a post by an author with no `users` row (a federated
-// author, PRD §5.3) stays visible once accepted, and the visible row still
+// author, docs/POSTS.md §5.3) stays visible once accepted, and the visible row still
 // hydrates its media out of the author's repository.
 func TestPostGetVisibility_PublicSeesAcceptedOnly(t *testing.T) {
 	t.Parallel()
@@ -252,7 +249,7 @@ func TestPostGetVisibility_PublicSeesAcceptedOnly(t *testing.T) {
 	assert.NotContains(t, views, removed, "post.get must not serve a removed post to the public")
 
 	t.Run("an accepted post by an unindexed author is still visible", func(t *testing.T) {
-		// The write-path flip (PRD §5.3) drops the posts→users FK so a federated
+		// The write-path flip (docs/POSTS.md §5.3) drops the posts→users FK so a federated
 		// author with no `users` row can be indexed. The read join must be a LEFT
 		// join, or the whole promise of open federated posting breaks silently at
 		// the read path — the post indexes fine and is invisible forever (the
@@ -276,7 +273,7 @@ func TestPostGetVisibility_PublicSeesAcceptedOnly(t *testing.T) {
 
 // TestPostGetVisibility_AuthorSeesOwnPendingPost is post.get's AUTHOR branch.
 //
-// The author-self-view contract (PRD §6.2) is one contract, not a per-endpoint
+// The author-self-view contract (docs/POSTS.md §6.2) is one contract, not a per-endpoint
 // courtesy: an author sees their own posts in every admission state so a client
 // can render "pending review" / "removed". actor.getPosts, the feeds and the
 // getComments thread header all honor it, and post.get — the permalink surface a
@@ -328,7 +325,7 @@ func TestPostGetVisibility_AuthorSeesOwnPendingPost(t *testing.T) {
 				"post.get hid a post from its own AUTHOR (%s). The author-self-view contract is one contract across "+
 					"surfaces: actor.getPosts, the feeds and the getComments header all show the author their own "+
 					"pending/rejected/removed posts, so a permalink that answers notFound makes post.get the one surface "+
-					"that disagrees (PRD §6.2)", uri)
+					"that disagrees (docs/POSTS.md §6.2)", uri)
 		}
 	})
 
@@ -355,7 +352,7 @@ func TestPostGetVisibility_AuthorSeesOwnPendingPost(t *testing.T) {
 
 // TestPostGetVisibility_AuthorMediaResolvesOnVisibleRow pins that the admission
 // predicate does not cost the visible row its media owner. A postv2 post's blobs
-// live in the AUTHOR's repository (blobOwnerOf, PRD §3.1), so the row must carry
+// live in the AUTHOR's repository (blobOwnerOf, docs/POSTS.md §3.1), so the row must carry
 // the author's pds_url out of the SELECT. A predicate that narrowed the SELECT
 // list, or dropped the author join to a subquery, would blank the pds_url and
 // address every accepted post's image to an empty host.
@@ -385,14 +382,14 @@ func TestPostGetVisibility_AuthorMediaResolvesOnVisibleRow(t *testing.T) {
 	assert.NotEmptyf(t, view.Author.PDSURL,
 		"the visible accepted postv2 row lost its author pds_url. A postv2 post's blobs live in the author's repo, "+
 			"so the visibility predicate must keep selecting author pds_url; blanking it addresses the post's media to "+
-			"an empty host — a broken image that looks fine server-side (blobOwnerOf, PRD §3.1)")
+			"an empty host — a broken image that looks fine server-side (blobOwnerOf, docs/POSTS.md §3.1)")
 }
 
 // TestActorPostsVisibility_AuthorVsNonAuthor is actor.getPosts, the one display
 // surface that already threads a viewer DID (GetAuthorPostsRequest.ViewerDID).
 // That makes it the site where BOTH halves of the predicate are testable today:
 // a non-author sees the author's accepted posts only, while the author sees
-// their own pending and removed posts too (PRD §6.2 — "authors see their own
+// their own pending and removed posts too (docs/POSTS.md §6.2 — "authors see their own
 // posts with per-community status").
 func TestActorPostsVisibility_AuthorVsNonAuthor(t *testing.T) {
 	t.Parallel()
@@ -440,12 +437,12 @@ func TestActorPostsVisibility_AuthorVsNonAuthor(t *testing.T) {
 	t.Run("the author sees their own non-accepted posts", func(t *testing.T) {
 		assert.ElementsMatch(t, []string{accepted, pending, removed}, read(t, author),
 			"an author must be able to see their own posts in every admission state — it is how a client renders "+
-				"'pending review' and 'removed' on the author's own profile (PRD §6.2)")
+				"'pending review' and 'removed' on the author's own profile (docs/POSTS.md §6.2)")
 	})
 }
 
 // TestProfileStatsVisibility_PostCountExcludesNonAccepted is the counts predicate
-// (PRD §6.2: "counts must not include non-accepted rows"). GetProfileStats'
+// (docs/POSTS.md §6.2: "counts must not include non-accepted rows"). GetProfileStats'
 // post_count is a live COUNT over `posts`, and a count that includes pending or
 // removed rows leaks their existence — a profile advertising 4 posts when only 1
 // is visible is a side channel onto content the reader cannot reach.
@@ -724,7 +721,7 @@ func TestGetCommentsVisibility_HeaderIsAdmissionAndDeleteAware(t *testing.T) {
 		// P5: the header the visibility check hydrated (via GetViewsByURIs) must be
 		// the one served — not a second view rebuilt from the raw Post, which drops
 		// the admission context. status and acceptanceUri are the fields postView
-		// gained for exactly this (PRD §6.2); a thread header that omits them makes
+		// gained for exactly this (docs/POSTS.md §6.2); a thread header that omits them makes
 		// the thread endpoint disagree with post.get about a post they both serve.
 		assert.Equalf(t, string(posts.AdmissionStatusAccepted), postView.Status,
 			"the served thread header dropped the admission status. buildPostView rebuilds the view from the raw Post "+
@@ -764,7 +761,7 @@ func TestGetCommentsVisibility_HeaderIsAdmissionAndDeleteAware(t *testing.T) {
 
 // TestCommunityPostCountVisibility_MatchesWhatTheFeedRenders pins that the
 // postCount a community SERVES is the number of posts a reader can actually
-// reach in it (PRD §6.2: counts must not include non-accepted rows — and, just
+// reach in it (docs/POSTS.md §6.2: counts must not include non-accepted rows — and, just
 // as much, must not omit rows the feed does show).
 //
 // It used to be a STORED column whose only incrementer belonged to the retired

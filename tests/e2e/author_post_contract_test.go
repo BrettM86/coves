@@ -18,7 +18,7 @@ import (
 )
 
 // The author-owned post pipeline: the three collections that replace the
-// community-repo post record (docs/PRD_AUTHOR_OWNED_POSTS.md §3, §5).
+// community-repo post record (docs/POSTS.md §3, §5).
 //
 // # THE SHAPE IS INVERTED FROM post_contract_test.go, AND THAT IS THE POINT
 //
@@ -43,13 +43,13 @@ import (
 //
 // # THE OBSERVATION SURFACE IS getStatus, NOT post.get
 //
-// PRD rev 2.7 pulled social.coves.community.post.getStatus forward into this
-// task precisely so these contracts have something to watch. post.get is
-// status-agnostic until task 7 rebuilds the read paths behind the centralized
-// visibility predicate (§6.2), so asserting "a pending post is invisible" here
-// would be asserting a behaviour that does not exist yet and is not this task's
-// to build. What IS true today is asserted; what task 7 owes is named where it
-// would otherwise look like a gap.
+// docs/POSTS.md §9 makes social.coves.community.post.getStatus the T2
+// observation surface precisely so these contracts have something to watch.
+// post.get is status-agnostic until task 7 rebuilds the read paths behind the
+// centralized visibility predicate (§6.2), so asserting "a pending post is
+// invisible" here would be asserting a behaviour that does not exist yet and is
+// not this task's to build. What IS true today is asserted; what task 7 owes is
+// named where it would otherwise look like a gap.
 //
 // # THE POSITIVE FETCH ARC IS STRUCTURALLY T1-ONLY
 //

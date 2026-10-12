@@ -23,7 +23,7 @@ import (
 
 // The re-materialization OUTER contract, against a REAL PDS and a REAL ledger:
 // the whole tool driven end to end over records a real PDS minted the CIDs for
-// (docs/PRD_AUTHOR_OWNED_POSTS.md §11).
+// (docs/POSTS.md §11).
 //
 // # WHY THIS IS T1 AND NOT T2 (the tier the task named)
 //

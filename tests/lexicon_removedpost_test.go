@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The lexicon half of task 7's read-path rebuild (PRD §3.4, §6.2). post.get
-// grows one union member and postView grows two optional fields, all additive
-// so no published consumer breaks:
+// The lexicon half of the read-path rebuild (docs/POSTS.md §3.4, §6.2).
+// post.get grows one union member and postView grows two optional fields, all
+// additive so no published consumer breaks:
 //
 //   - social.coves.community.post.get's output union gains #removedPost, the
 //     mirror of #notFoundPost/#blockedPost — a removed post is served as a
@@ -21,7 +21,7 @@ import (
 //     rather than a blank permalink.
 //   - social.coves.community.post.defs gains the #removedPost object.
 //   - postView gains optional `status` and `acceptanceUri`, the per-community
-//     admission context an author's own view renders (PRD §6.2). Optional, so a
+//     admission context an author's own view renders (docs/POSTS.md §6.2). Optional, so a
 //     public postView that omits them still validates.
 //
 // These are asserted against the raw schema JSON rather than the indigo catalog
@@ -120,7 +120,7 @@ func TestRemovedPostDefShape(t *testing.T) {
 
 	props := def["properties"].(map[string]interface{})
 	require.Contains(t, props, "code",
-		"removedPost must carry the removal code — a removal without one is an unexplained disappearance (PRD §3.3)")
+		"removedPost must carry the removal code — a removal without one is an unexplained disappearance (docs/POSTS.md §3.3)")
 
 	removedDiscriminator, ok := props["removed"].(map[string]interface{})
 	require.True(t, ok, "removedPost has no removed property")
@@ -129,7 +129,7 @@ func TestRemovedPostDefShape(t *testing.T) {
 }
 
 // TestPostViewCarriesAdmissionContext pins the two optional fields postView
-// gains: status and acceptanceUri (PRD §6.2). Both must be OPTIONAL — a public
+// gains: status and acceptanceUri (docs/POSTS.md §6.2). Both must be OPTIONAL — a public
 // postView that omits them still validates — and status must offer the full
 // admission vocabulary so an author's client renders the real state.
 func TestPostViewCarriesAdmissionContext(t *testing.T) {

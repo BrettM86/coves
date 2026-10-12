@@ -15,7 +15,7 @@ import (
 )
 
 // admitPost: the single decision point for "may this submission become a post
-// in this community?" (PRD_AUTHOR_OWNED_POSTS.md §4.1, §5.6, §8).
+// in this community?" (docs/POSTS.md §4.1, §5.6, §8).
 //
 // It is extraction PLUS new policy, and §4.1 is blunt about which is which.
 // What CreatePost enforces today is community existence, a private-visibility

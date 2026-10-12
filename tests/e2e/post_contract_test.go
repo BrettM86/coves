@@ -324,7 +324,7 @@ func TestPostAPIContract(t *testing.T) {
 		// answer to a broken resolver, and not the case anyone means to test.
 		// Distinguishing a nonexistent handle from a broken resolver needs a
 		// resolver that can answer, which is the second-PDS-and-relay topology of
-		// Phase 5. The reachable half of the handle path — a handle the index DOES
-		// know — is asserted in the feed subtest above.
+		// docs/TEST_ARCHITECTURE.md §3.4a. The reachable half of the handle path —
+		// a handle the index DOES know — is asserted in the feed subtest above.
 	})
 }

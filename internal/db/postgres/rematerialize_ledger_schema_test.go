@@ -15,7 +15,7 @@ import (
 )
 
 // Migration 037's ledger table, and the state vocabulary the whole cutover turns
-// on (docs/PRD_AUTHOR_OWNED_POSTS.md §11 the rev-2.8 deploy runbook).
+// on (docs/POSTS.md §11, Cutover runbook).
 //
 // The re-materialization tool moves every legacy social.coves.community.post to
 // an author-owned postv2 plus a community acceptance, and then — and ONLY then —

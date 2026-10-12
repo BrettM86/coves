@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The deterministic record key of docs/PRD_AUTHOR_OWNED_POSTS.md §3.2.
+// The deterministic record key of docs/POSTS.md §3.2.
 //
 // Every idempotency claim in the acceptance design rests on this function and
 // nothing else. Three independent writers — the synchronous fast path, the

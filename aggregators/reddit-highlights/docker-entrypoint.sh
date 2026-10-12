@@ -18,7 +18,7 @@ if [ -z "$COVES_API_KEY" ]; then
 fi
 
 echo "API Key prefix: ${COVES_API_KEY:0:12}..."
-echo "Cron schedule: Every 30 minutes (with 0-10 min jitter)"
+echo "Cron schedule: hourly (with 0-10 min jitter)"
 
 # Export environment variables for cron
 # Cron runs in a separate environment and doesn't inherit container env vars

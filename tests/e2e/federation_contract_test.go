@@ -5,7 +5,7 @@
 //
 // docs/TEST_ARCHITECTURE.md §3.4a is explicit that a direct-PDS write is
 // "honest direct-PDS-path testing, not federation (the record still lives on
-// the one PDS the stack fronts)". This file is what §4's Phase 5 asks for
+// the one PDS the stack fronts)". This file is the federation half §3.4a asks for
 // instead. Every record below is written into a repo hosted on pds2
 // (docker-compose.ci.yml), a host the AppView has no session on, no credentials
 // for, and no configuration naming. Everything it learns about those repos it
@@ -468,7 +468,7 @@ func TestVoteFederationIngestion(t *testing.T) {
 }
 
 // TestFederationRemoteBlobFetch is the remote-identity-resolution and
-// remote-blob-fetching proof docs/TEST_ARCHITECTURE.md §4 Phase 5 asks for
+// remote-blob-fetching proof docs/TEST_ARCHITECTURE.md §3.4a asks for
 // explicitly.
 //
 // # WHY A BLOB IS THE RIGHT OBSERVABLE FOR IDENTITY RESOLUTION

@@ -1342,7 +1342,7 @@ func (s *postService) GetPosts(ctx context.Context, req GetPostsRequest) ([]*Pos
 	// The viewer scopes the visibility gate. An anonymous permalink read passes
 	// "" and gets accepted content only; an AUTHOR reading their own
 	// pending/rejected/removed post gets it, exactly as actor.getPosts, the feeds
-	// and the getComments thread header already give it to them (PRD §6.2). This
+	// and the getComments thread header already give it to them (docs/POSTS.md §6.2). This
 	// is the same req.ViewerDID the block filter below runs on — post.get used to
 	// consult it for blocks and ignore it for admission, which made the permalink
 	// the one surface that told an author their own post did not exist.
@@ -1424,7 +1424,7 @@ func hasRemovedMarker(markers map[string]string, uri string) bool {
 
 // removedMarkers returns, for the absent URIs with indexed rows, the removal
 // code of any whose OWN community removed it — so post.get can
-// serve a #removedPost tombstone (PRD §3.4) instead of collapsing a moderator
+// serve a #removedPost tombstone (docs/POSTS.md §3.4) instead of collapsing a moderator
 // removal into an indistinguishable notFoundPost. The presence of a URI in the
 // returned map is the removed signal; the value is the code (possibly empty).
 //

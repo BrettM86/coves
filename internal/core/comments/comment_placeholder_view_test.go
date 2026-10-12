@@ -15,10 +15,11 @@ import (
 
 const placeholderTestCID = "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"
 
-// TestCommentService_buildThreadViews_PlaceholderContract pins PRD section 14.4's
-// privacy-preserving deleted view for both deletion reasons. The placeholder
-// must remain structurally valid without leaking content, profile details, vote
-// totals, or viewer state while preserving the references needed for threading.
+// TestCommentService_buildThreadViews_PlaceholderContract pins the
+// privacy-preserving deleted view (docs/MODERATION.md, Served shapes) for both
+// deletion reasons. The placeholder must remain structurally valid without
+// leaking content, profile details, vote totals, or viewer state while
+// preserving the references needed for threading.
 func TestCommentService_buildThreadViews_PlaceholderContract(t *testing.T) {
 	catalog := lexicon.NewBaseCatalog()
 	require.NoError(t, catalog.LoadDirectory("../../atproto/lexicon"),

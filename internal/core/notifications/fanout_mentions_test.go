@@ -204,8 +204,9 @@ func TestFanoutCommentCreate_MentionRequiresPostRoot(t *testing.T) {
 	}
 }
 
-// PRD "Post author resolution": when a legacy root's posts row is missing, the
-// event produces no notification, so D's mention is dropped along with the reply.
+// docs/NOTIFICATIONS.md, "Recipients": when a legacy root's posts row is
+// missing, the event produces no notification, so D's mention is dropped along
+// with the reply.
 func TestFanoutCommentCreate_MissingLegacyPostAuthorSuppressesMentions(t *testing.T) {
 	const legacyAuthorityDID = "did:plc:legacycommunity"
 	comment := notificationMentionComment()

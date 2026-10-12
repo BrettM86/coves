@@ -745,9 +745,9 @@ const connectionHeadroom = 40
 //
 // So the budget goes to within-package parallelism instead.
 //
-// AN EARLIER VERSION OF THIS COMMENT SAID TO RAISE THIS once phase 4 deleted
-// tests/integration, "leaving testkit the only firehose consumer". Phase 4 has
-// now done that, and the trigger was wrong: dissolving that directory relocated
+// AN EARLIER VERSION OF THIS COMMENT SAID TO RAISE THIS once tests/integration
+// was deleted, "leaving testkit the only firehose consumer". It has now been
+// deleted, and the trigger was wrong: dissolving that directory relocated
 // its account-creating tests into internal/… packages, it did not stop them
 // creating accounts. testkit is indeed the only firehose SUBSCRIBER, but the
 // contention was never with other subscribers — it is with account churn from

@@ -41,7 +41,7 @@ import (
 // `author` field that named the human who wrote it. Every assertion in this file
 // used to pin that arrangement in place.
 //
-// docs/PRD_AUTHOR_OWNED_POSTS.md §3.1 and §4.2 reverse it. A post is a
+// docs/POSTS.md §3.1 and §4.2 reverse it. A post is a
 // social.coves.community.postv2 record in the AUTHOR's repository, signed with
 // the author's own credentials, with NO author field at all — authorship is the
 // repository, which a verifying relay or a DID-resolved fetch can check, rather

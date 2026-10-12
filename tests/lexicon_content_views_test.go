@@ -16,9 +16,10 @@ const (
 	moderationViewRef = "social.coves.moderation.defs#moderationView"
 )
 
-// TestCommentViewModerationPlaceholderShape pins PRD §14.4's output-loosening
-// exception so deleted comments can retain thread position without leaking the
-// removed record, while active comments continue to carry their verbatim record.
+// TestCommentViewModerationPlaceholderShape pins the output-loosening
+// exception (docs/MODERATION.md, Served shapes) so deleted comments can retain
+// thread position without leaking the removed record, while active comments
+// continue to carry their verbatim record.
 func TestCommentViewModerationPlaceholderShape(t *testing.T) {
 	document := readLexiconJSON(t, commentDefsPath)
 	commentView := definitionMap(t, document, "commentView")
@@ -37,7 +38,7 @@ func TestCommentViewModerationPlaceholderShape(t *testing.T) {
 	}
 	for propertyName, expectation := range expectations {
 		property, ok := properties[propertyName].(map[string]interface{})
-		require.Truef(t, ok, "commentView.%s must exist so placeholders expose the PRD §14.4 deletion contract", propertyName)
+		require.Truef(t, ok, "commentView.%s must exist so placeholders expose the served-shape deletion contract", propertyName)
 		assertModerationProperty(t, "commentView."+propertyName, property, expectation)
 		assert.NotContainsf(t, required, propertyName, "commentView.%s must remain optional for active comments", propertyName)
 	}
@@ -55,9 +56,9 @@ func TestCommentViewModerationPlaceholderShape(t *testing.T) {
 		"the published moderator known value must remain for compatibility even though it is never emitted")
 }
 
-// TestModeratedPostShape pins PRD §14.4's content-free instance/inherited
-// tombstone so AppView moderation cannot accidentally return the removed post's
-// record, title, embed, or CID.
+// TestModeratedPostShape pins the content-free instance/inherited
+// tombstone (docs/MODERATION.md, Served shapes) so AppView moderation cannot
+// accidentally return the removed post's record, title, embed, or CID.
 func TestModeratedPostShape(t *testing.T) {
 	document := readLexiconJSON(t, postDefsPath)
 	moderatedPost := definitionMap(t, document, "moderatedPost")
@@ -86,9 +87,10 @@ func TestModeratedPostShape(t *testing.T) {
 	}
 }
 
-// TestPostViewCarriesActiveModeration pins PRD §14.4's additive moderation
-// projection while preserving the published seven required fields, allowing an
-// NSFW-only post to retain its verbatim record.
+// TestPostViewCarriesActiveModeration pins the additive moderation
+// projection (docs/MODERATION.md, Served shapes) while preserving the published
+// seven required fields, allowing an NSFW-only post to retain its verbatim
+// record.
 func TestPostViewCarriesActiveModeration(t *testing.T) {
 	document := readLexiconJSON(t, postDefsPath)
 	postView := definitionMap(t, document, "postView")
@@ -103,9 +105,10 @@ func TestPostViewCarriesActiveModeration(t *testing.T) {
 	assert.NotContains(t, required, "moderation", "postView.moderation must remain optional for compatibility")
 }
 
-// TestPostGetUnionCarriesModerationTombstones pins PRD §14.4's distinct
-// instance-moderation and community-removal members without closing the union
-// against future federated post outcomes.
+// TestPostGetUnionCarriesModerationTombstones pins the distinct
+// instance-moderation and community-removal members (docs/MODERATION.md,
+// Served shapes) without closing the union against future federated post
+// outcomes.
 func TestPostGetUnionCarriesModerationTombstones(t *testing.T) {
 	document := readLexiconJSON(t, postGetPath)
 	main := definitionMap(t, document, "main")
@@ -127,9 +130,10 @@ func TestPostGetUnionCarriesModerationTombstones(t *testing.T) {
 	assert.NotEqual(t, true, items["closed"], "post.get's result union must remain open to future federated outcomes")
 }
 
-// TestContentViewModerationDescriptions pins PRD §14.4's semantic boundary:
-// community removal remains removedPost, instance moderation becomes
-// moderatedPost, and removed quoted content cannot be copied into embeds.
+// TestContentViewModerationDescriptions pins the semantic boundary in
+// docs/MODERATION.md, Served shapes: community removal remains removedPost,
+// instance moderation becomes moderatedPost, and removed quoted content cannot
+// be copied into embeds.
 func TestContentViewModerationDescriptions(t *testing.T) {
 	postDocument := readLexiconJSON(t, postDefsPath)
 	removedPostDescription := strings.ToLower(requireNonemptyDescription(t,
@@ -151,8 +155,9 @@ func TestContentViewModerationDescriptions(t *testing.T) {
 }
 
 // TestContentViewModerationDeclarationPrivacy walks every declaration reachable
-// from PRD §14.4's public content views so adding moderation cannot expose
-// operator notes, private subjects, actors, or private classifications.
+// from the public content views (docs/MODERATION.md, Served shapes) so adding
+// moderation cannot expose operator notes, private subjects, actors, or private
+// classifications.
 func TestContentViewModerationDeclarationPrivacy(t *testing.T) {
 	publicRefs := []string{
 		moderatedPostRef,

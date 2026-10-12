@@ -116,7 +116,7 @@ func hiddenReasonRequireNoActionTrace(t *testing.T, value any, actionIDs []strin
 }
 
 // TestModerationHiddenReasonTombstonesMatchPublicOnes pins the accepted
-// limitation of hidden-reason removals (Q-ORACLE option b): a doxing removal
+// limitation of hidden-reason removals (Q-ORACLE, docs/MODERATION.md): a doxing removal
 // keeps the same public tombstone as a spam removal on post.get and
 // getComments, and subject omission only keeps it out of the browsable and
 // filterable public log. An observer who already holds the URI can still see

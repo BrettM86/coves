@@ -6,11 +6,11 @@ import (
 	"Coves/internal/core/posts"
 )
 
-// The centralized read-path visibility predicate (task 7, PRD §6.2).
+// The centralized read-path visibility predicate (docs/POSTS.md §6.2).
 //
 // This is the single admission-aware gate every posts display query goes
-// through so that no read path can forget it (the piecemeal-predicate failure
-// PRD §6.2 calls out). ONE predicate string serves all of them —
+// through so that no read path can forget it (docs/POSTS.md §6.2: piecemeal
+// predicates miss surfaces). ONE predicate string serves all of them —
 // visiblePostsPredicate below — and everything else in this file is a different
 // way of BINDING ITS VIEWER, never a second copy of the rule:
 //
@@ -57,7 +57,7 @@ import (
 //     a LEGACY community-repo post (social.coves.community.post), a bridged post,
 //     or any non-postv2 collection was never routed through the admission engine
 //     — it is accepted by construction (it lives in the community's own repo) and
-//     must stay visible until task 8 drains it. But the task-5 consumer ALWAYS
+//     must stay visible until the legacy drain (§11) removes it. But the consumer ALWAYS
 //     seeds a pending row the moment it indexes a postv2, so a postv2 with NO row
 //     is not grandfathered content — the seed failed, and the secure answer is to
 //     FAIL CLOSED. So a missing row is visible for a non-postv2 collection, and
@@ -65,7 +65,7 @@ import (
 //   - a.status IN (pending, pending_reacceptance, removed, rejected) AND the
 //     viewer is the author → visible. An author sees their own posts in every
 //     admission state so a client can render "pending review" / "removed" on the
-//     author's own profile (PRD §6.2). Any OTHER viewer — including the anonymous
+//     author's own profile (docs/POSTS.md §6.2). Any OTHER viewer — including the anonymous
 //     public, whose DID is "" — sees accepted content only. This is the security
 //     core: every non-accepted post that HAS a decision, and every postv2 with no
 //     decision, is invisible to non-authors on every read path.
@@ -131,7 +131,7 @@ func visiblePostsPredicate(viewerExpr string) (joinSQL, whereSQL string) {
 // removed. Anything else would disclose a pending, rejected or unadmitted post
 // and tie it to a community that never accepted it. The public moderation log
 // deliberately does not follow this rule: removals are public by default
-// (decided 2026-10-03, PRD section 6), so listActions names such a post and
+// (decided 2026-10-03, docs/MODERATION.md, Public modlog), so listActions names such a post and
 // selects it by its community.
 func admittedPostsPredicate(viewerExpr string) (joinSQL, whereSQL string) {
 	joinSQL = `

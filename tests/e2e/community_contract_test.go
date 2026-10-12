@@ -50,7 +50,7 @@ import (
 // second PDS or cross-host identity is exercised. §3.4a is explicit that
 // single-PDS direct writes are "honest direct-PDS-path testing, not
 // federation", and real federation-path contracts are the second-PDS-plus-relay
-// topology of Phase 5.
+// topology (pds2 and the relay, docs/TEST_ARCHITECTURE.md §3.4a).
 //
 // # RECONCILIATION PATHS: NONE FOR THIS COLLECTION (checked, see contracts_test.go)
 //

@@ -8,9 +8,7 @@ services:
 
     # Environment variables - override in .env file or here
     environment:
-      # Required: Aggregator credentials
-      - AGGREGATOR_HANDLE=${AGGREGATOR_HANDLE}
-      - AGGREGATOR_PASSWORD=${AGGREGATOR_PASSWORD}
+      # Required COVES_API_KEY and ANTHROPIC_API_KEY come from .env (env_file below)
 
       # Optional: Override Coves API URL
       - COVES_API_URL=${COVES_API_URL:-https://api.coves.social}
@@ -21,9 +19,9 @@ services:
     # Mount config file if you want to modify it without rebuilding
     volumes:
       - ./config.yaml:/app/config.yaml:ro
-      - ./data:/app/data  # For state persistence (if implemented)
+      - ./data:/app/data  # State persistence (data/state.json)
 
-    # Use env_file to load credentials from .env
+    # Load COVES_API_KEY, ANTHROPIC_API_KEY and overrides from .env
     env_file:
       - .env
 

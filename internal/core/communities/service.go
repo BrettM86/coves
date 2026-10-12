@@ -97,8 +97,8 @@ func NewCommunityService(
 ) Service {
 	// SECURITY: Basic validation that did:web domain matches configured instanceDomain
 	// This catches honest configuration mistakes but NOT malicious code modifications
-	// Full verification (Phase 2) requires fetching DID document from domain
-	// See: docs/PRD_BACKLOG.md - "did:web Domain Verification"
+	// Full bidirectional did:web verification runs in the community consumer;
+	// see docs/SECURITY_MODEL.md, Community handles and hostedBy.
 	if strings.HasPrefix(instanceDID, "did:web:") {
 		didDomain := strings.TrimPrefix(instanceDID, "did:web:")
 		if didDomain != instanceDomain {

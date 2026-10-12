@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The admitPost decision matrix (docs/PRD_AUTHOR_OWNED_POSTS.md §4.1, §5.6, §8).
+// The admitPost decision matrix (docs/POSTS.md §4.1, §5.6, §8).
 //
 // admitPost is a pure function over injected lookups and an injected clock, so
 // every branch is reachable here without Postgres, without a PDS, and without

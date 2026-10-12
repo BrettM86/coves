@@ -20,7 +20,7 @@ import (
 // rejectedMediaCase seeds a subject, optionally removes it, then delivers an
 // event whose content the consumer refuses to index. The author's repository
 // still serves the images the refused record names, so a removed subject must
-// block them for the author only (PRD Q-I6), while the refused content itself
+// block them for the author only (docs/MODERATION.md Q-I6), while the refused content itself
 // stays unindexed.
 type rejectedMediaCase struct {
 	h                *editMediaHarness

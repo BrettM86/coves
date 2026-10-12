@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// The bridgedStats exception of docs/PRD_AUTHOR_OWNED_POSTS.md §5.5.
+// The bridgedStats exception of docs/POSTS.md §5.5.
 //
 // A bridge rewrites its records constantly and specifically to refresh
 // origin-platform vote counts. Every rewrite changes the record's CID, so

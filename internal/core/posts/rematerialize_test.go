@@ -94,7 +94,7 @@ func firstMutationIndex(events []string) int {
 }
 
 // The re-materialization state machine, against a REAL migration-037 ledger and
-// FAKE repos (docs/PRD_AUTHOR_OWNED_POSTS.md §11 the rev-2.8 deploy runbook).
+// FAKE repos (docs/POSTS.md §11, Cutover runbook).
 //
 // # WHAT THIS TIER PROVES, AND WHY THE REPOS ARE FAKED
 //

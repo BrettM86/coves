@@ -476,8 +476,8 @@ func (r *postgresCommentRepo) ListByCommenterWithCursor(ctx context.Context, req
 	// Cursor values (if present) use $3 and $4, then the community DID and the
 	// viewer DID the visibility predicate binds.
 	//
-	// SECURITY (PRD §6.2 — "comment community filters" are in the must-convert
-	// inventory): naming a community in this query is a claim about that
+	// SECURITY (docs/POSTS.md §6.2 lists "comment community filters" among the
+	// read paths that must use the visibility predicate): naming a community in this query is a claim about that
 	// community's scope, so the roots it selects must be the posts that community
 	// actually ADMITTED. Under author-owned posts anyone can write a postv2 naming
 	// any community, and the comment consumer indexes a comment whatever its root

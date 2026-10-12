@@ -418,7 +418,7 @@ type PostView struct {
 	CID        string          `json:"cid"`
 	URI        string          `json:"uri"`
 
-	// Status and AcceptanceURI are the per-community admission context (PRD §6.2),
+	// Status and AcceptanceURI are the per-community admission context (docs/POSTS.md §6.2),
 	// populated from the visibility join. Both are additive-optional: a public
 	// postView carries status "accepted" (and the acceptance URI), while an
 	// author's own non-accepted post carries "pending"/"removed"/etc.; a

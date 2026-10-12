@@ -323,7 +323,7 @@ func indexedPost(t *testing.T, p *pipeline, community provisionedCommunity, auth
 // that the bounding write is naturally in the same repo, since every one of an
 // author's comments is. Please do not "simplify" the bounding write into the
 // community's repo or another author's; cross-repo ordering is topology luck
-// today and Phase 5's relay would break it silently.
+// today and the relay would break it silently.
 //
 // The hijack's target is a real, indexed post rather than a fabricated URI, so
 // the refusal can only be attributed to the immutability rule: had it pointed

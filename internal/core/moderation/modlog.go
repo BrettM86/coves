@@ -57,9 +57,9 @@ func hiddenAction(action Action) bool {
 	return false
 }
 
-// restrictedSubject reports a subject the public log must no longer name (PRD
-// §6), because its indexed row is gone: its URI, CID and community stay out of
-// the public view.
+// restrictedSubject reports a subject the public log must no longer name
+// (docs/MODERATION.md, Public modlog), because its indexed row is gone: its
+// URI, CID and community stay out of the public view.
 func restrictedSubject(action Action) bool {
 	return action.SubjectAccess == SubjectAccessRestricted
 }

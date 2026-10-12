@@ -44,7 +44,7 @@ type PostEventConsumer struct {
 	identityResolver identity.Resolver
 
 	// The collaborators author-owned post ingestion needs
-	// (docs/PRD_AUTHOR_OWNED_POSTS.md §5.3-§5.6). All four are read by the
+	// (docs/POSTS.md §5.3-§5.6). All four are read by the
 	// handlers in authorpost.go, and a nil one disables a capability rather
 	// than degrading it — see each field.
 	//

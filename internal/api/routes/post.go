@@ -120,7 +120,7 @@ func RegisterPostRoutes(
 	//
 	// NO auth middleware at all, unlike post.get beside it. The caller this is
 	// built for is an author on ANOTHER server asking this host whether it
-	// accepted their post (PRD §7): they have no account here, so there is no
+	// accepted their post (docs/POSTS.md §7): they have no account here, so there is no
 	// session to require and no viewer state to personalise. OptionalAuth would
 	// be harmless but pointless — the answer does not vary by viewer — while
 	// RequireAuth would make the cross-server case unanswerable, which is the

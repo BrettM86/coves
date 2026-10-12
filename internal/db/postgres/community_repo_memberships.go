@@ -261,7 +261,7 @@ func (r *postgresCommunityRepo) DecrementMemberCount(ctx context.Context, commun
 // response, which is exactly the trap worth naming: wiring it up to "fix the
 // counter" would advance a column no reader consults, and would look like it had
 // worked. Removing the column, this method and its interface entry is filed in
-// PRD_AUTHOR_OWNED_POSTS.md §12; it is left standing only because deleting it is
+// docs/POSTS.md §12; it is left standing only because deleting it is
 // a schema + interface change with its own blast radius.
 func (r *postgresCommunityRepo) IncrementPostCount(ctx context.Context, communityDID string) error {
 	query := `UPDATE communities SET post_count = post_count + 1 WHERE did = $1`

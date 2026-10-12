@@ -82,7 +82,7 @@ func buildPNGDecompressionBomb(t *testing.T, width, height uint32) []byte {
 }
 
 // TestHandler_RejectsDecompressionBombBeforeDecoding reproduces
-// docs/SECURITY_AUDIT_2026-09-01.md §1.1: an image whose header declares a
+// docs/MEDIA.md, Decode budget: an image whose header declares a
 // pixel count the proxy cannot afford must be refused as ErrImageTooLarge
 // BEFORE any pixel buffer is allocated, and that refusal must reach the client
 // as a 400 "image too large" rather than a 500.

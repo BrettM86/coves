@@ -18,7 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The acceptance engine's backlog query (docs/PRD_AUTHOR_OWNED_POSTS.md §5.6).
+// The acceptance engine's backlog query (docs/POSTS.md §5.6).
 //
 // ListPendingSubjects is a work queue, and the assertions that matter here are
 // about what it LEAVES OUT rather than what it returns. Every excluded class is

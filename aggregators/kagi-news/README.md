@@ -1,370 +1,67 @@
-# Kagi News RSS Aggregator
+# Kagi News aggregator
 
-A Python-based RSS aggregator that posts Kagi News stories to Coves communities using rich text formatting.
+Posts Kagi News stories to Coves communities. Each run is a single `python -m src.main` that processes every enabled feed and exits. Cron runs it every two hours (`0 */2 * * *`) with no jitter.
 
-## Overview
+The aggregator runs as a trusted DID on the AppView, so it needs no community authorization and may send `thumbnailUrl`. The server-side rules are in [docs/AGGREGATORS.md](../../docs/AGGREGATORS.md).
 
-This aggregator:
-- Fetches RSS feeds from Kagi News daily via CRON
-- Parses HTML descriptions to extract structured content (highlights, perspectives, sources)
-- Formats posts using Coves rich text with facets (bold, italic, links)
-- Thumbnails are automatically extracted by the server's unfurl service
-- Posts to configured communities via XRPC
+## What a run does
 
-## Project Structure
+Each configured feed URL must end in `.xml`. The run fetches it and its `.json` sibling (same URL, `.json` suffix). RSS supplies the link, guid, pubDate, categories and title. JSON supplies the content: summary, highlights, perspectives, quote, sources and image.
 
-```
-aggregators/kagi-news/
-├── src/
-│   ├── models.py              # Data models (KagiStory, Perspective, etc.)
-│   ├── rss_fetcher.py         # RSS feed fetching with retry logic
-│   ├── html_parser.py         # Parse Kagi HTML to structured data
-│   ├── richtext_formatter.py  # Format content with rich text facets (TODO)
-│   ├── atproto_client.py      # ATProto authentication and operations (TODO)
-│   ├── state_manager.py       # Deduplication state tracking (TODO)
-│   ├── config.py              # Configuration loading (TODO)
-│   └── main.py                # Entry point (TODO)
-├── tests/
-│   ├── test_rss_fetcher.py    # RSS fetcher tests ✓
-│   ├── test_html_parser.py    # HTML parser tests ✓
-│   └── fixtures/
-│       ├── sample_rss_item.xml
-│       └── world.xml
-├── scripts/
-│   └── setup.sh               # Automated Coves registration script
-├── Dockerfile                 # Docker image definition
-├── docker-compose.yml         # Docker Compose configuration
-├── docker-entrypoint.sh       # Container entrypoint script
-├── .dockerignore              # Docker build exclusions
-├── requirements.txt           # Runtime dependencies (what the image installs)
-├── requirements-dev.txt       # Test/lint dependencies (includes requirements.txt)
-├── config.example.yaml        # Example configuration
-├── .env.example               # Environment variables template
-├── crontab                    # CRON schedule
-└── README.md
-```
+`Aggregator._resolve_json_cluster` joins an RSS entry to its JSON cluster. The normalized title is the real join key, because it is the only value Kagi carries identically in both feeds. When the entry link ends in a bare number, cluster `number + 1` is tried first and accepted only if its title matches. Otherwise the run scans all clusters for a single title match. Kagi changed the link shape on 2026-07-30 (date prefix plus slug), which is why the number is never required. If no unposted entry in a feed resolves, the run logs an error naming possible Kagi title-format drift. That log line is the only alarm for a format change.
 
-## Registration with Coves
+Feeds are isolated. An exception in one feed is logged and the run moves to the next.
 
-Before running the aggregator, you must register it with a Coves instance. This creates a DID for your aggregator and registers it with Coves.
+Posts are built by `RichTextFormatter` with byte-offset facets. `embed.external.sources` is trimmed to the lexicon's 50-entry cap, keeping Kagi's leading (most relevant) articles; an over-long list would make the AppView reject the whole post. The story image goes in the top-level `thumbnailUrl`.
 
-### Handle Options
+## Dedup
 
-You have two choices:
+State lives in `data/state.json` (override with `STATE_FILE`), keyed by the configured feed URL. Per feed it keeps up to 100 posted GUIDs and drops any older than 30 days. Changing a feed's URL starts it with empty state, so every story in the feed looks new.
 
-1. **PDS-assigned handle** (simpler): Use `my-aggregator.bsky.social`. No domain verification needed.
-2. **Custom domain** (branded): Use `news.example.com`. Requires hosting a `.well-known/atproto-did` file.
+Semantic dedup runs after the GUID check when `dedup.semantic_enabled` is true, which is the default even with no `dedup` block. Claude Haiku compares the new candidates against stories this same feed posted in the last `lookback_days` (default 4) and flags a duplicate at `similarity_threshold` (default 0.8) or above. It never compares across feeds.
 
-### Quick Setup (Automated)
+It fails closed. If the model call fails or returns something unusable (`SemanticDedupUnavailable`), the whole feed is deferred: nothing is posted, nothing is suppressed, and the same candidates come back next run. Suppressions are written to state before any post is attempted, so a failure while posting cannot lose them. Suppressed GUIDs sit in their own list with the same 100-entry and 30-day limits, and are not offered to the model again while they are kept.
 
-The automated setup script handles the entire registration process:
-
-```bash
-cd scripts
-chmod +x setup.sh
-./setup.sh
-```
-
-This will:
-1. **Create a PDS account** for your aggregator (generates a DID)
-2. **(Optional)** Generate `.well-known/atproto-did` file for custom domain handle
-3. **(Optional)** Pause for manual upload if using custom domain
-4. **Create service declaration** record (indexed by Jetstream)
-5. **Generate an API key** for authentication (requires browser OAuth)
-
-**Manual steps required:**
-- **(If using custom domain)** Upload `.well-known/atproto-did` to your domain
-- Complete OAuth login in browser to generate API key
-
-After completion, you'll have:
-- `kagi-aggregator-config.env` - Full configuration with API key
-- `COVES_API_KEY` - Your authentication token for posting
-
-**Keep the API key secure!** It cannot be retrieved after generation.
-
-### Manual Setup (Step-by-step)
-
-Alternatively, use the generic setup scripts from the main Coves repo for more control:
-
-```bash
-# From the Coves project root
-cd scripts/aggregator-setup
-
-# Follow the 5-step process
-./1-create-pds-account.sh
-./2-setup-wellknown.sh
-./3-register-with-coves.sh
-./4-create-service-declaration.sh
-./5-create-api-key.sh
-```
-
-See [scripts/aggregator-setup/README.md](../../scripts/aggregator-setup/README.md) for detailed documentation on each step.
-
-### What Happens During Registration?
-
-1. **PDS Account Creation**: Your aggregator gets a `did:plc:...` identifier
-2. **Domain Verification**: Proves you control your aggregator's domain
-3. **Coves Registration**: Inserts your DID into the Coves instance's `users` table
-4. **Service Declaration**: Creates a record that gets indexed into the `aggregators` table
-5. **API Key Generation**: Creates a secure API key for authentication
-6. **Ready for Authorization**: Community moderators can now authorize your aggregator
-
-Once registered and authorized by a community, your aggregator can post content.
-
-## Setup
-
-### Prerequisites
-
-- Python 3.11+
-- python3-venv package (`apt install python3.12-venv`)
-- **Completed registration** (see above)
-
-### Installation
-
-1. Create virtual environment:
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate
-   ```
-
-2. Install dependencies:
-   ```bash
-   pip install -r requirements-dev.txt
-   ```
-
-3. Copy configuration templates:
-   ```bash
-   cp config.example.yaml config.yaml
-   cp .env.example .env
-   ```
-
-4. Edit `config.yaml` to map RSS feeds to communities
-5. Set `COVES_API_KEY` in `.env` (from registration step 5)
-
-## Running Tests
-
-```bash
-# Activate virtual environment
-source venv/bin/activate
-
-# Run all tests
-pytest -v
-
-# Run specific test file
-pytest tests/test_html_parser.py -v
-
-# Run with coverage
-pytest --cov=src --cov-report=html
-```
-
-## Deployment
-
-### Docker Deployment (Recommended for Production)
-
-The easiest way to deploy the Kagi aggregator is using Docker. The cron job runs inside the container automatically.
-
-#### Prerequisites
-
-- Docker and Docker Compose installed
-- Completed registration (you have `.env` with credentials)
-- `config.yaml` configured with your feed mappings
-
-#### Quick Start
-
-1. **Configure your environment:**
-   ```bash
-   # Copy and edit configuration
-   cp config.example.yaml config.yaml
-   cp .env.example .env
-
-   # Edit .env with your aggregator credentials
-   nano .env
-   ```
-
-2. **Start the aggregator:**
-   ```bash
-   docker compose up -d
-   ```
-
-3. **View logs:**
-   ```bash
-   docker compose logs -f
-   ```
-
-4. **Stop the aggregator:**
-   ```bash
-   docker compose down
-   ```
-
-#### Configuration
-
-The `docker-compose.yml` file supports these environment variables:
-
-- **`COVES_API_KEY`** (required): Your aggregator's API key (format: `ckapi_...`)
-- **`COVES_API_URL`** (optional): Override Coves API endpoint (defaults to `https://api.coves.social`)
-- **`RUN_ON_STARTUP`** (optional): Set to `true` to run immediately on container start (useful for testing)
-
-#### Testing the Setup
-
-Run the aggregator immediately without waiting for cron:
-
-```bash
-# Run once and exit
-docker compose run --rm kagi-aggregator python -m src.main
-
-# Or set RUN_ON_STARTUP=true in .env and restart
-docker compose restart
-```
-
-#### Production Deployment
-
-For production, consider:
-
-1. **Using Docker Secrets** for credentials:
-   ```yaml
-   secrets:
-     aggregator_credentials:
-       file: ./secrets/aggregator.env
-   ```
-
-2. **Setting up log rotation** (already configured in docker-compose.yml):
-   - Max size: 10MB per file
-   - Max files: 3
-
-3. **Monitoring health checks:**
-   ```bash
-   docker inspect --format='{{.State.Health.Status}}' kagi-news-aggregator
-   ```
-
-4. **Auto-restart on failure** (already enabled with `restart: unless-stopped`)
-
-#### Viewing Cron Logs
-
-```bash
-# Follow cron execution logs
-docker compose logs -f kagi-aggregator
-
-# View last 100 lines
-docker compose logs --tail=100 kagi-aggregator
-```
-
-#### Updating the Aggregator
-
-```bash
-# Pull latest code
-git pull
-
-# Rebuild and restart
-docker compose up -d --build
-```
-
-### Manual Deployment (Alternative)
-
-If you prefer running without Docker, use the traditional approach:
-
-1. **Install dependencies:**
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate
-   pip install -r requirements-dev.txt
-   ```
-
-2. **Configure crontab:**
-   ```bash
-   # Edit the crontab file with your paths
-   # Then install it:
-   crontab crontab
-   ```
-
-3. **Verify cron is running:**
-   ```bash
-   crontab -l
-   ```
-
-## Development Status
-
-### ✅ Phase 1-2 Complete (Oct 24, 2025)
-- [x] Project structure created
-- [x] Data models defined (KagiStory, Perspective, Quote, Source)
-- [x] RSS fetcher with retry logic and tests
-- [x] HTML parser extracting all sections (summary, highlights, perspectives, sources, quote, image)
-- [x] Test fixtures from real Kagi News feed
-
-### 🚧 Next Steps (Phase 3-4)
-- [ ] Rich text formatter (convert to Coves format with facets)
-- [ ] State manager for deduplication
-- [ ] Configuration loader
-- [ ] ATProto client for post creation
-- [ ] Main orchestration script
-- [ ] End-to-end tests
+A story whose post fails is not marked posted and is retried next run.
 
 ## Configuration
 
-Edit `config.yaml` to define feed-to-community mappings:
+Copy `config.example.yaml` to `config.yaml`. It holds `coves_api_url`, the `feeds` list (`name`, `url`, `community_handle`, `enabled`), the `dedup` block and `log_level`. Use `news.kagi.com` feed URLs. Kagi moved its feeds there from `kite.kagi.com` in October 2025. Story permalinks inside the feed still point at `kite.kagi.com`, and that is expected.
 
-```yaml
-coves_api_url: "https://api.coves.social"
+| Variable | Required | Purpose |
+|---|---|---|
+| `COVES_API_KEY` | yes | `ckapi_` key from setup step 5 |
+| `ANTHROPIC_API_KEY` | unless `dedup.semantic_enabled: false` | semantic dedup; each run fails without it (the container still starts) |
+| `COVES_API_URL` | no | overrides `coves_api_url` in `config.yaml` |
+| `CONFIG_PATH` | no | defaults to `config.yaml` |
+| `STATE_FILE` | no | defaults to `data/state.json` |
+| `RUN_ON_STARTUP` | no | `true` runs once when the container starts |
 
-feeds:
-  - name: "World News"
-    url: "https://news.kagi.com/world.xml"
-    community_handle: "world-news.coves.social"
-    enabled: true
+Under Docker Compose, `COVES_API_URL` is always set: `docker-compose.yml` defaults it to `https://api.coves.social`, which overrides `config.yaml`. Set it explicitly in `.env`.
 
-  - name: "Tech News"
-    url: "https://news.kagi.com/tech.xml"
-    community_handle: "tech.coves.social"
-    enabled: true
-```
-
-## Architecture
-
-### Data Flow
-
-```
-Kagi RSS Feed
-    ↓ (HTTP GET)
-RSS Fetcher
-    ↓ (feedparser)
-Parsed RSS Items
-    ↓ (for each item)
-HTML Parser
-    ↓ (BeautifulSoup)
-Structured KagiStory
-    ↓
-Rich Text Formatter
-    ↓ (with facets)
-Post Record
-    ↓ (XRPC)
-Coves Community
-```
-
-### Rich Text Format
-
-Posts use Coves rich text with UTF-8 byte-positioned facets:
-
-```python
-{
-  "content": "Summary text...\n\nHighlights:\n• Point 1\n...",
-  "facets": [
-    {
-      "index": {"byteStart": 20, "byteEnd": 31},
-      "features": [{"$type": "social.coves.richtext.facet#bold"}]
-    },
-    {
-      "index": {"byteStart": 50, "byteEnd": 75},
-      "features": [{"$type": "social.coves.richtext.facet#link", "uri": "https://..."}]
-    }
-  ]
-}
-```
+`docker-entrypoint.sh` copies only `COVES_*`, `ANTHROPIC_*` and `PATH` into `/etc/environment`, which is all the cron run sees. `CONFIG_PATH`, `STATE_FILE` and any new variable apply to manual runs only until the whitelist is changed.
 
 ## License
 
-See parent Coves project license.
+Kagi News data is CC BY-NC: free for non-commercial use with attribution. Every post must credit Kagi News and link the story, and `RichTextFormatter.format_full` ends each post with a "Kagi News" link to the story permalink. Do not remove it. Commercial use needs a license from Kagi (support@kagi.com).
 
-## Related Documentation
+## Setup
 
-- [PRD: Kagi News Aggregator](../../docs/aggregators/PRD_KAGI_NEWS_RSS.md)
-- [PRD: Aggregator System](../../docs/aggregators/PRD_AGGREGATORS.md)
-- [Coves Rich Text Lexicon](../../internal/atproto/lexicon/social/coves/richtext/README.md)
+Register the aggregator account and mint an API key with [scripts/aggregator-setup/README.md](../../scripts/aggregator-setup/README.md). Use the numbered scripts, not `scripts/setup.sh` here. That script creates the account with a generated `*.bsky.social` handle, so its registration call fails with `HandleMismatch` and it exits before the service declaration. A re-run cannot recover: it loads `kagi-aggregator-config.env`, whose `AGGREGATOR_`-prefixed names its later steps do not read. It also has no API key step.
+
+The Dockerfile copies `config.yaml` into the image, so create it before building.
+
+```bash
+cp config.example.yaml config.yaml   # edit feeds and communities
+cp .env.example .env                 # set COVES_API_KEY, ANTHROPIC_API_KEY, COVES_API_URL
+docker compose up -d --build
+docker compose run --rm kagi-aggregator python -m src.main   # one run now
+```
+
+For tests: `python3 -m venv venv && . venv/bin/activate && pip install -r requirements-dev.txt && pytest`.
+
+## Operations
+
+`/var/log/cron.log` is not on a volume. Before recreating `kagi-news-aggregator`, save `docker logs kagi-news-aggregator` and `docker exec kagi-news-aggregator cat /var/log/cron.log`. After recreation, empty logs mean no history, not no errors.
+
+A manual `docker exec ... python -m src.main` proves the container environment, not cron's. Confirm authentication from a log line written by a real cron run. To reproduce cron's environment in a shell, use `set -a; . /etc/environment; set +a`.

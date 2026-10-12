@@ -34,7 +34,7 @@ import (
 // the marker is written, it is written ATOMICALLY WITH the deletion, and
 // re-registration clears it.
 //
-// See docs/PRD_AUTHOR_OWNED_POSTS.md rev 2.7 (§5 status header).
+// See docs/POSTS.md §5.3.
 
 const deletedAccountsTable = "deleted_accounts"
 

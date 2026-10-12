@@ -871,7 +871,7 @@ func TestConnector_PermanentFailureSkipsRetriesAndExhaustsRedrive(t *testing.T) 
 // this AppView has not indexed must cost the lane exactly ONE handler call:
 // the record lives in another repo and no amount of in-line waiting brings
 // it, while the wait itself is a free stall any repo on the network can mint
-// (docs/CONSUMER_TRUST_AUDIT.md §1.3). Unlike a permanent rejection, though,
+// (docs/SECURITY_MODEL.md, Firehose error classes). Unlike a permanent rejection, though,
 // the row keeps a bounded redrive budget, because the ordering case is real —
 // BigSky preserves order within a repo, not across repos — and the
 // timer-driven redriver is where it converges.

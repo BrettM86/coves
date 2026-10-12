@@ -430,7 +430,7 @@ type MediaConfig struct {
 }
 
 // SubmissionsConfig bounds what one author may submit to one community
-// (docs/PRD_AUTHOR_OWNED_POSTS.md §8).
+// (docs/POSTS.md §8).
 //
 // It mirrors posts.SubmissionLimits field for field rather than embedding it.
 // The duplication is deliberate: this package is imported by everything that
@@ -457,7 +457,7 @@ type SubmissionsConfig struct {
 	DedupeWindow time.Duration
 
 	// AcceptanceQueueInterval is how often the acceptance engine's driver walks
-	// the undecided backlog (docs/PRD_AUTHOR_OWNED_POSTS.md §5.6).
+	// the undecided backlog (docs/POSTS.md §5.6).
 	//
 	// It is the PULL side of admission. The synchronous fast path and the
 	// firehose consumer both push work at the engine, and neither can see a

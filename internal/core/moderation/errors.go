@@ -2,7 +2,7 @@ package moderation
 
 import "errors"
 
-// One sentinel per error code the moderation lexicons declare (PRD §14.5),
+// One sentinel per error code the moderation lexicons declare (docs/MODERATION.md, Errors),
 // plus two that never reach the wire on their own: the reader-level
 // ErrSubjectNotIndexed, and ErrResolverUnavailable, which always accompanies
 // ErrModerationUnavailable to say an identity or community resolver, not the

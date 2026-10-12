@@ -300,7 +300,7 @@ func TestVoteIngestion(t *testing.T) {
 // repo. Jetstream serialises a single repo's commits and PARALLELISES ACROSS
 // repos, so nothing orders a vote against its subject. The window is small in a healthy stack and arbitrarily
 // large in an unhealthy one — a redriven post, a consumer catching up after a
-// restart, a slow blob fetch upstream — and Phase 5's relay topology widens it
+// restart, a slow blob fetch upstream — and the relay topology widens it
 // further. Arrival order is topology luck, so a pipeline that only counts votes
 // which happen to arrive second is not counting votes.
 //

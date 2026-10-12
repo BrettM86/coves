@@ -45,8 +45,9 @@ var baseMobileRedirectURIs = map[string]bool{
 // BuildAllowedRedirectURIs returns a copy of the allowed mobile redirect URIs.
 // The allowlist uses exact URI matching to prevent token theft.
 //
-// For web frontends like Kelp, use a reverse proxy (Vite proxy in dev, nginx in prod)
-// to serve from the same origin as Coves, allowing HTTP-only cookies to work.
+// For web frontends like coves-frontend, use a reverse proxy (Caddy in both:
+// the :8080 proxy from Caddyfile.dev in dev, Caddy in prod) to serve from the
+// same origin as Coves, allowing HTTP-only cookies to work.
 func BuildAllowedRedirectURIs() map[string]bool {
 	// Return a copy of base mobile URIs
 	allowed := make(map[string]bool, len(baseMobileRedirectURIs))

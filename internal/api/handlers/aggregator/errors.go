@@ -51,7 +51,7 @@ var errorMapper = xrpc.NewMapper("aggregator",
 	xrpc.MatchDetail(aggregators.IsConflict, http.StatusConflict, "Conflict"),
 	xrpc.MatchDetail(aggregators.IsRateLimited, http.StatusTooManyRequests, "RateLimitExceeded"),
 	xrpc.Match(aggregators.IsNotImplemented, http.StatusNotImplemented,
-		"NotImplemented", "This feature is not yet available (Phase 2)"),
+		"NotImplemented", "This feature is not yet available"),
 )
 
 // writeError writes a JSON error response with proper buffering.

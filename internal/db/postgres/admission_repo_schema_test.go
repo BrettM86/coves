@@ -42,7 +42,7 @@ import (
 
 const admissionsTable = "community_post_admissions"
 
-// admissionStatuses is the exact status vocabulary of PRD §6.1. The CHECK
+// admissionStatuses is the exact status vocabulary of docs/POSTS.md §6.1. The CHECK
 // constraint is asserted against this set rather than against a substring so
 // that ADDING a status is as visible as removing one — a new state that no read
 // path knows about is exactly the kind of drift a substring match sails past.
@@ -128,7 +128,7 @@ func TestAdmissionsTable_CheckConstraints(t *testing.T) {
 	definitions := checkConstraintDefinitions(t, db, admissionsTable)
 	require.NotEmpty(t, definitions, "%s must constrain its statuses and decisions", admissionsTable)
 
-	t.Run("status is restricted to exactly the PRD vocabulary", func(t *testing.T) {
+	t.Run("status is restricted to exactly the docs/POSTS.md §6.1 vocabulary", func(t *testing.T) {
 		var matched string
 		for name, definition := range definitions {
 			if !strings.Contains(definition, "status") {
@@ -186,7 +186,7 @@ func TestAdmissionsTable_ConstraintsAreEnforced(t *testing.T) {
 	}
 
 	assert.Error(t, insert(t, "quarantined", nil),
-		"a status outside the PRD vocabulary must be rejected: read paths switch on this column exhaustively")
+		"a status outside the docs/POSTS.md §6.1 vocabulary must be rejected: read paths switch on this column exhaustively")
 	assert.Error(t, insert(t, "removed", nil),
 		"a removal with no code renders as #removedPost with nothing to show the author")
 	assert.Error(t, insert(t, "rejected", nil),

@@ -1,130 +1,31 @@
-# Reddit Highlights Aggregator
+# Reddit Highlights aggregator
 
-Aggregates video highlights from Reddit subreddits (e.g., r/nba) and posts them to Coves communities.
+Posts video highlights from subreddits (r/nba by default) to Coves communities. It reads each subreddit's public RSS feed (`https://www.reddit.com/r/<name>/.rss`), so it needs no Reddit API key. Only links on `allowed_domains` (default `streamable.com`) are posted. Server-side rules are in [docs/AGGREGATORS.md](../../docs/AGGREGATORS.md).
 
-## Features
+## Schedule
 
-- Fetches posts from Reddit via RSS (no API key required)
-- Extracts streamable.com video links
-- Posts to configured Coves communities with proper attribution
-- Anti-detection jitter (randomized polling intervals)
-- State tracking for deduplication
-- Docker deployment with cron scheduler
+Cron starts a run every hour (`0 * * * *`). `src/main.py` first sleeps a random 0 to 600 seconds, so requests land 0 to 10 minutes after each hourly cron start and consecutive runs are 50 to 70 minutes apart. The jitter is there to avoid a fixed polling pattern against Reddit.
 
-## Quick Start
+`SKIP_JITTER` set to `true`, `1` or `yes` skips the sleep. `RUN_ON_STARTUP=true` runs once at container start, always without jitter.
 
-1. **Copy environment file:**
-   ```bash
-   cp .env.example .env
-   ```
-
-2. **Configure your Coves API key:**
-   ```bash
-   # Edit .env and set your API key
-   COVES_API_KEY=ckapi_your_key_here
-   ```
-
-3. **Build and run:**
-   ```bash
-   docker-compose up -d
-   ```
-
-4. **View logs:**
-   ```bash
-   docker-compose logs -f
-   ```
-
-## Configuration
-
-### config.yaml
-
-```yaml
-coves_api_url: "https://coves.social"
-
-subreddits:
-  - name: "nba"
-    community_handle: "nba.coves.social"
-    enabled: true
-
-allowed_domains:
-  - streamable.com
-```
-
-### Adding More Subreddits
-
-1. Add entry to `config.yaml`:
-   ```yaml
-   - name: "soccer"
-     community_handle: "soccer.coves.social"
-     enabled: true
-   ```
-
-2. Authorize the aggregator for the new community in Coves
-
-3. Restart the container:
-   ```bash
-   docker-compose restart
-   ```
-
-## Polling Schedule
-
-- Cron runs every **10 minutes**
-- Python script adds **0-10 minutes random jitter**
-- Effective polling interval: **10-20 minutes** (varies each run)
-
-This randomization helps avoid bot detection patterns.
-
-## Development
-
-### Setup
+A run without `SKIP_JITTER` can sit silent for up to ten minutes and looks hung. Over SSH, run it from `/app` like this so the jitter is skipped and output is not buffered:
 
 ```bash
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements-dev.txt
+docker exec -it reddit-highlights-aggregator sh -c 'cd /app && SKIP_JITTER=1 python -u -m src.main'
 ```
 
-### Run Tests
+A process showing 0s CPU and sleeping in `hrtimer_nanosleep` is in the jitter, not hung.
 
-```bash
-pytest
-```
+## What a run does
 
-### Run Manually
+For each enabled subreddit, the run walks the feed in order and stops after `max_posts_per_run` (default 3) video entries. Entries without an allowed video link, and entries whose post fails, do not count. Already-posted entries do count, so a run looks only at the top N video entries and posts the ones it has not posted before. The limit is per subreddit.
 
-```bash
-# Set environment variables
-export COVES_API_KEY=ckapi_your_key
-export SKIP_JITTER=true  # Skip delay for testing
+State lives in `data/state.json` (override with `STATE_FILE`), keyed by subreddit name, holding up to 100 entry IDs per subreddit for up to 30 days. The entry ID is Reddit's `t3_` ID, falling back to the link. A failed post is not recorded and is retried next run. One failing subreddit does not stop the others.
 
-# Run
-python -m src.main
-```
+## Post format
 
-## Architecture
+Each post has the Reddit title as its title, no body, and a `social.coves.embed.external` embed:
 
-```
-src/
-├── main.py           # Orchestration (CRON entry point)
-├── rss_fetcher.py    # RSS feed fetching with retry
-├── link_extractor.py # Streamable URL detection
-├── coves_client.py   # Coves API client
-├── state_manager.py  # Deduplication state tracking
-├── config.py         # YAML config loader
-└── models.py         # Data models
-```
-
-## Post Format
-
-Posts are created with:
-- **Title**: Reddit post title
-- **Embed**: Streamable video link with metadata
-- **Sources**: Link back to original Reddit post
-
-Example embed:
 ```json
 {
   "$type": "social.coves.embed.external",
@@ -132,9 +33,43 @@ Example embed:
     "uri": "https://streamable.com/abc123",
     "title": "LeBron with the chase-down block!",
     "description": "From r/nba",
-    "sources": [
-      {"uri": "https://reddit.com/...", "title": "r/nba", "domain": "reddit.com"}
-    ]
+    "embedType": "video",
+    "provider": "streamable",
+    "domain": "streamable.com",
+    "sources": [{"uri": "https://www.reddit.com/r/nba/comments/...", "title": "r/nba", "domain": "reddit.com"}]
   }
 }
 ```
+
+The aggregator sends no `thumbnailUrl`. The AppView fetches the thumbnail by unfurling the Streamable link.
+
+## Configuration
+
+Copy `config.example.yaml` to `config.yaml`. It holds `coves_api_url`, the `subreddits` list (`name`, `community_handle`, `enabled`), `allowed_domains`, `max_posts_per_run` and `log_level`. Subreddit names are restricted to letters, digits, `_` and `-`.
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `COVES_API_KEY` | yes | `ckapi_` key from [setup step 5](../../scripts/aggregator-setup/README.md) |
+| `COVES_API_URL` | no | overrides `coves_api_url`; Compose defaults it to `https://coves.social` |
+| `SKIP_JITTER` | no | skip the startup sleep |
+| `RUN_ON_STARTUP` | no | run once at container start |
+| `CONFIG_PATH`, `STATE_FILE` | no | default `config.yaml`, `data/state.json` |
+
+`docker-entrypoint.sh` copies only `COVES_*`, `SKIP_*` and `PATH` into `/etc/environment`, which is all the cron run sees. `CONFIG_PATH` and `STATE_FILE` reach manual runs only.
+
+Adding a subreddit means a new `subreddits` entry and a container restart. If the aggregator's DID is not trusted on the instance, the target community also needs an authorization record.
+
+## Running
+
+The Dockerfile copies `config.yaml` into the image, so create it before building.
+
+```bash
+cp config.example.yaml config.yaml
+cp .env.example .env           # set COVES_API_KEY
+docker compose up -d --build
+docker compose logs -f
+```
+
+`/var/log/cron.log` is not on a volume. Save `docker logs` and the cron log before recreating the container. The `Using API key authentication` log line appears after the jitter and shows the run reached authentication, not that it finished.
+
+For tests: `python -m venv venv && . venv/bin/activate && pip install -r requirements-dev.txt && pytest`.

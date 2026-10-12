@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The production AdmissionDecider (docs/PRD_AUTHOR_OWNED_POSTS.md §5.6): the
+// The production AdmissionDecider (docs/POSTS.md §5.6): the
 // adapter between "decide about this indexed post" and the policy matrix
 // admit_matrix_test.go already pins.
 //

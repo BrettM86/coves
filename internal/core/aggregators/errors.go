@@ -19,7 +19,7 @@ var (
 	ErrInvalidConfig          = errors.New("invalid aggregator configuration")
 	ErrConfigSchemaValidation = errors.New("configuration does not match aggregator's schema")
 	ErrNotModerator           = errors.New("user is not a moderator of this community")
-	ErrNotImplemented         = errors.New("feature not yet implemented") // For Phase 2 write-forward operations
+	ErrNotImplemented         = errors.New("feature not yet implemented") // For write-forward operations not yet built
 
 	// API Key authentication errors
 	ErrAPIKeyRevoked      = errors.New("API key has been revoked")

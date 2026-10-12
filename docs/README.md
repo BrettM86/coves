@@ -1,51 +1,46 @@
 # Documentation
 
-See the [project README](../README.md) for an overview and
-[CONTRIBUTING.md](../CONTRIBUTING.md) to work on the backend.
+These are implementation notes for the Coves AppView. Each doc holds what the code cannot tell you: invariants, the reasons behind decisions, contracts between components, and procedures. If the code and a doc disagree, the code is right and the doc needs fixing.
 
-## Development and reference
+Start with the [project README](../README.md) and [CONTRIBUTING.md](../CONTRIBUTING.md).
 
-- [Test architecture](TEST_ARCHITECTURE.md) — test tiers, fixtures, and CI.
-- [Project structure](../PROJECT_STRUCTURE.md) — packages and server startup.
-- [Lexicon schemas](../internal/atproto/lexicon/social/coves/) — API and record definitions.
-- [Schema fixtures](../tests/lexicon-test-data/README.md) — validation examples.
-- [SSRF security model](SSRF_SECURITY.md) — rules for outbound requests.
-- [Credential encryption](CREDENTIAL_ENCRYPTION.md) — storage, keys, and recovery.
-- [Security policy](../SECURITY.md) — how to report a vulnerability.
+## Working on the code
 
-## Local development
+- [ARCHITECTURE.md](ARCHITECTURE.md): package layering, server startup, config loading, migrations.
+- [LOCAL_DEVELOPMENT.md](LOCAL_DEVELOPMENT.md): the dev stack, ports, and local PLC/PDS identity.
+- [TEST_ARCHITECTURE.md](TEST_ARCHITECTURE.md): test tiers, the testkit, and what `make ci` enforces.
+- [LEXICON_PUBLISHING.md](LEXICON_PUBLISHING.md): publishing `social.coves.*` schemas. A test checks this runbook.
+- [Lexicon schemas](../internal/atproto/lexicon/social/coves/) and [schema fixtures](../tests/lexicon-test-data/README.md).
 
-The [setup guide](LOCAL_DEVELOPMENT.md) needs updating. Check the
-[Makefile](../Makefile), [Compose file](../docker-compose.dev.yml), and
-[example environment](../.env.dev.example) for current configuration.
+## Subsystems
 
-Development Postgres uses port **5435**, and the AppView subscribes through
-`JETSTREAM_FEEDS`. Replace the environment template's placeholder values before
-using it. Keep `OAUTH_SEAL_SECRET` and `ENCRYPTION_KEY` stable across restarts.
-`make dev-up` starts the supporting services; `make run` starts the AppView
-and requires `goose` for migrations.
+- [POSTS.md](POSTS.md): author-owned posts, community admission, visibility, comments, and the legacy post cutover.
+- [FEEDS.md](FEEDS.md): timeline, Discover, community feeds, search, and Hot ranking.
+- [COMMUNITIES.md](COMMUNITIES.md): community accounts, handles, and credentials.
+- [AGGREGATORS.md](AGGREGATORS.md): how aggregators register, get authorized, and post.
+- [MODERATION.md](MODERATION.md): server-admin removal, NSFW labels, and the modlog.
+- [NOTIFICATIONS.md](NOTIFICATIONS.md): in-app notifications, upvote groups, seen state, and retention.
+- [MEDIA.md](MEDIA.md): the image proxy, CSAM scanning, caching, and purges.
 
-## Aggregators
+## Security
 
-- [Kagi News](../aggregators/kagi-news/README.md)
-- [Reddit Highlights](../aggregators/reddit-highlights/README.md)
-- [Account and API-key setup scripts](../scripts/aggregator-setup/README.md)
+- [SECURITY_MODEL.md](SECURITY_MODEL.md): auth, write-path, and firehose trust rules.
+- [SSRF_SECURITY.md](SSRF_SECURITY.md): rules for outbound requests.
+- [CREDENTIAL_ENCRYPTION.md](CREDENTIAL_ENCRYPTION.md): how stored credentials are sealed, and key recovery.
+- [SECURITY.md](../SECURITY.md): reporting a vulnerability.
 
-## Maintainer guides
+## Operations
 
-- [Lexicon publishing](LEXICON_PUBLISHING.md)
-- [Frontend routing and deployment](FRONTEND_DEPLOY.md)
+- [PRODUCTION_DEPLOY.md](PRODUCTION_DEPLOY.md): Compose projects, Caddy routing, and the frontend deploy.
+- [PRODUCTION_BACKUPS.md](PRODUCTION_BACKUPS.md): backup timers and restore.
+- Aggregators: [Kagi News](../aggregators/kagi-news/README.md), [Reddit Highlights](../aggregators/reddit-highlights/README.md), [Bluesky Topics](../aggregators/bluesky-topics/README.md), [account and API-key setup](../scripts/aggregator-setup/README.md).
 
-## Design background
+## Plans
 
-[Admin moderation PRD](PRD_ADMIN_MODERATION.md) covers server-admin remove/restore,
-post NSFW labeling with existing blur/reveal, a public modlog, and opt-in
-federated moderation through signed labels (draft).
+[plans/](plans/) holds designs for work that is not built yet. Delete a plan when it ships, after moving its lasting rules into the subsystem doc.
 
-[Author-owned posts](PRD_AUTHOR_OWNED_POSTS.md) explains why post content and
-community acceptance live in separate repositories. It also includes migration
-notes and proposed federation work.
+- [IMAGE_UPLOADS.md](plans/IMAGE_UPLOADS.md): user image uploads in posts and comments.
+- [NOTIFICATIONS_CLIENTS.md](plans/NOTIFICATIONS_CLIENTS.md): web and mobile notification clients.
+- [MODERATION_LABELS.md](plans/MODERATION_LABELS.md): federated moderation through signed labels.
 
-Other PRDs, implementation reports, and dated audits remain in this directory
-for historical context. They may describe replaced code or unimplemented plans;
-use the source and tests to check current behavior.
+Deferred bugs and feature requests go in the central backlog, not in this folder.

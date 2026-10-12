@@ -23,7 +23,7 @@ import (
 // a field the Go struct emits and the schema omits works perfectly — here. The
 // lexicon is not for us. It is the contract third parties generate clients
 // from: `status` is how a client tells a post that is live in its community from
-// one still waiting for a decision (PRD §4.2 steps 4 and 5), and a generated
+// one still waiting for a decision (docs/POSTS.md §4.2 steps 4 and 5), and a generated
 // client built from a schema that does not mention it has no field to put the
 // value in. The AppView would be answering a question nobody downstream can hear
 // itself asking.

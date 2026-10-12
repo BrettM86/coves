@@ -21,8 +21,8 @@ cd ../coves-my-change
 ```
 
 For local services, you'll also need Docker, the `docker-compose` command, and
-`goose` for migrations. See the [local setup notes](docs/README.md#local-development)
-before following the development guide.
+`goose` for migrations. See [LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md)
+for the local stack.
 
 ## Tests
 

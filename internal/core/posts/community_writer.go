@@ -15,7 +15,7 @@ import (
 // The writers that publish a community's own records about a post.
 //
 // These are the only things in the post system that write into a COMMUNITY's
-// repository (docs/PRD_AUTHOR_OWNED_POSTS.md §5.6), and every one of them is
+// repository (docs/POSTS.md §5.6), and every one of them is
 // STATE-SHAPED rather than optimistic: what it sends is decided by what the
 // repo already holds, because the PDS answers the wrong shape with a 500 and
 // because a re-fire must not mint a new record CID.

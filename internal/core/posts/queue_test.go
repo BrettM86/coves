@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The acceptance engine's queue driver (docs/PRD_AUTHOR_OWNED_POSTS.md §5.6,
+// The acceptance engine's queue driver (docs/POSTS.md §5.6,
 // §8): what turns "the engine can settle a subject" into "every stranded
 // subject eventually gets settled".
 //

@@ -21,7 +21,7 @@ import (
 //
 //   - one subject, for the consumer deciding what an incoming event means;
 //   - one post across every community, for the author's own view of where their
-//     post stands — the "fork" shape of PRD §2, and the reason the primary key
+//     post stands — the "fork" shape of docs/POSTS.md §2, and the reason the primary key
 //     is (community, post) rather than a status column on the post;
 //   - one community's queue in one status, for moderation.
 //

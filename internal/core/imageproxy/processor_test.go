@@ -369,7 +369,7 @@ func measureProcessAlloc(proc Processor, data []byte, preset Preset) ([]byte, ui
 const budgetAllocBound = 8 << 20
 
 // TestProcessor_Process_RefusesOverBudgetWithoutDecoding is the unit-level
-// statement of SECURITY_AUDIT_2026-09-01 §1.1: a header that declares more
+// statement of the decode budget (docs/MEDIA.md, Decode budget): a header that declares more
 // pixels than the budget must be refused from the header alone. The sentinel
 // matters because the handler maps ErrImageTooManyPixels to a 400 and
 // ErrProcessingFailed to a 500, and because ErrImageTooLarge already means the

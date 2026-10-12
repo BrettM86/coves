@@ -200,7 +200,7 @@ var declaredRoutes = []declaredRoute{
 	// what this table can see. Which principals that RequireAuth accepts is
 	// post_aggregator_test.go's subject.
 	{http.MethodPost, "/xrpc/social.coves.community.post.create", authRequired, 0, false},
-	// update arrived with the write-path flip (PRD §4.2): a post lives in its
+	// update arrived with the write-path flip (docs/POSTS.md §4.2): a post lives in its
 	// author's repo now, so editing one is a write this AppView can actually
 	// perform. It is declared exactly like create beside it — the same guard,
 	// no limiter of its own — because it is the same kind of write by the same
@@ -212,11 +212,12 @@ var declaredRoutes = []declaredRoute{
 	// getStatus takes no auth at all, unlike post.get beside it, and the
 	// asymmetry is the decision this line exists to hold. The caller it is for
 	// is an author on ANOTHER server asking this host whether it accepted their
-	// post (PRD §7): they have no account here, so there is no session to
+	// post (docs/POSTS.md §7): they have no account here, so there is no session to
 	// require and no viewer state to personalise. A rejection is AppView-local
 	// and writes no community record (§3.3), so this endpoint is the only way
-	// that answer is reachable at all. The accepted cost, recorded in PRD rev
-	// 2.7: anyone who can name a post URI learns its status in a community.
+	// that answer is reachable at all. The accepted cost, recorded in
+	// docs/POSTS.md §7: anyone who can name a post URI learns its status in a
+	// community.
 	// Adding OptionalAuth here would be harmless; adding RequireAuth would make
 	// the cross-server case unanswerable, which is why it is declared.
 	// getStatus carries its OWN limiter, tighter than the global 100/minute,

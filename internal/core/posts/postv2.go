@@ -14,7 +14,7 @@ import (
 	"Coves/internal/core/blobs"
 )
 
-// The author-repo half of the write path (docs/PRD_AUTHOR_OWNED_POSTS.md §3.1,
+// The author-repo half of the write path (docs/POSTS.md §3.1,
 // §4.2): the record shape a post takes in its AUTHOR's repository, the
 // deterministic key it is written at, and the seam the author's own credentials
 // arrive through.

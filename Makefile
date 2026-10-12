@@ -445,19 +445,18 @@ web-proxy: ## Start Caddy reverse proxy for web frontend dev (combines Vite + Co
 	@echo "$(CYAN)Starting web development proxy...$(RESET)"
 	@echo ""
 	@echo "$(YELLOW)Prerequisites:$(RESET)"
-	@echo "  1. Coves backend running on :8081  (make run)"
-	@echo "  2. Vite frontend running on :5173  (cd frontend && npm run dev)"
+	@echo "  1. make run-web (backend on :8081 and Vite on :5173)"
 	@echo ""
 	@command -v caddy >/dev/null 2>&1 || { echo "$(RED)Error: Caddy not installed. Install with:$(RESET)"; \
 		echo "  Ubuntu/Debian: sudo apt install caddy"; \
 		echo "  macOS: brew install caddy"; \
 		echo "  Or see: https://caddyserver.com/docs/install"; \
 		exit 1; }
-	@echo "$(GREEN)Starting Caddy on http://localhost:8080$(RESET)"
+	@echo "$(GREEN)Starting Caddy on http://127.0.0.1:8080$(RESET)"
 	@echo "  Backend routes (/oauth/*, /xrpc/*, /api/*) -> 127.0.0.1:8081"
 	@echo "  Frontend routes (everything else) -> localhost:5173"
 	@echo ""
-	@echo "$(CYAN)Access your app at: http://localhost:8080$(RESET)"
+	@echo "$(CYAN)Access your app at: http://127.0.0.1:8080$(RESET)"
 	@echo "$(CYAN)Press Ctrl+C to stop$(RESET)"
 	@echo ""
 	@caddy run --config Caddyfile.dev
@@ -465,7 +464,7 @@ web-proxy: ## Start Caddy reverse proxy for web frontend dev (combines Vite + Co
 web-proxy-bg: ## Start Caddy proxy in background
 	@command -v caddy >/dev/null 2>&1 || { echo "$(RED)Error: Caddy not installed$(RESET)"; exit 1; }
 	@caddy start --config Caddyfile.dev
-	@echo "$(GREEN)✓ Caddy proxy started in background on http://localhost:8080$(RESET)"
+	@echo "$(GREEN)✓ Caddy proxy started in background on http://127.0.0.1:8080$(RESET)"
 
 web-proxy-stop: ## Stop background Caddy proxy
 	@caddy stop 2>/dev/null || echo "$(YELLOW)Caddy not running$(RESET)"
@@ -475,7 +474,7 @@ web-proxy-stop: ## Stop background Caddy proxy
 
 validate-lexicon: ## Validate all Lexicon schemas
 	@echo "$(GREEN)Validating Lexicon schemas...$(RESET)"
-	@./validate-lexicon
+	@go run ./cmd/validate-lexicon
 	@echo "$(GREEN)✓ Lexicon validation complete$(RESET)"
 
 ##@ Documentation
@@ -483,5 +482,5 @@ validate-lexicon: ## Validate all Lexicon schemas
 docs: ## Open project documentation
 	@echo "$(CYAN)Project Documentation:$(RESET)"
 	@echo "  - Setup Guide:        docs/LOCAL_DEVELOPMENT.md"
-	@echo "  - Project Structure:  PROJECT_STRUCTURE.md"
-	@echo "  - atProto Guide:      ATPROTO_GUIDE.md"
+	@echo "  - Architecture:       docs/ARCHITECTURE.md"
+	@echo "  - Docs index:         docs/README.md"

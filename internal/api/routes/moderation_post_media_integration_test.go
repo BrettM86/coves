@@ -265,7 +265,7 @@ func TestModerationLegacyPostSharedImageRemovalAndRestore(t *testing.T) {
 			before := h.pds.count(ownerDID, imageCID)
 			removed := h.remove(t, first, postMediaSpamReason)
 			h.assertNoCachedBlob(t, imageCID, ownerDID)
-			// PRD §9 Media: one community-owned blob shared by two legacy posts is blocked for both when either is removed.
+			// docs/MODERATION.md, Media blocks: one community-owned blob shared by two legacy posts is blocked for both when either is removed.
 			secondView, err = postgres.NewPostRepository(h.db).GetViewsByURIs(t.Context(), []string{second.URI}, "")
 			require.NoError(t, err)
 			require.NotNil(t, secondView[second.URI], "the second post remains visible even though its shared image is blocked")
@@ -338,7 +338,7 @@ func postV2ImageEvent(ownerDID, communityDID, operation, rkey, rev, recordCID st
 	}}
 }
 
-// PRD Definition of done: deleting and recreating a removed postv2 keeps it
+// Deleting and recreating a removed postv2 keeps it
 // removed and blocks the new blob, which the author's repo serves even though
 // the AppView keeps the tombstone.
 func TestModerationPostV2RecreatedImageBlockedColdAndWarm(t *testing.T) {

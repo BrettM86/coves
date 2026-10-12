@@ -17,8 +17,7 @@ import (
 const commentCollection = "social.coves.community.comment"
 
 // freshnessWindow is how far before the index transaction's time a record's
-// createdAt may be and still notify. See docs/PRD_NOTIFICATIONS.md, Architecture,
-// "Freshness gate".
+// createdAt may be and still notify. See docs/NOTIFICATIONS.md, "Time gates".
 const freshnessWindow = 7 * 24 * time.Hour
 
 // errMissingLegacyPost marks a direct reply to a legacy post whose posts row is
@@ -29,8 +28,8 @@ var errMissingLegacyPost = errors.New("legacy post row is missing")
 // comment. An invalid thread URI has no reply recipient. Mentions require a root
 // URI that parses and names a post collection, because the row's root_post_uri
 // must name a post. A reply to a legacy post whose posts row is missing produces
-// no notification at all, mentions included (docs/PRD_NOTIFICATIONS.md, "Post
-// author resolution"). A withdrawn or unindexed comment, root or parent also
+// no notification at all, mentions included (docs/NOTIFICATIONS.md,
+// "Recipients"). A withdrawn or unindexed comment, root or parent also
 // suppresses fan-out.
 // richtext.MaxFacets bounds parsed mentions; at most
 // MaxMentionsPerRecord surviving mention rows may belong to the record across

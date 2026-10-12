@@ -30,13 +30,13 @@ const (
 	// wellKnownTimeout is the ceiling on one DID-document fetch. It is
 	// re-applied over the shared SSRF client's own 15s; see newWellKnownClient.
 	//
-	// It ran at 10s until the consumer trust audit (docs/CONSUMER_TRUST_AUDIT.md
-	// §1.3) priced it: the host is named by the record, so a wildcard-DNS host
-	// that accepts TCP and never answers costs the communities lane the full
-	// timeout per distinct did:web, with no cache to help until the fetch
-	// returns. A DID document is a static file behind a well-known path; a host
-	// that cannot serve it in 5s is not one the AppView should be waiting on,
-	// and a genuinely slow one gets the redrive.
+	// It ran at 10s until the consumer trust audit (docs/SECURITY_MODEL.md,
+	// Firehose error classes) priced it: the host is named by the record, so a
+	// wildcard-DNS host that accepts TCP and never answers costs the
+	// communities lane the full timeout per distinct did:web, with no cache to
+	// help until the fetch returns. A DID document is a static file behind a
+	// well-known path; a host that cannot serve it in 5s is not one the AppView
+	// should be waiting on, and a genuinely slow one gets the redrive.
 	wellKnownTimeout = 5 * time.Second
 
 	// wellKnownFailureTTL keeps repeated failures from turning into repeated

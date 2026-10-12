@@ -223,7 +223,7 @@ func (r *postgresUserRepo) GetProfileStats(ctx context.Context, did string) (*us
 	// earned reputation but loses the membership count.
 	//
 	// post_count counts VISIBLE posts only: a profile advertising posts no reader
-	// can reach is a side channel onto non-accepted content (PRD §6.2). It runs
+	// can reach is a side channel onto non-accepted content (docs/POSTS.md §6.2). It runs
 	// THE read-path predicate (visiblePostsJoin) rather than a copy of it — an
 	// earlier revision inlined the rule here, and a reviewer showed three
 	// mutations of that copy (dropping the collection check, the pinned-CID

@@ -14,7 +14,7 @@ import (
 )
 
 // DeleteAcceptance: the writer's fifth method, and the one the author's own
-// deletion needs (docs/PRD_AUTHOR_OWNED_POSTS.md §5.3).
+// deletion needs (docs/POSTS.md §5.3).
 //
 // # WHY THE OTHER FOUR CANNOT DO THIS
 //

@@ -272,7 +272,7 @@ func (a *application) buildCommentConsumer() *jetstream.CommentEventConsumer {
 // buildPostConsumer builds the post consumer registered on the feed.
 func (a *application) buildPostConsumer() *jetstream.PostEventConsumer {
 	// The direct fetcher is what makes acceptance-before-post converge without
-	// full relay coverage (PRD §5.4). It dials a PDS named by a DID document
+	// full relay coverage (docs/POSTS.md §5.4). It dials a PDS named by a DID document
 	// anyone can publish, so its SSRF guard stays on in production and the hatch
 	// opens only under IS_DEV_ENV — where the hermetic stack's PDS is a private
 	// address the guard would otherwise refuse.

@@ -15,7 +15,7 @@ import (
 type Service interface {
 	// CreatePost writes a new post into the AUTHOR's repository and, when this
 	// AppView hosts the community, settles the community's admission
-	// synchronously (docs/PRD_AUTHOR_OWNED_POSTS.md §4.2).
+	// synchronously (docs/POSTS.md §4.2).
 	//
 	// Flow: Validate -> Admission -> Write postv2 to the author's repo at the
 	// deterministic rkey -> seed the admission row -> local fast-path acceptance
@@ -141,7 +141,7 @@ type Repository interface {
 	// ignores this argument narrows nothing and widens nothing for the public,
 	// while an author passed here reaches their own pending/rejected/removed
 	// posts, the same author-self-view contract actor.getPosts and the feeds
-	// honor (PRD §6.2).
+	// honor (docs/POSTS.md §6.2).
 	GetViewsByURIs(ctx context.Context, uris []string, viewerDID string) (map[string]*PostView, error)
 
 	// GetByAuthor retrieves posts authored by a specific user

@@ -585,7 +585,7 @@ func TestGetCommentsHandler_WithCommunityFilter(t *testing.T) {
 // TestGetCommentsHandler_ViewerDIDComesFromTheAuthMiddleware is the provenance
 // pin for actor.getComments, and it became a security pin the moment the
 // COMMUNITY FILTER started resolving each comment's root through the read-path
-// visibility predicate (PRD §6.2).
+// visibility predicate (docs/POSTS.md §6.2).
 //
 // With `?community=` set, the repository only lists comments whose root that
 // community admitted — except for the root's own AUTHOR, who keeps the carve-out

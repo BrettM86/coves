@@ -9,7 +9,9 @@ import (
 
 // DefaultNegativeCacheTTL bounds how long failed or unverified DID resolution is
 // remembered in-process. Without it, every retry re-resolves an attacker-chosen
-// tarpit DID at up to 10 seconds per attempt (docs/SECURITY_AUDIT_2026-09-01.md §1.3).
+// tarpit DID at up to the resolver HTTP client's 10-second timeout per attempt,
+// or 5 seconds when a firehose event triggers the resolution
+// (docs/SECURITY_MODEL.md, Firehose error classes).
 // It must remain below the dead-letter redrive interval so a redrive reaches the
 // network; internal/config refuses to load when REDRIVE_INTERVAL is not
 // greater than IDENTITY_NEGATIVE_CACHE_TTL.
