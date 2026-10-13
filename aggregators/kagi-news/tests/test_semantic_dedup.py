@@ -16,6 +16,7 @@ from unittest.mock import Mock, MagicMock, patch
 import httpx2 as httpx
 
 import anthropic
+from anthropic.types import TextBlock, ThinkingBlock, ToolUseBlock
 from src.semantic_dedup import (
     SemanticDeduplicator,
     SemanticDedupUnavailable,
@@ -252,8 +253,10 @@ class TestSemanticDeduplicator:
             NEW_GUIDS[1]: RECENT_GUIDS[1],
         }
 
-    def test_uses_tool_use_for_structured_output(self, dedup, new_stories, recent_stories):
-        """Test that the API call uses tool_choice to force structured output."""
+    def test_lets_model_think_before_calling_report_duplicates_tool(self, dedup, new_stories,
+                                                                   recent_stories):
+        """The API call leaves tool_choice on auto with high effort, so the model can
+        think before calling report_duplicates, and budgets thinking plus answer tokens."""
         dedup.client.messages.create.return_value = _make_tool_response([
             {"new_id": "n1", "duplicate_of": "", "confidence": 0.0},
             {"new_id": "n2", "duplicate_of": "", "confidence": 0.0},
@@ -263,7 +266,10 @@ class TestSemanticDeduplicator:
         dedup.find_duplicates(new_stories, recent_stories)
 
         call_kwargs = dedup.client.messages.create.call_args.kwargs
-        assert call_kwargs["tool_choice"] == {"type": "tool", "name": "report_duplicates"}
+        assert call_kwargs["tool_choice"] == {"type": "auto"}
+        assert call_kwargs["output_config"] == {"effort": "high"}
+        # 3 new candidates: 16000 thinking + 256 base + 48 per candidate.
+        assert call_kwargs["max_tokens"] == 16400
         tools = call_kwargs["tools"]
         assert len(tools) == 1
         assert tools[0]["name"] == "report_duplicates"
@@ -595,6 +601,7 @@ class TestSemanticDeduplicator:
                                                       recent_stories):
         """The token budget grows with the candidate count, so batches are not truncated.
 
+        On top of a fixed thinking allowance, the answer budget scales per candidate.
         A fixed 1024 budget fit roughly twenty verdicts; a larger feed ran past
         it and came back truncated.
         """
@@ -602,7 +609,7 @@ class TestSemanticDeduplicator:
             {"new_id": "n1", "duplicate_of": "", "confidence": 0.0},
         ])
         dedup.find_duplicates(new_stories[:1], recent_stories[:1])
-        assert dedup.client.messages.create.call_args.kwargs["max_tokens"] == 256 + 48 * 1
+        assert dedup.client.messages.create.call_args.kwargs["max_tokens"] == 16304
 
         dedup.client.messages.create.return_value = _make_tool_response([
             {"new_id": "n1", "duplicate_of": "", "confidence": 0.0},
@@ -610,7 +617,7 @@ class TestSemanticDeduplicator:
             {"new_id": "n3", "duplicate_of": "", "confidence": 0.0},
         ])
         dedup.find_duplicates(new_stories[:3], recent_stories[:1])
-        assert dedup.client.messages.create.call_args.kwargs["max_tokens"] == 256 + 48 * 3
+        assert dedup.client.messages.create.call_args.kwargs["max_tokens"] == 16400
 
     def test_only_unknown_handle_verdict_raises_unavailable(self, dedup, new_stories,
                                                             recent_stories, caplog):
@@ -688,3 +695,52 @@ class TestSemanticDeduplicator:
             if "n1" in message
         ]
         assert uncovered, _warning_messages(caplog)
+
+    def test_refusal_with_partial_tool_call_raises_unavailable(
+            self, dedup, new_stories, recent_stories):
+        """A refusal that cut the tool call short is not an answer for the rest.
+
+        stop_reason "refusal" means the model stopped mid-answer, so candidates
+        missing from the partial report_duplicates call were never judged and
+        must not be treated as cleared.
+        """
+        dedup.client.messages.create.return_value = _make_tool_response(
+            [{"new_id": "n1", "duplicate_of": "r1", "confidence": 0.95}],
+            stop_reason="refusal",
+        )
+
+        with pytest.raises(SemanticDedupUnavailable):
+            dedup.find_duplicates(new_stories[:3], recent_stories[:3])
+
+    def test_thinking_and_text_before_tool_call_are_skipped(
+            self, dedup, new_stories, recent_stories):
+        """Thinking and text blocks ahead of report_duplicates do not hide the verdicts.
+
+        Real SDK block types are used so a parser that reads attributes these
+        blocks lack (such as .name on a thinking block) fails here.
+        """
+        response = Mock()
+        response.stop_reason = "tool_use"
+        response.content = [
+            ThinkingBlock(
+                type="thinking",
+                thinking="n1 repeats the tariff story; n2 and n3 are separate news.",
+                signature="test-signature",
+            ),
+            TextBlock(type="text", text="Reporting the duplicates now."),
+            ToolUseBlock(
+                type="tool_use",
+                id="toolu_test",
+                name="report_duplicates",
+                input={"results": [
+                    {"new_id": "n1", "duplicate_of": "r1", "confidence": 0.95},
+                    {"new_id": "n2", "duplicate_of": "", "confidence": 0.0},
+                    {"new_id": "n3", "duplicate_of": "", "confidence": 0.0},
+                ]},
+            ),
+        ]
+        dedup.client.messages.create.return_value = response
+
+        duplicates = dedup.find_duplicates(new_stories[:3], recent_stories[:3])
+
+        assert duplicates == {NEW_GUIDS[0]: RECENT_GUIDS[0]}

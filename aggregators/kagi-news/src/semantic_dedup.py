@@ -13,6 +13,8 @@ import anthropic
 
 logger = logging.getLogger(__name__)
 
+# Thinking at high effort needs room before the report_duplicates tool call.
+THINKING_ALLOWANCE_TOKENS = 16000
 # Response token budget: a fixed allowance plus room for one verdict per candidate.
 BASE_RESPONSE_TOKENS = 256
 RESPONSE_TOKENS_PER_CANDIDATE = 48
@@ -59,34 +61,38 @@ REPORT_DUPLICATES_TOOL: Dict[str, Any] = {
     }
 }
 
-SYSTEM_PROMPT = """You are a news deduplication system. Your job is to identify when a NEW article is essentially a rewrite of the same report as a RECENT article — covering the identical event with no meaningful new information.
+SYSTEM_PROMPT = """You are the duplicate filter for a news community. Every RECENT article has already been posted. For each NEW candidate, decide whether a reader who already saw the RECENT posts would see it as the same story again (DUPLICATE) or as a separate piece of news (NEW).
 
-DUPLICATE means: both articles describe the same specific occurrence at the same point in time, and the new one adds no significant new facts, outcome, or development beyond what the other already reported. They are essentially the same report from different outlets or with different headlines.
+Judge by the candidate's headline news: what it reports that the RECENT article did not.
 
-CRITICAL: For ongoing stories (missions, conflicts, investigations, court cases), focus on the article's PRIMARY new fact — NOT on recap/background context. News articles routinely recap prior events; that recap does NOT make the new article a duplicate. Compare what the article is actually REPORTING NEW.
+DUPLICATE when the candidate's headline news is the same incident or the same ongoing storyline, and what it adds is only:
+- the same report rewritten, or with a different headline or outlet;
+- more detail about the same incident: updated casualty counts, a named victim, the nationality of those affected, extra quotes;
+- reactions, commentary, criticism, praise, or statements about something already reported, when they change nothing yet;
+- officials repeating, weighing, defending, or hinting at the same position or option, with no decision;
+- the measured aftermath or knock-on effect of an incident already reported (outages, traffic, prices, ratings), when nothing new has happened;
+- another stunt, claim, or threat by the same actor in a saga already covered, with no outcome.
 
-NOT a duplicate when ANY of the following apply:
-- The new article reports a SUBSEQUENT event, even if closely related — this includes:
-  • Anticipation/preparation followed by the actual event ("preparing to launch" vs "launched successfully")
-  • Announcement followed by implementation ("tariffs announced" vs "tariffs take effect")
-  • Deadline followed by response ("48-hour ultimatum" vs "Iran responds")
-  • One milestone followed by the next milestone (orbit → translunar injection → flyby → return)
-- The new article reports a new daily status update on an ongoing mission/event, even if it recaps prior days
-- The new article adds substantial new information: a new outcome, official response, policy change, or follow-up action
-- The articles cover the same broad topic but different specific events or different time points
+NEW when the candidate reports a development that changes the situation:
+- a decision or outcome: a ruling, vote, signing, launch, arrest, resignation, firing, verdict, death, deal, policy taking effect;
+- the event itself after earlier coverage of its anticipation, or the next milestone of an ongoing event;
+- a separate incident, even in the same conflict or topic;
+- a separate study, report, dataset, or record, even on the same subject;
+- a materially changed forecast or status: a new window, a new location, or a new scale.
 
-Examples:
-- DUPLICATE: "US revokes residency of Soleimani relatives, detains two" and "US revokes visas of Soleimani relatives, detains two" (same event rewritten same day)
-- DUPLICATE: "Planet Labs halts Iran conflict imagery after US request" and "US satellite firm halts Iran conflict imagery release" (same announcement)
-- DUPLICATE: "Italian court orders Netflix to refund subscribers for price hikes" and "Italian court orders Netflix to refund customers up to €500" (same court ruling)
-- NOT DUPLICATE: "NASA readies Artemis II crewed moon flyby" and "NASA launches Artemis II crew on lunar flyby" (preparation vs the launch actually happening — DIFFERENT events on different days)
-- NOT DUPLICATE: "Artemis II sends astronauts toward the Moon" (TLI burn) and "Artemis II tests moon mission technologies" (next-day status, different activity)
-- NOT DUPLICATE: "Artemis II crew nears moon flyby" (halfway point) and "Artemis II crew enters lunar space" (sphere of influence reached) — distinct mission milestones
-- NOT DUPLICATE: "Trump gives Iran 48-hour Hormuz deadline" and "Iran allows Iraqi ships through Strait of Hormuz" (sequential events in same crisis)
-- NOT DUPLICATE: "US announces tariffs on China" and "Tariffs officially take effect, markets react" (announcement vs implementation)
-- NOT DUPLICATE: "Earthquake hits Turkey" and "Earthquake hits Japan" (same topic, different events)
+Examples (illustrative, not from the feed):
+- DUPLICATE: RECENT "Storm floods coastal town, two dead" / NEW "Death toll in coastal town flooding rises to five" (same incident, updated count)
+- DUPLICATE: RECENT "Minister says sanctions are on the table after embassy attack" / NEW "Minister weighs sanctions after embassy attack that killed a citizen" (same option still being weighed, one added detail)
+- DUPLICATE: RECENT "Hacker leaks early footage of unreleased film" / NEW "Same hacker threatens to release full film unless paid" (same actor, same saga, no outcome)
+- DUPLICATE: RECENT "Fire shuts down chip plant" / NEW "Chip shipments fall after plant fire" (knock-on effect of the reported incident)
+- NEW: RECENT "Government announces tariff on steel" / NEW "Steel tariff takes effect; importers halt orders" (announcement, then implementation)
+- NEW: RECENT "Agency forecasts record heat season" / NEW "June sets all-time temperature record" (forecast, then a measured record)
+- NEW: RECENT "Senate debates spending bill" / NEW "Senate passes spending bill" (debate, then a vote)
+- NEW: RECENT "Earthquake strikes northern region" / NEW "Second quake hits southern coast" (separate incident)
 
-When in doubt, mark as NOT a duplicate. It is better to allow a near-duplicate through than to suppress a unique story or a daily status update on an ongoing event."""
+When the candidate is a real development, do not suppress it because it shares a topic, people, or background with a RECENT article.
+
+Always answer by calling the report_duplicates tool exactly once, with one result per NEW candidate."""
 
 
 class SemanticDeduplicator:
@@ -98,7 +104,7 @@ class SemanticDeduplicator:
     """
 
     def __init__(self, api_key: str, threshold: float = 0.8,
-                 model: str = "claude-haiku-4-5-20251001"):
+                 model: str = "claude-haiku-5-5"):
         """
         Initialize the semantic deduplicator.
 
@@ -135,8 +141,10 @@ class SemanticDeduplicator:
 
         Raises:
             SemanticDedupUnavailable: The candidates were never judged -- a
-                transient API failure, a truncated response, or a response
-                carrying no usable verdict for a non-empty candidate list.
+                transient API failure, a response that did not stop normally
+                (truncated, refused, paused or out of context window), or a
+                response carrying no usable verdict for a non-empty candidate
+                list.
         """
         if not new_stories or not recent_stories:
             return {}
@@ -150,11 +158,16 @@ class SemanticDeduplicator:
         try:
             response = self.client.messages.create(
                 model=self.model,
-                max_tokens=(BASE_RESPONSE_TOKENS
+                max_tokens=(THINKING_ALLOWANCE_TOKENS
+                            + BASE_RESPONSE_TOKENS
                             + RESPONSE_TOKENS_PER_CANDIDATE * len(new_stories)),
                 system=SYSTEM_PROMPT,
                 tools=[tool],
-                tool_choice={"type": "tool", "name": "report_duplicates"},
+                # Auto tool choice lets the model think before it calls
+                # report_duplicates; a reply without that call is rejected
+                # by _parse_response.
+                tool_choice={"type": "auto"},
+                output_config={"effort": "high"},
                 messages=[{"role": "user", "content": prompt}]
             )
 
@@ -212,7 +225,9 @@ class SemanticDeduplicator:
                         recent_handles: Dict[str, Dict]) -> Dict[str, str]:
         """Translate the tool use response into a new id -> recent id mapping.
 
-        Raises SemanticDedupUnavailable when the response was truncated or
+        Raises SemanticDedupUnavailable when the response did not stop
+        normally (any stop_reason other than "tool_use", which is how a
+        completed report_duplicates call ends under auto tool choice) or
         carried no usable verdict at all. Individually unusable verdicts are
         warned about and discarded without counting as their candidate's verdict,
         and candidates left without a usable verdict are named once and treated
@@ -225,6 +240,18 @@ class SemanticDeduplicator:
             )
             raise SemanticDedupUnavailable(
                 "semantic dedup response was truncated (stop_reason max_tokens)"
+            )
+
+        stop_reason = getattr(response, "stop_reason", None)
+        if stop_reason != "tool_use":
+            logger.warning(
+                f"Semantic dedup response did not stop normally "
+                f"(stop_reason {stop_reason!r}); its verdicts cannot be trusted "
+                f"as complete"
+            )
+            raise SemanticDedupUnavailable(
+                f"semantic dedup response did not stop normally "
+                f"(stop_reason {stop_reason!r})"
             )
 
         results = None
