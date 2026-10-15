@@ -1,0 +1,8 @@
+{
+  "$type": "social.coves.actor.defs#profileViewDetailed",
+  "did": "did:plc:abc123",
+  "origin": "lemmy.world",
+  "originUsername": "Alice_B",
+  "originUrl": "https://lemmy.world/u/Alice_B",
+  "originSoftware": "lemmy"
+}

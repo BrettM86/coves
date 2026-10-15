@@ -59,8 +59,12 @@ type RecordView struct {
 
 // ProfileView is social.coves.actor.defs#profileView.
 type ProfileView struct {
-	DID         string  `json:"did"`
-	Handle      string  `json:"handle,omitempty"`
-	DisplayName *string `json:"displayName,omitempty"`
-	Avatar      *string `json:"avatar,omitempty"`
+	DID            string  `json:"did"`
+	Handle         string  `json:"handle,omitempty"`
+	DisplayName    *string `json:"displayName,omitempty"`
+	Avatar         *string `json:"avatar,omitempty"`
+	Origin         string  `json:"origin,omitempty"`
+	OriginUsername string  `json:"originUsername,omitempty"`
+	OriginURL      string  `json:"originUrl,omitempty"`
+	OriginSoftware string  `json:"originSoftware,omitempty"`
 }

@@ -32,6 +32,8 @@ type mockUserService struct {
 	// updateHandleError is returned by UpdateHandle when set, so the identity
 	// path's classification of handle failures can be pinned without a DB.
 	updateHandleError error
+	// updatedHandles records every handle UpdateHandle accepted, in order.
+	updatedHandles []string
 }
 
 func newMockUserService() *mockUserService {
@@ -65,10 +67,15 @@ func (m *mockUserService) UpdateHandle(ctx context.Context, did, newHandle strin
 	if m.updateHandleError != nil {
 		return nil, m.updateHandleError
 	}
+	m.updatedHandles = append(m.updatedHandles, newHandle)
 	return nil, nil
 }
 
 func (m *mockUserService) ResolveHandleToDID(ctx context.Context, handle string) (string, error) {
+	return "", nil
+}
+
+func (m *mockUserService) ResolveActorIdentifierToDID(ctx context.Context, identifier string) (string, error) {
 	return "", nil
 }
 
@@ -161,6 +168,19 @@ func (m *mockIdentityResolverForUser) ResolveDID(ctx context.Context, did string
 
 func (m *mockIdentityResolverForUser) Purge(ctx context.Context, identifier string) error {
 	return nil
+}
+
+// ResolveDeclaredIdentity answers from the same identities as Resolve, with the
+// resolved handle as the declared one; it does not count toward calls.
+func (m *mockIdentityResolverForUser) ResolveDeclaredIdentity(ctx context.Context, did string) (*identity.DeclaredIdentity, error) {
+	if m.resolveErr != nil {
+		return nil, m.resolveErr
+	}
+	resolved := m.identities[did]
+	if resolved == nil {
+		return nil, &identity.ErrNotFound{Identifier: did, Reason: "no scripted document"}
+	}
+	return &identity.DeclaredIdentity{DID: resolved.DID, DeclaredHandle: resolved.Handle, PDSURL: resolved.PDSURL}, nil
 }
 
 func TestUserConsumer_HandleProfileCommit(t *testing.T) {
@@ -1018,25 +1038,29 @@ func TestUserConsumer_IdentityEvent_SyncsSessionHandles(t *testing.T) {
 		return &JetstreamEvent{Kind: "identity", Did: did, Identity: &IdentityEvent{Did: did, Handle: handle}}
 	}
 
-	newConsumer := func(currentHandle string) (*UserEventConsumer, *fakeSessionHandleUpdater, *mockUserService) {
+	newConsumer := func(currentHandle, resolvedHandle string) (*UserEventConsumer, *fakeSessionHandleUpdater, *mockUserService) {
 		service := newMockUserService()
 		service.users[did] = &users.User{DID: did, Handle: currentHandle}
 		updater := &fakeSessionHandleUpdater{}
 		return NewUserEventConsumer(service, &mockIdentityResolverForUser{},
+			WithUserUncachedIdentityResolver(&mockIdentityResolverForUser{identities: map[string]*identity.Identity{
+				did: {DID: did, Handle: resolvedHandle},
+			}}),
+			WithUserIdentityRefreshLock(&passThroughIdentityRefreshLock{}),
 			WithSessionHandleUpdater(updater)), updater, service
 	}
 
 	t.Run("a real rename fans out to the sessions", func(t *testing.T) {
-		consumer, updater, _ := newConsumer("old.example.com")
+		consumer, updater, _ := newConsumer("old.example.com", "verified.example.com")
 
-		require.NoError(t, consumer.HandleEvent(context.Background(), identityEvent("new.example.com")))
+		require.NoError(t, consumer.HandleEvent(context.Background(), identityEvent("event.example.com")))
 
 		require.Len(t, updater.calls, 1,
 			"a handle change must reach the OAuth sessions, or every device the user is signed "+
 				"in on keeps showing the old handle until its session expires")
 		assert.Equal(t, did, updater.calls[0].did)
-		assert.Equal(t, "new.example.com", updater.calls[0].handle,
-			"the sessions must be given the NEW handle, not the one they already hold")
+		assert.Equal(t, "verified.example.com", updater.calls[0].handle,
+			"the sessions must receive the verified handle, not the event's handle")
 	})
 
 	t.Run("an unchanged handle does not touch the sessions", func(t *testing.T) {
@@ -1044,7 +1068,7 @@ func TestUserConsumer_IdentityEvent_SyncsSessionHandles(t *testing.T) {
 		// rotation key change, a PDS migration), and they arrive on an
 		// unfiltered stream. Writing every session row on each of them would be
 		// a steady stream of pointless UPDATEs against a hot table.
-		consumer, updater, _ := newConsumer("same.example.com")
+		consumer, updater, _ := newConsumer("same.example.com", "same.example.com")
 
 		require.NoError(t, consumer.HandleEvent(context.Background(), identityEvent("same.example.com")))
 		assert.Empty(t, updater.calls)
@@ -1076,7 +1100,7 @@ func TestUserConsumer_IdentityEvent_SyncsSessionHandles(t *testing.T) {
 		// session row that expires on its own. The cost of the failure is a user
 		// seeing their old handle in one client; the cost of treating it as
 		// fatal is a consumer that stops.
-		consumer, updater, _ := newConsumer("old.example.com")
+		consumer, updater, _ := newConsumer("old.example.com", "new.example.com")
 		updater.err = errors.New("the session store is unreachable")
 
 		require.NoError(t, consumer.HandleEvent(context.Background(), identityEvent("new.example.com")),
@@ -1091,7 +1115,11 @@ func TestUserConsumer_IdentityEvent_SyncsSessionHandles(t *testing.T) {
 		// performed.
 		service := newMockUserService()
 		service.users[did] = &users.User{DID: did, Handle: "old.example.com"}
-		consumer := NewUserEventConsumer(service, &mockIdentityResolverForUser{})
+		consumer := NewUserEventConsumer(service, &mockIdentityResolverForUser{},
+			WithUserUncachedIdentityResolver(&mockIdentityResolverForUser{identities: map[string]*identity.Identity{
+				did: {DID: did, Handle: "new.example.com"},
+			}}),
+			WithUserIdentityRefreshLock(&passThroughIdentityRefreshLock{}))
 
 		require.NoError(t, consumer.HandleEvent(context.Background(), identityEvent("new.example.com")))
 	})

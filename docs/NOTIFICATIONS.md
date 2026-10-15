@@ -167,6 +167,6 @@ Each sweep deletes at most 10,000 rows per transaction with `FOR UPDATE SKIP LOC
 
 - No new env vars. Bridged totals depend on `TRUSTED_BRIDGE_PDS_HOSTS`, and thumbnails on `IMAGE_PROXY_ENABLED` with an absolute `IMAGE_PROXY_BASE_URL` or `IMAGE_PROXY_CDN_URL`.
 - Migration 054 builds `idx_votes_voter_subject_upvotes` `CONCURRENTLY` outside a transaction, with no `IF NOT EXISTS`. If interrupted, drop the INVALID index by hand (`DROP INDEX CONCURRENTLY idx_votes_voter_subject_upvotes`) before retrying.
-- A new migration after 055 needs a `MigrateDownOne` step at each rollback site in `internal/db/postgres` (grep `MigrateDownOne(t, db, 55`) and an update to the "035 through 055" comment in `admission_repo_schema_test.go`.
+- A new migration after 059 needs a `MigrateDownOne` step at each rollback site in `internal/db/postgres` (grep `MigrateDownOne(t, db, 59`) and an update to the "035 through 059" comment in `admission_repo_schema_test.go`.
 - The lexicons go out in the notifications release in [LEXICON_PUBLISHING.md](LEXICON_PUBLISHING.md). Caddy needs no change: `@appview` already routes `/xrpc/*`.
 - T2 covers replies, mentions, upvotes and mark-seen with real sign-in. Bridged totals have no T2, because the hermetic stack has no bridge.

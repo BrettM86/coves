@@ -387,3 +387,38 @@ func TestListNotifications_UpvoteMixedPageBatchesHydration(t *testing.T) {
 		})
 	}
 }
+
+func TestListNotifications_RecentUpvoterOrigin(t *testing.T) {
+	f := newListHandlerFixture(t)
+	thread := f.seedThread("Root", "Body")
+	bridged, native := "did:plc:originbridged"+f.id, "did:plc:originnative"+f.id
+	f.addUser(bridged, "originbridged"+f.id+".test", "Bridged")
+	f.addUser(native, "originnative"+f.id+".test", "Native")
+	_, err := f.db.ExecContext(context.Background(), `UPDATE users SET origin = $1, origin_username = $2, origin_url = $3, origin_software = $4 WHERE did = $5`,
+		"lemmy.world", "Alice_B", "https://lemmy.world/u/Alice_B", "lemmy", bridged)
+	require.NoError(t, err)
+	at := time.Date(2026, 9, 20, 9, 1, 0, 0, time.UTC)
+	f.addUpvoteGroup(thread.caller, thread.root, thread.root, at)
+	f.addUpvoteVote(bridged, thread.root, "up", at.Add(time.Second))
+	f.addUpvoteVote(native, thread.root, "up", at.Add(2*time.Second))
+
+	response := f.request(thread.caller, "")
+	require.Equal(t, http.StatusOK, response.status, "response: %s", response.raw)
+	rows := listRawRows(t, response)
+	require.Len(t, rows, 1)
+	byDID := make(map[string]map[string]json.RawMessage)
+	for _, voter := range upvoteVoters(t, rows[0]) {
+		var did string
+		require.NoError(t, json.Unmarshal(voter["did"], &did))
+		byDID[did] = voter
+	}
+	require.Contains(t, byDID, bridged)
+	require.Contains(t, byDID, native)
+	for key, value := range map[string]string{"origin": `"lemmy.world"`, "originUsername": `"Alice_B"`, "originUrl": `"https://lemmy.world/u/Alice_B"`, "originSoftware": `"lemmy"`} {
+		require.Contains(t, byDID[bridged], key, "bridged upvoter: %s", mustJSON(t, byDID[bridged]))
+		require.JSONEq(t, value, string(byDID[bridged][key]), key)
+	}
+	for _, key := range []string{"origin", "originUsername", "originUrl", "originSoftware"} {
+		require.NotContains(t, byDID[native], key)
+	}
+}

@@ -84,6 +84,11 @@ func (m *MockUserRepository) UpdateHandle(ctx context.Context, did, newHandle st
 	return args.Get(0).(*User), args.Error(1)
 }
 
+func (m *MockUserRepository) GetDIDByOriginUsername(ctx context.Context, username, origin string) (string, error) {
+	args := m.Called(ctx, username, origin)
+	return args.String(0), args.Error(1)
+}
+
 func (m *MockUserRepository) GetByDIDs(ctx context.Context, dids []string) (map[string]*User, error) {
 	args := m.Called(ctx, dids)
 	if args.Get(0) == nil {

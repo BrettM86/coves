@@ -120,33 +120,34 @@ func RegisterUserRoutesWithOptions(r chi.Router, service users.UserService, auth
 func (h *UserHandler) GetProfile(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Get actor parameter (DID or handle)
+	// Get actor parameter (DID, handle, or a bridged user's name@host)
 	actor := r.URL.Query().Get("actor")
 	if actor == "" {
 		writeXRPCError(w, "InvalidRequest", "actor parameter is required", http.StatusBadRequest)
 		return
 	}
 
-	// Resolve actor to DID
-	var did string
-	if strings.HasPrefix(actor, "did:") {
-		did = actor
-	} else {
-		// Resolve handle to DID
-		resolvedDID, err := h.userService.ResolveHandleToDID(ctx, actor)
+	// Resolve actor to DID. A DID needs no lookup. Only an actually-absent
+	// user is a 404. Reporting a DNS outage or a broken PLC directory as "user
+	// not found" tells the caller their handle is wrong and hides the outage
+	// from anyone watching 5xx.
+	did := actor
+	if !strings.HasPrefix(actor, "did:") {
+		resolvedDID, err := h.userService.ResolveActorIdentifierToDID(ctx, actor)
 		if err != nil {
-			// Only an actually-absent handle is a 404. Reporting a DNS outage or
-			// a broken PLC directory as "user not found" tells the caller their
-			// handle is wrong and hides the outage from anyone watching 5xx.
 			var invalidHandle *users.InvalidHandleError
 			switch {
+			case errors.Is(err, users.ErrAmbiguousUser):
+				writeXRPCError(w, "AmbiguousActor",
+					"More than one user matches this name and host; address them by DID or handle instead",
+					http.StatusConflict)
 			case errors.Is(err, users.ErrUserNotFound):
 				writeXRPCError(w, "ProfileNotFound", "user not found", http.StatusNotFound)
 			case errors.As(err, &invalidHandle):
-				writeXRPCError(w, "InvalidRequest", "actor is not a valid handle or DID", http.StatusBadRequest)
+				writeXRPCError(w, "InvalidRequest", "actor is not a valid handle, DID, or name@host", http.StatusBadRequest)
 			default:
-				log.Printf("Failed to resolve handle %s: %v", actor, err)
-				writeXRPCError(w, "InternalError", "failed to resolve handle", http.StatusInternalServerError)
+				log.Printf("Failed to resolve actor %s: %v", actor, err)
+				writeXRPCError(w, "InternalError", "failed to resolve actor", http.StatusInternalServerError)
 			}
 			return
 		}

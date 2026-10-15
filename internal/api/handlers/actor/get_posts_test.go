@@ -50,6 +50,10 @@ func (m *mockPostService) GetPosts(ctx context.Context, req posts.GetPostsReques
 // mockUserService implements users.UserService for testing
 type mockUserService struct {
 	resolveHandleToDIDFunc func(ctx context.Context, handle string) (string, error)
+	// resolveActorIdentifierToDIDFunc answers ResolveActorIdentifierToDID; when
+	// nil the call falls back to ResolveHandleToDID so handle-only tests keep
+	// one place to model resolution.
+	resolveActorIdentifierToDIDFunc func(ctx context.Context, identifier string) (string, error)
 }
 
 func (m *mockUserService) CreateUser(ctx context.Context, req users.CreateUserRequest) (*users.User, error) {
@@ -73,6 +77,13 @@ func (m *mockUserService) ResolveHandleToDID(ctx context.Context, handle string)
 		return m.resolveHandleToDIDFunc(ctx, handle)
 	}
 	return "did:plc:testuser", nil
+}
+
+func (m *mockUserService) ResolveActorIdentifierToDID(ctx context.Context, identifier string) (string, error) {
+	if m.resolveActorIdentifierToDIDFunc != nil {
+		return m.resolveActorIdentifierToDIDFunc(ctx, identifier)
+	}
+	return m.ResolveHandleToDID(ctx, identifier)
 }
 
 func (m *mockUserService) RegisterAccount(ctx context.Context, req users.RegisterAccountRequest) (*users.RegisterAccountResponse, error) {
@@ -236,7 +247,7 @@ func TestGetPostsHandler_InvalidLimitParameter(t *testing.T) {
 func TestGetPostsHandler_ActorNotFound(t *testing.T) {
 	mockUsers := &mockUserService{
 		resolveHandleToDIDFunc: func(ctx context.Context, handle string) (string, error) {
-			return "", posts.ErrActorNotFound
+			return "", users.ErrUserNotFound
 		},
 	}
 
@@ -325,7 +336,7 @@ func TestGetPostsHandler_HandleResolution(t *testing.T) {
 			if handle == "test.user" {
 				return "did:plc:resolveduser123", nil
 			}
-			return "", posts.ErrActorNotFound
+			return "", users.ErrUserNotFound
 		},
 	}
 

@@ -79,6 +79,16 @@ func run() error {
 		}
 	}()
 
+	identityRefreshLockDB, err := openIdentityRefreshLockDatabase(ctx, cfg.Database)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := identityRefreshLockDB.Close(); closeErr != nil {
+			slog.Error("failed to close identity refresh lock pool", "error", closeErr)
+		}
+	}()
+
 	otelProvider, err := startObservability(ctx)
 	if err != nil {
 		return err
@@ -92,7 +102,7 @@ func run() error {
 		}
 	}()
 
-	app, err := buildApplication(ctx, cfg, db, sessionCoordinationDB, credentialCipher)
+	app, err := buildApplication(ctx, cfg, db, sessionCoordinationDB, identityRefreshLockDB, credentialCipher)
 	if err != nil {
 		return err
 	}

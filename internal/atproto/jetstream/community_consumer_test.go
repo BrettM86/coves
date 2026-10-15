@@ -2,10 +2,16 @@ package jetstream
 
 import (
 	"context"
+	"net"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"Coves/internal/atproto/identity"
+	covesoauth "Coves/internal/atproto/oauth"
+	"Coves/internal/core/communities"
 )
 
 // Unit coverage for the community consumer's record parsing.
@@ -245,9 +251,9 @@ func TestCommunityConsumer_IgnoresUnrelatedCollections(t *testing.T) {
 			"an event for %s must be ignored, not handled", collection)
 	}
 
-	// Non-commit kinds too: identity and account events arrive on this feed
-	// regardless of wantedCollections.
-	require.NoError(t, c.HandleEvent(ctx, &JetstreamEvent{Kind: "identity", Did: "did:plc:somebody"}))
+	// Account events arrive on this feed regardless of wantedCollections.
+	// Identity events are handled, not ignored; their malformed shapes are
+	// owned by internal/core/communities/consumer_profile_indexing_test.go.
 	require.NoError(t, c.HandleEvent(ctx, &JetstreamEvent{Kind: "account", Did: "did:plc:somebody"}))
 	require.NoError(t, c.HandleEvent(ctx, &JetstreamEvent{Kind: "commit", Did: "did:plc:somebody"}),
 		"a commit event with no commit body must not dereference it")
@@ -320,4 +326,69 @@ func TestUpdateCommunityIgnoresRecordAssertedSubscriberCount(t *testing.T) {
 	require.NoError(t, consumer.updateCommunity(context.Background(), did, commit))
 	assert.Equal(t, 7, repo.byDID[did].SubscriberCount,
 		"a profile update must not touch the AppView-derived subscriber count")
+}
+
+// A rename under the community's stored hosted_by_did domain must reach DID
+// document verification of that domain, with verification on and the instance
+// DID naming a different domain. A check against any other DID (the instance's,
+// the owner's, the community's own, or none) is refused permanently before any
+// fetch, which in production would drop every community rename for good.
+//
+// The success path needs a real HTTPS fetch of did:web's .well-known document,
+// which this client cannot be pointed at, so the test asserts the fetch was
+// attempted for the stored domain. The resolver seam answers that lookup with
+// loopback, which the SSRF guard refuses before any dial: the test makes no DNS
+// lookup and opens no connection. A refused fetch is a redrivable failure.
+func TestCommunityIdentityEvent_RenameIsVerifiedAgainstTheStoredHostedByDomain(t *testing.T) {
+	t.Parallel()
+
+	const (
+		did            = "did:plc:communityidentityhostedby"
+		hostedByDomain = "community.example" // RFC 2606 reserved; only the seam answers it
+		storedHandle   = "gaming.old.example"
+		renamedHandle  = "gaming." + hostedByDomain
+	)
+
+	repo := newOriginRepo()
+	repo.byDID[did] = &communities.Community{
+		DID:         did,
+		Handle:      storedHandle,
+		Name:        "gaming",
+		OwnerDID:    "did:plc:communityidentityhostedbyowner",
+		HostedByDID: "did:web:" + hostedByDomain,
+	}
+
+	var (
+		lookupsMu sync.Mutex
+		lookups   []string
+	)
+	recordingLoopbackResolver := func(_ context.Context, host string) ([]net.IP, error) {
+		lookupsMu.Lock()
+		defer lookupsMu.Unlock()
+		lookups = append(lookups, host)
+		return []net.IP{net.IPv4(127, 0, 0, 1)}, nil
+	}
+
+	uncachedResolver := &scriptedRefreshResolver{answer: &identity.Identity{DID: did, Handle: renamedHandle}}
+	consumer := NewCommunityEventConsumer(repo, "did:web:coves.social", false, &purgeRecordingResolver{},
+		append(PrivateHostOptions(false),
+			WithCommunityUncachedIdentityResolver(uncachedResolver),
+			WithCommunityIdentityRefreshLock(&passThroughIdentityRefreshLock{}),
+			withTransportOptions(covesoauth.WithHostResolver(recordingLoopbackResolver)))...)
+
+	err := consumer.HandleEvent(context.Background(), &JetstreamEvent{
+		Kind:     "identity",
+		Did:      did,
+		Identity: &IdentityEvent{Did: did, Handle: renamedHandle},
+	})
+
+	require.ErrorIs(t, err, ErrUnresolvedReference,
+		"a rename whose DID document could not be fetched must be redrivable")
+	assert.NotErrorIs(t, err, ErrPermanentEvent,
+		"the rename is under the stored hostedBy domain; a permanent refusal means it was checked against another DID")
+	lookupsMu.Lock()
+	assert.Equal(t, []string{hostedByDomain}, lookups,
+		"DID document verification must fetch from the stored hostedBy domain, once")
+	lookupsMu.Unlock()
+	assert.Equal(t, storedHandle, repo.byDID[did].Handle, "an unverified rename must not be stored")
 }

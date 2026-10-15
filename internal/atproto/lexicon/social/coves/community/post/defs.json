@@ -124,6 +124,21 @@
         "reputation": {
           "type": "integer",
           "description": "Author's reputation in the community"
+        },
+        "origin": {
+          "type": "string",
+          "maxLength": 253,
+          "description": "Bridge-written home instance hostname (e.g. lemmy.world); display only. maxLength counts UTF-8 bytes."
+        },
+        "originUsername": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "Bridge-written username on the home instance; display only. maxLength counts UTF-8 bytes."
+        },
+        "originSoftware": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Bridge-written home instance software; display only. maxLength counts UTF-8 bytes."
         }
       }
     },

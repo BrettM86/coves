@@ -474,3 +474,49 @@ func TestListNotifications_SeenAtAndIsRead(t *testing.T) {
 		require.NotContains(t, body, "seenAt")
 	})
 }
+
+func TestListNotifications_ReplyAuthorOrigin(t *testing.T) {
+	for _, tc := range []struct {
+		name                                    string
+		origin, originUsername, originURL, soft any
+		want                                    map[string]string
+		absent                                  []string
+	}{
+		{
+			name: "bridged actor with full origin", origin: "lemmy.world", originUsername: "Alice_B", originURL: "https://lemmy.world/u/Alice_B", soft: "lemmy",
+			want: map[string]string{"origin": `"lemmy.world"`, "originUsername": `"Alice_B"`, "originUrl": `"https://lemmy.world/u/Alice_B"`, "originSoftware": `"lemmy"`},
+		},
+		{
+			name: "only origin software stored", soft: "lemmy",
+			want:   map[string]string{"originSoftware": `"lemmy"`},
+			absent: []string{"origin", "originUsername", "originUrl"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newListHandlerFixture(t)
+			thread := f.seedThread("Root", "Body")
+			_, err := f.db.ExecContext(context.Background(), `UPDATE users SET origin = $1, origin_username = $2, origin_url = $3, origin_software = $4 WHERE did = $5`,
+				tc.origin, tc.originUsername, tc.originURL, tc.soft, thread.actor)
+			require.NoError(t, err)
+			at := time.Date(2026, time.September, 20, 9, 1, 0, 0, time.UTC)
+			uri := "at://" + thread.actor + "/social.coves.community.comment/originreply"
+			f.addComment(uri, "bafyoriginreply", "originreply", thread.actor, thread.root, "bafyroot", thread.root, "bafyroot", "Reply", at)
+			f.addReply(thread.caller, notifications.ReasonPostReply, uri, "bafyoriginreply", thread.actor, thread.root, thread.root, at, at)
+
+			response := f.request(thread.caller, "")
+			require.Equal(t, http.StatusOK, response.status, "response: %s", response.raw)
+			rows := listRawRows(t, response)
+			require.Len(t, rows, 1)
+			var author map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(rows[0]["author"], &author))
+			require.JSONEq(t, `"`+thread.actor+`"`, string(author["did"]))
+			for key, value := range tc.want {
+				require.Contains(t, author, key, "author: %s", rows[0]["author"])
+				require.JSONEq(t, value, string(author[key]), key)
+			}
+			for _, key := range tc.absent {
+				require.NotContains(t, author, key)
+			}
+		})
+	}
+}

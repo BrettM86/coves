@@ -110,6 +110,49 @@ func openSessionCoordinationDatabase(ctx context.Context, cfg config.DatabaseCon
 	return db, nil
 }
 
+// identityRefreshLockMaxOpenConns caps the identity refresh lock pool. Each
+// in-flight identity refresh holds one connection from it while it waits for
+// or holds its DID's lock, and a process runs at most a few refreshes at once
+// (one per feed's consumer, plus the dead letter redriver). When it is full,
+// further refreshes queue for a connection under their own context.
+const identityRefreshLockMaxOpenConns = 8
+
+// openIdentityRefreshLockDatabase returns the small dedicated pool that
+// identity refreshes hold their per-DID advisory locks on. Keeping the waiting
+// and holding connections off the application pool means refreshes queued on
+// one DID cannot starve the handle write that would release them. Each lock
+// wait is bounded by the lock_timeout the lock sets on its connection
+// (jetstream.IdentityRefreshLockWaitTimeout).
+//
+// The caller owns the returned pool and must Close it.
+func openIdentityRefreshLockDatabase(ctx context.Context, cfg config.DatabaseConfig) (*sql.DB, error) {
+	dsn, err := cfg.AppDSN()
+	if err != nil {
+		return nil, fmt.Errorf("building identity refresh lock DSN: %w", err)
+	}
+
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("opening identity refresh lock database: %w", err)
+	}
+	db.SetMaxOpenConns(identityRefreshLockMaxOpenConns)
+	db.SetMaxIdleConns(identityRefreshLockMaxOpenConns)
+	db.SetConnMaxLifetime(cfg.ConnMaxLifetime)
+	db.SetConnMaxIdleTime(cfg.ConnMaxIdleTime)
+
+	if err := db.PingContext(ctx); err != nil {
+		if closeErr := db.Close(); closeErr != nil {
+			slog.Error("failed to close identity refresh lock pool after failed ping", "error", closeErr)
+		}
+		return nil, fmt.Errorf("pinging identity refresh lock database: %w", err)
+	}
+
+	slog.Info("connected identity refresh lock pool",
+		"max_open_conns", identityRefreshLockMaxOpenConns,
+	)
+	return db, nil
+}
+
 // runMigrations applies pending migrations on a short-lived connection that
 // carries no statement timeout. Before goose runs, legacy credentials are
 // resealed with the application cipher because migration 046 refuses to drop

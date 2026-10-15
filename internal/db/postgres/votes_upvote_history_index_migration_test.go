@@ -17,6 +17,12 @@ func TestVotesUpvoteHistoryIndexMigration054_DownAndUpRoundTrip(t *testing.T) {
 	db := testkit.DB(t)
 
 	assertVotesUpvoteHistoryIndex(t, db, "after 054 Up")
+	require.EqualValues(t, 59, testkit.MigrateDownOne(t, db, 59),
+		"059 (users origin username index) must be rolled back before testing earlier migrations")
+	require.EqualValues(t, 58, testkit.MigrateDownOne(t, db, 58),
+		"058 (communities origin display) must be rolled back before testing earlier migrations")
+	require.EqualValues(t, 57, testkit.MigrateDownOne(t, db, 57),
+		"057 (users profile origin) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 56, testkit.MigrateDownOne(t, db, 56),
 		"056 (moderation content snapshots) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 55, testkit.MigrateDownOne(t, db, 55),

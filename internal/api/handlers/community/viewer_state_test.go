@@ -42,7 +42,8 @@ import (
 )
 
 // repositoryBackedService is a communities.Service that answers only the reads
-// the two endpoints under test make, and answers them from the real repository.
+// the endpoints under test make (get and list here, plus search in
+// community_origin_view_test.go), and answers them from the real repository.
 //
 // The point of the fake is to take the SERVICE out of the picture without
 // taking the DATABASE out of it: the handler asks the service for the
@@ -74,8 +75,8 @@ func (s *repositoryBackedService) UpdateCommunity(context.Context, communities.U
 	return nil, fmt.Errorf("repositoryBackedService: UpdateCommunity is not part of the viewer-state seam")
 }
 
-func (s *repositoryBackedService) SearchCommunities(context.Context, communities.SearchCommunitiesRequest) ([]*communities.Community, int, error) {
-	return nil, 0, fmt.Errorf("repositoryBackedService: SearchCommunities is not part of the viewer-state seam")
+func (s *repositoryBackedService) SearchCommunities(ctx context.Context, req communities.SearchCommunitiesRequest) ([]*communities.Community, int, error) {
+	return s.repo.Search(ctx, req)
 }
 
 func (s *repositoryBackedService) SubscribeToCommunity(context.Context, *oauth.ClientSessionData, string, int) (*communities.Subscription, error) {

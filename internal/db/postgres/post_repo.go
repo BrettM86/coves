@@ -49,9 +49,13 @@ type PostRepository struct {
 // join every display query splices in via visiblePostsJoin — they carry the
 // per-community admission context an author's own view renders, and are NULL for
 // legacy/bridged rows that hold no admission.
+//
+// The author origin columns are COALESCEd to an empty string so a NULL (native author)
+// and a cleared column both scan to "", which omitempty drops.
 const postViewSelectColumns = `
 		p.uri, p.cid, p.rkey,
 		p.author_did, COALESCE(u.handle, p.author_did) as author_handle, u.display_name as author_display_name, u.avatar_cid as author_avatar, u.pds_url as author_pds_url,
+		COALESCE(u.origin, '') as author_origin, COALESCE(u.origin_username, '') as author_origin_username, COALESCE(u.origin_software, '') as author_origin_software,
 		p.community_did, c.handle as community_handle, c.name as community_name, c.avatar_cid as community_avatar, c.pds_url as community_pds_url, c.origin as community_origin,
 		p.title, p.content, p.content_facets, p.embed, p.content_labels,
 		p.created_at, p.edited_at, p.indexed_at,
@@ -686,6 +690,7 @@ func scanPostView(rows *sql.Rows, extraDest ...interface{}) (*posts.PostView, er
 	dest := []interface{}{
 		&postView.URI, &postView.CID, &postView.RKey,
 		&authorView.DID, &authorView.Handle, &authorDisplayName, &authorAvatar, &authorPDSURL,
+		&authorView.Origin, &authorView.OriginUsername, &authorView.OriginSoftware,
 		&communityRef.DID, &communityHandle, &communityRef.Name, &communityAvatar, &communityPDSURL, &communityOrigin,
 		&title, &content, &facets, &embed, &labelsJSON,
 		&postView.CreatedAt, &editedAt, &postView.IndexedAt,

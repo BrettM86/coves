@@ -60,6 +60,12 @@ func (h *GetCommentsHandler) HandleGetComments(w http.ResponseWriter, r *http.Re
 	// Parse query parameters
 	req, err := h.parseRequest(r)
 	if err != nil {
+		// More than one bridged user matches a name@host actor: 409 AmbiguousActor
+		if errors.Is(err, users.ErrAmbiguousUser) {
+			handleServiceError(w, err)
+			return
+		}
+
 		// Check if it's an actor not found error (from handle resolution)
 		var actorNotFound *actorNotFoundError
 		if errors.As(err, &actorNotFound) {
@@ -134,7 +140,7 @@ func (h *GetCommentsHandler) parseRequest(r *http.Request) (*comments.GetActorCo
 	}
 
 	// Resolve actor to DID if it's a handle
-	actorDID, err := h.resolveActor(r, actor)
+	actorDID, err := resolveActorDID(r.Context(), h.userService, actor)
 	if err != nil {
 		return nil, err
 	}
@@ -158,41 +164,6 @@ func (h *GetCommentsHandler) parseRequest(r *http.Request) (*comments.GetActorCo
 	}
 
 	return req, nil
-}
-
-// resolveActor converts an actor identifier (handle or DID) to a DID
-func (h *GetCommentsHandler) resolveActor(r *http.Request, actor string) (string, error) {
-	// If it's already a DID, return it
-	if strings.HasPrefix(actor, "did:") {
-		return actor, nil
-	}
-
-	// It's a handle - resolve to DID using user service
-	did, err := h.userService.ResolveHandleToDID(r.Context(), actor)
-	if err != nil {
-		// Check for context errors (timeouts, cancellation) - these are infrastructure errors
-		if r.Context().Err() != nil {
-			log.Printf("WARN: Handle resolution failed due to context error for %s: %v", actor, err)
-			return "", &resolutionFailedError{actor: actor, cause: r.Context().Err()}
-		}
-
-		// Check for common "not found" patterns in error message
-		errStr := err.Error()
-		isNotFound := strings.Contains(errStr, "not found") ||
-			strings.Contains(errStr, "no rows") ||
-			strings.Contains(errStr, "unable to resolve")
-
-		if isNotFound {
-			return "", &actorNotFoundError{actor: actor}
-		}
-
-		// For other errors (network, database, DNS failures), return infrastructure error
-		// This ensures users see "internal error" not "actor not found" for real problems
-		log.Printf("WARN: Handle resolution infrastructure failure for %s: %v", actor, err)
-		return "", &resolutionFailedError{actor: actor, cause: err}
-	}
-
-	return did, nil
 }
 
 // populateViewerVoteState enriches comment views with the authenticated user's vote state

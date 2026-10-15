@@ -8,6 +8,7 @@ import (
 	"Coves/internal/atproto/pds"
 	"Coves/internal/core/users"
 	"Coves/internal/db/postgres"
+	"Coves/internal/validation"
 	"Coves/tests/fixtures"
 	"Coves/tests/testkit"
 	"context"
@@ -16,11 +17,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/bluesky-social/indigo/atproto/atdata"
 	"github.com/bluesky-social/indigo/atproto/auth/oauth"
+	"github.com/bluesky-social/indigo/atproto/lexicon"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -207,6 +211,72 @@ func TestGetProfileEndpoint(t *testing.T) {
 			t.Errorf("Expected status %d, got %d", http.StatusNotFound, w.Code)
 		}
 	})
+
+	origin, username, url, software := "lemmy.world", "Alice_B", "https://lemmy.world/u/Alice_B", "lemmy"
+	for _, tc := range []struct {
+		name, did, handle, pdsURL string
+		bridged                   bool
+	}{
+		{"bridged profile", "did:plc:originb10bridge", "alice.originb10.test", "https://bridge.test", true},
+		{"native profile", "did:plc:originb10native", "native.originb10.test", "https://pds.example.com", false},
+	} {
+		if _, err := userService.CreateUser(ctx, users.CreateUserRequest{
+			DID: tc.did, Handle: tc.handle, PDSURL: tc.pdsURL,
+		}); err != nil {
+			t.Fatalf("seed %s: %v", tc.name, err)
+		}
+		if tc.bridged {
+			if _, err := userService.UpdateProfile(ctx, tc.did, users.UpdateProfileInput{
+				Origin: &origin, OriginUsername: &username, OriginURL: &url, OriginSoftware: &software,
+			}); err != nil {
+				t.Fatalf("seed bridged origin fields: %v", err)
+			}
+		}
+	}
+
+	catalog := lexicon.NewBaseCatalog()
+	if err := catalog.LoadDirectory(filepath.Join("..", "..", "atproto", "lexicon")); err != nil {
+		t.Fatalf("load lexicon catalog: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name, did string
+		bridged   bool
+	}{
+		{"bridged profile", "did:plc:originb10bridge", true},
+		{"native profile", "did:plc:originb10native", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/xrpc/social.coves.actor.getProfile?actor="+tc.did, nil)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("getProfile status = %d, want 200", w.Code)
+			}
+			body, err := atdata.UnmarshalJSON(w.Body.Bytes())
+			if err != nil {
+				t.Fatalf("decode getProfile: %v", err)
+			}
+			if body["did"] != tc.did {
+				t.Errorf("profile DID = %v, want %s", body["did"], tc.did)
+			}
+			for field, want := range map[string]string{
+				"origin": "lemmy.world", "originUsername": "Alice_B",
+				"originUrl": "https://lemmy.world/u/Alice_B", "originSoftware": "lemmy",
+			} {
+				got, present := body[field]
+				if tc.bridged && got != want {
+					t.Errorf("%s = %v, want %q", field, got, want)
+				}
+				if !tc.bridged && present {
+					t.Errorf("native profile unexpectedly includes %s", field)
+				}
+			}
+			if err := validation.ValidateData(catalog, body, "social.coves.actor.defs#profileViewDetailed", lexicon.AllowLenientDatetime); err != nil {
+				t.Errorf("getProfile body does not validate: %v", err)
+			}
+		})
+	}
 }
 
 // TestDuplicateCreation tests that duplicate DID/handle creation fails properly

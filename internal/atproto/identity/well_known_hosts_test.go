@@ -86,10 +86,13 @@ const (
 // Contrast newCountingPLC in resolver_guard_test.go, which deliberately declares
 // NO handle so that its lookup stays on the machine. That comment names the
 // constraint this whole feature exists to lift.
-func declaringPLC(t *testing.T, did, declaredHandle, pdsURL string) *httptest.Server {
+func declaringPLC(t *testing.T, did, declaredHandle, pdsURL string, observe ...func(http.ResponseWriter, *http.Request) bool) *httptest.Server {
 	t.Helper()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if len(observe) != 0 && observe[0](w, r) {
+			return
+		}
 		if r.URL.Path != "/"+did {
 			w.WriteHeader(http.StatusNotFound)
 			return

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"Coves/internal/atproto/identity"
 	"Coves/internal/core/userblocks"
 	"Coves/internal/core/users"
 
@@ -335,8 +336,8 @@ func TestAggregatorConsumer_NonDIDAggregator_IsPermanent(t *testing.T) {
 			"payload, not redriven ten times")
 }
 
-// The handle on an identity event is asserted by the relay, so its value is
-// chosen upstream of this AppView. Both of its failure modes used to surface as
+// The verified handle is resolved fresh rather than trusted from the event.
+// Both of its failure modes used to surface as
 // plain transient errors: 4.2s of lane per event, forever, for a handle that
 // either can never be accepted or is held by someone else.
 func TestUserConsumer_IdentityHandleFailures_AreClassified(t *testing.T) {
@@ -357,19 +358,27 @@ func TestUserConsumer_IdentityHandleFailures_AreClassified(t *testing.T) {
 		svc := newMockUserService()
 		svc.users["did:plc:knownuser"] = &users.User{DID: "did:plc:knownuser", Handle: "old.test"}
 		svc.updateHandleError = &users.InvalidHandleError{Handle: "renamed.test", Reason: "reserved namespace"}
-		consumer := NewUserEventConsumer(svc, &mockIdentityResolverForUser{})
+		consumer := NewUserEventConsumer(svc, &mockIdentityResolverForUser{},
+			WithUserUncachedIdentityResolver(&mockIdentityResolverForUser{identities: map[string]*identity.Identity{
+				"did:plc:knownuser": {DID: "did:plc:knownuser", Handle: "renamed.test"},
+			}}),
+			WithUserIdentityRefreshLock(&passThroughIdentityRefreshLock{}))
 
 		err := consumer.HandleEvent(ctx, identityEvent())
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrPermanentEvent,
-			"the replay carries the same handle and fails the same rule; retrying it is pure lane time")
+			"the same verified handle fails the same rule on replay; retrying it is pure lane time")
 	})
 
 	t.Run("a handle held by another row is an unresolved reference", func(t *testing.T) {
 		svc := newMockUserService()
 		svc.users["did:plc:knownuser"] = &users.User{DID: "did:plc:knownuser", Handle: "old.test"}
 		svc.updateHandleError = users.ErrHandleAlreadyTaken
-		consumer := NewUserEventConsumer(svc, &mockIdentityResolverForUser{})
+		consumer := NewUserEventConsumer(svc, &mockIdentityResolverForUser{},
+			WithUserUncachedIdentityResolver(&mockIdentityResolverForUser{identities: map[string]*identity.Identity{
+				"did:plc:knownuser": {DID: "did:plc:knownuser", Handle: "renamed.test"},
+			}}),
+			WithUserIdentityRefreshLock(&passThroughIdentityRefreshLock{}))
 
 		err := consumer.HandleEvent(ctx, identityEvent())
 		require.Error(t, err)

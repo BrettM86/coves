@@ -10,6 +10,11 @@ type UpdateProfileInput struct {
 	Bio         *string
 	AvatarCID   *string
 	BannerCID   *string
+	// Origin fields: bridge-written, display only. nil leaves the stored value, "" clears it.
+	Origin         *string
+	OriginUsername *string
+	OriginURL      *string
+	OriginSoftware *string
 }
 
 // ErasureMarkerStore reads and clears the migration-036 erasure markers.
@@ -63,6 +68,7 @@ type UserRepository interface {
 	GetByDID(ctx context.Context, did string) (*User, error)
 	GetByHandle(ctx context.Context, handle string) (*User, error)
 	UpdateHandle(ctx context.Context, did, newHandle string) (*User, error)
+	GetDIDByOriginUsername(ctx context.Context, username, origin string) (string, error)
 
 	// GetByDIDs retrieves multiple users by their DIDs in a single batch query.
 	// Returns a map of DID → User for efficient lookups.
@@ -131,6 +137,7 @@ type UserService interface {
 	GetUserByHandle(ctx context.Context, handle string) (*User, error)
 	UpdateHandle(ctx context.Context, did, newHandle string) (*User, error)
 	ResolveHandleToDID(ctx context.Context, handle string) (string, error)
+	ResolveActorIdentifierToDID(ctx context.Context, identifier string) (string, error)
 	RegisterAccount(ctx context.Context, req RegisterAccountRequest) (*RegisterAccountResponse, error)
 
 	// RequestSignupToken verifies a Cloudflare Turnstile token and, on success,

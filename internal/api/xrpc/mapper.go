@@ -9,6 +9,7 @@ import (
 	"Coves/internal/atproto/pds"
 	"Coves/internal/core/communities"
 	coreerrors "Coves/internal/core/errors"
+	"Coves/internal/core/users"
 )
 
 // Mapping is the XRPC error response a Go error resolves to.
@@ -137,6 +138,12 @@ var sharedRules = []Rule{
 	// by DID or handle instead, and has to be told so rather than get a 500.
 	Sentinel(communities.ErrAmbiguousCommunity, http.StatusConflict, "AmbiguousCommunity",
 		"More than one community matches this name and origin; address it by DID or handle instead"),
+	// The actor queries resolve `actor` through
+	// users.ResolveActorIdentifierToDID, whose name@host form can match more
+	// than one bridged user. Same answer as the community case: neither missing
+	// nor malformed, so the client is told to use the DID or handle.
+	Sentinel(users.ErrAmbiguousUser, http.StatusConflict, "AmbiguousActor",
+		"More than one user matches this name and host; address them by DID or handle instead"),
 
 	// PDS failures other than a dead session, which is handled ahead of the
 	// domain rules. 403 is a permissions problem — a missing OAuth scope, say —

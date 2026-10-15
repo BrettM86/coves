@@ -188,6 +188,9 @@ import (
 func TestMain(m *testing.M) {
 	os.Exit(testkit.Main(m,
 		testkit.RequirePDS,
+		// The test Postgres: TestReconcileHandlesRepairsStaleBridgedUser runs
+		// the reconcile-handles binary against a testkit.DB clone.
+		testkit.RequirePostgres,
 		// The federated PDS, for the same attribution reason as the rest of
 		// this list: a stack whose pds2 is down should say so once, up front,
 		// rather than have five contracts time out separately.

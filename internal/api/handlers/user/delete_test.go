@@ -57,6 +57,11 @@ func (m *MockUserService) ResolveHandleToDID(ctx context.Context, handle string)
 	return args.String(0), args.Error(1)
 }
 
+func (m *MockUserService) ResolveActorIdentifierToDID(ctx context.Context, identifier string) (string, error) {
+	args := m.Called(ctx, identifier)
+	return args.String(0), args.Error(1)
+}
+
 func (m *MockUserService) RegisterAccount(ctx context.Context, req users.RegisterAccountRequest) (*users.RegisterAccountResponse, error) {
 	args := m.Called(ctx, req)
 	if args.Get(0) == nil {

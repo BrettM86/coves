@@ -17,6 +17,7 @@ Start with the [project README](../README.md) and [CONTRIBUTING.md](../CONTRIBUT
 - [POSTS.md](POSTS.md): author-owned posts, community admission, visibility, comments, and the legacy post cutover.
 - [FEEDS.md](FEEDS.md): timeline, Discover, community feeds, search, and Hot ranking.
 - [COMMUNITIES.md](COMMUNITIES.md): community accounts, handles, and credentials.
+- [BRIDGED_IDENTITY.md](BRIDGED_IDENTITY.md): identity-event handle refresh, the per-DID lock, the handle sweep, origin fields, and `name@host` lookup for bridged accounts.
 - [AGGREGATORS.md](AGGREGATORS.md): how aggregators register, get authorized, and post.
 - [MODERATION.md](MODERATION.md): server-admin removal, NSFW labels, and the modlog.
 - [NOTIFICATIONS.md](NOTIFICATIONS.md): in-app notifications, upvote groups, seen state, and retention.

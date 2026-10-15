@@ -117,3 +117,83 @@ func TestCommentService_buildThreadViews_PlaceholderContract(t *testing.T) {
 		})
 	}
 }
+
+// TestCommentService_buildThreadViews_PlaceholderOmitsAuthorOrigin guards the
+// placeholder privacy contract once author views carry origin display fields:
+// when the author is hydrated for a live sibling in the same level, the
+// deleted and the moderation-removed placeholders still serve only the
+// author's DID and the sentinel handle, never origin, originUsername or
+// originSoftware.
+func TestCommentService_buildThreadViews_PlaceholderOmitsAuthorOrigin(t *testing.T) {
+	const authorDID = "did:plc:abc123"
+	rootURI := "at://did:plc:def456/social.coves.community.postv2/3k7a3dmb5bk2c"
+	liveURI := "at://did:plc:abc123/social.coves.community.comment/3k7a3dmb5bk2c"
+	deletedURI := "at://did:plc:abc123/social.coves.community.comment/3k7a3dmb5bk2d"
+	removedURI := "at://did:plc:abc123/social.coves.community.comment/3k7a3dmb5bk2e"
+
+	commentRepository := newMockCommentRepo()
+	commentRepository.activeRemovalsByURI = map[string][]RemovalSource{
+		removedURI: {{AuthorityDID: "did:web:coves.social", ScopeKind: "instance"}},
+	}
+	userRepository := newMockUserRepo()
+	author := createTestUser(authorDID, "alice.coves.social")
+	author.Origin = "lemmy.world"
+	author.OriginUsername = "Alice_B"
+	author.OriginSoftware = "lemmy"
+	userRepository.users[authorDID] = author
+	service := NewCommentService(
+		commentRepository,
+		userRepository,
+		newMockPostRepo(),
+		newMockCommunityRepo(),
+		nil,
+		nil,
+		nil,
+	).(*commentService)
+
+	live := createTestComment(liveURI, authorDID, "alice.coves.social", rootURI, rootURI, 0)
+	deleted := createTestComment(deletedURI, authorDID, "alice.coves.social", rootURI, rootURI, 0)
+	deletedAt := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	deleted.DeletedAt = &deletedAt
+	deleted.DeletionReason = stringPointer(DeletionReasonAuthor)
+	removed := createTestComment(removedURI, authorDID, "alice.coves.social", rootURI, rootURI, 0)
+
+	threadViews, err := service.buildThreadViews(
+		context.Background(),
+		[]*Comment{live, deleted, removed},
+		0,
+		"hot",
+		nil,
+	)
+	require.NoError(t, err, "building a level with live and placeholder siblings must not fail the thread")
+	require.Len(t, threadViews, 3, "every comment in the level must keep its place in the thread")
+
+	for _, placeholder := range []struct {
+		name  string
+		index int
+	}{
+		{name: "author-deleted", index: 1},
+		{name: "moderation-removed", index: 2},
+	} {
+		t.Run(placeholder.name, func(t *testing.T) {
+			view := threadViews[placeholder.index].Comment
+			require.NotNil(t, view, "the retained thread node must carry a comment placeholder")
+			require.True(t, view.IsDeleted, "the node must be served as a placeholder")
+			require.NotNil(t, view.Author, "the placeholder must retain its author's DID")
+			assert.Equal(t, "did:plc:abc123", view.Author.DID,
+				"the placeholder author must identify the comment's author")
+			assert.Equal(t, "handle.invalid", view.Author.Handle,
+				"the placeholder must use the sentinel handle")
+
+			serializedAuthor, err := json.Marshal(view.Author)
+			require.NoError(t, err, "the placeholder author must serialize to JSON")
+			var authorObject map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(serializedAuthor, &authorObject),
+				"the placeholder author must serialize to a JSON object")
+			for _, key := range []string{"origin", "originUsername", "originSoftware"} {
+				assert.NotContains(t, authorObject, key,
+					"a placeholder must not leak the author's %s", key)
+			}
+		})
+	}
+}

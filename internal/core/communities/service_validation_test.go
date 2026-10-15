@@ -294,6 +294,24 @@ func TestValidateHandle(t *testing.T) {
 	// unusable name.
 }
 
+// TestValidateHandle_PackageLevel covers the handle rules as the identity
+// consumer reaches them: it holds a Repository, not a Service, so it calls the
+// package-level function before storing a handle a fresh resolution verified.
+func TestValidateHandle_PackageLevel(t *testing.T) {
+	t.Parallel()
+
+	for _, handle := range []string{
+		"gaming.lemmy.world.ap.tdpl.io",
+		"xn--wgv71a.example.jp.ap.tdpl.io",
+	} {
+		assert.NoErrorf(t, communities.ValidateHandle(handle),
+			"%q is a bridged community handle the identity consumer must be able to store", handle)
+	}
+
+	require.ErrorIs(t, communities.ValidateHandle("-bad.example.com"), communities.ErrInvalidHandle,
+		"a label starting with a hyphen is not a DNS name and must not be stored as a community handle")
+}
+
 // TestResolveScopedIdentifier_RejectsDomainsThatAreNotDomains covers the two
 // isValidDomain branches the integration suite's table does not reach: an empty
 // domain and one past the 253-character limit a DNS name has.

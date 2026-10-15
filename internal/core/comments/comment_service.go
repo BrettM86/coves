@@ -552,10 +552,12 @@ func (s *commentService) buildLevelViews(
 	return threadViews, nil
 }
 
-// hydrateAuthorProfile fills display name and avatar on an author view from an indexed
-// user row. The avatar CID is transformed to an image-proxy URL against the author's
-// own PDS (avatar_small preset, matching post/feed author avatars). nil user (author
-// not indexed / not found) leaves the view with DID+handle only.
+// hydrateAuthorProfile fills display name, avatar and the bridge-written origin
+// display fields on an author view from an indexed user row. The avatar CID is
+// transformed to an image-proxy URL against the author's own PDS (avatar_small preset,
+// matching post/feed author avatars). Empty origin fields stay empty so omitempty
+// drops them. nil user (author not indexed / not found) leaves the view with
+// DID+handle only.
 func hydrateAuthorProfile(view *posts.AuthorView, user *users.User) {
 	if user == nil {
 		return
@@ -567,6 +569,9 @@ func hydrateAuthorProfile(view *posts.AuthorView, user *users.User) {
 	if avatarURL := blobs.HydrateImageURL(blobs.GetImageURLConfig(), user.PDSURL, user.DID, user.AvatarCID, "avatar_small"); avatarURL != "" {
 		view.Avatar = &avatarURL
 	}
+	view.Origin = user.Origin
+	view.OriginUsername = user.OriginUsername
+	view.OriginSoftware = user.OriginSoftware
 }
 
 // buildCommentView converts a Comment entity to a CommentView with full metadata

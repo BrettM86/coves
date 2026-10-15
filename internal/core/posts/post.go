@@ -440,6 +440,10 @@ type AuthorView struct {
 	DID         string  `json:"did"`
 	Handle      string  `json:"handle"`
 
+	Origin         string `json:"origin,omitempty"`
+	OriginUsername string `json:"originUsername,omitempty"`
+	OriginSoftware string `json:"originSoftware,omitempty"`
+
 	// PDSURL is the author's PDS, not exposed to the API — the mirror of
 	// CommunityRef.PDSURL beside it, and needed for the same reason: a postv2
 	// post's blobs live in the AUTHOR's repository, so building their URLs

@@ -17,6 +17,11 @@ type User struct {
 	Bio         string    `json:"bio,omitempty" db:"bio"`
 	AvatarCID   string    `json:"avatarCid,omitempty" db:"avatar_cid"`
 	BannerCID   string    `json:"bannerCid,omitempty" db:"banner_cid"`
+	// Origin fields: the bridged account's fediverse address and display hints.
+	Origin         string `json:"origin,omitempty" db:"origin"`
+	OriginUsername string `json:"originUsername,omitempty" db:"origin_username"`
+	OriginURL      string `json:"originUrl,omitempty" db:"origin_url"`
+	OriginSoftware string `json:"originSoftware,omitempty" db:"origin_software"`
 }
 
 // CreateUserRequest represents the input for creating a new user
@@ -83,6 +88,11 @@ type ProfileViewDetailed struct {
 	Avatar string              `json:"avatar,omitempty"` // URL, not CID
 	Banner string              `json:"banner,omitempty"` // URL, not CID
 	Viewer *ProfileViewerState `json:"viewer,omitempty"`
+	// Origin fields (bridged accounts only); empty values are omitted.
+	Origin         string `json:"origin,omitempty"`
+	OriginUsername string `json:"originUsername,omitempty"`
+	OriginURL      string `json:"originUrl,omitempty"`
+	OriginSoftware string `json:"originSoftware,omitempty"`
 }
 
 // ProfileViewerState contains the authenticated viewer's relationship to this profile.

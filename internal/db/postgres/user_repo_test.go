@@ -1081,3 +1081,37 @@ func TestUserRepo_GetByDIDs_ReturnsNewFields(t *testing.T) {
 	assert.Equal(t, bio2, u2.Bio)
 	assert.Empty(t, u2.AvatarCID)
 }
+
+func TestUserRepo_GetByDIDs_ReturnsOriginFields(t *testing.T) {
+	t.Parallel()
+	db := testkit.DB(t)
+	repo := NewUserRepository(db)
+	ctx := context.Background()
+
+	bridgedDID, nativeDID := "did:plc:getbydidsoriginbridged", "did:plc:getbydidsoriginnative"
+	_, err := repo.Create(ctx, &users.User{DID: bridgedDID, Handle: "getbydidsoriginbridged.test", PDSURL: "https://test.pds"})
+	require.NoError(t, err)
+	_, err = repo.Create(ctx, &users.User{DID: nativeDID, Handle: "getbydidsoriginnative.test", PDSURL: "https://test.pds"})
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx, `UPDATE users SET origin = $1, origin_username = $2, origin_url = $3, origin_software = $4 WHERE did = $5`,
+		"lemmy.world", "Alice_B", "https://lemmy.world/u/Alice_B", "lemmy", bridgedDID)
+	require.NoError(t, err)
+
+	userMap, err := repo.GetByDIDs(ctx, []string{bridgedDID, nativeDID})
+	require.NoError(t, err)
+	require.Len(t, userMap, 2)
+
+	bridged := userMap[bridgedDID]
+	require.NotNil(t, bridged)
+	assert.Equal(t, "lemmy.world", bridged.Origin)
+	assert.Equal(t, "Alice_B", bridged.OriginUsername)
+	assert.Equal(t, "https://lemmy.world/u/Alice_B", bridged.OriginURL)
+	assert.Equal(t, "lemmy", bridged.OriginSoftware)
+
+	native := userMap[nativeDID]
+	require.NotNil(t, native)
+	assert.Equal(t, "", native.Origin)
+	assert.Equal(t, "", native.OriginUsername)
+	assert.Equal(t, "", native.OriginURL)
+	assert.Equal(t, "", native.OriginSoftware)
+}

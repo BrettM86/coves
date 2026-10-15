@@ -164,6 +164,9 @@ func TestVerifyDIDDocument_CachedFailureKeepsItsClassificationAndDefersAttempts(
 		if !errors.Is(second, ErrUnresolvedReference) || !errors.Is(second, errRedriveDeferred) {
 			t.Fatalf("cached unresolved result must defer rather than consume an attempt: %v", second)
 		}
+		if !errors.Is(second, ErrHostedByVerificationPending) {
+			t.Fatalf("cached unresolved result must be marked ErrHostedByVerificationPending: %v", second)
+		}
 		if got := requests.Load(); got != 1 {
 			t.Fatalf("cached unresolved result fetched %d times, want 1", got)
 		}
@@ -207,6 +210,9 @@ func TestVerifyDIDDocument_InFlightRequestSuppressesDuplicateFetch(t *testing.T)
 	case err := <-secondDone:
 		if !errors.Is(err, ErrUnresolvedReference) || !errors.Is(err, errRedriveDeferred) {
 			t.Fatalf("duplicate in-flight verification returned the wrong classification: %v", err)
+		}
+		if !errors.Is(err, ErrHostedByVerificationPending) {
+			t.Fatalf("duplicate in-flight verification must be marked ErrHostedByVerificationPending: %v", err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("duplicate verification reached the blocked transport instead of using the in-flight marker")

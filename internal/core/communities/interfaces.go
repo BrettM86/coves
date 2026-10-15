@@ -36,6 +36,7 @@ type Repository interface {
 	// origin is expected already normalised (lower-case hostname).
 	GetByNameAndOrigin(ctx context.Context, name, origin string) (*Community, error)
 	Update(ctx context.Context, community *Community) (*Community, error)
+	UpdateHandle(ctx context.Context, did, handle string) error
 	Delete(ctx context.Context, did string) error
 
 	// Credential Management (for token refresh)

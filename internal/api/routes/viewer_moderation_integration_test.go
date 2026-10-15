@@ -72,6 +72,57 @@ func viewerModerationThreadNode(t *testing.T, body map[string]any, uri string) m
 	return nil
 }
 
+// viewerModerationThreadComment picks the top-level comment with uri out of a
+// comment.getComments thread.
+func viewerModerationThreadComment(uri string) viewerModerationRowItem {
+	return func(t *testing.T, body map[string]any) map[string]any {
+		t.Helper()
+		return moderationAcceptanceObject(t, viewerModerationThreadNode(t, body, uri)["comment"])
+	}
+}
+
+// viewerModerationThreadReply picks the reply with uri beneath the top-level
+// comment parentURI out of a comment.getComments thread.
+func viewerModerationThreadReply(parentURI, uri string) viewerModerationRowItem {
+	return func(t *testing.T, body map[string]any) map[string]any {
+		t.Helper()
+		replies := viewerModerationThreadNode(t, body, parentURI)["replies"]
+		for _, entry := range moderationAcceptanceArray(t, replies) {
+			comment := moderationAcceptanceObject(t, moderationAcceptanceObject(t, entry)["comment"])
+			if comment["uri"] == uri {
+				return comment
+			}
+		}
+		require.Failf(t, "reply missing from thread", "%s not beneath %s in %v", uri, parentURI, replies)
+		return nil
+	}
+}
+
+// viewerModerationThreadPost picks the post view a comment.getComments thread
+// is about.
+func viewerModerationThreadPost(uri string) viewerModerationRowItem {
+	return func(t *testing.T, body map[string]any) map[string]any {
+		t.Helper()
+		post := moderationAcceptanceObject(t, body["post"])
+		require.Equal(t, uri, post["uri"])
+		return post
+	}
+}
+
+func viewerModerationActorComment(uri string) viewerModerationRowItem {
+	return func(t *testing.T, body map[string]any) map[string]any {
+		t.Helper()
+		for _, entry := range moderationAcceptanceArray(t, body["comments"]) {
+			comment := moderationAcceptanceObject(t, entry)
+			if comment["uri"] == uri {
+				return comment
+			}
+		}
+		require.Failf(t, "comment missing from actor comments", "%s not in %v", uri, body["comments"])
+		return nil
+	}
+}
+
 // runViewerModerationRows requests every row as each viewer and checks the
 // row's item: the admin gets the literal action list, everyone else gets no
 // viewer.moderation key.
@@ -186,19 +237,13 @@ func TestViewerModerationCommentReadsAcceptance(t *testing.T) {
 	require.Equal(t, "applied", removed["outcome"])
 
 	thread := "/xrpc/social.coves.community.comment.getComments?" + url.Values{"post": {postURI}, "sort": {"new"}}.Encode()
-	threadComment := func(uri string) viewerModerationRowItem {
-		return func(t *testing.T, body map[string]any) map[string]any {
-			t.Helper()
-			return moderationAcceptanceObject(t, viewerModerationThreadNode(t, body, uri)["comment"])
-		}
-	}
 	runViewerModerationRows(t, f, []viewerModerationRow{
-		{name: "thread live comment", target: thread, item: threadComment(liveComment), want: []any{"remove"}},
+		{name: "thread live comment", target: thread, item: viewerModerationThreadComment(liveComment), want: []any{"remove"}},
 		{
 			name: "thread removed placeholder", target: thread, want: []any{"restore"},
 			item: func(t *testing.T, body map[string]any) map[string]any {
 				t.Helper()
-				placeholder := threadComment(removedComment)(t, body)
+				placeholder := viewerModerationThreadComment(removedComment)(t, body)
 				require.Equal(t, true, placeholder["isDeleted"])
 				require.Equal(t, "moderator", placeholder["deletionReason"])
 				return placeholder
@@ -217,28 +262,13 @@ func TestViewerModerationCommentReadsAcceptance(t *testing.T) {
 		},
 		{
 			name: "thread header post", target: thread, want: []any{"remove", "label"},
-			item: func(t *testing.T, body map[string]any) map[string]any {
-				t.Helper()
-				post := moderationAcceptanceObject(t, body["post"])
-				require.Equal(t, postURI, post["uri"])
-				return post
-			},
+			item: viewerModerationThreadPost(postURI),
 		},
 		{
 			name:   "actor comments",
 			target: "/xrpc/social.coves.actor.getComments?" + url.Values{"actor": {f.authorDID}}.Encode(),
 			want:   []any{"remove"},
-			item: func(t *testing.T, body map[string]any) map[string]any {
-				t.Helper()
-				for _, entry := range moderationAcceptanceArray(t, body["comments"]) {
-					comment := moderationAcceptanceObject(t, entry)
-					if comment["uri"] == liveComment {
-						return comment
-					}
-				}
-				require.Failf(t, "comment missing from actor comments", "%s not in %v", liveComment, body["comments"])
-				return nil
-			},
+			item:   viewerModerationActorComment(liveComment),
 		},
 	})
 }

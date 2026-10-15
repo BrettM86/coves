@@ -89,17 +89,21 @@ type application struct {
 	// sessionCoordinationDB is the dedicated pool OAuth session operations hold
 	// connections from; see openSessionCoordinationDatabase.
 	sessionCoordinationDB *sql.DB
+	// identityRefreshLockDB is the dedicated pool identity refreshes hold
+	// their per-DID locks on; see openIdentityRefreshLockDatabase.
+	identityRefreshLockDB *sql.DB
 	credentialCipher      *credentialcipher.Cipher
 
 	// Identity and authentication
-	identityResolver     identity.Resolver
-	oauthClient          *oauth.OAuthClient
-	oauthStore           *oauth.MobileAwareStoreWrapper
-	oauthHandler         *oauth.OAuthHandler
-	authMiddleware       *middleware.OAuthAuthMiddleware
-	dualAuth             *middleware.DualAuthMiddleware
-	serviceAuthValidator middleware.ServiceAuthValidator
-	instanceAdminAuth    *middleware.InstanceAdminMiddleware
+	identityResolver         identity.Resolver
+	uncachedIdentityResolver identity.UncachedResolver
+	oauthClient              *oauth.OAuthClient
+	oauthStore               *oauth.MobileAwareStoreWrapper
+	oauthHandler             *oauth.OAuthHandler
+	authMiddleware           *middleware.OAuthAuthMiddleware
+	dualAuth                 *middleware.DualAuthMiddleware
+	serviceAuthValidator     middleware.ServiceAuthValidator
+	instanceAdminAuth        *middleware.InstanceAdminMiddleware
 	// moderationAuthority answers who is an instance admin. It is the
 	// allowlist instanceAdminAuth checks, shared with the read paths that
 	// hydrate viewer.moderation and with getViewerAuthority.
@@ -195,12 +199,14 @@ func buildApplication(
 	cfg *config.Config,
 	db *sql.DB,
 	sessionCoordinationDB *sql.DB,
+	identityRefreshLockDB *sql.DB,
 	credentialCipher *credentialcipher.Cipher,
 ) (app *application, err error) {
 	app = &application{
 		cfg:                   cfg,
 		db:                    db,
 		sessionCoordinationDB: sessionCoordinationDB,
+		identityRefreshLockDB: identityRefreshLockDB,
 		credentialCipher:      credentialCipher,
 		stopImageProxyCleanup: func() {},
 	}
@@ -304,6 +310,7 @@ func (a *application) buildIdentity() {
 	}
 	identityConfig.NegativeCacheTTL = a.cfg.Identity.NegativeCacheTTL
 	a.identityResolver = identity.NewResolver(a.db, identityConfig)
+	a.uncachedIdentityResolver = identity.NewUncachedResolver(identityConfig)
 
 	// The same expression the hatch above was derived from, not a second read of
 	// the same config field: a log line describing the SSRF gate has to be unable

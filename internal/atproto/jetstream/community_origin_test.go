@@ -167,7 +167,10 @@ func (r *originRepo) Update(_ context.Context, c *communities.Community) (*commu
 // a mismatch invented by the fixture — which would have made the check look
 // wrong and, worse, made it untestable by construction. Pinning id.DID
 // explicitly is how a test asks for a genuine mismatch.
-type fixedResolver struct{ id identity.Identity }
+type fixedResolver struct {
+	identity.Resolver
+	id identity.Identity
+}
 
 func (f fixedResolver) Resolve(_ context.Context, did string) (*identity.Identity, error) {
 	id := f.id
@@ -204,7 +207,7 @@ func profileCommit(op, name, origin string, extra map[string]interface{}) *Commi
 func TestCreateCommunity_TrustedBridge_KeepsForeignOrigin(t *testing.T) {
 	t.Parallel()
 	repo := newOriginRepo()
-	resolver := fixedResolver{identity.Identity{Handle: bridgedHandle, PDSURL: trustedBridgePDS}}
+	resolver := fixedResolver{id: identity.Identity{Handle: bridgedHandle, PDSURL: trustedBridgePDS}}
 	consumer := NewCommunityEventConsumer(repo, originTestInstance, true, resolver,
 		WithCommunityBridgeTrust(trustingBridge()))
 
@@ -223,7 +226,7 @@ func TestCreateCommunity_TrustedBridge_KeepsForeignOrigin(t *testing.T) {
 func TestCreateCommunity_UntrustedRepo_DropsForeignOriginButIndexes(t *testing.T) {
 	t.Parallel()
 	repo := newOriginRepo()
-	resolver := fixedResolver{identity.Identity{Handle: "c-nba.example.net", PDSURL: untrustedPDS}}
+	resolver := fixedResolver{id: identity.Identity{Handle: "c-nba.example.net", PDSURL: untrustedPDS}}
 	consumer := NewCommunityEventConsumer(repo, originTestInstance, true, resolver,
 		WithCommunityBridgeTrust(trustingBridge()))
 
@@ -259,7 +262,7 @@ func TestCreateCommunity_NativeRecord_KeepsMatchingOrigin(t *testing.T) {
 
 // failingResolver is a directory that is down: the origin has to be dropped,
 // not the event.
-type failingResolver struct{}
+type failingResolver struct{ identity.Resolver }
 
 func (failingResolver) Resolve(context.Context, string) (*identity.Identity, error) {
 	return nil, errors.New("plc: connection refused")
@@ -283,7 +286,7 @@ func (failingResolver) Resolve(context.Context, string) (*identity.Identity, err
 func TestCreateCommunity_RecordHandleIsNotProvenance(t *testing.T) {
 	t.Parallel()
 	repo := newOriginRepo()
-	resolver := fixedResolver{identity.Identity{Handle: "c-nba.example.net", PDSURL: untrustedPDS}}
+	resolver := fixedResolver{id: identity.Identity{Handle: "c-nba.example.net", PDSURL: untrustedPDS}}
 	consumer := NewCommunityEventConsumer(repo, originTestInstance, true, resolver,
 		WithCommunityBridgeTrust(trustingBridge()))
 
@@ -309,7 +312,7 @@ func TestUpdateCommunity_ProvenanceIsResolvedAfresh(t *testing.T) {
 		repo := newOriginRepo()
 		const did = "did:plc:migratedbridge"
 		repo.byDID[did] = &communities.Community{DID: did, Handle: bridgedHandle, Name: "comicstrips", PDSURL: trustedBridgePDS, Origin: bridgedOrigin}
-		resolver := fixedResolver{identity.Identity{Handle: bridgedHandle, PDSURL: untrustedPDS}}
+		resolver := fixedResolver{id: identity.Identity{Handle: bridgedHandle, PDSURL: untrustedPDS}}
 		consumer := NewCommunityEventConsumer(repo, originTestInstance, true, resolver, WithCommunityBridgeTrust(trustingBridge()))
 
 		// The record carries a handle, which used to skip resolution entirely

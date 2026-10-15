@@ -4,6 +4,7 @@ import (
 	"Coves/internal/atproto/identity"
 	covesoauth "Coves/internal/atproto/oauth"
 	"Coves/internal/core/blobs"
+	"Coves/internal/validation"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -16,6 +17,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // atProto handle validation regex (per official atProto spec: https://atproto.com/specs/handle)
@@ -346,6 +349,60 @@ func (s *userService) UpdateHandle(ctx context.Context, did, newHandle string) (
 	}
 
 	return s.userRepo.UpdateHandle(ctx, did, newHandle)
+}
+
+// maxOriginUsernameBytes is the longest origin_username ingest stores (the
+// 256-byte cap in internal/atproto/jetstream/user_profile_origin.go), so a
+// longer name can never match a stored pair.
+const maxOriginUsernameBytes = 256
+
+// ResolveActorIdentifierToDID resolves the `actor` parameter of the actor
+// queries to a DID. It accepts three forms:
+//
+//	did:plc:abc123        -> returned unchanged, no lookup
+//	alice.bsky.social     -> ResolveHandleToDID (local index, then the resolver)
+//	[@]Alice_B@lemmy.world -> the stored (origin_username, origin) pair
+//
+// The name@host form is answered from the database alone. The pair is written
+// only by the trusted bridge, so an address with no stored pair is
+// ErrUserNotFound rather than a WebFinger, bridge or PLC lookup. The name is
+// split at the LAST @ (a fediverse username may itself contain one) and keeps
+// its case: the repository matches it exactly first and only then
+// case-insensitively. The host is normalised like every stored origin.
+func (s *userService) ResolveActorIdentifierToDID(ctx context.Context, identifier string) (string, error) {
+	identifier = strings.TrimSpace(identifier)
+	if strings.HasPrefix(identifier, "did:") {
+		return identifier, nil
+	}
+	if !strings.Contains(identifier, "@") {
+		return s.ResolveHandleToDID(ctx, identifier)
+	}
+
+	scoped := strings.TrimPrefix(identifier, "@")
+	separator := strings.LastIndex(scoped, "@")
+	if separator < 0 {
+		return "", &InvalidHandleError{Handle: identifier, Reason: "expected name@host"}
+	}
+	username := strings.TrimSpace(scoped[:separator])
+	if username == "" {
+		return "", &InvalidHandleError{Handle: identifier, Reason: "name before @ cannot be empty"}
+	}
+	if len(username) > maxOriginUsernameBytes {
+		return "", &InvalidHandleError{Handle: identifier, Reason: "name before @ is too long"}
+	}
+	if !utf8.ValidString(username) || strings.IndexFunc(username, unicode.IsControl) >= 0 {
+		return "", &InvalidHandleError{Handle: identifier, Reason: "name before @ must be valid UTF-8 without control characters"}
+	}
+	origin, err := validation.NormalizeDomain(strings.TrimSpace(scoped[separator+1:]))
+	if err != nil {
+		return "", &InvalidHandleError{Handle: identifier, Reason: "host after @ must be a valid domain"}
+	}
+
+	did, err := s.userRepo.GetDIDByOriginUsername(ctx, username, origin)
+	if err != nil {
+		return "", fmt.Errorf("resolving actor %s@%s: %w", username, origin, err)
+	}
+	return did, nil
 }
 
 // ResolveHandleToDID resolves a handle to a DID
@@ -805,12 +862,16 @@ func (s *userService) GetProfile(ctx context.Context, did string) (*ProfileViewD
 	}
 
 	profile := &ProfileViewDetailed{
-		DID:         user.DID,
-		Handle:      user.Handle,
-		CreatedAt:   user.CreatedAt,
-		Stats:       stats,
-		DisplayName: user.DisplayName,
-		Bio:         user.Bio,
+		DID:            user.DID,
+		Handle:         user.Handle,
+		CreatedAt:      user.CreatedAt,
+		Stats:          stats,
+		DisplayName:    user.DisplayName,
+		Bio:            user.Bio,
+		Origin:         user.Origin,
+		OriginUsername: user.OriginUsername,
+		OriginURL:      user.OriginURL,
+		OriginSoftware: user.OriginSoftware,
 	}
 
 	// Transform avatar/banner CIDs to URLs using image proxy config.

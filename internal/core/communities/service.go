@@ -1156,8 +1156,8 @@ func (s *communityService) IsBlocked(ctx context.Context, userDID, communityIden
 	return s.repo.IsBlocked(ctx, userDID, communityDID)
 }
 
-// ValidateHandle checks if a community handle is valid
-func (s *communityService) ValidateHandle(handle string) error {
+// ValidateHandle checks whether handle satisfies the community handle rules.
+func ValidateHandle(handle string) error {
 	if handle == "" {
 		return NewValidationError("handle", "required")
 	}
@@ -1167,6 +1167,11 @@ func (s *communityService) ValidateHandle(handle string) error {
 	}
 
 	return nil
+}
+
+// ValidateHandle checks if a community handle is valid
+func (s *communityService) ValidateHandle(handle string) error {
+	return ValidateHandle(handle)
 }
 
 // ResolveCommunityIdentifier converts a community identifier to a DID

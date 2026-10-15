@@ -10,9 +10,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"Coves/internal/atproto/identity"
+	"Coves/internal/core/users"
 )
 
 type twoPhaseOriginResolver struct {
+	identity.Resolver
 	calls       int
 	capturedCtx context.Context
 }
@@ -107,4 +109,28 @@ func TestUpdateCommunity_OriginFallbackResolutionHasDeadline(t *testing.T) {
 	require.Equal(t, 2, resolver.calls,
 		"an asserted origin must trigger the fallback after the update path's first resolution established nothing")
 	requireIdentityResolveDeadline(t, resolver.capturedCtx, callStart)
+}
+
+func TestUserConsumer_IdentityRefreshResolutionHasDeadline(t *testing.T) {
+	t.Parallel()
+
+	const did = "did:plc:deadlinedidentityrefresh"
+	service := newMockUserService()
+	service.users[did] = &users.User{DID: did, Handle: "stored.example.com"}
+	uncachedResolver := &mockIdentityResolverForUser{identities: map[string]*identity.Identity{
+		did: {DID: did, Handle: "stored.example.com"},
+	}}
+	consumer := NewUserEventConsumer(service, &mockIdentityResolverForUser{},
+		WithUserUncachedIdentityResolver(uncachedResolver),
+		WithUserIdentityRefreshLock(&passThroughIdentityRefreshLock{}))
+	event := &JetstreamEvent{
+		Kind:     "identity",
+		Did:      did,
+		Identity: &IdentityEvent{Did: did, Handle: "stored.example.com"},
+	}
+
+	callStart := time.Now()
+	require.NoError(t, consumer.HandleEvent(context.Background(), event))
+	require.Equal(t, 1, uncachedResolver.calls, "one identity event must trigger exactly one bounded fresh resolution")
+	requireIdentityResolveDeadline(t, uncachedResolver.capturedCtx, callStart)
 }

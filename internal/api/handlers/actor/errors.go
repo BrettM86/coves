@@ -1,11 +1,15 @@
 package actor
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"Coves/internal/api/xrpc"
 	"Coves/internal/core/posts"
+	"Coves/internal/core/users"
 )
 
 // ErrorResponse represents an XRPC error response.
@@ -66,4 +70,44 @@ func (e *resolutionFailedError) Error() string {
 
 func (e *resolutionFailedError) Unwrap() error {
 	return e.cause
+}
+
+// resolveActorDID converts the `actor` parameter (DID, handle, or a bridged
+// user's name@host) to a DID through users.ResolveActorIdentifierToDID.
+//
+// The returned errors are what the handlers classify: ErrAmbiguousUser stays
+// in the chain (409 AmbiguousActor), a missing user is *actorNotFoundError
+// (404), a malformed identifier is *validationError (400), and anything else
+// is *resolutionFailedError so an outage is not reported as "not found".
+func resolveActorDID(ctx context.Context, userService users.UserService, actor string) (string, error) {
+	// If it's already a DID, return it
+	if strings.HasPrefix(actor, "did:") {
+		return actor, nil
+	}
+
+	did, err := userService.ResolveActorIdentifierToDID(ctx, actor)
+	if err == nil {
+		return did, nil
+	}
+
+	// Check for context errors (timeouts, cancellation) - these are infrastructure
+	// errors. The handlers log every *resolutionFailedError, so nothing is logged here.
+	if ctx.Err() != nil {
+		return "", &resolutionFailedError{actor: actor, cause: ctx.Err()}
+	}
+
+	var invalidHandle *users.InvalidHandleError
+	switch {
+	case errors.Is(err, users.ErrAmbiguousUser):
+		return "", err
+	case errors.Is(err, users.ErrUserNotFound):
+		return "", &actorNotFoundError{actor: actor}
+	case errors.As(err, &invalidHandle):
+		return "", &validationError{field: "actor", message: "actor is not a valid handle, DID, or name@host"}
+	}
+
+	// Anything else (database, network, DNS failure) is an infrastructure error,
+	// so the client sees a 500 rather than "actor not found". The error text is
+	// never inspected: it embeds the caller-supplied identifier.
+	return "", &resolutionFailedError{actor: actor, cause: err}
 }

@@ -282,6 +282,10 @@ func notificationProfileView(did string, profiles map[string]*users.User) Profil
 		if avatarURL := blobs.HydrateImageURL(blobs.GetImageURLConfig(), profile.PDSURL, profile.DID, profile.AvatarCID, "avatar_small"); avatarURL != "" {
 			view.Avatar = &avatarURL
 		}
+		view.Origin = profile.Origin
+		view.OriginUsername = profile.OriginUsername
+		view.OriginURL = profile.OriginURL
+		view.OriginSoftware = profile.OriginSoftware
 	}
 	return view
 }

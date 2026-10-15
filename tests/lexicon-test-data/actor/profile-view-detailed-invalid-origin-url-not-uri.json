@@ -1,0 +1,5 @@
+{
+  "$type": "social.coves.actor.defs#profileViewDetailed",
+  "did": "did:plc:abc123",
+  "originUrl": "not a uri"
+}

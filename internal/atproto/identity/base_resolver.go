@@ -44,7 +44,7 @@ func newBaseResolver(plcURL string, httpClient *http.Client) Resolver {
 //
 // hosts is nil for every resolver but the dev and CI ones, and a nil map leaves
 // the client and the directory exactly as they were.
-func newBaseResolverWithWellKnownHosts(plcURL string, httpClient *http.Client, hosts map[string]string) Resolver {
+func newBaseResolverWithWellKnownHosts(plcURL string, httpClient *http.Client, hosts map[string]string) *baseResolver {
 	// Create Indigo's BaseDirectory which handles DNS and HTTPS resolution
 	dir := &indigoIdentity.BaseDirectory{
 		PLCURL:     plcURL,

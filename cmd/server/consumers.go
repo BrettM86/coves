@@ -134,6 +134,10 @@ func (s *consumerSet) start(ctx context.Context, wg *sync.WaitGroup, app *applic
 func (a *application) registerFeedConsumers() ([]feedConsumer, error) {
 	var consumers []feedConsumer
 
+	// One lock instance serializes identity refreshes of a DID for the user
+	// and community consumers alike.
+	identityRefreshLock := jetstream.NewPostgresIdentityRefreshLock(a.identityRefreshLockDB, jetstream.IdentityRefreshLockWaitTimeout)
+
 	// Users: actor profiles and actor blocks.
 	//
 	// A trusted bridge hosts many virtual repos, and its profile records may
@@ -144,6 +148,9 @@ func (a *application) registerFeedConsumers() ([]feedConsumer, error) {
 		jetstream.WithUserBridgeTrust(a.bridgeTrust),
 		jetstream.WithUserRevGate(a.revGate),
 		jetstream.WithUserBlockRepo(a.userBlockRepo),
+		jetstream.WithUserUncachedIdentityResolver(a.uncachedIdentityResolver),
+		jetstream.WithUserIdentityRefreshFailureTTL(a.cfg.Identity.NegativeCacheTTL),
+		jetstream.WithUserIdentityRefreshLock(identityRefreshLock),
 	}
 	// Statically typed rather than asserted at runtime: a type assertion here
 	// would silently disable handle sync if the store's method set ever
@@ -185,6 +192,9 @@ func (a *application) registerFeedConsumers() ([]feedConsumer, error) {
 		[]jetstream.CommunityConsumerOption{
 			jetstream.WithCommunityRevGate(a.revGate),
 			jetstream.WithCommunityBridgeTrust(a.bridgeTrust),
+			jetstream.WithCommunityUncachedIdentityResolver(a.uncachedIdentityResolver),
+			jetstream.WithCommunityIdentityRefreshFailureTTL(a.cfg.Identity.NegativeCacheTTL),
+			jetstream.WithCommunityIdentityRefreshLock(identityRefreshLock),
 		},
 		jetstream.PrivateHostOptions(a.allowPrivateHosts())...)
 	consumers = append(consumers, feedConsumer{

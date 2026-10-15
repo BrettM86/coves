@@ -54,10 +54,18 @@ those.
 
 ## Accepted evolution-rule exceptions
 
-`goat lex breaking` flags these on every run. Each was accepted because the
-published schema described something the AppView never served or had already
-stopped accepting, so the local schema is the wire truth. Do not add to this
-list without the same justification.
+`goat lex breaking` flags these on every run. Each was accepted for one of two
+reasons:
+
+- The published schema described something the AppView never served or had
+  already stopped accepting, so the local schema is the wire truth.
+- The change loosens an application-identifier input: the new schema accepts a
+  strict superset of what the previous `format` accepted, and a `maxLength`
+  bound replaces the length limit the dropped `format` implied. The 2026-09-07
+  `community` parameter entry and the 2026-10-13 `actor` parameter entry are
+  this kind.
+
+Do not add to this list without one of these justifications.
 
 Accepted 2026-09-07:
 
@@ -84,6 +92,17 @@ Accepted 2026-09-21, output-loosening:
   that works today breaks, because the wire shape is unchanged. This is the
   only exception that relaxes a required output field. No other nullability
   change and no ref-to-union change is authorized.
+
+Accepted 2026-10-13, input-loosening:
+
+- The `actor` parameter on `actor.getProfile`, `actor.getPosts` and
+  `actor.getComments` dropped `format: at-identifier` for a plain string so a
+  bridged user's `name@host` or `@name@host` address resolves alongside a
+  handle or DID. This is the same application-identifier exception as the
+  2026-09-07 `community` parameter entry: it loosens input only, so every
+  input that validated before still validates. The parameter is bounded at
+  `maxLength: 2048`, the longest DID `at-identifier` allowed and the limit
+  `getPosts` and `getComments` already enforce in code.
 
 ## Published and held back
 

@@ -35,6 +35,12 @@ func TestMigration048DiscoverHotSnapshots(t *testing.T) {
 	_, err := db.ExecContext(ctx, `CREATE TABLE discover_hot_migration_sentinel (id BIGINT PRIMARY KEY)`)
 	require.NoError(t, err)
 
+	require.EqualValues(t, 59, testkit.MigrateDownOne(t, db, 59),
+		"059 (users origin username index) must be rolled back before testing earlier migrations")
+	require.EqualValues(t, 58, testkit.MigrateDownOne(t, db, 58),
+		"058 (communities origin display) must be rolled back before testing earlier migrations")
+	require.EqualValues(t, 57, testkit.MigrateDownOne(t, db, 57),
+		"057 (users profile origin) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 56, testkit.MigrateDownOne(t, db, 56),
 		"056 (moderation content snapshots) must be rolled back before testing earlier migrations")
 

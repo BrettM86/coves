@@ -47,7 +47,10 @@ import (
 // fixedResolver next door echoes the subject DID, which is the honest default.
 // This one pins a DID explicitly, which is the whole point: it is the only way
 // to construct the disagreement the subject check exists to catch.
-type mismatchedResolver struct{ id identity.Identity }
+type mismatchedResolver struct {
+	identity.Resolver
+	id identity.Identity
+}
 
 func (m mismatchedResolver) Resolve(context.Context, string) (*identity.Identity, error) {
 	id := m.id
@@ -62,6 +65,7 @@ func (m mismatchedResolver) Resolve(context.Context, string) (*identity.Identity
 // and it is invisible in the stored row when the two agree — which is the case
 // that has to be pinned, because the disagreeing case is already covered.
 type countingResolver struct {
+	identity.Resolver
 	handle string
 	// pdsURL is what the directory says this repo's PDS is. Empty means
 	// untrustedPDS, so the cases that do not care about the PDS read the same
@@ -88,7 +92,7 @@ func (c *countingResolver) Resolve(ctx context.Context, did string) (*identity.I
 // package included, and a real resolver that ever returns a zero value on a
 // path its author thought unreachable does the same. A caller reads err, finds
 // it nil, and dereferences.
-type nilResolver struct{}
+type nilResolver struct{ identity.Resolver }
 
 func (nilResolver) Resolve(context.Context, string) (*identity.Identity, error) {
 	return nil, nil
@@ -102,6 +106,7 @@ func (nilResolver) Resolve(context.Context, string) (*identity.Identity, error) 
 // identity package classifies its failures, and the consumer has to route on
 // that classification — so the error has to be a parameter.
 type erroringResolver struct {
+	identity.Resolver
 	err   error
 	calls int
 }
@@ -275,9 +280,7 @@ func TestCreateCommunity_UnverifiedHandlesAreUnresolvedReferences(t *testing.T) 
 
 	for _, tc := range []struct {
 		name     string
-		resolver interface {
-			Resolve(context.Context, string) (*identity.Identity, error)
-		}
+		resolver identity.Resolver
 	}{
 		{name: "reserved invalid handle", resolver: &countingResolver{handle: identity.InvalidHandle}},
 		{name: "empty handle", resolver: &countingResolver{handle: ""}},
@@ -420,7 +423,7 @@ func TestCreateCommunity_RefusesAResolutionAboutADifferentDID(t *testing.T) {
 	t.Parallel()
 
 	repo := newOriginRepo()
-	resolver := mismatchedResolver{identity.Identity{
+	resolver := mismatchedResolver{id: identity.Identity{
 		DID:    "did:plc:someoneelsentirely",
 		Handle: nativeHandle,
 		PDSURL: untrustedPDS,
@@ -572,7 +575,7 @@ func TestCreateCommunity_IgnoresARecordHandleTheDirectoryContradicts(t *testing.
 	const resolvedHandle = "c-nba.example.net"
 
 	repo := newOriginRepo()
-	resolver := fixedResolver{identity.Identity{Handle: resolvedHandle, PDSURL: untrustedPDS}}
+	resolver := fixedResolver{id: identity.Identity{Handle: resolvedHandle, PDSURL: untrustedPDS}}
 	consumer := NewCommunityEventConsumer(repo, originTestInstance, true, resolver)
 
 	const did = "did:plc:contradictsthedirectory"
@@ -747,7 +750,7 @@ func TestUpdateCommunity_RefusesAResolutionAboutADifferentDID(t *testing.T) {
 	const did = "did:plc:updatestalecache"
 	seedCommunity(repo, did, nativeHandle, untrustedPDS)
 
-	resolver := mismatchedResolver{identity.Identity{
+	resolver := mismatchedResolver{id: identity.Identity{
 		DID:    "did:plc:someoneelsentirely",
 		Handle: "c-nba.example.net",
 		PDSURL: trustedBridgePDS,

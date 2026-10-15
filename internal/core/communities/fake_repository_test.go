@@ -210,6 +210,10 @@ func (f *fakeCommunityRepo) Delete(_ context.Context, did string) error {
 	return f.err
 }
 
+func (f *fakeCommunityRepo) UpdateHandle(ctx context.Context, did, handle string) error {
+	return nil
+}
+
 func (f *fakeCommunityRepo) UpdateCredentials(_ context.Context, did, accessToken, refreshToken string) error {
 	f.record("UpdateCredentials", did, accessToken, refreshToken)
 	return f.err

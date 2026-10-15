@@ -56,6 +56,12 @@ func TestNotificationMigration053_ActivationSingleton(t *testing.T) {
 func TestNotificationMigration053_DownAndUpRoundTrip(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
+	require.EqualValues(t, 59, testkit.MigrateDownOne(t, db, 59),
+		"059 (users origin username index) must be rolled back before testing earlier migrations")
+	require.EqualValues(t, 58, testkit.MigrateDownOne(t, db, 58),
+		"058 (communities origin display) must be rolled back before testing earlier migrations")
+	require.EqualValues(t, 57, testkit.MigrateDownOne(t, db, 57),
+		"057 (users profile origin) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 56, testkit.MigrateDownOne(t, db, 56),
 		"056 (moderation content snapshots) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 55, testkit.MigrateDownOne(t, db, 55),
@@ -83,6 +89,12 @@ func TestNotificationMigration053_DownAndUpRoundTrip(t *testing.T) {
 func TestNotificationMigration055_DownAndUpRoundTrip(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
+	require.EqualValues(t, 59, testkit.MigrateDownOne(t, db, 59),
+		"059 (users origin username index) must be rolled back before testing earlier migrations")
+	require.EqualValues(t, 58, testkit.MigrateDownOne(t, db, 58),
+		"058 (communities origin display) must be rolled back before testing earlier migrations")
+	require.EqualValues(t, 57, testkit.MigrateDownOne(t, db, 57),
+		"057 (users profile origin) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 56, testkit.MigrateDownOne(t, db, 56),
 		"056 (moderation content snapshots) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 55, testkit.MigrateDownOne(t, db, 55),

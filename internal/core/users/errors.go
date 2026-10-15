@@ -12,6 +12,10 @@ var (
 	// ErrUserNotFound is returned when a user lookup finds no matching record
 	ErrUserNotFound = errors.New("user not found")
 
+	// ErrAmbiguousUser is returned when a name@host lookup matches more than one
+	// user and no rule picks between them.
+	ErrAmbiguousUser = errors.New("multiple users match identifier")
+
 	// ErrHandleAlreadyTaken is returned when attempting to use a handle that belongs to another user
 	ErrHandleAlreadyTaken = errors.New("handle already taken")
 

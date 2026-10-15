@@ -130,6 +130,10 @@ func (r *listTestRepo) Update(ctx context.Context, community *communities.Commun
 	return nil, nil
 }
 func (r *listTestRepo) Delete(ctx context.Context, did string) error { return nil }
+func (r *listTestRepo) UpdateHandle(ctx context.Context, did, handle string) error {
+	return nil
+}
+
 func (r *listTestRepo) UpdateCredentials(ctx context.Context, did, accessToken, refreshToken string) error {
 	return nil
 }

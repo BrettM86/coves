@@ -42,8 +42,8 @@ import (
 //
 // # WHAT IS NOT HERE
 //
-// Events the consumer must ignore — other collections, identity and account
-// events, a commit with no body — are covered by that same file's
+// Events the consumer must ignore — other collections, account events, a
+// commit with no body — are covered by that same file's
 // TestCommunityConsumer_IgnoresUnrelatedCollections, which asserts it against a
 // NIL repository, so anything that reached a database call would panic rather
 // than pass. That is a stronger statement than a Postgres-backed test can make,
@@ -64,6 +64,7 @@ import (
 // what these tests care about is what the consumer DOES with the answer, and
 // whether it calls at all.
 type stubIdentityResolver struct {
+	identity.Resolver
 	resolutions map[string]string
 	lastDID     string
 	callCount   int
@@ -211,28 +212,55 @@ func TestCommunityConsumer_IgnoresForeignCollections(t *testing.T) {
 // Jetstream's wantedCollections filter applies to commits only: identity and
 // account events are delivered to every subscriber regardless, which is the same
 // property that keeps -p 1 in place for the whole suite (tests/testkit/db.go's
-// packageParallelism). A bodyless commit is here for a different reason — it is
-// the shape that dereferences a nil Commit if the consumer checks the kind
-// without checking the body.
+// packageParallelism). Account events are ignored. An identity event the
+// consumer cannot act on (no identity payload, or no DID in it) is rejected as
+// permanent: no redrive can make it actionable. A bodyless commit is here for a
+// different reason — it is the shape that dereferences a nil Commit if the
+// consumer checks the kind without checking the body.
 func TestCommunityConsumer_IgnoresNonCommitKinds(t *testing.T) {
 	t.Parallel()
 
-	consumer, repo := newCommunityConsumer(t, newStubIdentityResolver())
-	ctx := context.Background()
-
 	communityDID := fixtures.DID(testkit.UniqueIDWithPrefix(t, "knd"))
+	h := newCommunityOriginHarness(t, communityDID, "c-knd."+instanceDomain, trustedBridgePDS, withIdentityRefreshLock())
 
-	for _, event := range []*jetstream.JetstreamEvent{
-		{Kind: "identity", Did: communityDID, TimeUS: time.Now().UnixMicro()},
-		{Kind: "account", Did: communityDID, TimeUS: time.Now().UnixMicro()},
-		{Kind: "commit", Did: communityDID, TimeUS: time.Now().UnixMicro()},
+	for _, tc := range []struct {
+		name          string
+		event         *jetstream.JetstreamEvent
+		wantPermanent bool
+	}{
+		{
+			name:          "identity without an identity payload",
+			event:         &jetstream.JetstreamEvent{Kind: "identity", Did: communityDID, TimeUS: time.Now().UnixMicro()},
+			wantPermanent: true,
+		},
+		{
+			name: "identity with an empty DID",
+			event: &jetstream.JetstreamEvent{
+				Kind: "identity", Did: communityDID, TimeUS: time.Now().UnixMicro(),
+				Identity: &jetstream.IdentityEvent{Did: "", Handle: "c-knd." + instanceDomain},
+			},
+			wantPermanent: true,
+		},
+		{
+			name:  "account",
+			event: &jetstream.JetstreamEvent{Kind: "account", Did: communityDID, TimeUS: time.Now().UnixMicro()},
+		},
+		{
+			name:  "commit without a commit body",
+			event: &jetstream.JetstreamEvent{Kind: "commit", Did: communityDID, TimeUS: time.Now().UnixMicro()},
+		},
 	} {
-		require.NoErrorf(t, consumer.HandleEvent(ctx, event),
-			"a %q event must be ignored: it arrives whatever this consumer subscribed to", event.Kind)
+		t.Run(tc.name, func(t *testing.T) {
+			err := h.deliverEvent(tc.event)
+			if tc.wantPermanent {
+				require.ErrorIs(t, err, jetstream.ErrPermanentEvent)
+			} else {
+				require.NoError(t, err, "it must be ignored: it arrives whatever this consumer subscribed to")
+			}
+		})
 	}
 
-	_, err := repo.GetByDID(ctx, communityDID)
-	require.Error(t, err, "a non-commit event created a community row")
+	h.assertNoCommunity(t)
 }
 
 func TestCommunityConsumer_IndexesAProfileFromTheFirehose(t *testing.T) {

@@ -80,14 +80,15 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 			visibility, allow_external_discovery, moderation_type, content_warnings,
 			member_count, post_count,
 			federated_from, federated_id, created_at, updated_at,
-			record_uri, record_cid, origin
+			record_uri, record_cid, origin, origin_url, origin_software
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
 			$12, $13, $14, $15, $16,
 			$17, $18, $19, $20,
-			$21, $22, $23, $24, $25, $26, $27, $28, $29
+			$21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31
 		)
-		RETURNING id, subscriber_count, created_at, updated_at`
+		RETURNING id, subscriber_count, created_at, updated_at,
+			COALESCE(origin_url, ''), COALESCE(origin_software, '')`
 
 	// Handle JSONB field - use sql.NullString with valid JSON or NULL
 	var descFacets interface{}
@@ -129,7 +130,10 @@ func (r *postgresCommunityRepo) Create(ctx context.Context, community *communiti
 		nullString(community.RecordURI),
 		nullString(community.RecordCID),
 		nullString(community.Origin),
-	).Scan(&community.ID, &community.SubscriberCount, &community.CreatedAt, &community.UpdatedAt)
+		nullString(community.OriginURL),
+		nullString(community.OriginSoftware),
+	).Scan(&community.ID, &community.SubscriberCount, &community.CreatedAt, &community.UpdatedAt,
+		&community.OriginURL, &community.OriginSoftware)
 	if err != nil {
 		// Check for unique constraint violations
 		if strings.Contains(err.Error(), "duplicate key") {
@@ -162,7 +166,8 @@ func (r *postgresCommunityRepo) GetByDID(ctx context.Context, did string) (*comm
 			visibility, allow_external_discovery, moderation_type, content_warnings,
 			member_count, subscriber_count, ` + communityPostCountUnqualified + ` AS post_count,
 			federated_from, federated_id, created_at, updated_at,
-			record_uri, record_cid, origin
+			record_uri, record_cid, origin,
+			COALESCE(origin_url, ''), COALESCE(origin_software, '')
 		FROM communities
 		WHERE did = $1`
 
@@ -185,6 +190,7 @@ func (r *postgresCommunityRepo) GetByDID(ctx context.Context, did string) (*comm
 		&federatedFrom, &federatedID,
 		&community.CreatedAt, &community.UpdatedAt,
 		&recordURI, &recordCID, &origin,
+		&community.OriginURL, &community.OriginSoftware,
 	)
 
 	if errors.Is(err, sql.ErrNoRows) {
@@ -301,7 +307,8 @@ func (r *postgresCommunityRepo) GetByHandle(ctx context.Context, handle string) 
 			visibility, allow_external_discovery, moderation_type, content_warnings,
 			member_count, subscriber_count, ` + communityPostCountUnqualified + ` AS post_count,
 			federated_from, federated_id, created_at, updated_at,
-			record_uri, record_cid, origin
+			record_uri, record_cid, origin,
+			COALESCE(origin_url, ''), COALESCE(origin_software, '')
 		FROM communities
 		WHERE handle = $1`
 
@@ -321,6 +328,7 @@ func (r *postgresCommunityRepo) GetByHandle(ctx context.Context, handle string) 
 		&federatedFrom, &federatedID,
 		&community.CreatedAt, &community.UpdatedAt,
 		&recordURI, &recordCID, &origin,
+		&community.OriginURL, &community.OriginSoftware,
 	)
 
 	if errors.Is(err, sql.ErrNoRows) {
@@ -364,7 +372,8 @@ func (r *postgresCommunityRepo) GetByNameAndOrigin(ctx context.Context, name, or
 			visibility, allow_external_discovery, moderation_type, content_warnings,
 			member_count, subscriber_count, ` + communityPostCountUnqualified + ` AS post_count,
 			federated_from, federated_id, created_at, updated_at,
-			record_uri, record_cid, origin
+			record_uri, record_cid, origin,
+			COALESCE(origin_url, ''), COALESCE(origin_software, '')
 		FROM communities
 		WHERE lower(name) = lower($1) AND origin = $2
 		LIMIT 2`
@@ -394,6 +403,7 @@ func (r *postgresCommunityRepo) GetByNameAndOrigin(ctx context.Context, name, or
 			&federatedFrom, &federatedID,
 			&community.CreatedAt, &community.UpdatedAt,
 			&recordURI, &recordCID, &rowOrigin,
+			&community.OriginURL, &community.OriginSoftware,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan community by name and origin: %w", err)
 		}
@@ -428,6 +438,25 @@ func (r *postgresCommunityRepo) GetByNameAndOrigin(ctx context.Context, name, or
 	}
 }
 
+// UpdateHandle sets the stored handle of the community with did. It writes
+// only handle and updated_at.
+func (r *postgresCommunityRepo) UpdateHandle(ctx context.Context, did, handle string) error {
+	var returnedDID string
+	err := r.db.QueryRowContext(ctx,
+		`UPDATE communities SET handle = $2, updated_at = NOW() WHERE did = $1 RETURNING did`,
+		did, handle).Scan(&returnedDID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return communities.ErrCommunityNotFound
+	}
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") && strings.Contains(err.Error(), "communities_handle_key") {
+			return communities.ErrHandleTaken
+		}
+		return fmt.Errorf("failed to update community handle: %w", err)
+	}
+	return nil
+}
+
 // Update modifies an existing community's metadata
 func (r *postgresCommunityRepo) Update(ctx context.Context, community *communities.Community) (*communities.Community, error) {
 	query := `
@@ -439,7 +468,8 @@ func (r *postgresCommunityRepo) Update(ctx context.Context, community *communiti
 			updated_at = NOW(),
 			record_uri = $11, record_cid = $12,
 			pds_url = COALESCE(NULLIF($13, ''), pds_url),
-			origin = $14
+			origin = $14,
+			origin_url = $15, origin_software = $16
 		WHERE did = $1
 		RETURNING updated_at`
 
@@ -472,6 +502,10 @@ func (r *postgresCommunityRepo) Update(ctx context.Context, community *communiti
 		// origin wholesale from the record on every profile update, so a
 		// record that dropped (or had its untrusted) origin clears the column.
 		nullString(community.Origin),
+		// Replaced on every update like origin: the consumer sets both from
+		// the record each time, so an empty value clears the stored one.
+		nullString(community.OriginURL),
+		nullString(community.OriginSoftware),
 	).Scan(&community.UpdatedAt)
 
 	if errors.Is(err, sql.ErrNoRows) {
@@ -612,7 +646,8 @@ func (r *postgresCommunityRepo) List(ctx context.Context, req communities.ListCo
 			c.visibility, c.allow_external_discovery, c.moderation_type, c.content_warnings,
 			c.member_count, c.subscriber_count, `+communityPostCountAliasedC+` AS post_count,
 			c.federated_from, c.federated_id, c.created_at, c.updated_at,
-			c.record_uri, c.record_cid, c.pds_url, c.origin
+			c.record_uri, c.record_cid, c.pds_url, c.origin,
+			COALESCE(c.origin_url, ''), COALESCE(c.origin_software, '')
 		FROM communities c
 		%s
 		%s
@@ -651,6 +686,7 @@ func (r *postgresCommunityRepo) List(ctx context.Context, req communities.ListCo
 			&federatedFrom, &federatedID,
 			&community.CreatedAt, &community.UpdatedAt,
 			&recordURI, &recordCID, &pdsURL, &origin,
+			&community.OriginURL, &community.OriginSoftware,
 		)
 		if scanErr != nil {
 			return nil, fmt.Errorf("failed to scan community: %w", scanErr)
@@ -724,6 +760,7 @@ func (r *postgresCommunityRepo) Search(ctx context.Context, req communities.Sear
 			member_count, subscriber_count, `+communityPostCountUnqualified+` AS post_count,
 			federated_from, federated_id, created_at, updated_at,
 			record_uri, record_cid, pds_url, origin,
+			COALESCE(origin_url, ''), COALESCE(origin_software, ''),
 			similarity(name, $1) + similarity(COALESCE(description, ''), $1) as relevance
 		FROM communities
 		%s AND (similarity(name, $1) + similarity(COALESCE(description, ''), $1)) > 0.2
@@ -763,6 +800,7 @@ func (r *postgresCommunityRepo) Search(ctx context.Context, req communities.Sear
 			&federatedFrom, &federatedID,
 			&community.CreatedAt, &community.UpdatedAt,
 			&recordURI, &recordCID, &pdsURL, &origin,
+			&community.OriginURL, &community.OriginSoftware,
 			&relevance,
 		)
 		if scanErr != nil {

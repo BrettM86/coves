@@ -48,6 +48,9 @@ type contentLabelRouteFixture struct {
 	postCID       string
 	pdsRequests   *atomic.Int64
 	insertPost    func(title string) string
+	// insertPostBy inserts an accepted post in the fixture community by an
+	// author other than authorDID; the caller owns that author's users row.
+	insertPostBy func(authorDID, title string) string
 }
 
 func newContentLabelRouteFixture(t *testing.T) contentLabelRouteFixture {
@@ -98,7 +101,7 @@ func newContentLabelRouteFixture(t *testing.T) contentLabelRouteFixture {
 	`, communityDID, communityName, ownerDID, instanceDID, communityName+".coves.social", pds.URL)
 	require.NoError(t, err)
 	const postCID = "bafyreihgdyzzpkkzq2izfnhcmm77ycuacvkuziwbnqxfxtqsz7tmxwhnshi"
-	insertAcceptedPost := func(title string) string {
+	insertAcceptedPostBy := func(authorDID, title string) string {
 		t.Helper()
 		rkey := testkit.TID()
 		uri := "at://" + authorDID + "/" + moderation.PostV2Collection + "/" + rkey
@@ -114,6 +117,10 @@ func newContentLabelRouteFixture(t *testing.T) contentLabelRouteFixture {
 		`, communityDID, uri, postCID)
 		require.NoError(t, err)
 		return uri
+	}
+	insertAcceptedPost := func(title string) string {
+		t.Helper()
+		return insertAcceptedPostBy(authorDID, title)
 	}
 	adminDID := fixtures.DID(testkit.UniqueIDWithPrefix(t, "labeladmin"))
 	const adminToken = "content-label-admin-session"
@@ -145,7 +152,7 @@ func newContentLabelRouteFixture(t *testing.T) contentLabelRouteFixture {
 		db: db, server: server, client: server.Client(), instanceDID: instanceDID,
 		authorDID: authorDID, communityDID: communityDID, adminDID: adminDID,
 		adminToken: adminToken, nonAdminDID: nonAdminDID, nonAdminToken: nonAdminToken, postCID: postCID,
-		pdsRequests: &pdsRequests, insertPost: insertAcceptedPost,
+		pdsRequests: &pdsRequests, insertPost: insertAcceptedPost, insertPostBy: insertAcceptedPostBy,
 	}
 }
 

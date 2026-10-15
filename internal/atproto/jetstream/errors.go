@@ -133,9 +133,14 @@ func requireDIDShaped(field, value string) error {
 
 // identityResolveTimeout bounds one identity resolution triggered by an
 // attacker-reachable firehose event (community create and update, unknown-DID
-// profile create, author hydration). The identity HTTP client already has a
-// 10-second timeout, so this halves the worst case rather than creating the only
-// bound. See docs/SECURITY_MODEL.md, Firehose error classes.
+// profile create, author hydration, identity-event handle refresh). The identity
+// HTTP client already has a 10-second timeout, so this halves the worst case
+// rather than creating the only bound. Failures are damped for
+// IDENTITY_NEGATIVE_CACHE_TTL by the caching resolver's negative cache. Identity
+// refresh uses the uncached resolver, so only its timeouts are damped, by the
+// per-DID identityRefreshFailureDebounce; a debounce hit still purges the cached
+// DID and defers without spending a redrive attempt. See docs/SECURITY_MODEL.md,
+// Firehose error classes.
 const identityResolveTimeout = 5 * time.Second
 
 // authorHydrationTimeout shares the identity resolution ceiling so equivalent

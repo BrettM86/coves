@@ -79,10 +79,8 @@ type cachedDIDDoc struct {
 
 // CommunityEventConsumer consumes community-related events from Jetstream
 type CommunityEventConsumer struct {
-	repo             communities.Repository // Repository for community operations
-	identityResolver interface {
-		Resolve(context.Context, string) (*identity.Identity, error)
-	} // For resolving handles from DIDs
+	repo             communities.Repository                            // Repository for community operations
+	identityResolver identity.Resolver                                 // For resolving handles from DIDs
 	httpClient       *http.Client                                      // Shared HTTP client with connection pooling
 	didCache         *lru.Cache[didVerificationCacheKey, cachedDIDDoc] // Bounded LRU cache for .well-known verification results
 	didCacheMu       sync.Mutex                                        // Makes cache check + in-flight marker insertion atomic
@@ -95,6 +93,17 @@ type CommunityEventConsumer struct {
 	// their verified handle's domain (see admitCommunityOrigin). nil is
 	// default-deny: only a handle-matching origin is kept.
 	bridgeTrust *BridgeTrust
+
+	// uncachedIdentityResolver answers the fresh resolution a profile carrying
+	// originUrl or originSoftware needs (resolveFreshCommunityIdentity). nil
+	// means those fields are never stored.
+	uncachedIdentityResolver identity.UncachedResolver
+	// identityRefreshFailures is this consumer's own debounce of DIDs whose
+	// fresh resolution recently timed out.
+	identityRefreshFailures *identityRefreshFailureDebounce
+	// identityRefreshLock serializes identity refreshes of one DID. nil
+	// refuses identity refreshes.
+	identityRefreshLock IdentityRefreshLock
 
 	// allowPrivateHosts disables the SSRF address guard on the .well-known
 	// fetch. NEVER set in production: the domain this consumer dials comes off a
@@ -144,6 +153,21 @@ func WithCommunityRevGate(gate *RevGate) CommunityConsumerOption {
 // WithPostBridgeTrust.
 func WithCommunityBridgeTrust(bt *BridgeTrust) CommunityConsumerOption {
 	return func(c *CommunityEventConsumer) { c.bridgeTrust = bt }
+}
+
+// WithCommunityUncachedIdentityResolver sets the resolver that answers a fresh,
+// uncached identity for profiles carrying origin display fields.
+func WithCommunityUncachedIdentityResolver(resolver identity.UncachedResolver) CommunityConsumerOption {
+	return func(c *CommunityEventConsumer) { c.uncachedIdentityResolver = resolver }
+}
+
+// WithCommunityIdentityRefreshFailureTTL sets how long a fresh profile
+// resolution that hit identityResolveTimeout suppresses further fresh
+// resolutions of the same DID. Pass IDENTITY_NEGATIVE_CACHE_TTL: config keeps
+// it below REDRIVE_INTERVAL, so each redrive reaches the network. Defaults to
+// identity.DefaultNegativeCacheTTL.
+func WithCommunityIdentityRefreshFailureTTL(ttl time.Duration) CommunityConsumerOption {
+	return func(c *CommunityEventConsumer) { c.identityRefreshFailures.ttl = ttl }
 }
 
 // WithPrivateHostsAllowed disables the SSRF address guard on the .well-known
@@ -291,9 +315,8 @@ func newWellKnownClient(allowPrivateHosts bool, opts ...covesoauth.Option) *http
 // instanceDID: The DID of this Coves instance (for hostedBy verification)
 // skipVerification: Skip did:web verification (for dev mode)
 // identityResolver: Optional resolver for resolving handles from DIDs (can be nil for tests)
-func NewCommunityEventConsumer(repo communities.Repository, instanceDID string, skipVerification bool, identityResolver interface {
-	Resolve(context.Context, string) (*identity.Identity, error)
-}, opts ...CommunityConsumerOption,
+func NewCommunityEventConsumer(repo communities.Repository, instanceDID string, skipVerification bool, identityResolver identity.Resolver,
+	opts ...CommunityConsumerOption,
 ) *CommunityEventConsumer {
 	// Create bounded LRU cache for DID document verification results
 	// Max 1000 entries to prevent unbounded memory growth (PR review feedback)
@@ -316,6 +339,8 @@ func NewCommunityEventConsumer(repo communities.Repository, instanceDID string, 
 			skipVerification: skipVerification,
 			didCache:         cache,
 			wellKnownLimiter: rate.NewLimiter(10, 20),
+
+			identityRefreshFailures: newIdentityRefreshFailureDebounce(identity.DefaultNegativeCacheTTL),
 		}
 		for _, opt := range opts {
 			opt(fallback)
@@ -335,6 +360,8 @@ func NewCommunityEventConsumer(repo communities.Repository, instanceDID string, 
 		// Rate limiter: 10 requests per second, burst of 20
 		// Prevents DoS via excessive .well-known fetches
 		wellKnownLimiter: rate.NewLimiter(10, 20),
+
+		identityRefreshFailures: newIdentityRefreshFailureDebounce(identity.DefaultNegativeCacheTTL),
 	}
 	for _, opt := range opts {
 		opt(consumer)
@@ -377,7 +404,10 @@ func (c *CommunityEventConsumer) RevGated() bool { return c.revGate != nil }
 // HandleEvent processes a Jetstream event for community records
 // This is called by the main Jetstream consumer when it receives commit events
 func (c *CommunityEventConsumer) HandleEvent(ctx context.Context, event *JetstreamEvent) error {
-	// We only care about commit events for community records
+	if event.Kind == "identity" {
+		return c.handleIdentityEvent(ctx, event)
+	}
+	// Other non-commit kinds carry nothing for community records.
 	if event.Kind != "commit" || event.Commit == nil {
 		return nil
 	}
@@ -417,6 +447,89 @@ func (c *CommunityEventConsumer) HandleEvent(ctx context.Context, event *Jetstre
 		// Not a community-related collection
 		return nil
 	}
+}
+
+// handleIdentityEvent refreshes the stored handle of an indexed community from
+// a fresh, verified resolution of its DID. The event's own handle is never
+// trusted, and an event for a DID this instance does not index is acknowledged
+// without resolving anything.
+func (c *CommunityEventConsumer) handleIdentityEvent(ctx context.Context, event *JetstreamEvent) error {
+	if event.Identity == nil {
+		return fmt.Errorf("%w: identity event missing identity data", ErrPermanentEvent)
+	}
+	did := event.Identity.Did
+	if did == "" {
+		return fmt.Errorf("%w: identity event missing did", ErrPermanentEvent)
+	}
+
+	// Only filters unknown DIDs. The stored row is read again inside the
+	// refresh lock, since another refresh may change it meanwhile.
+	if _, err := c.repo.GetByDID(ctx, did); err != nil {
+		if errors.Is(err, communities.ErrCommunityNotFound) {
+			return nil
+		}
+		return fmt.Errorf("failed to check if community exists: %w", err)
+	}
+
+	refresh, err := c.RefreshCommunityHandle(ctx, did)
+	if err != nil {
+		return err
+	}
+	if !refresh.Changed {
+		log.Printf("Community handle unchanged for %s (%s)", refresh.VerifiedHandle, did)
+		return nil
+	}
+	log.Printf("Community handle changed: %s → %s (DID: %s)", refresh.StoredHandle, refresh.VerifiedHandle, did)
+	return nil
+}
+
+// RefreshCommunityHandle runs the locked handle refresh an identity event runs
+// for an indexed community: RefreshIdentityHandle with the stored row re-read
+// inside the lock, and a changed handle written only after ValidateHandle and
+// the hostedBy verification against the stored hosted_by_did pass. The error
+// chain keeps its cause: ErrIdentityResolveFailed,
+// identity.ErrHandleUnverified, identity.ErrIdentitySubjectMismatch,
+// ErrVerifiedHandleInvalid, ErrHostedByMismatch, ErrHostedByVerificationPending,
+// communities.ErrHandleTaken or
+// ErrIdentityRefreshBusy, each under the connector class the identity-event
+// path uses.
+func (c *CommunityEventConsumer) RefreshCommunityHandle(ctx context.Context, did string) (IdentityHandleRefresh, error) {
+	var refresh IdentityHandleRefresh
+	var hostedByDID string
+	verifiedHandle, changed, err := RefreshIdentityHandle(ctx, did, c.identityRefreshLock,
+		c.identityResolver, c.uncachedIdentityResolver, c.identityRefreshFailures,
+		func(ctx context.Context) (string, error) {
+			community, readErr := c.repo.GetByDID(ctx, did)
+			if readErr != nil {
+				return "", fmt.Errorf("failed to read stored community: %w", readErr)
+			}
+			refresh.StoredHandle = community.Handle
+			hostedByDID = community.HostedByDID
+			return community.Handle, nil
+		},
+		func(ctx context.Context, handle string) error {
+			if validateErr := communities.ValidateHandle(handle); validateErr != nil {
+				return markRefreshError(
+					fmt.Errorf("%w: verified handle %q breaks community handle rules: %w", ErrPermanentEvent, handle, validateErr),
+					ErrVerifiedHandleInvalid)
+			}
+			if verifyErr := c.verifyHostedByClaim(ctx, handle, hostedByDID); verifyErr != nil {
+				if errors.Is(verifyErr, ErrPermanentEvent) {
+					return markRefreshError(verifyErr, ErrHostedByMismatch)
+				}
+				return verifyErr
+			}
+			if updateErr := c.repo.UpdateHandle(ctx, did, handle); updateErr != nil {
+				if errors.Is(updateErr, communities.ErrHandleTaken) {
+					return fmt.Errorf("%w: failed to update handle: %w", ErrUnresolvedReference, updateErr)
+				}
+				return fmt.Errorf("failed to update handle: %w", updateErr)
+			}
+			return nil
+		})
+	refresh.VerifiedHandle = verifiedHandle
+	refresh.Changed = changed
+	return refresh, err
 }
 
 // handleCommunityProfile processes community profile create/update/delete events
@@ -569,6 +682,211 @@ func (c *CommunityEventConsumer) resolveVerifiedHandleForUpdate(ctx context.Cont
 	}
 }
 
+// profileCarriesOriginDisplay reports whether a profile record asserts
+// originUrl or originSoftware. Either key, whatever its value, switches the
+// event to the fresh resolution path.
+func profileCarriesOriginDisplay(record map[string]interface{}) bool {
+	_, hasURL := record["originUrl"]
+	_, hasSoftware := record["originSoftware"]
+	return hasURL || hasSoftware
+}
+
+// originDisplayVerdict is why a profile's originUrl and originSoftware were or
+// were not stored. It is logged by name; the record's values never are.
+type originDisplayVerdict int
+
+const (
+	// originDisplayAbsent: the record carries neither field.
+	originDisplayAbsent originDisplayVerdict = iota
+	// originDisplayAdmitted: a fresh, verified identity on a trusted bridge PDS
+	// with its handle under that PDS host's registrable domain. admitOriginDisplay
+	// keeps it only when the record's origin was admitted too.
+	originDisplayAdmitted
+	// originDisplayNoUncachedResolver: no fresh resolution is available.
+	originDisplayNoUncachedResolver
+	// originDisplayUntrustedDocument: the fresh DID document names a PDS outside
+	// bridge trust or declares a handle outside its PDS host's registrable
+	// domain. No handle lookup is made for the fields.
+	originDisplayUntrustedDocument
+	// originDisplayUntrustedResolution: the verified answer names a PDS outside
+	// bridge trust.
+	originDisplayUntrustedResolution
+	// originDisplayHandleOutsideBridgeDomain: the verified handle is outside the
+	// bridge PDS host's registrable domain.
+	originDisplayHandleOutsideBridgeDomain
+	// originDisplayOriginNotAdmitted: the identity admits the fields but the
+	// record has no admitted origin.
+	originDisplayOriginNotAdmitted
+	// originDisplayValueRejected: admitted, but a value failed sanitizing (a
+	// non-https or off-origin URL, or software outside 1-64 bytes).
+	originDisplayValueRejected
+)
+
+func (v originDisplayVerdict) String() string {
+	switch v {
+	case originDisplayAbsent:
+		return "absent"
+	case originDisplayAdmitted:
+		return "admitted"
+	case originDisplayNoUncachedResolver:
+		return "no-uncached-resolver"
+	case originDisplayUntrustedDocument:
+		return "untrusted-document"
+	case originDisplayUntrustedResolution:
+		return "untrusted-resolution"
+	case originDisplayHandleOutsideBridgeDomain:
+		return "handle-outside-bridge-domain"
+	case originDisplayOriginNotAdmitted:
+		return "origin-not-admitted"
+	case originDisplayValueRejected:
+		return "value-rejected"
+	default:
+		return fmt.Sprintf("originDisplayVerdict(%d)", int(v))
+	}
+}
+
+// freshCommunityIdentity is what resolveFreshCommunityIdentity established.
+type freshCommunityIdentity struct {
+	// resolved and verifiedHandle are set only when the document admitted the
+	// lookup and Resolve verified the handle. With originDisplayUntrustedDocument
+	// they are empty: no handle lookup was made.
+	resolved       *identity.Identity
+	verifiedHandle string
+	verdict        originDisplayVerdict
+}
+
+// resolveFreshCommunityIdentity is resolveVerifiedHandle for a profile that
+// carries originUrl or originSoftware. It never consults the caching resolver:
+// an identity_cache row can name a trusted bridge PDS long after the repo
+// moved, and these fields are admitted only on a fresh answer.
+//
+// It follows the user consumer's resolveFreshUserProfileIdentity order
+// (debounce, DID document, trust and domain checks, uncached Resolve,
+// verification). A document that fails the trust or domain check is settled
+// before any handle I/O: it returns originDisplayUntrustedDocument with no
+// resolved identity and no error, so a repo cannot make the serial community
+// lane wait on a handle domain it controls for fields that could never be
+// admitted. The caller then indexes the rest of the record as it would a record
+// without the fields. A subject mismatch in the document or the Resolve answer
+// is ErrPermanentEvent, as it is on the caching path.
+//
+// Once the document admits the lookup, any failure to verify the handle is
+// ErrUnresolvedReference, so the event is redriven rather than applied without
+// the fields. A timeout of the identityResolveTimeout deadline (not the caller's
+// context) is recorded in the consumer's debounce; while it is recent the lookup
+// is deferred without touching the network.
+func (c *CommunityEventConsumer) resolveFreshCommunityIdentity(ctx context.Context, did string) (freshCommunityIdentity, error) {
+	if c.identityRefreshFailures.recentlyFailed(did) {
+		return freshCommunityIdentity{}, deferRedrive(fmt.Errorf("%w: community identity resolution for %s debounced after a recent resolution timeout",
+			ErrUnresolvedReference, did))
+	}
+	resolveCtx, cancel := context.WithTimeout(ctx, identityResolveTimeout)
+	defer cancel()
+	recordIfTimedOut := func() {
+		if ctx.Err() == nil && errors.Is(resolveCtx.Err(), context.DeadlineExceeded) {
+			c.identityRefreshFailures.recordFailure(did)
+		}
+	}
+
+	declared, err := c.uncachedIdentityResolver.ResolveDeclaredIdentity(resolveCtx, did)
+	if err != nil {
+		recordIfTimedOut()
+		return freshCommunityIdentity{}, classifyFreshProfileResolveError(did, "read community identity document", err)
+	}
+	if declared == nil {
+		return freshCommunityIdentity{}, fmt.Errorf("%w: read community identity document %s: no document", ErrUnresolvedReference, did)
+	}
+	if declared.DID != did {
+		return freshCommunityIdentity{}, fmt.Errorf("%w: community identity document for %s describes %q instead",
+			ErrPermanentEvent, did, declared.DID)
+	}
+	var fresh freshCommunityIdentity
+	if !c.bridgeTrust.TrustsPDS(declared.PDSURL) ||
+		!handleUnderPDSRegistrableDomain(declared.DeclaredHandle, declared.PDSURL) {
+		fresh.verdict = originDisplayUntrustedDocument
+		return fresh, nil
+	}
+
+	resolved, err := c.uncachedIdentityResolver.Resolve(resolveCtx, did)
+	// Recorded before any outcome: indigo reports a handle domain that hung past
+	// the deadline as handle.invalid with a nil error.
+	recordIfTimedOut()
+	if err != nil {
+		return freshCommunityIdentity{}, classifyFreshProfileResolveError(did, "resolve community identity", err)
+	}
+	verifiedHandle, err := identity.VerifiedHandle(resolved, did)
+	if errors.Is(err, identity.ErrIdentitySubjectMismatch) {
+		return freshCommunityIdentity{}, fmt.Errorf("%w: resolving community %s: %w (the directory described %q instead)",
+			ErrPermanentEvent, did, err, resolved.DID)
+	}
+	if err != nil {
+		return freshCommunityIdentity{}, fmt.Errorf("%w: resolving the handle of community %s: %w", ErrUnresolvedReference, did, err)
+	}
+	c.identityRefreshFailures.clear(did)
+
+	fresh.resolved, fresh.verifiedHandle = resolved, verifiedHandle
+	switch {
+	case !c.bridgeTrust.TrustsPDS(resolved.PDSURL):
+		fresh.verdict = originDisplayUntrustedResolution
+	case !handleUnderPDSRegistrableDomain(verifiedHandle, resolved.PDSURL):
+		fresh.verdict = originDisplayHandleOutsideBridgeDomain
+	default:
+		fresh.verdict = originDisplayAdmitted
+	}
+	return fresh, nil
+}
+
+// admitOriginDisplay returns the originUrl and originSoftware to store, and the
+// final verdict. Both are empty unless verdict is originDisplayAdmitted and an
+// origin was admitted. The record's values are display data and are never
+// logged.
+func admitOriginDisplay(record map[string]interface{}, admittedOrigin string, verdict originDisplayVerdict) (originURL, originSoftware string, outcome originDisplayVerdict) {
+	if verdict == originDisplayAdmitted && admittedOrigin == "" {
+		verdict = originDisplayOriginNotAdmitted
+	}
+	if verdict != originDisplayAdmitted {
+		return "", "", verdict
+	}
+	rawURL, _ := record["originUrl"].(string)
+	rawSoftware, _ := record["originSoftware"].(string)
+	originURL, originSoftware = sanitizeOriginURL(rawURL, admittedOrigin), sanitizeOriginSoftware(rawSoftware)
+	_, assertedURL := record["originUrl"]
+	_, assertedSoftware := record["originSoftware"]
+	if (assertedURL && originURL == "") || (assertedSoftware && originSoftware == "") {
+		verdict = originDisplayValueRejected
+	}
+	return originURL, originSoftware, verdict
+}
+
+// logOriginDisplayLoss logs one line when the record asserted a display field
+// that is not stored, or a stored one is cleared. Only the DID and the reason
+// code are logged, never the values.
+func logOriginDisplayLoss(did string, record map[string]interface{}, outcome originDisplayVerdict, storedURL, storedSoftware, keptURL, keptSoftware string) {
+	_, assertedURL := record["originUrl"]
+	_, assertedSoftware := record["originSoftware"]
+	droppedAsserted := (assertedURL && keptURL == "") || (assertedSoftware && keptSoftware == "")
+	clearedStored := (storedURL != "" && keptURL == "") || (storedSoftware != "" && keptSoftware == "")
+	if !droppedAsserted && !clearedStored {
+		return
+	}
+	if outcome == originDisplayAdmitted {
+		// Admitted with nothing rejected: a stored value was cleared because the
+		// record omitted that field.
+		outcome = originDisplayAbsent
+	}
+	log.Printf("Community %s: originUrl/originSoftware not stored or cleared (reason=%s)", did, outcome)
+}
+
+// originDisplayVerdictWithoutFreshResolution is the verdict for a record that
+// was not resolved fresh: it carries neither field, or no uncached resolver is
+// configured.
+func originDisplayVerdictWithoutFreshResolution(record map[string]interface{}) originDisplayVerdict {
+	if profileCarriesOriginDisplay(record) {
+		return originDisplayNoUncachedResolver
+	}
+	return originDisplayAbsent
+}
+
 // createCommunity indexes a new community from the firehose
 func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string, commit *CommitEvent) error {
 	if commit.Record == nil {
@@ -628,20 +946,38 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 
 	var resolvedPDSURL string
 	var resolved *identity.Identity
-	if c.identityResolver != nil {
-		// EVERY failure is fatal here, which is what separates this path from
-		// the update one. A create has no stored handle to fall back on: without
-		// a verified one there is nothing to index the community under, so a
-		// resolution that established nothing has to become a retry rather than
-		// a row. updateCommunity tolerates the same two failures precisely
-		// because the row it is editing already carries a handle this consumer
-		// verified when it created it.
-		resolvedIdentity, verifiedHandle, err := c.resolveVerifiedHandle(ctx, did)
+	var verifiedHandle string
+	// EVERY resolution failure is fatal here, which is what separates this path
+	// from the update one. A create has no stored handle to fall back on: without
+	// a verified one there is nothing to index the community under, so a
+	// resolution that established nothing has to become a retry rather than a
+	// row. updateCommunity tolerates the same two failures precisely because the
+	// row it is editing already carries a handle this consumer verified when it
+	// created it.
+	//
+	// A record carrying originUrl or originSoftware is resolved fresh, through
+	// the uncached resolver, in place of the caching one. When the fresh DID
+	// document can never admit those fields (originDisplayUntrustedDocument) no
+	// handle lookup is made there, and the handle is verified through the
+	// caching resolver below, as for a record without the fields: the create
+	// still needs a verified handle, and the caching resolver's positive and
+	// negative caches hold the lane cost to that of an ordinary create.
+	displayVerdict := originDisplayVerdictWithoutFreshResolution(commit.Record)
+	if c.uncachedIdentityResolver != nil && profileCarriesOriginDisplay(commit.Record) {
+		var fresh freshCommunityIdentity
+		fresh, err = c.resolveFreshCommunityIdentity(ctx, did)
 		if err != nil {
 			return err
 		}
-		resolved = resolvedIdentity
-
+		resolved, verifiedHandle, displayVerdict = fresh.resolved, fresh.verifiedHandle, fresh.verdict
+	}
+	if resolved == nil && c.identityResolver != nil {
+		resolved, verifiedHandle, err = c.resolveVerifiedHandle(ctx, did)
+		if err != nil {
+			return err
+		}
+	}
+	if resolved != nil {
 		// A record that claims a handle the directory contradicts is WARNED
 		// ABOUT, not refused. The claim is inert either way: profile.Handle is
 		// overwritten with the verified handle on the next line, so the string
@@ -728,6 +1064,8 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 	if resolvedPDSURL == "" {
 		resolvedPDSURL = provenancePDSURL
 	}
+	originURL, originSoftware, displayOutcome := admitOriginDisplay(commit.Record, origin, displayVerdict)
+	logOriginDisplayLoss(did, commit.Record, displayOutcome, "", "", originURL, originSoftware)
 
 	// Create community entity
 	community := &communities.Community{
@@ -752,6 +1090,8 @@ func (c *CommunityEventConsumer) createCommunity(ctx context.Context, did string
 		RecordURI:              uri,
 		RecordCID:              commit.CID,
 		Origin:                 origin,
+		OriginURL:              originURL,
+		OriginSoftware:         originSoftware,
 	}
 
 	// Handle blobs (avatar/banner) if present
@@ -906,8 +1246,28 @@ func (c *CommunityEventConsumer) updateCommunity(ctx context.Context, did string
 	// nothing confirmed. Only a VERIFIED resolution may write that column, which
 	// keeps the backfill working (rows predating pds_url carry an empty value and
 	// this path is what repairs them) without making it a trust hole.
+	//
+	// A record carrying originUrl or originSoftware is resolved fresh
+	// (resolveFreshCommunityIdentity) instead. When its DID document can admit
+	// those fields, any failure to verify the handle fails the event, because
+	// applying the profile without them and acking it would lose them. When the
+	// document can never admit them (originDisplayUntrustedDocument), no handle
+	// lookup is made through either resolver: the edit is applied against the
+	// stored handle, the fields are cleared, and the origin is measured against
+	// the stored handle and the stored pds_url, both verified when they were
+	// written. The document's PDS host is not verified, so it neither decides
+	// the origin nor is written to pds_url.
 	var resolvedPDSURL string
-	resolved, verifiedHandle, err := c.resolveVerifiedHandleForUpdate(ctx, did)
+	var resolved *identity.Identity
+	var verifiedHandle string
+	displayVerdict := originDisplayVerdictWithoutFreshResolution(commit.Record)
+	if c.uncachedIdentityResolver != nil && profileCarriesOriginDisplay(commit.Record) {
+		var fresh freshCommunityIdentity
+		fresh, err = c.resolveFreshCommunityIdentity(ctx, did)
+		resolved, verifiedHandle, displayVerdict = fresh.resolved, fresh.verifiedHandle, fresh.verdict
+	} else {
+		resolved, verifiedHandle, err = c.resolveVerifiedHandleForUpdate(ctx, did)
+	}
 	if err != nil {
 		return err
 	}
@@ -927,9 +1287,19 @@ func (c *CommunityEventConsumer) updateCommunity(ctx context.Context, did string
 	// fresh resolution of the repo — not against whatever handle or stale
 	// pds_url the record's author would like it to see. The fresh PDS host
 	// replaces the stored one for the same reason.
-	admittedOrigin, provenancePDSURL := c.admitRecordOrigin(ctx, did, profile, resolved, existing.Handle, existing.PDSURL)
-	if resolvedPDSURL == "" && provenancePDSURL != existing.PDSURL {
-		resolvedPDSURL = provenancePDSURL
+	var admittedOrigin string
+	if displayVerdict == originDisplayUntrustedDocument {
+		// No resolver call on this path: admitRecordOrigin would fall back to
+		// the caching resolver when resolved is nil. The document's PDS host is
+		// unverified, so a document naming a trusted bridge must not admit an
+		// origin; the stored pds_url, verified when written, decides instead.
+		admittedOrigin = admitCommunityOrigin(c.bridgeTrust, did, existing.PDSURL, existing.Handle, profile.Origin)
+	} else {
+		var provenancePDSURL string
+		admittedOrigin, provenancePDSURL = c.admitRecordOrigin(ctx, did, profile, resolved, existing.Handle, existing.PDSURL)
+		if resolvedPDSURL == "" && provenancePDSURL != existing.PDSURL {
+			resolvedPDSURL = provenancePDSURL
+		}
 	}
 	if existing.Origin != "" && admittedOrigin == "" {
 		log.Printf("WARNING: community %s loses its stored origin %q: this profile update carries origin %q, which was absent or not admitted", did, existing.Origin, profile.Origin)
@@ -954,6 +1324,11 @@ func (c *CommunityEventConsumer) updateCommunity(ctx context.Context, did string
 	existing.ContentWarnings = profile.ContentWarnings
 	existing.RecordCID = commit.CID
 	existing.Origin = admittedOrigin
+	// Every update replaces both display fields: absent or not admitted clears them.
+	storedOriginURL, storedOriginSoftware := existing.OriginURL, existing.OriginSoftware
+	var displayOutcome originDisplayVerdict
+	existing.OriginURL, existing.OriginSoftware, displayOutcome = admitOriginDisplay(commit.Record, admittedOrigin, displayVerdict)
+	logOriginDisplayLoss(did, commit.Record, displayOutcome, storedOriginURL, storedOriginSoftware, existing.OriginURL, existing.OriginSoftware)
 
 	// Update blobs
 	if avatarCID, ok := extractBlobCID(profile.Avatar); ok {
@@ -1059,6 +1434,9 @@ func (c *CommunityEventConsumer) verifyHostedByClaim(ctx context.Context, handle
 		// is genuinely re-attemptable (the DID document may be published
 		// after the record), which is what the redrive budget is for.
 		classified := fmt.Errorf("%w: bidirectional DID verification required: %v", ErrUnresolvedReference, err)
+		if errors.Is(err, ErrHostedByVerificationPending) {
+			classified = markRefreshError(classified, ErrHostedByVerificationPending)
+		}
 		if errors.Is(err, errRedriveDeferred) {
 			return deferRedrive(classified)
 		}
@@ -1140,8 +1518,8 @@ func (c *CommunityEventConsumer) verifyDIDDocument(ctx context.Context, did, dom
 			return fmt.Errorf("%w: cached DID document verification failure for %s and handle domain %s: %s",
 				ErrPermanentEvent, did, handleDomain, cached.reason)
 		default:
-			return deferRedrive(fmt.Errorf("cached DID document verification pending for %s and handle domain %s: %s",
-				did, handleDomain, cached.reason))
+			return deferRedrive(markRefreshError(fmt.Errorf("cached DID document verification pending for %s and handle domain %s: %s",
+				did, handleDomain, cached.reason), ErrHostedByVerificationPending))
 		}
 	}
 

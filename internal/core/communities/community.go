@@ -93,6 +93,8 @@ type Community struct {
 	Name                   string                `json:"name" db:"name"`                 // Short name (e.g., "gardening")
 	DisplayHandle          string                `json:"displayHandle,omitempty" db:"-"` // UI hint: !gardening@coves.social (computed, not stored)
 	Origin                 string                `json:"origin,omitempty" db:"origin"`   // Instance the community lives on (hostname only); empty when unknown
+	OriginURL              string                `json:"originUrl,omitempty" db:"origin_url"`
+	OriginSoftware         string                `json:"originSoftware,omitempty" db:"origin_software"`
 	RecordCID              string                `json:"recordCid,omitempty" db:"record_cid"`
 	FederatedID            string                `json:"federatedId,omitempty" db:"federated_id"`
 	PDSAccessToken         string                `json:"-" db:"pds_access_token"`
@@ -136,6 +138,8 @@ type CommunityView struct {
 	DisplayName     string                `json:"displayName,omitempty"`
 	DisplayHandle   string                `json:"displayHandle,omitempty"`
 	Origin          string                `json:"origin,omitempty"`
+	OriginURL       string                `json:"originUrl,omitempty"`
+	OriginSoftware  string                `json:"originSoftware,omitempty"`
 	Avatar          string                `json:"avatar,omitempty"` // URL, not CID
 	Visibility      string                `json:"visibility,omitempty"`
 	SubscriberCount int                   `json:"subscriberCount"`
@@ -153,6 +157,8 @@ type CommunityViewDetailed struct {
 	DisplayName            string                `json:"displayName,omitempty"`
 	DisplayHandle          string                `json:"displayHandle,omitempty"`
 	Origin                 string                `json:"origin,omitempty"`
+	OriginURL              string                `json:"originUrl,omitempty"`
+	OriginSoftware         string                `json:"originSoftware,omitempty"`
 	Description            string                `json:"description,omitempty"`
 	Avatar                 string                `json:"avatar,omitempty"` // URL
 	Banner                 string                `json:"banner,omitempty"` // URL
@@ -379,6 +385,8 @@ func (c *Community) ToCommunityView() *CommunityView {
 		DisplayName:     c.DisplayName,
 		DisplayHandle:   c.GetDisplayHandle(),
 		Origin:          c.EffectiveOrigin(),
+		OriginURL:       c.OriginURL,
+		OriginSoftware:  c.OriginSoftware,
 		Avatar:          blobs.HydrateImageURL(blobs.GetImageURLConfig(), c.PDSURL, c.DID, c.AvatarCID, "avatar_small"),
 		Visibility:      c.Visibility,
 		SubscriberCount: c.SubscriberCount,
@@ -400,6 +408,8 @@ func (c *Community) ToCommunityViewDetailed() *CommunityViewDetailed {
 		DisplayName:            c.DisplayName,
 		DisplayHandle:          c.GetDisplayHandle(),
 		Origin:                 c.EffectiveOrigin(),
+		OriginURL:              c.OriginURL,
+		OriginSoftware:         c.OriginSoftware,
 		Description:            c.Description,
 		Avatar:                 blobs.HydrateImageURL(blobs.GetImageURLConfig(), c.PDSURL, c.DID, c.AvatarCID, "avatar"),
 		Banner:                 blobs.HydrateImageURL(blobs.GetImageURLConfig(), c.PDSURL, c.DID, c.BannerCID, "banner"),

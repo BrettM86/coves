@@ -22,6 +22,12 @@ func TestMigration045RecountsAndMaintainsCommunitySubscribers(t *testing.T) {
 	t.Parallel()
 
 	db := testkit.DB(t)
+	require.EqualValues(t, 59, testkit.MigrateDownOne(t, db, 59),
+		"059 (users origin username index) must be rolled back before testing earlier migrations")
+	require.EqualValues(t, 58, testkit.MigrateDownOne(t, db, 58),
+		"058 (communities origin display) must be rolled back before testing earlier migrations")
+	require.EqualValues(t, 57, testkit.MigrateDownOne(t, db, 57),
+		"057 (users profile origin) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 56, testkit.MigrateDownOne(t, db, 56),
 		"056 (moderation content snapshots) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 55, testkit.MigrateDownOne(t, db, 55),
@@ -54,22 +60,20 @@ func TestMigration045RecountsAndMaintainsCommunitySubscribers(t *testing.T) {
 	// "successfully" and leave the trigger live. Prove it is actually gone.
 	require.False(t, subscriberTriggerExists(t, db),
 		"045 Down must remove the subscriber-count trigger")
+	// Seed with SQL limited to columns that exist at 044: the production
+	// Create writes columns added by later migrations.
 	seedCommunity := func(name string) *communities.Community {
 		t.Helper()
 		did := "did:plc:m45" + name
-		community, err := repo.Create(ctx, &communities.Community{
-			DID:          did,
-			Handle:       "c-m45-" + name + ".coves.local",
-			Name:         "m45-" + name,
-			OwnerDID:     did,
-			CreatedByDID: "did:plc:m45creator",
-			HostedByDID:  "did:web:coves.local",
-			Visibility:   "public",
-			CreatedAt:    time.Now(),
-			UpdatedAt:    time.Now(),
-		})
+		_, err := db.ExecContext(ctx, `
+			INSERT INTO communities (
+				did, handle, name, owner_did, created_by_did, hosted_by_did,
+				visibility, created_at, updated_at
+			) VALUES ($1, $2, $3, $1, $4, $5, $6, NOW(), NOW())
+		`, did, "c-m45-"+name+".coves.local", "m45-"+name,
+			"did:plc:m45creator", "did:web:coves.local", "public")
 		require.NoError(t, err)
-		return community
+		return &communities.Community{DID: did}
 	}
 
 	withRelationships := seedCommunity(testkit.UniqueIDWithPrefix(t, "relationships"))

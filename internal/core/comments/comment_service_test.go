@@ -232,6 +232,10 @@ func (m *mockUserRepo) GetByHandle(ctx context.Context, handle string) (*users.U
 	return nil, errors.New("user not found")
 }
 
+func (m *mockUserRepo) GetDIDByOriginUsername(ctx context.Context, username, origin string) (string, error) {
+	return "", users.ErrUserNotFound
+}
+
 func (m *mockUserRepo) UpdateHandle(ctx context.Context, did, newHandle string) (*users.User, error) {
 	if u, ok := m.users[did]; ok {
 		u.Handle = newHandle
@@ -464,6 +468,10 @@ func (m *mockCommunityRepo) Update(ctx context.Context, community *communities.C
 
 func (m *mockCommunityRepo) Delete(ctx context.Context, did string) error {
 	delete(m.communities, did)
+	return nil
+}
+
+func (m *mockCommunityRepo) UpdateHandle(ctx context.Context, did, handle string) error {
 	return nil
 }
 

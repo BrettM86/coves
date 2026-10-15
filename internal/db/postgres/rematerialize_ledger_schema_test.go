@@ -196,6 +196,12 @@ func TestRematerializeLedgerMigration_RollsBack(t *testing.T) {
 	// 037 and come off first, one asserted step at a time. Asserting which
 	// migration rolled back is what keeps this pointed at 037's Down rather than
 	// drifting onto a newer one later.
+	require.EqualValues(t, 59, testkit.MigrateDownOne(t, db, 59),
+		"059 (users origin username index) must be rolled back before testing earlier migrations")
+	require.EqualValues(t, 58, testkit.MigrateDownOne(t, db, 58),
+		"058 (communities origin display) must be rolled back before testing earlier migrations")
+	require.EqualValues(t, 57, testkit.MigrateDownOne(t, db, 57),
+		"057 (users profile origin) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 56, testkit.MigrateDownOne(t, db, 56),
 		"056 (moderation content snapshots) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 55, testkit.MigrateDownOne(t, db, 55),

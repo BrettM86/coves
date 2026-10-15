@@ -54,6 +54,10 @@ func (m *mockCommentService) DeleteComment(ctx context.Context, session *oauthli
 // mockUserServiceForComments implements users.UserService for testing getComments
 type mockUserServiceForComments struct {
 	resolveHandleToDIDFunc func(ctx context.Context, handle string) (string, error)
+	// resolveActorIdentifierToDIDFunc answers ResolveActorIdentifierToDID; when
+	// nil the call falls back to ResolveHandleToDID so handle-only tests keep
+	// one place to model resolution.
+	resolveActorIdentifierToDIDFunc func(ctx context.Context, identifier string) (string, error)
 }
 
 func (m *mockUserServiceForComments) CreateUser(ctx context.Context, req users.CreateUserRequest) (*users.User, error) {
@@ -77,6 +81,13 @@ func (m *mockUserServiceForComments) ResolveHandleToDID(ctx context.Context, han
 		return m.resolveHandleToDIDFunc(ctx, handle)
 	}
 	return "did:plc:testuser", nil
+}
+
+func (m *mockUserServiceForComments) ResolveActorIdentifierToDID(ctx context.Context, identifier string) (string, error) {
+	if m.resolveActorIdentifierToDIDFunc != nil {
+		return m.resolveActorIdentifierToDIDFunc(ctx, identifier)
+	}
+	return m.ResolveHandleToDID(ctx, identifier)
 }
 
 func (m *mockUserServiceForComments) RegisterAccount(ctx context.Context, req users.RegisterAccountRequest) (*users.RegisterAccountResponse, error) {
@@ -268,7 +279,7 @@ func TestGetCommentsHandler_InvalidLimit(t *testing.T) {
 func TestGetCommentsHandler_ActorNotFound(t *testing.T) {
 	mockUsers := &mockUserServiceForComments{
 		resolveHandleToDIDFunc: func(ctx context.Context, handle string) (string, error) {
-			return "", posts.ErrActorNotFound
+			return "", users.ErrUserNotFound
 		},
 	}
 
@@ -384,7 +395,7 @@ func TestGetCommentsHandler_HandleResolution(t *testing.T) {
 			if handle == "test.user" {
 				return "did:plc:resolveduser123", nil
 			}
-			return "", posts.ErrActorNotFound
+			return "", users.ErrUserNotFound
 		},
 	}
 

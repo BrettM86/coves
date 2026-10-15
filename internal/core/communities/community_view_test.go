@@ -119,7 +119,7 @@ func TestToCommunityView_OmitsTheDetailOnlyFields(t *testing.T) {
 	view := fullCommunity().ToCommunityView()
 
 	assert.Equal(t, []string{
-		"DID", "Handle", "Name", "DisplayName", "DisplayHandle", "Origin", "Avatar",
+		"DID", "Handle", "Name", "DisplayName", "DisplayHandle", "Origin", "OriginURL", "OriginSoftware", "Avatar",
 		"Visibility", "SubscriberCount", "MemberCount", "PostCount", "Viewer",
 	}, fieldNamesOf(view),
 		"CommunityView's shape changed. If the new field belongs in a list of communities, add it "+

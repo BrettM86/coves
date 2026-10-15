@@ -1,0 +1,9 @@
+{
+  "$type": "social.coves.community.defs#communityView",
+  "did": "did:plc:gamingcommunity1",
+  "handle": "gaming.lemmy.world.ap.bridge.test",
+  "name": "gaming",
+  "origin": "lemmy.world",
+  "originUrl": "not a uri",
+  "originSoftware": "lemmy"
+}
