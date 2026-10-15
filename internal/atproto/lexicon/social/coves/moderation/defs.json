@@ -98,6 +98,11 @@
           "type": "string",
           "format": "did",
           "description": "DID of the community the record was posted in, recorded when the action was taken"
+        },
+        "rootUri": {
+          "type": "string",
+          "format": "at-uri",
+          "description": "AT-URI of the post at the root of a comment's thread, recorded when the action was taken; absent on actions recorded before 2026-10-13. The public log omits it when the root post has a doxing or illegal-content action or is no longer indexed"
         }
       }
     },
@@ -202,6 +207,11 @@
           "type": "string",
           "format": "datetime",
           "description": "Source label creation time, not a moderation-log sort key"
+        },
+        "contentSnapshot": {
+          "type": "ref",
+          "ref": "#contentSnapshot",
+          "description": "Text of a removed subject, captured at removal; omitted when the subject is withheld or deleted by its author. Returned by listActions and listAdminActions only, never in a mutation result"
         }
       }
     },
@@ -225,13 +235,45 @@
         "privateSubject": {
           "type": "ref",
           "ref": "#subjectRef",
-          "description": "Private subject reference retained when the public projection restricts it"
+          "description": "Private subject reference retained when the public projection restricts it or withholds its rootUri"
         },
         "privateNote": {
           "type": "string",
           "maxGraphemes": 1000,
           "maxLength": 10000,
           "description": "Private administrative note that is never included in public projections"
+        },
+        "contentSnapshot": {
+          "type": "ref",
+          "ref": "#contentSnapshot",
+          "description": "Text of a removed subject, captured at removal, including when the public projection withholds it. Returned by listAdminActions only, never in a mutation result"
+        }
+      }
+    },
+    "contentSnapshot": {
+      "type": "object",
+      "description": "Text of a removed record as indexed when it was removed",
+      "required": [
+        "capturedCid"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Post title"
+        },
+        "text": {
+          "type": "string",
+          "description": "Post body or comment text"
+        },
+        "linkUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "URL of the post's external link embed"
+        },
+        "capturedCid": {
+          "type": "string",
+          "format": "cid",
+          "description": "CID of the record version the snapshot was taken from"
         }
       }
     },

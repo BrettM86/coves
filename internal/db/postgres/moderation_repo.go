@@ -57,7 +57,7 @@ func (r *ModerationRepository) SubjectModeration(ctx context.Context, authorityD
 	row := tx.QueryRowContext(ctx, `
 		SELECT COALESCE(s.version, 0),
 		       a.id, a.actor_did, a.authority_did, a.scope_kind, a.scope_community_did,
-		       a.subject_uri, a.subject_collection, a.subject_community_did, a.observed_cid,
+		       a.subject_uri, a.subject_collection, a.subject_community_did, a.subject_root_uri, a.observed_cid,
 		       a.action, a.label_value, a.reason, a.private_classification, a.private_note,
 		       a.reverses_action_id, a.origin, a.created_at
 		FROM (SELECT $2::text AS uri) AS target
@@ -168,12 +168,11 @@ func (t *moderationTransaction) LockSubject(ctx context.Context, subjectURI stri
 
 func (t *moderationTransaction) ReadIndexedPost(ctx context.Context, subjectURI string) (*moderation.IndexedPost, error) {
 	var post moderation.IndexedPost
-	var authorDID string
-	var embed sql.NullString
+	var embed, title, content sql.NullString
 	err := t.tx.QueryRowContext(ctx, `
-		SELECT uri, cid, author_did, community_did, (deleted_at IS NOT NULL), embed
+		SELECT uri, cid, author_did, community_did, (deleted_at IS NOT NULL), embed, title, content
 		FROM posts WHERE uri = $1 FOR SHARE
-	`, subjectURI).Scan(&post.URI, &post.CID, &authorDID, &post.CommunityDID, &post.AuthorDeleted, &embed)
+	`, subjectURI).Scan(&post.URI, &post.CID, &post.AuthorDID, &post.CommunityDID, &post.AuthorDeleted, &embed, &title, &content)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, moderation.ErrSubjectNotIndexed
 	}
@@ -184,7 +183,8 @@ func (t *moderationTransaction) ReadIndexedPost(ctx context.Context, subjectURI 
 	if err != nil {
 		return nil, err
 	}
-	post.OwnerDID = authorDID
+	post.Title, post.Text = title.String, content.String
+	post.OwnerDID = post.AuthorDID
 	if uri.Collection().String() == moderation.LegacyPostCollection {
 		post.OwnerDID = post.CommunityDID
 	}
@@ -195,24 +195,41 @@ func (t *moderationTransaction) ReadIndexedPost(ctx context.Context, subjectURI 
 		if err := json.Unmarshal([]byte(embed.String), &decoded); err == nil {
 			if object, isObject := decoded.(map[string]any); isObject {
 				post.BlobCIDs = embeds.PostBlobCIDs(object)
+				post.LinkURL = externalEmbedURI(object)
 			}
 		}
 	}
 	return &post, nil
 }
 
+// externalEmbedURI returns the link URI of an external link embed, or empty
+// for any other or malformed embed or a uri that is not a valid URI.
+func externalEmbedURI(embed map[string]any) string {
+	if embedType, _ := embed["$type"].(string); embedType != embeds.TypeExternal {
+		return ""
+	}
+	external, _ := embed["external"].(map[string]any)
+	uri, _ := external["uri"].(string)
+	// Keep only a value the lexicon's "uri" format accepts, so the snapshot
+	// view's linkUrl always validates.
+	if _, err := syntax.ParseURI(uri); err != nil {
+		return ""
+	}
+	return uri
+}
+
 func (t *moderationTransaction) ReadIndexedComment(ctx context.Context, subjectURI string) (*moderation.IndexedComment, error) {
 	var comment moderation.IndexedComment
-	var communityDID, embed sql.NullString
+	var communityDID, embed, rootURI, content sql.NullString
 	err := t.tx.QueryRowContext(ctx, `
 		SELECT c.uri, c.cid, c.commenter_did,
 		       (c.deleted_at IS NOT NULL AND c.deletion_reason = 'author'),
-		       p.community_did, c.embed
+		       p.community_did, c.embed, c.root_uri, c.content
 		FROM comments c
 		LEFT JOIN posts p ON p.uri = c.root_uri
 		WHERE c.uri = $1 FOR SHARE OF c
 	`, subjectURI).Scan(&comment.URI, &comment.CID, &comment.OwnerDID,
-		&comment.AuthorDeleted, &communityDID, &embed)
+		&comment.AuthorDeleted, &communityDID, &embed, &rootURI, &content)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, moderation.ErrSubjectNotIndexed
 	}
@@ -220,6 +237,14 @@ func (t *moderationTransaction) ReadIndexedComment(ctx context.Context, subjectU
 		return nil, err
 	}
 	comment.CommunityDID = communityDID.String
+	comment.Text = content.String
+	// The indexed root is stored unvalidated. Keep only a value the lexicon's
+	// "at-uri" format accepts, so the subject's rootUri always
+	// validates; an invalid root records no root and the comment stays
+	// removable.
+	if _, err := syntax.ParseATURI(rootURI.String); err == nil {
+		comment.RootURI = rootURI.String
+	}
 	if embed.Valid {
 		// The embed is author-controlled and stored unvalidated. A shape the
 		// comment view cannot serve images from has no images to block, and
@@ -236,7 +261,7 @@ func (t *moderationTransaction) ReadIndexedComment(ctx context.Context, subjectU
 
 const moderationActionColumns = `
 	a.id, a.actor_did, a.authority_did, a.scope_kind, a.scope_community_did,
-	a.subject_uri, a.subject_collection, a.subject_community_did, a.observed_cid,
+	a.subject_uri, a.subject_collection, a.subject_community_did, a.subject_root_uri, a.observed_cid,
 	a.action, a.label_value, a.reason, a.private_classification, a.private_note,
 	a.reverses_action_id, a.origin, a.created_at`
 
@@ -246,13 +271,13 @@ type moderationRow interface {
 
 func scanModerationAction(row moderationRow, version *int64, reversedReason *sql.NullString) (*moderation.Action, error) {
 	var id, actorDID, authorityDID, scopeKind, scopeCommunityDID sql.NullString
-	var subjectURI, subjectCollection, subjectCommunityDID, observedCID sql.NullString
+	var subjectURI, subjectCollection, subjectCommunityDID, subjectRootURI, observedCID sql.NullString
 	var actionKind, labelValue, reason, privateClassification, privateNote sql.NullString
 	var reversesActionID, origin sql.NullString
 	var createdAt sql.NullTime
 	dest := []any{
 		&id, &actorDID, &authorityDID, &scopeKind, &scopeCommunityDID,
-		&subjectURI, &subjectCollection, &subjectCommunityDID, &observedCID,
+		&subjectURI, &subjectCollection, &subjectCommunityDID, &subjectRootURI, &observedCID,
 		&actionKind, &labelValue, &reason, &privateClassification, &privateNote,
 		&reversesActionID, &origin, &createdAt,
 	}
@@ -272,8 +297,9 @@ func scanModerationAction(row moderationRow, version *int64, reversedReason *sql
 		ID: id.String, ActorDID: actorDID.String, AuthorityDID: authorityDID.String,
 		ScopeKind: scopeKind.String, ScopeCommunityDID: scopeCommunityDID.String,
 		SubjectURI: subjectURI.String, SubjectCollection: subjectCollection.String,
-		SubjectCommunityDID: subjectCommunityDID.String, ObservedCID: observedCID.String,
-		Action: actionKind.String, LabelValue: labelValue.String, Reason: reason.String,
+		SubjectCommunityDID: subjectCommunityDID.String, SubjectRootURI: subjectRootURI.String,
+		ObservedCID: observedCID.String, Action: actionKind.String,
+		LabelValue: labelValue.String, Reason: reason.String,
 		PrivateNote: privateNote.String, ReversesActionID: reversesActionID.String,
 		Origin: origin.String, CreatedAt: createdAt.Time,
 	}
@@ -365,17 +391,42 @@ func (t *moderationTransaction) InsertAction(ctx context.Context, action moderat
 		INSERT INTO moderation_actions
 		    (id, actor_did, authority_did, scope_kind, scope_community_did,
 		     subject_uri, subject_collection, subject_community_did, observed_cid,
-		     action, label_value, reason, private_note, reverses_action_id, origin, created_at)
+		     action, label_value, reason, private_note, reverses_action_id, origin, created_at,
+		     subject_root_uri)
 		VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, $7, NULLIF($8, ''), NULLIF($9, ''),
-		        $10, NULLIF($11, ''), NULLIF($12, ''), NULLIF($13, ''), NULLIF($14, ''), $15, $16)
+		        $10, NULLIF($11, ''), NULLIF($12, ''), NULLIF($13, ''), NULLIF($14, ''), $15, $16,
+		        NULLIF($17, ''))
 	`, action.ID, action.ActorDID, action.AuthorityDID, action.ScopeKind, action.ScopeCommunityDID,
 		action.SubjectURI, action.SubjectCollection, action.SubjectCommunityDID, action.ObservedCID,
 		action.Action, action.LabelValue, action.Reason, action.PrivateNote, action.ReversesActionID,
-		action.Origin, action.CreatedAt)
+		action.Origin, action.CreatedAt, action.SubjectRootURI)
 	if err != nil {
 		return nil, err
 	}
 	return &action, nil
+}
+
+func (t *moderationTransaction) InsertContentSnapshot(ctx context.Context, actionID, authorDID string, snapshot moderation.ContentSnapshot) error {
+	_, err := t.tx.ExecContext(ctx, `
+		INSERT INTO moderation_content_snapshots (action_id, author_did, title, text, link_url, captured_cid)
+		VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''), $6)
+	`, actionID, authorDID, snapshot.Title, snapshot.Text, snapshot.LinkURL, snapshot.CapturedCID)
+	if err != nil {
+		return fmt.Errorf("insert content snapshot: %w", err)
+	}
+	return nil
+}
+
+func (t *moderationTransaction) DeleteSubjectContentSnapshots(ctx context.Context, subjectURI string) error {
+	_, err := t.tx.ExecContext(ctx, `
+		DELETE FROM moderation_content_snapshots s
+		USING moderation_actions a
+		WHERE a.id = s.action_id AND a.subject_uri = $1
+	`, subjectURI)
+	if err != nil {
+		return fmt.Errorf("delete subject content snapshots: %w", err)
+	}
+	return nil
 }
 
 func (t *moderationTransaction) SetRemovalDecision(ctx context.Context, authorityDID, subjectURI, actionID string, active bool) error {
@@ -677,7 +728,12 @@ func (r *ModerationRepository) BindTransaction(tx *sql.Tx) moderation.MediaTrans
 // Each row's SubjectAccess is decided now, not when the action was recorded: a
 // subject whose own post or comment row is still indexed is public, whatever
 // its community admission status and even when the author soft-deleted it, and
-// one whose row is gone (account erasure hard-deletes it) is restricted. ExcludeRestricted filters in the WHERE
+// one whose row is gone (account erasure hard-deletes it) is restricted.
+// SubjectAuthorDeleted is decided now too: the author has soft-deleted the
+// subject's post, or its comment row was deleted for reason 'author', or the
+// author once deleted the removed comment (snapshot.author_deleted_at), which a
+// re-created comment does not undo. SubjectRootWithheld is set when a comment's
+// root post has a hidden-reason action or is no longer indexed. ExcludeRestricted filters in the WHERE
 // clause, before LIMIT, so a filtered page is never short.
 func (r *ModerationRepository) ListActions(ctx context.Context, query moderation.ActionListQuery) ([]moderation.Action, error) {
 	var beforeCreatedAt, beforeID any
@@ -685,14 +741,26 @@ func (r *ModerationRepository) ListActions(ctx context.Context, query moderation
 		beforeCreatedAt, beforeID = query.Before.CreatedAt, query.Before.ID
 	}
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT `+moderationActionColumns+`, reversed.reason, subject_access.access
+		SELECT `+moderationActionColumns+`, reversed.reason, subject_access.access,
+		       subject_access.author_deleted OR snapshot.author_deleted_at IS NOT NULL, subject_access.root_withheld,
+		       snapshot.title, snapshot.text, snapshot.link_url, snapshot.captured_cid
 		FROM moderation_actions a
 		LEFT JOIN moderation_actions reversed ON reversed.id = a.reverses_action_id
+		LEFT JOIN moderation_content_snapshots snapshot ON snapshot.action_id = a.id
 		CROSS JOIN LATERAL (
 		    SELECT CASE WHEN
 		        EXISTS (SELECT 1 FROM comments c WHERE a.subject_collection = $18 AND c.uri = a.subject_uri)
 		        OR EXISTS (SELECT 1 FROM posts p WHERE a.subject_collection <> $18 AND p.uri = a.subject_uri)
-		    THEN $20::text ELSE $21::text END AS access
+		    THEN $20::text ELSE $21::text END AS access,
+		    EXISTS (SELECT 1 FROM comments c WHERE a.subject_collection = $18 AND c.uri = a.subject_uri
+		            AND c.deleted_at IS NOT NULL AND c.deletion_reason = 'author')
+		    OR EXISTS (SELECT 1 FROM posts p WHERE a.subject_collection <> $18 AND p.uri = a.subject_uri
+		            AND p.deleted_at IS NOT NULL) AS author_deleted,
+		    NULLIF(a.subject_root_uri, '') IS NOT NULL AND (
+		        NOT EXISTS (SELECT 1 FROM posts p WHERE p.uri = a.subject_root_uri)
+		        OR EXISTS (SELECT 1 FROM moderation_actions root_action
+		                   WHERE root_action.subject_uri = a.subject_root_uri AND root_action.reason = ANY($15::text[]))
+		    ) AS root_withheld
 		) subject_access
 		WHERE ($2::timestamptz IS NULL OR (a.created_at, a.id) < ($2::timestamptz, $3::text))
 		  AND (NULLIF($4::text, '') IS NULL OR a.subject_uri = $4)
@@ -724,9 +792,12 @@ func (r *ModerationRepository) ListActions(ctx context.Context, query moderation
 	defer rows.Close()
 	var actions []moderation.Action
 	for rows.Next() {
-		var reversedReason sql.NullString
+		var reversedReason, snapshotTitle, snapshotText, snapshotLinkURL, snapshotCID sql.NullString
 		var access string
-		action, err := scanModerationAction(trailingColumns{row: rows, extra: []any{&access}}, nil, &reversedReason)
+		var authorDeleted, rootWithheld bool
+		action, err := scanModerationAction(trailingColumns{row: rows, extra: []any{
+			&access, &authorDeleted, &rootWithheld, &snapshotTitle, &snapshotText, &snapshotLinkURL, &snapshotCID,
+		}}, nil, &reversedReason)
 		if err != nil {
 			return nil, fmt.Errorf("scan moderation action: %w", err)
 		}
@@ -734,6 +805,14 @@ func (r *ModerationRepository) ListActions(ctx context.Context, query moderation
 			return nil, errors.New("scan moderation action: row has no action id")
 		}
 		action.SubjectAccess = moderation.SubjectAccess(access)
+		action.SubjectAuthorDeleted = authorDeleted
+		action.SubjectRootWithheld = rootWithheld
+		if snapshotCID.Valid {
+			action.ContentSnapshot = &moderation.ContentSnapshot{
+				Title: snapshotTitle.String, Text: snapshotText.String,
+				LinkURL: snapshotLinkURL.String, CapturedCID: snapshotCID.String,
+			}
+		}
 		actions = append(actions, *action)
 	}
 	if err := rows.Err(); err != nil {

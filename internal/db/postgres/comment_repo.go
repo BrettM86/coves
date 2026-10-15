@@ -241,10 +241,31 @@ func (r *postgresCommentRepo) SoftDeleteWithReason(ctx context.Context, uri, rea
 }
 
 // SoftDeleteWithReasonTx performs a soft delete within an optional transaction
-// If tx is nil, executes directly against the database
+// If tx is nil, runs in a transaction of its own
 // Returns rows affected count for callers that need to check idempotency
 // This method is used by both the repository and the Jetstream consumer
 func (r *postgresCommentRepo) SoftDeleteWithReasonTx(ctx context.Context, tx *sql.Tx, uri, reason, deletedByDID string) (int64, error) {
+	if tx == nil {
+		// The delete and the snapshot withdrawal below commit together.
+		ownTx, err := r.db.BeginTx(ctx, nil)
+		if err != nil {
+			return 0, fmt.Errorf("failed to begin comment delete transaction: %w", err)
+		}
+		defer func() {
+			if rollbackErr := ownTx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+				log.Printf("Failed to roll back comment delete transaction: %v", rollbackErr)
+			}
+		}()
+		rowsAffected, err := r.SoftDeleteWithReasonTx(ctx, ownTx, uri, reason, deletedByDID)
+		if err != nil {
+			return 0, err
+		}
+		if err := ownTx.Commit(); err != nil {
+			return 0, fmt.Errorf("failed to commit comment delete: %w", err)
+		}
+		return rowsAffected, nil
+	}
+
 	query := `
 		UPDATE comments
 		SET
@@ -258,15 +279,7 @@ func (r *postgresCommentRepo) SoftDeleteWithReasonTx(ctx context.Context, tx *sq
 		WHERE uri = $1 AND deleted_at IS NULL
 	`
 
-	var result sql.Result
-	var err error
-
-	if tx != nil {
-		result, err = tx.ExecContext(ctx, query, uri, reason, deletedByDID)
-	} else {
-		result, err = r.db.ExecContext(ctx, query, uri, reason, deletedByDID)
-	}
-
+	result, err := tx.ExecContext(ctx, query, uri, reason, deletedByDID)
 	if err != nil {
 		return 0, fmt.Errorf("failed to soft delete comment: %w", err)
 	}
@@ -274,6 +287,24 @@ func (r *postgresCommentRepo) SoftDeleteWithReasonTx(ctx context.Context, tx *sq
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("failed to check delete result: %w", err)
+	}
+
+	if rowsAffected > 0 && reason == comments.DeletionReasonAuthor {
+		// The author's delete withdraws the comment's removal snapshots from the
+		// public log for good, even if a new record later re-creates the URI. This
+		// runs after the UPDATE above, which waits on an in-flight removal's share
+		// lock on the comment row, so under READ COMMITTED this statement sees
+		// that removal's committed snapshot.
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE moderation_content_snapshots snapshot
+			SET author_deleted_at = NOW()
+			FROM moderation_actions action
+			WHERE action.id = snapshot.action_id
+			  AND action.subject_uri = $1
+			  AND snapshot.author_deleted_at IS NULL
+		`, uri); err != nil {
+			return 0, fmt.Errorf("failed to withdraw removal snapshots of deleted comment: %w", err)
+		}
 	}
 
 	return rowsAffected, nil

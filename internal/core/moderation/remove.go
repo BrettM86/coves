@@ -132,7 +132,8 @@ func (s *service) removeContent(ctx context.Context, actorDID string, request Re
 				ActorDID: actorDID, AuthorityDID: s.config.InstanceDID,
 				ScopeKind: ScopeInstance, SubjectURI: request.Subject.URI,
 				SubjectCollection: subject.Collection, SubjectCommunityDID: subject.CommunityDID,
-				ObservedCID: subject.CID, Action: ActionRemove, Reason: request.Reason,
+				SubjectRootURI: subject.RootURI,
+				ObservedCID:    subject.CID, Action: ActionRemove, Reason: request.Reason,
 				PrivateNote: request.PrivateNote, Origin: OriginLocal, CreatedAt: now,
 			})
 			if err != nil {
@@ -140,6 +141,23 @@ func (s *service) removeContent(ctx context.Context, actorDID string, request Re
 			}
 			if action == nil || action.ID == "" {
 				return unavailable(errors.New("action insert returned no identifier"))
+			}
+			// A doxing or illegal-content removal drops the text earlier
+			// removals of the subject kept, for admins too.
+			if request.Reason == doxingReason || request.Reason == illegalContentReason {
+				if err := tx.DeleteSubjectContentSnapshots(ctx, request.Subject.URI); err != nil {
+					return unavailable(err)
+				}
+			}
+			// Illegal content is never kept, not even for admins. A comment
+			// its author deleted has already lost its text.
+			authorDeletedComment := subject.AuthorDeleted && subject.Collection == CommentCollection
+			if request.Reason != illegalContentReason && !authorDeletedComment {
+				if err := tx.InsertContentSnapshot(ctx, action.ID, subject.AuthorDID, ContentSnapshot{
+					Title: subject.Title, Text: subject.Text, LinkURL: subject.LinkURL, CapturedCID: action.ObservedCID,
+				}); err != nil {
+					return unavailable(err)
+				}
 			}
 			if err := tx.SetRemovalDecision(ctx, s.config.InstanceDID, request.Subject.URI, action.ID, true); err != nil {
 				return unavailable(err)

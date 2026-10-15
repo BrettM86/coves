@@ -56,6 +56,8 @@ func TestNotificationMigration053_ActivationSingleton(t *testing.T) {
 func TestNotificationMigration053_DownAndUpRoundTrip(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
+	require.EqualValues(t, 56, testkit.MigrateDownOne(t, db, 56),
+		"056 (moderation content snapshots) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 55, testkit.MigrateDownOne(t, db, 55),
 		"055 (notification public post withdrawals) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 54, testkit.MigrateDownOne(t, db, 54),
@@ -81,6 +83,8 @@ func TestNotificationMigration053_DownAndUpRoundTrip(t *testing.T) {
 func TestNotificationMigration055_DownAndUpRoundTrip(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
+	require.EqualValues(t, 56, testkit.MigrateDownOne(t, db, 56),
+		"056 (moderation content snapshots) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 55, testkit.MigrateDownOne(t, db, 55),
 		"this must exercise 055's Down section, not an earlier migration")
 	var relation sql.NullString

@@ -259,3 +259,142 @@ func TestModlogPublicProjectionDoesNotLeakStoredFields(t *testing.T) {
 		}
 	}
 }
+
+// A comment action's rootUri goes wherever its subject goes: in the public
+// subject while the subject is public, and only in the admin privateSubject
+// when the subject is hidden or restricted.
+func TestModlogSubjectRootURIProjection(t *testing.T) {
+	const rootURI = "at://did:plc:rootauthor/social.coves.community.post/3mwmyrootpost"
+	for _, test := range []struct {
+		name           string
+		rootURI        string
+		reason         string
+		reversedReason string
+		restore        bool
+		access         moderation.SubjectAccess
+		rootWithheld   bool
+		private        bool
+	}{
+		{"public spam removal", rootURI, modlogReasonSpam, "", false, moderation.SubjectAccessPublic, false, false},
+		{"doxing removal", rootURI, modlogReasonDoxing, "", false, moderation.SubjectAccessPublic, false, true},
+		{"restore of doxing", rootURI, modlogReasonDiscretion, modlogReasonDoxing, true, moderation.SubjectAccessPublic, false, true},
+		{"restricted spam removal", rootURI, modlogReasonSpam, "", false, moderation.SubjectAccessRestricted, false, true},
+		{"public action without root", "", modlogReasonSpam, "", false, moderation.SubjectAccessPublic, false, false},
+		{"hidden action without root", "", modlogReasonDoxing, "", false, moderation.SubjectAccessPublic, false, true},
+		{"public spam removal under a withheld root", rootURI, modlogReasonSpam, "", false, moderation.SubjectAccessPublic, true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			action := modlogTestAction()
+			action.SubjectRootURI = test.rootURI
+			action.Reason = test.reason
+			action.SubjectAccess = test.access
+			action.SubjectRootWithheld = test.rootWithheld
+			if test.restore {
+				action.Action = moderation.ActionRestore
+				action.ReversesActionID = "3mwmyoriginalremoval"
+				action.ReversedActionReason = test.reversedReason
+			}
+
+			publicObject, publicJSON := modlogJSON(t, moderation.NewActionView(action))
+			adminObject, _ := modlogJSON(t, moderation.NewAdminActionView(action))
+			if test.private {
+				assert.NotContains(t, publicObject, "subject")
+				assert.NotContains(t, string(publicJSON), rootURI, "a private subject's thread must not be named publicly")
+				privateSubject := modlogObject(t, adminObject["privateSubject"])
+				if test.rootURI == "" {
+					assert.NotContains(t, privateSubject, "rootUri")
+				} else {
+					assert.Equal(t, rootURI, privateSubject["rootUri"])
+				}
+				return
+			}
+			subject := modlogObject(t, publicObject["subject"])
+			if test.rootWithheld {
+				// The subject stays public; only its thread's root goes admin-only.
+				assert.Equal(t, "at://did:plc:author/social.coves.community.comment/3mwmycomment", subject["uri"])
+				assert.NotContains(t, subject, "rootUri")
+				assert.NotContains(t, string(publicJSON), rootURI, "a withheld root must not be named publicly")
+				privateSubject := modlogObject(t, adminObject["privateSubject"])
+				assert.Equal(t, rootURI, privateSubject["rootUri"])
+				return
+			}
+			if test.rootURI == "" {
+				assert.NotContains(t, subject, "rootUri")
+			} else {
+				assert.Equal(t, rootURI, subject["rootUri"])
+			}
+			assert.NotContains(t, adminObject, "privateSubject")
+		})
+	}
+}
+
+// The public log shows a removal's content snapshot only while it shows the
+// subject; the admin log shows it whenever the action has one.
+func TestModlogContentSnapshotProjection(t *testing.T) {
+	postSnapshot := &moderation.ContentSnapshot{
+		Title:       "Removed post title 🔥",
+		Text:        "Removed post body\nsecond line",
+		LinkURL:     "https://news.example/story?id=42",
+		CapturedCID: "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm",
+	}
+	postSnapshotJSON := map[string]any{
+		"title":       "Removed post title 🔥",
+		"text":        "Removed post body\nsecond line",
+		"linkUrl":     "https://news.example/story?id=42",
+		"capturedCid": "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm",
+	}
+	commentSnapshot := &moderation.ContentSnapshot{
+		Text:        "Removed comment body",
+		CapturedCID: "bafyreihgdyzzpkkzq2izfnhcmm77ycuacvkuziwbnqxfxtqsz7tmxwhnshi",
+	}
+	commentSnapshotJSON := map[string]any{
+		"text":        "Removed comment body",
+		"capturedCid": "bafyreihgdyzzpkkzq2izfnhcmm77ycuacvkuziwbnqxfxtqsz7tmxwhnshi",
+	}
+	for _, test := range []struct {
+		name     string
+		snapshot *moderation.ContentSnapshot
+		reason   string
+		access   moderation.SubjectAccess
+		// authorDeleted marks a subject its author has since deleted: the
+		// public entry still names it but withholds the snapshot.
+		authorDeleted bool
+		wantPublic    map[string]any
+		wantAdmin     map[string]any
+	}{
+		{"public post removal", postSnapshot, modlogReasonSpam, moderation.SubjectAccessPublic, false, postSnapshotJSON, postSnapshotJSON},
+		{"public comment removal omits empty fields", commentSnapshot, modlogReasonHarassment, moderation.SubjectAccessPublic, false, commentSnapshotJSON, commentSnapshotJSON},
+		{"doxing removal", postSnapshot, modlogReasonDoxing, moderation.SubjectAccessPublic, false, nil, postSnapshotJSON},
+		{"restricted subject", postSnapshot, modlogReasonSpam, moderation.SubjectAccessRestricted, false, nil, postSnapshotJSON},
+		{"author-deleted subject", postSnapshot, modlogReasonSpam, moderation.SubjectAccessPublic, true, nil, postSnapshotJSON},
+		{"no snapshot", nil, modlogReasonSpam, moderation.SubjectAccessPublic, false, nil, nil},
+		{"hidden action without snapshot", nil, modlogReasonDoxing, moderation.SubjectAccessPublic, false, nil, nil},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			action := modlogTestAction()
+			action.ContentSnapshot = test.snapshot
+			action.Reason = test.reason
+			action.SubjectAccess = test.access
+			action.SubjectAuthorDeleted = test.authorDeleted
+
+			publicObject, publicJSON := modlogJSON(t, moderation.NewActionView(action))
+			if test.authorDeleted {
+				assert.Contains(t, publicObject, "subject", "an author-deleted subject is still named publicly")
+			}
+			if test.wantPublic == nil {
+				assert.NotContains(t, publicObject, "contentSnapshot")
+				assert.NotContains(t, string(publicJSON), "Removed post body", "a withheld snapshot must not leak publicly")
+			} else {
+				assert.Equal(t, test.wantPublic, publicObject["contentSnapshot"])
+			}
+
+			adminObject, _ := modlogJSON(t, moderation.NewAdminActionView(action))
+			assert.Equal(t, publicObject, modlogObject(t, adminObject["action"]), "the admin entry embeds the public projection")
+			if test.wantAdmin == nil {
+				assert.NotContains(t, adminObject, "contentSnapshot")
+			} else {
+				assert.Equal(t, test.wantAdmin, adminObject["contentSnapshot"])
+			}
+		})
+	}
+}

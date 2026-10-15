@@ -41,11 +41,11 @@ func restrictedLogComment(t *testing.T, db *sql.DB, authorDID string, root moder
 	return subject
 }
 
-func restrictedLogRemove(t *testing.T, service moderation.Service, subject moderation.StrongRef) string {
+func restrictedLogRemove(t *testing.T, service moderation.Service, subject moderation.StrongRef, reason string) string {
 	t.Helper()
 	result, err := service.RemoveContent(t.Context(), fixtures.DID("restrictedlogadmin"), moderation.RemoveContentRequest{
 		Subject: subject, ExpectedVersion: "v0", IdempotencyKey: testkit.UniqueIDWithPrefix(t, "remove"),
-		Reason: "social.coves.moderation.defs#reasonSpam",
+		Reason: reason,
 	})
 	require.NoError(t, err)
 	require.Equal(t, moderation.OutcomeApplied, result.Outcome)
@@ -102,9 +102,17 @@ func TestModerationActionLogRestrictsOnlyUnindexedSubjects(t *testing.T) {
 	pending := post("pending", "pending")
 	orphanRoot := post("orphan root", "")
 	erasedPost := post("erased post", "")
-	erasedComment := restrictedLogComment(t, db, authorDID, accepted)
+	// roots records each comment's root post URI as seeded.
+	roots := map[string]string{}
+	comment := func(root moderation.StrongRef) moderation.StrongRef {
+		subject := restrictedLogComment(t, db, authorDID, root)
+		roots[subject.URI] = root.URI
+		return subject
+	}
+	erasedComment := comment(accepted)
+	orphanComment := comment(orphanRoot)
 	softDeletedPost := post("soft deleted post", "")
-	softDeletedComment := restrictedLogComment(t, db, authorDID, accepted)
+	softDeletedComment := comment(accepted)
 
 	type entry struct {
 		subject    moderation.StrongRef
@@ -119,8 +127,8 @@ func TestModerationActionLogRestrictsOnlyUnindexedSubjects(t *testing.T) {
 		{post("community removed", "removed"), moderation.PostV2Collection, false},
 		{post("unadmitted", "unadmitted"), moderation.PostV2Collection, false},
 		{indexedModerationPost(t, db, moderation.LegacyPostCollection, communityDID, authorDID, "legacy", ""), moderation.LegacyPostCollection, false},
-		{restrictedLogComment(t, db, authorDID, pending), moderation.CommentCollection, false},
-		{restrictedLogComment(t, db, authorDID, orphanRoot), moderation.CommentCollection, false},
+		{comment(pending), moderation.CommentCollection, false},
+		{orphanComment, moderation.CommentCollection, false},
 		{softDeletedPost, moderation.PostV2Collection, false},
 		{softDeletedComment, moderation.CommentCollection, false},
 		{erasedPost, moderation.PostV2Collection, true},
@@ -129,7 +137,7 @@ func TestModerationActionLogRestrictsOnlyUnindexedSubjects(t *testing.T) {
 	entries := map[string]entry{}
 	var publicIDs []string
 	for _, subject := range subjects {
-		id := restrictedLogRemove(t, service, subject.subject)
+		id := restrictedLogRemove(t, service, subject.subject, "social.coves.moderation.defs#reasonSpam")
 		entries[id] = subject
 		if !subject.restricted {
 			publicIDs = append([]string{id}, publicIDs...)
@@ -137,7 +145,8 @@ func TestModerationActionLogRestrictsOnlyUnindexedSubjects(t *testing.T) {
 	}
 	// Account erasure hard-deletes rows; an author's delete only sets
 	// deleted_at, so the row stays and the entry stays public. A comment whose
-	// root post is gone keeps its own row, so it stays public too.
+	// root post is gone keeps its own row, so it stays public too, without its
+	// rootUri, which only the admin log carries (decided 2026-10-13).
 	for _, statement := range []struct{ sql, uri string }{
 		{`UPDATE posts SET deleted_at = NOW() WHERE uri = $1`, softDeletedPost.URI},
 		{`UPDATE comments SET deleted_at = NOW() WHERE uri = $1`, softDeletedComment.URI},
@@ -147,6 +156,23 @@ func TestModerationActionLogRestrictsOnlyUnindexedSubjects(t *testing.T) {
 	} {
 		_, err := db.ExecContext(t.Context(), statement.sql, statement.uri)
 		require.NoError(t, err)
+	}
+	// subjectRef is the subject reference JSON a log entry carries; a comment's
+	// names the post that roots its thread.
+	subjectRef := func(want entry) map[string]any {
+		ref := map[string]any{"uri": want.subject.URI, "cid": want.subject.CID, "communityDid": communityDID}
+		if root, isComment := roots[want.subject.URI]; isComment {
+			ref["rootUri"] = root
+		}
+		return ref
+	}
+	// publicRef is the subject reference the public view gives.
+	publicRef := func(want entry) map[string]any {
+		ref := subjectRef(want)
+		if want.subject.URI == orphanComment.URI {
+			delete(ref, "rootUri")
+		}
+		return ref
 	}
 	publicIn := func(collection string) []string {
 		var ids []string
@@ -168,7 +194,7 @@ func TestModerationActionLogRestrictsOnlyUnindexedSubjects(t *testing.T) {
 				assert.Nil(t, action.Subject, "an erased subject must not appear in the public log")
 				assert.NotContains(t, encoded, want.subject.URI)
 			} else {
-				assert.Equal(t, &moderation.SubjectRefView{URI: want.subject.URI, CID: want.subject.CID, CommunityDID: communityDID}, action.Subject)
+				assert.Equal(t, publicRef(want), snapshotObject(t, action.Subject))
 			}
 		}
 	})
@@ -179,12 +205,15 @@ func TestModerationActionLogRestrictsOnlyUnindexedSubjects(t *testing.T) {
 		require.Len(t, page.Actions, len(entries))
 		for _, action := range page.Actions {
 			want := entries[action.Action.Ref.ActionID]
-			ref := &moderation.SubjectRefView{URI: want.subject.URI, CID: want.subject.CID, CommunityDID: communityDID}
+			ref := subjectRef(want)
 			if want.restricted {
 				assert.Nil(t, action.Action.Subject)
-				assert.Equal(t, ref, action.PrivateSubject)
+				assert.Equal(t, ref, snapshotObject(t, action.PrivateSubject))
+			} else if want.subject.URI == orphanComment.URI {
+				assert.Equal(t, publicRef(want), snapshotObject(t, action.Action.Subject))
+				assert.Equal(t, ref, snapshotObject(t, action.PrivateSubject))
 			} else {
-				assert.Equal(t, ref, action.Action.Subject)
+				assert.Equal(t, ref, snapshotObject(t, action.Action.Subject))
 				assert.Nil(t, action.PrivateSubject)
 			}
 		}

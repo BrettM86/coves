@@ -35,6 +35,9 @@ func TestMigration048DiscoverHotSnapshots(t *testing.T) {
 	_, err := db.ExecContext(ctx, `CREATE TABLE discover_hot_migration_sentinel (id BIGINT PRIMARY KEY)`)
 	require.NoError(t, err)
 
+	require.EqualValues(t, 56, testkit.MigrateDownOne(t, db, 56),
+		"056 (moderation content snapshots) must be rolled back before testing earlier migrations")
+
 	require.EqualValues(t, 55, testkit.MigrateDownOne(t, db, 55),
 		"055 (notification public post withdrawals) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 54, testkit.MigrateDownOne(t, db, 54),

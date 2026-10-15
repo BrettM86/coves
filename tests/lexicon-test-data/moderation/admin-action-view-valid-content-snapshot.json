@@ -1,0 +1,29 @@
+{
+  "$type": "social.coves.moderation.defs#adminActionView",
+  "action": {
+    "ref": {
+      "serviceDid": "did:plc:abc123",
+      "actionId": "action-011"
+    },
+    "action": "remove",
+    "authorityDid": "did:plc:abc123",
+    "scope": {
+      "kind": "instance"
+    },
+    "createdAt": "2026-10-13T10:01:00Z",
+    "origin": "local",
+    "reason": "social.coves.moderation.defs#reasonDoxing"
+  },
+  "actorDid": "did:plc:ghi789",
+  "privateSubject": {
+    "uri": "at://did:plc:def456/social.coves.community.postv2/3k7a3dmb5bk2c",
+    "cid": "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm",
+    "communityDid": "did:plc:def456"
+  },
+  "contentSnapshot": {
+    "title": "Found their home address",
+    "text": "Posting the address here so everyone can visit.",
+    "linkUrl": "https://maps.example/place/123",
+    "capturedCid": "bafyreib6tbnql2ux3whnfysbzabthaj2vvck53nimhbi5g5a7jgvgr5eqm"
+  }
+}

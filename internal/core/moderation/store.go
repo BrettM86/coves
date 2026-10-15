@@ -40,6 +40,7 @@ type Action struct {
 	SubjectURI          string
 	SubjectCollection   string
 	SubjectCommunityDID string
+	SubjectRootURI      string `json:",omitempty"` // omitempty keeps stored idempotency result JSON (pinned in idempotency_golden_test.go) unchanged for actions without a root.
 	ObservedCID         string
 	Action              string
 	LabelValue          string
@@ -58,6 +59,24 @@ type Action struct {
 	// service refuses a row that leaves it unset. It is read-time state, so it
 	// stays out of stored idempotency results.
 	SubjectAccess SubjectAccess `json:"-"`
+	// ContentSnapshot is read-time state too: only Store.ListActions sets it,
+	// so mutation results and stored idempotency results never carry it.
+	ContentSnapshot *ContentSnapshot `json:"-"`
+	// SubjectAuthorDeleted is read-time state set by Store.ListActions: the author has deleted the subject.
+	// Any reader that sets ContentSnapshot must set it too, or the public log shows text the author deleted.
+	SubjectAuthorDeleted bool `json:"-"`
+	// SubjectRootWithheld is read-time state set by Store.ListActions: the public log must not name the
+	// subject's root post, which has a hidden-reason action or is no longer indexed.
+	SubjectRootWithheld bool `json:"-"`
+}
+
+// ContentSnapshot is the text of a removed subject, as indexed when it was
+// removed. CapturedCID is the version it was read from.
+type ContentSnapshot struct {
+	Title       string
+	Text        string
+	LinkURL     string
+	CapturedCID string
 }
 
 // SubjectAccess says whether the public log may name an action's subject.
@@ -85,6 +104,9 @@ type IndexedComment struct {
 	CommunityDID string
 	// ImageCIDs are the blob CIDs of the comment's indexed image embed.
 	ImageCIDs []string
+	// RootURI is the post at the root of the comment's thread.
+	RootURI string
+	Text    string
 }
 
 // IndexedPost is the indexed post row a mutation inspects, read under a share
@@ -99,6 +121,13 @@ type IndexedPost struct {
 	CommunityDID string
 	// BlobCIDs are the canonical CIDs of the post's proxy-served blobs.
 	BlobCIDs []string
+	// AuthorDID is the person who wrote the post, which differs from OwnerDID
+	// for legacy posts.
+	AuthorDID string
+	Title     string
+	Text      string
+	// LinkURL is the URI of an external link embed.
+	LinkURL string
 }
 
 // MediaBlock suppresses Coves-served bytes of a blob. An empty OwnerDID
@@ -192,6 +221,11 @@ type Transaction interface {
 	// ActiveLabels returns active instance-scope label actions, ordered by value.
 	ActiveLabels(ctx context.Context, authorityDID, subjectURI string) ([]Action, error)
 	InsertAction(ctx context.Context, action Action) (*Action, error)
+	// InsertContentSnapshot stores the snapshot of a removal's subject,
+	// written by authorDID, keyed to the removal's action.
+	InsertContentSnapshot(ctx context.Context, actionID, authorDID string, snapshot ContentSnapshot) error
+	// DeleteSubjectContentSnapshots deletes the snapshots of every action on subjectURI.
+	DeleteSubjectContentSnapshots(ctx context.Context, subjectURI string) error
 	SetRemovalDecision(ctx context.Context, authorityDID, subjectURI, actionID string, active bool) error
 	// SetLabelDecision changes the instance-scope label decision for
 	// (authorityDID, subjectURI, value). With active true it activates the

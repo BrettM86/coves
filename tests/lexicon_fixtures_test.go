@@ -75,6 +75,9 @@ var invalidFixtureExpectedErrors = map[string]string{
 	"post-viewer-state-invalid-moderation-item-not-string.json":           "expected a string",
 	"comment-viewer-state-invalid-moderation-item-not-string.json":        "expected a string",
 	"moderated-post-invalid-viewer-not-object.json":                       "expected an object",
+	// Modlog content snapshots and comment thread roots.
+	"action-view-invalid-snapshot-missing-captured-cid.json": "required field missing: capturedCid",
+	"action-view-invalid-root-uri-not-at-uri.json":           "AT-URI syntax",
 }
 
 // expectedFixtureFamilies is the closed list of top-level fixture directories

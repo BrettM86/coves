@@ -196,6 +196,8 @@ func TestRematerializeLedgerMigration_RollsBack(t *testing.T) {
 	// 037 and come off first, one asserted step at a time. Asserting which
 	// migration rolled back is what keeps this pointed at 037's Down rather than
 	// drifting onto a newer one later.
+	require.EqualValues(t, 56, testkit.MigrateDownOne(t, db, 56),
+		"056 (moderation content snapshots) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 55, testkit.MigrateDownOne(t, db, 55),
 		"055 (notification public post withdrawals) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 54, testkit.MigrateDownOne(t, db, 54),

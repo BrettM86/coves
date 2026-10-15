@@ -80,6 +80,8 @@ func TestMigration040_RecountsVoteDriftAndSweepsLegacyOrphans(t *testing.T) {
 	// point of a repair migration and cannot be observed by seeding after it has
 	// run. Asserting the version that came off is the tripwire that keeps this
 	// pointed at 040 when later migrations land.
+	require.EqualValues(t, 56, testkit.MigrateDownOne(t, db, 56),
+		"056 (moderation content snapshots) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 55, testkit.MigrateDownOne(t, db, 55),
 		"055 (notification public post withdrawals) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 54, testkit.MigrateDownOne(t, db, 54),

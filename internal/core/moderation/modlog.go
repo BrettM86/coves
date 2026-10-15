@@ -82,6 +82,8 @@ type ActionView struct {
 	LabelValue   string          `json:"labelValue,omitempty"`
 	Actor        *ActorRefView   `json:"actor,omitempty"`
 	Reverses     *ActionRefView  `json:"reverses,omitempty"`
+	// ContentSnapshot is present only while the subject is public and not deleted by its author.
+	ContentSnapshot *ContentSnapshotView `json:"contentSnapshot,omitempty"`
 }
 
 // ActionRefView is defs#actionRef.
@@ -101,10 +103,26 @@ type SubjectRefView struct {
 	URI          string `json:"uri"`
 	CID          string `json:"cid,omitempty"`
 	CommunityDID string `json:"communityDid,omitempty"`
+	RootURI      string `json:"rootUri,omitempty"`
 }
 
 func newSubjectRefView(action Action) *SubjectRefView {
-	return &SubjectRefView{URI: action.SubjectURI, CID: action.ObservedCID, CommunityDID: action.SubjectCommunityDID}
+	return &SubjectRefView{URI: action.SubjectURI, CID: action.ObservedCID, CommunityDID: action.SubjectCommunityDID, RootURI: action.SubjectRootURI}
+}
+
+// ContentSnapshotView is defs#contentSnapshot.
+type ContentSnapshotView struct {
+	Title       string `json:"title,omitempty"`
+	Text        string `json:"text,omitempty"`
+	LinkURL     string `json:"linkUrl,omitempty"`
+	CapturedCID string `json:"capturedCid"`
+}
+
+func newContentSnapshotView(snapshot *ContentSnapshot) *ContentSnapshotView {
+	if snapshot == nil {
+		return nil
+	}
+	return &ContentSnapshotView{Title: snapshot.Title, Text: snapshot.Text, LinkURL: snapshot.LinkURL, CapturedCID: snapshot.CapturedCID}
 }
 
 // ActorRefView is defs#actorRef.
@@ -118,6 +136,9 @@ type AdminActionView struct {
 	ActorDID       string          `json:"actorDid,omitempty"`
 	PrivateSubject *SubjectRefView `json:"privateSubject,omitempty"`
 	PrivateNote    string          `json:"privateNote,omitempty"`
+	// ContentSnapshot is present whenever the action has one, including for
+	// a subject the public log withholds.
+	ContentSnapshot *ContentSnapshotView `json:"contentSnapshot,omitempty"`
 }
 
 // NewActionView projects an action for the public log.
@@ -134,6 +155,12 @@ func NewActionView(action Action) ActionView {
 	}
 	if !privateSubject(action) {
 		view.Subject = newSubjectRefView(action)
+		if action.SubjectRootWithheld {
+			view.Subject.RootURI = ""
+		}
+		if !action.SubjectAuthorDeleted {
+			view.ContentSnapshot = newContentSnapshotView(action.ContentSnapshot)
+		}
 	}
 	if restrictedSubject(action) {
 		// A community scope would tie the restricted subject to its community.
@@ -151,11 +178,12 @@ func NewActionView(action Action) ActionView {
 // NewAdminActionView projects an action for the admin log.
 func NewAdminActionView(action Action) AdminActionView {
 	view := AdminActionView{
-		Action:      NewActionView(action),
-		ActorDID:    action.ActorDID,
-		PrivateNote: action.PrivateNote,
+		Action:          NewActionView(action),
+		ActorDID:        action.ActorDID,
+		PrivateNote:     action.PrivateNote,
+		ContentSnapshot: newContentSnapshotView(action.ContentSnapshot),
 	}
-	if privateSubject(action) {
+	if privateSubject(action) || (action.SubjectRootWithheld && action.SubjectRootURI != "") {
 		view.PrivateSubject = newSubjectRefView(action)
 	}
 	return view

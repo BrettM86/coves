@@ -248,7 +248,7 @@ func TestModerationModlogListsRemovalHistory(t *testing.T) {
 		if want.hidden {
 			assert.NotContains(t, action, "subject")
 		} else {
-			assert.Equal(t, map[string]any{"uri": want.uri, "cid": want.cid, "communityDid": f.communityDID}, action["subject"])
+			assert.Equal(t, map[string]any{"uri": want.uri, "cid": want.cid, "communityDid": f.communityDID, "rootUri": f.postURI}, action["subject"])
 		}
 		if want.reverses != "" {
 			assert.Equal(t, want.reverses, moderationAcceptanceObject(t, action["reverses"])["actionId"])
@@ -270,7 +270,7 @@ func TestModerationModlogListsRemovalHistory(t *testing.T) {
 		assert.Equal(t, want.note, entry["privateNote"])
 		if want.hidden {
 			assert.NotContains(t, action, "subject")
-			assert.Equal(t, map[string]any{"uri": want.uri, "cid": want.cid, "communityDid": f.communityDID}, entry["privateSubject"])
+			assert.Equal(t, map[string]any{"uri": want.uri, "cid": want.cid, "communityDid": f.communityDID, "rootUri": f.postURI}, entry["privateSubject"])
 		} else {
 			assert.NotContains(t, entry, "privateSubject")
 		}
@@ -685,4 +685,36 @@ func TestModerationModlogCommunityAssociationSurvivesReindex(t *testing.T) {
 	_, err = f.db.ExecContext(t.Context(), `INSERT INTO comments (uri,cid,rkey,commenter_did,root_uri,root_cid,parent_uri,parent_cid,content,created_at) VALUES ($1,$2,$3,$4,$5,$6,$5,$6,$7,NOW())`, uri, cid, uri[strings.LastIndex(uri, "/")+1:], f.authorDID, f.postURI, f.postCID, "reindexed comment")
 	require.NoError(t, err)
 	check(t)
+}
+
+// Acceptance: a public removal of a comment names the post that roots its
+// thread and shows the removed text; a doxing removal shows neither its
+// subject nor its text publicly, while admins see both.
+func TestModerationModlogContentSnapshotsAndCommentRoot(t *testing.T) {
+	f := newModlogFixture(t)
+	commentURI, commentCID := f.comment(t)
+	commentRemoval, _ := f.remove(t, commentURI, commentCID, f.tokenA, modlogSpam, "comment removal note")
+	doxedURI := fixtures.Post(t, f.db, f.communityDID, f.authorDID, "Doxed post title", 0, time.Now())
+	doxedRemoval, _ := f.remove(t, doxedURI, "bafytest", f.tokenA, modlogDoxing, "doxing removal note")
+
+	publicResponse := f.list(t, false, "", nil)
+	_, publicItems := modlogPage(t, publicResponse, false)
+	public := map[string]map[string]any{}
+	for _, item := range publicItems {
+		action := modlogAction(t, item, false)
+		public[modlogID(t, action)] = action
+	}
+	require.Contains(t, public, commentRemoval)
+	assert.Equal(t, map[string]any{"uri": commentURI, "cid": commentCID, "communityDid": f.communityDID, "rootUri": f.postURI}, public[commentRemoval]["subject"])
+	assert.Equal(t, map[string]any{"text": "modlog comment", "capturedCid": commentCID}, public[commentRemoval]["contentSnapshot"])
+	require.Contains(t, public, doxedRemoval)
+	assert.NotContains(t, public[doxedRemoval], "subject")
+	assert.NotContains(t, public[doxedRemoval], "contentSnapshot")
+	assert.NotContains(t, string(publicResponse.body), "Doxed post title")
+
+	_, adminItems := modlogPage(t, f.list(t, true, f.tokenB, url.Values{"actionId": {doxedRemoval}}), true)
+	require.Len(t, adminItems, 1)
+	entry := moderationAcceptanceObject(t, adminItems[0])
+	assert.Equal(t, map[string]any{"title": "Doxed post title", "capturedCid": "bafytest"}, entry["contentSnapshot"])
+	assert.Equal(t, map[string]any{"uri": doxedURI, "cid": "bafytest", "communityDid": f.communityDID}, entry["privateSubject"])
 }

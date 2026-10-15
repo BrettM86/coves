@@ -1,0 +1,22 @@
+{
+  "$type": "social.coves.moderation.defs#actionView",
+  "ref": {
+    "serviceDid": "did:plc:abc123",
+    "actionId": "action-012"
+  },
+  "action": "remove",
+  "authorityDid": "did:plc:abc123",
+  "scope": {
+    "kind": "instance"
+  },
+  "createdAt": "2026-10-13T10:02:00Z",
+  "origin": "local",
+  "subject": {
+    "uri": "at://did:plc:ghi789/social.coves.community.comment/3k7a3dmb5bk2d",
+    "cid": "bafyreihgdyzzpkkzq2izfnhcmm77ycuacvkuziwbnqxfxtqsz7tmxwhnshi"
+  },
+  "reason": "social.coves.moderation.defs#reasonSpam",
+  "contentSnapshot": {
+    "text": "Buy cheap watches at the link in my profile"
+  }
+}

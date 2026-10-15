@@ -15,6 +15,13 @@ type indexedSubject struct {
 	OwnerDID      string
 	CommunityDID  string
 	BlobCIDs      []string
+	// AuthorDID is the account that wrote the subject; for a legacy post it differs from OwnerDID.
+	AuthorDID string
+	// RootURI is the post at the root of a comment's thread; empty for posts.
+	RootURI string
+	Title   string
+	Text    string
+	LinkURL string
 }
 
 type indexedSubjectReader interface {
@@ -38,6 +45,8 @@ func readIndexedSubject(ctx context.Context, reader indexedSubjectReader, subjec
 			URI: comment.URI, CID: comment.CID, Collection: collection,
 			AuthorDeleted: comment.AuthorDeleted, OwnerDID: comment.OwnerDID,
 			CommunityDID: comment.CommunityDID, BlobCIDs: comment.ImageCIDs,
+			// A comment lives in its author's repository.
+			AuthorDID: comment.OwnerDID, RootURI: comment.RootURI, Text: comment.Text,
 		}, nil
 	case PostV2Collection, LegacyPostCollection:
 		post, err := reader.ReadIndexedPost(ctx, subjectURI)
@@ -48,6 +57,7 @@ func readIndexedSubject(ctx context.Context, reader indexedSubjectReader, subjec
 			URI: post.URI, CID: post.CID, Collection: collection,
 			AuthorDeleted: post.AuthorDeleted, OwnerDID: post.OwnerDID,
 			CommunityDID: post.CommunityDID, BlobCIDs: post.BlobCIDs,
+			AuthorDID: post.AuthorDID, Title: post.Title, Text: post.Text, LinkURL: post.LinkURL,
 		}, nil
 	default:
 		return nil, fmt.Errorf("%w: unsupported subject collection", ErrInvalidSubject)

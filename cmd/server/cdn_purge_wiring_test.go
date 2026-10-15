@@ -75,6 +75,10 @@ type cdnWiringTransaction struct {
 }
 
 func (*cdnWiringTransaction) LockActor(context.Context, string) error { return nil }
+func (*cdnWiringTransaction) InsertContentSnapshot(context.Context, string, string, moderation.ContentSnapshot) error {
+	return nil
+}
+func (*cdnWiringTransaction) DeleteSubjectContentSnapshots(context.Context, string) error { return nil }
 func (*cdnWiringTransaction) LiveIdempotencyRecord(context.Context, string, string, string, time.Time) (*moderation.IdempotencyRecord, error) {
 	return nil, nil
 }

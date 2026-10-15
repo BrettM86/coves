@@ -306,6 +306,14 @@ func (transaction *inMemoryModerationTransaction) SetLabelDecision(_ context.Con
 	return nil
 }
 
+func (transaction *inMemoryModerationTransaction) InsertContentSnapshot(context.Context, string, string, moderation.ContentSnapshot) error {
+	return nil
+}
+
+func (transaction *inMemoryModerationTransaction) DeleteSubjectContentSnapshots(context.Context, string) error {
+	return nil
+}
+
 func (transaction *inMemoryModerationTransaction) InsertAction(_ context.Context, action moderation.Action) (*moderation.Action, error) {
 	transaction.store.writeCalls = append(transaction.store.writeCalls, "InsertAction")
 	if transaction.store.failInsertAction != nil {

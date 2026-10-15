@@ -408,7 +408,16 @@ func (r *postgresUserRepo) Delete(ctx context.Context, did string) error {
 		return fmt.Errorf("failed to delete posts for did=%s: %w", did, err)
 	}
 
-	// 11. Delete notifications for this recipient or actor after content deletes.
+	// 11. Delete the modlog content snapshots of this author's removed posts
+	// and comments; their moderation actions stay. This must follow the
+	// comments and posts deletes: an in-flight removal holds a share lock on
+	// the post or comment row until it commits its snapshot, so those deletes
+	// wait for it, and this statement then sees the committed snapshot.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM moderation_content_snapshots WHERE author_did = $1`, did); err != nil {
+		return fmt.Errorf("failed to delete moderation content snapshots for did=%s: %w", did, err)
+	}
+
+	// 12. Delete notifications for this recipient or actor after content deletes.
 	// A notification consumer locks the recipient's content row (count/reply_count
 	// UPDATE) before upserting the notification. Deleting notifications first
 	// could hold the notification row it needs while waiting for the content row
@@ -425,12 +434,12 @@ func (r *postgresUserRepo) Delete(ctx context.Context, did string) error {
 		return fmt.Errorf("failed to delete notification public post withdrawals for did=%s: %w", did, err)
 	}
 
-	// 12. Delete notification state
+	// 13. Delete notification state
 	if _, err := tx.ExecContext(ctx, `DELETE FROM notification_state WHERE did = $1`, did); err != nil {
 		return fmt.Errorf("failed to delete notification_state for did=%s: %w", did, err)
 	}
 
-	// 13. Delete user
+	// 14. Delete user
 	result, err := tx.ExecContext(ctx, `DELETE FROM users WHERE did = $1`, did)
 	if err != nil {
 		return fmt.Errorf("failed to delete user did=%s: %w", did, err)

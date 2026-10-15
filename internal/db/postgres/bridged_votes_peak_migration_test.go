@@ -13,6 +13,8 @@ import (
 func TestNotificationMigration053_BridgedUpvotePeakColumns(t *testing.T) {
 	t.Parallel()
 	db := testkit.DB(t)
+	require.EqualValues(t, 56, testkit.MigrateDownOne(t, db, 56),
+		"056 (moderation content snapshots) must be rolled back before testing earlier migrations")
 	require.EqualValues(t, 55, testkit.MigrateDownOne(t, db, 55))
 	require.EqualValues(t, 54, testkit.MigrateDownOne(t, db, 54))
 	require.EqualValues(t, 53, testkit.MigrateDownOne(t, db, 53))
