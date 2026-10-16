@@ -386,9 +386,12 @@ func TestModerationContentSnapshotOnlyRemovalsKeepItAndEditsDoNotChangeIt(t *tes
 		moderation.ActionRestore: restored.Action.ID, moderation.ActionLabel: labelled.Action.ID,
 		moderation.ActionRetractLabel: retracted.Action.ID,
 	}
-	for kind, id := range others {
+	_, restoreAdmin := snapshotLogEntries(t, service, restored.Action.ID)
+	assert.Equal(t, original, restoreAdmin["contentSnapshot"], "a restore row shows the snapshot of the removal it reverses")
+	current := map[string]any{"title": "Edited snapshot title", "text": "edited post content", "capturedCid": snapshotEditedCID}
+	for _, id := range []string{labelled.Action.ID, retracted.Action.ID} {
 		_, admin := snapshotLogEntries(t, service, id)
-		assert.NotContains(t, admin, "contentSnapshot", kind)
+		assert.Equal(t, current, admin["contentSnapshot"], "a label row shows the post as indexed now")
 	}
 	assert.Equal(t, 1, snapshotRowCount(t, db, removalID))
 	for kind, id := range others {
@@ -420,5 +423,6 @@ func TestModerationContentSnapshotRestoreKeepsCommentRoot(t *testing.T) {
 	require.NotNil(t, subject)
 	assert.Equal(t, comment.URI, subject["uri"])
 	assert.Equal(t, root.URI, subject["rootUri"])
-	assert.NotContains(t, admin, "contentSnapshot")
+	assert.Equal(t, map[string]any{"text": "restricted log comment", "capturedCid": moderationCommentCID}, admin["contentSnapshot"],
+		"the admin restore row shows the reversed removal's snapshot")
 }

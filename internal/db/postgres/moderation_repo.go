@@ -735,6 +735,13 @@ func (r *ModerationRepository) BindTransaction(tx *sql.Tx) moderation.MediaTrans
 // re-created comment does not undo. SubjectRootWithheld is set when a comment's
 // root post has a hidden-reason action or is no longer indexed. ExcludeRestricted filters in the WHERE
 // clause, before LIMIT, so a filtered page is never short.
+//
+// A removal's ContentSnapshot is the one it stored, and a restore's is the one
+// its reversed removal stored, whose author_deleted_at also feeds
+// SubjectAuthorDeleted. A label or retract-label row's ContentSnapshot is the
+// post's current indexed text, with CapturedCID its current CID; it is omitted
+// when the post row is gone, the author deleted the post, or any action on the
+// post has a hidden reason, whose snapshots are deleted for admins too.
 func (r *ModerationRepository) ListActions(ctx context.Context, query moderation.ActionListQuery) ([]moderation.Action, error) {
 	var beforeCreatedAt, beforeID any
 	if query.Before != nil {
@@ -743,10 +750,18 @@ func (r *ModerationRepository) ListActions(ctx context.Context, query moderation
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT `+moderationActionColumns+`, reversed.reason, subject_access.access,
 		       subject_access.author_deleted OR snapshot.author_deleted_at IS NOT NULL, subject_access.root_withheld,
-		       snapshot.title, snapshot.text, snapshot.link_url, snapshot.captured_cid
+		       snapshot.title, snapshot.text, snapshot.link_url, snapshot.captured_cid,
+		       current_post.cid, current_post.title, current_post.content, current_post.embed
 		FROM moderation_actions a
 		LEFT JOIN moderation_actions reversed ON reversed.id = a.reverses_action_id
-		LEFT JOIN moderation_content_snapshots snapshot ON snapshot.action_id = a.id
+		LEFT JOIN moderation_content_snapshots snapshot
+		    ON snapshot.action_id = CASE WHEN a.action = $22 THEN a.reverses_action_id ELSE a.id END
+		LEFT JOIN LATERAL (
+		    SELECT p.cid, p.title, p.content, p.embed FROM posts p
+		    WHERE a.action = ANY($23::text[]) AND p.uri = a.subject_uri AND p.deleted_at IS NULL
+		      AND NOT EXISTS (SELECT 1 FROM moderation_actions hidden
+		                      WHERE hidden.subject_uri = a.subject_uri AND hidden.reason = ANY($15::text[]))
+		) current_post ON TRUE
 		CROSS JOIN LATERAL (
 		    SELECT CASE WHEN
 		        EXISTS (SELECT 1 FROM comments c WHERE a.subject_collection = $18 AND c.uri = a.subject_uri)
@@ -785,7 +800,8 @@ func (r *ModerationRepository) ListActions(ctx context.Context, query moderation
 		query.ActionID, query.Since, query.Until, query.ExcludeHidden, pq.Array(moderation.HiddenActionReasons()),
 		query.ExcludeLabelActions, pq.Array(moderation.PublicExcludedActions()),
 		moderation.CommentCollection, query.ExcludeRestricted,
-		string(moderation.SubjectAccessPublic), string(moderation.SubjectAccessRestricted))
+		string(moderation.SubjectAccessPublic), string(moderation.SubjectAccessRestricted),
+		moderation.ActionRestore, pq.Array([]string{moderation.ActionLabel, moderation.ActionRetractLabel}))
 	if err != nil {
 		return nil, fmt.Errorf("list moderation actions: %w", err)
 	}
@@ -793,10 +809,12 @@ func (r *ModerationRepository) ListActions(ctx context.Context, query moderation
 	var actions []moderation.Action
 	for rows.Next() {
 		var reversedReason, snapshotTitle, snapshotText, snapshotLinkURL, snapshotCID sql.NullString
+		var currentCID, currentTitle, currentContent, currentEmbed sql.NullString
 		var access string
 		var authorDeleted, rootWithheld bool
 		action, err := scanModerationAction(trailingColumns{row: rows, extra: []any{
 			&access, &authorDeleted, &rootWithheld, &snapshotTitle, &snapshotText, &snapshotLinkURL, &snapshotCID,
+			&currentCID, &currentTitle, &currentContent, &currentEmbed,
 		}}, nil, &reversedReason)
 		if err != nil {
 			return nil, fmt.Errorf("scan moderation action: %w", err)
@@ -812,6 +830,12 @@ func (r *ModerationRepository) ListActions(ctx context.Context, query moderation
 				Title: snapshotTitle.String, Text: snapshotText.String,
 				LinkURL: snapshotLinkURL.String, CapturedCID: snapshotCID.String,
 			}
+		} else if currentCID.Valid {
+			// Only label and retract-label rows read the current post, and they store no snapshot.
+			action.ContentSnapshot = &moderation.ContentSnapshot{
+				Title: currentTitle.String, Text: currentContent.String,
+				LinkURL: indexedEmbedLinkURL(currentEmbed), CapturedCID: currentCID.String,
+			}
 		}
 		actions = append(actions, *action)
 	}
@@ -819,6 +843,21 @@ func (r *ModerationRepository) ListActions(ctx context.Context, query moderation
 		return nil, fmt.Errorf("read moderation actions: %w", err)
 	}
 	return actions, nil
+}
+
+// indexedEmbedLinkURL returns the external link URI of an indexed post embed.
+// The embed is unvalidated indexed data; a malformed one has no link and must
+// not fail the listing.
+func indexedEmbedLinkURL(embed sql.NullString) string {
+	if !embed.Valid {
+		return ""
+	}
+	var decoded any
+	if err := json.Unmarshal([]byte(embed.String), &decoded); err != nil {
+		return ""
+	}
+	object, _ := decoded.(map[string]any)
+	return externalEmbedURI(object)
 }
 
 // trailingColumns scans extra columns after the ones its caller asks for.

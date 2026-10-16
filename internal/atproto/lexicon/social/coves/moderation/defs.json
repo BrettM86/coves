@@ -211,7 +211,7 @@
         "contentSnapshot": {
           "type": "ref",
           "ref": "#contentSnapshot",
-          "description": "Text of a removed subject, captured at removal; omitted when the subject is withheld or deleted by its author. Returned by listActions and listAdminActions only, never in a mutation result"
+          "description": "Text of a removed subject, captured at removal; a restore carries the snapshot of the removal it reverses. Omitted when the subject is withheld or deleted by its author. In listAdminActions, a label or retract-label carries the post's current text, as on adminActionView. Returned by listActions and listAdminActions only, never in a mutation result"
         }
       }
     },
@@ -246,13 +246,13 @@
         "contentSnapshot": {
           "type": "ref",
           "ref": "#contentSnapshot",
-          "description": "Text of a removed subject, captured at removal, including when the public projection withholds it. Returned by listAdminActions only, never in a mutation result"
+          "description": "Text of a removed subject, captured at removal, including when the public projection withholds it; a restore carries the snapshot of the removal it reverses. A label or retract-label carries the post's current text, omitted when the post is deleted, gone, or has a doxing or illegal-content action. Returned by listAdminActions only, never in a mutation result"
         }
       }
     },
     "contentSnapshot": {
       "type": "object",
-      "description": "Text of a removed record as indexed when it was removed",
+      "description": "Text of a record: as indexed when it was removed, or for a label or retract-label, as indexed now",
       "required": [
         "capturedCid"
       ],
