@@ -7,13 +7,13 @@
 #
 # Hardware: AMD Epyc 7351p (16c/32t), 256GB RAM, 2x500GB NVMe RAID
 #
-# Usage:
-#   docker-compose -f docker-compose.prod.yml up -d
+# Usage: deploy one service at a time with up -d --no-deps <service>;
+# see docs/PRODUCTION_DEPLOY.md.
 #
 # Prerequisites:
 #   1. DNS configured for both domains
 #   2. SSL certificates (Caddy handles this automatically)
-#   3. .env.prod file with secrets
+#   3. /opt/coves/.env with secrets (read by Compose, not in the repository)
 #   4. .well-known/did.json deployed to coves.social
 
 services:
@@ -58,8 +58,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    # VERSION defaults to the git short SHA in scripts/deploy.sh so the image
-    # tag on the box says exactly which commit is running.
+    # Export VERSION=$(git rev-parse --short HEAD) before building so the image
+    # tag on the box says exactly which commit is running (docs/PRODUCTION_DEPLOY.md).
     image: coves/appview:${VERSION:-latest}
     container_name: coves-prod-appview
     restart: unless-stopped
@@ -265,7 +265,7 @@ services:
       # Note: Root domain (coves.social) handle works via .well-known resolution
       PDS_SERVICE_HANDLE_DOMAINS: .coves.social
 
-      # Security (set real values in .env.prod)
+      # Security (set real values in .env)
       PDS_JWT_SECRET: ${PDS_JWT_SECRET}
       PDS_ADMIN_PASSWORD: ${PDS_ADMIN_PASSWORD}
       PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX: ${PDS_ROTATION_KEY}

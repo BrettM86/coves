@@ -18,7 +18,7 @@ Admins are the DIDs listed in `MODERATION_ADMINS`. An empty list grants nobody, 
 
 Any admin may reverse another admin's decision within the same authority and scope, and history keeps both actors. Removing a DID from the list does not erase or retract its past actions.
 
-The list is read at boot. To change it in production, edit `MODERATION_ADMINS` in `/opt/coves/.env` and redeploy the AppView (`scripts/deploy.sh appview`). `deploy.sh` exports `.env.prod` over `.env`, so `.env.prod` must not also set it.
+The list is read at boot. To change it in production, edit `MODERATION_ADMINS` in `/opt/coves/.env` and recreate the AppView (`docker compose -f docker-compose.prod.yml up -d --no-deps appview`, see `docs/PRODUCTION_DEPLOY.md`).
 
 Keep `MODERATION_ADMINS` empty until supported web and mobile builds pass release gate 5 in [LEXICON_PUBLISHING.md](LEXICON_PUBLISHING.md). There is no `#notFoundPost` fallback: `post.get` serves `#moderatedPost` for every instance removal, so a client that cannot decode it breaks as soon as an admin acts.
 

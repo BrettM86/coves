@@ -48,9 +48,18 @@ The authoritative reference is `coves-frontend/docs/ENVIRONMENT.md`. These value
 
 ## Compose and Caddy changes
 
-`scripts/deploy.sh` refuses to run without `.env.prod` and sources it with `set -a`. Compose prefers exported variables over `.env`, so a value in `.env.prod` beats `/opt/coves/.env`, and either overrides the `${VAR:-default}` defaults in the compose file. After bumping a pin in the compose file, check that neither `.env.prod` nor `.env` still sets the variable, or the bump does nothing.
+Deploy with Compose directly from `/opt/coves`. Compose reads `/opt/coves/.env` (not in the repository) for `${VAR}` interpolation, and a value there overrides the `${VAR:-default}` defaults in the compose file. After bumping a pin in the compose file, check that `.env` does not still set the variable, or the bump does nothing. Do not shell-source `.env`: some values (for example `OTEL_EXPORTER_OTLP_HEADERS`) are unquoted and contain spaces, which Compose accepts and bash does not.
 
-The script runs `build --no-cache` before `up`. `scripts/deploy.sh <service>` runs `up -d --no-deps <service>`. With no service argument it runs plain `up -d`, which recreates every service whose config changed. Without `--no-deps`, Compose also recreates any dependency whose config changed; Caddy depends on the AppView and the PDS, so a Caddy deploy after an image pin bump once restarted the database and PDS as a side effect.
+To deploy the AppView, tag the image with the commit so `docker ps` shows what is running (`.env` sets `VERSION=latest`, and an exported value beats it):
+
+```sh
+cd /opt/coves
+export VERSION=$(git rev-parse --short HEAD)
+docker compose -f docker-compose.prod.yml build appview
+docker compose -f docker-compose.prod.yml up -d --no-deps appview
+```
+
+The AppView applies pending migrations at startup. Always name the service and pass `--no-deps`. Plain `up -d` recreates every service whose config changed, and without `--no-deps` Compose also recreates any dependency whose config changed; Caddy depends on the AppView and the PDS, so a Caddy deploy after an image pin bump once restarted the database and PDS as a side effect.
 
 Caddy mounts the `Caddyfile` as a single-file bind mount. `git pull` replaces the file with a new inode and the running container keeps reading the old one, so a Caddyfile change needs the container recreated, not reloaded. Validate first in a fresh container, because validating inside the running one reads the stale file:
 
@@ -81,7 +90,7 @@ The image built from `Dockerfile` contains only the server. Build the tool from 
 ```sh
 cd /opt/coves
 (
-  set -a; . ./.env.prod; set +a
+  set -a; . <(grep -E '^(POSTGRES_USER|POSTGRES_PASSWORD|POSTGRES_DB|ENCRYPTION_KEY|OAUTH_SEAL_SECRET|CURSOR_SECRET|IMAGE_PROXY_BASE_URL)=' .env); set +a
   export DATABASE_URL="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@coves-prod-postgres:5432/${POSTGRES_DB}?sslmode=disable"
   docker run --rm --network coves-prod-network \
     -e DATABASE_URL -e ENCRYPTION_KEY -e OAUTH_SEAL_SECRET -e CURSOR_SECRET \
@@ -97,10 +106,10 @@ cd /opt/coves
 )
 ```
 
-- The subshell loads `.env.prod` the way `scripts/deploy.sh` does (`set -a; source .env.prod`), so the shell strips quotes from its values exactly as it does for the AppView, and nothing stays in the operator's shell afterwards. Do not use `docker run --env-file .env.prod`: it passes values verbatim, so a quoted value such as `ENCRYPTION_KEY="<base64>"` reaches the tool with its quotes and configuration loading refuses it.
-- Bare `-e NAME` copies the value from that environment without putting it on the command line. Only the `.env.prod` values that configuration loading requires in production are passed: `ENCRYPTION_KEY`, `OAUTH_SEAL_SECRET`, `CURSOR_SECRET`, and `IMAGE_PROXY_BASE_URL` with the compose default `https://img.coves.social`. The AppView's other `.env.prod` settings are optional and unused by the tool, so their defaults load.
-- The `-e NAME=value` flags are the literals in the `appview` service's `environment:` block of `docker-compose.prod.yml`. `.env.prod` lacks them or holds a different value (its `PDS_URL`). Keep them in step with that block.
-- `DATABASE_URL` is built from `.env.prod`'s `POSTGRES_*` values as compose builds it, with host `coves-prod-postgres` instead of `postgres`, because Tidepool's stack shares `coves-prod-network` and its `postgres` alias can resolve to Tidepool's database.
+- The subshell exports only the seven `.env` keys the tool needs, so the shell strips quotes from their values the way Compose does for the AppView, and nothing stays in the operator's shell afterwards. Do not source the whole file: bash fails on its unquoted values with spaces and prints part of the value. Do not use `docker run --env-file .env`: it passes values verbatim, so a quoted value such as `ENCRYPTION_KEY="<base64>"` reaches the tool with its quotes and configuration loading refuses it.
+- Bare `-e NAME` copies the value from that environment without putting it on the command line. Only the `.env` values that configuration loading requires in production are passed: `ENCRYPTION_KEY`, `OAUTH_SEAL_SECRET`, `CURSOR_SECRET`, and `IMAGE_PROXY_BASE_URL` with the compose default `https://img.coves.social`. The AppView's other `.env` settings are optional and unused by the tool, so their defaults load.
+- The `-e NAME=value` flags are the literals in the `appview` service's `environment:` block of `docker-compose.prod.yml`. `.env` may lack them or hold a different value. Keep them in step with that block.
+- `DATABASE_URL` is built from `.env`'s `POSTGRES_*` values as compose builds it, with host `coves-prod-postgres` instead of `postgres`, because Tidepool's stack shares `coves-prod-network` and its `postgres` alias can resolve to Tidepool's database.
 - At startup the tool prints `reconcile-handles: plc_url=<url>` on stderr. It must be `https://plc.directory`, the AppView's PLC directory: the compose file passes the AppView neither `PLC_DIRECTORY_URL` nor `IDENTITY_PLC_URL`, and this command passes neither. Any other value means the command was changed to pass one; stop and remove it.
 
 Flags: `-trusted-hosts https://tdpl.io` (comma-separated scheme and host; replaces `TRUSTED_BRIDGE_PDS_HOSTS`, and with neither set the tool exits before opening anything), `-clear-identity-cache` (deletes every `identity_cache` row before the sweep and prints `identity_cache_deleted=<n>`), `-dry-run` (resolves and verifies only: no lock, no purge, no writes; a row that would change is listed with `reason=-`), and `-concurrency N` (default 4). `-dry-run` with `-clear-identity-cache` is refused, because a dry run must not change the cache.
